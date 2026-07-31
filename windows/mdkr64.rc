@@ -1,0 +1,59 @@
+// Golden Balloon (mdkr64) Windows executable resources.
+//
+// The .ico is a single-entry, PNG-compressed (Vista+) icon wrapping
+// dist/web/assets/favicon.png — the project's own 256x256 app icon, the same
+// image the web build serves — byte-for-byte. Regenerate with:
+//     tools/wrap_png_as_ico.sh dist/web/assets/favicon.png windows/mdkr64.ico
+IDI_ICON1 ICON "mdkr64.ico"
+
+// ---------------------------------------------------------------------------
+// VERSIONINFO — what Explorer's Properties>Details dialog and Windows game
+// launchers read for the product name + version. There is no compiled-in
+// version anywhere else in this tree, so this is the single embedded source of
+// truth for the shipped binary's identity.
+//
+// The numeric FILEVERSION/PRODUCTVERSION and the human FileVersion/
+// ProductVersion strings are overridable at build time via -DMDKR_VER_CSV and
+// -DMDKR_VER_STR, which CMake derives from the MDKR_VERSION cache variable
+// (default 0.0.0 -> "0.0.0-dev"). The #ifndef defaults keep a bare
+// `windres mdkr64.rc` invocation (no -D) working standalone.
+#include <windows.h>
+
+#ifndef MDKR_VER_CSV
+#define MDKR_VER_CSV 0, 0, 0, 0
+#endif
+#ifndef MDKR_VER_STR
+#define MDKR_VER_STR 0.0.0-dev
+#endif
+// Stringize the token form so callers pass -DMDKR_VER_STR=0.8.0 (no embedded
+// quotes to escape across CMake -> windres).
+#define MDKR_STR2(x) #x
+#define MDKR_STR(x) MDKR_STR2(x)
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION MDKR_VER_CSV
+ PRODUCTVERSION MDKR_VER_CSV
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"  // U.S. English, Unicode (1200) codepage
+        BEGIN
+            VALUE "CompanyName",      "Golden Balloon project"
+            VALUE "FileDescription",  "Golden Balloon"
+            VALUE "FileVersion",      MDKR_STR(MDKR_VER_STR)
+            VALUE "InternalName",     "mdkr64"
+            VALUE "OriginalFilename", "GoldenBalloon.exe"
+            VALUE "ProductName",      "Golden Balloon"
+            VALUE "ProductVersion",   MDKR_STR(MDKR_VER_STR)
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200  // 0x409 = U.S. English, 1200 = Unicode
+    END
+END

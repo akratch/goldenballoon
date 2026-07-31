@@ -1,0 +1,14 @@
+# Resume a checksum-valid Adventure One save, then let MDKR_DRIVE_ROUTE enter
+# Dino Domain and its first race. The save is supplied by check_adventure_two.py.
+
+1250 START 4
+1330 START 4
+1450 A 4
+1540 A 4
+1750 A 4
+
+# GAME_SELECT: Adventure One is option 0.
+1900 A 4
+
+# FILE_SELECT: resume the already-started first slot.
+2050 A 4

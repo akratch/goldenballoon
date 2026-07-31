@@ -1,0 +1,1900 @@
+#include "thread3_main.h"
+
+#include "asset_enums.h"
+#include "asset_loading.h"
+#include "audio.h"
+#include "audio_spatial.h"
+#include "audiomgr.h"
+#include "audiosfx.h"
+#include "borders.h"
+#include "camera.h"
+#include "common.h"
+#include "f3ddkr.h"
+#include "fade_transition.h"
+#include "font.h"
+#include "game.h"
+#include "game_text.h"
+#include "game_ui.h"
+#include "gzip.h"
+#include "joypad.h"
+#include "lights.h"
+#include "macros.h"
+#include "main.h"
+#include "math_util.h"
+#include "memory.h"
+#include "menu.h"
+#include "object_models.h"
+#include "objects.h"
+#include "particles.h"
+#include "PR/os_internal.h"
+#include "PRinternal/viint.h"
+#include "printf.h"
+#include "racer.h"
+#include "rcp_dkr.h"
+#include "save_data.h"
+#include "save_layout.h"
+#include "set_rsp_segment.h"
+#include "stacks.h"
+#include "structs.h"
+#include "textures_sprites.h"
+#include "thread0_epc.h"
+#include "thread30_bgload.h"
+#include "tracks.h"
+#include "types.h"
+#include "video.h"
+#include "weather.h"
+#include <PR/gu.h>
+#include <PR/os_cont.h>
+#include <PR/os_time.h>
+#ifdef NATIVE_PORT
+#include "platform_os.h"
+#include "waves.h"
+#include "fast3d/gfx_pc_dkr.h"
+#include "presentation_snapshot.h"
+#endif
+
+/************ .rodata ************/
+
+#if VERSION >= VERSION_79
+UNUSED char *sDebugRomBuildInfo[] = { "1.1634", "17/10/97 11:19", "pmountain" };
+#elif VERSION == VERSION_77
+UNUSED char *sDebugRomBuildInfo[] = { "1.1605", "02/10/97 16:03", "pmountain" };
+#endif
+
+const char D_800E7134[] = "BBB\n"; // Functionally unused.
+
+/*********************************/
+
+/************ .data ************/
+
+#if VERSION == VERSION_80
+UNUSED char gBuildString[] = "Version 8.0 27/10/97 12.30 L.Schuneman";
+#elif VERSION == VERSION_79
+UNUSED char gBuildString[] = "Version 7.9 14/10/97 19.40 L.Schuneman";
+#elif VERSION == VERSION_77
+UNUSED char gBuildString[] = "Version 7.7 29/09/97 15.00 L.Schuneman";
+#endif
+
+s8 sAntiPiracyTriggered = FALSE;
+UNUSED s32 D_800DD378 = 1;
+s32 gSaveDataFlags = 0; // Official Name: load_save_flags
+s32 gScreenStatus = OSMESG_SWAP_BUFFER;
+s32 sControllerStatus = 0;
+UNUSED s32 D_800DD388 = 0;
+s8 gSkipGfxTask = FALSE;
+s8 gDrumstickSceneLoadTimer = 0;
+s16 gLevelLoadTimer = 0;
+s8 gPauseLockTimer = 0; // If this is above zero, the player cannot pause the game.
+s8 gFutureFunLandLevelTarget = FALSE;
+s8 gDmemInvalid = FALSE;
+UNUSED s32 D_800DD3A4[] = { 0, 0, 0 };
+s32 gNumF3dCmdsPerPlayer[MAXCONTROLLERS] = { 4500, 7000, 11000, 11000 };
+s32 gNumHudVertsPerPlayer[MAXCONTROLLERS] = { 300, 600, 850, 900 };
+s32 gNumHudMatPerPlayer[MAXCONTROLLERS] = { 300, 400, 550, 600 };
+s32 gNumHudTrisPerPlayer[MAXCONTROLLERS] = { 20, 30, 40, 50 };
+s8 gDrawFrameTimer = 0;
+FadeTransition D_800DD3F4 = FADE_TRANSITION(FADE_FULLSCREEN, FADE_FLAG_OUT, FADE_COLOR_BLACK, 20, 0);
+UNUSED FadeTransition D_800DD3FC = FADE_TRANSITION(FADE_FULLSCREEN, FADE_FLAG_NONE, FADE_COLOR_WHITE, 20, FADE_STAY);
+s32 sLogicUpdateRate = LOGIC_5FPS;
+FadeTransition gDrumstickSceneTransition =
+    FADE_TRANSITION(FADE_FULLSCREEN, FADE_FLAG_NONE, FADE_COLOR_WHITE, 30, FADE_STAY);
+UNUSED char *D_800DD410[3] = { "CAR", "HOV", "PLN" };
+FadeTransition gLevelFadeOutTransition =
+    FADE_TRANSITION(FADE_FULLSCREEN, FADE_FLAG_NONE, FADE_COLOR_BLACK, 30, FADE_STAY);
+FadeTransition D_800DD424 = FADE_TRANSITION(FADE_FULLSCREEN, FADE_FLAG_NONE, FADE_COLOR_BLACK, 260, FADE_STAY);
+
+/*******************************/
+
+/************ .bss ************/
+
+Gfx *gDisplayLists[2];
+Gfx *gCurrDisplayList;
+UNUSED s32 D_801211FC;
+Mtx *gMatrixHeap[2];
+Mtx *gGameCurrMatrix;
+Vertex *gVertexHeap[2];
+Vertex *gGameCurrVertexList;
+Triangle *gTriangleHeap[2];
+Triangle *gGameCurrTriList;
+UNUSED s32 D_80121230[8];
+s8 gLevelSettings[16];
+OSSched gMainSched; // 0x288 / 648 bytes
+u64 gSchedStack[STACKSIZE(STACK_SCHED)];
+s32 gSPTaskNum;
+s32 gGameMode;
+s32 gRenderMenu; // I don't think this is ever not 1
+// Similar to gMapId, but is 0 if not currently playing a level (e.g. start menu).
+s32 gPlayableMapId;
+s32 D_801234F8;
+s32 D_801234FC;
+s32 gGameNumPlayers;
+s32 gGameCurrentEntrance;
+s32 gGameCurrentCutscene;
+s32 gPrevPlayerCount;
+Settings *gSettingsPtr;
+static Settings *sWriteSaveSource;
+s8 gIsLoading;
+s8 gIsPaused;
+s8 gPostRaceViewPort;
+Vehicle gLevelDefaultVehicleID;
+Vehicle gMenuVehicleID; // Looks to be the current level's vehicle ID.
+s32 sBootDelayTimer;
+s8 gLevelLoadType;
+s8 gNextMap;
+UNUSED s8 D_80123526; // Set to 0 then never used.
+s32 gCurrNumF3dCmdsPerPlayer;
+s32 gCurrNumHudMatPerPlayer;
+s32 gCurrNumHudTrisPerPlayer;
+s32 gCurrNumHudVertsPerPlayer;
+OSScClient *gNMISched[3];
+OSMesg gNMIOSMesg;
+OSMesgQueue gNMIMesgQueue;
+s32 gNMIMesgBuf;          // Official Name: resetPressed
+UNUSED s32 D_80123568[3]; // BSS Padding
+
+/******************************/
+
+/**
+ * Main looping function for the main thread.
+ * Official Name: mainThread
+ */
+void thread3_main(UNUSED void *unused) {
+    init_game();
+    gSaveDataFlags = input_update(gSaveDataFlags, 0);
+    sBootDelayTimer = 0;
+    gGameMode = GAMEMODE_INTRO;
+    while (
+#ifdef NATIVE_PORT
+        !platform_exit_requested()
+#else
+        1
+#endif
+    ) {
+        if (is_reset_pressed()) {
+            rumble_kill();
+            audioStopThread();
+            bgload_kill();
+            __osSpSetStatus(SP_SET_HALT | SP_CLR_INTR_BREAK | SP_CLR_YIELD | SP_CLR_YIELDED | SP_CLR_TASKDONE |
+                            SP_CLR_RSPSIGNAL | SP_CLR_CPUSIGNAL | SP_CLR_SIG5 | SP_CLR_SIG6 | SP_CLR_SIG7);
+            osDpSetStatus(DPC_SET_XBUS_DMEM_DMA | DPC_CLR_FREEZE | DPC_CLR_FLUSH | DPC_CLR_TMEM_CTR | DPC_CLR_PIPE_CTR |
+                          DPC_CLR_CMD_CTR | DPC_CLR_CMD_CTR);
+            while (1) {
+                ; // Infinite loop
+            }
+        }
+        main_game_loop();
+#ifdef NATIVE_PORT
+        if (platform_exit_requested()) {
+            break;
+        }
+#endif
+        thread3_verify_stack();
+    }
+}
+
+/**
+ * Setup all of the necessary pieces required for the game to function.
+ * This includes the memory pool. controllers, video, audio, core assets and more.
+ * Official Name: mainInitGame
+ */
+void init_game(void) {
+#ifdef NATIVE_PORT
+    /* The host normally reports NTSC, but a malformed/unknown platform value
+     * must still select a valid scheduler mode instead of reading stack data. */
+    s32 viMode = OS_VI_NTSC_LPN1;
+#else
+    s32 viMode;
+#endif
+
+    stubbed_printf(sDebugRomBuildInfo);
+    mempool_init_main();
+    gzip_init();
+#ifdef ANTI_TAMPER
+    sAntiPiracyTriggered = TRUE;
+    if (drm_validate_imem()) {
+        sAntiPiracyTriggered = FALSE;
+    }
+#endif
+    gIsLoading = FALSE;
+    gLevelDefaultVehicleID = VEHICLE_CAR;
+
+    if (osTvType == OS_TV_TYPE_PAL) {
+        viMode = OS_VI_PAL_LPN1;
+    } else if (osTvType == OS_TV_TYPE_NTSC) {
+        viMode = OS_VI_NTSC_LPN1;
+    } else if (osTvType == OS_TV_TYPE_MPAL) {
+        viMode = OS_VI_MPAL_LPN1;
+    }
+    osCreateScheduler(&gMainSched, &gSchedStack[STACKSIZE(STACK_SCHED)], /*priority*/ 13, viMode, 1);
+#ifdef ANTI_TAMPER
+    // Antipiracy measure.
+    gDmemInvalid = FALSE;
+    if (drm_validate_dmem() == FALSE) {
+        gDmemInvalid = TRUE;
+    }
+#endif
+    video_init(VIDEO_MODE_LOWRES_LPN, &gMainSched);
+    pi_init();
+    gfxtask_init(&gMainSched);
+    audio_init(&gMainSched);
+    audspat_init();
+    sControllerStatus = input_init();
+    tex_init_textures();
+    allocate_object_model_pools();
+    allocate_object_pools();
+    debug_text_init();
+    allocate_ghost_data();
+    init_particle_assets();
+    weather_init();
+    calc_and_alloc_heap_for_settings();
+    default_alloc_displaylist_heap();
+    load_fonts();
+    init_controller_paks();
+    init_save_data();
+    bgload_init();
+    osCreateMesgQueue(&gNMIMesgQueue, &gNMIOSMesg, 1);
+    osScAddClient(&gMainSched, (OSScClient *) gNMISched, &gNMIMesgQueue, OS_SC_ID_PRENMI);
+    gNMIMesgBuf = 0;
+    gGameCurrentEntrance = 0;
+    gGameCurrentCutscene = 0;
+    gSPTaskNum = 0;
+
+    gCurrDisplayList = gDisplayLists[gSPTaskNum];
+    gDPFullSync(gCurrDisplayList++);
+    gSPEndDisplayList(gCurrDisplayList++);
+
+    osSetTime(0);
+}
+
+/**
+ * The main gameplay loop.
+ * Contains all game logic, audio and graphics processing.
+ */
+void main_game_loop(void) {
+    s32 debugLoopCounter;
+    s32 framebufferSize;
+    s32 tempLogicUpdateRate, tempLogicUpdateRateMax;
+
+    osSetTime(0);
+
+    if (gScreenStatus == MESG_SKIP_BUFFER_SWAP) {
+        gCurrDisplayList = gDisplayLists[gSPTaskNum];
+        rsp_segment(&gCurrDisplayList, SEGMENT_MAIN, 0x00000000);
+        rsp_segment(&gCurrDisplayList, SEGMENT_FRAMEBUFFER,
+                    (s32) DKR_TOK(gVideoCurrFramebuffer));
+        rsp_segment(&gCurrDisplayList, SEGMENT_ZBUFFER,
+                    (s32) DKR_TOK(gVideoLastDepthBuffer));
+        rsp_segment(&gCurrDisplayList, SEGMENT_FRAMEBUFFER_OFFSET,
+                    (s32) ((u32) DKR_TOK(gVideoCurrFramebuffer) -
+                           VI_OFFSET)); // Unused
+    }
+    if (gDrawFrameTimer == 0) {
+        gfxtask_run_xbus(gDisplayLists[gSPTaskNum], gCurrDisplayList, 0);
+        gSPTaskNum += 1;
+        gSPTaskNum &= 1;
+    }
+    if (gDrawFrameTimer) {
+        gDrawFrameTimer--;
+    }
+
+    gCurrDisplayList = gDisplayLists[gSPTaskNum];
+    gGameCurrMatrix = gMatrixHeap[gSPTaskNum];
+    gGameCurrVertexList = gVertexHeap[gSPTaskNum];
+    gGameCurrTriList = gTriangleHeap[gSPTaskNum];
+
+    rsp_segment(&gCurrDisplayList, SEGMENT_MAIN, 0x00000000);
+    rsp_segment(&gCurrDisplayList, SEGMENT_FRAMEBUFFER,
+                (s32) DKR_TOK(gVideoLastFramebuffer));
+    rsp_segment(&gCurrDisplayList, SEGMENT_ZBUFFER,
+                (s32) DKR_TOK(gVideoLastDepthBuffer));
+    rsp_segment(&gCurrDisplayList, SEGMENT_FRAMEBUFFER_OFFSET,
+                (s32) ((u32) DKR_TOK(gVideoLastFramebuffer) -
+                       VI_OFFSET)); // Unused
+    rsp_init(&gCurrDisplayList);
+    rdp_init(&gCurrDisplayList);
+    bgdraw_render(&gCurrDisplayList, &gGameCurrMatrix, TRUE);
+    gSaveDataFlags = input_update(gSaveDataFlags, sLogicUpdateRate);
+    if (get_lockup_status()) {
+        render_epc_lock_up_display();
+        gGameMode = GAMEMODE_LOCKUP;
+    }
+    if (gDmemInvalid) {
+        debugLoopCounter = 0;
+        while (debugLoopCounter != 10000000) {
+            debugLoopCounter++;
+        }
+        if (debugLoopCounter > 20000000) { // This shouldn't ever be true?
+            render_printf(D_800E7134 /* "BBB\n" */);
+        }
+    }
+
+    switch (gGameMode) {
+        case GAMEMODE_INTRO: // Pre-boot screen
+            mode_intro();
+            break;
+        case GAMEMODE_MENU: // In a menu
+            mode_menu(sLogicUpdateRate);
+            break;
+        case GAMEMODE_INGAME: // In game (Controlling a character)
+            mode_game(sLogicUpdateRate);
+            break;
+        case GAMEMODE_LOCKUP: // EPC (lockup display)
+            mode_lockup(sLogicUpdateRate);
+            break;
+    }
+
+    // This is a good spot to place custom text if you want it to overlay it over ALL the
+    // menus & gameplay.
+
+    sound_update_queue(sLogicUpdateRate);
+    debug_text_print(&gCurrDisplayList);
+    render_dialogue_boxes(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList);
+    dialogue_close(4);
+    dialogue_clear(4);
+    // transition_update will perform the logic of transitions and return the transition ID.
+    if (transition_update(sLogicUpdateRate)) {
+        transition_render(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList);
+    }
+    if (sBootDelayTimer >= 8 && is_controller_missing()) {
+        menu_missing_controller(&gCurrDisplayList, sLogicUpdateRate);
+    }
+
+    gDPFullSync(gCurrDisplayList++);
+    gSPEndDisplayList(gCurrDisplayList++);
+
+    copy_viewports_to_stack();
+    if (gDrawFrameTimer != 1) {
+        if (gSkipGfxTask == FALSE) {
+            gScreenStatus = gfxtask_wait();
+        }
+    } else {
+        gDrawFrameTimer = 0;
+    }
+    gSkipGfxTask = FALSE;
+    mempool_free_queue_clear();
+    if (!gIsPaused) {
+        disable_cutscene_camera();
+    }
+    if (gDrawFrameTimer == 2) {
+        framebufferSize = SCREEN_WIDTH * SCREEN_HEIGHT * 2;
+        if (osTvType == OS_TV_TYPE_PAL) {
+            framebufferSize = (s32) ((SCREEN_WIDTH * SCREEN_HEIGHT * 2) * 1.1f);
+        }
+        dmacopy_doubleword(gVideoLastFramebuffer, gVideoCurrFramebuffer,
+#ifdef NATIVE_PORT
+                           (u32) framebufferSize);
+#else
+                           (u32) gVideoCurrFramebuffer + (u32) framebufferSize);
+#endif
+    }
+    // tempLogicUpdateRate will be set to a value 2 or higher, based on the framerate.
+    // the mul factor is hardcapped at 6, which happens at 10FPS. The mul factor
+    // affects frameskipping, to maintain consistent game speed, through the (many)
+    // dropped frames in DKR.
+    tempLogicUpdateRate = fb_update(gScreenStatus);
+    sLogicUpdateRate = tempLogicUpdateRate;
+    tempLogicUpdateRateMax = LOGIC_10FPS;
+    if (tempLogicUpdateRate > tempLogicUpdateRateMax) {
+        sLogicUpdateRate = tempLogicUpdateRateMax;
+    }
+#if REGION == REGION_JP
+    func_800C78E0_C84E0();
+#endif
+}
+
+/**
+ * Loads a level for gameplay based on what the next track ID is, with the option to override.
+ */
+void load_next_ingame_level(s32 numPlayers, s32 trackID, Vehicle vehicle) {
+    gGameNumPlayers = numPlayers - 1;
+    if (trackID == -1) {
+        gPlayableMapId = get_track_id_to_load();
+    } else {
+        gPlayableMapId = trackID; // Unused, because arg1 is always -1.
+    }
+    load_level_game(gPlayableMapId, gGameNumPlayers, gGameCurrentEntrance, vehicle);
+}
+
+/**
+ * Calls level_load() with the same arguments except for the cutsceneId,
+ * which is the value at gGameCurrentCutscene. Also does some other stuff.
+ * Used when ingame.
+ */
+void load_level_game(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicleId) {
+    alloc_displaylist_heap(numberOfPlayers);
+    mempool_free_timer(0);
+    cam_init();
+    load_game_text_table();
+    level_load(levelId, numberOfPlayers, entranceId, vehicleId, gGameCurrentCutscene);
+    hud_init(cam_get_viewport_layout());
+    init_particle_buffers(8, 16, 150, 100, 50, 0);
+    ainode_update();
+    osSetTime(0);
+    mempool_free_timer(2);
+    rumble_init(TRUE);
+}
+
+#ifdef NATIVE_PORT
+/**
+ * Retire the presentation history whose backing memory is about to be freed or
+ * reissued.
+ *
+ * gfx_dkr_replay_walk() holds a BARE POINTER to the last display list a real
+ * walk consumed (gfx_pc_dkr.c's dkr_last_walked_dl, plus that walk's entry RDP/
+ * RSP/segment-table snapshot) and re-walks it on every interpolated present.
+ * Nothing about that pointer is refcounted; the only thing that clears it is
+ * gfx_dkr_replay_invalidate().
+ *
+ * game.c's level_load() calls gfx_dkr_resource_generation_begin(), which
+ * invalidates -- but a quit-to-title never reaches level_load(): it unloads and
+ * then loads a MENU with SPECIAL_MAP_ID_NO_LEVEL (:788/:844/:1151/:1190 below),
+ * and load_menu_with_level_background skips the level path entirely for that
+ * id. The DL heap and the level's geometry are freed underneath a pointer that
+ * is still live, and the next present replays freed memory. That is a
+ * use-after-free reachable from a plain quit-to-title with the subloop on --
+ * not a diagnostic-only path.
+ *
+ * So the invalidation belongs at the FREE, not at the load: every teardown that
+ * can release what the replay points into calls this. The snapshot store is
+ * reset alongside it for the same reason it is reset at level load -- the
+ * object pool is about to be torn down and every recycled address after that is
+ * a coincidence. Both calls are cheap no-ops when the features are unarmed.
+ */
+static void presentation_history_retire(void) {
+    gfx_dkr_replay_invalidate();
+    presentation_snapshot_stage_reset();
+}
+#endif
+
+/**
+ * Call numerous functions to clear data in RAM.
+ * Then call to free particles, HUD and text.
+ * Waits for a GFX task before unloading.
+ */
+void unload_level_game(void) {
+    mempool_free_timer(0);
+    if (gSkipGfxTask == FALSE) {
+        if (gDrawFrameTimer != 1) {
+            gfxtask_wait();
+        }
+        gSkipGfxTask = TRUE;
+    }
+#ifdef NATIVE_PORT
+    /* Before level_free(): the held display list's commands reference the
+     * level's segments and the object models it is about to release. */
+    presentation_history_retire();
+#endif
+    level_free();
+    transition_begin(&D_800DD3F4);
+    reset_particles();
+    hud_free();
+    free_game_text_table();
+    gCurrDisplayList = gDisplayLists[gSPTaskNum];
+    gDPFullSync(gCurrDisplayList++);
+    gSPEndDisplayList(gCurrDisplayList++);
+    mempool_free_timer(2);
+}
+
+/**
+ * The main behaviour function involving all of the ingame stuff.
+ * Involves the updating of all objects and setting up the render scene.
+ */
+void mode_game(s32 updateRate) {
+    s32 buttonPressedInputs, buttonHeldInputs, i, loadContext, sp3C;
+
+    loadContext = LEVEL_CONTEXT_NONE;
+    buttonHeldInputs = 0;
+    buttonPressedInputs = 0;
+
+    // Get input data for all 4 players.
+    for (i = 0; i < get_active_player_count(); i++) {
+        buttonHeldInputs |= input_held(i);
+        buttonPressedInputs |= input_pressed(i);
+    }
+#ifdef ANTI_TAMPER
+    // Spam the start button, making the game unplayable because it's constantly paused.
+    if (sAntiPiracyTriggered) {
+        buttonPressedInputs |= START_BUTTON;
+    }
+#endif
+    // Update all objects
+    if (!gIsPaused) {
+        obj_update(updateRate);
+        if (check_if_showing_cutscene_camera() == 0 || get_race_countdown()) {
+            if (buttonPressedInputs & START_BUTTON && level_properties_get() == 0 && gDrumstickSceneLoadTimer == 0 &&
+                gGameMode == GAMEMODE_INGAME && gPostRaceViewPort == FALSE && gLevelLoadTimer == 0 &&
+                gPauseLockTimer == 0) {
+                buttonPressedInputs = 0;
+                gIsPaused = TRUE;
+                menu_pause_init();
+            }
+        }
+    } else {
+        set_anti_aliasing(TRUE);
+    }
+    gPauseLockTimer -= updateRate;
+    if (gPauseLockTimer < 0) {
+        gPauseLockTimer = 0;
+    }
+    if (gPostRaceViewPort) {
+        gIsPaused = FALSE;
+    }
+    gParticlePtrList_flush();
+    ainode_update();
+#ifdef NATIVE_PORT
+    /*
+     * TICK ORDERING CONTRACT. hud_tick runs FIRST.
+     *
+     * hud_player_tick consumes this frame's C-button edges and writes
+     * gHudToggleSettings[] (game_ui.c). Three later readers key off that value:
+     *   - scene_build_last_viewport_basis (tracks.c) selects the 3P TT camera
+     *     with `hud_setting() == 0`, and that basis is what obj_sort_tick's
+     *     distances are measured from;
+     *   - obj_visibility_tick's fourth TT pass uses the identical predicate;
+     *   - render_scene itself re-reads it later in the same frame.
+     * If hud_tick ran LAST those three would read the PREVIOUS frame's toggle,
+     * so an R-C press would move the sort basis and the visibility frusta one
+     * tick later than it moved the drawn viewport -- the tick and the draw
+     * disagreeing about how many viewports exist.
+     *
+     * Running it first is safe, not merely earlier: hud_tick consumes input
+     * EDGES (input_pressed, sampled at the tick boundary by input_update before
+     * mode_game is entered), it consumes no RNG at all, and its writes
+     * (gHudToggleSettings, gMinimapOpacity/gMinimapFade, gRaceStartShowHudStep,
+     * the HUD slide/bounce state) are disjoint from every other tick's reads and
+     * writes -- none of waves/sort/visibility/animate/fog/weather/presentation
+     * touches HUD state. It also restores gActiveCameraID (game_ui.c), so it
+     * leaves no camera selection behind for the ticks after it.
+     *
+     * RAW rate, not pause-gated: this group runs while paused today.
+     */
+    hud_tick(updateRate);
+    /* The authoritative half of waves_update, hoisted out of
+     * render_scene (tracks.c:410) into the tick. Same guard and same pause gate
+     * render_scene applied, evaluated at the same point in the frame -- gIsPaused
+     * is decided above (thread3_main.c:481-501) and nothing between here and
+     * render_scene touches it, so this observes the identical value. */
+    if (gWaveBlockCount) {
+        waves_tick(is_game_paused() ? 0 : updateRate);
+    }
+    /* The authoritative object ORDER. Render used to
+     * partition and distance-sort gObjPtrList once per viewport; that array is what
+     * obj_update / process_object_interactions / checkpoint_update_all iterate, so
+     * drawing chose the next tick's collision and RNG order. Placed before
+     * obj_animate_tick, mirroring render's own order (the sort ran before the object
+     * draw loop that animates). */
+    obj_sort_tick();
+    /* Racer visibility -- the "was drawn" timer that
+     * gates the AI's steering and its RNG -- evaluated from the logical frusta of
+     * every viewport rather than from render admission. */
+    obj_visibility_tick();
+    /* Object animation and obj->curVertData -- the
+     * vertex buffer SPHERE COLLISION reads -- hoisted out of render_3d_model
+     * (objects.c:4772-4802). Ordered AFTER waves_tick, matching the order
+     * render_scene ran them in. */
+    obj_animate_tick();
+    /* The fog integrator, plus rain_fog ahead of it in the exact
+     * order render_scene ran the pair. gFogData is simulation-read --
+     * obj_loop_fogchanger latches on gFogData[].fogChanger, and
+     * object_functions.c's TT/Taj cutscene objects call get_fog_settings() to
+     * save the current fog before slowly_change_fog() fades it -- so the fade
+     * has to advance once per TICK, not once per draw. Same pause gate
+     * render_scene applied. */
+    fog_tick(is_game_paused() ? 0 : updateRate);
+    /*
+     * The presentation accumulators -- colour cycles, pulsating lights, the
+     * skydome scroll and the particle texture scroll. Same pause gate.
+     *
+     * ORDER: this must precede scene_weather_tick. What the accumulators STORE
+     * has no gameplay reader, but what they CONSUME does: the skydome scroll
+     * calls obj_tex_animate -> tex_animate_texture, whose rand_range
+     * (textures_sprites.c:1891) is a live draw from gCurrentRNGSeed, and
+     * weather_tick's splash spawner and lightning timer draw from the same
+     * stream. render_scene rolls sky (tracks.c:438) BEFORE weather
+     * (tracks.c:496), so the tick must roll them in that order too. (fog_tick
+     * sitting between them is RNG-neutral -- update_fog and rain_fog consume no
+     * seed -- so the sky->weather order is the whole constraint.)
+     */
+    scene_presentation_tick(is_game_paused() ? 0 : updateRate);
+    /* The weather integrators -- snow drift, the rain intensity
+     * ramp, the splash spawner and its RNG, and the lightning timer that starts
+     * gThunderTransition. Under render's own gate and pause gate. */
+    scene_weather_tick(is_game_paused() ? 0 : updateRate);
+    /* Hash authoritative state around the render traversal, so a render-side
+     * mutation of it is detectable (no-op unless MDKR_RENDER_CENSUS=1). */
+    {
+        extern void mdkr_render_census_pre(void);
+        extern void mdkr_render_census_post(void);
+        mdkr_render_census_pre();
+        {
+            extern int mdkr_test_pure_render_enabled(void);
+            extern void mdkr_pure_render_begin(void);
+            extern void mdkr_pure_render_end(void);
+            int pure = mdkr_test_pure_render_enabled();
+            if (pure) mdkr_pure_render_begin();
+            render_scene(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList, &gGameCurrTriList, updateRate);
+            if (pure) mdkr_pure_render_end();
+        }
+        mdkr_render_census_post();
+    }
+#else
+    render_scene(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList, &gGameCurrTriList, updateRate);
+#endif
+    if (gGameMode == GAMEMODE_INGAME) {
+        // Ignore the user's L/R/Z buttons.
+        buttonHeldInputs &= ~(L_TRIG | R_TRIG | Z_TRIG);
+    }
+    if (gPostRaceViewPort) {
+        i = menu_postrace(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList, updateRate);
+        switch (i) {
+            case POSTRACE_OPT_2:
+                buttonHeldInputs |= (L_TRIG | Z_TRIG);
+                break;
+            case POSTRACE_OPT_1:
+                gPostRaceViewPort = FALSE;
+                func_8006D8F0(-1);
+                break;
+            case POSTRACE_OPT_4:
+                level_properties_reset();
+                gDrumstickSceneLoadTimer = 0;
+                buttonHeldInputs |= (L_TRIG | R_TRIG);
+                break;
+            case POSTRACE_OPT_5:
+                buttonHeldInputs |= L_TRIG, loadContext = LEVEL_CONTEXT_TRACK_SELECT;
+                break;
+            case POSTRACE_OPT_8:
+                buttonHeldInputs |= L_TRIG, loadContext = LEVEL_CONTEXT_RESULTS;
+                break;
+            case POSTRACE_OPT_9:
+                buttonHeldInputs |= L_TRIG, loadContext = LEVEL_CONTEXT_TROPHY_ROUND;
+                break;
+            case POSTRACE_OPT_10:
+                buttonHeldInputs |= L_TRIG, loadContext = LEVEL_CONTEXT_TROPHY_RESULTS;
+                break;
+            case POSTRACE_OPT_11:
+                buttonHeldInputs |= L_TRIG, loadContext = LEVEL_CONTEXT_UNUSED;
+                break;
+            case POSTRACE_OPT_12:
+                buttonHeldInputs |= L_TRIG, loadContext = LEVEL_CONTEXT_CHARACTER_SELECT;
+                break;
+            case POSTRACE_OPT_13:
+                buttonHeldInputs |= L_TRIG, loadContext = LEVEL_CONTEXT_UNK7;
+                break;
+        }
+    }
+    process_onscreen_textbox(updateRate);
+    i = textbox_visible();
+    if (i != 0) {
+        if (i == 2) {
+            gIsPaused = TRUE;
+        }
+        if (textbox_visible() != 2) {
+            gIsPaused = FALSE;
+            menu_close_dialogue();
+        }
+    }
+    if (gIsPaused) {
+        i = menu_pause_loop(&gCurrDisplayList, updateRate);
+        switch (i) {
+            case PAUSE_CONTINUE:
+                gIsPaused = FALSE;
+                break;
+            case PAUSE_RESET:
+                sound_clear_delayed();
+                reset_delayed_text();
+                if (func_80023568() != 0 && is_in_two_player_adventure()) {
+                    swap_lead_player();
+                }
+                buttonHeldInputs |= (L_TRIG | Z_TRIG);
+                break;
+            case PAUSE_QUIT_LOBBY:
+                sound_clear_delayed();
+                reset_delayed_text();
+                if (func_80023568() != 0 && is_in_two_player_adventure()) {
+                    swap_lead_player();
+                }
+                buttonHeldInputs |= L_TRIG;
+                break;
+            case PAUSE_QUIT_TRACKS:
+                loadContext = LEVEL_CONTEXT_TRACK_SELECT;
+                reset_delayed_text();
+                buttonHeldInputs |= L_TRIG;
+                break;
+            case PAUSE_QUIT_CHARSELECT:
+                loadContext = LEVEL_CONTEXT_CHARACTER_SELECT;
+                reset_delayed_text();
+                buttonHeldInputs |= L_TRIG;
+                break;
+            case PAUSE_OPT_6:
+                gIsPaused = FALSE;
+                break;
+            case PAUSE_QUIT_CHALLENGE:
+                mode_end_taj_race(CHALLENGE_END_QUIT);
+                gIsPaused = FALSE;
+                break;
+            case PAUSE_OPT_4:
+                gDrumstickSceneLoadTimer = 0;
+                sound_clear_delayed();
+                reset_delayed_text();
+                level_properties_reset();
+                buttonHeldInputs |= (L_TRIG | R_TRIG);
+                break;
+        }
+    }
+    rdp_init(&gCurrDisplayList);
+    divider_draw(&gCurrDisplayList);
+    hud_render_general(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList, updateRate);
+    divider_clear_coverage(&gCurrDisplayList);
+    if (gFutureFunLandLevelTarget) {
+        if (func_800214C4() != 0) {
+            gPlayableMapId = ASSET_LEVEL_FUTUREFUNLANDHUB;
+            D_801234F8 = TRUE;
+            gGameCurrentEntrance = 0;
+            gFutureFunLandLevelTarget = FALSE;
+        }
+    }
+    sp3C = FALSE;
+    if (gDrumstickSceneLoadTimer) {
+        gDrumstickSceneLoadTimer -= updateRate;
+        if (gDrumstickSceneLoadTimer <= 0) {
+            gDrumstickSceneLoadTimer = 0;
+            level_properties_push(ASSET_LEVEL_CENTRALAREAHUB, 0, VEHICLE_CAR, CUTSCENE_ID_NONE);
+            level_properties_push(ASSET_LEVEL_WIZPIGAMULETSEQUENCE, 0, -1, CUTSCENE_ID_UNK_A);
+            sp3C = TRUE;
+        }
+    }
+    if (gLevelLoadTimer > 0) {
+        gLevelLoadTimer -= updateRate;
+        if (gLevelLoadTimer <= 0) {
+            buttonHeldInputs = L_TRIG;
+            sp3C = TRUE;
+            switch (gLevelLoadType) {
+                case LEVEL_LOAD_UNK1:
+                    buttonHeldInputs = (L_TRIG | Z_TRIG);
+                    break;
+                case LEVEL_LOAD_TROPHY_RACE:
+                    loadContext = LEVEL_CONTEXT_TROPHY_ROUND;
+                    trophyround_adventure();
+                    D_801234FC = 2;
+                    break;
+                case LEVEL_LOAD_LIGHTHOUSE_CUTSCENE:
+                    gFutureFunLandLevelTarget = TRUE;
+                    // fall-through
+                case LEVEL_LOAD_FUTURE_FUN_LAND:
+                    D_801234F8 = TRUE;
+                    gPlayableMapId = gNextMap;
+                    gGameCurrentEntrance = 0;
+                    gGameCurrentCutscene = 0;
+                    buttonHeldInputs = 0;
+                    break;
+            }
+            gLevelLoadType = LEVEL_LOAD_NORMAL;
+            gLevelLoadTimer = 0;
+        }
+    }
+    if (sp3C) {
+        if (level_properties_get() != 0) {
+            level_properties_pop(&gPlayableMapId, &gGameCurrentEntrance, &i, &gGameCurrentCutscene);
+            set_frame_blackout_timer();
+            if (gPlayableMapId < 0) {
+                if (gPlayableMapId == SPECIAL_MAP_ID_NO_LEVEL || gPlayableMapId == SPECIAL_MAP_ID_UNK_NEG10) {
+                    if (gPlayableMapId == SPECIAL_MAP_ID_UNK_NEG10 && is_in_two_player_adventure()) {
+                        swap_lead_player();
+                    }
+                    buttonHeldInputs |= L_TRIG;
+                    D_801234FC = 2;
+                } else {
+                    buttonHeldInputs = 0;
+                    D_801234FC = 1;
+                    loadContext = LEVEL_CONTEXT_CREDITS;
+                }
+            } else {
+                D_801234FC = 0;
+                D_801234F8 = TRUE;
+                buttonHeldInputs = 0;
+            }
+        }
+    } else {
+        sp3C = func_8006C300();
+        if (level_properties_get()) {
+            if (gLevelLoadTimer == 0) {
+                i = func_800214C4();
+                if ((i != 0) || ((buttonPressedInputs & A_BUTTON) && (sp3C != 0))) {
+                    if (sp3C != 0) {
+                        music_change_on();
+                    }
+                    set_frame_blackout_timer();
+                    level_properties_pop(&gPlayableMapId, &gGameCurrentEntrance, &i, &gGameCurrentCutscene);
+                    if (gPlayableMapId < 0) {
+                        if (gPlayableMapId == -1 || gPlayableMapId == -10) {
+                            if (gPlayableMapId == -10 && is_in_two_player_adventure()) {
+                                swap_lead_player();
+                            }
+                            buttonHeldInputs |= L_TRIG;
+                            D_801234FC = 2;
+                        } else {
+                            buttonHeldInputs = 0;
+                            D_801234FC = 1;
+                            loadContext = LEVEL_CONTEXT_CREDITS;
+                        }
+                    } else {
+                        D_801234F8 = TRUE;
+                    }
+                }
+            }
+        }
+    }
+    if ((buttonHeldInputs & L_TRIG && gGameMode == GAMEMODE_INGAME) || D_801234FC != 0) {
+        gIsPaused = FALSE;
+        gLevelLoadTimer = 0;
+        gPostRaceViewPort = FALSE;
+        unload_level_game();
+        safe_mark_write_save_file(get_save_file_index());
+        if (loadContext) {
+            gIsLoading = FALSE;
+            switch (loadContext) {
+                case LEVEL_CONTEXT_TRACK_SELECT:
+                    // Go to track select menu from "Select Track" option in tracks menu.
+                    load_menu_with_level_background(MENU_TRACK_SELECT, SPECIAL_MAP_ID_NO_LEVEL, 1);
+                    break;
+                case LEVEL_CONTEXT_RESULTS:
+                    load_menu_with_level_background(MENU_RESULTS, ASSET_LEVEL_TROPHYRACE, 0);
+                    break;
+                case LEVEL_CONTEXT_TROPHY_ROUND:
+                    load_menu_with_level_background(MENU_TROPHY_RACE_ROUND, ASSET_LEVEL_TROPHYRACE, 0);
+                    break;
+                case LEVEL_CONTEXT_TROPHY_RESULTS:
+                    load_menu_with_level_background(MENU_TROPHY_RACE_RANKINGS, ASSET_LEVEL_TROPHYRACE, 0);
+                    break;
+                case LEVEL_CONTEXT_UNUSED:
+                    // Trophy race related?
+                    load_menu_with_level_background(MENU_UNUSED_22, ASSET_LEVEL_TROPHYRACE, 0);
+                    break;
+                case LEVEL_CONTEXT_CHARACTER_SELECT:
+                    // Go to character select menu from "Select Character" option in tracks menu.
+                    i = 0;
+                    if (is_drumstick_unlocked()) {
+                        i ^= 1;
+                    }
+                    if (is_tt_unlocked()) {
+                        i ^= 3;
+                    }
+                    charselect_prev(1, 0);
+                    load_menu_with_level_background(MENU_CHARACTER_SELECT, ASSET_LEVEL_CHARACTERSELECT, i);
+                    break;
+                case LEVEL_CONTEXT_UNK7:
+                    gIsLoading = TRUE;
+                    load_menu_with_level_background(MENU_NEWGAME_CINEMATIC, SPECIAL_MAP_ID_NO_LEVEL, 0);
+                    gIsLoading = FALSE;
+                    break;
+                case LEVEL_CONTEXT_CREDITS:
+                    load_menu_with_level_background(MENU_CREDITS, SPECIAL_MAP_ID_NO_LEVEL, 0);
+                    break;
+            }
+        } else if (D_801234FC == 1) {
+            if (gLevelSettings[2] == -1) {
+                load_menu_with_level_background(MENU_UNUSED_8, SPECIAL_MAP_ID_NO_LEVEL, 0);
+            } else {
+                gIsLoading = TRUE;
+                load_menu_with_level_background(MENU_TRACK_SELECT_ADVENTURE, SPECIAL_MAP_ID_NO_LEVEL, -1);
+            }
+        } else if (!(buttonHeldInputs & R_TRIG)) {
+            if (!(buttonHeldInputs & Z_TRIG)) {
+                gPlayableMapId = gLevelSettings[0];
+                gGameCurrentEntrance = gLevelSettings[15];
+                gGameCurrentCutscene = gLevelSettings[gLevelSettings[1] + 8];
+                gLevelDefaultVehicleID = leveltable_vehicle_default(gPlayableMapId);
+                if (gGameCurrentCutscene < 0) {
+                    gGameCurrentCutscene = CUTSCENE_ID_UNK_64;
+                }
+            }
+            load_level_game(gPlayableMapId, gGameNumPlayers, gGameCurrentEntrance, gLevelDefaultVehicleID);
+        } else {
+            safe_mark_write_save_file(get_save_file_index());
+            load_menu_with_level_background(MENU_TITLE, SPECIAL_MAP_ID_NO_LEVEL, 0);
+        }
+        D_801234FC = 0;
+    }
+    if (D_801234F8) {
+        gPostRaceViewPort = FALSE;
+        unload_level_game();
+        load_level_game(gPlayableMapId, gGameNumPlayers, gGameCurrentEntrance, gLevelDefaultVehicleID);
+        safe_mark_write_save_file(get_save_file_index());
+        D_801234F8 = FALSE;
+    }
+#ifdef NATIVE_PORT
+    /* The authoritative clear of gCutsceneCameraActive. It used to be issued
+     * from inside render_scene's
+     * three-player TT-camera viewport (tracks.c), which made "was the scene
+     * drawn, and in which layout" an input to a flag the SIMULATION reads --
+     * racer input gating (racer.c:4513), audio, and active-camera selection
+     * (camera.c:1984).
+     *
+     * Placed at the same relative point in the frame as main_game_loop's own
+     * clear (thread3_main.c:373), i.e. after the draw, so the cutscene camera
+     * that obj_update armed this tick via write_to_object_render_stack() is
+     * still live for the render that consumes it. Unlike that one it is
+     * unconditional: main_game_loop's is gated on !gIsPaused, and it was
+     * exactly the paused frames that the render-side clear was covering. */
+    disable_cutscene_camera();
+#endif
+}
+
+/**
+ * Reset dialogue and set the transition effect for the cutscene showing an unlocked Drumstick.
+ */
+void set_drumstick_unlock_transition(void) {
+    gDrumstickSceneLoadTimer = 44;
+    gIsPaused = 0;
+    menu_close_dialogue();
+    transition_begin(&gDrumstickSceneTransition);
+}
+
+/**
+ * Set the postrace viewport var to match the finish state.
+ * The game never actually uses this beyond checking it's nonzero.
+ */
+void race_postrace_type(s32 finishState) {
+    gPostRaceViewPort = finishState + 1;
+}
+
+void func_8006D8F0(UNUSED s32 arg0) {
+    s32 temp;
+    if (gGameMode != GAMEMODE_UNUSED_4) {
+        gPlayableMapId = gLevelSettings[0];
+        gGameCurrentEntrance = 0;
+        gGameCurrentCutscene = CUTSCENE_ID_UNK_64;
+        temp = gLevelSettings[1];
+        if (gLevelSettings[15] >= 0) {
+            gGameCurrentEntrance = gLevelSettings[15];
+        }
+        if (gLevelSettings[temp + 8] >= 0) {
+            gGameCurrentCutscene = gLevelSettings[temp + 8];
+        }
+        D_801234F8 = TRUE;
+    }
+}
+
+void func_8006D968(s8 *arg0) {
+    // Is arg0 LevelObjectEntry_Exit?
+    s32 i;
+    if (gGameMode != GAMEMODE_UNUSED_4) {
+        gLevelSettings[0] = gPlayableMapId;
+        for (i = 0; i < 2; i++) {
+            gLevelSettings[i + 2] = arg0[i + 8];   // 0x8-0x9 - destinationMapId
+            gLevelSettings[i + 4] = arg0[i + 10];  // 0xA-0xB - overworldSpawnIndex
+            gLevelSettings[i + 6] = arg0[i + 12];  // 0xC-0xD - ?
+            gLevelSettings[i + 8] = arg0[i + 14];  // 0xE-0xF - ?
+            gLevelSettings[i + 10] = arg0[i + 18]; // 0x12-0x13 - ?
+            gLevelSettings[i + 12] = arg0[i + 20]; // 0x14-0x15 - ?
+        }
+        gLevelSettings[14] = arg0[22]; // 0x16 - ?
+        gLevelSettings[15] = arg0[23]; // 0x17 returnSpawnIndex
+        D_801234FC = 1;
+    }
+}
+
+/**
+ * Returns the current game mode.
+ */
+GameMode get_game_mode(void) {
+    return gGameMode;
+}
+
+/**
+ *  Sets the current game mode.
+ *  Official Name: mainSetMode?
+ */
+UNUSED void set_game_mode(s32 changeTo) {
+    gGameMode = changeTo;
+}
+
+/**
+ * Sets up and loads a level to be used in the background of the menu that's about to be set up.
+ * Used for every kind of menu that's not ingame.
+ */
+void load_menu_with_level_background(s32 menuId, s32 levelId, s32 cutsceneId) {
+    alloc_displaylist_heap(PLAYER_ONE);
+    gGameMode = GAMEMODE_MENU;
+    gRenderMenu = TRUE;
+    sndp_set_group_volume(0, AL_SNDP_GROUP_VOLUME_MAX);
+    sndp_set_group_volume(1, AL_SNDP_GROUP_VOLUME_MAX);
+    sndp_set_group_volume(2, AL_SNDP_GROUP_VOLUME_MAX);
+    cam_init();
+
+    if (!gIsLoading) {
+        gIsLoading = FALSE;
+        if (levelId < 0) {
+            gIsLoading = TRUE;
+        } else {
+            load_level_menu(levelId, -1, 0, VEHICLE_PLANE, cutsceneId);
+        }
+    }
+    if (menuId == MENU_UNUSED_2 || menuId == MENU_LOGOS || menuId == MENU_TITLE) {
+        reset_title_logo_scale();
+    }
+    menu_init(menuId);
+    gGameCurrentEntrance = 0;
+}
+
+/**
+ * Set the default vehicle option from the current loaded level.
+ */
+void set_level_default_vehicle(Vehicle vehicleID) {
+    gLevelDefaultVehicleID = vehicleID;
+}
+
+/**
+ * Sets the vehicle option that the next level loaded for a menu may use.
+ */
+void set_vehicle_id_for_menu(Vehicle vehicleId) {
+    stubbed_printf("Swapping\n");
+    gMenuVehicleID = vehicleId;
+}
+
+/**
+ * Get the default vehicle option, set by a loaded level.
+ */
+Vehicle get_level_default_vehicle(void) {
+    return gLevelDefaultVehicleID;
+}
+
+/**
+ * Calls level_load() with the same arguments, but also does some other stuff.
+ * Used for menus.
+ */
+void load_level_menu(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicleId, s32 cutsceneId) {
+    mempool_free_timer(0);
+    cam_init();
+    load_game_text_table();
+    level_load(levelId, numberOfPlayers, entranceId, vehicleId, cutsceneId);
+    hud_init(cam_get_viewport_layout());
+    init_particle_buffers(4, 4, 110, 48, 32, 0);
+    ainode_update();
+    osSetTime(0);
+    mempool_free_timer(2);
+}
+
+/**
+ * Call numerous functions to clear data in RAM.
+ * Then call to free particles, HUD and text.
+ */
+void unload_level_menu(void) {
+    if (!gIsLoading) {
+        gIsLoading = TRUE;
+        mempool_free_timer(0);
+#ifdef NATIVE_PORT
+        /* Same reason as unload_level_game's call; see
+         * presentation_history_retire. */
+        presentation_history_retire();
+#endif
+        level_free();
+        transition_begin(&D_800DD3F4);
+        reset_particles();
+        hud_free();
+        free_game_text_table();
+        mempool_free_timer(2);
+    }
+    gIsLoading = FALSE;
+}
+
+/**
+ * Used in menus, update objects and draw the game.
+ * In the tracks menu, this only runs if there's a track actively loaded.
+ */
+void update_menu_scene(s32 updateRate) {
+    if (bgload_active() == FALSE) {
+        obj_update(updateRate);
+        gParticlePtrList_flush();
+        ainode_update();
+    #ifdef NATIVE_PORT
+    /* The HUD's authoritative half. Runs FIRST -- see the tick ordering contract
+     * on the twin call in mode_game. */
+    hud_tick(updateRate);
+    /* Authoritative wave phase, hoisted out of render_scene.
+     * See the twin call in mode_game. */
+    if (gWaveBlockCount) {
+        waves_tick(is_game_paused() ? 0 : updateRate);
+    }
+    /* The authoritative object ORDER. Render used to
+     * partition and distance-sort gObjPtrList once per viewport; that array is what
+     * obj_update / process_object_interactions / checkpoint_update_all iterate, so
+     * drawing chose the next tick's collision and RNG order. Placed before
+     * obj_animate_tick, mirroring render's own order (the sort ran before the object
+     * draw loop that animates). */
+    obj_sort_tick();
+    /* Racer visibility -- the "was drawn" timer that
+     * gates the AI's steering and its RNG -- evaluated from the logical frusta of
+     * every viewport rather than from render admission. */
+    obj_visibility_tick();
+    /* Object animation and obj->curVertData -- the
+     * vertex buffer SPHERE COLLISION reads -- hoisted out of render_3d_model
+     * (objects.c:4772-4802). Ordered AFTER waves_tick, matching the order
+     * render_scene ran them in. */
+    obj_animate_tick();
+    /* The fog integrator, plus rain_fog ahead of it in the exact
+     * order render_scene ran the pair. gFogData is simulation-read --
+     * obj_loop_fogchanger latches on gFogData[].fogChanger, and
+     * object_functions.c's TT/Taj cutscene objects call get_fog_settings() to
+     * save the current fog before slowly_change_fog() fades it -- so the fade
+     * has to advance once per TICK, not once per draw. Same pause gate
+     * render_scene applied. */
+    fog_tick(is_game_paused() ? 0 : updateRate);
+    /* The presentation accumulators, same pause gate. Must precede
+     * scene_weather_tick -- see the ORDER note on the twin call in mode_game. */
+    scene_presentation_tick(is_game_paused() ? 0 : updateRate);
+    /* The weather integrators -- snow drift, the rain intensity
+     * ramp, the splash spawner and its RNG, and the lightning timer that starts
+     * gThunderTransition. Under render's own gate and pause gate. */
+    scene_weather_tick(is_game_paused() ? 0 : updateRate);
+    /* Hash authoritative state around the render traversal, so a render-side
+     * mutation of it is detectable (no-op unless MDKR_RENDER_CENSUS=1). */
+    {
+        extern void mdkr_render_census_pre(void);
+        extern void mdkr_render_census_post(void);
+        mdkr_render_census_pre();
+        {
+            extern int mdkr_test_pure_render_enabled(void);
+            extern void mdkr_pure_render_begin(void);
+            extern void mdkr_pure_render_end(void);
+            int pure = mdkr_test_pure_render_enabled();
+            if (pure) mdkr_pure_render_begin();
+            render_scene(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList, &gGameCurrTriList, updateRate);
+            if (pure) mdkr_pure_render_end();
+        }
+        mdkr_render_census_post();
+    }
+#else
+    render_scene(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList, &gGameCurrTriList, updateRate);
+#endif
+        process_onscreen_textbox(updateRate);
+        rdp_init(&gCurrDisplayList);
+        divider_draw(&gCurrDisplayList);
+        divider_clear_coverage(&gCurrDisplayList);
+    }
+}
+
+/**
+ * Main function for handling behaviour in menus.
+ * Runs the menu code, with a simplified object update and scene rendering system.
+ */
+void mode_menu(s32 updateRate) {
+    s32 menuLoopResult;
+    s32 temp;
+    s32 playerVehicle;
+    s32 temp5;
+
+    gIsPaused = FALSE;
+    gPostRaceViewPort = 0;
+    if (!gIsLoading && gRenderMenu) {
+        update_menu_scene(updateRate);
+    }
+    menuLoopResult =
+        menu_loop(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList, &gGameCurrTriList, updateRate);
+    gRenderMenu = TRUE;
+    if (menuLoopResult == -2) {
+        gRenderMenu = FALSE;
+        return;
+    }
+    if (menuLoopResult != -1 && menuLoopResult & MENU_RESULT_FLAGS_200) {
+        unload_level_menu();
+        gCurrDisplayList = gDisplayLists[gSPTaskNum];
+        gDPFullSync(gCurrDisplayList++);
+        gSPEndDisplayList(gCurrDisplayList++);
+        gPlayableMapId = menuLoopResult & 0x7F;
+        gLevelDefaultVehicleID = leveltable_vehicle_default(gPlayableMapId);
+        gGameCurrentEntrance = 0;
+        gGameCurrentCutscene = CUTSCENE_ID_UNK_64;
+        gGameMode = GAMEMODE_INGAME;
+        gIsPaused = FALSE;
+        gPostRaceViewPort = 0;
+        load_level_game(gPlayableMapId, gGameNumPlayers, gGameCurrentEntrance, gLevelDefaultVehicleID);
+        safe_mark_write_save_file(get_save_file_index());
+        return;
+    }
+    if (menuLoopResult != -1 && menuLoopResult & MENU_RESULT_FLAGS_100) {
+        unload_level_game();
+        gIsPaused = FALSE;
+        gPostRaceViewPort = 0;
+        switch (menuLoopResult & 0x7F) {
+            case MENU_RESULT_TRACKS_MODE:
+                load_menu_with_level_background(MENU_TRACK_SELECT, SPECIAL_MAP_ID_NO_LEVEL, 1);
+                break;
+            case MENU_RESULT_UNK14:
+                gPlayableMapId = ASSET_LEVEL_CENTRALAREAHUB;
+                gGameCurrentEntrance = 0;
+                gGameCurrentCutscene = CUTSCENE_ID_UNK_64;
+                gGameMode = GAMEMODE_INGAME;
+                load_level_game(gPlayableMapId, gGameNumPlayers, gGameCurrentEntrance, gLevelDefaultVehicleID);
+                safe_mark_write_save_file(get_save_file_index());
+                break;
+            case MENU_RESULT_RETURN_TO_GAME:
+                gGameCurrentEntrance = 0;
+                gPlayableMapId = gLevelSettings[0];
+                gGameCurrentCutscene = CUTSCENE_ID_UNK_64;
+                gGameMode = GAMEMODE_INGAME;
+                temp5 = gLevelSettings[1];
+                if (gLevelSettings[15] >= 0) {
+                    gGameCurrentEntrance = gLevelSettings[15];
+                }
+                temp = gLevelSettings[temp5 + 8];
+                if (temp >= 0) {
+                    gGameCurrentCutscene = temp;
+                }
+                load_level_game(gPlayableMapId, gGameNumPlayers, gGameCurrentEntrance, gLevelDefaultVehicleID);
+                safe_mark_write_save_file(get_save_file_index());
+                break;
+            case MENU_RESULT_UNK2:
+                gGameMode = GAMEMODE_INGAME;
+                load_level_game(gPlayableMapId, gGameNumPlayers, gGameCurrentEntrance, gLevelDefaultVehicleID);
+                break;
+            case MENU_RESULT_UNK3:
+                gGameMode = GAMEMODE_INGAME;
+                gPlayableMapId = gLevelSettings[0];
+                gGameCurrentEntrance = gLevelSettings[15];
+                gGameCurrentCutscene = gLevelSettings[gLevelSettings[1] + 8];
+                gLevelDefaultVehicleID = leveltable_vehicle_default(gPlayableMapId);
+                load_level_game(gPlayableMapId, gGameNumPlayers, gGameCurrentEntrance, gLevelDefaultVehicleID);
+                break;
+            default:
+                load_menu_with_level_background(MENU_TITLE, SPECIAL_MAP_ID_NO_LEVEL, 0);
+                break;
+        }
+        return;
+    }
+    if (menuLoopResult & MENU_RESULT_FLAGS_80 && menuLoopResult != -1) {
+        unload_level_menu();
+        gCurrDisplayList = gDisplayLists[gSPTaskNum];
+        gDPFullSync(gCurrDisplayList++);
+        gSPEndDisplayList(gCurrDisplayList++);
+
+        menuLoopResult &= 0x7f;
+        gLevelSettings[1] = menuLoopResult;
+        gLevelSettings[0] = gPlayableMapId;
+
+        gPlayableMapId = gLevelSettings[menuLoopResult + 2];
+        gGameCurrentEntrance = gLevelSettings[menuLoopResult + 4];
+        gGameMode = GAMEMODE_INGAME;
+        gGameCurrentCutscene = gLevelSettings[menuLoopResult + 12];
+        playerVehicle = get_player_selected_vehicle(PLAYER_ONE);
+        gGameNumPlayers = gSettingsPtr->gNumRacers - 1;
+        load_level_game(gPlayableMapId, gGameNumPlayers, gGameCurrentEntrance, playerVehicle);
+        D_801234FC = 0;
+        gLevelDefaultVehicleID = gMenuVehicleID;
+        return;
+    }
+    if (menuLoopResult > 0) {
+        unload_level_menu();
+        gCurrDisplayList = gDisplayLists[gSPTaskNum];
+        gDPFullSync(gCurrDisplayList++);
+        gSPEndDisplayList(gCurrDisplayList++);
+        gGameMode = GAMEMODE_INGAME;
+        load_next_ingame_level(menuLoopResult, -1, gLevelDefaultVehicleID);
+        if (gSettingsPtr->newGame && !is_in_tracks_mode()) {
+            music_change_on();
+            gSettingsPtr->newGame = FALSE;
+        }
+    }
+}
+
+/**
+ * Loads a level, intended to be used in a menu.
+ * Skips loading many things, otherwise used in gameplay.
+ */
+void load_level_for_menu(s32 levelId, s32 numberOfPlayers, s32 cutsceneId) {
+    Vehicle vehicleId;
+
+    if (!gIsLoading) {
+        unload_level_menu();
+        if (bgload_active() == FALSE) {
+            gCurrDisplayList = gDisplayLists[gSPTaskNum];
+            gDPFullSync(gCurrDisplayList++);
+            gSPEndDisplayList(gCurrDisplayList++);
+        }
+    }
+    if (levelId != (s32) SPECIAL_MAP_ID_NO_LEVEL) {
+#ifdef NATIVE_PORT
+        extern int mdkr_menu_vehicle_legacy(void);
+        vehicleId = mdkr_menu_vehicle_legacy()
+                        ? VEHICLE_PLANE
+                        : leveltable_vehicle_default(levelId);
+#else
+        //!@bug: Forcing the plane here makes all AI use plane paths.
+        //! This can be seen most evidently in the Ancient Lake demo.
+        vehicleId = VEHICLE_PLANE;
+#endif
+        load_level_menu(levelId, numberOfPlayers, 0, vehicleId, cutsceneId);
+        gIsLoading = FALSE;
+        return;
+    }
+    gIsLoading = TRUE;
+}
+
+/**
+ * Initialise global game settings data.
+ * Allocate space to accomodate it then set the start points for each data point.
+ */
+void calc_and_alloc_heap_for_settings(void) {
+    s32 dataSize;
+    u32 sizes[15];
+    s32 numWorlds, numLevels;
+
+    level_global_init();
+    reset_character_id_slots();
+    level_count(&numLevels, &numWorlds);
+    sizes[0] = sizeof(Settings);
+    sizes[1] = sizes[0] + (numLevels * 4); // balloonsPtr
+    sizes[2] = sizes[1] + (numWorlds * 2); // flapInitialsPtr[0]
+    dataSize = (numLevels * 2);
+    sizes[3] = sizes[2] + dataSize;   // flapInitialsPtr[1]
+    sizes[4] = sizes[3] + dataSize;   // flapInitialsPtr[2]
+    sizes[5] = sizes[4] + dataSize;   // flapTimesPtr[0]
+    sizes[6] = sizes[5] + dataSize;   // flapTimesPtr[1]
+    sizes[7] = sizes[6] + dataSize;   // flapTimesPtr[2]
+    sizes[8] = sizes[7] + dataSize;   // courseInitialsPtr[0]
+    sizes[9] = sizes[8] + dataSize;   // courseInitialsPtr[1]
+    sizes[10] = sizes[9] + dataSize;  // courseInitialsPtr[2]
+    sizes[11] = sizes[10] + dataSize; // courseTimesPtr[0]
+    sizes[12] = sizes[11] + dataSize; // courseTimesPtr[1]
+    sizes[13] = sizes[12] + dataSize; // courseTimesPtr[2]
+    sizes[14] = sizes[13] + dataSize; // total size
+
+    gSettingsPtr = mempool_alloc_safe(sizes[14], COLOUR_TAG_WHITE);
+    gSettingsPtr->courseFlagsPtr = (s32 *) ((u8 *) gSettingsPtr + sizes[0]);
+    gSettingsPtr->balloonsPtr = (s16 *) ((u8 *) gSettingsPtr + sizes[1]);
+    gSettingsPtr->tajFlags = 0;
+    gSettingsPtr->flapInitialsPtr[0] = (u16 *) ((u8 *) gSettingsPtr + sizes[2]);
+    gSettingsPtr->flapInitialsPtr[1] = (u16 *) ((u8 *) gSettingsPtr + sizes[3]);
+    gSettingsPtr->flapInitialsPtr[2] = (u16 *) ((u8 *) gSettingsPtr + sizes[4]);
+    gSettingsPtr->flapTimesPtr[0] = (u16 *) ((u8 *) gSettingsPtr + sizes[5]);
+    gSettingsPtr->flapTimesPtr[1] = (u16 *) ((u8 *) gSettingsPtr + sizes[6]);
+    gSettingsPtr->flapTimesPtr[2] = (u16 *) ((u8 *) gSettingsPtr + sizes[7]);
+    gSettingsPtr->courseInitialsPtr[0] = (u16 *) ((u8 *) gSettingsPtr + sizes[8]);
+    gSettingsPtr->courseInitialsPtr[1] = (u16 *) ((u8 *) gSettingsPtr + sizes[9]);
+    gSettingsPtr->courseInitialsPtr[2] = (u16 *) ((u8 *) gSettingsPtr + sizes[10]);
+    gSettingsPtr->courseTimesPtr[0] = (u16 *) ((u8 *) gSettingsPtr + sizes[11]);
+    gSettingsPtr->courseTimesPtr[1] = (u16 *) ((u8 *) gSettingsPtr + sizes[12]);
+    gSettingsPtr->courseTimesPtr[2] = (u16 *) ((u8 *) gSettingsPtr + sizes[13]);
+    gSettingsPtr->unk4C = (Settings4C *) &gLevelSettings;
+    gSaveDataFlags = // Set bits 0/1/2/8 and wipe out all others
+        SAVE_DATA_FLAG_READ_FLAP_TIMES | SAVE_DATA_FLAG_READ_COURSE_TIMES | SAVE_DATA_FLAG_READ_SAVE_DATA |
+        SAVE_DATA_FLAG_READ_EEPROM_SETTINGS;
+}
+
+/**
+ * Set the init values for each racer based on which character they are and which player they are.
+ * Then reset race status.
+ */
+void init_racer_headers(void) {
+    s32 i, j;
+    gSettingsPtr->gNumRacers = get_number_of_active_players();
+    for (i = 0; i < 8; i++) {
+        gSettingsPtr->racers[i].best_times = 0;
+        gSettingsPtr->racers[i].character = get_character_id_from_slot(i);
+        if (gSettingsPtr->gNumRacers >= 2) {
+            gSettingsPtr->racers[i].starting_position = i;
+        } else if (is_in_two_player_adventure()) {
+            gSettingsPtr->racers[i].starting_position = 5 - i;
+        } else {
+            gSettingsPtr->racers[i].starting_position = 7 - i;
+        }
+        gSettingsPtr->racers[i].unk7 = 0;
+        for (j = 0; j < 4; j++) {
+            gSettingsPtr->racers[i].placements[j] = 0;
+        }
+        gSettingsPtr->racers[i].course_time = 0;
+        for (j = 0; j < 3; j++) {
+            gSettingsPtr->racers[i].lap_times[j] = 0;
+        }
+    }
+    gSettingsPtr->timeTrialRacer = 0;
+    gSettingsPtr->unk115[0] = 0;
+    gSettingsPtr->unk115[1] = 0;
+    gSettingsPtr->display_times = 0;
+    gSettingsPtr->worldId = 0;
+    gSettingsPtr->courseId = 0;
+}
+
+/**
+ * Depending on flags, clear fastest lap times and/or overall course times.
+ */
+void clear_lap_records(Settings *settings, s32 flags) {
+    s32 i, j;
+    s32 numWorlds, numLevels;
+    s32 index;
+    u16 *temp_v0;
+
+    level_count(&numLevels, &numWorlds);
+    temp_v0 = (u16 *) get_misc_asset(ASSET_MISC_23);
+    for (i = 0; i < NUMBER_OF_SAVE_FILES; i++) {
+        for (j = 0; j < numLevels; j++) {
+            index = (j * 12) + (i * 4);
+            if (flags & 1) {
+                settings->flapInitialsPtr[i][j] = temp_v0[index + 3];
+                settings->flapTimesPtr[i][j] = temp_v0[index + 2];
+            }
+            if (flags & 2) {
+                settings->courseInitialsPtr[i][j] = temp_v0[index + 1];
+                settings->courseTimesPtr[i][j] = temp_v0[index];
+            }
+        }
+    }
+}
+
+/**
+ * Set all game progression values to their default, as if it were a new game.
+ */
+void clear_game_progress(Settings *settings) {
+    s32 i;
+    s32 worldCount;
+    s32 levelCount;
+
+    level_count(&levelCount, &worldCount);
+    settings->newGame = TRUE;
+
+    for (i = 0; i < worldCount; i++) {
+        settings->balloonsPtr[i] = 0;
+    }
+    for (i = 0; i < levelCount; i++) {
+        settings->courseFlagsPtr[i] = RACE_UNATTEMPTED;
+    }
+
+    settings->keys = 0;
+    settings->unkA = 0;
+    settings->bosses = 0;
+    settings->trophies = 0;
+    settings->cutsceneFlags = CUTSCENE_NONE;
+    settings->tajFlags = 0;
+    settings->ttAmulet = 0;
+    settings->wizpigAmulet = 0;
+}
+
+/**
+ * Call functions to set all game save data to the default.
+ */
+UNUSED void reset_save_data(void) {
+    clear_lap_records(gSettingsPtr, 3);
+    clear_game_progress(gSettingsPtr);
+}
+
+/**
+ * Return the global game settings.
+ * This is where global game records and perferences are stored.
+ */
+Settings *get_settings(void) {
+    return gSettingsPtr;
+}
+
+/**
+ * Returns the value in gIsPaused.
+ */
+s8 is_game_paused(void) {
+    return gIsPaused;
+}
+
+/**
+ * Returns the status of the post-race shrunken viewport.
+ */
+s8 is_postrace_viewport_active(void) {
+    return gPostRaceViewPort;
+}
+
+/**
+ * Sets and returns (nonzero) the message set when pressing the reset button.
+ * Official name: mainResetPressed
+ */
+s32 is_reset_pressed(void) {
+    if (gNMIMesgBuf == 0) {
+        gNMIMesgBuf = (s32) ((osRecvMesg(&gNMIMesgQueue, NULL, OS_MESG_NOBLOCK) + 1) != 0);
+    }
+    return gNMIMesgBuf;
+}
+
+/**
+ * Returns the current map ID if ingame, since this var is only set ingame.
+ */
+s32 get_ingame_map_id(void) {
+    return gPlayableMapId;
+}
+
+/**
+ * Marks a flag to read flap times from the eeprom
+ */
+UNUSED void mark_to_read_flap_times(void) {
+    gSaveDataFlags |= SAVE_DATA_FLAG_READ_FLAP_TIMES;
+}
+
+/**
+ * Marks a flag to read course times from the eeprom
+ */
+UNUSED void mark_to_read_course_times(void) {
+    gSaveDataFlags |= SAVE_DATA_FLAG_READ_COURSE_TIMES;
+}
+
+/**
+ * Marks a flag to read both flap times and course times from the eeprom
+ */
+void mark_to_read_flap_and_course_times(void) {
+    gSaveDataFlags |= (SAVE_DATA_FLAG_READ_FLAP_TIMES | SAVE_DATA_FLAG_READ_COURSE_TIMES);
+}
+
+/**
+ * Marks a flag to read the save file from the passed index from flash.
+ */
+void mark_read_save_file(s32 saveFileIndex) {
+    // Wipe out bits 8 and 9
+    gSaveDataFlags &= ~(SAVE_DATA_FLAG_READ_EEPROM_SETTINGS | SAVE_DATA_FLAG_WRITE_EEPROM_SETTINGS);
+    // Place saveFileIndex at bits 8 and 9 and set bit 2
+    gSaveDataFlags |= (SAVE_DATA_FLAG_READ_SAVE_DATA | ((saveFileIndex & SAVE_DATA_FLAG_INDEX_VALUE) << 8));
+}
+
+/**
+ * Marks a flag to read all save file data from flash.
+ */
+void mark_read_all_save_files(void) {
+    gSaveDataFlags |= SAVE_DATA_FLAG_READ_ALL_SAVE_DATA; // Set bit 3
+}
+
+/**
+ * Marks a flag to write flap times to the eeprom
+ */
+void mark_to_write_flap_times(void) {
+    gSaveDataFlags |= SAVE_DATA_FLAG_WRITE_FLAP_TIMES;
+}
+
+/**
+ * Marks a flag to write course times to the eeprom
+ */
+void mark_to_write_course_times(void) {
+    gSaveDataFlags |= SAVE_DATA_FLAG_WRITE_COURSE_TIMES;
+}
+
+/**
+ * Marks a flag to write both flap times and course times to the eeprom
+ */
+void mark_to_write_flap_and_course_times(void) {
+    gSaveDataFlags |= (SAVE_DATA_FLAG_WRITE_FLAP_TIMES | SAVE_DATA_FLAG_WRITE_COURSE_TIMES);
+}
+
+/**
+ * Forcefully marks a flag to write a save file to flash.
+ * Official Name: mainSaveGame
+ */
+void force_mark_write_save_file(s32 saveFileIndex, Settings *source) {
+    if (source == NULL) {
+        return;
+    }
+    sWriteSaveSource = source;
+    gSaveDataFlags &= ~SAVE_DATA_FLAG_WRITE_SAVE_FILE_NUMBER_BITS; // Wipe out bits 10 and 11
+    gSaveDataFlags |= (SAVE_DATA_FLAG_WRITE_SAVE_DATA |
+                       ((saveFileIndex & 3) << 10)); // Set bit 6 and place saveFileIndex into bits 10 and 11
+}
+
+/**
+ * Marks a flag to write a save file to flash as long as we're not in tracks mode, and we're in the draw game render
+ * context. This should prevent save data from being overwritten outside of Adventure Mode.
+ * Official Name: mainSaveGame2
+ */
+void safe_mark_write_save_file(s32 saveFileIndex) {
+    if (gGameMode == GAMEMODE_INGAME && !is_in_tracks_mode()) {
+        sWriteSaveSource = gSettingsPtr;
+        gSaveDataFlags &= ~SAVE_DATA_FLAG_WRITE_SAVE_FILE_NUMBER_BITS; // Wipe out bits 10 and 11
+        gSaveDataFlags |= (SAVE_DATA_FLAG_WRITE_SAVE_DATA |
+                           ((saveFileIndex & 3) << 10)); // Set bit 6 and place saveFileIndex into bits 10 and 11
+    }
+}
+
+/*
+ * A write request owns its source explicitly until the SI boundary consumes
+ * it. In particular, Tracks-mode aggregate records live in gSettingsPtr but
+ * forced file copies use gSavefileData[]/the Pak scratch slot instead, so an
+ * aggregate display can never become persisted progress through call ordering.
+ */
+Settings *take_write_save_file_source(void) {
+    Settings *source = sWriteSaveSource;
+    sWriteSaveSource = NULL;
+    return source;
+}
+
+/**
+ * Marks a flag to erase a save file from flash later
+ */
+void mark_save_file_to_erase(s32 saveFileIndex) {
+    // Set bit 7 and and place saveFileIndex into bits 10 and 11 while wiping everything else
+    gSaveDataFlags = SAVE_DATA_FLAG_ERASE_SAVE_DATA | ((saveFileIndex & 3) << 10);
+}
+
+/**
+ * Marks a flag to read eeprom settings from flash later
+ * @bug: Because this is the same bit used for reading save files,
+ *       it will change the save file number to read from
+ */
+UNUSED void mark_read_eeprom_settings(void) {
+    gSaveDataFlags |= SAVE_DATA_FLAG_READ_EEPROM_SETTINGS; // Set bit 8
+}
+
+/**
+ * Marks a flag to write eeprom settings to flash later
+ * @bug: Because this is the same bit used for reading save files,
+ *       it will change the save file number to read from
+ */
+void mark_write_eeprom_settings(void) {
+    gSaveDataFlags |= SAVE_DATA_FLAG_WRITE_EEPROM_SETTINGS; // Set bit 9
+}
+
+/**
+ * Allocates an amount of memory for the number of players passed in.
+ */
+void alloc_displaylist_heap(s32 numberOfPlayers) {
+    s32 num;
+    s32 totalSize;
+
+    if (numberOfPlayers != gPrevPlayerCount) {
+        gPrevPlayerCount = numberOfPlayers;
+        num = numberOfPlayers;
+        mempool_free_timer(0);
+#ifdef NATIVE_PORT
+        /* The DL buffers themselves are about to be freed and reissued at a
+         * different size. dkr_last_walked_dl points INTO gDisplayLists[]; see
+         * presentation_history_retire. This is the innermost of the three
+         * teardown seams -- a player-count change reaches it without any level
+         * unload at all. */
+        presentation_history_retire();
+#endif
+        mempool_free(gDisplayLists[0]);
+        mempool_free(gDisplayLists[1]);
+        totalSize = ((gNumF3dCmdsPerPlayer[num] * sizeof(Gfx))) + ((gNumHudMatPerPlayer[num] * sizeof(Mtx))) +
+                    ((gNumHudVertsPerPlayer[num] * sizeof(Vertex))) + ((gNumHudTrisPerPlayer[num] * sizeof(Triangle)));
+        gDisplayLists[0] = (Gfx *) mempool_alloc_fixed(totalSize, (u8 *) gDisplayLists[0], COLOUR_TAG_RED);
+        gDisplayLists[1] = (Gfx *) mempool_alloc_fixed(totalSize, (u8 *) gDisplayLists[1], COLOUR_TAG_YELLOW);
+        if ((gDisplayLists[0] == NULL) || gDisplayLists[1] == NULL) {
+            if (gDisplayLists[0] != NULL) {
+                mempool_free(gDisplayLists[0]);
+                gDisplayLists[0] = NULL;
+            }
+            if (gDisplayLists[1] != NULL) {
+                mempool_free(gDisplayLists[1]);
+                gDisplayLists[1] = NULL;
+            }
+            default_alloc_displaylist_heap();
+        }
+        gMatrixHeap[0] = (Mtx *) ((u8 *) gDisplayLists[0] + ((gNumF3dCmdsPerPlayer[num] * sizeof(Gfx))));
+        gTriangleHeap[0] = (Triangle *) ((u8 *) gMatrixHeap[0] + ((gNumHudMatPerPlayer[num] * sizeof(Mtx))));
+        gVertexHeap[0] = (Vertex *) ((u8 *) gTriangleHeap[0] + ((gNumHudTrisPerPlayer[num] * sizeof(Triangle))));
+        gMatrixHeap[1] = (Mtx *) ((u8 *) gDisplayLists[1] + ((gNumF3dCmdsPerPlayer[num] * sizeof(Gfx))));
+        gTriangleHeap[1] = (Triangle *) ((u8 *) gMatrixHeap[1] + ((gNumHudMatPerPlayer[num] * sizeof(Mtx))));
+        gVertexHeap[1] = (Vertex *) ((u8 *) gTriangleHeap[1] + ((gNumHudTrisPerPlayer[num] * sizeof(Triangle))));
+        gCurrNumF3dCmdsPerPlayer = gNumF3dCmdsPerPlayer[num];
+        gCurrNumHudMatPerPlayer = gNumHudMatPerPlayer[num];
+        gCurrNumHudTrisPerPlayer = gNumHudTrisPerPlayer[num];
+        gCurrNumHudVertsPerPlayer = gNumHudVertsPerPlayer[num];
+        mempool_free_timer(2);
+    }
+    gCurrDisplayList = gDisplayLists[gSPTaskNum];
+    gGameCurrMatrix = gMatrixHeap[gSPTaskNum];
+    gGameCurrTriList = gTriangleHeap[gSPTaskNum];
+    gGameCurrVertexList = gVertexHeap[gSPTaskNum];
+
+    gDPFullSync(gCurrDisplayList++);
+    gSPEndDisplayList(gCurrDisplayList++);
+}
+
+#ifdef ANTI_TAMPER
+/**
+ * Returns FALSE if dmem doesn't begin with a -1. This is checked on every main game loop iteration.
+ */
+s32 drm_validate_dmem(void) {
+    if (IO_READ(SP_DMEM_START) != -1U) {
+        return FALSE;
+    }
+    return TRUE;
+}
+#endif
+
+/**
+ * Defaults allocations for 4 players
+ */
+void default_alloc_displaylist_heap(void) {
+    s32 numberOfPlayers;
+    s32 totalSize;
+
+    numberOfPlayers = FOUR_PLAYERS;
+    gPrevPlayerCount = numberOfPlayers;
+    totalSize = (gNumF3dCmdsPerPlayer[numberOfPlayers] * sizeof(Gfx)) +
+                (gNumHudMatPerPlayer[numberOfPlayers] * sizeof(Mtx)) +
+                (gNumHudVertsPerPlayer[numberOfPlayers] * sizeof(Vertex)) +
+                (gNumHudTrisPerPlayer[numberOfPlayers] * sizeof(Triangle));
+
+    gDisplayLists[0] = (Gfx *) mempool_alloc_safe(totalSize, COLOUR_TAG_RED);
+    gMatrixHeap[0] = (Mtx *) ((u8 *) gDisplayLists[0] + (gNumF3dCmdsPerPlayer[numberOfPlayers] * sizeof(Gfx)));
+    gVertexHeap[0] = (Vertex *) ((u8 *) gMatrixHeap[0] + (gNumHudMatPerPlayer[numberOfPlayers] * sizeof(Mtx)));
+    gTriangleHeap[0] = (Triangle *) ((u8 *) gVertexHeap[0] + (gNumHudVertsPerPlayer[numberOfPlayers] * sizeof(Vertex)));
+
+    gDisplayLists[1] = (Gfx *) mempool_alloc_safe(totalSize, COLOUR_TAG_YELLOW);
+    gMatrixHeap[1] = (Mtx *) ((u8 *) gDisplayLists[1] + (gNumF3dCmdsPerPlayer[numberOfPlayers] * sizeof(Gfx)));
+    gVertexHeap[1] = (Vertex *) ((u8 *) gMatrixHeap[1] + (gNumHudMatPerPlayer[numberOfPlayers] * sizeof(Mtx)));
+    gTriangleHeap[1] = (Triangle *) ((u8 *) gVertexHeap[1] + (gNumHudVertsPerPlayer[numberOfPlayers] * sizeof(Vertex)));
+
+    gCurrNumF3dCmdsPerPlayer = gNumF3dCmdsPerPlayer[numberOfPlayers];
+    gCurrNumHudMatPerPlayer = gNumHudMatPerPlayer[numberOfPlayers];
+    gCurrNumHudTrisPerPlayer = gNumHudTrisPerPlayer[numberOfPlayers];
+    gCurrNumHudVertsPerPlayer = gNumHudVertsPerPlayer[numberOfPlayers];
+}
+
+/**
+ * Set a delayed level trigger and a transition.
+ * Once the timer hits zero, the level will change.
+ */
+void level_transition_begin(s32 type) {
+    if (gLevelLoadTimer == 0) {
+        gLevelLoadTimer = 40;
+        gLevelLoadType = LEVEL_LOAD_NORMAL;
+        D_80123526 = 0;
+        if (type == 1) { // FADE_BARNDOOR_HORIZONTAL?
+            transition_begin(&gLevelFadeOutTransition);
+        }
+        if (type == 3) { // FADE_CIRCLE?
+            gLevelLoadTimer = 282;
+            transition_begin(&D_800DD424);
+        }
+        if (type == 4) { // FADE_WAVES?
+            gLevelLoadTimer = 360;
+            transition_begin(&D_800DD424);
+        }
+        if (type == 0) { // FADE_FULLSCREEN?
+            gLevelLoadTimer = 2;
+        }
+    }
+}
+
+UNUSED void func_8006F20C(void) {
+    if (gLevelLoadTimer == 0) {
+        transition_begin(&gLevelFadeOutTransition);
+        gLevelLoadTimer = 40;
+        gLevelLoadType = LEVEL_LOAD_UNK1;
+    }
+}
+
+/**
+ * Begins a fade transition, then signals to the level loading that it wants to be a trophy race.
+ */
+void begin_trophy_race_teleport(void) {
+    if (gLevelLoadTimer == 0) {
+        transition_begin(&gLevelFadeOutTransition);
+        gLevelLoadTimer = 40;
+        gLevelLoadType = LEVEL_LOAD_TROPHY_RACE;
+    }
+}
+
+/**
+ * Check if all available trophy races and Wizpig 1 has been beaten, and if the cutscene has not yet played.
+ */
+void begin_lighthouse_rocket_cutscene(void) {
+    if (gLevelLoadTimer == 0) {
+        if ((gSettingsPtr->trophies & 0xFF) == 0xFF && !(gSettingsPtr->cutsceneFlags & CUTSCENE_LIGHTHOUSE_ROCKET) &&
+            gSettingsPtr->bosses & 1) {
+            gSettingsPtr->cutsceneFlags |= CUTSCENE_LIGHTHOUSE_ROCKET;
+            transition_begin(&gLevelFadeOutTransition);
+            gLevelLoadTimer = 40;
+            gNextMap = ASSET_LEVEL_ROCKETSEQUENCE;
+            gLevelLoadType = LEVEL_LOAD_LIGHTHOUSE_CUTSCENE;
+        }
+    }
+}
+
+/**
+ * Begin a transition, then set the next level to the passed argument.
+ * This is used only to warp to Future Fun Land from the hub area.
+ */
+void begin_level_teleport(s32 levelID) {
+    if (gLevelLoadTimer == 0) {
+        gNextMap = levelID;
+        transition_begin(&gLevelFadeOutTransition);
+        gLevelLoadTimer = 40;
+        gLevelLoadType = LEVEL_LOAD_FUTURE_FUN_LAND;
+    }
+}
+
+/**
+ * Set the number of frames to disallow pausing for.
+ */
+void set_pause_lockout_timer(u8 time) {
+    gPauseLockTimer = time;
+}
+
+/**
+ * Switch the data around for player 1 and 2 for two player adventure,
+ * effectively passing the lead over to the other player.
+ */
+void swap_lead_player(void) {
+    s32 i;
+    u8 temp;
+    u8 *first_racer_data;
+    u8 *second_racer_data;
+
+    input_swap_id();
+    toggle_lead_player_index();
+
+    first_racer_data = (u8 *) (gSettingsPtr->racers);
+    second_racer_data = (u8 *) (gSettingsPtr->racers + 1);
+
+    for (i = 0; i < (s32) sizeof(Racer); i++) {
+        temp = first_racer_data[i];
+        first_racer_data[i] = second_racer_data[i];
+        second_racer_data[i] = temp;
+    }
+}
+
+/**
+ * Sets the timer to delay drawing new frames.
+ * When set to 2, the game will copy the previous framebuffer over to the next.
+ */
+void set_frame_blackout_timer(void) {
+    gDrawFrameTimer = 2;
+}
+
+/**
+ * Give the player 8 frames to enter the CPak menu with start, then load the intro sequence.
+ */
+void mode_intro(void) {
+    s32 i;
+    s32 buttonInputs = 0;
+
+    for (i = 0; i < MAXCONTROLLERS; i++) {
+        buttonInputs |= input_held(i);
+    }
+    if (buttonInputs & START_BUTTON) {
+        gShowControllerPakMenu = TRUE;
+    }
+    sBootDelayTimer++;
+    if (sBootDelayTimer >= 8) {
+        load_menu_with_level_background(MENU_BOOT, ASSET_LEVEL_OPTIONSBACKGROUND, 2);
+    }
+}
+
+/**
+ * Returns TRUE if the game doesn't detect any controllers.
+ * Official name: mainDemoOnly
+ */
+s32 is_controller_missing(void) {
+    if (sControllerStatus == CONTROLLER_MISSING) {
+        return TRUE;
+    } else {
+        return FALSE;
+    }
+}
+
+#ifdef ANTI_TAMPER
+/**
+ * Ran on boot, will make sure the CIC chip (CIC6103) is to spec. Will return true if it's all good, otherwise it
+ * returns false. The intention of this function, is an attempt to check that the cartridge is a legitimate copy. A
+ * false read, meaning you're caught running an illegitimate copy, will force the game to pause when you enter the
+ * world.
+ */
+s32 drm_validate_imem(void) {
+    if (IO_READ(SP_IMEM_START) != CIC_ID) {
+        return FALSE;
+    }
+    return TRUE;
+}
+#endif

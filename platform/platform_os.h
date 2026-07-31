@@ -1,0 +1,222 @@
+/**
+ * platform_os.h — mdkr64 platform layer (native macOS/PC port of DKR).
+ *
+ * NOTE: Unlike mgb64, the DKR decomp KEEPS its full PR SDK headers, which
+ * already declare every os/al/gu function and type. This header therefore
+ * does NOT redeclare the libultra API - it only declares the mdkr64-internal
+ * platform glue that game code and the platform TUs share:
+ *   - the RDRAM stand-in arena (16 MB) + 32-bit pointer reconstruction,
+ *   - ROM-buffer access for the dmacopy/DMA path,
+ *   - the cooperative frame-sync / headless-run hooks,
+ *   - the renderer (fast3d) entry points.
+ */
+#ifndef MDKR64_PLATFORM_OS_H
+#define MDKR64_PLATFORM_OS_H
+
+#include <stdint.h>
+#include <stddef.h>
+#include "mdkr_trace.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ===== RDRAM stand-in arena (PLAN decision 2) ============================= *
+ * One contiguous, 16 MB-aligned block stands in for N64 RDRAM. Aligning the
+ * block to its own size guarantees every pointer into it shares the same high
+ * 32 bits, so a value truncated to u32 by game code (`(u32)ptr`, pervasive in
+ * the asset/DMA path) can be losslessly widened back to a host pointer by
+ * OR-ing the arena's high bits. */
+#define DKR_ARENA_SIZE   0x1000000u   /* 16 MB */
+
+/* Allocate + register the arena. Returns the usable base (host pointer). */
+void *dkr_arena_init(uint32_t size);
+/* Release the arena after audio/game/renderer owners have stopped using it. */
+void dkr_arena_shutdown(void);
+/* Reconstruct a full host pointer from a 32-bit-truncated arena address. */
+void *dkr_lo32_to_ptr(uint32_t lo32);
+extern uintptr_t g_dkrArenaHi;   /* arena base & ~0xFFFFFFFF */
+extern void     *g_dkrArenaBase;
+extern uint32_t  g_dkrArenaSize;
+
+/* ===== ROM buffer (rom_io.c) ============================================= */
+extern uint8_t *g_romData;   /* whole .z64 image, big-endian bytes */
+extern uint32_t g_romSize;
+int platformInitRom(const char *path);
+/* Raw ROM read used by the dmacopy path: memcpy rom[off..off+len) -> dst. */
+int platform_rom_read(uint32_t romOffset, void *dst, int32_t len);
+void platform_rom_shutdown(void);
+
+/* ===== Frame pacing / headless (platform_sdl_min.c) ====================== *
+ * The collapsed single-threaded loop blocks in osRecvMesg on an empty
+ * scheduler-client (video) queue; that block is the frame boundary and calls
+ * platform_frame_sync(): poll input, present, advance the headless counter. */
+void platform_frame_sync(void);
+/*
+ * The same frame boundary MINUS the buffer swap, for a present that produced no
+ * new image (Phase 3 Wave B's presentation subloop: motion smoothing off, or a
+ * stale display list). Swapping there would put an undefined back buffer on
+ * screen instead of repeating the tick's image; see the definition.
+ */
+void platform_frame_sync_no_swap(void);
+extern int g_headlessFrames;    /* -1 = windowed/forever; >=0 = exit after N */
+extern int g_frameCounter;
+/*
+ * Cooperative process exit. Frame/input code requests termination and the
+ * game loop unwinds to main(), which tears down renderer, audio, and SDL in
+ * dependency order instead of calling exit() from inside a frame.
+ */
+void platform_request_exit(int code);
+int platform_exit_requested(void);
+int platform_exit_code(void);
+
+/* Source-release timing selected by ROM identification before game boot. */
+int platform_source_tv_type(void);   /* 0 PAL, 1 NTSC, 2 MPAL */
+int platform_source_field_hz(void);  /* 50 PAL, 60 NTSC/MPAL */
+
+/* ===== VI retrace / logic-update-rate pacing (the frame-pacing fix) ======= *
+ * DKR normalises game speed against framerate via fb_update() (game/src/video.c),
+ * which drains the video message queue to count how many 60 Hz VI fields elapsed
+ * per rendered frame and returns that as `updateRate` (LOGIC_60FPS=1 @ 60fps,
+ * LOGIC_30FPS=2 @ 30fps, ...). Movement, physics AND the race clock all scale by
+ * updateRate, so a correct updateRate is what keeps wall-clock speed constant as
+ * the render rate varies (DKR's native frameskip compensation).
+ *
+ * On N64 the VI interrupt posts retrace messages to that queue ASYNCHRONOUSLY at
+ * 60 Hz. Our cooperative shim has no async producer, so without this pacer the
+ * drain always finds 0 and updateRate pins at 1 regardless of the real present
+ * cadence — motion desyncs from real time (slow when the renderer can't sustain
+ * 60fps; fast on a >60 Hz display). This pacer restores the mechanism: it derives
+ * the true field count from the wall clock and feeds it back through the queue.
+ *
+ * platform_vi_pace_measure() paces the present to the configured simulation
+ * floor: two 60 Hz fields for original/authored gameplay (default), or one for
+ * the explicit enhanced compatibility mode. It returns the number of fields the
+ * just-completed frame occupied (>=1). The video-queue recv in stubs_dkr.c makes
+ * exactly that many retraces available, so fb_update's drain returns the
+ * matching updateRate. */
+int  platform_vi_pace_measure(void);   /* pace + return this frame's field count (>=1) */
+extern int g_viLastFields;             /* fields the last present represented (== updateRate injected) */
+extern int g_viLastWallFields;         /* true wall-clock/synthetic fields elapsed (trace: speed vs realtime) */
+int      platform_pace_is_synthetic(void); /* 1 == deterministic fixed fields/frame (headless) */
+uint64_t platform_sim_field_count(void);   /* cumulative 60 Hz fields; the deterministic clock */
+/* The pacer's RESOLVED field clock (source rate, or the MDKR_FIELD_HZ
+ * diagnostic override). present_sched.c models the same second the pacer
+ * enforces, so it must read this rather than platform_source_field_hz(). */
+int      platform_pace_field_hz(void);
+/* 0 == MDKR_VI_PACE=off: the diagnostic that injects updateRate 1 regardless of
+ * elapsed time. The present subloop applies it once per tick, not per present. */
+int      platform_vi_pace_compensating(void);
+/* Presentation subloop (Phase 3 Wave B slice 2). Returns the source fields one
+ * present occupies, or 0 when the subloop is not engaged and one present is one
+ * authoritative tick exactly as before. */
+int      platform_present_subloop_fields(void);
+/* Pace one present; returns the TRUE source fields it occupied. */
+int      platform_vi_present_pace(void);
+/* Commit the tick's synthetic field budget at the tick boundary — the phase the
+ * deterministic COUNTER depends on. No-op unless the subloop is engaged and
+ * pacing is synthetic. */
+void     platform_vi_tick_clock_commit(void);
+
+/* Objective motion-vs-clock probe (published from game/src/racer.c under
+ * NATIVE_PORT for player 1 each frame; logged by the pacer trace). Lets an
+ * automated run compare the racer's world-position advance against the race
+ * clock advance without a human watching the screen. */
+void mdkr_pace_probe_racer(int playerIndex, float x, float y, float z, int clockFrames);
+void mdkr_pace_probe_vehicle(int playerIndex, int vehicleID);
+/* Race progress (checkpoint index + lap) for the same probe — the invariant an
+ * automated drive check asserts on ("the racer keeps advancing along the track"). */
+void mdkr_pace_probe_progress(int playerIndex, int checkpoint, int lap);
+/* Published from race_check_finish() -- outside update_player_racer, which stops
+ * for a racer as soon as it finishes and so cannot observe the finish itself.
+ * The identity fields prove that the probe follows controller port 1 rather
+ * than whichever racer happened to occupy starting-grid slot zero. */
+void mdkr_pace_probe_finish(
+    int lap, int raceFinished, int finishPosition,
+    int racerIndex, int playerIndex);
+/* Time-trial ghost playback: counts interpolated ghost frames and records the
+ * source bank (0/1 = the player's own ghost, 2 = staff). Lets a check assert that
+ * its route really reaches timetrial_ghost_read() rather than assuming it. */
+void mdkr_pace_probe_ghost(int ghostBank);
+
+/* ===== Render backend selection (M4.5) =================================== *
+ * The renderer backend is chosen once at startup from MDKR_RENDERER
+ * (webgpu|gl|metal), defaulting to webgpu. The window/context created by
+ * platform_sdl_init() differs per backend (a Metal-layer window for WebGPU vs a
+ * GL-context window for OpenGL), so the choice must be resolved BEFORE the
+ * window is created and used again by main_pc to pick the &gfx_*_api passed to
+ * gfx_init. mdkr_render_backend() resolves + caches it (validating against the
+ * backends actually compiled in — an unavailable choice falls back to GL and
+ * logs), so all call sites agree. */
+enum MdkrRenderBackend {
+    MDKR_BACKEND_GL     = 0,
+    MDKR_BACKEND_WEBGPU = 1,
+    MDKR_BACKEND_METAL  = 2,
+};
+int mdkr_render_backend(void);          /* resolved once from MDKR_RENDERER */
+const char *mdkr_render_backend_name(void);
+
+/* SDL window + GL/Metal context lifecycle. */
+int  platform_sdl_init(void);
+int  platform_sdl_fallback_to_gl(void);
+void platform_sdl_shutdown(void);
+void platform_sdl_present(void);   /* swap GL buffers (WebGPU presents in end_frame) */
+void platform_sdl_drawable_size(int *w, int *h);  /* HiDPI framebuffer pixels */
+void platform_sdl_set_initial_size(int w, int h);
+void platform_sdl_sync_drawable_size(void);
+/* False while the native window is hidden/minimized and cannot supply a
+ * swapchain drawable. Browser canvases remain presentable even though SDL's
+ * synthetic window flags do not describe DOM visibility. */
+int  platform_sdl_surface_presentable(void);
+
+/* Native window handles the WebGPU backend (platform/fast3d/gfx_webgpu.c)
+ * resolves its WGPUSurface from. macOS uses the CAMetalLayer; every backend
+ * shares the SDL_Window. NULL before the window exists / off the Metal path. */
+void *platformGetMetalLayer(void);
+void *platformGetSdlWindow(void);
+
+enum MdkrWebGpuWindowSystem {
+    MDKR_WGPU_WINDOW_UNKNOWN = 0,
+    MDKR_WGPU_WINDOW_WIN32,
+    MDKR_WGPU_WINDOW_X11,
+    MDKR_WGPU_WINDOW_WAYLAND,
+};
+
+/*
+ * Resolve the live SDL window into the native pair required by webgpu.h.
+ * Win32: out_display=HINSTANCE, out_window=HWND.
+ * X11:   out_display=Display*, out_id=Window.
+ * Wayland: out_display=wl_display*, out_window=wl_surface*.
+ */
+enum MdkrWebGpuWindowSystem platformWebGpuWindowInfo(
+    void *sdl_window, void **out_display, void **out_window,
+    unsigned long long *out_id);
+
+/* ===== Frame dumping (--dump-frames DIR) ================================= *
+ * When g_dumpFramesDir is non-NULL the last completed backend frame is written
+ * as DIR/frame_%04d.ppm (P6 binary). */
+extern const char *g_dumpFramesDir;
+
+/* ===== Input (platform_sdl_min.c) ======================================= *
+ * platform_input_init opens connected SDL game controllers + loads the
+ * gamecontrollerdb mappings; platform_input_pump rebuilds the per-frame pad
+ * state (keyboard + gamepad + scripted) and is called from platform_frame_sync
+ * before the retrace is synthesized. osContGetReadData reads via the
+ * accessors below. P1 is always present because the keyboard is its first-class
+ * controller; P2-P4 are present when an SDL controller is assigned or an input
+ * script addresses that port. platform_input_load_script parses
+ * --input-script FILE. */
+void platform_input_init(void);
+void platform_input_pump(void);
+int  platform_input_load_script(const char *path);
+int          platform_pad_present(int port);
+int          platform_pad_rumble_supported(int port);
+int          platform_pad_rumble(int port, int enabled);
+unsigned int platform_pad_buttons(int port);
+void         platform_pad_stick(int port, int *sx, int *sy);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* MDKR64_PLATFORM_OS_H */

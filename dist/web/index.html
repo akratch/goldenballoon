@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Golden Balloon — play in your browser</title>
+<meta name="description" content="A native source port of the 1997 N64 kart racer, compiled to WebGPU and running entirely in your browser. Bring your own ROM.">
+
+<meta property="og:title" content="Golden Balloon">
+<meta property="og:description" content="A native source port of the 1997 N64 kart racer, running in your browser via WebGPU. Bring your own ROM.">
+<meta property="og:image" content="https://akratch.github.io/golden-balloon/assets/og.jpg">
+<meta property="og:url" content="https://akratch.github.io/golden-balloon/">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
+<link rel="icon" type="image/png" sizes="256x256" href="assets/favicon.png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Golden Balloon">
+<link rel="preload" as="image" href="assets/hero.jpg" fetchpriority="high">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ================= LAUNCHER ================= -->
+<main id="gate">
+
+  <!-- Start/finish gantry across the top edge, then the banner artwork at its own
+       aspect (never cropped) on the sky gradient sampled from the art itself. -->
+  <div class="gantry" aria-hidden="true"></div>
+
+  <div class="banner">
+    <img src="assets/hero.jpg" alt="Golden Balloon" width="1600" height="533"
+         fetchpriority="high">
+  </div>
+
+  <h1 class="sr-only">Golden Balloon</h1>
+
+  <div class="intro">
+    <p class="lede">
+      A native source port of the 1997&nbsp;N64 kart racer — the game compiled
+      for your CPU, drawn through <strong>WebGPU</strong>, running entirely in
+      this tab. Not an emulator.
+    </p>
+    <ul class="badges">
+      <li>No install</li>
+      <li>No server</li>
+      <li>No game data shipped</li>
+    </ul>
+  </div>
+
+  <div class="gantry" aria-hidden="true"></div>
+
+  <div class="page">
+    <div class="wrap">
+
+      <!-- Capability gate, boot progress and errors all land here. -->
+      <p id="gate-msg" class="status-line" role="status" aria-live="polite">Checking your browser…</p>
+      <noscript>
+        <p class="status-line err">This page needs JavaScript to download and run the WebGPU engine.</p>
+      </noscript>
+
+      <!-- Revealed once the WebGPU capability gate passes. -->
+      <div id="rom-ui" hidden>
+
+        <section class="sect" aria-labelledby="picker-title">
+          <div class="pos" aria-hidden="true">01</div>
+          <div class="panel">
+            <h2 id="picker-title">Bring your own ROM</h2>
+
+            <div id="drop" class="drop" tabindex="0" role="button"
+                 aria-describedby="drop-help">
+              <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 16V4m0 0L8 8m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
+                      fill="none" stroke="currentColor" stroke-width="2"
+                      stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <p class="drop-title">Drop your ROM here, or <span class="link">browse</span></p>
+              <p id="drop-help" class="drop-sub">
+                <code>.z64</code> · <code>.v64</code> · <code>.n64</code> — 12&nbsp;MB, <strong>US 1.1 or EU 1.1</strong>
+              </p>
+              <input type="file" id="rom-input" accept=".z64,.n64,.v64,.rom" hidden>
+            </div>
+
+            <p id="rom-status" role="status" aria-live="polite"></p>
+
+            <div class="quality">
+              <label class="quality-label" for="mode">Presentation</label>
+              <select id="mode" class="quality-select">
+                <option value="restored" selected>Restored &mdash; original look, modern fidelity</option>
+                <option value="remastered">Remastered &mdash; everything on (work in progress)</option>
+                <option value="pure">Pure &mdash; original 4:3, no enhancements</option>
+              </select>
+              <label class="quality-label" for="scale">Supersampling</label>
+              <select id="scale" class="quality-select">
+                <option value="">Mode default (2&times;)</option>
+                <option value="1">Off (1&times;) &mdash; reference</option>
+                <option value="2">2&times;</option>
+                <option value="3">3&times;</option>
+                <option value="4">4&times; &mdash; sharpest, heaviest</option>
+              </select>
+              <p class="quality-note">Supersampling renders above your window size and
+                filters back down, which is what removes the stair-stepping on edges.
+                Restored and Remastered use 2&times;. <strong>Set it to Off and back to
+                4&times; while watching the balloons and palm trees</strong> &mdash; that
+                is the difference. It costs fill rate, so drop back if the frame rate
+                suffers.</p>
+            </div>
+
+            <div class="actions">
+              <button id="play" class="btn btn-primary" disabled>
+                <span>▶ Play</span>
+              </button>
+              <button id="forget" class="btn btn-ghost" hidden>Forget stored ROM</button>
+            </div>
+
+            <p class="fine">
+              Other revisions (US 1.0, EU 1.0, Japan) are recognised and named back to
+              you, but not supported yet — this build is compiled for the 1.1 data and
+              nothing bounds-checks an index into a section that shrank.
+            </p>
+
+            <p class="privacy">
+              Your ROM is read <strong>locally, in this browser</strong>. It is never
+              uploaded — there is no server here to receive it. No game data is
+              distributed with this page; you supply your own copy.
+            </p>
+          </div>
+        </section>
+
+        <section class="sect" aria-labelledby="play-title">
+          <div class="pos" aria-hidden="true">02</div>
+          <div>
+            <h2 id="play-title" class="sr-only">How to play</h2>
+            <div class="cols">
+              <div class="panel">
+                <h3>Controls</h3>
+                <dl class="keys">
+                  <dt><kbd>←</kbd><kbd>→</kbd> <span class="alt">/ <kbd>A</kbd><kbd>D</kbd></span></dt>
+                    <dd>Steer</dd>
+                  <dt><kbd>↑</kbd><kbd>↓</kbd> <span class="alt">/ <kbd>W</kbd><kbd>S</kbd></span></dt>
+                    <dd>Menus · plane pitch</dd>
+                  <dt><kbd>X</kbd></dt><dd><strong>Accelerate</strong> (A)</dd>
+                  <dt><kbd>Z</kbd></dt><dd>Brake / reverse (B)</dd>
+                  <dt><kbd>Space</kbd></dt><dd><strong>Hop / power-slide</strong> (R)</dd>
+                  <dt><kbd>Shift</kbd></dt><dd>Fire item (Z)</dd>
+                  <dt><kbd>Q</kbd></dt><dd>L</dd>
+                  <dt><kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd></dt><dd>C-buttons · rear view</dd>
+                  <dt><kbd>Enter</kbd></dt><dd>Start / pause</dd>
+                  <dt><kbd>F</kbd></dt><dd>Fullscreen</dd>
+                </dl>
+                <p class="tip">
+                  <strong>Space is worth learning.</strong> Tapping hop into a corner
+                  power-slides, which is how you actually go fast in this game.
+                </p>
+                <p class="fine">
+                  A gamepad is genuinely better here — keyboard steering is digital
+                  (full lock or nothing) where the original is analog. Plug one in
+                  and press a button; it is picked up automatically.
+                </p>
+                <p class="fine">
+                  On a phone or tablet, analog touch controls appear automatically
+                  when play starts. They respect screen cutouts, support simultaneous
+                  steering and action buttons, and can be hidden from the in-game
+                  <strong>Controls</strong> button.
+                </p>
+              </div>
+
+              <div class="panel">
+                <h3>Good to know</h3>
+                <ul class="notes">
+                  <li><strong>Saves persist</strong> in your browser, so lap records
+                    survive a reload. <em>Stored data</em> (step&nbsp;04) erases
+                    them if you want a clean slate.</li>
+                  <li>Needs <strong>WebGPU</strong> — Chrome or Edge 113+. There is no
+                    WebGL fallback, so this page says so up front rather than
+                    running black.</li>
+                  <li><strong>Adventure, Tracks, Time Trial, bosses, trophy series,
+                    and challenge modes</strong> are playable.</li>
+                  <li>Two-, three-, and four-player split-screen work with
+                    additional controllers.</li>
+                  <li>The mouse is not used in-game; play with a keyboard, gamepad,
+                    or the automatic phone/tablet touch controls.</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="sect" aria-labelledby="known-title">
+          <div class="pos" aria-hidden="true">03</div>
+          <div class="panel">
+            <h3 id="known-title">Known issues</h3>
+            <ul class="notes">
+              <li><strong>Controller Pak backup uses mdkr64's versioned
+                <code>.mdkr-paks</code> bundle.</strong> Import of raw emulator
+                <code>.mpk</code> images is not available yet.</li>
+              <li><strong>Rumble support depends on the browser and controller.</strong>
+                Devices without a Web Gamepad vibration actuator play normally
+                without feedback.</li>
+              <li><strong>Video Options</strong> are available from the in-game
+                Options menu. Aspect, FOV, and supersampling apply immediately;
+                cache-wide presentation changes clearly request a restart.</li>
+              <li>Found something? A browser console trace is genuinely useful —
+                the wasm offsets in it map straight back to function names.
+                <a href="https://github.com/akratch/golden-balloon/issues">Open an
+                issue</a>.</li>
+            </ul>
+          </div>
+        </section>
+
+        <!-- Stored data. Its own section, away from the ROM picker, because this
+             is the recovery path: if a stored save ever makes the game misbehave
+             on boot, wiping it here is the way out. The shell talks to IndexedDB
+             directly so this still works when the engine does not. -->
+        <section class="sect" aria-labelledby="data-title">
+          <div class="pos" aria-hidden="true">04</div>
+          <div class="panel">
+            <h3 id="data-title">Stored data</h3>
+            <p class="fine">
+              Browser storage can be cleared by browser settings, private mode,
+              storage eviction, or a site reset. Download a backup if the
+              progress matters to you. Save files and ROMs stay on this device
+              and are never uploaded.
+            </p>
+            <div class="actions">
+              <button id="download-save" class="btn btn-primary">
+                <span>Download backup</span>
+              </button>
+              <button id="download-save-raw" class="btn btn-ghost">Download raw EEPROM</button>
+              <button id="download-paks" class="btn btn-ghost">Download ghost Paks</button>
+              <button id="import-paks-button" class="btn btn-ghost">Import ghost Paks</button>
+              <input id="import-paks-input" type="file"
+                     accept=".mdkr-paks,application/json"
+                     hidden>
+              <button id="import-save-button" class="btn btn-ghost">Import backup</button>
+              <input id="import-save-input" type="file"
+                     accept=".mdkr-save,.eep,.bin,.sav,application/json"
+                     hidden>
+              <button id="edit-save" class="btn btn-ghost">Edit saved progress</button>
+              <button id="restore-save-snapshot" class="btn btn-ghost">Recovery points</button>
+              <button id="clear-save" class="btn btn-danger">Erase saved progress</button>
+            </div>
+            <div id="save-drop" class="save-drop" tabindex="0" role="button"
+                 aria-label="Drop a save backup here">
+              Drop a <code>.mdkr-save</code> backup or exact 512-byte EEPROM here
+            </div>
+            <p id="save-status" role="status" aria-live="polite"></p>
+            <p class="fine">
+              Adventure progress and Controller Pak ghosts are stored
+              separately; use both backup buttons if both matter. Import and
+              editing use a rollback transaction: the candidate is
+              staged, persisted, reloaded, and checked byte-for-byte before it
+              becomes live. The game also retains three checksum-safe automatic
+              snapshots. Corrupt blocks are never repaired silently.
+            </p>
+          </div>
+        </section>
+
+        <hr class="rule" aria-hidden="true">
+
+        <footer class="foot">
+          <p>
+            Unofficial fan project, made for research and preservation. Not
+            affiliated with or endorsed by any rights holder; all trademarks belong
+            to their owners.
+          </p>
+          <p class="fine">
+            Game logic comes from the community decompilation. The engine layer,
+            renderer and this web build are original work.
+          </p>
+          <p class="fine">
+            <a href="https://github.com/akratch/golden-balloon/blob/main/DISCLAIMER.md">Disclaimer</a> ·
+            <a href="https://github.com/akratch/golden-balloon/blob/main/LICENSE">License (MIT, our code only)</a> ·
+            <a href="https://github.com/akratch/golden-balloon">Source of this page</a>
+          </p>
+          <p class="fine" id="ios-fullscreen-hint" hidden>
+            iPhone tip: Safari cannot full-screen web games. For a chromeless,
+            full-screen experience use <strong>Share&nbsp;→&nbsp;Add to Home
+            Screen</strong> and launch from the icon.
+          </p>
+          <p class="fine" id="build-tag" hidden></p>
+        </footer>
+      </div>
+    </div>
+  </div>
+</main>
+
+<dialog id="save-dialog" aria-labelledby="save-dialog-title">
+  <div class="save-dialog-head">
+    <h2 id="save-dialog-title">Manage saved progress</h2>
+    <button id="save-dialog-close" class="btn btn-ghost" type="button"
+            aria-label="Close save manager">Close</button>
+  </div>
+  <div id="save-dialog-body"></div>
+  <p id="save-dialog-status" role="status" aria-live="polite"></p>
+  <div id="save-dialog-actions" class="actions"></div>
+</dialog>
+
+<!-- ================= GAME ================= -->
+<!-- The canvas id MUST stay "#canvas" — it is the WebGPU surface selector in
+     gfx_webgpu_compat.h and the SDL2 canvas the shell binds to. Its backing
+     store is sized by the shell before boot and after every live resize; the
+     engine samples it each frame and transactionally resizes its targets. -->
+<div id="stage" hidden>
+  <canvas id="canvas" width="640" height="480" tabindex="-1"></canvas>
+  <div id="fps" class="fps" hidden aria-hidden="true"></div>
+  <button id="touch-toggle" class="touch-toggle" type="button" hidden
+          aria-label="Hide touch controls" aria-pressed="true">
+    <span aria-hidden="true">◉</span><span class="touch-toggle-label">Controls</span>
+  </button>
+  <div id="touch-controls" class="touch-controls" role="group" hidden
+       aria-label="On-screen game controls">
+    <p class="touch-rotate-hint" role="status">
+      Turn your phone sideways for more room
+    </p>
+    <button class="touch-pause" type="button" data-touch-button="4096"
+            aria-label="Pause or start"><span aria-hidden="true">❚❚</span></button>
+
+    <div id="touch-stick" class="touch-stick" role="group"
+         aria-label="Analog steering stick">
+      <span class="touch-stick-ring" aria-hidden="true"></span>
+      <span id="touch-stick-knob" class="touch-stick-knob" aria-hidden="true"></span>
+      <span class="touch-stick-label" aria-hidden="true">Steer</span>
+    </div>
+
+    <div class="touch-actions" role="group" aria-label="Race controls">
+      <button class="touch-action touch-item" type="button"
+              data-touch-button="8192" aria-label="Use item">
+        <span>Item</span><small>Z</small>
+      </button>
+      <button class="touch-action touch-drift" type="button"
+              data-touch-button="16" aria-label="Hop or power-slide">
+        <span>Drift</span><small>R</small>
+      </button>
+      <button class="touch-action touch-brake" type="button"
+              data-touch-button="16384" aria-label="Brake or go back">
+        <span>Brake</span><small>B</small>
+      </button>
+      <button class="touch-action touch-go" type="button"
+              data-touch-button="32768" aria-label="Accelerate or select">
+        <span>Go</span><small>A</small>
+      </button>
+      <button class="touch-action touch-look" type="button"
+              data-touch-button="4" aria-label="Look behind">
+        <span>Look</span><small>C</small>
+      </button>
+    </div>
+  </div>
+  <button id="fullscreen" class="fs-btn" type="button" title="Fullscreen (F)"
+          aria-label="Enter fullscreen" aria-pressed="false">⛶</button>
+</div>
+
+<div id="save-banner" role="status" aria-live="polite" hidden>
+  Couldn't save to browser storage — progress may not persist.
+</div>
+
+<!-- rom-id.js MUST come first: the shell calls dkrValidateRom() from it. It is the
+     browser mirror of platform/rom_id.c (revision table + byte-order fix-up). -->
+<script src="rom-id.js"></script>
+<script src="mdkr-save-ui.js"></script>
+<script src="mdkr64-shell.js"></script>
+</body>
+</html>

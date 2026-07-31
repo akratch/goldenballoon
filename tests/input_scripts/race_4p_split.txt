@@ -1,0 +1,47 @@
+# DKR regression fixture: title -> four-player Ancient Lake race.
+#
+# All four humans join/confirm on distinct controller ports. This exercises the
+# four-quadrant viewport/HUD path rather than inferring it from a one-frame spot
+# check.
+
+1250 START 4
+1330 START 4
+
+# Join players 2-4.
+1430 A 4 P2
+1470 A 4 P3
+1510 A 4 P4
+
+# Confirm one character per controller, then accept the group.
+1600 A 4 P1
+1660 A 4 P2
+1720 A 4 P3
+1780 A 4 P4
+1880 A 4 P1
+
+# Ancient Lake, vehicle confirmation by every player, CPU-count prompt, GO.
+2100 A 4 P1
+2250 A 4 P1
+2250 A 4 P2
+2250 A 4 P3
+2250 A 4 P4
+2400 A 4 P1
+2550 A 4 P1
+
+# Exercise every physical input path once; MDKR_AUTOPILOT drives the racing line.
+# Long holds are deliberately forbidden here: menu input is edge-triggered, so a
+# held A would freeze the multiplayer post-race flow after the racers finish.
+2660 A 4 P1
+2660 A 4 P2
+2660 A 4 P3
+2660 A 4 P4
+
+# Multiplayer post-race starts at FADE_OUT and accepts one A edge before loading
+# MENU_RESULTS. These spaced retries are harmless while anyone is still racing.
+7600 A 4 P1
+7900 A 4 P1
+8200 A 4 P1
+8500 A 4 P1
+8800 A 4 P1
+9100 A 4 P1
+9400 A 4 P1

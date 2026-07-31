@@ -1,0 +1,74 @@
+# DKR: TITLE -> a TWO-PLAYER split-screen race on Ancient Lake.
+#
+# This is the only fixture that reaches gNumberOfActivePlayers == 2, and it needs
+# the `P1`/`P2` port field the input-script parser gained for it: a second player
+# JOINS at PLAYER SELECT by pressing A on their OWN controller
+# (charselect_new_player() scans gMenuButtons[0..3] for a pad that is not yet in
+# gActivePlayersArray), so no amount of input on port 0 can ever produce a second
+# player.
+#
+# The two-player menu graph DIFFERS from every one-player route. In
+# menu_character_select_loop() the branch is
+#     confirmOffset >= gNumberOfActivePlayers
+# with confirmOffset == 1 when entering char select from the title. One player
+# takes the true side -> CAUTION(28)/GAME_SELECT(19); two players take the false
+# side and go STRAIGHT to TRACK_SELECT(15). There is no GAME_SELECT and no
+# CAUTION screen on this route.
+#
+# Track select also differs: func_80092188()'s stage machine sends
+# gNumberOfActivePlayers >= 2 from stage TRACKMENU_OPT_1 to TRACKMENU_OPT_2,
+# skipping TRACKMENU_CHOOSE (the Time-Trial toggle) entirely — a multiplayer race
+# has no time trial (set_time_trial_enabled(FALSE) is forced for >= 2 players).
+# Stage OPT_2 is the "how many CPU racers" prompt and takes one extra A.
+#
+# Verified route (MDKR_TRACE=1 | grep -E 'menu_init|level_load|hud_init'):
+#   TITLE(0) --START,START--> CHARACTER_SELECT(3)
+#     --A on P2 (join)--> --A on P1--> --A on P2--> (both confirmed)
+#     --A--> TRACK_SELECT(15)
+#     --A (world)--> --A on P1 + A on P2 (vehicle)--> --A (racer count)--> --A (GO)-->
+#   level_load: levelId=5 numPlayers=1   <- 0-indexed viewport layout, i.e. 2 players
+#   hud_init:   hudPlayers=1 numViewports=2
+#
+# Use with MDKR_AUTOPILOT=1 so BOTH human racers are driven by DKR's own AI (the
+# hook drives every racer whose playerIndex != PLAYER_COMPUTER, so it covers
+# player 2 with no extra machinery). The trailing held-A entries below keep the
+# route a real two-pad race without autopilot as well, but open-loop it only
+# noses into the first wall — assert with tests/check_race_2p_split.py.
+#
+# Assert both racers move on the [PACE] (player 1) and [PACE2] (player 2) lines.
+
+# --- Title: reveal Start/Options, then select Character Select ---
+1250 START 4
+1330 START 4
+# --- PLAYER SELECT: player 2 joins on controller 2 ---
+1450 A 4 P2
+# --- PLAYER SELECT: each player confirms their own character ---
+1560 A 4 P1
+1670 A 4 P2
+# --- "OK?" -> TRACK_SELECT (no GAME_SELECT / CAUTION on a 2-player route) ---
+1780 A 4 P1
+# --- TRACK_SELECT world map: pick the world at cursor (0,0) = Ancient Lake ---
+2000 A 4 P1
+# --- Vehicle select (stage OPT_1): BOTH players must confirm ---
+2150 A 4 P1
+2150 A 4 P2
+# --- Racer-count prompt (stage OPT_2) ---
+2300 A 4 P1
+# --- GO -> level_load at ~frame 2491 ---
+2450 A 4 P1
+# --- Drive: MDKR_AUTOPILOT owns the racing line. Tap (never hold) A once per
+# pad to exercise the physical input path; menu input is edge-triggered, so a
+# held A would freeze the multiplayer post-race flow after the racers finish
+# (the same rule race_3p_split.txt documents).
+2560 A 4 P1
+2560 A 4 P2
+
+# Multiplayer post-race starts at FADE_OUT and accepts one A edge before loading
+# MENU_RESULTS. These spaced retries are harmless while anyone is still racing.
+7600 A 4 P1
+7900 A 4 P1
+8200 A 4 P1
+8500 A 4 P1
+8800 A 4 P1
+9100 A 4 P1
+9400 A 4 P1

@@ -1,0 +1,5 @@
+# DKR title -> CHARACTER_SELECT (menuId 3). Title menu inits ~f1134.
+# Title screen needs TWO press-edges: first reveals START/OPTIONS menu (menu.c:3568),
+# second selects the highlighted option (menu.c:3584). Option 0 = char select.
+1250 START 4
+1330 START 4

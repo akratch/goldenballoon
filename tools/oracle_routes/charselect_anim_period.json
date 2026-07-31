@@ -1,0 +1,44 @@
+{
+  "schema": "mdkr64.oracle.route.v1",
+  "name": "charselect_anim_period",
+  "description": "Same navigation as title_to_character_select, but captures EVERY frame across a 130-frame window while parked on CHARACTER_SELECT. Purpose is not pixel fidelity -- it is measuring the ANIMATION RATE of the dancing characters against the real ROM. A reported bug says the dancing is far too fast in the browser build; comparing the bob period in frames, ares vs native, decides whether the engine advances menu animation too fast everywhere or only under the browser's pacing. Measured by tools/anim_period.py.",
+  "native_cadence": "enhanced",
+  "native_synth_fields": 1,
+  "sync": {
+    "event": "title",
+    "native_frame": 1134,
+    "ares_frame": 1340
+  },
+  "native": {
+    "frames": 1530,
+    "dump_every": 1,
+    "dump_start": 1400
+  },
+  "ares": {
+    "frames": 1880,
+    "dump_every": 1,
+    "dump_start": 1670
+  },
+  "marks": [
+    {
+      "name": "char_select",
+      "logical": 260
+    }
+  ],
+  "events": [
+    {
+      "frame": 1250,
+      "buttons": [
+        "start"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1330,
+      "buttons": [
+        "start"
+      ],
+      "hold": 4
+    }
+  ]
+}

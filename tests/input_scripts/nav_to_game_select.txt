@@ -1,0 +1,10 @@
+# DKR title -> CHARACTER_SELECT(3) -> CAUTION(28) -> GAME_SELECT(19), then HOLD.
+# GAME_SELECT init builds the wood-panel geometry (menu.c func_8007FFEC) — the
+# original LP64 pointer-truncation crash site. This fixture stops on GAME_SELECT
+# so the 20x crash-loop exercises that init + idle render.
+# Assert: MDKR_TRACE=1 ... | grep menu_init  -> ... 3, 28, 19.
+1250 START 4
+1330 START 4
+1450 A 4
+1540 A 4
+1750 A 4

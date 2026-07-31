@@ -1,0 +1,124 @@
+# DKR regression fixture -- the ADVENTURE RACE LOOP (P3.5b).
+#
+#   Timber's Island -> Dino Domain lobby -> ANCIENT LAKE (3 laps, finished)
+#                   -> back to the lobby -> back to Timber's Island.
+#
+# This is the first fixture that ENTERS a race from the Adventure hub;
+# tests/check_adventure_hub.py only ever drove the hub itself.  Driven by
+# tests/check_adventure_race_loop.py, which supplies the steering:
+#
+#   MDKR_DRIVE_ROUTE=...   closed-loop steering at named hub objects
+#                          (platform/mdkr_adventure.c)
+#   MDKR_AUTOPILOT=1       DKR's own AI drives the race itself
+#
+# So this file contains only what a stick/button script has to do -- which is
+# exactly the two things the drive hook cannot do: navigate the frontend, and
+# answer DKR's edge-detected post-race menu.
+#
+# --- Frontend (identical to adventure_hub_drive.txt) ---------------------------
+#   TITLE(0) --2 taps--> CHARACTER_SELECT(3) --A,A--> CAUTION(28) --A-->
+#   GAME_SELECT(19) --A picks Adventure--> FILE_SELECT(6) --A picks empty file 1
+#   --> name entry (3 chars + confirm) --> MENU_NEWGAME_CINEMATIC(23) +
+#   level_load(levelId=36 cutscene=15) @frame~2236 --> the cutscene runs to its
+#   own end (it is NOT skippable) --> level_load(levelId=0) @frame~5867, in-game.
+#   The cutscene length is not padding that can be shortened: its terminating
+#   entry is actor 23 with animationStartDelay 3630, counted down one tick per
+#   game update, so the hub cannot be reached before frame ~5867.
+#
+# --- There is deliberately NO held-A throttle line ----------------------------
+# adventure_hub_drive.txt holds `6000 A 6000`.  Do not copy that here.  The drive
+# hook and MDKR_AUTOPILOT both set the throttle themselves, so a held A buys
+# nothing -- and it actively BREAKS the post-race menu, because every screen in
+# it is driven by input_pressed(), which is edge-detected.  While A is held there
+# are no further edges, so every tap below is silently swallowed.  Measured: with
+# `6000 A 11000` present the run sits on the post-race screen for 4200 frames and
+# never returns; with the hold removed and one single A tap it returns in 350.
+#
+# --- Post-race menu -----------------------------------------------------------
+# The player is driven by the same AI as the CPU field, so it finishes mid-pack,
+# not first.  objects.c:6851 only takes the race_finish_adventure() branch -- the
+# balloon cutscene, which returns to the lobby on its own -- when the racer in
+# FIRST place is human; a mid-pack finish calls postrace_start() instead and the
+# race stops dead on a menu (measured: frozen at the finish line, clock=5222
+# fin=1, for 13000 frames with no input).
+#
+# postrace_start() builds [TRY AGAIN, RETURN TO LOBBY, QUIT] for a 1-player
+# Adventure race that was not won (menu.c:10570).  Option 0 is TRY AGAIN, so
+# blind A taps re-race for ever -- measured level_load(levelId=5) at 6950, 14212,
+# 19882 and 25642.  The stages need:
+#
+#   POSTRACE_STAGE_BEGIN            one A            (menu.c:11005)
+#   POSTRACE_STAGE_SHRINK_VIEWPORT  none -- 60 frames, A only hurries it
+#   POSTRACE_STAGE_RACE_ORDER       none -- postrace_render()'s own timer.
+#                                   Reached instead of RACE_TIMES/ENTER_INITIALS
+#                                   because settings->display_times is FALSE
+#                                   outside Time Trial (objects.c:7132), so there
+#                                   is no initials-entry screen on this route.
+#   POSTRACE_STAGE_OPTIONS          DOWN, then A.  A is checked BEFORE the stick
+#                                   (menu.c:11163), so an A on a frame where the
+#                                   option is still 0 picks TRY AGAIN.
+#   -- selecting a normal option jumps straight to POSTRACE_STAGE_END, so no
+#      further A is needed; POSTRACE_STAGE_FADE_OUT is the >=2-player path.
+#
+# Hence: ONE A at 12750 to clear BEGIN, then nothing while the timer-driven
+# screens play out, then (DOWN, A) pairs from 13200 every 250 frames.  DOWN is one
+# press, not a repeat: gControllersYAxisDirection is edge-detected and auto-repeats
+# only after STICK_DELAY_AMOUNT == 15 frames (menu.c:13577), so a 6-frame hold
+# moves exactly one option.  The pairs repeat because POSTRACE_STAGE_OPTIONS never
+# advances on its own -- once it is reached it waits, so every later pair is a
+# free, safe retry.
+#
+# Budget: 17000 frames.  Measured transitions:
+#   level_load levelId=0  @5867    Timber's Island
+#   balloon 10 collected  @6331    total 1 -- the Dino Domain doors want 1
+#   level_load levelId=12 @6648    Dino Domain lobby
+#   level_load levelId=5  @6950    Ancient Lake
+#   race finished         @12713   clock 5222, 3 laps
+#   level_load levelId=12 @13492   entrance=3 (the Ancient Lake door) -- returned
+#   level_load levelId=0  @13840   entrance=2 (the Dino Domain exit) -- returned
+
+# --- Frontend navigation ---
+1250 START 4
+1330 START 4
+1450 A 4
+1540 A 4
+1750 A 4
+1900 A 4
+2050 A 4
+2100 A 4
+2130 A 4
+2160 A 4
+2200 A 4
+
+# --- Post-race: clear POSTRACE_STAGE_BEGIN ---
+12750 A 6
+
+# --- Post-race: step DOWN to RETURN TO LOBBY and confirm (retried) ---
+13200 DOWN 6
+13210 A 6
+13450 DOWN 6
+13460 A 6
+13700 DOWN 6
+13710 A 6
+13950 DOWN 6
+13960 A 6
+14200 DOWN 6
+14210 A 6
+14450 DOWN 6
+14460 A 6
+14700 DOWN 6
+14710 A 6
+14950 DOWN 6
+14960 A 6
+15200 DOWN 6
+15210 A 6
+15450 DOWN 6
+15460 A 6
+15700 DOWN 6
+15710 A 6
+15950 DOWN 6
+15960 A 6
+16200 DOWN 6
+16210 A 6
+16450 DOWN 6
+16460 A 6

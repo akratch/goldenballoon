@@ -1,0 +1,1712 @@
+// mdkr64-shell.js — browser launcher for the mdkr64 WebGPU/wasm engine.
+//
+// Flow: feature-detect WebGPU -> let the user pick their .z64 (validated and
+// byte-order-normalised by rom-id.js, which index.html loads first) ->
+// instantiate the wasm module -> mount IDBFS at /rom (ROM persists across
+// reloads) and /save (EEPROM persists) -> write the ROM into MEMFS/IDBFS ->
+// callMain(--rom ...).
+// The engine reads the whole ROM at boot (rom_io.c) and drives its own frame
+// loop, suspending to requestAnimationFrame via Asyncify at each frame boundary.
+//
+// No ROM is distributed with this page; the user supplies their own. Everything
+// stays in the browser — there is no server to upload to.
+
+"use strict";
+
+// ---- Visual-only: make :active feedback reliable on iOS Safari ------------
+// iOS Safari only applies the CSS :active pseudo-class to a tapped element
+// while at least one ancestor has a touchstart listener; without one, taps
+// on the plain launcher buttons (Play, Forget, Download backup, ...) skip
+// straight from default to hover-ish state with no visible press. This is
+// the standard, well-documented no-op fix. It does not read or react to any
+// touch data, does not call preventDefault, and is entirely independent of
+// the touch-pad pointer lifecycle below (which drives its own "is-pressed"
+// classes directly and never relies on :active). Zero effect on gameplay.
+document.addEventListener("touchstart", () => {}, { passive: true });
+
+// The ROM is always written here in canonical .z64 order — validateRom() below
+// converts a .v64/.n64 pick in place before it is persisted, so the name is
+// accurate rather than aspirational. Size and revision live in rom-id.js.
+const ROM_PATH = "/rom/baserom.us.v80.z64";
+const $ = (id) => document.getElementById(id);
+
+let romBytes = null;     // freshly-picked ROM bytes (null once written to FS)
+let module = null;       // the instantiated engine Module
+let booted = false;
+let savedOnce = false;
+
+// One plain object is shared with the wasm input sampler. Pointer callbacks only
+// mutate browser state; C reads one coherent snapshot at its ordinary per-frame
+// input boundary, avoiding Asyncify re-entry while main() is suspended.
+const touchPadState = {
+  enabled: false,
+  buttons: 0,
+  stickX: 0,
+  stickY: 0,
+};
+
+function publishTouchPad() {
+  if (module) module.__mdkrTouchPad = touchPadState;
+}
+
+function clearTouchPad() {
+  touchPadState.buttons = 0;
+  touchPadState.stickX = 0;
+  touchPadState.stickY = 0;
+  publishTouchPad();
+}
+
+// ---- Browser regression bridge -------------------------------------------
+// A CDP test can install this object with Page.addScriptToEvaluateOnNewDocument
+// before any page code runs. Nothing is read from the URL and no test asset is
+// shipped: the fixture text remains in the test process and is written into the
+// module's private MEMFS only after the user-supplied ROM has passed the normal
+// picker/identity gate. Ordinary visitors never create this object, so this path
+// is inert in production.
+const testConfig = (() => {
+  const value = globalThis.__mdkrTestConfig;
+  return value && typeof value === "object" ? value : null;
+})();
+const testState = testConfig ? {
+  phase: "shell-loaded",
+  exitCode: null,
+  abortReason: null,
+  errors: [],
+  storage: null,
+  module: null,
+} : null;
+if (testState) globalThis.__mdkrTestState = testState;
+
+function testMark(phase) {
+  if (testState) testState.phase = phase;
+}
+
+function testError(value) {
+  if (!testState) return;
+  const text = String(value == null ? "" : value);
+  testState.errors.push(text.slice(0, 1000));
+  if (testState.errors.length > 32) testState.errors.shift();
+}
+
+// Called synchronously by the wasm WebGPU seam when device bring-up or a live
+// device fails. Keep recovery outside the renderer: expose the launcher (and
+// its independent Clear Save / Forget ROM controls), hide the frozen canvas,
+// and give the player a stable, actionable message instead of a black frame.
+let graphicsRecoveryQueued = false;
+window.mdkr64ShowError = (message) => {
+  const text = String(
+    message || "The graphics device stopped. Reload the page to try again."
+  );
+  testError(text);
+  testMark("graphics-failed");
+  clearTouchPad();
+  $("stage").hidden = true;
+  $("gate").hidden = false;
+  const status = $("gate-msg");
+  status.className = "status-line err";
+  status.textContent = text;
+  const play = $("play");
+  play.disabled = true;
+  play.title = text;
+  /*
+   * Asyncify's callMain() can return at its first unwind and never deliver the
+   * ordinary onExit callback for an initialization failure. Explicitly finish
+   * the engine's persistence generation, then hand /save back to the
+   * ROM-independent recovery module. This keeps Clear Save/import/export
+   * usable on the exact screen reached when the engine cannot render.
+   */
+  if (!graphicsRecoveryQueued) {
+    graphicsRecoveryQueued = true;
+    quiesceEnginePersistence("graphics-failure", () => {
+      if (globalThis.MDKRSaveUI) {
+        globalThis.MDKRSaveUI.resume();
+      }
+    });
+  }
+};
+
+// FNV-1a is not a security hash; it is a compact reload oracle for the 512-byte
+// EEPROM. Never fingerprint the ROM here: the browser check only records that
+// the expected private file exists and has the legal 12 MiB size.
+function testFileInfo(path, includeHash, includeBytes = false) {
+  if (!module || !module.FS) return { exists: false, size: 0, hash: null };
+  try {
+    const bytes = module.FS.readFile(path);
+    let hash = null;
+    if (includeHash) {
+      let value = 0x811c9dc5;
+      for (const byte of bytes) {
+        value ^= byte;
+        value = Math.imul(value, 0x01000193) >>> 0;
+      }
+      hash = value.toString(16).padStart(8, "0");
+    }
+    return {
+      exists: true,
+      size: bytes.length,
+      hash,
+      bytes: includeBytes ? Array.from(bytes) : undefined,
+    };
+  } catch (e) {
+    return { exists: false, size: 0, hash: null };
+  }
+}
+
+function testAudioInfo() {
+  const audio = module && module.mdkrAudio;
+  if (!audio) return null;
+  return {
+    ready: audio.ready === true,
+    failed: audio.failed === true,
+    posted: Number(audio.posted) || 0,
+    ring: Number(audio.statRing) || 0,
+    underflows: Number(audio.under) || 0,
+    contextState: audio.ctx ? String(audio.ctx.state) : "missing",
+    shutdownComplete: audio.shutdownComplete === true,
+  };
+}
+
+function testRefreshExitState() {
+  if (!testState || !module || testState.phase !== "main-started") return;
+  /*
+   * __mdkrExitCode is published when a frame requests termination. That is
+   * deliberately earlier than renderer/audio/platform teardown. Only the
+   * post-teardown flag proves C main actually unwound through every owner.
+   */
+  if (Number.isInteger(module.__mdkrExitCode) &&
+      module.__mdkrShutdownComplete === true) {
+    testState.exitCode = module.__mdkrExitCode;
+    testMark("exited");
+  }
+}
+
+if (testState) {
+  globalThis.__mdkrTestSnapshot = () => {
+    testRefreshExitState();
+    return {
+      phase: testState.phase,
+      exitCode: testState.exitCode,
+      abortReason: testState.abortReason,
+      errors: testState.errors.slice(),
+      frames: module && Number.isFinite(module.__mdkrFrames)
+        ? module.__mdkrFrames : 0,
+      exitRequested: module && module.__mdkrExitRequested === true,
+      shutdownComplete: module && module.__mdkrShutdownComplete === true,
+      rom: testFileInfo(ROM_PATH, false),
+      save: testFileInfo("/save/eeprom.bin", true),
+      videoConfig: testFileInfo("/save/mdkr64.ini", false),
+      saveRecovery: {
+        previous: testFileInfo("/save/eeprom.bin.previous", true),
+        automatic: [1, 2, 3].map((index) =>
+          testFileInfo(`/save/eeprom.bin.autosave.${index}`, true, true)),
+      },
+      saveDurability: module && module.__mdkrSaveDurability
+        ? { ...module.__mdkrSaveDurability } : null,
+      persistenceWait: testState.persistenceWait
+        ? { ...testState.persistenceWait } : null,
+      audio: testAudioInfo(),
+    };
+  };
+}
+
+// ---- WebGPU capability gate ------------------------------------------------
+// A real adapter request (not just navigator.gpu presence): some browsers expose
+// the API but have no usable GPU, which would boot to a permanently black canvas.
+async function gate() {
+  if (!("gpu" in navigator)) {
+    return "This build needs WebGPU. Use Chrome / Edge 113+ (or a WebGPU-enabled Firefox / Safari).";
+  }
+  try {
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) {
+      return "Your browser exposes WebGPU but no usable GPU adapter was found (it may be blocklisted or disabled).";
+    }
+  } catch (e) {
+    return "WebGPU adapter request failed: " + (e && e.message ? e.message : e);
+  }
+  return null;
+}
+
+// ---- Client-side ROM check -------------------------------------------------
+// The whole gate lives in rom-id.js, which is the browser mirror of
+// platform/rom_id.c: size -> byte order (converted IN PLACE to .z64 here, so the
+// copy persisted to IDBFS is canonical) -> which DKR revision this actually is.
+//
+// It used to be size + magic only. That accepted .v64/.n64 without converting
+// anything (the engine converted, so it worked, but this side did not know it)
+// and — the real hole — accepted EVERY DKR revision, because all five are 12 MB
+// with the same magic. A European or Japanese cart passed and booted into
+// garbage. rom-id.js says exactly which revision it is instead.
+//
+// Returns an error string to show the user, or null to accept. Mutates `bytes`
+// into .z64 order on success.
+function validateRom(bytes, name) {
+  if (typeof dkrValidateRom !== "function") {
+    return "rom-id.js failed to load, so this page cannot check your ROM. Reload the page.";
+  }
+  const res = dkrValidateRom(bytes, name);
+  if (res.error) return res.error;
+  if (res.warning) console.warn("[ROM] " + res.warning);
+  if (res.order && res.order !== "z64") {
+    console.info(`[ROM] .${res.order} image converted to big-endian .z64 order.`);
+  }
+  return null;
+}
+
+// ---- Presentation preferences ---------------------------------------------
+// Remembered across sessions so a chosen mode survives a reload, and reflected
+// from the URL so a shared link opens on the same settings.
+const PREF_MODE = "mdkr64.mode";
+const PREF_SCALE = "mdkr64.scale";
+let qualityModeDirty = false;
+let qualityScaleDirty = false;
+function initQualityControls() {
+  const qsp = new URLSearchParams(location.search);
+  const mode = $("mode");
+  const scale = $("scale");
+  if (!mode || !scale) return;
+  try {
+    const m = qsp.get("mode") || localStorage.getItem(PREF_MODE);
+    const s = qsp.get("scale") || localStorage.getItem(PREF_SCALE);
+    if (m && [...mode.options].some((o) => o.value === m)) mode.value = m;
+    if (s !== null && [...scale.options].some((o) => o.value === s)) scale.value = s;
+  } catch (_) { /* private mode: fall back to the defaults in the markup */ }
+  const save = (event) => {
+    if (event && event.currentTarget === mode) qualityModeDirty = true;
+    if (event && event.currentTarget === scale) qualityScaleDirty = true;
+    try {
+      localStorage.setItem(PREF_MODE, mode.value);
+      localStorage.setItem(PREF_SCALE, scale.value);
+    } catch (_) { /* nothing to do if storage is unavailable */ }
+  };
+  mode.addEventListener("change", save);
+  scale.addEventListener("change", save);
+}
+
+function parseIniSection(text, wantedSection) {
+  const values = new Map();
+  let section = "";
+  for (const rawLine of String(text).split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#") || line.startsWith(";")) continue;
+    const sectionMatch = /^\[([^\]]+)\]$/.exec(line);
+    if (sectionMatch) {
+      section = sectionMatch[1].trim().toLowerCase();
+      continue;
+    }
+    const equals = line.indexOf("=");
+    if (section !== wantedSection.toLowerCase() || equals <= 0) continue;
+    values.set(
+      line.slice(0, equals).trim().toLowerCase(),
+      line.slice(equals + 1).trim()
+    );
+  }
+  return values;
+}
+
+function applyStoredVideoControls(qs) {
+  if (!module || !module.FS) return false;
+  let text;
+  try {
+    text = module.FS.readFile("/save/mdkr64.ini", {encoding: "utf8"});
+  } catch (_) {
+    return false;
+  }
+  const mode = $("mode");
+  const scale = $("scale");
+  const video = parseIniSection(text, "video");
+  const storedMode = (video.get("mode") || "").toLowerCase();
+  const storedScale = video.get("renderscale") || "";
+  if (mode && !qualityModeDirty && !qs.has("mode") &&
+      /^(pure|restored|remastered)$/.test(storedMode)) {
+    mode.value = storedMode;
+  }
+  if (scale && !qualityScaleDirty && !qs.has("scale") &&
+      /^[1-4](?:\.0+)?$/.test(storedScale)) {
+    scale.value = String(Math.trunc(Number(storedScale)));
+  }
+  return true;
+}
+
+// ---- Build identity ---------------------------------------------------------
+// The publisher stamps every asset reference with ?v=<commit> so a stale
+// Safari cache can never mix shell versions; the stamp is recovered from this
+// script's own URL and propagated to the runtime-loaded engine assets. The
+// visible build tag comes from build-info.json and answers "which build am I
+// actually running?" without devtools.
+const BUILD_QUERY = (() => {
+  try {
+    const src = document.currentScript && document.currentScript.src;
+    const match = src && src.match(/\?v=([\w.-]+)$/);
+    return match ? "?v=" + match[1] : "";
+  } catch (_) {
+    return "";
+  }
+})();
+globalThis.__mdkrBuildQuery = BUILD_QUERY;
+
+(async () => {
+  try {
+    const response = await fetch("build-info.json" + BUILD_QUERY, { cache: "no-cache" });
+    if (!response.ok) return;
+    const info = await response.json();
+    const tag = document.getElementById("build-tag");
+    const text = "build " + (info.source_commit_short || "?") +
+      (info.source_dirty ? " (dirty)" : "") +
+      (info.built_utc ? " · " + info.built_utc : "");
+    if (tag) {
+      tag.textContent = text;
+      tag.hidden = false;
+    }
+    console.info("[shell] " + text);
+  } catch (_) {}
+})();
+
+// ---- Engine factory (loads mdkr64_web.js, which defines createMDKR64) -------
+function loadEngineFactory() {
+  if (window.createMDKR64) return Promise.resolve(window.createMDKR64);
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "mdkr64_web.js" + BUILD_QUERY;
+    s.onload = () => window.createMDKR64
+      ? resolve(window.createMDKR64)
+      : reject(new Error("mdkr64_web.js loaded but did not define createMDKR64"));
+    s.onerror = () => reject(new Error("failed to load mdkr64_web.js"));
+    document.head.appendChild(s);
+  });
+}
+
+// ---- Persist saves (IDBFS -> IndexedDB) ------------------------------------
+// A save call now has completion semantics: its Promise resolves only after a
+// sync that began after that call. The wasm EEPROM seam awaits this Promise via
+// Asyncify, so a race result cannot be followed by more simulation while its
+// browser transaction is merely queued. A single Promise chain also makes
+// syncfs non-reentrancy structural rather than flag-dependent.
+let persistRequested = 0;
+let persistCommitted = 0;
+let persistTail = Promise.resolve();
+let enginePersistenceActive = true;
+let persistenceTimer = null;
+
+function publishDurability(error = null) {
+  if (!module) return;
+  module.__mdkrSaveDurability = {
+    requested: persistRequested,
+    committed: persistCommitted,
+    pending: Math.max(0, persistRequested - persistCommitted),
+    lastError: error ? String(error.message || error).slice(0, 500) : null,
+  };
+}
+
+async function syncEngineFs(options) {
+  if (testConfig && options && options.reason === "eeprom") {
+    const delay = Number(testConfig.persistDelayOnceMs) || 0;
+    const currentFrame = module && Number.isFinite(module.__mdkrFrames)
+      ? module.__mdkrFrames : 0;
+    if (delay > 0 && currentFrame > 0) {
+      testConfig.persistDelayOnceMs = 0;
+      const started = performance.now();
+      const startFrame = currentFrame;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      const endFrame = module && Number.isFinite(module.__mdkrFrames)
+        ? module.__mdkrFrames : 0;
+      testState.persistenceWait = {
+        requestedMs: delay,
+        elapsedMs: performance.now() - started,
+        startFrame,
+        endFrame,
+      };
+    }
+  }
+  return new Promise((resolve, reject) => {
+    if (!module || !module.FS) {
+      resolve();
+      return;
+    }
+    try {
+      module.FS.syncfs(false, (error) =>
+        error ? reject(error) : resolve());
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+function persist(optionsOrDone) {
+  const done = typeof optionsOrDone === "function" ? optionsOrDone : null;
+  const options = optionsOrDone && typeof optionsOrDone === "object"
+    ? optionsOrDone : null;
+  if (!enginePersistenceActive) {
+    const settled = persistTail.catch(() => {});
+    if (done) settled.then(() => done(null), (error) => done(error));
+    return settled;
+  }
+  const generation = ++persistRequested;
+  publishDurability();
+  const run = persistTail.catch(() => {}).then(async () => {
+    await syncEngineFs(options);
+    persistCommitted = Math.max(persistCommitted, generation);
+    savedOnce = true;
+    const banner = $("save-banner");
+    if (banner) banner.hidden = true;
+    publishDurability();
+    return generation;
+  });
+  persistTail = run;
+  if (done) {
+    run.then(() => done(null), (error) => done(error));
+  }
+  run.catch((error) => {
+    const banner = $("save-banner");
+    if (banner) banner.hidden = false;
+    publishDurability(error);
+  });
+  return run;
+}
+
+function quiesceEnginePersistence(reason, done) {
+  if (!enginePersistenceActive) {
+    persistTail.then(
+      () => { if (done) done(null); },
+      (error) => { if (done) done(error); }
+    );
+    return persistTail;
+  }
+  if (persistenceTimer !== null) {
+    clearInterval(persistenceTimer);
+    persistenceTimer = null;
+  }
+  /*
+   * Enqueue one final generation while the engine still owns /save, then close
+   * the producer side immediately. The Promise chain preserves every earlier
+   * EEPROM generation; later timer/pagehide callbacks become read-only waits
+   * and cannot reinstall stale files after the recovery module erases them.
+   */
+  const finalFlush = persist({reason, urgent: true});
+  enginePersistenceActive = false;
+  finalFlush.then(
+    () => { if (done) done(null); },
+    (error) => { if (done) done(error); }
+  );
+  return finalFlush;
+}
+
+// ---- Resume the AudioContext on a user gesture (autoplay policy) -----------
+// iOS additionally mutes Web Audio while the physical ring/silent switch is
+// on, because a bare AudioContext runs in the "ambient" audio session. The
+// documented escape (the unmute.js technique) is to play a silent MEDIA
+// element during a user gesture: media playback flips the session to
+// "playback", which ignores the ringer switch — and Web Audio rides along.
+let iosUnmuteElement = null;
+let iosUnmuteDone = false;
+function iosUnmuteKick() {
+  try {
+    const iosLike = /iP(hone|ad|od)/.test(navigator.userAgent) ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    if (!iosLike) return;
+    // Preferred, sanctioned path (Safari 16.4+): declare a playback audio
+    // session. Web Audio then ignores the ring/silent switch with NO media
+    // element involved. The legacy silent-element trick below is only the
+    // fallback for older iOS — and it must NOT loop: a persistently playing
+    // media element drags the whole session through the media pipeline's
+    // large HAL buffers, which is exactly the "huge audio delay" failure.
+    if (iosUnmuteDone) return;
+    if (navigator.audioSession) {
+      try {
+        if (navigator.audioSession.type !== "playback") {
+          navigator.audioSession.type = "playback";
+        }
+        // Verify the engine actually accepted it; a silently-ignored write
+        // must fall through to the element fallback.
+        if (navigator.audioSession.type === "playback") {
+          iosUnmuteDone = true;
+          return;
+        }
+      } catch (_) {}
+    }
+    if (!iosUnmuteElement) {
+      iosUnmuteElement = document.createElement("audio");
+      iosUnmuteElement.setAttribute("playsinline", "");
+      iosUnmuteElement.loop = false;
+      iosUnmuteElement.preload = "auto";
+      iosUnmuteElement.src = "data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YSADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+    }
+    const attempt = iosUnmuteElement.play();
+    if (attempt && attempt.then) {
+      attempt.then(() => { iosUnmuteDone = true; }, () => {});
+    }
+  } catch (_) {}
+}
+
+let audioLatencyLogged = false;
+function resumeAudio() {
+  iosUnmuteKick();
+  try {
+    const ctx = module && module.SDL2 && module.SDL2.audioContext;
+    if (ctx && ctx.state !== "running") ctx.resume().catch(() => {});
+    if (ctx && ctx.state === "running" && !audioLatencyLogged) {
+      audioLatencyLogged = true;
+      console.info(
+        "[audio] rate=" + ctx.sampleRate +
+        " baseLatency=" + (ctx.baseLatency != null ? ctx.baseLatency.toFixed(3) : "?") +
+        " outputLatency=" + (ctx.outputLatency != null ? ctx.outputLatency.toFixed(3) : "?") +
+        (navigator.audioSession ? " session=" + navigator.audioSession.type : ""));
+    }
+  } catch (e) {}
+}
+
+// ---- Canvas sizing ---------------------------------------------------------
+// The engine now samples the canvas backing store every frame. Fill the browser
+// viewport at its real aspect, keep CSS pixels and GPU pixels separate for HiDPI,
+// and resize live (including fullscreen/orientation changes). The long-edge and
+// pixel-budget caps prevent a 5K/8K display from allocating several full-resolution
+// WebGPU post-processing targets while retaining the exact host aspect.
+const MAX_EDGE = 2560;
+const MAX_PIXELS = 2560 * 1440;
+
+function sizeCanvas() {
+  const canvas = $("canvas");
+  // Prefer the visual viewport: iOS (especially standalone/home-screen
+  // launches) can report a stale layout innerHeight until a rotation, while
+  // visualViewport tracks the real visible area. The inline pixel styles set
+  // below override the stylesheet, so THIS measurement is the layout.
+  // Only trust the visual viewport at rest (scale ~1): during a pinch it
+  // reports the zoomed region, and resizing the engine per pinch frame would
+  // churn the render for an accidental gesture.
+  const vv = window.visualViewport;
+  const vvAtRest = vv && Math.abs((vv.scale || 1) - 1) < 0.001;
+  const rawW = (vvAtRest && vv.width) || window.innerWidth;
+  const rawH = (vvAtRest && vv.height) || window.innerHeight;
+  const vw = Math.max(320, Math.round(rawW));
+  const vh = Math.max(240, Math.round(rawH));
+  const cssW = vw, cssH = vh;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  let bw = Math.round(cssW * dpr), bh = Math.round(cssH * dpr);
+  const edgeScale = Math.min(1, MAX_EDGE / Math.max(bw, bh));
+  const pixelScale = Math.min(1, Math.sqrt(MAX_PIXELS / Math.max(1, bw * bh)));
+  const scale = Math.min(edgeScale, pixelScale);
+  // Apply one scale to both axes. Independent minimums would subtly change the
+  // backing-store aspect in very wide or very short browser windows, leaving
+  // CSS to stretch the otherwise-correct engine output.
+  bw = Math.max(1, Math.round(bw * scale));
+  bh = Math.max(1, Math.round(bh * scale));
+
+  if (canvas.width !== bw) canvas.width = bw;
+  if (canvas.height !== bh) canvas.height = bh;
+  canvas.style.width = cssW + "px";
+  canvas.style.height = cssH + "px";
+  return { bw, bh, cssW, cssH };
+}
+
+let canvasResizeFrame = 0;
+let canvasResizeObserver = null;
+function scheduleCanvasResize() {
+  if (canvasResizeFrame) return;
+  canvasResizeFrame = requestAnimationFrame(() => {
+    canvasResizeFrame = 0;
+    const dim = sizeCanvas();
+    if (module) {
+      module.__mdkrCanvasSize = [dim.bw, dim.bh];
+    }
+    // A layout change moves the touch cluster (URL-bar collapse, settle,
+    // rotation): re-measure the zone rects of any press in flight so slides
+    // keep scoring against where the buttons actually are.
+    if (globalThis.__mdkrRefreshPressRects) globalThis.__mdkrRefreshPressRects();
+  });
+}
+
+// iOS can settle its real viewport (status bar, home indicator, standalone
+// chrome) shortly after launch or an orientation change WITHOUT firing any
+// resize event — the shipped symptom was a short canvas with the page
+// background showing beneath it until a rotation forced the event chain.
+// After every lifecycle edge, poll the measured viewport each frame for a
+// bounded window and re-drive the resize when it moves. Cheap (a few reads
+// per frame for ~2s) and categorical: no "missing event" can strand the
+// layout again.
+let viewportSettleUntil = 0;
+let viewportSettleFrame = 0;
+function viewportSignature() {
+  const vv = window.visualViewport;
+  return [
+    window.innerWidth, window.innerHeight,
+    vv ? Math.round(vv.width) : 0, vv ? Math.round(vv.height) : 0,
+    window.devicePixelRatio || 1,
+  ].join("x");
+}
+function armViewportSettleWatch(durationMs) {
+  viewportSettleUntil = Math.max(
+    viewportSettleUntil, performance.now() + (durationMs || 2000));
+  if (viewportSettleFrame) return;
+  let last = viewportSignature();
+  const tick = () => {
+    viewportSettleFrame = 0;
+    const now = performance.now();
+    const sig = viewportSignature();
+    if (sig !== last) {
+      last = sig;
+      scheduleCanvasResize();
+      // A move restarts the window: settle means "stable", not "timer ran out
+      // mid-transition".
+      viewportSettleUntil = Math.max(viewportSettleUntil, now + 700);
+    }
+    if (now < viewportSettleUntil) {
+      viewportSettleFrame = requestAnimationFrame(tick);
+    }
+  };
+  viewportSettleFrame = requestAnimationFrame(tick);
+}
+
+function wireCanvasResize() {
+  addEventListener("resize", scheduleCanvasResize, { passive: true });
+  addEventListener("orientationchange", () => {
+    scheduleCanvasResize();
+    armViewportSettleWatch(2500);
+  }, { passive: true });
+  document.addEventListener("fullscreenchange", () => {
+    scheduleCanvasResize();
+    armViewportSettleWatch(2000);
+  });
+  // The visual viewport fires on iOS in cases the window does not (chrome
+  // collapse, standalone settle, pinch state changes).
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener(
+      "resize", scheduleCanvasResize, { passive: true });
+    window.visualViewport.addEventListener(
+      "scroll", scheduleCanvasResize, { passive: true });
+  }
+  addEventListener("pageshow", () => armViewportSettleWatch(2000));
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") armViewportSettleWatch(1500);
+  });
+  if (screen.orientation && screen.orientation.addEventListener) {
+    screen.orientation.addEventListener("change", () => {
+      scheduleCanvasResize();
+      armViewportSettleWatch(2500);
+    });
+  }
+  if (typeof ResizeObserver !== "undefined") {
+    // Retain the observer for the lifetime of the page. Relying on the browser's
+    // target-registration internals to keep an otherwise-unreferenced observer
+    // alive makes resize behavior GC-dependent.
+    canvasResizeObserver = new ResizeObserver(scheduleCanvasResize);
+    canvasResizeObserver.observe($("stage"));
+  }
+  // Cover the launch transient itself (standalone boots measure wrong for the
+  // first few hundred ms on iOS).
+  armViewportSettleWatch(3000);
+}
+
+// ---- Boot ------------------------------------------------------------------
+async function boot() {
+  if (booted) return;
+  booted = true;
+  // The tiny save-tools module and the engine each have their own in-memory FS
+  // view of the same IDBFS database. Hand ownership to the engine only after
+  // save tooling has flushed and stopped mutating its view.
+  if (globalThis.MDKRSaveUI) {
+    await globalThis.MDKRSaveUI.release();
+  }
+  testMark("boot-started");
+  const canvas = $("canvas");
+  const status = $("gate-msg");
+  status.textContent = "Downloading engine…";
+
+  // Size the surface first so SDL and the first WebGPU configure agree.
+  const dim = sizeCanvas();
+  // Diagnostic only: gated behind the same ?trace= flag that arms the engine's
+  // own traces, so a normal boot writes nothing to the console.
+  if (new URLSearchParams(location.search).get("trace")) {
+    console.info("[shell] canvas backing store " + dim.bw + "x" + dim.bh +
+                 " (css " + dim.cssW + "x" + dim.cssH + ")");
+  }
+
+  let createMDKR64;
+  try {
+    createMDKR64 = await loadEngineFactory();
+    testMark("factory-loaded");
+  } catch (e) {
+    booted = false;
+    testError(e && e.message ? e.message : e);
+    testMark("factory-failed");
+    status.textContent = "Couldn't load the engine (" + e.message + "). Reload to retry.";
+    $("play").disabled = false;
+    return;
+  }
+
+  status.textContent = "Starting engine…";
+
+  // ?trace=1 turns on the engine's own [PACE] trace, which prints the real
+  // per-frame time (dtms) and the updateRate the game is using (R=). That is the
+  // decisive diagnostic for "is the game running too fast?" -- a healthy 60 Hz run
+  // shows dtms~16.7 with R=1. ?trace=2 adds the display-list opcode trace.
+  const qs = new URLSearchParams(location.search);
+  const traceLevel = qs.get("trace");
+  // ?objcoll=legacy restores the pre-wave-"objcoll" behaviour, where
+  // func_80017A18 returned 0 and every collision-meshed object was intangible.
+  // It is the same A/B arm tests/check_door_blocks.py drives natively, exposed
+  // here so a human can compare the two builds without rebuilding: with it set,
+  // a locked hub door can be driven through; without it, the door blocks.
+  const objCollValue = qs.get("objcoll");
+  const objColl = objCollValue === "legacy" || objCollValue === "trace"
+    ? objCollValue : null;
+  // ?track=<levelId>[:<vehicle>] RETARGETS the next race -- it does NOT boot
+  // straight in. You still navigate the menus and start a race normally (Tracks
+  // or Time Trial, any track); mdkr_force_track() then rewrites gTrackIdToLoad
+  // so <levelId> loads instead of the one you picked. Menu backgrounds and the
+  // track-select preview are deliberately left alone.
+  //
+  // Useful because saves are per-ORIGIN: a test server on another port cannot
+  // see your real progress, and reaching a boss legitimately costs four world
+  // balloons. 38 = Tricky's volcano, 5 = Ancient Lake, 12 = Dino Domain lobby.
+  // Optional vehicle: 0 = car, 1 = hovercraft, 2 = plane.
+  const loadTrackValue = qs.get("track");
+  const loadTrack = /^(?:[0-9]|[1-5][0-9]|6[0-5])(?::[0-2])?$/.test(
+    loadTrackValue || ""
+  ) ? loadTrackValue : null;
+
+  module = await createMDKR64({
+    canvas,
+    noInitialRun: true,
+    // Keep the wasm and any side files on the same cache-busting stamp as the
+    // shell that loaded them.
+    locateFile: (path, prefix) => (prefix || "") + path + BUILD_QUERY,
+    // preRun runs BEFORE the createMDKR64 promise resolves, so `module` is still
+    // null here — take the Module from the callback argument instead.
+    preRun: [function (m) {
+      if (traceLevel && m && m.ENV) {
+        try { m.ENV.MDKR_TRACE = String(traceLevel); } catch (e) {}
+      }
+      if (objColl && m && m.ENV) {
+        try { m.ENV.MDKR_OBJCOLL = objColl; } catch (e) {}
+      }
+      if (loadTrack && m && m.ENV) {
+        try { m.ENV.MDKR_LOAD_TRACK = loadTrack; } catch (e) {}
+      }
+      if (testConfig && testConfig.env && m && m.ENV) {
+        for (const [key, value] of Object.entries(testConfig.env)) {
+          if (/^MDKR_[A-Z0-9_]+$/.test(key)) {
+            try { m.ENV[key] = String(value).slice(0, 256); } catch (e) {}
+          }
+        }
+      }
+    }],
+    printErr: (t) => {
+      testError(t);
+      console.error(t);
+    },
+    onExit: (code) => {
+      if (testState) {
+        testState.exitCode = Number(code);
+        testMark("exited");
+      }
+      // The engine's main() returns nonzero when rom_io.c refuses the ROM.
+      if (code && code !== 0) {
+        $("gate").hidden = false;
+        $("stage").hidden = true;
+        $("rom-status").className = "err";
+        $("rom-status").textContent =
+          "The engine refused this ROM (exit " + code + "). Try a different file.";
+        $("play").disabled = false;
+        booted = false;
+      }
+      // main() is no longer mutating IDBFS. Flush the engine view before the
+      // launcher save module reacquires the store, so post-run backup/recovery
+      // controls observe the exact final EEPROM.
+      quiesceEnginePersistence("engine-exit", () => {
+        if (globalThis.MDKRSaveUI) {
+          globalThis.MDKRSaveUI.resume();
+        }
+      });
+    },
+    onAbort: (reason) => {
+      if (testState) {
+        testState.abortReason = String(reason == null ? "abort" : reason);
+        testMark("aborted");
+      }
+      const text =
+        "The engine crashed — reload to continue from your last persisted save.";
+      status.className = "status-line err";
+      status.textContent = text;
+      $("stage").hidden = true;
+      $("gate").hidden = false;
+      $("play").disabled = true;
+      quiesceEnginePersistence("engine-abort", () => {
+        if (globalThis.MDKRSaveUI) {
+          globalThis.MDKRSaveUI.resume();
+        }
+      });
+    },
+  });
+  publishTouchPad();
+  if (testState) testState.module = module;
+  testMark("module-ready");
+
+  status.textContent = "Preparing storage…";
+  // IDBFS-backed ROM + save dirs. syncfs(true) pulls any persisted copies in.
+  let storageMounted = false;
+  try {
+    module.FS.mkdir("/rom");  module.FS.mount(module.IDBFS, {}, "/rom");
+    module.FS.mkdir("/save"); module.FS.mount(module.IDBFS, {}, "/save");
+    await new Promise((resolve, reject) => module.FS.syncfs(
+      true, (err) => err ? reject(err) : resolve()
+    ));
+    storageMounted = true;
+  } catch (e) {
+    testError("IDBFS mount/sync failed: " + (e && e.message ? e.message : e));
+    console.warn("IDBFS mount/sync failed; running from memory only:", e);
+  }
+
+  const storedRomBeforeWrite = testFileInfo(ROM_PATH, false);
+  const saveBeforeMain = testFileInfo("/save/eeprom.bin", true);
+  const hasStoredVideoConfig = applyStoredVideoControls(qs);
+
+  // Write the freshly-picked ROM (if any) and persist it for next visit.
+  let pickedRomWritten = false;
+  if (romBytes) {
+    module.FS.writeFile(ROM_PATH, romBytes);
+    romBytes = null;
+    pickedRomWritten = true;
+    try {
+      await new Promise((resolve, reject) => module.FS.syncfs(
+        false, (err) => err ? reject(err) : resolve()
+      ));
+    } catch (e) {
+      testError("ROM persistence failed: " + (e && e.message ? e.message : e));
+    }
+  }
+
+  // The engine's post-EEPROM-write sync calls this, so the whole page shares one
+  // in-flight sync (see the comment on persist()).
+  module.__mdkrPersist = (options) => persist(options);
+  module.__mdkrPersistFailed = (message) => {
+    const banner = $("save-banner");
+    if (banner) {
+      banner.hidden = false;
+      banner.textContent =
+        "Couldn't save to browser storage — the game will keep retrying. " +
+        String(message || "").slice(0, 300);
+    }
+  };
+
+  // Arm persistence + audio-resume gestures (once).
+  persistenceTimer = setInterval(persist, 5000);
+  addEventListener("pagehide", persist);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") persist();
+    else resumeAudio();
+  });
+  addEventListener("keydown", resumeAudio, true);
+  addEventListener("pointerdown", resumeAudio);
+
+  // Show the game view and run.
+  $("gate").hidden = true;
+  $("stage").hidden = false;
+  armViewportSettleWatch(2500);
+  canvas.focus();
+  status.textContent = "";
+  const mainArgs = ["--rom", ROM_PATH];
+
+  // A stored in-game config is authoritative unless this page's controls were
+  // explicitly changed or the URL names an override. First launch seeds
+  // /save/mdkr64.ini from the visible picker. Launcher-rank values remain
+  // editable in-game; query-only aspect/FOV flags below stay CLI-ranked.
+  const MODES = ["pure", "restored", "remastered"];
+  const modeSel = $("mode");
+  const scaleSel = $("scale");
+  let mode = (qs.get("mode") || (modeSel && modeSel.value) || "").toLowerCase();
+  let scale = qs.get("scale") || (scaleSel && scaleSel.value) || "";
+  const seedMode = !hasStoredVideoConfig || qualityModeDirty || qs.has("mode");
+  const seedScale = !hasStoredVideoConfig || qualityScaleDirty || qs.has("scale");
+  if (seedMode && MODES.includes(mode)) {
+    mainArgs.push("--video-launch-mode", mode);
+  }
+  if (seedScale && /^[1-4]$/.test(scale)) {
+    mainArgs.push("--video-launch-set", "Video.RenderScale=" + scale);
+  }
+  if (seedMode || seedScale) mainArgs.push("--video-launch-persist");
+
+  const aspect = qs.get("aspect");
+  const fov = qs.get("fov");
+  const maxHfov = qs.get("maxHfov");
+  const widescreen = qs.get("widescreen");
+  if (aspect) mainArgs.push("--aspect", aspect);
+  if (fov) mainArgs.push("--fov", fov);
+  if (maxHfov) mainArgs.push("--max-hfov", maxHfov);
+  if (widescreen === "0" || widescreen === "off") mainArgs.push("--legacy-stretch");
+
+  // The browser regression installs only in-memory fixture text. Keep limits
+  // tight and fail the test loudly if its configuration is malformed.
+  if (testConfig) {
+    if (typeof testConfig.inputScript === "string") {
+      if (testConfig.inputScript.length > 1024 * 1024) {
+        throw new Error("browser test input script exceeds 1 MiB");
+      }
+      const inputPath = "/tmp/mdkr-browser-input.txt";
+      module.FS.writeFile(inputPath, testConfig.inputScript);
+      mainArgs.push("--input-script", inputPath);
+    }
+    const frames = Number(testConfig.headlessFrames);
+    if (Number.isInteger(frames) && frames > 0 && frames <= 100000) {
+      mainArgs.push("--headless-frames", String(frames));
+    }
+    testState.storage = {
+      mounted: storageMounted,
+      pickedRomWritten,
+      storedRomBeforeWrite,
+      romBeforeMain: testFileInfo(ROM_PATH, false),
+      saveBeforeMain,
+    };
+  }
+  testMark("main-started");
+  try {
+    const result = module.callMain(mainArgs);
+    if (result && typeof result.then === "function") await result;
+    // With Asyncify, callMain() returns when the first rAF unwinds, not when C
+    // main exits. platform_frame_sync publishes the real finite-run exit below.
+    testRefreshExitState();
+  } catch (e) {
+    testError(e && e.stack ? e.stack : e);
+    testMark("main-threw");
+    throw e;
+  }
+}
+
+// ---- Stored data: talk to IndexedDB directly, NOT through the engine -------
+// This is the recovery path, so it must work when the engine does NOT. A save
+// that the engine crashes on lives in IndexedDB and comes back on every reload;
+// if wiping it required booting the engine to get an FS, the one state that
+// needs wiping would be the one state you could not wipe from. So these helpers
+// go straight at the IDBFS backing store.
+//
+// IDBFS names the database after the mount point ("/rom", "/save") and keeps
+// every file in one object store, "FILE_DATA", keyed by absolute path. Opening
+// with no explicit version joins whatever version is already there instead of
+// fighting IDBFS's own; clearing the store inside a plain readwrite transaction
+// works even while the engine holds an open connection, which deleteDatabase()
+// does not (it would sit in onblocked).
+const IDB_STORE = "FILE_DATA";
+
+function idbOpen(dbName) {
+  return new Promise((resolve) => {
+    let req;
+    try { req = indexedDB.open(dbName); } catch (e) { resolve(null); return; }
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => resolve(null);
+    req.onblocked = () => resolve(null);
+  });
+}
+
+// Number of files IDBFS has stored for a mount (0 when the store does not exist).
+// indexedDB.databases() first, so a first-ever visit does not create an empty
+// database just to be told it is empty.
+async function idbCount(dbName) {
+  try {
+    if (indexedDB.databases) {
+      const names = (await indexedDB.databases()).map((d) => d.name);
+      if (!names.includes(dbName)) return 0;
+    }
+  } catch (e) { /* fall through to open() */ }
+  const db = await idbOpen(dbName);
+  if (!db) return 0;
+  if (!db.objectStoreNames.contains(IDB_STORE)) { db.close(); return 0; }
+  return new Promise((resolve) => {
+    let n = 0;
+    try {
+      const req = db.transaction(IDB_STORE, "readonly").objectStore(IDB_STORE).count();
+      req.onsuccess = () => { n = req.result | 0; db.close(); resolve(n); };
+      req.onerror = () => { db.close(); resolve(0); };
+    } catch (e) { db.close(); resolve(0); }
+  });
+}
+
+async function idbClear(dbName) {
+  const db = await idbOpen(dbName);
+  if (!db) return false;
+  if (!db.objectStoreNames.contains(IDB_STORE)) { db.close(); return true; }
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IDB_STORE, "readwrite");
+      tx.objectStore(IDB_STORE).clear();
+      tx.oncomplete = () => { db.close(); resolve(true); };
+      tx.onerror = () => { db.close(); resolve(false); };
+      tx.onabort = () => { db.close(); resolve(false); };
+    } catch (e) { db.close(); resolve(false); }
+  });
+}
+
+// If a module happens to be live (a boot that bounced back to the launcher), keep
+// its in-memory FS in step so it cannot write the old bytes back out.
+function fsUnlinkAll(dir) {
+  if (!module || !module.FS) return;
+  try {
+    for (const name of module.FS.readdir(dir)) {
+      if (name === "." || name === "..") continue;
+      try { module.FS.unlink(dir + "/" + name); } catch (e) {}
+    }
+  } catch (e) {}
+}
+
+// ---- ROM picker + Forget ---------------------------------------------------
+function wireRomUi() {
+  const input = $("rom-input");
+  const play = $("play");
+  const romStatus = $("rom-status");
+
+  // One handler for both the file input and a drop, so the two paths cannot
+  // drift apart.
+  async function acceptFile(file) {
+    if (!file) return;
+    romStatus.className = "";
+    romStatus.textContent = "Reading " + file.name + "…";
+    let buf;
+    try {
+      buf = new Uint8Array(await file.arrayBuffer());
+    } catch (e) {
+      romStatus.className = "err";
+      romStatus.textContent = "Couldn't read that file (" + (e.message || e) + ").";
+      return;
+    }
+    const err = validateRom(buf, file.name);
+    if (err) {
+      romStatus.className = "err";
+      romStatus.textContent = err;
+      play.disabled = true;
+      return;
+    }
+    romBytes = buf;
+    romStatus.className = "ok";
+    if (play.dataset.blocked) {
+      // Valid ROM, but this browser can't run the engine. Say so here too, since
+      // this is where the user is looking.
+      romStatus.textContent = "✓ " + file.name +
+        " looks good — but this browser can't run WebGPU (see above).";
+      return;
+    }
+    romStatus.textContent = "✓ " + file.name + " looks good — press Play.";
+    play.disabled = false;
+    play.focus();
+  }
+
+  input.addEventListener("change", () => acceptFile(input.files && input.files[0]));
+
+  // ---- drop zone: click, keyboard, and drag-and-drop ----
+  const drop = $("drop");
+  if (drop) {
+    drop.addEventListener("click", () => input.click());
+    drop.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); }
+    });
+    // dragover must be prevented or the browser navigates to the file instead.
+    ["dragenter", "dragover"].forEach((ev) =>
+      drop.addEventListener(ev, (e) => {
+        e.preventDefault(); e.stopPropagation(); drop.classList.add("over");
+      }));
+    ["dragleave", "dragend"].forEach((ev) =>
+      drop.addEventListener(ev, () => drop.classList.remove("over")));
+    drop.addEventListener("drop", (e) => {
+      e.preventDefault(); e.stopPropagation(); drop.classList.remove("over");
+      const dt = e.dataTransfer;
+      acceptFile(dt && dt.files && dt.files[0]);
+    });
+  }
+  // Swallow stray drops on the page so a mis-aimed drop never navigates away
+  // from a half-configured launcher.
+  ["dragover", "drop"].forEach((ev) =>
+    window.addEventListener(ev, (e) => { e.preventDefault(); }));
+
+  play.addEventListener("click", () => {
+    play.disabled = true;
+    if (!romBytes) {
+      // Boot from the ROM already persisted in IDBFS (checked at boot time).
+      boot();
+      return;
+    }
+    boot();
+  });
+
+  // Forget the stored ROM. This used to instantiate a SECOND engine module just to
+  // get an FS, never mount IDBFS on it, and then unlink a path that did not exist
+  // there — so it downloaded the whole engine and deleted nothing. It also had no
+  // code path that ever un-hid the button, so it was unreachable as well as
+  // ineffective. Both are fixed: it clears the "/rom" store directly.
+  $("forget").addEventListener("click", async () => {
+    const btn = $("forget");
+    btn.disabled = true;
+    fsUnlinkAll("/rom");
+    const ok = await idbClear("/rom");
+    persist();
+    romBytes = null;
+    btn.disabled = false;
+    btn.hidden = true;
+    $("rom-status").className = ok ? "" : "err";
+    $("rom-status").textContent = ok
+      ? "Stored ROM forgotten. Pick a file to play."
+      : "Couldn't clear the stored ROM — clear this site's data in your browser settings.";
+    $("play").disabled = true;
+  });
+
+}
+
+// ---- Is there already a ROM in IndexedDB? ----------------------------------
+// Without this the persisted ROM was unreachable: #play stayed disabled and
+// #forget stayed hidden until a file was picked, so "the ROM persists across
+// reloads" was true of the storage and false of the UI.
+async function probeStoredRom() {
+  if ((await idbCount("/rom")) === 0) return;
+  $("forget").hidden = false;
+  const play = $("play");
+  if (!play.dataset.blocked) {
+    play.disabled = false;
+    $("rom-status").className = "ok";
+    $("rom-status").textContent = "✓ Using the ROM stored in this browser — press Play.";
+  }
+}
+
+// ---- Frame-rate readout ----------------------------------------------------
+// The engine suspends to requestAnimationFrame once per frame, so counting rAF
+// callbacks measures the ENGINE's frame rate, not just the display refresh. If this
+// reads ~120 on a 120 Hz panel while the game feels double speed, the pacing floor
+// is not holding; if it reads ~60 and the game still feels fast, the problem is
+// upstream of pacing. Toggle with F3.
+function wireFpsReadout() {
+  const el = $("fps");
+  if (!el) return;
+  let frames = 0, since = performance.now(), shown = false;
+  const rawRAF = window.requestAnimationFrame.bind(window);
+  window.requestAnimationFrame = function (cb) {
+    frames++;
+    return rawRAF(cb);
+  };
+  setInterval(() => {
+    const now = performance.now();
+    const dt = now - since;
+    if (dt >= 500) {
+      const fps = (frames * 1000) / dt;
+      el.textContent = fps.toFixed(0) + " fps  ·  " + (1000 / Math.max(fps, 0.001)).toFixed(1) + " ms";
+      frames = 0; since = now;
+    }
+  }, 500);
+  addEventListener("keydown", (e) => {
+    if (e.key === "F3") { shown = !shown; el.hidden = !shown; }
+  });
+}
+
+// ---- Mobile touch controller ----------------------------------------------
+// Touch is a first-class analog P1 controller, not a collection of synthetic
+// key events. It appears automatically on coarse-pointer devices, yields to a
+// connected physical gamepad unless the player explicitly asks to keep it, and
+// can always be hidden without leaving a held button behind.
+const TOUCH_PREF = "mdkr64.touch-controls";
+
+function wireTouchControls() {
+  const controls = $("touch-controls");
+  const toggle = $("touch-toggle");
+  const stage = $("stage");
+  const stick = $("touch-stick");
+  const knob = $("touch-stick-knob");
+  if (!controls || !toggle || !stage || !stick || !knob) return;
+
+  const qs = new URLSearchParams(location.search);
+  const forced = qs.get("touch");
+  const coarseQuery = matchMedia("(pointer: coarse)");
+  const noHoverQuery = matchMedia("(hover: none)");
+  let preference = "";
+  try { preference = localStorage.getItem(TOUCH_PREF) || ""; } catch (_) {}
+  // A persisted explicit "shown" is an opt-in equivalent to ?touch=1: the
+  // media queries can stop matching on the same physical device (a convertible
+  // with a keyboard attached), and the stored choice must still revive the
+  // overlay after reload.
+  const mediaCapable = () => coarseQuery.matches ||
+    (navigator.maxTouchPoints > 0 && noHoverQuery.matches);
+  const touchCapable = forced === "1" || forced === "on" ||
+    (forced !== "0" && forced !== "off" &&
+     (mediaCapable() || preference === "shown"));
+  if (!touchCapable) {
+    if (forced === "0" || forced === "off") return;
+    // A convertible can become touch-capable after load (keyboard detached,
+    // pointer turns coarse). Wire the overlay the moment that happens.
+    // MediaQueryList.addEventListener is missing on older engines (Safari <=13,
+    // old WebViews) and this branch runs on EVERY non-touch load inside the
+    // un-caught startup path — an unguarded throw here would abort bootstrap
+    // before the ROM picker and the WebGPU gate message ever appear.
+    if (typeof coarseQuery.addEventListener !== "function") return;
+    const onCapabilityChange = () => {
+      if (wireTouchControls.rewired || !mediaCapable()) return;
+      wireTouchControls.rewired = true;
+      coarseQuery.removeEventListener("change", onCapabilityChange);
+      noHoverQuery.removeEventListener("change", onCapabilityChange);
+      wireTouchControls();
+    };
+    try {
+      coarseQuery.addEventListener("change", onCapabilityChange);
+      noHoverQuery.addEventListener("change", onCapabilityChange);
+    } catch (_) {}
+    return;
+  }
+  let stickPointer = null;
+  let accessibilityButtons = 0;
+  const pressedPointers = new Map();
+  const pressedClasses = new Set();
+  const pulseTimers = new Map();
+  const actionButtons = [
+    ...controls.querySelectorAll("[data-touch-button]")
+  ];
+
+  const hasGamepad = () => {
+    try {
+      return !!(navigator.getGamepads &&
+        [...navigator.getGamepads()].some((pad) => pad && pad.connected));
+    } catch (_) {
+      return false;
+    }
+  };
+
+  function recomputeButtons() {
+    let buttons = accessibilityButtons;
+    pressedPointers.forEach((press) => {
+      buttons |= press.bits;
+    });
+    touchPadState.buttons = buttons >>> 0;
+    publishTouchPad();
+  }
+
+  function refreshButtonClasses() {
+    actionButtons.forEach((button) => {
+      const buttonBit = Number(button.dataset.touchButton) >>> 0;
+      const active = (accessibilityButtons & buttonBit) !== 0 ||
+        [...pressedPointers.values()].some(
+          (press) => (press.bits & buttonBit) === buttonBit);
+      button.classList.toggle("is-pressed", active);
+      if (active) pressedClasses.add(button);
+      else pressedClasses.delete(button);
+    });
+  }
+
+  function releaseButtonPointer(pointerId) {
+    if (!pressedPointers.delete(pointerId)) return;
+    refreshButtonClasses();
+    recomputeButtons();
+  }
+
+  function resetStick() {
+    stickPointer = null;
+    touchPadState.stickX = 0;
+    touchPadState.stickY = 0;
+    knob.style.transform = "translate3d(0, 0, 0)";
+    stick.classList.remove("is-active");
+    publishTouchPad();
+  }
+
+  function releaseAll() {
+    pressedPointers.clear();
+    accessibilityButtons = 0;
+    pulseTimers.forEach((timer) => clearTimeout(timer));
+    pulseTimers.clear();
+    pressedClasses.forEach((el) => el.classList.remove("is-pressed"));
+    pressedClasses.clear();
+    resetStick();
+    clearTouchPad();
+  }
+
+  function setVisible(visible, remember = false) {
+    controls.hidden = !visible;
+    toggle.hidden = false;
+    toggle.setAttribute("aria-pressed", visible ? "true" : "false");
+    toggle.setAttribute(
+      "aria-label", visible ? "Hide touch controls" : "Show touch controls");
+    toggle.querySelector(".touch-toggle-label").textContent =
+      visible ? "Controls" : "Show controls";
+    stage.classList.toggle("touch-ui-active", visible);
+    touchPadState.enabled = visible;
+    if (!visible) releaseAll();
+    publishTouchPad();
+    if (remember) {
+      preference = visible ? "shown" : "hidden";
+      try { localStorage.setItem(TOUCH_PREF, preference); } catch (_) {}
+    }
+  }
+
+  function updateStick(event) {
+    const rect = stick.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const radius = Math.max(24, Math.min(rect.width, rect.height) * 0.31);
+    let dx = event.clientX - centerX;
+    let dy = event.clientY - centerY;
+    const distance = Math.hypot(dx, dy);
+    if (distance > radius) {
+      dx = dx * radius / distance;
+      dy = dy * radius / distance;
+    }
+
+    // Eight percent center deadzone, then rescale the remaining travel so the
+    // outer ring still reaches the full N64 range. This prevents thumb tremor
+    // from steering while retaining continuous low-speed control.
+    const normalized = Math.min(1, Math.hypot(dx, dy) / radius);
+    const deadzone = 0.08;
+    const magnitude = normalized <= deadzone
+      ? 0 : (normalized - deadzone) / (1 - deadzone);
+    const angle = Math.atan2(dy, dx);
+    touchPadState.stickX = Math.round(Math.cos(angle) * magnitude * 80);
+    touchPadState.stickY = Math.round(-Math.sin(angle) * magnitude * 80);
+    knob.style.transform =
+      `translate3d(${dx.toFixed(1)}px, ${dy.toFixed(1)}px, 0)`;
+    publishTouchPad();
+  }
+
+  stick.addEventListener("pointerdown", (event) => {
+    if (stickPointer !== null) return;
+    event.preventDefault();
+    stickPointer = event.pointerId;
+    // Capture is an optimization; the window-level tracking below owns the
+    // lifecycle (see the pad comment — Safari can decline capture, and a
+    // steering thumb that wanders off the stick must never freeze steering).
+    try { stick.setPointerCapture(event.pointerId); } catch (_) {}
+    stick.classList.add("is-active");
+    updateStick(event);
+  });
+  addEventListener("pointermove", (event) => {
+    if (event.pointerId !== stickPointer) return;
+    event.preventDefault();
+    updateStick(event);
+  }, true);
+  const endStick = (event) => {
+    if (event.pointerId !== stickPointer) return;
+    resetStick();
+  };
+  addEventListener("pointerup", endStick, true);
+  addEventListener("pointercancel", endStick, true);
+
+  // ---- The throttle pad: slide-to-chord ----------------------------------
+  // Human-factors model: the action cluster IS the accelerator. Touching any
+  // zone holds A instantly; the zone under the thumb selects the modifier, so
+  // drifting or firing never requires lifting off the throttle:
+  //   Go -> A         Drift -> A+R      Item -> A+Z      Look -> A+C
+  //   Brake -> B      (braking is off-throttle by definition)
+  // Zone changes use nearest-target hysteresis with retention: crossing a gap
+  // or overshooting keeps the last chord, so a mid-corner slide can never
+  // stall the kart; only lifting releases. A second finger still lands as an
+  // independent tap on any zone (bits union across pointers). Pause sits
+  // outside the pad and stays a plain tap without the throttle latch.
+  const N64_A = 32768;
+  const N64_BRAKE = 16384;
+  const N64_PAUSE = 4096;
+  const actions = controls.querySelector(".touch-actions");
+  const clusterButtons = actions
+    ? [...actions.querySelectorAll("[data-touch-button]")]
+    : [];
+
+  function chordBits(bit) {
+    if (bit === N64_A || bit === N64_BRAKE) return bit;
+    return bit | N64_A;
+  }
+
+  function padRects() {
+    return clusterButtons.map((button) => ({
+      button,
+      bit: Number(button.dataset.touchButton) >>> 0,
+      rect: button.getBoundingClientRect(),
+    }));
+  }
+  globalThis.__mdkrRefreshPressRects = () => {
+    pressedPointers.forEach((press) => {
+      if (press.rects) press.rects = padRects();
+    });
+  };
+
+  function zoneAt(rects, x, y, reach) {
+    const limit = reach == null ? 14 : reach;
+    let best = null;
+    let bestScore = Infinity;
+    for (const entry of rects) {
+      const r = entry.rect;
+      const dx = x < r.left ? r.left - x : (x > r.right ? x - r.right : 0);
+      const dy = y < r.top ? r.top - y : (y > r.bottom ? y - r.bottom : 0);
+      const outside = Math.max(dx, dy);
+      if (outside > limit) continue;
+      const cx = x - (r.left + r.right) / 2;
+      const cy = y - (r.top + r.bottom) / 2;
+      // Strictly-inside beats padded reach; ties resolve to nearest center.
+      const score = outside * 1e7 + cx * cx + cy * cy;
+      if (score < bestScore) {
+        bestScore = score;
+        best = entry;
+      }
+    }
+    return best;
+  }
+
+  function padVibrate(ms, type) {
+    try {
+      if (navigator.vibrate && type !== "mouse") navigator.vibrate(ms);
+    } catch (_) {}
+  }
+
+  if (actions) {
+    actions.addEventListener("pointerdown", (event) => {
+      const rects = padRects();
+      // Any touch inside the cluster box engages the nearest zone: the box
+      // IS the pad, and an inert patch would swallow the tap (the box is a
+      // hit target so it never falls through to the canvas).
+      const zone = zoneAt(rects, event.clientX, event.clientY, Infinity);
+      if (!zone) return;
+      event.preventDefault();
+      // Capture is an optimization only. Release correctness must NEVER
+      // depend on it: Safari declines capture in configurations Chrome
+      // accepts, and a declined capture meant a thumb that slid off its
+      // starting button hit-tested its pointerup into the canvas — the
+      // pad's handlers never saw it and the throttle latched forever
+      // (the shipped stuck-Go defect). The window-level tracking below is
+      // the authoritative lifecycle.
+      try { actions.setPointerCapture(event.pointerId); } catch (_) {}
+      pressedPointers.set(event.pointerId, {
+        rects,
+        bits: chordBits(zone.bit),
+        zone: zone.button,
+      });
+      refreshButtonClasses();
+      recomputeButtons();
+      padVibrate(8, event.pointerType);
+    });
+  }
+
+  // Authoritative pointer lifecycle: once a pad (or pause) pointer is down,
+  // its moves and its release are tracked at the WINDOW in the capture
+  // phase, so no hit-testing quirk, overlay boundary, or declined capture
+  // can ever eat the release. blur/pagehide/visibilitychange releaseAll
+  // remains the backstop.
+  addEventListener("pointermove", (event) => {
+    const press = pressedPointers.get(event.pointerId);
+    if (!press || !press.rects) return;
+    const zone = zoneAt(press.rects, event.clientX, event.clientY);
+    if (!zone || zone.button === press.zone) return;
+    press.zone = zone.button;
+    press.bits = chordBits(zone.bit);
+    refreshButtonClasses();
+    recomputeButtons();
+    padVibrate(5, event.pointerType);
+  }, true);
+  ["pointerup", "pointercancel"].forEach((name) => {
+    addEventListener(name, (event) =>
+      releaseButtonPointer(event.pointerId), true);
+  });
+
+  actionButtons.forEach((button) => {
+    const bit = Number(button.dataset.touchButton) >>> 0;
+    if (bit === N64_PAUSE) {
+      button.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        try { button.setPointerCapture(event.pointerId); } catch (_) {}
+        pressedPointers.set(event.pointerId, { bits: bit, zone: button });
+        refreshButtonClasses();
+        recomputeButtons();
+        padVibrate(8, event.pointerType);
+        // Release rides the window-level pointerup/pointercancel tracking.
+      });
+    }
+    // Screen readers and switch controls may activate a button without Pointer
+    // Events. Hold it long enough to cross at least one authored 30 Hz sample.
+    button.addEventListener("click", (event) => {
+      if (event.detail !== 0) return;
+      const pulseBits = bit === N64_PAUSE ? bit : chordBits(bit);
+      const priorTimer = pulseTimers.get(bit);
+      if (priorTimer) clearTimeout(priorTimer);
+      accessibilityButtons |= pulseBits;
+      button.classList.add("is-pressed");
+      recomputeButtons();
+      pulseTimers.set(bit, setTimeout(() => {
+        accessibilityButtons &= ~pulseBits;
+        pulseTimers.delete(bit);
+        refreshButtonClasses();
+        recomputeButtons();
+      }, 90));
+    });
+  });
+
+  toggle.addEventListener("click", () => {
+    setVisible(controls.hidden, true);
+  });
+  addEventListener("blur", releaseAll);
+  addEventListener("pagehide", releaseAll);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") releaseAll();
+  });
+  document.addEventListener("fullscreenchange", releaseAll);
+
+  addEventListener("gamepadconnected", () => {
+    if (!preference) setVisible(false, false);
+  });
+  addEventListener("gamepaddisconnected", () => {
+    if (!preference && !hasGamepad()) setVisible(true, false);
+  });
+
+  controls.hidden = false;
+  toggle.hidden = false;
+  setVisible(preference === "shown" ||
+    (preference !== "hidden" && !hasGamepad()), false);
+}
+
+// ---- Fullscreen ------------------------------------------------------------
+function wireFullscreen() {
+  const btn = $("fullscreen");
+  const stage = $("stage");
+  const canvas = $("canvas");
+  let transition = null;
+
+  // iPhone Safari has no Fullscreen API for page elements (iPad does). A
+  // visible button that can only ever fail is worse than none: hide it and
+  // let the browser chrome own the experience there.
+  if (btn && stage &&
+      typeof stage.requestFullscreen !== "function" &&
+      typeof stage.webkitRequestFullscreen !== "function") {
+    btn.hidden = true;
+    // Give iPhone players the real path to a chromeless game: Safari has no
+    // element fullscreen, but an installed home-screen app launches with the
+    // manifest's fullscreen display mode.
+    try {
+      const standalone = navigator.standalone === true ||
+        (typeof matchMedia === "function" &&
+         matchMedia("(display-mode: standalone), (display-mode: fullscreen)")
+           .matches);
+      const hint = document.getElementById("ios-fullscreen-hint");
+      if (hint && !standalone) hint.hidden = false;
+    } catch (_) {}
+    return;
+  }
+
+  const updateButton = () => {
+    if (!btn) return;
+    const active = document.fullscreenElement === stage;
+    btn.disabled = transition !== null;
+    btn.setAttribute("aria-pressed", active ? "true" : "false");
+    btn.setAttribute(
+      "aria-label", active ? "Exit fullscreen" : "Enter fullscreen");
+    btn.title = active ? "Exit fullscreen (F)" : "Fullscreen (F)";
+  };
+
+  const settleSurface = () => new Promise((resolve) => {
+    // Fullscreen changes both the viewport and, on HiDPI displays, the canvas
+    // backing store. Let those values settle before returning input to wasm.
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
+
+  const go = () => {
+    // A second click/key-repeat while the browser's fullscreen promise is
+    // pending can enqueue an immediate exit and leave resize events racing GPU
+    // target creation. Serialize the transition as one state change.
+    if (transition) return transition;
+    transition = (async () => {
+      try {
+        if (document.fullscreenElement) {
+          await document.exitFullscreen();
+        } else if (document.webkitFullscreenElement &&
+                   typeof document.webkitExitFullscreen === "function") {
+          document.webkitExitFullscreen();
+        } else {
+          if (typeof stage.requestFullscreen !== "function") {
+            // WebKit-prefixed engines (older iPadOS) never reach here when
+            // the standard API is absent unless the prefixed form exists —
+            // wireFullscreen() hides the button otherwise.
+            if (typeof stage.webkitRequestFullscreen === "function") {
+              stage.webkitRequestFullscreen();
+              scheduleCanvasResize();
+              await settleSurface();
+              scheduleCanvasResize();
+              canvas.focus({ preventScroll: true });
+              return;
+            }
+            throw new Error("Fullscreen is unavailable in this browser");
+          }
+          try {
+            await stage.requestFullscreen({ navigationUI: "hide" });
+          } catch (error) {
+            // Older implementations support fullscreen but reject the options
+            // dictionary. Retry only if the first request did not succeed.
+            if (error && error.name === "TypeError" &&
+                document.fullscreenElement !== stage) {
+              await stage.requestFullscreen();
+            } else {
+              throw error;
+            }
+          }
+        }
+        scheduleCanvasResize();
+        await settleSurface();
+        scheduleCanvasResize();
+        canvas.focus({ preventScroll: true });
+      } catch (error) {
+        console.warn("[shell] fullscreen transition failed:", error);
+      } finally {
+        transition = null;
+        updateButton();
+      }
+    })();
+    updateButton();
+    return transition;
+  };
+
+  document.addEventListener("fullscreenchange", () => {
+    scheduleCanvasResize();
+    updateButton();
+  });
+  document.addEventListener("fullscreenerror", (event) => {
+    console.warn("[shell] fullscreen error:", event);
+    updateButton();
+  });
+  if (btn) btn.addEventListener("click", go);
+  addEventListener("keydown", (e) => {
+    if (e.key.toLowerCase() === "f") {
+      // Only while playing, and never while the user is typing in a field.
+      const active = document.activeElement;
+      const editing = active &&
+        (/^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName) ||
+         active.isContentEditable);
+      if (!stage.hidden && !e.repeat &&
+          !editing) {
+        e.preventDefault();
+        go();
+      }
+    }
+  });
+  updateButton();
+}
+
+// ---- Startup ---------------------------------------------------------------
+(async () => {
+  wireRomUi();
+  wireFullscreen();
+  wireFpsReadout();
+  wireCanvasResize();
+  // A touch-subsystem failure must never block the launcher: everything after
+  // this line (save UI, revealing the ROM picker, the WebGPU gate message)
+  // matters on exactly the browsers most likely to lack a touch-era API.
+  try { wireTouchControls(); } catch (_) {}
+  if (globalThis.MDKRSaveUI) {
+    // Do not gate the rest of the launcher on storage availability. The save
+    // panel reports its own actionable error while ROM selection remains usable.
+    globalThis.MDKRSaveUI.init().catch(() => {});
+  }
+
+  // ALWAYS reveal the launcher UI. It used to be hidden behind the WebGPU gate,
+  // which meant a browser without a usable adapter showed nothing but an error
+  // line -- no picker, no controls, no explanation of what the page even is, and
+  // no way to get as far as trying. The gate now only blocks the Play ACTION.
+  $("rom-ui").hidden = false;
+  initQualityControls();
+
+  const err = await gate();
+  const msg = $("gate-msg");
+  if (err) {
+    msg.className = "status-line err";
+    msg.textContent = err;
+    const play = $("play");
+    play.disabled = true;
+    play.dataset.blocked = "1";     // keep it disabled even after a valid ROM
+    play.title = err;
+    await probeStoredRom();         // still show Forget, so storage stays clearable
+    return;
+  }
+  msg.className = "status-line";
+  msg.textContent = "";
+  await probeStoredRom();
+})();

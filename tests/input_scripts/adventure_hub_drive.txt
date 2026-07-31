@@ -1,0 +1,88 @@
+# DKR regression fixture -- enter ADVENTURE and drive Timber's Island (the hub).
+#
+# This is the P3.5 route.  It is the only fixture that leaves the frontend for
+# GAMEMODE_INGAME on the *Adventure* side, and the only one that reaches
+#   - the new-game intro cutscene (level 36, cutsceneId 15) and its teardown,
+#   - set_current_text() (the hub doors' balloon-requirement textbox),
+#   - ASSET_LEVEL_CENTRALAREAHUB (levelId 0) with a player-controlled racer.
+#
+# Route (verified with MDKR_TRACE=1 'menu_init' / 'level_load'):
+#   TITLE(0) --2 taps--> CHARACTER_SELECT(3) --A,A--> CAUTION(28) --A-->
+#   GAME_SELECT(19) --A picks Adventure--> FILE_SELECT(6) --A picks empty file 1
+#   --> name entry (3 chars + confirm) --> MENU_NEWGAME_CINEMATIC(23) +
+#   level_load(levelId=36 cutscene=15) @frame~2236 --> the cutscene runs to its
+#   own end (it is NOT skippable: cinematic_start() is called with skipFlagsA=0
+#   and skipFlagsB=0, so menu_cinematic_loop can only exit on func_800214C4())
+#   --> level_load(levelId=0) @frame~5867  == Timber's Island, in-game.
+#
+# The cutscene length is not padding we can shorten: the terminating cutscene
+# entry is actor 23 with animationStartDelay 3630, counted down one tick per game
+# update, so the hub cannot be reached before frame ~5867.  Do not "optimise"
+# the budget below that.
+#
+# DRIVING IS NOW CLOSED-LOOP and does not come from this file. Since the
+# "closedloop" wave, tests/check_adventure_hub.py and tests/check_save_failsafe.py
+# set MDKR_DRIVE_ROUTE to a 44-waypoint tour of the island (check_adventure_hub.py's
+# HUB_TOUR_ROUTE, sampled from THIS route's own [PACE] trace) plus MDKR_AUTOPILOT=1
+# for the tail. The pulse train below still runs and is harmless -- the drive hook
+# overrides it -- but it is no longer what steers. It stopped working when the
+# ROM-faithful RNG seed / arctan table / trig became the defaults: the drifted line
+# entered a hub exit and left for the Dino Domain lobby at frame 6883.
+#
+# Historical: throttle held from frame 6000, with a RIGHT pulse every 200 frames.
+# Timber's Island loops clockwise around the island from the spawn beach, so that
+# keeps the kart on the hub's own spline -- measured courseCheckpoint 23 and
+# lap 2 by frame 12000, i.e. it really goes somewhere rather than bouncing off
+# one wall.  This particular line also drives the stretch that puts NINE void
+# segments in view at once, which is what caught the func_80026E54 sp94[10]
+# stack overflow (docs/OPEN_ITEMS.md "P3.5"); keep it.
+#
+# Budget: 12000 frames.  Driven by tests/check_adventure_hub.py.
+
+# --- Frontend navigation ---
+1250 START 4
+1330 START 4
+1450 A 4
+1540 A 4
+1750 A 4
+# Game Select: A takes the first option, Adventure -> FILE_SELECT
+1900 A 4
+# File Select: A on the empty first file -> filename entry
+2050 A 4
+# Filename entry is edge-detected: one A per character, then one A on END.
+2100 A 4
+2130 A 4
+2160 A 4
+2200 A 4
+
+# --- In the hub: throttle + a right-hand pulse train ---
+6000 A 6000
+6100 RIGHT 30
+6300 RIGHT 30
+6500 RIGHT 30
+6700 RIGHT 30
+6900 RIGHT 30
+7100 RIGHT 30
+7300 RIGHT 30
+7500 RIGHT 30
+7700 RIGHT 30
+7900 RIGHT 30
+8100 RIGHT 30
+8300 RIGHT 30
+8500 RIGHT 30
+8700 RIGHT 30
+8900 RIGHT 30
+9100 RIGHT 30
+9300 RIGHT 30
+9500 RIGHT 30
+9700 RIGHT 30
+9900 RIGHT 30
+10100 RIGHT 30
+10300 RIGHT 30
+10500 RIGHT 30
+10700 RIGHT 30
+10900 RIGHT 30
+11100 RIGHT 30
+11300 RIGHT 30
+11500 RIGHT 30
+11700 RIGHT 30

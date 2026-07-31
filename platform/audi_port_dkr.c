@@ -1,0 +1,559 @@
+/**
+ * audi_port_dkr.c — native audio host driver for the mdkr64 (DKR) port.
+ *
+ * DKR's audio synthesizer runs natively; its Acmd output is executed inline by
+ * platform/mixer.c (the abi.h a* macros are overridden — see platform/mixer.h).
+ * The N64 audio thread (__amMain) never runs in the cooperative model, so this
+ * file DRIVES the synthesis synchronously, once per rendered frame:
+ *
+ *   dkr_audio_pump()  (called from the frame boundary in stubs_dkr.c)
+ *     -> pick this frame's sample count (queue-occupancy controller, or a fixed
+ *        count when headless / no device)
+ *     -> amAudioSynthFrame(n)   (audiomgr.c: __clearAudioDMA + alAudioFrame ->
+ *                                synthesis straight into an arena PCM buffer)
+ *     -> osAiSetNextBuffer(buf, n*4)   (queue to the SDL device below)
+ *
+ * Host output is an SDL2 audio device in queue mode (stereo s16 @ OUTPUT_RATE).
+ * The sample production is decoupled from the SDL sink so an M8 web build can
+ * swap an AudioWorklet in without touching the pump. Under --headless-frames
+ * the SDL device is not opened, but synthesis still runs (so CI exercises the
+ * whole DSP path); set MDKR_AUDIO_DUMP=out.wav to capture the PCM for RMS/peak
+ * validation, or MDKR_AUDIO_RMS=1 to print running RMS/peak to stderr.
+ *
+ * MDKR_AUDIO_RMS=1 additionally emits one
+ *
+ *   [AUDIO] music seq=<id> tempo=<bpm> playing=<0|1> at sample=<n>
+ *
+ * line every time the sequence player's programmed tempo or sequence changes,
+ * where <n> is the sample-frame offset into the MDKR_AUDIO_DUMP capture at which
+ * the change took effect. tests/check_audio_output.py uses it to window its beat
+ * measurement to a constant-tempo stretch and to compare the *measured* beat
+ * period in the PCM against the BPM the sequencer says it programmed — the PCM
+ * alone cannot tell "the synth is running" from "the synth is running at the
+ * wrong rate".
+ *
+ * The same validation mode reports RAW16 loader calls/bytes and the first output
+ * block containing one. tests/check_raw16_audio.py pairs that reachability
+ * evidence with fixed-vs-legacy PCM captures and an independent ROM-bank decode.
+ */
+#ifdef NATIVE_PORT
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <math.h>
+#ifndef SDL_MAIN_HANDLED
+#define SDL_MAIN_HANDLED
+#endif
+#include <SDL.h>
+#ifdef __EMSCRIPTEN__
+#include "web_audio_worklet.h"   /* AudioWorklet sink (drains off the main thread) */
+#endif
+
+#include "platform_os.h"
+#include "mdkr_trace.h"
+
+/* Match the game's ultratypes without pulling the whole PR header chain (which
+ * would re-include mixer.h etc.). Same underlying widths as game/include. */
+typedef uint8_t  u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+typedef int16_t  s16;
+typedef int32_t  s32;
+
+/* libultra OS timer (stubs_dkr.c) — COUNTER at 46.875 MHz. */
+extern u32 osGetCount(void);
+
+/* audiomgr.c synth entry points (declared in game/src/audiomgr.h, but this is
+ * platform code and we avoid pulling the game headers). */
+extern int  gDkrAudioReady;
+extern short *amAudioSynthFrame(int frameSamples);
+extern unsigned int amAudioGetFrameSize(void);
+extern unsigned int amAudioGetMaxSamples(void);
+
+/* audio.c sequence-player state, for the MDKR_AUDIO_RMS tempo trace. These are
+ * read-only observations of the game's own accessors (game/src/audio.h); nothing
+ * here writes audio state. */
+extern short music_tempo(void);          /* s16, BPM as programmed (amTuneGetTempoBPM) */
+extern u8    music_is_playing(void);
+extern u8    music_current_sequence(void);
+/* The LIVE tempo of the sequence player, which is what the synthesiser actually
+ * advances the beat grid by: alCSPGetTempo() returns seqp->uspt/qnpt, i.e. the
+ * microseconds per quarter note currently in force, INCLUDING any AL_MIDI_META_TEMPO
+ * event embedded in the sequence data (csplayer.c __setUsptFromTempo). music_tempo()
+ * only reports the BPM audio.c last programmed from gSeqSoundTable, so the two
+ * diverge on any sequence that drives its own tempo. gMusicPlayer is declared void*
+ * here on purpose: this is platform code and pulling libaudio.h in would re-include
+ * the mixer headers this file deliberately avoids. The pointer is only passed back
+ * through, and a pointer argument is ABI-identical either way. */
+extern void *gMusicPlayer;
+extern s32   alCSPGetTempo(void *seqp);
+/* Per-generation voice-ownership high-water sampler (game/src/audio.c). Same
+ * "declare, don't include" rule as the accessors above. Only called when
+ * MDKR_RESOURCE_STATS is on. */
+extern void  mdkr_audio_voice_peaks_sample(void);
+
+#define DKR_OUTPUT_RATE   22050
+#define DKR_AUDIO_CHANNELS 2
+/* osGetCount() ticks at 46.875 MHz (stubs_dkr.c). Used to measure the real
+ * per-pump drain so the controller is pump-rate agnostic. */
+#define DKR_COUNTER_RATE  46875000u
+/* Drop queued buffers only once the backlog grows well past the target — a
+ * safety net against runaway growth, not the normal path. */
+#define DKR_QUEUE_LIMIT_FRAMES 5u
+
+/* ---- SDL device state ---------------------------------------------------- */
+static SDL_AudioDeviceID s_dev;
+static int   s_devOpen;
+static int   s_disabled;          /* MDKR_AUDIO=0 or headless: no SDL device   */
+static int   s_shutdownComplete;
+static u32   s_droppedBuffers;
+#ifdef __EMSCRIPTEN__
+static int   s_webAudio;          /* AudioWorklet backend committed (web only)  */
+#endif
+
+/* A live host sink exists (SDL device OR the web AudioWorklet) — drives the
+ * queue-occupancy pump controller and gates the enqueue. */
+static int audio_have_sink(void) {
+#ifdef __EMSCRIPTEN__
+    if (s_webAudio) return 1;
+#endif
+    return s_devOpen;
+}
+
+/* Host-side queued audio in bytes (the pump's latency feedback signal). */
+static u32 audio_queued_bytes(void) {
+#ifdef __EMSCRIPTEN__
+    if (s_webAudio) return webAudioOutputQueuedBytes();
+#endif
+    if (!s_devOpen) return 0;
+    return SDL_GetQueuedAudioSize(s_dev);
+}
+
+/* ---- pump rate controller ------------------------------------------------ */
+static u32   s_lastCount;
+static int   s_haveLastCount;
+
+/* ---- validation dump ----------------------------------------------------- */
+static FILE *s_wav;
+static u32   s_wavDataBytes;
+static int   s_rmsEnabled = -1;
+static double s_rmsSumSq;        /* running sum of squares over all samples    */
+static u64   s_rmsCount;
+static u32   s_peak;
+static u64   s_dumpFrames;
+static u64   s_raw16FirstBlockSample = UINT64_MAX;
+static u32   s_raw16PreviousCalls;
+
+static void wav_write_header(FILE *f, u32 dataBytes) {
+    u32 byteRate = DKR_OUTPUT_RATE * DKR_AUDIO_CHANNELS * 2;
+    u16 blockAlign = DKR_AUDIO_CHANNELS * 2;
+    u32 riffSize = 36 + dataBytes;
+    u16 fmt = 1, ch = DKR_AUDIO_CHANNELS, bits = 16;
+    u32 rate = DKR_OUTPUT_RATE, sub1 = 16;
+    fseek(f, 0, SEEK_SET);
+    fwrite("RIFF", 1, 4, f); fwrite(&riffSize, 4, 1, f);
+    fwrite("WAVE", 1, 4, f);
+    fwrite("fmt ", 1, 4, f); fwrite(&sub1, 4, 1, f);
+    fwrite(&fmt, 2, 1, f); fwrite(&ch, 2, 1, f);
+    fwrite(&rate, 4, 1, f); fwrite(&byteRate, 4, 1, f);
+    fwrite(&blockAlign, 2, 1, f); fwrite(&bits, 2, 1, f);
+    fwrite("data", 1, 4, f); fwrite(&dataBytes, 4, 1, f);
+}
+
+static void audio_dump_open(void) {
+    const char *path = getenv("MDKR_AUDIO_DUMP");
+    if (s_rmsEnabled < 0) {
+        s_rmsEnabled = (getenv("MDKR_AUDIO_RMS") != NULL) ? 1 : 0;
+    }
+    if (path && *path && s_wav == NULL) {
+        s_wav = fopen(path, "wb");
+        if (s_wav) {
+            wav_write_header(s_wav, 0); /* placeholder; patched at close */
+            printf("[AUDIO] dumping synthesized PCM to %s (%d Hz stereo s16)\n",
+                   path, DKR_OUTPUT_RATE);
+        }
+    }
+}
+
+/* Tap the synthesized signal: accumulate RMS/peak and (optionally) append WAV. */
+static void audio_measure_and_dump(const s16 *buf, u32 bytes) {
+    u32 n = bytes / 2; /* s16 samples */
+    u32 i;
+    if (!buf || bytes == 0) {
+        return;
+    }
+    if (s_rmsEnabled != 1 && s_wav == NULL) {
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        s32 v = buf[i];
+        u32 a = (v < 0) ? (u32)(-v) : (u32)v;
+        if (a > s_peak) {
+            s_peak = a;
+        }
+        s_rmsSumSq += (double)v * (double)v;
+    }
+    s_rmsCount += n;
+    if (s_wav) {
+        fwrite(buf, 1, bytes, s_wav);
+        s_wavDataBytes += bytes;
+    }
+    s_dumpFrames++;
+    if (s_rmsEnabled == 1 && (s_dumpFrames % 120u) == 0u && s_rmsCount > 0) {
+        double rms = sqrt(s_rmsSumSq / (double)s_rmsCount);
+        fprintf(stderr, "[AUDIO] frames=%llu samples=%llu rms=%.1f peak=%u\n",
+                (unsigned long long)s_dumpFrames,
+                (unsigned long long)s_rmsCount, rms, s_peak);
+    }
+}
+
+/* ---- host device lifecycle ---------------------------------------------- */
+
+void dkr_audio_out_shutdown(void);
+static void dkr_audio_atexit(void) { dkr_audio_out_shutdown(); }
+
+void dkr_audio_out_init(void) {
+    SDL_AudioSpec want, have;
+    const char *disable = getenv("MDKR_AUDIO");
+
+    s_shutdownComplete = 0;
+    audio_dump_open();
+    /* Emergency fallback for a fatal libc/process exit. Normal finite and
+     * window-close paths now unwind through main() and call the idempotent
+     * shutdown directly. */
+    atexit(dkr_audio_atexit);
+
+    if (disable && disable[0] == '0') {
+        s_disabled = 1;
+        printf("[AUDIO] disabled via MDKR_AUDIO=0 (synthesis still runs)\n");
+        return;
+    }
+    if (g_headlessFrames >= 0) {
+#ifdef __EMSCRIPTEN__
+        /*
+         * The committed real-browser gate runs Chrome with --mute-audio and
+         * explicitly opts in so it can exercise the AudioWorklet lifecycle
+         * during a finite run. No native/ordinary headless invocation may open
+         * an output device merely because this test hook exists.
+         */
+        const char *testHeadlessAudio = getenv("MDKR_TEST_HEADLESS_AUDIO");
+        if (testHeadlessAudio && testHeadlessAudio[0] == '1') {
+            /* Continue into the normal browser AudioWorklet path below. */
+        } else
+#endif
+        {
+            /* Headless: no device (synthesis still runs; use MDKR_AUDIO_DUMP to
+             * capture). Opening a device in CI is undesirable and often fails. */
+            s_disabled = 1;
+            return;
+        }
+    }
+
+#ifdef __EMSCRIPTEN__
+    /* Browser: prefer the AudioWorklet sink (drains off the main thread, so a
+     * GC / WebGPU pipeline compile / level-load stall can't starve it). If the
+     * browser lacks AudioWorklet, webAudioOutputInit returns 0 and we fall
+     * through to the SDL emscripten audio device. The context is created
+     * suspended and resumed on the first user gesture by the shell. */
+    if (webAudioOutputInit(DKR_OUTPUT_RATE, DKR_AUDIO_CHANNELS)) {
+        s_webAudio = 1;
+        printf("[AUDIO] web AudioWorklet sink active: %d Hz, %d ch\n",
+               DKR_OUTPUT_RATE, DKR_AUDIO_CHANNELS);
+        return;
+    }
+    printf("[AUDIO] AudioWorklet unavailable - using SDL emscripten audio\n");
+#endif
+
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
+        fprintf(stderr, "[AUDIO] SDL_InitSubSystem(AUDIO) failed: %s\n", SDL_GetError());
+        s_disabled = 1;
+        return;
+    }
+    memset(&want, 0, sizeof(want));
+    want.freq = DKR_OUTPUT_RATE;
+    want.format = AUDIO_S16SYS;
+    want.channels = DKR_AUDIO_CHANNELS;
+    want.samples = 1024;
+    want.callback = NULL; /* queue mode */
+    s_dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    if (s_dev == 0) {
+        fprintf(stderr, "[AUDIO] SDL_OpenAudioDevice failed: %s\n", SDL_GetError());
+        s_disabled = 1;
+        return;
+    }
+    SDL_PauseAudioDevice(s_dev, 0);
+    s_devOpen = 1;
+    printf("[AUDIO] SDL device open: %d Hz, %d ch, %d buf\n",
+           have.freq, have.channels, have.samples);
+}
+
+void dkr_audio_out_shutdown(void) {
+    int had_device;
+    int had_web = 0;
+    if (s_shutdownComplete) {
+        return;
+    }
+    s_shutdownComplete = 1;
+    had_device = s_devOpen;
+#ifdef __EMSCRIPTEN__
+    had_web = s_webAudio;
+    if (s_webAudio) {
+        webAudioOutputShutdown();
+        s_webAudio = 0;
+    }
+#endif
+    if (s_devOpen) {
+        SDL_CloseAudioDevice(s_dev);
+        s_devOpen = 0;
+    }
+    if (s_wav) {
+        wav_write_header(s_wav, s_wavDataBytes); /* patch RIFF/data sizes */
+        fclose(s_wav);
+        s_wav = NULL;
+    }
+    if ((s_rmsEnabled == 1 || s_wavDataBytes) && s_rmsCount > 0) {
+        double rms = sqrt(s_rmsSumSq / (double)s_rmsCount);
+        printf("[AUDIO] TOTAL frames=%llu samples=%llu rms=%.1f peak=%u\n",
+               (unsigned long long)s_dumpFrames,
+               (unsigned long long)s_rmsCount, rms, s_peak);
+    }
+    /* Reverb delay-line bounds guard (reverb.c). Non-zero means a delay-line
+     * DMA tried to leave its allocation and was clamped — always a bug; the
+     * regression fixtures assert this line reads 0. */
+    {
+        extern u32 alFxGuardTrips(void);
+        u32 trips = alFxGuardTrips();
+        if (trips != 0u || s_rmsEnabled == 1) {
+            printf("[AUDIO] fx-guard trips=%u\n", (unsigned)trips);
+        }
+    }
+    if (s_rmsEnabled == 1) {
+        /* Master-bus headroom: how often and by how much the final mix wanted
+         * to exceed s16 full scale (platform/mixer.c). */
+        extern void mixerGetMainBusClip(uint32_t *hits, uint32_t *overPeak,
+                                        uint32_t *samples);
+        uint32_t hits = 0, over = 0, tot = 0;
+        mixerGetMainBusClip(&hits, &over, &tot);
+        printf("[AUDIO] mainbus clip: %u/%u samples (%.5f%%), worst pre-clamp "
+               "magnitude %u (%.2f dBFS)\n",
+               (unsigned)hits, (unsigned)tot,
+               tot ? 100.0 * (double)hits / (double)tot : 0.0,
+               (unsigned)over,
+               over ? 20.0 * log10((double)over / 32768.0) : 0.0);
+        {
+            extern void mixerGetRaw16Stats(uint32_t *calls, uint64_t *bytes,
+                                            int *legacy);
+            uint32_t calls = 0;
+            uint64_t bytes = 0;
+            int legacy = 0;
+            mixerGetRaw16Stats(&calls, &bytes, &legacy);
+            if (s_raw16FirstBlockSample == UINT64_MAX) {
+                printf("[AUDIO] raw16 mode=%s loads=%u bytes=%llu "
+                       "first_block_sample=none\n",
+                       legacy ? "legacy" : "fixed",
+                       (unsigned)calls, (unsigned long long)bytes);
+            } else {
+                printf("[AUDIO] raw16 mode=%s loads=%u bytes=%llu "
+                       "first_block_sample=%llu\n",
+                       legacy ? "legacy" : "fixed",
+                       (unsigned)calls, (unsigned long long)bytes,
+                       (unsigned long long)s_raw16FirstBlockSample);
+            }
+        }
+    }
+    printf("[AUDIO-SHUTDOWN] device=%d web=%d complete=1\n",
+           had_device, had_web);
+}
+
+/* ===== AI (Audio Interface) — SDL queue-based (replaces stubs_dkr.c) ===== */
+
+u32 osAiGetStatus(void) { return 0; }
+
+s32 osAiSetFrequency(u32 freq) {
+    /* The synth uses the returned value as its output rate; honor the request. */
+    return (s32)freq;
+}
+
+u32 osAiGetLength(void) {
+    /* Queue occupancy in bytes — the pump's frame-sizing feedback signal. */
+    return audio_queued_bytes();
+}
+
+s32 osAiSetNextBuffer(void *buf, u32 size) {
+    /* Tap for validation FIRST (records what the synth produced regardless of
+     * whether a device consumes it). */
+    audio_measure_and_dump((const s16 *)buf, size);
+
+#ifdef __EMSCRIPTEN__
+    if (s_webAudio && buf && size > 0) {
+        /* The worklet ring drops OLDEST on overflow (realtime-correct after a
+         * stall), so push unconditionally — no host-side backlog cap needed. */
+        webAudioOutputPush(buf, size);
+        return 0;
+    }
+#endif
+
+    if (s_devOpen && buf && size > 0) {
+        u32 frameBytes = amAudioGetFrameSize() * 4;
+        u32 limit;
+        u32 queued;
+        if (frameBytes == 0) {
+            frameBytes = DKR_OUTPUT_RATE / 15; /* ~2 fields, fallback */
+        }
+        limit = frameBytes * DKR_QUEUE_LIMIT_FRAMES;
+        queued = SDL_GetQueuedAudioSize(s_dev);
+        if (queued <= limit && size <= (limit - queued)) {
+            SDL_QueueAudio(s_dev, buf, size);
+        } else {
+            s_droppedBuffers++;
+        }
+    }
+    return 0;
+}
+
+/* ---- music tempo trace (MDKR_AUDIO_RMS=1) -------------------------------- */
+/* One line per change of (sequence, tempo, playing), stamped with the sample-
+ * frame offset into the capture. s_rmsCount is the s16 count and is only
+ * accumulated while measuring, which is exactly when this trace is armed, so
+ * s_rmsCount/2 is the WAV sample-frame index the change lands at. */
+static int s_traceSeq  = -1;
+static int s_traceBpm  = -32768;
+static int s_traceUspt = -1;
+static int s_tracePlay = -1;
+
+static void audio_trace_music(void) {
+    int seq, bpm, play, uspt;
+    if (s_rmsEnabled != 1) {
+        return;
+    }
+    seq  = (int) music_current_sequence();
+    bpm  = (int) music_tempo();
+    play = music_is_playing() ? 1 : 0;
+    uspt = (gMusicPlayer != NULL) ? (int) alCSPGetTempo(gMusicPlayer) : 0;
+    if (seq == s_traceSeq && bpm == s_traceBpm && play == s_tracePlay &&
+        uspt == s_traceUspt) {
+        return;
+    }
+    s_traceSeq = seq; s_traceBpm = bpm; s_tracePlay = play; s_traceUspt = uspt;
+    printf("[AUDIO] music seq=%d tempo=%d uspt=%d playing=%d at sample=%llu\n",
+           seq, bpm, uspt, play, (unsigned long long)(s_rmsCount / 2u));
+}
+
+static void audio_trace_raw16(void) {
+    extern void mixerGetRaw16Stats(uint32_t *calls, uint64_t *bytes,
+                                    int *legacy);
+    uint32_t calls = 0;
+    uint64_t bytes = 0;
+    int legacy = 0;
+
+#ifdef __EMSCRIPTEN__
+    /* The real-browser gate has a live AudioWorklet but does not dump/RMS the
+     * copyrighted PCM. Still expose one reachability line when RAW16 first
+     * enters that sink, so wasm coverage is measured rather than inferred. */
+    if (s_rmsEnabled != 1 && !s_webAudio) {
+        return;
+    }
+#else
+    if (s_rmsEnabled != 1) {
+        return;
+    }
+#endif
+    mixerGetRaw16Stats(&calls, &bytes, &legacy);
+    if (s_raw16PreviousCalls == 0 && calls > 0) {
+        /*
+         * amAudioSynthFrame has produced this entire block, but it has not yet
+         * reached osAiSetNextBuffer/audio_measure_and_dump. Therefore the
+         * current capture length is the exact start of the first output block
+         * whose synthesis issued a RAW16 load.
+         */
+        if (s_rmsEnabled == 1) {
+            s_raw16FirstBlockSample = s_rmsCount / DKR_AUDIO_CHANNELS;
+        }
+#ifdef __EMSCRIPTEN__
+        printf("[AUDIO] raw16 active mode=%s loads=%u bytes=%llu\n",
+               legacy ? "legacy" : "fixed", (unsigned)calls,
+               (unsigned long long)bytes);
+#endif
+    }
+    s_raw16PreviousCalls = calls;
+}
+
+/* ===== per-frame synthesis pump ===== */
+
+static s32 dkr_choose_frame_samples(void) {
+    u32 frameSize = amAudioGetFrameSize();          /* ~2 VI fields of samples */
+    u32 maxSamples = amAudioGetMaxSamples();
+    s32 produce;
+
+    if (frameSize == 0) {
+        frameSize = DKR_OUTPUT_RATE / 30;
+    }
+
+    if (!audio_have_sink()) {
+        /* Headless / no device: deterministic fixed cadence (also what the WAV
+         * dump captures). One frameSize == ~2 fields of audio per pump. */
+        produce = (s32)frameSize;
+    } else {
+        /* Queue-occupancy controller: refill exactly what the DAC drained since
+         * the last pump (measured from the host counter, so it is correct at
+         * any present cadence — 60/30 fps) plus a correction toward a ~2-field
+         * latency target. Works for the SDL device and the web AudioWorklet
+         * (audio_queued_bytes routes to the active sink). */
+        u32 now = osGetCount();
+        s32 queued = (s32)(audio_queued_bytes() >> 2); /* sample-frames */
+        s32 target = (s32)frameSize;
+        s32 consumed;
+
+        if (!s_haveLastCount) {
+            consumed = (s32)(frameSize / 2);
+            s_haveLastCount = 1;
+        } else {
+            u32 dt = now - s_lastCount; /* u32 wrap-safe */
+            u64 c = (u64)dt * DKR_OUTPUT_RATE / DKR_COUNTER_RATE;
+            if (c > (u64)frameSize * 4u) {
+                c = frameSize / 2; /* stall/first-frame guard */
+            }
+            consumed = (s32)c;
+        }
+        s_lastCount = now;
+
+        produce = consumed + (target - queued);
+    }
+
+    if (produce < 16) {
+        produce = 16;
+    }
+    if (produce > (s32)maxSamples) {
+        produce = (s32)maxSamples;
+    }
+    produce &= ~0xf;
+    return produce;
+}
+
+void dkr_audio_pump(void) {
+    s32 frameSamples;
+    s16 *buf;
+
+    if (!gDkrAudioReady) {
+        return;
+    }
+    frameSamples = dkr_choose_frame_samples();
+    buf = amAudioSynthFrame(frameSamples);
+    /* Sample live voice ownership BETWEEN level boundaries. resource_state can
+     * only read the boundary, where alCSPStop() has already handed every music
+     * voice back; the plateau gates need to know the generation actually owned
+     * them. Off unless MDKR_RESOURCE_STATS is set. */
+    if (mdkr_resource_trace_enabled()) {
+        mdkr_audio_voice_peaks_sample();
+    }
+    audio_trace_raw16();
+    if (buf != NULL) {
+        osAiSetNextBuffer(buf, (u32)frameSamples * 4);
+    }
+    audio_trace_music();
+}
+
+#endif /* NATIVE_PORT */

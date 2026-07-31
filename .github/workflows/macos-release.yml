@@ -1,0 +1,129 @@
+# macOS asset-free build pipeline
+#
+# Adapted from mgb64's .github/workflows/macos-release.yml. Builds a
+# universal (arm64 + x86_64) `mdkr64` native executable and verifies a
+# host-architecture unsigned local `.app` bundle. Signing, notarization, DMG
+# creation, and GitHub Release upload remain deferred until maintainer
+# credentials and distributable packaging are wired (see the commented-out
+# `package` job below, kept for parity with mgb64's deferred pipeline).
+#
+# Structural delta from mgb64: mgb64 links a Swift/AppKit shell against a
+# separate static C engine library (libge007_lib.a) built by
+# build_universal.sh. mdkr64 has no Swift shell -- its CMake target `mdkr64`
+# is already a complete, self-contained SDL2 executable (platform/main_pc.c is
+# the real `main`), so macos/Scripts/build_universal.sh here builds and
+# verifies that EXECUTABLE directly, not a static library.
+#
+# The active job requires no Apple Developer credentials or repository secrets.
+# This is a manual hosted mirror of the local release lane; public launch uses
+# local preflight evidence, not hosted GitHub Actions.
+#
+# macos/Scripts/build_universal.sh, build_app_bundle.sh, and
+# verify_asset_free.sh (referenced below) landed on `main` via the macOS
+# packaging port during the development of this workflow.
+
+name: macOS Asset-Free Build
+
+on:
+  workflow_dispatch:
+
+env:
+  DEPLOYMENT_TARGET: '13.0'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build asset-free macOS artifacts
+    runs-on: macos-14  # Apple Silicon runner
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install dependencies
+        run: |
+          brew install sdl2 cmake pkg-config
+
+      - name: Build universal mdkr64 executable
+        run: |
+          chmod +x macos/Scripts/build_universal.sh
+          ./macos/Scripts/build_universal.sh \
+            --release \
+            --build-dir build-macos-universal
+
+      - name: Verify asset-free binary
+        run: |
+          chmod +x macos/Scripts/verify_asset_free.sh
+          ./macos/Scripts/verify_asset_free.sh build-macos-universal/mdkr64
+
+      - name: Report build info
+        run: |
+          echo "=== Build artifacts ==="
+          ls -lh build-macos-universal/mdkr64
+          echo ""
+          echo "=== Architectures ==="
+          lipo -info build-macos-universal/mdkr64
+          echo ""
+          echo "=== Size ==="
+          size build-macos-universal/mdkr64
+
+      - name: Build unsigned local app bundle
+        run: |
+          chmod +x macos/Scripts/build_app_bundle.sh
+          ./macos/Scripts/build_app_bundle.sh \
+            --release \
+            --build-dir build-macos-app \
+            --output build-macos-app/mdkr64.app
+
+      - name: Verify asset-free app bundle
+        run: |
+          ./macos/Scripts/verify_asset_free.sh build-macos-app/mdkr64.app
+
+  # NOTE: The full sign-notarize-dmg pipeline remains disabled until maintainer
+  # Developer ID credentials and release packaging policy are wired.
+  # If GitHub Release upload is enabled later, grant the package job only the
+  # permissions it needs, such as `contents: write`.
+  #
+  # package:
+  #   name: Sign, Notarize, Package
+  #   needs: build
+  #   runs-on: macos-14
+  #   steps:
+  #     - name: Import signing certificate
+  #       env:
+  #         MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+  #         MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+  #       run: |
+  #         echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
+  #         security create-keychain -p "" build.keychain
+  #         security default-keychain -s build.keychain
+  #         security unlock-keychain -p "" build.keychain
+  #         security import certificate.p12 -k build.keychain \
+  #           -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+  #         security set-key-partition-list -S apple-tool:,apple: -s \
+  #           -k "" build.keychain
+  #         rm certificate.p12
+  #
+  #     - name: Sign and notarize
+  #       env:
+  #         DEVELOPER_ID_APPLICATION: ${{ secrets.DEVELOPER_ID_APPLICATION }}
+  #         APPLE_ID: ${{ secrets.APPLE_ID }}
+  #         APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+  #         APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+  #       run: |
+  #         chmod +x macos/Scripts/sign_and_notarize.sh
+  #         ./macos/Scripts/sign_and_notarize.sh "build-macos-app/mdkr64.app"
+  #
+  #     - name: Create DMG
+  #       run: |
+  #         chmod +x macos/Scripts/create_dmg.sh
+  #         ./macos/Scripts/create_dmg.sh "build-macos-app/mdkr64.app"
+  #
+  #     - name: Upload to GitHub Release
+  #       uses: softprops/action-gh-release@v2
+  #       with:
+  #         files: build-macos-app/*.dmg
+  #         generate_release_notes: true

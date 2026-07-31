@@ -1,0 +1,37 @@
+{
+  "schema": "mdkr64.oracle.route.v1",
+  "name": "title_attract_demos",
+  "description": "Idle from the interactive title into the first two rolling attract demos. This is the GAME-08 oracle route: Ancient Lake defaults to car, so a menu loader that forces VEHICLE_PLANE selects the wrong AI-node family even though individual frames can look plausible.",
+  "native_cadence": "enhanced",
+  "native_synth_fields": 1,
+  "sync": {
+    "event": "title",
+    "native_frame": 1134,
+    "ares_frame": 1340
+  },
+  "native": {
+    "frames": 7500,
+    "dump_every": 60,
+    "dump_start": 5000
+  },
+  "ares": {
+    "frames": 7800,
+    "dump_every": 30,
+    "dump_start": 5100
+  },
+  "marks": [
+    {
+      "name": "ancient_lake_early",
+      "logical": 4200
+    },
+    {
+      "name": "ancient_lake_late",
+      "logical": 4700
+    },
+    {
+      "name": "second_demo",
+      "logical": 5700
+    }
+  ],
+  "events": []
+}

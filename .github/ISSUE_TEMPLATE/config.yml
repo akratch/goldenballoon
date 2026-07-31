@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and contributor discussion
+    url: https://github.com/akratch/goldenballoon/discussions
+    about: Use Discussions for setup questions, contribution ideas, and triage before filing an issue.

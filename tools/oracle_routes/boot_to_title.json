@@ -1,0 +1,16 @@
+{
+  "schema": "mdkr64.oracle.route.v1",
+  "name": "boot_to_title",
+  "description": "Boot with no input; capture the shared 'DIDDY KONG RACING' title-logo screen in both runners. This is the sync/validation anchor: both the real ROM (ares) and the native port render the identical static logo early in boot (native ~f40-140, ares ~f80-220), before their boot paths diverge (the native port blanks the N64-logo/Diddy intro that the real ROM plays). Proves the harness captures comparable frames from both.",
+  "native_cadence": "enhanced",
+  "native_synth_fields": 1,
+  "sync": { "event": "dkr_logo", "native_frame": 100, "ares_frame": 140 },
+  "native": { "frames": 220, "dump_every": 10, "dump_start": 0 },
+  "ares":   { "frames": 220, "dump_every": 20, "dump_start": 0 },
+  "marks": [
+    { "name": "logo_in",  "logical": -20 },
+    { "name": "logo",     "logical": 0 },
+    { "name": "logo_out", "logical": 20 }
+  ],
+  "events": []
+}

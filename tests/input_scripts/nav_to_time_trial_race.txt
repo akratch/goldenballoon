@@ -1,0 +1,39 @@
+# DKR: TITLE -> in-race, Tracks (Time Trial) mode, first Dino Domain track.
+# Route (verified via MDKR_TRACE=1 menu_init + level_load):
+#   TITLE(0) --2 taps--> CHARACTER_SELECT(3) --A,A--> CAUTION(28) --A-->
+#   GAME_SELECT(19) --DOWN,A--> TRACK_SELECT(15) --A(world),A(vehicle),
+#   A(TT off),A(GO)--> level_load(levelId=5, numPlayers=0)  [the real race]
+#
+# Menu input is EDGE-detected: distinct taps need a release gap; the title needs
+# TWO taps (reveal menu, then select). Frames are approximate (input-ignore
+# windows + fade transitions), spaced generously so each edge lands.
+#
+# Assert with: MDKR_TRACE=1 ... | grep -E 'menu_init|level_load'
+#   -> menu_init 3, 28, 19, 15 then "level_load: levelId=5 numPlayers=0" (in-race).
+#
+# TWO consumers, and the second is why this file has no driving inputs:
+#   tests/check_nav_fixtures.py   -- 2900 frames, asserts the race level loads.
+#   tests/check_race_drive.py     -- 7500 frames with MDKR_AUTOPILOT=1, which
+#     drives the race with DKR's own AI. This route is exactly
+#     race_drive_long.txt's navigation with that file's throttle+LEFT-pulse train
+#     removed; the pulse train was a blind open-loop line and re-stranded the kart
+#     every time the simulation changed. See tests/README.md, "Open loop vs
+#     closed loop".
+
+# Title: reveal Start/Options, then select Character Select
+1250 START 4
+1330 START 4
+# Character select: confirm default character (A), then finalize (A)
+1450 A 4
+1540 A 4
+# Caution screen: dismiss (A) -> Game Select
+1750 A 4
+# Game Select: DOWN to the Tracks option, then select (A) -> Track Select
+1900 DOWN 4
+2000 A 4
+# Track Select world map: pick the world at cursor (0,0)
+2150 A 4
+# Race setup: confirm vehicle (A), confirm Time-Trial=off (A), then GO (A)
+2320 A 4
+2460 A 4
+2600 A 4

@@ -1,0 +1,24 @@
+{
+  "name": "Golden Balloon",
+  "short_name": "Golden Balloon",
+  "description": "A native source port of the 1997 N64 kart racer, running entirely in your browser via WebGPU. Bring your own ROM.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#061529",
+  "theme_color": "#061529",
+  "icons": [
+    {
+      "src": "assets/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    },
+    {
+      "src": "assets/favicon.png",
+      "sizes": "256x256",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+ImGui: ocornut/imgui @ 776bf2ab0d61e719e58f2c6d27d109ab5dcf2af1 (MIT)
+
+Vendored for the native app shell (platform/app/). Same pin as the sibling
+mgb64 checkout so the two shells stay behavior-identical. Source files only:
+imgui{,_draw,_tables,_widgets}.cpp + headers, and the SDL2 / OpenGL3 backends.
+The WebGPU render backend is this project's own
+platform/fast3d/gfx_webgpu_imgui.cpp (upstream imgui_impl_wgpu is version-
+skewed from our pinned wgpu-native v29).

@@ -1,0 +1,68 @@
+# Normalize text files across platforms.
+* text=auto eol=lf
+
+# Common ROM/media/build artifacts should stay binary if they ever appear
+# locally; the release guards still forbid committing them.
+*.z64 binary
+*.n64 binary
+*.v64 binary
+*.rom binary
+*.bin binary
+*.bmp binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.raw binary
+*.wav binary
+*.mp3 binary
+*.ogg binary
+*.flac binary
+*.dmg binary
+*.zip binary
+*.7z binary
+*.tar binary
+*.tgz binary
+*.gz binary
+
+# Keep GitHub language statistics focused on mdkr64-owned code. These are the
+# build-time vendored dependencies documented in NOTICE.md (retained for build
+# compatibility, each under its own upstream license). MGB64's equivalent list
+# (tools/armips.cpp, tools/asm-processor/**, tools/extractor/*, tools/gzipsrc/**,
+# tools/smaa/*, tools/ido5.3_recomp/**, tools/mktex/**) has no counterpart here —
+# mdkr64 vendors only these two.
+lib/glad/** linguist-vendored
+lib/sdl_gamecontrollerdb/** linguist-vendored
+
+# --- Internal working documentation: the public/internal boundary ------------
+#
+# The paths below are internal working material and are NOT published.
+#
+#   docs/superpowers/**  -- internal planning workspace (plans/, specs/); not
+#                           part of the public docs/ reference surface.
+#   PUBLIC_LAUNCH_BACKLOG.md -- internal public-launch program tracking doc.
+#   docs/archive/**      -- the dated working documents (implementation reports,
+#                           audits, censuses, design studies, reviews) that this
+#                           port accumulated while it was built.
+#   docs/SDK_INVENTORY.md -- the historical legend-bearing-file inventory.
+#
+# HOW THEY ARE ACTUALLY EXCLUDED, and what these lines do and do not do.
+#
+# The public release is a SQUASHED single-commit cut pushed to a separate public
+# repository; this repository stays private. The paths above are removed from
+# that cut with `git rm` before the commit is made, so they are absent from the
+# public tree AND from its history. That deletion is the mechanism. It is not
+# optional and it is not implemented here.
+#
+# The `export-ignore` attributes below only affect `git archive`, i.e. tarballs
+# and zips generated from this repository. They are kept as a second layer for
+# that one path. They have no effect on clone, fetch, push, or on the release
+# cut. Do not cite this file as the reason any of the above is unpublished.
+#
+# Everything directly under docs/ that is not listed here is public by
+# construction.
+docs/superpowers/** export-ignore
+PUBLIC_LAUNCH_BACKLOG.md export-ignore
+docs/archive/** export-ignore
+docs/SDK_INVENTORY.md export-ignore

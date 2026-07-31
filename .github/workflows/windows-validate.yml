@@ -1,0 +1,157 @@
+# Windows EXECUTION validation lane.
+#
+# Adapted from mgb64's .github/workflows/windows-validate.yml. The credibility
+# gate that proves the Windows build RUNS, not just compiles. The local
+# cross-compile check (tools/mingw_cross_check.sh) proves compile+link from a
+# macOS/Linux host; this lane closes the "verified by execution" gap: it
+# builds mdkr64.exe on a real windows-latest kernel via MSYS2 (mirroring the
+# release.yml Windows job exactly), then EXERCISES it:
+#
+#   1. Import-table guard on real Windows — the libgcc_s_seh regression class
+#      (a non-self-contained exe that dies "DLL not found" on a player's PC) is
+#      caught here, on the actual toolchain, not on a player's machine.
+#   2. Headless execution smoke — drives the ROM-free surfaces (--help,
+#      --video-list; see platform/main_pc.c) with SDL dummy drivers. This
+#      exercises real Windows process startup and the video-config
+#      report/CLI-parsing logic on a real kernel. No ROM, no GPU.
+#      NOTE: mdkr64 has no separate GUI "app" shell the way mgb64 did (no
+#      config-schema self-check, --dump-config, --list-settings, or
+#      update-check self-test surfaces exist here) -- --help and --video-list
+#      are the entire ROM-free execution surface platform/main_pc.c exposes.
+#   3. ROM-free CTest suite — the compiled C/C++ unit tests run as native
+#      Windows executables. correctness.yml already proves this same ctest
+#      suite is ROM-free and headless-safe on Linux/macOS runners (no Xvfb,
+#      no ROM); this step proves the same for Windows. mdkr64's CMakeLists.txt
+#      does not tag tests with ctest LABELS, and this repo has active work on
+#      platform/audio*/ that may add or rename audio-adjacent tests, so this
+#      excludes by name pattern (audio/mixer) rather than hardcoding an
+#      include-list of exact test names that could silently go stale.
+#   4. Asset-free verify + upload the .exe artifact.
+#
+# Manual-only (workflow_dispatch), matching the repo's deliberate
+# no-auto-trigger posture for release/validation lanes (see release.yml,
+# macos-release.yml). A maintainer dispatches this and it should be GREEN
+# before a release cut. It needs no secrets and writes no repository state —
+# it only compiles the ASSET-FREE source and uploads the result, consistent
+# with the bring-your-own-ROM provenance policy.
+#
+# tools/mingw_cross_check.sh and cmake/mingw-w64-x86_64.cmake (referenced by
+# path above) and macos/Scripts/verify_asset_free.sh (the last step) all
+# landed on `main` via their respective ports during the development of this
+# workflow.
+
+name: Windows validate (execution)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-validate:
+    name: Windows build + execute (windows-latest / MSYS2)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # Mirror release.yml's Windows toolchain EXACTLY (same MINGW64 msystem,
+      # same package set) so the build half is known-good by construction. `python`
+      # is added for the asset-free verifier's ROM-magic byte scan (a Python
+      # heredoc) and for the save_cli ctest; it is not needed by the build.
+      - uses: msys2/setup-msys2@d40200dc2db4c351366b048a9565ad82919e1c24 # v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-pkg-config mingw-w64-x86_64-ninja zip python
+
+      # Same CMake config as the release.yml Windows job, plus BUILD_TESTING
+      # (ON by default via include(CTest) in CMakeLists.txt) so the ROM-free
+      # CTest unit exes are produced alongside mdkr64.exe. No --target filter:
+      # the default build target builds mdkr64 plus every ctest executable.
+      - name: Build the app + ROM-free test exes (Release)
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j
+          test -f build/mdkr64.exe || { echo "FAIL: build/mdkr64.exe missing"; exit 1; }
+          file build/mdkr64.exe
+
+      # Import-table guard (the same check tools/mingw_cross_check.sh runs, here on
+      # the REAL Windows toolchain's objdump). The exe must import only Windows
+      # COMDLG32.dll is on the list deliberately: the app shell's ROM picker uses
+      # GetOpenFileNameW (platform/app/file_dialog_win.cpp) so the player can
+      # select their own file without the launcher enumerating any directory.
+      # It is a stock Windows system DLL, present on every install.
+      # system DLLs + the SDL2.dll shipped beside it (plus the D3D12/DXGI/BCRYPT
+      # family wgpu-native's Windows backend pulls in -- MDKR_WEBGPU_BACKEND is ON
+      # by default, see cmake/webgpu.cmake). Any libgcc_s_seh-1 / libstdc++-6 /
+      # libwinpthread-1 leak (present on the runner, absent on stock Windows)
+      # fails the lane HERE, not on a player's machine.
+      - name: Import-table guard (self-contained on stock Windows)
+        run: |
+          objdump -p build/mdkr64.exe | grep -i "DLL Name" || true
+          BAD="$(objdump -p build/mdkr64.exe | awk '/DLL Name/{print $3}' \
+            | grep -viE '^(KERNEL32.dll|USER32.dll|SHELL32.dll|ole32.dll|GDI32.dll|ADVAPI32.dll|WS2_32.dll|IMM32.dll|OLEAUT32.dll|SETUPAPI.dll|VERSION.dll|WINMM.dll|OPENGL32.dll|NTDLL.dll|USERENV.dll|BCRYPTPRIMITIVES.dll|BCRYPT.dll|CRYPT32.dll|COMBASE.dll|RPCRT4.dll|PROPSYS.dll|COMDLG32.dll|d3dcompiler_47.dll|dxgi.dll|D3D12.dll|SDL2.dll|api-ms-win-.*)$' || true)"
+          if [ -n "$BAD" ]; then
+            echo "FAIL: non-system, non-SDL2 DLL imports (would not run on stock Windows):"
+            echo "$BAD"
+            exit 1
+          fi
+          echo "PASS: mdkr64.exe is self-contained (system DLLs + SDL2.dll only)."
+
+      # Headless EXECUTION smoke: prove the exe RUNS on a real kernel without a
+      # ROM. SDL dummy drivers so no display/GPU is required. Each command must
+      # exit 0 and print its expected marker. mdkr64 fails fast without a ROM
+      # (platform/main_pc.c), so --help and --video-list are the only two
+      # execution paths that return before ROM/window/audio initialization --
+      # this exercises process startup + CRT + static runtimes and the
+      # video-config CLI/report logic on a real kernel.
+      - name: Headless execution smoke (ROM-free surfaces)
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+        run: |
+          set -e
+          echo "--- (a) --help ---"
+          ./build/mdkr64.exe --help > help.txt 2>help.err
+          cat help.txt
+          grep -q '^Usage: ' help.txt
+
+          echo "--- (b) --video-list (resolved video config report) ---"
+          ./build/mdkr64.exe --video-list > video.txt 2>video.err
+          cat video.txt
+          grep -qE '^\[video\] mode=' video.txt
+
+          echo "PASS: all ROM-free execution surfaces ran and produced expected output."
+
+      # ROM-free CTest suite: the compiled C/C++ unit tests, run as native
+      # Windows exes. correctness.yml runs this identical suite on Linux and
+      # macOS runners with no Xvfb and no ROM, so it is proven ROM-free and
+      # headless-safe by construction; this proves the same on Windows.
+      # Excluded by NAME PATTERN rather than an exact include-list: this repo
+      # has active work under platform/audio*/ that may add or rename
+      # audio-adjacent tests, and CMakeLists.txt does not tag tests with ctest
+      # LABELS to select on instead.
+      - name: ROM-free CTest suite
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+        run: |
+          ctest --test-dir build --output-on-failure -E 'audio|mixer'
+
+      # Asset-free verify (mirror the release job's post-build check): the binary
+      # must contain no ROM-derived copyrighted data. MSYS2 `nm` reads the PE and
+      # the ROM-magic byte scan is portable Python.
+      - name: Verify asset-free
+        run: ./macos/Scripts/verify_asset_free.sh build/mdkr64.exe
+
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
+        with:
+          name: mdkr64-windows-validate-exe
+          path: build/mdkr64.exe

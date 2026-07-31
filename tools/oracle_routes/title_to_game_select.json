@@ -1,0 +1,77 @@
+{
+  "schema": "mdkr64.oracle.route.v1",
+  "name": "title_to_game_select",
+  "description": "Title -> CHARACTER_SELECT (3) -> CAUTION (28) -> GAME_SELECT (19). Mirrors tests/input_scripts/nav_to_game_select.txt verbatim. Menu-init frames measured from MDKR_TRACE=1 menu_init lines; each mark sits ~140 frames after its screen's init so the transition has settled. CAUTION is the health/safety screen (ASSET_MENU_TEXT_CAUTION*) and is a STATIC full-screen text page, so it is the strictest fidelity target in this route.",
+  "native_cadence": "enhanced",
+  "native_synth_fields": 1,
+  "sync": {
+    "event": "title",
+    "native_frame": 1134,
+    "ares_frame": 1340
+  },
+  "native": {
+    "frames": 1990,
+    "dump_every": 20,
+    "dump_start": 1100
+  },
+  "ares": {
+    "frames": 2290,
+    "dump_every": 20,
+    "dump_start": 1300
+  },
+  "marks": [
+    {
+      "name": "title_menu",
+      "logical": 146
+    },
+    {
+      "name": "char_select",
+      "logical": 367
+    },
+    {
+      "name": "caution",
+      "logical": 577
+    },
+    {
+      "name": "game_select",
+      "logical": 787
+    }
+  ],
+  "events": [
+    {
+      "frame": 1250,
+      "buttons": [
+        "start"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1330,
+      "buttons": [
+        "start"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1450,
+      "buttons": [
+        "a"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1540,
+      "buttons": [
+        "a"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1750,
+      "buttons": [
+        "a"
+      ],
+      "hold": 4
+    }
+  ]
+}

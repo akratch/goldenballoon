@@ -1,0 +1,54 @@
+# public_text_denylist.txt -- the single source of truth for the text classes
+# that must never reach a public surface.
+#
+# Consumers read this file at run time and join every non-comment line with `|`
+# into one alternation:
+#   - tools/ci/check_public_history_text.sh -- git log -G, POSIX ERE, over the
+#     content that entered a tracked file in reachable history.
+#   - tools/check_github_launch_ready.sh -- jq test(), Oniguruma, over GitHub
+#     repository metadata, labels, milestones, releases, issues, comments and
+#     discussions.
+#
+# Format: one regex alternative per line. Blank lines, and lines whose first
+# non-blank character is #, are ignored. Both engines must accept every line, so
+# each line must stay inside their common subset: bracket expressions ([(]) in
+# place of backslash escapes, POSIX classes ([[:space:]]) in place of \s, no
+# lookaround, no named groups, no backreferences. The GitHub consumer matches
+# case-insensitively and the history consumer matches case-sensitively, so a
+# pattern must not depend on case to stay narrow.
+#
+# This file carries the marker text verbatim as its job, so it is excluded from
+# tools/ci/check_public_history_text.sh's own path scope; without that exclusion
+# it would self-flag on every run.
+
+# Private paths, internal-only working documentation, and pre-public backup
+# remote naming. The prepublic-remote alternative requires a concrete timestamp
+# (8 date digits + 6 time digits) so it matches a leaked remote name but not the
+# shell template that generates a fresh timestamp on each run.
+/Users/[^[:space:]]+
+Desktop/dev
+/home/adam
+mdkr64-prepublic-[0-9]{8}-[0-9]{6}
+private dev repo
+contaminated private
+Claude
+session handoff
+agent memory
+must never go public
+superpowers
+PUBLIC_LAUNCH_BACKLOG
+
+# Credentials.
+AKIA[0-9A-Z]{16}
+ghp_[0-9A-Za-z_]{36,}
+github_pat_[0-9A-Za-z_]+
+xox[baprs]-[0-9A-Za-z-]+
+sk-[A-Za-z0-9]{20,}
+BEGIN (RSA|OPENSSH|EC|DSA) PRIVATE KEY
+
+# Proprietary SDK notice boilerplate.
+UNPUBLISHED[[:space:]]+PROPRIETARY
+may not be disclosed
+without the prior written (permission|consent)
+RESTRICTED[[:space:]]+RIGHTS
+subparagraph [(]c[)][(]1[)][(]ii[)] of the Rights

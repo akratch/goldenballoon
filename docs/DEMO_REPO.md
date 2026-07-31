@@ -1,0 +1,123 @@
+# The two-repo split: source → demo
+
+## Why
+
+The source and the live playable demo live in two different repositories, and
+they stay separate even though both are now public.
+
+The reason is not visibility, it is *purpose*. The demo repo is a deployment
+target for GitHub Pages: its entire contents are machine-generated build output,
+replaced wholesale on every publish. Mixing that into a source repository means
+every publish rewrites tracked files nobody authored, and the Pages site's
+history becomes indistinguishable from the project's. Keeping them apart means
+the source repo has a human history and the demo repo has a build history, and
+neither pollutes the other.
+
+| | source repo (this one) | demo repo |
+|---|---|---|
+| purpose | the project | a Pages deployment target |
+| contains | everything — decomp, engine, tests, oracle, docs | built artifacts only |
+| game code | yes (decompiled) | **none** |
+| ROM / assets | none (bring-your-own) | **none** |
+| edited by | humans | **nobody — generated** |
+
+> **Note on history.** The public source repository is a squashed single-commit
+> cut of a longer private development history. The private repository is where
+> the day-to-day work happened and is not published. That is why this document
+> and the publisher scripts talk about "the source repo" as a single thing: from
+> the demo repo's point of view, it is.
+
+## The contract
+
+**1. One direction, always.** The demo repo is a publication *target*. Its payload is
+replaced wholesale on every publish, so anything edited there is silently lost. Even
+its `README.md`, `DISCLAIMER.md` and `LICENSE` are version-controlled *here*, in
+`tools/web/demo-repo/`, and re-synced every time — there is exactly one source of
+truth, and the public repo cannot drift by someone editing it.
+
+**2. Every publish is provenance-stamped.** `tools/web/build_web.sh` writes
+`dist/web/build-info.json`:
+
+```json
+{ "source_commit": "…", "source_dirty": false, "built_utc": "…",
+  "emcc": "…", "wasm_bytes": 1444256 }
+```
+
+With no source in the demo repo, that stamp is the only link from the live site back
+to code, so the publisher repeats it in the demo repo's commit message too. "What
+code is live?" always has an exact answer.
+
+**3. Fail closed.** `tools/web/publish_demo.sh` aborts rather than shipping something
+questionable. In order:
+
+- **dirty source tree** → refused (a published build must correspond to a commit, or
+  nobody can say what is live). Override is explicit: `--allow-dirty`.
+- **build** runs `build_web.sh`, which enforces the 40 MiB wasm budget and runs
+  `tools/check_no_rom.sh`.
+- **demo dir sanity** → refused if it is the source repo, is *nested* inside it, or
+  is not a git repo.
+- **source leakage** → refused if the demo repo contains `game/`, `platform/` or a
+  ROM. The demo repo is supposed to hold build output and nothing else; source
+  appearing in it means the publisher copied the wrong tree, so this stops the
+  run instead of warning.
+
+## Keeping them in sync
+
+The failure mode this split invites is that the live site quietly rots: nothing
+breaks, it is just old, and nobody notices. The ratchet against that:
+
+```bash
+tools/web/check_demo_sync.sh --demo ../golden-balloon-demo
+```
+
+It reads the stamp, compares to `HEAD`, and distinguishes *stale* from *behind*:
+
+- exactly `HEAD` → **PASS**
+- behind, but no intervening commit touched `platform/`, `game/`, `lib/`, `cmake/`,
+  `CMakeLists.txt`, `dist/web/` or `tools/web/` → **PASS**, because a republish
+  would produce a byte-identical site
+- behind by commits that *do* touch the build → **exit 1**, listing the files
+
+It also fails if the live build was made from a dirty tree, or if the published
+commit is not in this repo at all (history rewritten, or published from another
+clone).
+
+Run it before saying "the demo is up to date", and after any renderer, engine or
+shell change.
+
+## Publishing
+
+```bash
+# 1. land your work here first — the publisher refuses a dirty tree
+git status
+
+# 2. publish (builds, guards, stamps, commits in the demo repo)
+tools/web/publish_demo.sh --demo ../golden-balloon-demo
+
+# 3. review what landed, then push
+cd ../golden-balloon-demo && git status && git push
+```
+
+Add `--push` to step 2 once you trust it. Pages then deploys from the demo repo's
+default branch; `.nojekyll` is written so Pages does not run Jekyll over the
+wasm/js payload.
+
+## First-time setup of the demo repo
+
+```bash
+mkdir -p ../golden-balloon-demo && cd ../golden-balloon-demo
+git init -b main
+git remote add origin git@github.com:<you>/golden-balloon.git   # the PUBLIC repo name
+# (the local directory is golden-balloon-demo; the remote is what the URL is built from)
+```
+
+Then publish once, push, and enable Pages on that repo (branch `main`, folder `/`).
+Update the live URL at the top of `tools/web/demo-repo/README.md` — remembering that
+it is edited *here*, not there.
+
+## If you would rather not run a second repo
+
+Cloudflare Pages, Netlify and Vercel can all deploy a static directory straight
+from a repository on their free tiers, public or private. In that case
+`dist/web` is the publish directory and this whole split is unnecessary — keep
+`build-info.json` and the ROM guard, drop `publish_demo.sh`.

@@ -1,0 +1,1038 @@
+/* Golden Balloon — browser shell.
+
+   The design follows the brand art rather than fighting it. That art is *bright*:
+   cyan sky, white cloud, gold letterforms with a deep-blue bevel, and checkered
+   flags. An earlier pass pasted the logo onto a near-black page behind a 16%
+   background wash, which read as a generic dark landing page with a game logo on
+   it. So instead:
+
+     - the banner is full-bleed, and the intro copy sits with it on one bright
+       band whose ground starts at #71bef9, the measured average of the artwork's
+       bottom row, so art and document share a colour rather than meeting at a
+       seam;
+     - the checkered flag becomes structure — a start/finish gantry above and
+       below that band, and a ghosted rule between sections;
+     - sections are numbered like a starting grid, in the gutter;
+     - panels are square-cornered with a single gold leading edge, not a stack of
+       identical rounded shadow-boxes;
+     - headings are heavy italic uppercase — motorsport signage.
+
+   Element ids are a contract with mdkr64-shell.js (gate, gate-msg, rom-ui, drop,
+   rom-input, rom-status, play, forget, clear-save, save-status, stage, canvas,
+   fps, fullscreen, save-banner). Note that the shell ASSIGNS `className` on
+   #rom-status and #save-status, which drops any layout class, so layout for them
+   hangs off the id and .err/.ok are colour-only modifiers. */
+
+:root {
+  --gold:       #ffc42e;
+  --gold-deep:  #f5a623;
+  --sky:        #71bef9;   /* measured: bottom row of assets/hero.jpg */
+  --blue-deep:  #123a7a;   /* the bevel colour in the letterforms */
+  --navy:       #0a2447;
+  --navy-2:     #061529;
+  --panel:      #0d2b52;
+  --line:       rgba(133, 178, 235, .22);
+  --ink:        #eaf2ff;
+  --ink-dim:    #a2b8d6;
+  --ok:         #57e08a;
+  --err:        #ff8189;
+  --grid:       clamp(20px, 3vw, 30px);   /* panel padding */
+
+  /* Motion: critically-damped by default (Apple's "damping 1.0" — settles
+     without overshoot), used for every state change nothing was flicked or
+     dragged into. Reserved for the rare momentum-carrying transition. */
+  --ease-out:    cubic-bezier(.16, 1, .3, 1);
+  --ease-spring: cubic-bezier(.34, 1.56, .64, 1);
+
+  /* One floating-material recipe reused everywhere translucent chrome sits
+     above content, so a blur, a saturation boost, and a bright top edge (light
+     catching real glass) always travel together. */
+  --glass-blur:   blur(20px) saturate(160%);
+  --glass-edge:   inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--navy-2);
+  color: var(--ink);
+  font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+
+/* ---------- the checkered flag, used as structure ----------
+   Two offset rows of squares. Drawn in CSS from the brand palette so it scales to
+   any width and can never fall out of step with the artwork. */
+
+.gantry {
+  height: 16px;
+  background:
+    repeating-conic-gradient(from 90deg, #f4f7fc 0% 25%, var(--blue-deep) 0% 50%)
+    0 0 / 16px 16px;
+}
+
+/* Same flag, ghosted, as the section rule. 12px tile = two rows of 6px squares,
+   which is the smallest size that still reads as a checker rather than dots. */
+.rule {
+  height: 12px; border: 0; margin: clamp(30px, 4vw, 46px) 0;
+  background:
+    repeating-conic-gradient(from 90deg,
+      rgba(214, 231, 252, .42) 0% 25%, transparent 0% 50%) 0 0 / 12px 12px;
+}
+
+/* ---------- launcher ---------- */
+
+#gate { min-height: 100vh; }
+#gate[hidden] { display: none; }
+
+/* The artwork and the intro copy share one bright "grid" band, flagged top and
+   bottom; everything below the second flag is the dark half of the page. The
+   boundary is deliberately hard rather than a gradient fade: an earlier version
+   faded sky into navy *behind* the intro copy, so at narrow widths the copy wrapped
+   into the dark end and turned dark-on-dark. A defined light region means every
+   colour pair on the page is decided, not incidental. */
+/* The artwork is NEVER cropped. A previous version was full-bleed with
+   `object-fit: cover` under a 400px height cap, which on any viewport wider than
+   ~1200px sliced the top and bottom off the letterforms. Instead the art keeps its
+   own 3:1 aspect at a capped width, and the band it sits on is the artwork's own
+   sky gradient -- sampled from its top row (#114fe1) and bottom row (#72bef9) --
+   so the space either side reads as a continuation of the picture rather than a
+   flat block next to it. */
+.banner {
+  background: linear-gradient(180deg, #114fe1 0%, #4a95f2 56%, var(--sky) 100%);
+  text-align: center;
+  line-height: 0;                     /* no descender gap under the image */
+}
+.banner img {
+  display: block; margin: 0 auto;
+  width: min(100%, 1000px); height: auto;
+  /* Feather the left/right edges into the band. The art's own sky is darker at the
+     top than a single flat gradient can match at every height, so without this
+     there is a faint vertical seam where the picture ends. */
+  mask-image: linear-gradient(90deg, transparent 0, #000 5%, #000 95%, transparent 100%);
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 5%, #000 95%, transparent 100%);
+}
+
+.intro {
+  background: linear-gradient(180deg, var(--sky) 0%, #9ed2fb 100%);
+  padding: 22px max(20px, env(safe-area-inset-right)) 26px
+           max(20px, env(safe-area-inset-left));
+  text-align: center;
+}
+.lede {
+  max-width: 56ch; margin: 0 auto;
+  color: #08284f; font-size: clamp(16px, 1.8vw, 19px); font-weight: 500;
+}
+.lede strong { font-weight: 750; }
+
+.badges {
+  display: flex; flex-wrap: wrap; gap: 8px 10px; justify-content: center;
+  margin: 16px 0 0; padding: 0; list-style: none;
+}
+.badges li {
+  padding: 4px 12px;
+  background: rgba(255, 255, 255, .42); border: 1px solid rgba(8, 40, 79, .28);
+  color: #08284f; font-size: 12.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .06em;
+}
+
+.page { background: linear-gradient(180deg, var(--navy) 0, var(--navy-2) 620px); }
+
+.wrap {
+  width: 100%; max-width: 1060px;
+  margin: 0 auto;
+  /* env(safe-area-inset-*) only matters in landscape on a notched iPhone —
+     the launcher scrolls normally there, so its own side padding (not just
+     the in-game overlay's) needs to clear the sensor housing / home
+     indicator. */
+  padding: clamp(22px, 3.5vw, 34px) max(20px, env(safe-area-inset-right)) 64px
+           max(20px, env(safe-area-inset-left));
+}
+
+.status-line {
+  margin: 0 auto; text-align: center; color: var(--ink-dim); font-size: 15px;
+}
+#gate-msg { min-height: 24px; margin-bottom: clamp(16px, 2.5vw, 28px); }
+.err { color: var(--err) !important; }
+.ok  { color: var(--ok)  !important; }
+
+/* ---------- grid-numbered sections ----------
+   The number lives in the gutter at desktop width and inline above the heading
+   when the gutter collapses. */
+
+.sect { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 0 18px; }
+.sect + .sect { margin-top: clamp(26px, 4vw, 40px); }
+
+.pos {
+  font: italic 900 46px/1 ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: -.04em; text-align: right;
+  color: transparent; -webkit-text-stroke: 2px rgba(255, 196, 46, .55);
+  padding-top: 14px;
+}
+
+@media (max-width: 800px) {
+  .sect { grid-template-columns: 1fr; }
+  .pos { text-align: left; font-size: 30px; padding: 0 0 4px;
+         -webkit-text-stroke-width: 1.5px; }
+}
+
+/* ---------- panels ---------- */
+
+/* Floating material, not a flat box: content behind it (the page's own dark
+   gradient) shows through a blur, and a bright inset top edge reads as light
+   catching glass. Panels are the biggest surfaces on the page, so they carry
+   the strongest blur in the material system (see --glass-blur/--glass-edge). */
+.panel {
+  background: linear-gradient(180deg, rgba(13, 43, 82, .82), rgba(9, 30, 58, .78));
+  border: 1px solid var(--line); border-left: 4px solid var(--gold);
+  box-shadow: var(--glass-edge);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  padding: var(--grid);
+}
+.panel + .panel { margin-top: 18px; }
+
+h2, h3 {
+  margin: 0 0 16px;
+  font-style: italic; font-weight: 800; text-transform: uppercase;
+  letter-spacing: .01em; line-height: 1.15;
+}
+h2 { font-size: clamp(21px, 2.6vw, 28px); }
+h3 { font-size: 15px; letter-spacing: .07em; color: var(--gold); margin-bottom: 12px; }
+
+/* Controls and notes sit side by side; the ROM panel spans alone above them. */
+.cols { display: grid; gap: 18px; align-items: start;
+        grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
+@media (max-width: 800px) { .cols { grid-template-columns: 1fr; } }
+
+/* ---------- drop zone ---------- */
+
+.drop {
+  border: 2px dashed rgba(255, 196, 46, .45); border-radius: 3px;
+  background: rgba(255, 196, 46, .05);
+  padding: 34px 22px; text-align: center; cursor: pointer;
+  transition: background .16s var(--ease-out), border-color .16s var(--ease-out),
+              transform .1s var(--ease-out);
+  -webkit-tap-highlight-color: transparent;
+}
+.drop:hover, .drop:focus-visible {
+  background: rgba(255, 196, 46, .1); border-color: var(--gold); outline: none;
+}
+.drop:active { transform: scale(.995); background: rgba(255, 196, 46, .14); }
+/* An active drag has real momentum behind it — the only interaction on this
+   page a user "throws" rather than taps — so this is the one place a slight
+   spring overshoot earns its keep (apple-design §4: bounce only where a
+   gesture carried it in) rather than the critically-damped --ease-out used
+   for every plain tap/hover state above. */
+.drop.over {
+  background: rgba(255, 196, 46, .18); border-color: var(--gold); border-style: solid;
+  transform: scale(1.008);
+  transition: background .16s var(--ease-spring), border-color .16s var(--ease-spring),
+              transform .22s var(--ease-spring);
+}
+.drop-icon { width: 32px; height: 32px; color: var(--gold); margin-bottom: 4px; }
+.drop-title { margin: 0 0 6px; font-size: 17px; font-weight: 650; }
+.drop-title .link { color: var(--gold); text-decoration: underline; }
+.drop-sub { margin: 0; font-size: 13px; color: var(--ink-dim); }
+code {
+  background: rgba(255, 255, 255, .08); border-radius: 3px;
+  padding: 1px 6px; font-size: 12.5px;
+}
+
+#rom-status { min-height: 22px; margin: 14px 0 0; text-align: center; font-size: 14px; }
+
+/* ---------- buttons ---------- */
+
+.actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 18px; }
+
+.btn {
+  font: inherit; font-weight: 800; cursor: pointer; border: 0;
+  transition: filter .12s var(--ease-out), opacity .12s var(--ease-out),
+              transform .1s var(--ease-out), background-color .1s var(--ease-out),
+              border-color .1s var(--ease-out), box-shadow .1s var(--ease-out);
+  /* The system tap-highlight box would otherwise flash under our own
+     pointer-down feedback below — one response per tap, not two. */
+  -webkit-tap-highlight-color: transparent;
+}
+.btn:active:not(:disabled) { transform: translateY(1px); }
+
+/* Skewed like a decal. The label counter-skews so the text stays upright. */
+.btn-primary {
+  padding: 14px 40px; border-radius: 2px; transform: skewX(-9deg);
+  background: linear-gradient(180deg, var(--gold) 0%, var(--gold-deep) 100%);
+  color: #33220a; font-size: 17px; font-style: italic;
+  text-transform: uppercase; letter-spacing: .05em;
+  box-shadow: 0 6px 18px rgba(245, 166, 35, .3), inset 0 1px 0 rgba(255, 255, 255, .55);
+}
+.btn-primary > span { display: inline-block; transform: skewX(9deg); }
+.btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+/* Feedback lands the instant a finger/pointer goes down, not on release (see
+   apple-design §1) — the skew is part of the identity, so press keeps it
+   rather than un-skewing on tap, and adds a small press-in scale on top. */
+.btn-primary:active:not(:disabled) {
+  transform: skewX(-9deg) scale(.97); filter: brightness(.95);
+  box-shadow: 0 3px 10px rgba(245, 166, 35, .28), inset 0 1px 0 rgba(255, 255, 255, .4);
+}
+.btn-primary:disabled { opacity: .38; cursor: not-allowed; box-shadow: none; }
+
+.btn-ghost {
+  padding: 12px 18px; border-radius: 2px; background: transparent;
+  color: var(--ink-dim); border: 1px solid var(--line); font-weight: 600;
+}
+.btn-ghost:hover { color: var(--ink); border-color: rgba(160, 190, 230, .55); }
+.btn-ghost:active:not(:disabled) {
+  transform: scale(.97); color: var(--ink);
+  background: rgba(160, 190, 230, .1); border-color: rgba(160, 190, 230, .55);
+}
+.btn-ghost:disabled { opacity: .42; cursor: not-allowed; }
+
+/* Destructive. Same ghost shape so it does not shout from the page, but outlined
+   in the error red the .err status colour already uses, so "this one deletes
+   something" reads before the label does. It confirms before acting. */
+.btn-danger {
+  padding: 12px 18px; border-radius: 2px; background: transparent;
+  color: var(--err); border: 1px solid rgba(255, 129, 137, .45); font-weight: 700;
+}
+.btn-danger:hover:not(:disabled) {
+  color: #fff; background: rgba(255, 129, 137, .14);
+  border-color: rgba(255, 129, 137, .8);
+}
+.btn-danger:active:not(:disabled) {
+  transform: scale(.97); color: #fff;
+  background: rgba(255, 129, 137, .26); border-color: rgba(255, 129, 137, .9);
+}
+.btn-danger:disabled { opacity: .45; cursor: not-allowed; }
+
+/* #save-status mirrors #rom-status: the shell ASSIGNS className on it, so layout
+   hangs off the id and .err/.ok stay colour-only. */
+#save-status { min-height: 22px; margin: 12px 0 0; font-size: 14px; }
+
+/* ---------- save ownership / editor ---------- */
+
+.save-drop {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px dashed rgba(160, 190, 230, .45);
+  color: var(--ink-dim);
+  text-align: center;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background .16s var(--ease-out), border-color .16s var(--ease-out),
+              color .16s var(--ease-out), transform .1s var(--ease-out);
+  -webkit-tap-highlight-color: transparent;
+}
+.save-drop.over,
+.save-drop:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+  border-color: var(--gold);
+  color: var(--ink);
+  background: rgba(255, 196, 46, .08);
+}
+.save-drop:active { transform: scale(.99); background: rgba(255, 196, 46, .1); }
+
+#save-dialog {
+  width: min(960px, calc(100vw - 28px));
+  max-height: calc(100vh - 28px);
+  padding: 0;
+  border: 1px solid rgba(160, 190, 230, .45);
+  border-left: 4px solid var(--gold);
+  background: var(--navy-2);
+  color: var(--ink);
+  overflow: auto;
+  /* Materialize rather than just fade (apple-design §12): scale and opacity
+     move together so the sheet reads as arriving, not blinking on. Browsers
+     without discrete-property transitions just show/hide it instantly, same
+     as before this pass — purely additive. */
+  opacity: 1;
+  transform: scale(1);
+  transition: opacity .22s var(--ease-out), transform .22s var(--ease-out),
+              overlay .22s var(--ease-out) allow-discrete,
+              display .22s var(--ease-out) allow-discrete;
+}
+@starting-style {
+  #save-dialog[open] { opacity: 0; transform: scale(.96); }
+}
+#save-dialog::backdrop {
+  background: rgba(0, 8, 20, .78);
+  transition: background-color .22s var(--ease-out),
+              overlay .22s var(--ease-out) allow-discrete,
+              display .22s var(--ease-out) allow-discrete;
+}
+@starting-style {
+  #save-dialog[open]::backdrop { background-color: rgba(0, 8, 20, 0); }
+}
+.save-dialog-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px var(--grid);
+  border-bottom: 1px solid var(--line);
+  background: rgba(6, 21, 41, .97);
+}
+.save-dialog-head h2 { margin: 0; }
+#save-dialog-body { padding: var(--grid); }
+#save-dialog > #save-dialog-status {
+  min-height: 22px;
+  margin: 0 var(--grid);
+  font-size: 14px;
+}
+#save-dialog > #save-dialog-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin: 0;
+  padding: 16px var(--grid);
+  border-top: 1px solid var(--line);
+  background: rgba(6, 21, 41, .97);
+}
+
+.save-summary,
+.save-editor-card,
+.save-editor-review {
+  margin: 0 0 18px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  background: rgba(13, 43, 82, .72);
+}
+.save-summary h3,
+.save-editor-card h3 { margin-bottom: 10px; }
+.save-summary ul,
+.save-editor-review ul {
+  margin: 10px 0 0;
+  padding-left: 20px;
+  color: var(--ink-dim);
+  font-size: 13px;
+}
+.save-digest {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink-dim);
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.save-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+  margin: 12px 0;
+}
+.save-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(96px, .7fr);
+  align-items: center;
+  gap: 10px;
+  color: var(--ink-dim);
+  font-size: 13px;
+}
+.save-field input,
+.save-field select {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--navy);
+  color: var(--ink);
+  font: inherit;
+}
+.save-field input:focus-visible,
+.save-field select:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 1px;
+}
+.save-editor-card fieldset {
+  margin: 16px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+}
+.save-editor-card legend {
+  padding: 0 7px;
+  color: var(--gold);
+  font-size: 12px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.save-check-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+}
+.save-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-dim);
+  font-size: 13px;
+}
+.save-check input { accent-color: var(--gold); }
+.save-editor-card details {
+  margin: 14px 0;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.save-editor-card summary {
+  cursor: pointer;
+  color: var(--gold);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+@media (max-width: 700px) {
+  #save-dialog {
+    width: calc(100vw - 12px);
+    max-height: calc(100vh - 12px);
+  }
+  .save-fields,
+  .save-check-grid { grid-template-columns: 1fr; }
+  .save-field { grid-template-columns: minmax(0, 1fr) minmax(88px, .65fr); }
+  .save-dialog-head { align-items: flex-start; }
+}
+
+.privacy {
+  margin: 18px 0 0; padding-top: 16px; border-top: 1px solid var(--line);
+  font-size: 13px; line-height: 1.6; color: var(--ink-dim);
+}
+.privacy strong { color: var(--ink); }
+
+/* ---------- controls / notes ---------- */
+
+.keys { display: grid; grid-template-columns: auto 1fr; gap: 7px 14px; margin: 0; font-size: 14px; }
+.keys dt { text-align: right; white-space: nowrap; }
+.keys dd { margin: 0; color: var(--ink-dim); }
+.keys .alt { color: var(--ink-dim); font-size: 12px; }
+.keys dd strong { color: var(--gold); font-weight: 650; }
+
+kbd {
+  display: inline-block; min-width: 22px; padding: 2px 6px; margin-right: 3px;
+  background: linear-gradient(180deg, #24507f, #16305a);
+  border: 1px solid rgba(150, 185, 230, .32);
+  border-bottom-width: 2px; border-radius: 4px;
+  font: 650 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center;
+}
+
+.tip {
+  margin: 16px 0 0; padding: 10px 12px;
+  background: rgba(255, 196, 46, .08); border-left: 3px solid var(--gold);
+  font-size: 13px; line-height: 1.55;
+}
+.tip strong { color: var(--gold); }
+
+.notes { margin: 0; padding-left: 18px; font-size: 14px; color: var(--ink-dim); }
+.notes li { margin-bottom: 9px; }
+.notes strong { color: var(--ink); }
+
+.fine { margin: 12px 0 0; font-size: 12.5px; color: var(--ink-dim); }
+
+.foot { color: var(--ink-dim); font-size: 12.5px; }
+.foot p { margin: 6px 0; max-width: 74ch; }
+
+/* ---------- game stage ----------
+   The shell keeps the canvas at the live browser aspect and updates its backing
+   store on resize/fullscreen/orientation changes. The engine handles 3D framing
+   and the 4:3 UI safe area; CSS must not impose a second letterbox policy. */
+
+#stage {
+  position: fixed; inset: 0; z-index: 10;
+  display: flex; align-items: center; justify-content: center; background: #000;
+}
+#stage[hidden] { display: none; }
+
+#canvas {
+  display: block; width: 100vw; height: 100vh;
+  max-width: 100vw; max-height: 100vh;
+  /* iOS Safari: 100vh includes the area behind the collapsing toolbar, which
+   * squeezed and mis-centered the game. Dynamic viewport units track the
+   * REAL visible height; older engines keep the vh fallback above. */
+  width: 100dvw; height: 100dvh;
+  max-width: 100dvw; max-height: 100dvh;
+  background: #000; outline: none;
+  /* Always suppress browser touch gestures on the live game surface — with
+   * the overlay hidden (gamepad pairing, screenshots) a pinch would otherwise
+   * zoom the viewport mid-race. Mouse/keyboard input is unaffected. */
+  touch-action: none;
+}
+
+/* Same floating-material recipe as the touch overlay chrome (blur + bright
+   top edge) so the fullscreen control reads as one family of glass, whether
+   or not the touch pad is on screen next to it. */
+.fs-btn {
+  position: fixed; right: 14px; bottom: 14px; z-index: 11;
+  width: 42px; height: 42px; border-radius: 4px; cursor: pointer;
+  background: rgba(8, 22, 44, .68); color: var(--ink);
+  border: 1px solid rgba(150, 185, 230, .3);
+  box-shadow: var(--glass-edge);
+  backdrop-filter: blur(14px) saturate(145%);
+  -webkit-backdrop-filter: blur(14px) saturate(145%);
+  font-size: 18px; line-height: 1; opacity: .35;
+  transition: opacity .16s var(--ease-out), transform .1s var(--ease-out),
+              background-color .1s var(--ease-out);
+  -webkit-tap-highlight-color: transparent;
+}
+.fs-btn:hover, .fs-btn:focus-visible { opacity: 1; outline: none; }
+.fs-btn:active { opacity: 1; transform: scale(.92); background: rgba(8, 22, 44, .85); }
+.fs-btn { touch-action: manipulation; }
+/* With the touch overlay active, the bottom-right corner belongs to the
+ * Go/Brake action cluster (z-index 13, pointer-events auto) — the fullscreen
+ * button underneath it was unreachable on phones. Move it to the free
+ * top-right corner, above the overlay chrome. */
+#stage.touch-ui-active .fs-btn {
+  top: max(12px, env(safe-area-inset-top));
+  right: max(14px, calc(env(safe-area-inset-right) + 7px));
+  bottom: auto;
+  z-index: 16;
+  opacity: .55;
+}
+
+/* ---------- mobile touch controller ----------
+   Touch chrome floats over the game without changing its render aspect. The
+   controls sit inside safe-area insets, use real analog stick travel, and leave
+   the center of the image unobstructed. Only this layer suppresses browser
+   gestures; the launcher remains normally zoomable and scrollable. */
+
+.touch-toggle,
+.touch-controls { display: none; }
+
+.touch-toggle:not([hidden]) {
+  position: fixed;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  left: max(12px, env(safe-area-inset-left));
+  top: max(12px, env(safe-area-inset-top));
+  z-index: 15;
+  min-height: 44px;
+  padding: 0 13px;
+  border: 1px solid rgba(220, 235, 255, .34);
+  border-radius: 999px;
+  background: rgba(5, 22, 43, .62);
+  color: #f3f7ff;
+  box-shadow: 0 8px 24px rgba(0, 8, 24, .2),
+              inset 0 1px 0 rgba(255, 255, 255, .14);
+  backdrop-filter: blur(16px) saturate(145%);
+  -webkit-backdrop-filter: blur(16px) saturate(145%);
+  font: 700 12px/1 system-ui, sans-serif;
+  letter-spacing: .01em;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  opacity: .7;
+  transition: opacity .16s var(--ease-out), transform .1s var(--ease-out),
+              background-color .1s var(--ease-out);
+}
+.touch-toggle:active { transform: scale(.96); opacity: 1; }
+.touch-toggle:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.touch-controls:not([hidden]) {
+  --touch-size: clamp(126px, min(27vw, 43vh), 174px);
+  position: fixed;
+  inset: 0;
+  z-index: 13;
+  display: block;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.touch-controls button,
+.touch-stick {
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Pause: DKR's HUD owns the top strip (position, lap, bananas, time), so the
+ * old top-center pill sat on the banana counter and needed a reach across
+ * the screen. Bottom-center is view-safe (road surface), one small thumb
+ * hop from either resting position, and mostly transparent at rest. */
+.touch-pause {
+  position: fixed;
+  left: 50%;
+  bottom: max(10px, env(safe-area-inset-bottom));
+  top: auto;
+  transform: translateX(-50%);
+  /* Paint and hit-test ABOVE the action cluster: in portrait the cluster box
+   * overlaps this spot, and a Pause tap must never read as throttle. */
+  z-index: 1;
+  opacity: .55;
+  transition: opacity .16s var(--ease-out), transform .1s var(--ease-out),
+              background-color .1s var(--ease-out), border-color .1s var(--ease-out),
+              box-shadow .1s var(--ease-out);
+  min-width: 48px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid rgba(220, 235, 255, .34);
+  border-radius: 999px;
+  background: rgba(5, 22, 43, .62);
+  color: #f3f7ff;
+  box-shadow: 0 8px 24px rgba(0, 8, 24, .2),
+              inset 0 1px 0 rgba(255, 255, 255, .14);
+  backdrop-filter: blur(16px) saturate(145%);
+  -webkit-backdrop-filter: blur(16px) saturate(145%);
+  font: 750 12px/1 system-ui, sans-serif;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+}
+
+.touch-stick {
+  position: fixed;
+  left: max(14px, calc(env(safe-area-inset-left) + 8px));
+  bottom: max(14px, calc(env(safe-area-inset-bottom) + 8px));
+  width: var(--touch-size);
+  height: var(--touch-size);
+  border-radius: 50%;
+}
+.touch-stick-ring {
+  position: absolute;
+  inset: 9%;
+  border: 1px solid rgba(225, 238, 255, .3);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle,
+      rgba(75, 125, 185, .06) 0 35%,
+      rgba(5, 22, 43, .48) 36% 100%);
+  box-shadow: 0 12px 32px rgba(0, 7, 22, .25),
+              inset 0 1px 0 rgba(255, 255, 255, .13);
+  backdrop-filter: blur(14px) saturate(130%);
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
+  /* Highlights the ring on grab; the knob itself (tracked 1:1 to the finger)
+     deliberately carries no transition — see apple-design §2/§11. */
+  transition: border-color .12s var(--ease-out), background .12s var(--ease-out);
+}
+.touch-stick-ring::before,
+.touch-stick-ring::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  background: rgba(224, 237, 255, .13);
+  transform: translate(-50%, -50%);
+}
+.touch-stick-ring::before { width: 54%; height: 1px; }
+.touch-stick-ring::after { width: 1px; height: 54%; }
+.touch-stick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 38%;
+  height: 38%;
+  margin-left: -19%;
+  margin-top: -19%;
+  border: 1px solid rgba(255, 255, 255, .48);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 38% 30%, #ffe18a 0 8%,
+      var(--gold) 32%, var(--gold-deep) 100%);
+  box-shadow: 0 7px 18px rgba(0, 7, 22, .34),
+              inset 0 1px 1px rgba(255, 255, 255, .55);
+  will-change: transform;
+}
+.touch-stick-label {
+  position: absolute;
+  left: 50%;
+  bottom: -1px;
+  transform: translateX(-50%);
+  color: rgba(235, 243, 255, .62);
+  font: 750 9px/1 system-ui, sans-serif;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+.touch-stick.is-active .touch-stick-ring {
+  border-color: rgba(255, 216, 106, .55);
+  background:
+    radial-gradient(circle,
+      rgba(255, 196, 46, .08) 0 35%,
+      rgba(5, 22, 43, .58) 36% 100%);
+}
+
+.touch-actions {
+  position: fixed;
+  right: max(13px, calc(env(safe-area-inset-right) + 7px));
+  bottom: max(12px, calc(env(safe-area-inset-bottom) + 6px));
+  width: calc(var(--touch-size) * 1.27);
+  height: calc(var(--touch-size) * 1.08);
+  /* The whole cluster box is a legitimate hit/capture target: a touch that
+   * lands in a gap still reaches the pad handler (nearest zone within reach
+   * accelerates — the pad IS the throttle), and pointer capture is requested
+   * against a hit-testable element. */
+  pointer-events: auto;
+  touch-action: none;
+}
+.touch-action {
+  position: absolute;
+  display: grid;
+  place-content: center;
+  gap: 1px;
+  padding: 0;
+  border: 1px solid rgba(226, 238, 255, .38);
+  border-radius: 50%;
+  background: rgba(5, 22, 43, .6);
+  color: #f7faff;
+  box-shadow: 0 8px 22px rgba(0, 7, 22, .28),
+              inset 0 1px 0 rgba(255, 255, 255, .16);
+  backdrop-filter: blur(14px) saturate(145%);
+  -webkit-backdrop-filter: blur(14px) saturate(145%);
+  font: 800 clamp(10px, 2.7vh, 13px)/1 system-ui, sans-serif;
+  letter-spacing: -.01em;
+  will-change: transform;
+  /* transform is deliberately NOT in this transition (and never should be):
+     these are exactly the elements padRects()/zoneAt() measures with
+     getBoundingClientRect() for slide-to-chord hit-testing, and that call
+     returns the POST-transform box. An animated scale would let a second
+     finger's pointerdown sample a mid-tween rect and shift its zone — a
+     real change to touch geometry, not just visuals (apple-design's own
+     "respond on pointer-down, instantly" also argues for zero delay here).
+     Only the non-geometry paint properties get the smoothing. */
+  transition: background-color .1s var(--ease-out), border-color .1s var(--ease-out),
+              box-shadow .1s var(--ease-out);
+}
+.touch-action small {
+  color: rgba(230, 239, 252, .58);
+  font: 750 8px/1 system-ui, sans-serif;
+}
+.touch-action.is-pressed,
+.touch-pause.is-pressed {
+  transform: scale(.91);
+  border-color: rgba(255, 228, 146, .9);
+  background: rgba(245, 166, 35, .82);
+  color: #241808;
+  box-shadow: 0 3px 10px rgba(0, 7, 22, .25),
+              inset 0 1px 0 rgba(255, 255, 255, .48);
+}
+.touch-pause.is-pressed { transform: translateX(-50%) scale(.91); opacity: 1; }
+.touch-pause:hover, .touch-pause:focus-visible, .touch-pause:active { opacity: 1; }
+.touch-action.is-pressed small { color: rgba(36, 24, 8, .62); }
+.touch-action:focus-visible,
+.touch-pause:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+.touch-go {
+  right: 0;
+  bottom: 0;
+  width: 47%;
+  aspect-ratio: 1;
+  border-color: rgba(255, 216, 106, .7);
+  background: rgba(139, 91, 6, .58);
+  font-size: clamp(13px, 3.4vh, 17px);
+}
+.touch-drift {
+  left: 0;
+  bottom: 0;
+  width: 40%;
+  aspect-ratio: 1;
+}
+/* Thumb-arc layout for the slide-to-chord pad: Go anchors the corner where
+ * the thumb rests; the most frequent chord (Drift) is one easy horizontal
+ * slide inboard; Item is one vertical slide up; Brake sits on the deliberate
+ * diagonal (hardest to hit by accident — braking should never be a slip);
+ * Look tucks into the center pocket. Gaps between zones are covered by the
+ * pad's zone-retention rule, so they never drop the throttle. */
+.touch-item {
+  right: 2%;
+  top: 0;
+  width: 38%;
+  aspect-ratio: 1;
+}
+.touch-brake {
+  left: 2%;
+  top: 4%;
+  width: 33%;
+  aspect-ratio: 1;
+}
+.touch-look {
+  left: 30%;
+  top: 28%;
+  width: 25%;
+  /* Hold the 44px comfortable-touch floor a mid-race rear-view button
+   * needs even at the smallest cluster size. */
+  min-width: 44px;
+  min-height: 44px;
+  aspect-ratio: 1;
+  color: rgba(241, 247, 255, .84);
+  font-size: 9px;
+}
+
+.touch-rotate-hint {
+  display: none;
+  position: fixed;
+  left: 50%;
+  top: calc(max(62px, env(safe-area-inset-top) + 58px));
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  margin: 0;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: rgba(5, 22, 43, .7);
+  color: rgba(241, 247, 255, .82);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  font: 650 11px/1.3 system-ui, sans-serif;
+  text-align: center;
+}
+
+/* (fs-btn relocation lives with the fullscreen rules above — one owner.) */
+#stage.touch-ui-active #canvas {
+  touch-action: none;
+}
+#stage.touch-ui-active .fps {
+  left: 50%;
+  bottom: auto;
+  top: calc(max(58px, env(safe-area-inset-top) + 54px));
+  transform: translateX(-50%);
+}
+
+@media (orientation: portrait) and (max-width: 720px) {
+  .touch-controls:not([hidden]) {
+    --touch-size: clamp(132px, 39vw, 174px);
+  }
+  .touch-rotate-hint { display: block; }
+  .touch-toggle-label { display: none; }
+  .touch-toggle:not([hidden]) {
+    width: 42px;
+    justify-content: center;
+    padding: 0;
+  }
+}
+
+@media (max-height: 420px) {
+  .touch-controls:not([hidden]) {
+    --touch-size: clamp(112px, 41vh, 150px);
+  }
+  .touch-toggle:not([hidden]),
+  .touch-pause,
+  #stage.touch-ui-active .fs-btn {
+    min-height: 44px;
+    height: 44px;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .touch-toggle:not([hidden]),
+  .touch-pause,
+  .touch-action,
+  .touch-stick-ring,
+  .touch-rotate-hint,
+  .fs-btn {
+    background: rgba(5, 22, 43, .94);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  /* Launcher-side glass: same instruction — go frosty/solid rather than
+     leaning on a blur the user asked us not to render. */
+  .panel {
+    background: rgb(15, 39, 71);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .quality {
+    background: rgba(10, 36, 71, .92);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .touch-toggle:not([hidden]),
+  .touch-pause,
+  .touch-action,
+  .touch-stick-ring,
+  .fs-btn {
+    border-color: #fff;
+    background-color: rgba(0, 8, 20, .96);
+  }
+  .touch-stick-label,
+  .touch-action small { color: #fff; }
+  .panel { border-color: #fff; }
+  .quality { border-color: #fff; }
+}
+
+/* Frame-rate readout (F3). Deliberately plain — it is instrumentation. */
+.fps {
+  position: fixed; left: 12px; bottom: 12px; z-index: 12;
+  padding: 5px 10px; border-radius: 3px;
+  background: rgba(4, 16, 31, .82); border: 1px solid rgba(150, 185, 230, .35);
+  color: var(--gold); font: 650 12px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+#save-banner {
+  position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 20;
+  background: rgba(120, 20, 30, .95); color: #fff;
+  padding: 10px 18px; border-radius: 4px; font-size: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
+/* Links in body copy. The page had none until the known-issues block and the legal
+   line; without this they inherit the ink colour and read as plain text. */
+.notes a, .foot a {
+  color: var(--gold); text-decoration: underline;
+  transition: color .1s var(--ease-out);
+  -webkit-tap-highlight-color: transparent;
+}
+.notes a:hover, .foot a:hover { color: #ffd76a; }
+.notes a:active, .foot a:active { color: #ffe9a8; }
+
+/* --- Presentation controls (videoconf) --------------------------------- */
+.quality {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px 14px;
+  align-items: center;
+  margin: 18px 0 4px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(10, 36, 71, .45);
+  box-shadow: var(--glass-edge);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+}
+.quality-label {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink-dim);
+  letter-spacing: .01em;
+}
+.quality-select {
+  width: 100%;
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--navy);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px 10px;
+}
+.quality-select:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+.quality-note {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-dim);
+}
+@media (max-width: 520px) {
+  .quality { grid-template-columns: 1fr; gap: 6px; }
+}

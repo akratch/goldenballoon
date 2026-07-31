@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+#
+# make_public_source_archive.sh -- create a tracked-files-only public source
+# archive after running the public release guard.
+#
+# This intentionally uses `git archive`, not tar over the working directory, so
+# ignored local ROMs, extracted assets, screenshots, audio dumps, and build
+# products cannot be swept into a release artifact.
+#
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+ref="HEAD"
+out=""
+force=0
+
+usage() {
+  cat <<'USAGE'
+Usage: tools/make_public_source_archive.sh [--ref REF] [--out PATH] [--force]
+
+Creates a gzip-compressed public source archive from tracked git content only.
+The script fails if the non-ignored working tree is dirty, if release checks
+fail, or if the archive listing contains obvious ROM/media/build-artifact paths.
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --ref)
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+      ref="$2"
+      shift 2
+      ;;
+    --out)
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+      out="$2"
+      shift 2
+      ;;
+    --force)
+      force=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+commit="$(git rev-parse --verify "${ref}^{commit}")"
+short="$(git rev-parse --short=12 "$commit")"
+prefix="mdkr64-${short}"
+
+if [ -z "$out" ]; then
+  out="dist/${prefix}.tar.gz"
+fi
+
+dirty="$(git status --porcelain --untracked-files=all)"
+if [ -n "$dirty" ]; then
+  echo "Refusing to build a public archive with non-ignored working-tree changes:" >&2
+  printf '%s\n' "$dirty" >&2
+  exit 1
+fi
+
+if [ -e "$out" ] && [ "$force" -ne 1 ]; then
+  echo "Archive already exists: $out (use --force to replace)" >&2
+  exit 1
+fi
+
+echo "== Running release guard =="
+# MGB64's scripts/ci/check_release_ready.sh has no counterpart here; mdkr64
+# splits the same job across smaller, real tools already used by this repo's
+# own CI (see tools/create_public_launch_repo.sh for the same substitution).
+./tools/check_clean_room.sh
+python3 tools/check_markdown_links.py --repo-root .
+python3 tools/check_shell_syntax.py --repo-root .
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/mdkr64-archive.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+mkdir -p "$(dirname "$out")"
+tmparchive="$tmpdir/archive.tar.gz"
+listfile="$tmpdir/list.txt"
+
+echo
+echo "== Creating source archive =="
+git archive --format=tar --prefix="${prefix}/" "$commit" | gzip -n > "$tmparchive"
+tar -tzf "$tmparchive" > "$listfile"
+
+echo
+echo "== Validating archive listing =="
+# brand/appicon-source.png is hand-authored project branding (not ROM-derived)
+# — the same tracked exception as .gitignore / tools/check_clean_room.sh.
+forbidden="$(grep -E '\.(z64|n64|v64|rom|bin|bmp|png|jpe?g|gif|webp|ico|icns|ppm|raw|wav|mp3|ogg|flac|ctl|tbl|aifc|aiff|sbk|seq|cdata|dmg|zip|7z|tar|tgz|gz)$|(^|/)baserom|(^|/)[^/]+\.app(/|$)|(^|/)screenshot_[^/]*\.(bmp|png|jpe?g|gif|webp|ppm|raw|jsonl|mp4|mov|m4v|webm)$' "$listfile" \
+  | grep -v -E '/brand/appicon-source\.png$' || true)"
+if [ -n "$forbidden" ]; then
+  echo "Archive contains forbidden ROM/media/build-artifact path(s):" >&2
+  printf '%s\n' "$forbidden" >&2
+  exit 1
+fi
+
+entries="$(wc -l < "$listfile" | tr -d ' ')"
+mv "$tmparchive" "$out"
+shasum -a 256 "$out" > "${out}.sha256"
+
+echo "  OK -- archive listing contains ${entries} tracked entries."
+echo
+echo "Archive:  $out"
+echo "SHA-256:  $(cut -d' ' -f1 "${out}.sha256")"

@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- App identity -->
+	<!-- Player-facing product name. "mdkr64" stays the internal name (repo,
+	     CMake target, binary filename, env prefix); nothing a player reads
+	     says it. CFBundleName is what Finder/the Dock/About This Mac show, so
+	     both it and CFBundleDisplayName carry the brand. The bundle IDENTIFIER
+	     is deliberately unchanged -- it is an opaque key, and rotating it would
+	     orphan every existing install's preferences and signing history. -->
+	<key>CFBundleName</key>
+	<string>Golden Balloon</string>
+	<key>CFBundleDisplayName</key>
+	<string>Golden Balloon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.mdkr64.app</string>
+
+	<!-- Version strings -- both stamped by build_app_bundle.sh's --version
+	     flag (PlistBuddy), which defaults to the CMake MDKR_VERSION cache
+	     variable's own default (1.0.0). Keep this literal in sync as the
+	     human-readable fallback for anyone inspecting the template directly. -->
+	<key>CFBundleVersion</key>
+	<string>1.0.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+
+	<!-- Set by build_app_bundle.sh (PlistBuddy) to the one real executable:
+	     the app shell and the engine are the same binary. -->
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
+
+	<!-- Icon asset generated into Contents/Resources/AppIcon.icns by build_app_bundle.sh -->
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
+
+	<!-- Minimum deployment target; build_app_bundle.sh raises this
+	     automatically if the local SDL2 dylib requires a newer macOS. -->
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+
+	<!-- Retina / HiDPI support -->
+	<key>NSHighResolutionCapable</key>
+	<true/>
+
+	<!-- Let macOS pick integrated vs discrete GPU as needed -->
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+
+	<!-- Wording matches DISCLAIMER.md: unofficial fan project, not affiliated
+	     with/endorsed/sponsored by any rights holder. -->
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright &#xA9; 2026. Unofficial fan project; not affiliated with, endorsed by, or sponsored by Nintendo, Rare, Microsoft, or any other rights holder. See DISCLAIMER.md.</string>
+
+	<!-- Register as an alternate handler for N64 ROM files -->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>N64 ROM</string>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>z64</string>
+				<string>v64</string>
+				<string>n64</string>
+			</array>
+			<!-- Viewer — we read but never modify ROM files -->
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<!-- Alternate — don't steal the default association from emulators -->
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+		</dict>
+	</array>
+
+	<!-- SDL2 sets up its own NSApplication/Cocoa event loop internally when
+	     it creates the game window; this is still the correct principal
+	     class for a GUI app bundle even though there is no custom AppKit
+	     shell. -->
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+
+	<!-- macOS Sonoma (14+) Game Mode: higher scheduling priority, lower
+	     Bluetooth latency for controllers. Free performance win. -->
+	<key>GCSupportsGameMode</key>
+	<true/>
+
+</dict>
+</plist>

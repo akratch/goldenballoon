@@ -1,0 +1,3 @@
+# Idle into the first rolling title demo, then return to the title screen using
+# the same START edge a player would press.
+5400 START 4

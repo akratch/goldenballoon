@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Public launch uses local preflight evidence and starts with no hosted
+    # automation branches. Vulnerability alerts are enabled in repo settings.
+    open-pull-requests-limit: 0
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    labels:
+      - "build"
+      - "release-hygiene"
+
+# MGB64's dependabot.yml also has a "cargo" ecosystem block for
+# tools/asm-processor/rust (a vendored Rust build tool). mdkr64 has no
+# tools/asm-processor/ or any other vendored Rust code, so that block is
+# dropped rather than ported — add an ecosystem block here if mdkr64 ever
+# vendors a Rust (or other non-Actions) build dependency.

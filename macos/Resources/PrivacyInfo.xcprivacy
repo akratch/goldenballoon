@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  PrivacyInfo.xcprivacy — Required since Spring 2024 for apps using
+  certain Apple APIs. Declares which "required reason" APIs the app uses
+  and why. Without this, App Store Connect rejects the binary, and
+  Gatekeeper may warn users on direct distribution.
+
+  The declaration must match what the shipped binary actually calls. The
+  mdkr64 engine (platform/main_pc.c) is a plain C/SDL2 program that uses no
+  "required reason" API: ROM path state is kept in a plain text file rather
+  than NSUserDefaults, and there is no screenshot or file-timestamp feature.
+  An empty NSPrivacyAccessedAPITypes array is therefore the accurate
+  declaration. Adding either behaviour -- NSUserDefaults-backed preferences,
+  or reading/writing file timestamps -- requires a matching entry here.
+-->
+<plist version="1.0">
+<dict>
+    <!-- No tracking domains or tracking data collection -->
+    <key>NSPrivacyTracking</key>
+    <false/>
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array/>
+
+    <!-- No required-reason APIs are used yet (see header comment). -->
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array/>
+</dict>
+</plist>

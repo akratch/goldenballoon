@@ -1,0 +1,59 @@
+{
+  "schema": "mdkr64.oracle.route.v1",
+  "name": "title_to_options",
+  "description": "Title -> OPTIONS menu (menuId 12). First START reveals the START/OPTIONS menu (menu.c:3568), DOWN moves the highlight to OPTIONS, second START selects it. Mirrors tests/input_scripts/nav_to_options.txt.",
+  "native_cadence": "enhanced",
+  "native_synth_fields": 1,
+  "sync": {
+    "event": "title",
+    "native_frame": 1134,
+    "ares_frame": 1340
+  },
+  "native": {
+    "frames": 1520,
+    "dump_every": 20,
+    "dump_start": 1100
+  },
+  "ares": {
+    "frames": 1720,
+    "dump_every": 20,
+    "dump_start": 1300
+  },
+  "marks": [
+    {
+      "name": "title_menu",
+      "logical": 146
+    },
+    {
+      "name": "navigated",
+      "logical": 206
+    },
+    {
+      "name": "options",
+      "logical": 300
+    }
+  ],
+  "events": [
+    {
+      "frame": 1250,
+      "buttons": [
+        "start"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1310,
+      "buttons": [
+        "down"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1380,
+      "buttons": [
+        "start"
+      ],
+      "hold": 4
+    }
+  ]
+}

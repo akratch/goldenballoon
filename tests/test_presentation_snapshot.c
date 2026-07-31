@@ -1,0 +1,724 @@
+/*
+ * Presentation snapshot unit (spec §7, §12.2.5, §12.4; Phase 3 Wave A).
+ *
+ * The module is compiled standalone here — it deliberately contains no game
+ * header — so this test can stage lifecycle races that are impossible to
+ * provoke reliably inside a running race: freeing a slot and respawning into
+ * the exact same address inside one tick, an overflowing capture, a level
+ * transition between two ticks.
+ *
+ * Coverage:
+ *   1. identity + generation: a freed slot reused by a new spawn is never an
+ *      interpolation pair, even at the identical address;
+ *   2. shortest-arc angle wrap, including the 0x7FFF/0x8000 boundary and the
+ *      ambiguous half turn;
+ *   3. exact rational alpha endpoints: alpha 0 returns previous bits, alpha 1
+ *      returns current bits, bit for bit;
+ *   4. the discrete previous-until-complete selection rule;
+ *   5. discontinuity suppression (spawn and teleport draw current, unblended);
+ *   6. published-pair immutability while the next capture is in flight;
+ *   7. atomic overflow: a capture that overruns publishes nothing and the
+ *      previous pair is retained.
+ */
+#include <stdio.h>
+#include <string.h>
+
+#include "presentation_snapshot.h"
+
+static int failures;
+
+static void expect(int condition, const char *message) {
+    if (!condition) {
+        fprintf(stderr, "FAIL: %s\n", message);
+        failures++;
+    }
+}
+
+static int bits_equal(float a, float b) {
+    return memcmp(&a, &b, sizeof(float)) == 0;
+}
+
+/* Synthetic object addresses. Only their identity matters to the module. */
+static char s_slot_a[4];
+static char s_slot_b[4];
+
+static PresentationObjectEntry make_object(const void *address, float x,
+                                           float y, float z) {
+    PresentationObjectEntry sample;
+
+    memset(&sample, 0, sizeof(sample));
+    sample.address = address;
+    sample.position[0] = x;
+    sample.position[1] = y;
+    sample.position[2] = z;
+    sample.scale = 1.0f;
+    sample.model_index = 0;
+    sample.animation_id = 0;
+    sample.animation_frame = 0;
+    sample.opacity = 255;
+    return sample;
+}
+
+static PresentationCameraEntry make_camera(int camera_id, float x, float y,
+                                           float z) {
+    PresentationCameraEntry sample;
+
+    memset(&sample, 0, sizeof(sample));
+    sample.camera_id = camera_id;
+    sample.position[0] = x;
+    sample.position[1] = y;
+    sample.position[2] = z;
+    sample.fov = 60.0f;
+    sample.vertical_fov = 60.0f;
+    sample.aspect = 4.0f / 3.0f;
+    sample.near_plane = 10.0f;
+    sample.far_plane = 15000.0f;
+    sample.viewport[2] = 320.0f;
+    sample.viewport[3] = 240.0f;
+    return sample;
+}
+
+static void begin(void) {
+    presentation_snapshot_shutdown();
+    presentation_snapshot_set_enabled(true);
+}
+
+/* ---- 2. shortest-arc angle interpolation --------------------------------- */
+
+static void test_angle_shortest_arc(void) {
+    /* Plain interior case: no wrap involved. */
+    expect(presentation_lerp_angle(0, 1000, 1, 2) == 500,
+           "angle: interior midpoint");
+
+    /*
+     * The 0x7FFF/0x8000 boundary. 32767 -> -32768 is ONE step forward, not
+     * 65535 steps backward: the wrapped difference is +1, so the midpoint
+     * must stay at 32767 (truncation) and the endpoint must land exactly on
+     * -32768.
+     */
+    expect(presentation_lerp_angle(32767, -32768, 1, 2) == 32767,
+           "angle: 0x7FFF->0x8000 midpoint takes the +1 arc");
+    expect(presentation_lerp_angle(32767, -32768, 1, 1) == -32768,
+           "angle: 0x7FFF->0x8000 endpoint is exact");
+
+    /* And the same boundary crossed the other way: -32768 -> 32767 is one
+     * step BACKWARD, so the result wraps below 0x8000. */
+    expect(presentation_lerp_angle(-32768, 32767, 1, 2) == -32768,
+           "angle: 0x8000->0x7FFF midpoint takes the -1 arc");
+    expect(presentation_lerp_angle(-32768, 32767, 1, 1) == 32767,
+           "angle: 0x8000->0x7FFF endpoint is exact");
+
+    /*
+     * Crossing zero: 0x8000 apart is the ambiguous half turn and resolves
+     * negative; 0xC000 (-16384) is unambiguously the short way round
+     * backwards, NOT +49152 forwards.
+     */
+    expect(presentation_lerp_angle(0, (int16_t)0xC000, 1, 2) == -8192,
+           "angle: 0 -> 0xC000 takes the short negative arc");
+    expect(presentation_lerp_angle((int16_t)0xC000, 0, 1, 2) == -8192,
+           "angle: 0xC000 -> 0 takes the short positive arc");
+    expect(presentation_lerp_angle(0, (int16_t)0x8000, 1, 2) == -16384,
+           "angle: exact half turn resolves negative, deterministically");
+
+    /* Wrap through 0 the short way: 0xFF00 -> 0x0100 is +512, not -65024. */
+    expect(presentation_lerp_angle((int16_t)0xFF00, 0x0100, 1, 2) == 0,
+           "angle: wrap through zero interpolates the short way");
+
+    /* Endpoints of every case return the endpoint bits untouched. */
+    expect(presentation_lerp_angle(1234, -4321, 0, 2) == 1234,
+           "angle: alpha 0 is previous");
+    expect(presentation_lerp_angle(1234, -4321, 2, 2) == -4321,
+           "angle: alpha 1 is current");
+    expect(presentation_lerp_angle(1234, -4321, 9, 2) == -4321,
+           "angle: alpha > 1 clamps to current");
+    expect(presentation_lerp_angle(1234, -4321, 1, 0) == 1234,
+           "angle: zero denominator is previous");
+}
+
+/* ---- 3. exact rational alpha endpoints ----------------------------------- */
+
+static void test_exact_endpoints(void) {
+    /* A value that cannot survive a round trip through a sloppy blend. */
+    const float previous = 1.0000001f;
+    const float current = 16777217.0f;
+    const float a3[3] = { 0.1f, -12345.678f, 3.0e7f };
+    const float b3[3] = { 99999.9f, 0.0f, -1.0e-7f };
+    float out[3];
+
+    expect(bits_equal(presentation_lerp1(previous, current, 0, 3), previous),
+           "lerp1: alpha 0 returns previous bits exactly");
+    expect(bits_equal(presentation_lerp1(previous, current, 3, 3), current),
+           "lerp1: alpha 1 returns current bits exactly");
+    expect(bits_equal(presentation_lerp1(previous, current, 4, 3), current),
+           "lerp1: alpha > 1 clamps to current bits exactly");
+    expect(bits_equal(presentation_lerp1(previous, current, 1, 0), previous),
+           "lerp1: zero denominator returns previous bits exactly");
+
+    presentation_lerp3(a3, b3, 0, 7, out);
+    expect(bits_equal(out[0], a3[0]) && bits_equal(out[1], a3[1]) &&
+               bits_equal(out[2], a3[2]),
+           "lerp3: alpha 0 is previous, bit for bit, on all three axes");
+    presentation_lerp3(a3, b3, 7, 7, out);
+    expect(bits_equal(out[0], b3[0]) && bits_equal(out[1], b3[1]) &&
+               bits_equal(out[2], b3[2]),
+           "lerp3: alpha 1 is current, bit for bit, on all three axes");
+
+    /* The rational is honoured exactly, not via a pre-rounded float alpha:
+     * 1/3 of the way from 0 to 3 is 1. */
+    expect(presentation_lerp1(0.0f, 3.0f, 1, 3) == 1.0f,
+           "lerp1: exact rational thirds");
+    expect(presentation_alpha(1, 3) > 0.333333 &&
+               presentation_alpha(1, 3) < 0.333334,
+           "alpha: rational converted once, in double");
+    expect(presentation_alpha(0, 0) == 0.0,
+           "alpha: zero denominator is 0");
+    expect(presentation_alpha(5, 2) == 1.0, "alpha: clamps at 1");
+
+    /* Interior monotonicity across a large-magnitude interval. */
+    expect(presentation_lerp1(-1000.0f, 1000.0f, 1, 4) == -500.0f,
+           "lerp1: interior quarter");
+}
+
+/* ---- 4. the discrete selection rule -------------------------------------- */
+
+static void test_discrete_rule(void) {
+    expect(!presentation_discrete_use_current(0, 2),
+           "discrete: alpha 0 shows previous");
+    expect(!presentation_discrete_use_current(1, 2),
+           "discrete: alpha 0.5 STILL shows previous (not nearest-neighbour)");
+    expect(!presentation_discrete_use_current(999, 1000),
+           "discrete: alpha 0.999 still shows previous");
+    expect(presentation_discrete_use_current(1000, 1000),
+           "discrete: alpha 1 switches to current");
+    expect(presentation_discrete_use_current(3, 2),
+           "discrete: alpha > 1 shows current");
+    expect(!presentation_discrete_use_current(1, 0),
+           "discrete: zero denominator shows previous");
+}
+
+/* ---- 1. identity + generation across slot reuse -------------------------- */
+
+static void test_identity_generation_reuse(void) {
+    PresentationObjectPose pose;
+    PresentationObjectEntry sample;
+
+    begin();
+
+    /* Tick 1: object A at the origin. */
+    presentation_snapshot_note_spawn(s_slot_a);
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 0.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+
+    /* Tick 2: A moved 10 units. A normal, interpolable pair. */
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 10.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+
+    expect(presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose),
+           "identity: live object resolves");
+    expect(pose.interpolated == 1, "identity: matched pair interpolates");
+    expect(pose.position[0] == 5.0f, "identity: matched pair blends position");
+
+    /*
+     * THE CASE THIS MODULE EXISTS FOR. Between tick 2 and tick 3, A is freed
+     * and a new object B is allocated at the EXACT same address (DKR's pool
+     * recycles constantly). Keyed on the address alone, tick 2's pose and
+     * tick 3's pose look like one object that jumped; keyed on
+     * (address, generation) they are two different lives and must not pair.
+     */
+    presentation_snapshot_note_free(s_slot_a);
+    presentation_snapshot_note_spawn(s_slot_a); /* same address, new object */
+
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 20.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+
+    expect(presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose),
+           "identity: reused slot resolves as an object");
+    expect(pose.interpolated == 0,
+           "identity: reused slot does NOT interpolate from the dead object");
+    expect(pose.position[0] == 20.0f,
+           "identity: reused slot draws its own spawn pose verbatim");
+
+    /*
+     * And the generation really is what did it: the two published frames
+     * hold the same address with different generations.
+     */
+    {
+        const PresentationSnapshot *current = presentation_snapshot_current();
+        const PresentationSnapshot *previous =
+            presentation_snapshot_previous();
+        expect(current != NULL && previous != NULL &&
+                   current->object_count == 1 && previous->object_count == 1,
+               "identity: both frames hold the one entry");
+        if (current != NULL && previous != NULL && current->object_count == 1 &&
+            previous->object_count == 1) {
+            expect(current->objects[0].address == previous->objects[0].address,
+                   "identity: the address really is identical");
+            expect(current->objects[0].generation !=
+                       previous->objects[0].generation,
+                   "identity: the generation is what separates them");
+        }
+    }
+
+    /* Once the new object has a tick of history of its own it interpolates
+     * normally — the suppression lasts exactly one tick. */
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 30.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    expect(presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose),
+           "identity: respawned object resolves on its second tick");
+    expect(pose.interpolated == 1 && pose.position[0] == 25.0f,
+           "identity: respawned object interpolates from its own history");
+
+    /* A destroyed object is simply not resolvable — no gameplay presence and
+     * no visual tail owned by this module (spec §7). */
+    presentation_snapshot_note_free(s_slot_a);
+    presentation_snapshot_capture_begin();
+    presentation_snapshot_capture_commit();
+    expect(!presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose),
+           "identity: destroyed object does not resolve");
+}
+
+/* ---- 5. discontinuity suppression ---------------------------------------- */
+
+static void test_discontinuity(void) {
+    PresentationObjectPose pose;
+    PresentationObjectEntry sample;
+    PresentationSnapshotStats stats;
+
+    begin();
+
+    /* Spawn tick: no previous pose exists, so nothing to blend from. */
+    presentation_snapshot_note_spawn(s_slot_a);
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 100.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    expect(presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose),
+           "discontinuity: spawned object resolves");
+    expect(pose.interpolated == 0 && pose.position[0] == 100.0f,
+           "discontinuity: spawn draws the authoritative spawn pose");
+
+    /* Ordinary motion: interpolates. */
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 140.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose);
+    expect(pose.interpolated == 1 && pose.position[0] == 120.0f,
+           "discontinuity: ordinary motion still interpolates");
+
+    /* Just under the threshold is still motion. */
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 140.0f + 1999.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose);
+    expect(pose.interpolated == 1,
+           "discontinuity: 1999 units in one tick is (barely) motion");
+
+    /* Over the threshold on a single axis is a teleport: current pose, no
+     * blend, and it is counted. */
+    presentation_snapshot_get_stats(&stats);
+    {
+        const uint64_t before = stats.discontinuities;
+        presentation_snapshot_capture_begin();
+        sample = make_object(s_slot_a, 40000.0f, 0.0f, 0.0f);
+        presentation_snapshot_capture_object(&sample);
+        presentation_snapshot_capture_commit();
+        presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose);
+        expect(pose.interpolated == 0,
+               "discontinuity: teleport is not interpolated");
+        expect(pose.position[0] == 40000.0f,
+               "discontinuity: teleport draws the current pose");
+        presentation_snapshot_get_stats(&stats);
+        expect(stats.discontinuities == before + 1,
+               "discontinuity: the teleport is counted once");
+    }
+
+    /* The threshold is on the 3D distance, not any single axis: three
+     * components of 1500 each is 2598 units and must trip it. */
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 40000.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 41500.0f, 1500.0f, 1500.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose);
+    expect(pose.interpolated == 0,
+           "discontinuity: threshold applies to the 3D distance");
+
+    /*
+     * Level transition (spec §5): the stage reset drops history so the first
+     * tick of the new scene cannot blend from the old one, even for an
+     * address that happens to survive.
+     */
+    begin();
+    presentation_snapshot_note_spawn(s_slot_a);
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 0.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 4.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose);
+    expect(pose.interpolated == 1, "stage: interpolating before the reset");
+
+    presentation_snapshot_stage_reset();
+    expect(presentation_snapshot_current() == NULL &&
+               presentation_snapshot_previous() == NULL,
+           "stage: reset drops the published pair");
+    presentation_snapshot_note_spawn(s_slot_a);
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 8.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 12.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose);
+    expect(pose.interpolated == 1 && pose.position[0] == 10.0f,
+           "stage: the new scene builds its own history");
+    presentation_snapshot_get_stats(&stats);
+    expect(stats.resets == 1, "stage: the reset is counted");
+
+    /*
+     * A tick an object sits out is a gap, not motion: the pair is no longer
+     * adjacent and must not be blended across.
+     */
+    begin();
+    presentation_snapshot_note_spawn(s_slot_a);
+    presentation_snapshot_note_spawn(s_slot_b);
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 0.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    sample = make_object(s_slot_b, 0.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_capture_begin(); /* A absent this tick */
+    sample = make_object(s_slot_b, 2.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 4.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    sample = make_object(s_slot_b, 4.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose);
+    expect(pose.interpolated == 0,
+           "discontinuity: an object that missed a tick has no adjacent pair");
+    presentation_snapshot_resolve_object(s_slot_b, 1, 2, &pose);
+    expect(pose.interpolated == 1 && pose.position[0] == 3.0f,
+           "discontinuity: its neighbour is unaffected");
+}
+
+/* ---- 4b. discrete fields through the resolver ---------------------------- */
+
+static void test_resolved_fields(void) {
+    PresentationObjectPose pose;
+    PresentationObjectEntry sample;
+    PresentationCameraPose camera;
+    PresentationCameraEntry camera_sample;
+
+    begin();
+    presentation_snapshot_note_spawn(s_slot_a);
+
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 0.0f, 0.0f, 0.0f);
+    sample.scale = 1.0f;
+    sample.rotation_y = 0;
+    sample.opacity = 0;
+    sample.model_index = 0;
+    sample.animation_id = 7;
+    sample.animation_frame = 11;
+    presentation_snapshot_capture_object(&sample);
+    camera_sample = make_camera(0, 0.0f, 0.0f, 0.0f);
+    camera_sample.rotation_y = 0;
+    camera_sample.apply_shake = 0;
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 8.0f, 16.0f, -8.0f);
+    sample.scale = 3.0f;
+    sample.rotation_y = 4000;
+    sample.opacity = 200;
+    sample.model_index = 2;
+    sample.animation_id = 9;
+    sample.animation_frame = 13;
+    presentation_snapshot_capture_object(&sample);
+    camera_sample = make_camera(0, 40.0f, 0.0f, 0.0f);
+    camera_sample.rotation_y = 2000;
+    camera_sample.fov = 80.0f;
+    camera_sample.apply_shake = 1;
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+
+    /* Half way through the tick. */
+    expect(presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose),
+           "fields: resolves");
+    expect(pose.position[0] == 4.0f && pose.position[1] == 8.0f &&
+               pose.position[2] == -4.0f,
+           "fields: position is interpolated on all three axes");
+    expect(pose.scale == 2.0f, "fields: scale is a continuous scalar");
+    expect(pose.rotation_y == 2000, "fields: rotation is shortest-arc blended");
+    expect(pose.opacity == 100, "fields: opacity is a continuous scalar");
+    expect(pose.model_index == 0 && pose.animation_id == 7 &&
+               pose.animation_frame == 11,
+           "fields: discrete state holds PREVIOUS at alpha 0.5");
+
+    /* At alpha 1 every field is the current tick's, exactly. */
+    expect(presentation_snapshot_resolve_object(s_slot_a, 2, 2, &pose),
+           "fields: resolves at alpha 1");
+    expect(bits_equal(pose.position[0], 8.0f) &&
+               bits_equal(pose.position[1], 16.0f) &&
+               bits_equal(pose.position[2], -8.0f) &&
+               bits_equal(pose.scale, 3.0f) && pose.rotation_y == 4000 &&
+               pose.opacity == 200 && pose.model_index == 2 &&
+               pose.animation_id == 9 && pose.animation_frame == 13,
+           "fields: alpha 1 is the current tick, bit for bit");
+
+    /* At alpha 0 every field is the previous tick's, exactly. */
+    expect(presentation_snapshot_resolve_object(s_slot_a, 0, 2, &pose),
+           "fields: resolves at alpha 0");
+    expect(bits_equal(pose.position[0], 0.0f) &&
+               bits_equal(pose.scale, 1.0f) && pose.rotation_y == 0 &&
+               pose.opacity == 0 && pose.model_index == 0 &&
+               pose.animation_id == 7 && pose.animation_frame == 11,
+           "fields: alpha 0 is the previous tick, bit for bit");
+
+    /* Cameras use the same pair and the same alpha (spec §7). */
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &camera),
+           "camera: viewport 0 resolves");
+    expect(camera.interpolated == 1, "camera: matched viewport interpolates");
+    expect(camera.position[0] == 20.0f, "camera: position blends");
+    expect(camera.rotation_y == 1000, "camera: rotation is shortest-arc");
+    expect(camera.fov == 70.0f, "camera: FOV is a continuous projection input");
+    expect(camera.apply_shake == 0,
+           "camera: the shake flag is discrete, previous until complete");
+    expect(presentation_snapshot_resolve_camera(0, 2, 2, &camera) &&
+               bits_equal(camera.position[0], 40.0f) &&
+               bits_equal(camera.fov, 80.0f) && camera.apply_shake == 1,
+           "camera: alpha 1 is the current tick exactly");
+    expect(!presentation_snapshot_resolve_camera(3, 1, 2, &camera),
+           "camera: an unpublished viewport does not resolve");
+
+    /* A viewport that switches which gCameras[] entry it draws is a cut. */
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(4, 900.0f, 0.0f, 0.0f); /* cutscene bank */
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &camera),
+           "camera: cut viewport still resolves");
+    expect(camera.interpolated == 0 && camera.position[0] == 900.0f,
+           "camera: switching camera bank is a cut, not motion");
+}
+
+/* ---- 6. published-pair immutability -------------------------------------- */
+
+static void test_publish_immutability(void) {
+    PresentationObjectEntry sample;
+    PresentationSnapshot pinned_current;
+    PresentationSnapshot pinned_previous;
+    const PresentationSnapshot *current;
+    const PresentationSnapshot *previous;
+    PresentationObjectPose pose;
+
+    begin();
+    presentation_snapshot_note_spawn(s_slot_a);
+
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 1.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 2.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+
+    current = presentation_snapshot_current();
+    previous = presentation_snapshot_previous();
+    expect(current != NULL && previous != NULL,
+           "publish: a pair is published after two commits");
+    pinned_current = *current;
+    pinned_previous = *previous;
+
+    /*
+     * Now stage a THIRD capture without committing it, the way a render
+     * thread would be mid-frame when the next tick boundary arrives. The
+     * published pair must not move a byte — which is why the ring is three
+     * slots deep and not two.
+     */
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 99.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+
+    expect(presentation_snapshot_current() == current &&
+               presentation_snapshot_previous() == previous,
+           "publish: an in-flight capture does not move the published pair");
+    expect(memcmp(&pinned_current, current, sizeof(pinned_current)) == 0,
+           "publish: the published current is byte-identical mid-capture");
+    expect(memcmp(&pinned_previous, previous, sizeof(pinned_previous)) == 0,
+           "publish: the published previous is byte-identical mid-capture");
+    expect(presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose) &&
+               pose.position[0] == 1.5f,
+           "publish: consumers keep resolving the old pair mid-capture");
+
+    presentation_snapshot_capture_commit();
+    expect(presentation_snapshot_previous() == current,
+           "publish: commit promotes current to previous");
+    expect(presentation_snapshot_current()->generation ==
+               pinned_current.generation + 1,
+           "publish: the generation counter advances by one per publish");
+    expect(presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose) &&
+               pose.position[0] == 50.5f,
+           "publish: the new pair is live after commit");
+}
+
+/* ---- 7. atomic overflow with retention ----------------------------------- */
+
+static void test_overflow_is_atomic(void) {
+    static char slots[PRESENTATION_SNAPSHOT_MAX_OBJECTS + 8];
+    PresentationObjectEntry sample;
+    PresentationSnapshot pinned_current;
+    PresentationSnapshot pinned_previous;
+    PresentationSnapshotStats stats;
+    const PresentationSnapshot *current;
+    const PresentationSnapshot *previous;
+    PresentationObjectPose pose;
+    int index;
+
+    begin();
+    presentation_snapshot_note_spawn(s_slot_a);
+
+    /* Two good ticks, so there is a pair worth retaining. */
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 0.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 10.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+
+    current = presentation_snapshot_current();
+    previous = presentation_snapshot_previous();
+    pinned_current = *current;
+    pinned_previous = *previous;
+    presentation_snapshot_get_stats(&stats);
+    expect(stats.captures == 2, "overflow: two good captures so far");
+    expect(stats.objects_peak == 1, "overflow: peak tracks published frames");
+
+    /* A capture with more objects than the table can hold. */
+    presentation_snapshot_capture_begin();
+    for (index = 0; index < PRESENTATION_SNAPSHOT_MAX_OBJECTS + 4; index++) {
+        sample = make_object(&slots[index], (float)index, 0.0f, 0.0f);
+        presentation_snapshot_capture_object(&sample);
+    }
+    presentation_snapshot_capture_commit();
+
+    presentation_snapshot_get_stats(&stats);
+    expect(stats.overflows == 1, "overflow: the failure is counted");
+    expect(stats.captures == 2, "overflow: nothing new was published");
+    expect(stats.objects_peak == 1,
+           "overflow: a failed capture never touches the peak");
+    expect(presentation_snapshot_current() == current &&
+               presentation_snapshot_previous() == previous,
+           "overflow: the published pair is retained");
+    expect(memcmp(&pinned_current, current, sizeof(pinned_current)) == 0 &&
+               memcmp(&pinned_previous, previous, sizeof(pinned_previous)) == 0,
+           "overflow: the retained pair is byte-identical");
+    expect(presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose) &&
+               pose.interpolated == 1 && pose.position[0] == 5.0f,
+           "overflow: consumers still resolve the retained pair");
+    expect(!presentation_snapshot_resolve_object(&slots[0], 1, 2, &pose),
+           "overflow: not one entry of the failed capture is visible");
+
+    /*
+     * Recovery: the next well-sized capture publishes, and because the
+     * failed one never published, the object that WAS captured on both good
+     * ticks has a non-adjacent pair and correctly refuses to interpolate
+     * across the gap.
+     */
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 20.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_get_stats(&stats);
+    expect(stats.captures == 3, "overflow: capture resumes after the failure");
+    presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose);
+    expect(pose.interpolated == 0,
+           "overflow: no blend across the tick the failed capture ate");
+
+    /* A capture that overflows on CAMERAS fails just as whole. */
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 30.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_object(&sample);
+    for (index = 0; index < PRESENTATION_SNAPSHOT_MAX_VIEWPORTS + 1; index++) {
+        PresentationCameraEntry camera_sample = make_camera(index, 0, 0, 0);
+        presentation_snapshot_capture_camera(&camera_sample);
+    }
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_get_stats(&stats);
+    expect(stats.overflows == 2 && stats.captures == 3,
+           "overflow: a viewport overrun also fails the whole snapshot");
+}
+
+/* ---- seam ---------------------------------------------------------------- */
+
+static void test_disabled_seam(void) {
+    PresentationObjectEntry sample;
+    PresentationObjectPose pose;
+    PresentationSnapshotStats stats;
+
+    presentation_snapshot_shutdown();
+    presentation_snapshot_set_enabled(false);
+
+    presentation_snapshot_note_spawn(s_slot_a);
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 1.0f, 0.0f, 0.0f);
+    expect(!presentation_snapshot_capture_object(&sample),
+           "seam: capture is inert when the seam is off");
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_stage_reset();
+
+    expect(presentation_snapshot_current() == NULL &&
+               presentation_snapshot_previous() == NULL,
+           "seam: nothing is published when the seam is off");
+    expect(!presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose),
+           "seam: nothing resolves when the seam is off");
+    presentation_snapshot_get_stats(&stats);
+    expect(stats.captures == 0 && stats.overflows == 0 && stats.resets == 0,
+           "seam: no statistic moves when the seam is off");
+}
+
+int main(void) {
+    test_angle_shortest_arc();
+    test_exact_endpoints();
+    test_discrete_rule();
+    test_identity_generation_reuse();
+    test_discontinuity();
+    test_resolved_fields();
+    test_publish_immutability();
+    test_overflow_is_atomic();
+    test_disabled_seam();
+
+    if (failures != 0) {
+        fprintf(stderr, "presentation_snapshot: %d failure(s)\n", failures);
+        return 1;
+    }
+    printf("presentation_snapshot: all checks passed\n");
+    return 0;
+}

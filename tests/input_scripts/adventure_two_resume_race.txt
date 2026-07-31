@@ -1,0 +1,21 @@
+# Resume a checksum-valid Adventure Two save, then let MDKR_DRIVE_ROUTE enter
+# Dino Domain and its first mirrored race. The save and Adv2 unlock bit are
+# supplied by check_adventure_two.py.
+
+1250 START 4
+1330 START 4
+1450 A 4
+1540 A 4
+1750 A 4
+
+# GAME_SELECT: move from Adventure One (0) to Adventure Two (1).
+1840 DOWN 4
+1900 A 4
+
+# FILE_SELECT: the slot carries CUTSCENE_ADVENTURE_TWO, so it matches the mode.
+2050 A 4
+
+# Exercise the human steering-sign path after the race grid. MDKR_AUTOPILOT
+# subsequently supplies the racing line, so this probe cannot destabilise the
+# all-track progression sweep.
+4200 LEFT 4

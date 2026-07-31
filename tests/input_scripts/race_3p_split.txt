@@ -1,0 +1,44 @@
+# DKR regression fixture: title -> three-player Ancient Lake race.
+#
+# Each additional human joins and confirms from its own controller. The route
+# mirrors race_2p_split.txt's measured menu graph; with three players the race
+# uses VIEWPORT_LAYOUT_3_PLAYERS (three racer quadrants plus the shared
+# spectator/minimap quadrant).
+
+1250 START 4
+1330 START 4
+
+# Join players 2 and 3.
+1450 A 4 P2
+1490 A 4 P3
+
+# Confirm one character per controller, then accept the group.
+1580 A 4 P1
+1640 A 4 P2
+1700 A 4 P3
+1800 A 4 P1
+
+# Ancient Lake, vehicle confirmation by every player, CPU-count prompt, GO.
+2020 A 4 P1
+2170 A 4 P1
+2170 A 4 P2
+2170 A 4 P3
+2320 A 4 P1
+2470 A 4 P1
+
+# Exercise every physical input path once; MDKR_AUTOPILOT drives the racing line.
+# Long holds are deliberately forbidden here: menu input is edge-triggered, so a
+# held A would freeze the multiplayer post-race flow after the racers finish.
+2580 A 4 P1
+2580 A 4 P2
+2580 A 4 P3
+
+# Multiplayer post-race starts at FADE_OUT and accepts one A edge before loading
+# MENU_RESULTS. These spaced retries are harmless while anyone is still racing.
+7600 A 4 P1
+7900 A 4 P1
+8200 A 4 P1
+8500 A 4 P1
+8800 A 4 P1
+9100 A 4 P1
+9400 A 4 P1

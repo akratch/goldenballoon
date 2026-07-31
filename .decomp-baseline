@@ -1,0 +1,37 @@
+3b2dd520667ed676424f578145c0a1c7713a28b7  # decomp commit synced 2026-07-25
+#
+# This is a COMMIT, with no working-tree addendum: `git status --untracked-files=no`
+# in the decomp checkout is clean at this hash, so `theirs` for the next 3-way merge
+# is exactly this tree.
+#
+# It resolves the caveat the previous line carried ("527889b5 plus working-tree
+# func_80049794 rework in src/racer.c"). Two facts about that, recorded so nobody
+# has to re-derive them:
+#
+#  * 527889b5 was never an upstream commit. It is a local WIP commit in the decomp
+#    checkout ("Improve func_80017A18 WIP"), forked from upstream 851b15dd, and its
+#    only vendored-path content was the objects.c/tracks.c work that later landed
+#    upstream as PR #744 (trackbg_render_flashy) -- byte-identical, so it left
+#    nothing to merge. `git merge-base --is-ancestor 527889b5 HEAD` was false, which
+#    is why sync_decomp.sh's base blobs for that hash were only approximately right.
+#  * the uncommitted func_80049794 rework we vendored on top of it became upstream
+#    PR #747 verbatim. Verified at sync time: our game/src/racer.c already contained
+#    every line of the committed match; the whole delta 527889b5..3b2dd520 for that
+#    function was one stale comment.
+#
+# Anything vendored under game/{src,include,libultra} is base+NATIVE_PORT patches --
+# never re-copy, always 3-way merge. See docs/DECOMP_SYNC.md.
+#
+# ONE EXCEPTION, carried deliberately (wave "objcoll", 2026-07-26):
+#   game/src/objects.c's func_80017A18 + its objects.h declaration are NOT from
+#   this baseline. They are upstream 9da89ecb ("match: func_80017A18"), which
+#   lives only on the decomp branch match-func_80017A18, forked from 851b15dd --
+#   SEVEN commits BEHIND 3b2dd520, and `git merge-base --is-ancestor 3b2dd520
+#   9da89ecb` is FALSE.
+#
+#   So a sync from master will present the old `#ifdef NON_EQUIVALENT` +
+#   GLOBAL_ASM version as "theirs" and look like it wants to revert us. DO NOT
+#   TAKE IT until that branch merges upstream. Our copy of that function was
+#   verified byte-identical to 3b2dd520's before adoption, i.e. it carried no
+#   port patches, which is why replacing it wholesale was the correct 3-way
+#   resolution. Re-verify that equality if this is ever redone.

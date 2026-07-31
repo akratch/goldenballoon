@@ -1,0 +1,63 @@
+# DKR: TITLE -> a TWO-PLAYER split-screen race on Ancient Lake -> PAUSE ->
+# "SELECT TRACK", i.e. quit-to-title WITHOUT a level_load.
+#
+# This is the route the Phase 3 presentation-replay lifetime fix needs, and the
+# reason it needs its own fixture: every other race fixture either runs to the
+# results screen or is killed by the frame budget, and both of those reach the
+# next scene through level_load(), which retires the replay's held display list
+# via gfx_dkr_resource_generation_begin(). Quitting does NOT. thread3_main.c's
+# PAUSE_QUIT_TRACKS path calls unload_level_game() and then
+# load_menu_with_level_background(MENU_TRACK_SELECT, SPECIAL_MAP_ID_NO_LEVEL, 1),
+# and load_menu_with_level_background skips the level path entirely for that id
+# -- so the display-list heap and the level's geometry are freed while the
+# renderer still holds a bare pointer into them.
+#
+# Two players, because a 2P split is what makes the subloop's replay do real
+# work per present (two viewports, two interpolated view-projections) and
+# because alloc_displaylist_heap()'s free/realloc branch -- the third teardown
+# seam -- only fires on a player-count change.
+#
+# Drive with MDKR_AUTOPILOT=1, MDKR_TEST_REPLAY_WALK=1 under the ASan build.
+# The route below is race_2p_split.txt's up to the drive point; see that file
+# for why the two-player menu graph differs from every one-player route.
+
+# --- Title: reveal Start/Options, then select Character Select ---
+1250 START 4
+1330 START 4
+# --- PLAYER SELECT: player 2 joins on controller 2 ---
+1450 A 4 P2
+# --- PLAYER SELECT: each player confirms their own character ---
+1560 A 4 P1
+1670 A 4 P2
+# --- "OK?" -> TRACK_SELECT (no GAME_SELECT / CAUTION on a 2-player route) ---
+1780 A 4 P1
+# --- TRACK_SELECT world map: pick the world at cursor (0,0) = Ancient Lake ---
+2000 A 4 P1
+# --- Vehicle select (stage OPT_1): BOTH players must confirm ---
+2150 A 4 P1
+2150 A 4 P2
+# --- Racer-count prompt (stage OPT_2) ---
+2300 A 4 P1
+# --- GO -> level_load at ~frame 2491 ---
+2450 A 4 P1
+# --- Drive for a while so the replay has a real in-race display list to hold,
+# and so the subloop has been running for hundreds of presents before the free.
+2560 A 4 P1
+2560 A 4 P2
+
+# --- PAUSE. menu_pause_init() builds, for a 2P Tracks race on a RACETYPE_DEFAULT
+# course (menu.c:11005-11059):
+#     0 CONTINUE   1 RESTART RACE   2 SELECT TRACK   3 QUIT GAME
+# (no SELECT CHARACTER: that option is gIsInTracksMode && 1 player only.)
+# gLastPlayerWhoPaused is whichever pad HELD start, so pause and navigate on P1.
+3600 START 4 P1
+# --- Two DOWN edges to land on SELECT TRACK. menu_pause_loop reads
+# gControllersYAxisDirection, which update_controller_sticks() derives from the
+# analog stick, so the DOWN token (stick + D-pad) is what moves the cursor.
+# Spaced well apart: the axis is edge-triggered per stick re-centre.
+3700 DOWN 4 P1
+3820 DOWN 4 P1
+# --- Select it. gMenuDelay counts to 4 and then returns PAUSE_QUIT_TRACKS. ---
+3940 A 4 P1
+# --- Track select is now up over a freed level. Sit here: every present after
+# this point is one the replay must NOT service from the retired list.

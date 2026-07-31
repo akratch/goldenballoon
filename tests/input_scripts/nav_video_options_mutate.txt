@@ -1,0 +1,35 @@
+# DKR title -> OPTIONS(12) -> VIDEO OPTIONS(29), then exercise every setting.
+# The focused gate runs this only in a private cwd/MDKR_SAVE_DIR.
+1250 START 4
+1310 DOWN 4
+1380 START 4
+1520 DOWN 4
+1580 DOWN 4
+1640 DOWN 4
+1720 A 4
+
+# Presentation: Remastered -> Pure (coherent restart-staged preset).
+1860 RIGHT 4
+# Supersampling: Pure 1x -> 2x -> 3x (live; active launch began at 2x,
+# so the second edge proves the renderer really resizes).
+1920 DOWN 4
+1980 RIGHT 4
+2010 RIGHT 4
+# Aspect: Pure 4:3 -> 16:10 (live).
+2040 DOWN 4
+2100 RIGHT 4
+# Gameplay FOV: Authored -> 50 degrees (live).
+2160 DOWN 4
+2220 RIGHT 4
+# Filtering: Original -> Restored (restart staged, atomic pair).
+2280 DOWN 4
+2340 RIGHT 4
+# Remaster effects: Off -> On (restart staged).
+2400 DOWN 4
+2460 RIGHT 4
+# Accessibility: toggle subtitles.
+2520 DOWN 4
+2580 RIGHT 4
+# Return to root options.
+2640 DOWN 4
+2700 B 4

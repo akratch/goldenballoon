@@ -1,0 +1,76 @@
+name: web-demo
+
+# GUARDED PUBLISH. workflow_dispatch only -- this never fires on push, tag, or
+# schedule. Publishing a playable build is an owner decision made deliberately,
+# not a side effect of committing. (Same doctrine as mgb64's web-demo workflow.)
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write        # scoped to the Pages deployment only
+  id-token: write     # required by deploy-pages OIDC; grants nothing else
+
+concurrency: { group: pages, cancel-in-progress: true }
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # Actions pinned to commit SHAs, not tags: a tag can be moved, a SHA cannot.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: mymindstorm/setup-emsdk@6ab9eb1bda2574c4ddb79809fc9247783eaf9021 # v14
+        with: { version: "4.0.10" }
+
+      - name: Build (WebGPU browser target)
+        run: EMSDK_DIR="$EMSDK" tools/web/build_web.sh
+
+      # build_web.sh already enforces both of the following. They are repeated here
+      # so the release gate does not depend on a script the build could have
+      # skipped, and so the failure is visible as its own red step.
+      - name: Size budget (fail-closed)
+        run: |
+          set -euo pipefail
+          sz=$(stat -c%s dist/web/mdkr64_web.wasm)
+          save_sz=$(stat -c%s dist/web/mdkr-save-tools.wasm)
+          echo "wasm size: $sz bytes"
+          echo "save tools wasm size: $save_sz bytes"
+          test "$sz" -lt 41943040   # 40 MiB; Pages per-file limit is 100 MiB
+          test "$save_sz" -lt 524288
+
+      - name: ROM-absence guard (fail-closed)
+        # THE legal gate. Golden Balloon is bring-your-own-ROM: the player supplies
+        # a copy they own and it is read client-side, never uploaded. Nothing
+        # ROM-derived may ship. This proves that about the actual artifacts --
+        # structural header-magic checks in all three N64 byte orders at offset 0,
+        # plus the big-endian magic sequence anywhere in each file. See
+        # tools/check_no_rom.sh for why it is not a string search.
+        run: tools/check_no_rom.sh dist/web
+
+      - name: Browser save custody (ROM/WebGPU independent)
+        run: >-
+          python3 tests/check_browser_save_ui.py
+          --engine-dir dist/web
+          --shell-dir dist/web
+          --chrome google-chrome
+          --timeout 90
+
+      - name: Verify no ROM was committed to the tree either
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -iE '\.(z64|n64|v64)$'; then
+            echo "A ROM is tracked in git. Refusing to publish." >&2
+            exit 1
+          fi
+          echo "no ROM tracked in git"
+
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with: { path: dist/web }
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: { name: github-pages, url: "${{ steps.deployment.outputs.page_url }}" }
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

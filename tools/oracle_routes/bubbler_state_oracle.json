@@ -1,0 +1,72 @@
+{
+  "schema": "mdkr64.oracle.route.v1",
+  "name": "bubbler_state_oracle",
+  "description": "State-only US 1.1 Bubbler 1 oracle. Both runners follow the proven one-player Tracks route to Ancient Lake; a narrow level_load argument override retargets only that gameplay load to Bubbler 1 (course 52). Every racer is sampled after presentation and racer index 1 (Bubbler) is joined on the race clock. This characterizes authored 30 Hz and shipping 60 Hz native cadence against retail without changing retail gameplay code or hand-tuning the boss.",
+  "compare_frames": false,
+  "state_trace": true,
+  "state_require_finish": true,
+  "forced_track": 52,
+  "forced_track_source": 5,
+  "state_racer_index": 1,
+  "state_min_common_clocks": 1000,
+  "state_min_lap": 0,
+  "state_min_checkpoint": 20,
+  "state_max_position_p95": 200.0,
+  "state_min_progress_agreement": 0.95,
+  "native_cadence": "original",
+  "native_synth_fields": 2,
+  "native_event_divisor": 2,
+  "native_arms": [
+    {
+      "name": "authored",
+      "cadence": "original",
+      "frames": 4800,
+      "synth_fields": 2,
+      "event_divisor": 2
+    },
+    {
+      "name": "shipping_60hz",
+      "cadence": "enhanced",
+      "frames": 9500,
+      "synth_fields": 1,
+      "event_divisor": 1
+    }
+  ],
+  "sync": {
+    "event": "title",
+    "native_frame": 1134,
+    "ares_frame": 1340
+  },
+  "ares_phase_offsets": [
+    {
+      "from_native_frame": 2750,
+      "extra": 122,
+      "basis": "Inherited from the proven one-player Tracks route through the point where its gameplay load is retargeted."
+    }
+  ],
+  "native": {
+    "frames": 4800,
+    "dump_every": 0,
+    "dump_start": 0
+  },
+  "ares": {
+    "frames": 9500,
+    "dump_every": 0,
+    "dump_start": 0
+  },
+  "marks": [],
+  "events": [
+    { "frame": 1250, "buttons": ["start"], "hold": 4 },
+    { "frame": 1330, "buttons": ["start"], "hold": 4 },
+    { "frame": 1450, "buttons": ["a"], "hold": 4 },
+    { "frame": 1540, "buttons": ["a"], "hold": 4 },
+    { "frame": 1750, "buttons": ["a"], "hold": 4 },
+    { "frame": 1900, "buttons": ["down"], "hold": 4 },
+    { "frame": 2000, "buttons": ["a"], "hold": 4 },
+    { "frame": 2150, "buttons": ["a"], "hold": 4 },
+    { "frame": 2320, "buttons": ["a"], "hold": 4 },
+    { "frame": 2460, "buttons": ["a"], "hold": 4 },
+    { "frame": 2600, "buttons": ["a"], "hold": 4 },
+    { "frame": 2750, "buttons": ["a"], "hold": 6800 }
+  ]
+}

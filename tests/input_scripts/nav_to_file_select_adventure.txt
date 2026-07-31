@@ -1,0 +1,9 @@
+# DKR title -> ... -> GAME_SELECT(19) -> [A picks the first option, Adventure] ->
+# FILE_SELECT(6). Exercises the adventure save-file select screen (cpak/save
+# menu init). Assert: MDKR_TRACE=1 ... | grep menu_init  -> ... 19, 6.
+1250 START 4
+1330 START 4
+1450 A 4
+1540 A 4
+1750 A 4
+1900 A 4

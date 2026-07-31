@@ -1,0 +1,676 @@
+/**
+ * video_config.c — see video_config.h.
+ *
+ * Structured like display_config.c: a pure calculation core with no globals or
+ * environment reads, wrapped by a thin runtime layer. The split is what lets
+ * tests/test_video_config.c assert every precedence rule without a window.
+ */
+#include "video_config.h"
+#include "pacing_policy.h"
+
+#include <ctype.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
+    [MDKR_VIDEO_REMASTER_FX] = {
+        "Video.RemasterFX", "MDKR_REMASTER_FX",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 1.0f,
+        "Remaster effects",
+        "Master switch for look-changing effects. Requires a restart so cached "
+        "font, lighting, and post-effect resources change as one coherent mode.",
+        MDKR_VIDEO_CAT_PRESENTATION
+    },
+    [MDKR_VIDEO_WIDESCREEN] = {
+        "Video.Widescreen", "MDKR_WIDESCREEN",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 1.0f,
+        "Widescreen",
+        "1 engages the display policy. 0 is the pre-widescreen STRETCH compatibility "
+        "path -- it is NOT how Pure gets 4:3; see Video.Aspect.",
+        MDKR_VIDEO_CAT_PRESENTATION
+    },
+    [MDKR_VIDEO_ASPECT] = {
+        "Video.Aspect", "MDKR_ASPECT",
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 0.0f,
+        "Aspect ratio",
+        "auto follows the window. 4:3 pillarboxes the authored framing (Pure).",
+        MDKR_VIDEO_CAT_PRESENTATION
+    },
+    [MDKR_VIDEO_RENDER_SCALE] = {
+        "Video.RenderScale", "MDKR_RENDER_SCALE",
+        MDKR_VIDEO_TYPE_FLOAT, MDKR_VIDEO_SCOPE_LIVE, 1.0f, 4.0f,
+        "Render scale",
+        "Internal supersampling factor. Fidelity only; never changes the look.",
+        MDKR_VIDEO_CAT_FIDELITY
+    },
+    [MDKR_VIDEO_MSAA] = {
+        "Video.MSAA", "MDKR_MSAA",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 8.0f,
+        "MSAA",
+        "Multisample anti-aliasing. Redundant with render scale; off by default.",
+        MDKR_VIDEO_CAT_FIDELITY
+    },
+    [MDKR_VIDEO_ANISOTROPY] = {
+        "Video.AnisotropicFiltering", "MDKR_ANISOTROPY",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_RESTART, 1.0f, 16.0f,
+        "Anisotropic filtering",
+        "1 keeps the N64 3-point filter. Above 1 bypasses it for grazing surfaces. "
+        "Requires a restart because shader and sampler caches own this choice.",
+        MDKR_VIDEO_CAT_FIDELITY
+    },
+    [MDKR_VIDEO_MIPMAPS] = {
+        "Video.Mipmaps", "MDKR_MIPMAPS",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 1.0f,
+        "Mipmaps",
+        "Generate mip chains for 3D surfaces. Removes track-surface shimmer. "
+        "Requires a restart so already-uploaded textures cannot retain stale chains.",
+        MDKR_VIDEO_CAT_FIDELITY
+    },
+    [MDKR_VIDEO_TEXTURE_PACK] = {
+        "Video.TexturePack", "MDKR_TEXTURE_PACK",
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
+        "Texture pack",
+        "Directory of a user-supplied HD texture pack. Empty uses stock textures.",
+        MDKR_VIDEO_CAT_FIDELITY
+    },
+    [MDKR_VIDEO_GAMEPLAY_FOV] = {
+        "Video.GameplayFOV", "MDKR_FOV",
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 0.0f,
+        "Gameplay FOV",
+        "authored preserves every track's original lens. A number from 20 to 140 "
+        "scales gameplay cameras relative to the authored 60-degree reference.",
+        MDKR_VIDEO_CAT_PRESENTATION
+    },
+    [MDKR_VIDEO_SIMULATION_CADENCE] = {
+        "Gameplay.SimulationCadence", "MDKR_SIMULATION_CADENCE",
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
+        "Simulation cadence",
+        "original preserves DKR's authored two-VI-field physics. enhanced keeps "
+        "the historical port's one-field simulation and changes gameplay.",
+        MDKR_VIDEO_CAT_PACING
+    },
+    /*
+     * FrameLimit/MotionSmoothing (spec §11) are presentation-only settings
+     * mapped onto the MDKR_PRESENT_RATE / MDKR_PRESENT_SMOOTHING seams Phase 3
+     * Wave B slice 2 already reads (present_sched.c/platform_sdl_min.c).
+     * The env name below is deliberately the SAME seam name so a raw
+     * diagnostic override and this schema key resolve from the same
+     * underlying environment variable. Only "original" and "60" are accepted
+     * here -- slice 2 is the only rate the presentation subloop actually
+     * supports (60 Hz NTSC == 2 presents/tick); 120/144/VRR/uncapped are
+     * refused with a trace line by present_pace_lazy_init()
+     * (platform_sdl_min.c) rather than silently rounded, and this schema must
+     * not claim coverage the engine does not have. Values outside {original,
+     * 60} remain reachable only via the raw env seam directly, for the
+     * gates/diagnostics that exercise them (tests/check_presentation_matrix.py
+     * arm B's MDKR_PRESENT_RATE=30).
+     *
+     * SCOPE_RESTART, not SCOPE_LIVE, and the asymmetry with Video.Widescreen /
+     * Video.Aspect / Video.RenderScale is deliberate. Both consumers LATCH:
+     *
+     *   - platform_sdl_min.c's present_pace_lazy_init() resolves the present
+     *     period ONCE, on the first platform_present_subloop_fields() call,
+     *     into a file-static (s_presentFields). Nothing ever re-resolves it.
+     *   - gfx_pc_dkr.c's gfx_start_frame()/gfx_end_frame() capture the replay's
+     *     walk-entry state (dkr_walk_entry_*) and freeze the shadow matrix
+     *     registry only when present_sched_replay_armed() is true, and
+     *     present_sched.c arms the presentation snapshot store behind a
+     *     one-shot (s_snapshot_forced).
+     *
+     * So a "live" change is unsafe in BOTH directions. Engaging late is dead
+     * cost: the freeze/snapshot work starts happening but the subloop never
+     * runs, because s_presentFields was already latched at 0. Disengaging late
+     * is worse than dead: the subloop is still latched ON, while
+     * present_sched_replay_armed() has gone false, so gfx_start_frame stops
+     * refreshing dkr_walk_entry_* -- which gfx_dkr_replay_invalidate() is the
+     * only thing that ever clears -- and gfx_dkr_replay_walk() goes on
+     * memcpy'ing a STALE segment table (gfx_pc_dkr.c's replay branch) into the
+     * live HLE state. Stale segment bases are wild pointers.
+     *
+     * Making the seams genuinely re-resolvable is Phase 3's live/interactive
+     * slice (design doc §6 slice 3), which is the first slice that has a reason
+     * to want it. Until then RESTART is the honest scope: the value still
+     * resolves normally at boot from file/CLI/env, and mdkr_video_config_publish
+     * still pushes it into present_sched there (video_config_runtime.c) -- it
+     * just cannot be flipped underneath a running engine.
+     */
+    [MDKR_VIDEO_FRAME_LIMIT] = {
+        "Video.FrameLimit", "MDKR_PRESENT_RATE",
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
+        "Frame limit",
+        "original presents once per authoritative tick, exactly as the game "
+        "always has. 60 presents twice per NTSC tick, with the camera "
+        "interpolated between them (Phase 3 Wave B slice 2); higher, VRR, and "
+        "uncapped policies are not supported by this build yet and are "
+        "refused rather than approximated. Requires a restart because the "
+        "present pacer and the replay's frame-state capture both resolve this "
+        "once, at the first present. Note that with 60 and MotionSmoothing=off "
+        "a pass that submits no graphics task presents at the tick rate, not "
+        "at 60: there is no new image to show, so none is swapped.",
+        MDKR_VIDEO_CAT_PACING
+    },
+    /*
+     * RESTART for the same reason as Video.FrameLimit above, and it is not
+     * merely inherited: present_sched_replay_armed() short-circuits to false
+     * when smoothing is off, so a boot with MotionSmoothing=off never arms the
+     * snapshot store, never captures dkr_walk_entry_* and never freezes the
+     * registry. Flipping it to interpolate afterwards would drive the subloop
+     * into a replay with no frozen registry and no snapshot pair -- every
+     * intermediate frame silently identical to the tick's own. The reverse flip
+     * lands in the same stale-walk-entry hazard FrameLimit's note describes.
+     */
+    [MDKR_VIDEO_MOTION_SMOOTHING] = {
+        "Video.MotionSmoothing", "MDKR_PRESENT_SMOOTHING",
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
+        "Motion smoothing",
+        "interpolate draws the camera-interpolated intermediate frames "
+        "FrameLimit asks for. off presents at the same requested rate but "
+        "repeats the tick's own image instead -- the positive control "
+        "check_presentation_matrix.py's arm C uses to prove interpolation is "
+        "doing something. Only meaningful when FrameLimit=60; original has no "
+        "intermediate frame to smooth, so this setting is ignored under it. "
+        "Requires a restart: the replay's capture and snapshot arming are "
+        "decided from this value at boot.",
+        MDKR_VIDEO_CAT_PACING
+    },
+    [MDKR_VIDEO_MODE] = {
+        "Video.Mode", "MDKR_VIDEO_MODE",
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
+        "Presentation",
+        "Pure is the 4:3 reference, Restored preserves the art direction at modern "
+        "fidelity, and Remastered enables the complete art-directed presentation.",
+        MDKR_VIDEO_CAT_PRESENTATION
+    },
+};
+
+const char *mdkr_video_category_name(MdkrVideoCategory category) {
+    switch (category) {
+        case MDKR_VIDEO_CAT_PRESENTATION: return "Presentation";
+        case MDKR_VIDEO_CAT_FIDELITY:     return "Fidelity";
+        case MDKR_VIDEO_CAT_PACING:       return "Pacing";
+        default:                          return NULL;
+    }
+}
+
+const MdkrVideoSchema *mdkr_video_schema(MdkrVideoKey key) {
+    if ((int) key < 0 || (int) key >= MDKR_VIDEO_KEY_COUNT) {
+        return NULL;
+    }
+    return &s_schema[key];
+}
+
+static int mdkr_video_ci_equal(const char *a, const char *b) {
+    if (a == NULL || b == NULL) {
+        return 0;
+    }
+    while (*a != '\0' && *b != '\0') {
+        if (tolower((unsigned char) *a) != tolower((unsigned char) *b)) {
+            return 0;
+        }
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+MdkrVideoKey mdkr_video_key_from_name(const char *name) {
+    if (name == NULL) {
+        return MDKR_VIDEO_KEY_COUNT;
+    }
+    for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; i++) {
+        if (mdkr_video_ci_equal(name, s_schema[i].name)) {
+            return (MdkrVideoKey) i;
+        }
+    }
+    return MDKR_VIDEO_KEY_COUNT;
+}
+
+/*
+ * Preset tables. Rows are keys, columns are modes — see the design spec §2.2.
+ * Pure reproduces the authored presentation; Restored and Remastered layer
+ * fidelity on top without changing the art direction.
+ */
+static const float s_preset[MDKR_VIDEO_KEY_COUNT][3] = {
+    /*                                 pure  restored  remastered */
+    [MDKR_VIDEO_REMASTER_FX]  = {      0.0f,     0.0f,       1.0f },
+    [MDKR_VIDEO_WIDESCREEN]   = {      1.0f,     1.0f,       1.0f },
+    [MDKR_VIDEO_ASPECT]       = {      0.0f,     0.0f,       0.0f }, /* string; see below */
+    [MDKR_VIDEO_RENDER_SCALE] = {      1.0f,     2.0f,       2.0f },
+    [MDKR_VIDEO_MSAA]         = {      0.0f,     0.0f,       0.0f },
+    [MDKR_VIDEO_ANISOTROPY]   = {      1.0f,     8.0f,      16.0f },
+    [MDKR_VIDEO_MIPMAPS]      = {      0.0f,     1.0f,       1.0f },
+    [MDKR_VIDEO_TEXTURE_PACK] = {      0.0f,     0.0f,       0.0f }, /* string; see below */
+    [MDKR_VIDEO_GAMEPLAY_FOV] = {       0.0f,     0.0f,       0.0f }, /* string; see below */
+    [MDKR_VIDEO_SIMULATION_CADENCE] = { 0.0f,     0.0f,       0.0f }, /* string; see below */
+    [MDKR_VIDEO_FRAME_LIMIT]  = {      0.0f,     0.0f,       0.0f }, /* string; see below */
+    [MDKR_VIDEO_MOTION_SMOOTHING] = {  0.0f,     0.0f,       0.0f }, /* string; see below */
+    [MDKR_VIDEO_MODE]         = {       0.0f,     0.0f,       0.0f }, /* string; see below */
+};
+
+/*
+ * RenderScale 2 in Restored and Remastered is the supersampling default, and it
+ * is ON.
+ *
+ * A first attempt at this made it opt-in, because switching it on broke seven of
+ * the twenty-eight checks and the obvious reading was that anti-aliasing
+ * legitimately changes every pixel. That reading was wrong. Two of the seven
+ * compare arms that supersampling affects IDENTICALLY -- rom_revision compares
+ * ROM byte orders, renderer_backends compares backends -- so neither could be
+ * explained by filtering at all. The real cause was a resize-debounce bug that
+ * left the scene target oscillating between the output and render sizes
+ * (gfx_webgpu.c, PERF-020). With that fixed all seven pass with supersampling
+ * on, and the setting ships enabled where it belongs.
+ */
+
+/*
+ * String-valued presets. NULL means "this mode does not pin the key" (the
+ * resolved value survives); a non-NULL string is pinned at PRESET precedence.
+ *
+ * Video.Widescreen is 1 in EVERY mode, including Pure. Setting it to 0 does not
+ * give a 4:3 image — it engages the pre-widescreen path (display_config.c:116)
+ * where 4:3 content is STRETCHED to fill the window. Pure gets authentic
+ * framing from Aspect=4:3, which pillarboxes undistorted and, because Hor+
+ * computes against presentation_aspect, yields exactly the authored FOV.
+ */
+static const char *const s_preset_text[MDKR_VIDEO_KEY_COUNT][3] = {
+    /*                                  pure   restored  remastered */
+    [MDKR_VIDEO_ASPECT]       = {      "4:3",   "auto",     "auto" },
+    [MDKR_VIDEO_TEXTURE_PACK] = {         "",     NULL,       NULL },
+    [MDKR_VIDEO_GAMEPLAY_FOV] = { "authored", "authored", "authored" },
+    [MDKR_VIDEO_SIMULATION_CADENCE] = {
+        NULL, NULL, NULL
+    },
+    /*
+     * Never pinned by any preset (spec §11 policy): Pure/Restored/Remastered
+     * are presentation-mode art-direction presets, and FrameLimit/
+     * MotionSmoothing are a presentation-RATE choice orthogonal to them, same
+     * reasoning as Gameplay.SimulationCadence just above. A resolved value
+     * (file/env/CLI/in-game) survives every preset switch untouched.
+     */
+    [MDKR_VIDEO_FRAME_LIMIT] = { NULL, NULL, NULL },
+    [MDKR_VIDEO_MOTION_SMOOTHING] = { NULL, NULL, NULL },
+    [MDKR_VIDEO_MODE]         = {     "pure", "restored", "remastered" },
+};
+
+void mdkr_video_config_defaults(MdkrVideoConfig *config) {
+    if (config == NULL) {
+        return;
+    }
+    memset(config, 0, sizeof(*config));
+    /* Restored is the default everywhere a player first meets the port —
+     * the web launcher flipped at v0.7.2 ("don't put the incomplete remaster
+     * forward first") and native follows at v1.0.0 by the same owner call.
+     * Remastered remains one click away in the shell's settings. Gates that
+     * assert Remastered features pin mode=remastered explicitly, exactly as
+     * the browser gate learned to at d71fc9c's sibling fix. */
+    config->mode = MDKR_VIDEO_MODE_RESTORED;
+    for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; i++) {
+        const char *text = s_preset_text[i][MDKR_VIDEO_MODE_RESTORED];
+        config->values[i].number = s_preset[i][MDKR_VIDEO_MODE_RESTORED];
+        snprintf(config->values[i].text, sizeof(config->values[i].text),
+                 "%s", text != NULL ? text : "");
+        config->values[i].source = MDKR_VIDEO_SOURCE_DEFAULT;
+    }
+    /*
+     * Gameplay cadence is intentionally independent of the Remastered visual
+     * preset used to seed the other defaults.
+     */
+    snprintf(
+        config->values[MDKR_VIDEO_SIMULATION_CADENCE].text,
+        sizeof(config->values[MDKR_VIDEO_SIMULATION_CADENCE].text),
+        "%s", "original");
+    /*
+     * FrameLimit defaults to "original", NOT the "60" the spec §11 example ini
+     * shows as its "suggested final semantics". That example describes the
+     * shipped end state once the presentation architecture clears spec §12.3's
+     * oracle-breadth gate and is promoted (spec §15); today only camera-only
+     * interpolation at headless/offscreen-proven 60 Hz has landed (Wave B slice
+     * 2), so the conservative, behavior-preserving default is the honest one.
+     * MotionSmoothing defaults to "interpolate" because it is inert whenever
+     * FrameLimit=original -- there is no intermediate frame for it to affect --
+     * so shipping its eventual-default value now costs nothing and needs no
+     * migration later.
+     */
+    snprintf(
+        config->values[MDKR_VIDEO_FRAME_LIMIT].text,
+        sizeof(config->values[MDKR_VIDEO_FRAME_LIMIT].text),
+        "%s", "original");
+    snprintf(
+        config->values[MDKR_VIDEO_MOTION_SMOOTHING].text,
+        sizeof(config->values[MDKR_VIDEO_MOTION_SMOOTHING].text),
+        "%s", "interpolate");
+}
+
+int mdkr_video_config_apply_preset_from(MdkrVideoConfig *config,
+                                        MdkrVideoMode mode,
+                                        MdkrVideoSource source) {
+    MdkrVideoValue *mode_slot;
+
+    if (config == NULL || (int) mode < 0 || (int) mode > MDKR_VIDEO_MODE_REMASTERED) {
+        return 0;
+    }
+    mode_slot = &config->values[MDKR_VIDEO_MODE];
+    if (source < mode_slot->source) {
+        return 0;
+    }
+    config->mode = mode;
+    snprintf(mode_slot->text, sizeof(mode_slot->text), "%s",
+             s_preset_text[MDKR_VIDEO_MODE][mode]);
+    mode_slot->source = source;
+    for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; i++) {
+        const MdkrVideoSchema *s = &s_schema[i];
+        char number[64];
+
+        if (i == MDKR_VIDEO_MODE) {
+            continue;
+        }
+        if (s->type == MDKR_VIDEO_TYPE_STRING) {
+            const char *text = s_preset_text[i][mode];
+            if (text != NULL) {
+                (void) mdkr_video_config_set(config, (MdkrVideoKey) i, text, source);
+            }
+            continue;
+        }
+        snprintf(number, sizeof(number), "%.9g", (double) s_preset[i][mode]);
+        (void) mdkr_video_config_set(config, (MdkrVideoKey) i, number, source);
+    }
+    return 1;
+}
+
+void mdkr_video_config_apply_preset(MdkrVideoConfig *config, MdkrVideoMode mode) {
+    (void) mdkr_video_config_apply_preset_from(
+        config, mode, MDKR_VIDEO_SOURCE_PRESET);
+}
+
+int mdkr_video_mode_from_name(const char *name) {
+    if (mdkr_video_ci_equal(name, "pure"))       return MDKR_VIDEO_MODE_PURE;
+    if (mdkr_video_ci_equal(name, "restored"))   return MDKR_VIDEO_MODE_RESTORED;
+    if (mdkr_video_ci_equal(name, "remastered")) return MDKR_VIDEO_MODE_REMASTERED;
+    if (mdkr_video_ci_equal(name, "custom"))     return MDKR_VIDEO_MODE_CUSTOM;
+    return -1;
+}
+
+static int mdkr_video_parse_number(const char *value, float *out);
+
+static int mdkr_video_validate_aspect(const char *value) {
+    char *end;
+    double numerator;
+    double denominator;
+
+    if (mdkr_video_ci_equal(value, "auto") ||
+        mdkr_video_ci_equal(value, "window") ||
+        mdkr_video_ci_equal(value, "native")) {
+        return 1;
+    }
+    if (value == NULL || value[0] == '\0') {
+        return 0;
+    }
+    numerator = strtod(value, &end);
+    if (end == value || !isfinite(numerator)) {
+        return 0;
+    }
+    if (*end == ':' || *end == '/') {
+        const char *right = end + 1;
+        denominator = strtod(right, &end);
+        if (end == right || !isfinite(denominator) || denominator == 0.0) {
+            return 0;
+        }
+        numerator /= denominator;
+    }
+    while (*end != '\0' && isspace((unsigned char) *end)) {
+        end++;
+    }
+    return *end == '\0' && numerator >= 0.5 && numerator <= 4.0;
+}
+
+static int mdkr_video_validate_gameplay_fov(const char *value) {
+    float parsed;
+
+    if (mdkr_video_ci_equal(value, "authored") ||
+        mdkr_video_ci_equal(value, "default") ||
+        mdkr_video_ci_equal(value, "off")) {
+        return 1;
+    }
+    return mdkr_video_parse_number(value, &parsed) &&
+           parsed >= 20.0f && parsed <= 140.0f;
+}
+
+static int mdkr_video_validate_frame_limit(const char *value) {
+    return mdkr_video_ci_equal(value, "original") || mdkr_video_ci_equal(value, "60");
+}
+
+static int mdkr_video_validate_motion_smoothing(const char *value) {
+    return mdkr_video_ci_equal(value, "off") ||
+           mdkr_video_ci_equal(value, "interpolate");
+}
+
+static int mdkr_video_parse_number(const char *value, float *out) {
+    char *end;
+    float parsed;
+
+    if (value == NULL || value[0] == '\0' || out == NULL) {
+        return 0;
+    }
+    parsed = strtof(value, &end);
+    if (end == value) {
+        return 0;
+    }
+    while (*end != '\0' && isspace((unsigned char) *end)) {
+        end++;
+    }
+    if (*end != '\0' || !isfinite(parsed)) {
+        return 0;
+    }
+    *out = parsed;
+    return 1;
+}
+
+int mdkr_video_config_set(MdkrVideoConfig *config,
+                          MdkrVideoKey key,
+                          const char *value,
+                          MdkrVideoSource source) {
+    const MdkrVideoSchema *schema = mdkr_video_schema(key);
+    MdkrVideoValue *slot;
+    float parsed;
+
+    if (config == NULL || schema == NULL || value == NULL) {
+        return 0;
+    }
+    slot = &config->values[key];
+    if (source < slot->source) {
+        return 0;
+    }
+
+    if (schema->type == MDKR_VIDEO_TYPE_STRING) {
+        if (strchr(value, '\n') != NULL || strchr(value, '\r') != NULL) {
+            return 0;
+        }
+        if (key == MDKR_VIDEO_MODE) {
+            int mode = mdkr_video_mode_from_name(value);
+            if (mode < 0) {
+                return 0;
+            }
+            if (mode == MDKR_VIDEO_MODE_CUSTOM) {
+                snprintf(slot->text, sizeof(slot->text), "%s", "custom");
+                slot->source = source;
+                config->mode = MDKR_VIDEO_MODE_CUSTOM;
+                return 1;
+            }
+            return mdkr_video_config_apply_preset_from(
+                config, (MdkrVideoMode) mode, source);
+        }
+        if ((key == MDKR_VIDEO_ASPECT && !mdkr_video_validate_aspect(value)) ||
+            (key == MDKR_VIDEO_GAMEPLAY_FOV &&
+             !mdkr_video_validate_gameplay_fov(value)) ||
+            (key == MDKR_VIDEO_SIMULATION_CADENCE &&
+             !mdkr_pacing_cadence_valid(value)) ||
+            (key == MDKR_VIDEO_FRAME_LIMIT &&
+             !mdkr_video_validate_frame_limit(value)) ||
+            (key == MDKR_VIDEO_MOTION_SMOOTHING &&
+             !mdkr_video_validate_motion_smoothing(value))) {
+            return 0;
+        }
+        if (strlen(value) >= MDKR_VIDEO_STRING_MAX) {
+            return 0;
+        }
+        snprintf(slot->text, sizeof(slot->text), "%s", value);
+        slot->source = source;
+        return 1;
+    }
+
+    if (!mdkr_video_parse_number(value, &parsed)) {
+        return 0;
+    }
+    if (parsed < schema->min || parsed > schema->max) {
+        return 0;
+    }
+    if (schema->type == MDKR_VIDEO_TYPE_INT && parsed != (float) (int) parsed) {
+        return 0;
+    }
+    slot->number = parsed;
+    slot->source = source;
+    return 1;
+}
+
+/* --------------------------------------------------------------------------
+ *  Resolution — pure. See the header for the precedence contract.
+ * ------------------------------------------------------------------------ */
+
+void mdkr_video_config_resolve(MdkrVideoConfig *config,
+                               const ConfigIniEntry *file_entries,
+                               int file_count,
+                               MdkrVideoEnvLookup env_lookup,
+                               int argc,
+                               char *const *argv) {
+    if (config == NULL) {
+        return;
+    }
+
+    /* 1. File. Apply its mode as a base independent of key order, then its
+     * individual values at the same rank so custom overrides survive. */
+    for (int i = 0; i < file_count && file_entries != NULL; i++) {
+        if (mdkr_video_key_from_name(file_entries[i].key) == MDKR_VIDEO_MODE) {
+            mdkr_video_config_set(config, MDKR_VIDEO_MODE, file_entries[i].value,
+                                  MDKR_VIDEO_SOURCE_FILE);
+        }
+    }
+    for (int i = 0; i < file_count && file_entries != NULL; i++) {
+        MdkrVideoKey key = mdkr_video_key_from_name(file_entries[i].key);
+        if (key != MDKR_VIDEO_KEY_COUNT && key != MDKR_VIDEO_MODE) {
+            mdkr_video_config_set(config, key, file_entries[i].value,
+                                  MDKR_VIDEO_SOURCE_FILE);
+        }
+    }
+
+    /* 2. Preset. The last mode flag on the command line wins. */
+    for (int i = 1; i < argc && argv != NULL; i++) {
+        int mode = mdkr_video_mode_from_name(
+            strncmp(argv[i], "--", 2) == 0 ? argv[i] + 2 : "");
+        if (mode >= 0) {
+            mdkr_video_config_apply_preset(config, (MdkrVideoMode) mode);
+        }
+    }
+
+    /* Browser launcher choices sit above a native preset but below an in-game
+     * change, environment, or explicit CLI override. Unlike --pure, a launcher
+     * Pure choice is not a read-only oracle session. */
+    for (int i = 1; i < argc && argv != NULL; i++) {
+        if (!strcmp(argv[i], "--video-launch-mode") && i + 1 < argc) {
+            int mode = mdkr_video_mode_from_name(argv[++i]);
+            if (mode >= MDKR_VIDEO_MODE_PURE &&
+                mode <= MDKR_VIDEO_MODE_REMASTERED) {
+                mdkr_video_config_apply_preset_from(
+                    config, (MdkrVideoMode) mode,
+                    MDKR_VIDEO_SOURCE_LAUNCHER);
+            }
+        } else if (!strcmp(argv[i], "--video-launch-set") && i + 1 < argc) {
+            const char *pair = argv[++i];
+            const char *eq = strchr(pair, '=');
+            char name[MDKR_VIDEO_NAME_MAX];
+            size_t length = eq != NULL ? (size_t) (eq - pair) : 0;
+            if (length > 0 && length < sizeof(name)) {
+                MdkrVideoKey key;
+                memcpy(name, pair, length);
+                name[length] = '\0';
+                key = mdkr_video_key_from_name(name);
+                if (key != MDKR_VIDEO_KEY_COUNT) {
+                    mdkr_video_config_set(
+                        config, key, eq + 1, MDKR_VIDEO_SOURCE_LAUNCHER);
+                }
+            }
+        }
+    }
+
+    /* 3. Environment. */
+    if (env_lookup != NULL) {
+        const char *mode = env_lookup(s_schema[MDKR_VIDEO_MODE].env);
+        if (mode != NULL && mode[0] != '\0') {
+            mdkr_video_config_set(config, MDKR_VIDEO_MODE, mode,
+                                  MDKR_VIDEO_SOURCE_ENV);
+        }
+        for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; i++) {
+            const char *v = env_lookup(s_schema[i].env);
+            if (i != MDKR_VIDEO_MODE && v != NULL && v[0] != '\0') {
+                mdkr_video_config_set(config, (MdkrVideoKey) i, v,
+                                      MDKR_VIDEO_SOURCE_ENV);
+            }
+        }
+    }
+
+    /* Direct display flags are CLI-owned too. Resolving them here, in addition
+     * to main_pc.c's final validation pass, keeps the menu's displayed value and
+     * lock state truthful. */
+    for (int i = 1; i < argc && argv != NULL; i++) {
+        if (!strcmp(argv[i], "--aspect") && i + 1 < argc) {
+            mdkr_video_config_set(config, MDKR_VIDEO_ASPECT, argv[++i],
+                                  MDKR_VIDEO_SOURCE_CLI);
+        } else if (!strcmp(argv[i], "--fov") && i + 1 < argc) {
+            mdkr_video_config_set(config, MDKR_VIDEO_GAMEPLAY_FOV, argv[++i],
+                                  MDKR_VIDEO_SOURCE_CLI);
+        } else if (!strcmp(argv[i], "--widescreen")) {
+            mdkr_video_config_set(config, MDKR_VIDEO_WIDESCREEN, "1",
+                                  MDKR_VIDEO_SOURCE_CLI);
+        } else if (!strcmp(argv[i], "--legacy-stretch")) {
+            mdkr_video_config_set(config, MDKR_VIDEO_WIDESCREEN, "0",
+                                  MDKR_VIDEO_SOURCE_CLI);
+        }
+    }
+
+    /* 4. --video-set Key=Value. */
+    for (int i = 1; i + 1 < argc && argv != NULL; i++) {
+        const char *pair;
+        const char *eq;
+        char name[MDKR_VIDEO_NAME_MAX];
+        size_t nl;
+        MdkrVideoKey key;
+
+        if (strcmp(argv[i], "--video-set") != 0) {
+            continue;
+        }
+        pair = argv[i + 1];
+        i++;
+
+        eq = strchr(pair, '=');
+        if (eq == NULL) {
+            continue;
+        }
+        nl = (size_t) (eq - pair);
+        if (nl == 0 || nl >= sizeof(name)) {
+            continue;
+        }
+        memcpy(name, pair, nl);
+        name[nl] = '\0';
+
+        key = mdkr_video_key_from_name(name);
+        if (key != MDKR_VIDEO_KEY_COUNT) {
+            mdkr_video_config_set(config, key, eq + 1, MDKR_VIDEO_SOURCE_CLI);
+        }
+    }
+}
+
+int mdkr_video_config_readonly_for(const MdkrVideoConfig *config) {
+    return (config != NULL && config->mode == MDKR_VIDEO_MODE_PURE &&
+            config->values[MDKR_VIDEO_MODE].source == MDKR_VIDEO_SOURCE_PRESET) ? 1 : 0;
+}

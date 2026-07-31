@@ -1,0 +1,87 @@
+{
+  "schema": "mdkr64.oracle.route.v1",
+  "name": "title_to_track_select",
+  "description": "Title -> ... -> GAME_SELECT (19) -> TRACK_SELECT (15). Mirrors tests/input_scripts/nav_to_track_select.txt. TRACK_SELECT loads a track preview (level_load levelId=5 right after menu_init), so its mark sits late enough for the preview to be present.",
+  "native_cadence": "enhanced",
+  "native_synth_fields": 1,
+  "sync": {
+    "event": "title",
+    "native_frame": 1134,
+    "ares_frame": 1340
+  },
+  "native": {
+    "frames": 2240,
+    "dump_every": 20,
+    "dump_start": 1100
+  },
+  "ares": {
+    "frames": 2540,
+    "dump_every": 20,
+    "dump_start": 1300
+  },
+  "marks": [
+    {
+      "name": "title_menu",
+      "logical": 146
+    },
+    {
+      "name": "game_select",
+      "logical": 787
+    },
+    {
+      "name": "track_select",
+      "logical": 1037
+    }
+  ],
+  "events": [
+    {
+      "frame": 1250,
+      "buttons": [
+        "start"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1330,
+      "buttons": [
+        "start"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1450,
+      "buttons": [
+        "a"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1540,
+      "buttons": [
+        "a"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1750,
+      "buttons": [
+        "a"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1900,
+      "buttons": [
+        "down"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 2000,
+      "buttons": [
+        "a"
+      ],
+      "hold": 4
+    }
+  ]
+}

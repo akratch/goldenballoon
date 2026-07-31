@@ -1,0 +1,241 @@
+# DKR regression fixture -- a FULL 3-lap TIME TRIAL on Ancient Lake, driven to
+# the finish, through the post-race result screens, to the EEPROM record write.
+#
+# Use with MDKR_AUTOPILOT=1. This is the P3.1 route: it is the only fixture that
+# reaches the code which writes a course/lap record to EEPROM, because DKR only
+# records times when Time Trial is ON (objects.c race_finish_time_trial, gated on
+# gIsTimeTrial). nav_to_time_trial_race.txt / race_full_3lap.txt confirm
+# Time Trial OFF ("Tracks" mode) and therefore can never save a time.
+#
+# Navigation is nav_to_time_trial_race.txt plus ONE extra input: at the
+# track-select Time-Trial stage (trackmenu gMenuStage == 1) the stick must be
+# pushed DOWN to move gTracksMenuTimeTrialHighlightIndex 0 -> 1, so that
+# set_time_trial_enabled(1) runs (menu.c:9844). Without that DOWN the race is a
+# normal 8-racer Tracks race.
+#
+# Driving is left to MDKR_AUTOPILOT (DKR's own AI pathing); no throttle input is
+# needed or wanted -- the post-race menus are EDGE-detected, so a held A would
+# produce a single press and then nothing.
+#
+# Measured landmarks (deterministic): level_load at frame ~2641, lap 1 at clock
+# ~1592, lap 2 at ~3170, lap 3 (finish) at clock 4777 / frame ~7587. The A taps
+# below start after that and walk the post-race sequence:
+#   POSTRACE_STAGE_BEGIN -> SHRINK_VIEWPORT -> RACE_TIMES -> ENTER_INITIALS
+#   (3 characters + confirm) -> RACE_RECORDS -> OPTIONS -> END, where
+#   mark_to_write_flap_times()/mark_to_write_course_times() run and the next
+#   input_update() flushes the records to EEPROM.
+#
+# Budget: 13000 frames.
+
+1250 START 4
+1330 START 4
+1450 A 4
+1540 A 4
+1750 A 4
+1900 DOWN 4
+2000 A 4
+2150 A 4
+2320 A 4
+# Track select, Time-Trial stage: push DOWN to switch TIME TRIAL from OFF to ON.
+2400 DOWN 6
+2460 A 4
+2600 A 4
+# --- Post-race screens: tap A repeatedly (edge-detected) from after the finish.
+7650 A 5
+7674 A 5
+7698 A 5
+7722 A 5
+7746 A 5
+7770 A 5
+7794 A 5
+7818 A 5
+7842 A 5
+7866 A 5
+7890 A 5
+7914 A 5
+7938 A 5
+7962 A 5
+7986 A 5
+8010 A 5
+8034 A 5
+8058 A 5
+8082 A 5
+8106 A 5
+8130 A 5
+8154 A 5
+8178 A 5
+8202 A 5
+8226 A 5
+8250 A 5
+8274 A 5
+8298 A 5
+8322 A 5
+8346 A 5
+8370 A 5
+8394 A 5
+8418 A 5
+8442 A 5
+8466 A 5
+8490 A 5
+8514 A 5
+8538 A 5
+8562 A 5
+8586 A 5
+8610 A 5
+8634 A 5
+8658 A 5
+8682 A 5
+8706 A 5
+8730 A 5
+8754 A 5
+8778 A 5
+8802 A 5
+8826 A 5
+8850 A 5
+8874 A 5
+8898 A 5
+8922 A 5
+8946 A 5
+8970 A 5
+8994 A 5
+9018 A 5
+9042 A 5
+9066 A 5
+9090 A 5
+9114 A 5
+9138 A 5
+9162 A 5
+9186 A 5
+9210 A 5
+9234 A 5
+9258 A 5
+9282 A 5
+9306 A 5
+9330 A 5
+9354 A 5
+9378 A 5
+9402 A 5
+9426 A 5
+9450 A 5
+9474 A 5
+9498 A 5
+9522 A 5
+9546 A 5
+9570 A 5
+9594 A 5
+9618 A 5
+9642 A 5
+9666 A 5
+9690 A 5
+9714 A 5
+9738 A 5
+9762 A 5
+9786 A 5
+9810 A 5
+9834 A 5
+9858 A 5
+9882 A 5
+9906 A 5
+9930 A 5
+9954 A 5
+9978 A 5
+10002 A 5
+10026 A 5
+10050 A 5
+10074 A 5
+10098 A 5
+10122 A 5
+10146 A 5
+10170 A 5
+10194 A 5
+10218 A 5
+10242 A 5
+10266 A 5
+10290 A 5
+10314 A 5
+10338 A 5
+10362 A 5
+10386 A 5
+10410 A 5
+10434 A 5
+10458 A 5
+10482 A 5
+10506 A 5
+10530 A 5
+10554 A 5
+10578 A 5
+10602 A 5
+10626 A 5
+10650 A 5
+10674 A 5
+10698 A 5
+10722 A 5
+10746 A 5
+10770 A 5
+10794 A 5
+10818 A 5
+10842 A 5
+10866 A 5
+10890 A 5
+10914 A 5
+10938 A 5
+10962 A 5
+10986 A 5
+11010 A 5
+11034 A 5
+11058 A 5
+11082 A 5
+11106 A 5
+11130 A 5
+11154 A 5
+11178 A 5
+11202 A 5
+11226 A 5
+11250 A 5
+11274 A 5
+11298 A 5
+11322 A 5
+11346 A 5
+11370 A 5
+11394 A 5
+11418 A 5
+11442 A 5
+11466 A 5
+11490 A 5
+11514 A 5
+11538 A 5
+11562 A 5
+11586 A 5
+11610 A 5
+11634 A 5
+11658 A 5
+11682 A 5
+11706 A 5
+11730 A 5
+11754 A 5
+11778 A 5
+11802 A 5
+11826 A 5
+11850 A 5
+11874 A 5
+11898 A 5
+11922 A 5
+11946 A 5
+11970 A 5
+11994 A 5
+12018 A 5
+12042 A 5
+12066 A 5
+12090 A 5
+12114 A 5
+12138 A 5
+12162 A 5
+12186 A 5
+12210 A 5
+12234 A 5
+12258 A 5
+12282 A 5
+12306 A 5
+12330 A 5
+12354 A 5
+12378 A 5

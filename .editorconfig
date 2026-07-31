@@ -1,0 +1,35 @@
+# To learn more about .editorconfig see https://aka.ms/editorconfigdocs
+#
+# Adapted from MGB64's .editorconfig for mdkr64's actual tree (sampled game/src,
+# platform/, tools/*.py, game/src/hasm/*.s before writing this):
+#   - charset is UTF-8 here, not latin1 (game/src/*.c carries UTF-8 text).
+#   - brace style is K&R (`void foo(int x) {`), not Allman — the MGB64 file's
+#     curly_bracket_next_line / indent_brace_style / cpp_new_line_before_open_brace_*
+#     settings all assume Allman and would misdescribe this codebase, so they are
+#     dropped rather than carried over unused.
+#   - hand-written MIPS assembly (game/src/hasm/**, game/libultra/src/libc/*.s) is
+#     4-space indented here, not tab_width=12 as in MGB64's N64-devkit-style .s.
+#   - no VS-specific `cpp_*` formatting keys: this project is not edited via
+#     Visual Studio, and clang-format (see .clang-format) is the enforced style.
+
+# top-most EditorConfig file
+root = true
+
+# All files
+[*]
+indent_style = space
+indent_size = 4
+tab_width = 4
+end_of_line = lf
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true
+spaces_around_operators = true
+
+[Makefile]
+indent_style = tab
+
+[*.{mips,s,asm}]
+indent_style = space
+indent_size = 4
+tab_width = 4

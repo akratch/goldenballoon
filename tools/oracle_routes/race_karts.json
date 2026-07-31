@@ -1,0 +1,28 @@
+{
+  "schema": "mdkr64.oracle.route.v1",
+  "name": "race_karts",
+  "description": "Drive the proven time-trial route (nav_to_time_trial + race_drive fixtures) all the way to the START-line scene where the player kart and AI karts (billboarded character sprites) are visible, so the real ROM's kart rendering can be compared against the native port. In-race cross-runner sync is best-effort (see docs/ORACLE.md); the mark captures the karts-on-track scene on both runners.",
+  "native_cadence": "enhanced",
+  "native_synth_fields": 1,
+  "sync": { "event": "title", "native_frame": 1134, "ares_frame": 1340 },
+  "native": { "frames": 2960, "dump_every": 20, "dump_start": 2700 },
+  "ares":   { "frames": 3170, "dump_every": 20, "dump_start": 2900 },
+  "marks": [
+    { "name": "title",        "logical": 0 },
+    { "name": "karts_startline", "logical": 1714 }
+  ],
+  "events": [
+    { "frame": 1250, "buttons": ["start"], "hold": 4 },
+    { "frame": 1330, "buttons": ["start"], "hold": 4 },
+    { "frame": 1450, "buttons": ["a"],     "hold": 4 },
+    { "frame": 1540, "buttons": ["a"],     "hold": 4 },
+    { "frame": 1750, "buttons": ["a"],     "hold": 4 },
+    { "frame": 1900, "buttons": ["down"],  "hold": 4 },
+    { "frame": 2000, "buttons": ["a"],     "hold": 4 },
+    { "frame": 2150, "buttons": ["a"],     "hold": 4 },
+    { "frame": 2320, "buttons": ["a"],     "hold": 4 },
+    { "frame": 2460, "buttons": ["a"],     "hold": 4 },
+    { "frame": 2600, "buttons": ["a"],     "hold": 4 },
+    { "frame": 2750, "buttons": ["a"],     "hold": 200 }
+  ]
+}

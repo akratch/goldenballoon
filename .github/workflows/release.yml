@@ -1,0 +1,127 @@
+# Release build pipeline — Windows + Linux app binaries (asset-free).
+#
+# Adapted from mgb64's .github/workflows/release.yml. Produces the portable
+# prebuilt binaries that this Mac can't build natively: a Windows portable
+# .zip and a Linux AppImage + .tar.gz. macOS is built and validated by
+# .github/workflows/macos-release.yml (asset-free verification only; no
+# signing/notarization/DMG yet -- see that workflow); a maintainer assembles
+# the final GitHub Release from all sources.
+#
+# Manual-only, matching the repo's local-CI posture (see correctness.yml,
+# whose push/pull_request/workflow_dispatch triggers are the only automatic
+# ones this repo runs -- release/validation lanes are deliberate maintainer
+# actions): a maintainer dispatches this deliberately. The build jobs need no
+# repository secrets and write no repository state — they only compile the
+# ASSET-FREE source and upload the results as workflow artifacts, so they are
+# consistent with the bring-your-own-ROM / no-hosted-auto-triggers provenance
+# policy.
+#
+# Two structural deltas from mgb64, both because mdkr64 has no separate GUI
+# "app" launcher shell (mgb64's -DMGB64_APP=ON built ge007.exe as a ROM-free
+# launcher/menu shell around the engine):
+#   1. No MGB64_APP/MGB64_VERSION/PORT_VALIDATION_TESTS cmake defines exist in
+#      this tree -- the `mdkr64` target IS the game (platform/main_pc.c), so
+#      the build step is a plain Release configure + build of that target.
+#   2. mdkr64 fails fast without a ROM (see platform/main_pc.c's "Pass --rom
+#      <path>" message) -- there is no ROM-free full-render smoke path the
+#      way mgb64's app shell had. The ROM-free surfaces this lane can exercise
+#      are `--help` and `--video-list` (platform/main_pc.c), the same pair
+#      windows-validate.yml's headless smoke drives.
+#
+# There is no PortMaster/GLES analog in this repo (that was a GoldenEye/mgb64
+# handheld-porting effort with no mdkr64 counterpart), so that job is not
+# ported.
+#
+# macos/Scripts/verify_asset_free.sh (used by the Linux job's "Verify
+# asset-free" step below) landed on `main` via the macOS packaging port
+# during the development of this workflow.
+
+name: Release build (Windows + Linux)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version label for the artifact names (e.g. v1.0.0)"
+        required: false
+        default: "dev"
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux app (AppImage + tar.gz)
+    runs-on: ubuntu-22.04  # oldest-reasonable glibc for broad compatibility
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config libsdl2-dev libgl1-mesa-dev \
+            libdbus-1-dev file wget
+      - name: Build the app (Release)
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          cmake --build build --target mdkr64 -j
+      - name: Package AppImage + tar.gz
+        run: ./tools/package_linux_appimage.sh --binary build/mdkr64 --version "${{ github.event.inputs.version }}"
+      - name: Stamp provenance (bind assets to this commit)
+        run: |
+          for f in dist/mdkr64-linux-*; do
+            case "$f" in *.provenance.json) continue ;; esac
+            ./tools/release/stamp_provenance.sh "$f" "${{ github.event.inputs.version }}"
+          done
+      - name: Verify asset-free
+        run: ./macos/Scripts/verify_asset_free.sh build/mdkr64
+      - name: Smoke-launch the ROM-free surfaces (headless)
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+        run: |
+          set -e
+          # mdkr64 has no ROM-free full-render path (unlike mgb64's app-shell
+          # smoke): the game fails fast without a ROM (platform/main_pc.c).
+          # The only ROM-free execution surfaces are --help and --video-list.
+          ./build/mdkr64 --help | tee help.txt
+          grep -q '^Usage: ' help.txt
+          ./build/mdkr64 --video-list | tee video.txt
+          grep -qE '^\[video\] mode=' video.txt
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
+        with:
+          name: mdkr64-linux-${{ github.event.inputs.version }}
+          path: dist/mdkr64-linux-*
+
+  windows:
+    name: Windows app (portable .zip)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: msys2/setup-msys2@d40200dc2db4c351366b048a9565ad82919e1c24 # v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-pkg-config mingw-w64-x86_64-ninja zip
+      - name: Build the app (Release)
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          cmake --build build --target mdkr64 -j
+      - name: Package portable .zip (GoldenBalloon.exe (static SDL2, no DLLs))
+        run: ./tools/package_windows_zip.sh --binary build/mdkr64.exe --version "${{ github.event.inputs.version }}"
+      - name: Stamp provenance (bind assets to this commit)
+        run: |
+          for f in dist/mdkr64-windows-*; do
+            case "$f" in *.provenance.json) continue ;; esac
+            ./tools/release/stamp_provenance.sh "$f" "${{ github.event.inputs.version }}"
+          done
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
+        with:
+          name: mdkr64-windows-${{ github.event.inputs.version }}
+          path: dist/mdkr64-windows-*

@@ -1,0 +1,83 @@
+build*/
+save/
+.DS_Store
+*.o
+compile_commands.json
+
+# ROMs, in every N64 byte order. Golden Balloon is bring-your-own-ROM: nothing
+# ROM-derived is ever committed. All three byte orders must be covered here,
+# because the release gate (tools/check_no_rom.sh) and the CI tree check both
+# check all three.
+*.z64
+*.n64
+*.v64
+
+# ROM ARCHIVES. A ROM handed over as an archive is still a ROM, and an archive is
+# not caught by the byte-order patterns above or by check_no_rom.sh's header scan
+# of staged files. Nothing in this repository is legitimately distributed as an
+# archive, so the formats are ignored outright.
+*.zip
+*.7z
+*.rar
+*.gz
+*.tar
+
+# Ares visual oracle: local-only ares checkout/build + ROM-derived captures.
+# The workspace lives under build/ares-oracle/ (already covered by build*/),
+# but keep these explicit so captures never get committed even if the oracle
+# workspace is pointed elsewhere via MDKR64_ARES_ORACLE_DIR.
+build/ares-oracle/
+/ares-oracle/
+*.ppm
+oracle_captures/
+oracle-work/
+
+# ROM-derived runtime captures. Frame dumps (--dump-frames) are PPM, covered
+# above. MDKR_AUDIO_DUMP writes a RIFF/WAVE file of synthesised game audio —
+# that is ROM-derived output and must never be committed.
+*.wav
+*.raw
+
+# Saves. save/ (save/eeprom.bin) is covered above; these catch an EEPROM written
+# elsewhere via a --savedir style path or copied aside for a bisect.
+*.eep
+*.sav
+*.srm
+
+# M8 web build: ship the shell (index.html, *-shell.js, style.css, assets/) but
+# NOT the emscripten-generated engine glue/binary, its sourcemap or preload data,
+# nor any ROM copied in for local serving.
+dist/web/mdkr64_web.js
+dist/web/mdkr64_web.wasm
+dist/web/mdkr64_web.js.symbols
+dist/web/mdkr-save-tools.js
+dist/web/mdkr-save-tools.wasm
+dist/web/*.wasm.map
+dist/web/*.data
+
+# transient tool worktrees
+.claude/worktrees/
+
+# python bytecode (tools/ helpers are imported by the test checkers)
+__pycache__/
+
+# generated per-build provenance stamp (see tools/web/build_web.sh)
+dist/web/build-info.json
+*.pyc
+
+# macOS / local build leftovers
+*.dSYM/
+*.a
+*.dylib
+*.so
+.ruff_cache/
+
+
+# MinGW cross-check lane logs (tools/mingw_cross_check.sh writes build-mingw-*.log
+# next to the build dir, and `build*/` above only covers directories).
+build-*.log
+
+# Engine video/gameplay config written at runtime next to the working directory
+# (platform/video_config_runtime.c). A test or a launch from the repo root drops
+# one here; it is per-machine state, never source.
+mdkr64.ini

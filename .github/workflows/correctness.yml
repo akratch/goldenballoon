@@ -1,0 +1,142 @@
+name: correctness
+
+# This workflow never receives or downloads a game ROM. It preserves the
+# source/build foundation on every change; proprietary-ROM gameplay remains a
+# local pre-release gate run by a maintainer against a legally-owned ROM, and
+# is documented in docs/RELEASE_CHECKLIST.md.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: correctness-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    name: Policy and source contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Clean-room history
+        run: tools/check_clean_room.sh
+      - name: Native SDK surface, third-party notices, and image metadata
+        run: |
+          python3 tools/check_native_sdk_surface.py
+          python3 tools/check_third_party_notices.py
+          python3 tools/check_image_metadata.py
+      - name: Shell and Python syntax
+        run: |
+          find tools -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
+          python3 -m compileall -q tests tools
+      - name: Public shell tool syntax
+        run: python3 tools/check_shell_syntax.py --repo-root .
+      - name: Public documentation links
+        run: python3 tools/check_markdown_links.py --repo-root .
+      - name: Ignored-artifact hygiene
+        run: tools/ci/check_high_risk_ignored_artifacts.sh
+      - name: CI and WebGPU source contracts
+        run: |
+          python3 tests/check_ci_contract.py
+          python3 tests/check_address_domains.py
+          python3 tests/check_webgpu_fault_matrix.py
+
+  native:
+    name: Native ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux WebGPU
+            os: ubuntu-latest
+            compiler: gcc
+            webgpu: "ON"
+            extra_flags: ""
+          - label: Linux OpenGL-only
+            os: ubuntu-latest
+            compiler: gcc
+            webgpu: "OFF"
+            extra_flags: ""
+          - label: macOS WebGPU warnings
+            os: macos-latest
+            compiler: clang
+            webgpu: "ON"
+            extra_flags: "-Wreturn-type -Wuninitialized -Wsometimes-uninitialized -Warray-bounds -Wshift-sign-overflow -Wshift-negative-value -Wnull-pointer-arithmetic"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev libsdl2-dev pkg-config
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install pkg-config sdl2
+      - name: Configure
+        env:
+          CC: ${{ matrix.compiler }}
+        run: >-
+          cmake -S . -B build-ci
+          -DCMAKE_BUILD_TYPE=Release
+          -DMDKR_WEBGPU_BACKEND=${{ matrix.webgpu }}
+          -DMDKR_EXTRA_C_FLAGS="${{ matrix.extra_flags }}"
+      - name: Build
+        run: cmake --build build-ci --parallel 4
+      - name: ROM-free unit and format contracts
+        run: ctest --test-dir build-ci --output-on-failure
+
+  sanitizers:
+    name: Linux ROM-free ASan + UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libgl1-mesa-dev libsdl2-dev pkg-config
+      - name: Configure
+        env:
+          CC: clang
+        run: >-
+          cmake -S . -B build-sanitize
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DMDKR_WEBGPU_BACKEND=OFF
+          -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build
+        run: cmake --build build-sanitize --parallel 4
+      - name: ROM-free sanitizer contracts
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build-sanitize --output-on-failure
+
+  web:
+    name: Linked wasm and browser save custody
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: mymindstorm/setup-emsdk@6ab9eb1bda2574c4ddb79809fc9247783eaf9021 # v14
+        with:
+          version: "4.0.10"
+      - name: Build linked browser artifacts
+        run: EMSDK_DIR="$EMSDK" tools/web/build_web.sh
+      - name: Linked wasm layout
+        run: python3 tests/check_wave_visible_table.py --wasm build-web/mdkr64_web.wasm
+      - name: ROM-free browser save custody
+        run: >-
+          python3 tests/check_browser_save_ui.py
+          --engine-dir dist/web
+          --shell-dir dist/web
+          --chrome google-chrome
+          --timeout 90
+      - name: Shipped-artifact ROM guard
+        run: tools/check_no_rom.sh dist/web

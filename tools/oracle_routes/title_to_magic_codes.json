@@ -1,0 +1,94 @@
+{
+  "schema": "mdkr64.oracle.route.v1",
+  "name": "title_to_magic_codes",
+  "description": "Title -> OPTIONS (12) -> MAGIC_CODES (10). Mirrors tests/input_scripts/nav_to_magic_codes.txt. The cheat-entry keyboard is dense static text, so a fidelity gap here shows up sharply in the block metric.",
+  "native_cadence": "enhanced",
+  "native_synth_fields": 1,
+  "sync": {
+    "event": "title",
+    "native_frame": 1134,
+    "ares_frame": 1340
+  },
+  "native": {
+    "frames": 1990,
+    "dump_every": 20,
+    "dump_start": 1100
+  },
+  "ares": {
+    "frames": 2290,
+    "dump_every": 20,
+    "dump_start": 1300
+  },
+  "marks": [
+    {
+      "name": "title_menu",
+      "logical": 146
+    },
+    {
+      "name": "options",
+      "logical": 417
+    },
+    {
+      "name": "magic_codes",
+      "logical": 787
+    }
+  ],
+  "events": [
+    {
+      "frame": 1250,
+      "buttons": [
+        "start"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1310,
+      "buttons": [
+        "down"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1380,
+      "buttons": [
+        "start"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1520,
+      "buttons": [
+        "down"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1580,
+      "buttons": [
+        "down"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1640,
+      "buttons": [
+        "down"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1700,
+      "buttons": [
+        "down"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1780,
+      "buttons": [
+        "a"
+      ],
+      "hold": 4
+    }
+  ]
+}

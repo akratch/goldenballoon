@@ -1,0 +1,11 @@
+# DKR title -> OPTIONS(12) -> AUDIO OPTIONS(13).
+# Native OPTIONS item order: 0 ENGLISH, 1 SUBTITLES, 2 AUDIO OPTIONS,
+# 3 VIDEO OPTIONS, 4 SAVE OPTIONS, 5 MAGIC CODES, 6 RETURN. Cursor starts at 0;
+# DOWN x2 -> AUDIO, then A opens the sub-menu. Menu input is edge-detected.
+# Assert: MDKR_TRACE=1 ... | grep menu_init  -> ... 12 then 13.
+1250 START 4
+1310 DOWN 4
+1380 START 4
+1520 DOWN 4
+1580 DOWN 4
+1660 A 4
