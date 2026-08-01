@@ -19,26 +19,23 @@ with `tools/anim_period.py` disproved it: captures were byte-identical across
 autocorrelation period measured ~20 frames — the dancers were, and always had
 been, moving. Related prior art in this tree: `docs/open-items/renderer.md`'s
 "headless renders were NOT reproducible" entry (wave "determinism") is what
-made this screen's frames comparable run-to-run at all, and
-`tests/check_menu_anim_rate.py` already guards the OPPOSITE failure shape (the
-T1 bug, dancing 8x too fast) via the same `music_animation_fraction()` /
-`obj_loop_char_select()` path (`game/src/object_functions.c`).
-
-**The gap.** Both of those existing gates measure something *about* the
-animation but neither one measures "is it still moving at all" as a
-regression floor. The disproof above was real analysis, run once, by hand — a
-genuine freeze regression in `obj_loop_char_select()` or in the COUNTER-driven
-clock it reads would have shipped with zero automated warning.
+made this screen's frames comparable run-to-run at all. The older rate-only
+check sampled a hand-tuned window and caught the T1 bug (dancing 8x too fast)
+through the same `music_animation_fraction()` / `obj_loop_char_select()` path,
+but did not prove the dancers were moving at all. Its capture window later
+became stale as frontend timing settled, so it was retired rather than
+re-baselined.
 
 **Closed by `tests/check_charselect_motion.py`.** Productizes the same
 analysis into a permanent gate: a six-window ensemble (the
 `check_mip_motion.py` pattern — `WINDOW_FRAMES=24`, `WINDOW_COUNT=6`,
 `CAPTURE_COUNT=144`) over whole-screen motion RMS on the character-select
-capture, plus a loosely-banded periodicity check. No animation-freeze hook
-exists in the engine and none was added for this — the required
-broken-direction control is built at the analyzer level instead, by feeding
-the scorer the same captured frames with every frame replaced by frame 0
-("every frame duplicated from frame 0"); measured motion on that arm is
-exactly 0.0 in every window, correctly failing the gate. See
+capture, plus a loosely-banded periodicity check that rejects the original
+too-fast cycle as well as an implausibly slow one. No animation-freeze hook
+exists in the engine and none was added for this — both broken-direction
+controls are built at the analyzer level. The frozen arm replaces every frame
+with frame 0 and must fail the motion floors; the fast arm loops five phases
+sampled across one healthy cycle and must fail the bounded-period assertion.
+See
 `tests/README.md`'s "Character-select dancer motion" section for the measured
 numbers and threshold rationale.

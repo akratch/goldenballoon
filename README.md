@@ -51,6 +51,12 @@ Then:
 Each release file ships with a `.provenance.json` naming the exact source
 commit and SHA-256 it was built from.
 
+For a focused human spot check, use the
+**[1.0.1 release-candidate test guide](docs/RELEASE_CANDIDATE_TEST_GUIDE.md)**.
+It pins the exact artifact hashes and covers the startup-audio, menu-animation,
+geometry, wheel, UI-alignment, magic-code, multiplayer, persistence, and
+experimental-frame-limit regressions found during patch development.
+
 > **macOS packaging notice:** the known-bad 1.0.0 DMG can produce Finder's
 > “damaged and can't be opened” dialog because its executable was modified
 > after the linker's integrity signature. This is not the ordinary

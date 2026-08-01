@@ -456,6 +456,10 @@ Before dispatching:
 
 ## 7. Post-release spot checks
 
+For the concise human route and exact 1.0.1 artifact hashes, use
+[`RELEASE_CANDIDATE_TEST_GUIDE.md`](RELEASE_CANDIDATE_TEST_GUIDE.md). The steps
+below remain the policy-level detail behind that guide.
+
 Load the published page in a WebGPU browser, select a ROM, and confirm it boots and
 renders. Confirm in devtools that no request carries ROM bytes — the ROM is read
 client-side and must never be uploaded.

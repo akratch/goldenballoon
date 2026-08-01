@@ -29,7 +29,7 @@ trig as with the superseded ones, since the frontend does not consume them.
 The one thing that DOES move them is timing: menu input is edge-detected and the
 frames are hand-placed with generous gaps, so a change to the frontend's own
 update rate would break them.  That is exactly what they should catch, and
-`tests/check_menu_anim_rate.py` measures the rate itself.
+`tests/check_charselect_motion.py` measures the animation rate itself.
 
     MDKR_AUDIO=0 python3 tests/check_nav_fixtures.py -v      # ~3 min
 

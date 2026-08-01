@@ -447,21 +447,24 @@ gate — until this existed, a real regression in `obj_loop_char_select()` or
 144-frame character-select capture must clear a floor and at least 5/6
 windows must individually clear a per-window floor, with a loosely-banded
 periodicity assertion (peak autocorrelation lag in [14, 26] frames, r >= 0.3)
-alongside it. Whole-screen RMS was chosen over the cropped dancer region
-`check_menu_anim_rate.py` uses because it reproduces the original ad-hoc
-numbers directly and was measured to still catch a freeze localized to just
-the character models (butterflies alone left animating drops per-window
-motion from a real 5.76-6.90 to 4.24-4.65, cleanly below the chosen floor).
+alongside it. That band also rejects the historical 8x-too-fast oscillation.
+Whole-screen RMS was chosen over the legacy cropped dancer analysis because it
+reproduces the original ad-hoc numbers directly and was measured to still catch
+a freeze localized to just the character models (butterflies alone left
+animating drops per-window motion from a real 5.76-6.90 to 4.24-4.65, cleanly
+below the chosen floor). The older rate-only script was retired when its fixed
+capture window no longer reached the settled character-select screen; this
+gate subsumes both of its useful assertions without weakening either one.
 
 No env-gated animation-freeze hook exists in the engine, and the plan
 explicitly prefers an analyzer-level control over adding one for this gate.
-The required broken-direction control is built without any engine change: the
-same captured grids, with every frame replaced by a copy of frame 0 ("every
-frame duplicated from frame 0"), run through the identical scoring function.
-Measured: motion collapses to exactly 0.0 in every window, failing both the
-per-window and ensemble-mean floors. The check's own PASS depends on that
-control failing — if a frozen capture ever passed the same gate the real one
-does, the script fails on that alone.
+The required broken-direction controls are built without any engine change.
+The frozen arm replaces every captured grid with frame 0; measured motion
+collapses to exactly 0.0 in every window and must fail both motion floors. The
+rate arm loops five phases sampled across one healthy cycle, recreating the
+historical roughly five-frame oscillation while preserving visible movement;
+it must fail the [14, 26]-frame period band. The check's own PASS depends on
+both controls being rejected by the same scorer used for the real capture.
 
 ### Output-resolution HUD/text — `tests/check_native_ui_resolution.py`
 
@@ -533,7 +536,7 @@ to be taken — `MDKR_BOSS_WIN` replaced `MDKR_BOSS_SLOW` for exactly that reaso
 | `nav_to_audio_options` | 1900 | `check_nav_fixtures.py` → `menuId=13` | open, by design |
 | `nav_to_save_options` | 1950 | `check_nav_fixtures.py` → `menuId=14` | open, by design |
 | `nav_to_magic_codes` | 2000 | `check_nav_fixtures.py`, `check_array_bounds_sweep.py` → `menuId=10`; the nav gate also submits valid `ARNOLD` and invalid `ARNOLE` through the onscreen keyboard | open, by design |
-| `nav_to_character_select` | 1600 | `check_nav_fixtures.py`, `check_menu_anim_rate.py`, `check_charselect_motion.py`, `check_determinism.py`, `check_array_bounds_sweep.py` → `menuId=3` | open, by design |
+| `nav_to_character_select` | 1600 | `check_nav_fixtures.py`, `check_charselect_motion.py`, `check_determinism.py`, `check_array_bounds_sweep.py` → `menuId=3` | open, by design |
 | `nav_to_game_select` | 2000 | `check_nav_fixtures.py` → `menuId=19` | open, by design |
 | `nav_to_file_select_adventure` | 2100 | `check_nav_fixtures.py`, `check_array_bounds_sweep.py` → `menuId=6` | open, by design |
 | `nav_to_track_select` | 2300 | `check_nav_fixtures.py`, `check_array_bounds_sweep.py` → `menuId=15` | open, by design |

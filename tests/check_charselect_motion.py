@@ -15,21 +15,20 @@ completely undetected. This productizes that analysis into a permanent gate.
 
 Why whole-screen RMS, not a per-character crop
 ------------------------------------------------
-`check_menu_anim_rate.py` already measures a cropped "two character rows"
-region (0.1,0.2,0.95,0.65) for a *different* purpose -- catching the T1 bug
-where the dance ran 8x too fast. That crop also catches butterflies drifting
-across the screen, which the check's own docstring calls out as a confound for
-period detection: on this capture the cropped region's autocorrelation peaks
-at lag 9 (r=0.74), not the dancers' true ~19-20 frame cycle, because the
-butterflies have their own faster rhythm. Measuring the WHOLE frame instead
-reproduces the original ad-hoc numbers almost exactly (14.285 vs 14.120 RMS,
-lag 19 vs "period 20", on a capture starting 50 frames later than the original
-run) and is what this gate uses for its regression floor.
+The legacy rate check measured a cropped "two character rows" region
+(0.1,0.2,0.95,0.65) to catch the T1 bug where the dance ran 8x too fast. That
+crop also catches butterflies drifting across the screen: on this capture its
+autocorrelation peaks at lag 9 (r=0.74), not the dancers' true ~19-20 frame
+cycle, because the butterflies have their own faster rhythm. Measuring the
+WHOLE frame instead reproduces the original ad-hoc numbers almost exactly
+(14.285 vs 14.120 RMS, lag 19 vs "period 20", on a capture starting 50 frames
+later than the original run) and lets this one gate reject both frozen dancers
+and the original too-fast period.
 
 Whole-screen RMS still has to prove it can catch a dancer-specific freeze, not
 just a fully-dead screen (a bug could plausibly freeze only the character
 models while the background/butterflies keep moving). Measured directly:
-freezing ONLY the check_menu_anim_rate crop (dancers held at their frame-0
+freezing only the legacy dancer crop (dancers held at their frame-0
 pose, everything else including butterflies left alone) drops per-window
 (24-frame) whole-screen motion from a real 5.76-6.90 down to 4.24-4.65 -- a
 clean, consistent gap below the MIN_WINDOW_MOTION floor chosen here. A full
@@ -57,7 +56,7 @@ in a generous [14, 26]-frame band with r >= 0.3. Measured real values: lag 19,
 r=0.66 (offset 1650) and lag 19, r=0.66 (offset 1710) -- stable across phase,
 so the band has real margin without being tuned to the exact ROM value.
 
-Broken-direction control (required)
+Broken-direction controls (required)
 ------------------------------------
 No env-gated animation-freeze hook exists anywhere in the game/engine sources
 (searched `obj_loop_char_select`, `music_animation_fraction`, and every
@@ -68,13 +67,12 @@ analyzer-level control will do. It will: the ensemble scorer above is a pure
 function of a list of luma grids, so a frozen-frame arm is built by taking the
 SAME captured grids and replacing every one of them with a copy of the first
 frame -- literally the "capture where every frame is duplicated from frame 0"
-construction the plan calls out. That arm is run through the identical scoring
-function used for the real capture, and the check's own PASS depends on that
-control failing: motion collapses to exactly 0.0 in every window (measured),
-which trips both the per-window and ensemble-mean floors and reports "STILL"
-for periodicity. If the frozen arm were ever to pass, this script fails loudly
-on that alone -- the gate would not be able to tell dancing from static, which
-is precisely the coverage hole this file exists to close.
+construction the plan calls out. A second arm loops five phases sampled across
+one healthy cycle, recreating the original roughly five-frame too-fast failure
+shape. Both arms run through the identical scoring function used for the real
+capture, and the check's own PASS depends on both failing: the frozen arm must
+trip the motion floors, while the fast-loop arm must fail the [14, 26]-frame
+period band.
 
 Usage
 -----
@@ -101,7 +99,7 @@ SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_character_select.txt"
 
 # Character select settles well before this (menu_init: menuId=3 fires ~1394-
 # 1600 depending on route bookkeeping -- see tests/README.md's nav_* table and
-# check_menu_anim_rate.py). 1650 leaves a comfortable margin past the fade-in.
+# the legacy rate capture). 1650 leaves a comfortable margin past the fade-in.
 CAPTURE_FROM = 1650
 WINDOW_FRAMES = 24
 WINDOW_COUNT = 6
@@ -224,7 +222,7 @@ def capture(
 def score(anim_period, grids: list, label: str) -> tuple[list[str], dict]:
     """Score one sequence of coarse luma grids through the same ensemble gate.
 
-    Shared by the real capture (which must pass) and the frozen-frame control
+    Shared by the real capture (which must pass) and both analyzer controls
     (which must not) -- see the module docstring's broken-direction section.
     """
     failures: list[str] = []
@@ -373,6 +371,26 @@ def main() -> int:
             for f in frozen_failures:
                 print(f"    - {f}")
 
+        # Original T1 broken direction: sample five phases across one healthy
+        # ~19-frame cycle, then loop them. This synthesizes the historical
+        # roughly five-frame period without a gameplay-code test hook, while
+        # retaining enough real motion amplitude to exercise the rate check.
+        fast_grids = [real_grids[(i % 5) * 4] for i in range(len(real_grids))]
+        fast_failures, fast_info = score(anim_period, fast_grids, "fast-loop control")
+        print(
+            "  fast-loop control: whole-run motion RMS="
+            f"{fast_info['full_motion']:.3f}, period={fast_info['period']} "
+            f"frames (peak r={fast_info['peak_r']:.2f})"
+        )
+        period_rejected = any("no plausible dance period" in f for f in fast_failures)
+        if not period_rejected:
+            failures.append(
+                "broken-direction control did not reject a five-frame loop on "
+                "the bounded-period assertion"
+            )
+        elif args.verbose:
+            print("  fast-loop control correctly failed the period band")
+
         if failures:
             print("FAIL charselect motion:", file=sys.stderr)
             for f in failures:
@@ -385,8 +403,8 @@ def main() -> int:
             "PASS charselect motion: character select, "
             f"{CAPTURE_COUNT} frames over {WINDOW_COUNT} windows, mean motion "
             f"RMS {real_info['mean_motion']:.2f} (floor {MIN_MEAN_MOTION:.2f}), "
-            f"period {real_info['period']} frames; frozen-frame control "
-            "correctly rejected"
+            f"period {real_info['period']} frames; frozen and five-frame-loop "
+            "controls correctly rejected"
         )
         if args.keep_frames:
             print(f"  evidence retained in {work}")

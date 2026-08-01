@@ -16,6 +16,9 @@ save formats). Everything below 1.0.0 predates that commitment.
   documented the 1.0.1 ASCII-path workaround, and recorded explicit backend
   selection, wide-character filesystem APIs, and a reviewed application
   manifest for 1.0.2.
+- Added an exact-hash 1.0.1 human acceptance guide and consolidated the stale
+  pre-character-select animation-rate script into the stronger settled-screen
+  motion/rate gate, with explicit frozen and five-frame-loop controls.
 
 ## [1.0.1] — 2026-08-01
 

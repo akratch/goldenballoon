@@ -83,7 +83,7 @@ What is asserted (measured values are from the reference run, US 1.1)
     i.e. the beat grid is within 0.4 % of the programmed tempo in every case, and the
     +-5 % detunings score *negative* (-0.02 to -0.04) — a 10x margin, not a threshold
     scraped past. 182.11 BPM for the title sequence independently confirms the 182 BPM
-    / 659 ms figure that check_menu_anim_rate.py was built around.
+    / 659 ms figure from the historical title-screen animation diagnosis.
 
     The live readout also exposes something worth knowing: `music_tempo()`
     (sMusicTempo) is only the BPM audio.c last programmed from gSeqSoundTable, and it

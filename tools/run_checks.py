@@ -131,11 +131,9 @@ CHECKS = (
     Check("shadow_plausibility", "check_shadow_plausibility.py", "native",
           "caster provenance and shadow attribution across 3 worlds and every "
           "1P-4P budget tier, with an injected bogus-caster control"),
-    Check("menu_anim_rate", "check_menu_anim_rate.py", "native",
-          "menu animation timing"),
     Check("charselect_motion", "check_charselect_motion.py", "native",
-          "character-select dancer motion ensemble, with a frozen-frame "
-          "broken-direction control"),
+          "character-select dancer motion/rate ensemble, with frozen-frame "
+          "and fast-loop broken-direction controls"),
     Check("attract_demo", "check_attract_demo.py", "native",
           "rolling-demo vehicle/path selection, soak, and input teardown"),
     Check("nav_fixtures", "check_nav_fixtures.py", "native", "all menu routes"),
