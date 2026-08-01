@@ -38,13 +38,40 @@ audio thread.
    mixer address from its low 32 bits — the same pattern the graphics path
    uses.
 
-4. **The pump and the sink.** A per-frame synchronous pump
+4. **The pump and the sink.** An independently due synchronous pump
    (`platform/audi_port_dkr.c` plus `amAudioSynthFrame`) replaces the
-   never-run audio thread; it is driven once per rendered frame from the
-   `stubs_dkr.c` frame boundary. Native output is an SDL2 queue-mode device at
-   22050 Hz stereo s16, gated off under `--headless-frames`. The browser build
-   swaps the sink for `web_audio_worklet.c`; sample production is decoupled
-   from the sink so both reuse it.
+   never-run audio thread. Exact host-audio time accrues in two-field quanta;
+   each ordered game tick consumes at most one, so extra presentation frames
+   cannot manufacture PCM and catch-up retains cue order. Native output is an
+   SDL2 queue-mode device at 22050 Hz stereo s16, gated off under
+   `--headless-frames`. `platform/audio_queue_controller.c` replaces the
+   measured sink drain and corrects the application queue toward a bounded
+   target; the same pure controller drives deterministic cadence tests and a
+   ROM-free SDL sink probe. The browser build swaps the sink for
+   `web_audio_worklet.c`; sample production is decoupled from the sink so both
+   reuse it.
+
+## Sink qualification
+
+Two ROM-free CTests separate deterministic control from operating-system
+plumbing. `audio_queue_controller` simulates exact 30, 60, 120, 144, 240 and
+1000 Hz service schedules plus counter wrap, capacity/alignment, and a long
+host stall. `audio_sink_contract` opens the real SDL queue API with silence,
+requires the exact 22050 Hz/stereo/s16 contract, observes active drain, and
+checks bounded occupancy plus pause and clear behavior. CI selects SDL's
+silent `dummy` driver. The same executable can exercise a physical default
+device without copyrighted PCM or audible output:
+
+```bash
+env -u SDL_AUDIODRIVER build/mdkr_audio_sink_contract_test --duration-ms 10000
+```
+
+The 2026-08-01 CoreAudio witness passed for 5 seconds: 476 controller calls,
+214 observed queue drains, zero queue failures or stall guards, and a
+1,193-sample-frame application-queue high-water. SDL queue occupancy does not
+expose the hidden hardware buffer and silence cannot prove speaker output, so
+this is not represented as DAC underrun, audible-output, or cross-platform
+hardware qualification. Those remain part of the physical release matrix.
 
 ## Provenance: what the engine replaced
 
@@ -81,4 +108,4 @@ here (commit `cdeb3e5`), which is what closed the gap in the table above.
 - [`docs/open-items/audio.md`](../open-items/audio.md) — the audio defect
   record, including the reverb LP64 delay-tap fix.
 - [`tests/README.md`](../../tests/README.md) — `check_audio_output`,
-  `check_raw16_audio` and the rest of the audio fixtures.
+  `check_raw16_audio`, the sink contracts and the rest of the audio fixtures.

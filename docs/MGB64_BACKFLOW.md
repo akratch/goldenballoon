@@ -1009,8 +1009,7 @@ resolve the colour from the register the combiner actually names.
 
 # Widescreen/FOV and projected-shadow findings (2026-07-25)
 
-Source investigation and implementation details are in
-`WIDESCREEN_SHADOW_IMPLEMENTATION_2026-07-25.md` (internal archive).
+The source investigation is preserved here alongside the implementation facts.
 MGB64 was inspected read-only at HEAD
 `f9fd34f4e245c1561a62669c8737b628e737e9db`; no changes were made there.
 
@@ -1203,9 +1202,7 @@ Keep user-facing aspect/FOV defaults reversible, and do not let host drawable
 state enter matching or simulation-visible structures.
 ## Preserved pre-implementation audit note (VIS-01/VIS-02)
 
-The complete evidence, citations, estimates, and acceptance matrices are in
-`the correctness/portability audit` (internal archive)
-under VIS-01 and VIS-02. Two parts should be carried between projects:
+Two parts of the VIS-01/VIS-02 findings should be carried between projects:
 
 1. **Treat widescreen as projection + visibility + draw-class policy, not a
    global X-coordinate trick.** MDKR64's world projection is simpler than BOND's,
@@ -1401,11 +1398,11 @@ sparks, explosions, and other effect billboards are still the right census:
 4. compare equal-height 4:3/16:9/21:9 captures and at least one changed-FOV arm;
 5. use a deliberate legacy/aspect regression as a positive control.
 
-MDKR's dependency-free gate measures the same golden-balloon art through both
-SAFE_2D and world-billboard paths in one frame. Fixed output is 99×36 for the HUD
-at every production aspect and 68×27 for the world motif at both 4:3 and 16:9;
-capped 21:9 and 75° FOV follow their analytic focal scales. The exact legacy arm
-remains 173×36 / 122×27 and must fail the production threshold
+MDKR's dependency-free gate measures the same golden-balloon art through the
+SAFE_2D and world-billboard paths at two deterministic approach frames. Fixed
+output is 99×36 for the HUD at every production aspect and 48×18 for the world
+motif at both 4:3 and 16:9; capped 21:9 and 75° FOV follow their analytic focal
+scales. The exact legacy arm remains 173×36 / 84×18 and must fail the production threshold
 ([check_widescreen_proportions.py](../tests/check_widescreen_proportions.py)).
 That paired-art pattern is broadly reusable when one asset can be found in two
 transform classes.

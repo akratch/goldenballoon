@@ -201,6 +201,28 @@ void presentation_snapshot_set_enabled(bool enabled);
 void presentation_snapshot_note_spawn(const void *object);
 void presentation_snapshot_note_free(const void *object);
 
+/*
+ * Return the generation currently assigned by the lifecycle registry without
+ * exposing or reading the live Object. Matrix registration uses this to bind
+ * a frozen display-list transform to the exact object lifetime that produced
+ * it; an address alone is not an identity because the 512-slot pool recycles
+ * addresses aggressively.
+ *
+ * This strict lookup is deliberately read-only. If the seam was enabled after
+ * a normal captured object spawned and its first capture has not happened yet,
+ * it returns false and that matrix remains unowned for one tick rather than
+ * manufacturing identity state from the render path.
+ */
+bool presentation_snapshot_identity_generation(const void *object,
+                                               uint64_t *generation);
+/* Register a presentation-only lifetime that predates replay activation (for
+ * example the shared shield/magnet render objects, which are not in
+ * gObjPtrList) without resetting an already-issued generation. This is only
+ * for renderer-owned identities that the authoritative object walk cannot
+ * discover; normal game objects use the strict lookup above. */
+bool presentation_snapshot_identity_ensure_generation(
+    const void *object, uint64_t *generation);
+
 /* Level transitions reset snapshot history so interpolation never crosses
  * two unrelated scenes (spec §5). Hooked at game.c's stage boundary, beside
  * gfx_dkr_resource_generation_begin. */
@@ -249,6 +271,19 @@ float presentation_lerp1(float a, float b, uint64_t numerator,
 void presentation_lerp3(const float a[3], const float b[3],
                         uint64_t numerator, uint64_t denominator,
                         float out[3]);
+uint8_t presentation_lerp_u8(uint8_t a, uint8_t b, uint64_t numerator,
+                             uint64_t denominator);
+
+/* Particle::opacity is an s16 containing an unsigned 8.8 fixed-point bit
+ * pattern. Extracting through uint16_t matches render_particle's high-byte
+ * interpretation without relying on implementation-defined right shift of a
+ * negative signed value. */
+uint8_t presentation_particle_opacity_u8(int16_t opacity);
+
+/* Preserve draw-local fades/modifiers while replacing the authoritative
+ * object's current opacity with its interpolated presentation opacity. */
+uint8_t presentation_scale_opacity_u8(uint8_t authored, uint8_t current,
+                                      uint8_t target);
 
 /*
  * Shortest-arc interpolation of a DKR fixed angle.
@@ -301,6 +336,21 @@ bool presentation_snapshot_resolve_object(const void *address,
                                           uint64_t numerator,
                                           uint64_t denominator,
                                           PresentationObjectPose *out);
+
+/* Resolve only when the published current entry is the exact registered
+ * lifetime. This is the renderer-facing form; pointer-only resolution remains
+ * available for callers that enumerate the snapshot itself. */
+bool presentation_snapshot_resolve_object_generation(
+    const void *address, uint64_t generation, uint64_t numerator,
+    uint64_t denominator, PresentationObjectPose *out);
+
+/* True only when previous/current entries are one continuous, non-particle
+ * lifetime with the same model and animation topology. Retained animated
+ * vertex batches use this before blending deformation. */
+bool presentation_snapshot_deformation_compatible(const void *address,
+                                                   uint64_t generation);
+bool presentation_snapshot_particle_deformation_compatible(
+    const void *address, uint64_t generation);
 
 /* Same, indexed into the published current frame's object array. */
 bool presentation_snapshot_resolve_object_at(size_t index,

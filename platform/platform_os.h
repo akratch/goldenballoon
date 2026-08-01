@@ -59,7 +59,10 @@ void platform_frame_sync(void);
  * screen instead of repeating the tick's image; see the definition.
  */
 void platform_frame_sync_no_swap(void);
+/* Catch-up boundary: service host input/lifecycle without an image present. */
+void platform_frame_service(void);
 extern int g_headlessFrames;    /* -1 = windowed/forever; >=0 = exit after N */
+extern int g_headlessTicks;     /* -1 = frame budget; >=0 = exit after N ticks */
 extern int g_frameCounter;
 /*
  * Cooperative process exit. Frame/input code requests termination and the
@@ -69,6 +72,7 @@ extern int g_frameCounter;
 void platform_request_exit(int code);
 int platform_exit_requested(void);
 int platform_exit_code(void);
+void platform_headless_tick_complete(int tick_count);
 
 /* Source-release timing selected by ROM identification before game boot. */
 int platform_source_tv_type(void);   /* 0 PAL, 1 NTSC, 2 MPAL */
@@ -85,18 +89,24 @@ int platform_source_field_hz(void);  /* 50 PAL, 60 NTSC/MPAL */
  * On N64 the VI interrupt posts retrace messages to that queue ASYNCHRONOUSLY at
  * 60 Hz. Our cooperative shim has no async producer, so without this pacer the
  * drain always finds 0 and updateRate pins at 1 regardless of the real present
- * cadence — motion desyncs from real time (slow when the renderer can't sustain
- * 60fps; fast on a >60 Hz display). This pacer restores the mechanism: it derives
- * the true field count from the wall clock and feeds it back through the queue.
+ * cadence — motion desyncs from real time. The native driver converts host
+ * elapsed time into fixed one- or two-field tickets. Ordinary lateness becomes
+ * repeated tickets; it never becomes one oversized gameplay update.
  *
  * platform_vi_pace_measure() paces the present to the configured simulation
  * floor: two 60 Hz fields for original/authored gameplay (default), or one for
- * the explicit enhanced compatibility mode. It returns the number of fields the
- * just-completed frame occupied (>=1). The video-queue recv in stubs_dkr.c makes
- * exactly that many retraces available, so fb_update's drain returns the
- * matching updateRate. */
+ * the explicit enhanced compatibility mode. It returns the host fields in that
+ * pace sample. The driver consumes them and the video-queue adapter publishes
+ * exactly one fixed-width ticket to fb_update(). */
 int  platform_vi_pace_measure(void);   /* pace + return this frame's field count (>=1) */
-extern int g_viLastFields;             /* fields the last present represented (== updateRate injected) */
+/* Local oracle diagnostic only. When MDKR_ORACLE_UPDATE_FIELDS names a strict
+ * `tick fields` schedule, return the real-ROM update width for `tick`. This
+ * never changes the shipping fixed-ticket path. */
+int  platform_oracle_update_fields(uint64_t tick, int *fields);
+/* Report and release the optional oracle schedule. Returns zero when a named
+ * schedule was not consumed completely, so diagnostic runs fail closed. */
+int  platform_oracle_update_fields_finish(void);
+extern int g_viLastFields;             /* fixed ticket width published as updateRate */
 extern int g_viLastWallFields;         /* true wall-clock/synthetic fields elapsed (trace: speed vs realtime) */
 int      platform_pace_is_synthetic(void); /* 1 == deterministic fixed fields/frame (headless) */
 uint64_t platform_sim_field_count(void);   /* cumulative 60 Hz fields; the deterministic clock */
@@ -104,19 +114,20 @@ uint64_t platform_sim_field_count(void);   /* cumulative 60 Hz fields; the deter
  * diagnostic override). present_sched.c models the same second the pacer
  * enforces, so it must read this rather than platform_source_field_hz(). */
 int      platform_pace_field_hz(void);
+/* Fixed gameplay-ticket width selected by SimulationCadence. */
+int      platform_sim_tick_fields(void);
+/* The most recent pace sample crossed a suspension/debugger rebase. */
+int      platform_vi_pace_rebased(void);
 /* 0 == MDKR_VI_PACE=off: the diagnostic that injects updateRate 1 regardless of
  * elapsed time. The present subloop applies it once per tick, not per present. */
 int      platform_vi_pace_compensating(void);
-/* Presentation subloop (Phase 3 Wave B slice 2). Returns the source fields one
- * present occupies, or 0 when the subloop is not engaged and one present is one
- * authoritative tick exactly as before. */
+/* Presentation subloop. Returns nonzero when the resolved policy needs host
+ * opportunities between authoritative ticks. */
 int      platform_present_subloop_fields(void);
-/* Pace one present; returns the TRUE source fields it occupied. */
-int      platform_vi_present_pace(void);
-/* Commit the tick's synthetic field budget at the tick boundary — the phase the
- * deterministic COUNTER depends on. No-op unless the subloop is engaged and
- * pacing is synthetic. */
-void     platform_vi_tick_clock_commit(void);
+/* Pace one present; returns exact clock units (one source field == 1e9). */
+uint64_t platform_vi_present_pace_units(void);
+/* Commit one fixed ticket to the synthetic COUNTER at the tick boundary. */
+void     platform_vi_tick_clock_commit(unsigned tick_fields);
 
 /* Objective motion-vs-clock probe (published from game/src/racer.c under
  * NATIVE_PORT for player 1 each frame; logged by the pacer trace). Lets an
@@ -141,7 +152,7 @@ void mdkr_pace_probe_ghost(int ghostBank);
 
 /* ===== Render backend selection (M4.5) =================================== *
  * The renderer backend is chosen once at startup from MDKR_RENDERER
- * (webgpu|gl|metal), defaulting to webgpu. The window/context created by
+ * (webgpu|gl|metal), defaulting to GL on native builds. The window/context created by
  * platform_sdl_init() differs per backend (a Metal-layer window for WebGPU vs a
  * GL-context window for OpenGL), so the choice must be resolved BEFORE the
  * window is created and used again by main_pc to pick the &gfx_*_api passed to
@@ -198,16 +209,14 @@ enum MdkrWebGpuWindowSystem platformWebGpuWindowInfo(
 extern const char *g_dumpFramesDir;
 
 /* ===== Input (platform_sdl_min.c) ======================================= *
- * platform_input_init opens connected SDL game controllers + loads the
- * gamecontrollerdb mappings; platform_input_pump rebuilds the per-frame pad
- * state (keyboard + gamepad + scripted) and is called from platform_frame_sync
- * before the retrace is synthesized. osContGetReadData reads via the
- * accessors below. P1 is always present because the keyboard is its first-class
- * controller; P2-P4 are present when an SDL controller is assigned or an input
- * script addresses that port. platform_input_load_script parses
- * --input-script FILE. */
+ * Host events are captured on presentation opportunities, but DKR-visible pad
+ * state is published only when the host driver issues a fixed-step ticket.
+ * Script entries bypass host poll cadence and remain authoritative-tick
+ * indexed. */
 void platform_input_init(void);
 void platform_input_pump(void);
+void platform_input_commit_tick(uint64_t ticket);
+void platform_input_queue_summary(void);
 int  platform_input_load_script(const char *path);
 int          platform_pad_present(int port);
 int          platform_pad_rumble_supported(int port);

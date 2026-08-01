@@ -18,6 +18,7 @@
 #include "thread3_main.h"
 #ifdef NATIVE_PORT
 #include "save_codec.h"
+#include "gameplay_event_trace.h"
 #endif
 
 #ifdef NATIVE_PORT
@@ -124,6 +125,10 @@ void rumble_set(s16 controllerIndex, u8 type) {
     s32 index;
 
     if (type < 19 && controllerIndex >= 0 && controllerIndex < 4) {
+#ifdef NATIVE_PORT
+        GAMEPLAY_EVENT_TRACE(
+            GAMEPLAY_EVENT_RUMBLE, controllerIndex, type, 0, 0);
+#endif
         index = (input_get_id(controllerIndex)) & 0xFFFF;
         if (gRumble[index].rumbleType == type) {
             if (gRumble[index].spinTime < 0) {
@@ -147,6 +152,20 @@ void rumble_set_fade(s16 controllerIndex, u8 type, f32 strength) {
     s32 index;
 
     if (type < 19 && controllerIndex >= 0 && controllerIndex < 4) {
+#ifdef NATIVE_PORT
+        f32 traceStrength = strength;
+        /* Quantize a bounded diagnostic copy. This deliberately does not
+         * alter the value consumed by original gameplay, including its
+         * historical handling of unusual floating-point input. */
+        if (!(traceStrength >= 0.0f)) {
+            traceStrength = 0.0f;
+        } else if (traceStrength > 1.0f) {
+            traceStrength = 1.0f;
+        }
+        GAMEPLAY_EVENT_TRACE(
+            GAMEPLAY_EVENT_RUMBLE, controllerIndex, type,
+            (s32)(traceStrength * 65536.0f), 1);
+#endif
         index = input_get_id(controllerIndex) & 0xFFFF;
         if (type == gRumble[index].rumbleType) {
             if (gRumble[index].spinTime < 0) {
@@ -1078,6 +1097,10 @@ s32 write_save_data(s32 saveFileNum, Settings *settings) {
         stubbed_printf("WARNING : No Eprom\n");
         return -1;
     }
+#ifdef NATIVE_PORT
+    GAMEPLAY_EVENT_TRACE(
+        GAMEPLAY_EVENT_SAVE, saveFileNum, 1, 0, 0);
+#endif
 
     switch (saveFileNum) {
         case 0:

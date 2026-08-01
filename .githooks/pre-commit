@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# pre-commit -- repository clean-room guard.
+# pre-commit -- repository clean-room and public-surface guard.
 #
 # Ported from MGB64's pre-commit, which called scripts/ci/check_no_rom_data.sh
 # (a tracked-file/history contamination scan). mdkr64's equivalent-purpose guard
@@ -18,3 +18,4 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
 tools/check_clean_room.sh
+python3 tools/check_public_surface.py --staged

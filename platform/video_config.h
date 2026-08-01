@@ -45,6 +45,12 @@ typedef enum MdkrVideoKey {
     MDKR_VIDEO_FRAME_LIMIT,
     MDKR_VIDEO_MOTION_SMOOTHING,
     MDKR_VIDEO_MODE,
+    /*
+     * Appended, not inserted. The enum is the schema table's index and the
+     * in-game menu's wheel order; inserting in the middle would renumber the
+     * pacing keys another lane owns. New keys go here.
+     */
+    MDKR_VIDEO_WORLD_SHADOWS,
     MDKR_VIDEO_KEY_COUNT
 } MdkrVideoKey;
 
@@ -139,6 +145,15 @@ int mdkr_video_config_apply_preset_from(MdkrVideoConfig *config,
 
 /* Returns the matching MdkrVideoMode, or -1 when `name` matches nothing. */
 int mdkr_video_mode_from_name(const char *name);
+
+/*
+ * Canonical spelling for a Video.WorldShadows value ("off", "soft", "full"), or
+ * NULL when `value` is not one. The key inherits MDKR_WORLD_SHADOW, a seam that
+ * predates it and that the existing A/B gates drive with "0"/"1"/"", so those
+ * spellings resolve here too and every layer downstream sees one of three
+ * words. Exposed so a UI can offer only what the validator takes.
+ */
+const char *mdkr_video_world_shadows_canonical(const char *value);
 
 /*
  * Applies `value` to `key` if `source` outranks whatever set it last.

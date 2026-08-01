@@ -28,6 +28,12 @@
 #include "tracks.h"
 #include "types.h"
 
+#ifdef NATIVE_PORT
+#define hud_rand_range presentation_rand_range
+#else
+#define hud_rand_range rand_range
+#endif
+
 /************ .data ************/
 
 UNUSED s32 D_800E1E60 = 0;
@@ -489,7 +495,7 @@ void hud_init_element(void) {
     gHudPALScale = FALSE;
     gAdventurePlayerFinish = FALSE;
     D_80126D4C = -100;
-    D_80126D50 = rand_range(120, 360);
+    D_80126D50 = hud_rand_range(120, 360);
     gAdvRaceStartedByP2 = is_race_started_by_player_two();
     gStopwatchErrorX = 55;
     gStopwatchErrorY = 179;
@@ -1005,6 +1011,13 @@ static void hud_player_tick(Object *obj, s32 updateRate) {
         gHudController = racer->playerIndex;
     }
     gCurrentHud = gPlayerHud[gHudCurrentViewport];
+    if (gShowCourseDirections) {
+        if (racer->indicator_timer > updateRate) {
+            racer->indicator_timer -= updateRate;
+        } else {
+            racer->indicator_timer = 0;
+        }
+    }
     if (cutscene_id() != 10) {
         if (gHUDNumPlayers == ONE_PLAYER) {
             if (input_pressed(gHudController) & D_CBUTTONS && racer->raceFinished == FALSE &&
@@ -1240,7 +1253,9 @@ void hud_course_arrows(Object_Racer *racer, s32 updateRate) {
         timer = racer->indicator_timer;
         if (timer > 0) {
             type = racer->indicator_type;
+#ifndef NATIVE_PORT
             racer->indicator_timer = timer - updateRate;
+#endif
             if (type) {
                 indicator = (HudElement *) &gCurrentHud->entry[HUD_COURSE_ARROWS];
                 switch (type) {
@@ -1298,7 +1313,9 @@ void hud_course_arrows(Object_Racer *racer, s32 updateRate) {
                 }
             }
         } else {
+#ifndef NATIVE_PORT
             racer->indicator_timer = 0;
+#endif
         }
         if (gHudIndicatorTimer) {
             if (gHudIndicatorTimer & 0x20) {
@@ -1875,9 +1892,9 @@ void hud_main_time_trial(s32 arg0, Object *playerRacerObj, s32 updateRate) {
         if ((D_80126D4C == 0) && (!curRacer->raceFinished)) {
             D_80126D4C = -100;
             if (gHUDVoiceSoundMask == 0) {
-                soundID = rand_range(0, D_80126D64 + 2) + SOUND_VOICE_TT_OH_NO;
+                soundID = hud_rand_range(0, D_80126D64 + 2) + SOUND_VOICE_TT_OH_NO;
                 while (soundID == gHudTTSoundID) {
-                    soundID = rand_range(0, D_80126D64 + 2) + SOUND_VOICE_TT_OH_NO;
+                    soundID = hud_rand_range(0, D_80126D64 + 2) + SOUND_VOICE_TT_OH_NO;
                 }
                 gHudTTSoundID = soundID;
                 sound_play(soundID, &gHUDVoiceSoundMask);
@@ -1912,13 +1929,13 @@ void hud_main_time_trial(s32 arg0, Object *playerRacerObj, s32 updateRate) {
                 posZ = ttSWBodyObject->trans.z_position - playerRacerObj->trans.z_position;
                 if ((sqrtf((posX * posX) + (posY * posY) + (posZ * posZ)) < 600.0f) && (gHUDVoiceSoundMask == 0) &&
                     (D_80126D50 == 0)) {
-                    soundID = SOUND_VOICE_TT_GO_FOR_IT + rand_range(0, 2);
+                    soundID = SOUND_VOICE_TT_GO_FOR_IT + hud_rand_range(0, 2);
                     while (soundID == gHudTTSoundID) {
-                        soundID = SOUND_VOICE_TT_GO_FOR_IT + rand_range(0, 2);
+                        soundID = SOUND_VOICE_TT_GO_FOR_IT + hud_rand_range(0, 2);
                     }
                     gHudTTSoundID = soundID;
                     sound_play(soundID, &gHUDVoiceSoundMask);
-                    D_80126D50 = rand_range(120, 1200);
+                    D_80126D50 = hud_rand_range(120, 1200);
                 }
                 D_80126D50 -= updateRate;
                 if (D_80126D50 < 0) {
@@ -2174,14 +2191,14 @@ void hud_race_start(s32 countdown, s32 updateRate) {
                 Object_Racer *racer;
                 s32 numRacerObjects;
                 racerGroup = get_racer_objects(&numRacerObjects);
-                randomRacer = racerGroup[rand_range(1, numRacerObjects) - 1];
+                randomRacer = racerGroup[hud_rand_range(1, numRacerObjects) - 1];
                 racer = randomRacer->racer;
                 if (racer->vehicleID == VEHICLE_CAR) {
-                    if (rand_range(0, 100) >= 96) {
-                        frequency = 1.25 - ((rand_range(0, 7) * 0.5) / 7.0);
+                    if (hud_rand_range(0, 100) >= 96) {
+                        frequency = 1.25 - ((hud_rand_range(0, 7) * 0.5) / 7.0);
                         audspat_play_sound_direct(76, randomRacer->trans.x_position, randomRacer->trans.y_position,
                                                   randomRacer->trans.z_position, AUDIO_POINT_FLAG_ONE_TIME_TRIGGER,
-                                                  ((rand_range(0, 7) * 63) / 7) + 24, frequency * 100.0f,
+                                                  ((hud_rand_range(0, 7) * 63) / 7) + 24, frequency * 100.0f,
                                                   &gRaceStartSoundMask);
                     }
                 }
@@ -2716,10 +2733,10 @@ void hud_wrong_way(Object_Racer *obj, s32 updateRate) {
         !is_game_paused()) {
         if ((gWrongWayNagPrefix || gWrongWayNagTimer == 0) && gHUDVoiceSoundMask == NULL) {
             // 20% chance that T.T decides not to precede his nagging with "No no no!"
-            if (gWrongWayNagPrefix || rand_range(1, 10) >= 8) {
+            if (gWrongWayNagPrefix || hud_rand_range(1, 10) >= 8) {
                 gWrongWayNagPrefix = FALSE;
                 sound_play(SOUND_VOICE_TT_WRONG_WAY, &gHUDVoiceSoundMask);
-                gWrongWayNagTimer = rand_range(1, 480) + 120;
+                gWrongWayNagTimer = hud_rand_range(1, 480) + 120;
             } else {
                 gWrongWayNagPrefix = TRUE;
                 sound_play(SOUND_VOICE_TT_NONONO, &gHUDVoiceSoundMask);

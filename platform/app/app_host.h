@@ -2,9 +2,9 @@
 //
 // Picks its backend at init() from mdkr_render_backend() — the SAME selector the
 // engine uses (MDKR_RENDERER), so the launcher and the game can never disagree
-// about which device the window is backed by. Default is WebGPU (Metal-layer
-// window + wgpu device/surface, UI drawn by gfx_webgpu_imgui); MDKR_RENDERER=gl
-// falls back to a GL window + context + imgui_impl_opengl3.
+// about which device the window is backed by. Default is GL (a GL window +
+// context + imgui_impl_opengl3); MDKR_RENDERER=webgpu selects the Metal-layer
+// window + wgpu device/surface, with UI drawn by gfx_webgpu_imgui.
 //
 // Either way the engine adopts the same objects (platformSetHostWindow +
 // platformSetHostWebGpu), so the launcher and the game render into ONE window
@@ -37,6 +37,13 @@ public:
     // Pump SDL events into ImGui. Returns true on quit (close / Cmd-Q).
     bool pumpAndShouldQuit();
 
+    // Queue one synthetic file drop for the next event pump. This is only for
+    // the headless launcher smoke: the pump builds an SDL_DROPFILE and sends it
+    // through the same handler as a platform-delivered drop. It deliberately
+    // does not SDL_PushEvent() a reserved drop event; SDL2 compatibility layers
+    // are not required to support application-generated platform events.
+    void queueDropFileForSmoke(const char *path);
+
     // Path of a file dragged onto the window since the last call, or "" — the
     // ROM panel's drag-and-drop entry point. Returns and clears.
     std::string takeDroppedFile();
@@ -67,12 +74,14 @@ private:
     void ensureWgpuSceneTarget(int w, int h);
     bool endFrameWebGpu(const char *captureBmpPath);
     bool endFrameGL(const char *captureBmpPath);
+    bool processEvent(SDL_Event &event);
 
     SDL_Window   *window_ = nullptr;
     SDL_GLContext gl_     = nullptr;
     bool imguiReady_      = false;
     bool sdlOwned_        = false;
     std::string droppedFile_;
+    std::string pendingSmokeDrop_;
 
     bool  useWebGpu_    = false;
     void *metalView_    = nullptr;   // SDL_MetalView backing the surface layer (macOS)

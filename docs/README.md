@@ -87,10 +87,6 @@ Recognising them on sight saves days.
 
 - **[`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md)** — the repeatable
   pre-release gate: clean-room verification, build, tests, ROM-absence guard.
-- **`SDK_INVENTORY.md` (internal inventory)** — the historical record of the
-  108 legend-bearing files that were replaced or deleted at the clean-room
-  swap. Superseded by [`../NOTICE.md`](../NOTICE.md) and
-  [`../THIRD_PARTY.md`](../THIRD_PARTY.md), and removed from the public cut.
 - **[`DEMO_REPO.md`](DEMO_REPO.md)** — how the playable web demo is published,
   and why it is a publication target that is never hand-edited.
 - **[`MGB64_BACKFLOW.md`](MGB64_BACKFLOW.md)** — findings sent back to mgb64, the
@@ -102,11 +98,13 @@ Recognising them on sight saves days.
   specification and the asset-layout headers that `platform/asset_swap.c` is
   written against. Derived from the upstream decompilation project's tooling, not
   first-party; see [`../NOTICE.md`](../NOTICE.md).
-- **`archive/` (internal archive)** — the dated implementation reports, audits
-  and reviews written while the port was built, each with a triage verdict. Kept
-  for the evidence in them; not maintained. Removed from the public release cut
-  and retained only in the private development repository, so if you are reading
-  this in the public repository, that directory is not present.
+
+This repository is the public source of truth and keeps ordinary Git history.
+Temporary plans, handoffs, transcripts, personal filesystem paths, and similar
+working material belong outside tracked paths. Durable decisions go into the
+architecture or open-items documents above, with measured evidence and a
+regression check. `python3 tools/check_public_surface.py --staged` enforces this
+boundary before publication.
 
 ## House style
 

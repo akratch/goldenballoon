@@ -42,10 +42,14 @@ int main(void) {
         .two_sided = true,
     };
     GfxShadowMatrixBinding binding;
+    GfxPresentationMatrixOwner owner;
+    GfxPresentationOwnerStats owner_stats;
     GfxWorldFxStats stats;
     const GfxShadowFrame *frame;
     int key_a;
     int key_b;
+    int owner_key;
+    int consumed_key;
     int static_source;
     int static_source_b;
     int view_a;
@@ -76,6 +80,48 @@ int main(void) {
     expect(
         !gfx_shadow_matrix_lookup(&key_b, &binding),
         "unknown matrix key fails closed");
+
+    memset(&owner, 0, sizeof(owner));
+    owner.address = &owner_key;
+    owner.generation = 17;
+    owner.matrix_class = GFX_PRESENTATION_MATRIX_ROOT;
+    owner.source_scale = 1.0f;
+    owner.scale_y = 1.0f;
+    identity(owner.parent_world);
+    owner.valid = true;
+    gfx_shadow_matrix_set_presentation_owner(&owner);
+    expect(gfx_shadow_matrix_register(
+               &owner_key, world, view_projection,
+               GFX_SHADOW_MOBILITY_DYNAMIC),
+           "presentation owner registers with its matrix");
+    memset(&binding, 0, sizeof(binding));
+    expect(gfx_shadow_matrix_lookup(&owner_key, &binding) &&
+               binding.presentation_owner.valid &&
+               binding.presentation_owner.address == &owner_key &&
+               binding.presentation_owner.generation == 17 &&
+               binding.presentation_owner.matrix_class ==
+                   GFX_PRESENTATION_MATRIX_ROOT,
+           "presentation owner metadata round trips by value");
+
+    /* Per-call tags must clear on failure: a rejected key cannot lend its
+     * object identity to the following untagged matrix. */
+    gfx_shadow_matrix_set_presentation_owner(&owner);
+    expect(!gfx_shadow_matrix_register(
+               NULL, world, view_projection, GFX_SHADOW_MOBILITY_DYNAMIC),
+           "presentation owner failure control rejects the null key");
+    expect(gfx_shadow_matrix_register(
+               &consumed_key, world, view_projection,
+               GFX_SHADOW_MOBILITY_DYNAMIC),
+           "matrix after failed owner registration still registers");
+    memset(&binding, 0, sizeof(binding));
+    expect(gfx_shadow_matrix_lookup(&consumed_key, &binding) &&
+               !binding.presentation_owner.valid,
+           "failed registration consumes presentation owner metadata");
+    memset(&owner_stats, 0, sizeof(owner_stats));
+    gfx_shadow_presentation_owner_get_stats(&owner_stats);
+    expect(owner_stats.registrations == 3 && owner_stats.roots == 1 &&
+               owner_stats.unowned == 2,
+           "presentation owner census classifies owned and unowned matrices");
 
     gfx_shadow_capture_begin();
     frame = gfx_shadow_frame_previous();
@@ -239,7 +285,7 @@ int main(void) {
         stats.masked_triangles == 1 &&
         stats.static_cache_hits == 3 &&
         stats.static_cache_misses == 2 &&
-        stats.matrix_lookup_hits == 1 &&
+        stats.matrix_lookup_hits == 3 &&
         stats.matrix_lookup_misses == 1,
         "telemetry records both directions");
 

@@ -59,7 +59,7 @@ the target column.
 | P3.6 two-player split-screen — wave "splitscreen" (WORKS) | [open-items/multiplayer.md](open-items/multiplayer.md#p36-two-player-split-screen--wave-splitscreen-works) |
 | P3.5 Adventure — the hub is drivable and the trophy series is covered | [open-items/gameplay.md](open-items/gameplay.md#p35-adventure--the-hub-is-drivable-and-the-trophy-series-is-covered) |
 | P3.3 MAGIC_CODES / FILE_SELECT text fidelity — wave "p33-text" | [open-items/renderer.md](open-items/renderer.md#p33-magiccodes--fileselect-text-fidelity--wave-p33-text) |
-| M4.5 WebGPU backend — DONE (default backend; GL fallback). Open notes: | [open-items/renderer.md](open-items/renderer.md#m45-webgpu-backend--done-default-backend-gl-fallback-open-notes) |
+| M4.5 WebGPU backend — DONE (selectable native backend; browser renderer). Open notes: | [open-items/renderer.md](open-items/renderer.md#m45-webgpu-backend--done-default-backend-gl-fallback-open-notes) |
 | M5 audio — DONE (music + SFX via the aspMain software mixer) | [open-items/audio.md](open-items/audio.md#m5-audio--done-music--sfx-via-the-aspmain-software-mixer) |
 | Playability wave — memory safety, saves, and the race finish | [open-items/gameplay.md](open-items/gameplay.md#playability-wave--memory-safety-saves-and-the-race-finish) |
 | Phase 2 — menu 1:1 fidelity: every screen now scored (wave "oraclefix") | [open-items/renderer.md](open-items/renderer.md#phase-2--menu-11-fidelity-every-screen-now-scored-wave-oraclefix) |

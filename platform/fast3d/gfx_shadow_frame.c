@@ -33,6 +33,13 @@ typedef struct GfxShadowMatrixEntry {
 
 typedef struct GfxShadowStaticKey {
     const void *source;
+    /*
+     * Where this key's three admitted vertices live in the stage cache. The
+     * cache dedups by ADDRESS, so this is the only record of what the address
+     * held when it was admitted — and therefore the only way to notice that it
+     * no longer holds it (see stale_casters in GfxWorldFxStats).
+     */
+    size_t first_vertex;
     bool occupied;
 } GfxShadowStaticKey;
 
@@ -187,6 +194,9 @@ static int s_register_site;
  * one tagged call can never license a byte copy off the next, untagged one.
  */
 static bool s_register_key_is_mtx;
+static GfxPresentationMatrixOwner s_register_presentation_owner;
+static bool s_register_presentation_owner_valid;
+static GfxPresentationOwnerStats s_presentation_owner_stats;
 
 static bool checked_add_size(size_t left, size_t right, size_t *out) {
     if (out == NULL || left > SIZE_MAX - right) {
@@ -289,31 +299,124 @@ static bool static_keys_reserve(size_t need) {
     return true;
 }
 
-static bool static_key_contains(const void *source) {
+/* Slot index of `source`, or SIZE_MAX when it is not cached. */
+static size_t static_key_find(const void *source) {
     size_t slot;
 
     if (source == NULL || s_static_cache.key_capacity == 0) {
-        return false;
+        return SIZE_MAX;
     }
     slot = static_key_hash(source) & (s_static_cache.key_capacity - 1);
     while (s_static_cache.keys[slot].occupied) {
         if (s_static_cache.keys[slot].source == source) {
-            return true;
+            return slot;
         }
         slot = (slot + 1) & (s_static_cache.key_capacity - 1);
     }
-    return false;
+    return SIZE_MAX;
 }
 
-static void static_key_insert(const void *source) {
+static void static_key_insert(const void *source, size_t first_vertex) {
     size_t slot = static_key_hash(source) &
         (s_static_cache.key_capacity - 1);
     while (s_static_cache.keys[slot].occupied) {
         slot = (slot + 1) & (s_static_cache.key_capacity - 1);
     }
     s_static_cache.keys[slot].source = source;
+    s_static_cache.keys[slot].first_vertex = first_vertex;
     s_static_cache.keys[slot].occupied = true;
     s_static_cache.key_count++;
+}
+
+/*
+ * Tenancy: does the live triangle still match what this key was admitted with?
+ *
+ * A static caster is cached for the whole stage and drawn into every cascade
+ * whether or not the game submits it again. If the arena address it is keyed on
+ * comes to hold different geometry — freed and reallocated, or a fixed buffer
+ * the game rewrites in place — the cache silently keeps casting the ORIGINAL
+ * geometry: a shadow with no object under it, in a place the player can see no
+ * reason for. Wave "shadowdeep" closed two instances of this by excluding the
+ * known offenders at DL-build time; this is the general detector, and it can
+ * only run on a HIT, where the address is provably live because the game is
+ * drawing it this very frame.
+ *
+ * The comparison is on world-space positions, which are what the shadow map
+ * consumes. Identical geometry re-submitted through the same static
+ * (world-origin) matrix reproduces bit-identical floats, so the tolerance only
+ * has to exclude nothing at all; it is set at one world unit purely so that a
+ * future world matrix with a different-but-equivalent factorisation cannot
+ * report a phantom. DKR worlds span ~15k units and the defect shape displaces
+ * geometry by hundreds to thousands.
+ */
+#define GFX_SHADOW_TENANCY_EPSILON 1.0f
+
+static bool static_key_tenancy_ok(size_t slot, const float positions[9]) {
+    const GfxShadowStaticKey *key;
+    float worst = 0.0f;
+
+    if (slot == SIZE_MAX || positions == NULL) {
+        return true;
+    }
+    key = &s_static_cache.keys[slot];
+    if (s_static_cache.vertices == NULL ||
+        s_static_cache.vertex_count < 3 ||
+        key->first_vertex > s_static_cache.vertex_count - 3) {
+        /* Cannot be checked (a truncated cache). Do not invent a violation
+         * from missing evidence. */
+        return true;
+    }
+    for (size_t vertex = 0; vertex < 3; vertex++) {
+        const GfxShadowVertex *cached =
+            &s_static_cache.vertices[key->first_vertex + vertex];
+        for (size_t axis = 0; axis < 3; axis++) {
+            float delta = positions[vertex * 3 + axis] - cached->position[axis];
+            if (delta < 0.0f) {
+                delta = -delta;
+            }
+            if (delta > worst) {
+                worst = delta;
+            }
+        }
+    }
+    if (worst <= GFX_SHADOW_TENANCY_EPSILON) {
+        return true;
+    }
+    s_stats.stale_casters++;
+    if (worst > s_stats.stale_worst_delta) {
+        s_stats.stale_worst_delta = worst;
+    }
+    return false;
+}
+
+/*
+ * Re-seat a stale entry onto the geometry the address holds NOW.
+ *
+ * Leaving it alone would keep the phantom for the rest of the stage — the whole
+ * point of noticing. Rewriting the cached vertices in place is sound for ranges
+ * above the commit watermark and for ranges below it alike: the published frame
+ * borrows the vertex ARRAY, and a caster that moved is a caster that moved. The
+ * stage AABB is fold-only, so it can only stay a superset.
+ */
+static void static_key_reseat(size_t slot, const float positions[9]) {
+    const GfxShadowStaticKey *key;
+
+    if (slot == SIZE_MAX || positions == NULL) {
+        return;
+    }
+    key = &s_static_cache.keys[slot];
+    if (s_static_cache.vertices == NULL ||
+        s_static_cache.vertex_count < 3 ||
+        key->first_vertex > s_static_cache.vertex_count - 3) {
+        return;
+    }
+    for (size_t vertex = 0; vertex < 3; vertex++) {
+        GfxShadowVertex *cached =
+            &s_static_cache.vertices[key->first_vertex + vertex];
+        for (size_t axis = 0; axis < 3; axis++) {
+            cached->position[axis] = positions[vertex * 3 + axis];
+        }
+    }
 }
 
 static void sync_static_frame_references(void) {
@@ -397,8 +500,13 @@ bool gfx_shadow_matrix_register(
      * untagged registration would inherit them. */
     const int site = s_register_site;
     const bool key_is_mtx = s_register_key_is_mtx;
+    const bool owner_valid = s_register_presentation_owner_valid;
+    const GfxPresentationMatrixOwner owner = s_register_presentation_owner;
     s_register_site = GFX_SHADOW_SITE_UNKNOWN;
     s_register_key_is_mtx = false;
+    s_register_presentation_owner_valid = false;
+    memset(&s_register_presentation_owner, 0,
+           sizeof(s_register_presentation_owner));
     if (s_matrix_control_drop < 0) {
         const char *control = getenv("MDKR_WORLD_FX_MATRIX_CONTROL");
         s_matrix_control_drop =
@@ -431,11 +539,31 @@ bool gfx_shadow_matrix_register(
             s_matrix_entries[index].binding.gameplay_vp = s_register_gameplay_vp;
             s_matrix_entries[index].binding.site = site;
             s_matrix_entries[index].binding.key_bytes_valid = key_is_mtx;
+            if (owner_valid) {
+                s_matrix_entries[index].binding.presentation_owner = owner;
+                s_matrix_entries[index].binding.presentation_owner.valid = true;
+            } else {
+                memset(&s_matrix_entries[index].binding.presentation_owner, 0,
+                       sizeof(s_matrix_entries[index]
+                                  .binding.presentation_owner));
+            }
             if (key_is_mtx) {
                 memcpy(s_matrix_entries[index].binding.key_bytes, key,
                        sizeof(s_matrix_entries[index].binding.key_bytes));
             }
             s_stats.matrix_registrations++;
+            s_presentation_owner_stats.registrations++;
+            if (!owner_valid) {
+                s_presentation_owner_stats.unowned++;
+            } else if (owner.matrix_class == GFX_PRESENTATION_MATRIX_ROOT) {
+                s_presentation_owner_stats.roots++;
+            } else if (owner.matrix_class == GFX_PRESENTATION_MATRIX_CHILD) {
+                s_presentation_owner_stats.children++;
+            } else if (owner.matrix_class == GFX_PRESENTATION_MATRIX_EFFECT) {
+                s_presentation_owner_stats.effects++;
+            } else {
+                s_presentation_owner_stats.unowned++;
+            }
             return true;
         }
     }
@@ -476,12 +604,32 @@ bool gfx_shadow_matrix_register(
         s_register_gameplay_vp;
     s_matrix_entries[s_matrix_count].binding.site = site;
     s_matrix_entries[s_matrix_count].binding.key_bytes_valid = key_is_mtx;
+    if (owner_valid) {
+        s_matrix_entries[s_matrix_count].binding.presentation_owner = owner;
+        s_matrix_entries[s_matrix_count].binding.presentation_owner.valid = true;
+    } else {
+        memset(&s_matrix_entries[s_matrix_count].binding.presentation_owner, 0,
+               sizeof(s_matrix_entries[s_matrix_count]
+                          .binding.presentation_owner));
+    }
     if (key_is_mtx) {
         memcpy(s_matrix_entries[s_matrix_count].binding.key_bytes, key,
                sizeof(s_matrix_entries[s_matrix_count].binding.key_bytes));
     }
     s_matrix_count++;
     s_stats.matrix_registrations++;
+    s_presentation_owner_stats.registrations++;
+    if (!owner_valid) {
+        s_presentation_owner_stats.unowned++;
+    } else if (owner.matrix_class == GFX_PRESENTATION_MATRIX_ROOT) {
+        s_presentation_owner_stats.roots++;
+    } else if (owner.matrix_class == GFX_PRESENTATION_MATRIX_CHILD) {
+        s_presentation_owner_stats.children++;
+    } else if (owner.matrix_class == GFX_PRESENTATION_MATRIX_EFFECT) {
+        s_presentation_owner_stats.effects++;
+    } else {
+        s_presentation_owner_stats.unowned++;
+    }
     s_stats.matrix_entries = s_matrix_count;
     if (s_matrix_count > s_stats.matrix_peak) {
         s_stats.matrix_peak = s_matrix_count;
@@ -521,6 +669,26 @@ void gfx_shadow_matrix_set_context(int viewport, bool gameplay_vp) {
 void gfx_shadow_matrix_set_site(int site) {
     s_register_site = site;
     s_register_key_is_mtx = true;
+}
+
+void gfx_shadow_matrix_set_presentation_owner(
+    const GfxPresentationMatrixOwner *owner) {
+    if (owner == NULL || !owner->valid || owner->address == NULL ||
+        owner->generation == 0u) {
+        memset(&s_register_presentation_owner, 0,
+               sizeof(s_register_presentation_owner));
+        s_register_presentation_owner_valid = false;
+        return;
+    }
+    s_register_presentation_owner = *owner;
+    s_register_presentation_owner.valid = true;
+    s_register_presentation_owner_valid = true;
+}
+
+void gfx_shadow_presentation_owner_get_stats(GfxPresentationOwnerStats *out) {
+    if (out != NULL) {
+        *out = s_presentation_owner_stats;
+    }
 }
 
 /* ---- presentation-replay freeze / restore -------------------------------- */
@@ -871,6 +1039,51 @@ bool gfx_world_fx_trace_enabled(void) {
     return s_trace_enabled != 0;
 }
 
+/*
+ * MDKR_TEST_SHADOW_BOGUS_CASTER=<world units> — the broken direction for
+ * tests/check_shadow_plausibility.py.
+ *
+ * A plausibility gate that can only ever pass proves nothing, and the failure
+ * it has to be able to see is a specific one: the stage cache holding caster
+ * geometry that is not where the object is. That is what every historical
+ * instance of this defect looked like from the shadow map's side, whether the
+ * cause was a recycled arena address or a buffer the game rewrote in place —
+ * a shadow with no object under it, cast from somewhere the player can see is
+ * empty.
+ *
+ * This seam reproduces it directly and minimally: the FIRST admission of each
+ * static caster is displaced along +Y by the requested distance, so the cache
+ * (and therefore the depth map) disagrees with the live geometry from then on.
+ * Only the cached copy moves — the drawn image, the physics and the game state
+ * are untouched — so the positive-control arm differs from production in
+ * exactly the property the check measures. Off, empty, "0" and unparseable
+ * text all leave production behaviour alone.
+ */
+static float bogus_caster_offset(void) {
+    static int resolved = 0;
+    static float offset = 0.0f;
+    const char *value;
+    char *end;
+    double parsed;
+
+    if (resolved) {
+        return offset;
+    }
+    resolved = 1;
+    value = getenv("MDKR_TEST_SHADOW_BOGUS_CASTER");
+    if (value == NULL || value[0] == '\0') {
+        return offset;
+    }
+    parsed = strtod(value, &end);
+    if (end == value || *end != '\0' ||
+        !(parsed > -GFX_SHADOW_WORLD_LIMIT) ||
+        !(parsed < GFX_SHADOW_WORLD_LIMIT)) {
+        return offset;
+    }
+    offset = (float)parsed;
+    return offset;
+}
+
 void gfx_shadow_capture_begin(void) {
     GfxShadowFrame *write = &s_frames[s_write_index];
     frame_reset(write);
@@ -1078,12 +1291,30 @@ bool gfx_shadow_capture_triangle(
         material->alpha_mode == GFX_SHADOW_ALPHA_OPAQUE &&
         source_key != NULL;
     if (cache_static) {
-        cached = static_key_contains(source_key);
+        size_t slot = static_key_find(source_key);
+        cached = slot != SIZE_MAX;
         if (cached) {
             s_stats.static_cache_hits++;
+            /*
+             * The address is live this frame — the only moment its tenancy can
+             * be checked at all. A mismatch means the cache has been casting
+             * geometry that is no longer there.
+             */
+            if (!static_key_tenancy_ok(slot, positions)) {
+                static_key_reseat(slot, positions);
+            }
         } else {
             size_t required_keys;
+            size_t first_vertex = s_static_cache.vertex_count;
+            float admitted[9];
+            float bogus = bogus_caster_offset();
             bool appended;
+            memcpy(admitted, positions, sizeof(admitted));
+            if (bogus != 0.0f) {
+                for (size_t vertex = 0; vertex < 3; vertex++) {
+                    admitted[vertex * 3 + 1] += bogus;
+                }
+            }
             if (!checked_add_size(
                     s_static_cache.key_count, 1, &required_keys) ||
                 !static_keys_reserve(required_keys)) {
@@ -1107,7 +1338,7 @@ bool gfx_shadow_capture_triangle(
                     UINT8_MAX,
                     s_static_cache.range_count <=
                         s_static_cache.committed_range_count,
-                    positions,
+                    admitted,
                     uv,
                     material);
             /*
@@ -1120,12 +1351,12 @@ bool gfx_shadow_capture_triangle(
                 frame_fail(write);
                 return false;
             }
-            static_key_insert(source_key);
+            static_key_insert(source_key, first_vertex);
             sync_static_frame_references();
             s_stats.static_cache_misses++;
             for (size_t vertex = 0; vertex < 3; vertex++) {
                 for (size_t axis = 0; axis < 3; axis++) {
-                    float value = positions[vertex * 3 + axis];
+                    float value = admitted[vertex * 3 + axis];
                     if (!s_static_cache.bounds_valid ||
                         value < s_static_cache.bounds_min[axis]) {
                         s_static_cache.bounds_min[axis] = value;
@@ -1397,6 +1628,11 @@ void gfx_shadow_frame_shutdown(void) {
     s_generation = 0;
     s_capture_active = false;
     memset(&s_stats, 0, sizeof(s_stats));
+    memset(&s_presentation_owner_stats, 0,
+           sizeof(s_presentation_owner_stats));
+    memset(&s_register_presentation_owner, 0,
+           sizeof(s_register_presentation_owner));
+    s_register_presentation_owner_valid = false;
     s_trace_enabled = -1;
     s_matrix_control_drop = -1;
 }

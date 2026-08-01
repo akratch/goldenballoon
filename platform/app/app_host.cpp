@@ -46,7 +46,7 @@ bool AppHost::init(const char *title, int width, int height) {
     }
 
 #ifdef MDKR_WEBGPU_BACKEND
-    // Default: WebGPU end to end. MDKR_RENDERER=gl (or metal) falls back to a GL
+    // MDKR_RENDERER=webgpu selects WebGPU end to end. The native default is a GL
     // window that the engine then adopts, so both halves stay on one device.
     useWebGpu_ = (mdkr_render_backend() == MDKR_BACKEND_WEBGPU);
     if (useWebGpu_) {
@@ -517,21 +517,51 @@ float AppHost::framebufferScale() const {
     return (lw > 0) ? (float)dw / (float)lw : 1.0f;
 }
 
+bool AppHost::processEvent(SDL_Event &e) {
+    ImGui_ImplSDL2_ProcessEvent(&e);
+    if (e.type == SDL_QUIT) {
+        return true;
+    }
+    if (e.type == SDL_DROPFILE && e.drop.file) {
+        droppedFile_ = e.drop.file;  // consumed by takeDroppedFile()
+        SDL_free(e.drop.file);
+        return false;
+    }
+    return e.type == SDL_WINDOWEVENT &&
+           e.window.event == SDL_WINDOWEVENT_CLOSE &&
+           e.window.windowID == SDL_GetWindowID(window_);
+}
+
+void AppHost::queueDropFileForSmoke(const char *path) {
+    pendingSmokeDrop_ = path ? path : "";
+}
+
 bool AppHost::pumpAndShouldQuit() {
     bool quit = false;
+
+    // SDL_DROPFILE is a platform-reserved event. In particular, sdl2-compat
+    // cannot round-trip an application-built SDL2 DropEvent through SDL3: the
+    // SDL2 `file` pointer and SDL3 `data` pointer occupy different layouts.
+    // Materialize the smoke event on this side of that platform boundary, then
+    // feed the exact same event type and ownership contract to processEvent().
+    if (!pendingSmokeDrop_.empty()) {
+        std::string path;
+        path.swap(pendingSmokeDrop_);  // consume exactly once, even on OOM
+        SDL_Event e = {};
+        e.type = SDL_DROPFILE;
+        e.drop.timestamp = SDL_GetTicks();
+        e.drop.file = SDL_strdup(path.c_str());
+        e.drop.windowID = SDL_GetWindowID(window_);
+        if (e.drop.file) {
+            quit = processEvent(e) || quit;
+        } else {
+            std::fprintf(stderr, "[app] smoke: could not allocate drop path\n");
+        }
+    }
+
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
-        ImGui_ImplSDL2_ProcessEvent(&e);
-        if (e.type == SDL_QUIT) {
-            quit = true;
-        } else if (e.type == SDL_DROPFILE && e.drop.file) {
-            droppedFile_ = e.drop.file;  // consumed by takeDroppedFile()
-            SDL_free(e.drop.file);
-        } else if (e.type == SDL_WINDOWEVENT &&
-                   e.window.event == SDL_WINDOWEVENT_CLOSE &&
-                   e.window.windowID == SDL_GetWindowID(window_)) {
-            quit = true;
-        }
+        quit = processEvent(e) || quit;
     }
     return quit;
 }

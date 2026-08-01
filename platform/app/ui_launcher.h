@@ -56,6 +56,12 @@ class Launcher {
 public:
     LauncherAction draw(AppHost &host);
 
+    // Read-only view of the shared panel state (ROM path/verdict). Exists for
+    // the headless shell smoke (MDKR_APP_SMOKE_DROP) to observe the outcome of
+    // a smoke-generated SDL_DROPFILE the same way a screenshot proves a
+    // synthetic frame: by reading what the launcher itself ended up holding.
+    const LauncherState &state() const { return state_; }
+
 private:
     LauncherState state_;
     int  active_ = 0;               // index into the panel table

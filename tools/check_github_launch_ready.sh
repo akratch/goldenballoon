@@ -453,16 +453,16 @@ scan_github_public_commit_refs() {
   fi
 }
 
-scan_local_public_history_provenance() {
+scan_local_public_tree() {
   local scan_output
 
   echo
-  echo "== Local public git history provenance =="
+  echo "== Local public tracked-tree boundary =="
 
-  if scan_output="$(python3 tools/check_public_history_paths.py --repo-root . 2>&1)"; then
+  if scan_output="$(python3 tools/check_public_surface.py --tree 2>&1)"; then
     ok "$scan_output"
   else
-    note "local reachable git history exposes public-blocking provenance paths"
+    note "local tracked tree exposes private/high-risk material"
     printf '%s\n' "$scan_output" | sed 's/^/  /'
   fi
 }
@@ -792,7 +792,7 @@ if [ -n "$repo" ]; then
     fi
   fi
 
-  scan_local_public_history_provenance
+  scan_local_public_tree
   scan_github_branch_tag_refs "$repo"
   scan_github_pull_refs "$repo"
   scan_github_workflow_run_history "$repo"

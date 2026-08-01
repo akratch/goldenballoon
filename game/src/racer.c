@@ -39,6 +39,7 @@
 
 #ifdef NATIVE_PORT
 #include "mdkr_adventure.h"
+#include "gameplay_event_trace.h"
 #include <stdio.h>  /* fprintf — loud non-finite-position assert below */
 #include <stdlib.h> /* abort */
 
@@ -4778,6 +4779,12 @@ void update_player_racer(Object *obj, s32 updateRate) {
             }
             if (tempRacer->courseCheckpoint < (header->laps + 3) * checkpointCount) {
                 tempRacer->courseCheckpoint++;
+#ifdef NATIVE_PORT
+                GAMEPLAY_EVENT_TRACE(
+                    GAMEPLAY_EVENT_CHECKPOINT, tempRacer->playerIndex,
+                    tempRacer->nextCheckpoint, tempRacer->lap,
+                    tempRacer->courseCheckpoint);
+#endif
             }
             tempRacer->unk1A8 = 10000;
         } else {

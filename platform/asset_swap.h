@@ -186,19 +186,21 @@ void asset_swap_misc_pulsating(void *blob, uint32_t size);
  * strings — so only the index block may be swapped; a blanket halfword swap
  * would byte-reverse every string.
  *
- * MUST be called AFTER decrypt_magic_codes(), whose bit permutation is
- * intra-byte and therefore commutes with this swap, because the count that
- * bounds the index block is only meaningful post-decryption.
+ * MUST be called AFTER decrypt_magic_codes(). The cipher transposes bit pairs
+ * across each four-byte group and does not commute with a halfword byte swap;
+ * moreover, the count that bounds the index block exists only in plaintext.
  *
  * Self-checking: the first string offset must equal the index block's byte
- * length ((1 + numberOfCheats*3) * 2; us.v80: 29 cheats -> 176). If that
- * identity does not hold the function reverts its own writes and leaves the
- * blob untouched rather than corrupting it.
+ * length ((1 + numberOfCheats*3) * 2; us.v80: 29 cheats -> 176), and every
+ * offset must point to a NUL-terminated string inside the payload. If any
+ * invariant does not hold, the function reverts its own writes and leaves the
+ * blob untouched rather than exposing a partial table to the menu.
  *
  * @param blob  the raw sub-asset bytes inside gAssetsMiscSection.
  * @param size  byte length of the sub-asset.
+ * @return 1 when the complete plaintext table is valid and normalized, else 0.
  */
-void asset_swap_misc_magic_codes(void *blob, uint32_t size);
+int asset_swap_misc_magic_codes(void *blob, uint32_t size);
 
 /**
  * Convert the ASSET_MISC sub-asset 20 boost/exhaust graphics table from its

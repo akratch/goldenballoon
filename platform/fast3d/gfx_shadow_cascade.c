@@ -373,11 +373,40 @@ static bool build_cascade(
     out->world_to_clip[1][1] = axis_y.y / radius;
     out->world_to_clip[1][2] = axis_y.z / radius;
     out->world_to_clip[1][3] = -center_y / radius;
-    out->world_to_clip[2][0] = light_axis_z.x * (2.0f / z_span);
-    out->world_to_clip[2][1] = light_axis_z.y * (2.0f / z_span);
-    out->world_to_clip[2][2] = light_axis_z.z * (2.0f / z_span);
+    /*
+     * Depth increases AWAY from the sun, which is the only orientation the rest
+     * of the pipeline is built for and the one this row got backwards.
+     *
+     * `sun_direction_world` (and therefore light_axis_z) points TOWARDS the sun
+     * — gfx_level_lighting publishes the same vector the RL-5 receiver dots
+     * against its surface normal, where a +Y normal must be lit by a +Y sun.
+     * Projecting depth along +light_axis_z therefore made the depth buffer grow
+     * towards the light, so with both backends' shadow pass at "keep the
+     * smallest depth" (GL_LESS / WGPUCompareFunction_Less, clear 1.0) every
+     * cascade stored the surface FURTHEST from the sun in each column — the
+     * ground — instead of the one nearest it. The receiver's LESS_EQUAL compare
+     * then lit exactly that surface and shadowed everything standing on it.
+     *
+     * That is not a subtle bias artefact; it is the whole visible behaviour of
+     * the feed. Measured on Everfrost Peak, frame 3470, before this fix: the
+     * track surface identical with shadows on and off (mean 97.37 either way —
+     * nothing ever cast onto the ground, and the actor decal handoff had
+     * already removed the blob, so karts floated), while the driver's torso sat
+     * at a flat full-umbra 83.57 against 123.04 with shadows off. Raising the
+     * comparison bias 25x (MDKR_SHADOW_BIAS=200) moved the torso only to 94.61,
+     * which is what ruled acne out: nothing about a bias explains a receiver
+     * that is occluded by the ground it is standing on.
+     *
+     * Flipping the sign also restores the winding both backends' shadow pass
+     * already assumes. They cull FRONT faces on purpose (second-depth shadow
+     * mapping, the standard acne mitigation); mapping a right-handed light
+     * basis onto GL clip space with +z had inverted which faces those were.
+     */
+    out->world_to_clip[2][0] = -light_axis_z.x * (2.0f / z_span);
+    out->world_to_clip[2][1] = -light_axis_z.y * (2.0f / z_span);
+    out->world_to_clip[2][2] = -light_axis_z.z * (2.0f / z_span);
     out->world_to_clip[2][3] =
-        -(maximum[2] + minimum[2]) / z_span;
+        (maximum[2] + minimum[2]) / z_span;
     out->world_to_clip[3][3] = 1.0f;
     return true;
 }

@@ -193,9 +193,25 @@ int main(int argc, char **argv) {
         int frames = std::atoi(smoke);
         if (frames < 1) frames = 1;
         const char *shot = std::getenv("MDKR_APP_SMOKE_SHOT");
+        // Drag-and-drop coverage (Q2): the picker's NSOpenPanel and path-field
+        // paths run through the same RomPanel_setRom() the C++ unit tests already
+        // exercise directly, but the SDL_DROPFILE handler — used by a real
+        // Finder/Explorer drag — had no automated coverage. MDKR_APP_SMOKE_DROP=
+        // <path> queues exactly that event type inside AppHost partway through
+        // the smoke run, so it travels the live handler route
+        // (AppHost::pumpAndShouldQuit -> Launcher::draw -> takeDroppedFile ->
+        // RomPanel_setRom) instead of calling the panel function directly. It
+        // is materialized after SDL's platform translation boundary because
+        // reserved platform events cannot be portably round-tripped through
+        // SDL_PushEvent (notably through SDL2-on-SDL3 compatibility layers).
+        const char *smokeDrop = std::getenv("MDKR_APP_SMOKE_DROP");
+        const int dropFrame = (frames > 1) ? 1 : 0;   // let frame 0 render first when possible
         bool sawQuit = false;
         bool captureOk = true;
         for (int i = 0; i < frames; ++i) {
+            if (smokeDrop && smokeDrop[0] && i == dropFrame) {
+                host.queueDropFileForSmoke(smokeDrop);
+            }
             if (host.pumpAndShouldQuit()) sawQuit = true;   // drain, don't exit
             host.beginFrame();
             launcher.draw(host);
@@ -204,6 +220,17 @@ int main(int argc, char **argv) {
         }
         std::printf("[app] smoke: rendered %d frames, drawable %dx%d, sawQuit=%d\n",
                     frames, host.drawableWidth(), host.drawableHeight(), sawQuit ? 1 : 0);
+        if (smokeDrop && smokeDrop[0]) {
+            // Machine-parseable verdict for tests/check_shell_dropfile.py: proves
+            // the SAME path/valid pair the picker would have produced for this
+            // file reached the launcher's ROM state via the drop event, and that
+            // rendering kept going afterward either way (no crash on garbage).
+            const LauncherState &ls = launcher.state();
+            std::printf("[app] smoke: drop requested=%s got=%s valid=%d\n",
+                        smokeDrop, ls.romPath[0] ? ls.romPath : "(none)", ls.romInfo.valid);
+            std::printf("[app] smoke: drop message=%s\n",
+                        ls.romInfo.message[0] ? ls.romInfo.message : "(none)");
+        }
         host.shutdown();
         // A requested capture that was not written must fail the run, so a CI
         // smoke can never pass without its image.

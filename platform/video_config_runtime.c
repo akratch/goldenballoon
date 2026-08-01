@@ -11,6 +11,7 @@
 
 #include "display_config.h"
 #include "fast3d/gfx_mipgen.h"
+#include "fast3d/gfx_shadow_cascade.h"
 #include "fast3d/gfx_uniforms.h"
 #include "present_sched.h"
 
@@ -185,9 +186,38 @@ int mdkr_video_config_is_readonly(void) {
  *  Publication — the resolved config reaches the rest of the program here.
  * ------------------------------------------------------------------------ */
 
+/*
+ * Diagnostic float override for one of the two hardcoded shadow constants.
+ *
+ * Both were tuned by measurement (bias against DKR's terrain facet size, umbra
+ * against its baked vertex occlusion) and both are the kind of constant whose
+ * tuning has to be re-measurable later — the umbra already moved once, from
+ * 0.48 to 0.62, because a playthrough said the shadows were too heavy. A raw
+ * env seam keeps that A/B one command away without putting a second, redundant
+ * knob next to Video.WorldShadows in the options screen. Out-of-range or
+ * unparseable text leaves the production value untouched.
+ */
+static float mdkr_video_float_override(const char *name, float fallback,
+                                       float low, float high) {
+    const char *raw = mdkr_video_getenv(name);
+    char *end;
+    double parsed;
+
+    if (raw == NULL || raw[0] == '\0') {
+        return fallback;
+    }
+    parsed = strtod(raw, &end);
+    if (end == raw || *end != '\0' || !(parsed >= low) || !(parsed <= high)) {
+        fprintf(stderr, "[video] ignoring invalid %s=%s\n", name, raw);
+        return fallback;
+    }
+    return (float) parsed;
+}
+
 void mdkr_video_config_publish(void) {
     const MdkrVideoConfig *c = &s_video;
-    const char *world_shadow = mdkr_video_getenv("MDKR_WORLD_SHADOW");
+    const char *world_shadow =
+        c->values[MDKR_VIDEO_WORLD_SHADOWS].text;
     const char *world_finish_off =
         mdkr_video_getenv("MDKR_TEST_WORLD_FINISH_OFF");
     int world_finish;
@@ -200,15 +230,24 @@ void mdkr_video_config_publish(void) {
     /* RL-5 is part of the Remastered art pass, not an independent fidelity
      * knob. Pure/Restored therefore cannot accidentally enable its shader IDs. */
     g_pcPerPixelLight     = g_pcRemasterFX;
-    /* WD-6 production policy: real maps are part of Remastered. The environment
-     * seam remains only as a diagnostic off switch for exact fallback A/Bs. */
+    /*
+     * WD-6 production policy: real maps are part of Remastered, so the world
+     * shadow pass still cannot outlive RemasterFX. Within Remastered the player
+     * now chooses (Video.WorldShadows); MDKR_WORLD_SHADOW is that key's env
+     * name, so the historical "0"/"1" diagnostic spellings still resolve here,
+     * canonicalised by the schema.
+     */
     g_pcSunShadow =
-        g_pcRemasterFX &&
-        !(world_shadow != NULL &&
-          (world_shadow[0] == '\0' ||
-           strcmp(world_shadow, "0") == 0 ||
-           strcmp(world_shadow, "off") == 0));
-    g_pcSunShadowRes = 2048;
+        g_pcRemasterFX && strcmp(world_shadow, "off") != 0;
+    /*
+     * Not a resolution request — the cascade planner owns resolution and varies
+     * it live with the split-screen view count (2048 at 1P, 1024 at 2-4P). This
+     * publishes the 1P budget so a consumer reading the global agrees with the
+     * plan instead of contradicting it. It was a hardcoded 2048 that nothing in
+     * either backend read.
+     */
+    g_pcSunShadowRes =
+        (int) gfx_shadow_budget_for_views(1).resolution;
     /*
      * WORLD-unit comparison bias. Both receivers divide this by the planned
      * light z-span at upload, so acne/peter-panning behavior no longer
@@ -218,7 +257,8 @@ void mdkr_video_config_publish(void) {
      * facets at the clamped 29–55° sun without visibly detaching kart
      * contact shadows (kart bodies are ~40–60 units).
      */
-    g_pcSunShadowBias = 8.0f;
+    g_pcSunShadowBias =
+        mdkr_video_float_override("MDKR_SHADOW_BIAS", 8.0f, 0.0f, 4000.0f);
     /*
      * Shadowed pixels are multiplied by the umbra factor after RL-5 lighting.
      * DKR's baked vertex colour already carries authored occlusion, so a deep
@@ -226,8 +266,17 @@ void mdkr_video_config_publish(void) {
      * 0.62 (38% attenuation) keeps shadows legible without crushing; the
      * original 0.48 measured as the dominant "shadows degrade the UX" factor
      * in the 2026-07-29 playthrough review.
+     *
+     * "soft" is the same measurement taken one step further for players who
+     * still read it as heavy: 0.78 (22% attenuation) on the same maps and the
+     * same cascades. It is a strength choice, not a quality tier — nothing
+     * about the shadow itself gets coarser, so no value of this key can make
+     * the image noisier than the default does.
      */
-    g_pcSunShadowUmbra = 0.62f;
+    g_pcSunShadowUmbra = mdkr_video_float_override(
+        "MDKR_SHADOW_UMBRA",
+        strcmp(world_shadow, "soft") == 0 ? 0.78f : 0.62f,
+        0.0f, 1.0f);
     g_pcRenderScale       =       c->values[MDKR_VIDEO_RENDER_SCALE].number;
     g_pcMsaaSamples       = (int) c->values[MDKR_VIDEO_MSAA].number;
     g_pcTextureAnisotropy = (int) c->values[MDKR_VIDEO_ANISOTROPY].number;
@@ -259,13 +308,12 @@ void mdkr_video_config_publish(void) {
      * would not be LIVE. The push happens ONLY when this key resolved from
      * something other than the schema default: pushing unconditionally on
      * every publish() (including the very first one, at boot, before any game
-     * frame runs) would stomp a raw diagnostic MDKR_PRESENT_RATE=30/120/etc.
-     * with this key's DEFAULT "original" every single time, since the schema
-     * deliberately does not recognise those values as a valid Video.FrameLimit
-     * (see mdkr_video_validate_frame_limit) and therefore never marks the key
-     * as anything but DEFAULT-sourced when only that raw env is present.
-     * tests/check_presentation_matrix.py's arm B (MDKR_PRESENT_RATE=30) is
-     * exactly the regression this guard exists to prevent.
+     * frame runs) would overwrite the present scheduler's direct getenv result
+     * with this key's DEFAULT "original". The environment is normally resolved
+     * by the schema too, but keeping the default-source guard preserves the
+     * diagnostic seam and makes "unset" semantically distinct from an explicit
+     * `original`. tests/check_presentation_matrix.py's arm B remains the
+     * regression for that precedence boundary.
      */
     if (c->values[MDKR_VIDEO_FRAME_LIMIT].source != MDKR_VIDEO_SOURCE_DEFAULT) {
         mdkr_present_set_frame_limit(c->values[MDKR_VIDEO_FRAME_LIMIT].text);

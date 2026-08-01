@@ -7,6 +7,7 @@ name: correctness
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -27,6 +28,34 @@ jobs:
           fetch-depth: 0
       - name: Clean-room history
         run: tools/check_clean_room.sh
+      - name: Public tree and new-commit boundary
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          CURRENT_SHA: ${{ github.sha }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          python3 tools/check_public_surface.py --tree
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            python3 tools/check_public_surface.py --range "origin/$BASE_REF..HEAD"
+          elif [ "$EVENT_NAME" = "push" ] &&
+               [ -n "$BEFORE_SHA" ] &&
+               [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            python3 tools/check_public_surface.py --range "$BEFORE_SHA..$CURRENT_SHA"
+          fi
+          if [ "$REF_TYPE" = "tag" ]; then
+            tag_oid="$(git rev-parse "refs/tags/$REF_NAME")"
+            tag_commit="$(git rev-parse "${tag_oid}^{commit}")"
+            git merge-base --is-ancestor "$tag_commit" origin/main || {
+              echo "FAIL: release tags must point into public main history" >&2
+              exit 1
+            }
+            if [ "$(git cat-file -t "$tag_oid")" = "tag" ]; then
+              python3 tools/check_public_surface.py --tag "$tag_oid"
+            fi
+          fi
       - name: Native SDK surface, third-party notices, and image metadata
         run: |
           python3 tools/check_native_sdk_surface.py
@@ -47,6 +76,7 @@ jobs:
           python3 tests/check_ci_contract.py
           python3 tests/check_address_domains.py
           python3 tests/check_webgpu_fault_matrix.py
+          python3 tests/test_public_surface.py
 
   native:
     name: Native ${{ matrix.label }}

@@ -193,10 +193,12 @@ They pass every check that was run against them. They are refused anyway:
    (`docs/ORACLE.md`) for any non-us.v80 revision, and audio is unverified for all
    of them — `us.v77`'s `AUDIO` section differs and every check runs muted by the
    hard rule.
-4. **PAL timing is not modelled.** The pacer synthesises 60 Hz NTSC fields. This
-   does not affect `pal.v80` (the code is ours and its data is us.v80's), but a
-   genuine 50 Hz PAL build would need it, and every calibrated number in `tests/`
-   (lap ~1650 clocks, course time 4713, race start frame 3120) is NTSC-specific.
+4. **Region-specific oracle breadth is incomplete.** PAL timing itself is now
+   modelled as a 50 Hz source clock with a fixed two-field/25 Hz authored tick,
+   and PAL 60 presentation is proven without field-grid rounding. Many older
+   calibrated gameplay numbers in `tests/` (lap ~1650 clocks, course time 4713,
+   race start frame 3120) remain NTSC-specific, so adding another PAL revision
+   still needs dedicated oracle routes rather than inferred timing.
 
 Things that turned out **not** to be blockers, having been checked:
 

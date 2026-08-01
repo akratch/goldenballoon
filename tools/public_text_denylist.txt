@@ -1,13 +1,10 @@
 # public_text_denylist.txt -- the single source of truth for the text classes
 # that must never reach a public surface.
 #
-# Consumers read this file at run time and join every non-comment line with `|`
-# into one alternation:
-#   - tools/ci/check_public_history_text.sh -- git log -G, POSIX ERE, over the
-#     content that entered a tracked file in reachable history.
-#   - tools/check_github_launch_ready.sh -- jq test(), Oniguruma, over GitHub
-#     repository metadata, labels, milestones, releases, issues, comments and
-#     discussions.
+# Consumers read this file at run time:
+#   - tools/check_public_surface.py scans committed/staged/outgoing Git blobs
+#     and commit messages with Python regexes;
+#   - tools/check_github_launch_ready.sh scans GitHub metadata with jq/Oniguruma.
 #
 # Format: one regex alternative per line. Blank lines, and lines whose first
 # non-blank character is #, are ignored. Both engines must accept every line, so
@@ -17,9 +14,8 @@
 # case-insensitively and the history consumer matches case-sensitively, so a
 # pattern must not depend on case to stay narrow.
 #
-# This file carries the marker text verbatim as its job, so it is excluded from
-# tools/ci/check_public_history_text.sh's own path scope; without that exclusion
-# it would self-flag on every run.
+# This file carries the marker text verbatim as its job, so the surface guard
+# exempts this exact path. No directory-wide content exemption exists.
 
 # Private paths, internal-only working documentation, and pre-public backup
 # remote naming. The prepublic-remote alternative requires a concrete timestamp

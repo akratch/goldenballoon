@@ -11,6 +11,9 @@
       inline data arrays). See [DISCLAIMER.md](../DISCLAIMER.md) and
       [CONTRIBUTING.md](../CONTRIBUTING.md).
 - [ ] I re-read my diff (`git diff --stat`) for accidental data blobs.
+- [ ] I did not add private plans, handoffs, agent transcripts, personal paths,
+      or a personal author/committer email; `python3 tools/check_public_surface.py
+      --staged` passes.
 - [ ] I ran the relevant validation (`python3 tools/run_checks.py`, or
       `python3 tools/run_checks.py --only <name>` for the narrower checks that
       apply to this change — see `tools/run_checks.py --list`).

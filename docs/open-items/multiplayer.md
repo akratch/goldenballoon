@@ -67,6 +67,15 @@ P3.3 WebGPU containment clamp was the expected failure. It is fixed and stayed
 fixed: WebGPU and GL produce the same image (per-half scores within a few percent,
 identical gameplay numbers) and identical physics.
 
+**2026-07-31 detector correction — a zip-pad boost is not a teleport.** The 2P
+route now crosses a real pad: P2's per-frame displacement ramps 40.15 → 44.75 and
+back down, with 4.0 as the largest frame-to-frame change in step length over the
+full route. The fixture still carried an obsolete `MAX_STEP = 40` ceiling even though the
+one-player gameplay gate had already established that authored boosts exceed it.
+The 2P gate now uses the same shape policy: `MAX_ACCEL = 40` plus the generous
+`MAX_STEP = 150` backstop. This continues to reject the historic 1296.8-unit
+ASSET_MISC_8 discontinuity without rejecting normal boosted driving.
+
 **Not a bug — the shared centre minimap.** In two-player the minimap straddles the
 viewport divider: each player draws their own copy at the same absolute screen
 position, clipped to their own half, so each sees half of it. That follows from
@@ -97,7 +106,8 @@ and no run matrix. The later Wave 3 resolution below supersedes that limitation.
 - the existing probe now publishes P1–P4 without changing the historical P1/P2
   formats;
 - every human must contribute 3500+ active rows, remain finite and bounded,
-  avoid teleports/stalls, reach lap 3, and stay distinct from every other racer;
+  avoid teleports/stalls, make substantial progress, and stay distinct from
+  every other racer;
 - all four quadrants are scored separately, with a dedicated 3P-minimap contract
   and automatic flat-quadrant rejection controls;
 - spaced edge-triggered A taps advance both player counts through
@@ -107,6 +117,16 @@ and no run matrix. The later Wave 3 resolution below supersedes that limitation.
 Measured Debug/WebGPU transitions are results→track-select 7632→7931 for 3P and
 7932→8231 for 4P. The complete check runs both arms from the real frontend and
 is registered in `tools/run_checks.py` and the alignment-UBSan runtime matrix.
+
+**2026-07-31 terminal-contract correction.** After the ROM-fidelity work moved
+the AI lines, 4P P2 was still actively racing at `cp=33/lap=1` when the other
+three finished. This is not a hang: `race_check_finish()` intentionally ends an
+ordinary multiplayer race once N-1 racers are done, marks the sole remainder
+`raceFinished=1/finishPosition=4`, and advances to results. The old fixture
+overfit the earlier line by requiring all four to cross the finish. It now reads
+the existing end-of-update `[ORACLE]` state for every human, requires unique
+positions 1–4 and `raceFinished=1`, retains `cp>=40/lap>=2` for all normal
+finishers, and permits exactly one last-place DNF only after `cp>=30/lap>=1`.
 
 ### Left open
 - **No oracle comparison.** Every split-screen claim here is internal-consistency

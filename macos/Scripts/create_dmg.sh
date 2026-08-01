@@ -14,6 +14,18 @@
 
 set -euo pipefail
 
+STAGING_DIR=""
+MOUNT_DIR=""
+MOUNTED=false
+cleanup() {
+    if [[ "${MOUNTED}" == true && -n "${MOUNT_DIR}" ]]; then
+        hdiutil detach "${MOUNT_DIR}" >/dev/null 2>&1 || true
+    fi
+    [[ -z "${STAGING_DIR}" ]] || rm -rf "${STAGING_DIR}"
+    [[ -z "${MOUNT_DIR}" ]] || rm -rf "${MOUNT_DIR}"
+}
+trap cleanup EXIT
+
 # ---------------------------------------------------------------------------
 # Color helpers
 # ---------------------------------------------------------------------------
@@ -67,6 +79,21 @@ fi
 APP_PATH="$(cd "$(dirname "${APP_PATH}")" && pwd)/$(basename "${APP_PATH}")"
 APP_NAME="$(basename "${APP_PATH}" .app)"
 INFO_PLIST="${APP_PATH}/Contents/Info.plist"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+VERIFY_DISTRIBUTION=false
+if codesign -dvvv "${APP_PATH}" 2>&1 |
+        grep -Fq 'Authority=Developer ID Application:'; then
+    VERIFY_DISTRIBUTION=true
+fi
+if [[ "${VERIFY_DISTRIBUTION}" == true ]]; then
+    "${SCRIPT_DIR}/verify_gatekeeper_bundle.sh" \
+        --distribution "${APP_PATH}" ||
+        die "Source app failed Gatekeeper bundle verification"
+else
+    "${SCRIPT_DIR}/verify_gatekeeper_bundle.sh" "${APP_PATH}" ||
+        die "Source app failed Gatekeeper bundle verification"
+fi
 
 # Player-facing brand name. The .app is still built as mdkr64.app (the internal
 # name), so the bundle BASENAME must not drive anything a user reads. Take the
@@ -154,7 +181,6 @@ else
 
     # Create a temporary directory with the app and an Applications symlink
     STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dmg-staging.XXXXXX")"
-    trap 'rm -rf "${STAGING_DIR}"' EXIT
 
     cp -R "${APP_PATH}" "${STAGING_DIR}/"
     ln -s /Applications "${STAGING_DIR}/Applications"
@@ -185,9 +211,28 @@ info "Size   : $(du -h "${OUTPUT_DMG}" | cut -f1)"
 
 # Verify the DMG can be mounted
 info "Verifying DMG integrity..."
-hdiutil verify "${OUTPUT_DMG}" &>/dev/null \
-    && info "DMG integrity check passed." \
-    || warn "DMG integrity check had warnings (may still be usable)."
+hdiutil verify "${OUTPUT_DMG}" >/dev/null \
+    || die "DMG integrity verification failed"
+info "DMG integrity check passed."
+
+info "Mounting DMG read-only and re-verifying the packaged app..."
+MOUNT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mdkr-dmg-mount.XXXXXX")"
+hdiutil attach -readonly -nobrowse -mountpoint "${MOUNT_DIR}" \
+    "${OUTPUT_DMG}" >/dev/null || die "DMG could not be mounted"
+MOUNTED=true
+PACKAGED_APP="${MOUNT_DIR}/${APP_NAME}.app"
+[[ -d "${PACKAGED_APP}" ]] || die "Mounted DMG is missing ${APP_NAME}.app"
+if [[ "${VERIFY_DISTRIBUTION}" == true ]]; then
+    "${SCRIPT_DIR}/verify_gatekeeper_bundle.sh" \
+        --distribution "${PACKAGED_APP}" ||
+        die "App inside mounted DMG failed verification"
+else
+    "${SCRIPT_DIR}/verify_gatekeeper_bundle.sh" "${PACKAGED_APP}" ||
+        die "App inside mounted DMG failed verification"
+fi
+hdiutil detach "${MOUNT_DIR}" >/dev/null || die "Failed to detach verification mount"
+MOUNTED=false
+info "Packaged app verification passed."
 
 info "================================="
 info "Done."

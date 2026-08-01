@@ -4,6 +4,7 @@
 #include <SDL.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #ifdef _WIN32
@@ -17,6 +18,21 @@ std::map<std::string, std::string> g_kv;
 // caller treats that as an error rather than falling back to a CWD-relative file
 // (a double-clicked .app has CWD=/, so that would silently lose prefs) [AUDIT-0039].
 std::string prefsFilePath() {
+    // MDKR_APP_PREFS_DIR: test-only isolation, mirroring MDKR_SAVE_DIR
+    // (platform/stubs_dkr.c). SDL_GetPrefPath("mdkr64","mdkr64") is one
+    // location shared by every local build and every concurrent test run; a
+    // shell smoke that drops a ROM (tests/check_shell_dropfile.py, Q2) ends up
+    // on the same RomPanel_setRom() -> AppConfig::save() path a real accepted
+    // ROM takes, and must not read or overwrite whatever a real player (or
+    // another suite) already has there. No-op unless set — production behavior
+    // and path are unchanged. The caller-provided directory must already
+    // exist; this does not create one, same contract as SDL_GetPrefPath.
+    const char *dir = std::getenv("MDKR_APP_PREFS_DIR");
+    if (dir != nullptr && dir[0] != '\0') {
+        std::string base = dir;
+        if (base.back() != '/' && base.back() != '\\') base += '/';
+        return base + "mdkr64_app.ini";
+    }
     char *p = SDL_GetPrefPath("mdkr64", "mdkr64");
     if (!p) return "";
     std::string base = p;

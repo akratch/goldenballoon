@@ -3,9 +3,9 @@
 # Adapted from mgb64's .github/workflows/release.yml. Produces the portable
 # prebuilt binaries that this Mac can't build natively: a Windows portable
 # .zip and a Linux AppImage + .tar.gz. macOS is built and validated by
-# .github/workflows/macos-release.yml (asset-free verification only; no
-# signing/notarization/DMG yet -- see that workflow); a maintainer assembles
-# the final GitHub Release from all sources.
+# .github/workflows/macos-release.yml (Developer ID signing, notarization,
+# stapling, and DMG verification); a maintainer assembles the final GitHub
+# Release from all sources.
 #
 # Manual-only, matching the repo's local-CI posture (see correctness.yml,
 # whose push/pull_request/workflow_dispatch triggers are the only automatic

@@ -4,18 +4,19 @@
  * DKR's audio synthesizer runs natively; its Acmd output is executed inline by
  * platform/mixer.c (the abi.h a* macros are overridden — see platform/mixer.h).
  * The N64 audio thread (__amMain) never runs in the cooperative model, so this
- * file DRIVES the synthesis synchronously, once per rendered frame:
+ * file DRIVES synthesis synchronously from an independent audio-time clock:
  *
- *   dkr_audio_pump()  (called from the frame boundary in stubs_dkr.c)
- *     -> pick this frame's sample count (queue-occupancy controller, or a fixed
- *        count when headless / no device)
+ *   dkr_audio_advance_fields()  (called when host audio time advances)
+ *   dkr_audio_service_tick()    (called after one ordered game tick)
+ *     -> consume at most one due two-field audio quantum
+ *     -> pick its sample count (queue occupancy, or fixed deterministic count)
  *     -> amAudioSynthFrame(n)   (audiomgr.c: __clearAudioDMA + alAudioFrame ->
  *                                synthesis straight into an arena PCM buffer)
  *     -> osAiSetNextBuffer(buf, n*4)   (queue to the SDL device below)
  *
  * Host output is an SDL2 audio device in queue mode (stereo s16 @ OUTPUT_RATE).
  * The sample production is decoupled from the SDL sink so an M8 web build can
- * swap an AudioWorklet in without touching the pump. Under --headless-frames
+ * swap an AudioWorklet in without touching the service clock. Under --headless-frames
  * the SDL device is not opened, but synthesis still runs (so CI exercises the
  * whole DSP path); set MDKR_AUDIO_DUMP=out.wav to capture the PCM for RMS/peak
  * validation, or MDKR_AUDIO_RMS=1 to print running RMS/peak to stderr.
@@ -52,6 +53,9 @@
 #endif
 
 #include "platform_os.h"
+#include "audio_service_clock.h"
+#include "audio_queue_controller.h"
+#include "audi_port_dkr.h"
 #include "mdkr_trace.h"
 
 /* Match the game's ultratypes without pulling the whole PR header chain (which
@@ -123,7 +127,7 @@ static int audio_have_sink(void) {
     return s_devOpen;
 }
 
-/* Host-side queued audio in bytes (the pump's latency feedback signal). */
+/* Host-side queued audio in bytes (the service's latency feedback signal). */
 static u32 audio_queued_bytes(void) {
 #ifdef __EMSCRIPTEN__
     if (s_webAudio) return webAudioOutputQueuedBytes();
@@ -133,8 +137,42 @@ static u32 audio_queued_bytes(void) {
 }
 
 /* ---- pump rate controller ------------------------------------------------ */
-static u32   s_lastCount;
-static int   s_haveLastCount;
+static MdkrAudioQueueController s_queueController;
+
+/* ---- independent audio-time service clock ------------------------------ */
+#define DKR_AUDIO_FIELDS_PER_QUANTUM 2u
+static MdkrAudioServiceClock s_serviceClock;
+static u64 s_serviceCalls;
+static u64 s_serviceIdle;
+static u64 s_serviceNotReady;
+static u64 s_serviceSamples;
+static u64 s_serviceMaxQueued;
+static int s_serviceTrace = -1;
+static int64_t s_servicePerturb = INT64_MIN;
+
+static int audio_service_trace_enabled(void) {
+    if (s_serviceTrace < 0) {
+        const char *value = getenv("MDKR_AUDIO_SERVICE_TRACE");
+        s_serviceTrace = value != NULL && value[0] != '\0' &&
+                         strcmp(value, "0") != 0;
+    }
+    return s_serviceTrace != 0;
+}
+
+static int64_t audio_service_perturb_quantum(void) {
+    if (s_servicePerturb == INT64_MIN) {
+        const char *value = getenv("MDKR_TEST_AUDIO_PERTURB");
+        char *end = NULL;
+        s_servicePerturb = -1;
+        if (value != NULL && value[0] != '\0') {
+            long long parsed = strtoll(value, &end, 10);
+            if (end != value && *end == '\0' && parsed > 0) {
+                s_servicePerturb = (int64_t)parsed;
+            }
+        }
+    }
+    return s_servicePerturb;
+}
 
 /* ---- validation dump ----------------------------------------------------- */
 static FILE *s_wav;
@@ -220,6 +258,9 @@ void dkr_audio_out_init(void) {
     const char *disable = getenv("MDKR_AUDIO");
 
     s_shutdownComplete = 0;
+    mdkr_audio_service_clock_init(
+        &s_serviceClock, DKR_AUDIO_FIELDS_PER_QUANTUM);
+    mdkr_audio_queue_controller_init(&s_queueController);
     audio_dump_open();
     /* Emergency fallback for a fatal libc/process exit. Normal finite and
      * window-close paths now unwind through main() and call the idempotent
@@ -297,6 +338,7 @@ void dkr_audio_out_shutdown(void) {
         return;
     }
     s_shutdownComplete = 1;
+    dkr_audio_service_summary();
     had_device = s_devOpen;
 #ifdef __EMSCRIPTEN__
     had_web = s_webAudio;
@@ -481,67 +523,133 @@ static void audio_trace_raw16(void) {
     s_raw16PreviousCalls = calls;
 }
 
-/* ===== per-frame synthesis pump ===== */
+/* ===== independently due synthesis service ===== */
 
 static s32 dkr_choose_frame_samples(void) {
     u32 frameSize = amAudioGetFrameSize();          /* ~2 VI fields of samples */
     u32 maxSamples = amAudioGetMaxSamples();
-    s32 produce;
+    int haveSink = audio_have_sink();
+    u32 now = haveSink ? osGetCount() : 0u;
+    u32 queued = haveSink ? (audio_queued_bytes() >> 2) : 0u;
 
-    if (frameSize == 0) {
-        frameSize = DKR_OUTPUT_RATE / 30;
-    }
-
-    if (!audio_have_sink()) {
-        /* Headless / no device: deterministic fixed cadence (also what the WAV
-         * dump captures). One frameSize == ~2 fields of audio per pump. */
-        produce = (s32)frameSize;
-    } else {
-        /* Queue-occupancy controller: refill exactly what the DAC drained since
-         * the last pump (measured from the host counter, so it is correct at
-         * any present cadence — 60/30 fps) plus a correction toward a ~2-field
-         * latency target. Works for the SDL device and the web AudioWorklet
-         * (audio_queued_bytes routes to the active sink). */
-        u32 now = osGetCount();
-        s32 queued = (s32)(audio_queued_bytes() >> 2); /* sample-frames */
-        s32 target = (s32)frameSize;
-        s32 consumed;
-
-        if (!s_haveLastCount) {
-            consumed = (s32)(frameSize / 2);
-            s_haveLastCount = 1;
-        } else {
-            u32 dt = now - s_lastCount; /* u32 wrap-safe */
-            u64 c = (u64)dt * DKR_OUTPUT_RATE / DKR_COUNTER_RATE;
-            if (c > (u64)frameSize * 4u) {
-                c = frameSize / 2; /* stall/first-frame guard */
-            }
-            consumed = (s32)c;
-        }
-        s_lastCount = now;
-
-        produce = consumed + (target - queued);
-    }
-
-    if (produce < 16) {
-        produce = 16;
-    }
-    if (produce > (s32)maxSamples) {
-        produce = (s32)maxSamples;
-    }
-    produce &= ~0xf;
-    return produce;
+    /* Headless remains a deterministic fixed block. A live SDL/worklet sink
+     * replaces the estimated drain and corrects toward one synthesis-frame of
+     * latency. This shared pure controller is exercised by ROM-free simulated
+     * cadence and real SDL queue-mode contracts. */
+    return (s32)mdkr_audio_queue_controller_choose(
+        &s_queueController, haveSink != 0, now, DKR_COUNTER_RATE,
+        DKR_OUTPUT_RATE, frameSize, maxSamples, queued);
 }
 
-void dkr_audio_pump(void) {
+/* ---- output-level test seam (MDKR_AUDIO_TEST_GAIN_DB) --------------------
+ *
+ * A DELIBERATE DEFECT INJECTOR, not a user volume control. It exists so
+ * tests/check_audio_level_reference.py can prove it is able to fail: a check on
+ * absolute output level that no level error can trip would license the very
+ * claim it is meant to test. The seam applies a flat dB gain to the synthesised
+ * PCM before anything reads it, so the engine's own RMS/peak accounting, the
+ * MDKR_AUDIO_DUMP capture, and the sink all see the same biased signal — which
+ * is exactly the shape of the "systematic loudness bias" this gate hunts.
+ *
+ * It is REFUSED whenever a host sink exists (s_disabled == 0), so it can never
+ * change what a player hears; it only ever perturbs a file-domain capture. Any
+ * use is announced once, loudly, on stdout.
+ */
+static double s_testGain = 1.0;      /* linear */
+static int    s_testGainState = -1;  /* -1 unread, 0 inactive, 1 active */
+
+static void audio_test_gain_init(void) {
+    const char *spec;
+    if (s_testGainState >= 0) {
+        return;
+    }
+    s_testGainState = 0;
+    spec = getenv("MDKR_AUDIO_TEST_GAIN_DB");
+    if (spec == NULL || spec[0] == '\0') {
+        return;
+    }
+    if (!s_disabled) {
+        printf("[AUDIO] MDKR_AUDIO_TEST_GAIN_DB IGNORED: a host output device is "
+               "active; the level test seam is file-domain only\n");
+        return;
+    }
+    {
+        char *end = NULL;
+        double db = strtod(spec, &end);
+        if (end == spec || (end != NULL && *end != '\0') ||
+            db < -24.0 || db > 24.0) {
+            printf("[AUDIO] MDKR_AUDIO_TEST_GAIN_DB=%s is not a dB value in "
+                   "[-24, 24]; ignored\n", spec);
+            return;
+        }
+        s_testGain = pow(10.0, db / 20.0);
+        s_testGainState = 1;
+        printf("[AUDIO] TEST GAIN INJECTED: %+.3f dB (x%.6f) — this build's audio "
+               "output is DELIBERATELY WRONG\n", db, s_testGain);
+    }
+}
+
+static void audio_apply_test_gain(s16 *buf, s32 frameSamples) {
+    u32 n;
+    u32 i;
+    audio_test_gain_init();
+    if (s_testGainState != 1 || buf == NULL || frameSamples <= 0) {
+        return;
+    }
+    n = (u32)frameSamples * DKR_AUDIO_CHANNELS;
+    for (i = 0; i < n; i++) {
+        double v = (double)buf[i] * s_testGain;
+        if (v > 32767.0) {
+            v = 32767.0;
+        } else if (v < -32768.0) {
+            v = -32768.0;
+        }
+        buf[i] = (s16)(v < 0.0 ? v - 0.5 : v + 0.5);
+    }
+}
+
+void dkr_audio_advance_fields(unsigned fields, bool rebase) {
+    (void)mdkr_audio_service_clock_advance(
+        &s_serviceClock, fields, rebase);
+}
+
+void dkr_audio_advance_units(uint64_t units, bool rebase) {
+    (void)mdkr_audio_service_clock_advance_units(
+        &s_serviceClock, units, rebase);
+}
+
+void dkr_audio_service_tick(void) {
     s32 frameSamples;
     s16 *buf;
+    u32 queued;
 
+    s_serviceCalls++;
+    if (!mdkr_audio_service_clock_take(&s_serviceClock)) {
+        s_serviceIdle++;
+        return;
+    }
+    /* Retire pre-init time exactly as the old no-op pump did. Deferring it
+     * would burst boot-time PCM after the manager becomes ready. */
     if (!gDkrAudioReady) {
+        s_serviceNotReady++;
         return;
     }
     frameSamples = dkr_choose_frame_samples();
+    if (audio_service_perturb_quantum() > 0 &&
+        s_serviceClock.stats.serviced_quanta ==
+            (uint64_t)audio_service_perturb_quantum() &&
+        frameSamples > 16) {
+        /* Test-only PCM sensitivity control. It changes audio time for one
+         * service quantum without touching gameplay state or cue generation. */
+        frameSamples -= 16;
+    }
     buf = amAudioSynthFrame(frameSamples);
+    audio_apply_test_gain(buf, frameSamples);
+    s_serviceSamples += (u64)frameSamples;
+    queued = audio_queued_bytes() >> 2;
+    if (queued > s_serviceMaxQueued) {
+        s_serviceMaxQueued = queued;
+    }
     /* Sample live voice ownership BETWEEN level boundaries. resource_state can
      * only read the boundary, where alCSPStop() has already handed every music
      * voice back; the plateau gates need to know the generation actually owned
@@ -554,6 +662,50 @@ void dkr_audio_pump(void) {
         osAiSetNextBuffer(buf, (u32)frameSamples * 4);
     }
     audio_trace_music();
+}
+
+void dkr_audio_service_summary(void) {
+    if (!audio_service_trace_enabled()) {
+        return;
+    }
+    fprintf(stderr,
+            "[AUDIO-SERVICE] fields=%llu advances=%llu due=%llu "
+            "serviced=%llu pending=%llu retired=%llu rebases=%llu "
+            "calls=%llu idle=%llu notready=%llu samples=%llu "
+            "dropped=%u maxpending=%llu maxqueued=%llu quantumfields=%u\n",
+            (unsigned long long)s_serviceClock.stats.elapsed_fields,
+            (unsigned long long)s_serviceClock.stats.advances,
+            (unsigned long long)s_serviceClock.stats.due_quanta,
+            (unsigned long long)s_serviceClock.stats.serviced_quanta,
+            (unsigned long long)mdkr_audio_service_clock_pending(
+                &s_serviceClock),
+            (unsigned long long)s_serviceClock.stats.retired_quanta,
+            (unsigned long long)s_serviceClock.stats.rebases,
+            (unsigned long long)s_serviceCalls,
+            (unsigned long long)s_serviceIdle,
+            (unsigned long long)s_serviceNotReady,
+            (unsigned long long)s_serviceSamples,
+            (unsigned)s_droppedBuffers,
+            (unsigned long long)s_serviceClock.stats.max_pending_quanta,
+            (unsigned long long)s_serviceMaxQueued,
+            DKR_AUDIO_FIELDS_PER_QUANTUM);
+    if (s_queueController.stats.live_decisions != 0u) {
+        fprintf(stderr,
+                "[AUDIO-SINK] decisions=%llu estimateddrain=%llu produced=%llu "
+                "emptyobservations=%u stalls=%u minqueued=%u maxqueued=%u "
+                "maxproduced=%u\n",
+                (unsigned long long)s_queueController.stats.live_decisions,
+                (unsigned long long)
+                    s_queueController.stats.estimated_consumed_frames,
+                (unsigned long long)s_queueController.stats.produced_frames,
+                (unsigned)s_queueController.stats.empty_queue_observations,
+                (unsigned)s_queueController.stats.stall_guards,
+                (unsigned)(s_queueController.stats.min_queued_frames == UINT32_MAX
+                    ? 0u : s_queueController.stats.min_queued_frames),
+                (unsigned)s_queueController.stats.max_queued_frames,
+                (unsigned)s_queueController.stats.max_produced_frames);
+    }
+    fflush(stderr);
 }
 
 #endif /* NATIVE_PORT */

@@ -10,6 +10,7 @@
 #include "mdkr_taj.h"
 #include "mdkr_trace.h"
 #include "presentation_snapshot.h"
+#include "gameplay_event_trace.h"
 #include "fast3d/gfx_level_lighting.h"
 #endif
 /* The level-object-map header is 16 bytes; gObjectMap[] is s32*, so the entries
@@ -491,6 +492,12 @@ static Object *gObjectSavedBobFor; /* pairing guard for the exact-bits restore.
     untouched ROM behaviour. The tumble pair below carries the same guard over a
     wider bracket: obj_tex_animate, mtx_cam_push and (particles.c) the whole
     per-racer emitter loop. */
+static Object *gObjectRenderModelFor;
+static s32 gObjectRenderModelIndex;
+static s32 gObjectRenderRacerTexOffset;
+static Vertex *gObjectSavedCurVertData;
+static Object *gObjectSavedCurVertFor;
+static s32 object_render_model_index(const Object *obj);
 #endif
 s8 D_8011ADD4;
 s8 gOverrideDoors;
@@ -888,6 +895,130 @@ void dkr_force_boost_hook(Object_Racer *racer) {
     racer->boostTimer = normalise_time(45);
     racer->boostType = BOOST_LARGE;
 }
+
+/* Deterministic verification content for the shield/magnet shear path. Both
+ * pixel-comparison arms receive this same authored-tick state; only the replay
+ * interpolation test seam differs between them. */
+static void dkr_force_shield_hook(Object_Racer *racer) {
+    extern int g_frameCounter;
+    static s32 sStart = -2;
+    static s32 sLen = 90;
+
+    if (sStart == -2) {
+        const char *value = getenv("MDKR_FORCE_SHIELD");
+        sStart = -1;
+        if (value != NULL && value[0] != '\0') {
+            const char *colon = strchr(value, ':');
+            sStart = atoi(value);
+            if (colon != NULL && colon[1] != '\0') {
+                sLen = atoi(colon + 1);
+            }
+        }
+    }
+    if (racer == NULL || sStart < 0 || g_frameCounter < sStart ||
+        g_frameCounter >= sStart + sLen) {
+        return;
+    }
+    racer->shieldTimer = normalise_time(90);
+    racer->shieldType = SHIELD_LEVEL3;
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * G1: zip-pad boost magnitude — instrument and positive control.
+ * ---------------------------------------------------------------------------
+ *
+ * WHY THIS EXISTS RATHER THAN A PAD-CROSSING FIXTURE. The register's 44.9
+ * units/frame measurement came from a zip pad that `nav_to_time_trial_race.txt`
+ * + `MDKR_AUTOPILOT` happened to drive over. It does not any more: the AI line
+ * moved when the wave "closedloop" ROM-fidelity corrections landed, and the same
+ * route now peaks at 14.3 (tests/check_race_drive.py's own reported figure).
+ * That is exactly the fixture class tests/README.md warns about — the *line* is
+ * chaotic with respect to any simulation change, so no committed route can be
+ * relied on to keep crossing a particular pad.
+ *
+ * So the magnitude is measured by arming the boost directly, in the state a pad
+ * arms it in, and letting the authored physics run. Everything downstream of the
+ * two assignments below — `racer.c`'s `traction = 2.0f` throttle override, the
+ * `boostTimer -= updateRate` decay and every velocity/drag term — is untouched
+ * decomp code (verified statement-for-statement against the recorded decomp
+ * baseline), so what this measures IS the shipping boost, only with a
+ * deterministic trigger instead of a chaotic one.
+ *
+ *   MDKR_ZIPPAD_BOOST=<frame>[:<ticks>]
+ *       On the first update at or after <frame>, arm the HUMAN racer exactly as
+ *       `racer.c:5727` arms it for `SURFACE_ZIP_PAD` on a car:
+ *       `boostTimer = normalise_time(ticks)`, `boostType = BOOST_LARGE`.
+ *       <ticks> defaults to 45, the authored constant. Armed once per run.
+ *       Passing any other <ticks> is the perturbed-constant BROKEN DIRECTION
+ *       arm: it must move the speed trace out of the baseline envelope.
+ *
+ *   MDKR_BOOST_TRACE=1
+ *       Emit a greppable per-update [BOOST] row for the human racer: boost
+ *       state, velocity and world position, enough to reconstruct the per-frame
+ *       speed trace and to see a *real* pad arming a boost on any route.
+ *
+ * Unlike MDKR_FORCE_BOOST above (which re-arms every racer on every frame of a
+ * window, for the benefit of the boost *renderer*), this arms the one racer
+ * once, so the boost decays on its own schedule and the magnitude that comes out
+ * is the authored one. Both are zero cost when unset.
+ */
+void mdkr_zippad_boost_hook(Object *obj, Object_Racer *racer) {
+    extern int g_frameCounter;
+    static s32 sFrame = -2;
+    static s32 sTicks = 45;
+    static s32 sArmed = FALSE;
+
+    if (sFrame == -2) {
+        const char *e = getenv("MDKR_ZIPPAD_BOOST");
+        sFrame = -1;
+        if (e != NULL && e[0] != '\0') {
+            const char *colon = strchr(e, ':');
+            sFrame = atoi(e);
+            if (colon != NULL && colon[1] != '\0') {
+                sTicks = atoi(colon + 1);
+            }
+        }
+    }
+    if (sFrame < 0 || sArmed || obj == NULL || racer == NULL) {
+        return;
+    }
+    /* Player one only. Arming the CPU field too would make the measurement a
+     * function of the AI's traffic rather than of the boost. */
+    if (racer->playerIndex == PLAYER_COMPUTER || racer->racerIndex != 0) {
+        return;
+    }
+    if (g_frameCounter < sFrame) {
+        return;
+    }
+    sArmed = TRUE;
+    racer->boostTimer = normalise_time(sTicks);
+    racer->boostType = BOOST_LARGE;
+    mdkr_trace("[BOOSTARM] frame=%d ticks=%d timer=%d", g_frameCounter, sTicks,
+               racer->boostTimer);
+}
+
+void mdkr_boost_trace(Object *obj, Object_Racer *racer) {
+    extern int g_frameCounter;
+    static s32 sEnabled = -1;
+
+    if (sEnabled < 0) {
+        const char *e = getenv("MDKR_BOOST_TRACE");
+        sEnabled = e != NULL && e[0] != '\0' && atoi(e) != 0;
+    }
+    if (!sEnabled || obj == NULL || racer == NULL) {
+        return;
+    }
+    if (racer->playerIndex == PLAYER_COMPUTER || racer->racerIndex != 0) {
+        return;
+    }
+    mdkr_trace("[BOOST] frame=%d timer=%d type=%d vel=%.9g x=%.9g y=%.9g z=%.9g "
+               "surf=%d grounded=%d start=%d",
+               g_frameCounter, racer->boostTimer, racer->boostType,
+               racer->velocity, obj->trans.x_position, obj->trans.y_position,
+               obj->trans.z_position, racer->wheel_surfaces[0],
+               racer->groundedWheels, get_race_start_timer());
+}
 #endif
 
 /**
@@ -922,6 +1053,9 @@ void racerfx_update(s32 updateRate) {
         boostObj = &asset20[racer->racerIndex];
 #ifdef NATIVE_PORT
         dkr_force_boost_hook(racer);
+        dkr_force_shield_hook(racer);
+        mdkr_zippad_boost_hook((*gRacers)[i], racer);
+        mdkr_boost_trace((*gRacers)[i], racer);
 #endif
         if (racer->shieldTimer != 0) {
             gShieldSineTime[racer->racerIndex] += updateRate;
@@ -1126,13 +1260,16 @@ void allocate_object_pools(void) {
      * at load, so menu.c reads gNumberOfCheats byte-reversed (us.v80: 29 ->
      * 7424) and every string offset likewise (176 -> 45056), indexing far past
      * a 1520-byte blob. It must be swapped HERE, after decryption: the count
-     * that bounds the index block is only meaningful post-decrypt, and the
-     * decryption permutes bits within each byte (never across bytes), so the
-     * two operations commute. Only the index block is swapped — the ASCII cheat
-     * strings that follow it stay byte data. */
-    asset_swap_misc_magic_codes(
-        &gAssetsMiscSection[gAssetsMiscTable[ASSET_MISC_MAGIC_CODES]],
-        (u32) get_misc_asset_size(ASSET_MISC_MAGIC_CODES));
+     * that bounds the index block is only meaningful post-decrypt. The cipher
+     * transposes bit pairs across each four-byte group, so byte-swapping before
+     * decrypting is NOT equivalent and corrupts the plaintext. Decrypt first,
+     * then swap only the plaintext index block; the ASCII strings stay bytes. */
+    if (!asset_swap_misc_magic_codes(
+            &gAssetsMiscSection[gAssetsMiscTable[ASSET_MISC_MAGIC_CODES]],
+            (u32) get_misc_asset_size(ASSET_MISC_MAGIC_CODES))) {
+        fprintf(stderr, "[FATAL] decrypted magic-code table failed structural validation\n");
+        abort();
+    }
 #endif
     gObjPtrList = mempool_alloc_safe(sizeof(uintptr_t) * OBJECT_SLOT_COUNT, COLOUR_TAG_BLUE);
     gFirstTimeFinish = 0;
@@ -3146,6 +3283,9 @@ void add_particle_to_entity_list(Object *obj) {
     if (1) {} // Fakematch
     gParticleCount++;
 #ifdef NATIVE_PORT
+    GAMEPLAY_EVENT_TRACE(
+        GAMEPLAY_EVENT_SPAWN, obj->objectID, obj->headerType,
+        OBJ_FLAGS_PARTICLE, gObjectCount - 1);
     /* The second spawn site: particles come from particle_allocate(), not
      * spawn_object(), but they enter the SAME gObjPtrList the snapshot walks
      * and they render, so they need identities too. Their pool churns far
@@ -3799,6 +3939,10 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
      * No-op unless MDKR_PRESENT_SNAPSHOT is set.
      */
     presentation_snapshot_note_spawn(curObj);
+    GAMEPLAY_EVENT_TRACE(
+        GAMEPLAY_EVENT_SPAWN, curObj->objectID,
+        curObj->header != NULL ? curObj->header->behaviorId : -1,
+        spawnFlags, gObjectCount);
 #endif
     return curObj;
 }
@@ -4079,6 +4223,12 @@ Object *obj_spawn_attachment(s32 objID) {
  * Official Name: objFreeObject
  */
 void free_object(Object *object) {
+#ifdef NATIVE_PORT
+    GAMEPLAY_EVENT_TRACE(
+        GAMEPLAY_EVENT_DESPAWN, object->objectID, object->headerType,
+        (object->trans.flags & OBJ_FLAGS_PARTICLE) != 0,
+        gFreeListCount);
+#endif
     func_800245B4(object->objectID | OBJ_FLAGS_PARTICLE);
     gParticlePtrList[gFreeListCount] = object;
     gFreeListCount++;
@@ -4566,7 +4716,11 @@ void obj_tex_animate(Object *obj, s32 updateRate) {
     s32 batchNumber;
     ModelInstance *modInst;
 
+#ifdef NATIVE_PORT
+    modInst = obj->modelInstances[object_render_model_index(obj)];
+#else
     modInst = obj->modelInstances[obj->modelIndex];
+#endif
     model = modInst->objModel;
     batches = DKR_PTR(TriangleBatchInfo, model->batches);
     textureIsAnimated = model->hasAnimatedTexture;
@@ -4899,16 +5053,13 @@ void render_3d_billboard(Object *obj) {
         intensity = obj->shading->unk0 * 255.0f;
     }
 
+    alpha = scene_object_render_opacity(obj);
     if (obj->behaviorId == BHV_BOMB_EXPLOSION) {
-        //!@bug Never true, because the type is u8.
-        if (obj->opacity > 255) {
-            obj->opacity = obj->properties.bombExplosion.opacity & 0xFF;
-        } else {
-            obj->opacity = (obj->opacity * (obj->properties.bombExplosion.opacity & 0xFF)) >> 8;
-        }
+        /* opacity is u8, so the original >255 arm was unreachable. Keep the
+         * effective multiply, but make it a draw-local value so replaying or
+         * skipping presentation cannot compound authoritative opacity. */
+        alpha = (alpha * (obj->properties.bombExplosion.opacity & 0xFF)) >> 8;
     }
-
-    alpha = obj->opacity;
     if (alpha > 255) {
         alpha = 255;
     }
@@ -5015,13 +5166,10 @@ void render_3d_billboard(Object *obj) {
  * over 6000 frames each of a 1P time trial (26441 agreeing admissions), a 3P
  * split (22014) and a 4P split (32932).
  *
- * DELIBERATELY NOT MOVED: the modelIndex LOD at :5312 and the lightFlags state
- * machine at :5313-5333, which live in the same function and are also
- * simulation-read. Moving them makes check_race_multiplayer FAIL -- P3 stops dead
- * (mean speed 0.00 over 240 frames) in the 3P arm and the 4P results screen never
- * returns to track select -- while the admission migration alone passes both arms.
- * The admission probe above rules out the predicate, so the cause lies in the
- * LOD/lightFlags evaluation itself; it remains an open item.
+ * Racer LOD and the brake/headlight presentation state are committed separately
+ * by obj_lod_tick(). Keeping visibility, LOD and light cadence as distinct pure
+ * operations made the multiplayer regression that originally exposed their
+ * render ownership reproducible and independently testable.
  */
 void obj_visibility_tick(void) {
     extern LevelModel *gCurrentLevelModel; /* tracks.c */
@@ -5091,20 +5239,17 @@ void obj_visibility_tick(void) {
  *     buffer; :4802 is unconditional, so the surviving value is always
  *     modInst->vertices[animationTaskNum] AFTER obj_animate. One store, same
  *     result.
- *   - The animUpdateTimer RESET (:4795-4800) deliberately stays in render,
- *     together with the obj_shade_fancy/obj_shade_fast calls it gates: shading
- *     is presentation (class 4) and must keep running once per drawn frame. The
- *     gate is read here and re-read there with no intervening writer, so for a
- *     drawn object the two evaluations agree and this is pure code motion.
- *   - obj_tex_animate (:4807) deliberately stays in render for now; see the note
- *     at that call site.
+ *   - Shading remains presentation work, but obj_animation_cadence_tick commits
+ *     animUpdateTimer once in the fixed-step epilogue. A skipped or replayed
+ *     presentation therefore cannot change animation speed.
+ *   - obj_tex_animate remains draw-triggered, but its random texture choice uses
+ *     the dedicated presentation RNG and cannot steer gameplay RNG.
  *
  * DIVERGENCE (intended -- it is the point of the migration):
  * objects that were never drawn now animate and gain a non-NULL curVertData, so
- * they become subject to sphere collision. An undrawn object also has its
- * animUpdateTimer left at <= 0 by render, so it animates every tick rather than
- * at the half rate render assigns to drawn AI racers. Measured: this changes no
- * racer trajectory on any gate in the suite.
+ * they become subject to sphere collision. Their animation cadence is now the
+ * same fixed-tick cadence as drawn objects. Measured: this changes no racer
+ * trajectory on any gate in the suite.
  *
  * NOT addressed here (recorded, separate concern): sphere collision takes its
  * model from modelInstances[0] (objects.c:6383) while curVertData tracks
@@ -5172,35 +5317,22 @@ void render_3d_model(Object *obj) {
     ObjectModel *objModel;
     Sprite *something;
 
+#ifdef NATIVE_PORT
+    modInst = obj->modelInstances[object_render_model_index(obj)];
+#else
     modInst = obj->modelInstances[obj->modelIndex];
+#endif
     if (modInst != NULL) {
         objModel = modInst->objModel;
 #ifdef NATIVE_PORT
-        /* obj_animate_tick() owns curVertData now (the animate and the buffer choice
-         * both moved there), and for the overwhelming majority of objects this store
-         * writes back the identical pointer. It cannot be deleted until the
-         * modelIndex LOD choice also moves into the tick, for two reasons:
-         *
-         *   1. set_temp_model_transforms (:5180, called from render_object_parts
-         *      immediately before this) picks a racer's LOD for THIS frame and writes
-         *      obj->modelIndex. The tick resolved modInst against the PREVIOUS
-         *      frame's index, so on an LOD transition the two disagree -- and
-         *      everything below (obj_shade_fast/fancy, render_mesh, the attach-point
-         *      walk) indexes curVertData with the render-time model's vertex counts.
-         *      Leaving it stale is an out-of-bounds write, not a cosmetic error.
-         *   2. The same function CLAMPS modelIndex to a non-NULL model instance, so
-         *      on the first frame of a racer's life the tick can find
-         *      modelInstances[modelIndex] == NULL, skip the object, and leave
-         *      curVertData NULL.
-         *
-         * Measured with a throwaway gObjPtrList-membership probe over tracks
-         * 1/5/7/33, the attract demo, the menus, character select, the adventure hub
-         * and a 3P split, exactly one object reaches render_3d_model without being in
-         * gObjPtrList at all: the skydome (behaviorId -1, MODELTYPE_BASIC, never
-         * animated). It needs this store for the same reason.
-         *
-         * It sits here, above the shading block, rather than at the old :4802 site
-         * because obj_shade_fast/obj_shade_fancy dereference curVertData. */
+        /* obj_animate_tick() owns the authoritative curVertData pointer. A racer
+         * may nevertheless draw a different per-viewport LOD, whose vertex counts
+         * must match shading, mesh and attach-point work below. Temporarily select
+         * that model's buffer and restore the exact authoritative pointer in
+         * unset_temp_model_transforms(). This also covers the skydome, the one
+         * measured 3D draw object outside gObjPtrList. */
+        gObjectSavedCurVertData = obj->curVertData;
+        gObjectSavedCurVertFor = obj;
         obj->curVertData = modInst->vertices[modInst->animationTaskNum];
 #endif
         hasOpacity = FALSE;
@@ -5248,12 +5380,14 @@ void render_3d_model(Object *obj) {
                 }
             }
             // Set the animation ticker for non player racers to 2, making them animate at half the framerate.
+#ifndef NATIVE_PORT
             if ((racerObj != NULL) && (racerObj->playerIndex == PLAYER_COMPUTER) &&
                 (racerObj->vehicleID < VEHICLE_BOSSES)) {
                 modInst->animUpdateTimer = 2;
             } else {
                 modInst->animUpdateTimer = 1;
             }
+#endif
         }
 #ifndef NATIVE_PORT
         obj->curVertData = modInst->vertices[modInst->animationTaskNum];
@@ -5261,37 +5395,10 @@ void render_3d_model(Object *obj) {
         if (obj->behaviorId == BHV_DOOR) {
             obj_door_number(objModel, obj);
         }
-        /* NOT moved: folding obj_tex_animate -- the one direct render-path
-         * rand_range, textures_sprites.c:1891 -- into the tick. Measured reason it
-         * is deferred: moving it changes WHICH objects consume gCurrentRNGSeed
-         * (every listed object, not only the drawn ones), which reroutes the racer
-         * AI, and on Ancient Lake in a 4-player split that wedges P2 against terrain
-         * for ~1200 frames -- check_race_multiplayer goes from cp=44/lap=2 to
-         * cp=33/lap=1. Two controls pin that to the seed stream. The right
-         * resolution is the standing principle that texture-animation dice are
-         * presentation and belong OUTSIDE the authoritative stream; that is a
-         * migration of its own. */
+        /* Texture animation is presentation work. Its random branch advances
+         * the dedicated presentation RNG, never the gameplay RNG. */
         if (objModel->texOffsetUpdateRate && objModel->hasAnimatedTexture > 0) {
-#ifdef NATIVE_PORT
-            /* Purity-gate diagnostic ONLY (never production; bracketing this
-             * site measurably reroutes racer AI — see the deferral note
-             * above): under MDKR_TEST_PURE_RENDER=1 the tex-anim dice do not
-             * touch the authoritative seed, letting check_render_purity
-             * assert full render-skip invariance minus this one documented
-             * blocker. */
-            {
-                extern int mdkr_test_pure_render_enabled(void);
-                if (mdkr_test_pure_render_enabled()) {
-                    save_rng_seed();
-                    obj_tex_animate(obj, objModel->texOffsetUpdateRate);
-                    load_rng_seed();
-                } else {
-                    obj_tex_animate(obj, objModel->texOffsetUpdateRate);
-                }
-            }
-#else
             obj_tex_animate(obj, objModel->texOffsetUpdateRate);
-#endif
             modInst->objModel->texOffsetUpdateRate = 0;
         }
 #ifdef NATIVE_PORT
@@ -5312,10 +5419,12 @@ void render_3d_model(Object *obj) {
                 mtx_head_push(&gObjectCurrDisplayList, &gObjectCurrMatrix, modInst, racerObj->headAngle);
                 vertOffset = TRUE;
             } else {
+#ifndef NATIVE_PORT
                 racerObj->headAngle = 0;
+#endif
             }
         }
-        opacity = obj->opacity;
+        opacity = scene_object_render_opacity(obj);
         if (opacity > 255) {
             opacity = 255;
         }
@@ -5595,6 +5704,167 @@ void object_undo_player_tumble(Object *obj) {
     }
 }
 
+#ifdef NATIVE_PORT
+static s32 object_render_model_index(const Object *obj) {
+    if (gObjectRenderModelFor == obj) {
+        return gObjectRenderModelIndex;
+    }
+    return obj->modelIndex;
+}
+
+/* Pure racer LOD selection. The caller supplies the viewport's private
+ * distance and owns whether the result is committed to simulation (tick) or
+ * retained as a draw-local override (render). */
+static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
+                                      f32 distance, f32 *scaleMultiplier) {
+    s32 assetIndex;
+    s32 firstModel;
+    s32 lastModel;
+    s32 modelIndex;
+    s32 scaledDistance;
+    u8 *thresholds;
+
+    *scaleMultiplier = 1.0f;
+    if (racer->playerIndex != PLAYER_COMPUTER && racer->raceFinished) {
+        modelIndex = 0;
+    } else if (obj->behaviorId == BHV_TIMETRIAL_GHOST) {
+        modelIndex = 1;
+    } else {
+        assetIndex = racer->vehicleID;
+        if (assetIndex >= NUMBER_OF_PLAYER_VEHICLES) {
+            assetIndex = 0;
+        }
+        thresholds = (u8 *)get_misc_asset(assetIndex + VEHICLE_BOSSES);
+        thresholds += cam_get_viewport_layout() * 10;
+        if (get_current_viewport() != racer->playerIndex) {
+            thresholds += 5;
+        }
+        scaledDistance = (s32)distance >> 3;
+        if (distance < 0.0f) {
+            distance = 0.0f;
+        } else if (distance > 3500.0f) {
+            distance = 3500.0f;
+        }
+        *scaleMultiplier = (distance / 2700.0f) + 1.0f;
+        scaledDistance *=
+            ((f32 *)get_misc_asset(ASSET_MISC_4))[racer->characterId];
+        if (scaledDistance < -50) {
+            modelIndex = 5;
+        } else {
+            scaledDistance >>= 1;
+            if (scaledDistance < 0) {
+                scaledDistance = 0;
+            }
+            if (scaledDistance < thresholds[0]) {
+                modelIndex = 0;
+            } else if (scaledDistance < thresholds[1]) {
+                modelIndex = 1;
+            } else if (scaledDistance < thresholds[2]) {
+                modelIndex = 2;
+            } else if (scaledDistance < thresholds[3]) {
+                modelIndex = 3;
+            } else if (scaledDistance < thresholds[4]) {
+                modelIndex = 4;
+            } else {
+                modelIndex = 5;
+            }
+        }
+    }
+
+    firstModel = 0;
+    while (firstModel < obj->header->numberOfModelIds &&
+           obj->modelInstances[firstModel] == NULL) {
+        firstModel++;
+    }
+    lastModel = obj->header->numberOfModelIds - 1;
+    while (lastModel >= 0 && obj->modelInstances[lastModel] == NULL) {
+        lastModel--;
+    }
+    if (firstModel > lastModel) {
+        return obj->modelIndex;
+    }
+    if (modelIndex < firstModel) {
+        modelIndex = firstModel;
+    }
+    if (modelIndex > lastModel) {
+        modelIndex = lastModel;
+    }
+    return modelIndex;
+}
+
+/* Advance the authored brake/headlight state once per fixed tick. Shading is
+ * deliberately sampled here rather than by a draw, so skipped or additional
+ * presentations cannot change the light phase. */
+static void racer_light_tick(Object *obj, u8 *lightFlags) {
+    if (obj->shading != NULL && obj->shading->unk0 < 0.6f) {
+        *lightFlags |= RACER_LIGHT_NIGHT;
+    } else {
+        *lightFlags &= ~RACER_LIGHT_NIGHT;
+    }
+    if ((*lightFlags & RACER_LIGHT_TIMER) != 0) {
+        if (*lightFlags & RACER_LIGHT_BRAKE) {
+            *lightFlags =
+                (*lightFlags & ~RACER_LIGHT_UNK10) | RACER_LIGHT_UNK20;
+        } else if (*lightFlags & RACER_LIGHT_NIGHT) {
+            *lightFlags =
+                (*lightFlags & ~RACER_LIGHT_UNK20) | RACER_LIGHT_UNK10;
+        }
+    }
+}
+
+/* Pure texture-frame lookup for render_mesh. The shared model's
+ * TriangleBatchInfo is never modified by presentation. */
+static s32 racer_light_tex_offset(u8 lightFlags) {
+    s32 offset = lightFlags & RACER_LIGHT_TIMER;
+
+    if (offset != 0) {
+        offset--;
+        if (lightFlags & RACER_LIGHT_BRAKE) {
+            offset += 1;
+        } else if (lightFlags & RACER_LIGHT_NIGHT) {
+            offset += 3;
+        } else if (lightFlags & RACER_LIGHT_UNK20) {
+            offset += 1;
+        } else {
+            offset += 3;
+        }
+    }
+    return offset * 4;
+}
+
+/** Commit the final viewport's racer LOD and light phase once per fixed tick. */
+void obj_lod_tick(void) {
+    extern LevelModel *gCurrentLevelModel;
+    s32 savedCamera;
+    s32 i;
+    f32 unusedScale;
+    Object *obj;
+    Object_Racer *racer;
+    u8 lightFlags;
+
+    if (gCurrentLevelModel == NULL) {
+        return;
+    }
+    savedCamera = get_current_viewport();
+    scene_build_last_viewport_basis();
+    for (i = gObjectListStart; i < gObjectCount; i++) {
+        obj = gObjPtrList[i];
+        if (obj == NULL || (obj->trans.flags & OBJ_FLAGS_PARTICLE) ||
+            obj->header == NULL || obj->header->behaviorId != BHV_RACER ||
+            obj->racer == NULL || obj->modelInstances == NULL) {
+            continue;
+        }
+        racer = obj->racer;
+        obj->modelIndex = racer_model_index_for_view(
+            obj, racer, obj->distanceToCamera, &unusedScale);
+        lightFlags = racer->lightFlags;
+        racer_light_tick(obj, &lightFlags);
+        racer->lightFlags = lightFlags;
+    }
+    set_active_camera(savedCamera);
+}
+#endif
+
 void set_temp_model_transforms(Object *obj) {
 #ifdef NATIVE_PORT
     extern f32 gSceneDrawDistance; /* tracks.c: this viewport's private sort key */
@@ -5615,6 +5885,9 @@ void set_temp_model_transforms(Object *obj) {
     s32 firstNonEmptyModelIndex;
     s32 modelIndex;
     s32 numberOfModels;
+#ifdef NATIVE_PORT
+    f32 lodScale;
+#endif
 
     ret1 = 1.0f;
     ret2 = 1.0f;
@@ -5635,6 +5908,19 @@ void set_temp_model_transforms(Object *obj) {
                     ret2 = 0.2f;
                 }
             }
+#ifdef NATIVE_PORT
+            var_f0 = gSceneDrawDistanceValid ? gSceneDrawDistance
+                                             : obj->distanceToCamera;
+            modelIndex = racer_model_index_for_view(
+                obj, objRacer, var_f0, &lodScale);
+            obj->trans.scale *= lodScale;
+            gObjectRenderModelFor = obj;
+            gObjectRenderModelIndex = modelIndex;
+            gObjectRenderRacerTexOffset =
+                racer_light_tex_offset(objRacer->lightFlags);
+            modInst = obj->modelInstances[modelIndex];
+            objModel = modInst->objModel;
+#else
             if (objRacer->playerIndex != PLAYER_COMPUTER && objRacer->raceFinished) {
                 modelIndex = 0;
                 batchNum = 0;
@@ -5654,23 +5940,6 @@ void set_temp_model_transforms(Object *obj) {
                     if (get_current_viewport() != objRacer->playerIndex) {
                         bossAsset += 5;
                     }
-#ifdef NATIVE_PORT
-                    /* obj->distanceToCamera is the TICK's value now (obj_sort_tick,
-                     * from the last viewport). This LOD choice writes obj->modelIndex,
-                     * which also selects the collision model (:6628/:6671), so
-                     * collapsing it to one viewport would change split-screen
-                     * SIMULATION. render_level_geometry_and_objects hands us this
-                     * viewport's own distance instead, which is exactly what the
-                     * per-viewport sort used to leave on the object. Dead once the LOD
-                     * choice itself moves into the tick. */
-                    var_f0 = gSceneDrawDistanceValid ? gSceneDrawDistance : obj->distanceToCamera;
-                    var_v1 = (s32) var_f0 >> 3;
-                    if (var_f0 < 0.0f) {
-                        var_f0 = 0.0f;
-                    } else if (var_f0 > 3500.0f) {
-                        var_f0 = 3500.0f;
-                    }
-#else
                     var_f0 = obj->distanceToCamera;
                     var_v1 = (s32) var_f0 >> 3;
                     if (obj->distanceToCamera < 0.0f) {
@@ -5678,7 +5947,6 @@ void set_temp_model_transforms(Object *obj) {
                     } else if (var_f0 > 3500.0f) {
                         var_f0 = 3500.0f;
                     }
-#endif
                     var_f0 /= 2700.0f;
                     var_f0 += 1.0f;
                     obj->trans.scale *= var_f0;
@@ -5760,6 +6028,7 @@ void set_temp_model_transforms(Object *obj) {
                     DKR_PTR(TriangleBatchInfo, objModel->batches)[batchNum].texOffset = modelIndex;
                 }
             }
+#endif
 #ifdef NATIVE_PORT
             /* Render purity: same 1-ULP add/subtract hazard as the tumble
              * pair (a += then -= round-trip is not bit-exact). Save the
@@ -5808,6 +6077,15 @@ void render_object_parts(Object *obj) {
  * After rendering, sets the object position back to normal.
  */
 void unset_temp_model_transforms(Object *obj) {
+#ifdef NATIVE_PORT
+    if (gObjectSavedCurVertFor == obj) {
+        obj->curVertData = gObjectSavedCurVertData;
+        gObjectSavedCurVertFor = NULL;
+    }
+    if (gObjectRenderModelFor == obj) {
+        gObjectRenderModelFor = NULL;
+    }
+#endif
     if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE) && obj->header->behaviorId == BHV_RACER) {
 #ifdef NATIVE_PORT
         if (gObjectSavedBobFor == obj) {
@@ -6169,6 +6447,47 @@ void obj_tick_anims(void) {
     }
 }
 
+#ifdef NATIVE_PORT
+/**
+ * Commit the animation cadence once per authoritative tick, after the draw has
+ * had the opportunity to observe animUpdateTimer <= 0 for shading. The original
+ * render path performed this write; keeping it in the fixed-step epilogue makes
+ * skipped or additional presents unable to slow or accelerate model animation.
+ */
+void obj_animation_cadence_tick(void) {
+    s32 i;
+    Object *obj;
+    Object_Racer *racer;
+    ModelInstance *modInst;
+
+    for (i = gObjectListStart; i < gObjectCount; i++) {
+        obj = gObjPtrList[i];
+        if (obj == NULL || (obj->trans.flags & OBJ_FLAGS_PARTICLE) ||
+            obj->header == NULL ||
+            obj->header->modelType != OBJECT_MODEL_TYPE_3D_MODEL ||
+            obj->modelInstances == NULL || obj->modelIndex < 0 ||
+            obj->modelIndex >= obj->header->numberOfModelIds) {
+            continue;
+        }
+        modInst = obj->modelInstances[obj->modelIndex];
+        if (modInst == NULL || modInst->animUpdateTimer > 0) {
+            continue;
+        }
+        racer = obj->behaviorId == BHV_RACER ? obj->racer : NULL;
+        if (racer != NULL && obj->animationID != 0 &&
+            racer->vehicleID < VEHICLE_BOSSES) {
+            racer->headAngle = 0;
+        }
+        if (racer != NULL && racer->playerIndex == PLAYER_COMPUTER &&
+            racer->vehicleID < VEHICLE_BOSSES) {
+            modInst->animUpdateTimer = 2;
+        } else {
+            modInst->animUpdateTimer = 1;
+        }
+    }
+}
+#endif
+
 /**
  * Renders every triangle batch in an objects mesh.
  * If vertOffset is true, then draw in two passes, utilising the head matrix and vertex ID offset in the batch.
@@ -6216,7 +6535,17 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
                     texToSet = NULL;
                     texEnabled = FALSE;
                 } else {
+#ifdef NATIVE_PORT
+                    if (gObjectRenderModelFor == obj &&
+                        (DKR_PTR(TriangleBatchInfo, objModel->batches)[i].flags &
+                         0x810000) == RENDER_TEX_ANIM) {
+                        texOffset = gObjectRenderRacerTexOffset << 14;
+                    } else {
+                        texOffset = DKR_PTR(TriangleBatchInfo, objModel->batches)[i].texOffset << 14;
+                    }
+#else
                     texOffset = DKR_PTR(TriangleBatchInfo, objModel->batches)[i].texOffset << 14;
+#endif
                     texEnabled = TRUE;
                     texToSet = DKR_PTR(TextureHeader, DKR_PTR(TextureInfo, objModel->textures)[textureIndex].texture);
                 }

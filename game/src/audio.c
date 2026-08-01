@@ -2,6 +2,7 @@
 #include "runtime_contracts.h"
 #include "memory.h"
 #ifdef NATIVE_PORT
+#include "gameplay_event_trace.h"
 #include <stdlib.h>   /* getenv (MDKR_AUDIO_REVERB toggle) */
 #include <string.h>
 #endif
@@ -118,8 +119,8 @@ void audio_init(OSSched *sc) {
 #ifdef NATIVE_PORT
     /* M5 audio (was silence-stubbed for M2-M4): ASSET_AUDIO is big-endian.
      * alBnkfNew (bnkf.c) is now a BE parser that builds host-native, LP64-safe,
-     * arena-resident bank structs, and the audio synth is driven per frame by
-     * amAudioFramePump (audiomgr.c). Raw ADPCM sample data stays in ROM,
+     * arena-resident bank structs, and the audio synth is driven by the native
+     * host's independently due two-field service. Raw ADPCM sample data stays in ROM,
      * byte-order-defined, fetched by the audiomgr DMA callback. */
     addrPtr = (s32 *) asset_table_load(ASSET_AUDIO_TABLE);
 
@@ -271,8 +272,9 @@ void audio_init(OSSched *sc) {
      * i.e. the demo's music legitimately wants 121 and the stock budget is 120
      * -- a one-entry shortfall, reproducible at the frame the demo level's
      * sequence starts. It is real demand, not a headless-pacing artifact: the
-     * headless pump uses a fixed frameSize (platform/audi_port_dkr.c), so the
-     * simulated audio time per rendered frame is identical to a real-time run,
+     * deterministic host uses one fixed frameSize per due two-field audio
+     * quantum (platform/audi_port_dkr.c), so present count cannot change the
+     * simulated audio timeline,
      * and queue depth is a function of how far ahead the sequence schedules
      * events, not of wall-clock speed. Confirmed by re-measuring with the queue
      * temporarily at 1024: the peak stays 121 and drops go to 0, so nothing
@@ -486,10 +488,10 @@ static u32 gMdkrVoicePeakMusic;
  * caught them mapped. Measured on the plateau route: music voices run 3-14 of
  * 24 for the whole race and are 0/24 in every boundary row.
  *
- * So sample the peak between boundaries instead. Called once per audio pump
+ * So sample the peak between boundaries instead. Called once per due audio service
  * (platform/audi_port_dkr.c) and only under MDKR_RESOURCE_STATS, which is the
  * mode both resource-plateau gates run in; shipping builds never walk these
- * lists per frame.
+ * lists per service quantum.
  */
 void mdkr_audio_voice_peaks_sample(void) {
     MdkrAudioVoiceStats stats;
@@ -597,6 +599,10 @@ void music_change_on(void) {
  */
 void music_play(u8 seqID) {
     if (gBlockMusicChange == FALSE && gMusicSliderVolume != 0) {
+#ifdef NATIVE_PORT
+        GAMEPLAY_EVENT_TRACE(
+            GAMEPLAY_EVENT_MUSIC, seqID, 0, 0, 0);
+#endif
         gCurrentSequenceID = seqID;
         gMusicBaseVolume = 127;
         if (gCanPlayMusic) {
@@ -1140,6 +1146,9 @@ void music_jingle_pan_set(ALPan pan) {
  * Official Name: amDittyPlay
  */
 void music_jingle_play(u8 seqID) {
+#ifdef NATIVE_PORT
+    GAMEPLAY_EVENT_TRACE(GAMEPLAY_EVENT_MUSIC, seqID, 1, 0, 0);
+#endif
     gCanPlayJingle = TRUE;
     music_sequence_start(gCurrentJingleID = seqID, gJinglePlayer);
 }
@@ -1201,6 +1210,10 @@ void sound_play(u16 soundID, SoundHandle *handlePtr) {
         }
         return;
     }
+#ifdef NATIVE_PORT
+    GAMEPLAY_EVENT_TRACE(
+        GAMEPLAY_EVENT_SOUND, soundID, soundBite, 0, 0);
+#endif
     pitch = gSoundTable[soundID].pitch / 100.0f;
     if (handlePtr != NULL) {
         sndp_play_with_priority(gSoundBank->bankArray[0], soundBite, gSoundTable[soundID].priority, handlePtr);
@@ -1246,6 +1259,10 @@ void sound_play_direct(u16 soundID, SoundHandle *handlePtr) {
         }
         return;
     }
+#ifdef NATIVE_PORT
+    GAMEPLAY_EVENT_TRACE(
+        GAMEPLAY_EVENT_SOUND, soundID, soundID, 1, 0);
+#endif
     if (handlePtr) {
         sndp_play(gSoundBank->bankArray[0], (s16) soundID, handlePtr);
     } else {

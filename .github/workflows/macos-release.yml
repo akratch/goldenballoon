@@ -1,129 +1,192 @@
-# macOS asset-free build pipeline
-#
-# Adapted from mgb64's .github/workflows/macos-release.yml. Builds a
-# universal (arm64 + x86_64) `mdkr64` native executable and verifies a
-# host-architecture unsigned local `.app` bundle. Signing, notarization, DMG
-# creation, and GitHub Release upload remain deferred until maintainer
-# credentials and distributable packaging are wired (see the commented-out
-# `package` job below, kept for parity with mgb64's deferred pipeline).
-#
-# Structural delta from mgb64: mgb64 links a Swift/AppKit shell against a
-# separate static C engine library (libge007_lib.a) built by
-# build_universal.sh. mdkr64 has no Swift shell -- its CMake target `mdkr64`
-# is already a complete, self-contained SDL2 executable (platform/main_pc.c is
-# the real `main`), so macos/Scripts/build_universal.sh here builds and
-# verifies that EXECUTABLE directly, not a static library.
-#
-# The active job requires no Apple Developer credentials or repository secrets.
-# This is a manual hosted mirror of the local release lane; public launch uses
-# local preflight evidence, not hosted GitHub Actions.
-#
-# macos/Scripts/build_universal.sh, build_app_bundle.sh, and
-# verify_asset_free.sh (referenced below) landed on `main` via the macOS
-# packaging port during the development of this workflow.
+# Manual, asset-free macOS release pipeline. Produces a Developer ID signed,
+# notarized, stapled, and Gatekeeper-assessed Apple-silicon DMG. No ROM or
+# ROM-derived asset is accepted by this workflow.
 
-name: macOS Asset-Free Build
+name: macOS signed release
 
 on:
   workflow_dispatch:
-
-env:
-  DEPLOYMENT_TARGET: '13.0'
+    inputs:
+      version:
+        description: "Bundle version, without a v prefix (for example 1.0.1)"
+        required: true
+        default: "1.0.0"
+      release_tag:
+        description: "Optional existing GitHub Release tag to upload into"
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
+concurrency:
+  group: macos-release
+  cancel-in-progress: false
+
 jobs:
-  build:
-    name: Build asset-free macOS artifacts
-    runs-on: macos-14  # Apple Silicon runner
-    timeout-minutes: 30
+  package:
+    name: Sign, notarize, and package macOS
+    runs-on: macos-14
+    timeout-minutes: 45
+    environment: macos-release
 
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
 
-      - name: Install dependencies
+      - name: Validate release inputs
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          brew install sdl2 cmake pkg-config
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || {
+            echo "version must look like 1.0 or 1.0.1 (no v prefix)" >&2
+            exit 1
+          }
 
-      - name: Build universal mdkr64 executable
-        run: |
-          chmod +x macos/Scripts/build_universal.sh
-          ./macos/Scripts/build_universal.sh \
-            --release \
-            --build-dir build-macos-universal
+      - name: Install build dependencies
+        run: brew install sdl2 cmake pkg-config
 
-      - name: Verify asset-free binary
+      - name: Build self-contained ad-hoc integrity bundle
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          chmod +x macos/Scripts/verify_asset_free.sh
-          ./macos/Scripts/verify_asset_free.sh build-macos-universal/mdkr64
-
-      - name: Report build info
-        run: |
-          echo "=== Build artifacts ==="
-          ls -lh build-macos-universal/mdkr64
-          echo ""
-          echo "=== Architectures ==="
-          lipo -info build-macos-universal/mdkr64
-          echo ""
-          echo "=== Size ==="
-          size build-macos-universal/mdkr64
-
-      - name: Build unsigned local app bundle
-        run: |
-          chmod +x macos/Scripts/build_app_bundle.sh
           ./macos/Scripts/build_app_bundle.sh \
             --release \
-            --build-dir build-macos-app \
-            --output build-macos-app/mdkr64.app
+            --build-dir build-macos-release \
+            --output dist/mdkr64.app \
+            --version "$RELEASE_VERSION" \
+            --bundle-sdl2
+          ./macos/Scripts/verify_asset_free.sh dist/mdkr64.app
+          ./macos/Scripts/verify_gatekeeper_bundle.sh dist/mdkr64.app
 
-      - name: Verify asset-free app bundle
+      - name: Import certificate, sign, notarize, and build final DMG
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          DEVELOPER_ID_APPLICATION: ${{ vars.DEVELOPER_ID_APPLICATION }}
+          APPLE_API_PRIVATE_KEY_BASE64: ${{ secrets.APPLE_API_PRIVATE_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          ./macos/Scripts/verify_asset_free.sh build-macos-app/mdkr64.app
+          set -euo pipefail
+          : "${MACOS_CERTIFICATE_P12_BASE64:?missing repository secret}"
+          : "${MACOS_CERTIFICATE_PASSWORD:?missing repository secret}"
+          : "${DEVELOPER_ID_APPLICATION:?missing repository variable}"
+          : "${APPLE_API_PRIVATE_KEY_BASE64:?missing repository secret}"
+          : "${APPLE_API_KEY_ID:?missing repository secret}"
+          : "${APPLE_API_ISSUER_ID:?missing repository secret}"
 
-  # NOTE: The full sign-notarize-dmg pipeline remains disabled until maintainer
-  # Developer ID credentials and release packaging policy are wired.
-  # If GitHub Release upload is enabled later, grant the package job only the
-  # permissions it needs, such as `contents: write`.
-  #
-  # package:
-  #   name: Sign, Notarize, Package
-  #   needs: build
-  #   runs-on: macos-14
-  #   steps:
-  #     - name: Import signing certificate
-  #       env:
-  #         MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-  #         MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-  #       run: |
-  #         echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
-  #         security create-keychain -p "" build.keychain
-  #         security default-keychain -s build.keychain
-  #         security unlock-keychain -p "" build.keychain
-  #         security import certificate.p12 -k build.keychain \
-  #           -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-  #         security set-key-partition-list -S apple-tool:,apple: -s \
-  #           -k "" build.keychain
-  #         rm certificate.p12
-  #
-  #     - name: Sign and notarize
-  #       env:
-  #         DEVELOPER_ID_APPLICATION: ${{ secrets.DEVELOPER_ID_APPLICATION }}
-  #         APPLE_ID: ${{ secrets.APPLE_ID }}
-  #         APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-  #         APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-  #       run: |
-  #         chmod +x macos/Scripts/sign_and_notarize.sh
-  #         ./macos/Scripts/sign_and_notarize.sh "build-macos-app/mdkr64.app"
-  #
-  #     - name: Create DMG
-  #       run: |
-  #         chmod +x macos/Scripts/create_dmg.sh
-  #         ./macos/Scripts/create_dmg.sh "build-macos-app/mdkr64.app"
-  #
-  #     - name: Upload to GitHub Release
-  #       uses: softprops/action-gh-release@v2
-  #       with:
-  #         files: build-macos-app/*.dmg
-  #         generate_release_notes: true
+          KEYCHAIN_PATH="$RUNNER_TEMP/mdkr-release.keychain-db"
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
+          APPLE_API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          export APPLE_API_KEY_PATH
+
+          cleanup() {
+            security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
+            rm -f "$CERTIFICATE_PATH" "$APPLE_API_KEY_PATH"
+          }
+          trap cleanup EXIT
+
+          python3 - "$CERTIFICATE_PATH" "$APPLE_API_KEY_PATH" <<'PY'
+          import base64
+          import os
+          import sys
+
+          for variable, path in (
+              ("MACOS_CERTIFICATE_P12_BASE64", sys.argv[1]),
+              ("APPLE_API_PRIVATE_KEY_BASE64", sys.argv[2]),
+          ):
+              with open(path, "wb") as output:
+                  output.write(base64.b64decode(os.environ[variable], validate=True))
+          PY
+          chmod 600 "$CERTIFICATE_PATH" "$APPLE_API_KEY_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -k "$KEYCHAIN_PATH" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+          ./macos/Scripts/sign_and_notarize.sh dist/mdkr64.app
+          ./macos/Scripts/verify_gatekeeper_bundle.sh \
+            --distribution dist/mdkr64.app
+
+          DMG_PATH="dist/golden-balloon-${RELEASE_VERSION}.dmg"
+          ./macos/Scripts/create_dmg.sh dist/mdkr64.app "$DMG_PATH"
+          codesign --force --sign "$DEVELOPER_ID_APPLICATION" \
+            --timestamp "$DMG_PATH"
+          ./macos/Scripts/notarize_artifact.sh "$DMG_PATH"
+          hdiutil verify "$DMG_PATH"
+
+          ./tools/release/stamp_provenance.sh "$DMG_PATH" "$RELEASE_VERSION"
+          shasum -a 256 "$DMG_PATH" > "$DMG_PATH.sha256"
+
+      - name: Upload signed workflow artifact
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
+        with:
+          name: golden-balloon-macos-${{ inputs.version }}
+          path: |
+            dist/golden-balloon-${{ inputs.version }}.dmg
+            dist/golden-balloon-${{ inputs.version }}.dmg.sha256
+            dist/golden-balloon-${{ inputs.version }}.dmg.provenance.json
+          if-no-files-found: error
+
+  publish:
+    name: Publish signed macOS artifact
+    if: ${{ inputs.release_tag != '' }}
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download signed workflow artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: golden-balloon-macos-${{ inputs.version }}
+          path: dist
+
+      - name: Revalidate artifact identity and publish to existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          DMG_PATH="dist/golden-balloon-${RELEASE_VERSION}.dmg"
+          shasum -a 256 -c "${DMG_PATH}.sha256"
+          python3 - "${DMG_PATH}.provenance.json" "$DMG_PATH" <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import sys
+
+          sidecar = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          artifact = pathlib.Path(sys.argv[2])
+          expected = {
+              "artifact": artifact.name,
+              "commit": os.environ["SOURCE_COMMIT"],
+              "platform": "macos",
+              "version": os.environ["RELEASE_VERSION"],
+          }
+          for key, value in expected.items():
+              if sidecar.get(key) != value:
+                  raise SystemExit(f"provenance {key} mismatch")
+          digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+          if sidecar.get("sha256") != digest:
+              raise SystemExit("provenance sha256 mismatch")
+          PY
+          gh release view "$RELEASE_TAG" >/dev/null
+          gh release upload "$RELEASE_TAG" \
+            "$DMG_PATH" "${DMG_PATH}.sha256" "${DMG_PATH}.provenance.json"

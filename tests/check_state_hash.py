@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Authoritative-state hash determinism and first presentation-invariance arms.
 
-Phase 1 of the fidelity architecture (docs/
-FIXED_SIMULATION_HIGH_RATE_PRESENTATION_SPEC_2026-07-28.md §12) rests on one
+The fixed-simulation/high-rate-presentation fidelity work rests on one
 instrument: a per-tick versioned hash of authoritative state (`[SIMHASH]`
-rows, MDKR_STATE_HASH=1). Every later gate — render purity, the
+rows). Every later gate — render purity, the
 presentation-rate matrix, catch-up equivalence — is "this stream is
 identical" between two schedules. This check anchors the instrument:
 
@@ -14,19 +13,16 @@ identical" between two schedules. This check anchors the instrument:
 3. **Positive control:** the `MDKR_RNGSEED=legacy` arm must DIVERGE — the
    hash provably sees the RNG, or the identity assertions above are
    vacuous.
-4. **Field-set control (v2):** the hash must provably read the fields v1
-   could not. See `HASH_VERSION` below.
+4. **Field-set controls (v3):** each protected state family must independently
+   move the hash for exactly one sample, with the archived v1/v2 behavior kept
+   executable as a compatibility check.
 
-This gate runs the **v2** field set (`MDKR_STATE_HASH=2`). v1 covered
-y_rotation ONLY per object, which was a measured blind spot rather than a
-theoretical one: on level 37 a line particle's x/z rotation diverged
-between two runs of the same binary at tick 3378 and v1 could not see it
-until the drift reached y_rotation at 3381 (2a4f281). v2 adds full
-rotation, transform flags, velocity, animFrame, segment/header ids, and
-the whole particle integrator including angularVelocity — see the field
-table in platform/sim_hash.c. v1 stays selectable (`MDKR_STATE_HASH=1`)
-so an archived stream can still be compared against, and it is
-byte-for-byte what it always was.
+This gate runs the **v3** field set (`MDKR_STATE_HASH=3`). v3 retains the
+v2 object/particle integrator coverage and adds authoritative globals,
+progression, racer internals, behavior properties, interactions, model
+animation state, and the object fields formerly excluded as render-owned.
+The exact contract is documented beside the implementation in
+platform/sim_hash.c. v1 and v2 stay selectable for archived comparisons.
 
 Always muted + headless per tests/README.md. Exit 0 = pass.
 """
@@ -47,10 +43,24 @@ SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
 FRAMES = 3600
 # The field set every arm below runs. Promoting this is deliberate: a change
 # here changes what every "byte-identical" claim in this file MEANS.
-HASH_VERSION = "2"
+HASH_VERSION = "3"
 # Where the field-set control flips a bit. Any in-race tick works; this one
 # is late enough that the object list is populated and moving.
 PERTURB_TICK = 2000
+# The scripted route is still in menus at tick 2000 and reaches the race after
+# its final input at 2600. Pin each family to a phase where that target exists;
+# the first stable exhaust particles are live at tick 2640.
+CONTROL_TICKS = {
+    "object": 2000,
+    "particle": 2640,
+    "racer": 3300,
+    "global": 2000,
+    "settings": 2000,
+    "property": 3300,
+    "interaction": 3300,
+    "model": 2000,
+    "render-owned": 2000,
+}
 
 
 def run_arm(binary: Path, rom: Path, label: str, root: Path,
@@ -126,18 +136,33 @@ def main() -> int:
             control = run_arm(binary, rom, "rng-control", root, "gl",
                               "320x240", {"MDKR_RNGSEED": "legacy"},
                               args.timeout, args.verbose)
-            # Field-set control. MDKR_TEST_HASH_PERTURB flips one bit of one
-            # object's x_rotation at the named tick, hashes, and reverts it
-            # before anything else runs, so the SIMULATION is untouched and
-            # only the hash's view of it changes. Run under both versions.
-            perturb = {"MDKR_TEST_HASH_PERTURB": str(PERTURB_TICK)}
-            v2_perturbed = run_arm(binary, rom, "v2-perturb", root, "gl",
-                                   "320x240", perturb, args.timeout,
-                                   args.verbose)
+            # Each control flips one byte only while its hash is computed and
+            # restores it immediately. The v3 stream must move at that tick
+            # only. A missing target or omitted field therefore fails closed.
+            v3_perturbed = {}
+            for family, control_tick in CONTROL_TICKS.items():
+                perturb = {
+                    "MDKR_TEST_HASH_PERTURB":
+                        f"{family}:{control_tick}",
+                }
+                v3_perturbed[family] = run_arm(
+                    binary, rom, f"v3-perturb-{family}", root, "gl",
+                    "320x240", perturb, args.timeout, args.verbose)
+
+            # Archived field-set behavior remains executable. x_rotation is
+            # visible to v2 and intentionally invisible to v1.
+            object_perturb = {
+                "MDKR_TEST_HASH_PERTURB": f"object:{PERTURB_TICK}",
+            }
+            v2_base = run_arm(binary, rom, "v2-base", root, "gl", "320x240",
+                              {}, args.timeout, args.verbose, version="2")
+            v2_perturbed = run_arm(
+                binary, rom, "v2-perturb", root, "gl", "320x240",
+                object_perturb, args.timeout, args.verbose, version="2")
             v1_base = run_arm(binary, rom, "v1-base", root, "gl", "320x240",
                               {}, args.timeout, args.verbose, version="1")
             v1_perturbed = run_arm(binary, rom, "v1-perturb", root, "gl",
-                                   "320x240", perturb, args.timeout,
+                                   "320x240", object_perturb, args.timeout,
                                    args.verbose, version="1")
         except RuntimeError as error:
             print(f"check_state_hash: FAIL\n  - {error}")
@@ -163,11 +188,22 @@ def main() -> int:
             "positive control failed: the legacy-RNG arm produced an "
             "identical stream — the hash cannot see the RNG")
 
-    # Field-set control: v2 must SEE x_rotation and v1 must NOT. Both halves
-    # matter. The v2 half is what stops this gate silently degrading to a
-    # narrower field set than it advertises; the v1 half is the demonstration
-    # that the widening was necessary, kept executable rather than described.
-    v2_diffs = [i for i, (a, b) in enumerate(zip(base, v2_perturbed))
+    # v3 must independently see every advertised state family. Comparing the
+    # full stream also proves the byte flip was restored before the next tick.
+    for family, perturbed in v3_perturbed.items():
+        control_tick = CONTROL_TICKS[family]
+        diffs = [i for i, (a, b) in enumerate(zip(base, perturbed))
+                 if a != b]
+        if diffs != [control_tick]:
+            failures.append(
+                f"v3 {family} field-set control changed ticks "
+                f"{diffs[:8] or 'NONE'} — expected exactly "
+                f"[{control_tick}]. No difference means that family is not "
+                "covered (or the route supplied no target); later differences "
+                "mean the test mutation was not restored cleanly")
+
+    # The archived widening remains true: v2 sees x_rotation and v1 does not.
+    v2_diffs = [i for i, (a, b) in enumerate(zip(v2_base, v2_perturbed))
                 if a != b]
     if v2_diffs != [PERTURB_TICK]:
         failures.append(
@@ -250,8 +286,10 @@ def main() -> int:
         f"check_state_hash: PASS (v{HASH_VERSION} field set) — "
         f"{FRAMES} ticks byte-identical across rerun, 640x480, and WebGPU; "
         f"levels 41, 37 and 11 self-identical across two processes each; "
-        f"legacy-RNG control diverges at tick {diverge}; field-set control "
-        f"moves v2 at tick {PERTURB_TICK} only and leaves v1 untouched")
+        f"legacy-RNG control diverges at tick {diverge}; all "
+        f"{len(CONTROL_TICKS)} v3 field-family controls move only their "
+        "selected live-target tick; archived v2 sees x_rotation and v1 does "
+        "not")
     return 0
 
 

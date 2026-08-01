@@ -12,8 +12,8 @@ intangible, and the player could drive through a shut door into a world they had
 not earned: `obj_loop_exit()` has no door check by design (a 253-unit sphere plus
 a half-plane through the exit's own origin), so once past the leaf it warps you.
 
-Measured before the fix, on a clean EEPROM with **zero balloons**: the kart reached
-the Dino Domain lobby at frame ~6589 and *Ancient Lake* at ~6890, with
+Measured with the legacy arm, on a clean EEPROM with **zero balloons**: the kart
+reaches the Dino Domain lobby at frame ~6731 and *Ancient Lake* at ~7017, with
 `balloons_total=0` and both gating doors reporting `open=0`.
 
 This check is the reason the fix is falsifiable.  Its failure mode is **silence** —
@@ -52,16 +52,20 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 from harness_utils import resolve_binary
 
 SCRIPT = "tests/input_scripts/adventure_hub_drive.txt"
 FRAMES = 9000
 
-# Waypoints around Taj (who wedges the kart on contact), then the hub's Dino
-# Domain exit, then the lobby's Ancient Lake exit.  Taken verbatim from the
-# reproducer recorded in docs/OPEN_ITEMS.md wave "advloop".
-ROUTE = "0:200,500:-1004,946:E12;12:E5"
+# Waypoints around Taj (who wedges the kart on contact), then a center-line
+# approach to the hub's two Dino Domain door leaves before targeting the exit.
+# The older advloop reproducer omitted (-3336,2111); its diagonal approach could
+# latch obj_loop_exit() from the near-side corner without touching either leaf,
+# making a zero-hit "blocked" result vacuous.  The centered approach hits the
+# closed mesh in the fixed arm and crosses the same mesh in the legacy arm.
+ROUTE = "0:200,500:-1004,946:-3336,2111:E12;12:E5"
 
 HUB_LEVEL = 0        # Timber's Island — must always be reached
 LOBBY_LEVEL = 12     # Dino Domain lobby — behind a 1-balloon door
@@ -71,7 +75,7 @@ LEVEL_RE = re.compile(r"level_load: levelId=(\d+) .*@frame~(\d+)")
 HITS_RE = re.compile(r"\[OBJCOLL\] objectmodel_collision_hits=(\d+)")
 
 
-def run(binary: str, rom: str, legacy: bool, verbose: bool):
+def run(binary: str, rom: str, save_dir: str, legacy: bool, verbose: bool):
     """One arm.  Returns (levels_reached, collision_hits, returncode, output)."""
     env = dict(
         os.environ,
@@ -80,6 +84,7 @@ def run(binary: str, rom: str, legacy: bool, verbose: bool):
         MDKR_SYNTH_FIELDS="1",
         MDKR_TRACE="1",
         MDKR_DRIVE_ROUTE=ROUTE,
+        MDKR_SAVE_DIR=save_dir,
     )
     if legacy:
         env["MDKR_OBJCOLL"] = "legacy"
@@ -126,17 +131,14 @@ def main() -> int:
             print(f"FAIL: missing {path}", file=sys.stderr)
             return 1
 
-    # A recorded time changes the menu route, so both arms start from a clean
-    # EEPROM -- and, more importantly, from ZERO balloons, which is the whole
-    # premise of the test.
-    for save in ("save/eeprom.bin",):
-        if os.path.exists(save):
-            os.remove(save)
-
     failures: list[str] = []
 
     # ---- arm 1: the fix ---------------------------------------------------
-    levels, hits, rc, out = run(binary, args.rom, legacy=False, verbose=args.verbose)
+    # Private save directories guarantee zero balloons without reading or
+    # deleting the player's repository-local EEPROM.
+    with tempfile.TemporaryDirectory(prefix="mdkr-door-fixed-") as save_dir:
+        levels, hits, rc, out = run(
+            binary, args.rom, save_dir, legacy=False, verbose=args.verbose)
     check_crash("fixed", rc, out, failures)
 
     if HUB_LEVEL not in levels:
@@ -160,18 +162,17 @@ def main() -> int:
                         "never touched a collision-meshed object -- assertion 1 is "
                         "vacuous")
 
-    if os.path.exists("save/eeprom.bin"):
-        os.remove("save/eeprom.bin")
-
     # ---- arm 2: positive control ------------------------------------------
-    l2, h2, rc2, out2 = run(binary, args.rom, legacy=True, verbose=args.verbose)
+    with tempfile.TemporaryDirectory(prefix="mdkr-door-legacy-") as save_dir:
+        l2, h2, rc2, out2 = run(
+            binary, args.rom, save_dir, legacy=True, verbose=args.verbose)
     check_crash("legacy", rc2, out2, failures)
 
     if LOBBY_LEVEL not in l2 or RACE_LEVEL not in l2:
         failures.append(
             f"[legacy] POSITIVE CONTROL BROKEN: with collision stubbed the route was "
             f"expected to reach levelIds {LOBBY_LEVEL} and {RACE_LEVEL} (measured "
-            f"~6589 and ~6890 before the fix) but reached {sorted(l2)}. Either "
+            f"~6731 and ~7017) but reached {sorted(l2)}. Either "
             f"MDKR_OBJCOLL=legacy no longer restores the old behaviour, or the route "
             f"drifted -- until this passes, the fixed arm proves nothing.")
     if h2:

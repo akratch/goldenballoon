@@ -315,7 +315,8 @@ void audioStopThread(void) {
  * the mixer.h macro overrides of abi.h, runs the whole libultra synthesis
  * chain (sequence + sound players -> ADPCM decode -> resample -> envmix ->
  * reverb) directly into the output buffer through platform/mixer.c. Driven
- * once per rendered frame by the platform pump (platform/audi_port_dkr.c). */
+ * once per independently due audio quantum by the platform service
+ * (platform/audi_port_dkr.c). */
 s16 *amAudioSynthFrame(s32 frameSamples) {
     s16 *outBuf;
 

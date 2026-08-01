@@ -27,9 +27,12 @@
 # Remaster effects: Off -> On (restart staged).
 2400 DOWN 4
 2460 RIGHT 4
-# Accessibility: toggle subtitles.
+# World shadows: Full -> Soft (live; the Remastered preset landed on Full).
 2520 DOWN 4
 2580 RIGHT 4
-# Return to root options.
+# Accessibility: toggle subtitles.
 2640 DOWN 4
-2700 B 4
+2700 RIGHT 4
+# Return to root options.
+2760 DOWN 4
+2820 B 4

@@ -332,13 +332,25 @@ static void test_precedence(void) {
                mdkr_video_config_set(
                    &cfg, MDKR_VIDEO_FRAME_LIMIT, "60",
                    MDKR_VIDEO_SOURCE_CLI), 1);
-    expect_int("frame limit rejects 120 -- slice 2 does not support it",
+    expect_int("frame limit accepts 120",
                mdkr_video_config_set(
                    &cfg, MDKR_VIDEO_FRAME_LIMIT, "120",
-                   MDKR_VIDEO_SOURCE_CLI), 0);
-    expect_int("frame limit rejects uncapped",
+                   MDKR_VIDEO_SOURCE_CLI), 1);
+    expect_int("frame limit accepts display",
+               mdkr_video_config_set(
+                   &cfg, MDKR_VIDEO_FRAME_LIMIT, "display",
+                   MDKR_VIDEO_SOURCE_CLI), 1);
+    expect_int("frame limit accepts uncapped",
                mdkr_video_config_set(
                    &cfg, MDKR_VIDEO_FRAME_LIMIT, "uncapped",
+                   MDKR_VIDEO_SOURCE_CLI), 1);
+    expect_int("frame limit rejects a low numeric cap",
+               mdkr_video_config_set(
+                   &cfg, MDKR_VIDEO_FRAME_LIMIT, "29",
+                   MDKR_VIDEO_SOURCE_CLI), 0);
+    expect_int("frame limit rejects a cap above the policy bound",
+               mdkr_video_config_set(
+                   &cfg, MDKR_VIDEO_FRAME_LIMIT, "1001",
                    MDKR_VIDEO_SOURCE_CLI), 0);
     expect_int("motion smoothing accepts interpolate",
                mdkr_video_config_set(

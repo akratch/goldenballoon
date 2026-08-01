@@ -14,8 +14,8 @@ Modeled on mgb64's ROM oracle (`tools/prepare_ares_movement_oracle_build.sh`,
 `rom_oracle_route.py`, `movement_oracle_capture.sh`) but deliberately focused.
 The visual lane has no RDP/game-memory trace: input and frame dumps are keyed on
 the emulator's presented-frame counter. The US 1.1 state-only lane adds one
-compact, version-locked racer record from emulated RDRAM; see
-`ORIGINAL_STATE_ORACLE_2026-07-28.md`.
+compact, version-locked racer record from emulated RDRAM; the current contract
+is implemented by `tests/check_race_state_oracle.py`.
 
 ---
 
@@ -25,6 +25,7 @@ compact, version-locked racer record from emulated RDRAM; see
 |------|------|
 | `tools/prepare_ares_oracle.sh` | clone + patch + build a local instrumented ares |
 | `tools/dkr_oracle_route.py`    | compile ONE route JSON → native input-script + ares injection route + capture marks |
+| `tools/oracle_reference_replay.py` | compile a real-ROM state trace into a fail-closed native update/input replay |
 | `tools/oracle_routes/*.json`   | route specs (schema `mdkr64.oracle.route.v1`) |
 | `tools/run_oracle.sh`          | run a route on BOTH runners, then compare |
 | `tools/compare_frames.py`      | align frames at marks, score similarity, emit report + montage |
@@ -91,6 +92,29 @@ The ares hooks read these env vars (set for you by `run_oracle.sh`):
 | `MDKR64_ARES_DUMP_MARKS`   | comma-separated exact frames to always dump |
 | `MDKR64_ARES_EXIT_AFTER_FRAMES` | self-exit (`_Exit(0)`) after N presented frames |
 | `MDKR64_ARES_STATE_TRACE` | write the local-only US 1.1 numeric state CSV |
+| `MDKR64_ARES_AUDIO_DUMP` | write the ROM's own audio-interface PCM (raw LE s16 stereo) |
+
+### The audio lane
+
+`MDKR64_ARES_AUDIO_DUMP` taps `AI::sample()`, where `data` is the word the ROM
+itself DMA'd to the audio interface. Taking it **there** and not at
+`stream->frame()` is the whole point: it is upstream of ares' float conversion,
+upstream of the analogue-hold decay ares applies on the idle branch, and upstream
+of every host resampler and output driver. What lands in the file is the real
+ROM's synthesiser output at full s16 scale, and it is deterministic for a given
+input route.
+
+Only DMA-active samples are written — the idle decay is an output-stage artefact,
+not something the ROM produced, and including it would bias the level measurement
+the lane exists for. The rate is whatever the ROM programmed into `AI_DACRATE`
+(DKR asks for 22050 Hz; the VI divider makes it 22047), so it is written to a
+`<path>.rate` sidecar rather than assumed by the reader.
+
+Consumed by `tests/check_audio_level_reference.py --reference`, which re-runs the
+port on the same oracle route and reports the port/console RMS ratio whole and
+per band. Measured on `race_state_oracle`: **-0.488 dB** over a 153.21 s aligned
+overlap. Like every other oracle output the capture is ROM-derived and
+**local-only** — never commit it.
 
 Button masks are the standard N64 SI layout (A=0x8000 … C-Right=0x0001),
 identical to the native port's masks, so an injected value lands verbatim.
@@ -178,6 +202,9 @@ tools/run_oracle.sh boot_to_title
 tools/run_oracle.sh title_to_options --ares-timeout 280
 tools/run_oracle.sh race_state_oracle  # reference + default authored arm
 tools/run_oracle.sh race_state_oracle --native-arm shipping_60hz --skip-ares
+# Second stage: reuse the freshly captured real-ROM trace and replay its exact
+# observed update widths/input states in the native diagnostic lane.
+tools/run_oracle.sh race_state_oracle --native-arm reference_replay --skip-ares
 tools/run_oracle.sh boot_to_title --ares-bin /path/to/ares   # explicit binary
 ```
 
@@ -195,16 +222,31 @@ For `race_state_oracle`, no PPMs are created. The additional outputs are:
 ares_state.csv
 native_authored.log
 native_shipping_60hz.log
+native_reference_replay.log
 compare/state_report_race_state_oracle_authored.json
 compare/state_report_race_state_oracle_shipping_60hz.json
+compare/state_report_race_state_oracle_reference_replay.json
 native_saves/   # isolated from the player's normal save directory
 ares_saves/
 ```
 
-The state command is currently expected to return nonzero: both arms complete a
-lap, but the strict state-agreement contract exposes a cadence-sensitive racing
-line difference. Read the report; do not convert that result into an allowed
-failure.
+The Ancient Lake state arms are currently expected to return nonzero. The
+authored and enhanced arms complete a lap, but the strict contract exposes a
+cadence-sensitive open-loop racing line. `reference_replay` is a diagnostic,
+not a product mode: `MDKR_ORACLE_UPDATE_FIELDS` exists only as an environment-
+gated test seam and its schedule must be consumed completely. The replay moves
+the first five-unit position separation from race clock 18 to 767, and matches
+the ROM's checkpoint clocks exactly through checkpoints 0–3 (3, 349, 463,
+707), classifying the early difference as timestep partitioning. Sub-unit
+floating-point drift still grows into a different open-loop line; that strict
+arm remains red rather than hiding it behind a tolerance. Bubbler remains the
+passing gameplay-cadence oracle.
+
+ares samples RDRAM on VI observations while the CPU can begin the next update
+under an unchanged framebuffer. State normalization therefore retains the
+first observation per framebuffer serial, then the last stable observation per
+race clock. Retaining the last observation per serial admits in-flight hybrid
+state (the Ancient Lake control caught a transient 0.05-unit Y write).
 
 The native port dumps **every** frame (1280×960 HiDPI), so `run_oracle.sh`
 prunes to just the mark frames (±3) + `native.dump_every` cadence after the run
@@ -277,7 +319,11 @@ deterministically) is future work.
   32-bit structure offsets must be re-derived before another ROM revision can
   claim state-oracle coverage.
 - The current state lane covers one standard race. Challenge, boss,
-  multiplayer, progression/save, audio, and renderer-state contracts remain.
+  multiplayer, progression/save, and renderer-state contracts remain.
+- The audio lane measures **level**, not identity. Envelope alignment over a
+  multi-tap menu route is coarse (measured correlation +0.76 on
+  `race_state_oracle`), so per-band ratios carry alignment noise and a
+  sample-accurate PCM comparison is not available from it.
 
 ## Hygiene
 

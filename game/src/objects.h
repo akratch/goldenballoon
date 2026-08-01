@@ -336,17 +336,17 @@ void render_object_parts(Object *obj);
 void unset_temp_model_transforms(Object *obj);
 void obj_tick_anims(void);
 #ifdef NATIVE_PORT
-/* Fidelity Phase 2b: the authoritative half of render_3d_model -- object
- * animation, obj->curVertData (read by sphere collision) and the shared-model
- * texture-offset consumption. Called once per authoritative tick, immediately
- * before render_scene. See objects.c and
- * docs/RENDER_MUTATION_CENSUS_2026-07-29.md. */
+/* Fixed-step ownership seams used by the native decoupled presenter. */
+void obj_lod_tick(void);
+void obj_animation_cadence_tick(void);
+/* Authoritative half of render_3d_model: object animation and curVertData,
+ * which sphere collision reads. Called once per fixed tick before rendering. */
 void obj_animate_tick(void);
-/* Fidelity Phase 2b: the authoritative object ORDER -- the gObjPtrList partition
+/* Authoritative object order: the gObjPtrList partition
  * and distance sort render used to do per viewport, plus the obj->distanceToCamera
  * writes the simulation reads. Called once per tick, before obj_animate_tick. */
 void obj_sort_tick(void);
-/* Fidelity Phase 2b: authoritative racer visibility -- the "was drawn" AI timer
+/* Authoritative racer visibility: the "was drawn" AI timer
  * (unk201), evaluated from the logical frusta of every viewport instead of from
  * render admission. Called after obj_sort_tick. */
 void obj_visibility_tick(void);
@@ -423,6 +423,12 @@ Object_Boost *dkr_boost_table(void);
  * gives every racer a zip-pad-strength boost over that frame window. No-op unless
  * the env var is set. See the definition in objects.c and tests/README.md. */
 void dkr_force_boost_hook(Object_Racer *racer);
+
+/* G1 zip-pad boost-magnitude instrument + positive control. Both no-ops unless
+ * their env var is set. See the definitions in objects.c, tests/README.md and
+ * tests/check_boost_magnitude.py. */
+void mdkr_zippad_boost_hook(Object *obj, Object_Racer *racer);
+void mdkr_boost_trace(Object *obj, Object_Racer *racer);
 #else
 #define GET_BOOST_TABLE() ((Object_Boost *) get_misc_asset(ASSET_MISC_20))
 #endif

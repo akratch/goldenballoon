@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "gfx_webgpu_compat.h"   /* dialect seam: webgpu.h/wgpu.h, pump, waits, surface */
 
@@ -36,6 +37,7 @@
 #include "gfx_rendering_api.h"
 #include "gfx_shadow_cascade.h"
 #include "gfx_shadow_frame.h"
+#include "present_sched.h"
 
 /* platform/fast3d/gfx_pc_dkr.c — declared rather than included: gfx_pc_dkr.h
  * pulls in the F3DDKR/gbi headers, which redefine this file's GfxDimensions. */
@@ -88,6 +90,29 @@ static unsigned s_surface_recovery_attempts = 0;
 static bool s_native_recovery_attempted = false;
 static uintptr_t s_next_device_generation = 0;
 static uintptr_t s_active_device_generation = 0;
+
+/* PAC-005: cap CPU-produced WebGPU work independently of swapchain mode.
+ * Immediate presentation must not turn an uncapped host loop into an unbounded
+ * driver queue. Two submitted frames allow CPU/GPU overlap without letting
+ * input latency or retained surface resources grow with runtime. Native waits
+ * for the older completion; browser code never blocks inside the renderer and
+ * instead skips a render attempt until rAF/event-loop completion catches up. */
+#define WGPU_FRAME_IN_FLIGHT_MAX 2u
+static unsigned s_gpu_frames_in_flight;
+static unsigned s_gpu_frames_in_flight_high_water;
+static uint64_t s_gpu_frame_submissions;
+static uint64_t s_gpu_frame_completions;
+static uint64_t s_gpu_surface_presents;
+static uint64_t s_gpu_surface_holds;
+static uint64_t s_gpu_surface_unavailable;
+static uint64_t s_gpu_backpressure_waits;
+static uint64_t s_gpu_backpressure_polls;
+static uint64_t s_gpu_backpressure_skips;
+static uint64_t s_gpu_completion_failures;
+static uint64_t s_gpu_abandoned_completions;
+static uint64_t s_gpu_backpressure_wait_ns;
+static uint64_t s_gpu_first_submit_ns;
+static uint64_t s_gpu_last_submit_ns;
 /* When the app shell owns the device/surface (launcher → game handoff), the
  * engine adopts them and must NOT release them at teardown. False = we created
  * them ourselves (standalone --level boot) and own their lifetime. */
@@ -459,6 +484,149 @@ static void wgpu_runtime_fatal(const char *message) {
     WGPU_COMPAT_REPORT_FAILURE(message);
 }
 
+static uint64_t wgpu_monotonic_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * UINT64_C(1000000000) +
+           (uint64_t)ts.tv_nsec;
+}
+
+static void wgpu_reset_backpressure_stats(void) {
+    s_gpu_frames_in_flight = 0u;
+    s_gpu_frames_in_flight_high_water = 0u;
+    s_gpu_frame_submissions = 0u;
+    s_gpu_frame_completions = 0u;
+    s_gpu_surface_presents = 0u;
+    s_gpu_surface_holds = 0u;
+    s_gpu_surface_unavailable = 0u;
+    s_gpu_backpressure_waits = 0u;
+    s_gpu_backpressure_polls = 0u;
+    s_gpu_backpressure_skips = 0u;
+    s_gpu_completion_failures = 0u;
+    s_gpu_abandoned_completions = 0u;
+    s_gpu_backpressure_wait_ns = 0u;
+    s_gpu_first_submit_ns = 0u;
+    s_gpu_last_submit_ns = 0u;
+}
+
+WGPU_COMPAT_QUEUE_DONE_CALLBACK(wgpu_on_frame_work_done) {
+    const uintptr_t generation = (uintptr_t)userdata;
+    WGPU_COMPAT_QUEUE_DONE_UNUSED();
+    if (generation == 0u || generation != s_active_device_generation) {
+        return;
+    }
+    if (s_gpu_frames_in_flight > 0u) {
+        s_gpu_frames_in_flight--;
+        s_gpu_frame_completions++;
+    } else {
+        s_gpu_completion_failures++;
+    }
+    if (status != WGPUQueueWorkDoneStatus_Success) {
+        s_gpu_completion_failures++;
+        fprintf(stderr,
+                "[webgpu] submitted frame completion failed (status=%d)\n",
+                (int)status);
+        wgpu_runtime_fatal(
+            "The graphics queue could not complete a submitted frame. Reload "
+            "the page to continue from the last persisted save.");
+    }
+}
+
+static bool wgpu_backpressure_wait_below(unsigned limit) {
+    WGPU_COMPAT_QUEUE_POLL(s_instance, s_device);
+    s_gpu_backpressure_polls++;
+    if (s_gpu_frames_in_flight < limit) {
+        return true;
+    }
+    if (!WGPU_COMPAT_QUEUE_CAN_BLOCK) {
+        s_gpu_backpressure_skips++;
+        return false;
+    }
+
+    const uint64_t started = wgpu_monotonic_ns();
+    unsigned stalled = 0u;
+    s_gpu_backpressure_waits++;
+    while (s_gpu_frames_in_flight >= limit && stalled < 8u) {
+        const unsigned before = s_gpu_frames_in_flight;
+        WGPU_COMPAT_QUEUE_BLOCK(s_instance, s_device);
+        WGPU_COMPAT_QUEUE_POLL(s_instance, s_device);
+        s_gpu_backpressure_polls++;
+        stalled = s_gpu_frames_in_flight < before ? 0u : stalled + 1u;
+    }
+    s_gpu_backpressure_wait_ns += wgpu_monotonic_ns() - started;
+    if (s_gpu_frames_in_flight >= limit) {
+        s_gpu_completion_failures++;
+        fprintf(stderr,
+                "[webgpu] frame queue failed to retire below %u in-flight\n",
+                limit);
+        wgpu_runtime_fatal(
+            "The graphics queue stopped completing frames. Reload the page to "
+            "continue from the last persisted save.");
+        return false;
+    }
+    return true;
+}
+
+static void wgpu_track_frame_submission(void) {
+    const uint64_t now = wgpu_monotonic_ns();
+    if (s_gpu_first_submit_ns == 0u) {
+        s_gpu_first_submit_ns = now;
+    }
+    s_gpu_last_submit_ns = now;
+    s_gpu_frame_submissions++;
+    s_gpu_frames_in_flight++;
+    if (s_gpu_frames_in_flight > s_gpu_frames_in_flight_high_water) {
+        s_gpu_frames_in_flight_high_water = s_gpu_frames_in_flight;
+    }
+    WGPU_COMPAT_QUEUE_ON_DONE(
+        s_queue, wgpu_on_frame_work_done,
+        (void *)s_active_device_generation);
+
+    /* Native can wait here, after two frames have been submitted, so the next
+     * game/replay walk starts with at most one older GPU frame. Browser returns
+     * to rAF; its next start_frame performs the nonblocking saturation check. */
+    if (WGPU_COMPAT_QUEUE_CAN_BLOCK &&
+        s_gpu_frames_in_flight >= WGPU_FRAME_IN_FLIGHT_MAX) {
+        (void)wgpu_backpressure_wait_below(WGPU_FRAME_IN_FLIGHT_MAX);
+    }
+}
+
+static void wgpu_abandon_in_flight(void) {
+    s_gpu_abandoned_completions += s_gpu_frames_in_flight;
+    s_gpu_frames_in_flight = 0u;
+}
+
+static void wgpu_report_backpressure(void) {
+    uint64_t rate_millihz = 0u;
+    if (s_gpu_frame_submissions > 1u &&
+        s_gpu_last_submit_ns > s_gpu_first_submit_ns) {
+        const uint64_t elapsed = s_gpu_last_submit_ns - s_gpu_first_submit_ns;
+        const uint64_t intervals = s_gpu_frame_submissions - 1u;
+        rate_millihz = elapsed > 0u &&
+                intervals <= UINT64_MAX / UINT64_C(1000000000000)
+            ? intervals * UINT64_C(1000000000000) / elapsed : 0u;
+    }
+    fprintf(stderr,
+            "[WGPU-BACKPRESSURE] cap=%u submitted=%llu completed=%llu "
+            "presented=%llu held=%llu unavailable=%llu "
+            "inflight=%u highwater=%u waits=%llu polls=%llu skips=%llu "
+            "failures=%llu abandoned=%llu waitns=%llu rateMilliHz=%llu\n",
+            WGPU_FRAME_IN_FLIGHT_MAX,
+            (unsigned long long)s_gpu_frame_submissions,
+            (unsigned long long)s_gpu_frame_completions,
+            (unsigned long long)s_gpu_surface_presents,
+            (unsigned long long)s_gpu_surface_holds,
+            (unsigned long long)s_gpu_surface_unavailable,
+            s_gpu_frames_in_flight, s_gpu_frames_in_flight_high_water,
+            (unsigned long long)s_gpu_backpressure_waits,
+            (unsigned long long)s_gpu_backpressure_polls,
+            (unsigned long long)s_gpu_backpressure_skips,
+            (unsigned long long)s_gpu_completion_failures,
+            (unsigned long long)s_gpu_abandoned_completions,
+            (unsigned long long)s_gpu_backpressure_wait_ns,
+            (unsigned long long)rate_millihz);
+}
+
 static bool wgpu_submit_commands(
         WGPUQueue queue, size_t command_count,
         WGPUCommandBuffer const *commands) {
@@ -692,8 +860,40 @@ static WGPUPresentMode wgpu_choose_present_mode(void) {
     }
     resolved = 1;
     const char *want = getenv("GE007_WEBGPU_PRESENT");
-    if (want == NULL || *want == '\0' || strcmp(want, "fifo") == 0) {
-        return mode;   /* default / explicit FIFO — the byte-identity baseline */
+    const bool diagnostic_override = want != NULL && want[0] != '\0';
+#ifdef __EMSCRIPTEN__
+    if (!diagnostic_override) {
+        /* Browser canvas presentation is owned by rAF/the user agent. Numeric
+         * caps skip rAF opportunities in the host clock; they do not request a
+         * native immediate swapchain the browser cannot expose. */
+        fprintf(stderr,
+                "[PRESENT-MODE] backend=webgpu platform=web requestedPolicy=%s "
+                "effectivePolicy=%s rate=%u requested=fifo effective=fifo "
+                "supported=1 reason=raf-ceiling\n",
+                present_sched_present_requested_policy_name(),
+                present_sched_present_policy_name(),
+                present_sched_present_rate());
+        return mode;
+    }
+#endif
+    if (!diagnostic_override) {
+        if (present_sched_backend_vsync_enabled()) {
+            fprintf(stderr,
+                    "[PRESENT-MODE] backend=webgpu policy=%s rate=%u "
+                    "requested=fifo effective=fifo supported=1\n",
+                    present_sched_present_policy_name(),
+                    present_sched_present_rate());
+            return mode;
+        }
+        want = "immediate";
+    }
+    if (strcmp(want, "fifo") == 0) {
+        fprintf(stderr,
+                "[PRESENT-MODE] backend=webgpu policy=%s rate=%u "
+                "requested=fifo effective=fifo supported=1 override=%d\n",
+                present_sched_present_policy_name(),
+                present_sched_present_rate(), diagnostic_override ? 1 : 0);
+        return mode;
     }
     WGPUPresentMode requested;
     if (strcmp(want, "mailbox") == 0) {
@@ -725,9 +925,20 @@ static WGPUPresentMode wgpu_choose_present_mode(void) {
     wgpuSurfaceCapabilitiesFreeMembers(caps);
     if (advertised) {
         mode = requested;
+        fprintf(stderr,
+                "[PRESENT-MODE] backend=webgpu policy=%s rate=%u "
+                "requested=%s effective=%s supported=1 override=%d\n",
+                present_sched_present_policy_name(),
+                present_sched_present_rate(), want, want,
+                diagnostic_override ? 1 : 0);
     } else {
-        fprintf(stderr, "[webgpu] present mode '%s' not advertised by the surface; "
-                        "using fifo\n", want);
+        fprintf(stderr,
+                "[PRESENT-MODE] backend=webgpu policy=%s rate=%u "
+                "requested=%s effective=fifo supported=0 override=%d "
+                "reason=capability-fallback using fifo\n",
+                present_sched_present_policy_name(),
+                present_sched_present_rate(), want,
+                diagnostic_override ? 1 : 0);
     }
     return mode;
 }
@@ -1052,6 +1263,7 @@ fail:
 static bool wgpu_init(void) {
     s_ready = false;
     s_runtime_status = GFX_RENDERING_UNINITIALIZED;
+    wgpu_reset_backpressure_stats();
     s_surface_recovery_attempts = 0;
     s_native_recovery_attempted = false;
     if (!gfx_webgpu_fault_configure()) {
@@ -1212,6 +1424,13 @@ static void wgpu_start_frame(void) {
             &s_device, WGPUDeviceLostReason_Unknown,
             wgpu_sv("deterministic MDKR_WEBGPU_FAULT injection"),
             (void *)s_active_device_generation, NULL);
+        return;
+    }
+    if (!wgpu_backpressure_wait_below(WGPU_FRAME_IN_FLIGHT_MAX)) {
+        /* Browser: an earlier rAF frame is still occupying both bounded queue
+         * slots. Return without opening an encoder; the scheduler remains
+         * responsive and the next rAF opportunity tries again. Native only
+         * reaches this branch on a queue-completion failure. */
         return;
     }
 
@@ -2373,8 +2592,21 @@ static void wgpu_end_frame(void) {
      * count toward the hold — see s_frame_pending_skips). Native and web
      * --deterministic never store PENDING slots, so the counter is permanently 0
      * there and this block is behavior-neutral for every byte-exact gate. */
-    bool hold_present = false;
-    if (s_frame_pending_skips > 0 &&
+    /*
+     * A smoothed presenter can only draw previous -> current after both ticks
+     * exist. Keep the authoritative real walk in the offscreen scene target;
+     * the host boundary immediately replays it at alpha zero and that replay
+     * is the image allowed onto the surface. Without this hold the sequence is
+     * current, midpoint(previous,current), current: motion visibly reverses on
+     * every intermediate frame. GL already has this separation because its
+     * surface swap lives at the host boundary; WebGPU presents in end_frame,
+     * so it needs the explicit equivalent here.
+     */
+    const bool deferred_tick_present =
+        present_sched_defer_tick_present() &&
+        !gfx_dkr_replay_pass_active();
+    bool hold_present = deferred_tick_present;
+    if (!deferred_tick_present && s_frame_pending_skips > 0 &&
         s_present_hold_streak < WGPU_PRESENT_HOLD_MAX) {
         hold_present = true;
         s_present_hold_streak++;
@@ -2382,10 +2614,13 @@ static void wgpu_end_frame(void) {
         if (s_present_hold_streak > s_present_hold_streak_max) {
             s_present_hold_streak_max = s_present_hold_streak;
         }
-    } else {
+    } else if (!deferred_tick_present) {
         s_present_hold_streak = 0;
     }
     s_frame_pending_skips = 0;
+    if (hold_present) {
+        s_gpu_surface_holds++;
+    }
 
     /* Acquire the window drawable up front: the PERF-008 direct-to-surface path below
      * renders the output filter straight into it, and the offscreen path uses it as
@@ -2437,6 +2672,9 @@ static void wgpu_end_frame(void) {
     bool present_ok = st.texture != NULL &&
         (st.status == WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal ||
          st.status == WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal);
+    if (!hold_present && !present_ok) {
+        s_gpu_surface_unavailable++;
+    }
     if (getenv("MDKR_TEST_VISIBLE_HEADLESS") != NULL) {
         static bool reported_test_surface;
         if (!reported_test_surface) {
@@ -2866,6 +3104,9 @@ static void wgpu_end_frame(void) {
         return;
     }
     bool submitted = wgpu_submit_commands(s_queue, 1, &cmd);
+    if (submitted) {
+        wgpu_track_frame_submission();
+    }
     wgpuCommandBufferRelease(cmd);
     wgpuCommandEncoderRelease(s_encoder);
     s_encoder = NULL;
@@ -2901,6 +3142,7 @@ static void wgpu_end_frame(void) {
          * JS task yields (requestAnimationFrame), and emscripten's binding
          * aborts on an explicit present — so the browser side is a no-op. */
         WGPU_COMPAT_PRESENT(s_surface);
+        s_gpu_surface_presents++;
     }
     if (surface_view != NULL) {
         wgpuTextureViewRelease(surface_view);   /* PERF-008 direct-path render target */
@@ -7662,6 +7904,11 @@ static void wgpu_shutdown(void) {
     const bool shadow_resource_latched =
         s_shadow_resource_perma_fail;
 
+    if (s_gpu_frames_in_flight > 0u) {
+        (void)wgpu_backpressure_wait_below(1u);
+    }
+    wgpu_report_backpressure();
+    wgpu_abandon_in_flight();
     s_ready = false;
     s_runtime_status = GFX_RENDERING_UNINITIALIZED;
     /* Invalidate browser async callback contexts before any ShaderProgram is
@@ -7775,6 +8022,9 @@ bool gfx_webgpu_recover_device(void) {
         return false;
     }
     s_native_recovery_attempted = true;
+    /* The failed generation cannot contribute to the new device's queue cap.
+     * Its late callbacks carry the old generation token and are ignored. */
+    wgpu_abandon_in_flight();
     {
         const char *force_failure =
             getenv("MDKR_TEST_WEBGPU_RECOVERY_FAIL");

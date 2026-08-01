@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
 """Render purity: skipping renders must not change authoritative state.
 
-The fidelity spec's §12.2.1 gate (docs/
-FIXED_SIMULATION_HIGH_RATE_PRESENTATION_SPEC_2026-07-28.md). After the Phase 2
-migrations, rendering is required to be pure: a schedule that skips half of
+After the render-purity migrations, rendering is required to be pure: a
+schedule that skips half of
 all scene renders (`MDKR_TEST_SKIP_RENDER=odd`) must produce a byte-identical
 per-tick `[SIMHASH]` stream.
 
 Arms:
 
-* **A — purity (the assertion):** with `MDKR_TEST_PURE_RENDER=1` (a test-only
-  seed bracket around the whole render, subtracting the two documented
-  blockers: the obj_tex_animate dice and the HUD voice-line dice — see the
-  census's Phase 2 exit state), normal vs skip-odd streams must be
-  BYTE-IDENTICAL over the full route.
-* **B — positive control:** the same pair WITHOUT the bracket must DIVERGE:
-  the residual render-path RNG fires only on rendered ticks, proving this
-  gate can see impurity at all.
+* **A — raw purity (the assertion):** normal vs skip-odd streams must be
+  BYTE-IDENTICAL over the full route. There is no test-only state subtraction.
+* **B — positive control:** `MDKR_TEST_RENDER_IMPURITY=1` injects one
+  authoritative RNG write inside every non-skipped render; normal vs skip-odd
+  must DIVERGE, proving the gate can see an actual render leak.
 * **C — zero-delta replay, authoritative (Phase 3 Wave B slice 1):** with
   `MDKR_TEST_REPLAY_WALK=1` every tick's display list is walked a SECOND time
   through the HLE, with the frozen matrix registry restored and the same
@@ -59,27 +55,13 @@ defects — the skydome object's camera-follow write (hash-visible live
 object), and two 1-ULP add/subtract restore pairs on racers (tumble y,
 carBob xyz). This gate exists precisely to keep finding that class.
 
-Known blind spots, stated rather than discovered later
-------------------------------------------------------
+Coverage ceiling
+----------------
 
-* **The purity hash is v2** (raised from v1 on this branch). `[SIMHASH]`
-  covers the fields `mdkr_sim_hash_frame()` hashes, so arm A can only prove
-  purity *as far as the hash sees*. v1 saw RNG plus position, y_rotation and
-  scale; v2 adds full rotation, transform flags, velocity, animFrame,
-  header/segment ids and the whole particle integrator — see the field table
-  in `platform/sim_hash.c`. That raises the ceiling but does not remove it.
-  Still outside: `unk201`, the held-object lerp, and the census's other
-  non-transform findings, all of which were found by reading rather than by
-  this gate.
-* **Three render-owned object fields are excluded from v2 ON PURPOSE**, each
-  an open census item with a named migration: `distanceToCamera` (finding 3),
-  `opacity` (item 5) and `modelIndex` (item 6). They are not authoritative
-  state today — render writes them — so hashing them into the authoritative
-  stream would assert something false. `MDKR_STATE_HASH=2x` hashes them anyway
-  and is the measurement that keeps this honest: under `2x` arm A goes RED,
-  under `2` it is green, so the gap between this gate's ceiling and true
-  purity is exactly the census's own open list. Re-measure with `2x` after
-  each migration lands; when the list empties, fold them in as v3.
+* The purity hash is v3: globals/progression, object and particle integrators,
+  racer internals, behavior properties, interactions, model animation state,
+  and the former render-owned opacity/LOD/distance fields. Each family has an
+  independent positive control in `check_state_hash.py`.
 * **Arm E's ceiling.** `mtxhit != 0` proves the recomposition ran, not that it
   is still working; see the reject-ratio assertion below for why that needed a
   second bound and what it is set to.
@@ -101,10 +83,9 @@ from harness_utils import resolve_binary
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
 FRAMES = 3600
-# The authoritative field set every arm asserts over. Promoting this from "1"
-# to "2" strengthens every "byte-identical" claim below; see the blind-spot
-# notes in the module docstring for what v2 does and does not reach.
-HASH_VERSION = "2"
+# The authoritative field set every arm asserts over. v1/v2 remain available
+# for archived comparisons, but purity is gated on the complete v3 contract.
+HASH_VERSION = "3"
 # Arm D dumps real images, so it runs a short prefix of the same route. The
 # frames sampled are late enough to be in-race with a moving camera and a
 # populated scene, which is where a not-quite-identical redraw shows up.
@@ -199,28 +180,26 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="mdkr-render-purity-") as tmp:
         root = Path(tmp)
         try:
-            pure = {"MDKR_TEST_PURE_RENDER": "1"}
-            pure_skip = {"MDKR_TEST_PURE_RENDER": "1",
-                         "MDKR_TEST_SKIP_RENDER": "odd"}
             raw_skip = {"MDKR_TEST_SKIP_RENDER": "odd"}
-            replay = {"MDKR_TEST_PURE_RENDER": "1",
-                      "MDKR_TEST_REPLAY_WALK": "1",
+            impure = {"MDKR_TEST_RENDER_IMPURITY": "1"}
+            impure_skip = {"MDKR_TEST_RENDER_IMPURITY": "1",
+                           "MDKR_TEST_SKIP_RENDER": "odd"}
+            replay = {"MDKR_TEST_REPLAY_WALK": "1",
                       "MDKR_PRESENT_SCHED_TRACE": "1"}
-            recompose = {"MDKR_TEST_PURE_RENDER": "1",
-                         "MDKR_TEST_REPLAY_WALK": "recompose",
+            recompose = {"MDKR_TEST_REPLAY_WALK": "recompose",
                          "MDKR_PRESENT_SCHED_TRACE": "1"}
-            arm_a_normal = run_arm(binary, rom, "pure-normal", root,
-                                   pure, args.timeout, args.verbose)
-            arm_a_skip = run_arm(binary, rom, "pure-skip", root,
-                                 pure_skip, args.timeout, args.verbose)
-            arm_b_normal = run_arm(binary, rom, "raw-normal", root,
+            arm_a_normal = run_arm(binary, rom, "raw-normal", root,
                                    {}, args.timeout, args.verbose)
-            arm_b_skip = run_arm(binary, rom, "raw-skip", root,
+            arm_a_skip = run_arm(binary, rom, "raw-skip", root,
                                  raw_skip, args.timeout, args.verbose)
-            arm_c_replay = run_arm(binary, rom, "pure-replay", root,
+            arm_b_normal = run_arm(binary, rom, "impure-normal", root,
+                                   impure, args.timeout, args.verbose)
+            arm_b_skip = run_arm(binary, rom, "impure-skip", root,
+                                 impure_skip, args.timeout, args.verbose)
+            arm_c_replay = run_arm(binary, rom, "raw-replay", root,
                                    replay, args.timeout, args.verbose)
             summary = replay_summary(run_arm.last_output)
-            arm_e_replay = run_arm(binary, rom, "pure-recompose", root,
+            arm_e_replay = run_arm(binary, rom, "raw-recompose", root,
                                    recompose, args.timeout, args.verbose)
             recompose_summary = replay_summary(run_arm.last_output)
             run_arm(binary, rom, "pixel-normal", root, {}, args.timeout,
@@ -377,10 +356,9 @@ def main() -> int:
             "write to authoritative state has been (re)introduced")
     if arm_b_normal == arm_b_skip:
         failures.append(
-            "positive control failed: without the diagnostic bracket the "
-            "streams are identical — either the residual render RNG stopped "
-            "firing on this route (find a new control route) or the gate "
-            "lost its sensitivity")
+            "positive control failed: the explicit in-render RNG write did "
+            "not separate normal and skip schedules — the gate lost its "
+            "sensitivity")
 
     if failures:
         print("check_render_purity: FAIL")
@@ -392,8 +370,8 @@ def main() -> int:
                          if a != b), None)
     print(
         "check_render_purity: PASS — skip-render stream byte-identical over "
-        f"{FRAMES} ticks (render is pure modulo the two documented RNG "
-        f"blockers); positive control diverges at tick {control_tick}")
+        f"{FRAMES} ticks under the v{HASH_VERSION} authority contract; "
+        f"explicit in-render RNG control diverges at tick {control_tick}")
     for note in notes:
         print(f"  - {note}")
     return 0

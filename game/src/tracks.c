@@ -187,10 +187,10 @@ f32 D_8011D0F4;
 Vec4f D_8011D0F8[3];
 #ifdef NATIVE_PORT
 /*
- * The modern lens may need a wider level-geometry frustum, but DKR uses "was
- * rendered" as an AI simulation input (Object_Racer.unk201), and object draws
- * can consume gameplay RNG. Keep the original N64 planes for object admission;
- * only raw track geometry is allowed to use the wider plane set.
+ * The modern lens may need a wider level-geometry frustum, but DKR's logical
+ * object admission still drives Object_Racer.unk201 in the fixed-step
+ * visibility prepass. Keep the original N64 planes for that faithful object
+ * contract; only raw track geometry uses the wider plane set.
  */
 static Vec4f sFaithfulCullPlanes[3];
 #endif
@@ -435,6 +435,10 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
         if (mdkr_test_render_skip_this_tick()) {
             return;
         }
+        {
+            extern void mdkr_test_render_impurity_inject(void);
+            mdkr_test_render_impurity_inject();
+        }
     }
 #endif
 #ifdef NATIVE_PORT
@@ -514,24 +518,7 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
     scroll_particle_textures(tempUpdateRate);
 #endif
     if (gCurrentLevelModel->numberOfAnimatedTextures > 0) {
-#ifdef NATIVE_PORT
-        /* Render-tree RNG bracket 1 of 3.
-         * track_tex_anim reaches rand_range at textures_sprites.c:1891, the one
-         * direct render-path RNG call in the track texture animator. Every draw
-         * therefore advanced gCurrentRNGSeed, which racer AI consumes
-         * (racer.c:338/4335/4539/5219/5223/5415/5872/9019) -- so how many times
-         * the scene was drawn steered the racers. Save/restore makes the
-         * consumption invisible to the authoritative stream (the waves.c:370/384
-         * pattern) without changing what the animator itself does.
-         * gPrevRNGSeed is a single slot, so this must not nest: bracket 1 is
-         * before the viewport loop, brackets 2 and 3 are inside it and disjoint,
-         * and the only other user (waves_alloc, waves.c:370) is load-time. */
-        save_rng_seed();
-#endif
         track_tex_anim(tempUpdateRate);
-#ifdef NATIVE_PORT
-        load_rng_seed();
-#endif
     }
     for (j = gSceneCurrentPlayerID = 0; j < numViewports; gSceneCurrentPlayerID++, j = gSceneCurrentPlayerID) {
         if (gCurrentLevelHeader2 && !gCurrentLevelHeader2 && !gCurrentLevelHeader2) {} // Fakematch
@@ -554,17 +541,7 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
             if (gCurrentLevelHeader2->skyDome == -1) {
                 trackbg_render_flashy();
             } else {
-#ifdef NATIVE_PORT
-                /* Render-tree RNG bracket 2 of 3.
-                 * skydome_render -> render_object -> obj_tex_animate reaches
-                 * rand_range at objects.c:4313. Same reasoning as bracket 1;
-                 * disjoint from brackets 1 and 3. */
-                save_rng_seed();
-#endif
                 skydome_render();
-#ifdef NATIVE_PORT
-                load_rng_seed();
-#endif
             }
         } else {
             mtx_perspective(&gTrackDL, &gTrackMtxPtr);
@@ -578,10 +555,11 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
         // Show weather effects in single player.
         if (gCurrentLevelHeader2->weatherEnable > 0 && numViewports < 2) {
 #ifdef NATIVE_PORT
-            /* Render-tree RNG bracket 3 of 3.
+            /* The weather renderer still uses the ROM RNG internally for
+             * particle placement. Keep those draws invisible to gameplay RNG;
+             * weather_tick owns the authoritative weather integration.
              * weather_update consumes RNG at weather.c:955/956/1000/1001/1068
-             * (rain/snow particle placement and the lightning roll). Same
-             * reasoning as bracket 1; disjoint from brackets 1 and 2. */
+             * (rain/snow particle placement and the lightning roll). */
             save_rng_seed();
 #endif
             weather_update(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, &gTrackTriPtr, tempUpdateRate);
@@ -592,20 +570,9 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
         lensflare_override(cam_get_active_camera());
         lensflare_render(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, cam_get_active_camera());
 #ifdef NATIVE_PORT
-        /* Purity-gate diagnostic: the HUD render half still owns voice-line/SFX
-         * rand_range sites (migrating them needs the hud_main_* dispatch split
-         * first). Under
-         * MDKR_TEST_PURE_RENDER=1 they must not touch the authoritative seed
-         * so the skip-render invariance assertion can run. Not nested with
-         * any other bracket (object rendering is long finished here). */
-        {
-            extern int mdkr_test_pure_render_enabled(void);
-            int pure = mdkr_test_pure_render_enabled();
-            if (pure) save_rng_seed();
-            hud_render_player(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, get_racer_object_by_port(gSceneCurrentPlayerID),
-                              updateRate);
-            if (pure) load_rng_seed();
-        }
+        hud_render_player(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr,
+                          get_racer_object_by_port(gSceneCurrentPlayerID),
+                          updateRate);
 #else
         hud_render_player(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, get_racer_object_by_port(gSceneCurrentPlayerID),
                           updateRate);
@@ -2283,10 +2250,9 @@ void scene_visibility_prepare_viewport(s32 viewportIndex, s32 numViewports, s32 
  *
  * check_if_in_draw_range() is still called exactly ONCE, and still only for an
  * object some pass would admit, preserving the "one call per object per
- * viewport" property this predicate has always had. It writes obj->opacity as a
- * side effect (still render-owned, not migrated yet); render recomputes the identical
- * value from the identical camera moments later, and no simulation reader runs
- * in between, so the duplicate write stays invisible.
+ * viewport" property this predicate has always had. The tick commits its opacity
+ * result; render calls check_if_in_draw_range_render() and retains the identical
+ * per-viewport value as a draw-local override.
  */
 s32 scene_object_admitted(Object *obj) {
     s32 objFlags;
@@ -2358,6 +2324,26 @@ static f32 sSceneDrawDistance[SCENE_DRAW_ORDER_MAX];
  * itself moves into the tick. */
 f32 gSceneDrawDistance;
 s32 gSceneDrawDistanceValid;
+static const Object *sSceneRenderOpacityObject;
+static s32 sSceneRenderOpacity;
+
+s32 scene_object_render_opacity(const Object *obj) {
+    if (sSceneRenderOpacityObject == obj) {
+        return sSceneRenderOpacity;
+    }
+    return obj->opacity;
+}
+
+static void scene_render_opacity_begin(const Object *obj, s32 opacity) {
+    sSceneRenderOpacityObject = obj;
+    sSceneRenderOpacity = opacity;
+}
+
+static void scene_render_opacity_end(const Object *obj) {
+    if (sSceneRenderOpacityObject == obj) {
+        sSceneRenderOpacityObject = NULL;
+    }
+}
 
 /* The distance key sort_objects_by_dist (objects.c:6045) would have written for
  * this object from the ACTIVE camera -- computed, not stored on the object. */
@@ -2443,6 +2429,13 @@ void render_level_geometry_and_objects(void) {
     /* Indexed as segmentID + 1; slot zero represents objects without a segment. */
     u8 objectsVisible[LEVEL_SEGMENT_MAX + 1];
     s32 visible;
+#ifdef NATIVE_PORT
+    s32 renderOpacity;
+#define CHECK_DRAW_RANGE_RENDER(o) \
+    check_if_in_draw_range_render((o), &renderOpacity)
+#else
+#define CHECK_DRAW_RANGE_RENDER(o) check_if_in_draw_range(o)
+#endif
     Object *obj;
 #ifdef NATIVE_PORT
     s32 privateCount;
@@ -2522,10 +2515,16 @@ void render_level_geometry_and_objects(void) {
         if (objFlags & visibleFlags) {
             visible = 0;
         }
-        if (obj != NULL && visible == 255 && check_if_in_draw_range(obj) &&
+        if (obj != NULL && visible == 255 && CHECK_DRAW_RANGE_RENDER(obj) &&
             (objectsVisible[obj->segmentID + 1] || obj->unk34 > 1000.0)) {
+#ifdef NATIVE_PORT
+            scene_render_opacity_begin(obj, renderOpacity);
+#endif
             if (obj->trans.flags & OBJ_FLAGS_PARTICLE) {
                 render_object(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, obj);
+#ifdef NATIVE_PORT
+                scene_render_opacity_end(obj);
+#endif
                 continue;
             } else if (obj->shadow != NULL) {
                 shadow_render(obj, obj->shadow);
@@ -2534,6 +2533,9 @@ void render_level_geometry_and_objects(void) {
             if (obj->waterEffect != NULL && obj->header->flags & HEADER_FLAGS_WATER_EFFECT) {
                 watereffect_render(obj, obj->waterEffect);
             }
+#ifdef NATIVE_PORT
+            scene_render_opacity_end(obj);
+#endif
         }
     }
 
@@ -2553,9 +2555,15 @@ void render_level_geometry_and_objects(void) {
             visible = TRUE;
         }
         if (obj != NULL && visible && objFlags & OBJ_FLAGS_UNK_0100 && objectsVisible[obj->segmentID + 1] &&
-            check_if_in_draw_range(obj)) {
+            CHECK_DRAW_RANGE_RENDER(obj)) {
+#ifdef NATIVE_PORT
+            scene_render_opacity_begin(obj, renderOpacity);
+#endif
             if (obj->trans.flags & OBJ_FLAGS_PARTICLE) {
                 render_object(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, obj);
+#ifdef NATIVE_PORT
+                scene_render_opacity_end(obj);
+#endif
                 continue;
             } else if (obj->shadow != NULL) {
                 shadow_render(obj, obj->shadow);
@@ -2564,6 +2572,9 @@ void render_level_geometry_and_objects(void) {
             if (obj->waterEffect != NULL && obj->header->flags & HEADER_FLAGS_WATER_EFFECT) {
                 watereffect_render(obj, obj->waterEffect);
             }
+#ifdef NATIVE_PORT
+            scene_render_opacity_end(obj);
+#endif
         }
     }
 
@@ -2604,7 +2615,10 @@ void render_level_geometry_and_objects(void) {
         if (obj->behaviorId == BHV_RACER && visible >= 255) {
             visible = 0;
         }
-        if (obj != NULL && visible < 255 && objectsVisible[obj->segmentID + 1] && check_if_in_draw_range(obj)) {
+        if (obj != NULL && visible < 255 && objectsVisible[obj->segmentID + 1] && CHECK_DRAW_RANGE_RENDER(obj)) {
+#ifdef NATIVE_PORT
+            scene_render_opacity_begin(obj, renderOpacity);
+#endif
             if (visible > 0) {
                 if (obj->trans.flags & OBJ_FLAGS_PARTICLE) {
                     render_object(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, obj);
@@ -2622,6 +2636,9 @@ void render_level_geometry_and_objects(void) {
                 render_racer_shield(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, obj);
                 render_racer_magnet(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, obj);
             }
+#ifdef NATIVE_PORT
+            scene_render_opacity_end(obj);
+#endif
         }
     }
 
@@ -2635,6 +2652,7 @@ void render_level_geometry_and_objects(void) {
         void_check(segmentIds, numberOfSegments, get_current_viewport());
     }
     gAntiAliasing = FALSE;
+#undef CHECK_DRAW_RANGE_RENDER
 }
 
 /**
@@ -3306,7 +3324,7 @@ s32 block_visible(LevelModelSegmentBoundingBox *bb) {
  * At the edge of its view distance, it will set its alpha based on distance, giving it a fade in or out effect.
  * Objects in range return true, objects out of range return false.
  */
-s32 check_if_in_draw_range(Object *obj) {
+static s32 check_if_in_draw_range_impl(Object *obj, s32 *outOpacity) {
     f32 w;
     f32 y;
     f32 fadeDist;
@@ -3350,11 +3368,11 @@ s32 check_if_in_draw_range(Object *obj) {
         switch (obj->behaviorId) {
             case BHV_RACER:
                 racer = obj->racer;
-                obj->opacity = ((racer->transparency + 1) * alpha) >> 8;
+                *outOpacity = ((racer->transparency + 1) * alpha) >> 8;
                 break;
             case BHV_TIMETRIAL_GHOST: // Ghost Object?
                 racer = obj->racer;
-                obj->opacity = racer->transparency;
+                *outOpacity = racer->transparency;
                 break;
             case BHV_ANIMATED_OBJECT: // Cutscene object?
             case BHV_CAMERA_ANIMATION:
@@ -3365,24 +3383,24 @@ s32 check_if_in_draw_range(Object *obj) {
             case BHV_HIT_TESTER_2:      // animated objects?
             case BHV_ANIMATED_OBJECT_2: // space ships
                 animatedObj = obj->animatedObject;
-                obj->opacity = animatedObj->unk42;
+                *outOpacity = animatedObj->unk42;
                 break;
             case BHV_PARK_WARDEN:
             case BHV_GOLDEN_BALLOON:
             case BHV_PARK_WARDEN_2: // GBParkwarden
+                *outOpacity = obj->opacity;
                 break;
             default:
-                obj->opacity = alpha;
+                *outOpacity = alpha;
                 break;
         }
         for (i = 0; i < 3; i++) {
 #ifdef NATIVE_PORT
             /*
-             * Keep object admission on the original guard-band frustum. Raw
-             * level geometry is safe to widen, but render_object() is not a
-             * pure draw in DKR: animation, RNG and the AI "onscreen" timer all
-             * feed later simulation. Edge-only objects therefore remain on the
-             * faithful visibility route until those routines are made pure.
+             * Keep object admission on the original guard-band frustum. The
+             * fixed-step visibility prepass uses the same predicate to preserve
+             * the authored AI "onscreen" contract, while the draw itself retains
+             * a viewport-local opacity/LOD result.
              */
             x = sFaithfulCullPlanes[i].x;
             z = sFaithfulCullPlanes[i].z;
@@ -3403,6 +3421,22 @@ s32 check_if_in_draw_range(Object *obj) {
     }
     return TRUE;
 }
+
+s32 check_if_in_draw_range(Object *obj) {
+    s32 opacity = obj->opacity;
+    s32 admitted = check_if_in_draw_range_impl(obj, &opacity);
+    if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE)) {
+        obj->opacity = opacity;
+    }
+    return admitted;
+}
+
+#ifdef NATIVE_PORT
+s32 check_if_in_draw_range_render(Object *obj, s32 *opacity) {
+    *opacity = obj->opacity;
+    return check_if_in_draw_range_impl(obj, opacity);
+}
+#endif
 
 UNUSED void func_8002AC00(s32 arg0, s32 arg1, s32 arg2) {
     s32 index;
@@ -4563,6 +4597,11 @@ void shadow_render(Object *obj, ShadowData *shadow) {
     s32 vtxCount;
     s32 triCount;
     s32 alpha;
+#ifdef NATIVE_PORT
+    s32 objectOpacity = scene_object_render_opacity(obj);
+#else
+    s32 objectOpacity = obj->opacity;
+#endif
 
     if (obj->header->shadowGroup) {
         if (shadow->meshStart != -1 && gDisableShadows == FALSE) {
@@ -4601,16 +4640,16 @@ void shadow_render(Object *obj, ShadowData *shadow) {
 #else
             flags = RENDER_FOG_ACTIVE | RENDER_Z_COMPARE;
 #endif
-            if (alpha == 0 || obj->opacity == 0) {
+            if (alpha == 0 || objectOpacity == 0) {
                 i = shadow->meshEnd; // It'd be easier to just return...
-            } else if (alpha != 255 || obj->opacity != 255) {
+            } else if (alpha != 255 || objectOpacity != 255) {
                 flags = RENDER_FOG_ACTIVE | RENDER_SEMI_TRANSPARENT | RENDER_Z_COMPARE;
 #ifdef NATIVE_PORT
                 if (mdkr_shadow_decal_enabled()) {
                     flags |= RENDER_DECAL;
                 }
 #endif
-                alpha = (obj->opacity * alpha) >> 8;
+                alpha = (objectOpacity * alpha) >> 8;
                 gDPSetPrimColor(gTrackDL++, 0, 0, 255, 255, 255, alpha);
             }
             while (i < shadow->meshEnd) {

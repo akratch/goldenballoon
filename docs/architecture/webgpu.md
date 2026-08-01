@@ -4,7 +4,7 @@
 > vendoring list, the wgpu-native dependency and the CMake wiring below are
 > still an accurate description of how the backend is built.
 
-WebGPU is the default backend; GL stays the debug fallback. It is also the only
+WebGPU is selectable natively; GL is the native throughput default. WebGPU is the only
 in-browser backend, so this was the bridge to the browser build.
 
 ## De-risking (verified)
@@ -41,7 +41,7 @@ optional perf add — defer; on first bring-up let pipelines compile on demand.
   define MDKR_WEBGPU_BACKEND, link the webgpu target. Keep GL + Metal compiled too so
   MDKR_RENDERER can switch at runtime.
 - Backend selector (platform/main_pc.c or a gfx_backend chooser): read MDKR_RENDERER,
-  default webgpu, fall back to gl. Pass the chosen `&gfx_*_api` to gfx_init.
+  default gl, and keep webgpu selectable. Pass the chosen `&gfx_*_api` to gfx_init.
 
 ## Validation — achieved
 
@@ -49,8 +49,19 @@ optional perf add — defer; on first bring-up let pipelines compile on demand.
   identically to GL (dump frames both backends, compare — they should match modulo
   minor filtering). 20× crash loop on char-select + race under webgpu = 0 crashes.
 - `MDKR_RENDERER=gl` still works (fallback intact).
+- Native queue production is explicitly bounded. WebGPU registers one
+  completion after each frame submission and allows at most two outstanding;
+  native waits for the older completion, while the browser never blocks inside
+  renderer code and can omit a saturated rAF render attempt. GL interval 0
+  inserts completion fences with the same ceiling (FIFO swap remains its own
+  bound). Both report submission/completion/high-water/wait/rate telemetry.
+- Hidden or minimized native windows stop real display-list walks and retained
+  replay, service input/audio/fixed ticks at authored cadence, then reset
+  presentation history on resume. `check_gpu_backpressure.py` and
+  `check_surface_suspension.py` exercise both production backends.
 
 ## Then → M8 browser
-Once WebGPU is the native default and proven, M8 (docs/architecture/web.md) reuses the
-exact same gfx_webgpu.c under emscripten. The renderer, OS shim (cooperative single
-thread), arena, and dkrptr32 tokens are all already web-safe.
+Once WebGPU had been proven natively, M8 (docs/architecture/web.md) reused the
+exact same gfx_webgpu.c under emscripten. Native now defaults to the faster GL
+path; the renderer, OS shim (cooperative single thread), arena, and dkrptr32
+tokens remain web-safe.

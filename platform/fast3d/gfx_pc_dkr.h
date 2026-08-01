@@ -211,6 +211,12 @@ extern uint64_t gfx_dkr_decal_triangles;
 bool gfx_dkr_replay_walk(
     const GfxShadowReplayViewProjection *overrides, size_t override_count);
 
+/* The fixed-clock alpha additionally rebuilds generation-keyed object roots
+ * from the immutable presentation snapshot pair. */
+bool gfx_dkr_replay_walk_interpolated(
+    const GfxShadowReplayViewProjection *overrides, size_t override_count,
+    uint64_t numerator, uint64_t denominator);
+
 /** True while a replay walk is in progress — the guard every "must not happen
  *  twice per tick" side effect in the walk is gated on. */
 bool gfx_dkr_replay_pass_active(void);
@@ -264,6 +270,10 @@ uint64_t gfx_dkr_shadow_stale_tenant_count(void);
 void gfx_dkr_replay_get_stats(
     uint64_t *walks, uint64_t *matrix_hits, uint64_t *matrix_misses,
     uint64_t *matrix_rejects, uint64_t *real_walks);
+void gfx_dkr_replay_get_object_stats(uint64_t *hits, uint64_t *holds);
+void gfx_dkr_replay_get_billboard_stats(
+    uint64_t *matrix_hits, uint64_t *matrix_holds,
+    uint64_t *vertex_hits, uint64_t *vertex_holds);
 
 /**
  * Recomposition-tolerance evidence (Phase 3 Wave B, §12.4).

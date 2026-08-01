@@ -7,6 +7,38 @@
 > trap exists, and retractions are recorded in place rather than removed.
 
 
+## PARTIALLY CLOSED: native SDL sink had no ROM-free live qualification
+
+Every game-audio check deliberately ran with `--headless-frames` and
+`MDKR_AUDIO=0`. That is the correct copyright/CI boundary and fully exercises
+synthesis, but it left the native queue plumbing inferred: no automated test
+opened the SDL device, observed its queue drain, or proved pause and clear.
+The queue-size controller was private to `audi_port_dkr.c`, so a unit test could
+only have copied the algorithm instead of qualifying production code.
+
+The controller now lives in `platform/audio_queue_controller.c` and the game,
+browser worklet path, deterministic unit, and SDL probe all call that one
+implementation. The pure `audio_queue_controller` CTest simulates 20 seconds
+at each of 30, 60, 120, 144, 240 and 1000 Hz; requires exact production/drain
+conservation and a queue below three target blocks; and covers counter wrap,
+16-sample alignment, synth capacity, zero counter rate, first refill and a
+one-second stall guard. Headless calls remain host-time independent.
+
+`audio_sink_contract` then opens SDL queue mode using silence—not ROM PCM—with
+the production 22050 Hz/stereo/s16 request. CI pins `SDL_AUDIODRIVER=dummy` and
+requires exact obtained format, active drain, no enqueue failure or stall
+guard, bounded queue occupancy, pause stability and explicit clear. The same
+binary passed for five seconds against the workstation's physical CoreAudio
+default: 476 controller calls, 214 observed application-queue drains, and a
+1,193-sample-frame high-water. A 1,000-tick pre/post extraction headless PCM
+capture also remained byte-identical (`bf2c44b9...97b7f1`).
+
+This closes the production-controller and available-macOS SDL plumbing gap.
+It does **not** close the hidden device-buffer half: SDL exposes application
+queue bytes, not hardware underrun counters, and silence cannot prove speaker
+output or DAC drift. Audible or loopback game-audio qualification on macOS,
+Windows and Linux therefore remains in the physical release matrix.
+
 ## FIXED: RAW16 bass was decoded as host-endian noise — wave "raw16"
 
 **Report (playtest log, ordinary play):** the bass sounded garbled, buzzy, or like the
@@ -158,12 +190,12 @@ synthesis. Wiring:
   NATIVE_PORT (1 edit) guarantees the `#undef`+redefine of the `a*` macros wins in
   every synth TU regardless of its include order — cleaner than a `-include` (which
   lands BEFORE the TU's own `<libaudio.h>` → `<mbi.h>` → `<abi.h>` re-defines them).
-- **Per-frame pump:** the audio thread (__amMain) never runs in the cooperative
+- **Independent audio-time service:** the audio thread (__amMain) never runs in the cooperative
   model, so amAudioSynthFrame() (audiomgr.c) reproduces __amHandleFrameMsg's core
   (__clearAudioDMA + alAudioFrame straight into an arena PCM buffer) and
-  dkr_audio_pump() (platform/audi_port_dkr.c) drives it once per rendered frame
-  from the stubs_dkr.c video-queue frame boundary (right after
-  platform_frame_sync, so it doesn't inflate the paced frame time). Frame sizing:
+  dkr_audio_service_tick() (platform/audi_port_dkr.c) consumes at most one due
+  quantum after each ordered game tick. Host time is credited at real presentation
+  boundaries, so presentation count cannot create PCM. Frame sizing:
   fixed frameSize headless (deterministic dump), host-counter occupancy controller
   windowed.
 - **Host out:** SDL2 queue-mode device @ OUTPUT_RATE(22050) stereo s16
@@ -326,3 +358,151 @@ synthesis. Wiring:
   ~1200 frames are silent (boot logos); the interactive menus + race produce
   audio. Whether the title-screen attract loop should self-start music without
   input is unverified (needs a reference); menu SFX + race audio are confirmed.
+
+## MEASURED: absolute output level vs the real ROM — port is −0.49 dB
+
+**The gap this closes.** Every audio gate in this tree was scale-blind.
+`check_audio_output.py` asserts a *floor* on RMS and a *ceiling* on saturation, so
+anything between "clearly alive" and "clearly destroyed" passed; its tempo, stereo and
+spectral-change assertions are ratios and correlations, which a flat gain leaves
+exactly unchanged. `check_raw16_audio.py` compares two arms of the same build.
+`[EVTQ]` telemetry counts events; the resource-plateau `voicePeak` law counts voices.
+The clean-room engine's "within 0.5 dB of the pre-swap baseline" was a **port-vs-port**
+number. Absolute level against the real ROM had never been measured, so a systematic
+loudness bias — one wrong shift, an extra `/2`, a master trim added to stop the
+clipping — would have passed the entire suite.
+
+### A console reference now exists
+
+The ares oracle (`docs/ORACLE.md`) grew an audio lane. `MDKR64_ARES_AUDIO_DUMP` taps
+`AI::sample()` in the instrumented ares, i.e. the exact s16 word the ROM DMA'd to the
+audio interface — upstream of ares' float conversion, upstream of the analogue-hold
+decay on the idle branch, and upstream of every host resampler and output driver. It
+is the real ROM's own synthesiser output at full scale, and it is deterministic for a
+given input route. Only DMA-active samples are written; the idle decay is an
+output-stage artefact and including it would bias exactly the measurement the lane
+exists for. The rate comes out of `AI_DACRATE` (22047 Hz, not the 22050 the ROM asks
+for) and is written to a sidecar rather than assumed.
+
+Both runners were driven down the **same** oracle route, `race_state_oracle` (title →
+menus → Ancient Lake, one player), the port on that route's own native arm
+(`original` cadence, 2 synth fields, 4800 frames), ares for 9505 presented frames.
+
+| | sample-frames | duration | whole RMS | peak | rails |
+|---|---:|---:|---:|---:|---:|
+| **console (ares AI DMA)** | 3 501 190 @ 22047 | 158.81 s | 8317.0 = **−11.910 dBFS** | 32768 | 0.01312 % |
+| **port (same route)** | 3 532 064 @ 22050 | 160.19 s | 7979.9 = **−12.271 dBFS** | 32768 | — |
+
+Envelope-aligned (lag −5.60 s, correlation **+0.7633**) over a **153.21 s** overlap:
+
+```
+RMS console 8302.8 (−11.924 dBFS)   port 7848.9 (−12.413 dBFS)
+port / console = −0.488 dB
+```
+
+Per band, port minus console:
+
+| band | console | port | delta |
+|---|---:|---:|---:|
+| 0–100 Hz | −15.850 | −15.881 | **−0.031** |
+| 100–200 Hz | −17.736 | −19.901 | **−2.165** |
+| 200–400 Hz | −21.029 | −22.119 | −1.090 |
+| 400–800 Hz | −21.154 | −22.238 | −1.084 |
+| 800–1600 Hz | −22.605 | −22.804 | −0.198 |
+| 1600–3200 Hz | −26.665 | −26.410 | +0.254 |
+| 3200–6400 Hz | −29.124 | −28.062 | +1.062 |
+| 6400–11025 Hz | −36.797 | −32.974 | **+3.823** |
+
+**Verdict: there is no systematic loudness bias.** Broadband level agrees to half a
+decibel. What the band table does show is a mild **spectral tilt** — the port is
+~1–2 dB shy through the low-mids and progressively brighter above 1.6 kHz, reaching
++3.8 dB in the top band (which sits at −33 dBFS and contributes ~0.02 dB to total
+RMS). That is a resampler/interpolation character difference between our software
+`aResample` and ares' RSP microcode, not a gain stage; it is recorded here as an open
+observation and is **not** claimed to be resolved.
+
+### Gain-staging audit — every stage checked against the SGI reference, zero discrepancies
+
+Done independently of the measurement, against the decompiled libultra audio sources
+and the DKR decomp, stage by stage. Nothing was copied; this is a numeric equivalence
+audit.
+
+| stage | port | reference | verdict |
+|---|---|---|---|
+| pan / fx-mix law | `native_eqpower_at()` computes `cos(πi/254)·32767` | `env.c`'s 128-entry `eqpower[]` literal | **all 128 entries bit-identical**, max abs diff 0 |
+| per-voice note gain | `__vsVol`: `(tremelo·velocity·envGain)>>6`, `(sampleVolume·seqp->vol·chanVol)>>14`, product `>>15` | `seqplayer.c __vsVol` | identical shift-for-shift |
+| envelope volume map | applied **linearly** | `fVol = (fVol+fVol)/2` — the vestigial identity | unity either way |
+| envelope targets | `(volume·eqpower[pan])>>15`, mirrored index for R | `env.c:146-148, 175-177, 395-399` | identical |
+| dry/wet split | `eqpower[fxMix]` / `eqpower[127−fxMix]` | `env.c:135-136, 224-225` | identical |
+| envelope rate | `native_env_rate`: `((tgt−vol)/count)·8`, truncate, low word from the fraction | `_getRate` | same result; port uses `f32` where SGI used `f64`, a sub-LSB rate difference, not a level one |
+| aux bus | clear + sum sources, no gain | `alAuxBusPull` | identical |
+| **master bus** | `aMix(0x7fff, AUX_L→MAIN_L)` and R, per source | `mainbus.c:41-42` | identical |
+| reverb input fold | `aMix(0xda83, AUX_L→in)`, `aMix(0x5a82, AUX_R→in)` | `reverb.c:95-96` | byte-identical constants |
+| reverb coefficients | `ffcoef`/`fbcoef`/`gain` from the ROM's `AL_FX_CUSTOM` parameter asset (`ASSET_AUDIO_8`) | same asset, same `fxType[0]` | the port carries **no** built-in preset table to get wrong |
+| RSP op emulation | envmixer `dst += (in·gain)>>15` with `gain = (vol·voldry + 0x4000)>>15`; `aMix` = `((out·0x7fff + in·gain) + 0x4000)>>15`; resampler `(in·tbl + 0x4000)>>15`; pole filter Q2.14 | aspMain | standard forms |
+| final s16 | `mixerSaveBuffer` is a `memcpy`; the dump/sink copy verbatim | `alSavePull` → `aInterleave` + `aSaveBuffer`, no scaling | unity |
+
+**No `/2`, `>>1`, or float scale exists anywhere in the port's chain that the reference
+does not also have.** The only non-unity factor found is `aMix`'s `0x7fff/0x8000` on
+the destination — **−0.000265 dB** per pass, applied twice on the master bus, i.e.
+−0.00053 dB total. It is faithful: the RSP does the same thing.
+
+So the −0.49 dB is not a gain-stage error. It is what two different implementations of
+the same synthesiser produce over 153 s of not-quite-identically-timed program
+material.
+
+### The gate: `tests/check_audio_level_reference.py`
+
+Registered in `tools/run_checks.py` as `audio_level_reference`; full assertion table in
+[`tests/README.md`](../../tests/README.md). Frozen port-side baseline on the
+`race_drive_time_trial.txt` 4300-frame route (3 164 064 sample-frames, 143.49 s):
+
+- whole RMS 7222.6 = **−13.135 dBFS**; L −13.120, R −13.150
+- sample peak 32768 (0.000 dBFS), **crest 13.135 dB**, rails 0.06504 %
+- engine `mainbus clip` 4109/6328128 = 0.06493 %, worst pre-clamp 35784 = **+0.76 dBFS**
+- true peak (4x oversampled) **L +1.002 / R +2.045 dBFS**
+- 8 absolute band RMS values and 15 ten-second slice RMS values, all recorded
+
+Crest factor is deliberately part of the frozen set: the program already touches full
+scale, so a build that got **louder** cannot raise its peak — it closes the crest
+instead. Under the +3 dB control the peak is bit-identical at 32768 while the crest
+falls 2.8 dB.
+
+**Both directions, engine-level.** `MDKR_AUDIO_TEST_GAIN_DB` scales the synthesised PCM
+inside `dkr_audio_service_tick()` — before the engine's own RMS accounting, before the dump,
+before the sink. It **refuses to act whenever a host output device is open**, so it is
+file-domain only and can never make sound; with the variable unset the capture is
+byte-identical to a build compiled without the seam (verified by `cmp`).
+
+| arm | whole RMS | crest | rails | port/console | result |
+|---|---|---|---|---|---|
+| reference | −13.135 dBFS | 13.135 dB | 0.06504 % | −0.488 dB | PASS |
+| `--control gain+3` | −10.329 (+2.806) | 10.329 dB | 1.09181 % | **+2.309 dB** | FAIL ×28, exit 1 |
+| `--control gain-3` | −16.135 (−3.000) | 13.135 dB | 0.00000 % | **−3.488 dB** | FAIL ×28, exit 1 |
+
+Four signal-level controls (±3.0 and ±1.5 dB applied in memory) also run on every
+invocation and the check fails if any of them passes. The ±1.5 pair is there so the
+band cannot quietly become a rubber ruler.
+
+### What this still does not settle
+
+- **The reference is an emulator, not silicon.** ares' RSP audio implementation is an
+  implementation. It is the same reference this repo already trusts for video and
+  racer state, and it is enormously better than nothing, but a hardware line-out
+  capture would be a stronger reference and none was obtainable here.
+- **Alignment is coarse.** The two runners do not hold frame-precise alignment through
+  a multi-tap menu route (`docs/ORACLE.md` limitation 3); the aligned overlap is the
+  same *program* but not the same *instants*, correlation +0.76. That is why the
+  console tolerance is ±1.5 dB broadband / ±6 dB per band rather than something tight,
+  and why the per-band deltas above should be read as a tilt, not as calibrated
+  numbers.
+- **The console capture is ROM-derived and cannot be committed**, so the `--reference`
+  lane is opt-in and the registered gate runs the frozen-baseline half only. A CI run
+  proves the port has not *drifted*; it does not re-prove absolute correctness.
+- **Nothing here touches the host sinks.** No device is opened, so the SDL queue path
+  and the browser AudioWorklet's own level handling remain unmeasured.
+- **What would close the remaining gap:** a real N64 line-out capture of the same
+  route, digitised at known gain, to replace the emulator reference; and a
+  sample-accurate route (single deterministic tap, no multi-screen menu drift) so the
+  per-band comparison stops carrying alignment noise and the spectral tilt above can be
+  attributed rather than merely observed.
