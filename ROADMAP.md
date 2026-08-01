@@ -159,11 +159,18 @@ not an active release feature.
 
 ### Windows
 
-**Experimental.** The code is portable and the platform layer has no macOS-only
-assumptions left in it, but there is no Windows CI cell, no Win32 surface bridge
-exercised by any gate, and no measured run on Windows hardware. Anyone building
-there today is the first person to do so. Treat a Windows build as a
-contribution opportunity, not a supported configuration.
+The portable x64 build is supported in 1.0.1. Hosted CI checks the product,
+stock-Windows imports, package shape, ROM-free startup surfaces, and extracted
+archive; the release candidate also passed manual WebGPU gameplay, controller,
+audio, save, and relaunch acceptance on Windows hardware.
+
+The 1.0.2 compatibility backlog is explicit: add user-selectable
+auto/Direct3D-12/Vulkan adapter policy and textual GPU diagnostics; preserve
+adapter/device request failure messages; centralize UTF-8-to-UTF-16 filesystem
+and process operations; add Unicode-path tests and a reviewed application
+manifest; then broaden physical coverage across Intel, AMD, NVIDIA, hybrid-GPU,
+Windows on Arm, and negative VM/RDP configurations. Until the wide-path work
+lands, keep the extracted app and ROM in short, ASCII-only paths.
 
 ### Linux
 

@@ -10,7 +10,12 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ## [Unreleased]
 
-No changes yet.
+### Documentation
+
+- Clarified that Windows WebGPU automatically selects Vulkan or Direct3D 12,
+  documented the 1.0.1 ASCII-path workaround, and recorded explicit backend
+  selection, wide-character filesystem APIs, and a reviewed application
+  manifest for 1.0.2.
 
 ## [1.0.1] — 2026-08-01
 

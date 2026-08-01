@@ -32,11 +32,12 @@ Original mode, and keeps WebGPU as the native default. No game data is included.
   `MDKR_RENDERER=gl` as a diagnostic path, not the default release path.
 - **Windows startup audio and menu timing are restored.** A post-1.0.0 queue
   bound called `wgpuDevicePoll(..., true)` after every second native WebGPU
-  submission, synchronously draining D3D12 on the same cooperative thread that
-  advances gameplay and refills audio. Production now polls completion without
-  blocking and reserves the explicit queue bound for browser/internal replay
-  stress. The final portable candidate passed a real-hardware Windows retest
-  from launcher through intro, character select, gameplay, audio, and relaunch.
+  submission, synchronously draining the native WebGPU queue on the same
+  cooperative thread that advances gameplay and refills audio. Production now
+  polls completion without blocking and reserves the explicit queue bound for
+  browser/internal replay stress. The final portable candidate passed a
+  real-hardware Windows retest from launcher through intro, character select,
+  gameplay, audio, and relaunch.
 - **Numeric and Uncapped frame limits no longer crash the native app.** The
   adopted OpenGL context now initializes its function loader before the pacing
   code can use sync/fence entry points. Real launcher tests exercise both
@@ -149,7 +150,14 @@ its opening-sequence visual-parity issue is open, macOS requires the manual
 first-open approval above, and Linux has less physical-hardware coverage.
 Windows build/package/startup checks are automated, while native GPU gameplay,
 controller, audio, and save acceptance remains a manual gate that passed for
-this candidate. Non-Original frame-limit
+this candidate. On Windows, wgpu-native automatically selects a compatible API
+and may use Vulkan or Direct3D 12; `MDKR_RENDERER` does not force either one.
+Windows 1.0.1 also requires reasonably short, ASCII-only paths for the extracted
+app and ROM. If the launcher cannot save an otherwise valid ROM choice, launch
+`GoldenBalloon.exe --rom C:\ASCII\game.z64` from Command Prompt and report it.
+Explicit WebGPU API selection, richer diagnostics, wide-character filesystem
+support, and a reviewed application manifest are deferred to 1.0.2.
+Non-Original frame-limit
 choices remain Experimental — Under Construction and may add CPU cost without a
 noticeable benefit; use Original for the proven cadence. See
 [README — Current limitations](README.md#current-limitations) and

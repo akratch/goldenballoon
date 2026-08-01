@@ -35,7 +35,10 @@ boundary is recorded in `platform/fast3d/PROVENANCE.md` and
 
 - Native builds use an exact, SHA-256-verified wgpu-native release selected by
   `cmake/webgpu_artifact.cmake` and fetched through `cmake/webgpu.cmake`. It
-  dispatches to Metal on macOS, D3D12 on Windows, and Vulkan where available.
+  uses Metal on macOS and automatically selects a compatible native API on
+  Windows (normally Vulkan or Direct3D 12) and Linux. `MDKR_RENDERER` selects
+  WebGPU versus the diagnostic OpenGL renderer; it does not force a particular
+  WebGPU-native API.
 - Emscripten builds use the `emdawnwebgpu` port and do not link wgpu-native. The
   compatibility header lets the same `gfx_webgpu.c` compile for both dialects.
 

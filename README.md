@@ -171,9 +171,9 @@ not registered, and each check is validated in both directions. See
 | Bosses, challenges, trophies | All ten boss levels; the full first-boss progression with persistence; every authored challenge course; all four trophy championships | `check_first_boss_progression.py`, `check_challenge_modes.py`, `check_taj_challenges.py`, `check_trophy_series.py` |
 | ROM support | US 1.1 and European 1.1 (byte-identical racing). Other revisions are identified by CRC and refused by name | `check_rom_revision.py`, [docs/ROM_REVISIONS.md](docs/ROM_REVISIONS.md) |
 
-Hosted CI lanes exist (Linux GL/WebGPU, macOS, sanitizers, wasm, clean-room
-guards) but have not yet run green; the first hosted run is blocked on account
-billing, so current claims rest on local runs. See [ROADMAP.md](ROADMAP.md).
+Hosted CI covers Linux GL/WebGPU, macOS, sanitizers, wasm, and clean-room
+guards. Platform claims above still distinguish automated coverage from manual
+physical-hardware acceptance. See [ROADMAP.md](ROADMAP.md).
 
 ## Current limitations
 
@@ -190,6 +190,16 @@ billing, so current claims rest on local runs. See [ROADMAP.md](ROADMAP.md).
   display-server, controller, and OS-version breadth. Windows build/package
   validation is automated; native GPU gameplay, controller, audio, and save
   acceptance remains a manual real-hardware release gate and passed for 1.0.1.
+- On Windows, wgpu-native automatically selects a compatible API and may use
+  Vulkan or Direct3D 12. `MDKR_RENDERER=webgpu|gl` selects the project renderer;
+  it does not force either native API. Explicit selection and richer adapter
+  diagnostics are deferred to 1.0.2.
+- Windows 1.0.1 does not yet handle every non-ASCII or very long filesystem
+  path. Keep the extracted app and ROM in reasonably short, ASCII-only paths.
+  If the launcher cannot save an otherwise valid ROM choice, run
+  `GoldenBalloon.exe --rom C:\ASCII\game.z64` from Command Prompt and report the
+  issue. Wide-character filesystem support and an application manifest are
+  deferred to 1.0.2.
 
 The full deferred scope and the evidence required to close each item are in
 [ROADMAP.md](ROADMAP.md).

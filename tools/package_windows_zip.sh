@@ -109,6 +109,10 @@ Golden Balloon (Windows portable build)
    legally dumped Diddy Kong Racing ROM (.z64, .v64, or .n64).
 3. For command-line use: GoldenBalloon.exe --rom PATH\TO\your.z64
 
+Known 1.0.1 limitation: keep the extracted app and ROM in reasonably short,
+ASCII-only paths. If the launcher cannot save an otherwise valid ROM choice,
+run: GoldenBalloon.exe --rom C:\ASCII\game.z64
+
 This app ships no game data. See README.md for controls and support details.
 EOF
 

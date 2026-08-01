@@ -3,9 +3,10 @@
 # Mirrors mgb64/cmake/webgpu.cmake (the SOURCE this backend was vendored from):
 # consume wgpu-native's per-platform PREBUILT release (no Rust toolchain needed),
 # pinned to an exact version and SHA-256-verified. wgpu-native is the gfx-rs C
-# implementation of the standard webgpu.h C API; it dispatches to Metal on macOS,
-# D3D12 on Windows, Vulkan on Linux. The webgpu.h API is identical to Dawn /
-# emdawnwebgpu, so the SAME gfx_webgpu.c compiles for native and (M8) wasm.
+# implementation of the standard webgpu.h C API. It uses Metal on macOS and
+# automatically selects a compatible native API on Windows (normally Vulkan or
+# Direct3D 12) and Linux. The webgpu.h API is identical to Dawn / emdawnwebgpu,
+# so the SAME gfx_webgpu.c compiles for native and (M8) wasm.
 #
 # Two deltas from mgb64's copy, both offline/robustness only (same version + SHA):
 #   1. If mgb64 already fetched this exact prebuilt on this machine, reuse its
