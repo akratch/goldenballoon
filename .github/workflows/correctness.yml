@@ -42,10 +42,11 @@ jobs:
           if [ "$EVENT_NAME" = "pull_request" ]; then
             python3 tools/check_public_surface.py --range "origin/$BASE_REF..HEAD"
           elif [ "$EVENT_NAME" = "push" ] &&
+               [ "$REF_TYPE" != "tag" ] &&
                [ -n "$BEFORE_SHA" ] &&
                [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
             python3 tools/check_public_surface.py --range "$BEFORE_SHA..$CURRENT_SHA"
-          elif [ "$EVENT_NAME" = "push" ]; then
+          elif [ "$EVENT_NAME" = "push" ] && [ "$REF_TYPE" != "tag" ]; then
             python3 tools/check_public_surface.py \
               --range "origin/$DEFAULT_BRANCH..$CURRENT_SHA"
           fi

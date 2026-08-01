@@ -55,6 +55,18 @@ dist/web/mdkr-save-tools.wasm
 dist/web/*.wasm.map
 dist/web/*.data
 
+# Canonical desktop release outputs. Keep the tracked web shell under dist/web,
+# while allowing provenance to verify a clean source tree after the packagers
+# have created their own untracked artifacts.
+/dist/*.app/
+/dist/*.AppImage
+/dist/*.dmg
+/dist/*.dmg.sha256
+/dist/*.provenance.json
+/dist/*.tar.gz
+/dist/Golden-Balloon-SHA256SUMS-*
+/dist/Golden-Balloon-manifest-*
+
 # transient local worktrees (tool-specific paths belong in .git/info/exclude)
 .worktrees/
 

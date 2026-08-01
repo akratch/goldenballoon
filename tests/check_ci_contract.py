@@ -138,6 +138,7 @@ def validate(source: str) -> list[str]:
         "public ref-tip tree gate": "tools/check_public_surface.py --tree",
         "public pull-request range gate": "origin/$BASE_REF..HEAD",
         "public push range gate": "$BEFORE_SHA..$CURRENT_SHA",
+        "tag push range bypass": '[ "$REF_TYPE" != "tag" ]',
         "new-ref default-branch boundary": "origin/$DEFAULT_BRANCH..$CURRENT_SHA",
         "public-surface positive controls": "tests/test_public_surface.py",
         "native SDK surface gate": "tools/check_native_sdk_surface.py",
@@ -1973,6 +1974,9 @@ def main() -> int:
         ),
         "public push range gate": source.replace(
             "$BEFORE_SHA..$CURRENT_SHA", "removed-push-range", 1
+        ),
+        "tag push range bypass": source.replace(
+            '[ "$REF_TYPE" != "tag" ]', '[ "$REF_TYPE" = "tag" ]'
         ),
         "new-ref default-branch boundary": source.replace(
             "origin/$DEFAULT_BRANCH..$CURRENT_SHA",
