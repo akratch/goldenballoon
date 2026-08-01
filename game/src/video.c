@@ -2,6 +2,9 @@
 #include "memory.h"
 #include "PRinternal/viint.h"
 #include "types.h"
+#ifdef NATIVE_PORT
+#include "platform_os.h"
+#endif
 
 /************ .data ************/
 
@@ -275,9 +278,11 @@ void video_delta_reset(void) {
  * in the unused function, vi_refresh_rate.
  */
 s32 fb_update(s32 mesg) {
+#ifndef NATIVE_PORT
     u8 tempUpdateRate;
 
     tempUpdateRate = LOGIC_60FPS;
+#endif
     if (sBlackScreenTimer) {
         sBlackScreenTimer--;
         if (sBlackScreenTimer == 0) {
@@ -287,6 +292,15 @@ s32 fb_update(s32 mesg) {
     if (mesg != MESG_SKIP_BUFFER_SWAP) {
         fb_swap();
     }
+#ifdef NATIVE_PORT
+    /* The host driver has already converted elapsed time into one fixed-width
+     * ticket. The cooperative queue carries one compatibility notification,
+     * not one message per field; draining/counting it would reintroduce the
+     * variable updateRate policy the driver replaced. */
+    osViSwapBuffer(gVideoLastFramebuffer);
+    osRecvMesg(gVideoMesgQueue, NULL, OS_MESG_BLOCK);
+    return g_viLastFields;
+#else
     while (osRecvMesg(gVideoMesgQueue, NULL, OS_MESG_NOBLOCK) != -1) {
         tempUpdateRate++;
     }
@@ -313,6 +327,7 @@ s32 fb_update(s32 mesg) {
     osViSwapBuffer(gVideoLastFramebuffer);
     osRecvMesg(gVideoMesgQueue, NULL, OS_MESG_BLOCK);
     return tempUpdateRate;
+#endif
 }
 
 void func_8007AB24(u8 arg0) {

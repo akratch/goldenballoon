@@ -9,6 +9,13 @@ in a browser.
 
 This is the first public release.
 
+> **macOS artifact erratum (2026-08-01):** the original 1.0.0 DMG is withdrawn.
+> Rewriting its SDL2 load path invalidated the linker's ad-hoc signature, so
+> Gatekeeper correctly reported the app as damaged. Source and browser builds
+> are unaffected. The replacement macOS release is required to pass the new
+> Developer ID signing, notarization, stapling, mounted-DMG, and Gatekeeper
+> pipeline before publication.
+
 ---
 
 ## Before you start: bring your own ROM

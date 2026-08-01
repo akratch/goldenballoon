@@ -58,7 +58,10 @@ def run_route(
         [
             str(binary),
             "--headless-frames",
-            "2900",
+            # Raised from 2900 with the WORLD SHADOWS row: the fixture gained a
+            # DOWN/RIGHT pair, so RETURN now fires at 2820 and the route still
+            # needs room to land back on menu 12.
+            "3000",
             "--input-script",
             str(script),
             "--rom",
@@ -135,7 +138,14 @@ def run_success(binary: Path, rom: Path, script: Path, renderer: str) -> None:
         require_change(changes, 3, 1, "50 DEG")
         require_change(changes, 4, 2, "ORIGINAL")
         require_change(changes, 5, 2, "OFF")
-        require_change(changes, 6, 1)
+        # WORLD SHADOWS, added at R2 between REMASTER EFFECTS and SUBTITLES.
+        # Result 1 (LIVE), not 2: the world-shadow pass is re-read per frame and
+        # its depth resources are re-acquired from the cascade plan every frame,
+        # so unlike RemasterFX it does not need a relaunch. The wheel starts at
+        # FULL because the Presentation row above landed on REMASTERED, whose
+        # preset pins it there.
+        require_change(changes, 6, 1, "SOFT")
+        require_change(changes, 7, 1)
 
         config_path = root / "mdkr64.ini"
         if not config_path.is_file():
@@ -153,6 +163,9 @@ def run_success(binary: Path, rom: Path, script: Path, renderer: str) -> None:
             "RenderScale=4",
             "Mipmaps=0",
             "GameplayFOV=50",
+            # The one LIVE row added at R2: it applies immediately AND persists,
+            # so both halves of that contract are asserted here and above.
+            "WorldShadows=soft",
         }
         missing = sorted(entry for entry in expected if entry not in text)
         if missing:
@@ -254,11 +267,14 @@ def run_storage_fault(binary: Path, rom: Path, script: Path, renderer: str) -> N
         )
         changes = parse_changes(output)
         failed = [change for change in changes if change[2] == 4]
-        if len(failed) != 7:
+        # Eight since the WORLD SHADOWS row: six video rows, SUPERSAMPLING
+        # twice, and now shadows. Subtitles is the only mutation that does not
+        # go through the ini, so it still succeeds.
+        if len(failed) != 8:
             raise AssertionError(
-                f"storage fault did not fail all seven video transactions: {changes}"
+                f"storage fault did not fail all eight video transactions: {changes}"
             )
-        require_change(changes, 6, 1)
+        require_change(changes, 7, 1)
         if (root / "mdkr64.ini").exists():
             raise AssertionError("storage-fault arm published a partial config")
 

@@ -1,15 +1,12 @@
 /*
- * present_sched.h — the presentation-side view of the authoritative clock
- * (spec §5/§13 Phase 3, design doc §1/§3, Wave B slice 0).
+ * present_sched.h — presentation-side facade for the authoritative host-frame
+ * driver.
  *
- * WHY THIS EXISTS. Today one entry into the video-queue retrace branch
- * (stubs_dkr.c) is, by construction, exactly one authoritative tick AND
- * exactly one present: platform_vi_pace_measure() floors the frame to the
- * cadence minimum (2 source fields under `original`), so the two rates cannot
- * diverge. Wave B's goal is to let the present rate exceed the tick rate. The
- * first step is to grow a second, INDEPENDENT opinion about when a tick is due
- * — a SimSched accumulator — and prove it agrees with the pacer 1:1 before it
- * is ever allowed to drive anything (design §6, slice 0 gate).
+ * WHY THIS EXISTS. SimSched started as a parallel clock opinion and was
+ * promoted only after its exact agreement gate passed. HostFrameDriver now
+ * issues fixed-size game-loop tickets while this facade owns the presentation
+ * controls, replay telemetry, and collapsed-libultra adapter API. Presentation
+ * count may diverge from tick count; ticket width may not.
  *
  * THE CLOCK SOURCE. The accumulator is fed the pacer's own committed field
  * count (g_viLastWallFields), not a second reading of the host clock. Two
@@ -25,8 +22,8 @@
  * accumulator follows the TRUE count: it models wall time, not what the game
  * is told.
  *
- * COST WHEN OFF. Slice 0 is measurement only. Nothing here changes what is
- * presented; the telemetry row is behind one cached getenv.
+ * COST OF TELEMETRY. Trace rows remain behind one cached getenv. The driver and
+ * ticket adapter themselves are shipping clock policy, not diagnostics.
  */
 #ifndef MDKR_PRESENT_SCHED_H
 #define MDKR_PRESENT_SCHED_H
@@ -34,43 +31,72 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "pacing_policy.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* An authoritative tick is two source VI fields (LOGIC_30FPS), matching
- * pacing_policy.c's `original` minimum and sim_sched's 2e9-unit tick. */
-#define PRESENT_SCHED_FIELDS_PER_TICK 2u
-
 /*
- * Advance the parallel accumulator by one measured frame and return the
- * authoritative steps it believes are due (unbounded; the containment loop
- * still performs exactly one). Call once per video-queue branch entry,
- * immediately after platform_vi_pace_measure().
+ * Advance the authoritative driver by one committed host-time sample and
+ * return newly due fixed-step tickets. Ordinary multi-tick debt is retained
+ * until the adapter consumes it; `rebase` retires suspension time.
  */
-unsigned present_sched_advance_fields(unsigned fields);
+unsigned present_sched_advance_fields(unsigned fields, bool rebase);
+unsigned present_sched_advance_units(uint64_t units, bool rebase);
+
+/* Fixed-step ticket adapter used by the collapsed libultra message loop. */
+bool present_sched_take_tick(void);
+uint64_t present_sched_pending_ticks(void);
+uint64_t present_sched_issued_ticks(void);
+unsigned present_sched_tick_fields(void);
+
+/* Logical ticket assignment for host input captured at the current host
+ * opportunity. During a burst, events belong to the last due interval; while
+ * waiting between ticks, they belong to the next interval. */
+uint64_t present_sched_input_target_tick(void);
+
+/* Catch-up passes with another already-due ticket behind them may build the
+ * latest list but must not submit/present an intermediate image. */
+bool present_sched_should_elide_render(void);
+void present_sched_set_render_elided(bool elided);
+void present_sched_set_surface_elided(bool elided);
+bool present_sched_render_elided(void);
+void present_sched_note_render_elided(void);
+
+/* Observe the updateRate each game pass actually consumed. Tick zero is the
+ * original boot bootstrap and is reported separately; every scheduled pass
+ * after it must match the driver's ticket width. */
+void present_sched_note_game_update(unsigned update_rate);
 
 /* Interpolation alpha as sim_sched's exact rational (spec §7). */
 void present_sched_alpha(uint64_t *numerator, uint64_t *denominator);
 
-/* Total authoritative ticks the accumulator has issued since process start. */
+/* Total authoritative ticks the clock has made due since process start. */
 uint64_t present_sched_ticks(void);
 
 /*
- * Authoritative tick index, counted the way g_frameCounter counts presents:
- * bumped after the tick's present completes. While one tick == one present
- * these two are identical, which is precisely what slice 0's gate asserts.
+ * Authoritative tick index, independent of g_frameCounter's presented-image
+ * count. Bumped after each complete fixed-step game pass.
  */
 extern int g_simTickCounter;
 
 /* ---- presentation replay / subloop seam (slices 1-2) --------------------- */
 
 /*
- * MDKR_PRESENT_RATE=N — presents per second the subloop should aim for. 0 (the
- * default) keeps the historical one-present-per-tick behaviour exactly. Wave C
- * replaces this with the real Video.FrameLimit config key; the seam stays.
+ * MDKR_PRESENT_RATE accepts `original`, exact integer caps from 30 through
+ * 1000, `display`, and `uncapped`. `original` keeps the historical one-present-
+ * per-tick behaviour. Numeric caps use an absolute rational deadline grid;
+ * display and uncapped policies are resolved by the platform backend.
  */
 unsigned present_sched_present_rate(void);
+MdkrPresentPolicyKind present_sched_present_kind(void);
+unsigned present_sched_present_requested_rate(void);
+MdkrPresentPolicyKind present_sched_present_requested_kind(void);
+bool present_sched_present_subloop(void);
+bool present_sched_backend_vsync_enabled(void);
+const char *present_sched_present_policy_name(void);
+const char *present_sched_present_requested_policy_name(void);
 
 /*
  * True when something wants the captured display list re-walked: either the
@@ -80,6 +106,16 @@ unsigned present_sched_present_rate(void);
  * getenv for the whole run.
  */
 bool present_sched_replay_armed(void);
+
+/*
+ * Interpolation is deliberately one authoritative tick late: a completed
+ * pair can only describe previous -> current without predicting the future.
+ * While this is true the backend must retain the real walk but not expose it;
+ * the host boundary immediately replays that same packet at alpha zero, then
+ * advances through the interval. Presenting the real current-tick image first
+ * would make the following midpoint move backwards.
+ */
+bool present_sched_defer_tick_present(void);
 
 /*
  * MDKR_PRESENT_SMOOTHING=off — present at the requested rate but repeat the
@@ -197,8 +233,8 @@ void present_perf_summary(void);
  * as LIVE". That was wrong, and both keys are SCOPE_RESTART now. Overwriting
  * these two cached ints is necessary for a mid-run change to take effect but
  * nowhere near sufficient: the consumers downstream of them latch.
- * present_pace_lazy_init() (platform_sdl_min.c) resolves the present period
- * once into s_presentFields and never revisits it, so engaging late costs the
+ * present_pace_lazy_init() (platform_sdl_min.c) resolves the present policy
+ * once into its deadline state and never revisits it, so engaging late costs the
  * freeze/snapshot work with no subloop to spend it on; and gfx_start_frame()
  * stops refreshing dkr_walk_entry_* the moment present_sched_replay_armed()
  * goes false, while the already-latched subloop keeps replaying -- memcpy'ing
@@ -206,13 +242,11 @@ void present_perf_summary(void);
  * for the full argument. Making the seams re-resolvable belongs to the
  * live/interactive slice (design doc §6 slice 3).
  *
- * `value` is one of "original"|"60" for the frame limit, "off"|"interpolate"
- * for smoothing -- video_config.c's schema validator guarantees only those
- * strings ever reach here. Called only when the resolved key did NOT come
- * from the schema default (see video_config_runtime.c), so a raw diagnostic
- * MDKR_PRESENT_RATE=30/120/etc. that this schema does not recognise -- and
- * therefore never touches the config key at all -- keeps reaching
- * present_sched_present_rate()'s own getenv path completely untouched.
+ * `value` is `original`, `display`, `uncapped`, or a validated integer cap
+ * from 30 through 1000; smoothing is `off` or `interpolate`. Called only when
+ * the resolved key did not come from the schema default (see
+ * video_config_runtime.c), so an unset config still leaves the legacy raw-env
+ * diagnostic path untouched.
  */
 void mdkr_present_set_frame_limit(const char *value);
 void mdkr_present_set_motion_smoothing(const char *value);

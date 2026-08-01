@@ -56,7 +56,7 @@ is still running and owns it.
 
 **Both backends are fully supported, launcher and overlay.** Verified on macOS:
 
-| Surface | WebGPU (default) | GL (`MDKR_RENDERER=gl`) |
+| Surface | WebGPU (`MDKR_RENDERER=webgpu`) | GL (native default) |
 | --- | --- | --- |
 | Launcher UI | `gfx_webgpu_imgui.cpp` | `imgui_impl_opengl3` |
 | In-game overlay | overlay pass inside `wgpu_end_frame` (`gfx_webgpu.c`) | `platformOverlayRender()` before `SDL_GL_SwapWindow` (`platform_sdl_min.c`) |
@@ -185,6 +185,18 @@ ctest -R app_
   captured frame on disk. `main_app.cpp` returns non-zero when a requested
   capture is missing, so this cannot pass without producing pixels. Set
   `MDKR_SKIP_GPU_TESTS=1` to skip it on a machine with no GPU.
+
+`MDKR_APP_SMOKE_DROP=<path>` extends the same headless smoke loop: it
+synthesizes one `SDL_DROPFILE` inside `AppHost::pumpAndShouldQuit()` partway
+through the run, after SDL's platform-event translation boundary. The event is
+then consumed by the same handler and ownership path as a live OS drop. This
+avoids pushing a platform-reserved event through SDL2 compatibility layers,
+which cannot portably translate an application-built SDL2 drop payload to
+SDL3's different event layout.
+`tests/check_shell_dropfile.py` (`python3 tools/run_checks.py --only
+shell_dropfile`) drives it both directions — a supported ROM accepted and
+persisted, a non-ROM file refused without a crash — against an isolated
+`MDKR_APP_PREFS_DIR` so it never touches the real shared prefs file.
 
 Per `CONTRIBUTING.md`, every launch — including windowed ones — must set
 `MDKR_AUDIO=0`. Synthesis still runs; only the output device is suppressed.

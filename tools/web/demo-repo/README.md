@@ -2,6 +2,15 @@
 
 **▶ Play: https://akratch.github.io/golden-balloon/**
 
+> **Two repositories, one project — the hyphen matters:**
+>
+> - **This repository, [`akratch/golden-balloon`](https://github.com/akratch/golden-balloon),
+>   contains the generated playable web build only.**
+> - **For the native/desktop app, downloads, source code, and development, go to
+>   [`akratch/goldenballoon`](https://github.com/akratch/goldenballoon).**
+>
+> Code changes belong in the non-hyphenated source repository, not here.
+
 A native source port of the 1997 Nintendo 64 kart racer, compiled to WebGPU and
 running entirely in your browser.
 
@@ -29,13 +38,15 @@ A **publication target**, nothing more. It holds only built artifacts:
 
 **There is no source code here** — no decompiled game code, no engine source.
 This repository holds only the built web artifacts that GitHub Pages serves. The
-source lives in its own repository; see the project README for the link.
+source and native releases live in
+[`akratch/goldenballoon`](https://github.com/akratch/goldenballoon).
 
 ## Do not send pull requests here
 
 This repo is generated. Its contents are overwritten wholesale on every publish, so
 any change made here is silently lost. Issues about *gameplay* are welcome; code
-changes have to happen upstream.
+changes have to happen in the
+[`goldenballoon` source repository](https://github.com/akratch/goldenballoon).
 
 ## Requirements
 

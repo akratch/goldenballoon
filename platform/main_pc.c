@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <limits.h>
 #include <string.h>
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
@@ -35,6 +36,9 @@
 #include "display_config.h"
 #include "video_config.h"
 #include "present_sched.h"
+#include "gameplay_event_trace.h"
+#include "input_consumption_trace.h"
+#include "audi_port_dkr.h"
 
 /*
  * Fatal-crash write mirror. The app shell's DiagLog tee (platform/app/
@@ -119,9 +123,6 @@ extern bool gfx_init(struct GfxRenderingAPI *rapi);
 extern void gfx_shutdown(void);
 extern void gfx_set_dimensions(unsigned int width, unsigned int height);
 
-/* Audio host driver (platform/audi_port_dkr.c). */
-extern void dkr_audio_out_init(void);
-extern void dkr_audio_out_shutdown(void);
 extern void mdkr_memory_shutdown(void);
 /* game/src/memory.c — pending entries in the deferred-free queue. Read (not
  * assumed) by the shutdown report so a non-empty queue is visible. */
@@ -156,6 +157,7 @@ static void print_usage(const char *program) {
            "  --video-launch-set K=V     browser launcher seed (internal)\n"
            "  --video-list               print resolved video settings and exit\n"
            "  --headless-frames N        stop after N presented frames\n"
+           "  --headless-ticks N         stop after N simulation ticks\n"
            "  --dump-frames DIR          write PPM frame captures\n"
            "  --input-script FILE        deterministic controller fixture\n",
            program);
@@ -214,6 +216,17 @@ int main(int argc, char **argv) {
             romPath = argv[++i];
         } else if (strcmp(argv[i], "--headless-frames") == 0 && i + 1 < argc) {
             g_headlessFrames = atoi(argv[++i]);
+            g_headlessTicks = -1;
+        } else if (strcmp(argv[i], "--headless-ticks") == 0 && i + 1 < argc) {
+            g_headlessTicks = atoi(argv[++i]);
+            if (g_headlessTicks <= 0) {
+                fprintf(stderr,
+                        "[mdkr64] invalid --headless-ticks (expected > 0)\n");
+                return 2;
+            }
+            /* Reuse every existing hidden/synthetic/no-vsync headless policy;
+             * tick completion, not this unreachable image budget, exits. */
+            g_headlessFrames = INT_MAX;
         } else if (strcmp(argv[i], "--dump-frames") == 0 && i + 1 < argc) {
             g_dumpFramesDir = argv[++i];   /* write DIR/frame_%04d.ppm per frame */
         } else if (strcmp(argv[i], "--input-script") == 0 && i + 1 < argc) {
@@ -381,7 +394,7 @@ int main(int argc, char **argv) {
     audioInitialized = true;
 
     /* Phase 3: renderer front-end (F3DDKR HLE) on the selected backend
-     * (MDKR_RENDERER; default webgpu, GL fallback). gfx_init creates the
+     * (MDKR_RENDERER; default GL, WebGPU selectable). gfx_init creates the
      * backend's GPU resources, so it needs the window/context from Phase 2
      * (created for the SAME backend by platform_sdl_init). Size it to the
      * drawable (HiDPI) framebuffer. */
@@ -448,7 +461,10 @@ int main(int argc, char **argv) {
     MDKR_TRACE("gfx_init(%s) done; dimensions %dx%d",
                mdkr_render_backend_name(), renderer_width, renderer_height);
 
-    if (g_headlessFrames >= 0) {
+    if (g_headlessTicks >= 0) {
+        printf("[mdkr64] headless: will run %d simulation tick(s) then exit.\n",
+               g_headlessTicks);
+    } else if (g_headlessFrames >= 0) {
         printf("[mdkr64] headless: will run %d frame(s) then exit.\n", g_headlessFrames);
     }
     printf("[mdkr64] entering boot path...\n");
@@ -460,9 +476,14 @@ int main(int argc, char **argv) {
     exitCode = platform_exit_code();
 
 shutdown:
-    /* The parallel accumulator's census, emitted before any
-     * subsystem teardown so a fixture that ends in a fault still reports how
-     * far the two clocks agreed. Env-gated (MDKR_PRESENT_SCHED_TRACE). */
+    if (!platform_oracle_update_fields_finish()) {
+        exitCode = EXIT_FAILURE;
+    }
+    gameplay_event_trace_summary();
+    input_consumption_trace_summary();
+    platform_input_queue_summary();
+    /* Fixed-ticket/presentation census, emitted before subsystem teardown so
+     * a failing fixture still reports clock debt and issued work. */
     present_sched_trace_summary();
     /* Same reason, same place: the present-path cost census (MDKR_PRESENT_PERF)
      * must report whatever it measured even when the run ends badly. */

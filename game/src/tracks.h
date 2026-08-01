@@ -166,6 +166,7 @@ f32 scene_object_view_distance(Object *obj);
 s32 scene_visibility_viewport_count(void);
 void scene_visibility_prepare_viewport(s32 viewportIndex, s32 numViewports, s32 ttCam);
 s32 scene_object_admitted(Object *obj);
+s32 scene_object_render_opacity(const Object *obj);
 extern f32 gSceneDrawDistance;
 extern s32 gSceneDrawDistanceValid;
 #endif
@@ -173,6 +174,9 @@ void watereffect_render(Object *obj, WaterEffect *effect);
 void shadow_render(Object *obj, ShadowData *shadow);
 s32 block_visible(LevelModelSegmentBoundingBox *bb);
 s32 check_if_in_draw_range(Object *obj);
+#ifdef NATIVE_PORT
+s32 check_if_in_draw_range_render(Object *obj, s32 *opacity);
+#endif
 void func_8002C954(LevelModelSegment *segment, LevelModelSegmentBoundingBox *bbox, s32 arg2);
 void trackbg_render_gradient(void);
 void shadow_update(s32 group, s32 waterGroup, s32 updateRate);

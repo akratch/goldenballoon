@@ -108,14 +108,16 @@ python3 tools/run_checks.py \
 `check_key_cutscene_once.py` is the one check that is **build-type-sensitive by
 design**. The runner verifies that its dedicated binary has an optimized
 `CMAKE_BUILD_TYPE`; it also verifies that the filename-entry sanitizer binary
-actually imports ASan. The ROM-free CTest task includes `display_config`,
-`endian_utils`, `object_layout`, and `memory_allocator`; the RAW16 gate repeats against primary,
+actually imports ASan. The ROM-free CTest task includes the display/runtime/
+layout/scheduler units, the deterministic audio queue controller, and SDL's
+silent queue-mode sink contract; the RAW16 gate repeats against primary,
 Release, and ASan artifacts. The specialized native-layout gate verifies linked
 ASan/alignment handlers and exact legacy controls, then runs the complete
 menu/track/vehicle/Adventure/boss/2P/widescreen matrix under halt-on-error
 alignment UBSan. The primary suite's seven-arm `check_widescreen_proportions.py`
-pixel-measures both SAFE_2D and world-space golden balloons at 4:3, 16:9,
-21:9, and changed FOV, with exact legacy stretching as its failing control.
+pixel-measures SAFE_2D and world-space golden balloons at two deterministic
+approach frames across 4:3, 16:9, 21:9, and changed FOV, with exact legacy
+stretching as its failing control.
 `check_native_ui_resolution.py` runs GL/WebGPU production and disabled-control
 arms, requires the HUD/minimap-only pixel delta and measured edge gain, and
 rejects any world-after-overlay draw or pass-start failure. The 2P/3P/4P gates

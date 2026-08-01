@@ -10,6 +10,153 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ## [Unreleased]
 
+### Changed
+
+- **OpenGL is now the native throughput default; WebGPU remains selectable and
+  stays the browser renderer.** A controlled M3 Max run at 1920×1080,
+  `RenderScale=1`, 60 interpolated presents per 30 Hz authored tick schedule,
+  and 300 synthetic headless ticks completed in 1.15 s on GL versus 9.01 s on
+  WebGPU. GL sustained 698.9 submissions/s with a 2.617 ms mean tick wall;
+  WebGPU sustained 103.1 submissions/s with a 17.377 ms mean tick wall. A
+  five-second sample attributed the WebGPU gap to native presentation rather
+  than game code: the main thread spent about 41% of samples retiring
+  wgpu-native queue work and 27% waiting for `CAMetalLayer` drawables, while
+  snapshot/freeze/interpolation work remained in the low-microsecond range.
+  Raising the WebGPU queue ceiling from two to three did not improve throughput,
+  so the bounded two-frame latency contract is unchanged. `MDKR_RENDERER=webgpu`
+  retains the prior native choice for parity and backend development.
+
+### Added
+
+- **Magic-code tables now validate completely and fail closed.** The reported
+  `"Sorry, the code was incorrect"` response plus `8`/blank enabled rows was
+  reproduced on a pre-fix binary: the decrypted table's big-endian count and
+  offsets were read as native values (`29 -> 7424`, `187 -> 47872`,
+  `220 -> 56320`). Current source and the `v1.0.0` tag already contain the
+  original decrypt-then-normalize repair, so the reported DMG was not built
+  reproducibly from that tag. The normalizer now validates every string offset
+  and terminator transactionally, aborts loading instead of exposing a partial
+  table, and has a ROM-free unit test that pins the exact reported misreads,
+  `ARNOLD -> BIG CHARACTERS`, invalid offsets, and rollback. The signed macOS
+  release lane's commit/version/checksum provenance prevents another stale
+  local binary from being presented as a tagged artifact.
+
+- **Fail-closed macOS Developer ID release packaging.** A report from an M4
+  Mac mini on macOS 26.2 distinguished Finder's “damaged” rejection from the
+  expected unidentified-developer warning. The bundle builder was rewriting
+  SDL2's Mach-O load path after the linker's ad-hoc signature, then packaging
+  the invalid code envelope. The local path now clears inherited xattrs,
+  ad-hoc signs nested SDL2 before sealing the app, and requires strict nested
+  signature/resource/load-path verification. The protected manual release
+  workflow imports a password-protected Developer ID certificate into an
+  ephemeral keychain, uses an App Store Connect API key for `notarytool`, signs
+  nested code explicitly before the app with Hardened Runtime, requires an
+  Accepted notarization plus staple/Gatekeeper validation, then signs,
+  notarizes, staples, mounts, and re-verifies the DMG. Speculative library-
+  validation and unsigned-executable-memory entitlements are removed. The
+  broken 1.0.0 macOS artifact is withdrawn pending the credentialed rebuild.
+
+- **A ROM-free native audio-sink qualification seam.** The game's
+  queue-occupancy controller is now a shared pure module with deterministic
+  30/60/120/144/240/1000 Hz, counter-wrap, alignment, capacity and stall
+  contracts. A second CTest opens SDL queue mode with silence, requires exact
+  22050 Hz stereo-s16 output, observes real drain, and verifies bounded
+  backlog plus pause/clear behavior under SDL's dummy driver. The same binary
+  passed a five-second physical CoreAudio run with 476 controller calls, 214
+  observed drains, zero queue failures/stall guards, and a 1,193-frame queue
+  high-water. A 1,000-tick before/after headless capture remained byte-exact
+  (`bf2c44b9...97b7f1`). Hidden hardware-buffer underruns, speaker output and
+  DAC drift still require the cross-platform physical release matrix.
+
+- **Presentation lifecycle qualification now covers the destructive edges.**
+  A registered Release gate compares original and 60 Hz presentation through a
+  2P pause-to-Track-Select teardown with no following `level_load`, a production
+  pause-menu race restart, and the complete Adventure loss/post-race/lobby/hub
+  return. Across 26,700 fixed ticks and 53,400 high-rate presents, v3 state,
+  ordered gameplay events, consumed input, and temporary PCM remain
+  byte-identical; 53,329 retained walks complete with zero snapshot overflow,
+  packet/freeze/restore failure, hard matrix rejection, or ambiguous retained
+  key. A same-binary state-only perturbation changes exactly one hash row and
+  no other stream.
+
+- **Exact arbitrary-rate native presentation, independent of the authored
+  simulation.** `Video.FrameLimit` now accepts `original`, `display`, bounded
+  integer caps from 30 through 1000, and `uncapped`; the app presents curated
+  60/120/144/165/240 choices while retaining `original` as the default. Numeric
+  caps use absolute rational monotonic deadlines instead of integer source
+  fields. GL applies the same requested swap interval to standalone and adopted
+  contexts; WebGPU selects and reports a supported FIFO/immediate mode, with
+  explicit fallback diagnostics. Sub-field time feeds the fixed-ticket driver
+  and independent audio clock exactly. The new application gate proves 600
+  fixed ticks at NTSC 30/60/120/144/165/240 and an uncapped-like 1000 Hz
+  schedule (up to 20,000 presents), plus PAL 60 at exactly 1,440 presents,
+  while v3 state, ordered events, consumed input, and PCM remain byte-identical
+  to each region's original arm. The browser now exposes `original`, `display`,
+  and numeric ceilings, consumes at most one opportunity per rAF, and omits
+  native-style uncapped from its UI. A shared `uncapped` config maps explicitly
+  to `display`/FIFO with a diagnostic instead of making a false promise. A real
+  Chromium gate injects fixed 144 Hz and irregular rAF timelines: display,
+  capped 60-on-144, irregular, and uncapped-alias arms keep state/event/input/
+  PCM identity, while the complete 3,600-frame Chromium lifecycle gate remains
+  green. Native WebGPU now caps outstanding frame completions at two; native GL
+  interval 0 uses an equivalent two-fence ceiling. Their live uncapped gate
+  measures submitted/completed work, high-water, waits, achieved submit rate,
+  holds and failures. Minimized native windows stop display-list walks and
+  interpolation replay, service input/audio at the authored tick cadence, and
+  rebase retained history on resume. Equal-tick minimized/control arms keep v3
+  state, events, input and PCM identical on GL and WebGPU. Audible/loopback DAC
+  qualification and broader physical-device coverage
+  remain open; this is opt-in and does not change the default.
+
+- **Generation-keyed core-object interpolation.** Presentation replay now binds
+  registered 3D root matrices to the exact `(pool address, spawn generation)`
+  that built them and reconstructs roots, racer heads and vehicle-part child
+  matrices from the immutable previous/current snapshot pair. Render-only
+  tumble/bob/scale residuals are carried without reading or writing a live
+  object. Recycled addresses, spawns, teleports and missing history fail closed
+  to the tick pose. The presentation matrix gate requires nonzero object
+  rebuilds, reconciles every owned/unowned registration, and disables object
+  interpolation while retaining the same interpolated camera to prove the path
+  changes backend pixels. A bounded retained packet now also owns billboard-
+  local matrices and world-space anchor vertices through the last present of a
+  tick; sprite objects and sprite particles therefore interpolate position,
+  scale and camera-facing roll without trusting rewritten arena addresses.
+  Parent-relative attachment anchors follow their already-interpolated parent
+  exactly once. A tick-stamped previous/current packet now also retains model
+  vertex batches and blends their XYZ deformation plus shade RGBA across the
+  exact same object generation, model, animation, topology and root stream.
+  Spawn,
+  teleport, transition, skipped-tick and duplicate-key cases hold the authored
+  pose. The rate gate proves 315,974 changed batches over its route and a
+  deformation-only control changes 20/20 sampled intermediate race frames
+  while camera/root/billboard smoothing stays enabled. Direct world-space
+  point/line particle meshes now use the same exact retained endpoints under a
+  generation/kind/topology/tick-adjacency contract; line topology changes hold,
+  repeated multi-viewport submissions collapse only when byte-identical, and
+  conflicting keys fail closed. Particle opacity capture now decodes the
+  unsigned 8.8 value stored in the signed field instead of clamping its upper
+  half to zero. The battle witness blends 21,994 changed point-trail XYZ/RGBA
+  batches; independent geometry and color controls each change 50/50
+  intermediate backend frames without changing the authoritative hash.
+  Sprite/model/line-particle primitive alpha preserves draw-local modifiers
+  while replacing current object opacity with the interpolated value; it
+  applies 54,859 changed draws and its isolated control changes 33/50 frames.
+  Point trails remain single-scaled because their opacity is already retained
+  in vertex alpha. Shield and magnet shear
+  matrices now retain a semantic two-lifetime recipe (racer generation plus
+  shared effect-object generation) and reconstruct both the interpolated racer
+  root and continuous local rotation/scale/shear without lerping matrix cells.
+  Ambiguous effect keys fail closed; the forced-shield control applies 5,676
+  overrides and changes 30/30 intermediate backend frames with byte-identical
+  authoritative state. Smoothed presentation now also exposes the retained
+  previous-tick endpoint before its intermediate frames. The old order exposed
+  the new authoritative image first and then drew a previous-to-current
+  midpoint, visibly reversing motion every other present. GL and WebGPU now
+  both retain the real walk, replay alpha zero at the host boundary, and then
+  advance monotonically through the interval with the documented one-tick
+  presentation latency. Remaining nested classes and unretained visual scalars
+  remain intentionally open.
+
 ## [1.0.0] — 2026-07-30
 
 ### Release-night additions (folded at tag time)
@@ -106,16 +253,11 @@ rather than the order in which it was written, an honest statement of what is
   split by subsystem into ten files plus an index. Every entry is preserved
   verbatim, closed ones included: a closed entry is the only warning the next
   person gets that the same trap exists.
-- **`docs/SDK_INVENTORY.md` (internal inventory)** — provenance
-  classification of all 108 files carrying an N64 SDK / libultra legend header.
-- **`docs/archive/` (internal archive)** — the dated implementation
-  reports, audits and reviews written while the port was built, each with a
-  one-line triage verdict. Kept for the evidence in them; removed from the
-  public release cut and retained only in the private development repository.
 - **Repository standards that are enforced:** `.editorconfig`, `.clang-format`,
   pre-commit and pre-push hooks, issue and pull-request templates, a shell-syntax
-  check, and `tools/check_markdown_links.py`, which validates every local
-  Markdown link and heading anchor in the tree.
+  check, `tools/check_markdown_links.py`, which validates every local Markdown
+  link and heading anchor, and a public-surface guard for tracked paths, text,
+  commit identities, commit messages, and annotated tags.
 
 ### Changed
 
@@ -125,11 +267,10 @@ rather than the order in which it was written, an honest statement of what is
   rewritten as a map keyed on what someone is trying to do; and every public
   document reads as the documentation of a maintained project rather than a log
   of how it was produced.
-- **The public/internal documentation boundary is by location, not by
-  filename.** It was a glob matching dated filenames, which needed a new line
-  every calendar year and would silently publish any internal note named
-  without a date. Internal material now lives under known internal planning
-  directories, which are removed wholesale when the public release is cut.
+- **The source repository is itself the public boundary.** It keeps ordinary
+  Git history; temporary plans, handoffs, transcripts, and personal paths stay
+  outside tracked files, while durable decisions are written into maintained
+  architecture, status, or open-item documents.
 
 ### Removed
 
@@ -159,8 +300,7 @@ two-camera mixing fix, and the S-tier web shell polish.
   eligible levels byte-identical**, with zero overflows and zero registry
   failures; three levels were excluded for an unrelated defect hunt. So: **all
   66 levels are process deterministic, and the presentation-invariance sweep
-  covered 63 of 63 eligible ones.** The full per-level table is in the
-  presentation-oracle breadth report (internal archive). Four-player split screen
+  covered 63 of 63 eligible ones.** Four-player split screen
   substitutes 2.49 view-projections per interpolated present, which is the first
   machine-checked evidence for the design doc's multi-viewport claim (R2) —
   every gate run before this was one player.
@@ -211,7 +351,7 @@ two-camera mixing fix, and the S-tier web shell polish.
   left in the hottest matrix path. Registrations now carry a site tag, which
   attributes 13 of level 40's 14 rejects to `mtx_cam_push` and only 1 to the head
   push — the attribution-by-elimination that produced the wrong theory is no
-  longer possible. See the presentation-oracle breadth report (internal archive) §6.2.
+  longer possible.
 
 ### Changed
 
@@ -239,12 +379,11 @@ two-camera mixing fix, and the S-tier web shell polish.
   half of the spec's own Phase 3 checklist item — does not exist yet, and the
   design doc admits camera-only only on condition it is not shipped as the final
   behaviour; the live/interactive and input-edge-queue slices that are sequenced
-  before an interactive rate rise have not landed; and 5–22% of gameplay
-  geometry on race content is still drawn with the tick's camera on an
-  interpolated frame. The full argument, and a recorded mechanical trap (flipping
+  before an interactive rate rise have not landed. The 5–22% camera-mixing
+  population measured during development was subsequently eliminated by the
+  stale-tenancy and tolerance fixes above. One mechanical trap remains: flipping
   the default string alone would be *inert*, because the config runtime only
-  pushes the key when it did not come from the default), are in
-  the presentation-oracle breadth report (internal archive) §8.
+  pushes the key when it did not come from the default.
 
 - **Phase 3 fidelity architecture: camera-only interpolated presentation
   (headless/offscreen, off by default).** A presentation subloop can now
@@ -267,8 +406,7 @@ two-camera mixing fix, and the S-tier web shell polish.
   registry silently emptied by its own restore path, and two clock-phase
   bugs (a synthetic clock advancing per present instead of per tick, and
   the tick counter bumping before the interpolated presents that still owed
-  it input). See the render-mutation census (internal archive)'s "Phase 3
-  landed state" section for the full account.
+  it input).
 
 ### Fixed
 

@@ -51,8 +51,15 @@ run_number="${GITHUB_RUN_NUMBER:-local}"
 workflow="${GITHUB_WORKFLOW:-local}"
 
 base="$(basename "$asset")"
-# Derive the platform label from mdkr64-<platform>-<version>.<ext>.
-platform="$(printf '%s\n' "$base" | sed -E 's/^mdkr64-([A-Za-z0-9]+)-.*/\1/')"
+# Derive the platform label from the normal mdkr64-<platform>-<version> name.
+# The public macOS disk image intentionally keeps the established
+# golden-balloon-<version>.dmg name, so handle it explicitly instead of
+# accidentally recording the entire filename as the platform.
+case "$base" in
+  golden-balloon-*.dmg) platform="macos" ;;
+  mdkr64-*-*) platform="$(printf '%s\n' "$base" | sed -E 's/^mdkr64-([A-Za-z0-9]+)-.*/\1/')" ;;
+  *) echo "ERROR: cannot derive release platform from asset name: $base" >&2; exit 1 ;;
+esac
 
 out="${asset}.provenance.json"
 cat > "$out" <<EOF

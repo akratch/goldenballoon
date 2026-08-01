@@ -187,6 +187,49 @@ void presentation_snapshot_note_free(const void *object) {
     identity_erase(entry);
 }
 
+bool presentation_snapshot_identity_generation(const void *object,
+                                                uint64_t *generation) {
+    const SnapIdentity *entry;
+
+    if (object == NULL || generation == NULL ||
+        !presentation_snapshot_enabled()) {
+        return false;
+    }
+    entry = identity_find(object);
+    if (entry == NULL || entry->generation == 0u) {
+        return false;
+    }
+    *generation = entry->generation;
+    return true;
+}
+
+bool presentation_snapshot_identity_ensure_generation(
+    const void *object, uint64_t *generation) {
+    SnapIdentity *entry;
+
+    if (object == NULL || generation == NULL ||
+        !presentation_snapshot_enabled()) {
+        return false;
+    }
+    entry = identity_find(object);
+    if (entry == NULL) {
+        entry = identity_insert(object);
+        if (entry == NULL) {
+            return false;
+        }
+        entry->generation = ++s_generation_serial;
+        entry->last_capture = 0u;
+        entry->last_position[0] = 0.0f;
+        entry->last_position[1] = 0.0f;
+        entry->last_position[2] = 0.0f;
+    }
+    if (entry->generation == 0u) {
+        return false;
+    }
+    *generation = entry->generation;
+    return true;
+}
+
 /* ---- publish ring -------------------------------------------------------- */
 
 /*
@@ -581,6 +624,29 @@ void presentation_lerp3(const float a[3], const float b[3],
     }
 }
 
+uint8_t presentation_lerp_u8(uint8_t a, uint8_t b, uint64_t numerator,
+                             uint64_t denominator) {
+    const float value =
+        presentation_lerp1((float)a, (float)b, numerator, denominator);
+    return (uint8_t)(value + 0.5f);
+}
+
+uint8_t presentation_particle_opacity_u8(int16_t opacity) {
+    return (uint8_t)(((uint16_t)opacity) >> 8);
+}
+
+uint8_t presentation_scale_opacity_u8(uint8_t authored, uint8_t current,
+                                      uint8_t target) {
+    uint32_t scaled;
+
+    if (current == 0u || current == target || authored == 0u) {
+        return authored;
+    }
+    scaled = ((uint32_t)authored * (uint32_t)target + current / 2u) /
+             current;
+    return (uint8_t)(scaled > UINT8_MAX ? UINT8_MAX : scaled);
+}
+
 int16_t presentation_lerp_angle(int16_t a, int16_t b, uint64_t numerator,
                                 uint64_t denominator) {
     int32_t delta;
@@ -628,13 +694,6 @@ static void object_pose_from_entry(const PresentationObjectEntry *entry,
     out->interpolated = 0u;
 }
 
-static uint8_t lerp_u8(uint8_t a, uint8_t b, uint64_t numerator,
-                       uint64_t denominator) {
-    const float value =
-        presentation_lerp1((float)a, (float)b, numerator, denominator);
-    return (uint8_t)(value + 0.5f);
-}
-
 static bool resolve_object_pair(const PresentationSnapshot *current,
                                 size_t index, uint64_t numerator,
                                 uint64_t denominator,
@@ -677,8 +736,8 @@ static bool resolve_object_pair(const PresentationSnapshot *current,
     out->rotation_z = presentation_lerp_angle(before->rotation_z,
                                               entry->rotation_z, numerator,
                                               denominator);
-    out->opacity =
-        lerp_u8(before->opacity, entry->opacity, numerator, denominator);
+    out->opacity = presentation_lerp_u8(
+        before->opacity, entry->opacity, numerator, denominator);
 
     /* Discrete: previous until the tick completes (see the header). */
     use_current = presentation_discrete_use_current(numerator, denominator);
@@ -707,6 +766,80 @@ bool presentation_snapshot_resolve_object(const void *address,
         return false;
     }
     return resolve_object_pair(current, index, numerator, denominator, out);
+}
+
+bool presentation_snapshot_resolve_object_generation(
+    const void *address, uint64_t generation, uint64_t numerator,
+    uint64_t denominator, PresentationObjectPose *out) {
+    const PresentationSnapshot *current = presentation_snapshot_current();
+    size_t index;
+
+    if (out == NULL || current == NULL || !current->valid || generation == 0u) {
+        return false;
+    }
+    index = frame_lookup(current, address);
+    if (index == (size_t)-1 ||
+        current->objects[index].generation != generation) {
+        return false;
+    }
+    return resolve_object_pair(current, index, numerator, denominator, out);
+}
+
+bool presentation_snapshot_deformation_compatible(const void *address,
+                                                   uint64_t generation) {
+    const PresentationSnapshot *current = presentation_snapshot_current();
+    const PresentationSnapshot *previous = presentation_snapshot_previous();
+    const PresentationObjectEntry *now;
+    const PresentationObjectEntry *before;
+    size_t now_index;
+    size_t before_index;
+
+    if (address == NULL || generation == 0u || current == NULL ||
+        previous == NULL || !current->valid || !previous->valid ||
+        current->stage_generation != previous->stage_generation) {
+        return false;
+    }
+    now_index = frame_lookup(current, address);
+    before_index = frame_lookup(previous, address);
+    if (now_index == (size_t)-1 || before_index == (size_t)-1) {
+        return false;
+    }
+    now = &current->objects[now_index];
+    before = &previous->objects[before_index];
+    return !now->discontinuity && !before->discontinuity &&
+           !now->is_particle && !before->is_particle &&
+           now->generation == generation &&
+           before->generation == generation &&
+           now->model_index == before->model_index &&
+           now->animation_id == before->animation_id;
+}
+
+bool presentation_snapshot_particle_deformation_compatible(
+    const void *address, uint64_t generation) {
+    const PresentationSnapshot *current = presentation_snapshot_current();
+    const PresentationSnapshot *previous = presentation_snapshot_previous();
+    const PresentationObjectEntry *now;
+    const PresentationObjectEntry *before;
+    size_t now_index;
+    size_t before_index;
+
+    if (address == NULL || generation == 0u || current == NULL ||
+        previous == NULL || !current->valid || !previous->valid ||
+        current->stage_generation != previous->stage_generation) {
+        return false;
+    }
+    now_index = frame_lookup(current, address);
+    before_index = frame_lookup(previous, address);
+    if (now_index == (size_t)-1 || before_index == (size_t)-1) {
+        return false;
+    }
+    now = &current->objects[now_index];
+    before = &previous->objects[before_index];
+    return !now->discontinuity && !before->discontinuity &&
+           now->is_particle && before->is_particle &&
+           now->generation == generation &&
+           before->generation == generation &&
+           now->model_index == before->model_index;
 }
 
 bool presentation_snapshot_resolve_object_at(size_t index,

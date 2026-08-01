@@ -21,6 +21,19 @@
       "frames": 9500,
       "synth_fields": 1,
       "event_divisor": 1
+    },
+    {
+      "name": "reference_replay",
+      "cadence": "original",
+      "frames": 4339,
+      "synth_fields": 2,
+      "event_divisor": 2,
+      "reference_replay": {
+        "ares_frame_start": 3447,
+        "native_field_start": 1558,
+        "native_input_start": 1559,
+        "basis": "The first completed positive race state is ares frame 3449 / framebuffer serial 1417 at clock 3 and native frame 1559 at clock 3. The native queue publishes the scheduled field width one tick before that completed-state probe, while the tick-indexed input is committed at frame 1559. The one-tick field phase is confirmed at the first 3-to-2 transition: both runners reach clock 128."
+      }
     }
   ],
   "sync": {

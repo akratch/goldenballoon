@@ -4,6 +4,17 @@ A native and browser source port of the 1997 Nintendo 64 kart racer. Not an
 emulator: the game is compiled for your machine and renders through WebGPU or
 OpenGL, using a ROM you already own.
 
+> **Two repositories, one project — the hyphen matters:**
+>
+> - **Native/desktop app, source code, releases, and development:**
+>   [`akratch/goldenballoon`](https://github.com/akratch/goldenballoon) — you are here.
+> - **Playable web build and its generated publication files:**
+>   [`akratch/golden-balloon`](https://github.com/akratch/golden-balloon) —
+>   [launch the browser version](https://akratch.github.io/golden-balloon/).
+>
+> The web repository is generated from this source repository; code changes belong
+> here, not in the publication repository.
+
 ## Download and play
 
 **[Play in your browser](https://akratch.github.io/golden-balloon/)** (WebGPU
@@ -13,7 +24,7 @@ a desktop build from the
 
 | Platform | File | Notes |
 |---|---|---|
-| macOS (Apple silicon) | `golden-balloon-1.0.0.dmg` | Unsigned. First launch: right-click the app, choose Open |
+| macOS (Apple silicon) | `golden-balloon-1.0.0.dmg` | The original 1.0.0 DMG is withdrawn: its post-package signature is invalid. Use the next Developer ID signed and notarized rebuild |
 | Windows (x64) | `golden-balloon-windows-1.0.0.zip` | Single self-contained `GoldenBalloon.exe`, no installer |
 | Linux (x86-64) | `golden-balloon-linux-1.0.0-x86_64.tar.gz` | Also available for arm64. Needs SDL2 and Mesa GL |
 
@@ -28,6 +39,13 @@ Then:
 
 Each release file ships with a `.provenance.json` naming the exact source
 commit and SHA-256 it was built from.
+
+> **macOS 1.0.0 packaging notice:** the unsigned DMG can produce Finder's
+> “damaged and can't be opened” dialog because its executable was modified
+> after the linker's integrity signature. This is not the ordinary
+> unidentified-developer warning. The packaging path is fixed in `Unreleased`;
+> the replacement must pass Developer ID signing, Apple notarization, stapling,
+> mounted-DMG verification, and Gatekeeper assessment before publication.
 
 ### No game data is included
 
@@ -57,7 +75,7 @@ holder.
 
 | Platform | Status |
 |---|---|
-| macOS (Apple silicon) | Supported. WebGPU by default, OpenGL available |
+| macOS (Apple silicon) | Supported. OpenGL by default, WebGPU available |
 | Web (WebGPU browser) | Supported. WebAssembly + WebGPU + AudioWorklet |
 | Linux | Best effort. Builds and runs on GL and WebGPU; physical-GPU, Wayland, and controller breadth are unmeasured |
 | Windows | New in 1.0. Runs and plays; no CI cell yet, limited hardware coverage. Treat as early and report what you find |
@@ -83,7 +101,7 @@ showed the faster cadence finishing a boss lane 13.9% early.
 ## Status
 
 Every claim in this table names the check that demonstrates it. The full suite
-is 69 check scripts expanding to 76 tasks; the manifest fails if a new check is
+is 82 check scripts expanding to 90 tasks; the manifest fails if a new check is
 not registered, and each check is validated in both directions. See
 [tests/README.md](tests/README.md).
 
@@ -91,12 +109,12 @@ not registered, and each check is validated in both directions. See
 |---|---|---|
 | Boot and menus | Every screen navigable. Pixel fidelity vs the real ROM: 85.5–99.8% on frontend screens, 63.6% in-race | `check_nav_fixtures.py`; [the oracle](docs/ORACLE.md) (manual run) |
 | Racing | All 20 tracks, all three vehicles, all 47 legal combinations. Full 3-lap Time Trial with saved and reloaded times | `check_track_sweep.py`, `check_vehicle_sweep.py`, `check_race_finish_time.py` |
-| Renderers | WebGPU default, OpenGL selectable and used as window-creation fallback | `check_renderer_backends.py`, including an injected WebGPU failure that must render through GL |
+| Renderers | OpenGL is the native throughput default; WebGPU remains selectable and is the browser backend. Uncapped GPU production is bounded and minimized windows stop GPU walks | `check_renderer_backends.py`, `check_gpu_backpressure.py`, and `check_surface_suspension.py` |
 | Widescreen, UI, shadows | Hor+ world rendering, authored-FOV preservation, output-resolution HUD in the 4:3 safe region, live resize/HiDPI, split-screen projection, terrain-projected shadows | `check_native_ui_resolution.py`, `check_widescreen_proportions.py`, shadow and 2–4P gates on both backends |
 | Memory-layout safety | Host-aligned object tails, bounds-checked object-map records | `check_native_layout.py` under halt-on-error alignment UBSan, with broken-direction controls |
 | Local multiplayer | 2–4 player layouts, per-player HUD, multiplayer results | `check_race_2p_split.py`, `check_race_multiplayer.py` |
 | Audio | Music, SFX, and reverb through the clean-room audio engine | `check_audio_output.py`, `check_raw16_audio.py` |
-| Browser | Real Chromium boots the wasm build, races, runs the AudioWorklet, restores ROM and saves across reload, never sends the ROM over the network | `check_browser_runtime.py` (3,600-frame live run) |
+| Browser | Real Chromium boots the wasm build, races, runs the AudioWorklet, restores ROM and saves across reload, never sends the ROM over the network; display/numeric rAF schedules preserve fixed state/event/input/PCM | `check_browser_runtime.py` (3,600-frame live run) + `check_browser_presentation_rates.py` |
 | Mobile touch | Analog stick plus chorded Go/Brake/Drift/Item controls with safe-area placement | `check_touch_controls.py`, including a CDP three-finger chord traced to the game's own input read |
 | Adventure mode | Both adventures end to end: hub, balloons, lobby, races, mirrored Adventure Two, win/loss persistence | `check_adventure_hub.py`, `check_adventure_race_loop.py`, `check_adventure_two.py` |
 | Bosses, challenges, trophies | All ten boss levels; the full first-boss progression with persistence; every authored challenge course; all four trophy championships | `check_first_boss_progression.py`, `check_challenge_modes.py`, `check_taj_challenges.py`, `check_trophy_series.py` |

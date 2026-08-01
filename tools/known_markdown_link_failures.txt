@@ -1,62 +1,6 @@
-# known_markdown_link_failures.txt -- pre-existing tools/check_markdown_links.py
-# breakage, allowlisted so the checker is green today and still catches any NEW
-# broken link or anchor. To burn an entry down: fix the underlying link, then
-# delete its line here.
-#
-# Format: one `path: issue` line per entry, matching the text
-# check_markdown_links.py prints for that problem. An entry containing `*` or
-# `?` is an fnmatch glob and covers every problem line it matches; any other
-# entry must match a problem line exactly. Blank lines, and lines whose first
-# non-blank character is #, are ignored.
-#
-# A stale entry -- one that matches no current problem -- is non-fatal: the
-# checker reports it as resolved and keeps its exit status. Delete it anyway,
-# so this file keeps describing real breakage. Anything NOT covered here is a
-# NEW failure and still fails the check.
-#
-# Entries must not enumerate paths belonging to another repository: this file
-# ships publicly. Cover such links with a glob on the linking document instead.
+# known_markdown_link_failures.txt -- pre-existing links that intentionally
+# point outside this repository. Any unlisted problem remains a hard failure.
 
-# Links into a sibling checkout that is not part of this repository. They were
-# never meant to resolve in-tree.
+# MGB64_BACKFLOW cites the sibling project by design; that checkout is not part
+# of this source tree.
 docs/MGB64_BACKFLOW.md: points outside repository: *
-docs/archive/*: points outside repository: *
-
-# Line-number anchors (`#L123`) that named a position in a file which was
-# edited afterwards, so the anchor no longer resolves to a heading.
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L100' in tests/README.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L117' in docs/RELEASE_CHECKLIST.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L136' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L142' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L148' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L1568' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L23' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L24' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L2552' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L27' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L28' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L29' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L30' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L309' in tests/README.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L31' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L33' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L336' in tests/README.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L3375' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L35' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L36' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L37' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L40' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L41' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#L4756' in docs/OPEN_ITEMS.md
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing anchor '#adventure-race-loop--adventure_race_looptxt--testscheck_adventure_race_looppy' in tests/README.md
-docs/archive/WIDESCREEN_SHADOW_IMPLEMENTATION_2026-07-25.md: missing anchor '#L163' in tests/README.md
-docs/archive/WIDESCREEN_SHADOW_IMPLEMENTATION_2026-07-25.md: missing anchor '#L288' in docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md
-
-# Link targets in the archived audit that the clean-room audio swap deleted.
-# The archive is a fixed historical record: the citations stay as written and
-# the targets are intentionally absent.
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing target: ../../game/libultra/src/audio/env.c#L466
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing target: ../../game/libultra/src/audio/env.c#L501
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing target: ../../game/libultra/src/audio/heapalloc.c#L26
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing target: ../../game/libultra/src/audio/load.c
-docs/archive/CORRECTNESS_PORTABILITY_WEBGPU_AUDIT_2026-07-25.md: missing target: ../../game/libultra/src/audio/load.c#L364

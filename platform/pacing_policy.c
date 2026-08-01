@@ -1,11 +1,148 @@
 #include "pacing_policy.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define NS_PER_SECOND UINT64_C(1000000000)
+
+static int present_ci_equal(const char *left, const char *right) {
+    if (left == NULL || right == NULL) {
+        return 0;
+    }
+    while (*left != '\0' && *right != '\0') {
+        if (tolower((unsigned char)*left) != tolower((unsigned char)*right)) {
+            return 0;
+        }
+        left++;
+        right++;
+    }
+    return *left == '\0' && *right == '\0';
+}
+
+int mdkr_present_policy_parse(const char *value, MdkrPresentPolicy *out) {
+    MdkrPresentPolicy parsed = { MDKR_PRESENT_ORIGINAL, 0u };
+    char *end = NULL;
+    unsigned long rate;
+
+    if (value == NULL || out == NULL || value[0] == '\0') {
+        return 0;
+    }
+    if (present_ci_equal(value, "original")) {
+        *out = parsed;
+        return 1;
+    }
+    if (present_ci_equal(value, "display")) {
+        parsed.kind = MDKR_PRESENT_DISPLAY;
+        *out = parsed;
+        return 1;
+    }
+    if (present_ci_equal(value, "uncapped")) {
+        parsed.kind = MDKR_PRESENT_UNCAPPED;
+        *out = parsed;
+        return 1;
+    }
+    {
+        const unsigned char *digit = (const unsigned char *)value;
+        while (*digit != '\0' && isdigit(*digit)) {
+            digit++;
+        }
+        if (digit == (const unsigned char *)value || *digit != '\0') {
+            return 0;
+        }
+    }
+    errno = 0;
+    rate = strtoul(value, &end, 10);
+    if (errno != 0 || end == value || end == NULL || end[0] != '\0' ||
+        rate < MDKR_PRESENT_RATE_MIN || rate > MDKR_PRESENT_RATE_MAX) {
+        return 0;
+    }
+    parsed.kind = MDKR_PRESENT_CAPPED;
+    parsed.rate = (unsigned)rate;
+    *out = parsed;
+    return 1;
+}
+
+int mdkr_present_policy_equal(const MdkrPresentPolicy *left,
+                              const MdkrPresentPolicy *right) {
+    return left != NULL && right != NULL && left->kind == right->kind &&
+           left->rate == right->rate;
+}
+
+int mdkr_present_policy_uses_vsync(const MdkrPresentPolicy *policy) {
+    return policy == NULL || policy->kind == MDKR_PRESENT_ORIGINAL ||
+           policy->kind == MDKR_PRESENT_DISPLAY;
+}
+
+int mdkr_present_policy_needs_subloop(const MdkrPresentPolicy *policy,
+                                      unsigned tick_rate) {
+    if (policy == NULL || policy->kind == MDKR_PRESENT_ORIGINAL) {
+        return 0;
+    }
+    if (policy->kind == MDKR_PRESENT_CAPPED) {
+        return policy->rate > tick_rate;
+    }
+    return 1;
+}
+
+static uint64_t present_grid_time_ns(const MdkrPresentDeadlineClock *clock,
+                                     uint64_t index) {
+    uint64_t whole_seconds = index / (uint64_t)clock->rate;
+    uint64_t remainder = index % (uint64_t)clock->rate;
+
+    if (whole_seconds > (UINT64_MAX - clock->origin_ns) / NS_PER_SECOND) {
+        return UINT64_MAX;
+    }
+    return clock->origin_ns + whole_seconds * NS_PER_SECOND +
+           (remainder * NS_PER_SECOND) / (uint64_t)clock->rate;
+}
+
+int mdkr_present_deadline_init(MdkrPresentDeadlineClock *clock,
+                               unsigned rate) {
+    if (clock == NULL || rate < MDKR_PRESENT_RATE_MIN ||
+        rate > MDKR_PRESENT_RATE_MAX) {
+        return 0;
+    }
+    memset(clock, 0, sizeof(*clock));
+    clock->rate = rate;
+    return 1;
+}
+
+uint64_t mdkr_present_deadline_target(MdkrPresentDeadlineClock *clock,
+                                      uint64_t now_ns) {
+    if (clock == NULL || clock->rate == 0u) {
+        return now_ns;
+    }
+    if (!clock->initialized) {
+        clock->origin_ns = now_ns;
+        clock->next_index = 1u;
+        clock->initialized = 1;
+    }
+    return present_grid_time_ns(clock, clock->next_index);
+}
+
+void mdkr_present_deadline_commit(MdkrPresentDeadlineClock *clock,
+                                  uint64_t now_ns) {
+    uint64_t elapsed_ns;
+    uint64_t elapsed_intervals;
+
+    if (clock == NULL || !clock->initialized || clock->rate == 0u) {
+        return;
+    }
+    elapsed_ns = now_ns > clock->origin_ns ? now_ns - clock->origin_ns : 0u;
+    /* floor(elapsed * rate / 1e9), overflow-safe for host-time ranges. */
+    elapsed_intervals =
+        (elapsed_ns / NS_PER_SECOND) * (uint64_t)clock->rate +
+        ((elapsed_ns % NS_PER_SECOND) * (uint64_t)clock->rate) /
+            NS_PER_SECOND;
+    if (elapsed_intervals >= clock->next_index) {
+        clock->next_index = elapsed_intervals + 1u;
+    } else {
+        clock->next_index++;
+    }
+}
 
 int mdkr_pacing_cadence_valid(const char *value) {
     return value != NULL &&

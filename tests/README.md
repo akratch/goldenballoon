@@ -25,8 +25,8 @@ python3 tools/run_checks.py \
   --wasm build-web/mdkr64_web.wasm
 ```
 
-The manifest contains all 69 `tests/check_*.py` scripts and expands to 76 tasks:
-it also runs the ROM-free display/endian/object-layout/allocator/runtime-contract,
+The manifest contains all 82 `tests/check_*.py` scripts and expands to 90 tasks:
+it also runs the ROM-free display/endian/magic-code/object-layout/allocator/runtime-contract,
 sprite-layout, RDP-interpolation, font-registry/SDF, and RL-1 CTests, while filename
 entry, locked-door collision, RAW16 audio, native-layout safety, and
 widescreen/shadow safety run in their specialized
@@ -54,10 +54,13 @@ UBSan text; there is no retry or tolerated-failure path in the registered gate.
 The restoration/remaster baseline passed **45/45 tasks in 31m52s**. At that
 historical checkpoint, the WebGPU lifecycle wave added `webgpu_recovery` as task
 46; it passed all 16 injected cases while the unchanged 45-task gameplay
-baseline was not serially rerun. The current 76-task manifest additionally
+baseline was not serially rerun. The current 90-task manifest additionally
 registers lighting, attract-demo, challenge/battle, first-boss, Taj, and trophy
-coverage, output-resolution UI, in-game video configuration, and expanded
-WebGPU fault recovery. It also registers the optimized broad-UB corpus,
+coverage, output-resolution UI, in-game video configuration, expanded
+WebGPU fault recovery, app-shell SDL_DROPFILE ROM acquisition, absolute
+audio output level, character-select dancer motion, zip-pad boost magnitude,
+collision candidate headroom, and shadow plausibility. It also registers the
+optimized broad-UB corpus,
 dependency-ordered final-shutdown gate, and repeated real-wasm resource
 plateau gate. The ROM-free CI-contract task fails closed if push/PR triggers,
 Linux GL/WebGPU, macOS WebGPU warnings, sanitizers, linked wasm, browser save
@@ -73,6 +76,30 @@ variants no route instantiates.
 `check_renderer_backends.py` additionally writes every GL present from frame 15
 through 229 and rejects an isolated black buffer between completed images. This
 owns the F-28 consecutive-capture contract.
+
+### App-shell drag-and-drop ROM acquisition — `tests/check_shell_dropfile.py`
+
+```bash
+python3 tests/check_shell_dropfile.py --build build \
+  --rom baserom.us.v80.z64
+```
+
+Q2: the NSOpenPanel and typed-path ROM-acquisition arms call `RomPanel_setRom()`
+directly and are unit-tested (`tests/test_app_shell.cpp`); the drag-and-drop
+arm is entered by an `SDL_DROPFILE` handler and had no coverage of its own.
+`MDKR_APP_SMOKE_DROP=<path>` (inside the existing `MDKR_APP_SMOKE_FRAMES`
+launcher smoke) queues that event for `AppHost::pumpAndShouldQuit()` after
+SDL's platform translation boundary, where it uses the exact live-event
+handler and ownership contract. It is not passed through `SDL_PushEvent`:
+reserved platform events cannot be portably round-tripped through SDL2-on-SDL3
+compatibility layers. The gate drives the handler both directions: a supported
+ROM must be accepted (same path back, `valid=1`, the picker's own verdict
+message, and persisted to prefs), and a non-ROM file must be refused gracefully
+(`valid=0`, an explanatory message, exit 0, nothing persisted) — no crash
+either way. Every run points `MDKR_APP_PREFS_DIR` (a test-only override
+alongside `MDKR_SAVE_DIR`) at a private temporary directory, so this is the one
+check that can reach a successful `AppConfig::save()` without ever touching the
+real machine-shared `SDL_GetPrefPath("mdkr64","mdkr64")` prefs file.
 
 ### Cooperative final shutdown — `tests/check_final_shutdown.py`
 
@@ -139,8 +166,8 @@ coverage:
   forced optional-resource loss;
 - `check_state_hash.py` anchors the fidelity architecture's Phase 1
   instrument: two identical runs must produce byte-identical per-tick
-  `[SIMHASH]` streams (`MDKR_STATE_HASH=2`; versioned 64-bit hash over RNG
-  seed + per-object authoritative fields), a different window size AND the
+  `[SIMHASH]` streams (`MDKR_STATE_HASH=3`; versioned 64-bit hash over the
+  authoritative runtime contract), a different window size AND the
   other renderer backend must not change one bit of authoritative state
   (the first machine-checked slice of the presentation-invariance
   invariant), and the `MDKR_RNGSEED=legacy` positive control must diverge
@@ -148,34 +175,27 @@ coverage:
   require each to agree with itself. The `sim_sched` CTest covers the
   exact-integer fixed-step accumulator (hour-long zero-drift NTSC/PAL,
   catch-up budgets, stall rebase, rational alpha).
-  **Field-set versions.** The gate runs **v2**. v1 hashed `y_rotation` only
-  per object, a blind spot that cost three ticks of latency on a real level-37
-  divergence; v2 adds full rotation, transform flags, velocity, `animFrame`,
-  header/segment ids and the whole particle integrator including
-  `angularVelocity` — table in `platform/sim_hash.c`. v1 remains selectable as
-  `MDKR_STATE_HASH=1` (byte-for-byte what it always was, so archived streams
-  stay comparable); `=2x` adds the render-owned and presentation-only fields
-  and is diagnostic only, never a gate. Promoting v2 found ten levels whose
-  streams disagreed with themselves that v1 could not see; see the v2 section
-  of the render-mutation census (internal archive). The **field-set control**
-  (`MDKR_TEST_HASH_PERTURB=<tick>`) flips one bit of one object's `x_rotation`,
-  hashes, and reverts it before anything else runs: the v2 stream must move at
-  that tick and nowhere else, and the v1 stream must not move at all. That is
-  what stops the gate quietly degrading to a narrower field set than it claims.
-- `check_render_purity.py` is the fidelity spec's §12.2.1 gate: with a
-  test-only seed bracket subtracting the two documented RNG blockers,
-  skipping half of all scene renders (`MDKR_TEST_SKIP_RENDER=odd`) must
-  leave the per-tick `[SIMHASH]` stream byte-identical; the unbracketed
-  control pair must diverge (proving sensitivity). It asserts over the **v2**
-  field set, so "arm A green" is a stronger claim than it was under v1 — but
-  still a bounded one: `distanceToCamera`, `Object::opacity` and `modelIndex`
-  are render-owned open census items and are excluded by design, as is
-  `Particle::brightness` (presentation-only, but seeded from render-computed
-  shading — recorded as a known gap). Running the same pair under
-  `MDKR_STATE_HASH=2x` puts a number on that ceiling: 2020 of 3600 ticks
-  differ, first at tick 89, against 0 under `=2`. Its first runs
-  root-caused three real defects: the skydome object's camera-follow
-  write and two 1-ULP add/subtract restore pairs on racers. Phase 3 Wave B
+  **Field-set versions.** The gate runs **v3**. v1 and v2 remain selectable
+  byte-for-byte for archived comparisons; v2 first widened the object/particle
+  integrator and exposed ten process-nondeterministic levels that v1 missed.
+  v3 adds globals and progression, behavior properties, interactions, racer
+  physics/AI/controller state, model animation cadence, and the former
+  render-owned distance/opacity/LOD fields. It excludes host pointers and
+  presentation-only caches. Nine independent controls use
+  `MDKR_TEST_HASH_PERTURB=<family>:<tick>` to flip one covered byte only while
+  hashing and require exactly one changed row; the archived v2/v1 x-rotation
+  control remains. The exact field table and exclusions live beside the
+  implementation in `platform/sim_hash.c`.
+- `check_render_purity.py` is the fidelity spec's §12.2.1 gate. Skipping half
+  of all scene renders (`MDKR_TEST_SKIP_RENDER=odd`) must leave the raw v3
+  `[SIMHASH]` stream byte-identical. There is no test-only state subtraction:
+  HUD and texture dice use a dedicated presentation RNG; opacity and racer LOD
+  are draw-local; animation cadence, visibility, distance/order, light phase,
+  and the course-arrow timer advance once per fixed tick. An explicit
+  `MDKR_TEST_RENDER_IMPURITY=1` gameplay-RNG write must make normal and skipped
+  schedules diverge, proving sensitivity. The gate's first runs root-caused the
+  skydome camera-follow write and two 1-ULP add/subtract restore pairs on racers.
+  Phase 3 Wave B
   added three more arms on the same binary: **C** (`MDKR_TEST_REPLAY_WALK=1`)
   re-walks every tick's captured display list a second time through the HLE,
   with the frozen shadow-matrix registry restored and the same
@@ -193,38 +213,134 @@ coverage:
   interpolation now verifies per matrix before trusting it, falling back to
   the list's own matrix when the decomposition does not hold.
 - `check_presentation_matrix.py` is the fidelity spec's §12.2.2 gate:
-  presentation rate must never move the authoritative tick. **Arm A** proves
-  the `sim_sched`-driven parallel accumulator wired into the video-queue
-  retrace branch issues exactly as many ticks as the containment loop
-  performs presents, zero lead/lag over a full route — the precondition for
-  trusting it at all. **Arm B** requires the per-tick `[SIMHASH]` stream to be
-  byte-identical across `MDKR_PRESENT_RATE` unset, `=30`, and `=60` (`=30`
+  presentation rate must never move the authoritative tick. All stream
+  comparisons use the same **v3** authority contract as state-hash and render
+  purity. **Arm A** proves the promoted host-frame driver issues one exact
+  two-field ticket per scheduled game pass, with no debt or update-rate
+  violation on the original schedule. **Arm B** requires both the per-tick
+  `[SIMHASH]` state stream, ordered `[EVENTHASH]` gameplay-event stream, and
+  `[INPUTHASH]` consumed-pad stream to be byte-identical across
+  `MDKR_PRESENT_RATE` unset, `=30`, and `=60` (`=30`
   does not divide the tick floor finely enough to engage the subloop at all;
   `=60` engages it and presents twice per tick). **Arm C** is the smoothness
-  witness: with `MDKR_PRESENT_RATE=60` every interpolated frame must differ
-  from both bracketing tick frames (camera moved, same display list); the
+  witness: with `MDKR_PRESENT_RATE=60` every interpolated midpoint must differ
+  from both retained endpoint frames (camera moved, same display list). The
+  endpoint is deliberately the previous tick: GL and WebGPU both retain the
+  real walk off-surface and replay alpha zero before advancing through the
+  interval, providing interpolation's documented one-tick latency without
+  current/midpoint/current motion reversal. The
   positive control, `MDKR_PRESENT_SMOOTHING=off`, presents at the same rate
   but must repeat the tick's own image, so every intermediate frame is
   byte-identical to its neighbours — without that control arm C could not
-  tell interpolation from any other source of frame-to-frame difference. Its
+  tell interpolation from any other source of frame-to-frame difference. Arm B
+  also requires nonzero generation-keyed root and composed-child ownership,
+  exact owner-census reconciliation, and nonzero object matrix rebuilds. Arm C
+  adds an object-specific pixel control:
+  `MDKR_TEST_OBJECT_INTERPOLATION=off` keeps the identical interpolated camera
+  but disables object rebuilding, and the intermediate backend frames must
+  change against the fully smoothed arm. The same gate requires a bounded
+  retained packet to publish without allocation failure, observes nonzero
+  billboard-matrix and world-anchor registrations/overrides, and bounds the
+  fail-closed stale-key tail. The same packet retains tick-stamped model vertex
+  batches under generation/model/animation/topology/root-stream keys. Arm B
+  requires compatible and actually changed deformation overrides with zero
+  ambiguous keys; arm C's deformation-only control holds those vertices while
+  leaving camera/root/billboard smoothing enabled and must change sampled race
+  pixels. A particle-only control runs battle challenge level 26, whose moving
+  point trails (unlike stationary completed line chevrons) provide a real
+  positive witness: retained particle batches, compatible pairs, and changed
+  XYZ must all be nonzero; the on/off v3 hashes must match; and sampled
+  intermediate backend frames must differ. Identical repeated submissions in
+  multiple viewports are idempotent, while conflicting stable keys remain a
+  failure. A fifth isolated control forces the level-3 shield path and disables
+  only semantic effect interpolation. Shield/magnet matrices are keyed by both
+  racer and shared effect-object lifetimes; the enabled arm must register, find
+  and apply collision-free adjacent recipes, the disabled arm must apply none,
+  both v3 streams must match, and their sampled intermediate backend frames
+  must differ. Its
   first run diverged from tick 1345 on two real defects, both about phase
   rather than magnitude: the synthetic-pacing COUNTER was being advanced once
   per present instead of once per tick (its monotonic clamp fabricates a tick
   whenever read without the clock moving), and the authoritative tick index
   was bumped before the interpolated presents drained, so the last input pump
   before a tick was applying the next tick's scripted input one tick early.
+  `check_arbitrary_presentation_rates.py` extends the same contract beyond the
+  old integer-field grid. Over 600 fixed ticks it requires exact rational
+  presentation totals for NTSC `30`, `60`, `120`, `144`, `165`, `240`, and a
+  deterministic 1000 Hz uncapped stand-in, plus PAL `60` at exactly 2.4
+  opportunities per 25 Hz tick. Every arm must keep v3 state, ordered events,
+  consumed input, temporary PCM, audio time, and fixed two-field update counts
+  byte-identical to its region's original arm; replay/packet failures and
+  deformation/effect-key collisions remain zero.
+  `check_presentation_breadth.py` applies that v3 comparison to 17 NTSC/PAL
+  content arms spanning every boss/challenge class, car/hovercraft/plane, and
+  1P/4P, while also bounding snapshot, replay, matrix-recomposition, retained-
+  packet publication, deformation-key collision health, and the battle arm's
+  measured point-trail registrations/compatible pairs/changed batches.
+  `check_presentation_lifecycle.py` covers the teardown half the content matrix
+  cannot see: a 2P pause-to-Track-Select path with no following `level_load`, a
+  production pause-menu race restart, and the full Adventure loss/post-race/
+  lobby/hub return. Original and 60 Hz arms must keep v3 state, ordered events,
+  consumed input, and temporary PCM byte-identical while retained walks cross
+  every arena retirement/reissue with zero snapshot, packet, freeze, restore,
+  or key-collision failure. A one-row hash perturbation proves the comparator's
+  broken direction. The dangerous 2P no-`level_load` teardown repeats under the
+  linked ASan artifact as its own manifest task, so a retained-pointer lifetime
+  regression cannot depend on allocator luck to crash.
+- `check_fixed_tick_schedules.py` drives the application with deterministic
+  two-, three-, four-, five-, and six-field host opportunities plus periodic
+  suspension rebases. Every arm must complete 1,800 exact two-field game
+  passes with byte-identical v3 state, ordered gameplay events, consumed input,
+  and temporary PCM. It requires real multi-ticket catch-up, intermediate render elision,
+  rebase counters, zero ticket/input-queue debt, and zero `updateRate`
+  violations. A one-field diagnostic must diverge and be counted; independent
+  trace-only perturbations must change exactly one event/input row and zero
+  state rows; an independent one-quantum audio timing control must change PCM
+  without changing state/events/input. The ROM-free `host_frame_driver` CTest independently injects rational
+  30/50/60/120/144/165/240 Hz, 59.94-like, irregular, burst, rebase, PAL, and
+  uncapped-like schedules with exact alpha and long-run drift assertions. The
+  `audio_service_clock` proves grouped/split host-time equivalence, catch-up
+  ordering, suspension debt retirement, and one audio quantum per two source
+  fields even under enhanced one-field game cadence. The shared
+  `audio_queue_controller` CTest proves bounded, aligned production across
+  simulated 30/60/120/144/240/1000 Hz service schedules, counter wrap and
+  stalls. `audio_sink_contract` then opens SDL queue mode with silence and
+  requires exact format, active drain, bounded backlog, pause and clear; CI
+  uses the dummy driver, while an optional physical-device invocation exercises
+  the same path without ROM audio. The `input_tick_queue`
+  CTest covers between-tick tap stretching, independent
+  buttons/ports, latest-analog policy, disconnect/reconnect, catch-up ticket
+  targeting, target reordering, and overflow-to-neutral behavior.
 - `check_shadow_stage_reset.py` proves the static caster cache resets at level
   load in SHIPPING builds: identical terminal `[WORLD-FX] static=` census with
   and without `MDKR_TRACE`, plus a `MDKR_TEST_SHADOW_STAGE_RESET_SKIP=1`
   control whose census must grow (the historical defect was a reset reachable
   only through the diagnostic path, which every other shadow gate accidentally
   enabled);
+- `check_shadow_plausibility.py` asserts the property four separate shadow
+  defects have now violated: **every rendered shadow maps to a caster that is
+  really there**. Two halves, because the class has two. *Provenance* reads the
+  `[WORLD-FX]` census and requires `staleCasters=0` (the tenancy counter — the
+  stage cache dedups by raw arena `Triangle` address, so a recycled or
+  rewritten-in-place address would otherwise keep casting whatever it held
+  first, from wherever that was), `implausible=0`, `allocFails=0`, and a valid
+  `[SHADOW-PLAN]` at the exact budget tier the fixture's view count should
+  produce. *Attribution* differences a shadow-on/shadow-off frame pair and
+  requires the darkened footprint to exist, to stay one-sided, and not to
+  swallow the frame — the shape an inverted or pancaked depth axis makes.
+  It runs three differently authored worlds at 1P plus the `race_2p_split` and
+  `race_4p_split` fixtures, so all three planner tiers (2048px/2 cascades,
+  1024px/2, 1024px/1) are covered. Broken direction:
+  `MDKR_TEST_SHADOW_BOGUS_CASTER=<world units>` displaces the first admission of
+  every static caster, so the depth map holds geometry the object has left —
+  that arm must fail, and does (1945 stale admissions at +900 units);
 - `check_touch_controls.py` gates the mobile touch layer in real Chromium:
   a desktop arm (overlay hidden, launcher live — the capability-listener path
   must be non-fatal), a persisted-"shown" revival arm (fails on the
-  pre-`dc5f83b` shell), and a CDP three-finger chord that must reach
+  pre-`dc5f83b` shell), a CDP three-finger chord that must reach
   `osContGetReadData P1` with A+R plus a decisive stick and return to exact
-  neutral; and
+  neutral, and a press+release completed between rAF callbacks that must still
+  produce one `[INPUTHASH]` press then release through the bounded JS queue; and
 - `check_browser_runtime.py` requires the production WebGPU handoff to reach
   complete maps without resource failure or latching while retaining the
   existing cadence, resize, persistence, audio, and fault budgets.
@@ -258,6 +374,38 @@ over a fixed 24-frame moving Everfrost Peak window with anisotropy pinned to one
 Fire Mountain and enforces the measured decision to retain baked colour as the
 ambient base. Each gate has a failure direction; none is a screenshot-only
 approval.
+
+### Character-select dancer motion — `tests/check_charselect_motion.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_charselect_motion.py --build build --rom baserom.us.v80.z64 -v
+```
+
+Productizes the ad-hoc analysis that disproved a "dancers static" report
+(byte-identical captures across 86 commits, whole-screen motion RMS ~14.1,
+dominant period ~19-20 frames via `tools/anim_period.py`) into a permanent
+gate — until this existed, a real regression in `obj_loop_char_select()` or
+`music_animation_fraction()` would have shipped undetected. It reuses
+`check_mip_motion.py`'s six-window ensemble shape (`WINDOW_FRAMES=24`,
+`WINDOW_COUNT=6`, `CAPTURE_COUNT=144`): mean whole-screen motion RMS over the
+144-frame character-select capture must clear a floor and at least 5/6
+windows must individually clear a per-window floor, with a loosely-banded
+periodicity assertion (peak autocorrelation lag in [14, 26] frames, r >= 0.3)
+alongside it. Whole-screen RMS was chosen over the cropped dancer region
+`check_menu_anim_rate.py` uses because it reproduces the original ad-hoc
+numbers directly and was measured to still catch a freeze localized to just
+the character models (butterflies alone left animating drops per-window
+motion from a real 5.76-6.90 to 4.24-4.65, cleanly below the chosen floor).
+
+No env-gated animation-freeze hook exists in the engine, and the plan
+explicitly prefers an analyzer-level control over adding one for this gate.
+The required broken-direction control is built without any engine change: the
+same captured grids, with every frame replaced by a copy of frame 0 ("every
+frame duplicated from frame 0"), run through the identical scoring function.
+Measured: motion collapses to exactly 0.0 in every window, failing both the
+per-window and ensemble-mean floors. The check's own PASS depends on that
+control failing — if a frozen capture ever passed the same gate the real one
+does, the script fails on that alone.
 
 ### Output-resolution HUD/text — `tests/check_native_ui_resolution.py`
 
@@ -329,18 +477,18 @@ to be taken — `MDKR_BOSS_WIN` replaced `MDKR_BOSS_SLOW` for exactly that reaso
 | `nav_to_audio_options` | 1900 | `check_nav_fixtures.py` → `menuId=13` | open, by design |
 | `nav_to_save_options` | 1950 | `check_nav_fixtures.py` → `menuId=14` | open, by design |
 | `nav_to_magic_codes` | 2000 | `check_nav_fixtures.py`, `check_array_bounds_sweep.py` → `menuId=10` | open, by design |
-| `nav_to_character_select` | 1600 | `check_nav_fixtures.py`, `check_menu_anim_rate.py`, `check_determinism.py`, `check_array_bounds_sweep.py` → `menuId=3` | open, by design |
+| `nav_to_character_select` | 1600 | `check_nav_fixtures.py`, `check_menu_anim_rate.py`, `check_charselect_motion.py`, `check_determinism.py`, `check_array_bounds_sweep.py` → `menuId=3` | open, by design |
 | `nav_to_game_select` | 2000 | `check_nav_fixtures.py` → `menuId=19` | open, by design |
 | `nav_to_file_select_adventure` | 2100 | `check_nav_fixtures.py`, `check_array_bounds_sweep.py` → `menuId=6` | open, by design |
 | `nav_to_track_select` | 2300 | `check_nav_fixtures.py`, `check_array_bounds_sweep.py` → `menuId=15` | open, by design |
-| `nav_to_time_trial_race` | 2900 / 4000 / 7500 | `check_nav_fixtures.py` → `level_load levelId=5`; **`check_widescreen_shadow.py`**; **`check_race_drive.py`** | open to the grid, then **closed** (`MDKR_AUTOPILOT`) |
+| `nav_to_time_trial_race` | 2900 / 3500 / 4000 / 7500 | `check_nav_fixtures.py` → `level_load levelId=5`; **`check_widescreen_shadow.py`**; **`check_race_drive.py`**; **`check_shadow_plausibility.py`** (+ `MDKR_LOAD_TRACK` to retarget the 1P worlds) | open to the grid, then **closed** (`MDKR_AUTOPILOT`) |
 | `race_drive_long` | 3900–4300 | `check_texture_lineswap.py`, `check_rom_revision.py`, `check_determinism.py` | open, **by design** — these three compare *pixels between two arms of the same route*, so the route only has to be identical to itself |
 | `race_drive_time_trial` | 1500 | `check_determinism.py` | open, by design — same reason |
 | `race_full_3lap` | 12000 | `check_array_bounds_sweep.py` | **closed** (`MDKR_AUTOPILOT`) |
-| `race_full_3lap_tt` | 6500–13000 | `check_race_finish_time.py`, `check_collision_gridmask.py`, `check_boss_win_verdict.py`, `check_collision_untextured.py`, `check_track_sweep.py`, `check_vehicle_sweep.py`, `check_array_bounds_sweep.py` | **closed** (`MDKR_AUTOPILOT`, + `MDKR_LOAD_TRACK` to retarget) |
-| `race_2p_split` | 9600 | `check_race_2p_split.py` | **closed** — autopilot drives *both* humans, through results→track-select |
-| `race_3p_split` / `race_4p_split` | 9600 | `check_race_multiplayer.py` | **closed** — every human racer, all four quadrants, 3P minimap, and results→track-select |
-| `adventure_hub_drive` | 2300 / 6350 / 12000 | `check_filename_entry.py`, `check_widescreen_proportions.py`, `check_adventure_hub.py`, `check_save_failsafe.py`, `check_texture_lineswap.py` | **closed** (`MDKR_DRIVE_ROUTE` island tour; filename check stops at the character grid) |
+| `race_full_3lap_tt` | 6500–13000 | `check_race_finish_time.py`, `check_collision_gridmask.py`, `check_boss_win_verdict.py`, `check_collision_untextured.py`, `check_track_sweep.py`, `check_vehicle_sweep.py`, `check_array_bounds_sweep.py`, `check_collision_headroom.py` | **closed** (`MDKR_AUTOPILOT`, + `MDKR_LOAD_TRACK` to retarget) |
+| `race_2p_split` | 3500 / 9600 | `check_race_2p_split.py`, `check_shadow_plausibility.py` (2-view shadow budget tier) | **closed** — autopilot drives *both* humans, through results→track-select |
+| `race_3p_split` / `race_4p_split` | 3500 / 9600 | `check_race_multiplayer.py`; `race_4p_split` also `check_shadow_plausibility.py` (4-view tier) | **closed** — every human racer, all four quadrants, 3P minimap, and results→track-select |
+| `adventure_hub_drive` | 2300 / 6500 / 12000 | `check_filename_entry.py`, `check_widescreen_proportions.py`, `check_adventure_hub.py`, `check_save_failsafe.py`, `check_texture_lineswap.py` | **closed** (`MDKR_DRIVE_ROUTE` island tour; filename check stops at the character grid) |
 | `adventure_resume_race` / `adventure_two_resume_race` | 5200 | `check_adventure_two.py` | **closed** — canonical unlock/save identity, all 20 mirrored racing lines, viewport, stereo, minimap, steering, and pixel reflection control |
 | `adventure_race_loop` | 17000 | `check_adventure_race_loop.py` | **closed** (`MDKR_DRIVE_ROUTE` + `MDKR_AUTOPILOT`) |
 
@@ -395,6 +543,30 @@ non-flat scene pairs have per-frame RGB mean absolute difference at most 1.694
 one-sided sample at a transition because GL reads the current back buffer while
 WebGPU's asynchronous readback can retain the last presented scene.
 
+## Native GPU queue bounds and surface suspension
+
+```bash
+python3 tests/check_gpu_backpressure.py \
+  --build build-rel --rom baserom.us.v80.z64
+python3 tests/check_surface_suspension.py \
+  --build build-rel --rom baserom.us.v80.z64
+```
+
+`check_gpu_backpressure.py` runs real native GL and WebGPU at the synthetic
+uncapped rate with visible swapchains. WebGPU queue-completion callbacks and GL
+interval-0 fences must keep their in-flight high-water at or below two; every
+submission must retire by shutdown with no failure or abandoned completion.
+The gate also requires effective immediate/interval-0 diagnostics, completion
+waits, zero leaked child resources, and a measured achieved submission rate.
+An additional no-selector arm requires the production native default to resolve
+to GL, keeping the measured high-throughput path in front of uncapped users.
+
+`check_surface_suspension.py` compares equal-tick control and minimized arms on
+both native backends. The minimized interval must stop real display-list walks
+and replay, perform no more than two presentation boundaries, and rebase once
+on resume. All 30 v3 state, ordered-event and consumed-input rows plus the
+temporary PCM digest must remain byte-identical to the visible control.
+
 ## WebGPU lifecycle and recovery — `tests/check_webgpu_recovery.py`
 
 ```bash
@@ -402,7 +574,7 @@ python3 tests/check_webgpu_recovery.py \
   --build build --rom baserom.us.v80.z64
 ```
 
-This integration matrix injects 70 failures across instance, surface, adapter,
+This integration matrix injects 76 failures across instance, surface, adapter,
 device, queue, and configure bring-up; every surface-status repair class;
 featureless depth clipping; both native device-loss outcomes; and all
 Pure/Remastered scene-target, shader, texture, draw, post, resolve, mip, capture,
@@ -435,8 +607,9 @@ external ROM through the real file input. The ROM is never copied into the serve
 tree.
 
 The first document must run 3,600 rAF-paced frames through the title and menus
-into Ancient Lake. Five screenshots must be non-flat and changing; median cadence
-must remain 45–75 fps with at least 80% `updateRate == 1`; the racer must advance;
+into Ancient Lake. Five screenshots must be non-flat and changing; original-mode
+cadence must remain 24–36 fps with at least 80% `updateRate == 2` and no
+sub-two-field updates; the racer must advance;
 the AudioWorklet must consume PCM; its first active block must report nonzero
 fixed-mode RAW16 loads/bytes; and the C renderer must observe 1260×540 DPR-2,
 640×480 DPR-1, then 1260×540 DPR-2 backing stores after live CSS resizes. All
@@ -457,6 +630,17 @@ a synthetic ROM POST, a mismatched EEPROM hash, and a forced one-entry SFX queue
 must all be rejected or detected. The test bridge is injected in memory before
 page JavaScript; it is inert for ordinary visitors and accepts no fixture from the
 URL.
+
+`check_browser_presentation_rates.py` is the independent browser pacing gate.
+It runs the actual wasm/WebGPU engine in isolated Chromium profiles with exact
+rational rAF timestamps while still yielding through the real browser event
+loop. Original, display-at-144, capped-60-on-144, irregular display, and a
+shared native `uncapped` config must all complete 60 fixed authored ticks with
+byte-identical v3 state, ordered events, consumed input, and temporary PCM.
+Display 144 must issue exactly 288 presents; capped 60 exactly 120. The browser
+launcher must omit unbounded presentation and disclose the rAF ceiling, while
+the shared `uncapped` value must report requested `uncapped`, effective
+`display`/FIFO, and its `raf-ceiling` reason.
 
 A final stored-ROM reload forces engine-level WebGPU adapter failure. The canvas
 must be hidden, the launcher and independent recovery controls restored, and an
@@ -611,6 +795,76 @@ deliberately reintroduced, this check fails on six assertions at once: exit code
 to compare **pixels between two arms of the same route** — for that, the route only has
 to be identical to itself.
 
+⚠️ **The 44.9 figure quoted above is historical and no longer reproduces.** This route
+crossed a zip pad in 2026-07; it does not any more (measured: zero frames of surface
+`SURFACE_ZIP_PAD` across the whole race, and this check now reports max step 14.3).
+The AI line moved when the wave "closedloop" corrections landed — the same reason this
+file keeps warning against calibrating on a line. `MAX_STEP`/`MAX_ACCEL` are unaffected,
+because they were deliberately set so the check does not depend on whether a pad is
+crossed. The boost magnitude itself is now measured by `check_boost_magnitude.py`
+below, which does not rely on any route reaching a pad.
+
+## Zip-pad boost magnitude — `tests/check_boost_magnitude.py` (RUN THIS AFTER ANY CHANGE TO RACER VELOCITY, `boostTimer`/`boostType`, OR `normalise_time()`)
+
+```bash
+python3 tests/check_boost_magnitude.py -v      # ~3 min, muted + headless, four runs
+```
+
+Closes the long-standing register question "is the zip-pad boost the magnitude DKR
+authored, or a port defect?" (`docs/open-items/gameplay.md`, wave "zippad"). Answer:
+**authored.**
+
+It arms the boost rather than driving over a pad, for the reason in the ⚠️ above — no
+committed route can be relied on to keep crossing one particular pad, so a check
+calibrated on one would be measuring the AI, not the boost.
+`MDKR_ZIPPAD_BOOST=<frame>[:<ticks>]` (`objects.c mdkr_zippad_boost_hook`, no-op unless
+set) arms **player one only, once**, in exactly the state `racer.c:5727` arms it in for
+`SURFACE_ZIP_PAD` on a car: `boostTimer = normalise_time(ticks)` (default 45, the
+authored constant), `boostType = BOOST_LARGE`. Everything downstream is untouched
+decomp code, so what is measured is the shipping boost with a deterministic trigger.
+`MDKR_BOOST_TRACE=1` emits the per-update `[BOOST]` row the check parses (boost state,
+`racer->velocity`, world position, wheel surface).
+
+Four runs, all sequential:
+
+| arm | fixture | `MDKR_ZIPPAD_BOOST` | cruise | boost frames | peak &#124;velocity&#124; |
+|---|---|---|---|---|---|
+| 8-racer Tracks | `nav_to_time_trial_race.txt` | `4000` | 12.27 | 45 | **22.357** |
+| solo Time Trial | `race_full_3lap_tt.txt` | `4000` | 12.67 | 45 | **22.336** |
+| control | `nav_to_time_trial_race.txt` | `4000:15` | 12.27 | 15 | 20.880 |
+| control | `nav_to_time_trial_race.txt` | `4000:120` | 12.23 | 120 | 22.358 |
+
+The two baseline arms differ by **0.021 velocity units — 0.09%** with the boost armed
+identically, which is the assertion that answers the register: the mechanism has no
+racer-count coupling, and `normalise_time()` has no framerate term either (it is a PAL
+5/6 rescale of the constant and nothing else).
+
+**The trace is asserted on `|racer->velocity|`, not on the position step.** The step is
+what the other motion checks use, but it carries cornering and gradient — i.e. the
+racing line — into the measurement: normalised by cruise, the two fixtures' ramps
+differ by up to 0.17 where the tolerance would have to be 0.25. The velocity trace does
+not; the two agree to 0.05 across the plateau. Asserted: 45 boost frames exactly, a
+cruising entry state, a monotone ramp, a plateau inside `[21.8, 22.7]` over frames
++25..+34, peak inside `[21.5, 23.0]`, and decay back under 0.75 of the plateau by
+frames +55..+88.
+
+**Verified in the broken direction, both ways, on every run.** The `<ticks>` field is
+the perturbed boost constant, and both controls must fail or the check reports
+`POSITIVE CONTROL BROKEN`:
+
+* `:15` trips **four** assertions — duration, peak, ramp monotonicity (the velocity
+  turns over at frame +16), and the plateau (12.98–14.57 against an envelope of
+  21.8–22.7).
+* `:120` trips **two** — duration, and the tail: the speed is still 0.96 of the plateau
+  where the authored boost has decayed to 0.56. This is the arm that proves the
+  per-frame trace assertion is load-bearing, because it does **not** change the peak.
+
+That last point is the physically interesting result: **the boost saturates.** Holding
+`boostTimer` 2.7x longer reaches the same 22.358, because `traction = 2.0f` per update
+against the drag term reaches terminal velocity well inside 45 ticks. A zip pad cannot
+produce an unbounded speed however long it is held — its magnitude is bounded by the
+authored physics, not by the timer.
+
 ## Presentation-mode check — `tests/check_video_presets.py`
 
 ```bash
@@ -679,28 +933,28 @@ python3 tests/check_widescreen_proportions.py --build build \
   --rom baserom.us.v80.z64 --renderer webgpu -v
 ```
 
-This dependency-free pixel gate drives Timber's Island to frame 6300, immediately
-before balloon 10 is collected. The frame contains the same golden-balloon art
-through two independent paths: the SAFE_2D HUD glyph and a world-space F3DDKR
-billboard. It segments the blue zigzag inside each balloon and runs seven isolated
-arms at equal height: 4:3, 16:10, 16:9, 21:9 with the default 104° cap, forced
-4:3 centered inside a 21:9 drawable, 16:9 at 75° FOV with the cap off, and exact
-21:9 legacy stretching.
+This dependency-free pixel gate drives Timber's Island through two deterministic
+approach samples of balloon 10: frame 6300 keeps the SAFE_2D HUD glyph clear of
+the rainbow behind it, and frame 6410 brings the world-space F3DDKR billboard
+close enough for a meaningful changed-FOV measurement. It segments the saturated
+blue zigzag inside each balloon and runs seven isolated arms at equal height:
+4:3, 16:10, 16:9, 21:9 with the default 104° cap, forced 4:3 centered inside a
+21:9 drawable, 16:9 at 75° FOV with the cap off, and exact 21:9 legacy stretching.
 
-Measured on both Debug GL and Release native WebGPU:
+Measured on the current Release GL and native WebGPU paths:
 
 | arm | HUD motif | world motif | required interpretation |
 |---|---:|---:|---|
-| 4:3 | 99×36 | 68×27 | reference |
-| 16:10 | 99×36 | 68×27 | identical authored size |
-| 16:9 | 99×36 | 68×27 | identical authored size |
-| 21:9, cap 104° | 99×36 | 72×28 | 1.053× lens scale; shape retained |
-| 21:9, forced 4:3 | 99×36 | 68×27 | centered presentation; authored size |
-| 16:9, FOV 75° | 99×36 | 52×20 | 0.752× lens scale; shape retained |
-| 21:9 legacy | 173×36 | 122×27 | known-bad ~1.75× horizontal stretch |
+| 4:3 | 99×36 | 48×18 | reference |
+| 16:10 | 99×36 | 48×18 | identical authored size |
+| 16:9 | 99×36 | 48×18 | identical authored size |
+| 21:9, cap 104° | 99×36 | 50×19 | 1.053× lens scale; shape retained |
+| 21:9, forced 4:3 | 99×36 | 48×18 | centered presentation; authored size |
+| 16:9, FOV 75° | 99×36 | 36×14 | 0.752× lens scale; shape retained |
+| 21:9 legacy | 173×36 | 84×18 | known-bad 1.75× horizontal stretch |
 
-Every arm must reach the same normalized frame-6300 racer state and collect the
-same balloon at frame 6331. Production motif aspect must remain within 8% of the
+Every arm must reach the same normalized frame-6410 racer state and collect the
+same balloon at frame 6476. Production motif aspect must remain within 8% of the
 4:3 reference, size must track the analytic focal scale, and the legacy arm must
 fall well outside that threshold. The legacy arm is the positive control: if the
 detector cannot distinguish the former distortion, the check fails. It passes
@@ -925,9 +1179,9 @@ The check asserts the **exit code** plus the output-overlay ordering contract
 and seven independent things: the
 `hud_init: hudPlayers=1 numViewports=2` layout line, a two-player
 `level_load: ... numPlayers=1`, the existence of the `[PACE2]` player-2 probe,
-per-player motion sanity (finite position, y band, no teleport, checkpoint/lap
-progress, no stall) for **both** players, that the two racers stay apart in world
-space (so "the same racer traced twice" cannot pass), the top
+per-player motion sanity (finite position, y band, no discontinuous teleport,
+checkpoint/lap progress, no stall) for **both** players, that the two racers stay
+apart in world space (so "the same racer traced twice" cannot pass), the top
 and bottom halves of each sampled in-race frame scored **separately**, so a live
 viewport cannot mask a dead one, and (since 2026-07-29) the full **2P post-race
 flow**: the race finishes, `MENU_RESULTS` loads, and results returns to
@@ -935,6 +1189,15 @@ flow**: the race finishes, `MENU_RESULTS` loads, and results returns to
 fixture taps A instead of holding it (post-race menu input is edge-triggered),
 and motion is judged only while each racer's own race clock advances, because
 DKR freezes finished racers for the fade/results sequence.
+
+As in `check_race_drive.py`, teleport detection judges the *shape* of the motion:
+`MAX_ACCEL = 40` limits the frame-to-frame change in step length, with a generous
+`MAX_STEP = 150` absolute backstop. The former 40-unit absolute ceiling was stale:
+on 2026-07-31 player 2 took a real zip pad and ramped smoothly through 40.15,
+40.73, ... 44.75 units/frame before ramping down, while the whole run's largest
+step-to-step change was only 4.0. The known ASSET_MISC_8 break instead moved
+1296.8 units in one frame, so the shape test retains ample separation in the
+broken direction.
 
 The fixture's track-preview transition also covers the queued display-list
 pointer lifetime repaired by the later all-content census. The original report
@@ -944,16 +1207,16 @@ task executed. One-generation registry grace fixes the token/segment collision,
 and `MDKR_DL_STRICT=1` now passes this route with zero faults.
 
 Reference (deterministic, Ancient Lake, car, `MDKR_AUTOPILOT=1`, 9,600 frames,
-re-measured 2026-07-29 when the route was extended through the post-race flow):
-`level_load` at frame 2491, race clock starts 2662, **6939** frames with both
-players traced, racing ends ~7462, final `cp` **53** (P1) / **47** (P2) both on
-lap 2, max single-frame step **14.8 / 16.4**, slowest racing 240-frame mean
-speed 10.65 / 9.85, racer separation min 122 / median **2003**, per-half scores
-1061–2219 distinct colours and sigma 21.3–52.1 over the in-race window (frames
-2600–5600). GL and WebGPU both pass the full route including results →
-track select. (The pre-extension 5,700-frame figures — 3039 both-traced frames,
-`cp` 35/29 on lap 1 — described the truncated route and are retained only in
-history.) These are documentation, not thresholds.
+re-measured 2026-07-31): `level_load` at frame 2491, race clock starts 2662,
+**4719** racing frames with both players traced, final `cp` **53** (P1) / **39**
+(P2) both on lap 2, max single-frame step **23.3 / 44.7**, max step-to-step
+change **1.6 / 4.0**, slowest racing 240-frame mean speed 10.70 / 1.82, racer
+separation min 122 / median **3366**, per-half scores 949–2989 distinct colours
+and sigma 22.1–66.1 over the in-race window (frames 2600–7400). GL and WebGPU
+produce identical gameplay measurements and both pass the full route including
+results → track select. (The pre-extension 5,700-frame figures — 3039
+both-traced frames, `cp` 35/29 on lap 1 — described the truncated route and are
+retained only in history.) These are documentation, not thresholds.
 
 Positive control for the render half of the check:
 ```bash
@@ -991,8 +1254,9 @@ player count, and proves all of the following:
    layout.
 2. `[PACE]`, `[PACE2]`, `[PACE3]`, and (for 4P) `[PACE4]` come from distinct
    human racers. Each stream must remain finite, stay in the track's vertical
-   band, avoid one-frame teleports and long stalls, and reach lap 3
-   (`lap=2` internally) with substantial checkpoint progress.
+   band, avoid one-frame teleports and long stalls, and make substantial
+   checkpoint/lap progress. Every non-last-place racer must reach lap 3
+   (`[PACE] lap=2` before its terminal update).
 3. Every racer pair has a nontrivial median world-space separation, so copying
    one valid probe into several slots cannot pass.
 4. Every scene quadrant is scored independently. In 3P, the intentionally
@@ -1003,14 +1267,21 @@ player count, and proves all of the following:
    default Select Track action returns to `MENU_TRACK_SELECT` (menu 15). The
    input fixtures use spaced A edges; the former long A hold could never
    advance this edge-triggered flow.
-6. The same visual scorer must reject each quadrant after it is flat-filled.
+6. End-of-update `[ORACLE]` rows prove every human becomes `raceFinished=1` and
+   receives each finish position exactly once. DKR intentionally terminates an
+   ordinary multiplayer race after N-1 racers finish and classifies the sole
+   remainder last; that one DNF may stop at `cp>=30/lap>=1`, while every other
+   racer retains the stricter `cp>=40/lap>=2` requirement.
+7. The same visual scorer must reject each quadrant after it is flat-filled.
    This positive control runs automatically in both arms.
 
 Measured Debug/WebGPU reference: 3P loads at frame 2361, reaches results at 7632,
-and returns to track select at 7931; 4P does so at 2441, 7932, and 8231.
-All seven human streams across the two arms contribute 4709–5252 active rows,
-reach checkpoint 42–53 on lap 2, and have worst 240-frame mean motion
-1.71–11.05 units/frame. Scene quadrants measure 1003–2603 quantized colours and
+and returns to track select at 7931; 4P does so at 2441, 7932, and 8231. On the
+2026-07-31 fidelity line, 4P P1/P3/P4 finish normally and P2 is the authored
+last-place classification at `cp=33/lap=1`; its end-of-update state is
+`fin=1/fpos=4`, and it continues production finish-camera driving through
+`cp=34`. All human streams contribute at least 3500 active rows and remain
+moving. Scene quadrants measure 1003–2603 quantized colours and
 sigma 24.9–58.7; the 3P minimap measures 85–126 colours, sigma 33.1–33.9, and
 5.6–5.8% nonblack coverage.
 
@@ -1052,7 +1323,7 @@ having listened to it.
 **It opens no audio device.** `--headless-frames` returns before SDL audio is touched
 and `MDKR_AUDIO=0` is set on top; synthesis still runs headlessly, and
 `MDKR_AUDIO_DUMP` taps the PCM to a file while `MDKR_AUDIO_RMS=1` prints the mixer's
-own RMS / peak / main-bus-clip / fx-guard accounting plus a per-frame music trace. The
+own RMS / peak / main-bus-clip / fx-guard accounting plus a per-service music trace. The
 captures are **ROM-derived**: they go to a temp dir that is deleted unless
 `--keep-audio` is passed, and a `.wav` must never be committed (`.gitignore` covers
 `*.wav`).
@@ -1102,14 +1373,86 @@ healthy RMS and a healthy beat grid); whether the 0.011 % of clamped samples is
 audible; and realtime pacing, since headless synthesis runs on a fixed cadence so
 underruns and DAC drift are invisible here.
 
-One measured consequence of that fixed cadence, worth knowing before you listen to a
-`--keep-audio` capture: the pump emits **two** VI fields of audio (736 sample-frames,
-33.38 ms) per rendered frame while the headless pacer injects **one** 60 Hz field
-(16.68 ms), so a capture's timeline runs at exactly **2x** the game's — 600 frames
-give 19.99 s of audio against 10.0 s of game time. The music is at the right tempo
-within the file; it is not aligned to gameplay. With a real sink the
-queue-occupancy controller in `dkr_choose_frame_samples()` measures the actual DAC
-drain instead, and **nothing checks that controller.**
+The deterministic capture now follows the same source-time contract as the fixed
+simulation clock: original NTSC advances two source fields per game pass and emits
+one 736-sample audio quantum, while enhanced one-field simulation services audio
+only every second pass. `check_fixed_tick_schedules.py` additionally requires the
+PCM to remain byte-identical under 3–6-field catch-up and suspension rebases;
+`check_arbitrary_presentation_rates.py` requires the same identity across native
+30–240 Hz, uncapped-like, and PAL-60 presentation schedules. A live device is
+still required to qualify SDL or AudioWorklet underrun, backlog, and DAC-drift
+behavior.
+
+## Absolute output level — `tests/check_audio_level_reference.py` (RUN THIS ALONGSIDE `check_audio_output.py`, SAME TRIGGER PATHS)
+
+`check_audio_output.py` is **scale-blind by construction**: it asserts a *floor* on
+RMS and a *ceiling* on saturation, and its tempo, stereo and spectral-change
+assertions are ratios and correlations that a flat gain leaves exactly unchanged.
+`check_raw16_audio.py` compares two arms of the same build. `[EVTQ]` telemetry counts
+events; the resource-plateau `voicePeak` law counts voices. So a **systematic loudness
+bias** — one wrong shift in a gain stage, an extra `/2`, a master trim added "to stop
+the clipping" — passed the entire suite. This check is the one that would not.
+
+**It opens no audio device**, on the same terms as `check_audio_output.py`; the
+capture is ROM-derived and deleted unless `--keep-audio` is given.
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_audio_level_reference.py               # ~42 s
+MDKR_AUDIO=0 python3 tests/check_audio_level_reference.py --control gain+3  # must exit 1
+MDKR_AUDIO=0 python3 tests/check_audio_level_reference.py --control gain-3  # must exit 1
+MDKR_AUDIO=0 python3 tests/check_audio_level_reference.py \
+    --reference build/ares-oracle/console.raw     # opt-in console lane
+```
+
+Eight assertions over the same `race_drive_time_trial.txt` 4300-frame route, so a
+level move lands in both bodies of evidence:
+
+| # | asserted | measured | tolerance |
+|---|---|---|---|
+| 1 | 22050 Hz / 2 ch / 16-bit and the exact sample-frame count | 3 164 064 frames = 143.49 s | +-8192 frames |
+| 2 | whole-capture RMS | 7222.6 = **-13.135 dBFS** | +-1.0 dB |
+| 3 | per-channel RMS | L -13.120 / R -13.150 dBFS | +-1.2 dB |
+| 4 | crest factor (peak - RMS) | **13.135 dB** | +-1.0 dB |
+| 5 | saturation, WAV side and engine side | rails 0.06504 %, main-bus clip 0.06493 %, worst pre-clamp 35784 = +0.76 dBFS | ceilings |
+| 6 | true peak, 4x oversampled | L **+1.002** / R **+2.045 dBFS** | +-2.0 dB |
+| 7 | absolute per-band RMS, 8 bands | -18.262 / -21.193 / -21.925 / -21.856 / -23.267 / -24.711 / -27.231 / -32.858 dBFS | +-2.5 dB |
+| 8 | per-slice RMS, fifteen 10 s slices | -21.790 … -11.266 dBFS | +-2.0 dB |
+
+Assertion 4 is the one that keeps working when tolerances drift. The program already
+touches full scale, so a build that got **louder** cannot raise its peak — it closes
+the crest instead. Under the `+3 dB` engine control the sample peak is bit-identical
+at 32768 while the crest falls to 10.329 dB.
+
+Assertion 6 exists because sample peak is pinned at the rail and therefore carries no
+information; the inter-sample overshoot is what a real reconstruction filter and every
+downstream resampler actually produce, and it is measured, not assumed.
+
+**Both directions, and both are engine-level, not analysis-level.**
+`MDKR_AUDIO_TEST_GAIN_DB` scales the synthesised PCM inside `dkr_audio_service_tick()` —
+before the engine's own RMS accounting, before the dump, before the sink — and
+**refuses to act whenever a host output device is open**, so it is file-domain only
+and can never make sound. With the variable unset the capture is byte-identical to a
+build compiled without the seam (verified by `cmp`).
+
+| arm | whole RMS | crest | rails | verdict |
+|---|---|---|---|---|
+| reference | -13.135 dBFS | 13.135 dB | 0.06504 % | PASS |
+| `--control gain+3` | -10.329 dBFS (+2.806) | 10.329 dB | 1.09181 % | **FAIL, 28 assertions, exit 1** |
+| `--control gain-3` | -16.135 dBFS (-3.000) | 13.135 dB | 0.00000 % | **FAIL, 28 assertions, exit 1** |
+
+Four signal-level controls also run on every invocation (+-3.0 and +-1.5 dB applied to
+the real capture in memory); the check **fails if any of them passes**. The +-1.5 dB
+pair is there so the band cannot quietly become a rubber ruler that only catches gross
+errors.
+
+**The console lane (`--reference`) is opt-in and cannot be committed.** It compares
+against the real ROM's own synthesiser output, captured from the audio-interface DMA
+stream inside the instrumented ares of [`docs/ORACLE.md`](../docs/ORACLE.md)
+(`MDKR64_ARES_AUDIO_DUMP`). When it is given, the port arm is re-run on the *same*
+oracle route the console capture used, then envelope-aligned and compared. Measured on
+`race_state_oracle`: **port/console -0.488 dB** over a 153.21 s aligned overlap. Full
+numbers and the method's limits are in
+[`docs/open-items/audio.md`](../docs/open-items/audio.md).
 
 ## RAW16 byte order and timbre — `tests/check_raw16_audio.py` (RUN THIS AFTER ANY RAW16, MIXER LOAD, ENDIAN-HELPER, OR AUDIO-BANK CHANGE)
 
@@ -1200,8 +1543,12 @@ wave "objcoll" it was not: `func_80017A18()` — the per-facet object-model coll
 test, and the only non-NULL writer of `collisionData->collidedObj` in the game —
 linked to a `return 0` stub, so every collision-meshed object was intangible. With
 zero balloons the kart drove through a shut door and `obj_loop_exit()` (which has
-no door check, by design) warped it into the Dino Domain lobby at frame ~6589 and
-Ancient Lake at ~6890.
+no door check, by design) warped it into the Dino Domain lobby at frame ~6731 and
+Ancient Lake at ~7017.
+
+The route approaches the two hub door leaves on their center line before aiming
+at the exit. This is load-bearing: the older diagonal advloop reproducer can
+latch the exit from a near-side corner without touching the door mesh at all.
 
 **Why it has two arms.** The failure mode is *silence* — you drive through, nothing
 crashes, nothing is logged — so running only the fixed build proves nothing
@@ -1218,7 +1565,8 @@ arm's positive. It also asserts the hub *is* reached and that hits are non-zero,
 "blocked" cannot be satisfied by a route that broke early or never touched a door.
 
 `[OBJCOLL] objectmodel_collision_hits=N` at headless exit is the reachability
-number: 1730 on the hub tour, **9** on boss track 38, 0 on tracks 5/32/15. Object
+number: about 1742 on this centered-door route, **9** on boss track 38, 0 on
+tracks 5/32/15. Object
 collision is overwhelmingly a hub-world phenomenon, which is why the pre-fix
 measurement (taken only on race tracks) made the gap look 100x smaller than it was.
 
@@ -1311,6 +1659,71 @@ removed: it encodes where the AI line happens to fall off, and any change that
 shifts the racing line (e.g. a longer pre-race cutscene) makes the broken arm reach
 the summit first and fail the bound while still fully exhibiting the defect. See the
 note in `docs/OPEN_ITEMS.md`.
+
+## Collision candidate headroom — `tests/check_collision_headroom.py` (RUN THIS AFTER ANY CHANGE TO `generate_collision_candidates` OR LEVEL GEOMETRY)
+
+The `j >= cap` pre-check guard added at both
+insert sites in `generate_collision_candidates()` (wave "boundsweep",
+`docs/open-items/collision.md`) stops the out-of-bounds write, but a saturated
+500-entry `gCollisionCandidates` list still silently **drops** every candidate
+past the cap — the same mechanism that dropped racers through Tricky's volcano
+before wave "gridmask". Boss levels 41 and 54 measure 416 of 500, only 84 slots
+of margin. This item is instrument-and-gate only: it does **not** raise the
+cap — the layout/perf effects of a larger allocation are unmeasured.
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_collision_headroom.py -v      # ~3 min
+```
+
+Three things, in order:
+
+1. **Guard presence** — a static source check that the `j >= mdkr_coll_cap
+   (MAX_COLLISION_CANDIDATES)) { goto out; }` text is still present at both
+   insert sites in `game/src/hasm/collision.c` (the segment insert and the
+   facet insert). If wave "boundsweep"'s fix ever regresses to the ROM's bare
+   `j == MAX_COLLISION_CANDIDATES` equality test, this fails before anything
+   else runs.
+2. **Per-level sweep** — one `MDKR_AUTOPILOT` run per level, all ten boss
+   levels (`ASSET_MISC_BOSS_TRACKS_IDS` = 38, 46, 40, 53, 1, 52, 41, 54, 37, 55)
+   at 13000 frames plus Ancient Lake (track 5, an ordinary race) at 6500,
+   reading the `[COLL] maxCandidates=N truncated=N cap=N` line every route
+   already emits (`platform/platform_sdl_min.c`). Fails if `truncated != 0`
+   (saturation must never happen in normal play) or if a level's
+   `maxCandidates` exceeds a frozen baseline ceiling (measured peak + 16 slots
+   of slack) — the regression tripwire for headroom quietly shrinking.
+3. **Positive control** — `MDKR_COLLCAP=150` on boss level 41's own route (same
+   track, script and frame budget as its row in the sweep, cap alone lowered
+   from 500 to 150, well under its natural 416 peak). Asserts the guard still
+   holds under a forced boundary (`maxCandidates` never exceeds the lowered
+   cap — the fix from step 1 is doing its job, not merely present as text) and
+   that the run truncates, then evaluates the SAME "truncated must be 0" rule
+   step 2 applies against this forced arm and requires it to report a
+   failure — proof the sweep's assertion is not vacuous.
+
+Measured baseline (this binary, `MDKR_AUTOPILOT`, one run per level):
+
+| track | frames | peak candidates | truncated | cap | margin |
+|---|---|---|---|---|---|
+| 38 (Tricky 1) | 13000 | 270 | 0 | 500 | 230 |
+| 46 (Tricky 2) | 13000 | 270 | 0 | 500 | 230 |
+| 40 | 13000 | 55 | 0 | 500 | 445 |
+| 53 | 13000 | 55 | 0 | 500 | 445 |
+| 1 | 13000 | 152 | 0 | 500 | 348 |
+| 52 | 13000 | 152 | 0 | 500 | 348 |
+| **41** | 13000 | **416** | 0 | 500 | **84** |
+| **54** | 13000 | **416** | 0 | 500 | **84** |
+| 37 | 13000 | 149 | 0 | 500 | 351 |
+| 55 | 13000 | 92 | 0 | 500 | 408 |
+| 5 (Ancient Lake, ordinary race) | 6500 | 30 | 0 | 500 | 470 |
+
+Levels 41 and 54 remain the tightest margins in the game, unchanged from wave
+"boundsweep"'s original measurement — this check exists so that stops being true
+silently. `[COLPEAK] candidates new peak N of M` (`platform/stubs_dkr.c`
+`mdkr_coll_candidates()`, `MDKR_TRACE`-gated, same pattern as `[EVTQ]`'s
+per-queue peak telemetry in `platform/audio_event_queue.c`) prints each time a
+run's high-water mark advances, for tracing *when* in a route the peak moves;
+the sweep above reads the unconditional `[COLL]` summary line instead, which
+needs no `MDKR_TRACE` and is what every other collision check already parses.
 
 ## One-shot cutscene latch — `tests/check_key_cutscene_once.py` (RUN THIS AFTER ANY CHANGE TO `cutsceneFlags`, `level_load()` OR `DKR_SHL32`)
 
@@ -1942,8 +2355,8 @@ python3 tests/check_taj_challenges.py -v          # all 15 arms
 
 The fixture driver contributes only carpet progress/hold events or the same
 quit request used by the pause menu. It never writes the human finish, place,
-result menu, progress flags, or save. See
-the Taj challenge-coverage report (internal archive) for the exact boundary.
+result menu, progress flags, or save; the assertions below define the exact
+boundary.
 
 ## Adventure trophy series — `tests/check_trophy_series.py`
 

@@ -25,7 +25,9 @@ Three arms:
    deflected right + Go + Drift) must reach the game's own per-frame input
    read as `osContGetReadData P1` rows carrying the A and R bits with a
    decisive positive stick, and releasing every touch must return the
-   published pad to exact neutral. Zero page errors are tolerated.
+   published pad to exact neutral. A press+release completed between rAF/wasm
+   samples must appear as one consumed press and release through the bounded
+   JS queue. Zero page errors are tolerated.
 
 Positive controls: arm 1 and arm 2 are each other's controls (the same
 overlay probe must read hidden without the stored preference and visible with
@@ -69,6 +71,10 @@ import tempfile
 ROM_BYTES = 12 * 1024 * 1024
 PAD_RE = re.compile(
     r"osContGetReadData P1 btn=0x([0-9a-fA-F]{4}) sx=(-?\d+) sy=(-?\d+)"
+)
+INPUT_RE = re.compile(
+    r"\[INPUTHASH\].*p1=(\d),([0-9a-fA-F]{4}),"
+    r"([0-9a-fA-F]{4}),([0-9a-fA-F]{4}),(-?\d+),(-?\d+)"
 )
 N64_A = 0x8000
 N64_R = 0x0010
@@ -145,6 +151,36 @@ def wait_pad(
     raise CheckFailure(
         f"{label}: no matching pad row within {timeout:.0f}s; "
         f"last rows: {pad_rows(cdp, start)[-6:]}"
+    )
+
+
+def input_rows(cdp: CDPClient, start: int) -> list[tuple[int, ...]]:
+    rows = []
+    for line in cdp.console[start:]:
+        match = INPUT_RE.search(line)
+        if match:
+            rows.append((
+                int(match.group(1)),
+                int(match.group(2), 16),
+                int(match.group(3), 16),
+                int(match.group(4), 16),
+                int(match.group(5)),
+                int(match.group(6)),
+            ))
+    return rows
+
+
+def wait_input(cdp: CDPClient, start: int, predicate, label: str,
+               timeout: float) -> tuple[int, ...]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for row in input_rows(cdp, start):
+            if predicate(row):
+                return row
+        time.sleep(0.05)
+    raise CheckFailure(
+        f"{label}: no matching [INPUTHASH] row within {timeout:.0f}s; "
+        f"last rows: {input_rows(cdp, start)[-6:]}"
     )
 
 
@@ -238,6 +274,7 @@ def check_input_arm(
                     "env": {
                         "MDKR_TRACE": "3",
                         "MDKR_AUDIO": "0",
+                        "MDKR_INPUT_HASH": "1",
                     },
                 },
             )
@@ -376,6 +413,39 @@ def check_input_arm(
                 f"({slid_rows[-8:]})",
             )
 
+            # Edge-queue arm: press and release Go back-to-back, without
+            # waiting for wasm/rAF between the browser callbacks. The engine's
+            # tick trace must still expose one A press followed by one release;
+            # a latest-state-only sampler would see neutral twice and fail.
+            marker = len(cdp.console)
+            dispatch_touch(cdp, "touchStart",
+                           [{"x": go_x, "y": go_y, "id": 11}])
+            dispatch_touch(cdp, "touchEnd", [])
+            wait_input(
+                cdp, marker,
+                lambda row: (row[1] & N64_A) != 0
+                and (row[2] & N64_A) != 0,
+                "between-rAF Go tap press", timeout,
+            )
+            wait_input(
+                cdp, marker,
+                lambda row: (row[1] & N64_A) == 0
+                and (row[3] & N64_A) != 0,
+                "between-rAF Go tap release", timeout,
+            )
+            queue_state = cdp.evaluate(
+                "(() => { const s = globalThis.__mdkrTestState; "
+                "const p = s && s.module && s.module.__mdkrTouchPad; "
+                "return p ? {depth: p.events.length, overflow: p.overflow} "
+                ": null; })()"
+            )
+            require(
+                isinstance(queue_state, dict)
+                and queue_state.get("depth", 999) <= 128
+                and queue_state.get("overflow") == 0,
+                f"touch edge queue is not bounded/clean: {queue_state}",
+            )
+
             # The shell routes wasm stderr into testState.errors, so trace
             # rows land there under MDKR_TRACE; only genuine failure markers
             # count.
@@ -450,7 +520,9 @@ def main() -> int:
         "media queries; a CDP three-finger chord reaches osContGetReadData "
         "P1 with A+R plus a decisive stick; and a one-finger slide from Go "
         "onto Drift and back chords A+R then releases R without the throttle "
-        "ever dropping, ending in exact neutral with zero page errors"
+        "ever dropping; a press+release between rAF callbacks survives as one "
+        "consumed press/release; all paths end neutral with a bounded clean "
+        "queue and zero page errors"
     )
     return 0
 

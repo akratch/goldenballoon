@@ -8,7 +8,9 @@
 #include "tracks.h"
 #include <ultra64.h>
 #ifdef NATIVE_PORT
+#include "fast3d/gfx_presentation_packet.h"
 #include "presentation_snapshot.h"
+#include <string.h>
 #endif
 
 /************ .rodata ************/
@@ -33,6 +35,30 @@ const char D_800E8B10[] = "\nError :: trigger %x has no reference to point %x";
 const char D_800E8B44[] = "\nError :: particle %x is not indexed correctly in trigger list %x (%d >> %p)";
 
 /*********************************/
+
+#ifdef NATIVE_PORT
+static void mdkr_register_particle_vertex_batch(
+    const Particle *particle, const Vertex *vertices) {
+    GfxPresentationMatrixOwner owner;
+    uint64_t generation = 0u;
+
+    if (particle == NULL || vertices == NULL ||
+        !presentation_snapshot_identity_generation(particle, &generation)) {
+        return;
+    }
+    memset(&owner, 0, sizeof(owner));
+    owner.address = particle;
+    owner.generation = generation;
+    owner.matrix_class = GFX_PRESENTATION_MATRIX_PARTICLE_VERTICES;
+    owner.valid = true;
+    /* Point/line meshes are already in world space and are identical in every
+     * viewport. Keep one shared retained stream (viewport zero); repeated
+     * multi-view submissions of the same exact bytes are idempotent in the
+     * packet, while a conflicting repeat still poisons the key. */
+    (void)gfx_presentation_packet_register_vertex_identity(
+        vertices, 0, &owner);
+}
+#endif
 
 /************ .data ************/
 
@@ -2644,6 +2670,9 @@ void render_particle(Particle *particle, Gfx **dList, Mtx **mtx, Vertex **vtx, s
                 temp <<= 3;
                 tempvtx = &model->vertices[temp];
                 material_set(dList, model->texture, renderFlags, particle->textureFrame << 8);
+#ifdef NATIVE_PORT
+                mdkr_register_particle_vertex_batch(particle, tempvtx);
+#endif
                 gSPVertexDKR((*dList)++, OS_K0_TO_PHYSICAL(tempvtx), model->vertexCount, 0);
                 gSPPolygon((*dList)++, OS_K0_TO_PHYSICAL(model->triangles), model->triangleCount, TRIN_ENABLE_TEXTURE);
                 if (particle->brightness != 255) {
@@ -2655,11 +2684,17 @@ void render_particle(Particle *particle, Gfx **dList, Mtx **mtx, Vertex **vtx, s
             if (particle->lineCreationPhase >= 2) {
                 model = particle->model;
                 material_set(dList, model->texture, renderFlags, particle->textureFrame << 8);
+#ifdef NATIVE_PORT
+                mdkr_register_particle_vertex_batch(particle, model->vertices);
+#endif
                 gSPVertexDKR((*dList)++, OS_K0_TO_PHYSICAL(model->vertices), model->vertexCount, 0);
                 gSPPolygon((*dList)++, OS_K0_TO_PHYSICAL(model->triangles), model->triangleCount, TRIN_ENABLE_TEXTURE);
             } else if (particle->lineCreationPhase > 0) {
                 model = particle->model;
                 material_set(dList, model->texture, renderFlags, particle->textureFrame << 8);
+#ifdef NATIVE_PORT
+                mdkr_register_particle_vertex_batch(particle, model->vertices);
+#endif
                 gSPVertexDKR((*dList)++, OS_K0_TO_PHYSICAL(model->vertices), 4, 0);
                 gSPPolygon((*dList)++, OS_K0_TO_PHYSICAL(&model->triangles[model->triangleCount]), 1,
                            TRIN_ENABLE_TEXTURE);

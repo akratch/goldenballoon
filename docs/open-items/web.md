@@ -312,7 +312,7 @@ subsystems away* into bounded degradation. Positive control: with the hole emula
 
 ## M8 web (wasm) build — DONE (boots, runs, RENDERS correctly in-browser)
 The Emscripten/WebGPU build boots in a real browser, runs the full game loop at
-60fps (Asyncify/rAF frame boundary), and RENDERS the title/attract, menus, and a
+the authored 30 Hz by default (Asyncify/rAF frame boundary), and RENDERS the title/attract, menus, and a
 race CORRECTLY — verified in headless Chrome 150 driving the actual wasm + scored
 vs native `--dump-frames`. WebGPU device init, AudioWorklet, ROM in MEMFS, and IDBFS
 saves all work (see STATUS.md M8 + docs/architecture/web.md). THREE wasm32-specific

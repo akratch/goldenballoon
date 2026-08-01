@@ -215,14 +215,28 @@ def verify_pair(backend: str, off: Result, on: Result) -> str:
 
     pixel_count = off.width * off.height
     # The linear-light world finish can turn a sub-LSB receiver/decal edge into
-    # opposite channel deltas after tint and sRGB encode. Keep that mixed class
-    # below 1% of the handoff; it must never become a broad hue-shift region.
+    # opposite channel deltas after tint and sRGB encode. The invariant is that
+    # this class must never become a broad hue-shift REGION.
+    #
+    # It was written as 1% of `changed` and re-expressed against the frame at
+    # the R2 light-depth-sign fix, because the old form measured the wrong
+    # thing. `changed` is the size of the shadow handoff, which is exactly what
+    # the fix under test moves: correcting the inverted cascade depth axis
+    # stopped every surface standing on the ground from being umbra'd, so the
+    # handoff halved (40540 -> 20692 pixels) while the mixed class itself FELL
+    # (368 -> 263). A ratio against a shrinking denominator turned a strict
+    # improvement into a failure -- the twelfth bug shape in DEVELOPER_HANDBOOK
+    # section 3, in a threshold instead of a fixture. A fraction of the frame
+    # says "not a broad region" directly and cannot be gamed by a smaller
+    # handoff: it still rejects the pre-fix worst frames measured on this route
+    # (5985 mixed pixels, 1.9% of the frame).
     require(
         1000 < changed < pixel_count // 5 and
         dark_only > 500 and bright_only > 100 and
-        mixed <= changed // 100,
+        mixed <= pixel_count // 500,
         f"{backend}: implausible visual handoff changed={changed}, "
-        f"darkOnly={dark_only}, brightOnly={bright_only}, mixed={mixed}",
+        f"darkOnly={dark_only}, brightOnly={bright_only}, mixed={mixed} "
+        f"(cap {pixel_count // 500})",
     )
     require(
         0 < on.decal_triangles < off.decal_triangles * 9 // 10,

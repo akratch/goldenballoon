@@ -55,8 +55,8 @@ dist/web/mdkr-save-tools.wasm
 dist/web/*.wasm.map
 dist/web/*.data
 
-# transient tool worktrees
-.claude/worktrees/
+# transient local worktrees (tool-specific paths belong in .git/info/exclude)
+.worktrees/
 
 # python bytecode (tools/ helpers are imported by the test checkers)
 __pycache__/

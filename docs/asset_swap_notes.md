@@ -253,8 +253,9 @@ dedicated function with `model->numberOfAnimatedVertices` (see below).
     a MIXED blob: a u16 index block (`numberOfCheats`, then 3 byte-offsets per
     cheat) followed by raw ASCII strings, so a blanket halfword swap would
     reverse every string. `asset_swap_misc_magic_codes()` swaps only the index
-    block, called AFTER `decrypt_magic_codes()` (whose bit permutation is
-    intra-byte and therefore commutes). Before: `numberOfCheats` 7424, first
+    block, called AFTER `decrypt_magic_codes()`. The cipher transposes bit pairs
+    across each four-byte group, so it does **not** commute with a halfword swap;
+    the plaintext must exist first. Before: `numberOfCheats` 7424, first
     string offset 45056 in a 1520-byte blob. After: 29 and 176. The identity
     `firstOffset == (1 + numberOfCheats*3) * 2` pins the field map and the
     converter reverts itself if it does not hold.

@@ -44,7 +44,6 @@ extern ScreenViewport gScreenViewports[];
 static void capture_particle(const Object *object) {
     const Particle *particle = (const Particle *)object;
     PresentationObjectEntry sample;
-    s16 opacity;
 
     memset(&sample, 0, sizeof(sample));
     sample.address = object;
@@ -55,18 +54,14 @@ static void capture_particle(const Object *object) {
     sample.rotation_y = particle->trans.rotation.y_rotation;
     sample.rotation_x = particle->trans.rotation.x_rotation;
     sample.rotation_z = particle->trans.rotation.z_rotation;
-    sample.model_index = -1;
+    /* Particle kind is the stable topology selector used by retained point/
+     * line meshes. It is presentation metadata only, not an Object model ID. */
+    sample.model_index = particle->kind;
     /* A particle's "animation" is its texture frame; there is no
      * ModelInstance to read an animationID/animationFrame from. */
     sample.animation_id = particle->textureFrame;
     sample.animation_frame = 0;
-    opacity = particle->opacity;
-    if (opacity < 0) {
-        opacity = 0;
-    } else if (opacity > 255) {
-        opacity = 255;
-    }
-    sample.opacity = (u8)opacity;
+    sample.opacity = presentation_particle_opacity_u8(particle->opacity);
     sample.is_particle = 1;
     presentation_snapshot_capture_object(&sample);
 }

@@ -110,16 +110,23 @@ const char *sourceName(MdkrVideoSource src) {
 struct Options { const char *const *items; int count; };
 
 const char *kCadence[]   = {"original", "enhanced"};
-const char *kFrameLimit[] = {"original", "60"};
+const char *kFrameLimit[] = {
+    "original", "display", "60", "120", "144", "165", "240", "uncapped"
+};
 const char *kSmoothing[] = {"off", "interpolate"};
 const char *kMode[]      = {"pure", "restored", "remastered", "custom"};
+// The canonical spellings only. mdkr_video_world_shadows_canonical() also takes
+// "0"/"1"/"on"/"" so the MDKR_WORLD_SHADOW diagnostic seam keeps working, but a
+// combo that offered two words for the same state would be a worse control.
+const char *kShadows[]   = {"full", "soft", "off"};
 
 bool optionsFor(MdkrVideoKey k, Options &out) {
     switch (k) {
         case MDKR_VIDEO_SIMULATION_CADENCE: out = {kCadence, 2}; return true;
-        case MDKR_VIDEO_FRAME_LIMIT:        out = {kFrameLimit, 2}; return true;
+        case MDKR_VIDEO_FRAME_LIMIT:        out = {kFrameLimit, 8}; return true;
         case MDKR_VIDEO_MOTION_SMOOTHING:   out = {kSmoothing, 2}; return true;
         case MDKR_VIDEO_MODE:               out = {kMode, 4}; return true;
+        case MDKR_VIDEO_WORLD_SHADOWS:      out = {kShadows, 3}; return true;
         default: return false;
     }
 }

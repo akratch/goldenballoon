@@ -113,6 +113,7 @@ if ! git -C "$SRC_DIR" diff --quiet || ! git -C "$SRC_DIR" diff --cached --quiet
     fi
     while IFS= read -r dirty_path; do
         case "$dirty_path" in
+            ares/n64/ai/ai.cpp|\
             ares/n64/controller/gamepad/gamepad.cpp|\
             ares/n64/cpu/cpu.cpp|\
             ares/n64/n64.hpp|\
@@ -179,6 +180,17 @@ struct MdkrOracleState {
   char dumpDir[1024] = {0};
   bool hasDumpDir = false;
   FILE* stateTrace = nullptr;
+  /*
+   * Audio lane. The tap is in AI::sample(), i.e. the exact s16 pair the ROM
+   * DMA'd to the audio interface, BEFORE ares converts it to float, before the
+   * decay/hold filter, and before any host resampler or output driver. That is
+   * the real ROM's own synthesiser output at full scale -- the absolute-level
+   * reference the port's software mixer has to be measured against.
+   */
+  FILE* audioDump = nullptr;
+  u64 audioSamples = 0;
+  u32 audioRate = 0;
+  char audioPath[1024] = {0};
   u64 dumpEvery = 0;
   u64 dumpStart = 0;
   u64 marks[512] = {0};
@@ -337,12 +349,55 @@ struct MdkrOracleState {
         }
       }
     }
+    if(const char* path = getenv("MDKR64_ARES_AUDIO_DUMP")) {
+      if(*path) {
+        audioDump = fopen(path, "wb");
+        if(!audioDump) {
+          fprintf(stderr, "mdkr64 oracle: cannot open audio dump %s\n", path);
+        } else {
+          snprintf(audioPath, sizeof(audioPath), "%s", path);
+        }
+      }
+    }
     fprintf(stderr,
-      "mdkr64 oracle: configured dumpDir=%s stateTrace=%s every=%llu start=%llu marks=%u events=%u limit=%llu\n",
+      "mdkr64 oracle: configured dumpDir=%s stateTrace=%s audioDump=%s every=%llu start=%llu marks=%u events=%u limit=%llu\n",
       hasDumpDir ? dumpDir : "(none)",
       stateTrace ? "on" : "off",
+      audioDump ? audioPath : "(none)",
       (unsigned long long)dumpEvery, (unsigned long long)dumpStart,
       markCount, eventCount, (unsigned long long)frameLimit);
+  }
+
+  /*
+   * One DMA'd stereo sample pair, little-endian s16 L,R -- the raw AI stream.
+   * Only ACTIVE samples are written: ares' idle path exponentially decays the
+   * held DAC value to emulate the analogue hold, which is an output-stage
+   * artefact and not part of what the ROM's synthesiser produced. Writing it
+   * would bias the very measurement this lane exists for.
+   *
+   * The sample rate is whatever the ROM programmed into AI_DACRATE (DKR asks
+   * for 22050 Hz; the divider makes the true rate slightly different), so it is
+   * recorded in a sidecar rather than assumed by the reader.
+   */
+  auto audioSample(s16 left, s16 right, double frequency) -> void {
+    configure();
+    if(!audioDump) return;
+    u8 bytes[4] = {
+      (u8)((u16)left  & 0xff), (u8)(((u16)left  >> 8) & 0xff),
+      (u8)((u16)right & 0xff), (u8)(((u16)right >> 8) & 0xff),
+    };
+    fwrite(bytes, 1, sizeof(bytes), audioDump);
+    if(audioSamples == 0) {
+      audioRate = (u32)(frequency + 0.5);
+      char sidecar[1100];
+      snprintf(sidecar, sizeof(sidecar), "%s.rate", audioPath);
+      if(FILE* f = fopen(sidecar, "wb")) {
+        fprintf(f, "%u\n", audioRate);
+        fclose(f);
+      }
+      fprintf(stderr, "mdkr64 oracle: audio dump started, AI rate %u Hz\n", audioRate);
+    }
+    audioSamples++;
   }
 
   auto controllerRead(n32 data, const void* gamepad) -> n32 {
@@ -487,9 +542,11 @@ struct MdkrOracleState {
     videoFrame++;
     if(frameLimit && videoFrame >= frameLimit) {
       fprintf(stderr,
-        "mdkr64 oracle: reached frame limit %llu (dumped %u frame(s)), exiting\n",
-        (unsigned long long)frameLimit, dumpedCount);
+        "mdkr64 oracle: reached frame limit %llu (dumped %u frame(s), %llu audio sample-frame(s)), exiting\n",
+        (unsigned long long)frameLimit, dumpedCount,
+        (unsigned long long)audioSamples);
       if(stateTrace) fflush(stateTrace);
+      if(audioDump) fflush(audioDump);
       fflush(stderr);
       std::_Exit(0);
     }
@@ -505,6 +562,10 @@ auto oracleState() -> MdkrOracleState& {
 
 auto mdkr64OracleControllerRead(n32 data, const void* gamepad) -> n32 {
   return oracleState().controllerRead(data, gamepad);
+}
+
+auto mdkr64OracleAudioSample(s16 left, s16 right, double frequency) -> void {
+  oracleState().audioSample(left, right, frequency);
 }
 
 auto mdkr64OraclePresentedVideoDump(Node::Video::Screen screen, const u32* pixels, u32 pitch, u32 width, u32 height) -> void {
@@ -529,16 +590,21 @@ text = n64_hpp.read_text(encoding="utf-8")
 if "#include <cstdlib>" not in text:
     text = text.replace("#include <float.h>\n",
                         "#include <float.h>\n#include <cstdio>\n#include <cstdlib>\n", 1)
+declarations = []
 if "mdkr64OracleControllerRead" not in text:
+    declarations.append(
+        "  auto mdkr64OracleControllerRead(n32 data, const void* gamepad) -> n32;\n")
+if "mdkr64OracleAudioSample" not in text:
+    declarations.append(
+        "  auto mdkr64OracleAudioSample(s16 left, s16 right, double frequency) -> void;\n")
+if "mdkr64OraclePresentedVideoDump" not in text:
+    declarations.append(
+        "  auto mdkr64OraclePresentedVideoDump(Node::Video::Screen screen, const u32* pixels, u32 pitch, u32 width, u32 height) -> void;\n")
+if declarations:
     anchor = "  auto option(string name, string value) -> bool;\n"
     if anchor not in text:
         raise SystemExit("FAIL: n64.hpp declaration anchor not found")
-    text = text.replace(
-        anchor,
-        anchor
-        + "  auto mdkr64OracleControllerRead(n32 data, const void* gamepad) -> n32;\n"
-        + "  auto mdkr64OraclePresentedVideoDump(Node::Video::Screen screen, const u32* pixels, u32 pitch, u32 width, u32 height) -> void;\n",
-        1)
+    text = text.replace(anchor, anchor + "".join(declarations), 1)
 n64_hpp.write_text(text, encoding="utf-8")
 
 # --- gamepad.cpp: route the controller read through the oracle --------------
@@ -551,6 +617,27 @@ if "mdkr64OracleControllerRead" not in text:
     text = text.replace(anchor,
                         "\n  return mdkr64OracleControllerRead(data, (const void*)this);\n}\n\nauto Gamepad::getInodeChecksum", 1)
     gamepad_cpp.write_text(text, encoding="utf-8")
+
+# --- ai.cpp: tap the DMA'd audio samples ------------------------------------
+# The tap sits on the ACTIVE branch of AI::sample(), where `data` is the word
+# the ROM itself DMA'd to the audio interface. Taking it here rather than at
+# stream->frame() keeps the reference free of ares' float conversion, its
+# analogue-hold decay on the idle branch, and every host resampler/driver --
+# so the capture is the real ROM's synthesiser output at full s16 scale, and
+# it is deterministic for a given input route.
+ai_cpp = src / "ares/n64/ai/ai.cpp"
+text = ai_cpp.read_text(encoding="utf-8")
+if "mdkr64OracleAudioSample" not in text:
+    anchor = ("    dac.left  = (s16)(data >> 16) / 32768.0;\n"
+              "    dac.right = (s16)(data >>  0) / 32768.0;\n")
+    if anchor not in text:
+        raise SystemExit("FAIL: ai.cpp sample anchor not found")
+    text = text.replace(
+        anchor,
+        anchor
+        + "    mdkr64OracleAudioSample((s16)(data >> 16), (s16)(data >> 0), dac.frequency);\n",
+        1)
+    ai_cpp.write_text(text, encoding="utf-8")
 
 # --- screen.cpp: dump each presented frame ----------------------------------
 screen_cpp = src / "ares/ares/node/video/screen.cpp"

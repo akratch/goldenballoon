@@ -32,6 +32,50 @@ typedef enum GfxShadowMobility {
     GFX_SHADOW_MOBILITY_DYNAMIC = 1,
 } GfxShadowMobility;
 
+/*
+ * Presentation ownership of a retained display-list dependency. Matrix classes
+ * name how G_MTX relates to an authoritative object root; the particle class
+ * names direct world-space G_VTX data that has no matrix. None turns the
+ * renderer into an owner of gameplay state. The binding contains copied POD
+ * only and survives the display-list freeze without dereferencing its identity
+ * token.
+ */
+typedef enum GfxPresentationMatrixClass {
+    GFX_PRESENTATION_MATRIX_NONE = 0,
+    GFX_PRESENTATION_MATRIX_ROOT = 1,
+    GFX_PRESENTATION_MATRIX_CHILD = 2,
+    GFX_PRESENTATION_MATRIX_EFFECT = 3,
+    GFX_PRESENTATION_MATRIX_BILLBOARD = 4,
+    GFX_PRESENTATION_MATRIX_PARTICLE_VERTICES = 5,
+} GfxPresentationMatrixClass;
+
+typedef struct GfxPresentationMatrixOwner {
+    const void *address; /* identity token only; never dereferenced by replay */
+    uint64_t generation;
+    /* Optional second lifetime for render recipes composed from two objects
+     * (currently shield/magnet local effect + racer base). */
+    const void *secondary_address; /* identity token only */
+    uint64_t secondary_generation;
+    GfxPresentationMatrixClass matrix_class;
+    float source_position[3];
+    float source_scale;
+    int16_t source_rotation[3]; /* y, x, z in DKR fixed-angle order */
+    float scale_y;
+    float offset_y;
+    /* Parent world at the root push. A child binding additionally uses
+     * child_local: replay rebuilds child_local x interpolated_root_world. */
+    float parent_world[GFX_SHADOW_MATRIX_DIM][GFX_SHADOW_MATRIX_DIM];
+    float child_local[GFX_SHADOW_MATRIX_DIM][GFX_SHADOW_MATRIX_DIM];
+    /* EFFECT only: exact render-time local recipe. The primary source fields
+     * above describe the base racer; these describe the shared shield/magnet
+     * object as configured for this particular racer and tick. */
+    float effect_position[3];
+    float effect_scale;
+    int16_t effect_rotation[3]; /* y, x, z */
+    float effect_shear; /* already multiplied by effect_scale, as authored */
+    bool valid;
+} GfxPresentationMatrixOwner;
+
 typedef struct GfxShadowVertex {
     float position[3];
     float uv[2];
@@ -129,6 +173,7 @@ typedef struct GfxShadowMatrixBinding {
      * A binding without it cannot be tenancy-checked and must not be trusted
      * by a consumer that needs to know the key still holds this matrix. */
     bool key_bytes_valid;
+    GfxPresentationMatrixOwner presentation_owner;
 } GfxShadowMatrixBinding;
 
 /* Registration sites, in camera.c order. */
@@ -158,6 +203,23 @@ typedef struct GfxWorldFxStats {
     uint64_t implausible_triangles;
     /* Triangle batches dropped by the DL-build-time caster exclusion seam. */
     uint64_t excluded_triangles;
+    /*
+     * STALE TENANTS. The static caster cache keys on the raw arena Triangle
+     * address, so a source that is freed and reallocated — or a fixed buffer
+     * the game rewrites in place — dedups against an entry that no longer
+     * describes it, and the cache keeps casting the geometry it FIRST saw at
+     * that address for the rest of the stage. That is a caster with no visible
+     * object behind it: the "random shadows from random objects" shape.
+     *
+     * Every cache HIT re-checks the live triangle against the vertices admitted
+     * under that key (the address is being drawn right now, so reading it is
+     * safe). A mismatch is counted here and the entry is re-seated onto the
+     * live geometry, so the phantom lasts one frame instead of a whole stage.
+     * `stale_worst_delta` is the largest world-unit displacement seen, which is
+     * what separates float wobble from a genuinely different object.
+     */
+    uint64_t stale_casters;
+    float stale_worst_delta;
     size_t current_views;
     size_t current_triangles;
     size_t current_static_triangles;
@@ -168,6 +230,14 @@ typedef struct GfxWorldFxStats {
     size_t matrix_entries;
     size_t matrix_peak;
 } GfxWorldFxStats;
+
+typedef struct GfxPresentationOwnerStats {
+    uint64_t registrations;
+    uint64_t roots;
+    uint64_t children;
+    uint64_t effects;
+    uint64_t unowned;
+} GfxPresentationOwnerStats;
 
 /*
  * Matrix bindings are registered while the game builds its one display list.
@@ -206,6 +276,11 @@ typedef struct GfxShadowReplayViewProjection {
 void gfx_shadow_matrix_set_context(int viewport, bool gameplay_vp);
 /* The site the NEXT gfx_shadow_matrix_register call is attributed to. */
 void gfx_shadow_matrix_set_site(int site);
+/* Copied into the NEXT registration and consumed on every register attempt,
+ * like the site tag. NULL explicitly clears the pending owner. */
+void gfx_shadow_matrix_set_presentation_owner(
+    const GfxPresentationMatrixOwner *owner);
+void gfx_shadow_presentation_owner_get_stats(GfxPresentationOwnerStats *out);
 
 /* Copy the live registry + projected-range/excluded-caster marks. Fails whole:
  * a partial freeze would replay a partial scene. */

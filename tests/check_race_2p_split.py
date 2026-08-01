@@ -30,7 +30,7 @@ So this asserts, independently:
                                 playerIndex == PLAYER_TWO, so its presence *is*
                                 the evidence that a second human racer exists.
   4. BOTH PLAYERS MOVE        — for EACH player: finite positions, y inside the
-                                track band, no single-frame teleport, real
+                                track band, no discontinuous teleport, real
                                 checkpoint/lap progress, and no long stall.
   5. THEY ARE DISTINCT RACERS — the two probe streams must stay apart in world
                                 space, so "the same racer traced twice" cannot
@@ -46,14 +46,14 @@ So this asserts, independently:
                                 post-race regression can no longer hide.
 
 Reference (deterministic, Ancient Lake, car, MDKR_AUTOPILOT=1, 9600 frames;
-both backends pass, reference numbers measured on the GL arm — the check's
-default renderer remains WebGPU): level_load at frame 2491, race clock starts
-2662, 6939 frames with
-both players traced, final cp P1=53 / P2=47 (both lap 2, racing ends ~7462),
-max single-frame step 14.8 / 16.4, slowest racing 240-frame mean speed
-10.65 / 9.85, racer separation min 122 / median 2003, per-half scores
-1061..2219 distinct colours and sigma 21.3..52.1 over the in-race window
-(frames 2600-5600).  A blank viewport half scores 59 colours / sigma 5.9 (the
+both backends pass, reference numbers measured identically on GL and WebGPU —
+an unset selector follows the build's current native default): level_load at frame 2491, race
+clock starts 2662, 4719 racing frames with both players traced, final cp P1=53 /
+P2=39 (both lap 2), max single-frame step 23.3 / 44.7, max step-to-step change
+1.6 / 4.0, slowest racing 240-frame mean speed 10.70 / 1.82, racer separation
+min 122 / median 3366, and per-half scores 949..2989 distinct colours / sigma
+22.1..66.1 over the in-race window (frames 2600-7400).  A blank viewport half
+scores 59 colours / sigma 5.9 (the
 calibrated broken-frame value from check_race_drive.py), an order of magnitude
 below the thresholds here.  Motion is judged only while each racer's own race
 clock advances; DKR freezes finished racers for the fade/results sequence.
@@ -99,11 +99,16 @@ VISUAL_LAST = 7400     # racing ends ~7462; score viewport liveness while both
                        # racers are still on track, not the post-race fade
 
 # --- thresholds (measured values are in the module docstring; observations
-# re-measured 2026-07-29 on the extended 9,600-frame racing window) ---
-MIN_BOTH_FRAMES = 3000          # observed ~4800 racing frames (2662..~7462)
-MAX_STEP = 40.0                 # observed 14.8 (P1) / 16.4 (P2)
+# re-measured 2026-07-31 on the extended 9,600-frame racing window) ---
+MIN_BOTH_FRAMES = 3000          # observed 4719 racing frames
+# A real zip-pad boost can sustain >40 units/frame.  Teleports are identified by
+# their discontinuous shape, matching check_race_drive.py: the healthy 2026-07-31
+# 2P route peaks at 44.7 with max step-to-step change 4.0; the historic broken
+# ASSET_MISC_8 route jumped 1296.8 in one frame.
+MAX_STEP = 150.0
+MAX_ACCEL = 40.0
 Y_MIN, Y_MAX = -150.0, 450.0    # observed 6.8 .. 299.6
-MIN_FINAL_CP = 20               # observed 53 (P1) / 47 (P2), lap 2
+MIN_FINAL_CP = 20               # observed 53 (P1) / 39 (P2), lap 2
 MIN_FINAL_LAP = 1
 STALL_WINDOW = 240
 STALL_MIN_MEAN_SPEED = 1.5      # observed slowest racing mean 9.85
@@ -225,6 +230,7 @@ def track(rows, name, failures):
                         f"frame {worst}: y={rows[worst][1]}")
 
     max_step, max_step_frame, steps = 0.0, None, []
+    step_rows: list[tuple[int, float]] = []
     for f in drive:
         if f - 1 not in rows:
             continue
@@ -233,11 +239,23 @@ def track(rows, name, failures):
             continue
         d = sum((b[i] - a[i]) ** 2 for i in range(3)) ** 0.5
         steps.append(d)
+        step_rows.append((f, d))
         if d > max_step:
             max_step, max_step_frame = d, f
+    max_accel, max_accel_frame = 0.0, None
+    for (previous_frame, previous_step), (frame, step) in zip(step_rows, step_rows[1:]):
+        if frame != previous_frame + 1:
+            continue
+        accel = abs(step - previous_step)
+        if accel > max_accel:
+            max_accel, max_accel_frame = accel, frame
     if max_step > MAX_STEP:
         failures.append(f"{name}: teleport: {max_step:.1f} world units in one frame at "
                         f"frame {max_step_frame} (limit {MAX_STEP})")
+    if max_accel > MAX_ACCEL:
+        failures.append(f"{name}: teleport: step length changed by {max_accel:.1f} world "
+                        f"units between consecutive frames at frame {max_accel_frame} "
+                        f"(limit {MAX_ACCEL}) — a boost ramps, a discontinuity does not")
 
     final_cp, final_lap = rows[drive[-1]][3], rows[drive[-1]][4]
     if final_cp < MIN_FINAL_CP:
@@ -259,6 +277,7 @@ def track(rows, name, failures):
 
     return dict(frames=len(drive), final_cp=final_cp, final_lap=final_lap,
                 max_step=max_step, max_step_frame=max_step_frame,
+                max_accel=max_accel, max_accel_frame=max_accel_frame,
                 worst_mean=worst_mean, worst_frame=worst_frame)
 
 
@@ -298,7 +317,7 @@ def main() -> int:
     ap.add_argument("--build", default="build")
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("--renderer", default=None, choices=["gl", "webgpu"],
-                    help="force a backend (default: the build's default, WebGPU)")
+                    help="force a backend (default: the build's native default, GL)")
     ap.add_argument("--window-size", default="640x480",
                     help="initial drawable used for split-screen coverage (default: 640x480)")
     ap.add_argument("--keep-frames", default=None)
@@ -489,6 +508,7 @@ def main() -> int:
             if s:
                 print(f"  {nm}: final cp={s['final_cp']} lap={s['final_lap']}  "
                       f"max step {s['max_step']:.1f} @{s['max_step_frame']}  "
+                      f"max delta-step {s['max_accel']:.1f} @{s['max_accel_frame']}  "
                       f"slowest {STALL_WINDOW}-frame mean {s['worst_mean']:.2f} "
                       f"@{s['worst_frame']}")
         if min_sep is not None:

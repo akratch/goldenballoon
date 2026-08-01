@@ -10,8 +10,8 @@
  * This backend moves the DRAIN off the main thread: a plain-JS
  * AudioWorkletProcessor owns a ring buffer and pulls 128-sample render quanta at
  * audio-thread priority, immune to main-thread stalls. The engine still
- * synthesises on the main thread (welded to the 60 Hz sim tick — mdkr64's
- * dkr_audio_pump) and posts finished PCM into the ring via postMessage — so this
+ * synthesises on the main thread from mdkr64's independently due audio clock
+ * and posts finished PCM into the ring via postMessage — so this
  * needs NO SharedArrayBuffer, NO cross-origin isolation, and does NOT touch the
  * WebGPU build. It is web-only and behind webAudioOutputActive(); if the browser
  * lacks AudioWorklet the caller falls back to the SDL emscripten audio path.

@@ -57,6 +57,15 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME endian_utils COMMAND mdkr_endian_utils_test)
 
+    add_executable(mdkr_magic_codes_test
+        ${CMAKE_SOURCE_DIR}/tests/test_magic_codes.c
+        ${CMAKE_SOURCE_DIR}/platform/asset_swap.c)
+    target_include_directories(mdkr_magic_codes_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_definitions(mdkr_magic_codes_test PRIVATE VERSION_us_v80)
+    add_test(NAME magic_codes COMMAND mdkr_magic_codes_test)
+
     add_executable(mdkr_object_layout_test
         ${CMAKE_SOURCE_DIR}/tests/test_object_layout.c
         ${CMAKE_SOURCE_DIR}/game/src/object_layout.c)
@@ -164,7 +173,11 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform/video_config.c
         ${CMAKE_SOURCE_DIR}/platform/pacing_policy.c
         ${CMAKE_SOURCE_DIR}/platform/video_config_runtime.c
-        ${CMAKE_SOURCE_DIR}/platform/config_ini.c)
+        ${CMAKE_SOURCE_DIR}/platform/config_ini.c
+        # publish() asks the cascade planner for the 1P shadow budget instead of
+        # republishing a hardcoded resolution nothing read. gfx_shadow_cascade.c
+        # is pure (no globals, no GPU), so the ROM-free seam survives.
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_shadow_cascade.c)
     target_include_directories(mdkr_video_config_runtime_test PRIVATE
         ${CMAKE_SOURCE_DIR}/platform)
     if(NOT MSVC)
@@ -265,6 +278,36 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform)
     add_test(NAME sim_sched COMMAND mdkr_sim_sched_test)
 
+    add_executable(mdkr_host_frame_driver_test
+        ${CMAKE_SOURCE_DIR}/tests/test_host_frame_driver.c
+        ${CMAKE_SOURCE_DIR}/platform/host_frame_driver.c
+        ${CMAKE_SOURCE_DIR}/platform/sim_sched.c)
+    target_include_directories(mdkr_host_frame_driver_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME host_frame_driver COMMAND mdkr_host_frame_driver_test)
+
+    add_executable(mdkr_input_tick_queue_test
+        ${CMAKE_SOURCE_DIR}/tests/test_input_tick_queue.c
+        ${CMAKE_SOURCE_DIR}/platform/input_tick_queue.c)
+    target_include_directories(mdkr_input_tick_queue_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME input_tick_queue COMMAND mdkr_input_tick_queue_test)
+
+    add_executable(mdkr_audio_service_clock_test
+        ${CMAKE_SOURCE_DIR}/tests/test_audio_service_clock.c
+        ${CMAKE_SOURCE_DIR}/platform/audio_service_clock.c)
+    target_include_directories(mdkr_audio_service_clock_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME audio_service_clock COMMAND mdkr_audio_service_clock_test)
+
+    add_executable(mdkr_audio_queue_controller_test
+        ${CMAKE_SOURCE_DIR}/tests/test_audio_queue_controller.c
+        ${CMAKE_SOURCE_DIR}/platform/audio_queue_controller.c)
+    target_include_directories(mdkr_audio_queue_controller_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME audio_queue_controller
+        COMMAND mdkr_audio_queue_controller_test)
+
     add_executable(mdkr_presentation_snapshot_test
         ${CMAKE_SOURCE_DIR}/tests/test_presentation_snapshot.c
         ${CMAKE_SOURCE_DIR}/platform/presentation_snapshot.c)
@@ -272,6 +315,13 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform)
     add_test(NAME presentation_snapshot
         COMMAND mdkr_presentation_snapshot_test)
+
+    add_executable(mdkr_presentation_packet_test
+        ${CMAKE_SOURCE_DIR}/tests/test_presentation_packet.c
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_presentation_packet.c)
+    target_include_directories(mdkr_presentation_packet_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/fast3d)
+    add_test(NAME presentation_packet COMMAND mdkr_presentation_packet_test)
 
     add_executable(mdkr_shadow_cascade_test
         ${CMAKE_SOURCE_DIR}/tests/test_shadow_cascade.c
@@ -366,6 +416,20 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/tests/check_webgpu_artifacts.cmake)
 endif()
 
+# Repository-publication policy is backend-independent and must run in every
+# native CTest configuration, including OpenGL-only and sanitizer lanes.
+if(BUILD_TESTING)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(
+        NAME public_surface
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_public_surface.py)
+    add_test(
+        NAME oracle_reference_replay
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_oracle_reference_replay.py)
+endif()
+
 # --- Dependencies ---------------------------------------------------------
 # Native links system SDL2 + OpenGL. Under Emscripten neither exists as a
 # package: SDL2 comes from the emcc port (-sUSE_SDL=2) and there is no GL
@@ -378,6 +442,30 @@ if(NOT EMSCRIPTEN)
     else()
         find_package(OpenGL REQUIRED)
     endif()
+endif()
+
+# SDL queue-mode contract: still ROM-free, but deliberately placed after the
+# dependency finder. CI selects SDL's silent dummy driver; running the same
+# executable without that override is an inaudible physical-device witness.
+if(BUILD_TESTING AND NOT EMSCRIPTEN)
+    add_executable(mdkr_audio_sink_contract_test
+        ${CMAKE_SOURCE_DIR}/tests/test_audio_sink_contract.c
+        ${CMAKE_SOURCE_DIR}/platform/audio_queue_controller.c)
+    target_include_directories(mdkr_audio_sink_contract_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${SDL2_INCLUDE_DIRS})
+    target_link_directories(mdkr_audio_sink_contract_test PRIVATE
+        ${SDL2_LIBRARY_DIRS})
+    target_compile_definitions(mdkr_audio_sink_contract_test PRIVATE
+        SDL_MAIN_HANDLED)
+    target_link_libraries(mdkr_audio_sink_contract_test PRIVATE
+        ${SDL2_LIBRARIES})
+    add_test(NAME audio_sink_contract
+        COMMAND mdkr_audio_sink_contract_test
+                --duration-ms 750
+                --require-driver dummy)
+    set_tests_properties(audio_sink_contract PROPERTIES
+        ENVIRONMENT "SDL_AUDIODRIVER=dummy")
 endif()
 
 if(NOT EMSCRIPTEN)
@@ -430,14 +518,14 @@ else()
 endif()
 
 # --- WebGPU backend (M4.5 / M8) -------------------------------------------
-# WebGPU (wgpu-native) is the DEFAULT native render backend and the ONLY
-# in-browser backend (M8); GL stays the guaranteed native runtime fallback.
+# WebGPU (wgpu-native) is selectable on native and is the ONLY in-browser
+# backend (M8); GL is the native throughput default and guaranteed fallback.
 # Under Emscripten the code is ALWAYS on (there is no GL fallback in the
 # browser) and cmake/webgpu.cmake returns an INTERFACE `webgpu` target wired to
 # `--use-port=emdawnwebgpu` (Dawn's webgpu.h — same C API as wgpu-native, so the
 # vendored gfx_webgpu.c compiles unchanged). Set -DMDKR_WEBGPU_BACKEND=OFF for a
 # native GL-only binary with no wgpu dep. Runtime selection: MDKR_RENDERER.
-option(MDKR_WEBGPU_BACKEND "Build the WebGPU render backend (default backend)" ON)
+option(MDKR_WEBGPU_BACKEND "Build the selectable native WebGPU render backend" ON)
 if(EMSCRIPTEN)
     set(MDKR_WEBGPU_BACKEND ON CACHE BOOL "" FORCE)   # web = WebGPU only
 endif()
@@ -499,9 +587,15 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/video_config.c     # presentation modes (pure core)
     ${CMAKE_SOURCE_DIR}/platform/video_config_runtime.c  # ini/env/argv + g_pc* publication
     ${CMAKE_SOURCE_DIR}/platform/pacing_policy.c    # original/enhanced simulation cadence
-    ${CMAKE_SOURCE_DIR}/platform/sim_sched.c        # fixed-authority clock/accumulator (Phase 1)
+    ${CMAKE_SOURCE_DIR}/platform/sim_sched.c        # exact fixed-authority accumulator
+    ${CMAKE_SOURCE_DIR}/platform/host_frame_driver.c # exact host-time -> fixed tick tickets
+    ${CMAKE_SOURCE_DIR}/platform/input_tick_queue.c  # bounded host edges -> tick pad state
+    ${CMAKE_SOURCE_DIR}/platform/audio_service_clock.c # host audio time -> bounded PCM debt
+    ${CMAKE_SOURCE_DIR}/platform/audio_queue_controller.c # sink drain -> bounded PCM block
     ${CMAKE_SOURCE_DIR}/platform/present_sched.c    # its retrace-branch wiring (Phase 3 Wave B)
     ${CMAKE_SOURCE_DIR}/platform/sim_hash.c         # authoritative-state hash (Phase 1)
+    ${CMAKE_SOURCE_DIR}/platform/gameplay_event_trace.c # ordered transient authority events
+    ${CMAKE_SOURCE_DIR}/platform/input_consumption_trace.c # tick-consumed pad trace
     ${CMAKE_SOURCE_DIR}/platform/presentation_snapshot.c       # presentation shadow state (Phase 3 Wave A)
     ${CMAKE_SOURCE_DIR}/platform/presentation_snapshot_walk.c  # its gObjPtrList/camera capture wiring
     ${CMAKE_SOURCE_DIR}/platform/platform_sdl_min.c
@@ -519,7 +613,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/hasm_stubs_temp.c
     ${CMAKE_SOURCE_DIR}/platform/math_stubs_temp.c
     ${CMAKE_SOURCE_DIR}/platform/mixer.c            # M5: software aspMain audio mixer
-    ${CMAKE_SOURCE_DIR}/platform/audi_port_dkr.c    # M5: audio out + per-frame synth pump
+    ${CMAKE_SOURCE_DIR}/platform/audi_port_dkr.c    # audio-time service + SDL/worklet sinks
     ${CMAKE_SOURCE_DIR}/platform/audio_compat.c     # clean-room synth: banks, filters, CSP player
     ${CMAKE_SOURCE_DIR}/platform/audio_event_queue.c # clean-room ALEventQueue + occupancy stats
     ${CMAKE_SOURCE_DIR}/platform/audio_fx_transfer.c # reverb delay-line transfer planner + guard

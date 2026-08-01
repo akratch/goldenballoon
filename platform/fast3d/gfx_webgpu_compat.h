@@ -49,6 +49,33 @@
    * spontaneous callbacks only need a ProcessEvents dispatch here. */
   #define WGPU_COMPAT_DRAIN(instance)                           \
       do { if (instance) wgpuInstanceProcessEvents((instance)); } while (0)
+  /* Queue-completion callback compatibility. emdawnwebgpu omits the message
+   * parameter that current wgpu-native supplies; both use callback-info
+   * futures. Keep frame-in-flight accounting shared in gfx_webgpu.c. */
+  #define WGPU_COMPAT_QUEUE_DONE_CALLBACK(name)                \
+      static void name(WGPUQueueWorkDoneStatus status, void *userdata, \
+                       void *userdata2)
+  #define WGPU_COMPAT_QUEUE_DONE_UNUSED() ((void)userdata2)
+  #define WGPU_COMPAT_QUEUE_ON_DONE(queue, cb, userdata_value) \
+      do {                                                      \
+          WGPUQueueWorkDoneCallbackInfo _wc_info =              \
+              WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;          \
+          _wc_info.mode = WGPUCallbackMode_AllowProcessEvents;  \
+          _wc_info.callback = (cb);                             \
+          _wc_info.userdata1 = (userdata_value);                \
+          (void)wgpuQueueOnSubmittedWorkDone((queue), _wc_info);\
+      } while (0)
+  #define WGPU_COMPAT_QUEUE_POLL(instance, device)             \
+      do {                                                      \
+          (void)(device);                                       \
+          if (instance) wgpuInstanceProcessEvents((instance));  \
+      } while (0)
+  /* Waiting here would require a new Asyncify boundary inside renderer code.
+   * The browser instead returns to rAF and skips a render attempt when the
+   * bounded queue is saturated. */
+  #define WGPU_COMPAT_QUEUE_CAN_BLOCK 0
+  #define WGPU_COMPAT_QUEUE_BLOCK(instance, device)            \
+      WGPU_COMPAT_QUEUE_POLL((instance), (device))
   /* Browser: the canvas is presented automatically when the frame's JS task
    * yields (via requestAnimationFrame); emscripten's WebGPU binding ABORTS on
    * an explicit wgpuSurfacePresent, so presenting is a no-op here. */
@@ -82,6 +109,32 @@
    * no-op — a pipeline is ready the moment wgpuDeviceCreateRenderPipeline
    * returns. Keeps wgpu_end_frame free of an inline __EMSCRIPTEN__ guard. */
   #define WGPU_COMPAT_DRAIN(instance) ((void)(instance))
+  #define WGPU_COMPAT_QUEUE_DONE_CALLBACK(name)                         \
+      static void name(WGPUQueueWorkDoneStatus status,                  \
+                       WGPUStringView message, void *userdata,           \
+                       void *userdata2)
+  #define WGPU_COMPAT_QUEUE_DONE_UNUSED()                               \
+      do { (void)message; (void)userdata2; } while (0)
+  #define WGPU_COMPAT_QUEUE_ON_DONE(queue, cb, userdata_value)          \
+      do {                                                              \
+          WGPUQueueWorkDoneCallbackInfo _wc_info =                      \
+              WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;                  \
+          _wc_info.mode = WGPUCallbackMode_AllowProcessEvents;          \
+          _wc_info.callback = (cb);                                     \
+          _wc_info.userdata1 = (userdata_value);                        \
+          (void)wgpuQueueOnSubmittedWorkDone((queue), _wc_info);        \
+      } while (0)
+  #define WGPU_COMPAT_QUEUE_POLL(instance, device)                      \
+      do {                                                              \
+          (void)(instance);                                             \
+          if (device) wgpuDevicePoll((device), false, NULL);            \
+      } while (0)
+  #define WGPU_COMPAT_QUEUE_CAN_BLOCK 1
+  #define WGPU_COMPAT_QUEUE_BLOCK(instance, device)                     \
+      do {                                                              \
+          (void)(instance);                                             \
+          if (device) wgpuDevicePoll((device), true, NULL);             \
+      } while (0)
   /* Native: wgpu-native presents the surface explicitly. */
   #define WGPU_COMPAT_PRESENT(surface) wgpuSurfacePresent((surface))
   /* WEB-026: native bring-up waits drive wgpuDevicePoll synchronously — 1000

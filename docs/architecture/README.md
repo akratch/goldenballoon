@@ -9,7 +9,7 @@ identity is kept in each file's title — it is how the commit log, `docs/STATUS
 | File | Was | Covers |
 |---|---|---|
 | [input.md](input.md) | `M4_INPUT_SPEC.md` | Keyboard + SDL controller path into the game's own controller struct, default bindings, save data, interactive frame pacing |
-| [webgpu.md](webgpu.md) | `M4.5_WEBGPU_PLAN.md` | The WebGPU backend — now the default native renderer, and the only one in the browser. wgpu-native dependency, CMake wiring |
+| [webgpu.md](webgpu.md) | `M4.5_WEBGPU_PLAN.md` | The selectable native WebGPU backend and the only renderer in the browser. wgpu-native dependency, CMake wiring |
 | [audio.md](audio.md) | `M5_AUDIO_SPEC.md` | The clean-room audio engine driving a software `aspMain` mixer: ADPCM decode, envelope mixing, resampling, reverb, host output |
 | [race.md](race.md) | `M6_RACE_SPEC.md` | Getting into a controllable race: the deterministic menu route to gameplay, and the verified `MENU_ID` → trace-id mapping |
 | [web.md](web.md) | `M8_WEB_SPEC.md` | The browser (wasm) build: why the architecture was already web-ready, the wasm32-specific defects found and fixed, ROM + saves in the browser |

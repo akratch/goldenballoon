@@ -256,7 +256,33 @@ s16 gArcTanTable[1026];
 
 s32 gCurrentRNGSeed = DKR_RNG_SEED_ROM;
 s32 gPrevRNGSeed    = DKR_RNG_SEED_ROM;
+static u32 gPresentationRNGSeed = DKR_RNG_SEED_ROM ^ 0x50524553u;
 u8  gIntDisFlag     = 0; /* EXPORT(gIntDisFlag) .byte 0x00 -- matches */
+
+/* Renderer/HUD-only randomness. It intentionally uses the ROM generator's
+ * exact step and inclusive range semantics, but advances a separate stream so
+ * presentation count and visibility cannot steer authoritative gameplay. */
+s32 presentation_rand_range(s32 min, s32 max) {
+    u64 temp;
+    u32 seed = gPresentationRNGSeed;
+    u32 span;
+
+    temp = seed;
+    temp = (temp << 32) | (temp >> 1);
+    temp ^= ((u64)(seed & 0xFFFFFu) << 12);
+    seed = (u32)(temp ^ ((temp >> 20) & 0xFFFu));
+    gPresentationRNGSeed = seed;
+    if (max < min) {
+        s32 swap = min;
+        min = max;
+        max = swap;
+    }
+    span = (u32)max - (u32)min + 1u;
+    if (span == 0u) {
+        return (s32)seed;
+    }
+    return (s32)((seed - (u32)min) % span + (u32)min);
+}
 
 static unsigned int mdkr_fnv1a32_u16(const s16 *vals, int n) {
     unsigned int h = 2166136261u;

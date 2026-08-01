@@ -7,6 +7,228 @@
 > trap exists, and retractions are recorded in place rather than removed.
 
 
+## OPEN, believed authored (hardware-unverified): AI stuck-recovery cooldown `unk215` only decays while reversing — the Hot Top Volcano crater wedge
+
+> Observed during first-boss route work (`tests/check_first_boss_progression.py`)
+> once wave "closedloop"'s ASSET_AI_BEHAVIOUR byte-swap fix made the AI table
+> decode correctly and started driving the autopilot racer with it: the fourth
+> Dino race's AI kart leaves the track at Hot Top Volcano's crater jump (around
+> checkpoint 7, frame ~3025) and lands wedged at (-2139.4, -120.7, 1498.9). Left
+> alone, it never recovers — measured sitting there, three wheels grounded, A
+> held, for 18,677 frames straight.
+
+### Mechanism
+
+`racer_AI_pathing_inputs()`, `game/src/racer.c:670-699`:
+
+```c
+if (racer->unk214 == 0 && racer->velocity < -0.5) {
+    racer->unk215 -= updateRate;
+    if (racer->unk215 < 0) {
+        racer->unk215 = 0;
+    }
+}
+
+if (racer->velocity > -1.0 && racer->unk214 == 0 && !gRaceStartTimer && D_8011D544 == 0.0f &&
+    racer->groundedWheels && racer->unk215 == 0) {
+    racer->unk213 += updateRate;
+
+    if (racer->unk213 > 60) {
+        racer->unk213 = 0;
+        racer->unk214 = 60;
+        racer->unk215 = 120;
+        /* ... advance to the next AI line (unk1CA) ... */
+    }
+} else {
+    racer->unk214 -= updateRate;
+    racer->unk213 = 0;
+    if (racer->unk214 < 0) {
+        racer->unk214 = 0;
+    }
+}
+```
+
+`unk213` accumulates while the kart is stationary, grounded and otherwise
+racing normally; once it exceeds 60 update-rate units the AI kicks into a
+60-tick "reverse and pick another line" state (`unk214 = 60`, and `unk1CA`
+advances to a different AI node) and arms a 120-tick cooldown (`unk215`)
+before this recovery can fire again. The cooldown only decrements when
+`unk214 == 0` (i.e. after the reverse window has run its course) **and**
+`velocity < -0.5` — the kart has to actually be driving backwards fast enough,
+not merely have finished the 60-tick window. If the kart comes out of that
+window still wedged against geometry (unable to reach `velocity < -0.5` no
+matter how hard it reverses), `unk215` never reaches 0 again, so the
+`unk213`-driven recovery can never re-arm. Nothing else in `racer.c` reads or
+writes `unk215`, so once this happens the kart is stuck for the rest of the
+race.
+
+### Why this is believed authored, not a port defect
+
+`racer_AI_pathing_inputs()` and the rest of `game/src/racer.c` carry no
+`GLOBAL_ASM` and no `NON_MATCHING` — this is matching decompiled code. No
+port-side change touches `unk215`, `unk213`, `unk214`, or the branch
+conditions around them; they read exactly as the ROM's own logic. The
+ASSET_AI_BEHAVIOUR fix that exposed this (`docs/asset_swap_notes.md`) made the
+AI table decode *correctly* for the first time — the wedge is a consequence of
+the AI table now driving this racer down a real racing line it previously
+never reached (the table was garbage before the swap fix), not a new defect
+the byte-swap correction introduced.
+
+### The existing tripwire
+
+`platform/mdkr_adventure.c`'s `mdkr_autopilot_unstick()`, gated on the
+test-only `MDKR_AUTOPILOT_UNSTICK` env var, zeroes `racer->unk215` for the
+autopilot racer once it is *provably* immobile (moved less than 1 unit while
+120 update-rate units — 60 frames — elapse, grounded, mid-race, checkpoint
+already passed, input not blocked) and then lets the game's own recovery
+drive from there. It never touches position, steering, collision, laps or any
+verdict — see the function's own header comment in `mdkr_adventure.c` for the
+full contract, and its production-behavior statement: "That is upstream
+behaviour ... not a port defect, so it is not changed for production."
+`tests/check_first_boss_progression.py` sets it only for the campaign arms
+(the deliberately-broken collision-grid control does not set it, and must
+keep failing to finish); every firing is logged via the `autopilotunstick:`
+trace line, and the check asserts (`off_course` in the fourth-race
+verification block) that it **never fires outside Hot Top Volcano** — any new
+wedge site elsewhere would fail the gate rather than being silently absorbed.
+
+### Open question: hardware verification
+
+Not yet confirmed on real hardware or in a cycle-accurate emulator (ares) that
+the retail cart wedges identically at this crater jump once fed the same
+(correct) AI table. If a hardware/ares run reproduces the same wedge, this
+closes as authored-and-accepted. If it does not, the AI-table correction
+changed reachability in a way retail's own AI never encountered, and this
+needs an actual fix rather than a test-only workaround; the hardware-verification
+question remains tracked here.
+
+### Not done, and staying that way for now
+
+No production behavior changes here — `mdkr_autopilot_unstick()` compiles into
+every native build (it lives beside the other `MDKR_DRIVE_ROUTE`/`MDKR_OBJDUMP`
+test hooks under the same `#ifdef NATIVE_PORT` block in `racer.c`) but is a
+runtime no-op unless `MDKR_AUTOPILOT_UNSTICK` is explicitly set, which no
+shipping launch path does. An opt-in `--restored`-tier unstick (labeled, never
+default in `--pure`) is noted as a possible future enhancement, not
+implemented.
+
+## CLOSED, NOT A DEFECT: the zip-pad boost is the magnitude DKR authored — wave "zippad"
+
+The register carried this since wave "closedloop": *a zip pad reaches 44.9 world
+units/frame in an eight-racer Tracks race against 23.2 for the same pad in a solo
+Time Trial — 3.2× vs 1.67× top speed — mechanism is DKR's own, magnitude never
+checked against the ROM.* It is now measured. **Authored. No port defect, no fix.**
+
+### First: neither historical number reproduces, and that is the first finding
+
+The 44.9 came from a pad that `nav_to_time_trial_race.txt` + `MDKR_AUTOPILOT`
+happened to drive over. **That route no longer touches a zip pad at all** —
+measured with the new `[BOOST]` probe: zero frames of `SURFACE_ZIP_PAD` across the
+entire race, no boost ever armed, and `check_race_drive.py` now reports max step
+**14.3** where it recorded 44.9. The AI line moved when this same wave's parent
+("closedloop") landed the ROM-faithful RNG seed, arctan table and table-based trig.
+
+So the two figures were never a controlled comparison and cannot be made into one:
+two different racing lines, at two different points of two different track modes,
+with two different entry speeds and gradients, and two different "top speed"
+denominators. This is exactly the trap [`tests/README.md`](../../tests/README.md#open-loop-vs-closed-loop--read-this-before-adding-or-editing-a-fixture)
+documents — it bit the *measurement* this time rather than a fixture.
+
+### The controlled measurement
+
+`MDKR_ZIPPAD_BOOST=<frame>[:<ticks>]` (`objects.c mdkr_zippad_boost_hook`, no-op
+unless set) arms player one, once, in exactly the state `racer.c:5727` arms it in
+for `SURFACE_ZIP_PAD` on a car — `boostTimer = normalise_time(45)`,
+`boostType = BOOST_LARGE`. Everything downstream is untouched decomp code, so this
+measures the shipping boost with a deterministic trigger instead of a chaotic one.
+Armed at frame 4000, cadence enhanced / one field, Ancient Lake, default car:
+
+| arm | cruise | boost frames | peak &#124;velocity&#124; | peak step | ×cruise |
+|---|---|---|---|---|---|
+| **8-racer Tracks** | 12.27 | 45 | **22.357** | 24.31 | 1.98× |
+| **solo Time Trial** | 12.67 | 45 | **22.336** | 24.98 | 1.97× |
+| control `:15` | 12.27 | 15 | 20.880 | 20.89 | 1.70× |
+| control `:120` | 12.23 | 120 | 22.358 | 24.55 | 2.01× |
+
+**The two modes differ by 0.021 velocity units — 0.09%.** There is no racer-count
+coupling in the boost. `normalise_time()` (`objects.c:1341`) has no framerate term
+either: it is `(timer * 5) / 6` under PAL and the identity otherwise. And under
+`--headless-frames` the pacer is `PACE_SYNTH` with a fixed field count
+(`platform_sdl_min.c:1414`), so `updateRate` was identical in both arms — logged as
+`rate=` in the trace and confirmed, which rules out the frameskip-compensation
+suspect the plan listed.
+
+### The boost saturates — which bounds the whole question
+
+The `:120` control is the physically interesting row: holding `boostTimer` **2.7×
+longer reaches the same peak, 22.358**. `traction = 2.0f` per update against the
+drag term reaches terminal velocity well inside 45 ticks, so a zip pad cannot
+produce an unbounded speed however long it is held. Its magnitude is bounded by
+the authored physics, not by the timer. Recorded because it is the answer to
+"could a boost ever run away here?" — it cannot.
+
+### The reference used: code-level differential, not an ares trace
+
+**No hardware trace was taken, and that is a deliberate, disclosed choice.** The
+oracle pipeline in [`docs/ORACLE.md`](../ORACLE.md) needs an *instrumented* ares
+built by `tools/prepare_ares_oracle.sh` (pinned commit + patch + compile); the only
+ares on this machine is a stock `/Applications/ares.app` with none of the
+injection/state-trace hooks, and no capture is committed. Building it was out of
+proportion to what the question needed, because the differential is decisive on its
+own:
+
+**All 310 boost/velocity statements in `game/src/racer.c` are byte-identical to the
+decomp baseline** recorded in `.decomp-baseline` (`3b2dd520`) — compared as an
+ordered sequence over `boostTimer`, `boostType`, `BOOST_*`, `SURFACE_ZIP_PAD`,
+`normalise_time`, `traction`, `racer->velocity` and `gCurrentRacerMiscAssetPtr`, so
+a moved or reordered statement would show. `handle_racer_top_speed`,
+`update_car_velocity_ground` and `handle_car_velocity_control` — the functions that
+apply the boost — are byte-identical *whole*. The only port deltas anywhere near the
+path are `GET_BOOST_TABLE()` (the LP64 `ASSET_MISC_20` accessor), the `MtxF sp60`
+stack fix in the *plane* update, and a `D_800DCDA0` index clamp in the AI input
+function — none of which is in the car boost path. `objects.c`'s only additions are
+the port's own observability hooks.
+
+The handbook §3 priors were checked and are clean: `boostTimer`/`boostType` are
+plain `s8` runtime fields (`structs.h:1437`, `:1482`), never memcpy'd from a ROM
+record, never reached through a cast or an offset, and `normalise_time(45)` cannot
+overflow one; `gCurrentRacerMiscAssetPtr`'s backing tables are already in the
+`dkr_misc_normalize_tables()` word-swap list.
+
+### The gate
+
+[`tests/check_boost_magnitude.py`](../../tests/check_boost_magnitude.py), registered
+in `tools/run_checks.py` as `boost_magnitude`. It asserts the per-frame
+`|racer->velocity|` trace (45 boost frames exactly, monotone ramp, plateau inside
+`[21.8, 22.7]`, decay back under 0.75 of the plateau) and the cross-mode peak
+difference, and it runs **both** perturbed-constant controls on every invocation —
+`:15` trips four assertions, `:120` trips two, and if either passes the check fails
+with `POSITIVE CONTROL BROKEN`.
+
+The trace is asserted on velocity rather than on the position step **on purpose**:
+the step carries cornering and gradient, so normalised by cruise the two fixtures'
+ramps differ by up to 0.17 against a tolerance that would have to be 0.25, while the
+velocity traces agree to 0.05. A check calibrated on the step would have been
+another line-shaped fixture.
+
+### Honest gaps
+
+* **The plateau assertion stops at frame +34, not at the end of the boost.** The
+  solo Time Trial line reaches a corner around +37 and sheds speed while the timer
+  is still running (19.34, then 15.75) — a boost guarantees the throttle, not the
+  road. Frames +25..+34 are the widest window in which both fixtures are still on
+  the boost's own terminal speed. The decay half is covered by the tail assertion
+  instead, which is normalised and therefore line-tolerant.
+* **A real pad crossing is still not exercised by any check.** What is validated is
+  the boost *state* and everything downstream of it, not the surface-detection code
+  that arms it (`racer.c:5727`'s `surfaceType == SURFACE_ZIP_PAD` test). A route
+  that reliably crosses a pad would close that, and would pair naturally with G2's
+  human-line oracle route.
+* **No hardware number.** The claim proved is "identical to the decomp, and
+  internally consistent", not "identical to the ROM at the instruction level". If
+  the instrumented ares is ever built, the `[BOOST]` probe is already the right
+  shape to diff against it.
+
 ## FIXED: three ROM-fidelity divergences, and the fixture class that was blocking them — wave "closedloop"
 
 The "hasmaudit" wave below found three measured divergences from the ROM in
@@ -188,7 +410,11 @@ came in earlier and the number in the older section is stale.
   trajectory shift back.
 - **The zip-pad boost magnitude was not verified against the ROM** — measured and
   recorded above, and `check_race_drive`'s teleport test was rewritten so that it
-  does not depend on the answer either way.
+  does not depend on the answer either way. **SUPERSEDED 2026-07-31 by [wave
+  "zippad"](#closed-not-a-defect-the-zip-pad-boost-is-the-magnitude-dkr-authored--wave-zippad):
+  authored, no defect. Note the 44.9 recorded here no longer reproduces — this very
+  wave's corrections moved the AI line off that pad — which is why the closing
+  measurement had to arm the boost instead of driving over one.**
 - **`--expect-fail 9` is no longer used** — level 9 (`obj_loop_snowball`'s NULL
   `animatedObject`) completed a 12000-frame autopilot race with `maxcp=80` in BOTH
   math arms. Checked in both arms specifically to rule out the new RNG sequence

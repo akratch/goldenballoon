@@ -18,6 +18,9 @@ int main(void) {
     MdkrPacingClock enhanced;
     uint64_t target;
     int rebased;
+    MdkrPresentPolicy present;
+    MdkrPresentPolicy same;
+    MdkrPresentDeadlineClock present_clock;
 
     expect("original is valid", mdkr_pacing_cadence_valid("original"));
     expect("enhanced is valid", mdkr_pacing_cadence_valid("enhanced"));
@@ -59,6 +62,62 @@ int main(void) {
            mdkr_pacing_queue_refill(7, 6, 8) == 8);
     expect("video queue fails safe on a zero measurement",
            mdkr_pacing_queue_refill(0, 0, 8) == 1);
+
+    expect("original present policy parses",
+           mdkr_present_policy_parse("original", &present) &&
+               present.kind == MDKR_PRESENT_ORIGINAL && present.rate == 0u);
+    expect("numeric present policy parses",
+           mdkr_present_policy_parse("144", &present) &&
+               present.kind == MDKR_PRESENT_CAPPED && present.rate == 144u);
+    same = present;
+    expect("present policy equality includes rate",
+           mdkr_present_policy_equal(&present, &same));
+    expect("numeric cap disables backend vsync",
+           !mdkr_present_policy_uses_vsync(&present));
+    expect("numeric cap above tick rate needs the subloop",
+           mdkr_present_policy_needs_subloop(&present, 30u));
+    expect("tick-rate cap does not need replay",
+           mdkr_present_policy_parse("30", &present) &&
+               !mdkr_present_policy_needs_subloop(&present, 30u));
+    expect("display policy parses and uses backend sync",
+           mdkr_present_policy_parse("display", &present) &&
+               present.kind == MDKR_PRESENT_DISPLAY &&
+               mdkr_present_policy_uses_vsync(&present) &&
+               mdkr_present_policy_needs_subloop(&present, 30u));
+    expect("uncapped policy parses without backend sync",
+           mdkr_present_policy_parse("uncapped", &present) &&
+               present.kind == MDKR_PRESENT_UNCAPPED &&
+               !mdkr_present_policy_uses_vsync(&present));
+    expect("legacy keyword spelling remains case-insensitive",
+           mdkr_present_policy_parse("DISPLAY", &present) &&
+               present.kind == MDKR_PRESENT_DISPLAY);
+    expect("low numeric rate is rejected",
+           !mdkr_present_policy_parse("29", &present));
+    expect("high numeric rate is rejected",
+           !mdkr_present_policy_parse("1001", &present));
+    expect("malformed numeric rate is rejected",
+           !mdkr_present_policy_parse("120hz", &present));
+    expect("signed numeric rate is rejected",
+           !mdkr_present_policy_parse("+120", &present));
+    expect("space-prefixed numeric rate is rejected",
+           !mdkr_present_policy_parse(" 120", &present));
+
+    expect("initialize 144 Hz present deadline",
+           mdkr_present_deadline_init(&present_clock, 144u));
+    target = mdkr_present_deadline_target(
+        &present_clock, UINT64_C(1000000000));
+    expect("144 Hz first deadline is exact rational floor",
+           target == UINT64_C(1006944444));
+    mdkr_present_deadline_commit(&present_clock, target);
+    expect("144 Hz second deadline retains absolute phase",
+           mdkr_present_deadline_target(&present_clock, target) ==
+               UINT64_C(1013888888));
+    mdkr_present_deadline_commit(
+        &present_clock, UINT64_C(1050000000));
+    expect("late present skips expired deadlines without drift",
+           mdkr_present_deadline_target(
+               &present_clock, UINT64_C(1050000000)) ==
+               UINT64_C(1055555555));
 
     expect("initialize NTSC original clock",
            mdkr_pacing_clock_init(&ntsc, 60, 2, 6));

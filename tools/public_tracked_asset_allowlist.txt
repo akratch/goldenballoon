@@ -1,0 +1,28 @@
+# Exact, reviewed first-party/static assets intentionally tracked in source.
+# The release guard rejects any new binary or dist/ path until it is reviewed
+# and added here. Keep this list sorted.
+brand/appicon-source.png
+dist/web/assets/apple-touch-icon.png
+dist/web/assets/favicon-32.png
+dist/web/assets/favicon.png
+dist/web/assets/hero.jpg
+dist/web/assets/logo.png
+dist/web/assets/og.jpg
+dist/web/assets/wordmark.png
+dist/web/index.html
+dist/web/manifest.webmanifest
+dist/web/mdkr-save-ui.js
+dist/web/mdkr64-shell.js
+dist/web/rom-id.js
+dist/web/style.css
+docs/evidence/imgui-shell/ingame-overlay-f1.png
+docs/evidence/imgui-shell/ingame-overlay-gl.png
+docs/evidence/imgui-shell/launcher-about.png
+docs/evidence/imgui-shell/launcher-diagnostics.png
+docs/evidence/imgui-shell/launcher-rom-panel.png
+docs/evidence/imgui-shell/launcher-settings.png
+docs/evidence/imgui-shell/rompicker-firstrun.png
+docs/evidence/imgui-shell/rompicker-nsopenpanel.png
+docs/evidence/imgui-shell/rompicker-ready.png
+docs/evidence/imgui-shell/rompicker-rejected.png
+windows/mdkr64.ico

@@ -97,22 +97,17 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
      * Wave B slice 2 already reads (present_sched.c/platform_sdl_min.c).
      * The env name below is deliberately the SAME seam name so a raw
      * diagnostic override and this schema key resolve from the same
-     * underlying environment variable. Only "original" and "60" are accepted
-     * here -- slice 2 is the only rate the presentation subloop actually
-     * supports (60 Hz NTSC == 2 presents/tick); 120/144/VRR/uncapped are
-     * refused with a trace line by present_pace_lazy_init()
-     * (platform_sdl_min.c) rather than silently rounded, and this schema must
-     * not claim coverage the engine does not have. Values outside {original,
-     * 60} remain reachable only via the raw env seam directly, for the
-     * gates/diagnostics that exercise them (tests/check_presentation_matrix.py
-     * arm B's MDKR_PRESENT_RATE=30).
+     * underlying environment variable. The shared pacing-policy parser accepts
+     * `original`, integer caps 30..1000, `display`, and `uncapped`; the platform
+     * converts elapsed time into exact sub-field scheduler/audio units, so none
+     * of those values is rounded onto the source 50/60 Hz VI grid.
      *
      * SCOPE_RESTART, not SCOPE_LIVE, and the asymmetry with Video.Widescreen /
      * Video.Aspect / Video.RenderScale is deliberate. Both consumers LATCH:
      *
      *   - platform_sdl_min.c's present_pace_lazy_init() resolves the present
-     *     period ONCE, on the first platform_present_subloop_fields() call,
-     *     into a file-static (s_presentFields). Nothing ever re-resolves it.
+     *     policy ONCE, on the first platform_present_subloop_fields() call,
+     *     into file-static deadline state. Nothing ever re-resolves it.
      *   - gfx_pc_dkr.c's gfx_start_frame()/gfx_end_frame() capture the replay's
      *     walk-entry state (dkr_walk_entry_*) and freeze the shadow matrix
      *     registry only when present_sched_replay_armed() is true, and
@@ -121,7 +116,7 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
      *
      * So a "live" change is unsafe in BOTH directions. Engaging late is dead
      * cost: the freeze/snapshot work starts happening but the subloop never
-     * runs, because s_presentFields was already latched at 0. Disengaging late
+     * runs, because the platform policy was already latched inactive. Disengaging late
      * is worse than dead: the subloop is still latched ON, while
      * present_sched_replay_armed() has gone false, so gfx_start_frame stops
      * refreshing dkr_walk_entry_* -- which gfx_dkr_replay_invalidate() is the
@@ -141,10 +136,11 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
         "Frame limit",
         "original presents once per authoritative tick, exactly as the game "
-        "always has. 60 presents twice per NTSC tick, with the camera "
-        "interpolated between them (Phase 3 Wave B slice 2); higher, VRR, and "
-        "uncapped policies are not supported by this build yet and are "
-        "refused rather than approximated. Requires a restart because the "
+        "always has. A number from 30 to 1000 is an exact software cap; "
+        "display follows the display opportunity, and uncapped removes the "
+        "software limiter and requests a non-vsync backend mode. Interpolation "
+        "never changes the fixed gameplay tick. Backend fallbacks are reported "
+        "explicitly rather than labelled uncapped. Requires a restart because the "
         "present pacer and the replay's frame-state capture both resolve this "
         "once, at the first present. Note that with 60 and MotionSmoothing=off "
         "a pass that submits no graphics task presents at the tick rate, not "
@@ -169,7 +165,7 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "FrameLimit asks for. off presents at the same requested rate but "
         "repeats the tick's own image instead -- the positive control "
         "check_presentation_matrix.py's arm C uses to prove interpolation is "
-        "doing something. Only meaningful when FrameLimit=60; original has no "
+        "doing something. Only meaningful above the authored tick rate; original has no "
         "intermediate frame to smooth, so this setting is ignored under it. "
         "Requires a restart: the replay's capture and snapshot arming are "
         "decided from this value at boot.",
@@ -182,6 +178,47 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "Pure is the 4:3 reference, Restored preserves the art direction at modern "
         "fidelity, and Remastered enables the complete art-directed presentation.",
         MDKR_VIDEO_CAT_PRESENTATION
+    },
+    /*
+     * The only player-facing control over the Remastered world-shadow pass.
+     *
+     * Before this key the feed had no setting at all: shadows arrived bundled
+     * inside Video.RemasterFX, so "the remaster shadows degrade the UX" — the
+     * one complaint the pre-1.0 playthrough left open — could only be answered
+     * by giving up tonemapping, RL-5 lighting, 16x anisotropy and mip chains
+     * along with them. The renderer had already been written as though the
+     * setting existed (gfx_opengl.c's off->on latch reset still names
+     * "Video.SunShadow"); this is that setting, under its real name.
+     *
+     * SCOPE_LIVE, and unlike the pacing keys above that is not aspirational.
+     * Both receivers re-read g_pcSunShadow per draw and per frame; the shadow
+     * depth resources are (re)acquired every frame from the cascade plan's own
+     * budget, which ALREADY changes live whenever the split-screen player count
+     * does (2048/2 cascades at 1P, 1024/1 at 4P); and both backends already
+     * edge-detect an off->on transition to clear the perma-fail latch. Nothing
+     * about this value is latched at boot.
+     *
+     * Values, and why there are three rather than a checkbox:
+     *   full  the shipped image, unchanged (38% attenuation under the umbra).
+     *   soft  the same maps and the same cascades at 22% attenuation, for
+     *         players who read the full-strength umbra as heavy on DKR's flat
+     *         arcade art. DKR's vertex colour already bakes occlusion in, so
+     *         the shadow pass is always double-darkening to some degree; this
+     *         is the knob for how much.
+     *   off   no world shadows. Actor blob decals come back, so karts and
+     *         objects keep their grounding rather than floating.
+     * "1"/"on" and "0" are accepted for the diagnostic seam's historical
+     * spellings so every existing A/B gate keeps working unchanged.
+     */
+    [MDKR_VIDEO_WORLD_SHADOWS] = {
+        "Video.WorldShadows", "MDKR_WORLD_SHADOW",
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 0.0f,
+        "World shadows",
+        "full is the shipped art-directed depth pass. soft keeps the same "
+        "shadows at a lighter strength, for art that already bakes its own "
+        "occlusion. off restores the original blob shadows under karts and "
+        "objects. Part of Remaster effects; inert in Pure and Restored.",
+        MDKR_VIDEO_CAT_FIDELITY
     },
 };
 
@@ -247,6 +284,7 @@ static const float s_preset[MDKR_VIDEO_KEY_COUNT][3] = {
     [MDKR_VIDEO_FRAME_LIMIT]  = {      0.0f,     0.0f,       0.0f }, /* string; see below */
     [MDKR_VIDEO_MOTION_SMOOTHING] = {  0.0f,     0.0f,       0.0f }, /* string; see below */
     [MDKR_VIDEO_MODE]         = {       0.0f,     0.0f,       0.0f }, /* string; see below */
+    [MDKR_VIDEO_WORLD_SHADOWS] = {      0.0f,     0.0f,       0.0f }, /* string; see below */
 };
 
 /*
@@ -292,6 +330,15 @@ static const char *const s_preset_text[MDKR_VIDEO_KEY_COUNT][3] = {
     [MDKR_VIDEO_FRAME_LIMIT] = { NULL, NULL, NULL },
     [MDKR_VIDEO_MOTION_SMOOTHING] = { NULL, NULL, NULL },
     [MDKR_VIDEO_MODE]         = {     "pure", "restored", "remastered" },
+    /*
+     * Pinned in every mode, and "off" in Pure/Restored is the truth rather than
+     * a policy: the receiver shader path is only compiled under RemasterFX, so
+     * a non-off value in those modes would be a setting that displays a state
+     * the image does not have. Remastered pins "full" — the shipped default
+     * image is unchanged by this key's arrival, which is the whole point of
+     * defaulting it there.
+     */
+    [MDKR_VIDEO_WORLD_SHADOWS] = {    "off",      "off",       "full" },
 };
 
 void mdkr_video_config_defaults(MdkrVideoConfig *config) {
@@ -323,11 +370,11 @@ void mdkr_video_config_defaults(MdkrVideoConfig *config) {
         "%s", "original");
     /*
      * FrameLimit defaults to "original", NOT the "60" the spec §11 example ini
-     * shows as its "suggested final semantics". That example describes the
-     * shipped end state once the presentation architecture clears spec §12.3's
-     * oracle-breadth gate and is promoted (spec §15); today only camera-only
-     * interpolation at headless/offscreen-proven 60 Hz has landed (Wave B slice
-     * 2), so the conservative, behavior-preserving default is the honest one.
+     * shows as its "suggested final semantics". Arbitrary-rate presentation is
+     * opt-in for its first release: native live sink/backpressure and browser
+     * display-rate qualification remain separate from the deterministic
+     * headless proof, so the conservative behavior-preserving default is the
+     * honest one.
      * MotionSmoothing defaults to "interpolate" because it is inert whenever
      * FrameLimit=original -- there is no intermediate frame for it to affect --
      * so shipping its eventual-default value now costs nothing and needs no
@@ -438,12 +485,40 @@ static int mdkr_video_validate_gameplay_fov(const char *value) {
 }
 
 static int mdkr_video_validate_frame_limit(const char *value) {
-    return mdkr_video_ci_equal(value, "original") || mdkr_video_ci_equal(value, "60");
+    MdkrPresentPolicy policy;
+    return mdkr_present_policy_parse(value, &policy);
 }
 
 static int mdkr_video_validate_motion_smoothing(const char *value) {
     return mdkr_video_ci_equal(value, "off") ||
            mdkr_video_ci_equal(value, "interpolate");
+}
+
+/*
+ * World shadows resolve to one of three canonical words, but the key inherits
+ * MDKR_WORLD_SHADOW — a seam that predates it and that every existing A/B gate
+ * drives with "0"/"1" (and, historically, with an empty string meaning off).
+ * Accepting those spellings and CANONICALISING them here is what lets the
+ * setting and the diagnostic seam be the same thing: whatever a gate or a user
+ * writes, the config, the ini and the options screen all show one of three
+ * words. Returns NULL for anything unrecognised.
+ */
+const char *mdkr_video_world_shadows_canonical(const char *value) {
+    if (value == NULL) {
+        return NULL;
+    }
+    if (value[0] == '\0' || mdkr_video_ci_equal(value, "off") ||
+        mdkr_video_ci_equal(value, "0")) {
+        return "off";
+    }
+    if (mdkr_video_ci_equal(value, "soft")) {
+        return "soft";
+    }
+    if (mdkr_video_ci_equal(value, "full") || mdkr_video_ci_equal(value, "on") ||
+        mdkr_video_ci_equal(value, "1")) {
+        return "full";
+    }
+    return NULL;
 }
 
 static int mdkr_video_parse_number(const char *value, float *out) {
@@ -500,6 +575,15 @@ int mdkr_video_config_set(MdkrVideoConfig *config,
             }
             return mdkr_video_config_apply_preset_from(
                 config, (MdkrVideoMode) mode, source);
+        }
+        if (key == MDKR_VIDEO_WORLD_SHADOWS) {
+            const char *canonical = mdkr_video_world_shadows_canonical(value);
+            if (canonical == NULL) {
+                return 0;
+            }
+            snprintf(slot->text, sizeof(slot->text), "%s", canonical);
+            slot->source = source;
+            return 1;
         }
         if ((key == MDKR_VIDEO_ASPECT && !mdkr_video_validate_aspect(value)) ||
             (key == MDKR_VIDEO_GAMEPLAY_FOV &&

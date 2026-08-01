@@ -10,6 +10,9 @@
 #include "textures_sprites.h"
 #include "types.h"
 #include "video.h"
+#ifdef NATIVE_PORT
+#include "gameplay_event_trace.h"
+#endif
 
 /************ .data ************/
 
@@ -223,6 +226,13 @@ s32 transition_begin(FadeTransition *transition) {
     if (transition == NULL) {
         return 0;
     }
+#ifdef NATIVE_PORT
+    GAMEPLAY_EVENT_TRACE(
+        GAMEPLAY_EVENT_TRANSITION, transition->type, transition->duration,
+        transition->endTimer,
+        (s32)(((u32)transition->red << 16) |
+              ((u32)transition->green << 8) | (u32)transition->blue));
+#endif
     sTransitionFadeTimer = transition->duration;
     sTransitionFadeDuration = transition->duration;
     gTransitionEndTimer = transition->endTimer;

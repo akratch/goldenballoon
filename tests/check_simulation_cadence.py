@@ -20,12 +20,14 @@ PACE_INIT_RE = re.compile(
 )
 PACE_RE = re.compile(r"\[PACE\] frame=\d+ R=(\d+) wf=(\d+)")
 BAD_RE = re.compile(r"\[FATAL\]|\[CRASH\]|AddressSanitizer|runtime error:")
+AUDIO_RE = re.compile(r"\[AUDIO-SERVICE\] (.*)")
 
 
 def clean_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     env = {key: value for key, value in os.environ.items()
            if not key.startswith("MDKR_")}
-    env.update(MDKR_AUDIO="0", MDKR_TRACE="1")
+    env.update(
+        MDKR_AUDIO="0", MDKR_AUDIO_SERVICE_TRACE="1", MDKR_TRACE="1")
     if extra:
         env.update(extra)
     return env
@@ -83,6 +85,42 @@ def find_pal_rom(directory: Path) -> Path:
         f"no supported PAL v80 ROM found below {directory}; "
         "the release cadence gate requires both source clocks"
     )
+
+
+def audio_summary(output: str) -> dict[str, int]:
+    matches = list(AUDIO_RE.finditer(output))
+    if not matches:
+        raise AssertionError("probe omitted [AUDIO-SERVICE] summary")
+    values: dict[str, int] = {}
+    for token in matches[-1].group(1).split():
+        key, separator, value = token.partition("=")
+        if separator:
+            values[key] = int(value)
+    return values
+
+
+def require_audio_clock(
+    output: str, *, fields: int, due: int, serviced: int,
+    pending: int, calls: int, idle: int,
+) -> None:
+    summary = audio_summary(output)
+    expected = {
+        "fields": fields,
+        "due": due,
+        "serviced": serviced,
+        "pending": pending,
+        "calls": calls,
+        "idle": idle,
+        "notready": 0,
+        "retired": 0,
+        "dropped": 0,
+        "quantumfields": 2,
+    }
+    for key, value in expected.items():
+        if summary.get(key) != value:
+            raise AssertionError(
+                f"audio service {key}={summary.get(key)}, expected {value}: "
+                f"{summary}")
 
 
 def check_video_preset_independence(binary: Path) -> None:
@@ -157,6 +195,9 @@ def main() -> int:
             raise AssertionError(f"NTSC original did not inject two fields: {rows}")
         if "source video: NTSC (60 Hz fields)" not in output:
             raise AssertionError("NTSC ROM did not publish its source clock")
+        require_audio_clock(
+            output, fields=6, due=3, serviced=2, pending=1,
+            calls=2, idle=0)
 
         init, rows, output = run_probe(binary, pal_rom)
         if init != ("synth", "original", 2, 1, 2, 50, 50):
@@ -165,8 +206,11 @@ def main() -> int:
             raise AssertionError(f"PAL original did not inject two fields: {rows}")
         if "source video: PAL (50 Hz fields)" not in output:
             raise AssertionError("PAL ROM did not publish its source clock")
+        require_audio_clock(
+            output, fields=6, due=3, serviced=2, pending=1,
+            calls=2, idle=0)
 
-        init, rows, _ = run_probe(
+        init, rows, output = run_probe(
             binary,
             ntsc_rom,
             {
@@ -176,6 +220,9 @@ def main() -> int:
         )
         if init != ("synth", "enhanced", 1, 1, 1, 60, 60) or rows != [(1, 1)] * 3:
             raise AssertionError(f"explicit enhanced arm mismatch: {init}, {rows}")
+        require_audio_clock(
+            output, fields=3, due=1, serviced=1, pending=0,
+            calls=2, idle=1)
 
         init, rows, _ = run_probe(
             binary,
@@ -226,8 +273,9 @@ def main() -> int:
         return 1
     print(
         "check_simulation_cadence: PASS — NTSC 60/PAL 50 source clocks, "
-        "original/enhanced synthetic policy, preset isolation, diagnostic "
-        "semantics, and explicit oracle cadence"
+        "original/enhanced synthetic policy, independent two-field audio "
+        "service, preset isolation, diagnostic semantics, and explicit oracle "
+        "cadence"
     )
     return 0
 

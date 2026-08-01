@@ -3,6 +3,9 @@
 #include "menu.h"
 #include "save_layout.h"
 #include "thread3_main.h"
+#ifdef NATIVE_PORT
+#include "input_consumption_trace.h"
+#endif
 
 /* PORTABILITY (Windows/MinGW): OSContStatus has a field named `errno`, and the
  * Windows CRT defines `errno` as an object-like macro (see PR/os_cont.h), so
@@ -138,6 +141,13 @@ s32 input_update(s32 saveDataFlags, s32 updateRate) {
         gControllerButtonsReleased[i] =
             ((gControllerCurrData[i].button ^ gControllerPrevData[i].button) & gControllerPrevData[i].button) &
             gButtonMask;
+#ifdef NATIVE_PORT
+        INPUT_CONSUMPTION_TRACE(
+            (unsigned)i, gControllerCurrData[i].button,
+            gControllerButtonsPressed[i], gControllerButtonsReleased[i],
+            gControllerCurrData[i].stick_x, gControllerCurrData[i].stick_y,
+            (gControllerCurrData[i].errno & CONT_NO_RESPONSE_ERROR) == 0);
+#endif
     }
     return saveDataFlags;
 }

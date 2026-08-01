@@ -7,6 +7,57 @@
 > trap exists, and retractions are recorded in place rather than removed.
 
 
+## FIXED: tagged macOS artifact exposed a stale magic-code endian failure
+
+The report had two coupled symptoms: every submitted code ended at `BADCODE`,
+while the Code List rendered `8` and a blank row as enabled. A clean reproduction
+on pre-fix commit `6f5515f` identified one cause for both: after decryption, the
+mixed magic-code table still held a big-endian u16 count and offsets. A
+little-endian host therefore read 29 cheats as 7424 and the enabled-code string
+offsets 187/220 as 47872/56320, walking unrelated bytes for both lookup and text.
+
+The original decrypt-then-normalize repair is already an ancestor of the
+`v1.0.0` tag, and clean tag/current builds both accept `ARNOLD` and render
+`BIG CHARACTERS — ON`. No hosted `v1.0.0` release or workflow artifact exists,
+and the tag-era macOS script permitted packaging an arbitrary prebuilt binary;
+the reported DMG therefore cannot be authenticated as a build of the tag and is
+consistent with a stale pre-fix local executable.
+
+The runtime boundary is now transactional and fail closed: after normalizing the
+plaintext u16 index, it verifies the self-describing first offset and every
+code/description offset plus its in-blob NUL terminator. Any failure restores
+the complete original byte representation and stops asset loading. The
+`magic_codes` CTest pins the reported endian values, valid `ARNOLD` lookup and
+description, damaged offsets, unterminated strings, and full rollback;
+`check_asset_swap_invariants.py` independently pins decrypt-before-normalize
+ordering with a reversed-order control. The protected macOS pipeline now binds
+the downloadable DMG to its commit, version, platform, and checksum.
+
+
+## FIXED: macOS packaged app was reported as “damaged”
+
+The report was distinct from the expected unidentified-developer warning: on an
+M4 Mac mini running macOS 26.2, Finder rejected the app as damaged. The same
+failure reproduced locally. The Release executable arrived from the linker with
+a valid ad-hoc Apple-silicon signature; `build_app_bundle.sh --bundle-sdl2`
+then used `install_name_tool` to rewrite its SDL2 load path and packaged the
+mutated bundle without resealing it. `codesign --verify --deep --strict` failed
+with an invalid resource/signature envelope and `spctl` rejected it.
+
+The builder now removes inherited source xattrs, signs the bundled SDL2 image,
+then seals the outer app ad hoc after all mutations. A fresh self-contained app
+passes strict nested verification, resource sealing, and portable-load-path
+checks; its `spctl` result is now only the expected trust rejection for an
+ad-hoc identity. The distribution path replaces that identity inside-out with
+Developer ID + Hardened Runtime, requires Accepted app and DMG notarizations,
+valid staples, mounted-DMG re-verification, and Gatekeeper acceptance. It no
+longer disables library validation or W^X speculatively. The CI contract has
+broken-direction controls for the certificate, API key, app signing, DMG
+notarization, and Gatekeeper steps. The remaining external witness is the first
+credentialed notary run and launch of its downloaded artifact on the reporter's
+machine.
+
+
 ## FIXED: MIPS numeric conversion closeout
 
 Three small errors leaned against one another in the port:

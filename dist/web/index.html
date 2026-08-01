@@ -52,6 +52,10 @@
       <li>No server</li>
       <li>No game data shipped</li>
     </ul>
+    <p class="intro-links">
+      <a href="https://github.com/akratch/goldenballoon/releases/latest">Desktop downloads — macOS · Windows · Linux</a>
+      <a href="https://github.com/akratch/goldenballoon">Source code</a>
+    </p>
   </div>
 
   <div class="gantry" aria-hidden="true"></div>
@@ -104,12 +108,24 @@
                 <option value="3">3&times;</option>
                 <option value="4">4&times; &mdash; sharpest, heaviest</option>
               </select>
+              <label class="quality-label" for="rate">Frame rate</label>
+              <select id="rate" class="quality-select">
+                <option value="original" selected>Original &mdash; one image per game tick</option>
+                <option value="display">Display &mdash; one opportunity per refresh</option>
+                <option value="30">Up to 30 fps</option>
+                <option value="60">Up to 60 fps</option>
+                <option value="90">Up to 90 fps</option>
+                <option value="120">Up to 120 fps</option>
+                <option value="144">Up to 144 fps</option>
+              </select>
               <p class="quality-note">Supersampling renders above your window size and
                 filters back down, which is what removes the stair-stepping on edges.
                 Restored and Remastered use 2&times;. <strong>Set it to Off and back to
                 4&times; while watching the balloons and palm trees</strong> &mdash; that
                 is the difference. It costs fill rate, so drop back if the frame rate
-                suffers.</p>
+                suffers. Browser frame rates are capped by the display and
+                <code>requestAnimationFrame</code>; unlike the native app, the web
+                build does not offer an unbounded presentation mode.</p>
             </div>
 
             <div class="actions">
@@ -275,6 +291,9 @@
             renderer and this web build are original work.
           </p>
           <p class="fine">
+            <a href="https://github.com/akratch/goldenballoon">Source code</a> ·
+            <a href="https://github.com/akratch/goldenballoon/releases">Desktop releases</a> ·
+            <a href="https://github.com/akratch/goldenballoon/blob/main/RELEASE_NOTES.md">Release notes</a> ·
             <a href="https://github.com/akratch/golden-balloon/blob/main/DISCLAIMER.md">Disclaimer</a> ·
             <a href="https://github.com/akratch/golden-balloon/blob/main/LICENSE">License (MIT, our code only)</a> ·
             <a href="https://github.com/akratch/golden-balloon">Source of this page</a>

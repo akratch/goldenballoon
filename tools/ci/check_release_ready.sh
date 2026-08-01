@@ -52,6 +52,10 @@ public_file_list() {
     | sort
 }
 
+allowlist_values() {
+  sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$1"
+}
+
 echo "== mdkr64 release readiness guard =="
 
 chmod +x tools/check_no_rom.sh
@@ -69,13 +73,20 @@ fi
 echo
 echo "== Git history filename audit =="
 if [ "$HAVE_GIT" -eq 1 ]; then
-  # brand/appicon-source.png: same tracked exception as check_no_rom.sh --
-  # hand-authored branding, not ROM-derived.
+  # Media is rejected unless its exact path is in one of the reviewed
+  # first-party allowlists. The clean-room and metadata checks still inspect
+  # the accepted current assets; this exemption is path-only, not content-only.
+  asset_patterns="$(mktemp "${TMPDIR:-/tmp}/mdkr64-assets.XXXXXX")"
+  trap 'rm -f "$asset_patterns"' EXIT
+  {
+    allowlist_values tools/public_tracked_asset_allowlist.txt
+    allowlist_values tools/public_historical_asset_allowlist.txt
+  } > "$asset_patterns"
   history_hits=$(git log --all --name-only --pretty=format: \
     | awk 'NF' \
     | sort -u \
     | grep -E '\.(z64|n64|v64|rom|bin|bmp|png|jpe?g|gif|webp|ico|icns|ppm|raw|wav|mp3|ogg|flac|m4a|aac|mp4|mov|m4v|mkv|avi|webm|jsonl|ctl|tbl|aifc|aiff|sbk|seq|cdata|dmg|zip|7z|tar|tgz|gz)$|(^|/)baserom|(^|/)[^/]+\.app(/|$)|mdkr.*eeprom|(^|/)screenshot_[^/]*\.(bmp|png|jpe?g|gif|webp|ppm|raw|jsonl|mp4|mov|m4v|webm)$' \
-    | grep -v -E '^brand/appicon-source\.png$' \
+    | grep -Fvx -f "$asset_patterns" \
     || true)
   if [ -n "$history_hits" ]; then
     while IFS= read -r f; do note "ROM/media/build artifact path found in git history: $f"; done <<< "$history_hits"
@@ -87,45 +98,32 @@ else
 fi
 
 echo
-echo "== Git history text audit =="
+echo "== Public tracked-tree boundary =="
 if [ "$HAVE_GIT" -eq 1 ]; then
-  if tools/ci/check_public_history_text.sh; then
+  if python3 tools/check_public_surface.py --tree; then
     :
   else
-    note "public git history text guard failed"
+    note "committed public tree contains private/high-risk material"
   fi
 else
-  echo "  SKIP -- not a git checkout; current-tree guards already scanned this checkout."
-fi
-
-echo
-echo "== Internal working-documentation archive isolation =="
-if [ "$HAVE_GIT" -eq 1 ]; then
-  # mdkr64 draws the public/internal line via .gitattributes export-ignore
-  # entries rather than a structural docs/design/ tree (see that file's own
-  # comment on why): docs/superpowers/** (internal planning workspace),
-  # PUBLIC_LAUNCH_BACKLOG.md (internal launch tracking), and docs/archive/**
-  # (dated internal working documents, each triaged in docs/archive/README.md).
-  # Assert that actually holds for the archive artifact itself, not just the
-  # .gitattributes text, so a removed export-ignore line, a typo'd glob, or a
-  # new internal file added outside those paths regresses loudly here instead
-  # of silently shipping in the next public source archive.
-  archive_leak_hits=$(git archive HEAD | tar -t \
-    | grep -E '^docs/superpowers/[^/]|^docs/archive/[^/]|^PUBLIC_LAUNCH_BACKLOG\.md$' \
-    || true)
-  if [ -n "$archive_leak_hits" ]; then
-    while IFS= read -r f; do note "internal working-documentation path is archive-reachable: $f"; done <<< "$archive_leak_hits"
-  else
-    echo "  OK -- no internal working-documentation paths (docs/superpowers, PUBLIC_LAUNCH_BACKLOG.md, docs/archive) are archive-reachable."
-  fi
-else
-  echo "  SKIP -- not a git checkout; git archive is not meaningful here."
+  echo "  SKIP -- not a git checkout; archive content is covered by the artifact guards."
 fi
 
 echo
 echo "== Tracked build artifact hygiene =="
+tracked_asset_patterns="$(mktemp "${TMPDIR:-/tmp}/mdkr64-tracked-assets.XXXXXX")"
+trap 'rm -f "${asset_patterns:-}" "$tracked_asset_patterns"' EXIT
+allowlist_values tools/public_tracked_asset_allowlist.txt > "$tracked_asset_patterns"
+
+while IFS= read -r allowed_asset; do
+  if [ "$HAVE_GIT" -eq 1 ] && ! git ls-files --error-unmatch -- "$allowed_asset" >/dev/null 2>&1; then
+    note "stale or untracked public-asset allowlist entry: $allowed_asset"
+  fi
+done < "$tracked_asset_patterns"
+
 artifact_hits=$(public_file_list \
   | grep -E '\.(o|a|so|dylib|dll|exe|pyc|pyo|class|dSYM|app|dmg|zip|7z|tar|tgz|gz)$|(^|/)(__pycache__|build|build-[^/]*|dist)(/|$)' \
+  | grep -Fvx -f "$tracked_asset_patterns" \
   || true)
 if [ -n "$artifact_hits" ]; then
   while IFS= read -r f; do note "tracked build/generated artifact path: $f"; done <<< "$artifact_hits"
@@ -136,12 +134,7 @@ fi
 binary_hits=$(
   while IFS= read -r f; do
     [ -s "$f" ] || continue
-    # Exception: hand-authored branding art (not ROM-derived), the single
-    # source every platform icon is generated/wrapped from. See the matching
-    # exception in .gitignore and tools/check_no_rom.sh.
-    case "$f" in
-      brand/appicon-source.png) continue ;;
-    esac
+    grep -Fqx -f "$tracked_asset_patterns" <<< "$f" && continue
     if ! grep -Iq . "$f" 2>/dev/null; then
       printf '%s\n' "$f"
     fi
@@ -378,6 +371,8 @@ for f in \
   tools/install_git_hooks.sh \
   tools/ci/check_high_risk_ignored_artifacts.sh \
   tools/ci/check_public_history_text.sh \
+  tools/ci/check_public_push.sh \
+  tools/check_public_surface.py \
   tools/make_public_source_archive.sh \
   tools/smoke_public_source_archive.sh \
   tools/check_github_launch_ready.sh \
@@ -387,6 +382,10 @@ for f in \
   tools/mingw_cross_check.sh \
   macos/Scripts/build_app_bundle.sh \
   macos/Scripts/build_universal.sh \
+  macos/Scripts/create_dmg.sh \
+  macos/Scripts/notarize_artifact.sh \
+  macos/Scripts/sign_and_notarize.sh \
+  macos/Scripts/verify_gatekeeper_bundle.sh \
   macos/Scripts/verify_asset_free.sh; do
   if [ ! -x "$f" ]; then
     note "missing or non-executable release helper script: $f"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build_app_bundle.sh -- Build a local unsigned mdkr64.app bundle.
+# build_app_bundle.sh -- Build a local ad-hoc-signed mdkr64.app bundle.
 #
 # There is no Swift/AppKit shell to link against: the CMake target `mdkr64` is
 # already a complete, self-contained SDL2 executable (platform/main_pc.c is the
@@ -13,8 +13,9 @@
 # linked image is a system framework. `--bundle-sdl2` embeds that one dylib so
 # the bundle runs on a machine without Homebrew.
 #
-# This is the repeatable maintainer/developer packaging path. It intentionally
-# does not sign, notarize, create a DMG, or bundle a ROM. Users still bring
+# This is the repeatable maintainer/developer packaging path. It applies an
+# ad-hoc integrity signature after every bundle mutation, but does not apply a
+# trusted Developer ID signature, notarize, create a DMG, or bundle a ROM. Users still bring
 # their own ROM at runtime (the app shell's launcher, platform/app/, is what
 # asks for it on first run).
 #
@@ -98,7 +99,7 @@ usage() {
     cat <<'EOF'
 Usage: macos/Scripts/build_app_bundle.sh [options]
 
-Builds the mdkr64 native executable via CMake, then assembles an unsigned
+Builds the mdkr64 native executable via CMake, then assembles an ad-hoc-signed
 local macOS app bundle around it (icon, Info.plist, and the first-run ROM
 picker in the app shell's launcher).
 
@@ -119,7 +120,7 @@ Options:
   --no-cmake             Reuse an existing <build-dir>/mdkr64
   -h, --help             Show this help
 
-By default the resulting bundle is unsigned and still depends on SDL2 being
+By default the resulting bundle is ad-hoc signed for integrity only and still depends on SDL2 being
 available at the path reported by pkg-config. For distributable build
 candidates, use --strict-deployment-target --bundle-sdl2, then sign,
 notarize, and package the bundle with the separate scripts in macos/Scripts/.
@@ -203,7 +204,7 @@ case "${ARCH}" in
     *) die "--arch must be native, arm64, or x86_64" ;;
 esac
 
-for tool in cmake pkg-config plutil ditto iconutil python3 sips /usr/libexec/PlistBuddy; do
+for tool in cmake pkg-config plutil ditto iconutil python3 sips codesign xattr /usr/libexec/PlistBuddy; do
     if ! command -v "$tool" &>/dev/null; then
         die "Required tool '${tool}' not found."
     fi
@@ -370,6 +371,23 @@ fi
 
 echo "APPL????" > "${OUTPUT_APP}/Contents/PkgInfo"
 
+# install_name_tool invalidates the linker's ad-hoc Mach-O signature. On Apple
+# silicon that is an integrity failure, not merely an untrusted-developer case,
+# and Finder reports the quarantined app as "damaged". Remove inherited source
+# xattrs, sign nested code first, then seal the outer bundle. A later Developer
+# ID release signature replaces these ad-hoc signatures inside-out.
+xattr -cr "${OUTPUT_APP}"
+if [[ -n "${SDL2_BUNDLED_PATH}" ]]; then
+    info "Applying ad-hoc integrity signature to bundled SDL2..."
+    codesign --force --sign - "${SDL2_BUNDLED_PATH}" \
+        || die "Failed to ad-hoc sign bundled SDL2."
+fi
+info "Applying ad-hoc integrity signature and resource seal to app..."
+codesign --force --sign - "${OUTPUT_APP}" \
+    || die "Failed to ad-hoc sign app bundle."
+"${PROJECT_ROOT}/macos/Scripts/verify_gatekeeper_bundle.sh" "${OUTPUT_APP}" \
+    || die "App bundle integrity verification failed."
+
 echo ""
 info "========== App Bundle Summary =========="
 info "App bundle    : ${OUTPUT_APP}"
@@ -383,6 +401,7 @@ if [[ -n "${SDL2_BUNDLED_PATH}" ]]; then
 fi
 info "Verify assets : ${PROJECT_ROOT}/macos/Scripts/verify_asset_free.sh '${OUTPUT_APP}'"
 info "CLI/CI use    : '${ENGINE_PATH}' --rom ROM --headless-frames N   (any argument bypasses the launcher)"
+info "Code integrity: ad-hoc signature valid (not Developer ID trust)"
 info "========================================"
 
-warn "This app is unsigned and not notarized. Use sign_and_notarize.sh only for distributable builds."
+warn "This app is ad-hoc signed for integrity, but is not Developer ID signed or notarized. Use sign_and_notarize.sh for distributable builds."

@@ -1,31 +1,42 @@
 /*
  * sim_sched.c — fixed-authority frame clock and accumulator (spec §5, Phase 1).
  *
- * The authoritative tick is TWO source VI fields (updateRate == LOGIC_30FPS):
- * 2/60 s on NTSC/MPAL, 2/50 s on PAL. The accumulator is kept in exact integer
- * units of nanoseconds × field-rate, so one tick is exactly 2e9 units and no
- * floating-point drift can accumulate over any run length (spec §4.3, gate
- * 12.2.8: long-run drift bounded below one host clock quantum).
- *
- * Phase 1 scope: this module is the testable clock only. It does not change
- * the shipping loop; the containment complete-loop path continues to drive
- * gameplay until Phase 2's update/render split adopts it.
+ * The default/original authoritative tick is TWO source VI fields
+ * (updateRate == LOGIC_30FPS): 2/60 s on NTSC/MPAL, 2/50 s on PAL. The explicit
+ * enhanced compatibility cadence uses one field. The accumulator is kept in
+ * exact integer units of nanoseconds × field-rate, so no floating-point drift
+ * can accumulate. HostFrameDriver owns this clock and the native video-queue
+ * adapter consumes the fixed tickets it issues.
  */
 #include "sim_sched.h"
 
+#include <limits.h>
 #include <string.h>
 
-/* One authoritative tick, in accumulator units (ns × field_hz):
- * tick_seconds = 2 / field_hz  ->  ns × field_hz = 2e9 exactly. */
-#define SIM_SCHED_TICK_UNITS 2000000000ull
+#define SIM_SCHED_FIELD_UNITS 1000000000ull
 
 /* A gap this large (in ticks) is a suspension/debugger stall, not gameplay
  * time: rebase instead of catching up (spec §5). */
 #define SIM_SCHED_REBASE_TICKS 30u
 
 void sim_sched_init(SimSched *sched, unsigned field_hz) {
+    sim_sched_init_fields(sched, field_hz, 2u);
+}
+
+void sim_sched_init_fields(
+    SimSched *sched, unsigned field_hz, unsigned fields_per_tick) {
     memset(sched, 0, sizeof(*sched));
     sched->field_hz = field_hz == 0 ? 60u : field_hz;
+    /* Only the one-field enhanced cadence and the authored two-field cadence
+     * are selected in production. Keep a small diagnostic range available,
+     * but reject values large enough to weaken the suspension bound or
+     * overflow its derived unit count. */
+    sched->fields_per_tick =
+        fields_per_tick >= 1u && fields_per_tick <= 6u
+            ? fields_per_tick
+            : 2u;
+    sched->tick_units =
+        (unsigned long long)sched->fields_per_tick * SIM_SCHED_FIELD_UNITS;
 }
 
 void sim_sched_rebase(SimSched *sched) {
@@ -35,9 +46,10 @@ void sim_sched_rebase(SimSched *sched) {
 
 unsigned sim_sched_advance(
     SimSched *sched, unsigned long long elapsed_ns, unsigned max_steps) {
-    /* Overflow-safe: elapsed_ns is bounded by the rebase clamp inside
-     * sim_sched_advance_units long before multiplication can overflow
-     * (30 ticks << 2^64 / 240). */
+    if (elapsed_ns > ULLONG_MAX / (unsigned long long)sched->field_hz) {
+        sim_sched_rebase(sched);
+        return 0;
+    }
     return sim_sched_advance_units(
         sched, elapsed_ns * (unsigned long long)sched->field_hz, max_steps);
 }
@@ -48,18 +60,24 @@ unsigned sim_sched_advance_units(
     unsigned steps = 0;
 
     gained = units;
-    if (gained > SIM_SCHED_REBASE_TICKS * SIM_SCHED_TICK_UNITS) {
+    const unsigned long long rebase_units =
+        (unsigned long long)SIM_SCHED_REBASE_TICKS * sched->tick_units;
+
+    if (gained > rebase_units) {
+        sim_sched_rebase(sched);
+        return 0;
+    }
+    if (gained > ULLONG_MAX - sched->accumulator_units) {
         sim_sched_rebase(sched);
         return 0;
     }
     sched->accumulator_units += gained;
-    if (sched->accumulator_units >
-        SIM_SCHED_REBASE_TICKS * SIM_SCHED_TICK_UNITS) {
+    if (sched->accumulator_units > rebase_units) {
         sim_sched_rebase(sched);
         return 0;
     }
 
-    while (sched->accumulator_units >= SIM_SCHED_TICK_UNITS) {
+    while (sched->accumulator_units >= sched->tick_units) {
         if (max_steps != 0 && steps >= max_steps) {
             /* Budget reached with debt remaining: the caller must skip
              * rendering and continue stepping next frame (spec §5). Ordinary
@@ -67,7 +85,7 @@ unsigned sim_sched_advance_units(
             sched->stats.render_skips_owed++;
             break;
         }
-        sched->accumulator_units -= SIM_SCHED_TICK_UNITS;
+        sched->accumulator_units -= sched->tick_units;
         steps++;
         sched->stats.ticks++;
         if (steps > 1) {
@@ -82,6 +100,13 @@ void sim_sched_alpha(
     const SimSched *sched,
     unsigned long long *numerator,
     unsigned long long *denominator) {
-    *numerator = sched->accumulator_units;
-    *denominator = SIM_SCHED_TICK_UNITS;
+    /* Never extrapolate while whole-tick debt remains. A host driver must
+     * drain that debt before using interpolation; zero is the safe endpoint
+     * if a diagnostic asks early. */
+    *numerator = sim_sched_has_debt(sched) ? 0u : sched->accumulator_units;
+    *denominator = sched->tick_units;
+}
+
+int sim_sched_has_debt(const SimSched *sched) {
+    return sched->accumulator_units >= sched->tick_units;
 }

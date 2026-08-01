@@ -78,7 +78,9 @@
 #include "gfx_rl1_experiment.h"
 #include "gfx_render_scale.h"
 #include "gfx_rdp_interpolation.h"
+#include "gfx_presentation_packet.h"
 #include "gfx_shadow_frame.h"
+#include "presentation_snapshot.h"
 #include "present_sched.h"   /* presentation-replay arming seam */
 #include "gfx_uniforms.h"
 #include "gfx_pc_dkr.h"
@@ -92,10 +94,13 @@
 
 #define DKR_MAX_VERTICES   32          /* DKR RSP internal vertex buffer size */
 #define DKR_VTX_SCRATCH    (DKR_MAX_VERTICES + 4) /* +4 for rectangle corners */
+#define DKR_DEFORMATION_OWNERS PRESENTATION_SNAPSHOT_MAX_OBJECTS
 #define DKR_MAX_BUFFERED   2048        /* triangles buffered before a flush   */
 #define DKR_VBO_STRIDE_MAX 32          /* floats per vertex (generous)        */
 #define DKR_DL_MAX_DEPTH   16          /* nested G_DL / G_DMADL recursion cap */
 #define DKR_FONT_UPSCALE   4
+
+enum { DKR_PRESENTATION_PARTICLE_KIND_POINT = 4 };
 
 /* N64 5/4/3-bit channel → 8-bit expansions (Emill fast3d). */
 #define SCALE_5_8(v_) (((v_) * 0xFF) / 0x1F)
@@ -230,9 +235,24 @@ static bool dkr_trace_this_frame = false;
  * replays, apart from the presented image.
  */
 static bool dkr_replay_pass = false;
+static bool dkr_replay_object_alpha_valid = false;
+static uint64_t dkr_replay_object_alpha_numerator = 0;
+static uint64_t dkr_replay_object_alpha_denominator = 1;
+static int dkr_replay_object_interpolation = -1;
+static int dkr_replay_deformation_interpolation = -1;
+static int dkr_replay_particle_interpolation = -1;
+static int dkr_replay_vertex_color_interpolation = -1;
+static int dkr_replay_primitive_alpha_interpolation = -1;
+static int dkr_replay_effect_interpolation = -1;
 static Gfx *dkr_last_walked_dl = NULL;
 static uint64_t dkr_replay_matrix_hits = 0;
 static uint64_t dkr_replay_matrix_misses = 0;
+static uint64_t dkr_replay_object_hits = 0;
+static uint64_t dkr_replay_object_holds = 0;
+static uint64_t dkr_replay_billboard_matrix_hits = 0;
+static uint64_t dkr_replay_billboard_matrix_holds = 0;
+static uint64_t dkr_replay_billboard_vertex_hits = 0;
+static uint64_t dkr_replay_billboard_vertex_holds = 0;
 /*
  * Registry hits refused because the Mtx address had been rewritten since it was
  * registered (see dkr_shadow_lookup_live). Counted on BOTH walks, not just the
@@ -246,6 +266,8 @@ static uint64_t dkr_replay_matrix_tolerant_worst = 0;
 static uint64_t dkr_replay_matrix_reject_least = 0;
 static bool dkr_replay_matrix_reject_least_set = false;
 static bool dkr_replay_force_recompose = false;
+static int dkr_test_recompose_reject = -1;
+static bool dkr_test_recompose_reject_used = false;
 static uint64_t dkr_replay_walks = 0;
 
 /*
@@ -256,22 +278,26 @@ static uint64_t dkr_replay_walks = 0;
  * recomposing with the view-projection AS CAPTURED and comparing against the
  * display list's own matrix. That comparison used to be bit-exact, and bit-exact
  * cannot tell "the same product, re-associated by one rounding step" from "the
- * wrong association, thousands of world units away". Measured over the 63-level
- * sweep in docs/PRESENTATION_ORACLE_BREADTH_2026-07-30.md, both populations are
+ * wrong association, thousands of world units away". In the 63-level
+ * presentation sweep, both populations are
  * present and they do not overlap remotely:
  *
  *   - float re-association, 99.96% of all mismatches, worst a few thousand LSBs
  *     (hundredths of a world unit). mtx_head_rotation (camera.c) builds its list
  *     matrix as head x (parentWorld x VP) but must register a world of
  *     (head x parentWorld); the two products are equal in exact arithmetic.
- *   - genuine mis-association, exactly 3 per run on every level, at
- *     152,081,586 LSBs -- about 2,320 world units.
+ *   - genuine mis-association, historically millions of LSBs. Production now
+ *     refuses dead matrix-registry tenants before this comparison, and the
+ *     owner-specific presentation packet can supersede some stale bindings,
+ *     so the registered breadth gate injects one deterministic 2,000,000-LSB
+ *     verification error to keep the rejection side load-bearing.
  *
- * The two are six orders of magnitude apart. 4096 sits far above the first and
- * ~37,000x below the second, so the threshold is placed in empty space rather
- * than fitted to either edge. gfx_dkr_replay_get_reject_stats() reports the
- * worst accepted and the least rejected magnitude of every run, so the margin
- * is measured continuously rather than assumed from this comment.
+ * The injected control is hundreds of times above 4096 and tens of thousands
+ * of times above the measured accepted tail, so the threshold remains in empty
+ * space rather than fitted to either edge.
+ * gfx_dkr_replay_get_reject_stats() reports the worst accepted and the least
+ * rejected magnitude of every run, so the margin is measured continuously
+ * rather than assumed from this comment.
  *
  * Applied ONLY when the entry's view-projection was actually overridden -- see
  * the G_MTX replay branch. With the camera unchanged the display list already
@@ -322,11 +348,65 @@ static int64_t dkr_mtx_worst_lsb_delta(const void *listed_bytes,
     return worst;
 }
 
+/*
+ * MDKR_TEST_RECOMPOSE_REJECT=1 is the deterministic broken direction for the
+ * geometric tolerance. The old control depended on a particular allocator
+ * address being reused by an unregistered slot-2 matrix; owner-specific replay
+ * can now replace that stale world before verification, so the natural defect
+ * is correctly harmless and no longer a stable failure injector.
+ *
+ * On the first eligible replay matrix, force element zero of the verification
+ * image exactly 2,000,000 s15.16 LSBs away from the display-list image. This is
+ * ~30.5 world units, far above the 4,096-LSB tolerance and far below integer
+ * overflow. Only the stack-local verification copy changes; the display list,
+ * decoded draw matrix, game state, and production path are untouched.
+ */
+#define DKR_TEST_RECOMPOSE_REJECT_LSB 2000000
+
+static bool dkr_test_recompose_reject_enabled(void) {
+    if (dkr_test_recompose_reject < 0) {
+        const char *value = getenv("MDKR_TEST_RECOMPOSE_REJECT");
+        dkr_test_recompose_reject =
+            value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+    }
+    return dkr_test_recompose_reject != 0;
+}
+
+static void dkr_mtx_inject_recompose_reject(const void *listed_bytes,
+                                            void *built_bytes) {
+    const uint32_t *listed = (const uint32_t *)listed_bytes;
+    uint32_t *built = (uint32_t *)built_bytes;
+    int32_t listed_element = (int32_t)(
+        (listed[0] & 0xFFFF0000u) | ((listed[8] >> 16) & 0xFFFFu));
+    int64_t target = (int64_t)listed_element + DKR_TEST_RECOMPOSE_REJECT_LSB;
+
+    if (target > INT32_MAX) {
+        target = (int64_t)listed_element - DKR_TEST_RECOMPOSE_REJECT_LSB;
+    }
+    built[0] = (built[0] & 0x0000FFFFu) |
+        ((uint32_t)(int32_t)target & 0xFFFF0000u);
+    built[8] = (built[8] & 0x0000FFFFu) |
+        (((uint32_t)(int32_t)target & 0x0000FFFFu) << 16);
+}
+
 /* game/src/camera.c (NATIVE_PORT): world x view_projection through the exact
  * mtxf_mul/mtxf_to_mtx pair the display-list build used, so a replay of an
  * unchanged view_projection is bit-identical rather than merely close. */
 extern void mdkr_camera_replay_mvp(
     const float world[4][4], const float view_projection[4][4], void *out_mtx);
+extern bool mdkr_camera_replay_object_world(
+    const GfxPresentationMatrixOwner *owner, uint64_t numerator,
+    uint64_t denominator, float out_world[4][4]);
+extern bool mdkr_camera_replay_effect_world(
+    const GfxPresentationMatrixOwner *previous,
+    const GfxPresentationMatrixOwner *current, uint64_t numerator,
+    uint64_t denominator, float out_world[4][4]);
+extern bool mdkr_camera_replay_billboard_anchor(
+    const GfxPresentationMatrixOwner *owner, uint64_t numerator,
+    uint64_t denominator, float out_position[3]);
+extern bool mdkr_camera_replay_billboard_matrix(
+    const GfxPresentationMatrixOwner *owner, int viewport,
+    uint64_t numerator, uint64_t denominator, void *out_mtx);
 
 static inline bool dkr_dl_trace_on(void) {
     if (dkr_trace2 < 0) {
@@ -338,6 +418,67 @@ static inline bool dkr_dl_trace_on(void) {
     if (dkr_trace_frame_filter >= 0 && dkr_frame_index != dkr_trace_frame_filter)
         return false;
     return true;
+}
+
+static bool dkr_replay_object_interpolation_enabled(void) {
+    if (dkr_replay_object_interpolation < 0) {
+        const char *value = getenv("MDKR_TEST_OBJECT_INTERPOLATION");
+        dkr_replay_object_interpolation =
+            !(value != NULL &&
+              (strcmp(value, "off") == 0 || strcmp(value, "0") == 0));
+    }
+    return dkr_replay_object_interpolation != 0;
+}
+
+static bool dkr_replay_deformation_interpolation_enabled(void) {
+    if (dkr_replay_deformation_interpolation < 0) {
+        const char *value = getenv("MDKR_TEST_DEFORMATION_INTERPOLATION");
+        dkr_replay_deformation_interpolation =
+            !(value != NULL &&
+              (strcmp(value, "off") == 0 || strcmp(value, "0") == 0));
+    }
+    return dkr_replay_deformation_interpolation != 0;
+}
+
+static bool dkr_replay_particle_interpolation_enabled(void) {
+    if (dkr_replay_particle_interpolation < 0) {
+        const char *value = getenv("MDKR_TEST_PARTICLE_INTERPOLATION");
+        dkr_replay_particle_interpolation =
+            !(value != NULL &&
+              (strcmp(value, "off") == 0 || strcmp(value, "0") == 0));
+    }
+    return dkr_replay_particle_interpolation != 0;
+}
+
+static bool dkr_replay_vertex_color_interpolation_enabled(void) {
+    if (dkr_replay_vertex_color_interpolation < 0) {
+        const char *value = getenv("MDKR_TEST_VERTEX_COLOR_INTERPOLATION");
+        dkr_replay_vertex_color_interpolation =
+            !(value != NULL &&
+              (strcmp(value, "off") == 0 || strcmp(value, "0") == 0));
+    }
+    return dkr_replay_vertex_color_interpolation != 0;
+}
+
+static bool dkr_replay_primitive_alpha_interpolation_enabled(void) {
+    if (dkr_replay_primitive_alpha_interpolation < 0) {
+        const char *value = getenv(
+            "MDKR_TEST_PRIMITIVE_ALPHA_INTERPOLATION");
+        dkr_replay_primitive_alpha_interpolation =
+            !(value != NULL &&
+              (strcmp(value, "off") == 0 || strcmp(value, "0") == 0));
+    }
+    return dkr_replay_primitive_alpha_interpolation != 0;
+}
+
+static bool dkr_replay_effect_interpolation_enabled(void) {
+    if (dkr_replay_effect_interpolation < 0) {
+        const char *value = getenv("MDKR_TEST_EFFECT_INTERPOLATION");
+        dkr_replay_effect_interpolation =
+            !(value != NULL &&
+              (strcmp(value, "off") == 0 || strcmp(value, "0") == 0));
+    }
+    return dkr_replay_effect_interpolation != 0;
 }
 #define DTRACE(...) do { if (dkr_trace_this_frame) { \
     fprintf(stderr, "[DL] " __VA_ARGS__); fputc('\n', stderr); } } while (0)
@@ -396,6 +537,13 @@ struct LoadedVertex {
     uint8_t fog;        /* per-vertex fog factor [0,255] */
 };
 
+struct DkrDeformationCursor {
+    const void *address;
+    uint64_t generation;
+    int viewport;
+    uint32_t next_stream;
+};
+
 /* ---- RSP-side state ---- */
 static struct {
     float mtx[3][4][4];        /* 3 MVP matrix slots (G_MTX_DKR_INDEX_0..2)     */
@@ -411,9 +559,70 @@ static struct {
     float light_direction[3];   /* normalized object-space direction TO sun     */
     GfxShadowMatrixBinding shadow_matrix[3];
     bool shadow_matrix_valid[3];
+    /* The root/child whose model-space vertex stream is currently being
+     * walked. The real walk and replay both start from the same zeroed RSP
+     * state, so the per-root ordinal names the same G_VTX batch without
+     * retaining a transient vertex pointer as identity. */
+    GfxPresentationMatrixOwner deformation_owner;
+    int deformation_viewport;
+    uint32_t deformation_stream;
+    uint32_t deformation_batch;
+    bool deformation_owner_valid;
+    GfxPresentationMatrixOwner opacity_owner;
+    bool opacity_owner_valid;
+    struct DkrDeformationCursor
+        deformation_cursors[DKR_DEFORMATION_OWNERS];
+    size_t deformation_cursor_count;
     int      vtx_append_pos;   /* next append destination (G_VTX_APPEND)        */
     struct LoadedVertex loaded[DKR_VTX_SCRATCH];
 } rsp;
+
+static bool dkr_deformation_begin_stream(
+    const GfxPresentationMatrixOwner *owner, int viewport) {
+    struct DkrDeformationCursor *cursor = NULL;
+
+    if (owner == NULL || !owner->valid || owner->address == NULL ||
+        owner->generation == 0u) {
+        return false;
+    }
+    for (size_t index = 0; index < rsp.deformation_cursor_count; index++) {
+        struct DkrDeformationCursor *candidate =
+            &rsp.deformation_cursors[index];
+        if (candidate->address == owner->address &&
+            candidate->generation == owner->generation &&
+            candidate->viewport == viewport) {
+            cursor = candidate;
+            break;
+        }
+    }
+    if (cursor == NULL) {
+        if (rsp.deformation_cursor_count >= DKR_DEFORMATION_OWNERS) {
+            return false;
+        }
+        cursor =
+            &rsp.deformation_cursors[rsp.deformation_cursor_count++];
+        memset(cursor, 0, sizeof(*cursor));
+        cursor->address = owner->address;
+        cursor->generation = owner->generation;
+        cursor->viewport = viewport;
+    }
+    if (cursor->next_stream > UINT16_MAX) {
+        return false;
+    }
+    rsp.deformation_stream = cursor->next_stream++;
+    rsp.deformation_batch = 0u;
+    return true;
+}
+
+static bool dkr_deformation_next_ordinal(uint32_t *out) {
+    if (out == NULL || !rsp.deformation_owner_valid ||
+        rsp.deformation_stream > UINT16_MAX ||
+        rsp.deformation_batch > UINT16_MAX) {
+        return false;
+    }
+    *out = (rsp.deformation_stream << 16) | rsp.deformation_batch++;
+    return true;
+}
 
 /* Tile descriptor (SETTILE / SETTILESIZE). */
 struct DkrTile {
@@ -449,7 +658,8 @@ static struct {
     uint32_t other_mode_h, other_mode_l;
     uint64_t combine_mode;       /* normalized 28-bit-per-cycle cc_id          */
 
-    struct RGBA env_color, prim_color, fog_color, fill_color;
+    struct RGBA env_color, prim_color, authored_prim_color, fog_color,
+        fill_color;
     uint8_t prim_lod_fraction;
 
     struct XYWidthHeight viewport, scissor;
@@ -472,6 +682,59 @@ static struct {
     uint32_t z_buf_token;
     uint32_t color_image_token;
 } rdp;
+
+static void dkr_replay_apply_primitive_alpha(void) {
+    PresentationObjectPose current;
+    PresentationObjectPose target;
+    bool particle;
+    uint8_t alpha;
+
+    rdp.prim_color = rdp.authored_prim_color;
+    if (!dkr_replay_pass || !dkr_replay_object_alpha_valid ||
+        !dkr_replay_primitive_alpha_interpolation_enabled() ||
+        !rsp.opacity_owner_valid || !rsp.opacity_owner.valid ||
+        !presentation_snapshot_resolve_object_generation(
+            rsp.opacity_owner.address, rsp.opacity_owner.generation,
+            dkr_replay_object_alpha_denominator,
+            dkr_replay_object_alpha_denominator, &current) ||
+        !presentation_snapshot_resolve_object_generation(
+            rsp.opacity_owner.address, rsp.opacity_owner.generation,
+            dkr_replay_object_alpha_numerator,
+            dkr_replay_object_alpha_denominator, &target) ||
+        !target.interpolated) {
+        return;
+    }
+    particle = current.is_particle != 0u;
+    /* Point trails carry their opacity in retained per-vertex alpha. Their
+     * primitive alpha is deliberately 255 and must not be scaled a second
+     * time. Line trails and sprite/model particles use primitive alpha. */
+    if (particle &&
+        current.model_index == DKR_PRESENTATION_PARTICLE_KIND_POINT) {
+        return;
+    }
+    alpha = presentation_scale_opacity_u8(
+        rdp.authored_prim_color.a, current.opacity, target.opacity);
+    gfx_presentation_packet_note_primitive_alpha(
+        particle, alpha != rdp.authored_prim_color.a);
+    rdp.prim_color.a = alpha;
+}
+
+static void dkr_replay_bind_opacity_owner(
+    const GfxPresentationMatrixOwner *owner) {
+    if (owner != NULL && owner->valid &&
+        (owner->matrix_class == GFX_PRESENTATION_MATRIX_ROOT ||
+         owner->matrix_class == GFX_PRESENTATION_MATRIX_CHILD ||
+         owner->matrix_class == GFX_PRESENTATION_MATRIX_BILLBOARD ||
+         owner->matrix_class ==
+             GFX_PRESENTATION_MATRIX_PARTICLE_VERTICES)) {
+        rsp.opacity_owner = *owner;
+        rsp.opacity_owner_valid = true;
+    } else {
+        memset(&rsp.opacity_owner, 0, sizeof(rsp.opacity_owner));
+        rsp.opacity_owner_valid = false;
+    }
+    dkr_replay_apply_primitive_alpha();
+}
 
 /* True while emitting a textured screen rectangle. Set before material setup
  * so texture upload/cache decisions can distinguish text/2D from geometry. */
@@ -674,11 +937,12 @@ static int dkr_shadow_tenancy_check = -1;
  * MDKR_SHADOW_TENANCY=0 restores the pre-guard behaviour: serve the first
  * tenant's binding without checking that it still describes what is at the key.
  *
- * This is the POSITIVE CONTROL, and it is a runtime switch rather than a
- * rebuild on purpose. The before/after for this fix is one env var apart on one
- * binary, so a gate can prove in a single run that the hard rejects and the
- * wrong caster worlds are caused by the thing this guard refuses -- not merely
- * that they are absent once it is compiled in. Never set in production.
+ * This is one half of the registered positive control, and it is a runtime
+ * switch rather than a rebuild on purpose. The gate proves that production
+ * content raises the stale-tenant counter and that this switch suppresses it;
+ * MDKR_TEST_RECOMPOSE_REJECT independently proves the geometric tolerance's
+ * rejection side now that owner-specific replay can make a stale world harmless.
+ * Neither variable is set in production.
  */
 static bool dkr_shadow_tenancy_enabled(void) {
     if (dkr_shadow_tenancy_check < 0) {
@@ -2187,7 +2451,9 @@ static float dkr_ndc_cross(const struct LoadedVertex *a,
 /* SP: gSPVertexDKR (G_VTX)                                                   */
 /* ------------------------------------------------------------------------- */
 
-static void dkr_sp_vertex(const Vertex *verts, int n, bool append) {
+static void dkr_sp_vertex(const Vertex *verts, int n, bool append,
+                          const float (*position_overrides)[3],
+                          const struct RGBA *color_overrides) {
     int dest = append ? rsp.vtx_append_pos : 0;
     const float (*m)[4] = rsp.mtx[rsp.active_slot];
 
@@ -2220,6 +2486,11 @@ static void dkr_sp_vertex(const Vertex *verts, int n, bool append) {
         if (di < 0 || di >= DKR_MAX_VERTICES) continue;
         struct LoadedVertex *d = &rsp.loaded[di];
         float x = verts[i].x, y = verts[i].y, z = verts[i].z;
+        if (position_overrides != NULL) {
+            x = position_overrides[i][0];
+            y = position_overrides[i][1];
+            z = position_overrides[i][2];
+        }
 
         /* Row-vector transform through the selected MVP matrix. */
         float cx = x * m[0][0] + y * m[1][0] + z * m[2][0] + m[3][0];
@@ -2281,10 +2552,14 @@ static void dkr_sp_vertex(const Vertex *verts, int n, bool append) {
         d->light_y = rsp.light_direction[1];
         d->light_z = rsp.light_direction[2];
 
-        d->color.r = verts[i].r;
-        d->color.g = verts[i].g;
-        d->color.b = verts[i].b;
-        d->color.a = verts[i].a;
+        if (color_overrides != NULL) {
+            d->color = color_overrides[i];
+        } else {
+            d->color.r = verts[i].r;
+            d->color.g = verts[i].g;
+            d->color.b = verts[i].b;
+            d->color.a = verts[i].a;
+        }
         d->u = 0.0f; d->v = 0.0f;
 
         /* Per-vertex fog factor from the transformed depth. */
@@ -3325,6 +3600,125 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
     }
 }
 
+static bool dkr_replay_deformation_vertices(
+    const GfxPresentationMatrixOwner *owner, int viewport, uint32_t ordinal,
+    const Vertex *vertices, int count, bool particle,
+    float out[DKR_MAX_VERTICES][3],
+    struct RGBA colors[DKR_MAX_VERTICES]) {
+    GfxPresentationDeformationBinding deformation;
+    bool compatible;
+    bool changed = false;
+    bool color_changed = false;
+    const bool interpolate_color =
+        dkr_replay_vertex_color_interpolation_enabled();
+
+    if (owner == NULL || vertices == NULL || count <= 0 ||
+        count > DKR_MAX_VERTICES || out == NULL || colors == NULL) {
+        return false;
+    }
+    compatible = particle
+        ? presentation_snapshot_particle_deformation_compatible(
+              owner->address, owner->generation)
+        : presentation_snapshot_deformation_compatible(
+              owner->address, owner->generation);
+    if (!compatible) {
+        gfx_presentation_packet_note_deformation_incompatible();
+        return false;
+    }
+    if (!gfx_presentation_packet_lookup_deformation(
+            owner, viewport, ordinal, (uint64_t)g_simTickCounter,
+            (uint32_t)count, (uint32_t)sizeof(*vertices), &deformation)) {
+        return false;
+    }
+    for (int index = 0; index < count; index++) {
+        Vertex previous;
+        Vertex current;
+        memcpy(&previous,
+               deformation.previous_bytes +
+                   (size_t)index * deformation.stride,
+               sizeof(previous));
+        memcpy(&current,
+               deformation.current_bytes +
+                   (size_t)index * deformation.stride,
+               sizeof(current));
+        if (previous.x != current.x || previous.y != current.y ||
+            previous.z != current.z) {
+            changed = true;
+        }
+        if (previous.r != current.r || previous.g != current.g ||
+            previous.b != current.b || previous.a != current.a) {
+            color_changed = true;
+        }
+        out[index][0] = presentation_lerp1(
+            (float)previous.x, (float)current.x,
+            dkr_replay_object_alpha_numerator,
+            dkr_replay_object_alpha_denominator);
+        out[index][1] = presentation_lerp1(
+            (float)previous.y, (float)current.y,
+            dkr_replay_object_alpha_numerator,
+            dkr_replay_object_alpha_denominator);
+        out[index][2] = presentation_lerp1(
+            (float)previous.z, (float)current.z,
+            dkr_replay_object_alpha_numerator,
+            dkr_replay_object_alpha_denominator);
+        if (interpolate_color) {
+            colors[index].r = presentation_lerp_u8(
+                previous.r, current.r, dkr_replay_object_alpha_numerator,
+                dkr_replay_object_alpha_denominator);
+            colors[index].g = presentation_lerp_u8(
+                previous.g, current.g, dkr_replay_object_alpha_numerator,
+                dkr_replay_object_alpha_denominator);
+            colors[index].b = presentation_lerp_u8(
+                previous.b, current.b, dkr_replay_object_alpha_numerator,
+                dkr_replay_object_alpha_denominator);
+            colors[index].a = presentation_lerp_u8(
+                previous.a, current.a, dkr_replay_object_alpha_numerator,
+                dkr_replay_object_alpha_denominator);
+        }
+    }
+    if (interpolate_color) {
+        gfx_presentation_packet_note_deformation_color(
+            particle, color_changed);
+        changed = changed || color_changed;
+    }
+    if (particle) {
+        gfx_presentation_packet_note_particle_deformation(changed);
+    }
+    if (changed) {
+        gfx_presentation_packet_note_deformation_override();
+    }
+    return changed;
+}
+
+_Static_assert(sizeof(GfxPresentationMatrixOwner) <=
+                   GFX_PRESENTATION_DEFORM_MAX_BYTES,
+               "effect recipe must fit the retained history packet");
+
+static bool dkr_replay_effect_world(
+    const GfxPresentationMatrixOwner *owner, int viewport,
+    float out[4][4]) {
+    GfxPresentationDeformationBinding retained;
+    GfxPresentationMatrixOwner previous;
+    GfxPresentationMatrixOwner current;
+
+    if (owner == NULL || out == NULL ||
+        !gfx_presentation_packet_lookup_deformation(
+            owner, viewport, 0u, (uint64_t)g_simTickCounter, 1u,
+            (uint32_t)sizeof(*owner), &retained) ||
+        retained.byte_size != sizeof(*owner)) {
+        return false;
+    }
+    memcpy(&previous, retained.previous_bytes, sizeof(previous));
+    memcpy(&current, retained.current_bytes, sizeof(current));
+    if (!mdkr_camera_replay_effect_world(
+            &previous, &current, dkr_replay_object_alpha_numerator,
+            dkr_replay_object_alpha_denominator, out)) {
+        return false;
+    }
+    gfx_presentation_packet_note_effect_override();
+    return true;
+}
+
 static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
     const bool census = dkr_dl_census_enabled();
     if (cmd == NULL) {
@@ -3432,11 +3826,124 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             int slot = (int)((matrix_param >> 6) & 3);
             uint8_t draw_space = matrix_param & 3;
             void *ma = dkr_resolve(cmd->words.w1);
+            float replay_world[4][4];
+            bool object_overridden = false;
+            bool effect_overridden = false;
+            bool billboard_overridden = false;
+            bool billboard_binding_found = false;
+            int32_t billboard_matrix[16];
+            GfxPresentationPacketBinding packet_binding;
             rsp.active_slot = slot;
             rsp.shadow_matrix_valid[slot] =
                 dkr_shadow_lookup_live(ma, &rsp.shadow_matrix[slot]);
+            /* A ROOT begins one model's deterministic G_VTX sequence. CHILD
+             * matrices keep that sequence alive for articulated parts. Any
+             * other world matrix closes it, preventing ownership from leaking
+             * into unrelated geometry later in the display list. */
+            if (rsp.shadow_matrix_valid[slot] &&
+                rsp.shadow_matrix[slot].presentation_owner.valid &&
+                (rsp.shadow_matrix[slot].presentation_owner.matrix_class ==
+                     GFX_PRESENTATION_MATRIX_ROOT ||
+                 rsp.shadow_matrix[slot].presentation_owner.matrix_class ==
+                     GFX_PRESENTATION_MATRIX_CHILD)) {
+                const GfxPresentationMatrixOwner *owner =
+                    &rsp.shadow_matrix[slot].presentation_owner;
+                bool new_root =
+                    owner->matrix_class == GFX_PRESENTATION_MATRIX_ROOT;
+                bool new_lifetime =
+                    !rsp.deformation_owner_valid ||
+                    rsp.deformation_owner.address != owner->address ||
+                    rsp.deformation_owner.generation != owner->generation ||
+                    rsp.deformation_viewport !=
+                        rsp.shadow_matrix[slot].viewport;
+                rsp.deformation_owner = *owner;
+                rsp.deformation_viewport = rsp.shadow_matrix[slot].viewport;
+                if (new_root || new_lifetime) {
+                    rsp.deformation_owner_valid =
+                        dkr_deformation_begin_stream(
+                            owner, rsp.shadow_matrix[slot].viewport);
+                } else {
+                    rsp.deformation_owner_valid = true;
+                }
+            } else if (draw_space == G_MTX_DKR_SPACE_WORLD) {
+                memset(&rsp.deformation_owner, 0,
+                       sizeof(rsp.deformation_owner));
+                rsp.deformation_viewport = 0;
+                rsp.deformation_stream = 0u;
+                rsp.deformation_batch = 0u;
+                rsp.deformation_owner_valid = false;
+            }
+            if (!dkr_replay_pass && rsp.shadow_matrix_valid[slot] &&
+                rsp.shadow_matrix[slot].presentation_owner.valid &&
+                rsp.shadow_matrix[slot].presentation_owner.matrix_class ==
+                    GFX_PRESENTATION_MATRIX_EFFECT) {
+                const GfxPresentationMatrixOwner *effect_owner =
+                    &rsp.shadow_matrix[slot].presentation_owner;
+                (void)gfx_presentation_packet_capture_deformation(
+                    effect_owner, rsp.shadow_matrix[slot].viewport, 0u,
+                    effect_owner, sizeof(*effect_owner), 1u,
+                    (uint32_t)sizeof(*effect_owner));
+            }
             if (dkr_replay_pass && rsp.shadow_matrix_valid[slot] &&
+                dkr_replay_object_alpha_valid) {
+                const GfxPresentationMatrixOwner *presentation_owner =
+                    &rsp.shadow_matrix[slot].presentation_owner;
+                const bool effect_owner =
+                    presentation_owner->valid &&
+                    presentation_owner->matrix_class ==
+                        GFX_PRESENTATION_MATRIX_EFFECT;
+                if (effect_owner) {
+                    if (dkr_replay_effect_interpolation_enabled()) {
+                        effect_overridden = dkr_replay_effect_world(
+                            presentation_owner,
+                            rsp.shadow_matrix[slot].viewport, replay_world);
+                    }
+                } else {
+                    object_overridden = mdkr_camera_replay_object_world(
+                        presentation_owner,
+                        dkr_replay_object_alpha_numerator,
+                        dkr_replay_object_alpha_denominator, replay_world);
+                }
+                if (presentation_owner->valid && !effect_owner) {
+                    if (object_overridden) {
+                        dkr_replay_object_hits++;
+                    } else {
+                        dkr_replay_object_holds++;
+                    }
+                }
+            }
+            if (dkr_replay_pass && dkr_replay_object_alpha_valid) {
+                billboard_binding_found =
+                    gfx_presentation_packet_lookup_matrix(
+                        ma, &packet_binding);
+            }
+            if (billboard_binding_found) {
+                billboard_overridden = mdkr_camera_replay_billboard_matrix(
+                    &packet_binding.owner, packet_binding.viewport,
+                    dkr_replay_object_alpha_numerator,
+                    dkr_replay_object_alpha_denominator, billboard_matrix);
+                if (billboard_overridden) {
+                    dkr_replay_billboard_matrix_hits++;
+                } else {
+                    dkr_replay_billboard_matrix_holds++;
+                }
+            }
+            if (dkr_replay_pass && dkr_replay_object_alpha_valid) {
+                const GfxPresentationMatrixOwner *opacity_owner = NULL;
+                if (billboard_binding_found) {
+                    opacity_owner = &packet_binding.owner;
+                } else if (rsp.shadow_matrix_valid[slot]) {
+                    opacity_owner =
+                        &rsp.shadow_matrix[slot].presentation_owner;
+                }
+                dkr_replay_bind_opacity_owner(opacity_owner);
+            }
+            if (billboard_overridden) {
+                dkr_decode_matrix(slot, billboard_matrix);
+            } else if (dkr_replay_pass && rsp.shadow_matrix_valid[slot] &&
                 (rsp.shadow_matrix[slot].vp_overridden ||
+                 object_overridden ||
+                 effect_overridden ||
                  (dkr_replay_force_recompose &&
                   rsp.shadow_matrix[slot].gameplay_vp))) {
                 /*
@@ -3496,10 +4003,16 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                         rsp.shadow_matrix[slot].world,
                         rsp.shadow_matrix[slot].captured_view_projection,
                         verify);
+                    if (dkr_test_recompose_reject_enabled() &&
+                        !dkr_test_recompose_reject_used) {
+                        dkr_mtx_inject_recompose_reject(ma, verify);
+                        dkr_test_recompose_reject_used = true;
+                    }
                     faithful = memcmp(verify, ma, sizeof(verify)) == 0;
                     if (!faithful) {
                         worst = dkr_mtx_worst_lsb_delta(ma, verify);
-                        if (rsp.shadow_matrix[slot].vp_overridden &&
+                        if ((rsp.shadow_matrix[slot].vp_overridden ||
+                             object_overridden) &&
                             worst <= (int64_t)DKR_RECOMPOSE_TOLERANCE_LSB) {
                             faithful = true;
                             tolerated = true;
@@ -3527,7 +4040,9 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                 if (faithful) {
                     int32_t recomposed[16];
                     mdkr_camera_replay_mvp(
-                        rsp.shadow_matrix[slot].world,
+                        (object_overridden || effect_overridden)
+                            ? replay_world
+                            : rsp.shadow_matrix[slot].world,
                         rsp.shadow_matrix[slot].view_projection,
                         recomposed);
                     dkr_decode_matrix(slot, recomposed);
@@ -3609,9 +4124,116 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             int n = ((p >> 3) & 0x1f) + 1;
             bool append = (p & 1) != 0;
             const Vertex *v = (const Vertex *)dkr_resolve(cmd->words.w1);
+            int retained_n = n;
+            bool retained_packet_vertex = false;
+            bool packet_binding_found = false;
+            float position_overrides[DKR_MAX_VERTICES][3];
+            const float (*position_override)[3] = NULL;
+            struct RGBA color_overrides[DKR_MAX_VERTICES];
+            const struct RGBA *color_override = NULL;
+            GfxPresentationPacketBinding packet_binding;
+            if (v != NULL) {
+                const size_t room = dkr_arena_room(v);
+                if (room != (size_t)-1 &&
+                    (size_t)retained_n * sizeof(*v) > room) {
+                    retained_n = (int)(room / sizeof(*v));
+                } else if (room == (size_t)-1 && !dkr_ptr_plausible(v)) {
+                    retained_n = 0;
+                }
+            }
+            memset(&packet_binding, 0, sizeof(packet_binding));
+            retained_packet_vertex = dkr_replay_pass
+                ? gfx_presentation_packet_has_frozen_vertex(v)
+                : gfx_presentation_packet_has_live_vertex(v);
+            if (v != NULL) {
+                if (dkr_replay_pass && dkr_replay_object_alpha_valid) {
+                    packet_binding_found =
+                        gfx_presentation_packet_lookup_vertex(
+                            v, &packet_binding);
+                } else if (!dkr_replay_pass) {
+                    packet_binding_found =
+                        gfx_presentation_packet_lookup_live_vertex(
+                            v, &packet_binding);
+                }
+            }
+            if (dkr_replay_pass && dkr_replay_object_alpha_valid &&
+                packet_binding_found &&
+                packet_binding.owner.matrix_class ==
+                    GFX_PRESENTATION_MATRIX_BILLBOARD) {
+                if (mdkr_camera_replay_billboard_anchor(
+                        &packet_binding.owner,
+                        dkr_replay_object_alpha_numerator,
+                        dkr_replay_object_alpha_denominator,
+                        position_overrides[0])) {
+                    position_override = position_overrides;
+                    dkr_replay_billboard_vertex_hits++;
+                } else {
+                    dkr_replay_billboard_vertex_holds++;
+                }
+            }
+            if (packet_binding_found && retained_n > 0 &&
+                packet_binding.owner.matrix_class ==
+                    GFX_PRESENTATION_MATRIX_PARTICLE_VERTICES) {
+                if (dkr_replay_pass && dkr_replay_object_alpha_valid) {
+                    dkr_replay_bind_opacity_owner(&packet_binding.owner);
+                }
+                const size_t byte_size =
+                    (size_t)retained_n * sizeof(*v);
+                if (!dkr_replay_pass) {
+                    (void)gfx_presentation_packet_capture_deformation(
+                        &packet_binding.owner, packet_binding.viewport, 0u,
+                        v, byte_size, (uint32_t)retained_n,
+                        (uint32_t)sizeof(*v));
+                } else if (dkr_replay_object_alpha_valid &&
+                           dkr_replay_particle_interpolation_enabled() &&
+                           dkr_replay_deformation_vertices(
+                               &packet_binding.owner,
+                               packet_binding.viewport, 0u, v, retained_n,
+                               true, position_overrides, color_overrides)) {
+                    position_override = position_overrides;
+                    if (dkr_replay_vertex_color_interpolation_enabled()) {
+                        color_override = color_overrides;
+                    }
+                }
+            }
+            /* Sprite anchors have their own retained position recipe above.
+             * For ordinary model batches, retain the exact authored vertices
+             * on the real walk and blend XYZ plus shade RGBA during replay.
+             * Model, animation, generation, tick adjacency, batch count and
+             * stride all have to agree; every refusal leaves the current
+             * bytes in place. Texture coordinates remain authored-discrete. */
+            if (v != NULL && retained_n > 0 && !rsp.billboard &&
+                rsp.deformation_owner_valid) {
+                uint32_t ordinal = 0u;
+                const size_t byte_size = (size_t)retained_n * sizeof(*v);
+                if (!dkr_deformation_next_ordinal(&ordinal)) {
+                    rsp.deformation_owner_valid = false;
+                } else if (!dkr_replay_pass &&
+                           !retained_packet_vertex) {
+                    (void)gfx_presentation_packet_capture_deformation(
+                        &rsp.deformation_owner, rsp.deformation_viewport,
+                        ordinal, v, byte_size, (uint32_t)retained_n,
+                        (uint32_t)sizeof(*v));
+                } else if (dkr_replay_object_alpha_valid &&
+                           dkr_replay_deformation_interpolation_enabled() &&
+                           !retained_packet_vertex &&
+                           dkr_replay_deformation_vertices(
+                               &rsp.deformation_owner,
+                               rsp.deformation_viewport, ordinal, v,
+                               retained_n, false, position_overrides,
+                               color_overrides)) {
+                    position_override = position_overrides;
+                    if (dkr_replay_vertex_color_interpolation_enabled()) {
+                        color_override = color_overrides;
+                    }
+                }
+            }
             DTRACE("G_VTX n=%d append=%d slot=%d bb=%d addr=%08x->%p", n, append,
                    rsp.active_slot, rsp.billboard, cmd->words.w1, (const void *)v);
-            if (v) dkr_sp_vertex(v, n, append);
+            if (v) {
+                dkr_sp_vertex(
+                    v, n, append, position_override, color_override);
+            }
             break;
         }
         case G_TRIN: {  /* gSPPolygon */
@@ -3769,8 +4391,10 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             break;
         case G_SETPRIMCOLOR:
             rdp.prim_lod_fraction = (uint8_t)C0(cmd, 0, 8);
-            rdp.prim_color = (struct RGBA){ (uint8_t)C1(cmd,24,8), (uint8_t)C1(cmd,16,8),
-                                            (uint8_t)C1(cmd,8,8), (uint8_t)C1(cmd,0,8) };
+            rdp.authored_prim_color = (struct RGBA){
+                (uint8_t)C1(cmd,24,8), (uint8_t)C1(cmd,16,8),
+                (uint8_t)C1(cmd,8,8), (uint8_t)C1(cmd,0,8) };
+            dkr_replay_apply_primitive_alpha();
             break;
         case G_SETFOGCOLOR:
             rdp.fog_color = (struct RGBA){ (uint8_t)C1(cmd,24,8), (uint8_t)C1(cmd,16,8),
@@ -3965,6 +4589,7 @@ void gfx_shutdown(void) {
     free(tex_mip_buf);
     tex_mip_buf = NULL;
     tex_mip_cap = 0;
+    gfx_presentation_packet_shutdown();
     gfx_shadow_frame_shutdown();
     gfx_reset_renderer_caches();
     /* Every field is READ back from the variable that owns it, so a clean
@@ -4148,6 +4773,10 @@ void gfx_start_frame(void) {
     gfx_shadow_capture_begin();
     gfx_dkr_reset_interpreter_state();
     if (present_sched_replay_armed()) {
+        /* Billboard ownership was registered while game code built the list.
+         * Deformed model vertices only become visible when HLE resolves G_VTX,
+         * so begin their independent tick-stamped capture at the real walk. */
+        gfx_presentation_packet_capture_begin((uint64_t)g_simTickCounter);
         /* The exact state this walk is about to start from — see
          * dkr_walk_entry_rdp. */
         memcpy(dkr_walk_entry_rdp, &rdp, sizeof(rdp));
@@ -4187,7 +4816,8 @@ void gfx_dkr_reset_interpreter_state(void) {
     rsp.mtx[2][0][0] = rsp.mtx[2][1][1] = rsp.mtx[2][2][2] = rsp.mtx[2][3][3] = 1.0f;
 
     /* Seed sensible RDP defaults so draws before explicit setup still work. */
-    rdp.prim_color = rdp.env_color = (struct RGBA){ 255, 255, 255, 255 };
+    rdp.prim_color = rdp.authored_prim_color = rdp.env_color =
+        (struct RGBA){ 255, 255, 255, 255 };
     rdp.other_mode_h = 0;
     rdp.other_mode_l = 0;
     rdp.combine_mode = (uint64_t)color_comb(0, 0, 0, G_CCMUX_SHADE) |
@@ -4263,6 +4893,7 @@ void gfx_end_frame(void) {
      */
     if (present_sched_replay_armed()) {
         const uint64_t perf_freeze = present_perf_now();
+        gfx_presentation_packet_freeze();
         gfx_shadow_replay_freeze();
         present_perf_add(PRESENT_PERF_FREEZE, perf_freeze);
     }
@@ -4313,10 +4944,11 @@ bool gfx_renderer_failed(void) {
  * `overrides == NULL` the redraw is the same picture; with an interpolated
  * camera view-projection it is the same scene from a moved camera.
  */
-bool gfx_dkr_replay_walk(
-    const GfxShadowReplayViewProjection *overrides, size_t override_count) {
+static bool gfx_dkr_replay_walk_impl(
+    const GfxShadowReplayViewProjection *overrides, size_t override_count,
+    bool object_alpha_valid, uint64_t numerator, uint64_t denominator) {
     if (gfx_rapi == NULL || dkr_last_walked_dl == NULL || dkr_replay_pass ||
-        !dkr_walk_entry_valid) {
+        !dkr_walk_entry_valid || !gfx_presentation_packet_frozen()) {
         return false;
     }
     dkr_replay_force_recompose = present_sched_test_force_recompose();
@@ -4324,6 +4956,11 @@ bool gfx_dkr_replay_walk(
         return false;
     }
     dkr_replay_pass = true;
+    dkr_replay_object_alpha_valid =
+        object_alpha_valid && dkr_replay_object_interpolation_enabled() &&
+        denominator != 0u && numerator < denominator;
+    dkr_replay_object_alpha_numerator = numerator;
+    dkr_replay_object_alpha_denominator = denominator != 0u ? denominator : 1u;
     /* Caster capture belongs to the real walk, which already committed this
      * tick's frame; a second capture would republish it mid-present. */
     gfx_shadow_capture_suppress(true);
@@ -4353,14 +4990,30 @@ bool gfx_dkr_replay_walk(
      * by the time a presentation replay runs, the NEXT tick's display list has
      * already been built and registered (gfx_shadow_replay_release). */
     (void)gfx_shadow_replay_release();
+    dkr_replay_object_alpha_valid = false;
+    dkr_replay_object_alpha_numerator = 0;
+    dkr_replay_object_alpha_denominator = 1;
     dkr_replay_pass = false;
     dkr_replay_walks++;
     return true;
 }
 
+bool gfx_dkr_replay_walk(
+    const GfxShadowReplayViewProjection *overrides, size_t override_count) {
+    return gfx_dkr_replay_walk_impl(overrides, override_count, false, 0u, 1u);
+}
+
+bool gfx_dkr_replay_walk_interpolated(
+    const GfxShadowReplayViewProjection *overrides, size_t override_count,
+    uint64_t numerator, uint64_t denominator) {
+    return gfx_dkr_replay_walk_impl(overrides, override_count, true, numerator,
+                                    denominator);
+}
+
 void gfx_dkr_replay_invalidate(void) {
     dkr_last_walked_dl = NULL;
     dkr_walk_entry_valid = false;
+    gfx_presentation_packet_invalidate();
 }
 
 uint64_t gfx_dkr_real_walk_count(void) {
@@ -4387,6 +5040,32 @@ void gfx_dkr_replay_get_stats(
     }
     if (matrix_rejects != NULL) {
         *matrix_rejects = dkr_replay_matrix_rejects;
+    }
+}
+
+void gfx_dkr_replay_get_object_stats(uint64_t *hits, uint64_t *holds) {
+    if (hits != NULL) {
+        *hits = dkr_replay_object_hits;
+    }
+    if (holds != NULL) {
+        *holds = dkr_replay_object_holds;
+    }
+}
+
+void gfx_dkr_replay_get_billboard_stats(
+    uint64_t *matrix_hits, uint64_t *matrix_holds,
+    uint64_t *vertex_hits, uint64_t *vertex_holds) {
+    if (matrix_hits != NULL) {
+        *matrix_hits = dkr_replay_billboard_matrix_hits;
+    }
+    if (matrix_holds != NULL) {
+        *matrix_holds = dkr_replay_billboard_matrix_holds;
+    }
+    if (vertex_hits != NULL) {
+        *vertex_hits = dkr_replay_billboard_vertex_hits;
+    }
+    if (vertex_holds != NULL) {
+        *vertex_holds = dkr_replay_billboard_vertex_holds;
     }
 }
 

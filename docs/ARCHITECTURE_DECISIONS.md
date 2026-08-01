@@ -170,8 +170,8 @@ game controller via SDL_GameController); osGetCount/osGetTime from host clock
       no F3DDKR front-end change); pinned wgpu-native prebuilt v29.0.1.1 via
       cmake/webgpu.cmake (SHA-256 verified, mirrors mgb64; reuses mgb64's fetch
       offline). option(MDKR_WEBGPU_BACKEND ON) gates code+define+link; GL stays
-      compiled. Runtime select MDKR_RENDERER=webgpu|gl (default webgpu, GL
-      fallback; metal warns+falls back — gfx_metal.mm not built here). Window is
+      compiled. Runtime select MDKR_RENDERER=webgpu|gl (default GL, WebGPU
+      selectable; metal warns+falls back — gfx_metal.mm not built here). Window is
       backend-aware (SDL_WINDOW_METAL + Metal view for WebGPU vs GL context);
       headless --dump-frames captures WebGPU via the vtable's read_framebuffer_rgb
       (offscreen readback, no drawable needed). PARITY vs GL verified by eye +
@@ -253,9 +253,9 @@ game controller via SDL_GameController); osGetCount/osGetTime from host clock
       affected checksums. Save management must work from the launcher without a
       ROM, WebGPU, or running engine, perform zero uploads, and restore exact
       progression after complete browser-site-data loss. Native CLI parity and
-      corrupt-block recovery follow the same shared ROM-free byte codec. Scope,
-      formats, UX, security, tests, dependencies, and `SP-1`–`SP-10` backlog:
-      the save portability/editor spec (internal archive).
+      corrupt-block recovery follow the same shared ROM-free byte codec. The
+      formats and recovery contract are documented in `SAVE_MANAGEMENT.md` and
+      enforced by the save codec/container tests.
 
 ## Build
 
