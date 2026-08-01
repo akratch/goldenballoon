@@ -1,5 +1,6 @@
 #include "gfx_webgpu_callback_latch.h"
 
+#include <stddef.h>
 #include <stdatomic.h>
 
 /* Two low bits hold GfxWebgpuCallbackEvent; generations are monotonically
