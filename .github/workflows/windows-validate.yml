@@ -28,9 +28,8 @@
 # not promise a qualifying D3D12/Vulkan adapter or GL 3.3 context. Treating the
 # GPU-free surfaces above as a launcher-render substitute would recreate the
 # release-gate bug this audit is closing. Accordingly this workflow uploads no
-# executable or zip; Windows publication stays held until the built and
-# extracted launchers can both produce content-validated default-WebGPU and
-# explicit-GL captures on a stable GPU runner.
+# executable or zip. Automatic publication remains disabled; a maintainer may
+# attach only an exact archive that separately passed real-hardware acceptance.
 #
 # Manual-only (workflow_dispatch), matching the repo's deliberate
 # no-auto-trigger posture for release/validation lanes (see release.yml,

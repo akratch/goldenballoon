@@ -239,7 +239,7 @@ def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
         ),
         "Windows release targeted non-GPU sentinel": (
             sources["desktop_release"],
-            "ctest --test-dir build --output-on-failure -R '^memory_allocator$'",
+            "ctest --test-dir build --output-on-failure --no-tests=error -R '^memory_allocator$'",
         ),
         "local CI GPU exclusion": (
             sources["ci_local"],
@@ -1034,7 +1034,7 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
         ),
         "Windows MinGW portability execution": (
             workflow,
-            "-R '^memory_allocator$'",
+            "--no-tests=error -R '^memory_allocator$'",
         ),
         "Linux asset-free guard": (
             workflow,
@@ -1123,9 +1123,9 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
             workflow,
             'executable="$package_root/GoldenBalloon/GoldenBalloon.exe"',
         ),
-        "Windows publication hold": (
+        "Windows automatic-publication policy": (
             workflow,
-            "Windows artifact not uploaded: hosted GPU launcher qualification is unavailable.",
+            "Hosted Windows artifact not uploaded automatically; only a manually accepted exact archive may be attached.",
         ),
         "canonical Linux provenance input": (
             workflow,
@@ -2430,10 +2430,10 @@ def main() -> int:
                 1,
             ),
         },
-        "Windows publication hold": {
+        "Windows automatic-publication policy": {
             **desktop_sources,
             "workflow": desktop_sources["workflow"].replace(
-                "Windows artifact not uploaded: hosted GPU launcher qualification is unavailable.",
+                "Hosted Windows artifact not uploaded automatically; only a manually accepted exact archive may be attached.",
                 "Windows artifact ready.",
                 1,
             ),
@@ -2441,9 +2441,9 @@ def main() -> int:
         "Windows forbidden upload": {
             **desktop_sources,
             "workflow": desktop_sources["workflow"].replace(
-                "      - name: Enforce Windows publication hold",
+                "      - name: Confirm automatic Windows publication is disabled",
                 "      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08\n"
-                "      - name: Enforce Windows publication hold",
+                "      - name: Confirm automatic Windows publication is disabled",
                 1,
             ),
         },

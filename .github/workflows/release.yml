@@ -7,8 +7,9 @@
 # zip is built and inspected, but deliberately not uploaded: windows-latest
 # does not guarantee a qualifying D3D12/Vulkan adapter or GL 3.3 context, so a
 # real launcher gate there would be flaky and a headless CLI smoke would be a
-# false substitute. Windows publication stays closed until a stable GPU runner
-# is available. macOS is built and validated by
+# false substitute. Automatic Windows publication is disabled; a maintainer
+# may attach only the exact archive that passed real-hardware acceptance.
+# macOS is built and validated by
 # .github/workflows/macos-release.yml (standalone dependencies, integrity
 # sealing, mounted-DMG verification, and an optional Developer ID/notarization
 # lane); a maintainer assembles the final GitHub Release from all sources.
@@ -237,12 +238,12 @@ jobs:
           path: dist/Golden-Balloon-${{ needs.validate.outputs.version }}-linux-x86_64.*
 
   windows:
-    # Non-publishing by design. A windows-latest VM is useful for ABI, import,
+    # No automatic publishing by design. A windows-latest VM is useful for ABI, import,
     # packaging, and native execution checks, but is not a stable GPU
     # qualification environment. Do not add upload-artifact to this job until
     # the built and extracted launchers both pass content-validated WebGPU and
     # explicit-GL captures on a qualified runner.
-    name: Windows portable validation (publication held)
+    name: Windows portable validation (automatic publishing disabled)
     needs: validate
     runs-on: windows-latest
     timeout-minutes: 40
@@ -277,7 +278,7 @@ jobs:
           test "$version_output" = "mdkr64 ${{ needs.validate.outputs.version }}"
           ./tools/check_windows_imports.sh build/mdkr64.exe
           ./macos/Scripts/verify_asset_free.sh build/mdkr64.exe
-          ctest --test-dir build --output-on-failure -R '^memory_allocator$'
+          ctest --test-dir build --output-on-failure --no-tests=error -R '^memory_allocator$'
       - name: Smoke-launch ROM-free early-exit surfaces
         env:
           SDL_VIDEODRIVER: dummy
@@ -307,6 +308,6 @@ jobs:
             "$executable" --help > help.txt
             grep -q '^Usage: ' help.txt
           )
-      - name: Enforce Windows publication hold
+      - name: Confirm automatic Windows publication is disabled
         run: |
-          echo "Windows artifact not uploaded: hosted GPU launcher qualification is unavailable."
+          echo "Hosted Windows artifact not uploaded automatically; only a manually accepted exact archive may be attached."
