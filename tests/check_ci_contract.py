@@ -237,9 +237,9 @@ def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
             sources["windows_validate"],
             "ctest --test-dir build --output-on-failure -LE gpu -E 'audio|mixer'",
         ),
-        "Windows release GPU exclusion": (
+        "Windows release targeted non-GPU sentinel": (
             sources["desktop_release"],
-            "ctest --test-dir build --output-on-failure -LE gpu -E '(audio|mixer)'",
+            "ctest --test-dir build --output-on-failure -R '^memory_allocator$'",
         ),
         "local CI GPU exclusion": (
             sources["ci_local"],
@@ -1028,6 +1028,14 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
             "ctest --test-dir build --output-on-failure",
         ),
         "Windows test build": (workflow, "-DBUILD_TESTING=ON"),
+        "Windows MinGW portability target": (
+            workflow,
+            "--target mdkr64 mdkr_memory_allocator_test",
+        ),
+        "Windows MinGW portability execution": (
+            workflow,
+            "-R '^memory_allocator$'",
+        ),
         "Linux asset-free guard": (
             workflow,
             "./macos/Scripts/verify_asset_free.sh build/mdkr64",
@@ -2073,10 +2081,10 @@ def main() -> int:
                 " -LE gpu -E 'audio|mixer'", " -E 'audio|mixer'", 1
             ),
         },
-        "Windows release GPU exclusion deletion": {
+        "Windows release targeted sentinel deletion": {
             **gpu_routing_sources,
             "desktop_release": gpu_routing_sources["desktop_release"].replace(
-                " -LE gpu -E '(audio|mixer)'", " -E '(audio|mixer)'", 1
+                " -R '^memory_allocator$'", " -R '^never$'", 1
             ),
         },
         "local CI GPU exclusion deletion": {
@@ -2320,6 +2328,22 @@ def main() -> int:
             "workflow": desktop_sources["workflow"].replace(
                 "./tools/check_windows_imports.sh build/mdkr64.exe",
                 "true",
+                1,
+            ),
+        },
+        "Windows MinGW portability target": {
+            **desktop_sources,
+            "workflow": desktop_sources["workflow"].replace(
+                "--target mdkr64 mdkr_memory_allocator_test",
+                "--target mdkr64",
+                1,
+            ),
+        },
+        "Windows MinGW portability execution": {
+            **desktop_sources,
+            "workflow": desktop_sources["workflow"].replace(
+                "-R '^memory_allocator$'",
+                "-R '^never$'",
                 1,
             ),
         },

@@ -267,14 +267,17 @@ jobs:
         run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
             -DMDKR_VERSION="$RELEASE_VERSION"
-          cmake --build build -j
+          # The full ROM-free suite runs in the cross-platform correctness
+          # matrix. This Windows lane builds the product plus the native
+          # formatter/allocator sentinel that exercises MinGW CRT compatibility.
+          cmake --build build --target mdkr64 mdkr_memory_allocator_test -j
       - name: Verify portable executable
         run: |
           version_output="$(./build/mdkr64.exe --version | tr -d '\r')"
           test "$version_output" = "mdkr64 ${{ needs.validate.outputs.version }}"
           ./tools/check_windows_imports.sh build/mdkr64.exe
           ./macos/Scripts/verify_asset_free.sh build/mdkr64.exe
-          ctest --test-dir build --output-on-failure -LE gpu -E '(audio|mixer)'
+          ctest --test-dir build --output-on-failure -R '^memory_allocator$'
       - name: Smoke-launch ROM-free early-exit surfaces
         env:
           SDL_VIDEODRIVER: dummy
