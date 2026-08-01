@@ -9,6 +9,16 @@ or saved Time Trial ghosts matter to you.
 All save processing is local. A save file is never uploaded, and the launcher
 does not need a ROM, WebGPU, or the game engine to manage it.
 
+In a native packaged app, live EEPROM, recovery points, and Controller Paks are
+stored under `SDL_GetPrefPath("mdkr64", "mdkr64")/save`, never in the signed app
+bundle or its working directory. `MDKR_SAVE_DIR` remains the explicit native
+override for command-line tools and isolated tests. Non-packaged CLI builds
+retain their CWD-relative `save/` default, and the browser remains `/save` on
+IDBFS. A first packaged launch copy-migrates a complete known legacy save set
+only when the destination directory is absent: it stages every file in a
+sibling directory, atomically installs the whole directory, and never mutates
+the legacy source.
+
 ## Browser workflow
 
 Open **Stored data** on the launcher:
@@ -110,8 +120,8 @@ build/mdkr-save recover damaged.eep recovered.eep
 back on failure. Add `--recover-corrupt` only when explicitly choosing to reset
 corrupt blocks during import. Keep the original damaged input as forensic data.
 
-The portable container and raw EEPROM formats are defined in
-`SAVE_PORTABILITY_EDITOR_SPEC_2026-07-27.md` (internal archive).
+The portable container and raw EEPROM formats are defined by the shared codec
+in `platform/save_codec.c` and covered by `tests/test_save_codec.c`.
 The virtual Pak format, corruption policy, and original API bridge are defined
 in [`VIRTUAL_CONTROLLER_PAK.md`](VIRTUAL_CONTROLLER_PAK.md).
 

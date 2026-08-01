@@ -161,11 +161,16 @@ void render_level_geometry_and_objects(void);
  * survived into the next tick) without drawing, and render's own private
  * per-viewport draw order. See tracks.c. */
 void scene_build_last_viewport_basis(void);
+/* Advance the three-player spectator camera once per fixed tick. Rendering
+ * consumes camera 3 but never advances it. */
+void scene_tt_camera_tick(s32 updateRate);
 s32 scene_build_private_draw_order(s32 startIndex, s32 lastIndex);
 f32 scene_object_view_distance(Object *obj);
 s32 scene_visibility_viewport_count(void);
 void scene_visibility_prepare_viewport(s32 viewportIndex, s32 numViewports, s32 ttCam);
 s32 scene_object_admitted(Object *obj);
+void scene_authoritative_render_tick(s32 updateRate);
+s32 scene_object_render_opacity(const Object *obj);
 extern f32 gSceneDrawDistance;
 extern s32 gSceneDrawDistanceValid;
 #endif

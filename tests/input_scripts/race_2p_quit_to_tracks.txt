@@ -17,7 +17,8 @@
 # because alloc_displaylist_heap()'s free/realloc branch -- the third teardown
 # seam -- only fires on a player-count change.
 #
-# Drive with MDKR_AUTOPILOT=1, MDKR_TEST_REPLAY_WALK=1 under the ASan build.
+# Drive with MDKR_AUTOPILOT=1, MDKR_TEST_REPLAY_WALK=1 and
+# MDKR_INTERNAL_TEST_TOKEN=mdkr64-presentation-replay-v1 under ASan.
 # The route below is race_2p_split.txt's up to the drive point; see that file
 # for why the two-player menu graph differs from every one-player route.
 

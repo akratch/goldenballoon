@@ -1,0 +1,4 @@
+# Exact first-party branding paths present only in existing public history.
+# This is not a blanket media exemption: any new historical path still fails.
+brand/gb1.png
+brand/gb2.png

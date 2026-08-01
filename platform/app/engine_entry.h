@@ -8,25 +8,16 @@
 #ifndef MDKR64_ENGINE_ENTRY_H
 #define MDKR64_ENGINE_ENTRY_H
 
+/* Canonical C handoff/recovery seam. Keep these declarations in one header so
+ * the C engine and C++ shell cannot drift. */
+#include "../host_window.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 // The engine's original entry point (platform/main_pc.c under MDKR_APP).
 int mdkr64_headless_main(int argc, char **argv);
-
-// --- Window / device handoff (platform/host_window.c) ----------------------
-// Register the shell's SDL window + GL context so the engine adopts them
-// instead of creating its own. Call before booting the engine.
-void platformSetHostWindow(void *sdl_window, void *gl_context);
-
-// Register the shell's WebGPU objects (all opaque as void*; surface_format is a
-// WGPUTextureFormat) so the engine adopts the shell's device/surface and the
-// game renders into the SAME window the launcher used. Call after
-// platformSetHostWindow, before booting.
-void platformSetHostWebGpu(void *instance, void *adapter, void *device,
-                           void *queue, void *surface, int surface_format);
-int  platformHasHostWebGpu(void);
 
 // --- Launcher -> game boot -------------------------------------------------
 // DKR ADAPTATION: mgb64's MgbBootConfig carries level/difficulty/multiplayer/
@@ -43,6 +34,7 @@ typedef struct {
     int   video_mode;          // MdkrVideoMode, or -1 for "don't pass a preset"
     int   window_width;        // <= 0 => engine default
     int   window_height;
+    int   automation_ticks;    // <= 0 => interactive; launcher regression seam
     // Staged RESTART-scope settings, as "Video.Key=Value" strings. The settings
     // panel writes these when the player changes a restart-scope key before
     // pressing Play, so the choice takes effect on THIS boot rather than
@@ -75,7 +67,8 @@ extern int g_diagLogFileFd;
 typedef struct {
     void (*process_event)(const void *sdl_event);
     int  (*wants_input)(void);
-    void (*render)(void);
+    int  (*wants_render)(void);
+    int  (*render)(void);  // zero reports a fatal overlay-render failure
 } AppOverlayHooks;
 void platformSetOverlayHooks(const AppOverlayHooks *hooks);
 

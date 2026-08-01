@@ -17,6 +17,7 @@
 #ifdef NATIVE_PORT
 #include "asset_swap.h"
 #include "mdkr_trace.h"
+#include <stdlib.h>
 #endif
 #include "PRinternal/viint.h"
 #include "printf.h"
@@ -27,6 +28,12 @@
 #include "thread3_main.h"
 #include "tracks.h"
 #include "types.h"
+
+#ifdef NATIVE_PORT
+#define hud_rand_range cadence_compat_rand_range
+#else
+#define hud_rand_range rand_range
+#endif
 
 /************ .data ************/
 
@@ -315,6 +322,20 @@ s32 gStopwatchErrorX;
 s32 gStopwatchErrorY;
 LevelHeader_70 *D_80127194;
 UNUSED s32 D_80127198[4];
+#ifdef NATIVE_PORT
+/* Per-tick draw decisions for the two HUD state machines whose integration and
+ * audio now live in hud_authoritative_rng_tick_viewport().  Rendering consumes
+ * these snapshots without advancing a timer, firing a cue, or changing HUD
+ * state.  The GO x snapshot preserves the authored draw-before-integrate order. */
+static u8 sHudWrongWayDraw[MAXCONTROLLERS];
+static u8 sHudRaceStartReadyDraw[MAXCONTROLLERS];
+static u8 sHudRaceStartGoDraw[MAXCONTROLLERS];
+static f32 sHudRaceStartGoDrawX[MAXCONTROLLERS];
+/* The boost event is authoritative, but its face change was authored after the
+ * stopwatch had drawn. Keep that visual mutation pending until the matching
+ * viewport reaches the same post-draw point. */
+static u8 sHudStopwatchBoostFacePending[MAXCONTROLLERS];
+#endif
 
 /******************************/
 
@@ -485,11 +506,20 @@ void hud_init_element(void) {
     gMinimapOpacityTarget = osTvType == OS_TV_TYPE_PAL ? 60 : 50;
 #endif
     gMinimapFade = 0;
+#ifdef NATIVE_PORT
+    for (i = 0; i < MAXCONTROLLERS; i++) {
+        sHudWrongWayDraw[i] = FALSE;
+        sHudRaceStartReadyDraw[i] = FALSE;
+        sHudRaceStartGoDraw[i] = FALSE;
+        sHudRaceStartGoDrawX[i] = 0.0f;
+        sHudStopwatchBoostFacePending[i] = FALSE;
+    }
+#endif
     gShowHUD = FALSE;
     gHudPALScale = FALSE;
     gAdventurePlayerFinish = FALSE;
     D_80126D4C = -100;
-    D_80126D50 = rand_range(120, 360);
+    D_80126D50 = hud_rand_range(120, 360);
     gAdvRaceStartedByP2 = is_race_started_by_player_two();
     gStopwatchErrorX = 55;
     gStopwatchErrorY = 179;
@@ -962,8 +992,10 @@ void hud_render_player(Gfx **dList, Mtx **mtx, Vertex **vertexList, Object *obj,
  *     gHudOffsetX and the gHudRaceStart latch) integrates with the rate and
  *     fires two more sounds.
  *
- * Blink timers, opacity ramps used only for drawing, and everything under the
- * hud_main_* dispatch stay render-side; they are presentation.
+ * Blink timers, opacity ramps used only for drawing, and the visual-only parts
+ * of the hud_main_* dispatch stay render-side. Authored RNG, audio, and state
+ * machines nested under that dispatch run later from
+ * hud_authoritative_rng_tick_viewport().
  *
  * The prologue is hud_render_player's own, verbatim, so the same viewport
  * resolves to the same racer and the same gCurrentHud.
@@ -1005,6 +1037,13 @@ static void hud_player_tick(Object *obj, s32 updateRate) {
         gHudController = racer->playerIndex;
     }
     gCurrentHud = gPlayerHud[gHudCurrentViewport];
+    if (gShowCourseDirections) {
+        if (racer->indicator_timer > updateRate) {
+            racer->indicator_timer -= updateRate;
+        } else {
+            racer->indicator_timer = 0;
+        }
+    }
     if (cutscene_id() != 10) {
         if (gHUDNumPlayers == ONE_PLAYER) {
             if (input_pressed(gHudController) & D_CBUTTONS && racer->raceFinished == FALSE &&
@@ -1124,6 +1163,388 @@ void hud_tick(s32 updateRate) {
     }
     set_active_camera(savedCameraID);
 }
+
+static s32 hud_authoritative_viewport(void) {
+    s32 viewport = get_current_viewport();
+    if (viewport < PLAYER_ONE || viewport >= MAXCONTROLLERS) {
+        return PLAYER_ONE;
+    }
+    return viewport;
+}
+
+static void hud_time_trial_authored_rng_tick(Object *playerRacerObj,
+                                              s32 updateRate) {
+    Object_Racer *curRacer = playerRacerObj->racer;
+    Object *ttObject;
+    s32 soundID;
+    s32 stopwatchTimer;
+    s32 viewport = hud_authoritative_viewport();
+    s32 i;
+    f32 posX;
+    f32 posY;
+    f32 posZ;
+
+    if (!curRacer->raceFinished) {
+        if ((curRacer->boost_sound & BOOST_SOUND_UNK4) &&
+            D_80126D4C <= 0) {
+            sHudStopwatchBoostFacePending[viewport] = TRUE;
+            D_80126D4C = 60;
+            curRacer->boost_sound &= ~BOOST_SOUND_UNK4;
+        }
+        if (D_80126D4C > 0) {
+            D_80126D4C -= updateRate;
+            if (D_80126D4C < 0) {
+                D_80126D4C = 0;
+            }
+        }
+        if (D_80126D4C == 0) {
+            D_80126D4C = -100;
+            if (gHUDVoiceSoundMask == 0) {
+                soundID = hud_rand_range(0, D_80126D64 + 2) +
+                          SOUND_VOICE_TT_OH_NO;
+                while (soundID == gHudTTSoundID) {
+                    soundID = hud_rand_range(0, D_80126D64 + 2) +
+                              SOUND_VOICE_TT_OH_NO;
+                }
+                gHudTTSoundID = soundID;
+                sound_play(soundID, &gHUDVoiceSoundMask);
+                D_80126D64 = 1;
+            }
+        }
+    }
+
+    /* This authored voice sits between the boost reaction and the nearby-ghost
+     * reaction, and all three arbitrate through gHUDVoiceSoundMask. */
+    if (curRacer->lap > 0 && mdkr_hud_lap_index_valid(curRacer) &&
+        curRacer->lap < gHudLevelHeader->laps &&
+        curRacer->lap_times[curRacer->lap] < 20 &&
+        gHUDVoiceSoundMask == 0 &&
+        curRacer->vehicleID <= VEHICLE_PLANE) {
+        gHudSettings = get_settings();
+        if (curRacer->lap_times[curRacer->lap - 1] <
+            gHudSettings->flapTimesPtr[curRacer->vehicleID][level_id()]) {
+            stopwatchTimer = curRacer->lap_times[curRacer->lap - 1];
+            for (i = 0; i < curRacer->lap - 1; i++) {
+                if (stopwatchTimer >= curRacer->lap_times[i]) {
+                    stopwatchTimer = 0;
+                }
+            }
+            if (stopwatchTimer != 0) {
+                sound_play(SOUND_VOICE_TT_LAP_RECORD,
+                           &gHUDVoiceSoundMask);
+            }
+        }
+    }
+
+    if (!timetrial_valid_player_ghost()) {
+        return;
+    }
+    ttObject = timetrial_player_ghost();
+    if (ttObject == NULL || get_race_countdown() != 0 ||
+        curRacer->raceFinished) {
+        return;
+    }
+    posX = ttObject->trans.x_position - playerRacerObj->trans.x_position;
+    posY = ttObject->trans.y_position - playerRacerObj->trans.y_position;
+    posZ = ttObject->trans.z_position - playerRacerObj->trans.z_position;
+    if (sqrtf((posX * posX) + (posY * posY) + (posZ * posZ)) < 600.0f &&
+        gHUDVoiceSoundMask == 0 && D_80126D50 == 0) {
+        soundID = SOUND_VOICE_TT_GO_FOR_IT + hud_rand_range(0, 2);
+        while (soundID == gHudTTSoundID) {
+            soundID = SOUND_VOICE_TT_GO_FOR_IT + hud_rand_range(0, 2);
+        }
+        gHudTTSoundID = soundID;
+        sound_play(soundID, &gHUDVoiceSoundMask);
+        D_80126D50 = hud_rand_range(120, 1200);
+    }
+    D_80126D50 -= updateRate;
+    if (D_80126D50 < 0) {
+        D_80126D50 = 0;
+    }
+}
+
+/* Focused gate seam: make player one's wrong-way HUD stay active after the
+ * start sequence without rewriting racer state.  Production never enters it. */
+static s32 hud_wrong_way_counter(Object_Racer *racer) {
+    static s32 forceWrongWay = -1;
+    if (forceWrongWay < 0) {
+        const char *value = getenv("MDKR_TEST_HUD_FORCE_WRONG_WAY");
+        forceWrongWay = value != NULL && value[0] == '1' && value[1] == '\0';
+    }
+    if (forceWrongWay && hud_authoritative_viewport() == PLAYER_ONE &&
+        gRaceStartShowHudStep >= 5) {
+        return 200;
+    }
+    return racer->wrongWayCounter;
+}
+
+static void hud_wrong_way_authoritative_tick(Object_Racer *racer,
+                                              s32 updateRate) {
+    s32 viewport = hud_authoritative_viewport();
+    s32 wrongWayCounter = hud_wrong_way_counter(racer);
+    f32 textMoveSpeed;
+    f32 textPosTarget;
+
+    sHudWrongWayDraw[viewport] = FALSE;
+    if (wrongWayCounter > 120 &&
+        (gHUDNumPlayers ||
+         gCurrentHud->entry[HUD_WRONGWAY_1].pos.x ==
+             gCurrentHud->entry[HUD_WRONGWAY_1].lapText.targetPos) &&
+        !is_game_paused()) {
+        if ((gWrongWayNagPrefix || gWrongWayNagTimer == 0) &&
+            gHUDVoiceSoundMask == NULL) {
+            if (gWrongWayNagPrefix || hud_rand_range(1, 10) >= 8) {
+                gWrongWayNagPrefix = FALSE;
+                sound_play(SOUND_VOICE_TT_WRONG_WAY,
+                           &gHUDVoiceSoundMask);
+                gWrongWayNagTimer = hud_rand_range(1, 480) + 120;
+                MDKR_TRACE("hud_authority: viewport=%d action=wrong_way timer=%d",
+                           viewport, gWrongWayNagTimer);
+            } else {
+                gWrongWayNagPrefix = TRUE;
+                sound_play(SOUND_VOICE_TT_NONONO, &gHUDVoiceSoundMask);
+                MDKR_TRACE("hud_authority: viewport=%d action=wrong_way_prefix",
+                           viewport);
+            }
+        }
+        if (gWrongWayNagTimer > 0) {
+            s32 previousTimer = gWrongWayNagTimer;
+            gWrongWayNagTimer -= updateRate;
+            if (gWrongWayNagTimer < 0) {
+                gWrongWayNagTimer = 0;
+            }
+            if (previousTimer != 0 && gWrongWayNagTimer == 0) {
+                MDKR_TRACE("hud_authority: viewport=%d action=wrong_way_timer_zero",
+                           viewport);
+            }
+        }
+    }
+
+    if (gCurrentHud->entry[HUD_WRONGWAY_1].lapText.status !=
+        WRONGWAY_HIDE) {
+        if (gCurrentHud->entry[HUD_WRONGWAY_1].lapText.status ==
+            WRONGWAY_SHOW) {
+            if (gCurrentHud->entry[HUD_WRONGWAY_1].lapText.direction ==
+                WRONGWAY_IN) {
+                textMoveSpeed = updateRate * 13;
+                gCurrentHud->entry[HUD_WRONGWAY_1].pos.x += textMoveSpeed;
+                textPosTarget =
+                    gCurrentHud->entry[HUD_WRONGWAY_1].lapText.targetPos;
+                if (gCurrentHud->entry[HUD_WRONGWAY_1].pos.x >
+                    textPosTarget) {
+                    gCurrentHud->entry[HUD_WRONGWAY_1].pos.x = textPosTarget;
+                }
+                gCurrentHud->entry[HUD_WRONGWAY_2].pos.x -= textMoveSpeed;
+                textPosTarget =
+                    gCurrentHud->entry[HUD_WRONGWAY_2].lapText.targetPos;
+                if (gCurrentHud->entry[HUD_WRONGWAY_2].pos.x <
+                    textPosTarget) {
+                    gCurrentHud->entry[HUD_WRONGWAY_2].pos.x = textPosTarget;
+                }
+                if (wrongWayCounter <= 90) {
+                    gCurrentHud->entry[HUD_WRONGWAY_1].lapText.direction =
+                        WRONGWAY_OUT;
+                    sound_play(SOUND_WHOOSH1, NULL);
+                }
+            } else if (gCurrentHud->entry[HUD_WRONGWAY_1].lapText.direction ==
+                       WRONGWAY_OUT) {
+                textMoveSpeed = updateRate * 13;
+                gCurrentHud->entry[HUD_WRONGWAY_1].pos.x -= textMoveSpeed;
+                gCurrentHud->entry[HUD_WRONGWAY_2].pos.x += textMoveSpeed;
+                if (gCurrentHud->entry[HUD_WRONGWAY_1].pos.x < -200.0f) {
+                    gCurrentHud->entry[HUD_WRONGWAY_1].lapText.status =
+                        WRONGWAY_HIDE;
+                }
+            }
+            /* The authored path draws once more on the tick that changes the
+             * status to HIDE, because its outer condition was already taken. */
+            sHudWrongWayDraw[viewport] = !is_game_paused();
+        }
+    } else if (wrongWayCounter > 120) {
+        gCurrentHud->entry[HUD_WRONGWAY_1].lapText.status = WRONGWAY_SHOW;
+        gCurrentHud->entry[HUD_WRONGWAY_1].lapText.direction = WRONGWAY_IN;
+        gCurrentHud->entry[HUD_WRONGWAY_1].lapText.targetPos = -31;
+        gCurrentHud->entry[HUD_WRONGWAY_2].lapText.targetPos = 52;
+        gCurrentHud->entry[HUD_WRONGWAY_1].lapText.soundPlayed = FALSE;
+        if (gHUDNumPlayers == TWO_PLAYERS) {
+            gCurrentHud->entry[HUD_WRONGWAY_1].lapText.targetPos = -21;
+            gCurrentHud->entry[HUD_WRONGWAY_2].lapText.targetPos = 42;
+        } else if (gHUDNumPlayers > TWO_PLAYERS) {
+            if (racer->playerIndex == PLAYER_ONE ||
+                racer->playerIndex == PLAYER_THREE) {
+                gCurrentHud->entry[HUD_WRONGWAY_1].lapText.targetPos = -100;
+                gCurrentHud->entry[HUD_WRONGWAY_2].lapText.targetPos = -55;
+            } else {
+                gCurrentHud->entry[HUD_WRONGWAY_1].lapText.targetPos = 59;
+                gCurrentHud->entry[HUD_WRONGWAY_2].lapText.targetPos = 104;
+            }
+        }
+        gCurrentHud->entry[HUD_WRONGWAY_2].pos.x =
+            gCurrentHud->entry[HUD_WRONGWAY_2].lapText.targetPos + 200;
+        gCurrentHud->entry[HUD_WRONGWAY_1].pos.x =
+            gCurrentHud->entry[HUD_WRONGWAY_2].lapText.targetPos - 200;
+        sound_play(SOUND_WHOOSH1, NULL);
+        /* The original transition-to-SHOW tick did not draw the text. */
+    }
+}
+
+static void hud_race_start_authoritative_tick(s32 countdown,
+                                               s32 updateRate) {
+    f32 frequency;
+    Object **racerGroup;
+    Object *randomRacer;
+    Object_Racer *racer;
+    s32 numRacerObjects;
+    s32 viewport = hud_authoritative_viewport();
+    HudElement *go = &gCurrentHud->entry[HUD_RACE_START_GO];
+
+    sHudRaceStartReadyDraw[viewport] = FALSE;
+    sHudRaceStartGoDraw[viewport] = FALSE;
+
+    if (is_game_paused()) {
+        return;
+    }
+    if (countdown == 0 &&
+        gHudAudioData[0].playerIndex == PLAYER_COMPUTER) {
+        gHudAudioData[0].volumeRamp = -1;
+        gHudAudioData[1].volumeRamp = -1;
+    }
+    if (countdown > 0) {
+        sHudRaceStartReadyDraw[viewport] = gHudRaceStart;
+        if (gHudRaceStart && gRaceStartShowHudStep == 2) {
+            sound_play(SOUND_VOICE_TT_GET_READY, &gHUDVoiceSoundMask);
+            gRaceStartShowHudStep++;
+            MDKR_TRACE("hud_authority: viewport=%d action=race_ready",
+                       viewport);
+        }
+        /* Preserve the authored per-viewport dice order after READY. */
+        if (gRaceStartSoundMask == NULL && func_80023568() == 0) {
+            racerGroup = get_racer_objects(&numRacerObjects);
+            if (racerGroup != NULL && numRacerObjects > 0) {
+                randomRacer =
+                    racerGroup[hud_rand_range(1, numRacerObjects) - 1];
+                racer = randomRacer->racer;
+                if (racer->vehicleID == VEHICLE_CAR &&
+                    hud_rand_range(0, 100) >= 96) {
+                    frequency =
+                        1.25 - ((hud_rand_range(0, 7) * 0.5) / 7.0);
+                    audspat_play_sound_direct(
+                        76, randomRacer->trans.x_position,
+                        randomRacer->trans.y_position,
+                        randomRacer->trans.z_position,
+                        AUDIO_POINT_FLAG_ONE_TIME_TRIGGER,
+                        ((hud_rand_range(0, 7) * 63) / 7) + 24,
+                        frequency * 100.0f, &gRaceStartSoundMask);
+                }
+            }
+        }
+    } else if (go->pos.x > -200.0f) {
+        sHudRaceStartGoDraw[viewport] = TRUE;
+        sHudRaceStartGoDrawX[viewport] = go->pos.x;
+        go->raceStartGo.musicStartTimer[viewport] += updateRate;
+        if (go->raceStartGo.musicStartTimer[viewport] >= 60) {
+            if (gRaceStartShowHudStep == 4) {
+                if (cam_get_viewport_layout() > TWO_PLAYERS) {
+                    music_play(SEQUENCE_NONE);
+                    MDKR_TRACE("hud_authority: viewport=%d action=race_music_mute",
+                               viewport);
+                } else {
+                    level_music_start(1.0f);
+                    MDKR_TRACE("hud_authority: viewport=%d action=race_music_start",
+                               viewport);
+                }
+                sound_play(SOUND_WHOOSH1, NULL);
+                gRaceStartShowHudStep++;
+            }
+            go->pos.x -= updateRate * 8;
+        }
+        if (gRaceStartShowHudStep == 3) {
+            sound_play(SOUND_VOICE_TT_GO, &gHUDVoiceSoundMask);
+            if (timetrial_ghost_staff() &&
+                timetrial_staff_unbeaten() == FALSE) {
+                hud_sound_play_delayed(SOUND_VOICE_TT_BEAT_MY_TIME, 1.7f,
+                                       PLAYER_ONE);
+                set_delayed_text(ASSET_GAME_TEXT_82, 1.7f);
+            }
+            gHudAudioReset = TRUE;
+            gRaceStartShowHudStep++;
+            MDKR_TRACE("hud_authority: viewport=%d action=race_go",
+                       viewport);
+        }
+    }
+}
+
+static void hud_player_authored_rng_tick(Object *obj, s32 updateRate) {
+    Object_Racer *racer;
+    s32 countdown;
+    s32 doWrongWay = FALSE;
+    s32 doRaceStart = FALSE;
+
+    gHudCurrentViewport = get_current_viewport();
+    if (gAdvRaceStartedByP2) {
+        obj = get_racer_object_by_port(1 - gHudCurrentViewport);
+    }
+    gHudLevelHeader = level_header();
+    if (obj == NULL && cutscene_id() == 10) {
+        obj = get_racer_object_by_port(PLAYER_ONE);
+    }
+    if (obj == NULL || (gHudLevelHeader->unkBC & 2) ||
+        get_game_mode() == GAMEMODE_MENU || gShowHUD != FALSE) {
+        return;
+    }
+    racer = obj->racer;
+    gCurrentHud = gPlayerHud[gHudCurrentViewport];
+    countdown = get_race_countdown() >> 1;
+
+    if (is_in_time_trial()) {
+        hud_time_trial_authored_rng_tick(obj, updateRate);
+        doWrongWay = TRUE;
+        doRaceStart = TRUE;
+    } else if (cutscene_id() != 10) {
+        switch (level_type()) {
+            case RACETYPE_DEFAULT:
+            case RACETYPE_HORSESHOE_GULCH:
+                doRaceStart = TRUE;
+                /* hud_main_race and hud_main_taj both call hud_wrong_way. */
+                doWrongWay = TRUE;
+                break;
+            case RACETYPE_BOSS:
+                doRaceStart = TRUE;
+                doWrongWay = TRUE;
+                break;
+            case RACETYPE_CHALLENGE_BANANAS:
+                doRaceStart = TRUE;
+                break;
+            case RACETYPE_CHALLENGE_BATTLE:
+                doRaceStart =
+                    gNumActivePlayers != 1 || racer->raceFinished == FALSE;
+                break;
+            case RACETYPE_CHALLENGE_EGGS:
+                doRaceStart = racer->raceFinished == FALSE;
+                break;
+            default:
+                break;
+        }
+    }
+    if (doWrongWay) {
+        hud_wrong_way_authoritative_tick(racer, updateRate);
+    }
+    if (doRaceStart) {
+        hud_race_start_authoritative_tick(countdown, updateRate);
+    }
+}
+
+/**
+ * Fixed-tick owner for one viewport's HUD decisions that historically consumed
+ * RNG, integrated state, and fired audio in draw. scene_authoritative_render_tick
+ * calls this immediately after that viewport's ordinary-object passes,
+ * preserving objects->HUD interleave and authored viewport order.
+ */
+void hud_authoritative_rng_tick_viewport(s32 updateRate) {
+    s32 viewport = get_current_viewport();
+    hud_player_authored_rng_tick(
+        get_racer_object_by_port(viewport), updateRate);
+}
 #endif
 
 /**
@@ -1240,7 +1661,9 @@ void hud_course_arrows(Object_Racer *racer, s32 updateRate) {
         timer = racer->indicator_timer;
         if (timer > 0) {
             type = racer->indicator_type;
+#ifndef NATIVE_PORT
             racer->indicator_timer = timer - updateRate;
+#endif
             if (type) {
                 indicator = (HudElement *) &gCurrentHud->entry[HUD_COURSE_ARROWS];
                 switch (type) {
@@ -1298,7 +1721,9 @@ void hud_course_arrows(Object_Racer *racer, s32 updateRate) {
                 }
             }
         } else {
+#ifndef NATIVE_PORT
             racer->indicator_timer = 0;
+#endif
         }
         if (gHudIndicatorTimer) {
             if (gHudIndicatorTimer & 0x20) {
@@ -1861,6 +2286,18 @@ void hud_main_time_trial(s32 arg0, Object *playerRacerObj, s32 updateRate) {
 
         gCurrentHud->entry[HUD_TIME_TRIAL_LAP_NUMBER].pos.y -= i * 0xC;
         gCurrentHud->entry[HUD_TIME_TRIAL_LAP_TEXT].pos.y -= i * 0xC;
+#ifdef NATIVE_PORT
+        /* The fixed tick cleared the boost event, timer, and audio decision.
+         * Consume only its visual face here, after this tick's stopwatch draw,
+         * at the exact point authored by hud_main_time_trial. */
+        {
+            s32 viewport = hud_authoritative_viewport();
+            if (sHudStopwatchBoostFacePending[viewport]) {
+                hud_stopwatch_face(7, 3, 0, 4, 0);
+                sHudStopwatchBoostFacePending[viewport] = FALSE;
+            }
+        }
+#else
         if ((curRacer->boost_sound & BOOST_SOUND_UNK4) && (D_80126D4C <= 0)) {
             hud_stopwatch_face(7, 3, 0, 4, 0);
             D_80126D4C = 60;
@@ -1875,17 +2312,19 @@ void hud_main_time_trial(s32 arg0, Object *playerRacerObj, s32 updateRate) {
         if ((D_80126D4C == 0) && (!curRacer->raceFinished)) {
             D_80126D4C = -100;
             if (gHUDVoiceSoundMask == 0) {
-                soundID = rand_range(0, D_80126D64 + 2) + SOUND_VOICE_TT_OH_NO;
+                soundID = hud_rand_range(0, D_80126D64 + 2) + SOUND_VOICE_TT_OH_NO;
                 while (soundID == gHudTTSoundID) {
-                    soundID = rand_range(0, D_80126D64 + 2) + SOUND_VOICE_TT_OH_NO;
+                    soundID = hud_rand_range(0, D_80126D64 + 2) + SOUND_VOICE_TT_OH_NO;
                 }
                 gHudTTSoundID = soundID;
                 sound_play(soundID, &gHUDVoiceSoundMask);
                 D_80126D64 = 1;
             }
         }
+#endif
     }
 
+#ifndef NATIVE_PORT
     if ((curRacer->lap > 0) && mdkr_hud_lap_index_valid(curRacer) &&
         (curRacer->lap < gHudLevelHeader->laps) && (curRacer->lap_times[curRacer->lap] < 20) &&
         (gHUDVoiceSoundMask == 0) && (curRacer->vehicleID <= VEHICLE_PLANE)) {
@@ -1902,7 +2341,9 @@ void hud_main_time_trial(s32 arg0, Object *playerRacerObj, s32 updateRate) {
             }
         }
     }
+#endif
 
+#ifndef NATIVE_PORT
     if (timetrial_valid_player_ghost()) {
         ttSWBodyObject = timetrial_player_ghost();
         if (ttSWBodyObject != NULL) {
@@ -1912,13 +2353,13 @@ void hud_main_time_trial(s32 arg0, Object *playerRacerObj, s32 updateRate) {
                 posZ = ttSWBodyObject->trans.z_position - playerRacerObj->trans.z_position;
                 if ((sqrtf((posX * posX) + (posY * posY) + (posZ * posZ)) < 600.0f) && (gHUDVoiceSoundMask == 0) &&
                     (D_80126D50 == 0)) {
-                    soundID = SOUND_VOICE_TT_GO_FOR_IT + rand_range(0, 2);
+                    soundID = SOUND_VOICE_TT_GO_FOR_IT + hud_rand_range(0, 2);
                     while (soundID == gHudTTSoundID) {
-                        soundID = SOUND_VOICE_TT_GO_FOR_IT + rand_range(0, 2);
+                        soundID = SOUND_VOICE_TT_GO_FOR_IT + hud_rand_range(0, 2);
                     }
                     gHudTTSoundID = soundID;
                     sound_play(soundID, &gHUDVoiceSoundMask);
-                    D_80126D50 = rand_range(120, 1200);
+                    D_80126D50 = hud_rand_range(120, 1200);
                 }
                 D_80126D50 -= updateRate;
                 if (D_80126D50 < 0) {
@@ -1927,6 +2368,7 @@ void hud_main_time_trial(s32 arg0, Object *playerRacerObj, s32 updateRate) {
             }
         }
     }
+#endif
 
     if (curRacer->lap != 0 && mdkr_hud_current_lap_time(curRacer, 30) < 30) {
         hud_stopwatch_face(5, 1, 2, 2, 0);
@@ -2147,6 +2589,32 @@ void hud_speedometre(Object *obj, UNUSED s32 updateRate) {
  * This function will also call to begin the background music for 1 and 2 player. 3 and 4 are treated with silence.
  */
 void hud_race_start(s32 countdown, s32 updateRate) {
+#ifdef NATIVE_PORT
+    s32 viewport = hud_authoritative_viewport();
+    HudElement drawElement;
+
+    (void) updateRate;
+    if (!is_game_paused()) {
+        if (gHUDNumPlayers == TWO_PLAYERS) {
+            sprite_opaque(TRUE);
+        }
+        if (sHudRaceStartReadyDraw[viewport]) {
+            gDPSetPrimColor(gHudDL++, 0, 0, 255, 255, 255,
+                            (countdown * 255) / 40);
+            hud_element_render(
+                &gHudDL, &gHudMtx, &gHudVtx,
+                &gCurrentHud->entry[HUD_RACE_START_READY]);
+            gDPSetPrimColor(gHudDL++, 0, 0, 255, 255, 255, 255);
+        } else if (sHudRaceStartGoDraw[viewport]) {
+            gDPSetPrimColor(gHudDL++, 0, 0, 255, 255, 255, 160);
+            drawElement = gCurrentHud->entry[HUD_RACE_START_GO];
+            drawElement.pos.x = sHudRaceStartGoDrawX[viewport];
+            hud_element_render(&gHudDL, &gHudMtx, &gHudVtx, &drawElement);
+            gDPSetPrimColor(gHudDL++, 0, 0, 255, 255, 255, 255);
+        }
+        sprite_opaque(FALSE);
+    }
+#else
     if (!is_game_paused()) {
         if (countdown == 0 && gHudAudioData[0].playerIndex == PLAYER_COMPUTER) {
             gHudAudioData[0].volumeRamp = -1;
@@ -2174,14 +2642,14 @@ void hud_race_start(s32 countdown, s32 updateRate) {
                 Object_Racer *racer;
                 s32 numRacerObjects;
                 racerGroup = get_racer_objects(&numRacerObjects);
-                randomRacer = racerGroup[rand_range(1, numRacerObjects) - 1];
+                randomRacer = racerGroup[hud_rand_range(1, numRacerObjects) - 1];
                 racer = randomRacer->racer;
                 if (racer->vehicleID == VEHICLE_CAR) {
-                    if (rand_range(0, 100) >= 96) {
-                        frequency = 1.25 - ((rand_range(0, 7) * 0.5) / 7.0);
+                    if (hud_rand_range(0, 100) >= 96) {
+                        frequency = 1.25 - ((hud_rand_range(0, 7) * 0.5) / 7.0);
                         audspat_play_sound_direct(76, randomRacer->trans.x_position, randomRacer->trans.y_position,
                                                   randomRacer->trans.z_position, AUDIO_POINT_FLAG_ONE_TIME_TRIGGER,
-                                                  ((rand_range(0, 7) * 63) / 7) + 24, frequency * 100.0f,
+                                                  ((hud_rand_range(0, 7) * 63) / 7) + 24, frequency * 100.0f,
                                                   &gRaceStartSoundMask);
                     }
                 }
@@ -2216,6 +2684,7 @@ void hud_race_start(s32 countdown, s32 updateRate) {
         }
         sprite_opaque(FALSE);
     }
+#endif
 }
 
 /**
@@ -2704,6 +3173,24 @@ void hud_lap_count(Object_Racer *racer, s32 updateRate) {
  * This function plays the audio, and makes the text fly in.
  */
 void hud_wrong_way(Object_Racer *obj, s32 updateRate) {
+#ifdef NATIVE_PORT
+    s32 viewport = hud_authoritative_viewport();
+
+    (void) obj;
+    (void) updateRate;
+    if (gHUDNumPlayers == TWO_PLAYERS) {
+        sprite_opaque(TRUE);
+    }
+    if (sHudWrongWayDraw[viewport]) {
+        gDPSetPrimColor(gHudDL++, 0, 0, 255, 255, 255, 160);
+        hud_element_render(&gHudDL, &gHudMtx, &gHudVtx,
+                           &gCurrentHud->entry[HUD_WRONGWAY_1]);
+        hud_element_render(&gHudDL, &gHudMtx, &gHudVtx,
+                           &gCurrentHud->entry[HUD_WRONGWAY_2]);
+        gDPSetPrimColor(gHudDL++, 0, 0, 255, 255, 255, 255);
+    }
+    sprite_opaque(FALSE);
+#else
     f32 textMoveSpeed;
     f32 textPosTarget;
 
@@ -2716,10 +3203,10 @@ void hud_wrong_way(Object_Racer *obj, s32 updateRate) {
         !is_game_paused()) {
         if ((gWrongWayNagPrefix || gWrongWayNagTimer == 0) && gHUDVoiceSoundMask == NULL) {
             // 20% chance that T.T decides not to precede his nagging with "No no no!"
-            if (gWrongWayNagPrefix || rand_range(1, 10) >= 8) {
+            if (gWrongWayNagPrefix || hud_rand_range(1, 10) >= 8) {
                 gWrongWayNagPrefix = FALSE;
                 sound_play(SOUND_VOICE_TT_WRONG_WAY, &gHUDVoiceSoundMask);
-                gWrongWayNagTimer = rand_range(1, 480) + 120;
+                gWrongWayNagTimer = hud_rand_range(1, 480) + 120;
             } else {
                 gWrongWayNagPrefix = TRUE;
                 sound_play(SOUND_VOICE_TT_NONONO, &gHUDVoiceSoundMask);
@@ -2786,6 +3273,7 @@ void hud_wrong_way(Object_Racer *obj, s32 updateRate) {
         sound_play(SOUND_WHOOSH1, NULL);
     }
     sprite_opaque(FALSE);
+#endif
 }
 
 /**

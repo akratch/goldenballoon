@@ -9,6 +9,8 @@
 #include "asset_swap.h"
 #include "gfx_shadow_frame.h"
 #include "mdkr_bounds.h"
+#include "present_sched.h"
+#include "viewport_route_cache.h"
 #endif
 #include "camera.h"
 #include "collision.h"
@@ -140,7 +142,7 @@ s32 gTTCamSmoothTimer;
  *
  * gTTCamSmoothTimer above stays where it is and keeps its RAW, non-pause-gated
  * rate. */
-static s32 sTTCamSpectateIndex[10];
+s32 gTTCamSpectateIndex[10];
 #endif
 s32 D_8011B10C;
 s32 gTrackTexAnimOffset;
@@ -187,10 +189,10 @@ f32 D_8011D0F4;
 Vec4f D_8011D0F8[3];
 #ifdef NATIVE_PORT
 /*
- * The modern lens may need a wider level-geometry frustum, but DKR uses "was
- * rendered" as an AI simulation input (Object_Racer.unk201), and object draws
- * can consume gameplay RNG. Keep the original N64 planes for object admission;
- * only raw track geometry is allowed to use the wider plane set.
+ * The modern lens may need a wider level-geometry frustum, but DKR's logical
+ * object admission still drives Object_Racer.unk201 in the fixed-step
+ * visibility prepass. Keep the original N64 planes for that faithful object
+ * contract; only raw track geometry uses the wider plane set.
  */
 static Vec4f sFaithfulCullPlanes[3];
 #endif
@@ -330,8 +332,8 @@ void init_track(u32 geometry, u32 skybox, s32 numberOfPlayers, Vehicle vehicle, 
     gTTCamID = 0;
     gTTCamSmoothTimer = 0;
 #ifdef NATIVE_PORT
-    for (i = 0; i < (s32) ARRAY_COUNT(sTTCamSpectateIndex); i++) {
-        sTTCamSpectateIndex[i] = 0;
+    for (i = 0; i < (s32) ARRAY_COUNT(gTTCamSpectateIndex); i++) {
+        gTTCamSpectateIndex[i] = 0;
     }
 #endif
     D_8011B10C = 0;
@@ -424,16 +426,17 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
     s32 posY;
     s32 j;
 #ifdef NATIVE_PORT
-    /* Render-purity gate: under MDKR_TEST_SKIP_RENDER=odd the
-     * whole scene render is skipped on odd authoritative ticks BEFORE any
-     * state is touched. The display-list cursor is left unadvanced (callers
-     * append HUD/menu content behind it and the frame still presents), which
-     * is exactly the "render starvation" schedule the purity invariant must
-     * be blind to. Headless/test use only. */
+    /* Test-only render-starvation seam. Authoritative tick work has already
+     * completed before this function; skipping here must therefore leave the
+     * raw simulation state byte-identical. */
     {
         extern int mdkr_test_render_skip_this_tick(void);
         if (mdkr_test_render_skip_this_tick()) {
             return;
+        }
+        {
+            extern void mdkr_test_render_impurity_inject(void);
+            mdkr_test_render_impurity_inject();
         }
     }
 #endif
@@ -514,24 +517,7 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
     scroll_particle_textures(tempUpdateRate);
 #endif
     if (gCurrentLevelModel->numberOfAnimatedTextures > 0) {
-#ifdef NATIVE_PORT
-        /* Render-tree RNG bracket 1 of 3.
-         * track_tex_anim reaches rand_range at textures_sprites.c:1891, the one
-         * direct render-path RNG call in the track texture animator. Every draw
-         * therefore advanced gCurrentRNGSeed, which racer AI consumes
-         * (racer.c:338/4335/4539/5219/5223/5415/5872/9019) -- so how many times
-         * the scene was drawn steered the racers. Save/restore makes the
-         * consumption invisible to the authoritative stream (the waves.c:370/384
-         * pattern) without changing what the animator itself does.
-         * gPrevRNGSeed is a single slot, so this must not nest: bracket 1 is
-         * before the viewport loop, brackets 2 and 3 are inside it and disjoint,
-         * and the only other user (waves_alloc, waves.c:370) is load-time. */
-        save_rng_seed();
-#endif
         track_tex_anim(tempUpdateRate);
-#ifdef NATIVE_PORT
-        load_rng_seed();
-#endif
     }
     for (j = gSceneCurrentPlayerID = 0; j < numViewports; gSceneCurrentPlayerID++, j = gSceneCurrentPlayerID) {
         if (gCurrentLevelHeader2 && !gCurrentLevelHeader2 && !gCurrentLevelHeader2) {} // Fakematch
@@ -554,17 +540,7 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
             if (gCurrentLevelHeader2->skyDome == -1) {
                 trackbg_render_flashy();
             } else {
-#ifdef NATIVE_PORT
-                /* Render-tree RNG bracket 2 of 3.
-                 * skydome_render -> render_object -> obj_tex_animate reaches
-                 * rand_range at objects.c:4313. Same reasoning as bracket 1;
-                 * disjoint from brackets 1 and 3. */
-                save_rng_seed();
-#endif
                 skydome_render();
-#ifdef NATIVE_PORT
-                load_rng_seed();
-#endif
             }
         } else {
             mtx_perspective(&gTrackDL, &gTrackMtxPtr);
@@ -578,10 +554,11 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
         // Show weather effects in single player.
         if (gCurrentLevelHeader2->weatherEnable > 0 && numViewports < 2) {
 #ifdef NATIVE_PORT
-            /* Render-tree RNG bracket 3 of 3.
+            /* The weather renderer still uses the ROM RNG internally for
+             * particle placement. Keep those draws invisible to gameplay RNG;
+             * weather_tick owns the authoritative weather integration.
              * weather_update consumes RNG at weather.c:955/956/1000/1001/1068
-             * (rain/snow particle placement and the lightning roll). Same
-             * reasoning as bracket 1; disjoint from brackets 1 and 2. */
+             * (rain/snow particle placement and the lightning roll). */
             save_rng_seed();
 #endif
             weather_update(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, &gTrackTriPtr, tempUpdateRate);
@@ -591,25 +568,8 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
         }
         lensflare_override(cam_get_active_camera());
         lensflare_render(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, cam_get_active_camera());
-#ifdef NATIVE_PORT
-        /* Purity-gate diagnostic: the HUD render half still owns voice-line/SFX
-         * rand_range sites (migrating them needs the hud_main_* dispatch split
-         * first). Under
-         * MDKR_TEST_PURE_RENDER=1 they must not touch the authoritative seed
-         * so the skip-render invariance assertion can run. Not nested with
-         * any other bracket (object rendering is long finished here). */
-        {
-            extern int mdkr_test_pure_render_enabled(void);
-            int pure = mdkr_test_pure_render_enabled();
-            if (pure) save_rng_seed();
-            hud_render_player(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, get_racer_object_by_port(gSceneCurrentPlayerID),
-                              updateRate);
-            if (pure) load_rng_seed();
-        }
-#else
         hud_render_player(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, get_racer_object_by_port(gSceneCurrentPlayerID),
                           updateRate);
-#endif
     }
     // Show TT Cam toggle for the fourth viewport when playing 3 player.
     if (numViewports == 3 && level_type() != RACETYPE_CHALLENGE_EGGS && level_type() != RACETYPE_CHALLENGE_BATTLE &&
@@ -639,7 +599,9 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
 #else
             disable_cutscene_camera();
 #endif
+#ifndef NATIVE_PORT
             ttcam_update(updateRate);
+#endif
             viewport_main(&gTrackDL, &gTrackMtxPtr);
             func_8002A31C();
             mtx_perspective(&gTrackDL, &gTrackMtxPtr);
@@ -670,7 +632,9 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
 #endif
         } else {
             set_active_camera(PLAYER_FOUR);
+#ifndef NATIVE_PORT
             ttcam_update(updateRate);
+#endif
         }
     }
     viewport_reset(&gTrackDL);
@@ -1502,14 +1466,14 @@ void ttcam_update(s32 updateRate) {
         if (racerGroup[i] != NULL) {
             currentRacer = racerGroup[i]->racer;
 #ifdef NATIVE_PORT
-            cameraId = (i < (s32) ARRAY_COUNT(sTTCamSpectateIndex)) ? sTTCamSpectateIndex[i] : 0;
+            cameraId = (i < (s32) ARRAY_COUNT(gTTCamSpectateIndex)) ? gTTCamSpectateIndex[i] : 0;
 #else
             cameraId = currentRacer->cameraIndex;
 #endif
             spectate_nearest(racerGroup[i], &cameraId);
 #ifdef NATIVE_PORT
-            if (i < (s32) ARRAY_COUNT(sTTCamSpectateIndex)) {
-                sTTCamSpectateIndex[i] = cameraId;
+            if (i < (s32) ARRAY_COUNT(gTTCamSpectateIndex)) {
+                gTTCamSpectateIndex[i] = cameraId;
             }
 #else
             currentRacer->cameraIndex = cameraId;
@@ -1554,8 +1518,8 @@ void ttcam_update(s32 updateRate) {
         return;
     }
 #ifdef NATIVE_PORT
-    spectateIndex = (selectedIndex >= 0 && selectedIndex < (s32) ARRAY_COUNT(sTTCamSpectateIndex))
-                        ? sTTCamSpectateIndex[selectedIndex]
+    spectateIndex = (selectedIndex >= 0 && selectedIndex < (s32) ARRAY_COUNT(gTTCamSpectateIndex))
+                        ? gTTCamSpectateIndex[selectedIndex]
                         : 0;
 #else
 #define spectateIndex (currentRacer->cameraIndex)
@@ -1606,6 +1570,35 @@ void ttcam_update(s32 updateRate) {
 #undef spectateIndex
 #endif
 }
+
+#ifdef NATIVE_PORT
+/**
+ * Advance the authoritative three-player spectator camera once per fixed tick.
+ *
+ * The original renderer called ttcam_update() once from its optional fourth
+ * viewport. Native presentation may elide or replay that viewport, so leaving
+ * the update there made gCameras[PLAYER_FOUR], the TT target selection, and
+ * next-tick sort/LOD/visibility depend on whether a frame happened to draw.
+ * This predicate is the union of render_scene's two TT-camera branches: the
+ * spectator camera advances for every ordinary three-player race whether its
+ * viewport is visible (HUD setting 0) or hidden.
+ */
+void scene_tt_camera_tick(s32 updateRate) {
+    s32 savedCamera;
+    s32 viewports = scene_visibility_viewport_count();
+
+    if (viewports != 3 || level_type() == RACETYPE_CHALLENGE_EGGS ||
+        level_type() == RACETYPE_CHALLENGE_BATTLE ||
+        level_type() == RACETYPE_CHALLENGE_BANANAS) {
+        return;
+    }
+
+    savedCamera = get_current_viewport();
+    set_active_camera(PLAYER_FOUR);
+    ttcam_update(updateRate);
+    set_active_camera(savedCamera);
+}
+#endif
 
 /**
  * Handle the flipbook effect for level geometry textures.
@@ -2161,6 +2154,11 @@ s32 scene_visibility_viewport_count(void) {
 static u8 sTickObjectsVisible[LEVEL_SEGMENT_MAX + 1];
 static s32 sTickVisibleFlags;
 
+static s32 scene_viewport_invisible_flag(void) {
+    return (get_current_viewport() & 1) ? OBJ_FLAGS_INVIS_PLAYER2 :
+                                          OBJ_FLAGS_INVIS_PLAYER1;
+}
+
 /**
  * The non-drawing half of render_scene's viewport prologue, so the fixed step can
  * answer "would viewport N admit this object?".
@@ -2241,7 +2239,7 @@ void scene_visibility_prepare_viewport(s32 viewportIndex, s32 numViewports, s32 
         sTickObjectsVisible[1] = TRUE;
     }
 
-    sTickVisibleFlags = OBJ_FLAGS_INVIS_PLAYER1 << (get_current_viewport() & 1);
+    sTickVisibleFlags = scene_viewport_invisible_flag();
 }
 
 /**
@@ -2281,12 +2279,8 @@ void scene_visibility_prepare_viewport(s32 viewportIndex, s32 numViewports, s32 
  * an opaque racer out of the transparency pass -- and notably does NOT apply to
  * a ghost, whose obj->behaviorId is BHV_TIMETRIAL_GHOST).
  *
- * check_if_in_draw_range() is still called exactly ONCE, and still only for an
- * object some pass would admit, preserving the "one call per object per
- * viewport" property this predicate has always had. It writes obj->opacity as a
- * side effect (still render-owned, not migrated yet); render recomputes the identical
- * value from the identical camera moments later, and no simulation reader runs
- * in between, so the duplicate write stays invisible.
+ * The fixed tick commits the authoritative opacity. Render evaluates the same
+ * predicate into a viewport-local value and never writes back to the object.
  */
 s32 scene_object_admitted(Object *obj) {
     s32 objFlags;
@@ -2346,6 +2340,50 @@ s32 scene_object_admitted(Object *obj) {
  * without permuting the array the simulation iterates. */
 static Object *sSceneDrawOrder[SCENE_DRAW_ORDER_MAX];
 static f32 sSceneDrawDistance[SCENE_DRAW_ORDER_MAX];
+static MdkrViewportRouteCache sSceneViewportRoutes;
+static Object *sSceneViewportTestTarget;
+static s32 sSceneRouteLastViewport;
+
+static s32 scene_viewport_test_flag(
+    const char *name, s32 *initialized, s32 *enabled) {
+    if (!*initialized) {
+        const char *value = getenv(name);
+        *enabled = value != NULL && value[0] != '\0' && value[0] != '0';
+        *initialized = TRUE;
+    }
+    return *enabled;
+}
+
+static s32 scene_viewport_test_fade_last(void) {
+    static s32 initialized;
+    static s32 enabled;
+    return scene_viewport_test_flag(
+        "MDKR_TEST_VIEWPORT_FADE_LAST", &initialized, &enabled);
+}
+
+static s32 scene_viewport_test_shared_routes(void) {
+    static s32 initialized;
+    static s32 enabled;
+    return scene_viewport_test_flag(
+        "MDKR_TEST_SHARED_VIEWPORT_ROUTES", &initialized, &enabled);
+}
+
+static s32 scene_viewport_test_trace_tick(void) {
+    static s32 initialized;
+    static s32 tick;
+    if (!initialized) {
+        const char *value = getenv("MDKR_TEST_VIEWPORT_ROUTE_TRACE_TICK");
+        tick = value != NULL ? atoi(value) : -1;
+        initialized = TRUE;
+    }
+    return tick;
+}
+
+static const char *scene_viewport_route_pass_name(
+    MdkrViewportRoutePass pass) {
+    static const char *const names[] = { "opaque", "special", "blend" };
+    return (unsigned)pass < ARRAY_COUNT(names) ? names[pass] : "invalid";
+}
 
 /* This viewport's private distance for the object currently being drawn, and
  * whether one is in scope. obj->distanceToCamera is the TICK's value now (the last
@@ -2358,6 +2396,69 @@ static f32 sSceneDrawDistance[SCENE_DRAW_ORDER_MAX];
  * itself moves into the tick. */
 f32 gSceneDrawDistance;
 s32 gSceneDrawDistanceValid;
+static const Object *sSceneRenderOpacityObject;
+static s32 sSceneRenderOpacity;
+
+s32 scene_object_render_opacity(const Object *obj) {
+    if (sSceneRenderOpacityObject == obj) {
+        return sSceneRenderOpacity;
+    }
+    return obj->opacity;
+}
+
+static void scene_render_opacity_begin(const Object *obj, s32 opacity) {
+    sSceneRenderOpacityObject = obj;
+    sSceneRenderOpacity = opacity;
+}
+
+static void scene_render_opacity_end(const Object *obj) {
+    if (sSceneRenderOpacityObject == obj) {
+        sSceneRenderOpacityObject = NULL;
+    }
+}
+
+static void scene_viewport_route_store(
+    Object *obj, MdkrViewportRoutePass pass, s32 opacity, s32 visible) {
+    s32 viewport = get_current_viewport();
+    s32 stored = viewport >= 0 &&
+        mdkr_viewport_route_cache_store(
+            &sSceneViewportRoutes, obj, (unsigned)viewport, pass,
+            opacity, visible);
+    /* OBJECT_SLOT_COUNT and the cache both cap at 512. Reaching this assertion
+     * means an invalid camera index or duplicate-capacity contract drift; a
+     * release build fails closed by leaving the route absent. */
+    assert(stored);
+    if (stored && obj == sSceneViewportTestTarget &&
+        g_simTickCounter == scene_viewport_test_trace_tick()) {
+        fprintf(stderr,
+                "[VIEWPORT-ROUTE] tick=%d viewport=%d pass=%s opacity=%d visible=%d shadow=%d water=%d\n",
+                g_simTickCounter, viewport,
+                scene_viewport_route_pass_name(pass), opacity, visible,
+                obj->shadow != NULL,
+                obj->waterEffect != NULL &&
+                    (obj->header->flags & HEADER_FLAGS_WATER_EFFECT) != 0);
+    }
+}
+
+static s32 scene_viewport_route_load(
+    Object *obj, unsigned requestedViewport, unsigned sourceViewport,
+    MdkrViewportRoutePass pass, MdkrViewportRoute *route) {
+    s32 admitted = mdkr_viewport_route_cache_load(
+        &sSceneViewportRoutes, obj, sourceViewport, pass, route);
+    if (obj == sSceneViewportTestTarget &&
+        g_simTickCounter == scene_viewport_test_trace_tick()) {
+        fprintf(stderr,
+                "[VIEWPORT-DRAW] tick=%d requested=%u source=%u pass=%s admitted=%d opacity=%d visible=%d shadow=%d water=%d\n",
+                g_simTickCounter, requestedViewport, sourceViewport,
+                scene_viewport_route_pass_name(pass), admitted,
+                admitted ? route->opacity : -1,
+                admitted ? route->visible : -1,
+                obj->shadow != NULL,
+                obj->waterEffect != NULL &&
+                    (obj->header->flags & HEADER_FLAGS_WATER_EFFECT) != 0);
+    }
+    return admitted;
+}
 
 /* The distance key sort_objects_by_dist (objects.c:6045) would have written for
  * this object from the ACTIVE camera -- computed, not stored on the object. */
@@ -2430,6 +2531,188 @@ s32 scene_build_private_draw_order(s32 startIndex, s32 lastIndex) {
 
     return count;
 }
+
+/**
+ * Execute the authoritative side of render_scene's object/weather/HUD
+ * traversal once per fixed tick. This preserves DKR's authored RNG ordering:
+ * ordinary objects first, then single-player weather, then that viewport's
+ * HUD. render_level_geometry_and_objects() stays read-only over simulation
+ * state.
+ */
+static s32 scene_weather_rng_early_for_test(void) {
+    static s32 initialized;
+    static s32 enabled;
+
+    if (!initialized) {
+        const char *value = getenv("MDKR_TEST_WEATHER_RNG_EARLY");
+        enabled = value != NULL && value[0] != '\0' && value[0] != '0';
+        initialized = TRUE;
+    }
+    return enabled;
+}
+
+void scene_authoritative_render_tick(s32 updateRate) {
+    s32 numViewports;
+    s32 savedCamera;
+    s32 ttCam;
+    s32 pass;
+    s32 privateCount;
+    s32 visibleFlags;
+    s32 visible;
+    s32 objFlags;
+    s32 i;
+    s32 weatherUpdateRate;
+    s32 weatherRanEarly;
+    s32 viewportFadeTest;
+    Object *obj;
+
+    mdkr_viewport_route_cache_reset(&sSceneViewportRoutes);
+    sSceneViewportTestTarget = NULL;
+    sSceneRouteLastViewport = -1;
+    viewportFadeTest = scene_viewport_test_fade_last();
+
+    /* A deliberately wrong-order test arm. It is never active in production;
+     * the weather oracle uses it to prove that its digest detects the audited
+     * object/weather RNG-order regression rather than merely checking rerun
+     * determinism. */
+    weatherRanEarly = scene_weather_rng_early_for_test();
+    weatherUpdateRate = is_game_paused() ? 0 : updateRate;
+    if (weatherRanEarly) {
+        scene_weather_tick(weatherUpdateRate);
+    }
+    if (gCurrentLevelModel == NULL) {
+        if (!weatherRanEarly) {
+            scene_weather_tick(weatherUpdateRate);
+        }
+        return;
+    }
+    savedCamera = get_current_viewport();
+    numViewports = scene_visibility_viewport_count();
+    ttCam = numViewports == 3 && level_type() != RACETYPE_CHALLENGE_EGGS &&
+            level_type() != RACETYPE_CHALLENGE_BATTLE &&
+            level_type() != RACETYPE_CHALLENGE_BANANAS && hud_setting() == 0;
+
+    for (pass = 0; pass < numViewports + (ttCam ? 1 : 0); pass++) {
+        scene_visibility_prepare_viewport(pass, numViewports,
+                                          pass >= numViewports);
+        if (pass == numViewports - 1) {
+            sSceneRouteLastViewport = get_current_viewport();
+        }
+        privateCount = scene_build_private_draw_order(
+            gObjSortFirstActive, gObjSortObjCount - 1);
+        visibleFlags = scene_viewport_invisible_flag();
+
+        /* Opaque pass, front to back. */
+        for (i = 0; i < privateCount; i++) {
+            obj = sSceneDrawOrder[i];
+            if (viewportFadeTest && pass == 0 &&
+                sSceneViewportTestTarget == NULL &&
+                obj->behaviorId == BHV_RACER && obj->racer != NULL &&
+                obj->racer->playerIndex == PLAYER_ONE) {
+                sSceneViewportTestTarget = obj;
+                obj->opacity = 255;
+            }
+            objFlags = obj->trans.flags;
+            visible = 255;
+            if (objFlags & OBJ_FLAGS_UNK_0080) {
+                visible = 0;
+            } else if (!(objFlags & OBJ_FLAGS_PARTICLE)) {
+                visible = obj->opacity;
+            }
+            if (objFlags & visibleFlags) {
+                visible = 0;
+            }
+            if (viewportFadeTest &&
+                obj == sSceneViewportTestTarget &&
+                pass == numViewports - 1) {
+                visible = 0;
+            }
+            if (visible == 255 && check_if_in_draw_range(obj) &&
+                (sTickObjectsVisible[obj->segmentID + 1] ||
+                 obj->unk34 > 1000.0)) {
+                scene_viewport_route_store(
+                    obj, MDKR_VIEWPORT_ROUTE_OPAQUE,
+                    obj->opacity, visible);
+                obj_authoritative_texture_tick(
+                    obj, updateRate, sSceneDrawDistance[i]);
+            }
+        }
+
+        /* OBJ_FLAGS_UNK_0100 pass, back to front. */
+        for (i = privateCount - 1; i >= 0; i--) {
+            obj = sSceneDrawOrder[i];
+            objFlags = obj->trans.flags;
+            visible = !(objFlags & visibleFlags);
+            if (visible && (objFlags & OBJ_FLAGS_UNK_0100) &&
+                sTickObjectsVisible[obj->segmentID + 1] &&
+                check_if_in_draw_range(obj)) {
+                scene_viewport_route_store(
+                    obj, MDKR_VIEWPORT_ROUTE_SPECIAL,
+                    obj->opacity, visible);
+                obj_authoritative_texture_tick(
+                    obj, updateRate, sSceneDrawDistance[i]);
+            }
+        }
+
+        /* Transparent/racer-FX pass, back to front. */
+        for (i = privateCount - 1; i >= 0; i--) {
+            obj = sSceneDrawOrder[i];
+            objFlags = obj->trans.flags;
+            visible = 255;
+            if (objFlags & OBJ_FLAGS_UNK_0080) {
+                visible = 1;
+            } else if (!(objFlags & OBJ_FLAGS_PARTICLE)) {
+                visible = obj->opacity;
+            }
+            if (objFlags & visibleFlags) {
+                visible = 0;
+            }
+            if (obj->behaviorId == BHV_RACER && visible >= 255) {
+                visible = 0;
+            }
+            if (viewportFadeTest &&
+                obj == sSceneViewportTestTarget &&
+                pass == numViewports - 1) {
+                visible = 64;
+            }
+            if (visible < 255 &&
+                sTickObjectsVisible[obj->segmentID + 1] &&
+                check_if_in_draw_range(obj)) {
+                if (viewportFadeTest &&
+                    obj == sSceneViewportTestTarget &&
+                    pass == numViewports - 1) {
+                    /* Deliberately leave the old shared field holding the last
+                     * viewport's fade. Correct rendering must still use each
+                     * earlier viewport's retained route. */
+                    obj->opacity = 64;
+                }
+                scene_viewport_route_store(
+                    obj, MDKR_VIEWPORT_ROUTE_BLEND,
+                    obj->opacity, visible);
+                if (visible > 0) {
+                    obj_authoritative_texture_tick(
+                        obj, updateRate, sSceneDrawDistance[i]);
+                }
+            }
+        }
+
+        /* Canonical render_scene order for one-player weather is objects ->
+         * weather -> HUD. Weather's own viewport gate makes this a no-op in
+         * multiplayer; run it only once even for the optional 3P TT camera. */
+        if (pass == 0 && !weatherRanEarly) {
+            scene_weather_tick(weatherUpdateRate);
+        }
+
+        /* The optional fourth 3P TT-camera pass has no HUD. */
+        if (pass < numViewports) {
+            hud_authoritative_rng_tick_viewport(updateRate);
+        }
+    }
+
+    gSceneDrawDistanceValid = FALSE;
+    set_active_camera(savedCamera);
+}
+
 #endif
 
 void render_level_geometry_and_objects(void) {
@@ -2443,9 +2726,18 @@ void render_level_geometry_and_objects(void) {
     /* Indexed as segmentID + 1; slot zero represents objects without a segment. */
     u8 objectsVisible[LEVEL_SEGMENT_MAX + 1];
     s32 visible;
+    s32 routeAdmitted;
+#ifdef NATIVE_PORT
+    s32 renderOpacity;
+#else
+#define CHECK_DRAW_RANGE_RENDER(o) check_if_in_draw_range(o)
+#endif
     Object *obj;
 #ifdef NATIVE_PORT
     s32 privateCount;
+    unsigned routeViewport;
+    unsigned routeSourceViewport;
+    MdkrViewportRoute route;
 #endif
 
     func_80012C30();
@@ -2501,7 +2793,15 @@ void render_level_geometry_and_objects(void) {
 #else
     sort_objects_by_dist(sp160, objCount - 1);
 #endif
+#ifdef NATIVE_PORT
+    visibleFlags = scene_viewport_invisible_flag();
+    routeViewport = (unsigned)get_current_viewport();
+    routeSourceViewport = scene_viewport_test_shared_routes() &&
+            sSceneRouteLastViewport >= 0 ?
+        (unsigned)sSceneRouteLastViewport : routeViewport;
+#else
     visibleFlags = OBJ_FLAGS_INVIS_PLAYER1 << (get_current_viewport() & 1);
+#endif
 
 #ifdef NATIVE_PORT
     for (i = 0; i < privateCount; i++) {
@@ -2512,6 +2812,15 @@ void render_level_geometry_and_objects(void) {
     for (i = sp160; i < objCount; i++) {
         obj = get_object(i);
 #endif
+#ifdef NATIVE_PORT
+        routeAdmitted = scene_viewport_route_load(
+            obj, routeViewport, routeSourceViewport,
+            MDKR_VIEWPORT_ROUTE_OPAQUE, &route);
+        if (routeAdmitted) {
+            visible = route.visible;
+            renderOpacity = route.opacity;
+        }
+#else
         visible = 255;
         objFlags = obj->trans.flags;
         if (objFlags & OBJ_FLAGS_UNK_0080) {
@@ -2522,10 +2831,19 @@ void render_level_geometry_and_objects(void) {
         if (objFlags & visibleFlags) {
             visible = 0;
         }
-        if (obj != NULL && visible == 255 && check_if_in_draw_range(obj) &&
-            (objectsVisible[obj->segmentID + 1] || obj->unk34 > 1000.0)) {
+        routeAdmitted = obj != NULL && visible == 255 &&
+            CHECK_DRAW_RANGE_RENDER(obj) &&
+            (objectsVisible[obj->segmentID + 1] || obj->unk34 > 1000.0);
+#endif
+        if (routeAdmitted) {
+#ifdef NATIVE_PORT
+            scene_render_opacity_begin(obj, renderOpacity);
+#endif
             if (obj->trans.flags & OBJ_FLAGS_PARTICLE) {
                 render_object(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, obj);
+#ifdef NATIVE_PORT
+                scene_render_opacity_end(obj);
+#endif
                 continue;
             } else if (obj->shadow != NULL) {
                 shadow_render(obj, obj->shadow);
@@ -2534,6 +2852,9 @@ void render_level_geometry_and_objects(void) {
             if (obj->waterEffect != NULL && obj->header->flags & HEADER_FLAGS_WATER_EFFECT) {
                 watereffect_render(obj, obj->waterEffect);
             }
+#ifdef NATIVE_PORT
+            scene_render_opacity_end(obj);
+#endif
         }
     }
 
@@ -2546,16 +2867,35 @@ void render_level_geometry_and_objects(void) {
     for (i = objCount - 1; i >= sp160; i--) {
         obj = get_object(i);
 #endif
+#ifdef NATIVE_PORT
+        routeAdmitted = scene_viewport_route_load(
+            obj, routeViewport, routeSourceViewport,
+            MDKR_VIEWPORT_ROUTE_SPECIAL, &route);
+        if (routeAdmitted) {
+            visible = route.visible;
+            renderOpacity = route.opacity;
+        }
+#else
         objFlags = obj->trans.flags;
         if (objFlags & visibleFlags) {
             visible = FALSE;
         } else {
             visible = TRUE;
         }
-        if (obj != NULL && visible && objFlags & OBJ_FLAGS_UNK_0100 && objectsVisible[obj->segmentID + 1] &&
-            check_if_in_draw_range(obj)) {
+        routeAdmitted = obj != NULL && visible &&
+            objFlags & OBJ_FLAGS_UNK_0100 &&
+            objectsVisible[obj->segmentID + 1] &&
+            CHECK_DRAW_RANGE_RENDER(obj);
+#endif
+        if (routeAdmitted) {
+#ifdef NATIVE_PORT
+            scene_render_opacity_begin(obj, renderOpacity);
+#endif
             if (obj->trans.flags & OBJ_FLAGS_PARTICLE) {
                 render_object(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, obj);
+#ifdef NATIVE_PORT
+                scene_render_opacity_end(obj);
+#endif
                 continue;
             } else if (obj->shadow != NULL) {
                 shadow_render(obj, obj->shadow);
@@ -2564,6 +2904,9 @@ void render_level_geometry_and_objects(void) {
             if (obj->waterEffect != NULL && obj->header->flags & HEADER_FLAGS_WATER_EFFECT) {
                 watereffect_render(obj, obj->waterEffect);
             }
+#ifdef NATIVE_PORT
+            scene_render_opacity_end(obj);
+#endif
         }
     }
 
@@ -2591,6 +2934,15 @@ void render_level_geometry_and_objects(void) {
     for (i = objCount - 1; i >= sp160; i--) {
         obj = get_object(i);
 #endif
+#ifdef NATIVE_PORT
+        routeAdmitted = scene_viewport_route_load(
+            obj, routeViewport, routeSourceViewport,
+            MDKR_VIEWPORT_ROUTE_BLEND, &route);
+        if (routeAdmitted) {
+            visible = route.visible;
+            renderOpacity = route.opacity;
+        }
+#else
         visible = 255;
         objFlags = obj->trans.flags;
         if (objFlags & OBJ_FLAGS_UNK_0080) {
@@ -2604,7 +2956,14 @@ void render_level_geometry_and_objects(void) {
         if (obj->behaviorId == BHV_RACER && visible >= 255) {
             visible = 0;
         }
-        if (obj != NULL && visible < 255 && objectsVisible[obj->segmentID + 1] && check_if_in_draw_range(obj)) {
+        routeAdmitted = obj != NULL && visible < 255 &&
+            objectsVisible[obj->segmentID + 1] &&
+            CHECK_DRAW_RANGE_RENDER(obj);
+#endif
+        if (routeAdmitted) {
+#ifdef NATIVE_PORT
+            scene_render_opacity_begin(obj, renderOpacity);
+#endif
             if (visible > 0) {
                 if (obj->trans.flags & OBJ_FLAGS_PARTICLE) {
                     render_object(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, obj);
@@ -2622,6 +2981,9 @@ void render_level_geometry_and_objects(void) {
                 render_racer_shield(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, obj);
                 render_racer_magnet(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, obj);
             }
+#ifdef NATIVE_PORT
+            scene_render_opacity_end(obj);
+#endif
         }
     }
 
@@ -2635,6 +2997,9 @@ void render_level_geometry_and_objects(void) {
         void_check(segmentIds, numberOfSegments, get_current_viewport());
     }
     gAntiAliasing = FALSE;
+#ifndef NATIVE_PORT
+#undef CHECK_DRAW_RANGE_RENDER
+#endif
 }
 
 /**
@@ -3306,7 +3671,7 @@ s32 block_visible(LevelModelSegmentBoundingBox *bb) {
  * At the edge of its view distance, it will set its alpha based on distance, giving it a fade in or out effect.
  * Objects in range return true, objects out of range return false.
  */
-s32 check_if_in_draw_range(Object *obj) {
+static s32 check_if_in_draw_range_impl(Object *obj, s32 *outOpacity) {
     f32 w;
     f32 y;
     f32 fadeDist;
@@ -3350,11 +3715,11 @@ s32 check_if_in_draw_range(Object *obj) {
         switch (obj->behaviorId) {
             case BHV_RACER:
                 racer = obj->racer;
-                obj->opacity = ((racer->transparency + 1) * alpha) >> 8;
+                *outOpacity = ((racer->transparency + 1) * alpha) >> 8;
                 break;
             case BHV_TIMETRIAL_GHOST: // Ghost Object?
                 racer = obj->racer;
-                obj->opacity = racer->transparency;
+                *outOpacity = racer->transparency;
                 break;
             case BHV_ANIMATED_OBJECT: // Cutscene object?
             case BHV_CAMERA_ANIMATION:
@@ -3365,24 +3730,24 @@ s32 check_if_in_draw_range(Object *obj) {
             case BHV_HIT_TESTER_2:      // animated objects?
             case BHV_ANIMATED_OBJECT_2: // space ships
                 animatedObj = obj->animatedObject;
-                obj->opacity = animatedObj->unk42;
+                *outOpacity = animatedObj->unk42;
                 break;
             case BHV_PARK_WARDEN:
             case BHV_GOLDEN_BALLOON:
             case BHV_PARK_WARDEN_2: // GBParkwarden
+                *outOpacity = obj->opacity;
                 break;
             default:
-                obj->opacity = alpha;
+                *outOpacity = alpha;
                 break;
         }
         for (i = 0; i < 3; i++) {
 #ifdef NATIVE_PORT
             /*
-             * Keep object admission on the original guard-band frustum. Raw
-             * level geometry is safe to widen, but render_object() is not a
-             * pure draw in DKR: animation, RNG and the AI "onscreen" timer all
-             * feed later simulation. Edge-only objects therefore remain on the
-             * faithful visibility route until those routines are made pure.
+             * Keep object admission on the original guard-band frustum. The
+             * fixed-step visibility prepass uses the same predicate to preserve
+             * the authored AI "onscreen" contract, while the draw itself retains
+             * a viewport-local opacity/LOD result.
              */
             x = sFaithfulCullPlanes[i].x;
             z = sFaithfulCullPlanes[i].z;
@@ -3402,6 +3767,15 @@ s32 check_if_in_draw_range(Object *obj) {
         }
     }
     return TRUE;
+}
+
+s32 check_if_in_draw_range(Object *obj) {
+    s32 opacity = obj->opacity;
+    s32 admitted = check_if_in_draw_range_impl(obj, &opacity);
+    if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE)) {
+        obj->opacity = opacity;
+    }
+    return admitted;
 }
 
 UNUSED void func_8002AC00(s32 arg0, s32 arg1, s32 arg2) {
@@ -4563,6 +4937,11 @@ void shadow_render(Object *obj, ShadowData *shadow) {
     s32 vtxCount;
     s32 triCount;
     s32 alpha;
+#ifdef NATIVE_PORT
+    s32 objectOpacity = scene_object_render_opacity(obj);
+#else
+    s32 objectOpacity = obj->opacity;
+#endif
 
     if (obj->header->shadowGroup) {
         if (shadow->meshStart != -1 && gDisableShadows == FALSE) {
@@ -4601,16 +4980,16 @@ void shadow_render(Object *obj, ShadowData *shadow) {
 #else
             flags = RENDER_FOG_ACTIVE | RENDER_Z_COMPARE;
 #endif
-            if (alpha == 0 || obj->opacity == 0) {
+            if (alpha == 0 || objectOpacity == 0) {
                 i = shadow->meshEnd; // It'd be easier to just return...
-            } else if (alpha != 255 || obj->opacity != 255) {
+            } else if (alpha != 255 || objectOpacity != 255) {
                 flags = RENDER_FOG_ACTIVE | RENDER_SEMI_TRANSPARENT | RENDER_Z_COMPARE;
 #ifdef NATIVE_PORT
                 if (mdkr_shadow_decal_enabled()) {
                     flags |= RENDER_DECAL;
                 }
 #endif
-                alpha = (obj->opacity * alpha) >> 8;
+                alpha = (objectOpacity * alpha) >> 8;
                 gDPSetPrimColor(gTrackDL++, 0, 0, 255, 255, 255, alpha);
             }
             while (i < shadow->meshEnd) {
@@ -6029,7 +6408,10 @@ void scene_presentation_tick(s32 updateRate) {
         i = (skyTex->height << 9) - 1;
         gCurrentLevelHeader2->unkAA =
             (gCurrentLevelHeader2->unkAA + (gCurrentLevelHeader2->unkA3 * updateRate)) & i;
-        tex_animate_texture(skyTex, &gTrackTexAnimFlags, &gTrackTexAnimOffset, updateRate);
+        /* The fixed tick owns the one skydome-scroll roll migrated from the
+         * native render. The separately rendered skydome object remains outside
+         * ordinary-object authored scope and therefore uses presentation RNG. */
+        tex_animate_texture_cadence_compat(skyTex, &gTrackTexAnimFlags, &gTrackTexAnimOffset, updateRate);
     }
     scroll_particle_textures(updateRate);
 }

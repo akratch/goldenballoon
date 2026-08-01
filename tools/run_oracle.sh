@@ -95,6 +95,10 @@ STATE_MIN_PROGRESS_AGREEMENT="$(field state_min_progress_agreement)"
 NATIVE_SYNTH_FIELDS="$(field native_synth_fields)"
 NATIVE_CADENCE="$(field native_cadence)"
 ARM_SUFFIX=""
+REFERENCE_REPLAY=0
+REPLAY_ARES_FRAME_START=""
+REPLAY_FIELD_START=""
+REPLAY_INPUT_START=""
 ARM_NAMES="$($ROUTE_PY native-arms "$ROUTE")"
 if [[ -n "$ARM_NAMES" ]]; then
     if [[ -z "$NATIVE_ARM" ]]; then
@@ -111,6 +115,12 @@ if [[ -n "$ARM_NAMES" ]]; then
     NATIVE_FRAMES="$($ROUTE_PY arm-field "$ROUTE" "$NATIVE_ARM" frames)"
     NATIVE_CADENCE="$($ROUTE_PY arm-field "$ROUTE" "$NATIVE_ARM" cadence)"
     NATIVE_SYNTH_FIELDS="$($ROUTE_PY arm-field "$ROUTE" "$NATIVE_ARM" synth_fields)"
+    REFERENCE_REPLAY="$($ROUTE_PY arm-field "$ROUTE" "$NATIVE_ARM" reference_replay)"
+    if [[ "$REFERENCE_REPLAY" -eq 1 ]]; then
+        REPLAY_ARES_FRAME_START="$($ROUTE_PY arm-field "$ROUTE" "$NATIVE_ARM" replay_ares_frame_start)"
+        REPLAY_FIELD_START="$($ROUTE_PY arm-field "$ROUTE" "$NATIVE_ARM" replay_field_start)"
+        REPLAY_INPUT_START="$($ROUTE_PY arm-field "$ROUTE" "$NATIVE_ARM" replay_input_start)"
+    fi
     ARM_SUFFIX="_$NATIVE_ARM"
 elif [[ -n "$NATIVE_ARM" ]]; then
     echo "FAIL: route $ROUTE does not declare native arms" >&2
@@ -169,6 +179,8 @@ NATIVE_SAVES="$ROUTE_DIR/native_saves"         # route-local; never touch user c
 ARES_STATE="$ROUTE_DIR/ares_state.csv"
 NATIVE_LOG="$ROUTE_DIR/native${ARM_SUFFIX}.log"
 STATE_REPORT="$CMP_DIR/state_report_${ROUTE}${ARM_SUFFIX}.json"
+REFERENCE_FIELDS="$ROUTE_DIR/native${ARM_SUFFIX}_fields.txt"
+REFERENCE_BASE_INPUT="$ROUTE_DIR/native${ARM_SUFFIX}_base_input.txt"
 
 mkdir -p "$ROUTE_DIR" "$CMP_DIR" "$ARES_SAVES" "$NATIVE_SAVES"
 
@@ -176,7 +188,30 @@ NATIVE_SCRIPT_ARGS=(native-script "$ROUTE")
 if [[ -n "$NATIVE_ARM" ]]; then
     NATIVE_SCRIPT_ARGS+=(--arm "$NATIVE_ARM")
 fi
-$ROUTE_PY "${NATIVE_SCRIPT_ARGS[@]}" >"$NATIVE_INPUT"
+if [[ "$REFERENCE_REPLAY" -eq 1 ]]; then
+    if [[ "$SKIP_ARES" -ne 1 ]]; then
+        echo "FAIL: reference_replay is a second-stage native arm; first refresh" >&2
+        echo "the real-ROM trace, then rerun with --native-arm reference_replay --skip-ares" >&2
+        exit 2
+    fi
+    [[ -f "$ARES_STATE" ]] || {
+        echo "FAIL: reference replay requires existing ares trace: $ARES_STATE" >&2
+        echo "Run this route once without --skip-ares first." >&2
+        exit 1
+    }
+    $ROUTE_PY "${NATIVE_SCRIPT_ARGS[@]}" >"$REFERENCE_BASE_INPUT"
+    python3 tools/oracle_reference_replay.py \
+        --ares-trace "$ARES_STATE" \
+        --base-native-input "$REFERENCE_BASE_INPUT" \
+        --fields-out "$REFERENCE_FIELDS" \
+        --input-out "$NATIVE_INPUT" \
+        --ares-frame-start "$REPLAY_ARES_FRAME_START" \
+        --field-start "$REPLAY_FIELD_START" \
+        --input-start "$REPLAY_INPUT_START" \
+        --racer-index "$STATE_RACER_INDEX"
+else
+    $ROUTE_PY "${NATIVE_SCRIPT_ARGS[@]}" >"$NATIVE_INPUT"
+fi
 $ROUTE_PY ares-script   "$ROUTE" >"$ARES_INPUT"
 $ROUTE_PY mark-pairs    "$ROUTE" >"$MARK_PAIRS"
 
@@ -205,6 +240,9 @@ if [[ "$SKIP_NATIVE" -eq 0 ]]; then
     )
     if [[ "$STATE_TRACE" -eq 1 ]]; then
         NATIVE_ENV+=(MDKR_TRACE=1 MDKR_ORACLE_STATE=1)
+    fi
+    if [[ "$REFERENCE_REPLAY" -eq 1 ]]; then
+        NATIVE_ENV+=(MDKR_ORACLE_UPDATE_FIELDS="$REFERENCE_FIELDS")
     fi
     if [[ "$FORCED_TRACK" -ge 0 ]]; then
         NATIVE_ENV+=(MDKR_LOAD_TRACK="$FORCED_TRACK")

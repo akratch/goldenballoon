@@ -21,11 +21,10 @@ neither pollutes the other.
 | ROM / assets | none (bring-your-own) | **none** |
 | edited by | humans | **nobody — generated** |
 
-> **Note on history.** The public source repository is a squashed single-commit
-> cut of a longer private development history. The private repository is where
-> the day-to-day work happened and is not published. That is why this document
-> and the publisher scripts talk about "the source repo" as a single thing: from
-> the demo repo's point of view, it is.
+> **Note on history.** The source repository keeps ordinary public Git history.
+> The demo repository remains a separate, generated deployment target; this
+> document uses “source repo” only to distinguish authored source from that
+> generated site payload.
 
 ## The contract
 

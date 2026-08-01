@@ -312,7 +312,7 @@ subsystems away* into bounded degradation. Positive control: with the hole emula
 
 ## M8 web (wasm) build — DONE (boots, runs, RENDERS correctly in-browser)
 The Emscripten/WebGPU build boots in a real browser, runs the full game loop at
-60fps (Asyncify/rAF frame boundary), and RENDERS the title/attract, menus, and a
+the authored 30 Hz by default (Asyncify/rAF frame boundary), and RENDERS the title/attract, menus, and a
 race CORRECTLY — verified in headless Chrome 150 driving the actual wasm + scored
 vs native `--dump-frames`. WebGPU device init, AudioWorklet, ROM in MEMFS, and IDBFS
 saves all work (see STATUS.md M8 + docs/architecture/web.md). THREE wasm32-specific
@@ -361,7 +361,7 @@ address/layout bugs were found + fixed (all LP64-only assumptions re-surfacing a
   block=1.000; in-race (Ancient Lake track + orange canyon + palms + HUD 5TH/LAP
   1/3/x0/TIME) renders correctly (eyeballed; the race comparator scores noisily as a
   dynamic scene at unsynced frames). Native re-verified unregressed: 20x race 0
-  crashes, WebGPU renders title+OPTIONS, GL fallback boots.
+  crashes, WebGPU renders title+OPTIONS, and explicitly selected GL boots.
 - The earlier intermittent headless Chrome GPU-process exit has not reproduced in
   the isolated-profile runtime gate. GPU-process/device-loss markers, flat scenes,
   and stalled frame progress are now release failures rather than an informal

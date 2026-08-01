@@ -52,6 +52,10 @@
       <li>No server</li>
       <li>No game data shipped</li>
     </ul>
+    <p class="intro-links">
+      <a href="https://github.com/akratch/goldenballoon/releases/latest">Desktop downloads — macOS · Windows · Linux</a>
+      <a href="https://github.com/akratch/goldenballoon">Source code</a>
+    </p>
   </div>
 
   <div class="gantry" aria-hidden="true"></div>
@@ -104,11 +108,29 @@
                 <option value="3">3&times;</option>
                 <option value="4">4&times; &mdash; sharpest, heaviest</option>
               </select>
+              <label class="quality-label" for="rate">Frame rate</label>
+              <select id="rate" class="quality-select">
+                <option value="original" selected>Original &mdash; Recommended / Proven</option>
+                <option value="display">Display &mdash; Experimental &mdash; Under Construction</option>
+                <option value="30">30 Hz &mdash; Experimental &mdash; Under Construction</option>
+                <option value="60">60 Hz &mdash; Experimental &mdash; Under Construction</option>
+                <option value="90">90 Hz &mdash; Experimental &mdash; Under Construction</option>
+                <option value="120">120 Hz &mdash; Experimental &mdash; Under Construction</option>
+                <option value="144">144 Hz &mdash; Experimental &mdash; Under Construction</option>
+              </select>
+              <p id="frame-rate-status" class="quality-note"><strong>Every frame-rate choice except Original is
+                Experimental &mdash; Under Construction.</strong> In 1.0.1 these choices only
+                alter host pacing and input/event-pump opportunities; they do not increase
+                unique visual FPS above the supported US 1.1 game's authored ~30 FPS. Any
+                benefit may be negligible, while higher settings can use more CPU. Browser
+                scheduling remains capped by the display and
+                <code>requestAnimationFrame</code>; this build does not offer an unbounded
+                presentation mode.</p>
               <p class="quality-note">Supersampling renders above your window size and
                 filters back down, which is what removes the stair-stepping on edges.
                 Restored and Remastered use 2&times;. <strong>Set it to Off and back to
                 4&times; while watching the balloons and palm trees</strong> &mdash; that
-                is the difference. It costs fill rate, so drop back if the frame rate
+                is the difference. It costs fill rate, so drop back if performance
                 suffers.</p>
             </div>
 
@@ -275,6 +297,9 @@
             renderer and this web build are original work.
           </p>
           <p class="fine">
+            <a href="https://github.com/akratch/goldenballoon">Source code</a> ·
+            <a href="https://github.com/akratch/goldenballoon/releases">Desktop releases</a> ·
+            <a href="https://github.com/akratch/goldenballoon/blob/main/RELEASE_NOTES.md">Release notes</a> ·
             <a href="https://github.com/akratch/golden-balloon/blob/main/DISCLAIMER.md">Disclaimer</a> ·
             <a href="https://github.com/akratch/golden-balloon/blob/main/LICENSE">License (MIT, our code only)</a> ·
             <a href="https://github.com/akratch/golden-balloon">Source of this page</a>

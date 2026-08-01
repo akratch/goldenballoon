@@ -1,11 +1,148 @@
 #include "pacing_policy.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define NS_PER_SECOND UINT64_C(1000000000)
+
+static int present_ci_equal(const char *left, const char *right) {
+    if (left == NULL || right == NULL) {
+        return 0;
+    }
+    while (*left != '\0' && *right != '\0') {
+        if (tolower((unsigned char)*left) != tolower((unsigned char)*right)) {
+            return 0;
+        }
+        left++;
+        right++;
+    }
+    return *left == '\0' && *right == '\0';
+}
+
+int mdkr_present_policy_parse(const char *value, MdkrPresentPolicy *out) {
+    MdkrPresentPolicy parsed = { MDKR_PRESENT_ORIGINAL, 0u };
+    char *end = NULL;
+    unsigned long rate;
+
+    if (value == NULL || out == NULL || value[0] == '\0') {
+        return 0;
+    }
+    if (present_ci_equal(value, "original")) {
+        *out = parsed;
+        return 1;
+    }
+    if (present_ci_equal(value, "display")) {
+        parsed.kind = MDKR_PRESENT_DISPLAY;
+        *out = parsed;
+        return 1;
+    }
+    if (present_ci_equal(value, "uncapped")) {
+        parsed.kind = MDKR_PRESENT_UNCAPPED;
+        *out = parsed;
+        return 1;
+    }
+    {
+        const unsigned char *digit = (const unsigned char *)value;
+        while (*digit != '\0' && isdigit(*digit)) {
+            digit++;
+        }
+        if (digit == (const unsigned char *)value || *digit != '\0') {
+            return 0;
+        }
+    }
+    errno = 0;
+    rate = strtoul(value, &end, 10);
+    if (errno != 0 || end == value || end == NULL || end[0] != '\0' ||
+        rate < MDKR_PRESENT_RATE_MIN || rate > MDKR_PRESENT_RATE_MAX) {
+        return 0;
+    }
+    parsed.kind = MDKR_PRESENT_CAPPED;
+    parsed.rate = (unsigned)rate;
+    *out = parsed;
+    return 1;
+}
+
+int mdkr_present_policy_equal(const MdkrPresentPolicy *left,
+                              const MdkrPresentPolicy *right) {
+    return left != NULL && right != NULL && left->kind == right->kind &&
+           left->rate == right->rate;
+}
+
+int mdkr_present_policy_uses_vsync(const MdkrPresentPolicy *policy) {
+    return policy == NULL || policy->kind == MDKR_PRESENT_ORIGINAL ||
+           policy->kind == MDKR_PRESENT_DISPLAY;
+}
+
+int mdkr_present_policy_needs_subloop(const MdkrPresentPolicy *policy,
+                                      unsigned tick_rate) {
+    if (policy == NULL || policy->kind == MDKR_PRESENT_ORIGINAL) {
+        return 0;
+    }
+    if (policy->kind == MDKR_PRESENT_CAPPED) {
+        return policy->rate > tick_rate;
+    }
+    return 1;
+}
+
+static uint64_t present_grid_time_ns(const MdkrPresentDeadlineClock *clock,
+                                     uint64_t index) {
+    uint64_t whole_seconds = index / (uint64_t)clock->rate;
+    uint64_t remainder = index % (uint64_t)clock->rate;
+
+    if (whole_seconds > (UINT64_MAX - clock->origin_ns) / NS_PER_SECOND) {
+        return UINT64_MAX;
+    }
+    return clock->origin_ns + whole_seconds * NS_PER_SECOND +
+           (remainder * NS_PER_SECOND) / (uint64_t)clock->rate;
+}
+
+int mdkr_present_deadline_init(MdkrPresentDeadlineClock *clock,
+                               unsigned rate) {
+    if (clock == NULL || rate < MDKR_PRESENT_RATE_MIN ||
+        rate > MDKR_PRESENT_RATE_MAX) {
+        return 0;
+    }
+    memset(clock, 0, sizeof(*clock));
+    clock->rate = rate;
+    return 1;
+}
+
+uint64_t mdkr_present_deadline_target(MdkrPresentDeadlineClock *clock,
+                                      uint64_t now_ns) {
+    if (clock == NULL || clock->rate == 0u) {
+        return now_ns;
+    }
+    if (!clock->initialized) {
+        clock->origin_ns = now_ns;
+        clock->next_index = 1u;
+        clock->initialized = 1;
+    }
+    return present_grid_time_ns(clock, clock->next_index);
+}
+
+void mdkr_present_deadline_commit(MdkrPresentDeadlineClock *clock,
+                                  uint64_t now_ns) {
+    uint64_t elapsed_ns;
+    uint64_t elapsed_intervals;
+
+    if (clock == NULL || !clock->initialized || clock->rate == 0u) {
+        return;
+    }
+    elapsed_ns = now_ns > clock->origin_ns ? now_ns - clock->origin_ns : 0u;
+    /* floor(elapsed * rate / 1e9), overflow-safe for host-time ranges. */
+    elapsed_intervals =
+        (elapsed_ns / NS_PER_SECOND) * (uint64_t)clock->rate +
+        ((elapsed_ns % NS_PER_SECOND) * (uint64_t)clock->rate) /
+            NS_PER_SECOND;
+    if (elapsed_intervals >= clock->next_index) {
+        clock->next_index = elapsed_intervals + 1u;
+    } else {
+        clock->next_index++;
+    }
+}
 
 int mdkr_pacing_cadence_valid(const char *value) {
     return value != NULL &&
@@ -76,6 +213,10 @@ int mdkr_pacing_queue_refill(int pending_fields, int measured_fields,
     return pending_fields + measured_fields;
 }
 
+int mdkr_pacing_interval_requires_rebase(uint64_t elapsed_ns) {
+    return elapsed_ns >= MDKR_PACING_STALL_REBASE_NS;
+}
+
 static uint64_t grid_time_ns(const MdkrPacingClock *clock,
                              uint64_t fields) {
     uint64_t whole_seconds = fields / (uint64_t)clock->field_hz;
@@ -131,6 +272,7 @@ uint64_t mdkr_pacing_clock_target(MdkrPacingClock *clock, uint64_t now_ns) {
 
 int mdkr_pacing_clock_commit(MdkrPacingClock *clock, uint64_t now_ns,
                              int *rebased) {
+    uint64_t elapsed_ns;
     uint64_t grid_ns;
     uint64_t raw_fields;
     int fields;
@@ -142,9 +284,8 @@ int mdkr_pacing_clock_commit(MdkrPacingClock *clock, uint64_t now_ns,
         return 1;
     }
     grid_ns = grid_time_ns(clock, clock->grid_fields);
-    raw_fields = now_ns > grid_ns
-        ? elapsed_fields(clock, now_ns - grid_ns)
-        : 0;
+    elapsed_ns = now_ns > grid_ns ? now_ns - grid_ns : 0u;
+    raw_fields = elapsed_fields(clock, elapsed_ns);
     if (raw_fields < (uint64_t)clock->min_fields) {
         fields = clock->min_fields;
     } else if (raw_fields > (uint64_t)clock->max_fields) {
@@ -153,15 +294,10 @@ int mdkr_pacing_clock_commit(MdkrPacingClock *clock, uint64_t now_ns,
         fields = (int)raw_fields;
     }
     clock->grid_fields += (uint64_t)fields;
-    grid_ns = grid_time_ns(clock, clock->grid_fields);
 
-    /*
-     * A level load, debugger stop, or resume may leave more than four source
-     * fields of debt even after the bounded update. Rebase instead of carrying
-     * seconds of catch-up into subsequent frames.
-     */
-    if (now_ns > grid_ns &&
-        elapsed_fields(clock, now_ns - grid_ns) > 4u) {
+    /* Suspension/debugger/occlusion time is retired by the same exact policy
+     * used by the presentation subloop. Equality is intentionally a rebase. */
+    if (mdkr_pacing_interval_requires_rebase(elapsed_ns)) {
         clock->origin_ns = now_ns;
         clock->grid_fields = 0;
         if (rebased != NULL) {

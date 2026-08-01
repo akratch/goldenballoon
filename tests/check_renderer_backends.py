@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-"""Exercise native GL, native WebGPU, and WebGPU's window fallback to GL.
+"""Exercise qualified WebGPU, explicit diagnostic GL, and fail-closed startup.
 
 This is intentionally more than a boot/survival check:
 
 * GL and WebGPU each drive the same deterministic route into an actual race.
 * Their menu/level transition traces must be identical.
-* Sampled PPMs must contain real scenes and stay within a measured pixel-delta
-  budget. One transition-boundary sample may differ because native WebGPU
-  readback completes one presented frame later than ``glReadPixels``.
+* Coarsely sampled PPMs must contain real scenes and stay within a global
+  pixel-delta budget. This is a route/backend plumbing check, not GL visual
+  qualification: dense localized GL parity remains open. One transition sample
+  may differ because native WebGPU readback completes one presented frame later
+  than ``glReadPixels``.
 * A consecutive GL boot capture must never alternate a completed frame with an
   undefined black back buffer on VI presents that submit no new graphics task.
-* A fault-injected WebGPU-window failure must change the cached backend before
-  ``main_pc.c`` selects the renderer vtable, then GL must render a non-flat
-  menu frame.
+* No selector must resolve to WebGPU and produce byte-identical targeted intro
+  samples to an explicit WebGPU run at the guarded frames which exposed GL
+  corruption.
+* A fault-injected WebGPU-window failure must stop cleanly without changing the
+  cached backend or silently entering the unqualified GL diagnostic path.
 
 The visual comparator has an in-process positive control: the last race frame is
 compared with a black raster and the test fails if that deliberately bad pair
@@ -39,9 +43,21 @@ from harness_utils import resolve_binary
 DEFAULT_SCRIPT = Path("tests/input_scripts/nav_to_time_trial_race.txt")
 DEFAULT_FRAMES = 3200
 SAMPLE_EVERY = 400
-FALLBACK_FRAMES = 1200
 CAPTURE_FROM = 15
 CAPTURE_FRAMES = 230
+DEFAULT_PROBE_FROM = 640
+DEFAULT_PROBE_EVERY = 12
+DEFAULT_PROBE_FRAMES = 653
+AUTHORED_INTRO_FROM = 296
+AUTHORED_INTRO_FRAMES = 302
+RATE60_INTRO_FROM = AUTHORED_INTRO_FROM * 2
+RATE60_INTRO_FRAMES = AUTHORED_INTRO_FRAMES * 2
+AUTHORED_VEHICLE_FROM = 2996
+AUTHORED_VEHICLE_FRAMES = 3002
+RATE60_VEHICLE_FROM = AUTHORED_VEHICLE_FROM * 2
+RATE60_VEHICLE_FRAMES = AUTHORED_VEHICLE_FRAMES * 2
+MAX_AUTHORED_PAIR_MAD = 0.20
+MAX_INTRO_FRAMING_MAD = 1.50
 
 MIN_SCENE_COLOURS = 200
 MIN_SCENE_SIGMA = 10.0
@@ -53,7 +69,7 @@ MIN_RACE_SAMPLE_FRAME = 2800
 
 FATAL_RE = re.compile(
     r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|Assertion"
+    r"runtime error:|Assertion|SIGSEGV|Segmentation fault|SIGABRT|Abort trap"
 )
 ROUTE_RE = re.compile(
     r"^\[TRACE\] (?:menu_init|level_load):.*(?:@frame~\d+)$", re.MULTILINE
@@ -65,6 +81,7 @@ DISPLAY_SIZE_RE = re.compile(
     r" effectiveScale=([\d.]+)$",
     re.MULTILINE,
 )
+SCHED_RE = re.compile(r"^\[PRESENTSCHED-SUMMARY\] (.*)$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -166,7 +183,7 @@ def clean_environment(**updates: str) -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
-        if not key.startswith("MDKR")
+        if not key.startswith(("MDKR", "GE007_"))
     }
     env.update(updates)
     return env
@@ -176,16 +193,16 @@ def run_engine(
     binary: Path,
     rom: Path,
     script: Path | None,
-    backend: str,
+    backend: str | None,
     frames: int,
     frame_dir: Path,
     run_dir: Path,
     timeout: int,
     *,
-    force_window_failure: bool = False,
     dump_every: int = SAMPLE_EVERY,
     dump_from: int | None = None,
     window_size: str = "640x480",
+    extra_env: dict[str, str] | None = None,
     verbose: bool = False,
 ) -> Run:
     frame_dir.mkdir(parents=True)
@@ -195,13 +212,14 @@ def run_engine(
         MDKR_SIMULATION_CADENCE="enhanced",
         MDKR_SYNTH_FIELDS="1",
         MDKR_TRACE="1",
-        MDKR_RENDERER=backend,
         MDKR_DUMP_EVERY=str(dump_every),
     )
+    if backend is not None:
+        env["MDKR_RENDERER"] = backend
     if dump_from is not None:
         env["MDKR_DUMP_FROM"] = str(dump_from)
-    if force_window_failure:
-        env["MDKR_TEST_WEBGPU_WINDOW_FAIL"] = "1"
+    if extra_env is not None:
+        env.update(extra_env)
     cmd = [
         str(binary),
         "--headless-frames",
@@ -230,7 +248,8 @@ def run_engine(
     except subprocess.TimeoutExpired as exc:
         output = (exc.stdout or b"").decode("utf-8", "replace")
         raise RuntimeError(
-            f"{backend} arm timed out after {timeout}s\n{output[-4000:]}"
+            f"{backend or 'default'} arm timed out after {timeout}s\n"
+            f"{output[-4000:]}"
         ) from exc
     output = proc.stdout.decode("utf-8", "replace")
     failures: list[str] = []
@@ -241,9 +260,10 @@ def run_engine(
         failures.append(f"emitted {fatal.group(0)!r}")
     if failures:
         raise RuntimeError(
-            f"{backend} arm {'; '.join(failures)}\n{output[-4000:]}"
+            f"{backend or 'default'} arm {'; '.join(failures)}\n"
+            f"{output[-4000:]}"
         )
-    return Run(backend, output, frame_dir)
+    return Run(backend or "default", output, frame_dir)
 
 
 def frame_paths(run: Run) -> dict[int, Path]:
@@ -294,6 +314,24 @@ def reported_display_size(
             f"requested={result[4]:.2f} effective={result[5]:.2f}"
         )
     return result
+
+
+def parse_last_fields(
+    output: str, pattern: re.Pattern[str]
+) -> dict[str, int] | None:
+    rows = list(pattern.finditer(output))
+    if not rows:
+        return None
+    fields: dict[str, int] = {}
+    for token in rows[-1].group(1).split():
+        key, separator, value = token.partition("=")
+        if not separator:
+            continue
+        try:
+            fields[key] = int(value)
+        except ValueError:
+            continue
+    return fields
 
 
 def check_parity(gl_run: Run, webgpu_run: Run, verbose: bool) -> list[str]:
@@ -446,30 +484,49 @@ def check_parity(gl_run: Run, webgpu_run: Run, verbose: bool) -> list[str]:
     return failures
 
 
-def check_fallback(run: Run) -> list[str]:
+def check_fail_closed_window(binary: Path, rom: Path, root: Path,
+                             timeout: int, verbose: bool) -> list[str]:
+    run_dir = root / "run-webgpu-window-failure"
+    run_dir.mkdir(parents=True)
+    env = clean_environment(
+        MDKR_AUDIO="0",
+        MDKR_RENDERER="webgpu",
+        MDKR_TEST_WEBGPU_WINDOW_FAIL="1",
+    )
+    command = [
+        str(binary), "--headless-frames", "5", "--rom", str(rom),
+    ]
+    if verbose:
+        print("$ " + " ".join(command))
+    proc = subprocess.run(
+        command, cwd=run_dir, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        timeout=timeout, check=False,
+    )
+    output = proc.stdout.decode("utf-8", "replace")
     failures: list[str] = []
+    if proc.returncode != 1:
+        failures.append(
+            "forced WebGPU window failure did not use clean EXIT_FAILURE: "
+            f"returncode={proc.returncode}"
+        )
+    if fatal := FATAL_RE.search(output):
+        failures.append(
+            f"forced WebGPU window failure emitted {fatal.group(0)!r}"
+        )
     for marker in (
-        "[SDL] WebGPU window failure forced for fallback test.",
-        "forced by MDKR_TEST_WEBGPU_WINDOW_FAIL",
+        "[SDL] WebGPU window failure forced for fail-closed test.",
+        "stopping without an automatic GL fallback",
+    ):
+        if marker not in output:
+            failures.append(f"fail-closed arm is missing {marker!r}")
+    for marker in (
+        "[SDL] GL ready:",
         "[mdkr64] renderer backend: gl",
         "[TRACE] gfx_init(gl) done;",
     ):
-        if marker not in run.output:
-            failures.append(f"fallback arm is missing {marker!r}")
-    if "[TRACE] gfx_init(webgpu)" in run.output:
-        failures.append("fallback arm initialized WebGPU after selecting GL")
-
-    good_frames: list[int] = []
-    for frame, path in sorted(frame_paths(run).items()):
-        try:
-            colours, sigma = scene_metrics(read_ppm(path))
-        except ValueError as exc:
-            failures.append(str(exc))
-            continue
-        if colours >= MIN_SCENE_COLOURS and sigma >= MIN_SCENE_SIGMA:
-            good_frames.append(frame)
-    if not good_frames:
-        failures.append("fallback GL arm produced no non-flat sampled frame")
+        if marker in output:
+            failures.append(f"fail-closed arm silently emitted {marker!r}")
     return failures
 
 
@@ -516,6 +573,190 @@ def check_consecutive_gl_capture(run: Run) -> list[str]:
     # be rejected even when the two visible values differ.
     if isolated_black_frames([(1, 100), (2, 0), (3, 90)]) != [2]:
         failures.append("isolated-black positive control did not detect A/B/A")
+    return failures
+
+
+def check_default_webgpu(default_run: Run, explicit_run: Run) -> list[str]:
+    """Pin both the renderer policy and the targeted intro pixels it selects."""
+
+    failures: list[str] = []
+    require_backend(default_run, "webgpu", failures)
+    require_backend(explicit_run, "webgpu", failures)
+    default_paths = frame_paths(default_run)
+    explicit_paths = frame_paths(explicit_run)
+    expected = [DEFAULT_PROBE_FROM, DEFAULT_PROBE_FROM + DEFAULT_PROBE_EVERY]
+    if sorted(default_paths) != expected or sorted(explicit_paths) != expected:
+        failures.append(
+            "default-backend probe did not capture the two guarded intro "
+            f"frames: default={sorted(default_paths)}, "
+            f"explicit={sorted(explicit_paths)}, expected={expected}"
+        )
+        return failures
+
+    for frame in expected:
+        try:
+            default_image = read_ppm(default_paths[frame])
+            explicit_image = read_ppm(explicit_paths[frame])
+        except ValueError as exc:
+            failures.append(str(exc))
+            continue
+        colours, sigma = scene_metrics(default_image)
+        if colours < MIN_SCENE_COLOURS or sigma < MIN_SCENE_SIGMA:
+            failures.append(
+                f"default WebGPU intro frame {frame} is not a real scene: "
+                f"colours={colours}, sigma={sigma:.1f}"
+            )
+        if default_image != explicit_image:
+            mad = mean_absolute_difference(default_image, explicit_image)
+            failures.append(
+                f"default renderer diverged from explicit WebGPU at guarded "
+                f"intro frame {frame}: MAD={mad:.6f}"
+            )
+
+    # Both-direction proof: byte identity is discriminating for these frames.
+    control = read_ppm(default_paths[expected[-1]])
+    black = Image(control.width, control.height, bytes(len(control.pixels)))
+    if control == black:
+        failures.append("default-backend intro positive control was black")
+    return failures
+
+
+def check_first_dump_prearm(cli_run: Run, prearmed_run: Run) -> list[str]:
+    """The first CLI dump must already target the final output texture."""
+
+    failures: list[str] = []
+    cli_paths = frame_paths(cli_run)
+    prearmed_paths = frame_paths(prearmed_run)
+    expected = [DEFAULT_PROBE_FROM, DEFAULT_PROBE_FROM + DEFAULT_PROBE_EVERY]
+    if sorted(cli_paths) != expected or sorted(prearmed_paths) != expected:
+        return [
+            "WebGPU first-dump prearm captured the wrong frame set: "
+            f"CLI={sorted(cli_paths)}, prearmed={sorted(prearmed_paths)}, "
+            f"expected={expected}"
+        ]
+    for frame in expected:
+        try:
+            cli_image = read_ppm(cli_paths[frame])
+            prearmed_image = read_ppm(prearmed_paths[frame])
+        except ValueError as error:
+            failures.append(str(error))
+            continue
+        if cli_image != prearmed_image:
+            failures.append(
+                "WebGPU CLI dump did not prearm the final output target at "
+                f"frame {frame}: MAD="
+                f"{mean_absolute_difference(cli_image, prearmed_image):.6f}"
+            )
+    return failures
+
+
+def check_authored_rate_sequence(
+    original: Run,
+    rate60: Run,
+    original_from: int,
+    original_frames: int,
+    rate60_from: int,
+    rate60_frames: int,
+    maximum_mad: float,
+    label: str,
+) -> list[str]:
+    """Compare every Original image with both =60 images for that tick."""
+
+    failures: list[str] = []
+    original_paths = frame_paths(original)
+    rate60_paths = frame_paths(rate60)
+    expected_original = list(range(original_from, original_frames))
+    expected_rate60 = list(range(rate60_from, rate60_frames))
+    if sorted(original_paths) != expected_original or \
+            sorted(rate60_paths) != expected_rate60:
+        return [
+            f"{label}: incomplete exact frame sequence: "
+            f"Original={sorted(original_paths)}, =60={sorted(rate60_paths)}"
+        ]
+
+    original_sched = parse_last_fields(original.output, SCHED_RE)
+    rate60_sched = parse_last_fields(rate60.output, SCHED_RE)
+    if original_sched is None or rate60_sched is None:
+        failures.append(f"{label}: missing scheduler summary")
+    else:
+        for key, expected in (
+            ("ticks", original_frames),
+            ("simticks", original_frames),
+            ("presents", original_frames),
+        ):
+            if original_sched.get(key) != expected:
+                failures.append(
+                    f"{label}: Original {key}={original_sched.get(key)}, "
+                    f"expected {expected}"
+                )
+        for key, expected in (
+            ("ticks", original_frames),
+            ("simticks", original_frames),
+            ("presents", rate60_frames),
+        ):
+            if rate60_sched.get(key) != expected:
+                failures.append(
+                    f"{label}: =60 {key}={rate60_sched.get(key)}, "
+                    f"expected {expected}"
+                )
+        for key in ("blocked", "multidue", "lead", "lag", "catchup",
+                    "skips", "rebases", "updatebad"):
+            if original_sched.get(key, 0) != 0 or \
+                    rate60_sched.get(key, 0) != 0:
+                failures.append(
+                    f"{label}: scheduler {key} is nonzero "
+                    f"(Original={original_sched.get(key)}, "
+                    f"=60={rate60_sched.get(key)})"
+                )
+
+    compared = 0
+    worst_frame = -1
+    worst_mad = 0.0
+    for authored_frame in expected_original:
+        try:
+            authored = read_ppm(original_paths[authored_frame])
+        except ValueError as error:
+            failures.append(str(error))
+            continue
+        for present_frame in (authored_frame * 2, authored_frame * 2 + 1):
+            if present_frame not in rate60_paths:
+                failures.append(
+                    f"{label}: missing =60 presentation {present_frame}"
+                )
+                continue
+            try:
+                presented = read_ppm(rate60_paths[present_frame])
+                mad = mean_absolute_difference(authored, presented)
+            except ValueError as error:
+                failures.append(str(error))
+                continue
+            compared += 1
+            if mad > worst_mad:
+                worst_mad = mad
+                worst_frame = present_frame
+            if mad > maximum_mad:
+                failures.append(
+                    f"{label}: =60 frame {present_frame} diverged from "
+                    f"Original {authored_frame}: MAD={mad:.6f}, "
+                    f"limit={maximum_mad:.2f}"
+                )
+    if compared != len(expected_original) * 2:
+        failures.append(
+            f"{label}: compared {compared} pairs, expected "
+            f"{len(expected_original) * 2}"
+        )
+
+    # The threshold must reject a materially missing scene. This is an
+    # in-process detector control, independent of the production pair.
+    control = read_ppm(original_paths[expected_original[-1]])
+    black = Image(control.width, control.height, bytes(len(control.pixels)))
+    if mean_absolute_difference(control, black) <= maximum_mad:
+        failures.append(
+            f"{label}: black-frame positive control would pass the "
+            f"MAD limit {maximum_mad:.2f}"
+        )
+    if not failures and worst_frame < 0:
+        failures.append(f"{label}: no frame pair was measured")
     return failures
 
 
@@ -590,20 +831,8 @@ def main() -> int:
             runs.append(webgpu_run)
             failures.extend(check_parity(gl_run, webgpu_run, args.verbose))
 
-            fallback_run = run_engine(
-                binary,
-                rom,
-                None,
-                "webgpu",
-                FALLBACK_FRAMES,
-                root / "frames-fallback",
-                root / "run-fallback",
-                args.timeout,
-                force_window_failure=True,
-                verbose=args.verbose,
-            )
-            runs.append(fallback_run)
-            failures.extend(check_fallback(fallback_run))
+            failures.extend(check_fail_closed_window(
+                binary, rom, root, args.timeout, args.verbose))
 
             capture_run = run_engine(
                 binary,
@@ -621,6 +850,117 @@ def main() -> int:
             )
             runs.append(capture_run)
             failures.extend(check_consecutive_gl_capture(capture_run))
+
+            default_intro_run = run_engine(
+                binary,
+                rom,
+                None,
+                None,
+                DEFAULT_PROBE_FRAMES,
+                root / "frames-default-intro",
+                root / "run-default-intro",
+                args.timeout,
+                dump_every=DEFAULT_PROBE_EVERY,
+                dump_from=DEFAULT_PROBE_FROM,
+                verbose=args.verbose,
+            )
+            runs.append(default_intro_run)
+            explicit_intro_run = run_engine(
+                binary,
+                rom,
+                None,
+                "webgpu",
+                DEFAULT_PROBE_FRAMES,
+                root / "frames-webgpu-intro",
+                root / "run-webgpu-intro",
+                args.timeout,
+                dump_every=DEFAULT_PROBE_EVERY,
+                dump_from=DEFAULT_PROBE_FROM,
+                verbose=args.verbose,
+            )
+            runs.append(explicit_intro_run)
+            failures.extend(
+                check_default_webgpu(default_intro_run, explicit_intro_run)
+            )
+            prearmed_intro_run = run_engine(
+                binary,
+                rom,
+                None,
+                "webgpu",
+                DEFAULT_PROBE_FRAMES,
+                root / "frames-webgpu-intro-prearmed",
+                root / "run-webgpu-intro-prearmed",
+                args.timeout,
+                dump_every=DEFAULT_PROBE_EVERY,
+                dump_from=DEFAULT_PROBE_FROM,
+                extra_env={
+                    "GE007_WEBGPU_DUMP_FRAME": str(DEFAULT_PROBE_FROM),
+                },
+                verbose=args.verbose,
+            )
+            runs.append(prearmed_intro_run)
+            failures.extend(check_first_dump_prearm(
+                explicit_intro_run, prearmed_intro_run
+            ))
+
+            authored_common = {
+                "MDKR_SIMULATION_CADENCE": "original",
+                "MDKR_SYNTH_FIELDS": "2",
+                "MDKR_PRESENT_SCHED_TRACE": "1",
+            }
+            authored_intro_run = run_engine(
+                binary, rom, script, "webgpu", AUTHORED_INTRO_FRAMES,
+                root / "frames-authored-intro",
+                root / "run-authored-intro", args.timeout,
+                dump_every=1, dump_from=AUTHORED_INTRO_FROM,
+                window_size="320x240",
+                extra_env={**authored_common, "MDKR_PRESENT_RATE": "original"},
+                verbose=args.verbose,
+            )
+            rate60_intro_run = run_engine(
+                binary, rom, script, "webgpu", RATE60_INTRO_FRAMES,
+                root / "frames-rate60-intro",
+                root / "run-rate60-intro", args.timeout,
+                dump_every=1, dump_from=RATE60_INTRO_FROM,
+                window_size="320x240",
+                extra_env={**authored_common, "MDKR_PRESENT_RATE": "60"},
+                verbose=args.verbose,
+            )
+            runs.extend((authored_intro_run, rate60_intro_run))
+            failures.extend(check_authored_rate_sequence(
+                authored_intro_run, rate60_intro_run,
+                AUTHORED_INTRO_FROM, AUTHORED_INTRO_FRAMES,
+                RATE60_INTRO_FROM, RATE60_INTRO_FRAMES,
+                MAX_INTRO_FRAMING_MAD,
+                "authored intro/menu framing",
+            ))
+
+            authored_vehicle_run = run_engine(
+                binary, rom, script, "webgpu", AUTHORED_VEHICLE_FRAMES,
+                root / "frames-authored-vehicle",
+                root / "run-authored-vehicle", args.timeout,
+                dump_every=1, dump_from=AUTHORED_VEHICLE_FROM,
+                window_size="320x240",
+                extra_env={**authored_common, "MDKR_PRESENT_RATE": "original"},
+                verbose=args.verbose,
+            )
+            rate60_vehicle_run = run_engine(
+                binary, rom, script, "webgpu", RATE60_VEHICLE_FRAMES,
+                root / "frames-rate60-vehicle",
+                root / "run-rate60-vehicle", args.timeout,
+                dump_every=1, dump_from=RATE60_VEHICLE_FROM,
+                window_size="320x240",
+                extra_env={**authored_common, "MDKR_PRESENT_RATE": "60"},
+                verbose=args.verbose,
+            )
+            runs.extend((authored_vehicle_run, rate60_vehicle_run))
+            failures.extend(check_authored_rate_sequence(
+                authored_vehicle_run, rate60_vehicle_run,
+                AUTHORED_VEHICLE_FROM, AUTHORED_VEHICLE_FRAMES,
+                RATE60_VEHICLE_FROM, RATE60_VEHICLE_FRAMES,
+                MAX_AUTHORED_PAIR_MAD,
+                "authored racer/vehicle-part sequence",
+            ))
         except RuntimeError as exc:
             failures.append(str(exc))
 
@@ -651,9 +991,13 @@ def main() -> int:
         return 1
 
     print(
-        "check_renderer_backends: PASS — GL and WebGPU reached the same race "
-        "within pixel budgets; forced window failure rendered through GL; "
-        "consecutive GL captures retained completed frames"
+        "check_renderer_backends: PASS — diagnostic GL and WebGPU reached the "
+        "same race within coarse global pixel budgets; forced window failure "
+        "failed closed without GL; "
+        "consecutive GL captures retained completed frames; the no-selector "
+        "intro matched explicit WebGPU byte for byte; first CLI dump matched "
+        "a prearmed final target; authored intro and vehicle-part sequences "
+        "remained framed and complete at =60"
     )
     return 0
 

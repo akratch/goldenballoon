@@ -45,6 +45,12 @@ typedef enum MdkrVideoKey {
     MDKR_VIDEO_FRAME_LIMIT,
     MDKR_VIDEO_MOTION_SMOOTHING,
     MDKR_VIDEO_MODE,
+    /*
+     * Appended, not inserted. The enum is the schema table's index and the
+     * in-game menu's wheel order; inserting in the middle would renumber the
+     * pacing keys another lane owns. New keys go here.
+     */
+    MDKR_VIDEO_WORLD_SHADOWS,
     MDKR_VIDEO_KEY_COUNT
 } MdkrVideoKey;
 
@@ -141,6 +147,15 @@ int mdkr_video_config_apply_preset_from(MdkrVideoConfig *config,
 int mdkr_video_mode_from_name(const char *name);
 
 /*
+ * Canonical spelling for a Video.WorldShadows value ("off", "soft", "full"), or
+ * NULL when `value` is not one. The key inherits MDKR_WORLD_SHADOW, a seam that
+ * predates it and that the existing A/B gates drive with "0"/"1"/"", so those
+ * spellings resolve here too and every layer downstream sees one of three
+ * words. Exposed so a UI can offer only what the validator takes.
+ */
+const char *mdkr_video_world_shadows_canonical(const char *value);
+
+/*
  * Applies `value` to `key` if `source` outranks whatever set it last.
  * Returns 1 when applied, 0 when rejected (lower precedence, unparseable, or
  * outside the schema's range). Equal rank is allowed so a live change can
@@ -180,6 +195,18 @@ int mdkr_video_config_readonly_for(const MdkrVideoConfig *config);
 /* --- Runtime API (reads the real ini, environment and argv) --- */
 
 void mdkr_video_config_init(int argc, char *const *argv);
+
+/*
+ * Complete the launcher -> engine boundary exactly once in an app process.
+ * The launcher initializes this module early so its settings UI can stage
+ * restart-scoped changes. Immediately before engine entry, this transaction
+ * reloads the saved layer and resolves the engine argv into both the active
+ * and desired configs. The engine's later init remains an idempotent no-op.
+ *
+ * Returns 1 for the one valid handoff, or 0 if initialization has not happened
+ * or a handoff was already completed.
+ */
+int mdkr_video_config_handoff_to_engine(int argc, char *const *argv);
 const MdkrVideoConfig *mdkr_video_config_current(void);
 const MdkrVideoConfig *mdkr_video_config_desired(void);
 int mdkr_video_config_is_readonly(void);

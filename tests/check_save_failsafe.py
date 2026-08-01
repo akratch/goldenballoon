@@ -342,6 +342,10 @@ def run(binary: str, rom: str, frames: int, script: str | None,
     env["MDKR_AUDIO"] = "0"      # belt-and-braces; --headless-frames already
     env["MDKR_TRACE"] = "1"      # emit menu_init / level_load
     env["MDKR_SAVE_DIR"] = os.path.abspath(SAVE_DIR)
+    # This is a save oracle, so a developer's CWD mdkr64.ini must not change
+    # its authored-tick frame budget (for example by selecting Uncapped).
+    # /dev/null or NUL is an explicit, read-only empty config on each host.
+    env["MDKR_VIDEO_CONFIG_PATH"] = os.devnull
     cmd = [binary, "--headless-frames", str(frames)]
     if script:
         cmd += ["--input-script", script]

@@ -48,12 +48,12 @@ done
 [[ -n "$DEMO" ]] || { echo "publish_demo: --demo DIR is required" >&2; exit 2; }
 
 # ---- gate 1: the source tree must correspond to a real commit ----------------
-if ! git diff --quiet || ! git diff --cached --quiet; then
+if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
     if [[ "$ALLOW_DIRTY" -eq 0 ]]; then
         echo "publish_demo: FAIL -- source tree is dirty." >&2
         echo "  A published build must correspond to a commit, or nobody can tell what is live." >&2
         echo "  Commit first, or pass --allow-dirty if you really mean it." >&2
-        git status --short | sed 's/^/    /' >&2
+        git status --short --untracked-files=all | sed 's/^/    /' >&2
         exit 1
     fi
     echo ">> WARNING: publishing from a DIRTY tree (--allow-dirty)."

@@ -15,6 +15,12 @@
 #include "tracks.h"
 #include "types.h"
 #include "video.h"
+#ifdef NATIVE_PORT
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "present_sched.h"
+#endif
 
 #define WEATHER_OVERRIDE_COUNT 16
 
@@ -1080,6 +1086,18 @@ void rain_render_splashes(UNUSED s32 updateRate) {
 }
 
 #ifdef NATIVE_PORT
+static s32 weather_rng_trace_enabled(void) {
+    static s32 initialized;
+    static s32 enabled;
+
+    if (!initialized) {
+        const char *value = getenv("MDKR_WEATHER_RNG_TRACE");
+        enabled = value != NULL && value[0] != '\0' && value[0] != '0';
+        initialized = TRUE;
+    }
+    return enabled;
+}
+
 /**
  * The authoritative half of rain_render_splashes.
  *
@@ -1102,6 +1120,8 @@ static void rain_splash_tick(s32 updateRate) {
     Object *racer;
     WaterProperties **waterProps;
     WaveQueryCache savedWaveQuery;
+    s32 rngBefore;
+    s32 splashAccepted;
 
     if (gRainSplashGfx == NULL) {
         return;
@@ -1120,6 +1140,8 @@ static void rain_splash_tick(s32 updateRate) {
                     }
                 }
                 if (firstIndexWithoutFlags >= 0) {
+                    rngBefore = get_rng_seed();
+                    splashAccepted = FALSE;
                     randYRot = rand_range(-0x2000, 0x2000) + racer->trans.rotation.y_rotation + 0x8000;
                     randFloat = (f32) rand_range(50, 500);
                     xPos = (sins_f(randYRot) * randFloat) + racer->trans.x_position;
@@ -1172,6 +1194,7 @@ static void rain_splash_tick(s32 updateRate) {
                             gRainSplashSegments[firstIndexWithoutFlags].trans.flags = OBJ_FLAGS_UNK_0001;
                             gRainSplashSegments[firstIndexWithoutFlags].opacity =
                                 rand_range(128, (temp_t0 >> 10) + 191);
+                            splashAccepted = TRUE;
                             gRainSplashDelay = (gRainSplashDelay - (temp_t0 >> 10)) + 64;
                             if (gRainSplashDelay < 0) {
                                 gRainSplashDelay = 0;
@@ -1179,6 +1202,12 @@ static void rain_splash_tick(s32 updateRate) {
                         }
                     }
                     wave_query_cache_restore(&savedWaveQuery);
+                    if (weather_rng_trace_enabled()) {
+                        fprintf(stderr,
+                                "[WEATHER-RNG] tick=%d kind=splash before=%u after=%u accepted=%d\n",
+                                g_simTickCounter, (u32) rngBefore,
+                                (u32) get_rng_seed(), splashAccepted);
+                    }
                 }
             }
         }
@@ -1278,9 +1307,20 @@ void rain_lightning(s32 updateRate) {
         if (gLightningTimer > 0) {
             gLightningTimer -= updateRate;
         } else {
+#ifdef NATIVE_PORT
+            s32 rngBefore = get_rng_seed();
+#endif
             sound_play(SOUND_THUNDER, NULL);
             gThunderTimer = 600 - ((gLightningFrequency + -48000) >> 5);
             gLightningTimer = rand_range(900, 1140) - ((gLightningFrequency + -48000) >> 5);
+#ifdef NATIVE_PORT
+            if (weather_rng_trace_enabled()) {
+                fprintf(stderr,
+                        "[WEATHER-RNG] tick=%d kind=lightning before=%u after=%u accepted=1\n",
+                        g_simTickCounter, (u32) rngBefore,
+                        (u32) get_rng_seed());
+            }
+#endif
         }
     }
 }

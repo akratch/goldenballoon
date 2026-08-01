@@ -89,7 +89,6 @@ void drawAcquisition(LauncherState &s) {
             if (filedialog::openRom(picked)) {
                 g_note.clear();
                 RomPanel_setRom(s, picked.c_str());
-                g_changing = false;
             } else {
                 g_note = "No file chosen.";
             }
@@ -100,10 +99,12 @@ void drawAcquisition(LauncherState &s) {
     }
 
     ui::TextSubtle("Or paste the full path to your ROM:");
-    ImGui::SetNextItemWidth(ui::kControlWidth() * 1.6f);
+    ImGui::SetNextItemWidth(ui::kControlWidth(1.6f));
     const bool entered = ImGui::InputText("##rompath", g_pathInput, sizeof(g_pathInput),
                                           ImGuiInputTextFlags_EnterReturnsTrue);
-    ImGui::SameLine();
+    const bool stackAction = ImGui::GetContentRegionAvail().x <
+                             ui::kBtnSecondary().x + ImGui::GetStyle().ItemSpacing.x;
+    if (!stackAction) ImGui::SameLine();
     const bool pressed = ImGui::Button("Use This Path", ui::kBtnSecondary());
     if (entered || pressed) {
         if (g_pathInput[0] == '\0') {
@@ -111,7 +112,6 @@ void drawAcquisition(LauncherState &s) {
         } else {
             g_note.clear();
             RomPanel_setRom(s, g_pathInput);
-            if (s.romInfo.valid) g_changing = false;
         }
     }
 
@@ -125,17 +125,42 @@ void drawAcquisition(LauncherState &s) {
 
 void RomPanel_setRom(LauncherState &s, const char *path) {
     if (path == nullptr || path[0] == '\0') return;
-    std::snprintf(s.romPath, sizeof(s.romPath), "%s", path);
-    s.romInfo = mdkr_validate_rom(s.romPath);
-    std::snprintf(g_pathInput, sizeof(g_pathInput), "%s", s.romPath);
-    // Remember only a ROM this build will actually boot. Persisting a refused
-    // revision would reproduce the refusal on every launch with no way out
-    // except editing the ini by hand. The prefs file belongs to the app, so
-    // reading it back next launch needs no permission from anyone.
-    if (s.romInfo.valid) {
-        AppConfig::set("rom_path", s.romPath);
-        AppConfig::save();
+    char candidatePath[sizeof(s.romPath)];
+    std::snprintf(candidatePath, sizeof(candidatePath), "%s", path);
+    const RomInfo candidateInfo = mdkr_validate_rom(candidatePath);
+    std::snprintf(g_pathInput, sizeof(g_pathInput), "%s", candidatePath);
+
+    if (!candidateInfo.valid) {
+        std::snprintf(s.romCandidatePath, sizeof(s.romCandidatePath), "%s",
+                      candidatePath);
+        s.romCandidateInfo = candidateInfo;
+        s.romCandidateError[0] = '\0';
+        s.romCandidateVisible = true;
+        if (s.romInfo.valid) g_changing = true;
+        return;
     }
+
+    // A candidate becomes active only after its preference transaction lands.
+    // Failed storage therefore cannot strand the user without their working ROM.
+    if (!AppConfig::setAndSave("rom_path", candidatePath)) {
+        std::snprintf(s.romCandidatePath, sizeof(s.romCandidatePath), "%s",
+                      candidatePath);
+        s.romCandidateInfo = candidateInfo;
+        std::snprintf(s.romCandidateError, sizeof(s.romCandidateError),
+                      "This ROM is valid, but the preference file could not be "
+                      "saved. Your current ROM was kept.");
+        s.romCandidateVisible = true;
+        if (s.romInfo.valid) g_changing = true;
+        return;
+    }
+
+    std::snprintf(s.romPath, sizeof(s.romPath), "%s", candidatePath);
+    s.romInfo = candidateInfo;
+    s.romCandidatePath[0] = '\0';
+    s.romCandidateInfo = RomInfo{};
+    s.romCandidateError[0] = '\0';
+    s.romCandidateVisible = false;
+    g_changing = false;
 }
 
 void RomPanel_ensureInit(LauncherState &s) {
@@ -169,7 +194,7 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
     // recognised is the most prominent thing on the card, not a footnote.
     if (haveRom) {
         const ImVec4 border = ready ? AppTheme::good() : AppTheme::bad();
-        if (ui::CardBegin("##romcard", border, 150.0f * AppTheme::uiScale())) {
+        if (ui::CardBegin("##romcard", border, 0.0f)) {
             ImGui::PushStyleColor(ImGuiCol_Text, border);
             ImGui::PushFont(AppTheme::fonts().title);
             if (ready && s.romInfo.revision[0]) {
@@ -207,12 +232,39 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
         ui::Gap(ui::kGapM);
     }
 
+    if (s.romCandidateVisible) {
+        const char *message = s.romCandidateError[0]
+            ? s.romCandidateError : s.romCandidateInfo.message;
+        if (ui::CardBegin("##romcandidate", AppTheme::bad(), 0.0f)) {
+            ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+            ImGui::TextUnformatted(s.romCandidateInfo.valid
+                                       ? "Replacement was not saved"
+                                       : "Replacement ROM cannot be used");
+            ImGui::PopStyleColor();
+            ImGui::TextWrapped("%s", message);
+            ui::TextSubtleWrapped("%s", s.romCandidatePath);
+        }
+        ui::CardEnd();
+        ui::Gap(ui::kGapM);
+    }
+
     // ---- Play, and the way back to changing your mind ---------------------
     if (ready) {
         PlayButton_draw(s, out);
-        ImGui::SameLine();
+        if (ImGui::GetContentRegionAvail().x > ui::kBtnSecondary().x +
+                                               ImGui::GetStyle().ItemSpacing.x) {
+            ImGui::SameLine();
+        }
         if (ImGui::Button(g_changing ? "Cancel" : "Change ROM...", ui::kBtnSecondary())) {
-            g_changing = !g_changing;
+            if (g_changing) {
+                g_changing = false;
+                s.romCandidateVisible = false;
+                s.romCandidatePath[0] = '\0';
+                s.romCandidateError[0] = '\0';
+                std::snprintf(g_pathInput, sizeof(g_pathInput), "%s", s.romPath);
+            } else {
+                g_changing = true;
+            }
             g_note.clear();
         }
         ui::Gap(ui::kGapL);

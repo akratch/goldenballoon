@@ -14,6 +14,7 @@
 
 #ifdef NATIVE_PORT
 #include "display_config.h"
+#include "fast3d/gfx_presentation_packet.h"
 #include "fast3d/gfx_shadow_frame.h"
 #include "presentation_snapshot.h"
 #include "thread3_main.h"
@@ -229,16 +230,71 @@ MtxF gCurrentMVPMatrixF;
  */
 static s32 sShadowRegisterViewport = 0;
 static s32 sShadowRegisterGameplayVp = 0;
+/* Owner recipe parallel to the game's model stack. It contains copied POD
+ * only; the address is an identity token paired with a spawn generation and
+ * is never dereferenced by the replay. */
+static GfxPresentationMatrixOwner
+    sPresentationOwnerStack[CAMERA_MODEL_STACK_SIZE + 1];
+
+static bool mdkr_presentation_owner_root(
+    GfxPresentationMatrixOwner *out, const ObjectTransform *transform,
+    f32 scaleY, f32 offsetY, const MtxF *parentWorld) {
+    uint64_t generation = 0;
+
+    if (out == NULL) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    if (transform == NULL || parentWorld == NULL ||
+        !presentation_snapshot_identity_generation(transform, &generation)) {
+        return false;
+    }
+    out->address = transform;
+    out->generation = generation;
+    out->matrix_class = GFX_PRESENTATION_MATRIX_ROOT;
+    out->source_position[0] = transform->x_position;
+    out->source_position[1] = transform->y_position;
+    out->source_position[2] = transform->z_position;
+    out->source_scale = transform->scale;
+    out->source_rotation[0] = transform->rotation.y_rotation;
+    out->source_rotation[1] = transform->rotation.x_rotation;
+    out->source_rotation[2] = transform->rotation.z_rotation;
+    out->scale_y = scaleY;
+    out->offset_y = offsetY;
+    memcpy(out->parent_world, parentWorld, sizeof(out->parent_world));
+    out->valid = true;
+    return true;
+}
+
+static bool mdkr_presentation_owner_child(
+    GfxPresentationMatrixOwner *out,
+    const GfxPresentationMatrixOwner *root,
+    const MtxF *childLocal) {
+    if (out == NULL) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    if (root == NULL || !root->valid || childLocal == NULL) {
+        return false;
+    }
+    *out = *root;
+    out->matrix_class = GFX_PRESENTATION_MATRIX_CHILD;
+    memcpy(out->child_local, childLocal, sizeof(out->child_local));
+    out->valid = true;
+    return true;
+}
 
 static void mdkr_shadow_register_matrix(
     Mtx *key,
     const MtxF *world,
     GfxShadowMobility mobility,
-    s32 site) {
+    s32 site,
+    const GfxPresentationMatrixOwner *owner) {
     if (key != NULL && world != NULL) {
         gfx_shadow_matrix_set_context(
             (int)sShadowRegisterViewport, sShadowRegisterGameplayVp != 0);
         gfx_shadow_matrix_set_site((int)site);
+        gfx_shadow_matrix_set_presentation_owner(owner);
         (void)gfx_shadow_matrix_register(
             key, *world, gViewProjMatrixF, mobility);
     }
@@ -272,6 +328,278 @@ void mdkr_camera_replay_mvp(
     memcpy(viewProjectionF, viewProjection, sizeof(viewProjectionF));
     mtxf_mul(&worldF, &viewProjectionF, &mvp);
     mtxf_to_mtx(&mvp, (Mtx *)outMtx);
+}
+
+/*
+ * Rebuild an object-owned world matrix from immutable presentation state.
+ * The address is used only with the generation-keyed snapshot index; no live
+ * Object is dereferenced and no authoritative memory is written.
+ *
+ * mtx_cam_push can observe temporary render-only adjustments (racer tumble,
+ * bob and model scale) which have been restored by snapshot time. Carry the
+ * exact residual from the registered transform onto the interpolated pose.
+ *
+ * The retained display list was authored from the PREVIOUS snapshot: DKR
+ * submits one list while it builds the next. The residual must therefore be
+ * measured against alpha zero, not the newer snapshot. Measuring it against
+ * alpha one extrapolates every moving object backward at alpha zero instead of
+ * reproducing the retained list's authored endpoint.
+ */
+bool mdkr_camera_replay_object_world(
+    const GfxPresentationMatrixOwner *owner, u64 numerator, u64 denominator,
+    f32 outWorld[4][4]) {
+    PresentationObjectPose authored;
+    PresentationObjectPose target;
+    ObjectTransform transform;
+    MtxF rootLocal;
+    MtxF rootWorld;
+
+    if (owner == NULL || !owner->valid || outWorld == NULL ||
+        (owner->matrix_class != GFX_PRESENTATION_MATRIX_ROOT &&
+         owner->matrix_class != GFX_PRESENTATION_MATRIX_CHILD)) {
+        return false;
+    }
+    if (!presentation_snapshot_resolve_object_generation(
+            owner->address, owner->generation, 0u, denominator,
+            &authored) ||
+        !presentation_snapshot_resolve_object_generation(
+            owner->address, owner->generation, numerator, denominator,
+            &target) ||
+        !target.interpolated) {
+        return false;
+    }
+
+    memset(&transform, 0, sizeof(transform));
+    transform.x_position =
+        target.position[0] +
+        (owner->source_position[0] - authored.position[0]);
+    transform.y_position =
+        target.position[1] +
+        (owner->source_position[1] - authored.position[1]);
+    transform.z_position =
+        target.position[2] +
+        (owner->source_position[2] - authored.position[2]);
+    transform.rotation.y_rotation = (s16)(
+        target.rotation_y +
+        (s16)(owner->source_rotation[0] - authored.rotation_y));
+    transform.rotation.x_rotation = (s16)(
+        target.rotation_x +
+        (s16)(owner->source_rotation[1] - authored.rotation_x));
+    transform.rotation.z_rotation = (s16)(
+        target.rotation_z +
+        (s16)(owner->source_rotation[2] - authored.rotation_z));
+    if (authored.scale != 0.0f) {
+        transform.scale =
+            target.scale * (owner->source_scale / authored.scale);
+    } else {
+        transform.scale = target.scale +
+                          (owner->source_scale - authored.scale);
+    }
+
+    mtxf_from_transform(&rootLocal, &transform);
+    if (owner->offset_y != 0.0f) {
+        mtxf_translate_y(&rootLocal, owner->offset_y);
+    }
+    if (owner->scale_y != 1.0f) {
+        mtxf_scale_y(&rootLocal, owner->scale_y);
+    }
+    mtxf_mul(&rootLocal, (MtxF *)&owner->parent_world, &rootWorld);
+    if (owner->matrix_class == GFX_PRESENTATION_MATRIX_CHILD) {
+        mtxf_mul((MtxF *)&owner->child_local, &rootWorld,
+                 (MtxF *)outWorld);
+    } else {
+        memcpy(outWorld, rootWorld, sizeof(rootWorld));
+    }
+    return true;
+}
+
+static bool mdkr_camera_replay_object_transform(
+    const GfxPresentationMatrixOwner *owner, u64 numerator, u64 denominator,
+    ObjectTransform *out) {
+    PresentationObjectPose authored;
+    PresentationObjectPose target;
+
+    if (owner == NULL || !owner->valid || out == NULL ||
+        !presentation_snapshot_resolve_object_generation(
+            owner->address, owner->generation, 0u, denominator,
+            &authored) ||
+        !presentation_snapshot_resolve_object_generation(
+            owner->address, owner->generation, numerator, denominator,
+            &target) ||
+        !target.interpolated) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    out->x_position =
+        target.position[0] +
+        (owner->source_position[0] - authored.position[0]);
+    out->y_position =
+        target.position[1] +
+        (owner->source_position[1] - authored.position[1]);
+    out->z_position =
+        target.position[2] +
+        (owner->source_position[2] - authored.position[2]);
+    out->rotation.y_rotation = (s16)(
+        target.rotation_y +
+        (s16)(owner->source_rotation[0] - authored.rotation_y));
+    out->rotation.x_rotation = (s16)(
+        target.rotation_x +
+        (s16)(owner->source_rotation[1] - authored.rotation_x));
+    out->rotation.z_rotation = (s16)(
+        target.rotation_z +
+        (s16)(owner->source_rotation[2] - authored.rotation_z));
+    if (authored.scale != 0.0f) {
+        out->scale = target.scale * (owner->source_scale / authored.scale);
+    } else {
+        out->scale = target.scale + (owner->source_scale - authored.scale);
+    }
+    return true;
+}
+
+/* Rebuild the authored shield/magnet matrix from semantic parameters. This
+ * mirrors mtx_shear_push's expression order instead of lerping matrix cells:
+ * the local recipe remains a rotation/scale/shear and the current endpoint is
+ * still verified against the display-list matrix before replay trusts it. */
+static void mdkr_camera_effect_world_from_transforms(
+    const ObjectTransform *effect, const ObjectTransform *base, f32 shear,
+    f32 out[4][4]) {
+    const f32 cxe = coss_f(effect->rotation.x_rotation);
+    const f32 sxe = sins_f(effect->rotation.x_rotation);
+    const f32 cye = coss_f(effect->rotation.y_rotation);
+    const f32 sye = sins_f(effect->rotation.y_rotation);
+    const f32 czb = coss_f(base->rotation.z_rotation);
+    const f32 szb = sins_f(base->rotation.z_rotation);
+    const f32 cxb = coss_f(base->rotation.x_rotation);
+    const f32 sxb = sins_f(base->rotation.x_rotation);
+    const f32 cyb = coss_f(base->rotation.y_rotation);
+    const f32 syb = sins_f(base->rotation.y_rotation);
+    const f32 scale = effect->scale;
+
+    out[0][0] = ((((czb * cyb) + (szb * (sxb * syb))) * cye) +
+                 (-sye * (cxb * syb))) * scale;
+    out[0][1] = (((szb * cxb) * cye) + (-sye * -sxb)) * scale;
+    out[0][2] = ((((-syb * czb) + (szb * (sxb * cyb))) * cye) +
+                 (-sye * (cxb * cyb))) * scale;
+    out[0][3] = 0.0f;
+    out[1][0] = ((((-szb * cyb) + (czb * (sxb * syb))) * cxe) +
+                 (sxe * ((sye * ((czb * cyb) + (szb * (sxb * syb)))) +
+                         (cye * (cxb * syb))))) * shear;
+    out[1][1] = (((czb * cxb) * cxe) +
+                 (sxe * ((sye * (szb * cxb)) + (cye * -sxb)))) *
+                shear;
+    out[1][2] = ((((-szb * -syb) + (czb * (sxb * cyb))) * cxe) +
+                 (sxe * ((sye * ((-syb * czb) + (szb * (sxb * cyb)))) +
+                         (cye * (cxb * cyb))))) * shear;
+    out[1][3] = 0.0f;
+    out[2][0] = ((-sxe * ((-szb * cyb) + (czb * (sxb * syb)))) +
+                 (cxe * ((sye * ((czb * cyb) + (szb * (sxb * syb)))) +
+                         (cye * (cxb * syb))))) * scale;
+    out[2][1] = ((-sxe * (czb * cxb)) +
+                 (cxe * ((sye * (szb * cxb)) + (cye * -sxb)))) * scale;
+    out[2][2] = ((-sxe * ((-szb * -syb) + (czb * (sxb * cyb)))) +
+                 (cxe * ((sye * ((-syb * czb) + (szb * (sxb * cyb)))) +
+                         (cye * (cxb * cyb))))) * scale;
+    out[2][3] = 0.0f;
+    out[3][0] = (((czb * cyb) + (szb * (sxb * syb))) *
+                     effect->x_position) +
+                (effect->y_position *
+                 ((-szb * cyb) + (czb * (sxb * syb)))) +
+                (effect->z_position * (cxb * syb)) + base->x_position;
+    out[3][1] = ((szb * cxb) * effect->x_position) +
+                (effect->y_position * (czb * cxb)) +
+                (effect->z_position * -sxb) + base->y_position;
+    out[3][2] = (((-syb * czb) + (szb * (sxb * cyb))) *
+                     effect->x_position) +
+                (effect->y_position *
+                 ((-szb * -syb) + (czb * (sxb * cyb)))) +
+                (effect->z_position * (cxb * cyb)) + base->z_position;
+    out[3][3] = 1.0f;
+}
+
+bool mdkr_camera_replay_effect_world(
+    const GfxPresentationMatrixOwner *previous,
+    const GfxPresentationMatrixOwner *current, u64 numerator,
+    u64 denominator, f32 outWorld[4][4]) {
+    ObjectTransform base;
+    ObjectTransform effect;
+    f32 shear;
+
+    if (previous == NULL || current == NULL || outWorld == NULL ||
+        previous->matrix_class != GFX_PRESENTATION_MATRIX_EFFECT ||
+        current->matrix_class != GFX_PRESENTATION_MATRIX_EFFECT ||
+        previous->address != current->address ||
+        previous->generation != current->generation ||
+        previous->secondary_address == NULL ||
+        previous->secondary_address != current->secondary_address ||
+        previous->secondary_generation == 0u ||
+        previous->secondary_generation != current->secondary_generation ||
+        !mdkr_camera_replay_object_transform(
+            current, numerator, denominator, &base)) {
+        return false;
+    }
+    memset(&effect, 0, sizeof(effect));
+    presentation_lerp3(previous->effect_position, current->effect_position,
+                       numerator, denominator, effect.position.f);
+    effect.scale = presentation_lerp1(
+        previous->effect_scale, current->effect_scale,
+        numerator, denominator);
+    effect.rotation.y_rotation = presentation_lerp_angle(
+        previous->effect_rotation[0], current->effect_rotation[0],
+        numerator, denominator);
+    effect.rotation.x_rotation = presentation_lerp_angle(
+        previous->effect_rotation[1], current->effect_rotation[1],
+        numerator, denominator);
+    effect.rotation.z_rotation = presentation_lerp_angle(
+        previous->effect_rotation[2], current->effect_rotation[2],
+        numerator, denominator);
+    shear = presentation_lerp1(
+        previous->effect_shear, current->effect_shear,
+        numerator, denominator);
+    mdkr_camera_effect_world_from_transforms(
+        &effect, &base, shear, outWorld);
+    return true;
+}
+
+bool mdkr_camera_replay_billboard_anchor(
+    const GfxPresentationMatrixOwner *owner, u64 numerator, u64 denominator,
+    f32 outPosition[3]) {
+    ObjectTransform transform;
+
+    if (outPosition == NULL ||
+        !mdkr_camera_replay_object_transform(
+            owner, numerator, denominator, &transform)) {
+        return false;
+    }
+    outPosition[0] = transform.x_position;
+    outPosition[1] = transform.y_position;
+    outPosition[2] = transform.z_position;
+    return true;
+}
+
+bool mdkr_camera_replay_billboard_matrix(
+    const GfxPresentationMatrixOwner *owner, s32 viewport, u64 numerator,
+    u64 denominator, void *outMtx) {
+    ObjectTransform transform;
+    PresentationCameraPose camera;
+    MtxF billboard;
+    s16 tilt;
+    MdkrBillboardCorrection correction;
+
+    if (outMtx == NULL || viewport < 0 ||
+        !mdkr_camera_replay_object_transform(
+            owner, numerator, denominator, &transform) ||
+        !presentation_snapshot_resolve_camera(
+            viewport, numerator, denominator, &camera)) {
+        return false;
+    }
+    tilt = (s16)(camera.rotation_z + transform.rotation.z_rotation);
+    mtxf_billboard(&billboard, tilt, transform.scale, gVideoAspectRatio);
+    correction = mdkr_display_calculate_billboard_correction(
+        camera.fov, camera.vertical_fov, gVideoAspectRatio, camera.aspect,
+        mdkr_display_widescreen_enabled());
+    mdkr_display_apply_billboard_correction(billboard, correction);
+    mtxf_to_mtx(&billboard, (Mtx *)outMtx);
+    return true;
 }
 
 
@@ -894,6 +1222,15 @@ void viewport_main(Gfx **dlist, Mtx **mats) {
         gActiveCameraID = 1;
         savedCameraID = 0;
     }
+#ifdef NATIVE_PORT
+    /* Latch the camera this viewport actually authors while every selection
+     * input is still live. The tick-boundary snapshot runs after render may
+     * have cleared gCutsceneCameraActive, so reconstructing this later can
+     * silently substitute gameplay bank 0..3 for cutscene bank 4..7. */
+    (void)presentation_snapshot_authored_camera_record(
+        savedCameraID,
+        gActiveCameraID + (gCutsceneCameraActive ? 4 : 0));
+#endif
     widthAndHeight = fb_size();
     videoHeight = GET_VIDEO_HEIGHT(widthAndHeight);
     videoWidth = GET_VIDEO_WIDTH(widthAndHeight);
@@ -1325,28 +1662,62 @@ void mtx_ortho_fullscreen(Gfx **dList, Mtx **mtx) {
  * the inputs come from the presentation snapshot pair and every intermediate
  * is a local; the only output is the caller's array.
  *
- * The arithmetic is the same math_util path the authoritative build uses, so a
- * present at alpha 0 would reproduce the authoritative matrix. It is never
- * asked to: alpha 0 is the tick's own present, which draws the display list's
- * own matrices untouched.
+ * The arithmetic is the same math_util path the authoritative build uses. The
+ * alpha-zero replay observer compares this result byte-for-byte with the view-
+ * projection captured when the retained task was authored, and carries the
+ * alpha-one target forward to prove it becomes the next task's endpoint.
  */
+static void mdkr_camera_pose_view_projection(
+    const PresentationCameraPose *pose, f32 out[4][4]) {
+    ObjectTransform transform;
+    MtxF view;
+    MtxF perspective;
+    u16 norm;
+
+    guPerspectiveF(perspective, &norm, pose->vertical_fov, pose->aspect,
+                   pose->near_plane, pose->far_plane, CAMERA_SCALE);
+
+    memset(&transform, 0, sizeof(transform));
+    transform.scale = 1.0f;
+    transform.rotation.y_rotation = 0x8000 + pose->rotation_y;
+    transform.rotation.x_rotation = pose->rotation_x + pose->pitch;
+    transform.rotation.z_rotation = pose->rotation_z;
+    transform.x_position = -pose->position[0];
+    transform.y_position = -pose->position[1];
+    if (pose->apply_shake) {
+        transform.y_position -= pose->shake_magnitude;
+    }
+    transform.z_position = -pose->position[2];
+
+    mtxf_from_inverse_transform(&view, &transform);
+    mtxf_mul(&view, &perspective, (MtxF *)out);
+}
+
 size_t mdkr_camera_interpolated_view_projections(
     u64 numerator, u64 denominator,
     GfxShadowReplayViewProjection *out, size_t capacity) {
+    const PresentationSnapshot *current = presentation_snapshot_current();
+    const PresentationSnapshot *previous = presentation_snapshot_previous();
     size_t produced = 0;
     size_t viewport;
 
-    if (out == NULL) {
+    if (out == NULL || current == NULL || previous == NULL ||
+        !current->valid || !previous->valid ||
+        current->stage_generation != previous->stage_generation ||
+        previous->authored_tick == UINT64_MAX ||
+        current->authored_tick != previous->authored_tick + 1u) {
         return 0;
     }
     for (viewport = 0; viewport < capacity; viewport++) {
         PresentationCameraPose pose;
-        ObjectTransform transform;
-        MtxF view;
-        MtxF perspective;
-        u16 norm;
+        PresentationCameraPose next;
 
-        out[viewport].valid = FALSE;
+        memset(&out[viewport], 0, sizeof(out[viewport]));
+        out[viewport].camera_id = -1;
+        out[viewport].authored_tick = previous->authored_tick;
+        out[viewport].next_authored_tick = current->authored_tick;
+        out[viewport].numerator = numerator;
+        out[viewport].denominator = denominator;
         if (!presentation_snapshot_resolve_camera(
                 (int) viewport, numerator, denominator, &pose)) {
             continue;
@@ -1358,24 +1729,17 @@ size_t mdkr_camera_interpolated_view_projections(
             continue;
         }
 
-        guPerspectiveF(perspective, &norm, pose.vertical_fov, pose.aspect,
-                       pose.near_plane, pose.far_plane, CAMERA_SCALE);
-
-        memset(&transform, 0, sizeof(transform));
-        transform.scale = 1.0f;
-        transform.rotation.y_rotation = 0x8000 + pose.rotation_y;
-        transform.rotation.x_rotation = pose.rotation_x + pose.pitch;
-        transform.rotation.z_rotation = pose.rotation_z;
-        transform.x_position = -pose.position[0];
-        transform.y_position = -pose.position[1];
-        if (pose.apply_shake) {
-            transform.y_position -= pose.shake_magnitude;
-        }
-        transform.z_position = -pose.position[2];
-
-        mtxf_from_inverse_transform(&view, &transform);
-        mtxf_mul(&view, &perspective, (MtxF *) out[viewport].view_projection);
+        mdkr_camera_pose_view_projection(
+            &pose, out[viewport].view_projection);
         out[viewport].valid = TRUE;
+        out[viewport].camera_id = pose.camera_id;
+        if (presentation_snapshot_resolve_camera(
+                (int)viewport, denominator, denominator, &next) &&
+            next.interpolated && next.camera_id == pose.camera_id) {
+            mdkr_camera_pose_view_projection(
+                &next, out[viewport].next_view_projection);
+            out[viewport].next_valid = TRUE;
+        }
         produced = viewport + 1;
     }
     return produced;
@@ -1400,7 +1764,7 @@ void mtx_perspective(Gfx **dList, Mtx **mtx) {
 #ifdef NATIVE_PORT
     mdkr_shadow_register_matrix(
         *mtx, gModelMatrixF[0], GFX_SHADOW_MOBILITY_STATIC,
-        GFX_SHADOW_SITE_PERSPECTIVE);
+        GFX_SHADOW_SITE_PERSPECTIVE, NULL);
     gSPMatrixDKRTagged((*dList)++, OS_K0_TO_PHYSICAL((*mtx)++), G_MTX_DKR_INDEX_0,
                        G_MTX_DKR_SPACE_WORLD);
 #else
@@ -1471,7 +1835,7 @@ void mtx_world_origin(Gfx **dList, Mtx **mtx) {
 #ifdef NATIVE_PORT
     mdkr_shadow_register_matrix(
         *mtx, gModelMatrixF[gModelMatrixStackPos],
-        GFX_SHADOW_MOBILITY_STATIC, GFX_SHADOW_SITE_WORLD_ORIGIN);
+        GFX_SHADOW_MOBILITY_STATIC, GFX_SHADOW_SITE_WORLD_ORIGIN, NULL);
     gSPMatrixDKRTagged((*dList)++, OS_K0_TO_PHYSICAL((*mtx)++), gMtxOriginID,
                        G_MTX_DKR_SPACE_WORLD);
 #else
@@ -1522,6 +1886,11 @@ s32 render_sprite_billboard(Gfx **dList, Mtx **mtx, Vertex **vtx, Object *obj, S
     s32 tiltAngle;
     s32 result;
     s32 frameID;
+#ifdef NATIVE_PORT
+    GfxPresentationMatrixOwner billboardOwner;
+    bool billboardOwnerValid = false;
+    MtxF vehiclePartLocal;
+#endif
 
 #ifdef NATIVE_PORT
     if (transform == NULL) {
@@ -1547,6 +1916,16 @@ s32 render_sprite_billboard(Gfx **dList, Mtx **mtx, Vertex **vtx, Object *obj, S
                 (int) flags);
         fflush(stderr);
         abort();
+    }
+    if (transform != NULL) {
+        MtxF identity;
+        mtxf_from_translation(&identity, 0.0f, 0.0f, 0.0f);
+        billboardOwnerValid = mdkr_presentation_owner_root(
+            &billboardOwner, transform, 1.0f, 0.0f, &identity);
+        if (billboardOwnerValid) {
+            billboardOwner.matrix_class =
+                GFX_PRESENTATION_MATRIX_BILLBOARD;
+        }
     }
 #endif
 
@@ -1610,6 +1989,16 @@ s32 render_sprite_billboard(Gfx **dList, Mtx **mtx, Vertex **vtx, Object *obj, S
         gCameraTransform.y_position = MDKR_BILLBOARD_TRANSFORM->y_position;
         gCameraTransform.z_position = MDKR_BILLBOARD_TRANSFORM->z_position;
         mtxf_from_transform(&gCurrentModelMatrixF, &gCameraTransform);
+#ifdef NATIVE_PORT
+        /* Preserve the actual child-local recipe before gCurrentModelMatrixF
+         * is reused below as the final child-world x view-projection matrix.
+         * Passing that final MVP as child_local makes presentation replay
+         * multiply an already projected matrix by the interpolated racer root;
+         * vehicle-part sprites (most visibly the kart wheels) then land outside
+         * the viewport on every intermediate present. */
+        memcpy(vehiclePartLocal, gCurrentModelMatrixF,
+               sizeof(vehiclePartLocal));
+#endif
         gModelMatrixStackPos++;
         mtxf_mul(&gCurrentModelMatrixF, gModelMatrixF[gModelMatrixStackPos - 1], gModelMatrixF[gModelMatrixStackPos]);
         mtxf_mul(gModelMatrixF[gModelMatrixStackPos], &gViewProjMatrixF, &gCurrentModelMatrixF);
@@ -1637,9 +2026,20 @@ s32 render_sprite_billboard(Gfx **dList, Mtx **mtx, Vertex **vtx, Object *obj, S
          * them and they are deliberately left unregistered for the guard to
          * refuse.
          */
-        mdkr_shadow_register_matrix(
-            *mtx, gModelMatrixF[gModelMatrixStackPos],
-            GFX_SHADOW_MOBILITY_DYNAMIC, GFX_SHADOW_SITE_SPRITE_PART);
+        {
+            GfxPresentationMatrixOwner childOwner;
+            const GfxPresentationMatrixOwner *owner = NULL;
+            if (mdkr_presentation_owner_child(
+                    &childOwner,
+                    &sPresentationOwnerStack[gModelMatrixStackPos - 1],
+                    &vehiclePartLocal)) {
+                owner = &childOwner;
+            }
+            mdkr_shadow_register_matrix(
+                *mtx, gModelMatrixF[gModelMatrixStackPos],
+                GFX_SHADOW_MOBILITY_DYNAMIC,
+                GFX_SHADOW_SITE_SPRITE_PART, owner);
+        }
 #endif
         gSPMatrixDKR((*dList)++, OS_K0_TO_PHYSICAL((*mtx)++), G_MTX_DKR_INDEX_2);
         // Push an empty vertex because sprite vertices are hardcoded to start from index 1,
@@ -1657,6 +2057,17 @@ s32 render_sprite_billboard(Gfx **dList, Mtx **mtx, Vertex **vtx, Object *obj, S
         v->g = 255;
         v->b = 255;
         v->a = 255;
+#ifdef NATIVE_PORT
+        /* With a parent object matrix in force this anchor is local to that
+         * already-interpolated root, so moving it again would double-apply
+         * owner motion. Stack zero is the world-space object/particle case. */
+        if (billboardOwnerValid &&
+            !sPresentationOwnerStack[gModelMatrixStackPos].valid) {
+            (void)gfx_presentation_packet_register_vertex(
+                v, sizeof(*v), (int)sShadowRegisterViewport,
+                &billboardOwner);
+        }
+#endif
         gSPVertexDKR((*dList)++, OS_K0_TO_PHYSICAL(*vtx), 1, 0);
         (*vtx)++;
 
@@ -1698,6 +2109,13 @@ s32 render_sprite_billboard(Gfx **dList, Mtx **mtx, Vertex **vtx, Object *obj, S
 #endif
         mtxf_to_mtx(gModelMatrixF[gModelMatrixStackPos], *mtx);
         gModelMatrix[gModelMatrixStackPos] = *mtx;
+#ifdef NATIVE_PORT
+        if (billboardOwnerValid) {
+            (void)gfx_presentation_packet_register_matrix(
+                *mtx, sizeof(**mtx), (int)sShadowRegisterViewport,
+                &billboardOwner);
+        }
+#endif
         gSPMatrixDKR((*dList)++, OS_K0_TO_PHYSICAL((*mtx)++), G_MTX_DKR_INDEX_2);
         // Enable billboard mode; subsequent vertices will be rendered relative to the anchor point
         gDkrEnableBillboard((*dList)++);
@@ -1964,9 +2382,37 @@ void mtx_shear_push(Gfx **dList, Mtx **mtx, Object *obj, Object *objBase, f32 sh
     mtxf_mul(&matrix_mult, &gViewProjMatrixF, &gCurrentMVPMatrixF);
     mtxf_to_mtx(&gCurrentMVPMatrixF, *mtx);
 #ifdef NATIVE_PORT
-    mdkr_shadow_register_matrix(
-        *mtx, &matrix_mult, GFX_SHADOW_MOBILITY_DYNAMIC,
-        GFX_SHADOW_SITE_SHEAR_PUSH);
+    {
+        MtxF identity;
+        GfxPresentationMatrixOwner effectOwner;
+        const GfxPresentationMatrixOwner *owner = NULL;
+        uint64_t effectGeneration = 0u;
+        mtxf_from_translation(&identity, 0.0f, 0.0f, 0.0f);
+        if (obj != NULL && objBase != NULL &&
+            presentation_snapshot_identity_ensure_generation(
+                obj, &effectGeneration) &&
+            mdkr_presentation_owner_root(
+                &effectOwner, &objBase->trans, 1.0f, 0.0f, &identity)) {
+            effectOwner.matrix_class = GFX_PRESENTATION_MATRIX_EFFECT;
+            effectOwner.secondary_address = obj;
+            effectOwner.secondary_generation = effectGeneration;
+            effectOwner.effect_position[0] = obj->trans.x_position;
+            effectOwner.effect_position[1] = obj->trans.y_position;
+            effectOwner.effect_position[2] = obj->trans.z_position;
+            effectOwner.effect_scale = obj->trans.scale;
+            effectOwner.effect_rotation[0] =
+                obj->trans.rotation.y_rotation;
+            effectOwner.effect_rotation[1] =
+                obj->trans.rotation.x_rotation;
+            effectOwner.effect_rotation[2] =
+                obj->trans.rotation.z_rotation;
+            effectOwner.effect_shear = shear;
+            owner = &effectOwner;
+        }
+        mdkr_shadow_register_matrix(
+            *mtx, &matrix_mult, GFX_SHADOW_MOBILITY_DYNAMIC,
+            GFX_SHADOW_SITE_SHEAR_PUSH, owner);
+    }
 #endif
     gSPMatrixDKR((*dList)++, OS_K0_TO_PHYSICAL((*mtx)++), G_MTX_DKR_INDEX_1);
 }
@@ -1983,6 +2429,10 @@ s32 mtx_cam_push(Gfx **dList, Mtx **mtx, ObjectTransform *trans, f32 scaleY, f32
     f32 camRelX, camRelY, camRelZ;
     s32 index;
     f32 scaleFactor;
+#ifdef NATIVE_PORT
+    GfxPresentationMatrixOwner rootOwner;
+    const GfxPresentationMatrixOwner *owner = NULL;
+#endif
 
     // Generate model transformation matrix from input transform
     mtxf_from_transform(&gCurrentModelMatrixF, trans);
@@ -2006,12 +2456,25 @@ s32 mtx_cam_push(Gfx **dList, Mtx **mtx, ObjectTransform *trans, f32 scaleY, f32
     // Convert the MVP matrix to fixed-point format and upload to RSP
     mtxf_to_mtx(&gCurrentMVPMatrixF, *mtx);
 #ifdef NATIVE_PORT
+    if (mdkr_presentation_owner_root(
+            &rootOwner, trans, scaleY, offsetY,
+            gModelMatrixF[gModelMatrixStackPos])) {
+        owner = &rootOwner;
+    }
     mdkr_shadow_register_matrix(
         *mtx, gModelMatrixF[gModelMatrixStackPos + 1],
-        GFX_SHADOW_MOBILITY_DYNAMIC, GFX_SHADOW_SITE_CAM_PUSH);
+        GFX_SHADOW_MOBILITY_DYNAMIC, GFX_SHADOW_SITE_CAM_PUSH, owner);
 #endif
     gModelMatrixStackPos++;
     gModelMatrix[gModelMatrixStackPos] = *mtx;
+#ifdef NATIVE_PORT
+    if (owner != NULL) {
+        sPresentationOwnerStack[gModelMatrixStackPos] = *owner;
+    } else {
+        memset(&sPresentationOwnerStack[gModelMatrixStackPos], 0,
+               sizeof(sPresentationOwnerStack[gModelMatrixStackPos]));
+    }
+#endif
 
     if (gModelMatrixStackPos > CAMERA_MODEL_STACK_SIZE) {
         stubbed_printf("cameraPushModelMtx: model stack overflow!!\n");
@@ -2126,8 +2589,7 @@ void mtx_head_push(Gfx **dList, Mtx **mtx, ModelInstance *modInst, s16 headAngle
      * MDKR_PRESENT_RATE=60 found 4,271 head pushes and 0 disagreements.
      *
      * This is recorded because the wrong registered worlds measured on this
-     * path were once attributed to that seam (see
-     * docs/PRESENTATION_ORACLE_BREADTH_2026-07-30.md 6.2, since corrected).
+     * path were once attributed to that seam.
      * They were dead tenants instead -- registry entries whose Mtx address had
      * been rewritten by a later, unregistered push -- and they are fixed in the
      * registry, not here. Mirroring the MVP's world into a shadow global was
@@ -2138,9 +2600,19 @@ void mtx_head_push(Gfx **dList, Mtx **mtx, ModelInstance *modInst, s16 headAngle
         &headMtxF,
         gModelMatrixF[gModelMatrixStackPos],
         &headWorldMtxF);
-    mdkr_shadow_register_matrix(
-        *mtx, &headWorldMtxF, GFX_SHADOW_MOBILITY_DYNAMIC,
-        GFX_SHADOW_SITE_HEAD_PUSH);
+    {
+        GfxPresentationMatrixOwner headOwner;
+        const GfxPresentationMatrixOwner *owner = NULL;
+        if (mdkr_presentation_owner_child(
+                &headOwner,
+                &sPresentationOwnerStack[gModelMatrixStackPos],
+                &headMtxF)) {
+            owner = &headOwner;
+        }
+        mdkr_shadow_register_matrix(
+            *mtx, &headWorldMtxF, GFX_SHADOW_MOBILITY_DYNAMIC,
+            GFX_SHADOW_SITE_HEAD_PUSH, owner);
+    }
 #endif
     gSPMatrixDKR((*dList)++, OS_K0_TO_PHYSICAL((*mtx)++), G_MTX_DKR_INDEX_2);
     gSPSelectMatrixDKR((*dList)++, G_MTX_DKR_INDEX_1);
@@ -2162,6 +2634,13 @@ UNUSED void get_modelmatrix_vector(f32 *x, f32 *y, f32 *z) {
 void mtx_pop(Gfx **dList) {
     s32 temp;
 
+#ifdef NATIVE_PORT
+    if (gModelMatrixStackPos >= 0 &&
+        gModelMatrixStackPos <= CAMERA_MODEL_STACK_SIZE) {
+        memset(&sPresentationOwnerStack[gModelMatrixStackPos], 0,
+               sizeof(sPresentationOwnerStack[gModelMatrixStackPos]));
+    }
+#endif
     gCameraMatrixPos--;
     gModelMatrixStackPos--;
 

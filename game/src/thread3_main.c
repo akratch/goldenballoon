@@ -50,6 +50,8 @@
 #include "platform_os.h"
 #include "waves.h"
 #include "fast3d/gfx_pc_dkr.h"
+#include "present_sched.h"
+#include "gameplay_event_trace.h"
 #include "presentation_snapshot.h"
 #endif
 
@@ -274,8 +276,20 @@ void main_game_loop(void) {
     s32 debugLoopCounter;
     s32 framebufferSize;
     s32 tempLogicUpdateRate, tempLogicUpdateRateMax;
+    s32 logicUpdateRate = sLogicUpdateRate;
+#ifdef NATIVE_PORT
+    s32 elideCatchupRender;
+#endif
 
     osSetTime(0);
+
+#ifdef NATIVE_PORT
+    logicUpdateRate = video_logic_update_rate(sLogicUpdateRate);
+    present_sched_note_game_update((unsigned)sLogicUpdateRate,
+                                   (unsigned)logicUpdateRate);
+    elideCatchupRender = present_sched_should_elide_render();
+    present_sched_set_render_elided(elideCatchupRender != 0);
+#endif
 
     if (gScreenStatus == MESG_SKIP_BUFFER_SWAP) {
         gCurrDisplayList = gDisplayLists[gSPTaskNum];
@@ -288,7 +302,11 @@ void main_game_loop(void) {
                     (s32) ((u32) DKR_TOK(gVideoCurrFramebuffer) -
                            VI_OFFSET)); // Unused
     }
-    if (gDrawFrameTimer == 0) {
+    if (gDrawFrameTimer == 0
+#ifdef NATIVE_PORT
+        && !elideCatchupRender
+#endif
+    ) {
         gfxtask_run_xbus(gDisplayLists[gSPTaskNum], gCurrDisplayList, 0);
         gSPTaskNum += 1;
         gSPTaskNum &= 1;
@@ -301,6 +319,11 @@ void main_game_loop(void) {
     gGameCurrMatrix = gMatrixHeap[gSPTaskNum];
     gGameCurrVertexList = gVertexHeap[gSPTaskNum];
     gGameCurrTriList = gTriangleHeap[gSPTaskNum];
+#ifdef NATIVE_PORT
+    /* Stamp the main list exactly once. Nested rsp_init() calls (notably HUD)
+     * reset RSP state inside this list and must not replace task ownership. */
+    presentation_task_authoring_begin(gCurrDisplayList);
+#endif
 
     rsp_segment(&gCurrDisplayList, SEGMENT_MAIN, 0x00000000);
     rsp_segment(&gCurrDisplayList, SEGMENT_FRAMEBUFFER,
@@ -313,7 +336,7 @@ void main_game_loop(void) {
     rsp_init(&gCurrDisplayList);
     rdp_init(&gCurrDisplayList);
     bgdraw_render(&gCurrDisplayList, &gGameCurrMatrix, TRUE);
-    gSaveDataFlags = input_update(gSaveDataFlags, sLogicUpdateRate);
+    gSaveDataFlags = input_update(gSaveDataFlags, logicUpdateRate);
     if (get_lockup_status()) {
         render_epc_lock_up_display();
         gGameMode = GAMEMODE_LOCKUP;
@@ -333,30 +356,30 @@ void main_game_loop(void) {
             mode_intro();
             break;
         case GAMEMODE_MENU: // In a menu
-            mode_menu(sLogicUpdateRate);
+            mode_menu(logicUpdateRate);
             break;
         case GAMEMODE_INGAME: // In game (Controlling a character)
-            mode_game(sLogicUpdateRate);
+            mode_game(logicUpdateRate);
             break;
         case GAMEMODE_LOCKUP: // EPC (lockup display)
-            mode_lockup(sLogicUpdateRate);
+            mode_lockup(logicUpdateRate);
             break;
     }
 
     // This is a good spot to place custom text if you want it to overlay it over ALL the
     // menus & gameplay.
 
-    sound_update_queue(sLogicUpdateRate);
+    sound_update_queue(logicUpdateRate);
     debug_text_print(&gCurrDisplayList);
     render_dialogue_boxes(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList);
     dialogue_close(4);
     dialogue_clear(4);
     // transition_update will perform the logic of transitions and return the transition ID.
-    if (transition_update(sLogicUpdateRate)) {
+    if (transition_update(logicUpdateRate)) {
         transition_render(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList);
     }
     if (sBootDelayTimer >= 8 && is_controller_missing()) {
-        menu_missing_controller(&gCurrDisplayList, sLogicUpdateRate);
+        menu_missing_controller(&gCurrDisplayList, logicUpdateRate);
     }
 
     gDPFullSync(gCurrDisplayList++);
@@ -364,7 +387,11 @@ void main_game_loop(void) {
 
     copy_viewports_to_stack();
     if (gDrawFrameTimer != 1) {
-        if (gSkipGfxTask == FALSE) {
+        if (gSkipGfxTask == FALSE
+#ifdef NATIVE_PORT
+            && !elideCatchupRender
+#endif
+        ) {
             gScreenStatus = gfxtask_wait();
         }
     } else {
@@ -391,7 +418,15 @@ void main_game_loop(void) {
     // the mul factor is hardcapped at 6, which happens at 10FPS. The mul factor
     // affects frameskipping, to maintain consistent game speed, through the (many)
     // dropped frames in DKR.
+#ifdef NATIVE_PORT
+    gameplay_event_trace_observe_context(gGameMode, level_id());
+#endif
+#ifdef NATIVE_PORT
+    tempLogicUpdateRate = fb_update(
+        elideCatchupRender ? MESG_SKIP_BUFFER_SWAP : gScreenStatus);
+#else
     tempLogicUpdateRate = fb_update(gScreenStatus);
+#endif
     sLogicUpdateRate = tempLogicUpdateRate;
     tempLogicUpdateRateMax = LOGIC_10FPS;
     if (tempLogicUpdateRate > tempLogicUpdateRateMax) {
@@ -421,6 +456,10 @@ void load_next_ingame_level(s32 numPlayers, s32 trackID, Vehicle vehicle) {
  * Used when ingame.
  */
 void load_level_game(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicleId) {
+#ifdef NATIVE_PORT
+    GAMEPLAY_EVENT_TRACE(
+        GAMEPLAY_EVENT_LEVEL, levelId, numberOfPlayers, entranceId, vehicleId);
+#endif
     alloc_displaylist_heap(numberOfPlayers);
     mempool_free_timer(0);
     cam_init();
@@ -441,7 +480,7 @@ void load_level_game(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle v
  *
  * gfx_dkr_replay_walk() holds a BARE POINTER to the last display list a real
  * walk consumed (gfx_pc_dkr.c's dkr_last_walked_dl, plus that walk's entry RDP/
- * RSP/segment-table snapshot) and re-walks it on every interpolated present.
+ * RSP/segment-table snapshot) for explicit internal replay diagnostics.
  * Nothing about that pointer is refcounted; the only thing that clears it is
  * gfx_dkr_replay_invalidate().
  *
@@ -450,9 +489,10 @@ void load_level_game(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle v
  * then loads a MENU with SPECIAL_MAP_ID_NO_LEVEL (:788/:844/:1151/:1190 below),
  * and load_menu_with_level_background skips the level path entirely for that
  * id. The DL heap and the level's geometry are freed underneath a pointer that
- * is still live, and the next present replays freed memory. That is a
- * use-after-free reachable from a plain quit-to-title with the subloop on --
- * not a diagnostic-only path.
+ * is still live, and the next internal replay could read freed memory. That is a
+ * use-after-free in that test mechanism if teardown forgets to retire it.
+ * Production 1.0.1 does not arm delayed replay, but teardown still owns this
+ * invariant so the quarantined mechanism cannot hide a lifecycle defect.
  *
  * So the invalidation belongs at the FREE, not at the load: every teardown that
  * can release what the replay points into calls this. The snapshot store is
@@ -569,6 +609,10 @@ void mode_game(s32 updateRate) {
      * RAW rate, not pause-gated: this group runs while paused today.
      */
     hud_tick(updateRate);
+    /* The three-player TT spectator camera used to advance from render_scene.
+     * It feeds this tick's final sort/LOD/visibility basis, so advance it once
+     * from fixed-tick authority before any of those consumers. */
+    scene_tt_camera_tick(updateRate);
     /* The authoritative half of waves_update, hoisted out of
      * render_scene (tracks.c:410) into the tick. Same guard and same pause gate
      * render_scene applied, evaluated at the same point in the frame -- gIsPaused
@@ -584,6 +628,9 @@ void mode_game(s32 updateRate) {
      * obj_animate_tick, mirroring render's own order (the sort ran before the object
      * draw loop that animates). */
     obj_sort_tick();
+    /* Commit the final viewport's collision-visible racer LOD and the visual
+     * light phase once per fixed tick; render uses local read-only results. */
+    obj_lod_tick();
     /* Racer visibility -- the "was drawn" timer that
      * gates the AI's steering and its RNG -- evaluated from the logical frusta of
      * every viewport rather than from render admission. */
@@ -605,40 +652,29 @@ void mode_game(s32 updateRate) {
      * The presentation accumulators -- colour cycles, pulsating lights, the
      * skydome scroll and the particle texture scroll. Same pause gate.
      *
-     * ORDER: this must precede scene_weather_tick. What the accumulators STORE
-     * has no gameplay reader, but what they CONSUME does: the skydome scroll
-     * calls obj_tex_animate -> tex_animate_texture, whose rand_range
-     * (textures_sprites.c:1891) is a live draw from gCurrentRNGSeed, and
-     * weather_tick's splash spawner and lightning timer draw from the same
-     * stream. render_scene rolls sky (tracks.c:438) BEFORE weather
-     * (tracks.c:496), so the tick must roll them in that order too. (fog_tick
-     * sitting between them is RNG-neutral -- update_fog and rain_fog consume no
-     * seed -- so the sky->weather order is the whole constraint.)
+     * ORDER: preserve render_scene's authored sky-before-object sequence.
+     * Texture/HUD dice keep the authored RNG stream in original cadence and use
+     * the presentation stream in enhanced cadence.
      */
     scene_presentation_tick(is_game_paused() ? 0 : updateRate);
-    /* The weather integrators -- snow drift, the rain intensity
-     * ramp, the splash spawner and its RNG, and the lightning timer that starts
-     * gThunderTransition. Under render's own gate and pause gate. */
-    scene_weather_tick(is_game_paused() ? 0 : updateRate);
+    /* Commit opacity, ordinary-object texture animation, weather and HUD RNG in
+     * the exact object -> weather -> HUD order the canonical draw owned. */
+    scene_authoritative_render_tick(updateRate);
     /* Hash authoritative state around the render traversal, so a render-side
      * mutation of it is detectable (no-op unless MDKR_RENDER_CENSUS=1). */
     {
         extern void mdkr_render_census_pre(void);
         extern void mdkr_render_census_post(void);
         mdkr_render_census_pre();
-        {
-            extern int mdkr_test_pure_render_enabled(void);
-            extern void mdkr_pure_render_begin(void);
-            extern void mdkr_pure_render_end(void);
-            int pure = mdkr_test_pure_render_enabled();
-            if (pure) mdkr_pure_render_begin();
-            render_scene(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList, &gGameCurrTriList, updateRate);
-            if (pure) mdkr_pure_render_end();
-        }
+        render_scene(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList,
+                     &gGameCurrTriList, updateRate);
         mdkr_render_census_post();
     }
 #else
     render_scene(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList, &gGameCurrTriList, updateRate);
+#endif
+#ifdef NATIVE_PORT
+    obj_animation_cadence_tick();
 #endif
     if (gGameMode == GAMEMODE_INGAME) {
         // Ignore the user's L/R/Z buttons.
@@ -1064,6 +1100,12 @@ Vehicle get_level_default_vehicle(void) {
  * Used for menus.
  */
 void load_level_menu(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicleId, s32 cutsceneId) {
+#ifdef NATIVE_PORT
+    GAMEPLAY_EVENT_TRACE(
+        GAMEPLAY_EVENT_LEVEL, levelId, numberOfPlayers, entranceId,
+        (s32)(((u32)(u16)vehicleId << 16) |
+              ((u32)cutsceneId & 0xFFFFu)));
+#endif
     mempool_free_timer(0);
     cam_init();
     load_game_text_table();
@@ -1111,6 +1153,9 @@ void update_menu_scene(s32 updateRate) {
     /* The HUD's authoritative half. Runs FIRST -- see the tick ordering contract
      * on the twin call in mode_game. */
     hud_tick(updateRate);
+    /* Fixed-tick ownership of the three-player TT spectator camera; see the
+     * twin call and tracks.c's scene_tt_camera_tick contract. */
+    scene_tt_camera_tick(updateRate);
     /* Authoritative wave phase, hoisted out of render_scene.
      * See the twin call in mode_game. */
     if (gWaveBlockCount) {
@@ -1123,6 +1168,7 @@ void update_menu_scene(s32 updateRate) {
      * obj_animate_tick, mirroring render's own order (the sort ran before the object
      * draw loop that animates). */
     obj_sort_tick();
+    obj_lod_tick();
     /* Racer visibility -- the "was drawn" timer that
      * gates the AI's steering and its RNG -- evaluated from the logical frusta of
      * every viewport rather than from render admission. */
@@ -1140,32 +1186,26 @@ void update_menu_scene(s32 updateRate) {
      * has to advance once per TICK, not once per draw. Same pause gate
      * render_scene applied. */
     fog_tick(is_game_paused() ? 0 : updateRate);
-    /* The presentation accumulators, same pause gate. Must precede
-     * scene_weather_tick -- see the ORDER note on the twin call in mode_game. */
+    /* The presentation accumulators, same pause gate. Must precede the
+     * authoritative object/weather/HUD traversal -- see the ORDER note on the
+     * twin call in mode_game. */
     scene_presentation_tick(is_game_paused() ? 0 : updateRate);
-    /* The weather integrators -- snow drift, the rain intensity
-     * ramp, the splash spawner and its RNG, and the lightning timer that starts
-     * gThunderTransition. Under render's own gate and pause gate. */
-    scene_weather_tick(is_game_paused() ? 0 : updateRate);
+    scene_authoritative_render_tick(updateRate);
     /* Hash authoritative state around the render traversal, so a render-side
      * mutation of it is detectable (no-op unless MDKR_RENDER_CENSUS=1). */
     {
         extern void mdkr_render_census_pre(void);
         extern void mdkr_render_census_post(void);
         mdkr_render_census_pre();
-        {
-            extern int mdkr_test_pure_render_enabled(void);
-            extern void mdkr_pure_render_begin(void);
-            extern void mdkr_pure_render_end(void);
-            int pure = mdkr_test_pure_render_enabled();
-            if (pure) mdkr_pure_render_begin();
-            render_scene(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList, &gGameCurrTriList, updateRate);
-            if (pure) mdkr_pure_render_end();
-        }
+        render_scene(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList,
+                     &gGameCurrTriList, updateRate);
         mdkr_render_census_post();
     }
 #else
     render_scene(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList, &gGameCurrTriList, updateRate);
+#endif
+#ifdef NATIVE_PORT
+    obj_animation_cadence_tick();
 #endif
         process_onscreen_textbox(updateRate);
         rdp_init(&gCurrDisplayList);
@@ -1584,6 +1624,10 @@ void force_mark_write_save_file(s32 saveFileIndex, Settings *source) {
     if (source == NULL) {
         return;
     }
+#ifdef NATIVE_PORT
+    GAMEPLAY_EVENT_TRACE(
+        GAMEPLAY_EVENT_SAVE, saveFileIndex, 2, 0, 0);
+#endif
     sWriteSaveSource = source;
     gSaveDataFlags &= ~SAVE_DATA_FLAG_WRITE_SAVE_FILE_NUMBER_BITS; // Wipe out bits 10 and 11
     gSaveDataFlags |= (SAVE_DATA_FLAG_WRITE_SAVE_DATA |
@@ -1597,6 +1641,10 @@ void force_mark_write_save_file(s32 saveFileIndex, Settings *source) {
  */
 void safe_mark_write_save_file(s32 saveFileIndex) {
     if (gGameMode == GAMEMODE_INGAME && !is_in_tracks_mode()) {
+#ifdef NATIVE_PORT
+        GAMEPLAY_EVENT_TRACE(
+            GAMEPLAY_EVENT_SAVE, saveFileIndex, 3, 0, 0);
+#endif
         sWriteSaveSource = gSettingsPtr;
         gSaveDataFlags &= ~SAVE_DATA_FLAG_WRITE_SAVE_FILE_NUMBER_BITS; // Wipe out bits 10 and 11
         gSaveDataFlags |= (SAVE_DATA_FLAG_WRITE_SAVE_DATA |
@@ -1747,6 +1795,10 @@ void default_alloc_displaylist_heap(void) {
  */
 void level_transition_begin(s32 type) {
     if (gLevelLoadTimer == 0) {
+#ifdef NATIVE_PORT
+        GAMEPLAY_EVENT_TRACE(
+            GAMEPLAY_EVENT_LEVEL, type, LEVEL_LOAD_NORMAL, 1, 0);
+#endif
         gLevelLoadTimer = 40;
         gLevelLoadType = LEVEL_LOAD_NORMAL;
         D_80123526 = 0;

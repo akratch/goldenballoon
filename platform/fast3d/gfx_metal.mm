@@ -1,5 +1,5 @@
 /*
- * gfx_metal.mm — Native Metal rendering backend for macOS (opt-in; GL default).
+ * gfx_metal.mm — Native Metal rendering backend for macOS (not built by mdkr64).
  *
  * Implements the fast3d GfxRenderingAPI vtable (from Emill/n64-fast3d-engine,
  * MIT — see gfx_rendering_api.h) using Apple Metal directly, so screen-space
@@ -1022,8 +1022,8 @@ static bool mtl_msaa_force_off(void) {
  * boundary caster whose light-space z runs past the shadow ortho's [0,4*radius]
  * range is near/far-CLIPPED out of the shadow map here, where GL's process-global
  * GL_DEPTH_CLAMP (gfx_opengl.c:3734) clamps it instead. Off (default) = fix active
- * (clamp), matching GL. Metal-only: the default GL backend is unaffected either
- * way, so tools/sim_invariance_gate.sh and the GL faithful path stay byte-identical
+ * (clamp), matching GL. Metal-only: the GL backend is unaffected either way,
+ * so tools/sim_invariance_gate.sh and the GL faithful path stay byte-identical
  * (charter rule 5). A/B: metal_shadow_clamp_regression.sh. */
 static bool mtl_shadow_depth_clamp_disabled(void) {
     static int force = -1;
@@ -2043,10 +2043,10 @@ static void mtl_render_shadow_map(void) {
     mtl_dump_shadow_pgm(shadow_vbuf, tri_count, sm);
 }
 
-static void mtl_start_frame(void) {
+static bool mtl_start_frame(void) {
   @autoreleasepool {  /* drains per-frame autoreleased temporaries — without it,
                        * the C game loop never drains and RSS/drawable pool grow. */
-    if (s_layer == nil || s_queue == nil) return;
+    if (s_layer == nil || s_queue == nil) return false;
     s_frame_count_metal++;
     /* W3.E1: start a programmatic GPU capture of the target frame BEFORE its
      * command buffer is created, so the whole frame lands in the .gputrace. */
@@ -2088,7 +2088,7 @@ static void mtl_start_frame(void) {
          * (gfx_opengl_render_shadow_map sets this to 0 before any of its own
          * early-return checks). */
         g_pc_shadow_map_ready = 0;
-        return;
+        return false;
     }
 
     /* Throttle the CPU to <= MTL_VBUF_SLOTS frames ahead so the ring slot we are
@@ -2135,18 +2135,24 @@ static void mtl_start_frame(void) {
          * forever and the game hard-freezes. Return the permit and skip this frame so the
          * backend can recover once the GPU is back. */
         if (s_frame_sem != nil) dispatch_semaphore_signal(s_frame_sem);
-        return;
+        return false;
     }
     /* W1.E3.T3: replay the prior frame's captured casters into the sun-shadow depth
      * map before the scene encoder opens (capture-and-replay, §4.5). The ring is
      * reset in gfx_pc.c after start_frame, preserving the one-frame latency. */
     mtl_render_shadow_map();
     mtl_open_scene_encoder(true);
+    if (s_enc == nil) {
+        s_cmdbuf = nil;
+        if (s_frame_sem != nil) dispatch_semaphore_signal(s_frame_sem);
+        return false;
+    }
 
     if (!s_logged_first_frame) {
         fprintf(stderr, "[metal] first frame: scene %dx%d, geometry encoder open\n", s_fb_w, s_fb_h);
         s_logged_first_frame = true;
     }
+    return true;
   }
 }
 

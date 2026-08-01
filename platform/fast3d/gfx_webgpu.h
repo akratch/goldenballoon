@@ -34,6 +34,16 @@ bool gfx_webgpu_bringup(void *metal_layer, void *sdl_window,
                         WGPUDevice *out_device, WGPUQueue *out_queue,
                         WGPUSurface *out_surface, int *out_format);
 
+/* The device callbacks installed by bringup belong to the host-owned device,
+ * not to one engine session. AppHost calls this immediately before destroying
+ * that device so a late callback can never be mistaken for a newer device. */
+void gfx_webgpu_host_device_will_release(WGPUDevice device);
+
+/* AppHost uses the same device callbacks before gfx_init() adopts the roots.
+ * Surface configuration/presentation must therefore observe a callback-latched
+ * validation, OOM, internal, or device-loss failure directly. */
+bool gfx_webgpu_device_failed(void);
+
 /* True when DepthClipControl was granted and pipelines can clamp, rather than
  * clip, geometry beyond the far plane. The frontend performs the equivalent
  * homogeneous z clamp when this is false. */
@@ -45,7 +55,6 @@ bool gfx_webgpu_get_output_size(int *width, int *height);
  * platform_frame_sync consumes it between complete frames. */
 bool gfx_webgpu_runtime_recovery_pending(void);
 bool gfx_webgpu_recover_device(void);
-void gfx_webgpu_prepare_gl_fallback(void);
 /* Emit one end-of-run material-capacity census for headless/browser gates.
  * This is observational only and remains safe before bring-up or after a
  * controlled renderer failure. */

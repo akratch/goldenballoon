@@ -157,6 +157,10 @@ void material_load_simple(Gfx **dList, s32 flags);
 
 // There might be a file boundary here.
 void tex_animate_texture(TextureHeader *texture, u32 *triangleBatchInfoFlags, s32 *arg2, s32 updateRate);
+#ifdef NATIVE_PORT
+void tex_animate_texture_cadence_compat(TextureHeader *texture, u32 *triangleBatchInfoFlags, s32 *arg2,
+                                        s32 updateRate);
+#endif
 void func_8007F1E8(LevelHeader_70 *arg0);
 void init_pulsating_light_data(PulsatingLightData *data);
 void update_pulsating_light_data(PulsatingLightData *data, s32 timeDelta);

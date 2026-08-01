@@ -1,56 +1,76 @@
 # The WebGPU backend
 
-> **This work has landed.** Written ahead of the M4.5 wave and kept because the
-> vendoring list, the wgpu-native dependency and the CMake wiring below are
-> still an accurate description of how the backend is built.
+> **This work has landed.** This page describes the backend as it is built and
+> shipped today.
 
-WebGPU is the default backend; GL stays the debug fallback. It is also the only
-in-browser backend, so this was the bridge to the browser build.
+WebGPU is the qualified native default and the only in-browser backend. GL is
+still selectable explicitly for diagnostics while its visual-parity work
+continues, so WebGPU remains the bridge between the native and browser builds.
 
-## De-risking (verified)
-`gfx_webgpu.c` implements `struct GfxRenderingAPI gfx_webgpu_api` — the SAME vtable
-our F3DDKR renderer (gfx_pc_dkr.c) already drives (gfx_rendering_api.h: init/
-start_frame/end_frame/draw_triangles/upload_texture/select_texture/set_depth_mode/
-set_blend_mode/create_and_load_new_shader/read_framebuffer_rgb/…). So the backend is
-a true drop-in at the existing seam: `gfx_init(&gfx_webgpu_api)` instead of
-`&gfx_opengl_api`. Our renderer is backend-agnostic below the seam — nothing in the
-F3DDKR front-end needs to change. Backend selection in mgb64 is env-var driven
-(GE007_RENDERER); mirror as MDKR_RENDERER=webgpu|gl|metal.
+## Rendering seam
 
-## Vendor from mgb64 (src/platform/fast3d/)
-- gfx_webgpu.c (~205KB), gfx_webgpu.h
-- gfx_webgpu_shader.c, gfx_webgpu_shader.h
-- gfx_webgpu_compat.h (WGPU_COMPAT_WAIT + native/emscripten WebGPU shims)
-- (ImGui bits gfx_webgpu_imgui.* are optional — skip unless we add the ImGui overlay)
-Check each for GE-specific assumptions (framebuffer dims, GE combiner quirks); the
-shader generator consumes the same gfx_cc.c combiner output we already use, so it
-should port clean. The pipeline-prewarm-cache (ge007_pipecache.txt equivalent) is an
-optional perf add — defer; on first bring-up let pipelines compile on demand.
+`gfx_webgpu.c` implements `struct GfxRenderingAPI gfx_webgpu_api`, the same
+vtable that the F3DDKR renderer in `gfx_pc_dkr.c` drives for OpenGL. Backend
+selection resolves once at startup: the default passes `&gfx_webgpu_api` to
+`gfx_init`, while `MDKR_RENDERER=gl` explicitly selects `&gfx_opengl_api`.
+Startup and runtime failures are fail-closed and never switch renderers inside a
+live process.
+
+## Backend modules
+
+- `gfx_webgpu.c` and `gfx_webgpu.h` own device/surface setup, rendering,
+  presentation, readback, bounded queueing, and same-backend recovery.
+- `gfx_webgpu_shader.*` translates the shared combiner output into WGSL.
+- `gfx_webgpu_compat.h` is the native/emdawnwebgpu dialect boundary.
+- `gfx_webgpu_lifecycle.*` and `gfx_webgpu_fault.*` centralize resource accounting
+  and the public fault-injection vocabulary.
+- `gfx_webgpu_imgui.*` renders the native launcher and in-game overlay through
+  the same device used by the game.
+
+The implementation originated in mgb64; the current ownership and adaptation
+boundary is recorded in `platform/fast3d/PROVENANCE.md` and
+`docs/MGB64_BACKFLOW.md`.
 
 ## Dependency (native)
-- wgpu-native (Rust-built WebGPU impl; dispatches to Metal on macOS / D3D12 / Vulkan).
-  mgb64 links a pinned `webgpu` target. Check how mgb64's CMake finds/builds it
-  (CMakeLists ~104-136, the MGB64_WEBGPU_BACKEND block) and replicate: either vendor
-  the prebuilt lib or fetch the pinned release. macOS arm64 prebuilt exists.
-- IMPORTANT (web): under emscripten NO wgpu-native is needed — Emscripten supplies
-  WebGPU (-sUSE_WEBGPU=1). So the same gfx_webgpu.c compiles for both; only the
-  native build links wgpu-native. (This is why WebGPU is the browser path.)
+
+- Native builds use an exact, SHA-256-verified wgpu-native release selected by
+  `cmake/webgpu_artifact.cmake` and fetched through `cmake/webgpu.cmake`. It
+  dispatches to Metal on macOS, D3D12 on Windows, and Vulkan where available.
+- Emscripten builds use the `emdawnwebgpu` port and do not link wgpu-native. The
+  compatibility header lets the same `gfx_webgpu.c` compile for both dialects.
 
 ## CMake changes
-- `option(MDKR_WEBGPU_BACKEND ... ON)`; when ON, add gfx_webgpu*.c to the build,
-  define MDKR_WEBGPU_BACKEND, link the webgpu target. Keep GL + Metal compiled too so
-  MDKR_RENDERER can switch at runtime.
-- Backend selector (platform/main_pc.c or a gfx_backend chooser): read MDKR_RENDERER,
-  default webgpu, fall back to gl. Pass the chosen `&gfx_*_api` to gfx_init.
+
+- `MDKR_WEBGPU_BACKEND` defaults to `ON`. It adds the WebGPU modules, defines
+  `MDKR_WEBGPU_BACKEND`, and links the `webgpu` target.
+- Native builds also compile OpenGL for the explicit `MDKR_RENDERER=gl`
+  diagnostic route. The standalone Metal backend is not built.
+- Browser builds force WebGPU on and omit the OpenGL backend.
 
 ## Validation — achieved
 
-- `MDKR_RENDERER=webgpu ./build/mdkr64` renders the title + OPTIONS menu + a race
-  identically to GL (dump frames both backends, compare — they should match modulo
-  minor filtering). 20× crash loop on char-select + race under webgpu = 0 crashes.
-- `MDKR_RENDERER=gl` still works (fallback intact).
+- `MDKR_RENDERER=webgpu ./build/mdkr64` renders the title, OPTIONS menu, and race.
+  Sparse comparisons originally measured close GL/WebGPU agreement, but dense
+  opening-sequence captures later exposed localized GL corruption. WebGPU is the
+  qualified release path until that diagnostic backend regains full parity.
+- `MDKR_RENDERER=gl` still works as an explicit diagnostic selection. WebGPU
+  startup or device-recovery failures are terminal and never switch renderers
+  inside the live process.
+- Production native WebGPU registers one completion after each newly authored
+  image, polls callbacks without blocking at the next frame, and records zero
+  gameplay-time completion waits. It may drain outstanding work during orderly
+  shutdown, after gameplay/audio service has stopped. The browser and explicit
+  internal replay stress retain the nonblocking two-frame admission ceiling;
+  GL interval 0 retains its two-fence ceiling (FIFO swap remains its own bound).
+  Telemetry separates runtime waits from aggregate/shutdown waits and reports
+  submission, completion, high-water, wait, and achieved-rate accounting.
+- Hidden or minimized native windows stop real display-list walks and retained
+  replay, service input/audio/fixed ticks at authored cadence, then reset
+  presentation history on resume. `check_gpu_backpressure.py` and
+  `check_surface_suspension.py` exercise both production backends.
 
-## Then → M8 browser
-Once WebGPU is the native default and proven, M8 (docs/architecture/web.md) reuses the
-exact same gfx_webgpu.c under emscripten. The renderer, OS shim (cooperative single
-thread), arena, and dkrptr32 tokens are all already web-safe.
+## Browser sharing
+
+The M8 browser build compiles this repository's `gfx_webgpu.c` under Emscripten.
+Native and browser therefore share WebGPU as their qualified path; the renderer,
+cooperative OS shim, arena, and `dkrptr32` tokens remain web-safe.

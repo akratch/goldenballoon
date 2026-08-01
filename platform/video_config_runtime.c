@@ -11,8 +11,10 @@
 
 #include "display_config.h"
 #include "fast3d/gfx_mipgen.h"
+#include "fast3d/gfx_shadow_cascade.h"
 #include "fast3d/gfx_uniforms.h"
 #include "present_sched.h"
+#include "user_paths.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,20 +37,18 @@
  *  Runtime layer — the only part that touches the filesystem or environment.
  * ------------------------------------------------------------------------ */
 
-#ifdef __EMSCRIPTEN__
-#define MDKR_VIDEO_INI_PATH   "/save/mdkr64.ini"
-#else
-#define MDKR_VIDEO_INI_PATH   "mdkr64.ini"
-#endif
-#define MDKR_VIDEO_INI_TMP    MDKR_VIDEO_INI_PATH ".tmp"
 #define MDKR_VIDEO_INI_MAX    128
 #define MDKR_VIDEO_INI_TEXT_MAX 32768
+#define MDKR_VIDEO_PATH_MAX   4096
 
 static MdkrVideoConfig s_video;
 static MdkrVideoConfig s_desired_video;
 static ConfigIniEntry s_file_entries[MDKR_VIDEO_INI_MAX];
 static int s_file_entry_count;
 static int s_video_initialized;
+static int s_engine_handoff_completed;
+static char s_video_ini_path[MDKR_VIDEO_PATH_MAX];
+static char s_video_ini_tmp[MDKR_VIDEO_PATH_MAX];
 static int mdkr_video_write_config(const MdkrVideoConfig *config);
 
 #ifdef __EMSCRIPTEN__
@@ -69,6 +69,45 @@ EM_JS(void, mdkr_video_schedule_persist, (), {
 
 static const char *mdkr_video_getenv(const char *name) {
     return getenv(name);
+}
+
+static int mdkr_video_resolve_paths(void) {
+    int written;
+    if (!mdkr_user_video_config_path(
+            s_video_ini_path, sizeof(s_video_ini_path))) {
+        fprintf(stderr, "[video] config path is unavailable or too long\n");
+        return 0;
+    }
+    written = snprintf(s_video_ini_tmp, sizeof(s_video_ini_tmp), "%s.tmp",
+                       s_video_ini_path);
+    if (written < 0 || (size_t)written >= sizeof(s_video_ini_tmp)) {
+        fprintf(stderr, "[video] temporary config path is too long\n");
+        return 0;
+    }
+    return 1;
+}
+
+static int mdkr_video_parent_directory(char *output, size_t output_size) {
+    const char *slash = strrchr(s_video_ini_path, '/');
+    const char *backslash = strrchr(s_video_ini_path, '\\');
+    const char *last = slash;
+    size_t length;
+    if (backslash != NULL && (last == NULL || backslash > last)) {
+        last = backslash;
+    }
+    if (last == NULL) {
+        return snprintf(output, output_size, ".") == 1;
+    }
+    length = (size_t)(last - s_video_ini_path);
+    if (length == 0u) {
+        length = 1u;
+    }
+    if (length >= output_size) {
+        return 0;
+    }
+    memcpy(output, s_video_ini_path, length);
+    output[length] = '\0';
+    return 1;
 }
 
 /*
@@ -124,11 +163,31 @@ static int mdkr_video_launcher_args_valid(int argc, char *const *argv) {
     return 1;
 }
 
-void mdkr_video_config_init(int argc, char *const *argv) {
-    int count = 0;
-    int launcher_persist = 0;
+static int mdkr_video_read_config(ConfigIniEntry *entries) {
     char text[MDKR_VIDEO_INI_TEXT_MAX];
+    int count = 0;
     FILE *f;
+
+    if (!mdkr_video_resolve_paths()) {
+        return 0;
+    }
+    f = fopen(s_video_ini_path, "rb");
+
+    if (f != NULL) {
+        size_t n = fread(text, 1, sizeof(text) - 1, f);
+        text[n] = '\0';
+        fclose(f);
+        if (!config_ini_parse(text, entries, MDKR_VIDEO_INI_MAX, &count)) {
+            fprintf(stderr,
+                    "[video] %s has more than %d entries; extra keys ignored\n",
+                    s_video_ini_path, MDKR_VIDEO_INI_MAX);
+        }
+    }
+    return count;
+}
+
+void mdkr_video_config_init(int argc, char *const *argv) {
+    int launcher_persist = 0;
 
     if (s_video_initialized) {
         return;
@@ -136,20 +195,9 @@ void mdkr_video_config_init(int argc, char *const *argv) {
     s_video_initialized = 1;
     mdkr_video_config_defaults(&s_video);
 
-    f = fopen(MDKR_VIDEO_INI_PATH, "rb");
-    if (f != NULL) {
-        size_t n = fread(text, 1, sizeof(text) - 1, f);
-        text[n] = '\0';
-        fclose(f);
-        if (!config_ini_parse(text, s_file_entries, MDKR_VIDEO_INI_MAX, &count)) {
-            fprintf(stderr,
-                    "[video] %s has more than %d entries; extra keys ignored\n",
-                    MDKR_VIDEO_INI_PATH, MDKR_VIDEO_INI_MAX);
-        }
-    }
-    s_file_entry_count = count;
+    s_file_entry_count = mdkr_video_read_config(s_file_entries);
 
-    mdkr_video_config_resolve(&s_video, s_file_entries, count,
+    mdkr_video_config_resolve(&s_video, s_file_entries, s_file_entry_count,
                               mdkr_video_getenv, argc, argv);
     s_desired_video = s_video;
     for (int i = 1; i < argc; i++) {
@@ -169,6 +217,29 @@ void mdkr_video_config_init(int argc, char *const *argv) {
     }
 }
 
+int mdkr_video_config_handoff_to_engine(int argc, char *const *argv) {
+    MdkrVideoConfig resolved;
+
+    if (!s_video_initialized || s_engine_handoff_completed) {
+        return 0;
+    }
+
+    s_file_entry_count = mdkr_video_read_config(s_file_entries);
+    /* mdkr_video_config_resolve() layers values by source rank; it deliberately
+     * does not manufacture its caller's base object.  The launcher and engine
+     * share a process, so this second resolution must begin from the same fully
+     * initialized defaults as first boot.  Otherwise indeterminate source ranks
+     * can reject file/environment/CLI values and indeterminate strings can be
+     * copied into the live runtime configuration. */
+    mdkr_video_config_defaults(&resolved);
+    mdkr_video_config_resolve(&resolved, s_file_entries, s_file_entry_count,
+                              mdkr_video_getenv, argc, argv);
+    s_video = resolved;
+    s_desired_video = resolved;
+    s_engine_handoff_completed = 1;
+    return 1;
+}
+
 const MdkrVideoConfig *mdkr_video_config_current(void) {
     return &s_video;
 }
@@ -185,9 +256,38 @@ int mdkr_video_config_is_readonly(void) {
  *  Publication — the resolved config reaches the rest of the program here.
  * ------------------------------------------------------------------------ */
 
+/*
+ * Diagnostic float override for one of the two hardcoded shadow constants.
+ *
+ * Both were tuned by measurement (bias against DKR's terrain facet size, umbra
+ * against its baked vertex occlusion) and both are the kind of constant whose
+ * tuning has to be re-measurable later — the umbra already moved once, from
+ * 0.48 to 0.62, because a playthrough said the shadows were too heavy. A raw
+ * env seam keeps that A/B one command away without putting a second, redundant
+ * knob next to Video.WorldShadows in the options screen. Out-of-range or
+ * unparseable text leaves the production value untouched.
+ */
+static float mdkr_video_float_override(const char *name, float fallback,
+                                       float low, float high) {
+    const char *raw = mdkr_video_getenv(name);
+    char *end;
+    double parsed;
+
+    if (raw == NULL || raw[0] == '\0') {
+        return fallback;
+    }
+    parsed = strtod(raw, &end);
+    if (end == raw || *end != '\0' || !(parsed >= low) || !(parsed <= high)) {
+        fprintf(stderr, "[video] ignoring invalid %s=%s\n", name, raw);
+        return fallback;
+    }
+    return (float) parsed;
+}
+
 void mdkr_video_config_publish(void) {
     const MdkrVideoConfig *c = &s_video;
-    const char *world_shadow = mdkr_video_getenv("MDKR_WORLD_SHADOW");
+    const char *world_shadow =
+        c->values[MDKR_VIDEO_WORLD_SHADOWS].text;
     const char *world_finish_off =
         mdkr_video_getenv("MDKR_TEST_WORLD_FINISH_OFF");
     int world_finish;
@@ -200,15 +300,24 @@ void mdkr_video_config_publish(void) {
     /* RL-5 is part of the Remastered art pass, not an independent fidelity
      * knob. Pure/Restored therefore cannot accidentally enable its shader IDs. */
     g_pcPerPixelLight     = g_pcRemasterFX;
-    /* WD-6 production policy: real maps are part of Remastered. The environment
-     * seam remains only as a diagnostic off switch for exact fallback A/Bs. */
+    /*
+     * WD-6 production policy: real maps are part of Remastered, so the world
+     * shadow pass still cannot outlive RemasterFX. Within Remastered the player
+     * now chooses (Video.WorldShadows); MDKR_WORLD_SHADOW is that key's env
+     * name, so the historical "0"/"1" diagnostic spellings still resolve here,
+     * canonicalised by the schema.
+     */
     g_pcSunShadow =
-        g_pcRemasterFX &&
-        !(world_shadow != NULL &&
-          (world_shadow[0] == '\0' ||
-           strcmp(world_shadow, "0") == 0 ||
-           strcmp(world_shadow, "off") == 0));
-    g_pcSunShadowRes = 2048;
+        g_pcRemasterFX && strcmp(world_shadow, "off") != 0;
+    /*
+     * Not a resolution request — the cascade planner owns resolution and varies
+     * it live with the split-screen view count (2048 at 1P, 1024 at 2-4P). This
+     * publishes the 1P budget so a consumer reading the global agrees with the
+     * plan instead of contradicting it. It was a hardcoded 2048 that nothing in
+     * either backend read.
+     */
+    g_pcSunShadowRes =
+        (int) gfx_shadow_budget_for_views(1).resolution;
     /*
      * WORLD-unit comparison bias. Both receivers divide this by the planned
      * light z-span at upload, so acne/peter-panning behavior no longer
@@ -218,7 +327,8 @@ void mdkr_video_config_publish(void) {
      * facets at the clamped 29–55° sun without visibly detaching kart
      * contact shadows (kart bodies are ~40–60 units).
      */
-    g_pcSunShadowBias = 8.0f;
+    g_pcSunShadowBias =
+        mdkr_video_float_override("MDKR_SHADOW_BIAS", 8.0f, 0.0f, 4000.0f);
     /*
      * Shadowed pixels are multiplied by the umbra factor after RL-5 lighting.
      * DKR's baked vertex colour already carries authored occlusion, so a deep
@@ -226,8 +336,17 @@ void mdkr_video_config_publish(void) {
      * 0.62 (38% attenuation) keeps shadows legible without crushing; the
      * original 0.48 measured as the dominant "shadows degrade the UX" factor
      * in the 2026-07-29 playthrough review.
+     *
+     * "soft" is the same measurement taken one step further for players who
+     * still read it as heavy: 0.78 (22% attenuation) on the same maps and the
+     * same cascades. It is a strength choice, not a quality tier — nothing
+     * about the shadow itself gets coarser, so no value of this key can make
+     * the image noisier than the default does.
      */
-    g_pcSunShadowUmbra = 0.62f;
+    g_pcSunShadowUmbra = mdkr_video_float_override(
+        "MDKR_SHADOW_UMBRA",
+        strcmp(world_shadow, "soft") == 0 ? 0.78f : 0.62f,
+        0.0f, 1.0f);
     g_pcRenderScale       =       c->values[MDKR_VIDEO_RENDER_SCALE].number;
     g_pcMsaaSamples       = (int) c->values[MDKR_VIDEO_MSAA].number;
     g_pcTextureAnisotropy = (int) c->values[MDKR_VIDEO_ANISOTROPY].number;
@@ -259,13 +378,12 @@ void mdkr_video_config_publish(void) {
      * would not be LIVE. The push happens ONLY when this key resolved from
      * something other than the schema default: pushing unconditionally on
      * every publish() (including the very first one, at boot, before any game
-     * frame runs) would stomp a raw diagnostic MDKR_PRESENT_RATE=30/120/etc.
-     * with this key's DEFAULT "original" every single time, since the schema
-     * deliberately does not recognise those values as a valid Video.FrameLimit
-     * (see mdkr_video_validate_frame_limit) and therefore never marks the key
-     * as anything but DEFAULT-sourced when only that raw env is present.
-     * tests/check_presentation_matrix.py's arm B (MDKR_PRESENT_RATE=30) is
-     * exactly the regression this guard exists to prevent.
+     * frame runs) would overwrite the present scheduler's direct getenv result
+     * with this key's DEFAULT "original". The environment is normally resolved
+     * by the schema too, but keeping the default-source guard preserves the
+     * diagnostic seam and makes "unset" semantically distinct from an explicit
+     * `original`. tests/check_presentation_matrix.py's arm B remains the
+     * regression for that precedence boundary.
      */
     if (c->values[MDKR_VIDEO_FRAME_LIMIT].source != MDKR_VIDEO_SOURCE_DEFAULT) {
         mdkr_present_set_frame_limit(c->values[MDKR_VIDEO_FRAME_LIMIT].text);
@@ -378,7 +496,8 @@ static int mdkr_video_write_config(const MdkrVideoConfig *config) {
     int count = 0;
     FILE *f;
 
-    if (!mdkr_video_build_persisted_entries(config, entries, &count) ||
+    if (!mdkr_video_resolve_paths() ||
+        !mdkr_video_build_persisted_entries(config, entries, &count) ||
         !config_ini_serialize(entries, count, text, sizeof(text))) {
         fprintf(stderr, "[video] config is too large to save safely\n");
         return 0;
@@ -389,18 +508,18 @@ static int mdkr_video_write_config(const MdkrVideoConfig *config) {
         return 0;
     }
 #endif
-    f = fopen(MDKR_VIDEO_INI_TMP, "wb");
+    f = fopen(s_video_ini_tmp, "wb");
     if (f == NULL) {
         fprintf(stderr, "[video] could not open %s: %s\n",
-                MDKR_VIDEO_INI_TMP, strerror(errno));
+                s_video_ini_tmp, strerror(errno));
         return 0;
     }
     if (fwrite(text, 1, strlen(text), f) != strlen(text) ||
         fflush(f) != 0) {
         fprintf(stderr, "[video] could not write %s: %s\n",
-                MDKR_VIDEO_INI_TMP, strerror(errno));
+                s_video_ini_tmp, strerror(errno));
         fclose(f);
-        remove(MDKR_VIDEO_INI_TMP);
+        remove(s_video_ini_tmp);
         return 0;
     }
 #ifndef __EMSCRIPTEN__
@@ -410,37 +529,39 @@ static int mdkr_video_write_config(const MdkrVideoConfig *config) {
     if (fsync(fileno(f)) != 0) {
 #endif
         fprintf(stderr, "[video] could not synchronize %s: %s\n",
-                MDKR_VIDEO_INI_TMP, strerror(errno));
+                s_video_ini_tmp, strerror(errno));
         fclose(f);
-        remove(MDKR_VIDEO_INI_TMP);
+        remove(s_video_ini_tmp);
         return 0;
     }
 #endif
     if (fclose(f) != 0) {
         fprintf(stderr, "[video] could not close %s: %s\n",
-                MDKR_VIDEO_INI_TMP, strerror(errno));
-        remove(MDKR_VIDEO_INI_TMP);
+                s_video_ini_tmp, strerror(errno));
+        remove(s_video_ini_tmp);
         return 0;
     }
 #ifdef _WIN32
-    if (!MoveFileExA(MDKR_VIDEO_INI_TMP, MDKR_VIDEO_INI_PATH,
+    if (!MoveFileExA(s_video_ini_tmp, s_video_ini_path,
                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         fprintf(stderr, "[video] could not replace %s (Windows error %lu)\n",
-                MDKR_VIDEO_INI_PATH, (unsigned long) GetLastError());
-        remove(MDKR_VIDEO_INI_TMP);
+                s_video_ini_path, (unsigned long) GetLastError());
+        remove(s_video_ini_tmp);
         return 0;
     }
 #else
-    if (rename(MDKR_VIDEO_INI_TMP, MDKR_VIDEO_INI_PATH) != 0) {
+    if (rename(s_video_ini_tmp, s_video_ini_path) != 0) {
         fprintf(stderr, "[video] could not replace %s: %s\n",
-                MDKR_VIDEO_INI_PATH, strerror(errno));
-        remove(MDKR_VIDEO_INI_TMP);
+                s_video_ini_path, strerror(errno));
+        remove(s_video_ini_tmp);
         return 0;
     }
 #endif
 #if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
     {
-        int directory = open(".", O_RDONLY);
+        char parent[MDKR_VIDEO_PATH_MAX];
+        int directory = mdkr_video_parent_directory(parent, sizeof(parent))
+            ? open(parent, O_RDONLY | O_DIRECTORY) : -1;
         if (directory >= 0) {
             if (fsync(directory) != 0) {
                 fprintf(stderr,
@@ -557,7 +678,9 @@ int mdkr_video_config_restart_pending(void) {
 static const char *mdkr_video_source_name(MdkrVideoSource source) {
     switch (source) {
         case MDKR_VIDEO_SOURCE_DEFAULT: return "default";
-        case MDKR_VIDEO_SOURCE_FILE:    return MDKR_VIDEO_INI_PATH;
+        case MDKR_VIDEO_SOURCE_FILE:
+            return mdkr_video_resolve_paths()
+                ? s_video_ini_path : "config path unavailable";
         case MDKR_VIDEO_SOURCE_PRESET:  return "preset";
         case MDKR_VIDEO_SOURCE_LAUNCHER:return "browser launcher";
         case MDKR_VIDEO_SOURCE_RUNTIME: return "in-game";

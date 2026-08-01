@@ -76,7 +76,9 @@ struct GfxRenderingAPI {
      * Startup must never enter game code with an inert renderer. */
     bool (*init)(void);
     void (*on_resize)(void);
-    void (*start_frame)(void);
+    /* Begin one backend frame transaction. False means no encoder/context was
+     * opened, so the caller must not walk or end the frame. */
+    bool (*start_frame)(void);
     /*
      * Complete the render-resolution scene and begin a load-preserving pass at
      * the physical output resolution. Optional: a NULL backend keeps the

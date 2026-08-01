@@ -10,8 +10,13 @@
 
 // Redirect stdout+stderr through a tee: everything is appended to an in-memory
 // ring buffer and to mdkr64.log (rotating the previous run to mdkr64.prev.log)
-// AND written through to the real console. Safe to call once.
-void DiagLog_install();
+// AND written through to the real console. Returns false if the tee could not
+// be installed; stdout/stderr remain usable in that case.
+bool DiagLog_install();
+
+// Flush the tee, restore the process stdout/stderr descriptors, and join the
+// reader thread. Idempotent. Required before an orderly process relaunch.
+void DiagLog_shutdown();
 
 // Copy the most-recent ring text (NUL-terminated) into buf; returns byte count.
 int DiagLog_snapshot(char *buf, int cap);

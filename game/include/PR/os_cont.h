@@ -22,13 +22,12 @@ extern "C" {
 
 #if defined(_LANGUAGE_C) || defined(_LANGUAGE_C_PLUS_PLUS)
 
-/* PORTABILITY (Windows/MinGW): the N64 SDK named a controller-status field
- * `errno`. Every hosted libc makes `errno` an object-like macro, but on
- * glibc/Darwin that macro is only defined by <errno.h>, which the game TUs do
- * not include — so the field name survives. The Windows CRT defines it much
- * earlier (corecrt, reached from <stdint.h>, which PR/ultratypes.h includes),
- * so by the time we get here `u8 errno;` has already expanded to
- * `u8 (*_errno());` — "field '_errno' declared as a function".
+/* PORTABILITY: the N64 SDK named a controller-status field `errno`. Hosted
+ * libcs expose `errno` as an object-like macro, and some include paths define
+ * it before this compatibility header (the Windows CRT does so through its
+ * core headers; Emscripten reaches <errno.h> through <pthread.h>). Without a
+ * boundary guard, `u8 errno;` expands to a function call and the declaration
+ * becomes invalid.
  *
  * Suppress it for the declarations only, then put it straight back: MinGW's own
  * later system headers assign to errno (<stdlib.h> -> <malloc.h> ->
@@ -36,9 +35,10 @@ extern "C" {
  * itself. Code that READS this field must drop the macro locally — see
  * game/src/joypad.c and platform/stubs_dkr.c's dkr_host_errno(), which is the
  * established pattern in this tree and predates this guard. */
-#ifdef _WIN32
+#ifdef errno
 #pragma push_macro("errno")
 #undef errno
+#define MDKR_OS_CONT_RESTORE_ERRNO 1
 #endif
 
 /**************************************************************************
@@ -72,8 +72,9 @@ typedef struct {
 	u8	errno;
 } OSContRamIo;
 
-#ifdef _WIN32
+#ifdef MDKR_OS_CONT_RESTORE_ERRNO
 #pragma pop_macro("errno")
+#undef MDKR_OS_CONT_RESTORE_ERRNO
 #endif
 
 

@@ -1,10 +1,10 @@
 /**
- * gfx_webgpu_stubs.c — satisfiers for the shell-side symbols the vendored WebGPU
+ * gfx_webgpu_stubs.c — satisfiers for optional shell-side WebGPU symbols
  * backend (platform/fast3d/gfx_webgpu.c) references. Compiled ONLY when
  * MDKR_WEBGPU_BACKEND is on.
  *
- * mgb64's gfx_webgpu.c is shared verbatim (see docs/MGB64_BACKFLOW.md) so it
- * calls into subsystems the shell owns. What is real and what is inert now
+ * The backend originated in mgb64 and retains optional subsystem hooks. What is
+ * real and what is inert here
  * depends on MDKR_APP:
  *
  *   - App-shell WebGPU handoff (platformHasHostWebGpu + the host getters).
@@ -63,12 +63,17 @@ void *platformHostWgpuDevice(void)       { return NULL; }
 void *platformHostWgpuQueue(void)        { return NULL; }
 void *platformHostWgpuSurface(void)      { return NULL; }
 int   platformHostWgpuSurfaceFormat(void){ return 0; }
+int   platformHasHostWebGpuRecovery(void){ return 0; }
+int   platformRecoverHostWebGpu(int phase) { (void)phase; return 0; }
 
 /* ---- In-game overlay (ImGui F1 menu) — absent without the shell. ---- */
-void platformOverlayRender(void)      { /* no overlay */ }
+int platformOverlayRender(void)       { return 1; /* no overlay */ }
 int platformOverlayWantsInput(void) {
     const char *test = getenv("MDKR_TEST_WEBGPU_OVERLAY");
     return test != NULL && test[0] == '1';
+}
+int platformOverlayWantsRender(void) {
+    return platformOverlayWantsInput();
 }
 
 #endif /* !MDKR_APP */

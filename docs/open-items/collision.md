@@ -118,14 +118,17 @@ as `MDKR_COLLTEX=legacy` does for the untextured-batch case:
 ```
 $ MDKR_AUDIO=0 python3 tests/check_door_blocks.py --build build -v
 PASS: door blocking check
-  fixed  arm: reached [0, 21, 22, 23, 36, 39], 1730 object-collision hits -- locked doors held
+  fixed  arm: reached [0, 21, 22, 23, 36, 39], 1742 object-collision hits -- locked doors held
   legacy arm: reached [0, 5, 12, 21, 22, 23, 36, 39], 0 hits -- drove through the shut door, as before the fix
 ```
 
 The fixed arm asserts a *negative* (cannot get in), which is only meaningful next
 to the legacy arm's *positive* (could get in — same route, same binary). It also
 asserts the hub **is** reached and that hits are non-zero, so "blocked" cannot be
-satisfied by a route that broke early or never touched a door.
+satisfied by a route that broke early or never touched a door. The route includes
+a center-line waypoint before the paired hub door leaves; without it, the older
+diagonal advloop route can latch the exit from the near-side corner without ever
+touching the physical door mesh.
 
 `[OBJCOLL]` telemetry is kept but repurposed: it now counts **hits** rather than
 stubbed misses, so it stays a live measure of how much object collision a route
@@ -506,6 +509,63 @@ three are no-ops unless set.
   needs is the write *index*, which `[COLL] maxCandidates` already reports; making
   the emulated overrun a real heap write would trade a deterministic assertion for
   a nondeterministic crash.
+
+### G4 follow-up: per-level headroom measured and gated, cap NOT raised
+
+The class-2 guard above (`j >= mdkr_coll_cap(MAX_COLLISION_CANDIDATES)`) is
+confirmed still present
+at both insert sites — the segment insert and the facet insert — in
+`game/src/hasm/collision.c`. What it does not do is add headroom: a saturated
+list still silently drops every candidate past the cap, the exact mechanism wave
+"gridmask" fixed one instance of. Levels 41 and 54 remain the tightest margins in
+the game, unchanged since the table above: 84 of 500 slots.
+
+This wave adds two things, both instrument/gate-only — **the cap is not
+raised**, because the layout/perf effect of a larger `gCollisionCandidates`
+allocation is unmeasured:
+
+- `[COLPEAK] candidates new peak N of M` — `MDKR_TRACE`-gated, printed each time
+  a run's high-water mark advances (`platform/stubs_dkr.c`
+  `mdkr_coll_candidates()`), in the exact pattern of `[EVTQ]`'s per-queue peak
+  telemetry in `platform/audio_event_queue.c`. Purely additive: it cannot change
+  which candidates are kept, only whether a peak gets a trace line. The
+  unconditional `[COLL] maxCandidates=N truncated=N cap=N` summary every route
+  already emitted at headless exit (needing no `MDKR_TRACE`) is unchanged and is
+  what the check below actually parses.
+- `tests/check_collision_headroom.py` — one `MDKR_AUTOPILOT` run per level, all
+  ten boss levels plus one ordinary race (Ancient Lake), reading that `[COLL]`
+  line. Fails if truncation happens in normal play, or if a level's high-water
+  mark exceeds a frozen baseline ceiling (measured peak + 16 slots of slack) —
+  the regression tripwire for headroom quietly shrinking further. A positive
+  control (`MDKR_COLLCAP=150` on level 41's own route, well under its natural
+  416 peak) confirms the guard holds under a forced boundary and that doing so
+  trips the check's own "truncated must be 0" rule — the control is not
+  vacuous. Registered in `tools/run_checks.py` as `collision_headroom`.
+
+Measured per-level high-water (this binary, `MDKR_AUTOPILOT`, one run per
+level, `race_full_3lap_tt.txt`):
+
+| track | frames | peak candidates | truncated | cap | margin |
+|---|---|---|---|---|---|
+| 38 (Tricky 1) | 13000 | 270 | 0 | 500 | 230 |
+| 46 (Tricky 2) | 13000 | 270 | 0 | 500 | 230 |
+| 40 | 13000 | 55 | 0 | 500 | 445 |
+| 53 | 13000 | 55 | 0 | 500 | 445 |
+| 1 | 13000 | 152 | 0 | 500 | 348 |
+| 52 | 13000 | 152 | 0 | 500 | 348 |
+| **41** | 13000 | **416** | 0 | 500 | **84** |
+| **54** | 13000 | **416** | 0 | 500 | **84** |
+| 37 | 13000 | 149 | 0 | 500 | 351 |
+| 55 | 13000 | 92 | 0 | 500 | 408 |
+| 5 (Ancient Lake, ordinary race) | 6500 | 30 | 0 | 500 | 470 |
+
+Identical to the original "boundsweep" measurement for levels 41/54/38/46 (the
+rows that table already recorded), and fills in the remaining six boss levels
+plus one ordinary race that table did not enumerate individually. No level
+truncates. **Decision: accept, do not raise.** 84 slots is the tightest margin
+in the game and worth continuing to watch, but every measured route — boss and
+ordinary alike — stays well clear of the 500 cap, and `check_collision_headroom.py`
+is now the tripwire if that stops being true.
 
 ## FIXED: racers fall through Tricky's volcano — the collision grid mask never filtered in Z (wave "gridmask")
 

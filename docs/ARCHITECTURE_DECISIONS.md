@@ -17,7 +17,7 @@ game/include/    DKR headers incl. f3ddkr.h, structs.h, PR/ (libultra headers)
 game/libultra/   decompiled libultra (os/io mostly REPLACED; the audio synth was
                  removed entirely — audio is first-party clean-room, in platform/)
 platform/        native platform layer (this project's own code + mgb64-derived)
-platform/fast3d/ renderer: gfx_pc_dkr.c (F3DDKR front-end, NEW) + mgb64 backends (verbatim)
+platform/fast3d/ renderer: gfx_pc_dkr.c (F3DDKR front-end, new) + mgb64-derived backends
 lib/             vendored: glad, sdl_gamecontrollerdb
 docs/ref/        us.v80 linker script + symbol tables (reference for addresses)
 ```
@@ -45,7 +45,7 @@ docs/ref/        us.v80 linker script + symbol tables (reference for addresses)
    `gfx_pc.c` at the sibling mgb64 checkout, `src/platform/fast3d/gfx_pc.c` is
    the structural template but its GE base-GBI decode does NOT apply).
    Below `GfxRenderingAPI` (`platform/fast3d/gfx_rendering_api.h`) everything is
-   reused verbatim from mgb64.
+   derived from mgb64 and maintained here for DKR's requirements.
 6. **Audio:** DKR targets the libultra N-Audio ABI, but the synthesiser itself
    is **first-party clean-room code** — `platform/audio_compat.c` and friends,
    shared with mgb64 and extended with DKR-specific behaviour. Its `Acmd`
@@ -165,13 +165,15 @@ game controller via SDL_GameController); osGetCount/osGetTime from host clock
       on LP64, over-running tex_load_sprite's literal-8-Gfx-stride DL region into the
       sprite vertex buffer (HLE then read DL command bytes as verts); pinned to 32-bit
       under NATIVE_PORT. See STATUS.md M3c + docs/OPEN_ITEMS.md.
-- [x] M4.5 WebGPU backend (required scope): DONE. Vendored gfx_webgpu*.c verbatim
-      from mgb64 into platform/fast3d/ (drives the SAME GfxRenderingAPI vtable —
+- [x] M4.5 WebGPU backend (required scope): DONE. Ported gfx_webgpu*.c from
+      mgb64 into platform/fast3d/ and evolved it here (drives the same GfxRenderingAPI vtable —
       no F3DDKR front-end change); pinned wgpu-native prebuilt v29.0.1.1 via
       cmake/webgpu.cmake (SHA-256 verified, mirrors mgb64; reuses mgb64's fetch
       offline). option(MDKR_WEBGPU_BACKEND ON) gates code+define+link; GL stays
-      compiled. Runtime select MDKR_RENDERER=webgpu|gl (default webgpu, GL
-      fallback; metal warns+falls back — gfx_metal.mm not built here). Window is
+      compiled. Runtime select MDKR_RENDERER=webgpu|gl (default WebGPU, GL
+      explicitly selectable for diagnostics; metal warns and resolves to the
+      compiled default, WebGPU —
+      gfx_metal.mm not built here). Window is
       backend-aware (SDL_WINDOW_METAL + Metal view for WebGPU vs GL context);
       headless --dump-frames captures WebGPU via the vtable's read_framebuffer_rgb
       (offscreen readback, no drawable needed). PARITY vs GL verified by eye +
@@ -179,7 +181,8 @@ game controller via SDL_GameController); osGetCount/osGetTime from host clock
       near-identical (hist ~0.99, block ~0.999); race 20x + title 300f x5 = 0
       crashes. Pipeline-prewarm cache DEFERRED (dormant; DKR never calls
       gfx_webgpu_set_stage) per docs/architecture/webgpu.md. See STATUS.md M4.5 +
-      docs/architecture/web.md. This is the bridge to M8 (same file under Emscripten).
+      docs/architecture/web.md. This is the bridge to M8 (this repository's same
+      file builds under Emscripten).
 - [x] M5 audio: music + SFX via mixer HLE. DONE: the audio engine synthesises
       on the host, its Acmd macros overridden to the vendored software aspMain
       mixer (platform/mixer.c) via a NATIVE_PORT `#include "mixer.h"` at the tail of
@@ -253,9 +256,9 @@ game controller via SDL_GameController); osGetCount/osGetTime from host clock
       affected checksums. Save management must work from the launcher without a
       ROM, WebGPU, or running engine, perform zero uploads, and restore exact
       progression after complete browser-site-data loss. Native CLI parity and
-      corrupt-block recovery follow the same shared ROM-free byte codec. Scope,
-      formats, UX, security, tests, dependencies, and `SP-1`–`SP-10` backlog:
-      the save portability/editor spec (internal archive).
+      corrupt-block recovery follow the same shared ROM-free byte codec. The
+      formats and recovery contract are documented in `SAVE_MANAGEMENT.md` and
+      enforced by the save codec/container tests.
 
 ## Build
 

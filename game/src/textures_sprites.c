@@ -1877,7 +1877,8 @@ s32 tex_palette_id(s16 paletteID) {
 /**
  * Official Name: texAnimateTexture
  */
-void tex_animate_texture(TextureHeader *texture, u32 *triangleBatchInfoFlags, s32 *arg2, s32 updateRate) {
+static void tex_animate_texture_impl(TextureHeader *texture, u32 *triangleBatchInfoFlags, s32 *arg2,
+                                     s32 updateRate, s32 authoredRng) {
     s32 bit23Set;
     s32 bit25Set;
     s32 bit26Set;
@@ -1888,7 +1889,11 @@ void tex_animate_texture(TextureHeader *texture, u32 *triangleBatchInfoFlags, s3
     bit25Set = *triangleBatchInfoFlags & RENDER_UNK_2000000;
     if (bit23Set) {
         if (!bit25Set) {
+#ifdef NATIVE_PORT
+            if ((authoredRng ? cadence_compat_rand_range(0, 1000) : presentation_rand_range(0, 1000)) > 985) {
+#else
             if (rand_range(0, 1000) > 985) {
+#endif
                 *triangleBatchInfoFlags &= ~RENDER_UNK_4000000;
                 *triangleBatchInfoFlags |= RENDER_UNK_2000000;
             }
@@ -1941,6 +1946,24 @@ void tex_animate_texture(TextureHeader *texture, u32 *triangleBatchInfoFlags, s3
         }
     }
 }
+
+void tex_animate_texture(TextureHeader *texture, u32 *triangleBatchInfoFlags, s32 *arg2, s32 updateRate) {
+    tex_animate_texture_impl(texture, triangleBatchInfoFlags, arg2, updateRate, FALSE);
+}
+
+#ifdef NATIVE_PORT
+/*
+ * Two legacy owners shared the ROM RNG stream: ordinary scene-object animation
+ * and the skydome-scroll animation now migrated to the fixed tick. The original
+ * cadence retains that ordering; enhanced cadence retains the native port's
+ * pre-FPS presentation-stream behavior. Separately rendered skydome, track, and
+ * weather traversal always uses presentation RNG, as does retained replay.
+ */
+void tex_animate_texture_cadence_compat(TextureHeader *texture, u32 *triangleBatchInfoFlags, s32 *arg2,
+                                        s32 updateRate) {
+    tex_animate_texture_impl(texture, triangleBatchInfoFlags, arg2, updateRate, TRUE);
+}
+#endif
 
 void func_8007F1E8(LevelHeader_70 *arg0) {
     s32 i;

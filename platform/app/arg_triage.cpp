@@ -21,3 +21,10 @@ int mdkr_is_automation_invocation(int argc, char **argv) {
     // user typing `mdkr64`) opens the launcher.
     return (argc > 1) ? 1 : 0;
 }
+
+int mdkr_is_side_effect_free_info_invocation(int argc, char **argv) {
+    if (argc != 2 || argv == nullptr || argv[1] == nullptr) return 0;
+    return std::strcmp(argv[1], "--version") == 0 ||
+           std::strcmp(argv[1], "--help") == 0 ||
+           std::strcmp(argv[1], "-h") == 0;
+}

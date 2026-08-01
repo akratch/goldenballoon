@@ -65,6 +65,28 @@ static void test_triage() {
            "unknown flag bypasses the launcher (deny by default)");
 
     expect(mdkr_argv_requests_ui(0, nullptr) == 0, "null argv is not a --ui request");
+
+    std::vector<std::string> versionOwned = {"mdkr64", "--version"};
+    std::vector<char *> versionArgv;
+    for (std::string &s : versionOwned) versionArgv.push_back(&s[0]);
+    expect(mdkr_is_side_effect_free_info_invocation(
+               (int)versionOwned.size(), versionArgv.data()) == 1,
+           "exact --version bypasses mutable path initialization");
+
+    std::vector<std::string> helpOwned = {"mdkr64", "--help"};
+    std::vector<char *> helpArgv;
+    for (std::string &s : helpOwned) helpArgv.push_back(&s[0]);
+    expect(mdkr_is_side_effect_free_info_invocation(
+               (int)helpOwned.size(), helpArgv.data()) == 1,
+           "exact --help bypasses mutable path initialization");
+
+    std::vector<std::string> compoundOwned = {
+        "mdkr64", "--video-set", "Video.Mode=Pure", "--version"};
+    std::vector<char *> compoundArgv;
+    for (std::string &s : compoundOwned) compoundArgv.push_back(&s[0]);
+    expect(mdkr_is_side_effect_free_info_invocation(
+               (int)compoundOwned.size(), compoundArgv.data()) == 0,
+           "compound --version preserves engine argument ordering");
 }
 
 static void test_rom_validate() {

@@ -24,6 +24,7 @@
 #include <time.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include "user_paths.h"
 #ifndef __EMSCRIPTEN__
 #ifdef _WIN32
 #include <direct.h>    /* _mkdir  (Win32 has no mode argument) */
@@ -150,6 +151,10 @@ EM_ASYNC_JS(int, mdkr_persist_save_async, (int kind), {
 #include "platform_os.h"
 #include "pacing_policy.h"
 #include "present_sched.h"
+#include "presentation_snapshot.h"
+#include "gameplay_event_trace.h"
+#include "input_consumption_trace.h"
+#include "audi_port_dkr.h"
 #include "mdkr_bounds.h"
 #include "gfx_ptr.h"     /* gfx_ptr_store — register non-arena DL pointers */
 #include "fast3d/gfx_shadow_frame.h"
@@ -173,9 +178,6 @@ static bool renderer_recovery_deferred(void) {
     return false;
 #endif
 }
-
-/* Per-frame audio synthesis pump (platform/audi_port_dkr.c). */
-extern void dkr_audio_pump(void);
 
 /* game/src/camera.c (NATIVE_PORT): each viewport's view-projection rebuilt from
  * the INTERPOLATED camera inputs of the published snapshot pair (spec §7). */
@@ -400,10 +402,25 @@ static OSMesgQueue *s_schedInterruptQ = NULL;
  * a wall-clock field budget so fb_update measures the real elapsed-field count.
  * See platform_vi_pace_measure() (platform_sdl_min.c). */
 static OSMesgQueue *s_videoClientQueue = NULL;
-/* Real display-list walks observed at the previous branch entry — the
- * presentation subloop's freshness test (gfx_dkr_real_walk_count). */
+/* Real display-list walks observed at the previous branch entry — the host
+ * subloop's completed-authored-image test (gfx_dkr_real_walk_count). */
 static uint64_t     s_lastRealWalkCount = 0;
+static int          s_testDelayedEndpointReplay = -1;
 static s32          s_viFieldsPending  = 0;   /* retrace fields available to drain */
+/* A host suspension is observed at a presentation/pacing opportunity, but
+ * audio time is credited only when the resulting fixed game ticket completes.
+ * Carry the rebase to that ticket exactly once. */
+static bool         s_audioRebasePending = false;
+
+static bool test_delayed_endpoint_replay(void) {
+    if (s_testDelayedEndpointReplay < 0) {
+        const char *value = getenv("MDKR_TEST_DELAYED_ENDPOINT_REPLAY");
+        s_testDelayedEndpointReplay =
+            present_sched_internal_replay_test_enabled() &&
+            value != NULL && value[0] == '1' ? 1 : 0;
+    }
+    return s_testDelayedEndpointReplay != 0;
+}
 
 /* Gfx-task done payload. gfxtask_wait() reads received[1] as the status word
  * (0 == OSMESG_SWAP_BUFFER). */
@@ -414,6 +431,7 @@ typedef struct {
     void *next; u32 state; u32 flags; void *frameBuffer;
     OSTask_t task;
     OSMesgQueue *mesgQueue; OSMesg mesg;
+    u64 presentationAuthoredTick;
 } ShimScTask;
 
 static void sched_dispatch_task(OSMesg msg) {
@@ -426,7 +444,22 @@ static void sched_dispatch_task(OSMesg msg) {
          * through the backend. data_ptr is the DL head pointer. */
         MDKR_TRACE("gfxtask: type=%u dl=%p len=%u", (unsigned)t->task.type,
                    (void *)t->task.data_ptr, (unsigned)t->task.data_size);
-        gfx_start_frame();
+        if (present_sched_render_elided()) {
+            /* A minimized/hidden native window has no useful sink. Complete
+             * the emulated RSP task without walking or submitting its display
+             * list; input, audio and fixed simulation keep running at the
+             * throttled host boundary. Resume rebases retained history before
+             * the next task is allowed through. */
+            present_sched_note_render_elided();
+            goto task_complete;
+        }
+        /* A transiently saturated backend has not opened a frame transaction.
+         * Complete the emulated task without walking into a null encoder; a
+         * fatal refusal continues through the existing renderer-failure path. */
+        if (!gfx_start_frame(t->presentationAuthoredTick) &&
+            !gfx_renderer_failed()) {
+            goto task_complete;
+        }
         if (gfx_renderer_failed()) {
             if (renderer_recovery_deferred()) {
                 fprintf(stderr,
@@ -528,63 +561,96 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
         return mq_dequeue(mq, msg);
     }
 
-    /* ---- VIDEO client queue: wall-clock-paced retrace synthesis ----------
-     * fb_update (video.c) first NON-BLOCK drains this queue counting elapsed
-     * 60 Hz fields (updateRate), then BLOCK-recvs to wait for the next field
-     * (the vsync/pace point). We model that with a field budget: a blocking
-     * recv on an empty budget IS the frame boundary — pace to the configured
-     * one- or two-field floor, present the rendered frame, then make this
-     * frame's worth of retrace fields available. The drain then returns
-     * updateRate == the true field count (2 @ 30fps, ...), restoring DKR's
-     * frameskip compensation. */
+    /* ---- VIDEO client queue: authoritative fixed-ticket adapter ----------
+     * A blocking recv on an empty queue is the host boundary. Host elapsed time
+     * advances HostFrameDriver; one fixed ticket is translated back into the
+     * retrace messages fb_update expects. Multi-tick lateness stays in driver
+     * debt and causes repeated authored updates, never updateRate 4/6. */
     if (mq && mq == s_videoClientQueue) {
         if (s_viFieldsPending <= 0) {
             if (flags == OS_MESG_NOBLOCK) {
-                return -1;               /* drain finds no more elapsed fields */
+                return -1;               /* no more fixed-ticket notifications */
             }
-            s32 fields;
             unsigned ticks_due;
+            unsigned trace_fields = 0;
+            int oracle_update_fields = 0;
+            const bool oracle_variable_ticket =
+                platform_oracle_update_fields(
+                    (uint64_t)g_simTickCounter, &oracle_update_fields) != 0;
             const uint64_t perf_entry = present_perf_now();
             const int subloop = platform_present_subloop_fields();
-            if (!subloop) {
+            const bool catchup_ticket =
+                present_sched_pending_ticks() != 0u;
+            if (oracle_variable_ticket) {
+                /* Diagnostic only: replay one complete game pass at the exact
+                 * updateRate observed from the real ROM. Shipping never enters
+                 * this branch and retains exact fixed tickets under lateness. */
+                trace_fields = (unsigned)oracle_update_fields;
+                g_viLastWallFields = oracle_update_fields;
+                ticks_due = 1u;
+            } else if (!subloop && !catchup_ticket) {
                 /*
-                 * Unchanged path: pace the whole tick, present once. The
-                 * accumulator runs in parallel and drives nothing — it is the
-                 * second, independent opinion slice 0 introduced, fed the
-                 * pacer's own committed field count so any disagreement it
-                 * reports is a modelling difference and not clock skew.
+                 * Pace one host opportunity and let the authoritative driver
+                 * turn its elapsed fields into fixed-size tick tickets.
                  */
-                fields = (s32) platform_vi_pace_measure();
-                ticks_due =
-                    present_sched_advance_fields((unsigned)g_viLastWallFields);
-            } else {
+                (void)platform_vi_pace_measure();
+                trace_fields = (unsigned)g_viLastWallFields;
+                {
+                    const bool rebased = platform_vi_pace_rebased() != 0;
+                    if (rebased) {
+                        s_audioRebasePending = true;
+                    }
+                    ticks_due = present_sched_advance_fields(
+                        trace_fields, rebased);
+                }
+            } else if (!subloop) {
+                /* Ordinary late-frame debt is drained as repeated authored
+                 * ticks. Do not sample/sleep again until that debt is gone. */
+                g_viLastWallFields = 0;
+                ticks_due = 0;
+            } else if (!catchup_ticket) {
                 /*
                  * Presentation subloop engaged (design §1). Pacing moves AFTER
                  * the tick's own present, below, so this entry only needs the
                  * tick's field total, which the subloop accumulates. Zero here
                  * is a placeholder the subloop replaces.
                  */
-                fields = 0;
                 ticks_due = 0;
-                /* The deterministic COUNTER advances once per tick, here, where
-                 * the non-subloop path advances it (platform_vi_present_pace). */
-                platform_vi_tick_clock_commit();
+            } else {
+                /* A prior host opportunity issued more than one ticket. The
+                 * correctness-first catch-up path builds/presents this tick,
+                 * but does not wait for another presentation interval. */
+                ticks_due = 0;
+                g_viLastWallFields = 0;
             }
-            /* Authoritative-state hash (Phase 1 fidelity instrument): one row
-             * per complete game frame == one authoritative tick under the
-             * containment loop. Env-gated; no-op unless MDKR_STATE_HASH=1. */
+            /* The synthetic N64 COUNTER advances once per completed fixed
+             * game pass, never once per present and never by an oversleep's
+             * lumped wall-field count. */
+            platform_vi_tick_clock_commit(
+                oracle_variable_ticket
+                    ? (unsigned)oracle_update_fields
+                    : present_sched_tick_fields());
+            g_viLastFields = platform_vi_pace_compensating()
+                ? (oracle_variable_ticket
+                       ? (s32)oracle_update_fields
+                       : (s32)present_sched_tick_fields())
+                : 1;
+            /* Fidelity streams: one row per complete authoritative game pass.
+             * Both are env-gated no-ops in ordinary runs. */
             {
                 extern void mdkr_sim_hash_frame(void);
                 extern void mdkr_test_render_tick_advance(void);
-                extern void presentation_snapshot_capture(void);
                 mdkr_sim_hash_frame();
+                gameplay_event_trace_tick((uint64_t)g_simTickCounter);
+                input_consumption_trace_tick((uint64_t)g_simTickCounter);
                 /* Presentation snapshot (spec §7, Phase 3 Wave A): the same
                  * authoritative tick boundary, immediately after the hash so
                  * the hash can never observe it. Read-only over live state
                  * and env-gated by MDKR_PRESENT_SNAPSHOT; a no-op otherwise. */
                 {
                     const uint64_t perf_snapshot = present_perf_now();
-                    presentation_snapshot_capture();
+                    presentation_snapshot_capture(
+                        (uint64_t)g_simTickCounter);
                     present_perf_add(PRESENT_PERF_SNAPSHOT, perf_snapshot);
                 }
                 /* Purity-gate parity: one advance per authoritative tick,
@@ -592,27 +658,75 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                  * render_scene sees a stable parity for the whole tick. */
                 mdkr_test_render_tick_advance();
             }
-            {
+            /*
+             * The real walk is already the exact alpha-zero image for its
+             * authored task. Expose that completed image directly: replaying
+             * it here would happen after the game has built the next list, so
+             * any dependency not explicitly retained could have changed even
+             * though the command stream itself is still valid. Production
+             * holds the endpoint below; midpoint walks exist only under the
+             * explicit internal replay seam.
+             *
+             * MDKR_TEST_DELAYED_ENDPOINT_REPLAY plus the versioned internal
+             * token restores the old redraw only as a negative control.
+             */
+            const uint64_t walks = gfx_dkr_real_walk_count();
+            const bool dl_fresh = walks != s_lastRealWalkCount;
+            s_lastRealWalkCount = walks;
+            bool endpoint_drew = false;
+            if (!oracle_variable_ticket && subloop && !catchup_ticket &&
+                !present_sched_render_elided() && dl_fresh) {
+                const uint64_t authored_tick =
+                    gfx_dkr_last_walked_authored_tick();
+                GfxShadowReplayViewProjection endpoint_views[4] = { 0 };
+                size_t endpoint_count =
+                    mdkr_camera_interpolated_view_projections(
+                        0u, 1u, endpoint_views,
+                        sizeof(endpoint_views) / sizeof(endpoint_views[0]));
+                gfx_shadow_camera_endpoint_validate(
+                    endpoint_views, endpoint_count);
+                if (test_delayed_endpoint_replay() &&
+                    present_sched_smoothing_enabled()) {
+                    endpoint_drew = gfx_dkr_replay_walk_interpolated(
+                        endpoint_views, endpoint_count, 0u, 1u);
+                } else {
+                    endpoint_drew = true;
+                }
+                if (endpoint_drew) {
+                    present_sched_note_endpoint(
+                        test_delayed_endpoint_replay(), authored_tick);
+                }
+            }
+            if (present_sched_render_elided()) {
+                platform_frame_service();
+            } else {
                 const uint64_t perf_present = present_perf_now();
-                platform_frame_sync();                      /* present this frame */
+                if (!subloop || endpoint_drew) {
+                    platform_frame_sync();                  /* present this frame */
+                } else {
+                    /* No graphics task completed for this opportunity. Hold
+                     * the last complete image instead of swapping undefined
+                     * back-buffer contents. */
+                    present_sched_note_stale();
+                    platform_frame_sync_no_swap();
+                }
                 present_perf_add(PRESENT_PERF_PRESENT, perf_present);
             }
-            if (subloop) {
+            if (!oracle_variable_ticket && subloop && !catchup_ticket) {
                 /*
-                 * THE PRESENT SUBLOOP.
+                 * THE HOST-OPPORTUNITY SUBLOOP.
                  *
-                 * The tick's own present just went out at alpha 0, drawing the
-                 * display list's own matrices — the authoritative image,
-                 * untouched. Now burn wall time one present-quantum at a time
+                 * The exact real-walk endpoint just went out at alpha 0. Now
+                 * burn wall
+                 * time one present-quantum at a time
                  * until the next authoritative tick is due, and while it is
-                 * not, put out an interpolated image from the SAME display
-                 * list with the camera moved forward to the accumulator's
-                 * alpha.
+                 * not, hold the completed authored surface image. Production
+                 * 1.0.1 never redraws here. Explicit internal replay seams can
+                 * exercise an interpolated walk of the same display list.
                  *
-                 * Pacing after the tick present rather than before is what
-                 * makes the alpha sequence monotonic: 0, then 1/2, then the
-                 * next tick's 0. Pacing first would have presented the
-                 * un-interpolated image at alpha 1/2 and then jumped back.
+                 * Pacing after the tick endpoint keeps the internal diagnostic
+                 * alpha monotonic (0, then 1/2, then the next tick's 0) without
+                 * changing production surface-update cadence.
                  *
                  * The instruments above (state hash, presentation snapshot,
                  * render-tick advance) stay exactly where they are: once per
@@ -621,26 +735,29 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                  * gfx_dkr_replay_walk re-walks an already-built list at the HLE
                  * layer and never re-enters game/src (design R3).
                  */
-                int wall_total = 0;
-                /*
-                 * Is the held display list still the one this pass walked?
-                 * DKR does not submit a graphics task on every pass; when it
-                 * skips one, gSPTaskNum does not flip and the game is
-                 * rebuilding into the very buffer that was last walked. See
-                 * gfx_dkr_real_walk_count.
-                 */
-                const uint64_t walks = gfx_dkr_real_walk_count();
-                const bool dl_fresh = walks != s_lastRealWalkCount;
-                s_lastRealWalkCount = walks;
+                uint64_t wall_total_units = 0u;
                 for (;;) {
-                    int wall = platform_vi_present_pace();
-                    wall_total += wall;
-                    ticks_due = present_sched_advance_fields((unsigned)wall);
+                    uint64_t units = platform_vi_present_pace_units();
+                    if (UINT64_MAX - wall_total_units < units) {
+                        wall_total_units = UINT64_MAX;
+                    } else {
+                        wall_total_units += units;
+                    }
+                    {
+                        const bool rebased = platform_vi_pace_rebased() != 0;
+                        if (rebased) {
+                            s_audioRebasePending = true;
+                        }
+                        ticks_due = present_sched_advance_units(
+                            units, rebased);
+                    }
                     if (ticks_due != 0 || platform_exit_requested()) {
                         break;
                     }
                     bool drew = false;
-                    if (dl_fresh && present_sched_smoothing_enabled()) {
+                    if (!present_sched_render_elided() && dl_fresh &&
+                        present_sched_smoothing_enabled() &&
+                        !test_delayed_endpoint_replay()) {
                         GfxShadowReplayViewProjection views[4];
                         uint64_t numerator = 0;
                         uint64_t denominator = 1;
@@ -662,7 +779,8 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                          */
                         {
                             const uint64_t perf_replay = present_perf_now();
-                            drew = gfx_dkr_replay_walk(views, count);
+                            drew = gfx_dkr_replay_walk_interpolated(
+                                views, count, numerator, denominator);
                             present_perf_add(PRESENT_PERF_REPLAY, perf_replay);
                         }
                         if (drew) {
@@ -671,16 +789,16 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                             present_sched_note_stale();
                         }
                     } else {
-                        /* Smoothing off, or a stale list: hold the tick's own
-                         * image rather than walk memory the game is
-                         * overwriting. */
+                        /* Production, smoothing-off, or a stale list: retain
+                         * the front/surface image without walking memory the
+                         * game may be overwriting. */
                         present_sched_note_stale();
                     }
                     /*
                      * Nothing new was drawn on the else branches, so DO NOT
                      * swap: the back buffer's contents after the tick's own
                      * swap are undefined, and presenting it shows garbage
-                     * rather than repeating the tick's image (see
+                     * rather than holding the tick's image (see
                      * platform_frame_sync_no_swap). Everything else about the
                      * frame boundary -- input pump, frame counter, frame dump,
                      * traces -- still runs, and the present was already paced
@@ -689,7 +807,9 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                      */
                     {
                         const uint64_t perf_ipresent = present_perf_now();
-                        if (drew) {
+                        if (present_sched_render_elided()) {
+                            platform_frame_service();
+                        } else if (drew) {
                             platform_frame_sync();
                         } else {
                             platform_frame_sync_no_swap();
@@ -697,52 +817,56 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                         present_perf_add(PRESENT_PERF_IPRESENT, perf_ipresent);
                     }
                 }
-                /*
-                 * updateRate for the next pass is the tick's whole field total,
-                 * summed over its presents. MDKR_VI_PACE=off's diagnostic lie
-                 * is applied once here rather than per present.
-                 */
-                fields = platform_vi_pace_compensating() ? wall_total : 1;
-                g_viLastFields = fields;
+                /* wall_total is host-time telemetry only. Ticket width is
+                 * published below and cannot depend on present count. */
+                trace_fields = (unsigned)(
+                    wall_total_units / UINT64_C(1000000000));
             }
+            if (oracle_variable_ticket) {
+                platform_input_commit_tick((uint64_t)g_simTickCounter + 1u);
+            } else if (present_sched_take_tick()) {
+                platform_input_commit_tick(present_sched_issued_ticks());
+            } else if (!platform_exit_requested()) {
+                fprintf(stderr,
+                        "[scheduler] host boundary produced no fixed-step "
+                        "ticket; stopping before an unscheduled game pass\n");
+                platform_request_exit(EXIT_FAILURE);
+            }
+            /* fb_update consumes one authored ticket. Late time remains
+             * in the driver's bounded debt queue and becomes another game
+             * pass, never one updateRate=4/6 mega-step. The compensation-off
+             * diagnostic retains its deliberate one-field lie. */
             /*
-             * The tick index advances only once every present that belongs to
-             * this tick has gone out. That ordering is load-bearing, not
-             * cosmetic: platform_frame_sync pumps input on EVERY present, and
-             * the pads the next tick's input_update reads are whatever the LAST
-             * pump left. Bumping the index before the interpolated presents
-             * made them apply tick k+1's scripted input, so the simulation
-             * consumed every input one tick early — the [SIMHASH] streams for
-             * MDKR_PRESENT_RATE unset and =60 diverged from tick 1345, at the
-             * first level transition sensitive enough to show it.
+             * The tick index advances only after every present belonging to
+             * this tick. Scripted input uses that index, while live host edges
+             * are captured per opportunity and committed above only once per
+             * issued ticket. Catch-up service and extra presents cannot consume
+             * input themselves.
              */
             g_simTickCounter++;
-            present_sched_trace_entry((unsigned)g_viLastWallFields, ticks_due,
+            platform_headless_tick_complete(g_simTickCounter);
+            present_sched_trace_entry(trace_fields, ticks_due,
                                       g_frameCounter);
-            /* Drive one audio-synthesis frame per rendered frame (the audio
-             * thread never runs in the cooperative model). Runs AFTER the game
-             * logic that queued this frame's music/sfx events, and after the
-             * present so it does not add to the paced frame time. Safe before
-             * audio init (no-ops until gDkrAudioReady). A terminal boundary
-             * must retain the old exit() timing: that frame was never pumped.
-             *
-             * PHASE 3 WAVE B: this stays once per TICK rather than moving into
-             * the present subloop. Design §4 argues the queue-occupancy
-             * controller is cadence-agnostic because it derives its target from
-             * elapsed wall time, and that is true — but under synthetic
-             * headless pacing the COUNTER it measures with advances a fixed
-             * amount per tick, so pumping per present would hand it a
-             * fabricated dt (see platform_vi_present_pace). Measured rather
-             * than assumed: MDKR_AUDIO_DUMP over the 600-tick prefix of the
-             * fixture route is BYTE-IDENTICAL (3,529,900 bytes) with
-             * MDKR_PRESENT_RATE unset and =60. Moving the pump to presents is a
-             * live/realtime question (design R4), and belongs to the slice that
-             * turns the subloop on for interactive builds. */
+            /* Credit exactly this completed ticket, then service at most one
+             * independently due audio quantum AFTER the ordered game tick that
+             * queued its music/SFX events. Presentation rate cannot change PCM
+             * timing. Grouped lateness leaves one quantum per catch-up game
+             * pass, and a host suspension rebase is consumed exactly once by
+             * the first ticket produced after it. */
+            dkr_audio_advance_fields(
+                oracle_variable_ticket
+                    ? (unsigned)oracle_update_fields
+                    : present_sched_tick_fields(),
+                s_audioRebasePending);
+            s_audioRebasePending = false;
             if (!platform_exit_requested()) {
-                dkr_audio_pump();
+                dkr_audio_service_tick();
             }
+            /* Exactly one compatibility notification per fixed ticket. The
+             * measured bootstrap logical-delta phase lives in video.c and
+             * cannot drain a second simulation ticket. */
             s_viFieldsPending = mdkr_pacing_queue_refill(
-                s_viFieldsPending, fields, 8);
+                s_viFieldsPending, 1, 8);
             present_perf_add(PRESENT_PERF_TICKWALL, perf_entry);
         }
         s_viFieldsPending--;
@@ -786,6 +910,7 @@ void osScAddClient(OSSched *s, OSScClient *c, OSMesgQueue *msgQ, u8 id) {
      * field pacer instead of a (missing) async producer. */
     if (id == OS_SC_ID_VIDEO) {
         s_videoClientQueue = msgQ;
+        s_audioRebasePending = false;
     }
 }
 void osScRemoveClient(OSSched *s, OSScClient *c) { (void)s; (void)c; }
@@ -949,9 +1074,9 @@ s32  osDpSetNextBuffer(void *b, u64 n) { (void)b; (void)n; return 0; }
 
 /* ======================================================================== *
  *  Audio Interface — implemented in platform/audi_port_dkr.c (SDL queue +
- *  the per-frame synthesis pump). osAiGetStatus/osAiGetLength/osAiSetFrequency/
- *  osAiSetNextBuffer live there now; dkr_audio_pump() is driven from the frame
- *  boundary below.
+ *  independent audio-time service). osAiGetStatus/osAiGetLength/osAiSetFrequency/
+ *  osAiSetNextBuffer live there now; dkr_audio_service_tick() consumes due
+ *  quanta after ordered game ticks below.
  * ======================================================================== */
 
 /* ======================================================================== *
@@ -1040,7 +1165,7 @@ void osContGetReadData(OSContPad *pad) {
 }
 
 /* ======================================================================== *
- *  EEPROM — file-backed (save/eeprom.bin). DKR uses 4 Kbit = 512 bytes.
+ *  EEPROM — file-backed (per-user save/eeprom.bin). DKR uses 4 Kbit = 512 bytes.
  * ======================================================================== *
  * The save file is UNTRUSTED INPUT. On the web build it comes back out of
  * IndexedDB, where a killed tab, a crashed engine or an interrupted FS.syncfs
@@ -1084,15 +1209,13 @@ static char s_eepromSnapshotPath[DKR_EEPROM_SNAPSHOT_COUNT][1200];
 static char s_eepromSnapshotTmpPath[1200];
 
 static int eeprom_init_paths(void) {
-    const char *directory = "save";
-#ifndef __EMSCRIPTEN__
-    const char *configured = getenv("MDKR_SAVE_DIR");
-    if (configured != NULL && configured[0] != '\0') {
-        directory = configured;
-    }
-#endif
+    char directory[1024];
     if (s_eepromPathsReady) {
         return 1;
+    }
+    if (!mdkr_user_save_directory(directory, sizeof(directory))) {
+        fprintf(stderr, "[SAVE] save directory is unavailable or too long\n");
+        return 0;
     }
     if (snprintf(s_eepromDir, sizeof(s_eepromDir), "%s", directory) < 0 ||
         strlen(directory) >= sizeof(s_eepromDir) ||
@@ -2130,8 +2253,40 @@ int mdkr_gridmask_legacy(void) {
  * high-water mark is what sized the diagnosis. */
 static int  s_collMaxCandidates = 0;
 static long s_collTruncations   = 0;
+/* Forward-declared: mdkr_coll_cap() is defined further down in this file (the
+ * MDKR_COLLCAP=<n>|legacy hook), and mdkr_coll_candidates() needs the EFFECTIVE
+ * cap for the [COLPEAK] line below so a lowered test cap is reflected there
+ * too, not just the ROM's 500. */
+int mdkr_coll_cap(int romCap);
 void mdkr_coll_candidates(int count, int truncated) {
-    if (count > s_collMaxCandidates) s_collMaxCandidates = count;
+    if (count > s_collMaxCandidates) {
+        s_collMaxCandidates = count;
+        /* G4 (docs/open-items/collision.md, wave "boundsweep"): boss levels 41
+         * and 54 peak at 416 of 500 with only 84 slots of margin, and the
+         * per-run "[COLL] maxCandidates=" summary above only prints once, at
+         * headless exit -- it cannot show WHEN in a route the high-water mark
+         * moved. This is the per-event counterpart, gated and formatted exactly
+         * like the [EVTQ] peak telemetry in platform/audio_event_queue.c
+         * (MDKR_TRACE-gated, printed only when a call raises the high-water
+         * mark, stable grep-able prefix). It is instrumentation only: it cannot
+         * change which candidates are kept, only which peaks get a line in the
+         * log. tests/check_collision_headroom.py sweeps the boss levels and
+         * reads the "[COLL] maxCandidates=" exit summary (unconditional, so it
+         * works without MDKR_TRACE); this trace line is for a human -- or a
+         * future finer-grained check -- to see the peak's frame-by-frame
+         * approach rather than only its final value. */
+        {
+            static int s_collTrace = -1;
+            if (s_collTrace < 0) {
+                const char *t = getenv("MDKR_TRACE");
+                s_collTrace = (t != NULL && t[0] != '\0' && t[0] != '0');
+            }
+            if (s_collTrace) {
+                printf("[COLPEAK] candidates new peak %d of %d\n",
+                       s_collMaxCandidates, mdkr_coll_cap(500));
+            }
+        }
+    }
     if (truncated) s_collTruncations++;
 }
 int  mdkr_coll_max_candidates(void) { return s_collMaxCandidates; }

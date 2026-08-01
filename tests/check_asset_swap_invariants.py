@@ -509,10 +509,11 @@ def check_tt_ghosts(rom, rep):
 
 
 def decrypt_magic_codes(buf):
-    """Mirror of objects.c decrypt_magic_codes(): an INTRA-byte bit permutation.
+    """Mirror objects.c's four-byte bit-pair transpose.
 
-    It never moves bits between bytes, which is why it commutes with the u16
-    byte swap and why the swap may safely run after it.
+    Each output byte draws bit pairs from all four input bytes. It therefore
+    does *not* commute with a u16 byte swap: runtime must decrypt first, then
+    endian-normalize only the plaintext index block.
     """
     out = bytearray(buf)
     for i in range(0, (len(out) // 4) * 4, 4):
@@ -698,6 +699,14 @@ LOAD_CALL = re.compile(r"asset_load\(\s*(ASSET_[A-Z_0-9]+)")
 SWAP_WINDOW_LINES = 26
 
 
+def magic_code_call_order_ok(source):
+    """The mixed cheat table must be decrypted before its u16 index is swapped."""
+    decrypt = list(re.finditer(r"^\s+decrypt_magic_codes\s*\(", source, re.MULTILINE))
+    normalize = list(re.finditer(r"asset_swap_misc_magic_codes\s*\(", source))
+    return (len(decrypt) == 1 and len(normalize) == 1 and
+            decrypt[0].start() < normalize[0].start())
+
+
 def check_source_coverage(rep):
     """Every raw asset_load() site must have a declared, satisfied disposition."""
     sources = sorted((ROOT / "game" / "src").rglob("*.c"))
@@ -739,6 +748,21 @@ def check_source_coverage(rep):
     if problems:
         raise SwapInvariantError(
             "raw asset_load() coverage failures:\n  " + "\n  ".join(problems))
+
+    objects_source = (ROOT / "game" / "src" / "objects.c").read_text(
+        errors="replace")
+    order_ok = magic_code_call_order_ok(objects_source)
+    reversed_control = magic_code_call_order_ok("""
+        asset_swap_misc_magic_codes(blob, size);
+        decrypt_magic_codes(blob, size);
+    """)
+    rep.control("magic codes decrypt-before-endian-normalize call order",
+                order_ok, reversed_control)
+    if not order_ok:
+        raise SwapInvariantError(
+            "objects.c must call decrypt_magic_codes() exactly once before "
+            "asset_swap_misc_magic_codes(); the cipher moves bit pairs across "
+            "bytes and the operations do not commute")
     rep.note(f"source coverage: {len(seen)} asset types across raw asset_load() sites")
     for asset in sorted(seen):
         rep.ok(f"{asset} [{RAW_LOAD_DISPOSITION[asset]}] {len(seen[asset])} site(s)")

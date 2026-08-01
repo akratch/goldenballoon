@@ -17,7 +17,10 @@ uintptr_t gfx_segment_table[16];
 
 uint32_t  gfx_ptr_keys[GFX_PTR_TABLE_SIZE];
 uintptr_t gfx_ptr_vals[GFX_PTR_TABLE_SIZE];
-uint8_t   gfx_ptr_state[GFX_PTR_TABLE_SIZE];
+/* As a tentative 64 KiB byte array, ld64 assigns this a 32 KiB common-symbol
+ * alignment, above the output segment's 16 KiB maximum. State the required
+ * zero fill explicitly so the definition keeps uint8_t's real contract. */
+uint8_t   gfx_ptr_state[GFX_PTR_TABLE_SIZE] = { 0 };
 uint32_t  gfx_ptr_epoch[GFX_PTR_TABLE_SIZE];
 uint32_t  gfx_ptr_epoch_current = 1;
 

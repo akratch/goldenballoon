@@ -33,23 +33,16 @@ bool openRom(std::string &out) {
         panel.treatsFilePackagesAsDirectories = NO;
         panel.showsHiddenFiles = NO;
 
-        // Filter to the three N64 image extensions. UTType is 11.0+; the
-        // deprecated string API is the fallback for older deployment targets.
-        // Extensions are not registered system types, so build them explicitly.
-        if (@available(macOS 11.0, *)) {
-            NSMutableArray<UTType *> *types = [NSMutableArray array];
-            for (NSString *ext in @[ @"z64", @"n64", @"v64" ]) {
-                UTType *t = [UTType typeWithFilenameExtension:ext];
-                if (t != nil) [types addObject:t];
-            }
-            if (types.count > 0) {
-                panel.allowedContentTypes = types;
-            }
-        } else {
-#if defined(MAC_OS_X_VERSION_10_0)
-            // Deprecated on 11+, still correct below it.
-            panel.allowedFileTypes = @[ @"z64", @"n64", @"v64" ];
-#endif
+        // Filter to the three N64 image extensions. Golden Balloon targets
+        // macOS 13+, so use the current Uniform Type Identifiers API directly
+        // and keep deprecated allowedFileTypes out of warning-clean builds.
+        NSMutableArray<UTType *> *types = [NSMutableArray array];
+        for (NSString *ext in @[ @"z64", @"n64", @"v64" ]) {
+            UTType *type = [UTType typeWithFilenameExtension:ext];
+            if (type != nil) [types addObject:type];
+        }
+        if (types.count > 0) {
+            panel.allowedContentTypes = types;
         }
         // Never trap the user: if their dump has an unusual extension they can
         // still select it.

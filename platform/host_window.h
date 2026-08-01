@@ -1,13 +1,13 @@
 // host_window.h — app-shell window/context handoff seam.
 //
-// When MGB64's in-process app shell owns the SDL window + GL context, it
-// registers them here BEFORE booting the engine. platformInitSDL() then adopts
-// them instead of creating its own, so the launcher and the game render into
-// one window. When nothing is registered (automation/CLI path, or the bare
-// -DMGB64_APP=OFF engine), the engine creates its own window exactly as before
-// — the automation path stays byte-identical.
-#ifndef MGB64_HOST_WINDOW_H
-#define MGB64_HOST_WINDOW_H
+// When mdkr64's in-process app shell owns the SDL window and selected backend
+// context/device, it registers them here BEFORE booting the engine.
+// platformInitSDL() then adopts them instead of creating its own, so the
+// launcher and the game render into one window. When nothing is registered
+// (automation/CLI path, or the bare -DMDKR_APP=OFF engine), the engine creates
+// its own window exactly as before — the automation path stays byte-identical.
+#ifndef MDKR64_HOST_WINDOW_H
+#define MDKR64_HOST_WINDOW_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,8 +39,23 @@ void *platformHostWgpuQueue(void);          // WGPUQueue
 void *platformHostWgpuSurface(void);        // WGPUSurface
 int   platformHostWgpuSurfaceFormat(void);  // WGPUTextureFormat
 
+/* AppHost owns borrowed WebGPU roots. Native device recovery is a two-phase
+ * transaction so the engine can release every child of the failed device
+ * between candidate creation and root replacement. */
+enum PlatformHostWebGpuRecoveryPhase {
+    PLATFORM_HOST_WEBGPU_RECOVERY_PREPARE = 1,
+    PLATFORM_HOST_WEBGPU_RECOVERY_COMMIT = 2,
+    PLATFORM_HOST_WEBGPU_RECOVERY_ABORT = 3,
+};
+typedef int (*PlatformHostWebGpuRecoveryFn)(void *userdata, int phase);
+
+void platformSetHostWebGpuRecovery(
+    PlatformHostWebGpuRecoveryFn callback, void *userdata);
+int platformHasHostWebGpuRecovery(void);
+int platformRecoverHostWebGpu(int phase);
+
 #ifdef __cplusplus
 }
 #endif
 
-#endif  // MGB64_HOST_WINDOW_H
+#endif  // MDKR64_HOST_WINDOW_H

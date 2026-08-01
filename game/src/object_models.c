@@ -267,7 +267,10 @@ ModelInstance *model_instance_init(ObjectModel *model, s32 flags) {
     result->objModel = model;
     result->animationID = -1;
     result->animationFrame = -1;
+    result->animationFrameCount = 0;
+    result->headTilt = 0;
     result->animationTaskNum = 0;
+    result->animUpdateTimer = 0;
     // Shaded models need to be double buffered, so duplicate them.
     if (result->modelType != MODELTYPE_BASIC) {
         temp = 0;

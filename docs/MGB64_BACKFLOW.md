@@ -35,11 +35,12 @@ math; a production source census proves every real call site still uses the
 helper. MDKR mutates each required source fragment in memory and requires the
 census to fail, preventing a decorative static check from passing forever.
 
-## M4.5 WebGPU backend vendoring — nothing to back-port; two notes
-The WebGPU backend (gfx_webgpu*.c) was vendored from mgb64 **verbatim** and needed
-**zero source edits** to run in mdkr64 — it is a clean drop-in at the
-`GfxRenderingAPI` seam, exactly as designed. So there is no fix to send back. Two
-observations for the mgb64 side:
+## M4.5 WebGPU backend import — original bring-up notes
+The first M4.5 import of the WebGPU backend reached bring-up through mgb64's
+`GfxRenderingAPI` seam. It has since evolved substantially in this repository
+for DKR's lifecycle, presentation, recovery, and validation requirements, so the
+current files are not claimed to be byte-identical. Two observations from that
+initial integration remain useful for the mgb64 side:
 1. **De-coupling opportunity (optional):** gfx_webgpu.c hard-references mgb64-shell
    symbols the standalone engine doesn't strictly need — the ImGui overlay
    (platformOverlayRender/WantsInput), the minimap overlay
@@ -76,8 +77,8 @@ observations for the mgb64 side:
    "../gfx_pc.h"` for `struct GfxDimensions`/`gfx_current_dimensions` only. In mgb64
    that header drags the whole GE front-end surface into every backend TU. Splitting
    the shared types into a tiny `gfx_dimensions.h` (as our shim proves works) makes
-   the backends genuinely game-agnostic — this is exactly what made them verbatim-
-   reusable here, minus two `#ifdef` patches (see item 3).
+   the backends genuinely game-agnostic and keeps future ports smaller; this
+   import still needed two `#ifdef` patches (see item 3).
 
 3. **GE-specific heuristics inside `gfx_opengl.c`** — two auto-VI-filter heuristics
    in mgb64's `gfx_opengl.c` are GoldenEye-content-specific but live in the "generic"
@@ -1009,8 +1010,7 @@ resolve the colour from the register the combiner actually names.
 
 # Widescreen/FOV and projected-shadow findings (2026-07-25)
 
-Source investigation and implementation details are in
-`WIDESCREEN_SHADOW_IMPLEMENTATION_2026-07-25.md` (internal archive).
+The source investigation is preserved here alongside the implementation facts.
 MGB64 was inspected read-only at HEAD
 `f9fd34f4e245c1561a62669c8737b628e737e9db`; no changes were made there.
 
@@ -1203,9 +1203,7 @@ Keep user-facing aspect/FOV defaults reversible, and do not let host drawable
 state enter matching or simulation-visible structures.
 ## Preserved pre-implementation audit note (VIS-01/VIS-02)
 
-The complete evidence, citations, estimates, and acceptance matrices are in
-`the correctness/portability audit` (internal archive)
-under VIS-01 and VIS-02. Two parts should be carried between projects:
+Two parts of the VIS-01/VIS-02 findings should be carried between projects:
 
 1. **Treat widescreen as projection + visibility + draw-class policy, not a
    global X-coordinate trick.** MDKR64's world projection is simpler than BOND's,
@@ -1401,11 +1399,11 @@ sparks, explosions, and other effect billboards are still the right census:
 4. compare equal-height 4:3/16:9/21:9 captures and at least one changed-FOV arm;
 5. use a deliberate legacy/aspect regression as a positive control.
 
-MDKR's dependency-free gate measures the same golden-balloon art through both
-SAFE_2D and world-billboard paths in one frame. Fixed output is 99×36 for the HUD
-at every production aspect and 68×27 for the world motif at both 4:3 and 16:9;
-capped 21:9 and 75° FOV follow their analytic focal scales. The exact legacy arm
-remains 173×36 / 122×27 and must fail the production threshold
+MDKR's dependency-free gate measures the same golden-balloon art through the
+SAFE_2D and world-billboard paths at two deterministic approach frames. Fixed
+output is 99×36 for the HUD at every production aspect and 48×18 for the world
+motif at both 4:3 and 16:9; capped 21:9 and 75° FOV follow their analytic focal
+scales. The exact legacy arm remains 173×36 / 84×18 and must fail the production threshold
 ([check_widescreen_proportions.py](../tests/check_widescreen_proportions.py)).
 That paired-art pattern is broadly reusable when one asset can be found in two
 transform classes.
@@ -1775,9 +1773,11 @@ carry back are:
 - runtime telemetry for granted attribute/varying limits, shader-table overflow,
   and pipeline-creation failure.
 
-MDKR64's native policy is one device rebuild followed by a live OpenGL switch.
-MGB64 should adapt that to its own host/overlay ownership rather than copy the
-platform glue literally. Browser builds instead need a stable error UI. During
+MDKR64's native policy is one same-WebGPU device rebuild followed by a clean,
+terminal failure if recovery does not restore a usable backend; it never changes
+renderer families under live gameplay. MGB64 should adapt that fail-closed
+ownership policy to its own host/overlay lifecycle rather than copy platform
+glue literally. Browser builds instead need a stable error UI. During
 this wave MDKR64 discovered its C seam still called
 `window.mgb64ShowError`, but its actual shell defined no such handler; the error
 therefore remained a black canvas. MGB64 should verify — not infer — that its named

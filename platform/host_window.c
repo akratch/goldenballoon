@@ -47,3 +47,21 @@ void *platformHostWgpuDevice(void)       { return g_hostWgpuDevice; }
 void *platformHostWgpuQueue(void)        { return g_hostWgpuQueue; }
 void *platformHostWgpuSurface(void)      { return g_hostWgpuSurface; }
 int   platformHostWgpuSurfaceFormat(void){ return g_hostWgpuFormat; }
+
+static PlatformHostWebGpuRecoveryFn g_hostWgpuRecovery = NULL;
+static void *g_hostWgpuRecoveryUserdata = NULL;
+
+void platformSetHostWebGpuRecovery(
+        PlatformHostWebGpuRecoveryFn callback, void *userdata) {
+    g_hostWgpuRecovery = callback;
+    g_hostWgpuRecoveryUserdata = callback != NULL ? userdata : NULL;
+}
+
+int platformHasHostWebGpuRecovery(void) {
+    return g_hostWgpuRecovery != NULL;
+}
+
+int platformRecoverHostWebGpu(int phase) {
+    return g_hostWgpuRecovery != NULL
+        ? g_hostWgpuRecovery(g_hostWgpuRecoveryUserdata, phase) : 0;
+}

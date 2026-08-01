@@ -5,7 +5,8 @@
  * Responsibilities:
  *   - Create the window for whichever backend is active (GL 3.3 core via glad,
  *     or a Metal view / browser canvas for WebGPU) and tear it down cleanly,
- *     including the GL fallback path when WebGPU device creation fails.
+ *     including the explicitly selected GL diagnostic path. WebGPU failures
+ *     never switch renderers inside the live process.
  *   - Open game controllers, load SDL mappings, and drive the deterministic
  *     input-script fixtures the regression checks replay.
  *   - Own the frame boundary. The collapsed single-threaded game loop blocks in
@@ -20,6 +21,7 @@
  * Invariant: exactly one window and one backend context exist at a time, and
  * every SDL handle created here is released in platform_sdl_shutdown().
  */
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -42,13 +44,70 @@
  * when this yields. On the narrow ASYNCIFY_ADD spine (osRecvMesg reaches it via
  * direct calls). Models mgb64's platformWaitAnimationFrame. */
 EM_ASYNC_JS(void, platformWaitAnimationFrame, (void), {
+    while (document.visibilityState === 'hidden') {
+        await new Promise((resolve) => {
+            const visible = () => {
+                if (document.visibilityState !== 'hidden') {
+                    document.removeEventListener('visibilitychange', visible);
+                    resolve();
+                }
+            };
+            document.addEventListener('visibilitychange', visible);
+        });
+    }
     await new Promise((resolve) => requestAnimationFrame(resolve));
 });
+EM_ASYNC_JS(double, platformWaitSyntheticAnimationFrame, (void), {
+    return await globalThis.__mdkrWaitAnimationFrame();
+});
+EM_JS(int, platformAnimationFrameClockSynthetic, (void), {
+    return globalThis.__mdkrSyntheticAnimationFrameClock === true ? 1 : 0;
+});
+EM_JS(double, platformAnimationFrameClockDeltaNs, (void), {
+    const value = Number(globalThis.__mdkrLastAnimationFrameDeltaNs);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+});
+static uint64_t s_browserFrameNowNs;
+static uint64_t pace_host_ns(void);
+
+static void browser_record_animation_frame(double timestamp_ms) {
+    (void)timestamp_ms;
+    if (platformAnimationFrameClockSynthetic()) {
+        const double supplied_ns = platformAnimationFrameClockDeltaNs();
+        const uint64_t delta_ns =
+            supplied_ns > 0.0 && supplied_ns <= (double)UINT64_MAX
+                ? (uint64_t)supplied_ns : 0u;
+        if (UINT64_MAX - s_browserFrameNowNs < delta_ns) {
+            s_browserFrameNowNs = UINT64_MAX;
+        } else {
+            s_browserFrameNowNs += delta_ns;
+        }
+    } else {
+        /* Ordinary play keeps counting render/host work between callbacks;
+         * only the injected schedule owns a frozen per-opportunity clock. */
+        s_browserFrameNowNs = 0u;
+    }
+}
+
+static uint64_t browser_wait_animation_frame(void) {
+    if (platformAnimationFrameClockSynthetic()) {
+        browser_record_animation_frame(platformWaitSyntheticAnimationFrame());
+    } else {
+        platformWaitAnimationFrame();
+        s_browserFrameNowNs = 0u;
+    }
+    return pace_host_ns();
+}
 #endif
 #include <SDL.h>
 #include "platform_os.h"
+#include "app/app_brand.h"
+#include "user_paths.h"
 #include "pacing_policy.h"
 #include "present_sched.h"
+#include "gameplay_event_trace.h"
+#include "input_tick_queue.h"
+#include "input_consumption_trace.h"
 #include "video_config.h"
 #include "mdkr_bounds.h"
 #include "gfx_ptr.h"
@@ -69,7 +128,9 @@ EM_ASYNC_JS(void, platformWaitAnimationFrame, (void), {
 #endif
 
 int g_headlessFrames = -1;   /* -1 = run forever; >=0 = exit after N frames */
+int g_headlessTicks = -1;    /* -1 = frame budget; >=0 = exit after N ticks */
 int g_frameCounter   = 0;
+uint64_t g_surfaceFrameCounter = 0;
 const char *g_dumpFramesDir = NULL;  /* --dump-frames DIR (P6 PPM per frame) */
 static int s_exitRequested = 0;
 static int s_exitCode = 0;
@@ -147,6 +208,12 @@ static SDL_GLContext s_glctx  = NULL;
 static int           s_glReady = 0;
 static int           s_sdlReady = 0;
 static int           s_renderBackend = -1;
+static int           s_renderBackendUnavailable = 0;
+static int           s_surfaceRenderElided;
+static int           s_surfaceResumeRebasePending;
+static int           s_testMinimizeStart = -2;
+static int           s_testMinimizeEnd = -2;
+static int           s_testForcedMinimized;
 #ifdef MDKR_WEBGPU_BACKEND
 static SDL_MetalView s_metalView = NULL;   /* CAMetalLayer host for the WGPUSurface */
 #endif
@@ -157,46 +224,57 @@ static int           s_windowAdopted = 0;
 #endif
 
 /* ---- Render backend selection (M4.5) ------------------------------------ *
- * Resolved once from MDKR_RENDERER (webgpu|gl|metal), default webgpu. Validated
+ * Resolved once from MDKR_RENDERER (webgpu|gl|metal), default WebGPU. Validated
  * against the backends actually compiled in: webgpu needs MDKR_WEBGPU_BACKEND;
- * metal is not built in mdkr64 (gfx_metal.mm is Obj-C++, excluded), so it falls
- * back to GL. GL is always the guaranteed fallback. The choice drives BOTH the
+ * metal is not built in mdkr64 (gfx_metal.mm is Obj-C++, excluded), so that
+ * spelling selects WebGPU's Metal-backed implementation. GL remains available
+ * only as an explicit diagnostic selection. A WebGPU-disabled build is GL-only
+ * by construction, but an explicit WebGPU request still fails closed. The
+ * choice drives both the
  * window/context kind (platform_sdl_init) and the &gfx_*_api gfx_init receives
  * (main_pc), so it must be a single cached source of truth. */
 int mdkr_render_backend(void) {
     if (s_renderBackend >= 0) return s_renderBackend;
     const char *e = getenv("MDKR_RENDERER");
-    int want = MDKR_BACKEND_WEBGPU;   /* default: webgpu */
+#ifdef MDKR_WEBGPU_BACKEND
+    int want = MDKR_BACKEND_WEBGPU;   /* visually qualified native default */
+#else
+    int want = MDKR_BACKEND_GL;       /* this binary was built GL-only */
+#endif
     if (e && e[0]) {
         if      (!strcasecmp(e, "gl") || !strcasecmp(e, "opengl")) want = MDKR_BACKEND_GL;
         else if (!strcasecmp(e, "webgpu") || !strcasecmp(e, "wgpu")) want = MDKR_BACKEND_WEBGPU;
         else if (!strcasecmp(e, "metal")) want = MDKR_BACKEND_METAL;
         else {
             fprintf(stderr, "[mdkr64] MDKR_RENDERER='%s' unrecognized "
-                            "(webgpu|gl|metal); using webgpu.\n", e);
+                            "(webgpu|gl|metal); using the compiled default.\n", e);
+#ifdef MDKR_WEBGPU_BACKEND
             want = MDKR_BACKEND_WEBGPU;
+#else
+            want = MDKR_BACKEND_GL;
+#endif
         }
     }
-#ifndef MDKR_WEBGPU_BACKEND
-    if (want == MDKR_BACKEND_WEBGPU) {
-        fprintf(stderr, "[mdkr64] WebGPU backend not compiled in "
-                        "(MDKR_WEBGPU_BACKEND=OFF); falling back to GL.\n");
-        want = MDKR_BACKEND_GL;
-    }
-#endif
     if (want == MDKR_BACKEND_METAL) {
         /* Native Metal backend (gfx_metal.mm) is not compiled in mdkr64. */
         fprintf(stderr, "[mdkr64] Metal backend not available in mdkr64; "
-                        "use webgpu (Metal-backed via wgpu-native) or gl. "
-                        "Falling back to GL.\n");
-        want = MDKR_BACKEND_GL;
+                        "using WebGPU (Metal-backed via wgpu-native).\n");
+        want = MDKR_BACKEND_WEBGPU;
     }
+#ifndef MDKR_WEBGPU_BACKEND
+    if (want == MDKR_BACKEND_WEBGPU) {
+        fprintf(stderr, "[mdkr64] WebGPU was explicitly selected, but this "
+                        "build is OpenGL-only (MDKR_WEBGPU_BACKEND=OFF).\n");
+        s_renderBackendUnavailable = 1;
+    }
+#endif
     s_renderBackend = want;
     return s_renderBackend;
 }
 
-static void mdkr_render_backend_force_gl(void) {
-    s_renderBackend = MDKR_BACKEND_GL;
+int mdkr_render_backend_available(void) {
+    (void)mdkr_render_backend();
+    return !s_renderBackendUnavailable;
 }
 
 const char *mdkr_render_backend_name(void) {
@@ -210,10 +288,9 @@ const char *mdkr_render_backend_name(void) {
 /* ======================================================================== *
  *  Input — SDL keyboard / game controller / scripted -> OSContPad state.
  *
- *  The event pump (platform_input_pump) runs at the top of platform_frame_sync,
- *  i.e. BEFORE the synthesized retrace message, so the game reads fresh pad
- *  state on the frame it wakes for. osContGetReadData (stubs_dkr.c) copies from
- *  s_pads[] via platform_pad_buttons/platform_pad_stick.
+ *  The event pump captures host transitions on every presentation opportunity.
+ *  platform_input_commit_tick publishes one bounded queue sample per fixed
+ *  simulation ticket; presents never directly replace DKR-visible pad state.
  *
  *  N64 controller button bits — MUST match game/include/PR/os_cont.h CONT_*.
  * ======================================================================== */
@@ -235,8 +312,27 @@ const char *mdkr_render_backend_name(void) {
 #define DKR_MAXPADS 4
 #define STICK_FULL  80        /* menu deflection (spec: full ±80) */
 
-struct pad_state { unsigned int buttons; int stick_x, stick_y; };
+struct pad_state {
+    unsigned int buttons;
+    int stick_x, stick_y;
+    int present;
+};
 static struct pad_state s_pads[DKR_MAXPADS];
+static MdkrInputTickQueue s_inputQueue;
+static int s_inputQueueReady;
+
+struct controller_source_state {
+    Uint8 buttons[SDL_CONTROLLER_BUTTON_MAX];
+    Sint16 axes[SDL_CONTROLLER_AXIS_MAX];
+};
+static struct controller_source_state s_controllerSource[DKR_MAXPADS];
+static Uint8 s_keyboardDown[SDL_NUM_SCANCODES];
+static int s_gameInputSuppressed;
+#ifdef __EMSCRIPTEN__
+static struct pad_state s_browserTouchSource;
+#endif
+
+static void input_capture_live(uint64_t target_tick);
 
 static SDL_GameController *s_gc[DKR_MAXPADS] = { NULL, NULL, NULL, NULL };
 static int s_quitRequested = 0;
@@ -299,18 +395,32 @@ EM_JS(int, browser_gamepad_rumble, (int instanceId, int enabled), {
  * game frame.
  */
 EM_JS(void, browser_touch_pad_read,
-      (unsigned int *buttons, int *stickX, int *stickY), {
+      (unsigned int *buttons, int *stickX, int *stickY, int *enabled), {
     const pad = (typeof Module !== "undefined") && Module.__mdkrTouchPad;
     const active = pad && pad.enabled !== false;
     HEAPU32[buttons >> 2] = active ? (Number(pad.buttons) >>> 0) : 0;
     HEAP32[stickX >> 2] = active ? (Number(pad.stickX) | 0) : 0;
     HEAP32[stickY >> 2] = active ? (Number(pad.stickY) | 0) : 0;
+    HEAP32[enabled >> 2] = active ? 1 : 0;
+});
+EM_JS(int, browser_touch_pad_pop,
+      (unsigned int *buttons, int *stickX, int *stickY, int *enabled), {
+    const pad = (typeof Module !== "undefined") && Module.__mdkrTouchPad;
+    const events = pad && Array.isArray(pad.events) ? pad.events : null;
+    if (!events || events.length === 0) return 0;
+    const event = events.shift();
+    const active = event && event.enabled !== false;
+    HEAPU32[buttons >> 2] = active ? (Number(event.buttons) >>> 0) : 0;
+    HEAP32[stickX >> 2] = active ? (Number(event.stickX) | 0) : 0;
+    HEAP32[stickY >> 2] = active ? (Number(event.stickY) | 0) : 0;
+    HEAP32[enabled >> 2] = active ? 1 : 0;
+    return 1;
 });
 #endif
 
 /* ---- Scripted input (--input-script FILE) ------------------------------- *
  * Lines: `frame TOKEN[+TOKEN...] [holdFrames] [P1..P4]`. Injected into the named
- * controller port for [frame, frame+hold) present-frames; the port field is
+ * controller port for [frame, frame+hold) authoritative ticks; the port field is
  * optional and defaults to P1, so every pre-existing single-pad script parses
  * unchanged. Blank lines and `#` comments ignored. Directional tokens drive the
  * analog stick (DKR menus read the stick, not the D-pad, for navigation) and
@@ -436,6 +546,200 @@ void platform_sdl_set_initial_size(int w, int h) {
 /* Bring up a complete GL window/context/loader tuple. A partial tuple is torn
  * down and reported as failure: game code must never run against an inert
  * renderer. Desktop only — the web build is WebGPU-only. */
+#define GL_FRAME_IN_FLIGHT_MAX 2u
+static int s_glSwapEffective = 1;
+static GLsync s_glPresentFences[GL_FRAME_IN_FLIGHT_MAX];
+static unsigned s_glFenceHead;
+static unsigned s_glFencesInFlight;
+static unsigned s_glFenceHighWater;
+static uint64_t s_glFrameSubmissions;
+static uint64_t s_glFrameCompletions;
+static uint64_t s_glBackpressureWaits;
+static uint64_t s_glBackpressurePolls;
+static uint64_t s_glBackpressureFailures;
+static uint64_t s_glBackpressureWaitNs;
+static uint64_t s_glFirstSubmitNs;
+static uint64_t s_glLastSubmitNs;
+
+static void sdl_gl_backpressure_reset_stats(void) {
+    memset(s_glPresentFences, 0, sizeof(s_glPresentFences));
+    s_glFenceHead = 0u;
+    s_glFencesInFlight = 0u;
+    s_glFenceHighWater = 0u;
+    s_glFrameSubmissions = 0u;
+    s_glFrameCompletions = 0u;
+    s_glBackpressureWaits = 0u;
+    s_glBackpressurePolls = 0u;
+    s_glBackpressureFailures = 0u;
+    s_glBackpressureWaitNs = 0u;
+    s_glFirstSubmitNs = 0u;
+    s_glLastSubmitNs = 0u;
+}
+
+static uint64_t sdl_gl_monotonic_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * UINT64_C(1000000000) +
+           (uint64_t)ts.tv_nsec;
+}
+
+static bool sdl_gl_retire_oldest(bool wait) {
+    GLsync fence;
+    GLenum status;
+    unsigned attempts = 0u;
+    uint64_t started = 0u;
+
+    if (s_glFencesInFlight == 0u) {
+        return true;
+    }
+    fence = s_glPresentFences[s_glFenceHead];
+    if (fence == NULL) {
+        s_glFenceHead = (s_glFenceHead + 1u) % GL_FRAME_IN_FLIGHT_MAX;
+        s_glFencesInFlight--;
+        s_glBackpressureFailures++;
+        return false;
+    }
+    if (wait) {
+        started = sdl_gl_monotonic_ns();
+        s_glBackpressureWaits++;
+    }
+    do {
+        status = glClientWaitSync(
+            fence, wait ? GL_SYNC_FLUSH_COMMANDS_BIT : 0,
+            wait ? UINT64_C(100000000) : 0u);
+        s_glBackpressurePolls++;
+        attempts++;
+    } while (wait && status == GL_TIMEOUT_EXPIRED && attempts < 20u);
+    if (wait) {
+        s_glBackpressureWaitNs += sdl_gl_monotonic_ns() - started;
+    }
+    if (status == GL_ALREADY_SIGNALED ||
+        status == GL_CONDITION_SATISFIED) {
+        glDeleteSync(fence);
+        s_glPresentFences[s_glFenceHead] = NULL;
+        s_glFenceHead = (s_glFenceHead + 1u) % GL_FRAME_IN_FLIGHT_MAX;
+        s_glFencesInFlight--;
+        s_glFrameCompletions++;
+        return true;
+    }
+    if (!wait && status == GL_TIMEOUT_EXPIRED) {
+        return false;
+    }
+
+    fprintf(stderr,
+            "[gl] GPU completion fence failed (status=0x%x attempts=%u)\n",
+            (unsigned)status, attempts);
+    s_glBackpressureFailures++;
+    glDeleteSync(fence);
+    s_glPresentFences[s_glFenceHead] = NULL;
+    s_glFenceHead = (s_glFenceHead + 1u) % GL_FRAME_IN_FLIGHT_MAX;
+    s_glFencesInFlight--;
+    platform_request_exit(EXIT_FAILURE);
+    return false;
+}
+
+static void sdl_gl_backpressure_after_swap(void) {
+    uint64_t now;
+    unsigned slot;
+
+    now = sdl_gl_monotonic_ns();
+    if (s_glFirstSubmitNs == 0u) {
+        s_glFirstSubmitNs = now;
+    }
+    s_glLastSubmitNs = now;
+    s_glFrameSubmissions++;
+    if (s_glSwapEffective > 0) {
+        return; /* FIFO swap itself is the queue bound. */
+    }
+
+    if (glFenceSync == NULL || glClientWaitSync == NULL ||
+        glDeleteSync == NULL) {
+        /* A 3.3 core context should always expose sync objects. glFinish is a
+         * conservative bounded fallback instead of silently allowing queue
+         * growth on an unusual loader/driver. */
+        glFinish();
+        s_glFrameCompletions++;
+        s_glBackpressureWaits++;
+        s_glBackpressureFailures++;
+        return;
+    }
+    while (s_glFencesInFlight > 0u &&
+           sdl_gl_retire_oldest(false)) {
+        /* Retire every completion already observable without blocking. */
+    }
+    if (s_glFencesInFlight >= GL_FRAME_IN_FLIGHT_MAX) {
+        (void)sdl_gl_retire_oldest(true);
+    }
+    slot = (s_glFenceHead + s_glFencesInFlight) % GL_FRAME_IN_FLIGHT_MAX;
+    s_glPresentFences[slot] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    if (s_glPresentFences[slot] == NULL) {
+        glFinish();
+        s_glFrameCompletions++;
+        s_glBackpressureWaits++;
+        s_glBackpressureFailures++;
+        return;
+    }
+    s_glFencesInFlight++;
+    if (s_glFencesInFlight > s_glFenceHighWater) {
+        s_glFenceHighWater = s_glFencesInFlight;
+    }
+    glFlush();
+    if (s_glFencesInFlight >= GL_FRAME_IN_FLIGHT_MAX) {
+        (void)sdl_gl_retire_oldest(true);
+    }
+}
+
+static void sdl_gl_backpressure_shutdown(void) {
+    uint64_t rate_millihz = 0u;
+    while (s_glFencesInFlight > 0u) {
+        (void)sdl_gl_retire_oldest(true);
+    }
+    if (s_glFrameSubmissions > 1u &&
+        s_glLastSubmitNs > s_glFirstSubmitNs) {
+        const uint64_t elapsed = s_glLastSubmitNs - s_glFirstSubmitNs;
+        const uint64_t intervals = s_glFrameSubmissions - 1u;
+        if (intervals <= UINT64_MAX / UINT64_C(1000000000000)) {
+            rate_millihz = intervals * UINT64_C(1000000000000) / elapsed;
+        }
+    }
+    fprintf(stderr,
+            "[GL-BACKPRESSURE] cap=%u opportunities=%d submitted=%llu "
+            "held=%llu completed=%llu "
+            "inflight=%u highwater=%u waits=%llu polls=%llu failures=%llu "
+            "waitns=%llu rateMilliHz=%llu effectiveSwap=%d swapBound=%d\n",
+            GL_FRAME_IN_FLIGHT_MAX,
+            g_frameCounter,
+            (unsigned long long)s_glFrameSubmissions,
+            (unsigned long long)(
+                (uint64_t)g_frameCounter > s_glFrameSubmissions
+                    ? (uint64_t)g_frameCounter - s_glFrameSubmissions : 0u),
+            (unsigned long long)s_glFrameCompletions,
+            s_glFencesInFlight, s_glFenceHighWater,
+            (unsigned long long)s_glBackpressureWaits,
+            (unsigned long long)s_glBackpressurePolls,
+            (unsigned long long)s_glBackpressureFailures,
+            (unsigned long long)s_glBackpressureWaitNs,
+            (unsigned long long)rate_millihz,
+            s_glSwapEffective, s_glSwapEffective > 0 ? 1 : 0);
+}
+
+static void sdl_apply_gl_present_policy(void) {
+    const int requested =
+        (g_headlessFrames >= 0 ||
+         !present_sched_backend_vsync_enabled()) ? 0 : 1;
+    sdl_gl_backpressure_reset_stats();
+    const int result = SDL_GL_SetSwapInterval(requested);
+    const int effective = SDL_GL_GetSwapInterval();
+    s_glSwapEffective = effective;
+
+    fprintf(stderr,
+            "[PRESENT-MODE] backend=gl policy=%s rate=%u "
+            "requestedSwap=%d effectiveSwap=%d supported=%d\n",
+            present_sched_present_policy_name(),
+            present_sched_present_rate(), requested, effective,
+            result == 0 && effective == requested ? 1 : 0);
+}
+
 static int sdl_init_gl(Uint32 base_flags) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
@@ -443,7 +747,7 @@ static int sdl_init_gl(Uint32 base_flags) {
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
 
-    s_window = SDL_CreateWindow("mdkr64 — Diddy Kong Racing (native)",
+    s_window = SDL_CreateWindow(MDKR_BRAND_NAME " — OpenGL diagnostics",
                                 SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                 s_initialWindowWidth, s_initialWindowHeight,
                                 base_flags | SDL_WINDOW_OPENGL);
@@ -469,7 +773,7 @@ static int sdl_init_gl(Uint32 base_flags) {
         g_sdlWindow = NULL;
         return -1;
     }
-    SDL_GL_SetSwapInterval(g_headlessFrames >= 0 ? 0 : 1);
+    sdl_apply_gl_present_policy();
     s_glReady = 1;
     printf("[SDL] GL ready: %s / %s\n",
            (const char *)glGetString(GL_VERSION),
@@ -492,46 +796,6 @@ static int sdl_should_hide_window(void) {
     return g_headlessFrames >= 0 || getenv("MDKR64_HIDDEN") != NULL;
 }
 
-int platform_sdl_fallback_to_gl(void) {
-#ifdef __EMSCRIPTEN__
-    return -1;
-#else
-    Uint32 base_flags;
-    if (!s_sdlReady) {
-        return -1;
-    }
-#ifdef MDKR_WEBGPU_BACKEND
-    /*
-     * The WebGPU surface refers to this native window/CAMetalLayer. Unconfigure
-     * and detach it before either host object is destroyed.
-     */
-    gfx_webgpu_prepare_gl_fallback();
-#endif
-#if defined(MDKR_WEBGPU_BACKEND) && defined(__APPLE__)
-    if (s_metalView) {
-        SDL_Metal_DestroyView(s_metalView);
-        s_metalView = NULL;
-    }
-#endif
-    if (s_glctx) {
-        SDL_GL_DeleteContext(s_glctx);
-        s_glctx = NULL;
-    }
-    if (s_window) {
-        SDL_DestroyWindow(s_window);
-        s_window = NULL;
-    }
-    g_sdlWindow = NULL;
-    s_glReady = 0;
-    mdkr_render_backend_force_gl();
-    base_flags = SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE;
-    if (sdl_should_hide_window()) {
-        base_flags |= SDL_WINDOW_HIDDEN;
-    }
-    return sdl_init_gl(base_flags);
-#endif
-}
-
 int platform_sdl_surface_presentable(void) {
 #ifdef __EMSCRIPTEN__
     return 1;
@@ -545,6 +809,18 @@ int platform_sdl_surface_presentable(void) {
 }
 
 int platform_sdl_init(void) {
+    s_surfaceRenderElided = 0;
+    s_surfaceResumeRebasePending = 0;
+    s_testMinimizeStart = -2;
+    s_testMinimizeEnd = -2;
+    s_testForcedMinimized = 0;
+    present_sched_set_surface_elided(false);
+    if (!mdkr_render_backend_available()) {
+        fprintf(stderr,
+                "[SDL] requested renderer is unavailable; stopping without "
+                "an automatic fallback.\n");
+        return -1;
+    }
     if (SDL_WasInit(SDL_INIT_VIDEO) == 0 &&
         SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
         fprintf(stderr, "[SDL] init failed: %s\n", SDL_GetError());
@@ -569,9 +845,29 @@ int platform_sdl_init(void) {
         s_windowAdopted = 1;
         s_glctx = (SDL_GLContext)platformHostGLContext();
         if (s_glctx != NULL) {
-            /* GL host: the shell's context is already current and glad is
-             * already loaded in this process, so the GL path is live. */
-            SDL_GL_MakeCurrent(s_window, s_glctx);
+            /* GL host: make the borrowed context current and load GLAD here,
+             * exactly as sdl_init_gl() does for an engine-owned context.
+             *
+             * On macOS the app shell deliberately uses the system OpenGL
+             * declarations and therefore does not initialize GLAD.  Assuming
+             * otherwise left every function used only by the presentation
+             * pacer (glFenceSync/glClientWaitSync/glFinish) NULL.  FIFO hid
+             * that until Video.FrameLimit=uncapped selected the explicit GPU
+             * queue bound, which then called the NULL glFinish fallback.
+             * Treat a borrowed context as a complete context/loader tuple too:
+             * gameplay must never start with a partially live GL API. */
+            if (SDL_GL_MakeCurrent(s_window, s_glctx) != 0) {
+                fprintf(stderr, "[SDL] adopted GL context could not be made current: %s\n",
+                        SDL_GetError());
+                s_glctx = NULL;
+                return -1;
+            }
+            if (!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress)) {
+                fprintf(stderr, "[SDL] glad load failed for adopted GL context\n");
+                s_glctx = NULL;
+                return -1;
+            }
+            sdl_apply_gl_present_policy();
             s_glReady = 1;
             printf("[SDL] adopted the app shell's GL window\n");
         } else {
@@ -604,7 +900,7 @@ int platform_sdl_init(void) {
             s_initialWindowHeight = canvasHeight;
         }
     }
-    s_window = SDL_CreateWindow("mdkr64", SDL_WINDOWPOS_CENTERED,
+    s_window = SDL_CreateWindow(MDKR_BRAND_NAME, SDL_WINDOWPOS_CENTERED,
                                 SDL_WINDOWPOS_CENTERED,
                                 s_initialWindowWidth, s_initialWindowHeight,
                                 base_flags);
@@ -630,12 +926,12 @@ int platform_sdl_init(void) {
 #endif
         const char *forceWindowFailure = getenv("MDKR_TEST_WEBGPU_WINDOW_FAIL");
         if (forceWindowFailure != NULL && forceWindowFailure[0] == '1') {
-            /* Test-only fault injection for the window-kind fallback. A real
+            /* Test-only fault injection for fail-closed window creation. A real
              * SDL failure reaches the same branch; no-op unless explicitly set. */
             s_window = NULL;
-            fprintf(stderr, "[SDL] WebGPU window failure forced for fallback test.\n");
+            fprintf(stderr, "[SDL] WebGPU window failure forced for fail-closed test.\n");
         } else {
-            s_window = SDL_CreateWindow("mdkr64 — Diddy Kong Racing (native, WebGPU)",
+            s_window = SDL_CreateWindow(MDKR_BRAND_NAME " — WebGPU",
                                         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                         s_initialWindowWidth, s_initialWindowHeight,
                                         flags);
@@ -645,21 +941,25 @@ int platform_sdl_init(void) {
                 (forceWindowFailure != NULL && forceWindowFailure[0] == '1')
                     ? "forced by MDKR_TEST_WEBGPU_WINDOW_FAIL"
                     : SDL_GetError();
-            fprintf(stderr, "[SDL] WebGPU window creation failed: %s - "
-                            "falling back to GL.\n", reason);
-            mdkr_render_backend_force_gl();
-            return sdl_init_gl(base_flags);
+            fprintf(stderr,
+                    "[SDL] WebGPU window creation failed: %s; stopping without "
+                    "an automatic GL fallback. Set MDKR_RENDERER=gl explicitly "
+                    "for diagnostics.\n",
+                    reason);
+            return -1;
         }
         g_sdlWindow = s_window;
 #ifdef __APPLE__
         s_metalView = SDL_Metal_CreateView(s_window);
         if (!s_metalView) {
-            fprintf(stderr, "[SDL] Metal view creation failed: %s - "
-                            "falling back to GL.\n", SDL_GetError());
+            fprintf(stderr,
+                    "[SDL] Metal view creation failed: %s; stopping without "
+                    "an automatic GL fallback. Set MDKR_RENDERER=gl explicitly "
+                    "for diagnostics.\n",
+                    SDL_GetError());
             SDL_DestroyWindow(s_window);
             s_window = NULL; g_sdlWindow = NULL;
-            mdkr_render_backend_force_gl();
-            return sdl_init_gl(base_flags);
+            return -1;
         }
 #endif
         if (getenv("MDKR_TEST_VISIBLE_HEADLESS") != NULL) {
@@ -926,6 +1226,8 @@ static void gc_try_open(int deviceIndex) {
         if (!s_gc[i]) {
             s_gc[i] = SDL_GameControllerOpen(deviceIndex);
             if (s_gc[i]) {
+                memset(&s_controllerSource[i], 0,
+                       sizeof(s_controllerSource[i]));
                 printf("[SDL] gamepad P%d: %s\n", i + 1,
                        SDL_GameControllerName(s_gc[i]));
             }
@@ -944,6 +1246,8 @@ static void gc_close_instance(SDL_JoystickID which) {
                 (void)platform_pad_rumble(i, 0);
                 SDL_GameControllerClose(s_gc[i]);
                 s_gc[i] = NULL;
+                memset(&s_controllerSource[i], 0,
+                       sizeof(s_controllerSource[i]));
                 printf("[SDL] gamepad P%d disconnected\n", i + 1);
                 return;
             }
@@ -952,25 +1256,85 @@ static void gc_close_instance(SDL_JoystickID which) {
 }
 
 void platform_input_init(void) {
+    MdkrInputSample initial[MDKR_INPUT_PORTS];
+    char packaged_mapping_path[4096];
+    char executable_mapping_path[4096];
+    char *executable_base = NULL;
+    const char *paths[4];
+    size_t path_count = 0u;
     /* Layered on top of SDL's built-in DB (last write wins), so a curated entry
-     * can override a stale built-in mapping. Non-fatal if the file is absent. */
-    const char *paths[] = {
-        "lib/sdl_gamecontrollerdb/gamecontrollerdb.txt",
-        "gamecontrollerdb.txt",
-    };
-    for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+     * can override a stale built-in mapping. Packaged Resources are immutable
+     * and addressed absolutely; source-tree/CWD fallbacks remain for developer
+     * builds. Non-fatal if every candidate is absent. */
+    if (mdkr_user_paths_is_packaged() &&
+        mdkr_user_resource_path(
+            "gamecontrollerdb.txt", packaged_mapping_path,
+            sizeof(packaged_mapping_path))) {
+        paths[path_count++] = packaged_mapping_path;
+    }
+    /* Portable Windows/Linux packages place the curated database beside the
+     * executable.  Resolve that location independently of the caller's CWD;
+     * relative ROM arguments deliberately continue to use the caller's CWD. */
+    executable_base = SDL_GetBasePath();
+    if (executable_base != NULL) {
+        int written = snprintf(
+            executable_mapping_path, sizeof(executable_mapping_path),
+            "%sgamecontrollerdb.txt", executable_base);
+        if (written > 0 && (size_t)written < sizeof(executable_mapping_path)) {
+            paths[path_count++] = executable_mapping_path;
+        }
+    }
+    paths[path_count++] = "lib/sdl_gamecontrollerdb/gamecontrollerdb.txt";
+    paths[path_count++] = "gamecontrollerdb.txt";
+    memset(initial, 0, sizeof(initial));
+    initial[0].present = true;
+    mdkr_input_tick_queue_init(&s_inputQueue, initial);
+    s_inputQueueReady = 1;
+    memset(s_keyboardDown, 0, sizeof(s_keyboardDown));
+    if (s_sdlReady) {
+        const Uint8 *keyboard = SDL_GetKeyboardState(NULL);
+        if (keyboard != NULL) {
+            memcpy(s_keyboardDown, keyboard, sizeof(s_keyboardDown));
+        }
+    }
+    for (size_t i = 0; i < path_count; i++) {
         int n = SDL_GameControllerAddMappingsFromFile(paths[i]);
         if (n > 0) {
             printf("[SDL] loaded %d controller mappings from %s\n", n, paths[i]);
             break;
         }
     }
+    if (executable_base != NULL) {
+        SDL_free(executable_base);
+    }
     for (int i = 0; i < SDL_NumJoysticks(); i++) gc_try_open(i);
+    for (int i = 0; i < DKR_MAXPADS; i++) {
+        s_pads[i].buttons = 0;
+        s_pads[i].stick_x = 0;
+        s_pads[i].stick_y = 0;
+        s_pads[i].present = i == 0 || s_gc[i] != NULL;
+    }
+    input_capture_live(1u);
 }
 
-/* Read one SDL game controller into N64 button bits + stick. */
-static void gc_read(SDL_GameController *gc, struct pad_state *p) {
-    if (!gc) return;
+static int gc_port_for_instance(SDL_JoystickID which) {
+    int port;
+    for (port = 0; port < DKR_MAXPADS; port++) {
+        SDL_Joystick *joystick;
+        if (s_gc[port] == NULL) {
+            continue;
+        }
+        joystick = SDL_GameControllerGetJoystick(s_gc[port]);
+        if (joystick != NULL && SDL_JoystickInstanceID(joystick) == which) {
+            return port;
+        }
+    }
+    return -1;
+}
+
+/* Translate one maintained SDL controller source into an N64 pad sample. */
+static void gc_read(
+    const struct controller_source_state *source, struct pad_state *p) {
     struct { SDL_GameControllerButton b; unsigned int bit; } map[] = {
         { SDL_CONTROLLER_BUTTON_A,             N64_A },
         { SDL_CONTROLLER_BUTTON_B,             N64_B },
@@ -985,21 +1349,21 @@ static void gc_read(SDL_GameController *gc, struct pad_state *p) {
         { SDL_CONTROLLER_BUTTON_DPAD_RIGHT,    N64_DR },
     };
     for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
-        if (SDL_GameControllerGetButton(gc, map[i].b)) p->buttons |= map[i].bit;
+        if (source->buttons[map[i].b]) p->buttons |= map[i].bit;
     }
     /* Triggers: LT = Z (brake/reverse convention shared with menus), RT = Z too. */
-    if (SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT)  > 8000) p->buttons |= N64_Z;
-    if (SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 8000) p->buttons |= N64_Z;
+    if (source->axes[SDL_CONTROLLER_AXIS_TRIGGERLEFT]  > 8000) p->buttons |= N64_Z;
+    if (source->axes[SDL_CONTROLLER_AXIS_TRIGGERRIGHT] > 8000) p->buttons |= N64_Z;
     /* Right stick -> C-buttons (menus/camera). */
-    int rx = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_RIGHTX);
-    int ry = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_RIGHTY);
+    int rx = source->axes[SDL_CONTROLLER_AXIS_RIGHTX];
+    int ry = source->axes[SDL_CONTROLLER_AXIS_RIGHTY];
     if (rx < -12000) p->buttons |= N64_CL;
     if (rx >  12000) p->buttons |= N64_CR;
     if (ry < -12000) p->buttons |= N64_CU;
     if (ry >  12000) p->buttons |= N64_CD;
     /* Left stick -> analog (N64 range ±80; SDL axis is ±32767, +Y is down). */
-    int lx = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTX);
-    int ly = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTY);
+    int lx = source->axes[SDL_CONTROLLER_AXIS_LEFTX];
+    int ly = source->axes[SDL_CONTROLLER_AXIS_LEFTY];
     int sx = (lx * STICK_FULL) / 32767;
     int sy = (-ly * STICK_FULL) / 32767;
     if (sx < -STICK_FULL) sx = -STICK_FULL; if (sx > STICK_FULL) sx = STICK_FULL;
@@ -1010,8 +1374,7 @@ static void gc_read(SDL_GameController *gc, struct pad_state *p) {
 
 /* Read the keyboard (P1 only) into N64 button bits + stick. */
 static void kbd_read(struct pad_state *p) {
-    const Uint8 *k = SDL_GetKeyboardState(NULL);
-    if (!k) return;
+    const Uint8 *k = s_keyboardDown;
     /*
      * DEFAULT KEYBOARD LAYOUT (v0.1). Chosen for a kart racer, not inherited from
      * the generic N64-emulator default, and documented on the web page's Controls
@@ -1072,16 +1435,52 @@ static void kbd_read(struct pad_state *p) {
 }
 
 #ifdef __EMSCRIPTEN__
-static void browser_touch_read(struct pad_state *p) {
+static void browser_touch_clamp(struct pad_state *p) {
+    p->stick_x = p->stick_x < -STICK_FULL ? -STICK_FULL :
+                 p->stick_x >  STICK_FULL ?  STICK_FULL : p->stick_x;
+    p->stick_y = p->stick_y < -STICK_FULL ? -STICK_FULL :
+                 p->stick_y >  STICK_FULL ?  STICK_FULL : p->stick_y;
+    p->buttons &=
+        (N64_A | N64_B | N64_Z | N64_START |
+         N64_DU | N64_DD | N64_DL | N64_DR |
+         N64_L | N64_R | N64_CU | N64_CD | N64_CL | N64_CR);
+}
+
+static void browser_touch_read_current(struct pad_state *p) {
     unsigned int buttons = 0;
     int stickX = 0;
     int stickY = 0;
+    int enabled = 0;
 
-    browser_touch_pad_read(&buttons, &stickX, &stickY);
-    stickX = stickX < -STICK_FULL ? -STICK_FULL :
-             stickX >  STICK_FULL ?  STICK_FULL : stickX;
-    stickY = stickY < -STICK_FULL ? -STICK_FULL :
-             stickY >  STICK_FULL ?  STICK_FULL : stickY;
+    browser_touch_pad_read(&buttons, &stickX, &stickY, &enabled);
+    p->buttons = enabled ? buttons : 0;
+    p->stick_x = enabled ? stickX : 0;
+    p->stick_y = enabled ? stickY : 0;
+    p->present = enabled;
+    browser_touch_clamp(p);
+}
+
+static int browser_touch_pop(struct pad_state *p) {
+    unsigned int buttons = 0;
+    int stickX = 0;
+    int stickY = 0;
+    int enabled = 0;
+    if (!browser_touch_pad_pop(&buttons, &stickX, &stickY, &enabled)) {
+        return 0;
+    }
+    p->buttons = enabled ? buttons : 0;
+    p->stick_x = enabled ? stickX : 0;
+    p->stick_y = enabled ? stickY : 0;
+    p->present = enabled;
+    browser_touch_clamp(p);
+    return 1;
+}
+
+static void browser_touch_merge(
+    const struct pad_state *touch, struct pad_state *p) {
+    unsigned int buttons = touch->buttons;
+    int stickX = touch->stick_x;
+    int stickY = touch->stick_y;
 
     /* The analog stick is the authoritative steering source. Mirror a decisive
      * deflection onto the D-pad as the keyboard path does because a few menus
@@ -1091,10 +1490,7 @@ static void browser_touch_read(struct pad_state *p) {
     if (stickY < -24) buttons |= N64_DD;
     if (stickY >  24) buttons |= N64_DU;
 
-    p->buttons |= buttons &
-        (N64_A | N64_B | N64_Z | N64_START |
-         N64_DU | N64_DD | N64_DL | N64_DR |
-         N64_L | N64_R | N64_CU | N64_CD | N64_CL | N64_CR);
+    p->buttons |= buttons;
 
     /* A resting touch stick must not erase a physical pad. If both are active,
      * retain the larger deflection independently on each axis. */
@@ -1103,12 +1499,107 @@ static void browser_touch_read(struct pad_state *p) {
 }
 #endif
 
-/* Build the per-frame pad state. Called at the top of platform_frame_sync,
- * before the retrace message is synthesized (spec ordering). */
+static void input_clear_game_sources(void) {
+    memset(s_keyboardDown, 0, sizeof(s_keyboardDown));
+    memset(s_controllerSource, 0, sizeof(s_controllerSource));
+}
+
+static void input_capture_live(uint64_t target_tick) {
+    int port;
+    if (!s_inputQueueReady) {
+        return;
+    }
+    for (port = 0; port < DKR_MAXPADS; port++) {
+        struct pad_state live = { 0, 0, 0, 0 };
+        MdkrInputSample sample;
+        live.present = port == 0 || s_gc[port] != NULL;
+        if (!s_gameInputSuppressed) {
+            if (port == 0) {
+                kbd_read(&live);
+            }
+            if (s_gc[port] != NULL) {
+                gc_read(&s_controllerSource[port], &live);
+            }
+#ifdef __EMSCRIPTEN__
+            if (port == 0) {
+                browser_touch_merge(&s_browserTouchSource, &live);
+            }
+#endif
+        }
+        sample.buttons = (uint16_t)live.buttons;
+        sample.stick_x = (int8_t)live.stick_x;
+        sample.stick_y = (int8_t)live.stick_y;
+        sample.present = live.present != 0;
+        mdkr_input_tick_queue_capture(
+            &s_inputQueue, (unsigned)port, target_tick, sample);
+    }
+}
+
+/* PAC-007: native surface suspension state. Ordinary finite hidden tests keep
+ * rendering offscreen; an interactive window (or the explicit visible-headless
+ * lifecycle gate) elides GPU walks while SDL says it is hidden/minimized. */
+static void platform_surface_visibility_update(void) {
+#ifndef __EMSCRIPTEN__
+    bool forced = false;
+    bool automation_hidden;
+    bool elide;
+    if (s_testMinimizeStart == -2) {
+        const char *value = getenv("MDKR_TEST_MINIMIZE_TICKS");
+        int start = -1;
+        int end = -1;
+        char tail = '\0';
+        if (value != NULL &&
+            sscanf(value, "%d:%d%c", &start, &end, &tail) == 2 &&
+            start >= 1 && end > start && end <= 1000000) {
+            s_testMinimizeStart = start;
+            s_testMinimizeEnd = end;
+        } else {
+            s_testMinimizeStart = -1;
+            s_testMinimizeEnd = -1;
+        }
+    }
+    if (s_testMinimizeStart >= 0) {
+        forced = g_simTickCounter >= s_testMinimizeStart &&
+                 g_simTickCounter < s_testMinimizeEnd;
+        if ((int)forced != s_testForcedMinimized) {
+            s_testForcedMinimized = forced ? 1 : 0;
+            if (s_window != NULL) {
+                if (forced) {
+                    SDL_MinimizeWindow(s_window);
+                } else {
+                    SDL_RestoreWindow(s_window);
+                }
+            }
+        }
+    }
+    automation_hidden = g_headlessFrames >= 0 &&
+        getenv("MDKR_TEST_VISIBLE_HEADLESS") == NULL;
+    elide = s_testMinimizeStart >= 0 ? forced :
+        (!automation_hidden && getenv("MDKR64_HIDDEN") == NULL &&
+         !platform_sdl_surface_presentable());
+    if ((int)elide != s_surfaceRenderElided) {
+        s_surfaceRenderElided = elide ? 1 : 0;
+        present_sched_set_surface_elided(elide);
+        if (!elide) {
+            s_surfaceResumeRebasePending = 1;
+        }
+        fprintf(stderr,
+                "[SURFACE-PACING] presentable=%d renderElided=%d "
+                "resumeRebase=%d tick=%d frame=%d\n",
+                elide ? 0 : 1, elide ? 1 : 0,
+                elide ? 0 : 1, g_simTickCounter, g_frameCounter);
+    }
+#endif
+}
+
+/* Capture host input transitions. This may run many times between simulation
+ * ticks; it never directly replaces the DKR-visible s_pads snapshot. */
 void platform_input_pump(void) {
+    const uint64_t target_tick = present_sched_input_target_tick();
     if (s_sdlReady) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            int input_changed = 0;
 #ifdef MDKR_APP
             /*
              * Input-swallowing contract with the in-game overlay.
@@ -1124,6 +1615,17 @@ void platform_input_pump(void) {
              */
             int overlayActive = platformOverlayWantsInput();
             platformOverlayProcessEvent(&e);
+            {
+                const int overlayNow = platformOverlayWantsInput();
+                if (overlayActive != overlayNow) {
+                    /* Both toggle edges are swallowed. Opening capture
+                     * publishes one neutral game sample; closing remains
+                     * neutral until a fresh post-overlay host edge arrives. */
+                    s_gameInputSuppressed = overlayNow;
+                    input_clear_game_sources();
+                    input_capture_live(target_tick);
+                }
+            }
             if (overlayActive || platformOverlayWantsInput()) {
                 switch (e.type) {
                     case SDL_KEYDOWN:
@@ -1151,52 +1653,132 @@ void platform_input_pump(void) {
                     s_quitRequested = 1;
                     break;
                 case SDL_KEYDOWN:
+                    if (e.key.keysym.scancode >= 0 &&
+                        e.key.keysym.scancode < SDL_NUM_SCANCODES) {
+                        s_keyboardDown[e.key.keysym.scancode] = 1;
+                        input_changed = 1;
+                    }
                     if (e.key.keysym.sym == SDLK_ESCAPE && g_headlessFrames < 0)
                         s_quitRequested = 1;   /* Esc = host quit (interactive) */
+                    break;
+                case SDL_KEYUP:
+                    if (e.key.keysym.scancode >= 0 &&
+                        e.key.keysym.scancode < SDL_NUM_SCANCODES) {
+                        s_keyboardDown[e.key.keysym.scancode] = 0;
+                        input_changed = 1;
+                    }
                     break;
                 case SDL_WINDOWEVENT:
                     /* The dimensions are sampled after present in
                      * platform_frame_sync; consuming the event here keeps SDL's
                      * state current without reconfiguring a surface mid-frame. */
+                    if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+                        memset(s_keyboardDown, 0, sizeof(s_keyboardDown));
+                        input_changed = 1;
+                    }
                     break;
                 case SDL_CONTROLLERDEVICEADDED:
                     gc_try_open(e.cdevice.which);
+                    input_changed = 1;
                     break;
                 case SDL_CONTROLLERDEVICEREMOVED:
                     gc_close_instance(e.cdevice.which);
+                    input_changed = 1;
                     break;
+                case SDL_CONTROLLERBUTTONDOWN:
+                case SDL_CONTROLLERBUTTONUP: {
+                    const int port = gc_port_for_instance(e.cbutton.which);
+                    if (port >= 0 &&
+                        e.cbutton.button < SDL_CONTROLLER_BUTTON_MAX) {
+                        s_controllerSource[port].buttons[e.cbutton.button] =
+                            e.type == SDL_CONTROLLERBUTTONDOWN;
+                        input_changed = 1;
+                    }
+                    break;
+                }
+                case SDL_CONTROLLERAXISMOTION: {
+                    const int port = gc_port_for_instance(e.caxis.which);
+                    if (port >= 0 && e.caxis.axis < SDL_CONTROLLER_AXIS_MAX) {
+                        s_controllerSource[port].axes[e.caxis.axis] =
+                            e.caxis.value;
+                        input_changed = 1;
+                    }
+                    break;
+                }
                 default:
                     break;
             }
+            if (input_changed) {
+                input_capture_live(target_tick);
+            }
         }
     }
-
-    for (int i = 0; i < DKR_MAXPADS; i++) {
-        s_pads[i].buttons = 0;
-        s_pads[i].stick_x = 0;
-        s_pads[i].stick_y = 0;
-    }
-    /* P1: keyboard + first gamepad; P2..P4: their gamepads only (structural). */
-    if (s_sdlReady) {
-        kbd_read(&s_pads[0]);
-        for (int i = 0; i < DKR_MAXPADS; i++) gc_read(s_gc[i], &s_pads[i]);
-    }
+    platform_surface_visibility_update();
 #ifdef __EMSCRIPTEN__
-    browser_touch_read(&s_pads[0]);
+    /* JS pointer callbacks append bounded snapshots without re-entering wasm.
+     * Drain them in order so a complete tap between rAF callbacks survives;
+     * then sample current state as the analog/latest-value backstop. */
+    while (browser_touch_pop(&s_browserTouchSource)) {
+        input_capture_live(target_tick);
+    }
+    browser_touch_read_current(&s_browserTouchSource);
 #endif
-    /*
-     * Scripted input is authored against the AUTHORITATIVE TICK index, not the
-     * present counter. While one tick is one present the two are identical, and
-     * every existing fixture is unaffected; once the presentation subloop runs
-     * N presents per tick, g_frameCounter counts images while the script must
-     * keep describing what the player did on tick k. Entries carry their own
-     * target port (default P1), so pass the whole pad array.
-     */
-    script_apply(s_pads, g_simTickCounter);
+    /* Sample touch/current source state even when this opportunity carried no
+     * discrete SDL event. The queue coalesces unchanged/analog-only samples. */
+    input_capture_live(target_tick);
 
     if (s_quitRequested) {
         platform_request_exit(0);
     }
+}
+
+void platform_input_commit_tick(uint64_t ticket) {
+    MdkrInputSample published[MDKR_INPUT_PORTS];
+    unsigned port;
+    if (!s_inputQueueReady) {
+        return;
+    }
+    mdkr_input_tick_queue_consume(&s_inputQueue, ticket, published);
+    for (port = 0; port < DKR_MAXPADS; port++) {
+        s_pads[port].buttons = published[port].buttons;
+        s_pads[port].stick_x = published[port].stick_x;
+        s_pads[port].stick_y = published[port].stick_y;
+        s_pads[port].present = published[port].present ||
+            (s_scriptPresentMask & (1u << port)) != 0u;
+    }
+    /* Scripts are already authored in authoritative-tick space. Merge them
+     * only here, once per ticket, so presentation count cannot move an edge. */
+    script_apply(s_pads, g_simTickCounter);
+}
+
+void platform_input_queue_summary(void) {
+    unsigned pending = 0;
+    unsigned port;
+    if (!s_inputQueueReady || !input_consumption_trace_enabled()) {
+        return;
+    }
+    for (port = 0; port < MDKR_INPUT_PORTS; port++) {
+        pending += mdkr_input_tick_queue_pending_edges(&s_inputQueue, port);
+    }
+    fprintf(stderr,
+            "[INPUTQ-SUMMARY] captures=%llu ticks=%llu edges=%llu "
+            "stretched=%llu analog=%llu coalesced=%llu presence=%llu "
+            "overflow=%llu reordered=%llu maxedge=%llu maxanalog=%llu "
+            "pending=%u edgecap=%u samplecap=%u\n",
+            (unsigned long long)s_inputQueue.stats.captures,
+            (unsigned long long)s_inputQueue.stats.ticks,
+            (unsigned long long)s_inputQueue.stats.button_edges,
+            (unsigned long long)s_inputQueue.stats.stretched_edges,
+            (unsigned long long)s_inputQueue.stats.analog_samples,
+            (unsigned long long)s_inputQueue.stats.analog_coalesced,
+            (unsigned long long)s_inputQueue.stats.presence_edges,
+            (unsigned long long)s_inputQueue.stats.overflow_neutralizations,
+            (unsigned long long)s_inputQueue.stats.reordered_targets,
+            (unsigned long long)s_inputQueue.stats.max_button_depth,
+            (unsigned long long)s_inputQueue.stats.max_analog_depth,
+            pending, MDKR_INPUT_EDGE_CAPACITY,
+            MDKR_INPUT_SAMPLE_CAPACITY);
+    fflush(stderr);
 }
 
 void platform_sdl_present(void) {
@@ -1209,9 +1791,13 @@ void platform_sdl_present(void) {
          * before the swap. The WebGPU backend has its own overlay pass inside
          * wgpu_end_frame (gfx_webgpu.c); GL has no such seam, so this is it.
          * No-op when no overlay hooks are registered. */
-        platformOverlayRender();
+        (void)platformOverlayRender();
 #endif
         SDL_GL_SwapWindow(s_window);
+        g_surfaceFrameCounter++;
+#ifndef __EMSCRIPTEN__
+        sdl_gl_backpressure_after_swap();
+#endif
     }
     /* WebGPU has no swap here: wgpu_end_frame already presented the surface
      * (WGPU_COMPAT_PRESENT) inside gfx_end_frame. Nothing to do. */
@@ -1226,6 +1812,11 @@ void platform_sdl_shutdown(void) {
      * under the launcher. Release only what the engine itself created.
      */
     if (s_windowAdopted) {
+#ifndef __EMSCRIPTEN__
+        if (s_glReady && s_glctx != NULL) {
+            sdl_gl_backpressure_shutdown();
+        }
+#endif
         for (int i = 0; i < DKR_MAXPADS; i++) {
             if (s_gc[i]) {
                 (void)platform_pad_rumble(i, 0);
@@ -1243,7 +1834,15 @@ void platform_sdl_shutdown(void) {
         return;
     }
 #endif
-    if (s_glctx)  { SDL_GL_DeleteContext(s_glctx); s_glctx = NULL; }
+    if (s_glctx)  {
+#ifndef __EMSCRIPTEN__
+        if (s_glReady) {
+            sdl_gl_backpressure_shutdown();
+        }
+#endif
+        SDL_GL_DeleteContext(s_glctx);
+        s_glctx = NULL;
+    }
 #if defined(MDKR_WEBGPU_BACKEND) && defined(__APPLE__)
     if (s_metalView) { SDL_Metal_DestroyView(s_metalView); s_metalView = NULL; }
 #endif
@@ -1316,6 +1915,7 @@ void platform_sdl_shutdown(void) {
  * ======================================================================== */
 int g_viLastFields     = 1;   /* fields injected == updateRate the game will see */
 int g_viLastWallFields = 1;   /* true wall/synthetic fields elapsed (speed ref)  */
+static int s_viLastPaceRebased = 0;
 
 enum { PACE_REALTIME, PACE_SYNTH };
 static int      s_paceMode        = -1;      /* lazy-init */
@@ -1324,12 +1924,236 @@ static int      s_synthFields     = 2;
 static int      s_minFields       = 2;
 static int      s_fieldHz         = 60;
 static MdkrPacingClock s_paceClock;
-static uint64_t s_paceCumWall     = 0;       /* cumulative wall fields (trace) */
+static uint64_t s_paceCumWall     = 0;       /* cumulative host fields (trace) */
+static uint64_t s_paceUnitResidual = 0;      /* sub-field carry for telemetry */
+static uint64_t s_simCumFields    = 0;       /* fixed-ticket COUNTER source */
+static unsigned s_testRebaseEvery = 0;       /* deterministic suspension gate */
+static uint64_t s_paceSamples     = 0;
+
+/* Local-only independent-oracle replay. Shipping converts elapsed time into
+ * exact fixed tickets. This opt-in schedule answers the separate diagnostic
+ * question of whether native gameplay agrees when it receives the real ROM's
+ * observed variable 1..6-field update widths. */
+typedef struct MdkrOracleFieldEntry {
+    uint64_t tick;
+    uint8_t fields;
+} MdkrOracleFieldEntry;
+
+static MdkrOracleFieldEntry *s_oracleFieldEntries;
+static size_t s_oracleFieldCount;
+static size_t s_oracleFieldCursor;
+static int s_oracleFieldConfigured = -1;
+static uint64_t s_oracleFieldApplied;
+
+static void oracle_field_schedule_fatal(const char *path, unsigned line,
+                                        const char *reason) {
+    fprintf(stderr, "[FATAL] oracle update-field schedule %s:%u: %s\n",
+            path != NULL ? path : "(null)", line, reason);
+    fflush(stderr);
+    exit(EXIT_FAILURE);
+}
+
+static void oracle_field_schedule_init(void) {
+    const char *path;
+    FILE *file;
+    char line[256];
+    unsigned line_number = 0u;
+    size_t capacity = 0u;
+
+    if (s_oracleFieldConfigured >= 0) {
+        return;
+    }
+    s_oracleFieldConfigured = 0;
+    path = getenv("MDKR_ORACLE_UPDATE_FIELDS");
+    if (path == NULL || path[0] == '\0') {
+        return;
+    }
+    file = fopen(path, "r");
+    if (file == NULL) {
+        oracle_field_schedule_fatal(path, 0u, "cannot open file");
+    }
+    while (fgets(line, sizeof(line), file) != NULL) {
+        char *cursor = line;
+        char *end;
+        unsigned long long parsed_tick;
+        unsigned long parsed_fields;
+        MdkrOracleFieldEntry *grown;
+
+        line_number++;
+        if (strchr(line, '\n') == NULL && !feof(file)) {
+            fclose(file);
+            oracle_field_schedule_fatal(path, line_number,
+                                        "line exceeds 255 bytes");
+        }
+        end = strchr(cursor, '#');
+        if (end != NULL) {
+            *end = '\0';
+        }
+        while (*cursor == ' ' || *cursor == '\t' ||
+               *cursor == '\r' || *cursor == '\n') {
+            cursor++;
+        }
+        if (*cursor == '\0') {
+            continue;
+        }
+        errno = 0;
+        parsed_tick = strtoull(cursor, &end, 10);
+        if (errno != 0 || end == cursor || *cursor == '-') {
+            fclose(file);
+            oracle_field_schedule_fatal(path, line_number,
+                                        "expected an integer tick");
+        }
+        cursor = end;
+        errno = 0;
+        parsed_fields = strtoul(cursor, &end, 10);
+        if (errno != 0 || end == cursor || parsed_fields < 1u ||
+            parsed_fields > MDKR_PACING_MAX_FIELDS) {
+            fclose(file);
+            oracle_field_schedule_fatal(
+                path, line_number, "fields must be an integer in 1..6");
+        }
+        while (*end == ' ' || *end == '\t' ||
+               *end == '\r' || *end == '\n') {
+            end++;
+        }
+        if (*end != '\0') {
+            fclose(file);
+            oracle_field_schedule_fatal(path, line_number,
+                                        "unexpected trailing data");
+        }
+        if (s_oracleFieldCount != 0u &&
+            (s_oracleFieldEntries[s_oracleFieldCount - 1u].tick == UINT64_MAX ||
+             parsed_tick !=
+                 s_oracleFieldEntries[s_oracleFieldCount - 1u].tick + 1u)) {
+            fclose(file);
+            oracle_field_schedule_fatal(
+                path, line_number,
+                "ticks must be strictly increasing and contiguous");
+        }
+        if (s_oracleFieldCount == capacity) {
+            size_t next = capacity != 0u ? capacity * 2u : 1024u;
+            if (s_oracleFieldCount >= 1000000u) {
+                fclose(file);
+                oracle_field_schedule_fatal(path, line_number,
+                                            "entry limit exceeded");
+            }
+            if (next > 1000000u) {
+                next = 1000000u;
+            }
+            grown = realloc(s_oracleFieldEntries,
+                            next * sizeof(*s_oracleFieldEntries));
+            if (grown == NULL) {
+                fclose(file);
+                oracle_field_schedule_fatal(path, line_number,
+                                            "allocation failed");
+            }
+            s_oracleFieldEntries = grown;
+            capacity = next;
+        }
+        s_oracleFieldEntries[s_oracleFieldCount].tick =
+            (uint64_t)parsed_tick;
+        s_oracleFieldEntries[s_oracleFieldCount].fields =
+            (uint8_t)parsed_fields;
+        s_oracleFieldCount++;
+    }
+    if (ferror(file)) {
+        fclose(file);
+        oracle_field_schedule_fatal(path, line_number, "read failed");
+    }
+    fclose(file);
+    if (s_oracleFieldCount == 0u) {
+        oracle_field_schedule_fatal(path, line_number,
+                                    "schedule contains no entries");
+    }
+    s_oracleFieldConfigured = 1;
+    fprintf(stderr,
+            "[ORACLE-SCHEDULE] loaded=%zu first=%llu last=%llu path=%s\n",
+            s_oracleFieldCount,
+            (unsigned long long)s_oracleFieldEntries[0].tick,
+            (unsigned long long)
+                s_oracleFieldEntries[s_oracleFieldCount - 1u].tick,
+            path);
+}
+
+int platform_oracle_update_fields(uint64_t tick, int *fields) {
+    oracle_field_schedule_init();
+    if (!s_oracleFieldConfigured || fields == NULL ||
+        s_oracleFieldCursor >= s_oracleFieldCount) {
+        return 0;
+    }
+    while (s_oracleFieldCursor < s_oracleFieldCount &&
+           s_oracleFieldEntries[s_oracleFieldCursor].tick < tick) {
+        s_oracleFieldCursor++;
+    }
+    if (s_oracleFieldCursor >= s_oracleFieldCount ||
+        s_oracleFieldEntries[s_oracleFieldCursor].tick != tick) {
+        return 0;
+    }
+    *fields = (int)s_oracleFieldEntries[s_oracleFieldCursor].fields;
+    s_oracleFieldCursor++;
+    s_oracleFieldApplied++;
+    return 1;
+}
+
+int platform_oracle_update_fields_finish(void) {
+    int complete = 1;
+
+    oracle_field_schedule_init();
+    if (s_oracleFieldConfigured) {
+        complete = s_oracleFieldApplied == (uint64_t)s_oracleFieldCount;
+        fprintf(stderr,
+                "[ORACLE-SCHEDULE] applied=%llu total=%zu complete=%d\n",
+                (unsigned long long)s_oracleFieldApplied,
+                s_oracleFieldCount, complete);
+        if (!complete) {
+            fprintf(stderr,
+                    "[FATAL] oracle update-field schedule was not consumed "
+                    "completely\n");
+        }
+    }
+    free(s_oracleFieldEntries);
+    s_oracleFieldEntries = NULL;
+    s_oracleFieldCount = 0u;
+    s_oracleFieldCursor = 0u;
+    /* Finalization is idempotent. A second cleanup must not reload the same
+     * environment-named schedule and falsely report that it was never used. */
+    s_oracleFieldConfigured = 0;
+    s_oracleFieldApplied = 0u;
+    return complete;
+}
 
 static uint64_t pace_host_ns(void) {
+#ifdef __EMSCRIPTEN__
+    /* Browser work within one opportunity observes one rAF timestamp. This is
+     * both the browser's real display clock and the deterministic schedule
+     * harness seam; do not mix a second performance.now() opinion into it. */
+    if (s_browserFrameNowNs != 0u) {
+        return s_browserFrameNowNs;
+    }
+#endif
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+static void pace_credit_units(uint64_t units) {
+    uint64_t total;
+    uint64_t fields;
+
+    if (UINT64_MAX - s_paceUnitResidual < units) {
+        total = UINT64_MAX;
+    } else {
+        total = s_paceUnitResidual + units;
+    }
+    fields = total / UINT64_C(1000000000);
+    s_paceUnitResidual = total % UINT64_C(1000000000);
+    if (UINT64_MAX - s_paceCumWall < fields) {
+        s_paceCumWall = UINT64_MAX;
+    } else {
+        s_paceCumWall += fields;
+    }
+    g_viLastWallFields = fields > (uint64_t)INT_MAX
+        ? INT_MAX : (int)fields;
 }
 
 static void pace_lazy_init(void) {
@@ -1365,12 +2189,25 @@ static void pace_lazy_init(void) {
      * and the elapsed-field count is derived from real (rAF-timed) wall clock, so
      * DKR's updateRate frameskip compensation keeps speed correct in-browser. */
     s_paceMode = PACE_REALTIME;
+    if (platformAnimationFrameClockSynthetic() &&
+        s_browserFrameNowNs == 0u) {
+        /* The injector owns an exact logical timeline from this epoch onward.
+         * Each rAF callback advances it only by its supplied rational delta;
+         * real startup work cannot leak into the first interval. */
+        s_browserFrameNowNs = pace_host_ns();
+    }
 #endif
     if ((e = getenv("MDKR_PACE_REALTIME")) && atoi(e) != 0) s_paceMode = PACE_REALTIME;
     e = getenv("MDKR_SYNTH_FIELDS");
     s_synthFields = mdkr_pacing_synthetic_fields(
         e != NULL ? atoi(e) : 0, s_minFields, MDKR_PACING_MAX_FIELDS);
     if ((e = getenv("MDKR_VI_PACE")) && strcasecmp(e, "off") == 0) s_paceCompensate = 0;
+    if ((e = getenv("MDKR_TEST_PACE_REBASE_EVERY")) != NULL) {
+        int parsed = atoi(e);
+        if (parsed > 0 && parsed <= 1000000) {
+            s_testRebaseEvery = (unsigned)parsed;
+        }
+    }
     MDKR_TRACE("pace init: mode=%s cadence=%s minFields=%d compensate=%d "
                "synthFields=%d fieldHz=%d sourceFieldHz=%d",
                s_paceMode == PACE_REALTIME ? "realtime" : "synth",
@@ -1378,7 +2215,7 @@ static void pace_lazy_init(void) {
                s_fieldHz, platform_source_field_hz());
 }
 
-static void pace_sleep_until(uint64_t target_ns) {
+static uint64_t pace_sleep_until(uint64_t target_ns) {
     uint64_t now = pace_host_ns();
 #ifdef __EMSCRIPTEN__
     /* The browser cannot block a thread; suspend to requestAnimationFrame (via
@@ -1388,8 +2225,7 @@ static void pace_sleep_until(uint64_t target_ns) {
      * Stop within ~2 ms of the target: another whole vsync would overshoot, and
      * the grid is absolute so finishing slightly early is phase lead, not drift. */
     do {
-        platformWaitAnimationFrame();
-        now = pace_host_ns();
+        now = browser_wait_animation_frame();
     } while (now + 2000000ULL < target_ns);
 #else
     while (now < target_ns) {
@@ -1401,6 +2237,7 @@ static void pace_sleep_until(uint64_t target_ns) {
         now = pace_host_ns();
     }
 #endif
+    return now;
 }
 
 /* Return the field count the just-completed frame represents (>=1), pacing to
@@ -1410,34 +2247,57 @@ static void pace_sleep_until(uint64_t target_ns) {
 int platform_vi_pace_measure(void) {
     pace_lazy_init();
     int wall;   /* true elapsed fields */
+    const bool forced_rebase = s_surfaceResumeRebasePending != 0;
 
+    s_viLastPaceRebased = 0;
+    s_paceSamples++;
     if (s_paceMode == PACE_SYNTH) {
         wall = s_synthFields;
+        if (forced_rebase) {
+            wall = s_minFields;
+            s_viLastPaceRebased = 1;
+            s_surfaceResumeRebasePending = 0;
+        } else if (s_testRebaseEvery != 0u &&
+            s_paceSamples % s_testRebaseEvery == 0u) {
+            /* Deterministic suspension/resume injector. The gap itself is
+             * intentionally absent; the fresh interval is what gameplay may
+             * observe. Shipping behavior is untouched unless the test-only
+             * environment variable is explicitly armed. */
+            wall = s_minFields;
+            s_viLastPaceRebased = 1;
+        }
     } else {
         uint64_t now = pace_host_ns();
+        if (forced_rebase) {
+            (void)mdkr_pacing_clock_init(
+                &s_paceClock, s_fieldHz, s_minFields,
+                MDKR_PACING_MAX_FIELDS);
+            s_surfaceResumeRebasePending = 0;
+        }
         uint64_t target = mdkr_pacing_clock_target(&s_paceClock, now);
         int rebased = 0;
 #ifdef __EMSCRIPTEN__
         /* Web: yield EVERY frame (pace_sleep_until guarantees >=1 rAF), even
          * when the frame overran the configured floor — otherwise a heavy
          * frame would never suspend and the tab would hang. */
-        pace_sleep_until(target);
-        now = pace_host_ns();
+        now = pace_sleep_until(target);
 #else
         if (now < target) {
-            pace_sleep_until(target);
-            now = pace_host_ns();
+            now = pace_sleep_until(target);
         }
 #endif
         wall = mdkr_pacing_clock_commit(&s_paceClock, now, &rebased);
-        if (rebased) {
+        if (rebased || forced_rebase) {
+            /* Suspension time is not gameplay time. Begin a fresh authored
+             * interval instead of turning the clamped stall into catch-up. */
+            wall = s_minFields;
+            s_viLastPaceRebased = 1;
             MDKR_TRACE("pace rebase: now=%llu fieldHz=%d",
                        (unsigned long long)now, s_fieldHz);
         }
     }
 
-    s_paceCumWall += (uint64_t)wall;
-    g_viLastWallFields = wall;
+    pace_credit_units((uint64_t)wall * UINT64_C(1000000000));
     g_viLastFields = s_paceCompensate ? wall : 1;
     return g_viLastFields;
 }
@@ -1460,6 +2320,15 @@ int platform_pace_field_hz(void) {
     return s_fieldHz;
 }
 
+int platform_sim_tick_fields(void) {
+    pace_lazy_init();
+    return s_minFields;
+}
+
+int platform_vi_pace_rebased(void) {
+    return s_viLastPaceRebased;
+}
+
 int platform_vi_pace_compensating(void) {
     pace_lazy_init();
     return s_paceCompensate;
@@ -1471,82 +2340,112 @@ int platform_vi_pace_compensating(void) {
  * AND it is the only call that paces. Under N presents per tick those split.
  * The TICK floor (s_minFields) is untouched — it is what keeps authored physics
  * at its authored rate, and this path changes presentation only. What is added
- * is a second, finer floor for the individual presents inside one tick.
- *
- * Engagement is deliberately narrow. The present period must be a whole number
- * of source fields, at least one, and strictly finer than the tick floor:
- *   MDKR_PRESENT_RATE=60 at 60 Hz NTSC -> 1 field/present, 2 presents/tick.
- *   MDKR_PRESENT_RATE=30 -> 2 fields/present == the tick floor -> not engaged,
- *                           behaviour identical to an unset rate.
- *   MDKR_PRESENT_RATE=120 -> half a field per present, which the field-grid
- *                           pacing clock cannot express -> not engaged.
- * Rates finer than the field grid (120/144/VRR/uncapped) would need the pacer
- * to leave the integer-field grid entirely, which it cannot do; refusing them
- * here is honest rather than silently rounding them to 60.
+ * is an absolute rational nanosecond deadline for capped native presentation.
+ * Elapsed time is converted to SimSched units (one field == 1e9), preserving
+ * exact sub-field alpha and audio time at 120/144/165/240 Hz. `uncapped` has no
+ * software deadline; `display` follows rAF in the browser and the detected
+ * display cadence plus backend sync on native.
  */
-static int s_presentFields = -1;      /* -1 unresolved, 0 == not engaged */
-static MdkrPacingClock s_presentClock;
+static int s_presentActive = -1;
+static MdkrPresentPolicyKind s_presentKind = MDKR_PRESENT_ORIGINAL;
+static unsigned s_presentEffectiveRate;
+static bool s_presentSoftwareDeadline;
+static MdkrPresentDeadlineClock s_presentDeadline;
+static MdkrPresentDeadlineClock s_occludedDeadline;
+static bool s_occludedDeadlineReady;
+static uint64_t s_presentLastNs;
+static uint64_t s_presentSyntheticPhase;
+
+static unsigned present_display_rate(void) {
+#ifdef __EMSCRIPTEN__
+    return 0u; /* measured directly from requestAnimationFrame timestamps */
+#else
+    SDL_DisplayMode mode;
+    int display = s_window != NULL ? SDL_GetWindowDisplayIndex(s_window) : 0;
+    if (display >= 0 && SDL_GetCurrentDisplayMode(display, &mode) == 0 &&
+        mode.refresh_rate >= (int)MDKR_PRESENT_RATE_MIN &&
+        mode.refresh_rate <= (int)MDKR_PRESENT_RATE_MAX) {
+        return (unsigned)mode.refresh_rate;
+    }
+    return 60u;
+#endif
+}
 
 static void present_pace_lazy_init(void) {
-    unsigned rate;
-    int fields;
-
-    if (s_presentFields >= 0) {
+    if (s_presentActive >= 0) {
         return;
     }
     pace_lazy_init();
-    s_presentFields = 0;
-    rate = present_sched_present_rate();
-    if (rate == 0) {
+    s_presentKind = present_sched_present_kind();
+    /* Every non-original policy owns host opportunity pacing, even when a
+     * numeric cap is at/below an enhanced simulation tick rate. Replay is a
+     * separate decision and remains armed only above the tick rate. */
+    s_presentActive = s_presentKind != MDKR_PRESENT_ORIGINAL ? 1 : 0;
+    if (!s_presentActive) {
         return;
     }
-    if ((unsigned)s_fieldHz % rate != 0) {
-        MDKR_TRACE("present pace: rate=%u does not divide fieldHz=%d; "
-                   "subloop not engaged", rate, s_fieldHz);
+    if (s_presentKind == MDKR_PRESENT_CAPPED) {
+        s_presentEffectiveRate = present_sched_present_rate();
+        s_presentSoftwareDeadline = true;
+    } else if (s_presentKind == MDKR_PRESENT_DISPLAY) {
+        s_presentEffectiveRate = present_display_rate();
+    } else if (s_presentKind == MDKR_PRESENT_UNCAPPED &&
+               s_paceMode == PACE_SYNTH) {
+        /* Deterministic headless stand-in: 1 ms opportunities. Live uncapped
+         * has no limiter and measures the actual loop duration below. */
+        s_presentEffectiveRate = 1000u;
+    }
+    if (s_presentSoftwareDeadline && s_presentEffectiveRate != 0u &&
+        !mdkr_present_deadline_init(
+            &s_presentDeadline, s_presentEffectiveRate)) {
+        s_presentActive = 0;
         return;
     }
-    fields = s_fieldHz / (int)rate;
-    if (fields < 1 || fields >= s_minFields) {
-        MDKR_TRACE("present pace: rate=%u gives %d field(s)/present against a "
-                   "%d-field tick floor; subloop not engaged",
-                   rate, fields, s_minFields);
-        return;
-    }
-    if (!mdkr_pacing_clock_init(&s_presentClock, s_fieldHz, fields,
-                                MDKR_PACING_MAX_FIELDS)) {
-        return;
-    }
-    s_presentFields = fields;
-    MDKR_TRACE("present pace: rate=%u -> %d field(s)/present against a "
-               "%d-field tick", rate, fields, s_minFields);
+    s_presentLastNs = pace_host_ns();
+    MDKR_TRACE("present pace: policy=%s rate=%u tickFields=%d fieldHz=%d",
+               present_sched_present_policy_name(), s_presentEffectiveRate,
+               s_minFields, s_fieldHz);
 }
 
 int platform_present_subloop_fields(void) {
     present_pace_lazy_init();
-    return s_presentFields;
+    return s_presentActive;
 }
 
 /*
- * Pace ONE present and return the true source fields it occupied. Unlike
+ * Pace one present and return exact source-field units. Unlike
  * platform_vi_pace_measure() this never applies s_minFields: the tick floor is
  * enforced by the accumulator that consumes these counts, not by sleeping.
  */
-int platform_vi_present_pace(void) {
-    int wall;
+uint64_t platform_vi_present_pace_units(void) {
+    uint64_t units;
 
     present_pace_lazy_init();
-    if (s_presentFields <= 0) {
+    s_viLastPaceRebased = 0;
+    if (!s_presentActive) {
         /* Not engaged: one present is one tick, exactly as before. */
         (void)platform_vi_pace_measure();
-        return g_viLastWallFields;
+        return (uint64_t)g_viLastWallFields * UINT64_C(1000000000);
+    }
+    if (s_surfaceResumeRebasePending) {
+        s_surfaceResumeRebasePending = 0;
+        s_presentLastNs = pace_host_ns();
+        s_occludedDeadlineReady = false;
+        if (s_presentSoftwareDeadline) {
+            (void)mdkr_present_deadline_init(
+                &s_presentDeadline, s_presentEffectiveRate);
+        }
+        units = (uint64_t)s_minFields * UINT64_C(1000000000);
+        s_viLastPaceRebased = 1;
+        pace_credit_units(units);
+        return units;
     }
     if (s_paceMode == PACE_SYNTH) {
         /*
-         * NOTE the asymmetry with the realtime arm below: this does NOT add to
-         * s_paceCumWall.
-         *
-         * s_paceCumWall is the deterministic COUNTER source in synthetic mode
-         * (osGetCount, stubs_dkr.c), and osGetCount carries a monotonic clamp
+         * Per-present wall fields advance host-time telemetry below, but they
+         * do NOT advance s_simCumFields. That is the deterministic COUNTER
+         * source in synthetic mode (osGetCount, stubs_dkr.c), and osGetCount
+         * carries a monotonic clamp
          * that fabricates +1 whenever it is called twice without the clock
          * having moved. So the VALUE game code reads depends on where the clock
          * advances relative to the tick, not merely on how much it advances.
@@ -1555,52 +2454,107 @@ int platform_vi_present_pace(void) {
          * MDKR_PRESENT_RATE unset and =60 diverged from tick 1345 onward, at
          * exactly the 270-object to 96-object transition.
          *
-         * So in synthetic mode the tick's whole field budget is committed once
-         * per tick by platform_vi_tick_clock_commit(), in the same place the
-         * non-subloop path commits it, and the per-present count returned here
-         * feeds only the presentation accumulator. In realtime mode osGetCount
-         * reads the host clock instead and this cannot arise.
+         * So in synthetic mode one fixed ticket is committed by
+         * platform_vi_tick_clock_commit(), while the per-present count returned
+         * here feeds host time and the authoritative accumulator. In realtime
+         * mode osGetCount reads the host clock instead.
          */
-        wall = s_presentFields;
+        const uint64_t units_per_second =
+            (uint64_t)s_fieldHz * UINT64_C(1000000000);
+        s_presentSyntheticPhase += units_per_second;
+        units = s_presentSyntheticPhase / s_presentEffectiveRate;
+        s_presentSyntheticPhase %= s_presentEffectiveRate;
     } else {
         uint64_t now = pace_host_ns();
-        uint64_t target = mdkr_pacing_clock_target(&s_presentClock, now);
-        int rebased = 0;
-#ifdef __EMSCRIPTEN__
-        /* Web yields every present; the subloop body is present-and-yield only,
-         * so each interpolated present gets its own rAF. */
-        pace_sleep_until(target);
-        now = pace_host_ns();
-#else
-        if (now < target) {
-            pace_sleep_until(target);
-            now = pace_host_ns();
+        uint64_t target = now;
+        bool deadline = s_presentSoftwareDeadline;
+#ifndef __EMSCRIPTEN__
+        if (present_sched_render_elided()) {
+            const unsigned tick_rate =
+                (unsigned)s_fieldHz / (unsigned)s_minFields;
+            if (!s_occludedDeadlineReady) {
+                s_occludedDeadlineReady = mdkr_present_deadline_init(
+                    &s_occludedDeadline, tick_rate) != 0;
+            }
+            if (s_occludedDeadlineReady) {
+                deadline = true;
+                target = mdkr_present_deadline_target(
+                    &s_occludedDeadline, now);
+            }
+        } else {
+            s_occludedDeadlineReady = false;
         }
 #endif
-        wall = mdkr_pacing_clock_commit(&s_presentClock, now, &rebased);
-        s_paceCumWall += (uint64_t)wall;
+        if (deadline) {
+            if (!present_sched_render_elided()) {
+                target = mdkr_present_deadline_target(
+                    &s_presentDeadline, now);
+            }
+        }
+#ifdef __EMSCRIPTEN__
+        /* Browser presentation is at most one opportunity per rAF. Numeric
+         * caps skip rAF opportunities until their absolute deadline; display
+         * consumes exactly one. Never spin inside a JS task. */
+        do {
+            now = browser_wait_animation_frame();
+        } while (deadline && now < target);
+#else
+        if (deadline && now < target) {
+            now = pace_sleep_until(target);
+        }
+#endif
+        if (now > s_presentLastNs &&
+            mdkr_pacing_interval_requires_rebase(
+                now - s_presentLastNs)) {
+            /* Suspension/debugger/occlusion time is retired, not simulated. */
+            units = (uint64_t)s_minFields * UINT64_C(1000000000);
+            s_viLastPaceRebased = 1;
+            if (deadline) {
+                MdkrPresentDeadlineClock *clock =
+                    present_sched_render_elided()
+                        ? &s_occludedDeadline : &s_presentDeadline;
+                const unsigned rate = present_sched_render_elided()
+                    ? (unsigned)s_fieldHz / (unsigned)s_minFields
+                    : s_presentEffectiveRate;
+                (void)mdkr_present_deadline_init(clock, rate);
+                (void)mdkr_present_deadline_target(clock, now);
+            }
+        } else {
+            const uint64_t elapsed = now > s_presentLastNs
+                ? now - s_presentLastNs : 0u;
+            units = elapsed > UINT64_MAX / (uint64_t)s_fieldHz
+                ? UINT64_MAX : elapsed * (uint64_t)s_fieldHz;
+            if (deadline) {
+                mdkr_present_deadline_commit(
+                    present_sched_render_elided()
+                        ? &s_occludedDeadline : &s_presentDeadline,
+                    now);
+            }
+        }
+        s_presentLastNs = now;
     }
-    g_viLastWallFields = wall;
-    return wall;
+    pace_credit_units(units);
+    return units;
 }
 
 /*
  * Commit one authoritative tick's worth of synthetic field budget, at the point
  * in the branch where the non-subloop path commits it. See the synthetic arm of
- * platform_vi_present_pace for why the PHASE of this matters and not just the
- * total. No-op in realtime mode, where the COUNTER comes from the host clock.
+ * platform_vi_present_pace_units for why the PHASE of this matters and not
+ * just the total. No-op in realtime mode, where the COUNTER comes from the
+ * host clock.
  */
-void platform_vi_tick_clock_commit(void) {
-    present_pace_lazy_init();
-    if (s_presentFields <= 0 || s_paceMode != PACE_SYNTH) {
+void platform_vi_tick_clock_commit(unsigned tick_fields) {
+    pace_lazy_init();
+    if (s_paceMode != PACE_SYNTH) {
         return;
     }
-    s_paceCumWall += (uint64_t)s_synthFields;
+    s_simCumFields += (uint64_t)tick_fields;
 }
 
 uint64_t platform_sim_field_count(void) {
     pace_lazy_init();
-    return s_paceCumWall;
+    return s_simCumFields;
 }
 
 /* ---- Objective motion/clock probe (published from racer.c) ----------------- *
@@ -1668,6 +2622,24 @@ static int s_probeRaceRacerIndex = -1, s_probeRacePlayerIndex = -1;
 void mdkr_pace_probe_finish(
     int lap, int raceFinished, int finishPosition,
     int racerIndex, int playerIndex) {
+    static int eventValid;
+    static int eventLap, eventFinished, eventPosition;
+    static int eventRacerIndex, eventPlayerIndex;
+    if (!eventValid || lap != eventLap || raceFinished != eventFinished ||
+        finishPosition != eventPosition || racerIndex != eventRacerIndex ||
+        playerIndex != eventPlayerIndex) {
+        GAMEPLAY_EVENT_TRACE(
+            GAMEPLAY_EVENT_RACE_RESULT, playerIndex, racerIndex,
+            (int32_t)(((uint32_t)(uint16_t)lap << 16) |
+                      ((uint32_t)raceFinished & UINT32_C(0xFFFF))),
+            finishPosition);
+        eventLap = lap;
+        eventFinished = raceFinished;
+        eventPosition = finishPosition;
+        eventRacerIndex = racerIndex;
+        eventPlayerIndex = playerIndex;
+        eventValid = 1;
+    }
     s_probeRaceLap = lap;
     s_probeRaceFinished = raceFinished;
     s_probeRaceFinishPosition = finishPosition;
@@ -1727,7 +2699,7 @@ void mdkr_ground_probe(int playerIndex, int racerIndex, int groundedWheels, int 
  * submitted no graphics task so the held display list is stale. See
  * platform_frame_sync_no_swap() below for why that distinction has to exist.
  */
-static void platform_frame_sync_impl(int swap) {
+static void platform_frame_sync_impl(int swap, int count_present) {
     int renderer_recovered = 0;
     platform_input_pump();   /* pump events + build pad state before retrace */
     if (platform_exit_requested()) {
@@ -1745,7 +2717,6 @@ static void platform_frame_sync_impl(int swap) {
 #if defined(MDKR_WEBGPU_BACKEND) && !defined(__EMSCRIPTEN__)
         if (mdkr_render_backend() == MDKR_BACKEND_WEBGPU &&
             gfx_webgpu_runtime_recovery_pending()) {
-            extern struct GfxRenderingAPI gfx_opengl_api;
             if (gfx_webgpu_recover_device()) {
                 gfx_reset_renderer_caches();
                 gfx_set_dimensions(gfx_output_dimensions.width,
@@ -1754,17 +2725,10 @@ static void platform_frame_sync_impl(int swap) {
                 fprintf(stderr,
                         "[webgpu] native device recovery succeeded; gameplay "
                         "continues\n");
-            } else if (platform_sdl_fallback_to_gl() == 0 &&
-                       gfx_rebind_renderer(&gfx_opengl_api)) {
-                platform_sdl_sync_drawable_size();
-                renderer_recovered = 1;
-                fprintf(stderr,
-                        "[webgpu] recovery failed; switched to OpenGL without "
-                        "restarting\n");
             } else {
                 fprintf(stderr,
-                        "[webgpu] recovery and OpenGL fallback both failed; "
-                        "terminating cleanly\n");
+                        "[webgpu] recovery failed; terminating cleanly without "
+                        "an automatic OpenGL fallback\n");
                 platform_request_exit(EXIT_FAILURE);
                 return;
             }
@@ -1779,7 +2743,7 @@ static void platform_frame_sync_impl(int swap) {
             return;
         }
     }
-    if (!renderer_recovered) {
+    if (!renderer_recovered && count_present) {
         platform_dump_frame();   /* read the rendered backbuffer before the swap */
         if (swap) {
             platform_sdl_present();
@@ -1789,6 +2753,9 @@ static void platform_frame_sync_impl(int swap) {
      * renderer viewports and WebGPU targets therefore change together (no
      * one-frame projection/viewport mismatch). */
     platform_sdl_sync_drawable_size();
+    if (!count_present) {
+        return;
+    }
     g_frameCounter++;
     MDKR_TRACE("frame %d presented", g_frameCounter);
     {
@@ -1798,9 +2765,10 @@ static void platform_frame_sync_impl(int swap) {
         mdkr_oracle_trace_racers(g_simTickCounter);
     }
 #ifdef __EMSCRIPTEN__
-    /* Publish the presented-frame count to JS so the shell can show liveness/FPS
-     * and headless harnesses can confirm the rAF-driven loop is advancing. */
-    EM_ASM({ if (typeof Module !== 'undefined') { Module.__mdkrFrames = $0; } }, g_frameCounter);
+    /* Publish actual canvas updates, not scheduler opportunities. Numeric caps
+     * above the authored cadence can yield through rAF without a new image. */
+    EM_ASM({ if (typeof Module !== 'undefined') { Module.__mdkrFrames = $0; } },
+           (double)g_surfaceFrameCounter);
 #endif
 
     /* Boss-progress observation (MDKR_WATCH_COURSEFLAGS / MDKR_BOSS_PRECLEARED).
@@ -1926,7 +2894,9 @@ static void platform_frame_sync_impl(int swap) {
                 "failed=%llu views=%zu triangles=%zu ranges=%zu "
                 "static=%zu dynamic=%zu cache=%llu/%llu "
                 "opaque=%llu masked=%llu matrices=%zu matrixPeak=%zu "
-                "lookup=%llu/%llu allocFails=%llu\n",
+                "lookup=%llu/%llu allocFails=%llu "
+                "implausible=%llu excluded=%llu "
+                "staleCasters=%llu staleWorst=%.1f\n",
                 (unsigned long long)stats.frames_begun,
                 (unsigned long long)stats.frames_committed,
                 (unsigned long long)stats.frames_failed,
@@ -1943,7 +2913,11 @@ static void platform_frame_sync_impl(int swap) {
                 stats.matrix_peak,
                 (unsigned long long)stats.matrix_lookup_hits,
                 (unsigned long long)stats.matrix_lookup_misses,
-                (unsigned long long)stats.allocation_failures);
+                (unsigned long long)stats.allocation_failures,
+                (unsigned long long)stats.implausible_triangles,
+                (unsigned long long)stats.excluded_triangles,
+                (unsigned long long)stats.stale_casters,
+                (double)stats.stale_worst_delta);
             plan_valid = gfx_shadow_build_plan(
                 gfx_shadow_frame_previous(),
                 g_pc_sun_dir_world,
@@ -2043,18 +3017,18 @@ static void platform_frame_sync_impl(int swap) {
 }
 
 void platform_frame_sync(void) {
-    platform_frame_sync_impl(1);
+    platform_frame_sync_impl(1, 1);
 }
 
 /*
  * A frame boundary that does everything platform_frame_sync does EXCEPT the
  * buffer swap, for the presentation subloop.
  *
- * The subloop has two no-draw paths: Video.MotionSmoothing=off, whose
- * documented behaviour is "present at the requested rate but REPEAT the tick's
- * own image", and a pass that submitted no graphics task, where the held
- * display list is being overwritten by the game and must not be re-walked.
- * Both used to call platform_frame_sync(), which swaps.
+ * Production 1.0.1's extra host opportunities are no-draw paths: motion
+ * smoothing is fail-closed, and a pass may also submit no graphics task. The
+ * prior authored image remains on the front/surface; there is no duplicate
+ * swap or synthetic presentation. Both paths used to call
+ * platform_frame_sync(), which swaps.
  *
  * On a double-buffered GL context (platform_sdl_present -> SDL_GL_SwapWindow)
  * the contents of the back buffer AFTER a swap are undefined. So a present with
@@ -2066,9 +3040,8 @@ void platform_frame_sync(void) {
  * surface inside gfx_end_frame and platform_sdl_present is a no-op there --
  * which is part of why this went unnoticed.)
  *
- * NOT swapping is the correct repeat: the front buffer already holds the tick's
- * image and keeps being scanned out. What the viewer sees is the tick's image
- * held for the whole tick, i.e. FrameLimit=60 with smoothing off updates the
+ * NOT swapping is the correct hold: the front buffer already contains the
+ * authored image and keeps being scanned out. FrameLimit=60 therefore updates the
  * screen at TICK rate, not at 60. That is the honest consequence of asking for
  * a rate with nothing new to show at it, and it is recorded in
  * Video.FrameLimit's schema description (platform/video_config.c).
@@ -2085,7 +3058,20 @@ void platform_frame_sync(void) {
  * and in the browser that pacing call is the Asyncify rAF yield.
  */
 void platform_frame_sync_no_swap(void) {
-    platform_frame_sync_impl(0);
+    platform_frame_sync_impl(0, 1);
+}
+
+void platform_frame_service(void) {
+    platform_frame_sync_impl(0, 0);
+}
+
+void platform_headless_tick_complete(int tick_count) {
+    if (g_headlessTicks >= 0 && tick_count >= g_headlessTicks &&
+        !platform_exit_requested()) {
+        printf("[SDL] headless: reached %d simulation ticks, exiting cleanly.\n",
+               tick_count);
+        platform_request_exit(0);
+    }
 }
 
 /* ---- Pad accessors (read by osContGetReadData in stubs_dkr.c) ------------ */
@@ -2098,7 +3084,8 @@ int platform_pad_present(int port) {
      * a plugged-in controller from boot until shutdown, exactly like hardware.
      */
     if (port == 0) return 1;
-    return s_gc[port] != NULL || (s_scriptPresentMask & (1u << port)) != 0;
+    return s_pads[port].present ||
+           (s_scriptPresentMask & (1u << port)) != 0;
 }
 int platform_pad_rumble_supported(int port) {
     if (port < 0 || port >= DKR_MAXPADS || s_gc[port] == NULL) return 0;

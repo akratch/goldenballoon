@@ -283,11 +283,22 @@ def route_field(route: dict[str, Any], field: str) -> Any:
 
 def arm_field(route: dict[str, Any], name: str, field: str) -> Any:
     arm = native_arm(route, name)
+    replay = arm.get("reference_replay", {})
     table = {
         "frames": arm.get("frames"),
         "cadence": arm.get("cadence"),
         "synth_fields": arm.get("synth_fields"),
         "event_divisor": arm.get("event_divisor"),
+        "reference_replay": int(isinstance(replay, dict) and bool(replay)),
+        "replay_ares_frame_start": (
+            replay.get("ares_frame_start") if isinstance(replay, dict) else None
+        ),
+        "replay_field_start": (
+            replay.get("native_field_start") if isinstance(replay, dict) else None
+        ),
+        "replay_input_start": (
+            replay.get("native_input_start") if isinstance(replay, dict) else None
+        ),
     }
     if field not in table:
         raise SystemExit(f"FAIL: unknown native-arm field {field}")
@@ -415,6 +426,35 @@ def validate_route(route: dict[str, Any]) -> None:
             errors.append(
                 f"native_arms[{index}] original cadence requires at least two fields"
             )
+        replay = arm.get("reference_replay")
+        if replay is not None:
+            if not isinstance(replay, dict):
+                errors.append(
+                    f"native_arms[{index}].reference_replay must be an object"
+                )
+            else:
+                for key in (
+                    "ares_frame_start", "native_field_start", "native_input_start"
+                ):
+                    if not is_integer(replay.get(key)) or replay[key] < 0:
+                        errors.append(
+                            f"native_arms[{index}].reference_replay.{key} "
+                            "must be a non-negative integer"
+                        )
+                if (
+                    is_integer(replay.get("native_field_start"))
+                    and is_integer(replay.get("native_input_start"))
+                    and replay["native_input_start"] < replay["native_field_start"]
+                ):
+                    errors.append(
+                        f"native_arms[{index}].reference_replay native_input_start "
+                        "must not precede native_field_start"
+                    )
+                if not isinstance(replay.get("basis"), str) or not replay["basis"].strip():
+                    errors.append(
+                        f"native_arms[{index}].reference_replay.basis must explain "
+                        "the measured handoff"
+                    )
     if raw_arms and not route.get("state_trace", False):
         errors.append("native_arms are only supported by state-trace routes")
     if route.get("state_require_finish", False) and not route.get(

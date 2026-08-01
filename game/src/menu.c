@@ -4027,6 +4027,13 @@ enum {
     VIDEO_OPTION_FOV,
     VIDEO_OPTION_FILTERING,
     VIDEO_OPTION_EFFECTS,
+    /*
+     * Directly under REMASTER EFFECTS because that is the switch it belongs to:
+     * world shadows arrive with the remaster and are inert without it. Before
+     * this row the only way to answer "the remaster shadows are too heavy" was
+     * to turn the whole remaster off.
+     */
+    VIDEO_OPTION_SHADOWS,
     VIDEO_OPTION_SUBTITLES,
     VIDEO_OPTION_RETURN,
     VIDEO_OPTION_COUNT
@@ -4038,17 +4045,20 @@ static char sVideoFeedback[64];
 
 static const char *const sVideoOptionLabels[VIDEO_OPTION_COUNT] = {
     "PRESENTATION", "SUPERSAMPLING", "ASPECT RATIO", "GAMEPLAY FOV",
-    "TEXTURE FILTERING", "REMASTER EFFECTS", "SUBTITLES", "RETURN"
+    "TEXTURE FILTERING", "REMASTER EFFECTS", "WORLD SHADOWS", "SUBTITLES",
+    "RETURN"
 };
 
 static const char *const sVideoOptionLabelsDe[VIDEO_OPTION_COUNT] = {
     "DARSTELLUNG", "KANTENGLAETTUNG", "SEITENVERHAELTNIS", "SPIEL-SICHTFELD",
-    "TEXTURFILTER", "REMASTER-EFFEKTE", "UNTERTITEL", "ZURUECK"
+    "TEXTURFILTER", "REMASTER-EFFEKTE", "WELTSCHATTEN", "UNTERTITEL",
+    "ZURUECK"
 };
 
 static const char *const sVideoOptionLabelsFr[VIDEO_OPTION_COUNT] = {
     "PRESENTATION", "SUPER-ECHANT.", "FORMAT D'IMAGE", "CHAMP DE VISION",
-    "FILTRAGE TEXTURES", "EFFETS REMASTER", "SOUS-TITRES", "RETOUR"
+    "FILTRAGE TEXTURES", "EFFETS REMASTER", "OMBRES DU MONDE", "SOUS-TITRES",
+    "RETOUR"
 };
 
 static const char *const sVideoOptionHelp[3][VIDEO_OPTION_COUNT] = {
@@ -4059,6 +4069,7 @@ static const char *const sVideoOptionHelp[3][VIDEO_OPTION_COUNT] = {
         "AUTHORED PRESERVES ORIGINAL LENSES",
         "REDUCES DISTANT TRACK SHIMMER",
         "ART-DIRECTED LIGHTING AND TEXT",
+        "SOFT LIGHTENS THEM - OFF RESTORES BLOBS",
         "SHOW SPOKEN DIALOGUE AS TEXT",
         "BACK TO OPTIONS"
     },
@@ -4069,6 +4080,7 @@ static const char *const sVideoOptionHelp[3][VIDEO_OPTION_COUNT] = {
         "ORIGINAL BEWAHRT ALLE KAMERAOBJEKTIVE",
         "REDUZIERT FLIMMERN IN DER FERNE",
         "NEUE BELEUCHTUNG UND SCHRIFT",
+        "SANFT MILDERT SIE - AUS BRINGT FLECKEN",
         "GESPROCHENEN TEXT ANZEIGEN",
         "ZURUECK ZU DEN OPTIONEN"
     },
@@ -4079,6 +4091,7 @@ static const char *const sVideoOptionHelp[3][VIDEO_OPTION_COUNT] = {
         "ORIGINAL GARDE LES OBJECTIFS DU JEU",
         "REDUIT LE SCINTILLEMENT AU LOIN",
         "NOUVEL ECLAIRAGE ET NOUVEAU TEXTE",
+        "DOUX LES ALLEGE - ARRET REMET LES TACHES",
         "AFFICHE LES DIALOGUES PARLES",
         "RETOUR AUX OPTIONS"
     }
@@ -4105,6 +4118,9 @@ static const char *const sVideoFovLabels[] = {
     "AUTHORED", "50 DEG", "55 DEG", "65 DEG", "70 DEG",
     "75 DEG", "80 DEG", "85 DEG", "90 DEG"
 };
+/* Ordered strongest-first so the wheel reads as a strength ramp downward, the
+ * same direction TEXTURE FILTERING's ORIGINAL/RESTORED/HIGH wheel runs. */
+static const char *const sVideoShadowValues[] = { "full", "soft", "off" };
 
 static int video_options_language(void) {
     if (get_language() == LANGUAGE_GERMAN) return 1;
@@ -4263,6 +4279,17 @@ static void video_option_value(s32 option, char *out, size_t capacity) {
                     ? video_option_word("ON", "AN", "OUI")
                     : video_option_word("OFF", "AUS", "NON"));
             break;
+        case VIDEO_OPTION_SHADOWS:
+            index = video_option_find_string(
+                config->values[MDKR_VIDEO_WORLD_SHADOWS].text,
+                sVideoShadowValues, ARRAY_COUNT(sVideoShadowValues));
+            video_option_copy(
+                out, capacity,
+                index == 0 ? video_option_word("FULL", "VOLL", "COMPLET")
+                : index == 1 ? video_option_word("SOFT", "SANFT", "DOUX")
+                : index == 2 ? video_option_word("OFF", "AUS", "NON")
+                : video_option_word("CUSTOM", "BENUTZER", "PERSONNALISE"));
+            break;
         case VIDEO_OPTION_SUBTITLES:
             video_option_copy(
                 out, capacity,
@@ -4290,6 +4317,8 @@ static int video_option_locked(s32 option) {
                    mdkr_video_config_runtime_locked(MDKR_VIDEO_ANISOTROPY);
         case VIDEO_OPTION_EFFECTS:
             return mdkr_video_config_runtime_locked(MDKR_VIDEO_REMASTER_FX);
+        case VIDEO_OPTION_SHADOWS:
+            return mdkr_video_config_runtime_locked(MDKR_VIDEO_WORLD_SHADOWS);
         default:
             return 0;
     }
@@ -4393,6 +4422,15 @@ static MdkrVideoRuntimeResult video_option_change(s32 option, int direction) {
                 MDKR_VIDEO_REMASTER_FX,
                 config->values[MDKR_VIDEO_REMASTER_FX].number != 0.0f
                     ? "0" : "1");
+            break;
+        case VIDEO_OPTION_SHADOWS:
+            index = video_option_find_string(
+                config->values[MDKR_VIDEO_WORLD_SHADOWS].text,
+                sVideoShadowValues, ARRAY_COUNT(sVideoShadowValues));
+            index = video_option_cycle_index(
+                index, ARRAY_COUNT(sVideoShadowValues), direction);
+            result = mdkr_video_config_runtime_set(
+                MDKR_VIDEO_WORLD_SHADOWS, sVideoShadowValues[index]);
             break;
         case VIDEO_OPTION_SUBTITLES:
             if (sEepromSettings & 0x2000000) {
@@ -7065,6 +7103,13 @@ s32 menu_magic_codes_loop(s32 updateRate) {
                     gNewCheatID += 2;
 #endif
                 }
+#ifdef NATIVE_PORT
+                /* Keep the user-visible result observable to end-to-end menu
+                 * fixtures. This is the semantic cheat index; a successful
+                 * entry is converted to a string-table index just below. */
+                MDKR_TRACE("magic_code_submit: accepted=%d id=%d", foundCheat != FALSE,
+                           foundCheat != FALSE ? gNewCheatID : -1);
+#endif
                 if (foundCheat == FALSE) {
                     gNewCheatID = -1;
                 } else {
@@ -12824,7 +12869,10 @@ void menu_trophy_race_round_init(void) {
         index = (index + 1) & 3;
     } while (index == -1);
 
-    for (i = 0; i < gNumberOfActivePlayers; i++) {
+    /* A production player count is 1..4. Keep this write bounded even if
+     * upstream state is corrupt; gPlayerSelectVehicle has no fifth slot. */
+    for (i = 0; i < gNumberOfActivePlayers &&
+             i < ARRAY_COUNT(gPlayerSelectVehicle); i++) {
         gPlayerSelectVehicle[i] = leveltable_vehicle_default(index);
     }
 
@@ -13031,6 +13079,18 @@ void menu_trophy_race_rankings_init(void) {
     Settings *settings;
     s8 *trackMenuIds;
 
+#ifdef NATIVE_PORT
+    _Static_assert(
+        ARRAY_COUNT(ranking) == ARRAY_COUNT(gRankingsPlayerIDs) &&
+        ARRAY_COUNT(ranking) == ARRAY_COUNT(gRankingsPoints) &&
+        ARRAY_COUNT(ranking) == ARRAY_COUNT(gResultsPlayerIDs) &&
+        ARRAY_COUNT(ranking) == ARRAY_COUNT(gResultsPlayers) &&
+        ARRAY_COUNT(ranking) == ARRAY_COUNT(gRankingsPlayers) &&
+        ARRAY_COUNT(ranking) == ARRAY_COUNT(gTrophyRacePointsArray) &&
+        ARRAY_COUNT(ranking) == ARRAY_COUNT(settings->racers),
+        "trophy ranking scratch and output arrays must share one capacity");
+#endif
+
     settings = get_settings();
     trackMenuIds = (s8 *) get_misc_asset(ASSET_MISC_TRACKS_MENU_IDS);
 #ifdef NATIVE_PORT
@@ -13076,6 +13136,16 @@ void menu_trophy_race_rankings_init(void) {
     } else {
         gRankingPlayerCount = 8;
     }
+#ifdef NATIVE_PORT
+    /* The authored sources yield 3/4 active players, 2/4/6 multiplayer racers,
+     * or eight CPU racers. Clamp a corrupted source before it indexes every
+     * parallel eight-entry ranking array below. */
+    if (gRankingPlayerCount < 0) {
+        gRankingPlayerCount = 0;
+    } else if (gRankingPlayerCount > ARRAY_COUNT(gRankingsPlayerIDs)) {
+        gRankingPlayerCount = ARRAY_COUNT(gRankingsPlayerIDs);
+    }
+#endif
     for (i = 0; i < gRankingPlayerCount; i++) {
         for (j = 0; j < gRankingPlayerCount; j++) {
             if (i == settings->racers[j].starting_position) {

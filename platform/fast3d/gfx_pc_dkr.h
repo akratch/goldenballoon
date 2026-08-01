@@ -79,8 +79,10 @@ void gfx_set_dimensions(uint32_t width, uint32_t height);
  */
 bool gfx_get_capture_dimensions(uint32_t *width, uint32_t *height);
 
-/** Begin a frame: resets per-frame state and calls the backend start_frame. */
-void gfx_start_frame(void);
+/** Begin a frame transaction for one immutable game-authored task. False means
+ * no display list may be submitted. authored_tick was latched when the game
+ * began building task.data_ptr; it is never reconstructed from host time. */
+bool gfx_start_frame(uint64_t authored_tick);
 
 /** Interpret and render a complete F3DDKR display list. */
 void gfx_run(Gfx *dl);
@@ -211,6 +213,12 @@ extern uint64_t gfx_dkr_decal_triangles;
 bool gfx_dkr_replay_walk(
     const GfxShadowReplayViewProjection *overrides, size_t override_count);
 
+/* The fixed-clock alpha additionally rebuilds generation-keyed object roots
+ * from the immutable presentation snapshot pair. */
+bool gfx_dkr_replay_walk_interpolated(
+    const GfxShadowReplayViewProjection *overrides, size_t override_count,
+    uint64_t numerator, uint64_t denominator);
+
 /** True while a replay walk is in progress — the guard every "must not happen
  *  twice per tick" side effect in the walk is gated on. */
 bool gfx_dkr_replay_pass_active(void);
@@ -247,6 +255,8 @@ void gfx_dkr_replay_invalidate(void);
  * prevent: replay only when a NEW list was walked this pass.
  */
 uint64_t gfx_dkr_real_walk_count(void);
+/* Authored simulation tick stamped onto the most recent real graphics task. */
+uint64_t gfx_dkr_last_walked_authored_tick(void);
 
 /**
  * Registry hits refused because the Mtx address had been rewritten since
@@ -264,6 +274,10 @@ uint64_t gfx_dkr_shadow_stale_tenant_count(void);
 void gfx_dkr_replay_get_stats(
     uint64_t *walks, uint64_t *matrix_hits, uint64_t *matrix_misses,
     uint64_t *matrix_rejects, uint64_t *real_walks);
+void gfx_dkr_replay_get_object_stats(uint64_t *hits, uint64_t *holds);
+void gfx_dkr_replay_get_billboard_stats(
+    uint64_t *matrix_hits, uint64_t *matrix_holds,
+    uint64_t *vertex_hits, uint64_t *vertex_holds);
 
 /**
  * Recomposition-tolerance evidence (Phase 3 Wave B, §12.4).

@@ -109,9 +109,12 @@ def run(binary: Path, rom: Path, mode: str, size: str,
     # A fresh cwd gives each arm an independent save/ directory AND guarantees
     # no stray mdkr64.ini from the repo root leaks in as a file-precedence layer.
     with tempfile.TemporaryDirectory(prefix="mdkr_video_") as run_dir:
+        env = clean_environment(extra_env)
+        env["MDKR_VIDEO_CONFIG_PATH"] = str(Path(run_dir) / "video.ini")
+        env["MDKR_SAVE_DIR"] = str(Path(run_dir) / "save")
         try:
             proc = subprocess.run(
-                command, cwd=run_dir, env=clean_environment(extra_env),
+                command, cwd=run_dir, env=env,
                 text=True, capture_output=True, timeout=TIMEOUT, check=False,
             )
         except subprocess.TimeoutExpired as exc:
@@ -219,8 +222,14 @@ def main() -> int:
     ]
     for extra_env, argv, key, want_value, want_source in ladder:
         command = [str(binary), "--video-list"] + argv
-        proc = subprocess.run(command, env=clean_environment(extra_env),
-                              text=True, capture_output=True, check=False)
+        with tempfile.TemporaryDirectory(prefix="mdkr_video_list_") as run_dir:
+            env = clean_environment(extra_env)
+            env["MDKR_VIDEO_CONFIG_PATH"] = str(
+                Path(run_dir) / "video.ini")
+            env["MDKR_SAVE_DIR"] = str(Path(run_dir) / "save")
+            proc = subprocess.run(
+                command, cwd=run_dir, env=env,
+                text=True, capture_output=True, check=False)
         line = next((l for l in proc.stdout.splitlines() if key in l), None)
         if line is None:
             failures.append(f"--video-list {' '.join(argv)}: no {key} row")
@@ -256,6 +265,9 @@ def main() -> int:
                 "--restored", "--video-set", f"Video.RenderScale={scale}",
             ]
             env = clean_environment({"MDKR_DUMP_FROM": "1100", "MDKR_DUMP_EVERY": "999"})
+            env["MDKR_VIDEO_CONFIG_PATH"] = str(
+                Path(run_dir) / "video.ini")
+            env["MDKR_SAVE_DIR"] = str(Path(run_dir) / "save")
             proc = subprocess.run(command, cwd=run_dir, env=env, text=True,
                                   capture_output=True, timeout=TIMEOUT, check=False)
             dumps = sorted(frames.glob("*.ppm"))

@@ -2,6 +2,9 @@
 #include "memory.h"
 #include "PRinternal/viint.h"
 #include "types.h"
+#ifdef NATIVE_PORT
+#include "platform_os.h"
+#endif
 
 /************ .data ************/
 
@@ -47,6 +50,9 @@ u8 D_801262E4;
 UNUSED OSMesg D_801262E8[8];
 u8 gVideoDeltaCounter;
 u8 gVideoDeltaTime;
+#ifdef NATIVE_PORT
+static u8 sNativeVideoDeltaPrimed;
+#endif
 OSScClient gVideoSched;
 
 /******************************/
@@ -264,8 +270,68 @@ void fb_alloc(s32 index) {
  */
 void video_delta_reset(void) {
     gVideoDeltaCounter = 0;
+#ifdef NATIVE_PORT
+    if (platform_sim_tick_fields() == LOGIC_30FPS) {
+        gVideoDeltaTime = LOGIC_30FPS;
+        /* The legacy two-field queue remains phase-primed after its one
+         * post-bootstrap half-width semantic pass, including level resets. */
+    } else {
+        gVideoDeltaTime = LOGIC_60FPS;
+        sNativeVideoDeltaPrimed = TRUE;
+    }
+#else
     gVideoDeltaTime = 2;
+#endif
 }
+
+#ifdef NATIVE_PORT
+/**
+ * Preserve the legacy queue's one post-bootstrap logical-delta settling pass
+ * without allowing that compatibility phase to become a second clock. The
+ * HostFrameDriver ticket stays exactly two fields in Original cadence; after
+ * 20 game passes one consumer-visible pass uses rate 1, then the logical rate
+ * returns to 2 and remains phase-primed across level resets. The 27,832-row
+ * authored RNG/state oracle is byte-identical to the pre-FPS baseline only
+ * with this phase. Enhanced cadence has fixed one-field semantics throughout.
+ */
+static void video_logic_delta_observe_fixed_ticket(void) {
+    u8 observedUpdateRate;
+
+    if (platform_sim_tick_fields() != LOGIC_30FPS) {
+        return;
+    }
+
+    observedUpdateRate = sNativeVideoDeltaPrimed
+        ? (u8)platform_sim_tick_fields()
+        : LOGIC_60FPS;
+
+    if (observedUpdateRate < gVideoDeltaTime) {
+        if (gVideoDeltaCounter < 20) {
+            gVideoDeltaCounter++;
+        }
+        if (gVideoDeltaCounter == 20) {
+            gVideoDeltaTime = observedUpdateRate;
+            gVideoDeltaCounter = 0;
+            sNativeVideoDeltaPrimed = TRUE;
+        }
+    } else {
+        gVideoDeltaCounter = 0;
+        if ((gVideoDeltaTime < observedUpdateRate) &&
+            (D_801262E4 >= observedUpdateRate)) {
+            gVideoDeltaTime = observedUpdateRate;
+        }
+    }
+}
+
+s32 video_logic_update_rate(s32 fixedUpdateRate) {
+    if (!platform_vi_pace_compensating() ||
+        platform_sim_tick_fields() != LOGIC_30FPS ||
+        fixedUpdateRate > LOGIC_30FPS) {
+        return fixedUpdateRate;
+    }
+    return (s32)gVideoDeltaTime;
+}
+#endif
 
 /**
  * Wait for the finished message from the scheduler while counting up a timer,
@@ -275,9 +341,11 @@ void video_delta_reset(void) {
  * in the unused function, vi_refresh_rate.
  */
 s32 fb_update(s32 mesg) {
+#ifndef NATIVE_PORT
     u8 tempUpdateRate;
 
     tempUpdateRate = LOGIC_60FPS;
+#endif
     if (sBlackScreenTimer) {
         sBlackScreenTimer--;
         if (sBlackScreenTimer == 0) {
@@ -287,6 +355,12 @@ s32 fb_update(s32 mesg) {
     if (mesg != MESG_SKIP_BUFFER_SWAP) {
         fb_swap();
     }
+#ifdef NATIVE_PORT
+    video_logic_delta_observe_fixed_ticket();
+    osViSwapBuffer(gVideoLastFramebuffer);
+    osRecvMesg(gVideoMesgQueue, NULL, OS_MESG_BLOCK);
+    return g_viLastFields;
+#else
     while (osRecvMesg(gVideoMesgQueue, NULL, OS_MESG_NOBLOCK) != -1) {
         tempUpdateRate++;
     }
@@ -313,6 +387,7 @@ s32 fb_update(s32 mesg) {
     osViSwapBuffer(gVideoLastFramebuffer);
     osRecvMesg(gVideoMesgQueue, NULL, OS_MESG_BLOCK);
     return tempUpdateRate;
+#endif
 }
 
 void func_8007AB24(u8 arg0) {

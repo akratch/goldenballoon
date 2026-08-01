@@ -39,6 +39,8 @@
 
 #ifdef NATIVE_PORT
 #include "mdkr_adventure.h"
+#include "gameplay_event_trace.h"
+#include "present_sched.h"
 #include <stdio.h>  /* fprintf — loud non-finite-position assert below */
 #include <stdlib.h> /* abort */
 
@@ -53,6 +55,7 @@ static s32 racer_pos_is_finite(f32 v) {
     bits.f = v;
     return (bits.u & 0x7F800000u) != 0x7F800000u;
 }
+
 #endif
 
 #define MAX_NUMBER_OF_GHOST_NODES 360
@@ -198,6 +201,43 @@ s8 D_8011D5B4[4];
 s16 D_8011D5B8;
 
 /******************************/
+
+#ifdef NATIVE_PORT
+/*
+ * Env-gated controller-to-racer binding witness.
+ *
+ * INPUTHASH proves what joypad.c consumed for each physical port, but the
+ * multiplayer autopilot fixture deliberately overwrites gCurrent* after the
+ * human dispatch. This seam records the production human mapping after the
+ * selected port has been read and before any native test hook can replace it.
+ * It is observation-only and completely absent unless the focused gate arms
+ * MDKR_RACER_INPUT_TRACE.
+ */
+static s32 racer_input_trace_enabled(void) {
+    static s32 enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("MDKR_RACER_INPUT_TRACE");
+        enabled = value != NULL && value[0] != '\0' && value[0] != '0';
+    }
+    return enabled;
+}
+
+static void racer_input_trace(Object_Racer *racer, s32 port,
+                              s32 updateRate) {
+    if (!racer_input_trace_enabled()) {
+        return;
+    }
+    fprintf(stderr,
+            "[RACERINPUT] tick=%d player=%d racer=%d port=%d "
+            "held=%04x pressed=%04x released=%04x sx=%d sy=%d "
+            "delta=%d countdown=%d\n",
+            g_simTickCounter, racer->playerIndex, racer->racerIndex, port,
+            (unsigned)gCurrentRacerInput,
+            (unsigned)gCurrentButtonsPressed,
+            (unsigned)gCurrentButtonsReleased,
+            gCurrentStickX, gCurrentStickY, updateRate, gRaceStartTimer);
+}
+#endif
 
 void func_80042D20(Object *obj, Object_Racer *racer, s32 updateRate) {
     f32 sp94;
@@ -4436,6 +4476,9 @@ void update_player_racer(Object *obj, s32 updateRate) {
                 gCurrentRacerInput = input_held(tempVar);
                 gCurrentButtonsPressed = input_pressed(tempVar);
                 gCurrentButtonsReleased = input_released(tempVar);
+#ifdef NATIVE_PORT
+                racer_input_trace(tempRacer, tempVar, updateRate);
+#endif
             } else {
                 racer_enter_door(tempRacer, updateRate);
             }
@@ -4778,6 +4821,12 @@ void update_player_racer(Object *obj, s32 updateRate) {
             }
             if (tempRacer->courseCheckpoint < (header->laps + 3) * checkpointCount) {
                 tempRacer->courseCheckpoint++;
+#ifdef NATIVE_PORT
+                GAMEPLAY_EVENT_TRACE(
+                    GAMEPLAY_EVENT_CHECKPOINT, tempRacer->playerIndex,
+                    tempRacer->nextCheckpoint, tempRacer->lap,
+                    tempRacer->courseCheckpoint);
+#endif
             }
             tempRacer->unk1A8 = 10000;
         } else {

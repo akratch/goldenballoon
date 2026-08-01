@@ -67,7 +67,46 @@ ROUTES = [
 
 MENU_RE = re.compile(r"menu_init: menuId=(\d+)")
 LEVEL_RE = re.compile(r"level_load: levelId=(\d+) numPlayers=(-?\d+)")
+MAGIC_CODE_RE = re.compile(r"magic_code_submit: accepted=(\d+) id=(-?\d+)")
 BAD_RE = re.compile(r"\[FATAL\]|\[CRASH\]|AddressSanitizer|Assertion")
+
+
+def run_magic_code_submission(binary: str, rom: str, scripts: Path,
+                              verbose: bool) -> list[str]:
+    """Exercise valid and invalid submissions through the retail menu UI."""
+    name = "magic_codes_accept_reject"
+    script = str((scripts / (name + ".txt")).resolve())
+    if not os.path.exists(script):
+        return ["%s: missing %s" % (name, script)]
+
+    with tempfile.TemporaryDirectory(prefix="mdkr-magic-code-fixture-") as run_root:
+        save = os.path.join(run_root, "save")
+        os.mkdir(save)
+        env = dict(os.environ, MDKR_AUDIO="0", MDKR_TRACE="1", MDKR_SAVE_DIR=save)
+        cmd = [binary, "--headless-frames", "3650", "--input-script", script,
+               "--rom", rom]
+        if verbose:
+            print("  $ " + " ".join(cmd))
+        p = subprocess.run(cmd, cwd=run_root, env=env, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, timeout=900)
+
+    out = p.stdout.decode("utf-8", "replace")
+    failures = []
+    if p.returncode != 0:
+        failures.append("%s: exit code %d" % (name, p.returncode))
+    bad = BAD_RE.findall(out)
+    if bad:
+        failures.append("%s: %s in output" % (name, bad[0]))
+    outcomes = [(int(m.group(1)), int(m.group(2)))
+                for m in MAGIC_CODE_RE.finditer(out)]
+    expected = [(1, 4), (0, -1)]
+    if outcomes != expected:
+        failures.append("%s: outcomes %s, want %s" % (name, outcomes, expected))
+    elif verbose:
+        print("    %-30s outcomes=%s" % (name, outcomes))
+    return failures
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", default="build")
@@ -134,6 +173,11 @@ def main() -> int:
             elif args.verbose:
                 print("    %-30s level_load levelId=%d  (race loads %s)"
                       % (name, want, races))
+    # This is an additional assertion inside the existing nav gate, not a tenth
+    # route: it proves the reported code-entry bug at the runtime boundary while
+    # preserving the long-standing nine-route manifest and summary.
+    if args.only is None or args.only == "nav_to_magic_codes":
+        failures.extend(run_magic_code_submission(binary, rom, scripts, args.verbose))
     if failures:
         for f in failures:
             print("  - %s" % f, file=sys.stderr)

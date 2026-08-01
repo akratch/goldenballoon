@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 
 from harness_utils import resolve_binary
@@ -78,10 +79,13 @@ def run(binary: str, rom: str, frames: int, *, legacy: bool,
     if script is not None:
         command.extend(("--input-script", script))
     command.extend(("--rom", rom))
-    process = subprocess.run(
-        command, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        timeout=900, check=False,
-    )
+    with tempfile.TemporaryDirectory(prefix="mdkr_attract_") as run_dir:
+        env["MDKR_VIDEO_CONFIG_PATH"] = os.path.join(run_dir, "video.ini")
+        env["MDKR_SAVE_DIR"] = os.path.join(run_dir, "save")
+        process = subprocess.run(
+            command, env=env, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, timeout=900, check=False,
+        )
     output = process.stdout.decode("utf-8", "replace")
     defaults = {int(match.group(1)): int(match.group(2))
                 for match in LEVEL_INFO_RE.finditer(output)}

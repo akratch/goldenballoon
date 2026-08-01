@@ -96,6 +96,19 @@ sys.exit(1)
 PY
 }
 
+asset_symbols_for_file() {
+    local target="$1" nm_tool="${2:-nm}" nm_output
+    if ! nm_output="$("${nm_tool}" -P "${target}" 2>&1)"; then
+        printf '%s\n' "${nm_output}" >&2
+        return 2
+    fi
+    # A valid stripped release image may contain zero symbol rows. `nm` success
+    # is still useful evidence: command/read/format failures are nonzero and are
+    # rejected above; the caller separately pins the binary container with file.
+    printf '%s\n' "${nm_output}" |
+        grep -E '^_?(ANIM_DATA_|imgRAre_|ASSET_DATA_|dkrAssetPayload|ROM_ASSET_)'
+}
+
 scan_bootstrap_magic_tree() {
     python3 - "$1" <<'PY'
 import pathlib
@@ -108,19 +121,27 @@ signatures = [
 ]
 
 root = pathlib.Path(sys.argv[1])
+if not root.is_dir():
+    print(f"resource tree is missing or unreadable: {root}", file=sys.stderr)
+    sys.exit(2)
 bad = []
+errors = []
 for path in root.rglob("*"):
     if not path.is_file():
         continue
     try:
         data = path.read_bytes()
-    except OSError:
+    except OSError as error:
+        errors.append(f"{path}: {error}")
         continue
     for label, sig in signatures:
         if sig in data:
             bad.append(f"{path.relative_to(root.parent.parent)}: {label} ({sig.hex(' ')})")
             break
 
+if errors:
+    print("\n".join(errors), file=sys.stderr)
+    sys.exit(2)
 if bad:
     print("\n".join(bad))
     sys.exit(1)
@@ -129,9 +150,43 @@ sys.exit(0)
 PY
 }
 
+run_self_test() (
+    local temporary clean contaminated status output
+    temporary="$(mktemp -d "${TMPDIR:-/tmp}/mdkr-asset-guard.XXXXXX")"
+    clean="${temporary}/clean.bin"
+    contaminated="${temporary}/contaminated.bin"
+    trap 'rm -rf "${temporary}"' EXIT
+    printf 'asset-free fixture\n' > "${clean}"
+    printf '\200\067\022\100' > "${contaminated}"
+
+    output="$(scan_bootstrap_magic_file "${clean}" 2>&1)" && status=0 || status=$?
+    [[ ${status} -eq 1 ]] || { printf '%s\n' "${output}" >&2; return 1; }
+    output="$(scan_bootstrap_magic_file "${contaminated}" 2>&1)" && status=0 || status=$?
+    [[ ${status} -eq 0 && "${output}" == *"z64 big-endian"* ]] || return 1
+    scan_bootstrap_magic_file "${temporary}/missing" >/dev/null 2>&1 && status=0 || status=$?
+    [[ ${status} -eq 2 ]] || return 1
+    scan_bootstrap_magic_tree "${temporary}" >/dev/null 2>&1 && status=0 || status=$?
+    [[ ${status} -eq 1 ]] || return 1
+    scan_bootstrap_magic_tree "${temporary}/missing-tree" >/dev/null 2>&1 && status=0 || status=$?
+    [[ ${status} -eq 2 ]] || return 1
+    asset_symbols_for_file "${clean}" false >/dev/null 2>&1 && status=0 || status=$?
+    [[ ${status} -eq 2 ]] || return 1
+    # Invoked indirectly by asset_symbols_for_file as a command-shaped fixture.
+    # shellcheck disable=SC2329
+    stripped_nm() { printf '%s: no symbols\n' "$2" >&2; return 0; }
+    asset_symbols_for_file "${clean}" stripped_nm >/dev/null 2>&1 && status=0 || status=$?
+    [[ ${status} -eq 1 ]] || return 1
+    printf 'verify_asset_free: self-test PASS\n'
+)
+
 # ---------------------------------------------------------------------------
 # Usage
 # ---------------------------------------------------------------------------
+
+if [[ "${1:-}" == "--self-test" ]]; then
+    run_self_test || { echo "verify_asset_free: self-test FAIL" >&2; exit 1; }
+    exit 0
+fi
 
 if [[ $# -lt 1 ]]; then
     echo "Usage: $0 <path-to-macos-binary-or-app-bundle>"
@@ -175,6 +230,24 @@ if [[ ! -f "$BINARY" ]]; then
     exit 1
 fi
 
+for tool in nm size file python3; do
+    command -v "${tool}" >/dev/null 2>&1 || {
+        echo "ERROR: required inspection tool not found: ${tool}" >&2
+        exit 1
+    }
+done
+[[ -r "$BINARY" ]] || { echo "ERROR: binary is not readable: $BINARY" >&2; exit 1; }
+BINARY_DESCRIPTION="$(file "$BINARY" 2>&1)" && FILE_STATUS=0 || FILE_STATUS=$?
+if (( FILE_STATUS != 0 )); then
+    printf '%s\n' "${BINARY_DESCRIPTION}" >&2
+    echo "ERROR: could not classify binary format: $BINARY" >&2
+    exit 1
+fi
+case "${BINARY_DESCRIPTION}" in
+    *Mach-O*|*ELF*|*PE32*) ;;
+    *) echo "ERROR: unsupported or unrecognized binary format: ${BINARY_DESCRIPTION}" >&2; exit 1 ;;
+esac
+
 echo "============================================================"
 echo "  Asset-Free Verification"
 echo "  Binary: $BINARY"
@@ -197,15 +270,20 @@ echo ""
 
 echo "--- Check 1: Compiled-in DKR asset-table symbols ---"
 
-ASSET_SYMBOLS=$(nm -P "$BINARY" 2>/dev/null \
-    | grep -E '^_?(ANIM_DATA_|imgRAre_|ASSET_DATA_|dkrAssetPayload|ROM_ASSET_)' || true)
-
-if [[ -z "$ASSET_SYMBOLS" ]]; then
-    pass "No compiled-in asset-table symbol found (ANIM_DATA_*, imgRAre_*, ASSET_DATA_*, dkrAssetPayload*, ROM_ASSET_*)."
-else
-    fail "Compiled-in asset-table symbol(s) found -- this architecture must load all game data from the ROM at runtime, never compile it in:"
-    printf '%s\n' "$ASSET_SYMBOLS" | sed 's/^/    /'
-fi
+ASSET_SYMBOLS="$(asset_symbols_for_file "$BINARY" 2>&1)" && SYMBOL_STATUS=0 || SYMBOL_STATUS=$?
+case "${SYMBOL_STATUS}" in
+    0)
+        fail "Compiled-in asset-table symbol(s) found -- this architecture must load all game data from the ROM at runtime, never compile it in:"
+        printf '%s\n' "$ASSET_SYMBOLS" | sed 's/^/    /'
+        ;;
+    1)
+        pass "No compiled-in asset-table symbol found (ANIM_DATA_*, imgRAre_*, ASSET_DATA_*, dkrAssetPayload*, ROM_ASSET_*)."
+        ;;
+    *)
+        printf '%s\n' "$ASSET_SYMBOLS" | sed 's/^/    /' >&2
+        fail "Could not inspect the binary symbol table."
+        ;;
+esac
 
 echo ""
 
@@ -231,15 +309,12 @@ echo "--- Check 2: embedded-ROM signature (bootstrap magic) ---"
 # all common byte orders. In our source these bytes only exist as separate C
 # constants, never contiguously, so a contiguous match means an actual ROM image
 # or byte-swapped ROM dump is embedded.
-FOUND_SIG=0
-if SIG_MATCH="$(scan_bootstrap_magic_file "$BINARY" 2>/dev/null)"; then
-    fail "N64 bootstrap magic (${SIG_MATCH}) found contiguously - a ROM image is embedded!"
-    FOUND_SIG=1
-fi
-
-if (( FOUND_SIG == 0 )); then
-    pass "No embedded-ROM bootstrap magic detected."
-fi
+SIG_MATCH="$(scan_bootstrap_magic_file "$BINARY" 2>&1)" && SIG_STATUS=0 || SIG_STATUS=$?
+case "${SIG_STATUS}" in
+    0) fail "N64 bootstrap magic (${SIG_MATCH}) found contiguously - a ROM image is embedded!" ;;
+    1) pass "No embedded-ROM bootstrap magic detected." ;;
+    *) printf '%s\n' "${SIG_MATCH}" >&2; fail "Could not scan binary bytes for ROM bootstrap magic." ;;
+esac
 
 echo ""
 
@@ -263,10 +338,16 @@ echo "--- Check 3: Data segment size ---"
 #   __TEXT  __DATA  __OBJC  others  hex     decimal
 # Column 2 is __DATA.
 
-DATA_SIZE=$(size "$BINARY" 2>/dev/null | tail -1 | awk '{print $2}')
+SIZE_OUTPUT="$(size "$BINARY" 2>&1)" && SIZE_STATUS=0 || SIZE_STATUS=$?
+if (( SIZE_STATUS != 0 )); then
+    printf '%s\n' "${SIZE_OUTPUT}" >&2
+    DATA_SIZE=""
+else
+    DATA_SIZE="$(printf '%s\n' "${SIZE_OUTPUT}" | tail -1 | awk '{print $2}')"
+fi
 
-if [[ -z "$DATA_SIZE" || "$DATA_SIZE" == "0" ]]; then
-    warn "Could not determine data segment size (non-standard binary format?)."
+if [[ ! "$DATA_SIZE" =~ ^[1-9][0-9]*$ ]]; then
+    fail "Could not determine a nonzero data segment size."
 else
     DATA_KB=$(( DATA_SIZE / 1024 ))
     # Classify the binary so the right data-segment threshold applies. A ROM
@@ -274,9 +355,9 @@ else
     # differs is how `size` measures the CLEAN baseline.
     IS_MACHO_IMAGE=false   # macOS `size` folds __bss into __DATA
     IS_ELF_IMAGE=false     # Linux `size` DATA is REAL data (bss is a separate col)
-    if file "$BINARY" 2>/dev/null | grep -qiE "Mach-O.*(executable|shared library|dylib)"; then
+    if printf '%s\n' "${BINARY_DESCRIPTION}" | grep -qiE "Mach-O.*(executable|shared library|dylib)"; then
         IS_MACHO_IMAGE=true
-    elif file "$BINARY" 2>/dev/null | grep -qiE "ELF.*(executable|shared object)"; then
+    elif printf '%s\n' "${BINARY_DESCRIPTION}" | grep -qiE "ELF.*(executable|shared object)"; then
         IS_ELF_IMAGE=true
     fi
     if [[ "${IS_ELF_IMAGE}" == true ]]; then
@@ -310,8 +391,9 @@ echo ""
 # 4. App bundle resource hygiene
 #
 #    A clean app bundle may contain project-owned UI resources: the generated
-#    AppIcon.icns, the privacy manifest, and SDL_GameControllerDB's plain-text
-#    mapping file. It must not carry ROMs, extracted game assets,
+#    AppIcon.icns, the privacy manifest, SDL_GameControllerDB's plain-text
+#    mapping file, and the bundled SDL2 license notice. It must not carry ROMs,
+#    extracted game assets,
 #    screenshots, audio dumps, or other opaque payloads outside the
 #    executables.
 # ---------------------------------------------------------------------------
@@ -333,9 +415,9 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
         esac
 
         if [[ -s "${ICON_FILE}" ]]; then
-            pass "Declared app icon exists: ${ICON_FILE#${APP_BUNDLE}/}"
+            pass "Declared app icon exists: ${ICON_FILE#"${APP_BUNDLE}"/}"
         else
-            fail "Declared app icon is missing or empty: ${ICON_FILE#${APP_BUNDLE}/}"
+            fail "Declared app icon is missing or empty: ${ICON_FILE#"${APP_BUNDLE}"/}"
             RESOURCE_FAIL=1
         fi
     fi
@@ -345,17 +427,29 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
         RESOURCE_FAIL=1
     else
         while IFS= read -r RESOURCE; do
-            REL="${RESOURCE#${APP_BUNDLE}/}"
+            REL="${RESOURCE#"${APP_BUNDLE}"/}"
             BASE="$(basename "${RESOURCE}")"
 
             case "${REL}" in
                 Contents/Resources/AppIcon.icns|\
-                Contents/Resources/PrivacyInfo.xcprivacy|\
+                Contents/Resources/PrivacyInfo.xcprivacy)
+                    ;;
                 Contents/Resources/gamecontrollerdb.txt)
                     # SDL_GameControllerDB: plain-text community pad mappings
                     # (zlib; lib/sdl_gamecontrollerdb/LICENSE.txt). No
                     # ROM/asset content -- deliberately shipped so exotic and
                     # handheld controllers map out of the box.
+                    ;;
+                Contents/Resources/ThirdParty/SDL2-LICENSE.txt)
+                    # Required notice for the standalone SDL2 dylib shipped in
+                    # Contents/Frameworks. Its exact bytes are pinned by the
+                    # unsigned-release verifier.
+                    ;;
+                Contents/Resources/ThirdParty/SDL2-MANIFEST.txt)
+                    # Four-line, content-free dependency provenance: pinned
+                    # SDL2 version/source plus the pre- and post-sign dylib
+                    # hashes. verify_unsigned_release.sh validates its exact
+                    # schema and values before accepting a release bundle.
                     ;;
                 *)
                     fail "Unexpected app resource in asset-free bundle: ${REL}"
@@ -375,14 +469,21 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
             esac
         done < <(find "${RESOURCE_DIR}" -type f -print)
 
-        if RESOURCE_MAGIC_MATCHES="$(scan_bootstrap_magic_tree "${RESOURCE_DIR}" 2>/dev/null)"
-        then
-            :
-        else
-            printf '%s\n' "${RESOURCE_MAGIC_MATCHES}"
-            fail "Embedded N64 ROM bootstrap magic found in app resource(s)."
-            RESOURCE_FAIL=1
-        fi
+        RESOURCE_MAGIC_MATCHES="$(scan_bootstrap_magic_tree "${RESOURCE_DIR}" 2>&1)" &&
+            RESOURCE_MAGIC_STATUS=0 || RESOURCE_MAGIC_STATUS=$?
+        case "${RESOURCE_MAGIC_STATUS}" in
+            0) ;;
+            1)
+                printf '%s\n' "${RESOURCE_MAGIC_MATCHES}"
+                fail "Embedded N64 ROM bootstrap magic found in app resource(s)."
+                RESOURCE_FAIL=1
+                ;;
+            *)
+                printf '%s\n' "${RESOURCE_MAGIC_MATCHES}" >&2
+                fail "Could not inspect every app resource."
+                RESOURCE_FAIL=1
+                ;;
+        esac
     fi
 
     if (( RESOURCE_FAIL == 0 )); then
@@ -400,8 +501,17 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
         pass "No embedded Frameworks directory present."
     else
         while IFS= read -r FRAMEWORK_FILE; do
-            REL="${FRAMEWORK_FILE#${APP_BUNDLE}/}"
+            REL="${FRAMEWORK_FILE#"${APP_BUNDLE}"/}"
             BASE="$(basename "${FRAMEWORK_FILE}")"
+            FRAMEWORK_DESCRIPTION="$(file "${FRAMEWORK_FILE}" 2>&1)" &&
+                FRAMEWORK_FILE_STATUS=0 || FRAMEWORK_FILE_STATUS=$?
+            if (( FRAMEWORK_FILE_STATUS != 0 )) ||
+                [[ "${FRAMEWORK_DESCRIPTION}" != *Mach-O* ]]; then
+                printf '%s\n' "${FRAMEWORK_DESCRIPTION}" >&2
+                fail "App framework/library is not an inspectable Mach-O: ${REL}"
+                FRAMEWORK_FAIL=1
+                continue
+            fi
 
             case "${REL}" in
                 Contents/Frameworks/libSDL2-2.0.0.dylib|\
@@ -424,17 +534,35 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
                     ;;
             esac
 
-            if FRAMEWORK_SIG_MATCH="$(scan_bootstrap_magic_file "${FRAMEWORK_FILE}" 2>/dev/null)"; then
-                fail "Embedded N64 ROM bootstrap magic found in app framework/library: ${REL} (${FRAMEWORK_SIG_MATCH})"
-                FRAMEWORK_FAIL=1
-            fi
+            FRAMEWORK_SIG_MATCH="$(scan_bootstrap_magic_file "${FRAMEWORK_FILE}" 2>&1)" &&
+                FRAMEWORK_SIG_STATUS=0 || FRAMEWORK_SIG_STATUS=$?
+            case "${FRAMEWORK_SIG_STATUS}" in
+                0)
+                    fail "Embedded N64 ROM bootstrap magic found in app framework/library: ${REL} (${FRAMEWORK_SIG_MATCH})"
+                    FRAMEWORK_FAIL=1
+                    ;;
+                1) ;;
+                *)
+                    printf '%s\n' "${FRAMEWORK_SIG_MATCH}" >&2
+                    fail "Could not scan app framework/library bytes: ${REL}"
+                    FRAMEWORK_FAIL=1
+                    ;;
+            esac
 
-            ASSET_FRAMEWORK_SYMBOLS=$(nm -P "${FRAMEWORK_FILE}" 2>/dev/null \
-                | grep -E '^_?(ANIM_DATA_|imgRAre_|ASSET_DATA_|dkrAssetPayload|ROM_ASSET_)' || true)
-            if [[ -n "${ASSET_FRAMEWORK_SYMBOLS}" ]]; then
-                fail "Asset-data symbol found in app framework/library: ${REL}"
-                FRAMEWORK_FAIL=1
-            fi
+            ASSET_FRAMEWORK_SYMBOLS="$(asset_symbols_for_file "${FRAMEWORK_FILE}" 2>&1)" &&
+                FRAMEWORK_SYMBOL_STATUS=0 || FRAMEWORK_SYMBOL_STATUS=$?
+            case "${FRAMEWORK_SYMBOL_STATUS}" in
+                0)
+                    fail "Asset-data symbol found in app framework/library: ${REL}"
+                    FRAMEWORK_FAIL=1
+                    ;;
+                1) ;;
+                *)
+                    printf '%s\n' "${ASSET_FRAMEWORK_SYMBOLS}" >&2
+                    fail "Could not inspect app framework/library symbols: ${REL}"
+                    FRAMEWORK_FAIL=1
+                    ;;
+            esac
         done < <(find "${FRAMEWORKS_DIR}" -type f -print)
 
         if (( FRAMEWORK_FAIL == 0 )); then
@@ -459,9 +587,9 @@ echo "============================================================"
 if (( FAIL_COUNT > 0 )); then
     echo ""
     if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
-        echo "RESULT: FAILED -- app bundle contains ROM-derived content."
+        echo "RESULT: FAILED -- app bundle did not pass asset-free verification."
     else
-        echo "RESULT: FAILED -- binary contains ROM-derived content."
+        echo "RESULT: FAILED -- binary did not pass asset-free verification."
     fi
     echo "        Do NOT distribute this build."
     exit 1

@@ -16,8 +16,8 @@ IDBFS persistence is implemented, but browser storage is not durable custody.
 Browser 1.0 therefore also requires launcher-level save export, transactional
 import, and a validated simple editor that work without a ROM, WebGPU, or a
 running engine. The shared codec, raw/container formats, storage transaction,
-UX, security model, test gates, and `SP-1`–`SP-10` backlog are specified in
-`../SAVE_PORTABILITY_EDITOR_SPEC_2026-07-27.md` (internal archive).
+UX, security model, and test gates are documented in
+[`../SAVE_MANAGEMENT.md`](../SAVE_MANAGEMENT.md).
 
 ## Why the current architecture is already web-ready
 - **Cooperative single thread** (architecture decision 1): no wasm pthreads needed. The blocking
@@ -51,10 +51,17 @@ UX, security model, test gates, and `SP-1`–`SP-10` backlog are specified in
   - `-sEXIT_RUNTIME=0`, `-sASYNCIFY_STACK_SIZE` tuned.
 
 ## M4.5 done — what it de-risks / what still remains for M8
-The WebGPU backend is now the native default and a proven visual match to GL
-(`docs/STATUS.md` M4.5). Findings that matter for the Emscripten step:
-- **The backend file is byte-identical to mgb64's** (no source edits): the same
-  gfx_webgpu.c that runs natively here compiles for wasm. The mgb64-shell symbols
+At M4.5 the WebGPU backend became the native default and matched GL across the
+fixture set captured then (`docs/STATUS.md` M4.5). A later throughput experiment temporarily made
+GL the native default, but dense opening-sequence captures exposed localized GL
+texture corruption that the sparse comparison had missed. WebGPU is therefore
+again the qualified native default and remains the browser's only backend; GL
+is an explicit native diagnostic path pending visual-parity work.
+Findings that matter for the Emscripten step:
+- **The backend keeps one native/browser implementation:** the current
+  `gfx_webgpu.c` descends from mgb64's backend but includes this project's DKR
+  lifecycle, presentation, and recovery work. This repository's same source file
+  compiles for both native and wasm. The remaining shell symbols
   it references are satisfied by platform/gfx_webgpu_stubs.c (inert) — those stubs
   are native-only glue; under Emscripten the overlay/minimap/host-handoff are
   equally absent, so the same stubs (or web equivalents) apply. NONE of them are
@@ -77,7 +84,7 @@ The WebGPU backend is now the native default and a proven visual match to GL
 - **-sUSE_WEBGPU=1 is the WRONG flag**: mgb64 uses `--use-port=emdawnwebgpu`
   (webgpu.cmake EMSCRIPTEN branch), NOT `-sUSE_WEBGPU=1` (the older, unmaintained
   binding). cmake/webgpu.cmake's EMSCRIPTEN branch already wires
-  `--use-port=emdawnwebgpu` — reuse it verbatim; do not hand-roll the flag.
+  `--use-port=emdawnwebgpu` — reuse that wiring; do not hand-roll the flag.
 - **No wgpu-native under wasm**: cmake/webgpu.cmake returns an INTERFACE-only
   `webgpu` target under EMSCRIPTEN (no prebuilt fetch). The native link
   (libwgpu_native.a + Metal/AppKit/Security frameworks) is desktop-only.
@@ -111,6 +118,16 @@ The WebGPU backend is now the native default and a proven visual match to GL
 - `emcmake cmake` + `cmake --build` produces mdkr64_web.{wasm,js}. Loads in Chrome,
   user picks a .z64, game boots to menu, playable with keyboard + gamepad, saves
   persist across reload. Frame pace ~stable via rAF.
+- Browser presentation is explicitly rAF-bounded. The launcher exposes
+  `original`, `display`, and numeric ceilings but not native-style unbounded
+  pacing. A shared config containing `uncapped` resolves to `display` with
+  requested/effective diagnostics. Numeric policies skip rAF opportunities on
+  the same absolute rational deadline grid as native; `display` consumes one
+  opportunity per callback. In 1.0.1 these are host/input-pump opportunities,
+  not extra images: the browser presents only newly authored frames at about
+  30 Hz NTSC or 25 Hz PAL and never swaps a duplicate. Hidden documents suspend
+  at the Asyncify boundary and the resumed interval rebases instead of
+  producing background catch-up.
 
 ## Watch-items
 - The `_Static_assert` offset locks (architecture decision 8) will re-validate at wasm32 pointer
@@ -122,8 +139,14 @@ The WebGPU backend is now the native default and a proven visual match to GL
 ## M8 STATUS — RUNTIME ACCEPTANCE AUTOMATED (platform matrix still partial)
 
 Implemented (`M8:` commits). The wasm engine COMPILES + LINKS clean, BOOTS in a
-real browser, brings up WebGPU, and runs the full game loop at 60fps via the
-Asyncify/rAF frame boundary. Verified in headless Chrome 150 (Apple Metal-3,
+real browser, brings up WebGPU, and runs the full game loop through the
+Asyncify/rAF frame boundary. Original mode retains the authored 30 Hz complete
+loop; opt-in display/numeric policies are marked Experimental — Under
+Construction and change only host pacing and input/event-pump opportunities.
+They do not increase unique visual FPS and may add CPU cost without a noticeable
+benefit. Production motion smoothing/display-list replay is disabled,
+so every submitted image is a new authored frame. Verified in headless Chrome
+150 (Apple Metal-3,
 `--headless=new --enable-unsafe-webgpu`) by the committed, dependency-free
 `tests/check_browser_runtime.py` gate driving the actual `mdkr64_web.wasm`.
 
@@ -137,12 +160,15 @@ Asyncify/rAF frame boundary. Verified in headless Chrome 150 (Apple Metal-3,
   (re-verified: builds clean, renders the attract title, race fixture exits 0).
 - **Platform web adaptations**:
   - `platform_frame_sync` / `platform_vi_pace_measure` (platform_sdl_min.c): under
-    `__EMSCRIPTEN__` the 1/60 s pacer suspends to `requestAnimationFrame`
+    `__EMSCRIPTEN__` the pacer suspends to `requestAnimationFrame`
     (`EM_ASYNC_JS platformWaitAnimationFrame`) instead of `nanosleep`, ALWAYS
-    yielding >=1 rAF/frame (even on an overrun) so the cooperative loop never
-    hangs the tab. KEEPS the VI-field `updateRate` semantics — field count is
+    yielding at every presentation boundary (even on an overrun) so the
+    cooperative loop never hangs the tab. Numeric caps may skip additional rAF
+    opportunities before an authored image is ready. KEEPS the VI-field `updateRate` semantics — field count is
     derived from real (rAF-timed) wall clock, so the slow-motion fix holds
-    in-browser. Measured 60fps (`dtms~16.7`, `R=1`) headless.
+    in-browser. Original mode measures 30fps complete ticks (`R=2`); display
+    and numeric policies preserve that tick stream without presenting between
+    authored images.
   - Web window (platform_sdl_min.c): a plain SDL window (no GL/Metal) bound to the
     page `#canvas`; the WebGPU surface comes from the `"#canvas"` selector
     (gfx_webgpu_compat.h) — kept in sync with the index.html canvas id.
@@ -197,6 +223,10 @@ Asyncify/rAF frame boundary. Verified in headless Chrome 150 (Apple Metal-3,
   Lake and advances a racer; five sampled menu/race canvases are live and
   changing; CSS/DPR transitions produce 1260×540, 640×480, then 1260×540 engine
   drawables; the AudioWorklet consumes PCM; and the process exits cleanly.
+- A separate real-Chromium schedule harness injects exact 144 Hz and irregular
+  rAF timestamps. It verifies the expected host-opportunity counts for display
+  and capped policies while requiring the same authored-image count, no
+  duplicate swaps, and byte-identical v3 state, ordered events, input, and PCM.
 - IDBFS is checked in both directions. The same isolated profile reloads without
   another picker action, and the exact 512-byte EEPROM hash plus the 12 MiB ROM
   are present before `main()`. Clearing progress retains the ROM; forgetting the

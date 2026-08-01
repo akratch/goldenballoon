@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include "structs.h"
 #include "math_util.h"
+#include "platform_os.h"
 
 #define DKR_ANG_TO_RAD (3.14159265358979323846f / 32768.0f)
 
@@ -256,7 +257,44 @@ s16 gArcTanTable[1026];
 
 s32 gCurrentRNGSeed = DKR_RNG_SEED_ROM;
 s32 gPrevRNGSeed    = DKR_RNG_SEED_ROM;
+static u32 gPresentationRNGSeed = DKR_RNG_SEED_ROM ^ 0x50524553u;
 u8  gIntDisFlag     = 0; /* EXPORT(gIntDisFlag) .byte 0x00 -- matches */
+
+/* Renderer/HUD-only randomness. It intentionally uses the ROM generator's
+ * exact step and inclusive range semantics, but advances a separate stream so
+ * presentation count and visibility cannot steer authoritative gameplay. */
+s32 presentation_rand_range(s32 min, s32 max) {
+    u64 temp;
+    u32 seed = gPresentationRNGSeed;
+    u32 span;
+
+    temp = seed;
+    temp = (temp << 32) | (temp >> 1);
+    temp ^= ((u64)(seed & 0xFFFFFu) << 12);
+    seed = (u32)(temp ^ ((temp >> 20) & 0xFFFu));
+    gPresentationRNGSeed = seed;
+    if (max < min) {
+        s32 swap = min;
+        min = max;
+        max = swap;
+    }
+    span = (u32)max - (u32)min + 1u;
+    if (span == 0u) {
+        return (s32)seed;
+    }
+    return (s32)((seed - (u32)min) % span + (u32)min);
+}
+
+/* These rolls were render-authored in the ROM but were intentionally moved to
+ * the presentation stream by the native enhanced-cadence port. Preserve both
+ * compatibility targets: byte-exact ROM ordering at the shipping original
+ * cadence, and the pre-FPS native gameplay stream at opt-in enhanced cadence. */
+s32 cadence_compat_rand_range(s32 min, s32 max) {
+    if (platform_sim_tick_fields() == 2) {
+        return rand_range(min, max);
+    }
+    return presentation_rand_range(min, max);
+}
 
 static unsigned int mdkr_fnv1a32_u16(const s16 *vals, int n) {
     unsigned int h = 2166136261u;

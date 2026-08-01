@@ -22,15 +22,26 @@ namespace AppTheme {
 // logical ratio (2.0 on Retina) so glyphs are rasterized crisp.
 void setup(float fbScale);
 
+// Rebuild the font atlas when a window moves between monitors with different
+// framebuffer scales. Call before the renderer backend's NewFrame hook. The
+// ImGui 1.92 texture lifecycle retires the old atlas safely on the next render.
+void refreshFramebufferScale(float fbScale);
+
 // RX.2: apply the player's UI.Scale (0.75-2.0). Rescales the style metrics
 // (padding, spacing, min sizes) from the captured base and sets FontGlobalScale
 // so text grows too. Cheap + idempotent (early-outs when unchanged), so the
 // app can call it every frame from the live config value. Call after setup().
 void setUiScale(float uiScale);
 
+// Queue a live UI-scale preview while widgets are being drawn, then apply it
+// at the next pre-NewFrame safe point so one frame never mixes metric scales.
+void requestUiScale(float uiScale);
+void applyPendingUiScale();
+
 // Current UI.Scale multiplier (1.0 until setUiScale is called). Panels use it to
 // scale their explicit button/control sizes in step with the style metrics.
 float uiScale();
+unsigned atlasGeneration();
 
 const AppFonts &fonts();
 

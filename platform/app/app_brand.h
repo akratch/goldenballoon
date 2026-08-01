@@ -1,8 +1,8 @@
 // app_brand.h — the product name players see. One definition, one place.
 //
-// "mdkr64" is the INTERNAL name: the repository, the CMake target, the binary
-// filename, the env-var prefix, the log file. It is not a product name and must
-// never appear on a surface a player reads.
+// "mdkr64" is the INTERNAL name: the repository, the CMake target, technical
+// filenames, the env-var prefix, and the log file. Branded GUI surfaces use the
+// product name below; technical documentation may still name an internal file.
 //
 // "Golden Balloon" is the public brand. Per the project's published governance
 // (tools/web/demo-repo/DISCLAIMER.md) it is deliberately an unofficial project
@@ -13,14 +13,16 @@
 #ifndef MDKR64_APP_BRAND_H
 #define MDKR64_APP_BRAND_H
 
+// The product name, for titles, headings and labels.
+#define MDKR_BRAND_NAME "Golden Balloon"
+
+#ifdef __cplusplus
+
 #include "app_version.h"
 
 #include <cstdio>
 
-// The product name, for titles, headings and labels.
-#define MDKR_BRAND_NAME "Golden Balloon"
-
-// "Golden Balloon v1.0.0" — the canonical version line, plus the provenance
+// "Golden Balloon v<release>" — the canonical version line, plus the provenance
 // commit when the build carries one (tools/release/stamp_provenance.sh binds
 // releases to a source commit; a dev build simply has no stamp to show).
 inline const char *AppBrandVersionLine() {
@@ -36,5 +38,7 @@ inline const char *AppBrandVersionLine() {
     }
     return s_line;
 }
+
+#endif  // __cplusplus
 
 #endif  // MDKR64_APP_BRAND_H

@@ -1,32 +1,30 @@
-# Release build pipeline — Windows + Linux app binaries (asset-free).
+# Release build pipeline — qualified Linux artifacts + Windows validation.
 #
 # Adapted from mgb64's .github/workflows/release.yml. Produces the portable
-# prebuilt binaries that this Mac can't build natively: a Windows portable
-# .zip and a Linux AppImage + .tar.gz. macOS is built and validated by
-# .github/workflows/macos-release.yml (asset-free verification only; no
-# signing/notarization/DMG yet -- see that workflow); a maintainer assembles
-# the final GitHub Release from all sources.
+# prebuilt binaries that this Mac can't build natively. Linux's AppImage and
+# tarball are publishable because this workflow launches their real AppHost
+# through both renderers and validates captured pixels. The Windows portable
+# zip is built and inspected, but deliberately not uploaded: windows-latest
+# does not guarantee a qualifying D3D12/Vulkan adapter or GL 3.3 context, so a
+# real launcher gate there would be flaky and a headless CLI smoke would be a
+# false substitute. Windows publication stays closed until a stable GPU runner
+# is available. macOS is built and validated by
+# .github/workflows/macos-release.yml (standalone dependencies, integrity
+# sealing, mounted-DMG verification, and an optional Developer ID/notarization
+# lane); a maintainer assembles the final GitHub Release from all sources.
 #
 # Manual-only, matching the repo's local-CI posture (see correctness.yml,
 # whose push/pull_request/workflow_dispatch triggers are the only automatic
 # ones this repo runs -- release/validation lanes are deliberate maintainer
-# actions): a maintainer dispatches this deliberately. The build jobs need no
-# repository secrets and write no repository state — they only compile the
-# ASSET-FREE source and upload the results as workflow artifacts, so they are
+# actions): a maintainer dispatches this deliberately. The jobs need no
+# repository secrets and write no repository state — they compile only the
+# ASSET-FREE source, and only the fully GPU-qualified Linux result is uploaded,
 # consistent with the bring-your-own-ROM / no-hosted-auto-triggers provenance
 # policy.
 #
-# Two structural deltas from mgb64, both because mdkr64 has no separate GUI
-# "app" launcher shell (mgb64's -DMGB64_APP=ON built ge007.exe as a ROM-free
-# launcher/menu shell around the engine):
-#   1. No MGB64_APP/MGB64_VERSION/PORT_VALIDATION_TESTS cmake defines exist in
-#      this tree -- the `mdkr64` target IS the game (platform/main_pc.c), so
-#      the build step is a plain Release configure + build of that target.
-#   2. mdkr64 fails fast without a ROM (see platform/main_pc.c's "Pass --rom
-#      <path>" message) -- there is no ROM-free full-render smoke path the
-#      way mgb64's app shell had. The ROM-free surfaces this lane can exercise
-#      are `--help` and `--video-list` (platform/main_pc.c), the same pair
-#      windows-validate.yml's headless smoke drives.
+# The `mdkr64` target includes the native launcher shell. Release validation
+# remains asset-free: launcher rendering, `--help`, and `--video-list` need no
+# ROM, while gameplay artifacts are never generated in hosted release jobs.
 #
 # There is no PortMaster/GLES analog in this repo (that was a GoldenEye/mgb64
 # handheld-porting effort with no mdkr64 counterpart), so that job is not
@@ -36,22 +34,68 @@
 # asset-free" step below) landed on `main` via the macOS packaging port
 # during the development of this workflow.
 
-name: Release build (Windows + Linux)
+name: Portable release (Linux qualified; Windows validation only)
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version label for the artifact names (e.g. v1.0.0)"
+        description: "Bare semver for releases (for example 1.0.1, without a v prefix); use dev only for test artifacts"
         required: false
         default: "dev"
+      release_tag:
+        description: "Required v<version> tag for release artifacts; leave empty only with version=dev"
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
 jobs:
+  validate:
+    name: Validate release inputs
+    runs-on: ubuntu-22.04
+    timeout-minutes: 2
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout full tag history
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - id: version
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_VERSION" != "dev" &&
+                ! "$RELEASE_VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
+            echo "version must be dev or bare semver (for example 1.0.1)" >&2
+            exit 1
+          fi
+          if [[ "$RELEASE_VERSION" == "dev" ]]; then
+            [[ -z "$RELEASE_TAG" ]] || {
+              echo "release_tag must be empty when version=dev" >&2
+              exit 1
+            }
+          else
+            EXPECTED_RELEASE_TAG="v${RELEASE_VERSION}"
+            [[ "$RELEASE_TAG" == "$EXPECTED_RELEASE_TAG" ]] || {
+              echo "release_tag must exactly equal $EXPECTED_RELEASE_TAG" >&2
+              exit 1
+            }
+            TAG_COMMIT="$(git rev-parse --verify "${RELEASE_TAG}^{commit}")"
+            [[ "$TAG_COMMIT" == "$GITHUB_SHA" ]] || {
+              echo "release_tag resolves to $TAG_COMMIT, not $GITHUB_SHA" >&2
+              exit 1
+            }
+          fi
+          echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+
   linux:
     name: Linux app (AppImage + tar.gz)
+    needs: validate
     runs-on: ubuntu-22.04  # oldest-reasonable glibc for broad compatibility
     timeout-minutes: 30
     steps:
@@ -60,41 +104,146 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake pkg-config libsdl2-dev libgl1-mesa-dev \
-            libdbus-1-dev file wget
+            libdbus-1-dev file wget xvfb xauth mesa-vulkan-drivers \
+            libgl1-mesa-dri vulkan-tools
+          test -f /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
       - name: Build the app (Release)
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-          cmake --build build --target mdkr64 -j
-      - name: Package AppImage + tar.gz
-        run: ./tools/package_linux_appimage.sh --binary build/mdkr64 --version "${{ github.event.inputs.version }}"
-      - name: Stamp provenance (bind assets to this commit)
-        run: |
-          for f in dist/mdkr64-linux-*; do
-            case "$f" in *.provenance.json) continue ;; esac
-            ./tools/release/stamp_provenance.sh "$f" "${{ github.event.inputs.version }}"
-          done
-      - name: Verify asset-free
-        run: ./macos/Scripts/verify_asset_free.sh build/mdkr64
-      - name: Smoke-launch the ROM-free surfaces (headless)
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
+            -DMDKR_VERSION="$RELEASE_VERSION"
+          cmake --build build -j
+      - name: ROM-free unit tests (GPU tests routed separately)
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+        run: ctest --test-dir build --output-on-failure -LE gpu
+      - name: Verify built executable identity and ROM-free surfaces
         env:
           SDL_VIDEODRIVER: dummy
           SDL_AUDIODRIVER: dummy
         run: |
-          set -e
-          # mdkr64 has no ROM-free full-render path (unlike mgb64's app-shell
-          # smoke): the game fails fast without a ROM (platform/main_pc.c).
-          # The only ROM-free execution surfaces are --help and --video-list.
+          set -euo pipefail
+          version_output="$(./build/mdkr64 --version | tr -d '\r')"
+          test "$version_output" = "mdkr64 ${{ needs.validate.outputs.version }}"
+          ./macos/Scripts/verify_asset_free.sh build/mdkr64
           ./build/mdkr64 --help | tee help.txt
           grep -q '^Usage: ' help.txt
           ./build/mdkr64 --video-list | tee video.txt
           grep -qE '^\[video\] mode=' video.txt
+      - name: Qualify built AppHost pixels (lavapipe WebGPU + llvmpipe OpenGL)
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/xdg-runtime
+        run: |
+          set -euo pipefail
+          mkdir -p "$XDG_RUNTIME_DIR" "$RUNNER_TEMP/launcher-built"
+          chmod 700 "$XDG_RUNTIME_DIR"
+
+          qualify_launcher() {
+            local label="$1" renderer="$2" executable="$3"
+            local work="$RUNNER_TEMP/launcher-built/$label"
+            mkdir -p "$work/prefs" "$work/saves"
+            local -a backend=(-u MDKR_RENDERER)
+            [[ -z "$renderer" ]] || backend=(MDKR_RENDERER="$renderer")
+            xvfb-run -a -s '-screen 0 1280x800x24 +extension GLX +render -noreset' \
+              env -u SDL_VIDEODRIVER "${backend[@]}" \
+                MDKR_APP_SMOKE_FRAMES=4 \
+                MDKR_APP_SMOKE_SHOT="$work/launcher.bmp" \
+                MDKR_APP_PANEL=Settings MDKR_APP_UI_TRACE=1 \
+                MDKR_APP_REQUIRE_PRESENT=1 \
+                MDKR_APP_PREFS_DIR="$work/prefs" \
+                MDKR_VIDEO_CONFIG_PATH="$work/video.ini" \
+                MDKR_SAVE_DIR="$work/saves" MDKR_AUDIO=0 \
+                "$executable" 2>&1 | tee "$work/launcher.log"
+            if [[ -z "$renderer" ]]; then
+              grep -Fq '[app] host: WebGPU' "$work/launcher.log"
+              grep -Eq '^\[app\] smoke: surface presents=[1-9][0-9]*$' \
+                "$work/launcher.log"
+            else
+              grep -Fq '[app] host: OpenGL' "$work/launcher.log"
+            fi
+            python3 tests/check_app_capture.py "$work/launcher.bmp" --self-test
+          }
+
+          qualify_launcher webgpu "" "$GITHUB_WORKSPACE/build/mdkr64"
+          qualify_launcher gl gl "$GITHUB_WORKSPACE/build/mdkr64"
+      - name: Package AppImage + tar.gz
+        run: ./tools/package_linux_appimage.sh --binary build/mdkr64 --version "${{ needs.validate.outputs.version }}"
+      - name: Qualify extracted tar/AppRun from an unrelated directory
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/xdg-runtime
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          extract="$RUNNER_TEMP/linux-package"
+          unrelated="$RUNNER_TEMP/unrelated-launch-cwd"
+          mkdir -p "$extract" "$unrelated" "$RUNNER_TEMP/launcher-package"
+          tar -xzf "dist/Golden-Balloon-$RELEASE_VERSION-linux-x86_64.tar.gz" \
+            -C "$extract"
+          app_run="$extract/Golden-Balloon.AppDir/AppRun"
+          binary="$extract/Golden-Balloon.AppDir/usr/bin/mdkr64"
+          lib_dir="$extract/Golden-Balloon.AppDir/usr/lib"
+          test -x "$app_run"
+          LD_LIBRARY_PATH="$lib_dir" ldd "$binary" | \
+            grep -E "libSDL2[^ ]* => $lib_dir/libSDL2[^ ]*"
+
+          qualify_package() {
+            local label="$1" renderer="$2"
+            local work="$RUNNER_TEMP/launcher-package/$label"
+            mkdir -p "$work/prefs" "$work/saves"
+            local -a backend=(-u MDKR_RENDERER)
+            [[ -z "$renderer" ]] || backend=(MDKR_RENDERER="$renderer")
+            (
+              cd "$unrelated"
+              xvfb-run -a -s '-screen 0 1280x800x24 +extension GLX +render -noreset' \
+                env -u SDL_VIDEODRIVER "${backend[@]}" \
+                  MDKR_APP_SMOKE_FRAMES=4 \
+                  MDKR_APP_SMOKE_SHOT="$work/launcher.bmp" \
+                  MDKR_APP_PANEL=Settings MDKR_APP_UI_TRACE=1 \
+                  MDKR_APP_REQUIRE_PRESENT=1 \
+                  MDKR_APP_PREFS_DIR="$work/prefs" \
+                  MDKR_VIDEO_CONFIG_PATH="$work/video.ini" \
+                  MDKR_SAVE_DIR="$work/saves" MDKR_AUDIO=0 \
+                  "$app_run"
+            ) 2>&1 | tee "$work/launcher.log"
+            if [[ -z "$renderer" ]]; then
+              grep -Fq '[app] host: WebGPU' "$work/launcher.log"
+              grep -Eq '^\[app\] smoke: surface presents=[1-9][0-9]*$' \
+                "$work/launcher.log"
+            else
+              grep -Fq '[app] host: OpenGL' "$work/launcher.log"
+            fi
+            python3 tests/check_app_capture.py "$work/launcher.bmp" --self-test
+          }
+
+          qualify_package webgpu ""
+          qualify_package gl gl
+      - name: Stamp provenance (bind assets to this commit)
+        run: |
+          for f in dist/Golden-Balloon-*-linux-x86_64.*; do
+            case "$f" in *.provenance.json) continue ;; esac
+            ./tools/release/stamp_provenance.sh "$f" "${{ needs.validate.outputs.version }}"
+          done
       - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
         with:
-          name: mdkr64-linux-${{ github.event.inputs.version }}
-          path: dist/mdkr64-linux-*
+          name: Golden-Balloon-${{ needs.validate.outputs.version }}-linux-x86_64
+          path: dist/Golden-Balloon-${{ needs.validate.outputs.version }}-linux-x86_64.*
 
   windows:
-    name: Windows app (portable .zip)
+    # Non-publishing by design. A windows-latest VM is useful for ABI, import,
+    # packaging, and native execution checks, but is not a stable GPU
+    # qualification environment. Do not add upload-artifact to this job until
+    # the built and extracted launchers both pass content-validated WebGPU and
+    # explicit-GL captures on a qualified runner.
+    name: Windows portable validation (publication held)
+    needs: validate
     runs-on: windows-latest
     timeout-minutes: 40
     defaults:
@@ -108,20 +257,53 @@ jobs:
           update: true
           install: >-
             mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-SDL2
-            mingw-w64-x86_64-pkg-config mingw-w64-x86_64-ninja zip
+            mingw-w64-x86_64-pkg-config mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-python zip unzip
+      - name: Verify declared Python toolchain
+        run: python3 --version
       - name: Build the app (Release)
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-          cmake --build build --target mdkr64 -j
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
+            -DMDKR_VERSION="$RELEASE_VERSION"
+          cmake --build build -j
+      - name: Verify portable executable
+        run: |
+          version_output="$(./build/mdkr64.exe --version | tr -d '\r')"
+          test "$version_output" = "mdkr64 ${{ needs.validate.outputs.version }}"
+          ./tools/check_windows_imports.sh build/mdkr64.exe
+          ./macos/Scripts/verify_asset_free.sh build/mdkr64.exe
+          ctest --test-dir build --output-on-failure -LE gpu -E '(audio|mixer)'
+      - name: Smoke-launch ROM-free early-exit surfaces
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+        run: |
+          ./build/mdkr64.exe --help > help.txt
+          grep -q '^Usage: ' help.txt
+          ./build/mdkr64.exe --video-list > video.txt
+          grep -qE '^\[video\] mode=' video.txt
       - name: Package portable .zip (GoldenBalloon.exe (static SDL2, no DLLs))
-        run: ./tools/package_windows_zip.sh --binary build/mdkr64.exe --version "${{ github.event.inputs.version }}"
-      - name: Stamp provenance (bind assets to this commit)
+        run: ./tools/package_windows_zip.sh --binary build/mdkr64.exe --version "${{ needs.validate.outputs.version }}"
+      - name: Verify extracted package startup from an unrelated directory
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          for f in dist/mdkr64-windows-*; do
-            case "$f" in *.provenance.json) continue ;; esac
-            ./tools/release/stamp_provenance.sh "$f" "${{ github.event.inputs.version }}"
-          done
-      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
-        with:
-          name: mdkr64-windows-${{ github.event.inputs.version }}
-          path: dist/mdkr64-windows-*
+          set -euo pipefail
+          package_root="$RUNNER_TEMP/windows-package"
+          unrelated="$RUNNER_TEMP/unrelated-launch-cwd"
+          mkdir -p "$package_root" "$unrelated"
+          unzip -q "dist/Golden-Balloon-$RELEASE_VERSION-windows-x64.zip" \
+            -d "$package_root"
+          executable="$package_root/GoldenBalloon/GoldenBalloon.exe"
+          (
+            cd "$unrelated"
+            version_output="$("$executable" --version | tr -d '\r')"
+            test "$version_output" = "mdkr64 $RELEASE_VERSION"
+            "$executable" --help > help.txt
+            grep -q '^Usage: ' help.txt
+          )
+      - name: Enforce Windows publication hold
+        run: |
+          echo "Windows artifact not uploaded: hosted GPU launcher qualification is unavailable."

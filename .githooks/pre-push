@@ -1,29 +1,12 @@
 #!/usr/bin/env bash
 #
-# pre-push -- repository clean-room guard, run on every push.
+# pre-push -- clean-room plus exact outgoing-public-commit guard.
 #
 # Constraint enforced here: no push, to any remote, may carry ROM or
 # ROM-derived data, in the working tree or anywhere in reachable history.
 # tools/check_clean_room.sh is the evidence and runs unconditionally, on every
 # push and every remote, matching .githooks/pre-commit (see that file for why
 # check_clean_room.sh, not check_no_rom.sh, is the right guard).
-#
-# Two further constraints are NOT enforced here yet, and this hook must not be
-# treated as a complete public-push gate until they are:
-#
-#   1. The exact commits being pushed are not scanned for the never-leak text
-#      classes (private absolute paths, personal email, credentials,
-#      proprietary SDK notice). tools/public_text_denylist.txt is the shared
-#      ruleset such a scan must read; tools/ci/check_public_history_text.sh
-#      applies it to reachable history, but only when run explicitly.
-#
-#   2. Direct pushes to main and to release tags are not routed through a
-#      guarded publish entrypoint, because this repository has none to route
-#      through. tools/web/publish_demo.sh is not it: it one-way publishes
-#      built web artifacts to the separate public demo repository and does not
-#      gate pushes to this repository's own main or tags. When such an
-#      entrypoint exists, MDKR64_ALLOW_DIRECT_PUBLIC_PUSH=1 is the name of its
-#      single escape hatch.
 #
 # Enable in a checkout with: tools/install_git_hooks.sh  (sets
 # core.hooksPath=.githooks).
@@ -33,3 +16,4 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
 tools/check_clean_room.sh
+tools/ci/check_public_push.sh "${1:-origin}"

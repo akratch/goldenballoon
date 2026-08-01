@@ -1010,18 +1010,20 @@ void asset_swap_misc_pulsating(void *blob, uint32_t size) {
  *  The index block is therefore (1 + numberOfCheats*3) halfwords, and the first
  *  string offset must equal its byte length. us.v80: numberOfCheats == 29, so
  *  the block is 88 halfwords == 176 bytes, and offset[0] == 176 exactly — that
- *  identity is what pins the field map, and the swapper asserts it by refusing
- *  to run when it does not hold.
+ *  identity is what pins the field map. The swapper also bounds every offset
+ *  and requires its string to terminate inside the blob; it restores the input
+ *  bytes if any part of that validation fails.
  *
- *  Must be called AFTER decrypt_magic_codes(): the count that bounds the index
- *  block is only meaningful once decrypted. Decryption permutes bits WITHIN
- *  each byte and never reorders bytes, so it commutes with this swap.
+ *  Must be called AFTER decrypt_magic_codes(): the count and offsets that bound
+ *  the index block exist only in the plaintext. The cipher transposes bit pairs
+ *  across each four-byte group and does NOT commute with a halfword byte swap.
  * ======================================================================== */
-void asset_swap_misc_magic_codes(void *blob, uint32_t size) {
-    uint32_t count, indexHalfwords, indexBytes, firstOffset;
+int asset_swap_misc_magic_codes(void *blob, uint32_t size) {
+    uint32_t count, indexHalfwords, indexBytes, firstOffset, i;
+    uint16_t stringOffset;
 
     if (blob == NULL || size < 2u) {
-        return;
+        return 0;
     }
 
     sw16(blob, 0x00);
@@ -1031,7 +1033,7 @@ void asset_swap_misc_magic_codes(void *blob, uint32_t size) {
     indexBytes     = indexHalfwords * 2u;
     if (count == 0u || indexBytes > size) {
         sw16(blob, 0x00); /* implausible — undo and leave the blob untouched */
-        return;
+        return 0;
     }
 
     /* Swap the index block, then check the self-describing invariant. */
@@ -1041,8 +1043,25 @@ void asset_swap_misc_magic_codes(void *blob, uint32_t size) {
         /* Field map does not hold for this ROM — revert rather than corrupt. */
         sw16_arr(blob, 0x02, count * 3u);
         sw16(blob, 0x00);
+        return 0;
+    }
+
+    /* Every table entry is a byte offset to a NUL-terminated string. Checking
+     * only offset[0] proves the record shape, but would still let one damaged
+     * entry escape into menu.c's strcmp/draw_text walks. Validate the complete
+     * table while it is bounded here; fail closed by restoring the original
+     * big-endian bytes if even one string is outside the payload or unterminated. */
+    for (i = 0; i < count * 3u; i++) {
+        stringOffset = (uint16_t) rd16(blob, 0x02 + i * 2u);
+        if (stringOffset < indexBytes || stringOffset >= size ||
+            memchr((uint8_t *) blob + stringOffset, '\0', size - stringOffset) == NULL) {
+            sw16_arr(blob, 0x02, count * 3u);
+            sw16(blob, 0x00);
+            return 0;
+        }
     }
     /* Everything from indexBytes on is ASCII: deliberately NOT swapped. */
+    return 1;
 }
 
 /* ==========================================================================

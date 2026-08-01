@@ -6,11 +6,10 @@ Before cutting the next release, a four-lane deep review (adversarial review
 of the new commits, residual renderer mining, mobile touch layer, and a
 release-claims audit) plus one complete Release-led manifest run
 (**66/66 tasks in 96m54s** as the manifest stood at that checkpoint —
-it is 76 tasks today — including the 47m22s alignment-UBSan
+it is 100 tasks today — including the 47m22s alignment-UBSan
 native-layout matrix) mined the remaining issues. Findings and dispositions
-are recorded in
-the pre-release review (internal archive);
-the renderer fixes are wave "shadowdeep" in `docs/OPEN_ITEMS.md`. Headlines:
+are recorded in the renderer's wave "shadowdeep" entries in
+`docs/OPEN_ITEMS.md`. Headlines:
 
 - **Shipping builds never reset the shadow static caster cache** — the reset
   call was reachable only through the diagnostic trace path, which every
@@ -95,8 +94,8 @@ Main now contains an unreleased phone/tablet control layer with real analog
 steering and simultaneous race actions. It auto-detects coarse/no-hover touch
 devices, observes display cutout safe areas, yields to gamepads, and clears
 input across blur, page hide, visibility loss, fullscreen transitions, and
-manual hiding. The implementation and local Chromium evidence are in
-the mobile touch-controls report (internal archive).
+manual hiding. The registered browser gate preserves the implementation and
+local Chromium evidence.
 Released as part of `v0.5` (2026-07-29) with the shadow deep-review waves and
 the registered touch gate; the public page now serves the `v0.5` build by
 maintainer decision.
@@ -115,8 +114,9 @@ The defined Waves 1–3 are **23/23 complete** and integrated:
 | Wave 2 lighting | RL-2, RL-5, CO-1 | 3/3 |
 | Wave 3 gameplay | 3P/4P, Adventure Two, challenge/battle, first boss, Taj, trophy series | 6/6 |
 
-The manifest contains **69 check scripts / 76 full-run tasks**, and the
-configured native build exposes **28 CTests**. Linux X11/Mesa now has a
+The manifest contains **91 check scripts / 100 full-run tasks**. That v0.4
+snapshot exposed **28 CTests**; the current default native configuration
+exposes **59**: 50 non-GPU and 9 GPU. Linux X11/Mesa now has a
 clean Ubuntu/GCC build and real GL plus WebGPU/Vulkan render/present runs.
 Wayland, physical Linux GPUs, WGPU-11's offline/external corpus remainder, the full Adventure graph, physical
 peripheral breadth, broader ROM support, and broader independent-oracle contracts remain
@@ -127,23 +127,20 @@ The senior-review closeout also repaired the production fullscreen freeze
 mechanism: oversized fullscreen supersampling now respects a proportional
 render-area budget while output stays native, WebGPU resize debounce has one
 owner, and real Chromium proves live frames through fullscreen entry and exit.
-See the senior code review (internal archive).
 
 The first independent state lane now drives the real US 1.1 ROM and native port
 through a full Ancient Lake lap. The authored two-field arm measures 63.663%
 checkpoint/lap agreement and 1,259.956 position p95; the shipping 60 Hz arm
 measures 7.526% and 7,767.070. Both complete a lap and both fail strict parity.
 F-18 is therefore partial, not open; challenge breadth, multiplayer,
-progression/save, audio, renderer-state, and standard-race parity remain. See
-the original-state oracle report (internal archive).
+progression/save, audio, renderer-state, and standard-race parity remain.
 
 The new all-racer Bubbler lane closes the cadence-policy part of that gap.
 Unmodified US 1.1 Bubbler finishes at tick 3,459; native two-field Bubbler at
 3,458 with a 1.00047× mean-speed ratio, while the historical one-field arm
 finishes at 3,022 with a 1.13965× speed ratio. Interactive gameplay therefore
 defaults to persisted `Gameplay.SimulationCadence=original`; the old one-field
-behavior remains an explicit restart-scoped `enhanced` option. See
-the Bubbler state-oracle report (internal archive).
+behavior remains an explicit restart-scoped `enhanced` option.
 
 The Remastered world-depth and colour epic is complete: typed capture-once caster geometry, stable 1P–4P cascaded
 shadows on GL/WebGPU/browser, truthful projected-decal fallback, a scene-linear
@@ -156,8 +153,7 @@ The final browser gate sustains the temporary complete-loop authored cadence at
 median 30.0 fps with 99.9% two-field updates, no sub-two-field update, and
 35.35/35.64 ms p95/p99. Production shadows completed for 3,489/3,597 attempted
 frames with truthful fallback during prewarm, and fullscreen entry/exit stayed
-live. See
-the world-depth epic write-up (internal archive).
+live.
 
 ## ROM-free push/PR correctness matrix
 
@@ -216,8 +212,9 @@ callbacks cannot dereference shader metadata from a retired device.
 
 `check_final_shutdown.py` passes GL/WebGPU in Debug, Release, and ASan and
 requires zero terminal ownership in dependency order. The 76-case WebGPU
-recovery matrix still passes, including command-finish cleanup and live GL
-fallback. Real Chromium proves AudioWorklet closure, zero WebGPU/frontend
+recovery matrix still passes, including command-finish cleanup, one bounded
+same-backend rebuild, and terminal failure without an automatic GL switch.
+Real Chromium proves AudioWorklet closure, zero WebGPU/frontend
 children, ordinary reload, and cleanup before adapter/asynchronous-pipeline
 failure UI. A real-Chromium four-load gate now proves stable game/audio heaps,
 exact physical/music/jingle/SFX list conservation, coherent renderer
@@ -243,12 +240,14 @@ evidence. The raw ~158 ms transition maximum remains reported separately.
 
 ## WebGPU shipped fault-matrix closure
 
-The 105-point fault registry is fully wired and policy-classified. A structural
-gate now requires every one of the 73 native/shared shipped points and all three
-browser-only points in their executable runtime matrices, while forbidding
-runtime credit for 29 dormant inherited routes. The current native run passes
-76 injections plus forced vertex segmentation and shader-index exhaustion; the
-real Chromium gate covers all browser-only points.
+The 113-point fault registry is fully wired and policy-classified. A structural
+gate now requires every one of the 83 native-required points and all three
+browser-required points in their executable runtime matrices, while forbidding
+runtime credit for 29 dormant inherited routes. The native recovery and AppHost
+suites jointly cover all 83 points; the browser suite covers its one exclusive
+point plus the two overlay constructors whose native and browser policies
+deliberately differ. Forced vertex segmentation and shader-index exhaustion are
+independently exercised.
 
 The last flaky native arm — surface-capture buffer allocation on an occluded
 headless surface — now consumes the selected allocation-failure seam
@@ -268,8 +267,9 @@ remain visibly pending.
 Configuration has separate active/desired snapshots and monotonic source ranks:
 defaults, file, native preset, browser launcher, in-game, environment, then CLI.
 Higher-ranked values are visibly locked and never baked into the user file.
-Native writes synchronize a temporary and atomically replace `mdkr64.ini`;
-browser writes replace `/save/mdkr64.ini` and enter the existing coalesced IDBFS
+Native packaged writes synchronize a temporary and atomically replace the
+per-user `SDL_GetPrefPath("mdkr64", "mdkr64")/mdkr64.ini`; browser writes
+replace `/save/mdkr64.ini` and enter the existing coalesced IDBFS
 durability queue. Unknown keys survive. Malformed launcher input and unwritable
 storage leave both the active setting and prior file unchanged.
 
@@ -278,8 +278,7 @@ storage leave both the active setting and prior file unchanged.
 mutation/reload, env locking, all-control storage failure, and malformed-launch
 no-rewrite arms. The real Chromium gate drives the same menu, reloads 16:10,
 FOV 50, and 3× SSAA from IDBFS, and proves campaign-only erase preserves video
-preferences. Full implementation detail is in
-the video-options design note (internal archive).
+preferences.
 
 ## WGPU-11 visible-content census and queued-pointer repair
 
@@ -295,16 +294,18 @@ host-pointer registration after a task had encoded it, so its low token
 sometimes resolved as segment-1 arena garbage. One-generation registry grace
 now protects queued tasks without retaining unobserved mappings indefinitely;
 the repeated GL/WebGPU resource gate plateaus at registry high-water 41.
-See the WebGPU content census (internal archive).
 
 The subsequent capacity/fault closeout forces a one-entry shader table, proves
 two bounded refusals without pointer reuse or pipeline corruption, recovers the
-device once, and then switches the live process to GL. The native attachment-
-only surface blit and presented-surface capture paths now execute under fault
-injection. The registry is 105/105 classified: 72 shared shipped, one
-native-only, three browser-only, and 29 explicitly dormant inherited routes;
-the recovery gate passes 76 injected native cases plus forced vertex
-  segmentation and shader-index exhaustion.
+device once, and then stops cleanly without switching renderers. Native host
+surface configuration/acquisition, attachment-only presentation, and
+presented-surface capture paths now execute under fault injection. The registry
+is 113/113 classified: 74 shared shipped, nine native-only, one browser-only,
+and 29 explicitly dormant inherited routes. Native runtime gates cover all 83
+required points and browser gates cover all three required points. The AppHost
+lane exercises all eight `host.*` boundaries plus native fail-closed behavior
+for the two overlay constructors; forced vertex segmentation and shader-index
+exhaustion remain separately covered.
 
 ## Optimized full-UBSan and GCC/O1 checkpoint
 
@@ -329,8 +330,7 @@ types, direct host-pointer stores into 32-bit asset slots, variadic float
 reads, orphan collision facets, and indeterminate audio/camera/AI/plane state.
 Debug, Release, ASan, wasm, real Chromium, and the 46-route native WebGPU census
 all pass afterward. F-01 remains partial only because its written exit gate
-also requires an external toolchain/platform witness. Full detail is in
-the GCC/-O1 portability closeout (internal archive).
+also requires an external toolchain/platform witness.
 
 - Wave `core-safety` COMPLETE (2026-07-27): audit findings MEM-11, MEM-12,
   PORT-01, C-01, C-02, and GAME-06 are closed. Texture/CI construction is
@@ -536,12 +536,14 @@ difference for Ancient Lake/Fire Mountain.
   input was read exactly ONCE at boot and the game only ever saw neutral pads.
   Fixed by posting the SI completion synchronously (stubs_dkr.c) — the
   cooperative-model equivalent of the SI-DMA-done interrupt.
-  Input path (platform/): platform_sdl_min.c owns a per-frame pad state built in
-  platform_input_pump() (called at the top of platform_frame_sync, before the
-  retrace) from SDL keyboard (X=A,Z=B,C=Z,Enter=Start,A/D=L/R,IJKL=C-buttons,
-  arrows=stick), SDL_GameController (left stick + face/dpad/triggers, db from
-  lib/sdl_gamecontrollerdb), and an optional --input-script FILE
-  (`frame TOKEN[+TOKEN] [hold]`). osContGetReadData reads it. Default (no
+  Input path (platform/): platform_sdl_min.c captures SDL keyboard/controller
+  transitions at each host opportunity into bounded per-button queues, then
+  publishes one pad sample per fixed simulation ticket. Press+release between
+  ticks is stretched across two DKR samples; analog uses the latest sample;
+  disconnect/overlay capture neutralizes safely. Browser touch uses the same
+  contract through a bounded JS snapshot queue, while optional --input-script
+  entries (`frame TOKEN[+TOKEN] [hold]`) remain tick-indexed and bypass host
+  poll frequency. osContGetReadData reads only the published tick state. Default (no
   --headless-frames) opens a visible vsync-paced window; --headless-frames /
   --dump-frames unchanged; MDKR_TRACE>=3 traces input reads; menu_init traces
   the menu-id timeline.
@@ -798,11 +800,12 @@ difference for Ancient Lake/Fire Mountain.
   so building the Acmd list IS the synthesis. Wired via a NATIVE_PORT
   `#include "mixer.h"` at the tail of PR/abi.h (guarantees the override wins in
   every synth TU regardless of include order). The audio thread never runs in the
-  cooperative model, so a per-frame synchronous pump replaces it: amAudioSynthFrame
+  cooperative model, so an audio-time service replaces it: amAudioSynthFrame
   (audiomgr.c) reproduces __amHandleFrameMsg's core (__clearAudioDMA + alAudioFrame
-  into an arena PCM buffer) and dkr_audio_pump (platform/audi_port_dkr.c) drives it
-  once per rendered frame from the stubs_dkr.c frame boundary (after
-  platform_frame_sync — does not inflate the paced frame time). Host out = SDL2
+  into an arena PCM buffer) and dkr_audio_service_tick (platform/audi_port_dkr.c)
+  consumes independently due quanta after ordered game ticks. Host time is credited
+  at real presentation boundaries, so extra presentation never manufactures PCM.
+  Host out = SDL2
   queue-mode device @22050 Hz stereo s16 (audi_port_dkr.c; osAi* moved there from
   stubs_dkr.c), skipped under --headless-frames (synthesis still runs for CI);
   MDKR_AUDIO_DUMP=out.wav / MDKR_AUDIO_RMS=1 capture the PCM for validation.
@@ -844,20 +847,24 @@ difference for Ancient Lake/Fire Mountain.
   the main bus undelayed at unity, worth +2.5 dB of peak and 4.3x the master-bus
   clip events. See docs/OPEN_ITEMS.md "M5 open items" + docs/MGB64_BACKFLOW.md.
 
-- M4.5 WebGPU backend (this wave) — WebGPU is now the DEFAULT native render
-  backend (GL is the runtime fallback), and it is a proven visual match to GL.
-  This is the bridge to the in-browser build (M8): the SAME gfx_webgpu.c compiles
+- M4.5 WebGPU backend (this wave) — WebGPU became the default native render
+  backend at this checkpoint. A later throughput experiment temporarily made GL
+  the default; the first patch restored WebGPU after dense intro captures exposed
+  longstanding localized GL corruption which sparse parity samples had missed.
+  This is the bridge to the in-browser build (M8): this repository's same
+  gfx_webgpu.c compiles
   for wasm (Emscripten supplies WebGPU; only native links wgpu-native).
-  VENDORED verbatim from mgb64/src/platform/fast3d/ into platform/fast3d/:
+  Originally ported from mgb64/src/platform/fast3d/ into platform/fast3d/:
   gfx_webgpu.c (205KB), gfx_webgpu.h, gfx_webgpu_shader.c (runtime WGSL emitter),
   gfx_webgpu_shader.h, gfx_webgpu_compat.h (the native/emscripten dialect seam).
   It drives the SAME GfxRenderingAPI vtable our F3DDKR front-end (gfx_pc_dkr.c)
   already uses, so the switch is `gfx_init(&gfx_webgpu_api)` — ZERO front-end
   change. The shader generator consumes the same gfx_cc.c combiner output as GL.
-  ADAPTATION was minimal (the file stays byte-identical to mgb64 for M8 backflow):
-  the mgb64-shell symbols it references are satisfied without source edits to the
-  vendored .c. As of the native app shell (MDKR_APP, platform/app/), two of those
-  symbol groups are now REAL rather than inert: the app-shell WebGPU-handoff
+  The port has since gained DKR-specific lifecycle, presentation, recovery, and
+  validation work; native/browser reuse depends on the shared seam inside this
+  repository, not byte identity with mgb64. As of the native app shell
+  (MDKR_APP, platform/app/), two remaining shell symbol groups are now real
+  rather than inert: the app-shell WebGPU-handoff
   getters are backed by platform/host_window.c (the launcher hands its device and
   surface to the engine, so both render into one window) and the ImGui overlay
   hooks by platform/app_overlay_hooks.c (the in-game F1 overlay). The stub
@@ -877,11 +884,14 @@ difference for Ancient Lake/Fire Mountain.
   prebuilt v29.0.1.1, SHA-256 verified. On the maintainer's M3 Max it reuses mgb64's already-
   fetched prebuilt tree (offline-safe); otherwise FetchContent downloads it (or a
   local cached zip via file://). option(MDKR_WEBGPU_BACKEND ON) gates the code +
-  define + link; GL stays compiled so MDKR_RENDERER switches at runtime. OFF
-  builds a GL-only binary that links NO wgpu (verified: 0 wgpu deps) and falls
-  back to GL if MDKR_RENDERER=webgpu is set.
-  RUNTIME SELECTOR: MDKR_RENDERER=webgpu|gl|metal (default webgpu; metal is not
-  compiled in mdkr64 so it warns + falls back to GL). Resolved once
+  define + link; GL stays compiled for explicit diagnostics. OFF builds a
+  GL-only binary that links no wgpu (verified: 0 wgpu deps); its compiled default
+  is GL, while an explicit `MDKR_RENDERER=webgpu` request is unavailable and
+  fails startup instead of changing the requested backend.
+  RUNTIME SELECTOR: MDKR_RENDERER=webgpu|gl|metal (default WebGPU when compiled;
+  GL remains an explicit diagnostic backend while visual-parity work continues;
+  `metal` names WebGPU's Metal-backed wgpu-native implementation because the
+  standalone `gfx_metal.mm` backend is not compiled). Resolved once
   (platform_sdl_min.c mdkr_render_backend()) BEFORE the window is created, because
   the window kind differs per backend: WebGPU uses an SDL_WINDOW_METAL window +
   SDL_Metal_CreateView (macOS CAMetalLayer -> WGPUSurface via
@@ -919,7 +929,7 @@ difference for Ancient Lake/Fire Mountain.
     offscreen target, so it captures the held frame every present (more faithful
     to the real display). Parity scoring skips GL's black captures.
   ROBUSTNESS: race_drive 20x under WebGPU = 0 crashes; title 300f x5 = 0 crashes;
-  GL fallback still boots; default (no env) selects + initializes WebGPU (Apple
+  explicit diagnostic GL still boots; default (no env) selects + initializes WebGPU (Apple
   M3 Max, wgpu-native Metal). No new build warnings (the vendored + new TUs add 0;
   the 251 total are the pre-existing decomp token-truncation class). GL-only
   (MDKR_WEBGPU_BACKEND=OFF) build compiles + links clean, 0 wgpu deps.
@@ -1021,7 +1031,7 @@ difference for Ancient Lake/Fire Mountain.
       frames — the block metric needs matched camera/kart pose).
   NATIVE REGRESSION (the only native-affecting change is the earlier raw-token z-clear
   compare): 20x race_drive = 0 crashes; WebGPU renders the attract title (frame 1378
-  0.5% white) + OPTIONS (frame 1532 91% black text-on-black); GL fallback boots
+  0.5% white) + OPTIONS (frame 1532 91% black text-on-black); explicit GL boots
   (GL 4.1 Metal). No new warnings. FOLLOW-UP: the isolated-profile
   `check_browser_runtime.py` gate now runs 3600 paced frames through the in-race
   pipeline load, fails on GPU-process/device-loss markers or stalled/flat output,
@@ -1286,8 +1296,8 @@ within its pixel budgets despite GL now supersampling.
 
 ### imagequality — supersampling reaches the web build (IQ-9/IQ-10 complete)
 
-The WebGPU half of the render-scale work. WebGPU is the default backend natively
-and the **only** backend in the browser, so until this landed the setting was
+The WebGPU half of the render-scale work. WebGPU was the native default at this
+checkpoint and is the **only** backend in the browser, so until this landed the setting was
 unreachable where it matters most.
 
 `wgpu_run_resolve()` is an N×N box, not a bilinear shrink. Bilinear is an exact

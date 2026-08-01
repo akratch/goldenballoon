@@ -4,6 +4,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*
  * Stable WebGPU fault vocabulary. Keep the name user-facing: native and
  * browser gates select one point with MDKR_WEBGPU_FAULT=name[@occurrence].
@@ -29,6 +33,14 @@
     X(SURFACE_LOST,               "surface.lost") \
     X(SURFACE_ERROR,              "surface.error") \
     X(DEVICE_LOST,                "device.lost") \
+    X(HOST_SURFACE_CONFIGURE,     "host.surface-configure") \
+    X(HOST_SURFACE_ACQUIRE,       "host.surface-acquire") \
+    X(HOST_SURFACE_VIEW,          "host.surface-view") \
+    X(HOST_CAPTURE_MAP_TIMEOUT,   "host.capture-map-timeout") \
+    X(HOST_IMGUI_INIT_RESOURCE,   "host.imgui-init-resource") \
+    X(HOST_IMGUI_TEXTURE_VIEW,    "host.imgui-texture-view") \
+    X(HOST_IMGUI_DRAW_BUFFER,     "host.imgui-draw-buffer") \
+    X(HOST_IMGUI_IMAGE_BIND_GROUP,"host.imgui-image-bind-group") \
     X(QUEUE_SUBMIT,               "queue.submit") \
     X(NOISE_BUFFER,               "frame.noise-buffer") \
     X(SCENE_TEXTURE,              "target.scene-texture") \
@@ -142,5 +154,9 @@ const char *gfx_webgpu_fault_error(void);
 /* ROM/GPU-free unit-test seam. NULL restores environment-driven configuration. */
 void gfx_webgpu_fault_set_spec_for_test(const char *spec);
 void gfx_webgpu_fault_reset_for_test(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

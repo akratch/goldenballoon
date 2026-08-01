@@ -47,6 +47,10 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             owned.push_back("--window-size");
             owned.push_back(buf);
         }
+        if (cfg->automation_ticks > 0) {
+            owned.push_back("--headless-ticks");
+            owned.push_back(std::to_string(cfg->automation_ticks));
+        }
         // Staged RESTART-scope settings ride in as --video-set, which sits at
         // MDKR_VIDEO_SOURCE_CLI — above the ini the panel also wrote them to.
         // Same value from both layers, so precedence is a no-op here; passing
@@ -64,6 +68,18 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
     argv.reserve(owned.size() + 1);
     for (std::string &s : owned) argv.push_back(&s[0]);
     argv.push_back(nullptr);
+
+    // The shell initialized video config before showing Settings. Commit the
+    // settings it staged, plus these synthesized CLI overrides, to the active
+    // engine config now. main_pc.c's init remains idempotent and publishes this
+    // already-resolved state before any presentation subsystem can latch it.
+    if (!mdkr_video_config_handoff_to_engine(
+            static_cast<int>(owned.size()), argv.data())) {
+        std::fprintf(stderr,
+                     "[app] video-config handoff was missing or repeated; "
+                     "engine boot stopped\n");
+        return 2;
+    }
 
     std::fprintf(stderr, "[app] boot:");
     for (size_t i = 1; i < owned.size(); ++i) std::fprintf(stderr, " %s", owned[i].c_str());

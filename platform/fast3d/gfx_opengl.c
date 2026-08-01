@@ -4663,7 +4663,7 @@ static void gfx_opengl_render_shadow_map(void) {
     gfx_opengl_dump_shadow_pgm();
 }
 
-static void gfx_opengl_start_frame(void) {
+static bool gfx_opengl_start_frame(void) {
     /*
      * frame_count feeds the SHADER_NOISE hash, so it is a per-IMAGE seed, not a
      * per-frame counter for bookkeeping. A presentation replay redraws the same
@@ -4717,6 +4717,7 @@ static void gfx_opengl_start_frame(void) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT |
             (gfx_diag_xlu_coverage_stencil_enabled() ? GL_STENCIL_BUFFER_BIT : 0));
     glEnable(GL_SCISSOR_TEST);
+    return true;
 }
 
 static void gfx_opengl_resolve_scene_target(void) {

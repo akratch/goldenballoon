@@ -18,6 +18,10 @@ bool save();
 std::string get(const std::string &key, const std::string &fallback = "");
 void set(const std::string &key, const std::string &value);
 
+// Change one preference and persist it as a single transaction. On failure the
+// in-memory map is restored and the atomically replaced on-disk file is intact.
+bool setAndSave(const std::string &key, const std::string &value);
+
 // Escape a value to a single injection-safe ini line: backslash-escapes '\',
 // '\n' and '\r' so a value can never introduce a new line (and thus never inject
 // a forged key=value on reload). unescapeValue is the exact inverse. Applied by

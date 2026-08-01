@@ -14,10 +14,6 @@
 #      --video-list; see platform/main_pc.c) with SDL dummy drivers. This
 #      exercises real Windows process startup and the video-config
 #      report/CLI-parsing logic on a real kernel. No ROM, no GPU.
-#      NOTE: mdkr64 has no separate GUI "app" shell the way mgb64 did (no
-#      config-schema self-check, --dump-config, --list-settings, or
-#      update-check self-test surfaces exist here) -- --help and --video-list
-#      are the entire ROM-free execution surface platform/main_pc.c exposes.
 #   3. ROM-free CTest suite — the compiled C/C++ unit tests run as native
 #      Windows executables. correctness.yml already proves this same ctest
 #      suite is ROM-free and headless-safe on Linux/macOS runners (no Xvfb,
@@ -26,14 +22,22 @@
 #      platform/audio*/ that may add or rename audio-adjacent tests, so this
 #      excludes by name pattern (audio/mixer) rather than hardcoding an
 #      include-list of exact test names that could silently go stale.
-#   4. Asset-free verify + upload the .exe artifact.
+#   4. Exact portable packaging plus extracted startup from an unrelated CWD.
+#
+# This is deliberately not a publication lane. GitHub's windows-latest VM does
+# not promise a qualifying D3D12/Vulkan adapter or GL 3.3 context. Treating the
+# GPU-free surfaces above as a launcher-render substitute would recreate the
+# release-gate bug this audit is closing. Accordingly this workflow uploads no
+# executable or zip; Windows publication stays held until the built and
+# extracted launchers can both produce content-validated default-WebGPU and
+# explicit-GL captures on a stable GPU runner.
 #
 # Manual-only (workflow_dispatch), matching the repo's deliberate
 # no-auto-trigger posture for release/validation lanes (see release.yml,
 # macos-release.yml). A maintainer dispatches this and it should be GREEN
 # before a release cut. It needs no secrets and writes no repository state —
-# it only compiles the ASSET-FREE source and uploads the result, consistent
-# with the bring-your-own-ROM provenance policy.
+# it only compiles and validates the ASSET-FREE source, consistent with the
+# bring-your-own-ROM provenance policy.
 #
 # tools/mingw_cross_check.sh and cmake/mingw-w64-x86_64.cmake (referenced by
 # path above) and macos/Scripts/verify_asset_free.sh (the last step) all
@@ -69,7 +73,7 @@ jobs:
           update: true
           install: >-
             mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-SDL2
-            mingw-w64-x86_64-pkg-config mingw-w64-x86_64-ninja zip python
+            mingw-w64-x86_64-pkg-config mingw-w64-x86_64-ninja zip unzip python
 
       # Same CMake config as the release.yml Windows job, plus BUILD_TESTING
       # (ON by default via include(CTest) in CMakeLists.txt) so the ROM-free
@@ -88,22 +92,11 @@ jobs:
       # GetOpenFileNameW (platform/app/file_dialog_win.cpp) so the player can
       # select their own file without the launcher enumerating any directory.
       # It is a stock Windows system DLL, present on every install.
-      # system DLLs + the SDL2.dll shipped beside it (plus the D3D12/DXGI/BCRYPT
-      # family wgpu-native's Windows backend pulls in -- MDKR_WEBGPU_BACKEND is ON
-      # by default, see cmake/webgpu.cmake). Any libgcc_s_seh-1 / libstdc++-6 /
-      # libwinpthread-1 leak (present on the runner, absent on stock Windows)
-      # fails the lane HERE, not on a player's machine.
+      # SDL2, libgcc, libstdc++, and winpthread are static. The shared import
+      # guard permits only stock Windows DLLs (including wgpu-native's
+      # D3D12/DXGI/BCRYPT family) and rejects an SDL2/toolchain DLL regression.
       - name: Import-table guard (self-contained on stock Windows)
-        run: |
-          objdump -p build/mdkr64.exe | grep -i "DLL Name" || true
-          BAD="$(objdump -p build/mdkr64.exe | awk '/DLL Name/{print $3}' \
-            | grep -viE '^(KERNEL32.dll|USER32.dll|SHELL32.dll|ole32.dll|GDI32.dll|ADVAPI32.dll|WS2_32.dll|IMM32.dll|OLEAUT32.dll|SETUPAPI.dll|VERSION.dll|WINMM.dll|OPENGL32.dll|NTDLL.dll|USERENV.dll|BCRYPTPRIMITIVES.dll|BCRYPT.dll|CRYPT32.dll|COMBASE.dll|RPCRT4.dll|PROPSYS.dll|COMDLG32.dll|d3dcompiler_47.dll|dxgi.dll|D3D12.dll|SDL2.dll|api-ms-win-.*)$' || true)"
-          if [ -n "$BAD" ]; then
-            echo "FAIL: non-system, non-SDL2 DLL imports (would not run on stock Windows):"
-            echo "$BAD"
-            exit 1
-          fi
-          echo "PASS: mdkr64.exe is self-contained (system DLLs + SDL2.dll only)."
+        run: ./tools/check_windows_imports.sh build/mdkr64.exe
 
       # Headless EXECUTION smoke: prove the exe RUNS on a real kernel without a
       # ROM. SDL dummy drivers so no display/GPU is required. Each command must
@@ -134,16 +127,15 @@ jobs:
       # Windows exes. correctness.yml runs this identical suite on Linux and
       # macOS runners with no Xvfb and no ROM, so it is proven ROM-free and
       # headless-safe by construction; this proves the same on Windows.
-      # Excluded by NAME PATTERN rather than an exact include-list: this repo
-      # has active work under platform/audio*/ that may add or rename
-      # audio-adjacent tests, and CMakeLists.txt does not tag tests with ctest
-      # LABELS to select on instead.
+      # GPU-labelled tests need a real display and are exercised by packaged
+      # release lanes. The audio name exclusion remains broad because new
+      # audio-adjacent tests may arrive under platform/audio*/.
       - name: ROM-free CTest suite
         env:
           SDL_VIDEODRIVER: dummy
           SDL_AUDIODRIVER: dummy
         run: |
-          ctest --test-dir build --output-on-failure -E 'audio|mixer'
+          ctest --test-dir build --output-on-failure -LE gpu -E 'audio|mixer'
 
       # Asset-free verify (mirror the release job's post-build check): the binary
       # must contain no ROM-derived copyrighted data. MSYS2 `nm` reads the PE and
@@ -151,7 +143,21 @@ jobs:
       - name: Verify asset-free
         run: ./macos/Scripts/verify_asset_free.sh build/mdkr64.exe
 
-      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
-        with:
-          name: mdkr64-windows-validate-exe
-          path: build/mdkr64.exe
+      - name: Package and verify extracted startup (not published)
+        run: |
+          set -euo pipefail
+          ./tools/package_windows_zip.sh --binary build/mdkr64.exe --version dev
+          expected_version="$(./build/mdkr64.exe --version | tr -d '\r')"
+          package_root="$RUNNER_TEMP/windows-package"
+          unrelated="$RUNNER_TEMP/unrelated-launch-cwd"
+          mkdir -p "$package_root" "$unrelated"
+          unzip -q dist/Golden-Balloon-dev-windows-x64.zip -d "$package_root"
+          executable="$package_root/GoldenBalloon/GoldenBalloon.exe"
+          (
+            cd "$unrelated"
+            version_output="$("$executable" --version | tr -d '\r')"
+            test "$version_output" = "$expected_version"
+            "$executable" --help > help.txt
+            grep -q '^Usage: ' help.txt
+          )
+          echo "Windows artifact not uploaded: hosted GPU launcher qualification is unavailable."

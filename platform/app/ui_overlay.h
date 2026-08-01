@@ -5,8 +5,12 @@
 struct SDL_Window;
 
 // Register the overlay hooks with the engine. Call before mdkr64_engine_boot().
-// argv0 is the app executable path, used to re-exec back to the launcher.
-void Overlay_install(SDL_Window *window, const char *argv0);
+void Overlay_install(SDL_Window *window);
+
+// Consume an orderly launcher-return request made by the overlay. The overlay
+// only asks the engine to quit; main_app performs renderer/audio/log teardown
+// before it relaunches the process.
+bool Overlay_consumeLauncherReturnRequest();
 
 // The gamepad button reserved for toggling the overlay, as an
 // SDL_GameControllerButton value. Single source of truth so nothing else can

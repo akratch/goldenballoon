@@ -3,9 +3,9 @@
 
 The lifecycle transition table itself is exhaustively covered by the ROM-free
 C test. This integration check proves that the real native backend wires each
-class of transition to a survivable action at a complete-frame boundary. Every
-injection uses the public MDKR_WEBGPU_FAULT vocabulary; the one explicit
-recovery-failure control exists to prove the terminal WebGPU→GL arm.
+class of transition to a bounded action at a complete-frame boundary. Every
+injection uses the public MDKR_WEBGPU_FAULT vocabulary. WebGPU may rebuild
+WebGPU once, but it must never enter GL unless GL was explicitly selected.
 """
 
 from __future__ import annotations
@@ -35,13 +35,21 @@ def run_case(
     mode: str = "pure",
     dump_frames: bool = False,
     hidden: bool = True,
+    expect_failure: bool = False,
 ) -> str:
     always_forbidden = (
+        "[CRASH]",
+        "[FATAL]",
+        "AddressSanitizer",
+        "UndefinedBehaviorSanitizer",
+        "runtime error:",
         "Validation Error",
         "validation error",
         "Assertion failed",
         "assertion failed",
         "SIGABRT",
+        "SIGSEGV",
+        "Segmentation fault",
         "Abort trap",
         "[webgpu] device error",
     )
@@ -87,7 +95,12 @@ def run_case(
             check=False,
         )
     output = proc.stdout
-    if proc.returncode != 0:
+    if expect_failure and proc.returncode != 1:
+        raise CheckFailure(
+            f"{name}: expected clean EXIT_FAILURE (1), got "
+            f"{proc.returncode}\n{output[-6000:]}"
+        )
+    if not expect_failure and proc.returncode != 0:
         raise CheckFailure(
             f"{name}: exited {proc.returncode}\n{output[-6000:]}"
         )
@@ -119,7 +132,7 @@ def main() -> int:
     def completion(frames: int) -> str:
         return f"[SDL] headless: reached {frames} frames, exiting cleanly."
 
-    startup_fallback_points = (
+    startup_fail_closed_points = (
         "bringup.instance",
         "bringup.surface",
         "bringup.adapter",
@@ -127,17 +140,18 @@ def main() -> int:
         "bringup.queue",
         "capabilities.format",
     )
-    for point in startup_fallback_points:
+    for point in startup_fail_closed_points:
         run_case(
             binary,
             rom,
-            f"{point} -> startup GL",
+            f"{point} -> fail closed",
             {"MDKR_WEBGPU_FAULT": point},
             (
                 f"[webgpu-fault] injected {point}@1",
-                "[SDL] GL ready:",
-                completion(5),
+                "stopping without an automatic fallback",
             ),
+            ("[SDL] GL ready:", "gfx_init(gl)"),
+            expect_failure=True,
         )
 
     run_case(
@@ -254,7 +268,7 @@ def main() -> int:
     run_case(
         binary,
         rom,
-        "device loss -> GL",
+        "device loss recovery failure -> terminal WebGPU",
         {
             "MDKR_WEBGPU_FAULT": "device.lost",
             "MDKR_TEST_WEBGPU_RECOVERY_FAIL": "1",
@@ -262,11 +276,11 @@ def main() -> int:
         (
             "[webgpu-fault] injected device.lost@1",
             "injected native recovery failure",
-            "recovery failed; switched to OpenGL without restarting",
-            "[SDL] GL ready:",
-            completion(20),
+            "recovery failed; terminating cleanly without an automatic OpenGL fallback",
         ),
+        ("[SDL] GL ready:", "switched to OpenGL"),
         frames=20,
+        expect_failure=True,
     )
     run_case(
         binary,
@@ -291,30 +305,33 @@ def main() -> int:
     run_case(
         binary,
         rom,
-        "second device loss -> bounded GL switch",
+        "second device loss -> bounded terminal stop",
         {"MDKR_WEBGPU_FAULT": "device.lost@all"},
         (
             "[webgpu-fault] injected device.lost@1",
             "native device recovery succeeded; gameplay continues",
             "[webgpu-fault] injected device.lost@2",
-            "recovery failed; switched to OpenGL without restarting",
-            completion(20),
+            "recovery failed; terminating cleanly without an automatic OpenGL fallback",
         ),
+        ("[SDL] GL ready:", "switched to OpenGL"),
         frames=20,
+        expect_failure=True,
     )
 
     run_case(
         binary,
         rom,
-        "persistent surface timeout is bounded",
+        "persistent surface timeout is bounded and terminal after one rebuild",
         {"MDKR_WEBGPU_FAULT": "surface.timeout@all"},
         (
             "[webgpu-fault] injected surface.timeout@1",
             "surface recovery failed for 120 consecutive frames",
             "native device recovery succeeded; gameplay continues",
-            completion(300),
+            "recovery failed; terminating cleanly without an automatic OpenGL fallback",
         ),
+        ("[SDL] GL ready:", "switched to OpenGL"),
         frames=300,
+        expect_failure=True,
     )
 
     for point in (
@@ -535,16 +552,17 @@ def main() -> int:
     shader_guard = run_case(
         binary,
         rom,
-        "forced shader-index exhaustion -> no-reuse guard and bounded GL",
+        "forced shader-index exhaustion -> no-reuse guard and terminal stop",
         {"MDKR_TEST_WEBGPU_SHADER_LIMIT": "1"},
         (
             "shader hard limit reached (effective=1 hard=4096); "
             "refusing unsafe pointer reuse",
             "native device recovery succeeded; gameplay continues",
-            "recovery failed; switched to OpenGL without restarting",
-            completion(120),
+            "recovery failed; terminating cleanly without an automatic OpenGL fallback",
         ),
+        ("[SDL] GL ready:", "switched to OpenGL"),
         frames=120,
+        expect_failure=True,
     )
     guard_match = re.search(
         r"\[WGPU-LIMITS\]\s+shaders=(\d+)/4096\s+pipelines=(\d+).*"
@@ -564,7 +582,7 @@ def main() -> int:
         )
 
     case_count = (
-        len(startup_fallback_points)
+        len(startup_fail_closed_points)
         + 2
         + 7
         + 4

@@ -177,6 +177,23 @@ static void test_exact_endpoints(void) {
     /* Interior monotonicity across a large-magnitude interval. */
     expect(presentation_lerp1(-1000.0f, 1000.0f, 1, 4) == -500.0f,
            "lerp1: interior quarter");
+
+    expect(presentation_lerp_u8(10u, 20u, 0u, 2u) == 10u &&
+               presentation_lerp_u8(10u, 20u, 1u, 2u) == 15u &&
+               presentation_lerp_u8(10u, 20u, 2u, 2u) == 20u,
+           "lerp u8: endpoints and rounded midpoint are exact");
+    expect(presentation_particle_opacity_u8(0) == 0u &&
+               presentation_particle_opacity_u8((int16_t)0x1234) == 0x12u &&
+               presentation_particle_opacity_u8((int16_t)0x7f00) == 0x7fu &&
+               presentation_particle_opacity_u8((int16_t)0xff00) == 0xffu,
+           "particle opacity: signed storage preserves unsigned 8.8 high byte");
+    expect(presentation_scale_opacity_u8(200u, 200u, 100u) == 100u,
+           "opacity scale: alpha-zero source denominator preserves midpoint fade");
+    expect(presentation_scale_opacity_u8(100u, 200u, 100u) == 50u &&
+               presentation_scale_opacity_u8(255u, 100u, 200u) == 255u &&
+               presentation_scale_opacity_u8(77u, 0u, 200u) == 77u &&
+               presentation_scale_opacity_u8(77u, 200u, 200u) == 77u,
+           "opacity scale: preserves modifiers, clamps, and fails closed");
 }
 
 /* ---- 4. the discrete selection rule -------------------------------------- */
@@ -201,11 +218,16 @@ static void test_discrete_rule(void) {
 static void test_identity_generation_reuse(void) {
     PresentationObjectPose pose;
     PresentationObjectEntry sample;
+    uint64_t first_generation = 0;
+    uint64_t second_generation = 0;
 
     begin();
 
     /* Tick 1: object A at the origin. */
     presentation_snapshot_note_spawn(s_slot_a);
+    expect(presentation_snapshot_identity_generation(
+               s_slot_a, &first_generation) && first_generation != 0u,
+           "identity: lifecycle generation is readable without live object access");
     presentation_snapshot_capture_begin();
     sample = make_object(s_slot_a, 0.0f, 0.0f, 0.0f);
     presentation_snapshot_capture_object(&sample);
@@ -230,7 +252,14 @@ static void test_identity_generation_reuse(void) {
      * (address, generation) they are two different lives and must not pair.
      */
     presentation_snapshot_note_free(s_slot_a);
+    expect(!presentation_snapshot_identity_generation(
+               s_slot_a, &second_generation),
+           "identity: freed lifetime is no longer registrable by the renderer");
     presentation_snapshot_note_spawn(s_slot_a); /* same address, new object */
+    expect(presentation_snapshot_identity_generation(
+               s_slot_a, &second_generation) &&
+               second_generation != first_generation,
+           "identity: recycled address receives a distinct renderer generation");
 
     presentation_snapshot_capture_begin();
     sample = make_object(s_slot_a, 20.0f, 0.0f, 0.0f);
@@ -243,6 +272,12 @@ static void test_identity_generation_reuse(void) {
            "identity: reused slot does NOT interpolate from the dead object");
     expect(pose.position[0] == 20.0f,
            "identity: reused slot draws its own spawn pose verbatim");
+    expect(!presentation_snapshot_resolve_object_generation(
+               s_slot_a, first_generation, 1, 2, &pose),
+           "identity: stale matrix generation cannot resolve the recycled address");
+    expect(presentation_snapshot_resolve_object_generation(
+               s_slot_a, second_generation, 1, 2, &pose),
+           "identity: current matrix generation resolves its exact lifetime");
 
     /*
      * And the generation really is what did it: the two published frames
@@ -283,6 +318,34 @@ static void test_identity_generation_reuse(void) {
     presentation_snapshot_capture_commit();
     expect(!presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose),
            "identity: destroyed object does not resolve");
+}
+
+static void test_identity_ensure_generation(void) {
+    uint64_t first_generation = 0;
+    uint64_t repeated_generation = 0;
+    uint64_t replacement_generation = 0;
+
+    begin();
+
+    expect(!presentation_snapshot_identity_generation(
+               s_slot_a, &first_generation),
+           "identity ensure: an unregistered presentation object has no lifetime");
+    expect(presentation_snapshot_identity_ensure_generation(
+               s_slot_a, &first_generation) && first_generation != 0u,
+           "identity ensure: a presentation-only object gets a lifetime lazily");
+    expect(presentation_snapshot_identity_ensure_generation(
+               s_slot_a, &repeated_generation) &&
+               repeated_generation == first_generation,
+           "identity ensure: repeated render observation preserves the lifetime");
+
+    presentation_snapshot_note_free(s_slot_a);
+    expect(!presentation_snapshot_identity_generation(
+               s_slot_a, &replacement_generation),
+           "identity ensure: freeing retires a presentation-only lifetime");
+    expect(presentation_snapshot_identity_ensure_generation(
+               s_slot_a, &replacement_generation) &&
+               replacement_generation != first_generation,
+           "identity ensure: address reuse receives a fresh lifetime");
 }
 
 /* ---- 5. discontinuity suppression ---------------------------------------- */
@@ -509,6 +572,7 @@ static void test_resolved_fields(void) {
     expect(camera.apply_shake == 0,
            "camera: the shake flag is discrete, previous until complete");
     expect(presentation_snapshot_resolve_camera(0, 2, 2, &camera) &&
+               camera.camera_id == 0 &&
                bits_equal(camera.position[0], 40.0f) &&
                bits_equal(camera.fov, 80.0f) && camera.apply_shake == 1,
            "camera: alpha 1 is the current tick exactly");
@@ -522,8 +586,183 @@ static void test_resolved_fields(void) {
     presentation_snapshot_capture_commit();
     expect(presentation_snapshot_resolve_camera(0, 1, 2, &camera),
            "camera: cut viewport still resolves");
-    expect(camera.interpolated == 0 && camera.position[0] == 900.0f,
-           "camera: switching camera bank is a cut, not motion");
+    expect(camera.camera_id == 4 && camera.interpolated == 0 &&
+               camera.position[0] == 900.0f,
+           "camera: wrong-bank history is rejected and the new authored bank "
+           "is held exactly");
+}
+
+static void test_authored_camera_latch(void) {
+    int32_t ids[4] = { -1, -1, -1, -1 };
+    size_t count;
+
+    begin();
+    presentation_snapshot_authored_cameras_begin(41u);
+    expect(presentation_snapshot_authored_camera_record(0, 4) &&
+               presentation_snapshot_authored_camera_record(1, 5),
+           "camera latch: cutscene-bank IDs record at viewport authoring");
+    count = presentation_snapshot_authored_cameras_copy(41u, ids, 4u);
+    expect(count == 2u && ids[0] == 4 && ids[1] == 5,
+           "camera latch: exact authored bank survives later flag teardown");
+    expect(presentation_snapshot_authored_cameras_copy(42u, ids, 4u) == 0u,
+           "camera latch: a different live tick cannot claim an older list");
+
+    /* Pausing changes whether lifecycle code clears the cutscene flag, not
+     * which camera the already-authored viewport used. Re-recording the same
+     * paused viewport is idempotent and stays bank 4. */
+    presentation_snapshot_authored_cameras_begin(42u);
+    expect(presentation_snapshot_authored_camera_record(0, 4) &&
+               presentation_snapshot_authored_camera_record(0, 4) &&
+               presentation_snapshot_authored_cameras_copy(
+                   42u, ids, 4u) == 1u && ids[0] == 4,
+           "camera latch: paused cutscene retains its exact authored camera");
+
+    presentation_snapshot_authored_cameras_begin(43u);
+    expect(presentation_snapshot_authored_camera_record(1, 5) &&
+               presentation_snapshot_authored_cameras_copy(
+                   43u, ids, 4u) == 0u,
+           "camera latch: sparse viewport ownership fails closed");
+
+    presentation_snapshot_authored_cameras_begin(44u);
+    expect(presentation_snapshot_authored_camera_record(0, 0) &&
+               !presentation_snapshot_authored_camera_record(0, 4) &&
+               presentation_snapshot_authored_cameras_copy(
+                   44u, ids, 4u) == 0u,
+           "camera latch: conflicting ownership fails closed");
+}
+
+static void test_authored_tick_pair(void) {
+    uint64_t target = 0u;
+
+    begin();
+    presentation_snapshot_capture_begin_authored(70u);
+    presentation_snapshot_capture_commit();
+    expect(!presentation_snapshot_replay_target_tick(70u, &target),
+           "authored ticks: one snapshot cannot manufacture a target pair");
+
+    presentation_snapshot_capture_begin_authored(71u);
+    presentation_snapshot_capture_commit();
+    expect(presentation_snapshot_replay_target_tick(70u, &target) &&
+               target == 71u,
+           "authored ticks: exact task-to-next snapshot pair resolves");
+    expect(!presentation_snapshot_replay_target_tick(69u, &target) &&
+               !presentation_snapshot_replay_target_tick(71u, &target),
+           "authored ticks: wrong task token fails closed");
+
+    presentation_snapshot_capture_begin_authored(73u);
+    presentation_snapshot_capture_commit();
+    expect(!presentation_snapshot_replay_target_tick(71u, &target),
+           "authored ticks: a skipped snapshot tick fails closed");
+}
+
+/* ---- retained deformation compatibility -------------------------------- */
+
+static void test_deformation_compatibility(void) {
+    PresentationObjectEntry sample;
+    uint64_t generation = 0;
+
+    begin();
+    presentation_snapshot_note_spawn(s_slot_a);
+    expect(presentation_snapshot_identity_generation(
+               s_slot_a, &generation) && generation != 0u,
+           "deformation: renderer obtains the exact object generation");
+
+    /* The spawn frame is deliberately not a deformation endpoint. A third
+     * capture proves a continuous pair after the spawn discontinuity. */
+    for (int tick = 0; tick < 3; tick++) {
+        presentation_snapshot_capture_begin();
+        sample = make_object(s_slot_a, (float)tick, 0.0f, 0.0f);
+        sample.model_index = 4;
+        sample.animation_id = 7;
+        presentation_snapshot_capture_object(&sample);
+        presentation_snapshot_capture_commit();
+    }
+    expect(presentation_snapshot_deformation_compatible(
+               s_slot_a, generation),
+           "deformation: continuous generation/model/animation pair is compatible");
+
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 3.0f, 0.0f, 0.0f);
+    sample.model_index = 4;
+    sample.animation_id = 8;
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    expect(!presentation_snapshot_deformation_compatible(
+               s_slot_a, generation),
+           "deformation: animation transition holds the authored tick pose");
+
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 4.0f, 0.0f, 0.0f);
+    sample.model_index = 5;
+    sample.animation_id = 8;
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    expect(!presentation_snapshot_deformation_compatible(
+               s_slot_a, generation),
+           "deformation: model/topology transition is incompatible");
+
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 5.0f, 0.0f, 0.0f);
+    sample.model_index = 5;
+    sample.animation_id = 8;
+    sample.is_particle = 1;
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    expect(!presentation_snapshot_deformation_compatible(
+               s_slot_a, generation),
+           "deformation: particle topology uses a separate future recipe");
+
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 10000.0f, 0.0f, 0.0f);
+    sample.model_index = 5;
+    sample.animation_id = 8;
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    expect(!presentation_snapshot_deformation_compatible(
+               s_slot_a, generation),
+           "deformation: a teleport discontinuity never blends");
+
+    presentation_snapshot_note_free(s_slot_a);
+    presentation_snapshot_note_spawn(s_slot_a);
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 6.0f, 0.0f, 0.0f);
+    sample.model_index = 5;
+    sample.animation_id = 8;
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    expect(!presentation_snapshot_deformation_compatible(
+               s_slot_a, generation),
+           "deformation: stale generation cannot pair with a recycled address");
+
+    begin();
+    presentation_snapshot_note_spawn(s_slot_a);
+    expect(presentation_snapshot_identity_generation(
+               s_slot_a, &generation),
+           "particle deformation: generation is registered");
+    for (int tick = 0; tick < 3; tick++) {
+        presentation_snapshot_capture_begin();
+        sample = make_object(s_slot_a, (float)tick, 0.0f, 0.0f);
+        sample.is_particle = 1;
+        sample.model_index = 3; /* line */
+        sample.animation_id = tick; /* texture frames do not change topology */
+        presentation_snapshot_capture_object(&sample);
+        presentation_snapshot_capture_commit();
+    }
+    expect(presentation_snapshot_particle_deformation_compatible(
+               s_slot_a, generation) &&
+               !presentation_snapshot_deformation_compatible(
+                   s_slot_a, generation),
+           "particle deformation: same kind pairs independently of texture frame");
+
+    presentation_snapshot_capture_begin();
+    sample = make_object(s_slot_a, 3.0f, 0.0f, 0.0f);
+    sample.is_particle = 1;
+    sample.model_index = 4; /* point: different topology */
+    presentation_snapshot_capture_object(&sample);
+    presentation_snapshot_capture_commit();
+    expect(!presentation_snapshot_particle_deformation_compatible(
+               s_slot_a, generation),
+           "particle deformation: kind/topology transition holds");
 }
 
 /* ---- 6. published-pair immutability -------------------------------------- */
@@ -709,8 +948,12 @@ int main(void) {
     test_exact_endpoints();
     test_discrete_rule();
     test_identity_generation_reuse();
+    test_identity_ensure_generation();
     test_discontinuity();
     test_resolved_fields();
+    test_authored_camera_latch();
+    test_authored_tick_pair();
+    test_deformation_compatibility();
     test_publish_immutability();
     test_overflow_is_atomic();
     test_disabled_seam();

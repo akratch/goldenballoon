@@ -23,6 +23,10 @@ int platformOverlayWantsInput(void) {
     return (g_haveHooks && g_hooks.wants_input) ? g_hooks.wants_input() : 0;
 }
 
-void platformOverlayRender(void) {
-    if (g_haveHooks && g_hooks.render) g_hooks.render();
+int platformOverlayWantsRender(void) {
+    return (g_haveHooks && g_hooks.wants_render) ? g_hooks.wants_render() : 0;
+}
+
+int platformOverlayRender(void) {
+    return (g_haveHooks && g_hooks.render) ? g_hooks.render() : 1;
 }

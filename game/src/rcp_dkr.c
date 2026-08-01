@@ -1,6 +1,8 @@
 #include "rcp_dkr.h"
 #ifdef NATIVE_PORT
 #include "address_domains.h"
+#include "present_sched.h"
+#include "presentation_snapshot.h"
 #endif
 #include "camera.h"
 #include "macros.h"
@@ -30,6 +32,38 @@ BackgroundFunction gBGDrawFunc = NULL;
 s32 gGfxBufCounter = 0;
 s32 gGfxBufCounter2 = 0;
 s32 gGfxTaskIsRunning = FALSE;
+
+#ifdef NATIVE_PORT
+/* Keep the main-list cursor and tick until that exact byte range is submitted;
+ * this survives the host counter advancing before the real walk. */
+static const Gfx *sPresentationAuthoredCursor;
+static u64 sPresentationAuthoredTick;
+static s32 sPresentationAuthoredValid;
+
+void presentation_task_authoring_begin(Gfx *cursor) {
+    sPresentationAuthoredCursor = cursor;
+    sPresentationAuthoredTick = (u64)g_simTickCounter;
+    sPresentationAuthoredValid = TRUE;
+    presentation_snapshot_authored_cameras_begin(
+        sPresentationAuthoredTick);
+}
+
+static u64 presentation_task_take_authored_tick(Gfx *begin, Gfx *end) {
+    const uintptr_t lo = (uintptr_t)begin;
+    const uintptr_t hi = (uintptr_t)end;
+    const uintptr_t cursor = (uintptr_t)sPresentationAuthoredCursor;
+    /* Tick zero cannot form a previous/current interpolation pair, so it is
+     * also the safe fail-closed token when no main-list lifetime matches. */
+    u64 tick = 0;
+
+    if (sPresentationAuthoredValid && begin != NULL && end != NULL && lo < hi &&
+        lo <= cursor && cursor < hi) {
+        tick = sPresentationAuthoredTick;
+    }
+    sPresentationAuthoredValid = FALSE;
+    return tick;
+}
+#endif
 
 Gfx dRspInit[] = {
     gsSPClearGeometryMode(G_SHADE | G_SHADING_SMOOTH | G_CULL_FRONT | G_CULL_BACK | G_FOG | G_LIGHTING | G_TEXTURE_GEN |
@@ -177,6 +211,10 @@ s32 gfxtask_run_xbus(Gfx *dlBegin, Gfx *dlEnd, UNUSED s32 recvMesg) {
     }
     dkrtask->flags = OS_SC_LAST_TASK | OS_SC_NEEDS_RDP | OS_SC_NEEDS_RSP;
     dkrtask->mesgQueue = &gGfxTaskMesgQueue;
+#ifdef NATIVE_PORT
+    dkrtask->presentationAuthoredTick =
+        presentation_task_take_authored_tick(dlBegin, dlEnd);
+#endif
     dkrtask->unused58 = COLOUR_TAG_RED;
     dkrtask->unused5C = COLOUR_TAG_RED;
     dkrtask->task.data_ptr = (u64 *) dlBegin;
@@ -247,6 +285,9 @@ UNUSED void gfxtask_run_xbus2(Gfx *dlBegin, Gfx *dlEnd, s32 recvMesg) {
     dkrtask->next = NULL;
     dkrtask->flags = OS_SC_NEEDS_RDP | OS_SC_NEEDS_RSP;
     dkrtask->mesgQueue = &gGfxTaskMesgQueue;
+#ifdef NATIVE_PORT
+    dkrtask->presentationAuthoredTick = 0;
+#endif
     dkrtask->mesg = &gGfxTaskMesgNums[0];
     dkrtask->frameBuffer = gVideoCurrFramebuffer;
     dkrtask->unused58 = COLOUR_TAG_RED;
@@ -305,6 +346,9 @@ UNUSED void gfxtask_run_fifo(Gfx *dlBegin, Gfx *dlEnd, s32 recvMesg) {
     dkrtask->next = NULL;
     dkrtask->flags = OS_SC_NEEDS_RDP | OS_SC_NEEDS_RSP | OS_SC_DRAM_DLIST;
     dkrtask->mesgQueue = &gGfxTaskMesgQueue;
+#ifdef NATIVE_PORT
+    dkrtask->presentationAuthoredTick = 0;
+#endif
     dkrtask->mesg = &gGfxTaskMesgNums[0];
     dkrtask->frameBuffer = gVideoCurrFramebuffer;
     dkrtask->unused58 = COLOUR_TAG_RED;
@@ -362,6 +406,9 @@ UNUSED void gfxtask_run_fifo2(Gfx *dlBegin, Gfx *dlEnd, s32 recvMesg) {
     dkrtask->next = NULL;
     dkrtask->flags = OS_SC_NEEDS_RDP | OS_SC_NEEDS_RSP | OS_SC_DRAM_DLIST;
     dkrtask->mesgQueue = &gGfxTaskMesgQueue;
+#ifdef NATIVE_PORT
+    dkrtask->presentationAuthoredTick = 0;
+#endif
     dkrtask->mesg = &gGfxTaskMesgNums[0];
     dkrtask->frameBuffer = gVideoCurrFramebuffer;
     dkrtask->unused58 = COLOUR_TAG_RED;

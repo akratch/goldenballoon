@@ -35,8 +35,8 @@ running on WebGPU in Chrome, rendering title/menus/race correctly.
 
 | Area | State | Demonstrated by |
 |---|---|---|
-| Native build | macOS arm64. WebGPU default, GL fallback (`MDKR_RENDERER=webgpu\|gl`) | `check_renderer_backends.py`: same route/transition trace into a race, sampled pixel budgets, race-vs-black control, and a forced WebGPU-window fallback |
-| Browser build | wasm32 + WebGPU + Asyncify rAF loop + AudioWorklet + ROM picker + IDBFS saves | `check_browser_runtime`: actual Chromium, 3,600 authored-cadence frames into a race with no sub-two-field update, five changing scenes, live fullscreen/CSS/DPR resize, AudioWorklet PCM including nonzero fixed-mode RAW16 loads, exact ROM/EEPROM reload, erase recovery, and zero-upload network audit |
+| Native build | macOS arm64. WebGPU is the qualified fail-closed default; GL is available only through explicit diagnostic selection (`MDKR_RENDERER=gl`) pending visual-parity work. Production submits only new authored images; WebGPU completion polling never blocks the gameplay/audio frame path, and minimized windows elide GPU walks | `check_renderer_backends.py`: route/pixel parity, dense default-WebGPU intro identity, and forced startup-failure rejection; `check_gpu_backpressure.py`: zero WebGPU runtime waits plus the live GL fence ceiling; `check_surface_suspension.py`: GL/WebGPU minimized control with state/event/input/PCM invariance |
+| Browser build | wasm32 + WebGPU + Asyncify rAF loop + AudioWorklet + ROM picker + IDBFS saves | `check_browser_runtime`: actual Chromium, 3,600 authored-cadence frames into a race with no sub-two-field update, five changing scenes, live fullscreen/CSS/DPR resize, AudioWorklet PCM including nonzero fixed-mode RAW16 loads, exact ROM/EEPROM reload, erase recovery, and zero-upload network audit; `check_browser_presentation_rates`: display/capped/irregular rAF host-policy parity, authored image counts, no duplicate swaps, and honest uncapped fallback |
 | Presentation modes | Pure 4:3 reference; Restored/Remastered widescreen with CPU mip chains, configured anisotropy, and working 2× supersampling by default on GL/WebGPU; the localized in-game screen controls mode, 1×–4× SSAA, aspect/FOV, filtering, effects, and subtitles with truthful live/restart behavior and atomic native/browser persistence; Remastered reconstructs the shared ROM font atlas at 4× without changing metrics | `video_config` + `video_config_runtime` + `mip_chain` + `font_sdf` CTests; `check_video_options` on GL/WebGPU; `check_video_presets`, `check_renderer_backends`, `check_widescreen_proportions`, and real-Chromium `check_browser_runtime` config mutation/reload |
 | Restoration correctness | Every sprite reader shares one checked, asset-bounded serialized-layout decoder; shade and fog use the RDP's screen-linear interpolation while texture coordinates remain perspective-correct; moving textures receive complete mip chains | `sprite_layout`, `rdp_interpolation`, and `font_registry` CTests; `check_sprite_layout`, `check_rdp_interpolation`, `check_texture_lineswap`, and `check_mip_motion` |
 | Remastered text | Only runtime-registered font glyph regions receive 4× signed-distance reconstruction; region isolation, point/clamp sampling, fixed logical metrics, and registry-aware cache invalidation prevent atlas bleed or stale reuse; Pure and Restored remain exact | `font_sdf` + `font_registry` CTests; `check_font_sdf` on GL/WebGPU; `check_browser_runtime` requires nonzero text-only SDF uploads |
@@ -46,16 +46,19 @@ running on WebGPU in Chrome, rendering title/menus/race correctly.
 | Runtime boundaries | Owner-last level teardown, initialized racer/item state, finite path fallback, bounded sound groups/IDs, and explicit special-vehicle sound rows | `runtime_contracts` CTest + mutation-controlled `check_runtime_safety`; navigation, Adventure, PCM/RAW16, 47-vehicle, array-bounds, native sanitizer, and wasm gates |
 | Boot → menus | Every screen navigable | `check_nav_fixtures.py` (all nine routes) |
 | Racing | 20 tracks × 3 vehicles = 47 legitimate combinations; 3-lap TT finishes and the time round-trips through EEPROM | `check_track_sweep`, `check_vehicle_sweep`, `check_race_finish_time` |
-| Local multiplayer | 2P, 3P, and 4P layouts; independent local racers/HUDs; 3P minimap; results → track-select teardown | `check_race_2p_split`; `check_race_multiplayer` scores every racer and quadrant and runs flat-quadrant controls |
+| Local multiplayer | 2P, 3P, and 4P layouts; direct controller-to-racer binding; independent local racers/HUDs; 3P minimap; results → track-select teardown | `check_2p_human_binding` proves exact P1/P2 input and motion across renderer/rate arms; `check_race_2p_split`; `check_race_multiplayer` scores every racer and quadrant and runs flat-quadrant controls |
 | Adventure | Adventure One hub → balloon → door → lobby → race → hub; Adventure Two canonical unlock/save identity plus all 20 mirrored racing lines; every authored challenge/battle course; all three Taj vehicle challenges; all four trophy championships | `check_adventure_hub`, `check_adventure_race_loop`, `check_adventure_two`, `check_challenge_modes`, `check_taj_challenges`, `check_trophy_series` |
 | Boss races | Tricky 2 end to end with production object collision; all ten load/drive. The legal first-boss campaign route clears the fourth Dino race, opens the four-balloon door, physically finishes Tricky 1 in win/loss arms, returns to the hub, and reloads exact progression | `check_collision_gridmask`, `check_boss_win_verdict`, `check_first_boss_progression`; the old stock-AI summit miss remains a positive control and route-fidelity note in `OPEN_ITEMS.md`'s objcoll entry |
 | Audio | Music + SFX + reverb via the software aspMain mixer; RAW16 instruments are converted from serialized big-endian PCM | `check_audio_output` covers format/energy/timing/reverb; `check_raw16_audio` inventories 25 music + 1 SFX RAW16 wave and compares fixed/exact-legacy PCM in both directions |
 | ROM revisions | US 1.1 + EU 1.1 byte-identical payloads supported with authored NTSC/60 and PAL/50 source clocks; the other three named and refused; `.v64`/`.n64` normalised | `check_rom_revision` + `check_simulation_cadence` |
 | Oracle | Patched ares runs the real ROM for pixel parity and US 1.1 racer-state comparison (silent by construction) | `race_state_oracle`: Bubbler's authored two-field route passes and the historical one-field arm fails as a positive control; broader strict standard-race parity remains reported separately |
 
-**69 check scripts / 76 full-run tasks, each validated in both directions.**
+**91 check scripts / 100 full-run tasks, each validated in both directions.**
 (2026-07-29 additions: `check_shadow_stage_reset.py` and
-`check_touch_controls.py`.)
+`check_touch_controls.py`. 2026-07-31 post-1.0 additions:
+`check_charselect_motion.py`, `check_shell_dropfile.py`,
+`check_boost_magnitude.py`, `check_audio_level_reference.py`,
+`check_collision_headroom.py`, and `check_shadow_plausibility.py`.)
 The manifest also runs the ROM-free display/endian/object-layout CTests;
 filename entry, locked-door collision, RAW16 audio, native-layout safety, and
 widescreen/shadow safety repeat in their specialized configurations. A check
@@ -90,8 +93,9 @@ The defined waves are **23/23 complete**:
 | Wave 2 lighting | RL-2, RL-5, CO-1 | 3/3 integrated |
 | Wave 3 gameplay envelope | multiplayer, Adventure Two, challenge/battle, first boss, Taj challenges, trophy series | 6/6 integrated |
 
-The configured native build exposes 28 ROM-free CTests. This wave accounting is
-not a claim that the entire foundation or remaster backlog is complete.
+The default WebGPU+app native build exposes 59 ROM-free CTests: 50 non-GPU and
+9 GPU. This wave accounting is not a claim that the entire foundation or
+remaster backlog is complete.
 
 ### Wave 3 multiplayer checkpoint
 
@@ -347,7 +351,7 @@ Everything below is *ready* unless marked blocked. The task list in the harness 
 this; `docs/OPEN_ITEMS.md` has the evidence for each.
 
 Waves 1–3 are complete. The current work outside those waves is prioritized in
-the next-work planning note (internal archive):
+[`../ROADMAP.md`](../ROADMAP.md):
 
 1. ~~the remaining local broad-UB correctness tranche~~ **DONE on the
    available compiler/host matrix**, including pointer-width closure;
@@ -366,8 +370,7 @@ the next-work planning note (internal archive):
 F-28/WGPU-09 are closed at this checkpoint: GL consecutive dumps retain the
 completed pre-swap composite, and real Chromium enforces 20.0/25.0 ms p95/p99
 plus a two-frame async pipeline compile/hold ceiling. The measured one-frame
-maxima do not justify enabling the inherited persistent prewarm cache. See
-the frame-capture pipeline budget (internal archive).
+maxima do not justify enabling the inherited persistent prewarm cache.
 
 The canonical save codec, browser export/import/editor, fail-safe snapshots,
 attract behavior, aggregate-save isolation, in-game video/accessibility menu,
@@ -400,9 +403,9 @@ ASan GL; the rebuilt wasm and real Chromium resize/runtime gates also pass.
 
 The 2026-07-26 refinement expands that gate to seven arms: 16:10 and forced 4:3
 inside 21:9 join 4:3, 16:9, capped 21:9, changed FOV, and exact legacy stretch.
-Debug GL, Release WebGPU, and ASan GL all produce 99×36 HUD / 68×27 world motifs
+The current Release GL/WebGPU fixture produces 99×36 HUD / 48×18 world motifs
 at ordinary production lenses; the deliberate legacy arm still measures
-173×36 / 122×27. A source census now rejects any new direct post-projection
+173×36 / 84×18. A source census now rejects any new direct post-projection
 billboard producer outside the audited world/ortho builders; portrait
 layout/projection and rotated billboard columns are ROM-free unit cases.
 
@@ -432,9 +435,8 @@ survey plus the reproduced RAW16 finding has **47**. At this checkpoint **15/35
 original IDs (42.9%)** and **19/47 current IDs (40.4%)** are closed. The nineteen
 current closures are BUILD-01, MEM-01, MEM-02, MEM-03, MEM-04, MEM-05, MEM-06,
 MEM-08, MEM-09, MEM-10, PORT-05, AUDIO-01, AUDIO-02, AUDIO-03, GAME-01,
-GAME-03, VIS-01, VIS-02, and WGPU-07. See
-the correctness/portability/WebGPU audit (internal archive) for the counting method
-and why partial work is not credited as complete.
+GAME-03, VIS-01, VIS-02, and WGPU-07. Partial work is not credited as complete
+in that historical count.
 
 That 19/47 figure is historical. The current disposition table in the audit is
 **36/47 (76.6%)** after the integrated core-safety, WebGPU, multiplayer,
@@ -552,12 +554,16 @@ see the payoff of the very fixes it was blocking. Also: `race_karts` scores **0.
 thirty points below the menus, by far our worst route and the least investigated.
 `race_state_oracle` now drives both the US 1.1 ROM and the native port through a
 full Ancient Lake lap and compares intermediate racer state on the race's own
-clock. Both strict results are intentionally red. The authored two-field arm
-measures 63.663% checkpoint/lap agreement and 1,259.956 world-unit position
-p95; shipping 60 Hz measures 7.526% and 7,767.070. The original run used a
-measured mix of two- and three-field updates, exposing that the racing line is
-sensitive to timestep partitioning. See
-the original-state oracle report (internal archive).
+clock. Its strict production arms remain intentionally red: the authored
+two-field arm currently measures 39.241% checkpoint/lap agreement and
+2,103.419 world-unit position p95; enhanced one-field simulation measures
+2.988% and 6,230.618. A local-only `reference_replay` arm now compiles the
+real-ROM VI trace into exact observed update widths and input states. That arm
+makes the first four checkpoint clocks exact and moves the first five-unit
+position separation from clock 18 to 767, proving that timestep partitioning
+caused the early mismatch. Sub-unit floating-point drift still compounds into
+a different open-loop line, so the diagnostic remains red rather than
+manufacturing parity with a permissive tolerance.
 
 The later all-racer Bubbler lane closes the cadence choice. Retail and authored
 two-field Bubbler finish at ticks 3,459 and 3,458 with a 1.00047× mean-speed
@@ -565,14 +571,13 @@ ratio; the historical one-field arm finishes at 3,022 with a 1.13965× ratio.
 Interactive gameplay now defaults to persisted original cadence, with the old
 one-field simulation retained explicitly as enhanced compatibility. F-18
 remains partial for broader challenge, multiplayer, progression/save, audio,
-renderer-state, and standard-race parity. See
-the Bubbler state-oracle report (internal archive).
+renderer-state, and standard-race parity.
 
-The target fixed-authority/high-rate-presentation architecture is specified in
-the fixed-simulation high-rate presentation spec (internal archive). The current
-containment review, including PAL, preset-coupling, browser-floor, and headless
-findings plus a paste-ready lead explanation, is
-the simulation-cadence containment review (internal archive).
+The target architecture keeps authoritative gameplay on its original cadence
+and permits higher-rate presentation only after state-hash and render-purity
+gates prove that presentation cannot change simulation. Current implementation
+and qualification status are documented in [`../ROADMAP.md`](../ROADMAP.md),
+[`open-items/README.md`](open-items/README.md), and the presentation tests.
 
 ### 2. Adventure Two — **DONE**
 `get_filtered_cheats()` (`menu.c`) forces `CHEAT_MIRRORED_TRACKS` on for every race when
@@ -586,8 +591,9 @@ world/camera, stereo, minimap, steering, viewport, EEPROM, and pixel witnesses.
 ### 3. Close the remaining browser-runtime coverage hole — **DONE**
 
 The native half is now closed: `check_renderer_backends.py` compares GL with
-WebGPU in a real race and fault-injects the window fallback. That injection
-confirmed and fixed the stale cached-backend defect described here.
+WebGPU in a real race and fault-injects WebGPU window startup. That injection
+must stop cleanly without changing the cached backend or entering diagnostic
+GL; it confirmed and fixed the stale cached-backend defect described here.
 
 `check_browser_runtime.py` now runs the shipped shell and freshly linked wasm in
 an isolated real Chromium profile. It selects the external ROM through the actual
@@ -626,8 +632,8 @@ shared resolver. `tools/run_checks.py` owns the special Release, ASan, UBSan, an
 wasm/browser shapes plus the ROM-free CTests, runs save-mutating checks sequentially,
 and rejects any unregistered `tests/check_*.py`. The manifest covered 31 scripts
 and 38 tasks at the cited checkpoint, then 32 scripts and 39 tasks after the
-runtime-boundary gate. The current manifest contains **69 scripts and
-76 tasks**. `RELEASE_CHECKLIST.md` has one command per native configuration
+runtime-boundary gate. The current manifest contains **91 scripts and
+100 tasks**. `RELEASE_CHECKLIST.md` has one command per native configuration
 and routes the wasm artifact through the same runner.
 
 ### Smaller, and each has its evidence in `docs/OPEN_ITEMS.md`
@@ -823,4 +829,11 @@ so these are how its controls get there),
 `courseFlagsPtr[levelId]`/`settings->bosses`, polled at the frame boundary so a write
 through the *wrong* index shows up too),
 `MDKR_BOSS_PRECLEARED=<levelId>` (hold a boss course at "already beaten" — the state
-that makes a boss win present nothing; see `docs/OPEN_ITEMS.md` "wave bossverdict").
+that makes a boss win present nothing; see `docs/OPEN_ITEMS.md` "wave bossverdict"),
+`MDKR_WORLD_SHADOW=off|soft|full` (the `Video.WorldShadows` setting's env name;
+`0`/`1` still resolve, so every pre-R2 A/B keeps working),
+`MDKR_SHADOW_BIAS=<world units>` / `MDKR_SHADOW_UMBRA=<0..1>` (raw float overrides
+for the two tuned shadow constants — the seam that ruled acne out of the R2
+light-depth-sign investigation), `MDKR_TEST_SHADOW_BOGUS_CASTER=<world units>`
+(displace every static caster's first admission, so the depth map holds geometry
+the object has left — `check_shadow_plausibility.py`'s broken direction).

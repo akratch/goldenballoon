@@ -106,6 +106,9 @@ s32 fb_size(void);
 void fb_init_vi(void);
 void fb_alloc(s32 index);
 void video_delta_reset(void);
+#ifdef NATIVE_PORT
+s32 video_logic_update_rate(s32 fixedUpdateRate);
+#endif
 void func_8007AB24(u8 arg0);
 s32 vi_refresh_rate(void);
 void fb_swap(void);

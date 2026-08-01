@@ -203,10 +203,18 @@ def normalize_timebase(rows: list[State]) -> tuple[list[State], str]:
         return rows, "missing"
 
     # The emulator can present the same game framebuffer on multiple VI fields.
-    # Retain the last RDRAM observation associated with each framebuffer.
-    collapsed_by_serial = {
-        row.framebuffer_serial: row for row in rows if row.framebuffer_serial > 0
-    }
+    # RDRAM is not frozen while that framebuffer remains on screen: after the
+    # first observation, the CPU can begin mutating racer state for the next
+    # update without publishing a new framebuffer serial. Retaining the last
+    # sample therefore admits an in-flight hybrid (the Ancient Lake witness saw
+    # Y move by 0.05 and then settle back at the next serial). Keep the first
+    # observation for each serial. by_clock() below still keeps the later serial
+    # when the same completed race clock is presented again, which selects the
+    # stable post-update state rather than the transient write window.
+    collapsed_by_serial: dict[int, State] = {}
+    for row in rows:
+        if row.framebuffer_serial > 0:
+            collapsed_by_serial.setdefault(row.framebuffer_serial, row)
     collapsed = (
         [collapsed_by_serial[key] for key in sorted(collapsed_by_serial)]
         if collapsed_by_serial else rows

@@ -13,7 +13,7 @@
  * destroy requests each frame (a one-time upload would drop later-added glyphs).
  *
  * Compiled as C++ (it consumes ImGui's ImDrawData) but exposes a C ABI.
- * Only meaningful when MGB64_WEBGPU_BACKEND.
+ * Only meaningful when MDKR_WEBGPU_BACKEND.
  */
 #ifndef GFX_WEBGPU_IMGUI_H
 #define GFX_WEBGPU_IMGUI_H
@@ -26,19 +26,23 @@ struct ImDrawData;
 extern "C" {
 #endif
 
-/* Build the pipeline, font-atlas texture, sampler, and uniform/bind-group state.
+/* Build the pipeline, sampler, and fixed uniform/bind-group state. Dynamic
+ * ImGui textures, including the font atlas, are serviced during render.
  * device/queue are WGPUDevice/WGPUQueue (as void*); surface_format is the
- * WGPUTextureFormat the render pass targets. Returns false on failure. */
+ * WGPUTextureFormat the render pass targets. Initialization is transactional:
+ * on failure every resource created by that attempt is released before false
+ * is returned. */
 bool gfx_webgpu_imgui_init(void *device, void *queue, int surface_format);
 
-/* Call once per ImGui frame before ImGui::NewFrame(). No-op in the legacy path;
- * kept for symmetry + future dynamic-texture support. */
+/* Call once per ImGui frame before ImGui::NewFrame(). Currently a no-op kept
+ * for backend lifecycle symmetry; texture requests are serviced during render. */
 void gfx_webgpu_imgui_new_frame(void);
 
 /* Encode ImGui draw commands into an already-open render pass encoder
  * (WGPURenderPassEncoder as void*). fb_width/height are the target pixel size
- * (for scissor clamping). Safe to call with NULL/empty draw_data. */
-void gfx_webgpu_imgui_render(struct ImDrawData *draw_data, void *render_pass_encoder,
+ * (for scissor clamping). Empty draw data is a successful no-op; invalid input
+ * or any required texture/buffer/bind-group failure returns false. */
+bool gfx_webgpu_imgui_render(struct ImDrawData *draw_data, void *render_pass_encoder,
                              int fb_width, int fb_height);
 
 /* Release all GPU resources. */

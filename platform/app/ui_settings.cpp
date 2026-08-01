@@ -1,12 +1,16 @@
 // ui_settings.cpp — see ui_settings.h.
 #include "ui_settings.h"
+#include "app_config.h"
 #include "app_theme.h"
+#include "app_ui_policy.h"
 #include "ui_common.h"
 
 #include "video_config.h"
 
 #include "imgui.h"
 
+#include <array>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -18,6 +22,28 @@ namespace {
 // mdkr_video_config_runtime_set and its verdict is shown verbatim.
 std::string g_status;
 ImVec4      g_statusColor;
+
+struct EditState {
+    bool initialized = false;
+    bool active = false;
+    bool dirty = false;
+    char text[MDKR_VIDEO_STRING_MAX] = {0};
+    float number = 0.0f;
+    std::string error;
+};
+
+std::array<EditState, MDKR_VIDEO_KEY_COUNT> g_edits;
+bool g_uiScaleInitialized = false;
+bool g_uiScaleDirty = false;
+float g_uiScaleEdit = 1.0f;
+std::string g_uiScaleError;
+bool g_frameLimitRectValid = false;
+ImVec2 g_frameLimitRectMin;
+ImVec2 g_frameLimitRectMax;
+bool g_frameLimitRetryRectValid = false;
+ImVec2 g_frameLimitRetryRectMin;
+ImVec2 g_frameLimitRetryRectMax;
+bool g_smokeGamepadFocusUsed = false;
 
 void setStatus(const char *text, const ImVec4 &color) {
     g_status = text ? text : "";
@@ -48,6 +74,10 @@ void reportResult(MdkrVideoRuntimeResult r, const MdkrVideoSchema *s) {
                           "%s could NOT be saved — the settings file is not writable. "
                           "Nothing was changed.", s->label);
             setStatus(buf, AppTheme::bad());
+            if (std::getenv("MDKR_APP_SMOKE_EXPECT_SAVE_FAILURE")) {
+                std::fprintf(stderr,
+                             "[app-ui-test] visible settings error: %s\n", buf);
+            }
             break;
         case MDKR_VIDEO_RUNTIME_INVALID:
         default:
@@ -55,6 +85,26 @@ void reportResult(MdkrVideoRuntimeResult r, const MdkrVideoSchema *s) {
             setStatus(buf, AppTheme::bad());
             break;
     }
+}
+
+bool resultSucceeded(MdkrVideoRuntimeResult result) {
+    return result == MDKR_VIDEO_RUNTIME_LIVE ||
+           result == MDKR_VIDEO_RUNTIME_RESTART;
+}
+
+bool commitEdit(MdkrVideoKey key, const MdkrVideoSchema *schema,
+                EditState &edit, const char *value) {
+    const MdkrVideoRuntimeResult result =
+        mdkr_video_config_runtime_set(key, value);
+    reportResult(result, schema);
+    if (resultSucceeded(result)) {
+        edit.dirty = false;
+        edit.initialized = false;  // resync from the authoritative desired value
+        edit.error.clear();
+        return true;
+    }
+    edit.error = g_status;
+    return false;
 }
 
 // --- Value access ----------------------------------------------------------
@@ -107,20 +157,85 @@ const char *sourceName(MdkrVideoSource src) {
 // here mirror exactly what those validators accept, so the UI can only ever
 // offer a value the config layer will take. Anything with an open-ended domain
 // (Aspect, GameplayFOV, TexturePack) gets a text field instead of a combo.
-struct Options { const char *const *items; int count; };
+struct Option { const char *value; const char *label; };
+struct Options { const Option *items; int count; };
 
-const char *kCadence[]   = {"original", "enhanced"};
-const char *kFrameLimit[] = {"original", "60"};
-const char *kSmoothing[] = {"off", "interpolate"};
-const char *kMode[]      = {"pure", "restored", "remastered", "custom"};
+constexpr const char *kRecommendedFrameLimitLabel =
+    "Original (Recommended / Proven)";
+constexpr const char *kExperimentalFrameLimitGroup =
+    "Experimental \xE2\x80\x94 Under Construction";
+constexpr const char *kExperimentalFrameLimitCaveat =
+    "Non-Original choices only alter host pacing and input/event-pump "
+    "opportunities. In 1.0.1 they do not increase unique visual FPS; the "
+    "supported US 1.1 game remains at its authored ~30 FPS. Any benefit may "
+    "be negligible, while higher settings can use more CPU. Original is "
+    "Recommended / Proven.";
+
+const Option kCadence[] = {
+    {"original", "Original (recommended)"},
+    {"enhanced", "Enhanced (changes gameplay)"},
+};
+const Option kFrameLimit[] = {
+    {"original", kRecommendedFrameLimitLabel},
+    {"display",  "Match Display (Experimental \xE2\x80\x94 Under Construction)"},
+    {"60",       "60 Hz (Experimental \xE2\x80\x94 Under Construction)"},
+    {"120",      "120 Hz (Experimental \xE2\x80\x94 Under Construction)"},
+    {"144",      "144 Hz (Experimental \xE2\x80\x94 Under Construction)"},
+    {"165",      "165 Hz (Experimental \xE2\x80\x94 Under Construction)"},
+    {"240",      "240 Hz (Experimental \xE2\x80\x94 Under Construction)"},
+    {"uncapped", "Uncapped (Experimental \xE2\x80\x94 Under Construction)"},
+};
+const Option kSmoothing[] = {
+    {"off", "Unavailable in 1.0.1 (authored images only)"},
+};
+const Option kMode[] = {
+    {"pure",       "Pure"},
+    {"restored",   "Restored"},
+    {"remastered", "Remastered"},
+    {"custom",     "Custom"},
+};
+// The canonical spellings only. mdkr_video_world_shadows_canonical() also takes
+// "0"/"1"/"on"/"" so the MDKR_WORLD_SHADOW diagnostic seam keeps working, but a
+// combo that offered two words for the same state would be a worse control.
+const Option kShadows[] = {
+    {"full", "Full"}, {"soft", "Soft"}, {"off", "Off"},
+};
 
 bool optionsFor(MdkrVideoKey k, Options &out) {
     switch (k) {
         case MDKR_VIDEO_SIMULATION_CADENCE: out = {kCadence, 2}; return true;
-        case MDKR_VIDEO_FRAME_LIMIT:        out = {kFrameLimit, 2}; return true;
-        case MDKR_VIDEO_MOTION_SMOOTHING:   out = {kSmoothing, 2}; return true;
+        case MDKR_VIDEO_FRAME_LIMIT:        out = {kFrameLimit, 8}; return true;
+        case MDKR_VIDEO_MOTION_SMOOTHING:   out = {kSmoothing, 1}; return true;
         case MDKR_VIDEO_MODE:               out = {kMode, 4}; return true;
+        case MDKR_VIDEO_WORLD_SHADOWS:      out = {kShadows, 3}; return true;
         default: return false;
+    }
+}
+
+const char *optionLabel(MdkrVideoKey key, const char *value) {
+    Options options;
+    if (!optionsFor(key, options)) return value;
+    for (int i = 0; i < options.count; ++i) {
+        if (std::strcmp(options.items[i].value, value) == 0) {
+            return options.items[i].label;
+        }
+    }
+    return value;
+}
+
+const char *helpFor(MdkrVideoKey key, const MdkrVideoSchema *schema) {
+    switch (key) {
+        case MDKR_VIDEO_SIMULATION_CADENCE:
+            return "Original preserves the game's physics timing. Enhanced "
+                   "changes gameplay and is intended for compatibility use.";
+        case MDKR_VIDEO_FRAME_LIMIT:
+            return kExperimentalFrameLimitCaveat;
+        case MDKR_VIDEO_MOTION_SMOOTHING:
+            return "Motion interpolation is disabled for 1.0.1 while retained "
+                   "render dependencies are completed. The surface updates "
+                   "only when a complete authored game image is ready.";
+        default:
+            return schema->help;
     }
 }
 
@@ -132,6 +247,7 @@ bool drawKey(MdkrVideoKey k, bool compact) {
 
     const bool locked = mdkr_video_config_runtime_locked(k) != 0;
     bool changed = false;
+    EditState &editState = g_edits[static_cast<size_t>(k)];
 
     ImGui::PushID((int)k);
     if (locked) ImGui::BeginDisabled();
@@ -149,46 +265,162 @@ bool drawKey(MdkrVideoKey k, bool compact) {
 
     Options opts;
     if (optionsFor(k, opts)) {
-        int cur = 0;
-        for (int i = 0; i < opts.count; ++i) {
-            if (std::strcmp(opts.items[i], d->text) == 0) { cur = i; break; }
+        if (!editState.initialized ||
+            (!editState.active && !editState.dirty &&
+             std::strcmp(editState.text, d->text) != 0)) {
+            std::snprintf(editState.text, sizeof(editState.text), "%s", d->text);
+            editState.initialized = true;
+            editState.error.clear();
         }
-        if (ImGui::Combo("##v", &cur, opts.items, opts.count)) {
-            reportResult(mdkr_video_config_runtime_set(k, opts.items[cur]), s);
-            changed = true;
+        if (k == MDKR_VIDEO_FRAME_LIMIT && !g_smokeGamepadFocusUsed &&
+            AppUi_smokeInputMode() == AppUiSmokeInputMode::Gamepad) {
+            // Deterministic initial nav anchor only. Opening, movement, and
+            // activation below still arrive exclusively from SDL's virtual
+            // controller through the production ImGui platform backend.
+            ImGui::SetKeyboardFocusHere();
+            g_smokeGamepadFocusUsed = true;
+        }
+        int cur = -1;
+        for (int i = 0; i < opts.count; ++i) {
+            if (std::strcmp(opts.items[i].value, editState.text) == 0) {
+                cur = i;
+                break;
+            }
+        }
+        const char *preview = cur >= 0 ? opts.items[cur].label : editState.text;
+        const bool comboOpen = ImGui::BeginCombo("##v", preview);
+        editState.active = comboOpen;
+        if (k == MDKR_VIDEO_FRAME_LIMIT) {
+            g_frameLimitRectMin = ImGui::GetItemRectMin();
+            g_frameLimitRectMax = ImGui::GetItemRectMax();
+            g_frameLimitRectValid = true;
+            if (std::getenv("MDKR_APP_UI_INPUT_TRACE")) {
+                static int smokeFrame = 0;
+                const ImVec2 mouse = ImGui::GetIO().MousePos;
+                std::fprintf(stderr,
+                             "[app-ui-test] combo frame=%d open=%d hovered=%d "
+                             "active=%d focused=%d rect=%.0f,%.0f..%.0f,%.0f "
+                             "mouse=%.0f,%.0f\n",
+                             smokeFrame++, comboOpen ? 1 : 0,
+                             ImGui::IsItemHovered() ? 1 : 0,
+                             ImGui::IsItemActive() ? 1 : 0,
+                             ImGui::IsItemFocused() ? 1 : 0,
+                             g_frameLimitRectMin.x, g_frameLimitRectMin.y,
+                             g_frameLimitRectMax.x, g_frameLimitRectMax.y,
+                             mouse.x, mouse.y);
+            }
+        }
+        if (comboOpen) {
+            for (int i = 0; i < opts.count; ++i) {
+                if (k == MDKR_VIDEO_FRAME_LIMIT && i == 1) {
+                    ImGui::SeparatorText(kExperimentalFrameLimitGroup);
+                }
+                const bool selected = i == cur;
+                if (ImGui::Selectable(opts.items[i].label, selected)) {
+                    std::snprintf(editState.text, sizeof(editState.text), "%s",
+                                  opts.items[i].value);
+                    editState.dirty = true;
+                    changed = commitEdit(k, s, editState, editState.text);
+                }
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
         }
     } else if (s->type == MDKR_VIDEO_TYPE_STRING) {
         // Open domain (aspect expressions, "authored" or a FOV number, a texture
         // pack path). Commit on Enter/blur so a half-typed value is never sent
         // to the validator and reported as invalid mid-keystroke.
-        char edit[MDKR_VIDEO_STRING_MAX];
-        std::snprintf(edit, sizeof(edit), "%s", d->text);
-        if (ImGui::InputText("##v", edit, sizeof(edit),
-                             ImGuiInputTextFlags_EnterReturnsTrue)) {
-            reportResult(mdkr_video_config_runtime_set(k, edit), s);
-            changed = true;
+        if (!editState.initialized ||
+            (!editState.active && !editState.dirty &&
+             std::strcmp(editState.text, d->text) != 0)) {
+            std::snprintf(editState.text, sizeof(editState.text), "%s", d->text);
+            editState.initialized = true;
+            editState.error.clear();
+        }
+        const bool entered = ImGui::InputText(
+            "##v", editState.text, sizeof(editState.text),
+            ImGuiInputTextFlags_EnterReturnsTrue);
+        if (ImGui::IsItemEdited()) editState.dirty = true;
+        const bool commit = entered || ImGui::IsItemDeactivatedAfterEdit();
+        editState.active = ImGui::IsItemActive();
+        if (commit && editState.dirty) {
+            changed = commitEdit(k, s, editState, editState.text);
         }
     } else if (s->type == MDKR_VIDEO_TYPE_INT && s->min == 0.0f && s->max == 1.0f) {
-        bool on = d->number != 0.0f;
+        if (!editState.initialized || (!editState.active && !editState.dirty)) {
+            editState.number = d->number;
+            editState.initialized = true;
+        }
+        bool on = editState.number != 0.0f;
         if (ImGui::Checkbox("##v", &on)) {
-            reportResult(mdkr_video_config_runtime_set(k, on ? "1" : "0"), s);
-            changed = true;
+            editState.number = on ? 1.0f : 0.0f;
+            editState.dirty = true;
+            changed = commitEdit(k, s, editState, on ? "1" : "0");
         }
     } else if (s->type == MDKR_VIDEO_TYPE_INT) {
-        int v = (int)d->number;
-        if (ImGui::SliderInt("##v", &v, (int)s->min, (int)s->max)) {
+        if (!editState.initialized || (!editState.active && !editState.dirty)) {
+            editState.number = d->number;
+            editState.initialized = true;
+        }
+        int v = static_cast<int>(editState.number);
+        const bool previewChanged =
+            ImGui::SliderInt("##v", &v, (int)s->min, (int)s->max);
+        if (previewChanged) {
+            editState.number = static_cast<float>(v);
+        }
+        const bool commit = AppUi_deferredCommit(
+            previewChanged, ImGui::IsItemDeactivatedAfterEdit(), &editState.dirty);
+        editState.active = ImGui::IsItemActive();
+        if (commit && editState.dirty) {
             char buf[32];
             std::snprintf(buf, sizeof(buf), "%d", v);
-            reportResult(mdkr_video_config_runtime_set(k, buf), s);
-            changed = true;
+            changed = commitEdit(k, s, editState, buf);
         }
     } else {
-        float v = d->number;
-        if (ImGui::SliderFloat("##v", &v, s->min, s->max, "%.2f")) {
+        if (!editState.initialized || (!editState.active && !editState.dirty)) {
+            editState.number = d->number;
+            editState.initialized = true;
+        }
+        const bool previewChanged = ImGui::SliderFloat(
+            "##v", &editState.number, s->min, s->max, "%.2f");
+        const bool commit = AppUi_deferredCommit(
+            previewChanged, ImGui::IsItemDeactivatedAfterEdit(), &editState.dirty);
+        editState.active = ImGui::IsItemActive();
+        if (commit && editState.dirty) {
             char buf[32];
-            std::snprintf(buf, sizeof(buf), "%.2f", (double)v);
-            reportResult(mdkr_video_config_runtime_set(k, buf), s);
-            changed = true;
+            std::snprintf(buf, sizeof(buf), "%.2f",
+                          static_cast<double>(editState.number));
+            changed = commitEdit(k, s, editState, buf);
+        }
+    }
+
+    if (!editState.error.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+        ImGui::TextWrapped("%s", editState.error.c_str());
+        ImGui::PopStyleColor();
+        const bool retryPressed =
+            editState.dirty && ImGui::SmallButton("Retry save");
+        if (editState.dirty && k == MDKR_VIDEO_FRAME_LIMIT) {
+            g_frameLimitRetryRectMin = ImGui::GetItemRectMin();
+            g_frameLimitRetryRectMax = ImGui::GetItemRectMax();
+            g_frameLimitRetryRectValid = true;
+        }
+        if (retryPressed) {
+            if (k == MDKR_VIDEO_FRAME_LIMIT) {
+                std::fprintf(stderr,
+                             "[app-ui-test] Retry save widget activated\n");
+            }
+            char retry[MDKR_VIDEO_STRING_MAX];
+            if (s->type == MDKR_VIDEO_TYPE_STRING) {
+                std::snprintf(retry, sizeof(retry), "%s", editState.text);
+            } else if (s->type == MDKR_VIDEO_TYPE_INT) {
+                std::snprintf(retry, sizeof(retry), "%d",
+                              static_cast<int>(editState.number));
+            } else {
+                std::snprintf(retry, sizeof(retry), "%.2f",
+                              static_cast<double>(editState.number));
+            }
+            changed = commitEdit(k, s, editState, retry);
         }
     }
 
@@ -202,15 +434,33 @@ bool drawKey(MdkrVideoKey k, bool compact) {
         char liveBuf[MDKR_VIDEO_STRING_MAX];
         formatValue(s, live(k), liveBuf, sizeof(liveBuf));
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
-        ImGui::Text("Staged: %s \xE2\x86\x92 %s on the next launch (running now: %s)",
-                    liveBuf, valueBuf, liveBuf);
+        ImGui::Text("Saved for next Play: %s (current: %s)",
+                    optionLabel(k, valueBuf), optionLabel(k, liveBuf));
         ImGui::PopStyleColor();
     }
 
-    if (!compact && s->help) {
+    const char *help = helpFor(k, s);
+    if (!compact && help) {
         ImGui::PushTextWrapPos(0.0f);
-        ui::TextSubtle("%s", s->help);
+        ui::TextSubtle("%s", help);
         ImGui::PopTextWrapPos();
+    }
+    if (k == MDKR_VIDEO_FRAME_LIMIT &&
+        std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        static bool tracedFrameLimit = false;
+        if (!tracedFrameLimit) {
+            std::fprintf(stderr,
+                         "[app-ui] frame-limit value=%s label=%s restartPending=%d\n",
+                         d->text, optionLabel(k, d->text),
+                         Settings_restartPending() ? 1 : 0);
+            std::fprintf(
+                stderr,
+                "[app-ui] frame-limit-contract recommended=\"%s\" "
+                "group=\"%s\" caveat=\"%s\"\n",
+                kRecommendedFrameLimitLabel, kExperimentalFrameLimitGroup,
+                kExperimentalFrameLimitCaveat);
+            tracedFrameLimit = true;
+        }
     }
 
     ui::Gap(ui::kGapS);
@@ -219,6 +469,46 @@ bool drawKey(MdkrVideoKey k, bool compact) {
 }
 
 }  // namespace
+
+void Settings_loadUiScalePreference() {
+    const std::string stored = AppConfig::get("ui_scale", "1.0");
+    float parsed = 1.0f;
+    const float scale = AppUi_parseScale(stored.c_str(), &parsed) ? parsed : 1.0f;
+    AppTheme::setUiScale(scale);
+    g_uiScaleEdit = scale;
+    g_uiScaleInitialized = true;
+    g_uiScaleDirty = false;
+    g_uiScaleError.clear();
+    g_smokeGamepadFocusUsed = false;
+    if (std::getenv("MDKR_APP_UI_TRACE")) {
+        std::fprintf(stderr, "[app-ui] ui-scale loaded=%.2f\n",
+                     static_cast<double>(scale));
+    }
+}
+
+bool Settings_smokeFrameLimitCenter(int *x, int *y) {
+    if (!x || !y || !g_frameLimitRectValid) return false;
+    *x = static_cast<int>((g_frameLimitRectMin.x + g_frameLimitRectMax.x) * 0.5f);
+    *y = static_cast<int>((g_frameLimitRectMin.y + g_frameLimitRectMax.y) * 0.5f);
+    return true;
+}
+
+bool Settings_smokeFrameLimitRetryCenter(int *x, int *y) {
+    if (!x || !y || !g_frameLimitRetryRectValid) return false;
+    *x = static_cast<int>(
+        (g_frameLimitRetryRectMin.x + g_frameLimitRetryRectMax.x) * 0.5f);
+    *y = static_cast<int>(
+        (g_frameLimitRetryRectMin.y + g_frameLimitRetryRectMax.y) * 0.5f);
+    return true;
+}
+
+void Settings_dumpSchemaContract() {
+    std::printf(
+        "[app] frame-limit UI contract: recommended=\"%s\" group=\"%s\" "
+        "caveat=\"%s\"\n",
+        kRecommendedFrameLimitLabel, kExperimentalFrameLimitGroup,
+        kExperimentalFrameLimitCaveat);
+}
 
 bool Settings_restartPending() {
     for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
@@ -257,6 +547,12 @@ int Settings_collectStagedOverrides(const char **out, int cap) {
 
 bool Settings_draw(bool compact) {
     bool changed = false;
+    g_frameLimitRetryRectValid = false;
+    static const MdkrVideoCategory categoryOrder[] = {
+        MDKR_VIDEO_CAT_PACING,
+        MDKR_VIDEO_CAT_PRESENTATION,
+        MDKR_VIDEO_CAT_FIDELITY,
+    };
 
     if (mdkr_video_config_is_readonly()) {
         // A Pure session never rewrites the ini (video_config.h), so editing
@@ -271,8 +567,68 @@ bool Settings_draw(bool compact) {
         ui::Gap(ui::kGapM);
     }
 
-    for (int c = 0; c < MDKR_VIDEO_CAT_COUNT; ++c) {
-        const char *catName = mdkr_video_category_name((MdkrVideoCategory)c);
+    if (ImGui::CollapsingHeader("Interface", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (!g_uiScaleInitialized) {
+            g_uiScaleEdit = AppTheme::uiScale();
+            g_uiScaleInitialized = true;
+        }
+        ui::Gap(ui::kGapS);
+        ImGui::TextUnformatted("UI scale");
+        ImGui::SetNextItemWidth(ui::kControlWidth());
+        const bool scalePreviewChanged = ImGui::SliderFloat(
+            "##ui-scale", &g_uiScaleEdit, 0.75f, 2.0f, "%.2fx",
+            ImGuiSliderFlags_AlwaysClamp);
+        if (scalePreviewChanged) {
+            // Apply at the next pre-NewFrame safe point, never midway through
+            // the current widget tree.
+            AppTheme::requestUiScale(g_uiScaleEdit);
+        }
+        if (AppUi_deferredCommit(scalePreviewChanged,
+                                 ImGui::IsItemDeactivatedAfterEdit(),
+                                 &g_uiScaleDirty)) {
+            char value[32];
+            std::snprintf(value, sizeof(value), "%.2f",
+                          static_cast<double>(g_uiScaleEdit));
+            if (AppConfig::setAndSave("ui_scale", value)) {
+                g_uiScaleDirty = false;
+                g_uiScaleError.clear();
+                setStatus("UI scale saved.", AppTheme::good());
+                changed = true;
+            } else {
+                g_uiScaleError =
+                    "UI scale could not be saved. The preview remains available; "
+                    "retry after restoring write access.";
+                setStatus(g_uiScaleError.c_str(), AppTheme::bad());
+            }
+        }
+        if (!g_uiScaleError.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+            ImGui::TextWrapped("%s", g_uiScaleError.c_str());
+            ImGui::PopStyleColor();
+            if (ImGui::SmallButton("Retry UI scale save")) {
+                char value[32];
+                std::snprintf(value, sizeof(value), "%.2f",
+                              static_cast<double>(g_uiScaleEdit));
+                if (AppConfig::setAndSave("ui_scale", value)) {
+                    g_uiScaleDirty = false;
+                    g_uiScaleError.clear();
+                    setStatus("UI scale saved.", AppTheme::good());
+                    changed = true;
+                }
+            }
+        }
+        if (!compact) {
+            ui::TextSubtleWrapped(
+                "Scales text and controls together. Supported range: 0.75x to 2.00x.");
+        }
+        ui::Gap(ui::kGapS);
+    }
+
+    for (MdkrVideoCategory category : categoryOrder) {
+        const int c = static_cast<int>(category);
+        const char *catName = category == MDKR_VIDEO_CAT_PACING
+            ? "Frame rate & timing"
+            : mdkr_video_category_name(category);
         if (!catName) continue;
 
         // Count first so an empty category never renders a bare header.
@@ -283,7 +639,18 @@ bool Settings_draw(bool compact) {
         }
         if (inCat == 0) continue;
 
-        if (ImGui::CollapsingHeader(catName, ImGuiTreeNodeFlags_DefaultOpen)) {
+        const ImGuiTreeNodeFlags flags = category == MDKR_VIDEO_CAT_PACING
+            ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_None;
+        if (ImGui::CollapsingHeader(catName, flags)) {
+            if (category == MDKR_VIDEO_CAT_PACING && !compact) {
+                ui::Gap(ui::kGapS);
+                ImGui::PushTextWrapPos(0.0f);
+                ui::TextSubtle(
+                    "Original is Recommended / Proven. Every other frame-limit "
+                    "choice is Experimental \xE2\x80\x94 Under Construction and does not "
+                    "increase unique visual FPS in 1.0.1.");
+                ImGui::PopTextWrapPos();
+            }
             ui::Gap(ui::kGapS);
             ImGui::Indent(ui::kGapM);
             for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
@@ -301,8 +668,7 @@ bool Settings_draw(bool compact) {
         ui::Gap(ui::kGapS);
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
         ImGui::TextWrapped(
-            "Some changes are staged for the next launch. They are already saved "
-            "— quitting now will not lose them.");
+            "Changes are saved. Restart the game to apply them.");
         ImGui::PopStyleColor();
     }
 

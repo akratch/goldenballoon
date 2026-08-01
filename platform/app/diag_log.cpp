@@ -1,6 +1,6 @@
 // diag_log.cpp — see diag_log.h.
 #include "diag_log.h"
-#include "engine_entry.h"   // g_diagLogRealErrFd / g_diagLogFileFd (crash-write mirror)
+#include "engine_entry.h"   // crash-write mirror descriptors
 
 #include <SDL.h>
 
@@ -10,146 +10,221 @@
 #include <string>
 #include <thread>
 
+#if defined(_WIN32)
+#include <fcntl.h>
+#include <io.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 namespace {
-std::mutex  g_mtx;
+
+std::mutex  g_ringMutex;
 std::string g_ring;
-const size_t kRingCap = 256 * 1024;
+constexpr size_t kRingCap = 256 * 1024;
 std::string g_logPath;
 std::FILE  *g_logFile = nullptr;
+std::thread g_reader;
+int         g_realOut = -1;
+int         g_realErr = -1;
 bool        g_installed = false;
 
 void appendRing(const char *data, size_t n) {
-    std::lock_guard<std::mutex> lk(g_mtx);
+    std::lock_guard<std::mutex> lock(g_ringMutex);
     g_ring.append(data, n);
-    if (g_ring.size() > kRingCap) g_ring.erase(0, g_ring.size() - kRingCap);
+    if (g_ring.size() > kRingCap) {
+        g_ring.erase(0, g_ring.size() - kRingCap);
+    }
 }
 
 std::string prefsDir() {
-    char *p = SDL_GetPrefPath("mdkr64", "mdkr64");
-    std::string d = p ? p : "";
-    if (p) SDL_free(p);
-    return d;
+    const char *overrideDir = std::getenv("MDKR_APP_PREFS_DIR");
+    if (overrideDir && overrideDir[0]) {
+        std::string result = overrideDir;
+        if (result.back() != '/' && result.back() != '\\') result += '/';
+        return result;
+    }
+    char *path = SDL_GetPrefPath("mdkr64", "mdkr64");
+    std::string result = path ? path : "";
+    if (path) SDL_free(path);
+    return result;
 }
-}  // namespace
 
 #if defined(_WIN32)
 
-#include <fcntl.h>
-#include <io.h>
+int duplicateFd(int fd) { return _dup(fd); }
+int replaceFd(int source, int target) { return _dup2(source, target); }
+void closeFd(int fd) { if (fd >= 0) _close(fd); }
+int fileFd(std::FILE *file) { return file ? _fileno(file) : -1; }
 
-#include "engine_entry.h"  // g_diagLogRealErrFd/g_diagLogFileFd crash-write mirror
-
-namespace {
-int g_realErr = -1;
-
-void readerLoop(int rfd) {
-    char buf[4096];
-    int n;
-    while ((n = _read(rfd, buf, sizeof(buf))) > 0) {
-        appendRing(buf, (size_t)n);
+void readerLoop(int readFd) {
+    char buffer[4096];
+    int count = 0;
+    while ((count = _read(readFd, buffer, sizeof(buffer))) > 0) {
+        appendRing(buffer, static_cast<size_t>(count));
         if (g_logFile) {
-            std::fwrite(buf, 1, (size_t)n, g_logFile);
+            std::fwrite(buffer, 1, static_cast<size_t>(count), g_logFile);
             std::fflush(g_logFile);
         }
         if (g_realErr >= 0) {
-            int w = _write(g_realErr, buf, (unsigned)n);  // write through to console
-            (void)w;
+            (void)_write(g_realErr, buffer, static_cast<unsigned>(count));
         }
     }
+    closeFd(readFd);
 }
-}  // namespace
 
-void DiagLog_install() {
-    if (g_installed) return;
-    g_installed = true;
-
-    std::string dir = prefsDir();
-    g_logPath = dir + "mdkr64.log";
-    std::string prev = dir + "mdkr64.prev.log";
-    std::remove(prev.c_str());                     // Windows rename() won't replace an
-    std::rename(g_logPath.c_str(), prev.c_str());  // existing file, so clear it first
-    g_logFile = std::fopen(g_logPath.c_str(), "w");
-
-    g_realErr = _dup(2);  // keep the real console for write-through
-    int pfd[2];
-    if (_pipe(pfd, 64 * 1024, _O_BINARY | _O_NOINHERIT) != 0) return;
-    _dup2(pfd[1], 1);  // stdout -> pipe (CRT-level; covers printf/fprintf)
-    _dup2(pfd[1], 2);  // stderr -> pipe
-    _close(pfd[1]);
-    // Unbuffered, not line-buffered: the Windows CRT treats _IOLBF as full
-    // buffering, which would hold diagnostics back from the pipe until the
-    // buffer fills (or the process exits).
-    setvbuf(stdout, NULL, _IONBF, 0);
-    setvbuf(stderr, NULL, _IONBF, 0);
-    // Publish the crash-write mirror fds only once the tee is live (on the
-    // failure return above, fd 2 still points at the real console, where the
-    // engine's default crash write already lands).
-    g_diagLogRealErrFd = g_realErr;
-    g_diagLogFileFd = g_logFile ? _fileno(g_logFile) : -1;
-    std::thread(readerLoop, pfd[0]).detach();
+bool createPipe(int pipeFds[2]) {
+    return _pipe(pipeFds, 64 * 1024, _O_BINARY | _O_NOINHERIT) == 0;
 }
 
 #else
 
-#include <unistd.h>
+int duplicateFd(int fd) {
+    const int copy = dup(fd);
+    if (copy >= 0) (void)fcntl(copy, F_SETFD, FD_CLOEXEC);
+    return copy;
+}
+int replaceFd(int source, int target) { return dup2(source, target); }
+void closeFd(int fd) { if (fd >= 0) close(fd); }
+int fileFd(std::FILE *file) { return file ? fileno(file) : -1; }
 
-namespace {
-int g_realErr = -1;
-
-void readerLoop(int rfd) {
-    char buf[4096];
-    ssize_t n;
-    while ((n = read(rfd, buf, sizeof(buf))) > 0) {
-        appendRing(buf, (size_t)n);
+void readerLoop(int readFd) {
+    char buffer[4096];
+    ssize_t count = 0;
+    while ((count = read(readFd, buffer, sizeof(buffer))) > 0) {
+        appendRing(buffer, static_cast<size_t>(count));
         if (g_logFile) {
-            std::fwrite(buf, 1, (size_t)n, g_logFile);
+            std::fwrite(buffer, 1, static_cast<size_t>(count), g_logFile);
             std::fflush(g_logFile);
         }
         if (g_realErr >= 0) {
-            ssize_t w = write(g_realErr, buf, (size_t)n);  // write through to console
-            (void)w;
+            (void)write(g_realErr, buffer, static_cast<size_t>(count));
         }
     }
+    closeFd(readFd);
 }
+
+bool createPipe(int pipeFds[2]) {
+    if (pipe(pipeFds) != 0) return false;
+    (void)fcntl(pipeFds[0], F_SETFD, FD_CLOEXEC);
+    (void)fcntl(pipeFds[1], F_SETFD, FD_CLOEXEC);
+    return true;
+}
+
+#endif
+
+void closeSavedDescriptors() {
+    closeFd(g_realOut);
+    closeFd(g_realErr);
+    g_realOut = -1;
+    g_realErr = -1;
+}
+
+void closeLogFile() {
+    if (!g_logFile) return;
+    std::fflush(g_logFile);
+    std::fclose(g_logFile);
+    g_logFile = nullptr;
+}
+
 }  // namespace
 
-void DiagLog_install() {
-    if (g_installed) return;
+bool DiagLog_install() {
+    if (g_installed) return true;
+
+    const std::string directory = prefsDir();
+    g_logPath = directory.empty() ? "" : directory + "mdkr64.log";
+    if (!g_logPath.empty()) {
+        const std::string previous = directory + "mdkr64.prev.log";
+#if defined(_WIN32)
+        // Windows rename() does not replace an existing destination.
+        std::remove(previous.c_str());
+#endif
+        (void)std::rename(g_logPath.c_str(), previous.c_str());
+        g_logFile = std::fopen(g_logPath.c_str(), "w");
+    }
+
+    g_realOut = duplicateFd(1);
+    g_realErr = duplicateFd(2);
+    int pipeFds[2] = {-1, -1};
+    if (g_realOut < 0 || g_realErr < 0 || !createPipe(pipeFds)) {
+        closeSavedDescriptors();
+        closeFd(pipeFds[0]);
+        closeFd(pipeFds[1]);
+        closeLogFile();
+        return false;
+    }
+
+    std::fflush(stdout);
+    std::fflush(stderr);
+    if (replaceFd(pipeFds[1], 1) < 0 || replaceFd(pipeFds[1], 2) < 0) {
+        // Restore both descriptors even when only the first dup succeeded.
+        (void)replaceFd(g_realOut, 1);
+        (void)replaceFd(g_realErr, 2);
+        closeFd(pipeFds[0]);
+        closeFd(pipeFds[1]);
+        closeSavedDescriptors();
+        closeLogFile();
+        return false;
+    }
+    closeFd(pipeFds[1]);
+
+    // A pipe is block-buffered by default. Prompt flushing is important both
+    // for the in-app diagnostics view and for orderly relaunch.
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
+
+    try {
+        g_reader = std::thread(readerLoop, pipeFds[0]);
+    } catch (...) {
+        (void)replaceFd(g_realOut, 1);
+        (void)replaceFd(g_realErr, 2);
+        closeFd(pipeFds[0]);
+        closeSavedDescriptors();
+        closeLogFile();
+        return false;
+    }
+
+    g_diagLogRealErrFd = g_realErr;
+    g_diagLogFileFd = fileFd(g_logFile);
     g_installed = true;
-
-    std::string dir = prefsDir();
-    g_logPath = dir + "mdkr64.log";
-    std::string prev = dir + "mdkr64.prev.log";
-    std::rename(g_logPath.c_str(), prev.c_str());  // rotate previous run (ok if absent)
-    g_logFile = std::fopen(g_logPath.c_str(), "w");
-
-    g_realErr = dup(2);  // keep the real console for write-through
-    int pfd[2];
-    if (pipe(pfd) != 0) return;
-    dup2(pfd[1], 1);  // stdout -> pipe
-    dup2(pfd[1], 2);  // stderr -> pipe
-    close(pfd[1]);
-    // Line-buffer stdout so each line reaches the pipe promptly (a pipe is
-    // block-buffered by default, which would swallow stdout on a quick exit).
-    setvbuf(stdout, NULL, _IOLBF, 0);
-    setvbuf(stderr, NULL, _IOLBF, 0);
-    std::thread(readerLoop, pfd[0]).detach();
+    return true;
 }
 
-#endif  // _WIN32
+void DiagLog_shutdown() {
+    if (!g_installed) return;
 
-int DiagLog_snapshot(char *buf, int cap) {
-    if (!buf || cap <= 0) return 0;
-    std::lock_guard<std::mutex> lk(g_mtx);
-    int n = (int)g_ring.size();
-    const char *src = g_ring.c_str();
-    if (n >= cap) {
-        src += (n - (cap - 1));
-        n = cap - 1;
+    std::fflush(stdout);
+    std::fflush(stderr);
+
+    // Stop asynchronous crash writes before either target descriptor changes.
+    g_diagLogRealErrFd = -1;
+    g_diagLogFileFd = -1;
+
+    // Restoring fd 1 and 2 closes the pipe's final write references. The reader
+    // drains every queued byte, observes EOF, and can then be joined safely.
+    (void)replaceFd(g_realOut, 1);
+    (void)replaceFd(g_realErr, 2);
+    if (g_reader.joinable()) g_reader.join();
+
+    closeLogFile();
+    closeSavedDescriptors();
+    g_installed = false;
+}
+
+int DiagLog_snapshot(char *buffer, int capacity) {
+    if (!buffer || capacity <= 0) return 0;
+    std::lock_guard<std::mutex> lock(g_ringMutex);
+    int count = static_cast<int>(g_ring.size());
+    const char *source = g_ring.c_str();
+    if (count >= capacity) {
+        source += count - (capacity - 1);
+        count = capacity - 1;
     }
-    std::memcpy(buf, src, (size_t)n);
-    buf[n] = '\0';
-    return n;
+    std::memcpy(buffer, source, static_cast<size_t>(count));
+    buffer[count] = '\0';
+    return count;
 }
 
 const char *DiagLog_path() { return g_logPath.c_str(); }

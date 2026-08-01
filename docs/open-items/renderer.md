@@ -7,6 +7,102 @@
 > trap exists, and retractions are recorded in place rather than removed.
 
 
+## FIXED: the cascade light-depth axis pointed at the sun — wave "shadowsign"
+
+**Repro-sweep verdict for the v0.4 "random shadows from random objects" report:
+REPRODUCES at tip.** Post-1.0 R2 re-ran it because the world-depth epic landed
+after the report and nobody had re-measured. Sweep: Remastered, GL, autopilot to
+frame 3350–3590 on six worlds (Ancient Lake 5, Whale Bay 8, Everfrost Peak 13,
+Greenwood Village 19, Snowball Valley 9, and 31), shadow-on vs shadow-off frame
+pairs, `MDKR_WORLD_FX_TRACE` census on every arm.
+
+What the sweep found was not the caster feed. Provenance was clean everywhere:
+`staleCasters=0`, `implausible=0`, `allocFails=0`, identical `[WORLD-FX]`
+censuses between arms on all six worlds — the "shadowplay"/"shadowdeep" phantom
+classes really are closed. The symptom is downstream, in the one line that
+decides which way depth grows:
+
+**`gfx_shadow_cascade.c` built `world_to_clip` row 2 from `+light_axis_z`.**
+`sun_direction_world` points TOWARDS the sun — it is the same vector the RL-5
+receiver dots against a surface normal, where a +Y normal must be lit by a +Y
+sun. Projecting depth along it made the depth buffer grow *towards* the light,
+so with both backends' shadow pass at "keep the smallest depth" (GL_LESS /
+`WGPUCompareFunction_Less`, clear 1.0) every cascade stored the surface
+**furthest** from the sun in each column — the ground — and the receiver's
+LESS_EQUAL compare then lit exactly that surface and shadowed everything
+standing on it.
+
+Player-visible consequences, all four of which are the report:
+
+- Every kart, character and standing object was uniformly at full umbra in open
+  sunlight. Everfrost frame 3470, driver's torso: 83.57 mean with shadows on
+  against 123.04 with them off — a flat 32%, the umbra applied whole.
+- Nothing ever cast onto the ground. Same frame, track surface beside the kart:
+  **97.37 in both arms, to the digit.**
+- And because the actor-decal handoff had already suppressed the blob shadow
+  once the maps were ready, karts lost their only grounding and floated.
+- Large away-from-sun faces (cliff walls, the Ancient Lake shore rock) read as
+  hard-edged full-face blackouts with no visible caster — which is what "random
+  shadows … that don't seem to make sense in places" describes.
+
+Acne was ruled out before the sign was touched, not after: raising the
+comparison bias 25x (`MDKR_SHADOW_BIAS=200`) moved that torso only to 94.61.
+Nothing about a bias explains a receiver occluded by the ground it stands on.
+
+Fix: negate row 2 and its translation term, so depth increases away from the
+light. One sign, no new state. It also restores the winding both backends'
+shadow pass already assumes — they cull FRONT faces deliberately (second-depth
+shadow mapping, the standard acne mitigation), and mapping a right-handed light
+basis onto GL clip space with `+z` had inverted which faces those were.
+
+Evidence: on Ancient Lake frame 3400 the shadow-only footprint falls 60138 →
+9071 changed pixels and the opposite-channel "mixed" class 429 → 1; frame 3460,
+45111 → 23232 and 5985 → 5; karts now cast visible kart-shaped shadows onto the
+track and are no longer darkened themselves. `check_world_shadows` passes on
+both backends with near-identical footprints (GL 20692, WebGPU 20725) including
+the forced-loss fallback latch; `check_shadow_stage_reset`,
+`check_shadow_visual_ab`, `check_remaster_lighting`, `check_video_options`,
+`check_video_presets` and all 33 CTests pass. New registered gate
+`check_shadow_plausibility.py` covers the property from both ends (see
+tests/README.md).
+
+**Threshold changed, deliberately:** `check_world_shadows.py` capped the mixed
+class at 1% of `changed`. `changed` is the size of the shadow handoff, which is
+exactly what this fix moves — the handoff halved (40540 → 20692) while the mixed
+class itself *fell* (368 → 263), so a strict improvement failed a ratio against
+a shrinking denominator. That is DEVELOPER_HANDBOOK §3's twelfth shape living in
+a threshold instead of a fixture. It is now a fraction of the frame
+(`pixel_count // 500`), which states "never a broad hue-shift region" directly
+and still rejects the pre-fix worst frame measured on this route (5985 mixed,
+1.9% of the frame).
+
+## OPEN: shadow strength is one preset-wide choice, not a per-surface one
+
+Filed at R2 as the settings-UX residual. `Video.WorldShadows` now exists
+(off/soft/full, LIVE, defaulting to full so the shipped image is unchanged), and
+it answers the "remaster shadows degrade the UX" half of the v0.4 report at the
+level the report was made — but it is still one global umbra multiplier.
+
+What it cannot express, and what a future pass should measure before adding
+knobs for:
+
+1. **The receiver has no N·L term.** A surface facing away from the sun is
+   already unlit by RL-5 and is then multiplied by the umbra as well, so
+   away-from-sun faces darken twice. It is *defensible* — a surface facing away
+   from the light is in shadow — but it is why large flat faces read heavier
+   than the shadows cast onto them, and no measurement separates the two today.
+2. **The bias is not slope-scaled.** `g_pcSunShadowBias` is a constant 8 world
+   units divided by the plan's light z-span. Grazing-angle receivers therefore
+   get the same margin as face-on ones. The seam to measure this is now in place
+   (`MDKR_SHADOW_BIAS`, `MDKR_SHADOW_UMBRA`, raw float env overrides).
+3. **DKR's vertex colour bakes its own occlusion**, so *any* umbra is a second
+   multiply on art that already has one. `soft` (0.78) exists because 0.62
+   exists because 0.48 was too heavy; none of the three came from a measurement
+   against a reference image, only from playthrough judgement.
+
+Not fixed here because each needs a measurement this wave did not take, and
+because the exit gate for R2 was the plausibility property, not the aesthetic.
+
 ## FIXED: v0.4 playthrough shadow defects — wave "shadowplay"
 
 The first real v0.4 playthrough reported "random shadows from random objects
@@ -58,8 +154,8 @@ stage reset was exposed) and closed them; see the next section.
 
 ## FIXED: pre-release shadow deep review — wave "shadowdeep"
 
-The pre-release review (`full report` (internal archive)) mined
-the renderer after wave "shadowplay" and found that the address-keyed static
+The pre-release renderer review after wave "shadowplay" found that the
+address-keyed static
 cache residual was not hypothetical — it was live in two forms, and the wave
 also closed the remaining player-visible shadow findings:
 
@@ -271,23 +367,24 @@ reported balloon instance.
 
 ### Both-direction regression gate
 
-`tests/check_widescreen_proportions.py` runs seven isolated arms through both the
-HUD and world paths. Debug GL and Release WebGPU produced identical measurements:
+`tests/check_widescreen_proportions.py` runs seven isolated arms through the HUD
+at frame 6300 and the closer world balloon at frame 6410. Current Release GL and
+WebGPU produce identical measurements:
 
 | fixed arm | HUD motif | world motif | expected world scale |
 |---|---:|---:|---:|
-| 4:3 | 99×36 | 68×27 | 1.000 |
-| 16:10 | 99×36 | 68×27 | 1.000 |
-| 16:9 | 99×36 | 68×27 | 1.000 |
-| 21:9, cap 104° | 99×36 | 72×28 | 1.053 |
-| 21:9, forced 4:3 | 99×36 | 68×27 | 1.000 |
-| 16:9, FOV 75° | 99×36 | 52×20 | 0.752 |
-| 21:9 exact legacy | 173×36 | 122×27 | known-bad ~1.75× X |
+| 4:3 | 99×36 | 48×18 | 1.000 |
+| 16:10 | 99×36 | 48×18 | 1.000 |
+| 16:9 | 99×36 | 48×18 | 1.000 |
+| 21:9, cap 104° | 99×36 | 50×19 | 1.053 |
+| 21:9, forced 4:3 | 99×36 | 48×18 | 1.000 |
+| 16:9, FOV 75° | 99×36 | 36×14 | 0.752 |
+| 21:9 exact legacy | 173×36 | 84×18 | known-bad 1.75× X |
 
 Production motif aspect remains within 3.2% of the 4:3 reference and both axes
 track the analytic lens scale. The legacy arm must exceed the same production
 tolerance, so the detector proves it can reject the former bug. Every arm also
-requires the same normalized frame-6300 racer state and the same frame-6331
+requires the same normalized frame-6410 racer state and the same frame-6476
 collection event.
 
 The original five arms passed Debug GL, Debug WebGPU, Release WebGPU, and ASan
@@ -673,25 +770,24 @@ correct all along.
   block metric, which mean-centres and normalises, so it costs hist only. Fixing the
   backdrop belongs with the P3.2 preview-camera/backdrop work, not P3.3.
 
-## M4.5 WebGPU backend — DONE (default backend; GL fallback). Open notes:
-- **Post-bring-up fallback and loss recovery are now implemented.** Every
+## M4.5 WebGPU backend — DONE (qualified fail-closed default). Open notes:
+- **Post-bring-up failure and loss handling are implemented.** Every
   instance/surface/adapter/device/queue/configure failure is injected by
-  `check_webgpu_recovery.py`; native performs one bounded device rebuild and
-  then changes the live process to GL. The browser restores an actionable
-  launcher/error view because desktop GL is unavailable. Surface statuses,
+  `check_webgpu_recovery.py`; native may perform one bounded same-backend device
+  rebuild, then stops visibly if WebGPU is still unhealthy. It never changes a
+  live process to GL. The browser restores an actionable launcher/error view.
+  Surface statuses,
   usage capabilities, featureless depth clipping, and unsupported artifact
-  tuples have ROM-free policy gates. Full evidence and remaining platform
-  validation are in
-  `the lifecycle report` (internal archive).
-- **Native GL parity and the pre-init fallback are now automated.**
+  tuples have ROM-free policy gates; remaining external-platform validation is
+  recorded in this open-items register.
+- **Native GL diagnostics and fail-closed startup are automated.**
   `tests/check_renderer_backends.py` drives GL and WebGPU through the same
   deterministic route into Ancient Lake, compares stable scene samples, and
   positive-controls the comparator against black. It also injects a WebGPU SDL
-  window failure. That arm exposed a real bug: the SDL layer created a GL window
-  but left the cached backend as WebGPU, so `main_pc.c` selected the wrong vtable.
-  The fallback now changes the single cached selection before GL initialization;
-  Debug and Release both render through it. This does **not** close the later
-  adapter/device/surface failure gap below.
+  window failure and requires the deliberate `EXIT_FAILURE` path with no crash
+  marker and no GL initialization. GL is reachable only through explicit
+  `MDKR_RENDERER=gl`; Debug and Release both render through that diagnostic
+  path.
 - ~~**Pipeline-prewarm cache DEFERRED (dormant, by design):**~~ **CLOSED BY
   MEASUREMENT; CACHE REMAINS DORMANT:** the vendored
   gfx_webgpu.c has a record/replay pipeline-prewarm cache, but it only runs when
@@ -703,7 +799,7 @@ correct all along.
   real save/ path. The real-browser gate now enforces 20.0 ms p95 / 25.0 ms p99
   cadence and a two-frame async compile/hold maximum; the measured route was
   17.54–17.59/17.82–18.07 ms with one-frame maxima. Persistent prewarm is not
-  justified. See `the measured decision` (internal archive).
+  justified by those measurements.
 - ~~**GL frame-dump double-buffer artifact (GL-side, not WebGPU):**~~ **FIXED:**
   during phases
   where the game submits a gfxtask only every OTHER present (e.g. the boot logo
@@ -725,8 +821,9 @@ correct all along.
   them happened to clip what the HLE should have. The HLE now clips, which removes
   the backend divergence at its source.
 - ~~**Runtime device-init failure = loud, not graceful.**~~ **FIXED:** readiness
-  is checked after real surface configuration. Native recreates a GL window and
-  rebinds the renderer; browser failures replace the frozen canvas with recovery
+  is checked after real surface configuration. Native may rebuild WebGPU once,
+  then stops visibly if the same backend remains unhealthy; it never changes a
+  live process to GL. Browser failures replace the frozen canvas with recovery
   controls and a reload message.
 
 ## Phase 2 — menu 1:1 fidelity: every screen now scored (wave "oraclefix")
@@ -861,33 +958,17 @@ half the screen structurally wrong, no choice of phase could score better than
 `BHV_CAMERA_ANIMATION` / `objectIdToSpawn` lead was a red herring; the object-map
 body swap already covers this level.
 
-**Residual, and it is NOT this screen's fault.** On the *default WebGPU* backend
-`track_select` reads **70.4 %**, not 93.7 %, because our frame has black bars over
-the top 19 and bottom 7 rows (of 240) where the real ROM fills to the edge. That
-is the already-known WebGPU **viewport-clamp** limitation, not a track-select
-defect, and it is proven by A/B: `MDKR_RENDERER=gl` → 93.7 %, WebGPU → 70.4 % on
-the identical native run. `func_8008F618` sets an ortho viewport of
-`{y=-160, h=1280}` in a 1280x960 target (DKR over-sizes it so the background can
-scroll between worlds) and emits all 12 background quads
-(`emitted=2 culled=0 oob=0` each, covering clip y +120…-150). WebGPU requires
-`setViewport` to be contained in the attachment, so `wgpu_clamp_rect` clips it to
-`{y=0, h=960}` — which **changes the viewport transform** rather than clipping
-pixels the way GL does, shrinking the background: clip y=+120 lands at screen row
-120/960 instead of 0, and the bottom edge at 930 instead of 960. Both numbers match
-the measured `firstLit=76 / lastLit=929` exactly. The backend already anticipates
-this (`GE007_WEBGPU_TRACE_VIEWPORT`, and a comment noting the clamp "ALTERS the
-viewport transform"). Fixing it means preserving the transform under WebGPU's
-containment rule — e.g. apply the viewport transform to NDC and leave
-`setViewport` at the full target, clipping with the scissor — which is a
-renderer-wide change and deliberately out of this wave's scope. It is the single
-biggest remaining menu-fidelity item: it caps *every* screen that uses an
-over-sized viewport.
+**Resolved follow-up (historical pre-fix measurement).** At this checkpoint the
+*WebGPU* `track_select` score was **70.4 %**, versus 93.7 % on GL, because clamping
+the deliberately oversized ortho viewport changed its transform and left black
+bars at the top and bottom. The later **WebGPU viewport clamping … FIXED** entry
+above records the implemented clip-space affine, pixel-exact button bounds, and
+final verification; this is no longer an open WebGPU or track-select defect.
 
-MAGIC_CODES (79 %) and FILE_SELECT (84 %) are the next two to characterise; both
-are dense static text, where a block score in the 79–85 % range usually means a
-glyph layout or panel offset rather than a missing element. Worth re-measuring
-them first: the stale-texture bug above was silently costing every menu screen,
-so those numbers predate the fix.
+The MAGIC_CODES (79 %) and FILE_SELECT (84 %) figures at this checkpoint also
+predate their later investigations. The environment-colour fix raised
+MAGIC_CODES to 94.8%; FILE_SELECT's remaining difference was isolated to the
+shared island backdrop rather than missing UI or a WebGPU layout error.
 
 ## FIXED: no near-plane clipping in the HLE (wave "nearclip")
 The HLE emitted every triangle unclipped and leaned on `GL_DEPTH_CLAMP`. Depth
@@ -1013,6 +1094,13 @@ currently reads it in a way that reaches rendering (its only game-side callers a
 audio bookkeeping), so it was left alone rather than bundled into this fix — but
 it is the same hazard and should move to the simulated clock if anything starts
 depending on it.
+
+## Experimental high-rate native delivery cadence — OPEN
+
+Opt-in non-Original native modes are **Experimental — Under Construction** in
+1.0.1. They alter host pacing and input/event-pump opportunities without
+increasing unique visual FPS; any practical benefit may be negligible, while
+higher settings can use more CPU. Original remains the proven cadence.
 
 ## Frame pacing / slow-motion — RESOLVED (pacing wave)
 - [x] **Root cause of in-race slow motion (and high-refresh fast motion).** DKR
@@ -1461,7 +1549,7 @@ crashed — it **hung**. Idle the title screen: demo level 18 loads at ~frame 51
 and plays, level 28 loads at ~frame 6632, and a few frames later the process pins
 one core at 100% and stops advancing frames entirely. `sample(1)` put 100% of
 stacks in
-`main_game_loop -> fb_update -> dkr_audio_pump -> amAudioSynthFrame ->
+`main_game_loop -> fb_update -> osRecvMesg -> dkr_audio_service_tick -> amAudioSynthFrame ->
 alAudioFrame -> __CSPVoiceHandler / alEvtqNextEvent`; the game loop itself is fine.
 
 **Root cause chain (each step measured):**

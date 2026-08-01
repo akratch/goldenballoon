@@ -19,7 +19,7 @@ namespace ui {
 ImVec2 kBtnPrimary();    // 190 x 46
 ImVec2 kBtnSecondary();  // 190 x 40
 ImVec2 kBtnWide();       // 210 x 40
-float  kControlWidth();  // sliders / combos (340)
+float  kControlWidth(float multiplier = 1.0f);  // clamped to available width
 float  kNavWidth();      // nav rail width (244)
 // Vertical rhythm scale (fixed logical px; ItemSpacing already scales via style).
 constexpr float kGapXS = 4.0f;
@@ -30,8 +30,9 @@ constexpr float kGapL  = 22.0f;
 // --- Primitives ---
 void Gap(float y);                                   // vertical spacer
 void TextSubtle(const char *fmt, ...);               // secondary/muted text
+void TextSubtleWrapped(const char *fmt, ...);        // muted text, wrapping at edge
 void SectionHeader(const char *title, const char *subtitle);
-void RestartBadge();                                 // "(restart)" muted chip
+void RestartBadge();                                 // non-interactive muted chip
 
 // Primary (accent-filled) button. Push/Pop expose the style for custom layouts.
 // size defaults to the scaled primary button when passed a zero vector.

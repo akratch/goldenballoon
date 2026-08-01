@@ -1,15 +1,12 @@
 /*
- * present_sched.h — the presentation-side view of the authoritative clock
- * (spec §5/§13 Phase 3, design doc §1/§3, Wave B slice 0).
+ * present_sched.h — presentation-side facade for the authoritative host-frame
+ * driver.
  *
- * WHY THIS EXISTS. Today one entry into the video-queue retrace branch
- * (stubs_dkr.c) is, by construction, exactly one authoritative tick AND
- * exactly one present: platform_vi_pace_measure() floors the frame to the
- * cadence minimum (2 source fields under `original`), so the two rates cannot
- * diverge. Wave B's goal is to let the present rate exceed the tick rate. The
- * first step is to grow a second, INDEPENDENT opinion about when a tick is due
- * — a SimSched accumulator — and prove it agrees with the pacer 1:1 before it
- * is ever allowed to drive anything (design §6, slice 0 gate).
+ * WHY THIS EXISTS. SimSched started as a parallel clock opinion and was
+ * promoted only after its exact agreement gate passed. HostFrameDriver now
+ * issues fixed-size game-loop tickets while this facade owns the presentation
+ * controls, replay telemetry, and collapsed-libultra adapter API. Presentation
+ * count may diverge from tick count; ticket width may not.
  *
  * THE CLOCK SOURCE. The accumulator is fed the pacer's own committed field
  * count (g_viLastWallFields), not a second reading of the host clock. Two
@@ -25,8 +22,8 @@
  * accumulator follows the TRUE count: it models wall time, not what the game
  * is told.
  *
- * COST WHEN OFF. Slice 0 is measurement only. Nothing here changes what is
- * presented; the telemetry row is behind one cached getenv.
+ * COST OF TELEMETRY. Trace rows remain behind one cached getenv. The driver and
+ * ticket adapter themselves are shipping clock policy, not diagnostics.
  */
 #ifndef MDKR_PRESENT_SCHED_H
 #define MDKR_PRESENT_SCHED_H
@@ -34,65 +31,98 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "pacing_policy.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* An authoritative tick is two source VI fields (LOGIC_30FPS), matching
- * pacing_policy.c's `original` minimum and sim_sched's 2e9-unit tick. */
-#define PRESENT_SCHED_FIELDS_PER_TICK 2u
-
 /*
- * Advance the parallel accumulator by one measured frame and return the
- * authoritative steps it believes are due (unbounded; the containment loop
- * still performs exactly one). Call once per video-queue branch entry,
- * immediately after platform_vi_pace_measure().
+ * Advance the authoritative driver by one committed host-time sample and
+ * return newly due fixed-step tickets. Ordinary multi-tick debt is retained
+ * until the adapter consumes it; `rebase` retires suspension time.
  */
-unsigned present_sched_advance_fields(unsigned fields);
+unsigned present_sched_advance_fields(unsigned fields, bool rebase);
+unsigned present_sched_advance_units(uint64_t units, bool rebase);
+
+/* Fixed-step ticket adapter used by the collapsed libultra message loop. */
+bool present_sched_take_tick(void);
+uint64_t present_sched_pending_ticks(void);
+uint64_t present_sched_issued_ticks(void);
+unsigned present_sched_tick_fields(void);
+
+/* Logical ticket assignment for host input captured at the current host
+ * opportunity. During a burst, events belong to the last due interval; while
+ * waiting between ticks, they belong to the next interval. */
+uint64_t present_sched_input_target_tick(void);
+
+/* Catch-up passes with another already-due ticket behind them may build the
+ * latest list but must not submit/present an intermediate image. */
+bool present_sched_should_elide_render(void);
+void present_sched_set_render_elided(bool elided);
+void present_sched_set_surface_elided(bool elided);
+bool present_sched_render_elided(void);
+void present_sched_note_render_elided(void);
+
+/* Observe both clock authority and gameplay semantics. `ticket_width` is the
+ * fixed HostFrameDriver ticket; `effective_rate` is the value input/menu/game/
+ * audio/transition consume after the measured Original-cadence bootstrap
+ * compatibility phase. Tick zero is reported separately. */
+void present_sched_note_game_update(unsigned ticket_width,
+                                    unsigned effective_rate);
 
 /* Interpolation alpha as sim_sched's exact rational (spec §7). */
 void present_sched_alpha(uint64_t *numerator, uint64_t *denominator);
 
-/* Total authoritative ticks the accumulator has issued since process start. */
+/* Total authoritative ticks the clock has made due since process start. */
 uint64_t present_sched_ticks(void);
 
 /*
- * Authoritative tick index, counted the way g_frameCounter counts presents:
- * bumped after the tick's present completes. While one tick == one present
- * these two are identical, which is precisely what slice 0's gate asserts.
+ * Authoritative tick index, independent of g_frameCounter's host-opportunity
+ * count. Bumped after each complete fixed-step game pass.
  */
 extern int g_simTickCounter;
 
 /* ---- presentation replay / subloop seam (slices 1-2) --------------------- */
 
 /*
- * MDKR_PRESENT_RATE=N — presents per second the subloop should aim for. 0 (the
- * default) keeps the historical one-present-per-tick behaviour exactly. Wave C
- * replaces this with the real Video.FrameLimit config key; the seam stays.
+ * MDKR_PRESENT_RATE accepts `original`, exact integer caps from 30 through
+ * 1000, `display`, and `uncapped`. `original` keeps the historical one-present-
+ * per-tick behaviour. Numeric caps use an absolute rational deadline grid;
+ * display and uncapped policies are resolved by the platform backend.
  */
 unsigned present_sched_present_rate(void);
+MdkrPresentPolicyKind present_sched_present_kind(void);
+unsigned present_sched_present_requested_rate(void);
+MdkrPresentPolicyKind present_sched_present_requested_kind(void);
+bool present_sched_present_subloop(void);
+bool present_sched_backend_vsync_enabled(void);
+const char *present_sched_present_policy_name(void);
+const char *present_sched_present_requested_policy_name(void);
 
 /*
- * True when something wants the captured display list re-walked: either the
- * zero-delta replay harness (MDKR_TEST_REPLAY_WALK=1, slice 1) or a present
- * rate above the authoritative tick rate (slice 2). The renderer checks this
- * before paying for the registry freeze, so an unarmed build pays one cached
- * getenv for the whole run.
+ * True only when an explicit internal test seam wants the captured display
+ * list re-walked. Production 1.0.1 never arms delayed replay from a frame-rate
+ * or smoothing setting. The renderer checks this before paying for snapshot
+ * and registry retention, so ordinary play pays only cached policy checks.
  */
 bool present_sched_replay_armed(void);
 
 /*
- * MDKR_PRESENT_SMOOTHING=off — present at the requested rate but repeat the
- * tick's own image instead of interpolating (spec §11's
- * Video.MotionSmoothing=off). Also the positive control the smoothness gate
- * needs: with smoothing off the intermediate frames must be byte-identical to
- * the tick frames bracketing them, which is exactly what proves that with
- * smoothing on their difference is the interpolation and not noise.
+ * Production 1.0.1 always returns false. The public smoothing setting is
+ * fail-closed because a delayed list walk cannot yet retain every mutable
+ * dependency. Explicit internal replay seams can enable this for adversarial
+ * diagnostics; host opportunities without a new image never swap or submit.
  */
 bool present_sched_smoothing_enabled(void);
 
+/* All replay test flags are inert unless this exact versioned capability is
+ * present: MDKR_INTERNAL_TEST_TOKEN=mdkr64-presentation-replay-v1. */
+bool present_sched_internal_replay_test_enabled(void);
+
 /*
- * MDKR_TEST_REPLAY_WALK — slice 1's zero-delta harness.
+ * MDKR_TEST_REPLAY_WALK — slice 1's zero-delta harness. Also requires the
+ * versioned MDKR_INTERNAL_TEST_TOKEN above.
  *
  *   1          re-walk every tick's list once with the captured
  *              view-projection, changing nothing. The replay uses the display
@@ -115,15 +145,15 @@ bool present_sched_test_force_recompose(void);
  * agreement is machine-checkable (tests/check_presentation_matrix.py) and the
  * replay's matrix/freeze counters beside them (tests/check_render_purity.py).
  */
-/* One interpolated present went out, carrying `viewports` substituted camera
- * view-projections (0 == the snapshot pair could not be interpolated, so the
- * frame redrew the tick's own camera). */
+/* One internal-test interpolated image was submitted, carrying `viewports`
+ * substituted camera view-projections. Production 1.0.1 never calls this. */
 void present_sched_note_interpolated(unsigned viewports);
-/* An interpolated present drew NOTHING, so the tick's own image stays on
- * screen. Three causes, all counted here: the held display list was stale (the
- * pass submitted no graphics task), motion smoothing is off, or the replay walk
- * itself refused (no frozen registry / no walk-entry state). The present does
- * NOT swap in this case -- see platform_frame_sync_no_swap. */
+/* A tick-boundary image was exposed. `replayed` is reserved for the delayed
+ * replay negative control; production exposes the completed real walk. */
+void present_sched_note_endpoint(bool replayed, uint64_t authored_tick);
+/* No new image was produced for this host opportunity, so the prior authored
+ * image stays on screen. The boundary does not swap or submit; explicit replay
+ * diagnostics also use this when a retained walk safely refuses. */
 void present_sched_note_stale(void);
 
 bool present_sched_trace_enabled(void);
@@ -142,15 +172,16 @@ void present_sched_trace_summary(void);
  * as "no sample", so the sections cannot accumulate garbage from a build that
  * armed the flag mid-run (it cannot: the flag is cached at first use).
  *
- * WHAT THE SECTIONS ARE. They partition the work Phase 3 Wave B ADDED, so the
- * incremental cost of the interpolated presentation is the sum of them:
+ * WHAT THE SECTIONS ARE. They partition host pacing and the quarantined replay
+ * mechanism. Replay-specific sections remain zero in production 1.0.1:
  *   SNAPSHOT  the per-TICK authoritative publish walk (presentation_snapshot_
  *             capture) — paid once per tick whether or not the subloop runs.
  *   FREEZE    the per-real-walk matrix-registry freeze (gfx_end_frame).
  *   INTERP    building the interpolated view-projections for one present.
  *   REPLAY    re-walking the held display list for one present.
  *   PRESENT   platform_frame_sync for the TICK's own present.
- *   IPRESENT  platform_frame_sync for an INTERPOLATED present.
+ *   IPRESENT  frame boundary for an extra host opportunity (a no-swap hold in
+ *             production; a submitted midpoint only under the test seam).
  * TICKWALL is the whole retrace-branch entry, so PRESENT + the subloop's
  * per-present sections are bounded by it and the residue is the pacer's sleep.
  */
@@ -197,8 +228,8 @@ void present_perf_summary(void);
  * as LIVE". That was wrong, and both keys are SCOPE_RESTART now. Overwriting
  * these two cached ints is necessary for a mid-run change to take effect but
  * nowhere near sufficient: the consumers downstream of them latch.
- * present_pace_lazy_init() (platform_sdl_min.c) resolves the present period
- * once into s_presentFields and never revisits it, so engaging late costs the
+ * present_pace_lazy_init() (platform_sdl_min.c) resolves the present policy
+ * once into its deadline state and never revisits it, so engaging late costs the
  * freeze/snapshot work with no subloop to spend it on; and gfx_start_frame()
  * stops refreshing dkr_walk_entry_* the moment present_sched_replay_armed()
  * goes false, while the already-latched subloop keeps replaying -- memcpy'ing
@@ -206,13 +237,11 @@ void present_perf_summary(void);
  * for the full argument. Making the seams re-resolvable belongs to the
  * live/interactive slice (design doc §6 slice 3).
  *
- * `value` is one of "original"|"60" for the frame limit, "off"|"interpolate"
- * for smoothing -- video_config.c's schema validator guarantees only those
- * strings ever reach here. Called only when the resolved key did NOT come
- * from the schema default (see video_config_runtime.c), so a raw diagnostic
- * MDKR_PRESENT_RATE=30/120/etc. that this schema does not recognise -- and
- * therefore never touches the config key at all -- keeps reaching
- * present_sched_present_rate()'s own getenv path completely untouched.
+ * `value` is `original`, `display`, `uncapped`, or a validated integer cap
+ * from 30 through 1000; smoothing is `off` or `interpolate`. Called only when
+ * the resolved key did not come from the schema default (see
+ * video_config_runtime.c), so an unset config still leaves the legacy raw-env
+ * diagnostic path untouched.
  */
 void mdkr_present_set_frame_limit(const char *value);
 void mdkr_present_set_motion_smoothing(const char *value);

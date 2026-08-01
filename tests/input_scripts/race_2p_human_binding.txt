@@ -1,0 +1,23 @@
+# DKR direct-human-input fixture: title -> two-player Ancient Lake race.
+#
+# This is the menu-only prefix for check_2p_human_binding.py. That gate writes
+# four private temporary variants (neutral, P1, P2, both) and appends bounded
+# in-race controller pulses. MDKR_AUTOPILOT is intentionally forbidden: the
+# point is to exercise update_player_racer's production human port binding and
+# car physics, not the native AI override used by the full-race flow fixture.
+
+1250 START 4
+1330 START 4
+
+# Join and confirm player 2 on the physical second port.
+1450 A 4 P2
+1560 A 4 P1
+1670 A 4 P2
+1780 A 4 P1
+
+# Ancient Lake; both players confirm their vehicles.
+2000 A 4 P1
+2150 A 4 P1
+2150 A 4 P2
+2300 A 4 P1
+2450 A 4 P1

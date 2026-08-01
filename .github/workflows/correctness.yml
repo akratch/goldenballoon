@@ -6,7 +6,8 @@ name: correctness
 # is documented in docs/RELEASE_CHECKLIST.md.
 on:
   push:
-    branches: [main]
+    branches: ['**']
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -27,6 +28,38 @@ jobs:
           fetch-depth: 0
       - name: Clean-room history
         run: tools/check_clean_room.sh
+      - name: Public tree and new-commit boundary
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          CURRENT_SHA: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          python3 tools/check_public_surface.py --tree "$CURRENT_SHA"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            python3 tools/check_public_surface.py --range "origin/$BASE_REF..HEAD"
+          elif [ "$EVENT_NAME" = "push" ] &&
+               [ -n "$BEFORE_SHA" ] &&
+               [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            python3 tools/check_public_surface.py --range "$BEFORE_SHA..$CURRENT_SHA"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            python3 tools/check_public_surface.py \
+              --range "origin/$DEFAULT_BRANCH..$CURRENT_SHA"
+          fi
+          if [ "$REF_TYPE" = "tag" ]; then
+            tag_oid="$(git rev-parse "refs/tags/$REF_NAME")"
+            tag_commit="$(git rev-parse "${tag_oid}^{commit}")"
+            git merge-base --is-ancestor "$tag_commit" origin/main || {
+              echo "FAIL: release tags must point into public main history" >&2
+              exit 1
+            }
+            if [ "$(git cat-file -t "$tag_oid")" = "tag" ]; then
+              python3 tools/check_public_surface.py --tag "$tag_oid"
+            fi
+          fi
       - name: Native SDK surface, third-party notices, and image metadata
         run: |
           python3 tools/check_native_sdk_surface.py
@@ -47,6 +80,7 @@ jobs:
           python3 tests/check_ci_contract.py
           python3 tests/check_address_domains.py
           python3 tests/check_webgpu_fault_matrix.py
+          python3 tests/test_public_surface.py
 
   native:
     name: Native ${{ matrix.label }}
@@ -91,7 +125,7 @@ jobs:
       - name: Build
         run: cmake --build build-ci --parallel 4
       - name: ROM-free unit and format contracts
-        run: ctest --test-dir build-ci --output-on-failure
+        run: ctest --test-dir build-ci --output-on-failure -LE gpu
 
   sanitizers:
     name: Linux ROM-free ASan + UBSan
@@ -117,7 +151,25 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: ctest --test-dir build-sanitize --output-on-failure
+        run: ctest --test-dir build-sanitize --output-on-failure -LE gpu
+      - name: WebGPU asynchronous callback ThreadSanitizer
+        run: |
+          clang -std=c11 -Wall -Wextra -Wpedantic -Werror \
+            -fsanitize=thread -g -pthread \
+            -Iplatform/fast3d \
+            tests/test_webgpu_callback_latch.c \
+            platform/fast3d/gfx_webgpu_callback_latch.c \
+            -o build-sanitize/webgpu_callback_latch_tsan
+          TSAN_OPTIONS=halt_on_error=1 \
+            build-sanitize/webgpu_callback_latch_tsan
+          clang -std=c11 -Wall -Wextra -Wpedantic -Werror \
+            -fsanitize=thread -g -pthread \
+            -Iplatform/fast3d \
+            tests/test_webgpu_async_request.c \
+            platform/fast3d/gfx_webgpu_async_request.c \
+            -o build-sanitize/webgpu_async_request_tsan
+          TSAN_OPTIONS=halt_on_error=1 \
+            build-sanitize/webgpu_async_request_tsan
 
   web:
     name: Linked wasm and browser save custody

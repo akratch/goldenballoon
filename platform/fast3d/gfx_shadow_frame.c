@@ -33,6 +33,13 @@ typedef struct GfxShadowMatrixEntry {
 
 typedef struct GfxShadowStaticKey {
     const void *source;
+    /*
+     * Where this key's three admitted vertices live in the stage cache. The
+     * cache dedups by ADDRESS, so this is the only record of what the address
+     * held when it was admitted — and therefore the only way to notice that it
+     * no longer holds it (see stale_casters in GfxWorldFxStats).
+     */
+    size_t first_vertex;
     bool occupied;
 } GfxShadowStaticKey;
 
@@ -156,6 +163,14 @@ static uint64_t s_freeze_failures;
  * non-zero value means at least one present skipped its replay AND at least one
  * frame's registrations were dropped -- see replay_restore_unwind. */
 static uint64_t s_restore_failures;
+static GfxShadowCameraEndpointStats s_camera_endpoint_stats;
+static int s_camera_endpoint_observer = -1;
+static struct {
+    bool valid;
+    int camera_id;
+    uint64_t authored_tick;
+    float view_projection[GFX_SHADOW_MATRIX_DIM][GFX_SHADOW_MATRIX_DIM];
+} s_camera_next_endpoint[GFX_SHADOW_MAX_VIEWS];
 
 static bool s_capture_suppressed;
 
@@ -187,6 +202,147 @@ static int s_register_site;
  * one tagged call can never license a byte copy off the next, untagged one.
  */
 static bool s_register_key_is_mtx;
+static GfxPresentationMatrixOwner s_register_presentation_owner;
+static bool s_register_presentation_owner_valid;
+static GfxPresentationOwnerStats s_presentation_owner_stats;
+
+typedef struct GfxShadowCameraVpSemantic {
+    uint64_t authored_tick;
+    int viewport;
+    int camera_id;
+    float view_projection[GFX_SHADOW_MATRIX_DIM][GFX_SHADOW_MATRIX_DIM];
+} GfxShadowCameraVpSemantic;
+
+static bool camera_endpoint_observer_enabled(void) {
+    if (s_camera_endpoint_observer < 0) {
+        const char *value = getenv("MDKR_TEST_CAMERA_VP_ENDPOINTS");
+        s_camera_endpoint_observer =
+            value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+    }
+    return s_camera_endpoint_observer != 0;
+}
+
+static uint64_t camera_endpoint_hash(
+    uint64_t hash, const void *bytes, size_t size) {
+    const uint8_t *cursor = (const uint8_t *)bytes;
+    for (size_t index = 0; index < size; index++) {
+        hash ^= cursor[index];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+static void camera_endpoint_hash_pair(
+    uint64_t *expected_hash, uint64_t *actual_hash,
+    const GfxShadowCameraVpSemantic *expected,
+    const GfxShadowCameraVpSemantic *actual) {
+    if (*expected_hash == 0u) {
+        *expected_hash = UINT64_C(1469598103934665603);
+        *actual_hash = UINT64_C(1469598103934665603);
+    }
+    *expected_hash = camera_endpoint_hash(
+        *expected_hash, expected, sizeof(*expected));
+    *actual_hash = camera_endpoint_hash(
+        *actual_hash, actual, sizeof(*actual));
+}
+
+static void camera_endpoint_observe(
+    int viewport, const float captured[4][4],
+    const GfxShadowReplayViewProjection *override) {
+    GfxShadowCameraVpSemantic expected;
+    GfxShadowCameraVpSemantic actual;
+
+    if (!camera_endpoint_observer_enabled() || override == NULL ||
+        !override->valid || override->denominator == 0u || viewport < 0 ||
+        viewport >= GFX_SHADOW_MAX_VIEWS) {
+        return;
+    }
+    memset(&expected, 0, sizeof(expected));
+    expected.viewport = viewport;
+    expected.camera_id = override->camera_id;
+    expected.authored_tick = override->authored_tick;
+    memcpy(expected.view_projection, captured,
+           sizeof(expected.view_projection));
+
+    actual = expected;
+    memcpy(actual.view_projection, override->view_projection,
+           sizeof(actual.view_projection));
+
+    if (override->numerator == 0u) {
+        GfxShadowCameraVpSemantic mutated;
+        uint32_t bits;
+
+        s_camera_endpoint_stats.alpha_zero_checks++;
+        camera_endpoint_hash_pair(
+            &s_camera_endpoint_stats.alpha_zero_expected_hash,
+            &s_camera_endpoint_stats.alpha_zero_actual_hash,
+            &expected, &actual);
+        if (memcmp(&expected, &actual, sizeof(expected)) != 0) {
+            s_camera_endpoint_stats.alpha_zero_mismatches++;
+        }
+
+        if (s_camera_next_endpoint[viewport].valid &&
+            s_camera_next_endpoint[viewport].camera_id ==
+                override->camera_id &&
+            s_camera_next_endpoint[viewport].authored_tick ==
+                override->authored_tick) {
+            GfxShadowCameraVpSemantic next_expected;
+            memset(&next_expected, 0, sizeof(next_expected));
+            next_expected.viewport = viewport;
+            next_expected.camera_id =
+                s_camera_next_endpoint[viewport].camera_id;
+            next_expected.authored_tick =
+                s_camera_next_endpoint[viewport].authored_tick;
+            memcpy(next_expected.view_projection,
+                   s_camera_next_endpoint[viewport].view_projection,
+                   sizeof(next_expected.view_projection));
+            s_camera_endpoint_stats.next_endpoint_checks++;
+            camera_endpoint_hash_pair(
+                &s_camera_endpoint_stats.next_expected_hash,
+                &s_camera_endpoint_stats.next_actual_hash,
+                &next_expected, &expected);
+            if (memcmp(&next_expected, &expected, sizeof(expected)) != 0) {
+                s_camera_endpoint_stats.next_endpoint_mismatches++;
+            }
+        }
+
+        /* Built-in negative control: one flipped matrix bit must be rejected by
+         * the exact same semantic comparator used above. This mutates only a
+         * stack copy and can never reach the renderer. */
+        mutated = expected;
+        memcpy(&bits, &mutated.view_projection[0][0], sizeof(bits));
+        bits ^= 1u;
+        memcpy(&mutated.view_projection[0][0], &bits, sizeof(bits));
+        if (memcmp(&expected, &mutated, sizeof(expected)) != 0) {
+            s_camera_endpoint_stats.mutation_control_rejections++;
+        }
+
+        s_camera_next_endpoint[viewport].valid = override->next_valid;
+        if (override->next_valid) {
+            s_camera_next_endpoint[viewport].camera_id = override->camera_id;
+            s_camera_next_endpoint[viewport].authored_tick =
+                override->next_authored_tick;
+            memcpy(s_camera_next_endpoint[viewport].view_projection,
+                   override->next_view_projection,
+                   sizeof(s_camera_next_endpoint[viewport].view_projection));
+        }
+    } else if (override->numerator < override->denominator) {
+        s_camera_endpoint_stats.midpoint_checks++;
+        if (override->next_valid &&
+            memcmp(override->view_projection, captured,
+                   sizeof(override->view_projection)) != 0 &&
+            memcmp(override->view_projection, override->next_view_projection,
+                   sizeof(override->view_projection)) != 0) {
+            s_camera_endpoint_stats.midpoint_moved++;
+        }
+        if (s_camera_endpoint_stats.midpoint_hash == 0u) {
+            s_camera_endpoint_stats.midpoint_hash =
+                UINT64_C(1469598103934665603);
+        }
+        s_camera_endpoint_stats.midpoint_hash = camera_endpoint_hash(
+            s_camera_endpoint_stats.midpoint_hash, &actual, sizeof(actual));
+    }
+}
 
 static bool checked_add_size(size_t left, size_t right, size_t *out) {
     if (out == NULL || left > SIZE_MAX - right) {
@@ -289,31 +445,124 @@ static bool static_keys_reserve(size_t need) {
     return true;
 }
 
-static bool static_key_contains(const void *source) {
+/* Slot index of `source`, or SIZE_MAX when it is not cached. */
+static size_t static_key_find(const void *source) {
     size_t slot;
 
     if (source == NULL || s_static_cache.key_capacity == 0) {
-        return false;
+        return SIZE_MAX;
     }
     slot = static_key_hash(source) & (s_static_cache.key_capacity - 1);
     while (s_static_cache.keys[slot].occupied) {
         if (s_static_cache.keys[slot].source == source) {
-            return true;
+            return slot;
         }
         slot = (slot + 1) & (s_static_cache.key_capacity - 1);
     }
-    return false;
+    return SIZE_MAX;
 }
 
-static void static_key_insert(const void *source) {
+static void static_key_insert(const void *source, size_t first_vertex) {
     size_t slot = static_key_hash(source) &
         (s_static_cache.key_capacity - 1);
     while (s_static_cache.keys[slot].occupied) {
         slot = (slot + 1) & (s_static_cache.key_capacity - 1);
     }
     s_static_cache.keys[slot].source = source;
+    s_static_cache.keys[slot].first_vertex = first_vertex;
     s_static_cache.keys[slot].occupied = true;
     s_static_cache.key_count++;
+}
+
+/*
+ * Tenancy: does the live triangle still match what this key was admitted with?
+ *
+ * A static caster is cached for the whole stage and drawn into every cascade
+ * whether or not the game submits it again. If the arena address it is keyed on
+ * comes to hold different geometry — freed and reallocated, or a fixed buffer
+ * the game rewrites in place — the cache silently keeps casting the ORIGINAL
+ * geometry: a shadow with no object under it, in a place the player can see no
+ * reason for. Wave "shadowdeep" closed two instances of this by excluding the
+ * known offenders at DL-build time; this is the general detector, and it can
+ * only run on a HIT, where the address is provably live because the game is
+ * drawing it this very frame.
+ *
+ * The comparison is on world-space positions, which are what the shadow map
+ * consumes. Identical geometry re-submitted through the same static
+ * (world-origin) matrix reproduces bit-identical floats, so the tolerance only
+ * has to exclude nothing at all; it is set at one world unit purely so that a
+ * future world matrix with a different-but-equivalent factorisation cannot
+ * report a phantom. DKR worlds span ~15k units and the defect shape displaces
+ * geometry by hundreds to thousands.
+ */
+#define GFX_SHADOW_TENANCY_EPSILON 1.0f
+
+static bool static_key_tenancy_ok(size_t slot, const float positions[9]) {
+    const GfxShadowStaticKey *key;
+    float worst = 0.0f;
+
+    if (slot == SIZE_MAX || positions == NULL) {
+        return true;
+    }
+    key = &s_static_cache.keys[slot];
+    if (s_static_cache.vertices == NULL ||
+        s_static_cache.vertex_count < 3 ||
+        key->first_vertex > s_static_cache.vertex_count - 3) {
+        /* Cannot be checked (a truncated cache). Do not invent a violation
+         * from missing evidence. */
+        return true;
+    }
+    for (size_t vertex = 0; vertex < 3; vertex++) {
+        const GfxShadowVertex *cached =
+            &s_static_cache.vertices[key->first_vertex + vertex];
+        for (size_t axis = 0; axis < 3; axis++) {
+            float delta = positions[vertex * 3 + axis] - cached->position[axis];
+            if (delta < 0.0f) {
+                delta = -delta;
+            }
+            if (delta > worst) {
+                worst = delta;
+            }
+        }
+    }
+    if (worst <= GFX_SHADOW_TENANCY_EPSILON) {
+        return true;
+    }
+    s_stats.stale_casters++;
+    if (worst > s_stats.stale_worst_delta) {
+        s_stats.stale_worst_delta = worst;
+    }
+    return false;
+}
+
+/*
+ * Re-seat a stale entry onto the geometry the address holds NOW.
+ *
+ * Leaving it alone would keep the phantom for the rest of the stage — the whole
+ * point of noticing. Rewriting the cached vertices in place is sound for ranges
+ * above the commit watermark and for ranges below it alike: the published frame
+ * borrows the vertex ARRAY, and a caster that moved is a caster that moved. The
+ * stage AABB is fold-only, so it can only stay a superset.
+ */
+static void static_key_reseat(size_t slot, const float positions[9]) {
+    const GfxShadowStaticKey *key;
+
+    if (slot == SIZE_MAX || positions == NULL) {
+        return;
+    }
+    key = &s_static_cache.keys[slot];
+    if (s_static_cache.vertices == NULL ||
+        s_static_cache.vertex_count < 3 ||
+        key->first_vertex > s_static_cache.vertex_count - 3) {
+        return;
+    }
+    for (size_t vertex = 0; vertex < 3; vertex++) {
+        GfxShadowVertex *cached =
+            &s_static_cache.vertices[key->first_vertex + vertex];
+        for (size_t axis = 0; axis < 3; axis++) {
+            cached->position[axis] = positions[vertex * 3 + axis];
+        }
+    }
 }
 
 static void sync_static_frame_references(void) {
@@ -397,8 +646,13 @@ bool gfx_shadow_matrix_register(
      * untagged registration would inherit them. */
     const int site = s_register_site;
     const bool key_is_mtx = s_register_key_is_mtx;
+    const bool owner_valid = s_register_presentation_owner_valid;
+    const GfxPresentationMatrixOwner owner = s_register_presentation_owner;
     s_register_site = GFX_SHADOW_SITE_UNKNOWN;
     s_register_key_is_mtx = false;
+    s_register_presentation_owner_valid = false;
+    memset(&s_register_presentation_owner, 0,
+           sizeof(s_register_presentation_owner));
     if (s_matrix_control_drop < 0) {
         const char *control = getenv("MDKR_WORLD_FX_MATRIX_CONTROL");
         s_matrix_control_drop =
@@ -431,11 +685,32 @@ bool gfx_shadow_matrix_register(
             s_matrix_entries[index].binding.gameplay_vp = s_register_gameplay_vp;
             s_matrix_entries[index].binding.site = site;
             s_matrix_entries[index].binding.key_bytes_valid = key_is_mtx;
+            s_matrix_entries[index].binding.walked_key_bytes_valid = false;
+            if (owner_valid) {
+                s_matrix_entries[index].binding.presentation_owner = owner;
+                s_matrix_entries[index].binding.presentation_owner.valid = true;
+            } else {
+                memset(&s_matrix_entries[index].binding.presentation_owner, 0,
+                       sizeof(s_matrix_entries[index]
+                                  .binding.presentation_owner));
+            }
             if (key_is_mtx) {
                 memcpy(s_matrix_entries[index].binding.key_bytes, key,
                        sizeof(s_matrix_entries[index].binding.key_bytes));
             }
             s_stats.matrix_registrations++;
+            s_presentation_owner_stats.registrations++;
+            if (!owner_valid) {
+                s_presentation_owner_stats.unowned++;
+            } else if (owner.matrix_class == GFX_PRESENTATION_MATRIX_ROOT) {
+                s_presentation_owner_stats.roots++;
+            } else if (owner.matrix_class == GFX_PRESENTATION_MATRIX_CHILD) {
+                s_presentation_owner_stats.children++;
+            } else if (owner.matrix_class == GFX_PRESENTATION_MATRIX_EFFECT) {
+                s_presentation_owner_stats.effects++;
+            } else {
+                s_presentation_owner_stats.unowned++;
+            }
             return true;
         }
     }
@@ -459,6 +734,8 @@ bool gfx_shadow_matrix_register(
         return false;
     }
     s_matrix_entries[s_matrix_count].key = key;
+    memset(&s_matrix_entries[s_matrix_count].binding, 0,
+           sizeof(s_matrix_entries[s_matrix_count].binding));
     memcpy(s_matrix_entries[s_matrix_count].binding.world, world,
            sizeof(s_matrix_entries[s_matrix_count].binding.world));
     memcpy(s_matrix_entries[s_matrix_count].binding.view_projection,
@@ -476,12 +753,32 @@ bool gfx_shadow_matrix_register(
         s_register_gameplay_vp;
     s_matrix_entries[s_matrix_count].binding.site = site;
     s_matrix_entries[s_matrix_count].binding.key_bytes_valid = key_is_mtx;
+    if (owner_valid) {
+        s_matrix_entries[s_matrix_count].binding.presentation_owner = owner;
+        s_matrix_entries[s_matrix_count].binding.presentation_owner.valid = true;
+    } else {
+        memset(&s_matrix_entries[s_matrix_count].binding.presentation_owner, 0,
+               sizeof(s_matrix_entries[s_matrix_count]
+                          .binding.presentation_owner));
+    }
     if (key_is_mtx) {
         memcpy(s_matrix_entries[s_matrix_count].binding.key_bytes, key,
                sizeof(s_matrix_entries[s_matrix_count].binding.key_bytes));
     }
     s_matrix_count++;
     s_stats.matrix_registrations++;
+    s_presentation_owner_stats.registrations++;
+    if (!owner_valid) {
+        s_presentation_owner_stats.unowned++;
+    } else if (owner.matrix_class == GFX_PRESENTATION_MATRIX_ROOT) {
+        s_presentation_owner_stats.roots++;
+    } else if (owner.matrix_class == GFX_PRESENTATION_MATRIX_CHILD) {
+        s_presentation_owner_stats.children++;
+    } else if (owner.matrix_class == GFX_PRESENTATION_MATRIX_EFFECT) {
+        s_presentation_owner_stats.effects++;
+    } else {
+        s_presentation_owner_stats.unowned++;
+    }
     s_stats.matrix_entries = s_matrix_count;
     if (s_matrix_count > s_stats.matrix_peak) {
         s_stats.matrix_peak = s_matrix_count;
@@ -508,6 +805,25 @@ bool gfx_shadow_matrix_lookup(
     return false;
 }
 
+bool gfx_shadow_matrix_note_walked_key(
+    const void *key, const void *bytes, size_t size) {
+    if (key == NULL || bytes == NULL ||
+        size != sizeof(((GfxShadowMatrixBinding *)0)->walked_key_bytes)) {
+        return false;
+    }
+    for (size_t index = s_matrix_count; index > 0; index--) {
+        GfxShadowMatrixEntry *entry = &s_matrix_entries[index - 1];
+        if (entry->key != key) {
+            continue;
+        }
+        memcpy(entry->binding.walked_key_bytes, bytes,
+               sizeof(entry->binding.walked_key_bytes));
+        entry->binding.walked_key_bytes_valid = true;
+        return true;
+    }
+    return false;
+}
+
 void gfx_shadow_matrix_registry_reset(void) {
     s_matrix_count = 0;
     s_stats.matrix_entries = 0;
@@ -521,6 +837,26 @@ void gfx_shadow_matrix_set_context(int viewport, bool gameplay_vp) {
 void gfx_shadow_matrix_set_site(int site) {
     s_register_site = site;
     s_register_key_is_mtx = true;
+}
+
+void gfx_shadow_matrix_set_presentation_owner(
+    const GfxPresentationMatrixOwner *owner) {
+    if (owner == NULL || !owner->valid || owner->address == NULL ||
+        owner->generation == 0u) {
+        memset(&s_register_presentation_owner, 0,
+               sizeof(s_register_presentation_owner));
+        s_register_presentation_owner_valid = false;
+        return;
+    }
+    s_register_presentation_owner = *owner;
+    s_register_presentation_owner.valid = true;
+    s_register_presentation_owner_valid = true;
+}
+
+void gfx_shadow_presentation_owner_get_stats(GfxPresentationOwnerStats *out) {
+    if (out != NULL) {
+        *out = s_presentation_owner_stats;
+    }
 }
 
 /* ---- presentation-replay freeze / restore -------------------------------- */
@@ -635,6 +971,8 @@ static bool replay_restore_unwind(bool displaced_live_set) {
 
 bool gfx_shadow_replay_restore(
     const GfxShadowReplayViewProjection *overrides, size_t override_count) {
+    bool camera_observed[GFX_SHADOW_MAX_VIEWS] = { false };
+
     if (!s_frozen_valid || s_displaced_held) {
         return false;
     }
@@ -723,6 +1061,21 @@ bool gfx_shadow_replay_restore(
             !overrides[entry->viewport].valid) {
             continue;
         }
+        if (entry->viewport < GFX_SHADOW_MAX_VIEWS &&
+            !camera_observed[entry->viewport]) {
+            camera_endpoint_observe(
+                entry->viewport, entry->binding.captured_view_projection,
+                &overrides[entry->viewport]);
+            camera_observed[entry->viewport] = true;
+        }
+        /* Alpha zero is the retained display list's exact authored endpoint.
+         * Keep its captured VP bytes instead of needlessly rebuilding every
+         * world matrix through an equivalent float product. The semantic
+         * observer above still proves the supplied camera endpoint is exact;
+         * only non-zero interpolation alphas replace the VP used by replay. */
+        if (overrides[entry->viewport].numerator == 0u) {
+            continue;
+        }
         memcpy(entry->binding.view_projection,
                overrides[entry->viewport].view_projection,
                sizeof(entry->binding.view_projection));
@@ -730,6 +1083,29 @@ bool gfx_shadow_replay_restore(
     }
     s_restore_count++;
     return true;
+}
+
+void gfx_shadow_camera_endpoint_validate(
+    const GfxShadowReplayViewProjection *overrides, size_t override_count) {
+    bool observed[GFX_SHADOW_MAX_VIEWS] = { false };
+
+    if (overrides == NULL) {
+        return;
+    }
+    for (size_t index = 0; index < s_frozen_matrix_count; index++) {
+        const GfxShadowMatrixEntry *entry = &s_frozen_matrices[index];
+        if (!entry->gameplay_vp || entry->viewport < 0 ||
+            entry->viewport >= GFX_SHADOW_MAX_VIEWS ||
+            (size_t)entry->viewport >= override_count ||
+            observed[entry->viewport] ||
+            !overrides[entry->viewport].valid) {
+            continue;
+        }
+        camera_endpoint_observe(
+            entry->viewport, entry->binding.captured_view_projection,
+            &overrides[entry->viewport]);
+        observed[entry->viewport] = true;
+    }
 }
 
 /*
@@ -826,6 +1202,13 @@ void gfx_shadow_replay_get_stats(
     }
 }
 
+void gfx_shadow_camera_endpoint_get_stats(
+    GfxShadowCameraEndpointStats *out) {
+    if (out != NULL) {
+        *out = s_camera_endpoint_stats;
+    }
+}
+
 void gfx_shadow_capture_suppress(bool suppressed) {
     s_capture_suppressed = suppressed;
     /* A replay both refuses to capture casters and must keep consuming the
@@ -836,6 +1219,7 @@ void gfx_shadow_capture_suppress(bool suppressed) {
 void gfx_shadow_stage_begin(uint64_t stage_generation) {
     s_capture_active = false;
     s_static_cache.stage_generation = stage_generation;
+    memset(s_camera_next_endpoint, 0, sizeof(s_camera_next_endpoint));
     s_static_cache.vertex_count = 0;
     s_static_cache.range_count = 0;
     s_static_cache.key_count = 0;
@@ -869,6 +1253,51 @@ bool gfx_world_fx_trace_enabled(void) {
             strcmp(value, "off") != 0;
     }
     return s_trace_enabled != 0;
+}
+
+/*
+ * MDKR_TEST_SHADOW_BOGUS_CASTER=<world units> — the broken direction for
+ * tests/check_shadow_plausibility.py.
+ *
+ * A plausibility gate that can only ever pass proves nothing, and the failure
+ * it has to be able to see is a specific one: the stage cache holding caster
+ * geometry that is not where the object is. That is what every historical
+ * instance of this defect looked like from the shadow map's side, whether the
+ * cause was a recycled arena address or a buffer the game rewrote in place —
+ * a shadow with no object under it, cast from somewhere the player can see is
+ * empty.
+ *
+ * This seam reproduces it directly and minimally: the FIRST admission of each
+ * static caster is displaced along +Y by the requested distance, so the cache
+ * (and therefore the depth map) disagrees with the live geometry from then on.
+ * Only the cached copy moves — the drawn image, the physics and the game state
+ * are untouched — so the positive-control arm differs from production in
+ * exactly the property the check measures. Off, empty, "0" and unparseable
+ * text all leave production behaviour alone.
+ */
+static float bogus_caster_offset(void) {
+    static int resolved = 0;
+    static float offset = 0.0f;
+    const char *value;
+    char *end;
+    double parsed;
+
+    if (resolved) {
+        return offset;
+    }
+    resolved = 1;
+    value = getenv("MDKR_TEST_SHADOW_BOGUS_CASTER");
+    if (value == NULL || value[0] == '\0') {
+        return offset;
+    }
+    parsed = strtod(value, &end);
+    if (end == value || *end != '\0' ||
+        !(parsed > -GFX_SHADOW_WORLD_LIMIT) ||
+        !(parsed < GFX_SHADOW_WORLD_LIMIT)) {
+        return offset;
+    }
+    offset = (float)parsed;
+    return offset;
 }
 
 void gfx_shadow_capture_begin(void) {
@@ -1078,12 +1507,30 @@ bool gfx_shadow_capture_triangle(
         material->alpha_mode == GFX_SHADOW_ALPHA_OPAQUE &&
         source_key != NULL;
     if (cache_static) {
-        cached = static_key_contains(source_key);
+        size_t slot = static_key_find(source_key);
+        cached = slot != SIZE_MAX;
         if (cached) {
             s_stats.static_cache_hits++;
+            /*
+             * The address is live this frame — the only moment its tenancy can
+             * be checked at all. A mismatch means the cache has been casting
+             * geometry that is no longer there.
+             */
+            if (!static_key_tenancy_ok(slot, positions)) {
+                static_key_reseat(slot, positions);
+            }
         } else {
             size_t required_keys;
+            size_t first_vertex = s_static_cache.vertex_count;
+            float admitted[9];
+            float bogus = bogus_caster_offset();
             bool appended;
+            memcpy(admitted, positions, sizeof(admitted));
+            if (bogus != 0.0f) {
+                for (size_t vertex = 0; vertex < 3; vertex++) {
+                    admitted[vertex * 3 + 1] += bogus;
+                }
+            }
             if (!checked_add_size(
                     s_static_cache.key_count, 1, &required_keys) ||
                 !static_keys_reserve(required_keys)) {
@@ -1107,7 +1554,7 @@ bool gfx_shadow_capture_triangle(
                     UINT8_MAX,
                     s_static_cache.range_count <=
                         s_static_cache.committed_range_count,
-                    positions,
+                    admitted,
                     uv,
                     material);
             /*
@@ -1120,12 +1567,12 @@ bool gfx_shadow_capture_triangle(
                 frame_fail(write);
                 return false;
             }
-            static_key_insert(source_key);
+            static_key_insert(source_key, first_vertex);
             sync_static_frame_references();
             s_stats.static_cache_misses++;
             for (size_t vertex = 0; vertex < 3; vertex++) {
                 for (size_t axis = 0; axis < 3; axis++) {
-                    float value = positions[vertex * 3 + axis];
+                    float value = admitted[vertex * 3 + axis];
                     if (!s_static_cache.bounds_valid ||
                         value < s_static_cache.bounds_min[axis]) {
                         s_static_cache.bounds_min[axis] = value;
@@ -1397,6 +1844,14 @@ void gfx_shadow_frame_shutdown(void) {
     s_generation = 0;
     s_capture_active = false;
     memset(&s_stats, 0, sizeof(s_stats));
+    memset(&s_presentation_owner_stats, 0,
+           sizeof(s_presentation_owner_stats));
+    memset(&s_camera_endpoint_stats, 0, sizeof(s_camera_endpoint_stats));
+    memset(s_camera_next_endpoint, 0, sizeof(s_camera_next_endpoint));
+    memset(&s_register_presentation_owner, 0,
+           sizeof(s_register_presentation_owner));
+    s_register_presentation_owner_valid = false;
     s_trace_enabled = -1;
     s_matrix_control_drop = -1;
+    s_camera_endpoint_observer = -1;
 }

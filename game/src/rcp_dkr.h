@@ -26,6 +26,12 @@ typedef struct DKR_OSTask {
     OSTask_t task; // Size: 0x40 bytes
     OSMesgQueue *mesgQueue;
     OSMesg mesg;
+#ifdef NATIVE_PORT
+    /* Immutable identity of the game pass that authored task.data_ptr. The
+     * host may not reconstruct this from its live simulation counter because
+     * the double-buffered list is submitted one pass after it was built. */
+    u64 presentationAuthoredTick;
+#endif
     s32 unused58;
     s32 unused5C;
     s32 unused60;
@@ -57,6 +63,12 @@ void bgdraw_primcolour(u8 red, u8 green, u8 blue);
 void bgdraw_fillcolour(s32 red, s32 green, s32 blue);
 void rdp_init(Gfx **dList);
 void rsp_init(Gfx **dList);
+#ifdef NATIVE_PORT
+/* Mark the one main display list whose immutable authored tick will be carried
+ * by the next submitted graphics task. Sub-display-list state resets must not
+ * start a new authoring lifetime. */
+void presentation_task_authoring_begin(Gfx *cursor);
+#endif
 void gfxtask_init(OSSched *sc);
 void bgdraw_texture_init(TextureHeader *tex1, TextureHeader *tex2, u32 shiftX);
 void bgdraw_texture(Gfx **dList);

@@ -14,6 +14,21 @@ ground truth is in the tree. See the "gridmask" and "hasmaudit" waves in
 
 Then [docs/README.md](docs/README.md) is the map of everything else.
 
+## Public repository boundary
+
+This repository keeps normal public Git history. Do not commit temporary plans,
+handoffs, tool transcripts, personal filesystem paths, credentials, or private
+working directories. Put durable engineering knowledge in an architecture
+document, the open-items register, a focused code comment, or a regression test.
+
+Use a GitHub `noreply` address for both author and committer identity. Install
+the repository hooks once with `tools/install_git_hooks.sh`; CI and pre-push run
+the same fail-closed surface scan. You can run it directly before committing:
+
+```bash
+python3 tools/check_public_surface.py --staged
+```
+
 ## Audio safety — hard rule
 
 **Always pass `--headless-frames N` for game or test runs.** It returns before
@@ -51,8 +66,9 @@ ln -s /path/to/your/baserom.us.v80.z64 baserom.us.v80.z64
 cmake -S . -B build && cmake --build build -j8
 ```
 
-`MDKR_RENDERER=webgpu|gl` selects the backend — WebGPU is the default, OpenGL is the
-fallback. The browser build is WebGPU-only; see
+`MDKR_RENDERER=webgpu|gl` selects the backend — WebGPU is the native default and
+OpenGL remains available explicitly for diagnostics and parity work. The
+browser build is WebGPU-only; see
 [docs/architecture/web.md](docs/architecture/web.md).
 
 ## Tests

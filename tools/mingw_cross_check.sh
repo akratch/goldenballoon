@@ -138,17 +138,9 @@ echo "warnings: ${WARN_COUNT:-0} (non-fatal; full log: $BUILD_LOG)"
 if command -v file >/dev/null 2>&1; then echo "artifact: $(file "$ARTIFACT")"; else echo "artifact: $ARTIFACT"; fi
 echo ""
 
-# Import-table guard: the exe must be self-contained on stock Windows — only
-# Windows-system DLLs and the SDL2.dll we ship beside it. A toolchain change
-# that reintroduces libgcc_s_seh-1/libstdc++-6/libwinpthread-1 (present on the
-# build machine, absent on stock Windows) fails here instead of on a player's
-# machine ("The code execution cannot proceed because ... was not found").
-BAD_IMPORTS="$("${CROSS_PREFIX:-x86_64-w64-mingw32}"-objdump -p "$ARTIFACT" | awk '/DLL Name/{print $3}' \
-    | grep -viE '^(KERNEL32.dll|USER32.dll|SHELL32.dll|ole32.dll|GDI32.dll|ADVAPI32.dll|WS2_32.dll|IMM32.dll|OLEAUT32.dll|SETUPAPI.dll|VERSION.dll|WINMM.dll|OPENGL32.dll|NTDLL.dll|USERENV.dll|BCRYPTPRIMITIVES.dll|BCRYPT.dll|CRYPT32.dll|COMBASE.dll|RPCRT4.dll|PROPSYS.dll|COMDLG32.dll|d3dcompiler_47.dll|dxgi.dll|D3D12.dll|SDL2.dll|api-ms-win-.*)$' || true)"
-if [[ -n "$BAD_IMPORTS" ]]; then
-    echo "MINGW CROSS-CHECK: FAIL — non-system DLL imports (would not run on stock Windows):" >&2
-    echo "$BAD_IMPORTS" >&2
-    exit 1
-fi
+# The executable is intentionally single-file: SDL2 and the MinGW runtimes are
+# static, while wgpu-native and SDL may import stock Windows DLLs.
+OBJDUMP="${CROSS_PREFIX:-x86_64-w64-mingw32}-objdump" \
+    tools/check_windows_imports.sh "$ARTIFACT"
 
 echo "MINGW CROSS-CHECK: PASS — $ARTIFACT"

@@ -26,11 +26,12 @@ So this asserts, independently:
                                 so 1 == TWO_PLAYERS) and a two-player
                                 `level_load: ... numPlayers=1`.
   3. TWO PLAYERS EXIST        — the [PACE2] player-2 probe must appear at all.
-                                It is published only from a racer whose
-                                playerIndex == PLAYER_TWO, so its presence *is*
-                                the evidence that a second human racer exists.
+                                It proves that a second human-classified racer
+                                object exists. Because this long route enables
+                                MDKR_AUTOPILOT, it does NOT prove that P2's
+                                physical controller input reached that racer.
   4. BOTH PLAYERS MOVE        — for EACH player: finite positions, y inside the
-                                track band, no single-frame teleport, real
+                                track band, no discontinuous teleport, real
                                 checkpoint/lap progress, and no long stall.
   5. THEY ARE DISTINCT RACERS — the two probe streams must stay apart in world
                                 space, so "the same racer traced twice" cannot
@@ -39,21 +40,36 @@ So this asserts, independently:
                                 are scored SEPARATELY, so a live viewport cannot
                                 mask a dead one.
 
-  7. THE POST-RACE FLOW WORKS  — the full race finishes, MENU_RESULTS loads,
+  7. RESULTS ARE CLASSIFIED    — the end-of-update oracle proves P1 really wins
+                                on lap 3 and the production N-1 rule classifies
+                                P2 last on lap 2, with distinct positions.
+
+  8. THE POST-RACE FLOW WORKS  — the full race finishes, MENU_RESULTS loads,
                                 and results returns to MENU_TRACK_SELECT —
                                 mirroring the 3P/4P arms in
                                 check_race_multiplayer.py, so a 2P-specific
                                 post-race regression can no longer hide.
 
 Reference (deterministic, Ancient Lake, car, MDKR_AUTOPILOT=1, 9600 frames;
-both backends pass, reference numbers measured on the GL arm — the check's
-default renderer remains WebGPU): level_load at frame 2491, race clock starts
-2662, 6939 frames with
-both players traced, final cp P1=53 / P2=47 (both lap 2, racing ends ~7462),
-max single-frame step 14.8 / 16.4, slowest racing 240-frame mean speed
-10.65 / 9.85, racer separation min 122 / median 2003, per-half scores
-1061..2219 distinct colours and sigma 21.3..52.1 over the in-race window
-(frames 2600-5600).  A blank viewport half scores 59 colours / sigma 5.9 (the
+both backends pass and an unset renderer follows the build's native default):
+
+* shipping ``original`` cadence: 2180 racing frames with both players traced,
+  final cp P1=53 / P2=38 (both lap 2), max single-frame step 30.4 / 31.3,
+  slowest racing 240-frame mean speed 25.45 / 11.32;
+* fixed-one-field ``enhanced`` cadence: 4719 racing frames with both players
+  traced, final pace cp P1=53 / P2=39 (both lap 2), max single-frame step
+  23.3 / 44.7, max step-to-step change 1.6 / 4.0, and slowest racing 240-frame
+  mean speed 10.70 / 1.82. At the production finish transition P1 crosses at
+  lap 3 / position 1; DKR's N-1-finished rule then classifies the still-racing
+  P2 last at lap 2 / position 2. Results loads at frame 7632 and returns to
+  track select at 7931.
+
+The Enhanced P2 path is a chaotic AI/test-hook lane whose authored last-place
+classification is useful end-to-end coverage, not human-input evidence. Exact
+P1/P2 controller-to-racer dispatch and response are owned by
+``check_2p_human_binding.py`` with ``MDKR_AUTOPILOT`` off. The cadence-specific
+floors here therefore protect each AI smoke contract without conflating them.
+A blank viewport half scores 59 colours / sigma 5.9 (the
 calibrated broken-frame value from check_race_drive.py), an order of magnitude
 below the thresholds here.  Motion is judged only while each racer's own race
 clock advances; DKR freezes finished racers for the fade/results sequence.
@@ -61,6 +77,7 @@ clock advances; DKR freezes finished racers for the fade/results sequence.
 Usage:
     tests/check_race_2p_split.py [--build build] [--rom baserom.us.v80.z64]
                                  [--renderer gl|webgpu]
+                                 [--cadence original|enhanced]
                                  [--window-size WIDTHxHEIGHT]
                                  [--keep-frames DIR] [-v]
     tests/check_race_2p_split.py --blank-half-control DIR
@@ -81,6 +98,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass, replace
 
 from harness_utils import resolve_binary
 
@@ -94,19 +112,42 @@ SAMPLE_EVERY = 300
 
 MENU_RESULTS = 17
 MENU_TRACK_SELECT = 15
+ANCIENT_LAKE = 5
 MENU_RE = re.compile(r"menu_init: menuId=(\d+) @frame~(\d+)")
-VISUAL_LAST = 7400     # racing ends ~7462; score viewport liveness while both
-                       # racers are still on track, not the post-race fade
+# --- cadence-specific gameplay contracts ---------------------------------
+# The shipping default and the opt-in historical one-field mode are separate
+# products: updateRate=2 moves farther per game pass and finishes sooner. Keep
+# both baselines explicit instead of weakening one threshold until both pass.
+CADENCE_CONTRACTS = {
+    "original": {
+        "synth_fields": "2",
+        "visual_last": 4700,
+        "min_both_frames": 2100,       # observed 2180
+        "min_final_cp": {"player 1": 52, "player 2": 37},  # 53 / 38
+        "min_final_lap": 2,
+        # P2's exact healthy/current reference is 11.32; retain 7% headroom.
+        "min_mean_speed": {"player 1": 24.0, "player 2": 10.5},
+    },
+    "enhanced": {
+        "synth_fields": "1",
+        "visual_last": 7400,
+        "min_both_frames": 4650,       # observed 4719
+        "min_final_cp": {"player 1": 52, "player 2": 38},  # 53 / 39
+        "min_final_lap": 2,
+        # This is an AI/end-to-end smoke lane. Human response has its own gate.
+        "min_mean_speed": {"player 1": 10.5, "player 2": 1.75},
+    },
+}
 
-# --- thresholds (measured values are in the module docstring; observations
-# re-measured 2026-07-29 on the extended 9,600-frame racing window) ---
-MIN_BOTH_FRAMES = 3000          # observed ~4800 racing frames (2662..~7462)
-MAX_STEP = 40.0                 # observed 14.8 (P1) / 16.4 (P2)
+# --- shared thresholds (observations are in the module docstring) ----------
+# A real zip-pad boost can sustain >40 units/frame.  Teleports are identified by
+# their discontinuous shape, matching check_race_drive.py: the healthy 2026-07-31
+# 2P route peaks at 44.7 with max step-to-step change 4.0; the historic broken
+# ASSET_MISC_8 route jumped 1296.8 in one frame.
+MAX_STEP = 150.0
+MAX_ACCEL = 40.0
 Y_MIN, Y_MAX = -150.0, 450.0    # observed 6.8 .. 299.6
-MIN_FINAL_CP = 20               # observed 53 (P1) / 47 (P2), lap 2
-MIN_FINAL_LAP = 1
 STALL_WINDOW = 240
-STALL_MIN_MEAN_SPEED = 1.5      # observed slowest racing mean 9.85
 MIN_SEPARATION = 20.0           # observed min 122.1 (they share a start grid)
 MIN_MEDIAN_SEPARATION = 200.0   # observed racing median ~2100
 MIN_DISTINCT_COLOURS = 200      # blank half: 59   observed min: 1061
@@ -122,10 +163,121 @@ UI_RE = re.compile(
     r"\[UI-3\] frame=\d+ active=(\d+) draws=(\d+) lateWorld=(\d+) "
     r".*beginFailures=(\d+)"
 )
+ORACLE_RE = re.compile(
+    r"\[ORACLE\] frame=(\d+) map=(\d+) slot=(\d+) .* "
+    r"cp=(-?\d+) next=-?\d+ lap=(-?\d+) countlap=-?\d+ "
+    r"fin=(-?\d+) fpos=(-?\d+) ridx=(-?\d+) pidx=(-?\d+)"
+)
+
+
+@dataclass(frozen=True)
+class TerminalState:
+    frame: int
+    checkpoint: int
+    lap: int
+    finished: int
+    position: int
+    racer: int
+    player: int
 
 
 def is_finite(v: float) -> bool:
     return v == v and -1e30 < v < 1e30
+
+
+def parse_terminal_states(output: str) -> dict[int, TerminalState]:
+    """Latest end-of-update Ancient Lake classification for P1 and P2."""
+    states: dict[int, TerminalState] = {}
+    for line in output.splitlines():
+        match = ORACLE_RE.search(line)
+        if match is None or int(match.group(2)) != ANCIENT_LAKE:
+            continue
+        player = int(match.group(9))
+        if player not in (0, 1):
+            continue
+        states[player] = TerminalState(
+            frame=int(match.group(1)),
+            checkpoint=int(match.group(4)),
+            lap=int(match.group(5)),
+            finished=int(match.group(6)),
+            position=int(match.group(7)),
+            racer=int(match.group(8)),
+            player=player,
+        )
+    return states
+
+
+def terminal_classification_failures(
+    states: dict[int, TerminalState],
+) -> list[str]:
+    """Validate P1's real finish and P2's authored last-place classification."""
+    failures: list[str] = []
+    requirements = {
+        0: (1, 3),  # P1 wins after crossing the third-lap finish.
+        1: (2, 2),  # P2 is classified last after reaching at least lap two.
+    }
+    for player, (position, min_lap) in requirements.items():
+        state = states.get(player)
+        label = f"P{player + 1}"
+        if state is None:
+            failures.append(f"{label}: no terminal [ORACLE] classification")
+            continue
+        if state.player != player or state.racer != player:
+            failures.append(
+                f"{label}: terminal player/racer identity is "
+                f"{state.player}/{state.racer}, expected {player}/{player}"
+            )
+        if state.finished != 1:
+            failures.append(
+                f"{label}: terminal raceFinished={state.finished}, expected 1"
+            )
+        if state.position != position:
+            failures.append(
+                f"{label}: terminal finishPosition={state.position}, "
+                f"expected {position}"
+            )
+        if state.lap < min_lap:
+            failures.append(
+                f"{label}: terminal lap={state.lap}, expected >= {min_lap}"
+            )
+        if state.frame <= RACE_START:
+            failures.append(
+                f"{label}: terminal classification precedes the race at "
+                f"frame {state.frame}"
+            )
+    positions = [states[player].position for player in (0, 1)
+                 if player in states]
+    if len(positions) == 2 and sorted(positions) != [1, 2]:
+        failures.append(
+            f"terminal positions are {sorted(positions)}, expected distinct 1/2"
+        )
+    return failures
+
+
+def terminal_control_failures(
+    states: dict[int, TerminalState],
+) -> list[str]:
+    """Prove missing, swapped, and invalid classifications cannot pass."""
+    if terminal_classification_failures(states):
+        return []
+    controls = {
+        "missing-P2": {0: states[0]},
+        "swapped-positions": {
+            0: replace(states[0], position=2),
+            1: replace(states[1], position=1),
+        },
+        "invalid-P2": {
+            0: states[0],
+            1: replace(states[1], finished=0, position=0, lap=0),
+        },
+    }
+    failures: list[str] = []
+    for name, broken in controls.items():
+        if not terminal_classification_failures(broken):
+            failures.append(
+                f"terminal broken-direction control '{name}' was accepted"
+            )
+    return failures
 
 
 def read_ppm(path: str) -> tuple[int, int, bytes]:
@@ -200,7 +352,7 @@ def racing_rows(rows):
     return {f: rows[f] for f in frames if f <= last}
 
 
-def track(rows, name, failures):
+def track(rows, name, failures, contract):
     """Assertion 4 for one player.  rows: {frame: (x, y, z, cp, lap, clock)}.
 
     Only rows up to the racer's finish (clock still advancing) are judged for
@@ -225,6 +377,7 @@ def track(rows, name, failures):
                         f"frame {worst}: y={rows[worst][1]}")
 
     max_step, max_step_frame, steps = 0.0, None, []
+    step_rows: list[tuple[int, float]] = []
     for f in drive:
         if f - 1 not in rows:
             continue
@@ -233,18 +386,32 @@ def track(rows, name, failures):
             continue
         d = sum((b[i] - a[i]) ** 2 for i in range(3)) ** 0.5
         steps.append(d)
+        step_rows.append((f, d))
         if d > max_step:
             max_step, max_step_frame = d, f
+    max_accel, max_accel_frame = 0.0, None
+    for (previous_frame, previous_step), (frame, step) in zip(step_rows, step_rows[1:]):
+        if frame != previous_frame + 1:
+            continue
+        accel = abs(step - previous_step)
+        if accel > max_accel:
+            max_accel, max_accel_frame = accel, frame
     if max_step > MAX_STEP:
         failures.append(f"{name}: teleport: {max_step:.1f} world units in one frame at "
                         f"frame {max_step_frame} (limit {MAX_STEP})")
+    if max_accel > MAX_ACCEL:
+        failures.append(f"{name}: teleport: step length changed by {max_accel:.1f} world "
+                        f"units between consecutive frames at frame {max_accel_frame} "
+                        f"(limit {MAX_ACCEL}) — a boost ramps, a discontinuity does not")
 
     final_cp, final_lap = rows[drive[-1]][3], rows[drive[-1]][4]
-    if final_cp < MIN_FINAL_CP:
+    min_final_cp = contract["min_final_cp"][name]
+    min_final_lap = contract["min_final_lap"]
+    if final_cp < min_final_cp:
         failures.append(f"{name}: only reached checkpoint {final_cp} "
-                        f"(want >= {MIN_FINAL_CP}) — this player is not driving the track")
-    if final_lap < MIN_FINAL_LAP:
-        failures.append(f"{name}: only reached lap {final_lap} (want >= {MIN_FINAL_LAP})")
+                        f"(want >= {min_final_cp}) — this player is not driving the track")
+    if final_lap < min_final_lap:
+        failures.append(f"{name}: only reached lap {final_lap} (want >= {min_final_lap})")
 
     worst_mean, worst_frame = None, None
     for i in range(0, len(steps) - STALL_WINDOW, STALL_WINDOW // 2):
@@ -252,13 +419,15 @@ def track(rows, name, failures):
         mean = sum(seg) / len(seg)
         if worst_mean is None or mean < worst_mean:
             worst_mean, worst_frame = mean, drive[i]
-    if worst_mean is not None and worst_mean < STALL_MIN_MEAN_SPEED:
+    min_mean_speed = contract["min_mean_speed"][name]
+    if worst_mean is not None and worst_mean < min_mean_speed:
         failures.append(f"{name}: stalled: mean speed {worst_mean:.2f} units/frame over "
                         f"{STALL_WINDOW} frames from frame {worst_frame} "
-                        f"(limit {STALL_MIN_MEAN_SPEED})")
+                        f"(limit {min_mean_speed})")
 
     return dict(frames=len(drive), final_cp=final_cp, final_lap=final_lap,
                 max_step=max_step, max_step_frame=max_step_frame,
+                max_accel=max_accel, max_accel_frame=max_accel_frame,
                 worst_mean=worst_mean, worst_frame=worst_frame)
 
 
@@ -298,7 +467,9 @@ def main() -> int:
     ap.add_argument("--build", default="build")
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("--renderer", default=None, choices=["gl", "webgpu"],
-                    help="force a backend (default: the build's default, WebGPU)")
+                    help="force a backend (default: the build's native default, WebGPU)")
+    ap.add_argument("--cadence", default="original", choices=sorted(CADENCE_CONTRACTS),
+                    help="gameplay cadence contract to validate (default: original/shipping)")
     ap.add_argument("--window-size", default="640x480",
                     help="initial drawable used for split-screen coverage (default: 640x480)")
     ap.add_argument("--keep-frames", default=None)
@@ -321,16 +492,23 @@ def main() -> int:
 
     frame_dir = args.keep_frames or tempfile.mkdtemp(prefix="mdkr_2p_")
     os.makedirs(frame_dir, exist_ok=True)
-    env = dict(os.environ,
-               MDKR_AUDIO="0",          # belt-and-braces; --headless is the guarantee
-               MDKR_SIMULATION_CADENCE="enhanced",
-               MDKR_SYNTH_FIELDS="1",
-               MDKR_TRACE="1",
-               MDKR_AUTOPILOT="1",      # drives BOTH human racers with DKR's own AI
-               MDKR_UI_OVERLAY_TRACE="1",
-               MDKR_SAVE_DIR=os.path.join(frame_dir, "save"),
-               MDKR_DUMP_FROM=str(DUMP_FROM),
-               MDKR_DUMP_EVERY=str(SAMPLE_EVERY))
+    contract = CADENCE_CONTRACTS[args.cadence]
+    env = {
+        key: value for key, value in os.environ.items()
+        if not key.startswith(("MDKR", "GE007_"))
+    }
+    env.update(
+        MDKR_AUDIO="0",          # belt-and-braces; --headless is the guarantee
+        MDKR_SIMULATION_CADENCE=args.cadence,
+        MDKR_SYNTH_FIELDS=contract["synth_fields"],
+        MDKR_TRACE="1",
+        MDKR_AUTOPILOT="1",      # drives BOTH human racers with DKR's own AI
+        MDKR_ORACLE_STATE="1",   # post-update finish/place classification
+        MDKR_UI_OVERLAY_TRACE="1",
+        MDKR_SAVE_DIR=os.path.join(frame_dir, "save"),
+        MDKR_DUMP_FROM=str(DUMP_FROM),
+        MDKR_DUMP_EVERY=str(SAMPLE_EVERY),
+    )
     if args.renderer:
         env["MDKR_RENDERER"] = args.renderer
     cmd = [binary, "--headless-frames", str(FRAMES),
@@ -338,10 +516,19 @@ def main() -> int:
            "--input-script", SCRIPT, "--dump-frames", frame_dir, "--rom", args.rom]
     if args.verbose:
         print("$ " + " ".join(f"{k}={env[k]}" for k in
-                              ("MDKR_AUDIO", "MDKR_TRACE", "MDKR_AUTOPILOT")) +
+                              ("MDKR_AUDIO", "MDKR_SIMULATION_CADENCE",
+                               "MDKR_SYNTH_FIELDS", "MDKR_TRACE", "MDKR_AUTOPILOT",
+                               "MDKR_ORACLE_STATE")) +
               (f" MDKR_RENDERER={args.renderer}" if args.renderer else "") +
               " " + " ".join(cmd))
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    # This script's input times are present indices under the selected cadence.
+    # Never inherit repo-local mdkr64.ini (a developer may have selected
+    # 240/uncapped), because that advances far fewer game ticks before each
+    # scripted menu edge. A private nonexistent config is the default schema.
+    with tempfile.TemporaryDirectory(prefix="mdkr_2p_config_") as config_root:
+        env["MDKR_VIDEO_CONFIG_PATH"] = os.path.join(
+            config_root, "mdkr64.ini")
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
     out = proc.stdout + proc.stderr
 
     failures: list[str] = []
@@ -403,7 +590,7 @@ def main() -> int:
     if not p1 or not p2:
         if args.keep_frames is None:
             shutil.rmtree(frame_dir, ignore_errors=True)
-        return print_result(failures)
+        return print_result(failures, args.cadence)
 
     # The probes keep publishing stale rows after each racer finishes (the
     # freeze is legitimate post-race state), so every motion/separation
@@ -412,13 +599,22 @@ def main() -> int:
     p2_racing = racing_rows(p2)
     both = [f for f in sorted(set(p1_racing) & set(p2_racing))
             if f >= RACE_START]
-    if len(both) < MIN_BOTH_FRAMES:
+    if len(both) < contract["min_both_frames"]:
         failures.append(f"only {len(both)} racing frames with BOTH players "
-                        f"traced (want >= {MIN_BOTH_FRAMES})")
+                        f"traced (want >= {contract['min_both_frames']})")
 
     # 4. both players move
-    s1 = track(p1, "player 1", failures)
-    s2 = track(p2, "player 2", failures)
+    s1 = track(p1, "player 1", failures, contract)
+    s2 = track(p2, "player 2", failures, contract)
+
+    # Production terminal state is sampled after race_check_finish(), unlike
+    # [PACE], which lives inside update_player_racer(). P1 crosses the line;
+    # DKR then deliberately classifies the sole remaining racer (P2) last once
+    # N-1 racers have finished. This is AI/results coverage, not evidence about
+    # the physical P2 input path (AUTOPILOT replaced it above).
+    terminal = parse_terminal_states(out)
+    failures.extend(terminal_classification_failures(terminal))
+    failures.extend(terminal_control_failures(terminal))
 
     # 5. they are distinct racers — judged over the racing window so the
     # post-finish freeze positions cannot dilute (or spuriously fail) the
@@ -440,7 +636,7 @@ def main() -> int:
     # two racer viewports.
     dumped = sorted(int(re.search(r"frame_(\d+)\.ppm$", f).group(1))
                     for f in os.listdir(frame_dir) if f.endswith(".ppm"))
-    dumped = [f for f in dumped if f <= VISUAL_LAST]
+    dumped = [f for f in dumped if f <= contract["visual_last"]]
     if len(dumped) < 6:
         failures.append(f"only {len(dumped)} frames dumped (want >= 6)")
     for f in dumped:
@@ -456,7 +652,7 @@ def main() -> int:
                                 f">= {MIN_DISTINCT_COLOURS} / >= {MIN_LUMA_SIGMA}) — that "
                                 f"viewport is not rendering")
 
-    # 7. the 2P post-race flow reaches RESULTS and returns to TRACK SELECT —
+    # 8. the 2P post-race flow reaches RESULTS and returns to TRACK SELECT —
     # 3P and 4P are gated in check_race_multiplayer.py; without this, a
     # 2P-specific post-race regression stayed invisible even though it shares
     # most of the production branch.
@@ -489,24 +685,37 @@ def main() -> int:
             if s:
                 print(f"  {nm}: final cp={s['final_cp']} lap={s['final_lap']}  "
                       f"max step {s['max_step']:.1f} @{s['max_step_frame']}  "
+                      f"max delta-step {s['max_accel']:.1f} @{s['max_accel_frame']}  "
                       f"slowest {STALL_WINDOW}-frame mean {s['worst_mean']:.2f} "
                       f"@{s['worst_frame']}")
+        for player in (0, 1):
+            state = terminal.get(player)
+            if state:
+                print(
+                    f"  P{player + 1} terminal: frame={state.frame} "
+                    f"cp={state.checkpoint} lap={state.lap} "
+                    f"finished={state.finished} position={state.position}"
+                )
+        if not terminal_classification_failures(terminal):
+            print("  terminal controls rejected: missing-P2, swapped-positions, "
+                  "invalid-P2")
         if min_sep is not None:
             print(f"  racer separation: min {min_sep:.1f}  median {med_sep:.1f}")
         print(f"  frames checked for per-viewport render liveness: {dumped}")
 
     if args.keep_frames is None:
         shutil.rmtree(frame_dir, ignore_errors=True)
-    return print_result(failures)
+    return print_result(failures, args.cadence)
 
 
-def print_result(failures: list[str]) -> int:
+def print_result(failures: list[str], cadence: str | None = None) -> int:
+    label = "check_race_2p_split" + (f"[{cadence}]" if cadence else "")
     if failures:
-        print("check_race_2p_split: FAIL")
+        print(label + ": FAIL")
         for f in failures:
             print(f"  - {f}")
         return 1
-    print("check_race_2p_split: PASS")
+    print(label + ": PASS")
     return 0
 
 

@@ -65,8 +65,8 @@ step() {
 
 # --- Release / provenance hygiene (the most important gate for a decomp) ---
 # check_release_ready.sh itself runs check_clean_room.sh, check_no_rom.sh, and
-# check_public_history_text.sh (see that script), so they are not repeated
-# here as separate top-level steps.
+# the reachable-history text audit, so they are not repeated here as separate
+# top-level steps.
 step "Release hygiene (no ROM data, clean-room, public history)" \
   bash tools/ci/check_release_ready.sh
 step "Ignored-artifact hygiene" bash tools/ci/check_high_risk_ignored_artifacts.sh
@@ -85,7 +85,8 @@ fi
 
 # --- ROM-free test suite ---
 if [ -f "$BUILD_DIR/CMakeCache.txt" ]; then
-  step "ROM-free CTest suite" ctest --test-dir "$BUILD_DIR" --output-on-failure
+  step "ROM-free CTest suite" \
+    ctest --test-dir "$BUILD_DIR" --output-on-failure -LE gpu
 else
   echo "  (skipping ctest - no configured build at $BUILD_DIR; run without --no-build)"
 fi

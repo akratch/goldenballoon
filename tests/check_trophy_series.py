@@ -133,10 +133,14 @@ def write_input_script(path: Path, frames: int, mode: str) -> None:
         lines.extend(f"{frame} A 4" for frame in range(2400, frames, 220))
     elif mode == "quit_retry":
         lines.extend(f"{frame} A 4" for frame in range(2400, 5900, 220))
-        # First rankings RANKINGS_ORDER: select QUIT TROPHY RACE and confirm.
-        lines.append("7400 DOWN+A 4")
-        # Back in the world lobby, collide with and enter the same cabinet again.
-        lines.extend(f"{frame} A 4" for frame in range(8000, frames, 220))
+        # The first press dismisses the completed race; the rankings menu is
+        # constructed shortly afterwards. Retry confirmation while that menu
+        # animates in: MDKR_TROPHY_QUIT_AFTER selects the exact QUIT row, all
+        # pre-RANKINGS_ORDER A pulses are ignored, and the pulses following the
+        # first accepted one occur during RANKINGS_EXIT. Keep the window clear
+        # of the lobby that loads after the quit transition.
+        lines.append("7400 A 4")
+        lines.extend(f"{frame} A 4" for frame in range(7800, 8200, 100))
     elif mode != "reload":
         raise ValueError(f"unknown input mode {mode}")
     path.write_text("\n".join(lines) + "\n", encoding="ascii")
@@ -294,13 +298,15 @@ def main() -> int:
     # the series at round zero.
     malformed = "0,0,2,3,4,5,6,7"
     quit_proc, quit_save = run_case(
-        binary, rom, 8000, eeprom_image(), "quit_retry", malformed
+        binary, rom, 9000, eeprom_image(), "quit_retry", malformed
     )
     quit_output = quit_proc.stdout
     if quit_proc.returncode != 0:
         failures.append(f"quit/retry process exit code {quit_proc.returncode}")
     if "trophyorder: REJECT round=0 invalid permutations" not in quit_output:
         failures.append("malformed/non-permutation finish order was not rejected")
+    if "trophyselect: world=1 completedRound=0 option=1" not in quit_output:
+        failures.append("QUIT TROPHY RACE was not selected explicitly")
     if "trophyquit: world=1 afterRound=0" not in quit_output:
         failures.append("production QUIT TROPHY RACE branch was not observed")
     if len(quit_save) == EEPROM_BYTES:
@@ -379,8 +385,9 @@ def main() -> int:
                     print("  " + line)
             for line in quit_output.splitlines():
                 if any(token in line for token in (
-                    "trophyorder:", "trophyquit:", "trophyseries:",
-                    "trophyround:", "menu_init:",
+                    "trophyorder:", "trophyoption:", "trophyselect:",
+                    "trophyquit:", "trophyseries:", "trophyround:",
+                    "menu_init:",
                 )):
                     print("  quit/retry: " + line)
         return 1
@@ -401,8 +408,8 @@ def main() -> int:
         ))
         for line in quit_output.splitlines():
             if any(token in line for token in (
-                "trophyorder: REJECT", "trophyquit:",
-                "trophyseries:", "trophyround:",
+                "trophyorder: REJECT", "trophyoption:", "trophyselect:",
+                "trophyquit:", "trophyseries:", "trophyround:",
             )):
                 print("  quit/retry: " + line)
         for line in retry_proc.stdout.splitlines():

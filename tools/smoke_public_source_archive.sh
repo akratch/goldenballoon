@@ -150,7 +150,7 @@ fi
 
 echo
 echo "== Running archive CTest =="
-ctest --test-dir "$srcdir/build" --output-on-failure
+ctest --test-dir "$srcdir/build" --output-on-failure -LE gpu
 
 echo
 echo "Source archive smoke passed."

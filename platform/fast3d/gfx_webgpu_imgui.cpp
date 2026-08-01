@@ -17,10 +17,12 @@
  * unit bypassing gfx_webgpu_compat.h, and it fails to compile the moment the
  * overlay ships on web (emdawnwebgpu has no <webgpu/wgpu.h>). The compat header
  * pulls in webgpu.h + wgpu.h on native (this file is only built when
- * MGB64_APP=ON) and the emdawnwebgpu unified header on the browser. */
+ * MDKR_APP=ON) and the emdawnwebgpu unified header on the browser. */
 /* Seam rule: WebGPU types deliberately route through the compat header. */
 #include "gfx_webgpu_compat.h" // IWYU pragma: keep
+#include "gfx_webgpu_fault.h"
 
+#include <cstdio>
 #include <cstring>
 #include <cstdint>
 #include <vector>
@@ -76,7 +78,9 @@ WGPUBindGroup image_bind_group(WGPUTextureView view) {
     d.layout = s_bgl1;
     d.entryCount = 1;
     d.entries = &e;
-    WGPUBindGroup bg = wgpuDeviceCreateBindGroup(s_device, &d);
+    WGPUBindGroup bg =
+        gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_HOST_IMGUI_IMAGE_BIND_GROUP)
+            ? nullptr : wgpuDeviceCreateBindGroup(s_device, &d);
     if (bg != nullptr) {
         if (s_img_bg != nullptr) wgpuBindGroupRelease(s_img_bg);
         s_img_bg = bg;
@@ -88,7 +92,7 @@ WGPUBindGroup image_bind_group(WGPUTextureView view) {
 /* Honor one ImTextureData create/update/destroy request. TexID stores the
  * WGPUTextureView (referenced by draw commands); BackendUserData stores the
  * owning WGPUTexture so destroy can release both. Mirrors the GL backend. */
-void update_texture(ImTextureData *tex) {
+bool update_texture(ImTextureData *tex) {
     if (tex->Status == ImTextureStatus_WantCreate) {
         IM_ASSERT(tex->Format == ImTextureFormat_RGBA32);
         WGPUTextureDescriptor td = {};
@@ -99,7 +103,7 @@ void update_texture(ImTextureData *tex) {
         td.format = WGPUTextureFormat_RGBA8Unorm;
         td.mipLevelCount = 1; td.sampleCount = 1;
         WGPUTexture wtex = wgpuDeviceCreateTexture(s_device, &td);
-        if (wtex == nullptr) return;
+        if (wtex == nullptr) return false;
 
         WGPUTexelCopyTextureInfo dst = {};
         dst.texture = wtex; dst.aspect = WGPUTextureAspect_All;
@@ -109,13 +113,19 @@ void update_texture(ImTextureData *tex) {
         wgpuQueueWriteTexture(s_queue, &dst, tex->GetPixels(),
                               (size_t)tex->Width * tex->Height * 4u, &lay, &ext);
 
-        WGPUTextureView view = wgpuTextureCreateView(wtex, nullptr);
+        WGPUTextureView view =
+            gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_HOST_IMGUI_TEXTURE_VIEW)
+                ? nullptr : wgpuTextureCreateView(wtex, nullptr);
+        if (view == nullptr) {
+            wgpuTextureRelease(wtex);
+            return false;
+        }
         tex->BackendUserData = wtex;
         tex->SetTexID((ImTextureID)(intptr_t)view);
         tex->SetStatus(ImTextureStatus_OK);
     } else if (tex->Status == ImTextureStatus_WantUpdates) {
         WGPUTexture wtex = (WGPUTexture)tex->BackendUserData;
-        if (wtex == nullptr) return;
+        if (wtex == nullptr) return false;
         static std::vector<unsigned char> tmp;
         for (const ImTextureRect &r : tex->Updates) {
             // Copy the sub-rect into a contiguous staging block (its source rows
@@ -146,6 +156,7 @@ void update_texture(ImTextureData *tex) {
         tex->BackendUserData = nullptr;
         tex->SetStatus(ImTextureStatus_Destroyed);
     }
+    return true;
 }
 
 void clamp_rect(int *x, int *y, int *w, int *h, int maxw, int maxh) {
@@ -164,7 +175,11 @@ extern "C" bool gfx_webgpu_imgui_init(void *device, void *queue, int surface_for
     s_device = (WGPUDevice)device;
     s_queue = (WGPUQueue)queue;
     s_format = (WGPUTextureFormat)surface_format;
-    if (s_device == nullptr || s_queue == nullptr) return false;
+    if (s_device == nullptr || s_queue == nullptr ||
+        s_format == WGPUTextureFormat_Undefined) {
+        gfx_webgpu_imgui_shutdown();
+        return false;
+    }
 
     ImGuiIO &io = ImGui::GetIO();
     io.BackendRendererName = "gfx_webgpu_imgui";
@@ -179,7 +194,11 @@ extern "C" bool gfx_webgpu_imgui_init(void *device, void *queue, int surface_for
     WGPUShaderModuleDescriptor smd = {};
     smd.nextInChain = (WGPUChainedStruct *)&src;
     s_module = wgpuDeviceCreateShaderModule(s_device, &smd);
-    if (s_module == nullptr) return false;
+    if (s_module == nullptr) {
+        std::fprintf(stderr, "[app] ImGui WebGPU shader-module creation failed\n");
+        gfx_webgpu_imgui_shutdown();
+        return false;
+    }
 
     /* group 0: uniform (vertex) + sampler (fragment). */
     WGPUBindGroupLayoutEntry e0[2] = {};
@@ -190,6 +209,12 @@ extern "C" bool gfx_webgpu_imgui_init(void *device, void *queue, int surface_for
     WGPUBindGroupLayoutDescriptor bgld0 = {};
     bgld0.entryCount = 2; bgld0.entries = e0;
     s_bgl0 = wgpuDeviceCreateBindGroupLayout(s_device, &bgld0);
+    if (s_bgl0 == nullptr) {
+        std::fprintf(stderr,
+                     "[app] ImGui WebGPU fixed bind-group-layout creation failed\n");
+        gfx_webgpu_imgui_shutdown();
+        return false;
+    }
 
     /* group 1: texture (fragment). */
     WGPUBindGroupLayoutEntry e1 = {};
@@ -199,28 +224,55 @@ extern "C" bool gfx_webgpu_imgui_init(void *device, void *queue, int surface_for
     WGPUBindGroupLayoutDescriptor bgld1 = {};
     bgld1.entryCount = 1; bgld1.entries = &e1;
     s_bgl1 = wgpuDeviceCreateBindGroupLayout(s_device, &bgld1);
+    if (s_bgl1 == nullptr) {
+        std::fprintf(stderr,
+                     "[app] ImGui WebGPU image bind-group-layout creation failed\n");
+        gfx_webgpu_imgui_shutdown();
+        return false;
+    }
 
     WGPUBindGroupLayout bgls[2] = { s_bgl0, s_bgl1 };
     WGPUPipelineLayoutDescriptor pld = {};
     pld.bindGroupLayoutCount = 2; pld.bindGroupLayouts = bgls;
     s_pl = wgpuDeviceCreatePipelineLayout(s_device, &pld);
+    if (s_pl == nullptr) {
+        std::fprintf(stderr, "[app] ImGui WebGPU pipeline-layout creation failed\n");
+        gfx_webgpu_imgui_shutdown();
+        return false;
+    }
 
     /* uniform buffer + sampler + group 0 bind group. */
     WGPUBufferDescriptor ubd = {};
     ubd.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst; ubd.size = 64;
-    s_ubuf = wgpuDeviceCreateBuffer(s_device, &ubd);
+    s_ubuf = gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_HOST_IMGUI_INIT_RESOURCE)
+        ? nullptr : wgpuDeviceCreateBuffer(s_device, &ubd);
+    if (s_ubuf == nullptr) {
+        std::fprintf(stderr, "[app] ImGui WebGPU uniform-buffer creation failed\n");
+        gfx_webgpu_imgui_shutdown();
+        return false;
+    }
     WGPUSamplerDescriptor sd = {};
     sd.addressModeU = sd.addressModeV = sd.addressModeW = WGPUAddressMode_ClampToEdge;
     sd.magFilter = sd.minFilter = WGPUFilterMode_Linear;
     sd.mipmapFilter = WGPUMipmapFilterMode_Linear;
     sd.maxAnisotropy = 1;
     s_sampler = wgpuDeviceCreateSampler(s_device, &sd);
+    if (s_sampler == nullptr) {
+        std::fprintf(stderr, "[app] ImGui WebGPU sampler creation failed\n");
+        gfx_webgpu_imgui_shutdown();
+        return false;
+    }
     WGPUBindGroupEntry bge0[2] = {};
     bge0[0].binding = 0; bge0[0].buffer = s_ubuf; bge0[0].size = 64;
     bge0[1].binding = 1; bge0[1].sampler = s_sampler;
     WGPUBindGroupDescriptor bgd0 = {};
     bgd0.layout = s_bgl0; bgd0.entryCount = 2; bgd0.entries = bge0;
     s_bg0 = wgpuDeviceCreateBindGroup(s_device, &bgd0);
+    if (s_bg0 == nullptr) {
+        std::fprintf(stderr, "[app] ImGui WebGPU fixed bind-group creation failed\n");
+        gfx_webgpu_imgui_shutdown();
+        return false;
+    }
 
     /* Vertex layout: ImDrawVert = pos(f32x2)@0, uv(f32x2)@8, col(unorm8x4)@16. */
     WGPUVertexAttribute attrs[3] = {};
@@ -255,25 +307,36 @@ extern "C" bool gfx_webgpu_imgui_init(void *device, void *queue, int surface_for
     pd.multisample.count = 1; pd.multisample.mask = 0xFFFFFFFFu;
     pd.fragment = &fs;
     s_pipe = wgpuDeviceCreateRenderPipeline(s_device, &pd);
-    if (s_pipe == nullptr) return false;
+    if (s_pipe == nullptr) {
+        std::fprintf(stderr, "[app] ImGui WebGPU render-pipeline creation failed\n");
+        gfx_webgpu_imgui_shutdown();
+        return false;
+    }
 
     return true;
 }
 
 extern "C" void gfx_webgpu_imgui_new_frame(void) { /* texture updates run in render */ }
 
-extern "C" void gfx_webgpu_imgui_render(ImDrawData *draw_data, void *render_pass_encoder,
-                                        int fb_width, int fb_height) {
-    if (draw_data == nullptr || render_pass_encoder == nullptr || s_pipe == nullptr) return;
+extern "C" bool gfx_webgpu_imgui_render(ImDrawData *draw_data, void *render_pass_encoder,
+                                         int fb_width, int fb_height) {
+    if (draw_data == nullptr || render_pass_encoder == nullptr || s_pipe == nullptr ||
+        s_device == nullptr || s_queue == nullptr || s_ubuf == nullptr ||
+        s_bg0 == nullptr) {
+        return false;
+    }
 
     /* Honor dynamic font-atlas texture requests before drawing (grow-on-demand). */
     if (draw_data->Textures != nullptr) {
         for (ImTextureData *tex : *draw_data->Textures) {
-            if (tex->Status != ImTextureStatus_OK) update_texture(tex);
+            if (tex->Status != ImTextureStatus_OK && !update_texture(tex)) {
+                return false;
+            }
         }
     }
 
-    if (draw_data->TotalVtxCount <= 0 || fb_width <= 0 || fb_height <= 0) return;
+    if (fb_width <= 0 || fb_height <= 0) return false;
+    if (draw_data->TotalVtxCount <= 0) return true;
     WGPURenderPassEncoder pass = (WGPURenderPassEncoder)render_pass_encoder;
 
     /* Grow the vertex/index buffers. */
@@ -284,7 +347,8 @@ extern "C" void gfx_webgpu_imgui_render(ImDrawData *draw_data, void *render_pass
         s_vbuf_cap = vbytes + 8192;
         WGPUBufferDescriptor bd = {};
         bd.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst; bd.size = s_vbuf_cap;
-        s_vbuf = wgpuDeviceCreateBuffer(s_device, &bd);
+        s_vbuf = gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_HOST_IMGUI_DRAW_BUFFER)
+            ? nullptr : wgpuDeviceCreateBuffer(s_device, &bd);
     }
     if (s_ibuf == nullptr || ibytes > s_ibuf_cap) {
         if (s_ibuf) wgpuBufferRelease(s_ibuf);
@@ -293,7 +357,7 @@ extern "C" void gfx_webgpu_imgui_render(ImDrawData *draw_data, void *render_pass
         bd.usage = WGPUBufferUsage_Index | WGPUBufferUsage_CopyDst; bd.size = s_ibuf_cap;
         s_ibuf = wgpuDeviceCreateBuffer(s_device, &bd);
     }
-    if (s_vbuf == nullptr || s_ibuf == nullptr) return;
+    if (s_vbuf == nullptr || s_ibuf == nullptr) return false;
 
     /* Concatenate all lists into contiguous CPU staging, then one write each.
      * wgpuQueueWriteBuffer requires a 4-aligned size; 16-bit indices with an odd
@@ -355,9 +419,9 @@ extern "C" void gfx_webgpu_imgui_render(ImDrawData *draw_data, void *render_pass
             clamp_rect(&cx, &cy, &cw, &ch, fb_width, fb_height);
             if (cw <= 0 || ch <= 0) continue;
             WGPUTextureView view = (WGPUTextureView)(intptr_t)cmd->GetTexID();
-            if (view == nullptr) continue;   /* no texture bound: skip */
+            if (view == nullptr) return false;
             WGPUBindGroup bg = image_bind_group(view);
-            if (bg == nullptr) continue;
+            if (bg == nullptr) return false;
             wgpuRenderPassEncoderSetScissorRect(pass, (uint32_t)cx, (uint32_t)cy, (uint32_t)cw, (uint32_t)ch);
             wgpuRenderPassEncoderSetBindGroup(pass, 1, bg, 0, nullptr);
             wgpuRenderPassEncoderDrawIndexed(pass, cmd->ElemCount, 1,
@@ -367,6 +431,7 @@ extern "C" void gfx_webgpu_imgui_render(ImDrawData *draw_data, void *render_pass
         global_vtx += (uint32_t)cl->VtxBuffer.Size;
         global_idx += (uint32_t)cl->IdxBuffer.Size;
     }
+    return true;
 }
 
 extern "C" void gfx_webgpu_imgui_shutdown(void) {
@@ -384,11 +449,17 @@ extern "C" void gfx_webgpu_imgui_shutdown(void) {
                 tex->SetStatus(ImTextureStatus_Destroyed);
             }
         }
-        ImGui::GetIO().BackendFlags &= ~ImGuiBackendFlags_RendererHasTextures;
+        ImGuiIO &io = ImGui::GetIO();
+        io.BackendFlags &= ~(ImGuiBackendFlags_RendererHasTextures |
+                             ImGuiBackendFlags_RendererHasVtxOffset);
+        io.BackendRendererName = nullptr;
     }
-    if (s_img_bg) { wgpuBindGroupRelease(s_img_bg); s_img_bg = nullptr; s_img_bg_key = nullptr; }
-    if (s_vbuf) { wgpuBufferRelease(s_vbuf); s_vbuf = nullptr; s_vbuf_cap = 0; }
-    if (s_ibuf) { wgpuBufferRelease(s_ibuf); s_ibuf = nullptr; s_ibuf_cap = 0; }
+    if (s_img_bg) { wgpuBindGroupRelease(s_img_bg); s_img_bg = nullptr; }
+    s_img_bg_key = nullptr;
+    if (s_vbuf) { wgpuBufferRelease(s_vbuf); s_vbuf = nullptr; }
+    s_vbuf_cap = 0;
+    if (s_ibuf) { wgpuBufferRelease(s_ibuf); s_ibuf = nullptr; }
+    s_ibuf_cap = 0;
     if (s_bg0) { wgpuBindGroupRelease(s_bg0); s_bg0 = nullptr; }
     if (s_sampler) { wgpuSamplerRelease(s_sampler); s_sampler = nullptr; }
     if (s_ubuf) { wgpuBufferRelease(s_ubuf); s_ubuf = nullptr; }
@@ -397,4 +468,7 @@ extern "C" void gfx_webgpu_imgui_shutdown(void) {
     if (s_bgl1) { wgpuBindGroupLayoutRelease(s_bgl1); s_bgl1 = nullptr; }
     if (s_bgl0) { wgpuBindGroupLayoutRelease(s_bgl0); s_bgl0 = nullptr; }
     if (s_module) { wgpuShaderModuleRelease(s_module); s_module = nullptr; }
+    s_device = nullptr;
+    s_queue = nullptr;
+    s_format = WGPUTextureFormat_Undefined;
 }

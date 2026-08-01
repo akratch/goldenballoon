@@ -3,31 +3,10 @@
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Entitlements the signed mdkr64.app must declare. Each key below is
-	     required by something the shipped bundle actually does: it loads a
-	     bundled SDL2 dylib, maps gamepads through GameController, and drives a
-	     wgpu-native WebGPU backend. Nothing here is granted speculatively --
-	     removing any key breaks the corresponding runtime path under Hardened
-	     Runtime. -->
-
-	<!-- Allow loading the bundled SDL2 dylib (Contents/Frameworks) under
-	     Hardened Runtime when --bundle-sdl2 was used. -->
-	<key>com.apple.security.cs.disable-library-validation</key>
-	<true/>
-
-	<!-- wgpu-native (platform/fast3d/gfx_webgpu.c's backend) may JIT-compile
-	     shader code via the system Metal driver, which can require
-	     writable+executable memory in-process. -->
-	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-	<true/>
-
-	<!-- GCController framework access for N64 gamepad mapping (SDL_GameController
-	     in platform/platform_sdl_min.c). -->
-	<key>com.apple.security.device.game-controllers</key>
-	<true/>
-
-	<!-- Microphone not needed — explicitly deny -->
-	<key>com.apple.security.device.audio-input</key>
-	<false/>
+	<!-- Deliberately empty. The bundled SDL dylib is signed with the same
+	     Developer ID as the app, Metal compiles shaders in Apple's driver, and
+	     SDL game-controller input needs no App Sandbox entitlement. Keeping the
+	     Hardened Runtime entitlement surface empty preserves library validation
+	     and W^X instead of disabling either protection speculatively. -->
 </dict>
 </plist>

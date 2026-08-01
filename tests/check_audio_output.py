@@ -150,8 +150,10 @@ game, in the same capture, asserted to be silent.
 
 What this does NOT cover — needs a device or a human ear
 -------------------------------------------------------
- * That anything is audible at all: no device is ever opened here. Nothing headless
-   can prove the SDL queue path or the web AudioWorklet sink works.
+ * That anything is audible at all: no device is ever opened by this check.
+   The separate ROM-free `audio_sink_contract` CTest proves the shared queue
+   controller plus SDL open/format/drain/pause/clear path with silence (and can
+   run on a physical device); real speaker output still needs a human or loopback.
  * Timbre, tuning and instrument assignment. A bank that loaded the wrong instrument,
    or an envelope with the wrong decay, produces a healthy RMS, a healthy beat grid
    and the wrong sound. Only an ear (or a golden-master comparison against hardware,
@@ -159,18 +161,14 @@ What this does NOT cover — needs a device or a human ear
  * Whether the full-scale peaks in assertion 3 are audible distortion. 0.011 % of
    samples clamping is very likely inaudible, but this check measures it rather than
    judging it.
- * Realtime pacing, and note a consequence of it. Headless synthesis runs on a fixed
-   deterministic cadence (dkr_choose_frame_samples with no sink), so buffer underruns,
-   the queue-occupancy controller and drift against the DAC are all outside what this
-   can see. Measured: the pump emits one amAudioGetFrameSize() = 736 sample-frames =
-   33.38 ms = TWO VI fields of audio per rendered frame, while the headless pacer
-   injects ONE 60 Hz field (16.68 ms) per frame — so the capture's timeline advances
-   at exactly 2x the game's. 600 frames produce 19.99 s of audio against 10.0 s of
-   game time. Every assertion here lives inside the audio timeline and is unaffected
-   (the tempo reference, uspt, is control-side and the beat grid is measured in
-   samples), but the capture is NOT a faithful record of what a player hears alongside
-   the gameplay, and the queue-occupancy controller that makes the real-device path
-   correct is exercised by nothing.
+ * Realtime game-audio sink behavior. Headless synthesis uses one deterministic block per due
+   two-field audio quantum, so original NTSC game time and capture time now advance
+   together (736 samples = 33.38 ms against two fields = 33.37 ms). Enhanced
+   one-field simulation services audio every second game pass; grouped lateness and
+   presentation-rate invariance are covered by the scheduler gates. The SDL
+   contract measures bounded application-queue backlog and drain independently;
+   hidden hardware-buffer underruns, audible game output, and drift against a
+   physical DAC remain outside this PCM-only check.
  * An exact 2x/0.5x global rate error, per assertion 6(b).
 
 Usage:
@@ -270,8 +268,11 @@ def run_capture(build, rom, script, frames, wav, reverb=True, timeout=600):
     env["MDKR_AUDIO_REVERB"] = "1" if reverb else "0"
     cmd = [build, "--headless-frames", str(frames), "--input-script", script,
            "--rom", rom]
-    proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, timeout=timeout)
+    with tempfile.TemporaryDirectory(prefix="mdkr_audio_runtime_") as run_dir:
+        env["MDKR_VIDEO_CONFIG_PATH"] = os.path.join(run_dir, "video.ini")
+        env["MDKR_SAVE_DIR"] = os.path.join(run_dir, "save")
+        proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, timeout=timeout)
     return proc.returncode, proc.stdout.decode("utf-8", "replace")
 
 

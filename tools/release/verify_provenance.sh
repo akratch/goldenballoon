@@ -4,15 +4,15 @@
 # Fails CLOSED before any upload.
 #
 # Ported from mgb64's scripts/release/verify_provenance.sh (as tools/release/,
-# mirroring mdkr64's tools/ top-level convention). Logic is unchanged except
-# the artifact naming convention (mdkr64-<platform>-<version> instead of
-# mgb64-<platform>-...) and the manifest schema tag.
+# mirroring mdkr64's tools/ top-level convention). It accepts only the exact
+# `Golden-Balloon-<version>-<platform>-<arch>` release artifact family and
+# preserves mdkr64's internal manifest schema tag.
 #
 # Usage:
 #   tools/release/verify_provenance.sh --dist DIR --version VER --commit SHA \
 #       [--out-checksums FILE] [--out-manifest FILE]
 #
-# For each release asset (dist/mdkr64-*-<version>.*, excluding the generated
+# For each release asset (dist/Golden-Balloon-<version>-*, excluding generated
 # SHA256SUMS/manifest and the .provenance.json sidecars) requires a sidecar
 # "<asset>.provenance.json" whose recorded sha256 == the file on disk, version ==
 # VER, and commit == SHA. Rejects (nonzero) any missing sidecar, extra/renamed
@@ -53,16 +53,27 @@ err() { printf 'FAIL: %s\n' "$1" >&2; fail=$((fail+1)); }
 # Enumerate candidate release assets, excluding sidecars + generated outputs.
 shopt -s nullglob
 assets=()
-for f in "$dist"/mdkr64-*-"$version".*; do
+macos_unsigned="Golden-Balloon-${version}-macos-arm64-unsigned.dmg"
+macos_trusted="Golden-Balloon-${version}-macos-arm64-signed-notarized.dmg"
+windows_zip="Golden-Balloon-${version}-windows-x64.zip"
+linux_appimage="Golden-Balloon-${version}-linux-x86_64.AppImage"
+linux_tarball="Golden-Balloon-${version}-linux-x86_64.tar.gz"
+for f in "$dist"/Golden-Balloon-"$version"-*; do
   base="$(basename "$f")"
   case "$base" in
     *.provenance.json) continue ;;
-    mdkr64-SHA256SUMS-*) continue ;;
-    mdkr64-manifest-*) continue ;;
+    *.sha256) continue ;;
+    Golden-Balloon-SHA256SUMS-*) continue ;;
+    Golden-Balloon-manifest-*) continue ;;
   esac
-  assets+=("$f")
+  case "$base" in
+    "$macos_unsigned"|"$macos_trusted"|"$windows_zip"|"$linux_appimage"|"$linux_tarball")
+      assets+=("$f")
+      ;;
+    *) err "unsupported release artifact filename: $base" ;;
+  esac
 done
-orphans=("$dist"/mdkr64-*-"$version".*.provenance.json)
+orphans=("$dist"/Golden-Balloon-"$version"-*.provenance.json)
 shopt -u nullglob
 
 [[ ${#assets[@]} -gt 0 ]] || { echo "ERROR: no release assets in $dist for version $version." >&2; exit 1; }
@@ -99,6 +110,8 @@ for key, want in (("artifact", os.environ["ASSET"]),
                   ("commit",   os.environ["WANT_COMMIT"])):
     if rec.get(key) != want:
         errs.append(f"{key}={rec.get(key)!r} != {want!r}")
+if rec.get("source_dirty") is not False:
+    errs.append(f"source_dirty={rec.get('source_dirty')!r} != False")
 for e in errs:
     print("  " + e, file=sys.stderr)
 sys.exit(1 if errs else 0)

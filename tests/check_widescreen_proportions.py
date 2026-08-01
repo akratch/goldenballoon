@@ -7,11 +7,12 @@ projected normally and the sprite-local vertices are then added directly in clip
 space. A fixed 4:3 compensation therefore stretched collectible balloons by
 1.33x at 16:9 and 1.75x at 21:9 even while karts and track geometry were correct.
 
-This check drives to a deterministic frame on Timber's Island that contains the
-same golden balloon in two independent rendering paths:
+This check drives to two deterministic approach frames on Timber's Island that
+contain the same golden balloon in two independent rendering paths:
 
-  * the authored HUD glyph in the centered SAFE_2D region;
-  * a collectible world billboard immediately ahead of the racer.
+  * the authored HUD glyph in the centered SAFE_2D region at frame 6300;
+  * a collectible world billboard, closer and large enough for an honest
+    pixel-proportion measurement, at frame 6410.
 
 It captures seven arms at equal requested height:
 
@@ -34,7 +35,7 @@ Usage:
         --build build --rom baserom.us.v80.z64 -v
 
 Use ``--renderer gl`` or ``--renderer webgpu`` to select a backend explicitly,
-and ``--keep-frames DIR`` to retain the seven PPMs and logs.
+and ``--keep-frames DIR`` to retain the fourteen PPMs and seven logs.
 """
 
 from __future__ import annotations
@@ -56,8 +57,12 @@ from harness_utils import resolve_binary
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "tests" / "input_scripts" / "adventure_hub_drive.txt"
-CAPTURE_FRAME = 6300
-FRAMES = 6350
+HUD_CAPTURE_FRAME = 6300
+WORLD_CAPTURE_FRAME = 6410
+# Keep running after both sampled approach frames until the fixture physically
+# collects balloon 10. This proves the world motif belongs to the intended
+# object rather than similarly coloured scenery.
+FRAMES = 6500
 LOGICAL_ASPECT = 4.0 / 3.0
 MAX_PROPORTION_ERROR = 0.08
 MAX_SCALE_ERROR = 0.10
@@ -72,7 +77,7 @@ DRIVE_ROUTE = (
     ":-3381,1946:-2519,1516:-1858,1099;12:E5:E0"
 )
 
-PACE_RE = re.compile(r"\[PACE\] frame=6300 .*")
+PACE_RE = re.compile(rf"\[PACE\] frame={WORLD_CAPTURE_FRAME} .*")
 BALLOON_RE = re.compile(
     r"drive: level=0 step 3: balloon 10 COLLECTED \(total=(\d+)\) @frame~(\d+)"
 )
@@ -121,7 +126,8 @@ class Component:
 class Result:
     case: Case
     output: str
-    image: Image | None
+    hud_image: Image | None
+    world_image: Image | None
     hud: Component | None = None
     world: Component | None = None
 
@@ -224,8 +230,8 @@ def clean_environment(renderer: str | None) -> dict[str, str]:
         MDKR_TRACE="1",
         MDKR_NO_CRASH_HANDLER="1",
         MDKR64_HIDDEN="1",
-        MDKR_DUMP_FROM=str(CAPTURE_FRAME),
-        MDKR_DUMP_EVERY="1000",
+        MDKR_DUMP_FROM=str(HUD_CAPTURE_FRAME),
+        MDKR_DUMP_EVERY=str(WORLD_CAPTURE_FRAME - HUD_CAPTURE_FRAME),
         MDKR_DRIVE_ROUTE=DRIVE_ROUTE,
         LC_ALL="C",
     )
@@ -309,20 +315,26 @@ def run_case(
         )
 
     frames = sorted(frame_dir.glob("frame_*.ppm"))
-    expected_name = f"frame_{CAPTURE_FRAME:04d}.ppm"
-    if [path.name for path in frames] != [expected_name]:
+    expected_names = [
+        f"frame_{HUD_CAPTURE_FRAME:04d}.ppm",
+        f"frame_{WORLD_CAPTURE_FRAME:04d}.ppm",
+    ]
+    if [path.name for path in frames] != expected_names:
         failures.append(
             f"{case.label}: dumped {[path.name for path in frames]}, "
-            f"expected only {expected_name}"
+            f"expected exactly {expected_names}"
         )
-        image = None
+        hud_image = None
+        world_image = None
     else:
         try:
-            image = read_ppm(frames[0])
+            hud_image = read_ppm(frames[0])
+            world_image = read_ppm(frames[1])
         except ValueError as exc:
             failures.append(str(exc))
-            image = None
-    return Result(case, output, image), failures
+            hud_image = None
+            world_image = None
+    return Result(case, output, hud_image, world_image), failures
 
 
 def blue_components(
@@ -341,8 +353,8 @@ def blue_components(
             red, green, value = image.pixels[index:index + 3]
             if (
                 value >= 90
-                and value * 100 >= red * 128
-                and value * 100 >= green * 112
+                and value * 100 >= red * 150
+                and value * 100 >= green * 150
             ):
                 blue.add((x, y))
 
@@ -416,7 +428,7 @@ def world_balloon_component(image: Image) -> Component | None:
         centre_y = (component.y0 + component.y1) * 0.5 / image.height
         if (
             0.46 <= centre_x <= 0.52
-            and 0.25 <= centre_y <= 0.42
+            and 0.23 <= centre_y <= 0.42
             and component.aspect >= 2.0
         ):
             candidates.append(component)
@@ -439,16 +451,22 @@ def analyze_results(results: list[Result], verbose: bool) -> list[str]:
     reference = next((item for item in results if item.case.label == "4x3"), None)
 
     for result in results:
-        if result.image is None:
+        if result.hud_image is None or result.world_image is None:
             continue
-        actual_aspect = result.image.width / result.image.height
-        if abs(actual_aspect - result.case.aspect) > 0.005:
-            failures.append(
-                f"{result.case.label}: image aspect {actual_aspect:.5f}, "
-                f"expected {result.case.aspect:.5f}"
-            )
-        result.hud = hud_balloon_component(result.image, result.case.legacy)
-        result.world = world_balloon_component(result.image)
+        for sample_name, image in (
+            ("HUD", result.hud_image),
+            ("world", result.world_image),
+        ):
+            actual_aspect = image.width / image.height
+            if abs(actual_aspect - result.case.aspect) > 0.005:
+                failures.append(
+                    f"{result.case.label}: {sample_name} image aspect "
+                    f"{actual_aspect:.5f}, expected {result.case.aspect:.5f}"
+                )
+        result.hud = hud_balloon_component(
+            result.hud_image, result.case.legacy
+        )
+        result.world = world_balloon_component(result.world_image)
         if result.hud is None:
             failures.append(f"{result.case.label}: HUD balloon motif not found")
         if result.world is None:
@@ -456,7 +474,8 @@ def analyze_results(results: list[Result], verbose: bool) -> list[str]:
 
     if (
         reference is None
-        or reference.image is None
+        or reference.hud_image is None
+        or reference.world_image is None
         or reference.hud is None
         or reference.world is None
     ):
@@ -470,7 +489,10 @@ def analyze_results(results: list[Result], verbose: bool) -> list[str]:
         pace = normalized_pace(result.output)
         balloon = BALLOON_RE.findall(result.output)
         if pace is None:
-            failures.append(f"{result.case.label}: no frame-6300 [PACE] state")
+            failures.append(
+                f"{result.case.label}: no frame-{WORLD_CAPTURE_FRAME} "
+                "[PACE] state"
+            )
         elif reference_pace is not None and pace != reference_pace:
             failures.append(
                 f"{result.case.label}: capture state differs from 4x3\n"
@@ -488,15 +510,23 @@ def analyze_results(results: list[Result], verbose: bool) -> list[str]:
             )
 
         if (
-            result.image is None
+            result.hud_image is None
+            or result.world_image is None
             or result.hud is None
             or result.world is None
         ):
             continue
-        if result.image.height != reference.image.height:
+        if result.hud_image.height != reference.hud_image.height:
             failures.append(
-                f"{result.case.label}: dump height {result.image.height}, "
-                f"4x3 reference is {reference.image.height}"
+                f"{result.case.label}: HUD dump height "
+                f"{result.hud_image.height}, 4x3 reference is "
+                f"{reference.hud_image.height}"
+            )
+        if result.world_image.height != reference.world_image.height:
+            failures.append(
+                f"{result.case.label}: world dump height "
+                f"{result.world_image.height}, 4x3 reference is "
+                f"{reference.world_image.height}"
             )
 
         hud_aspect_scale = result.hud.aspect / reference.hud.aspect

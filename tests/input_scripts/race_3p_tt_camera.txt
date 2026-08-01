@@ -1,0 +1,43 @@
+# DKR regression fixture: title -> three-player Ancient Lake race with the
+# fourth quadrant switched from the minimap to the authored TT spectator.
+#
+# This mirrors race_3p_split.txt through the race start.  The one CRIGHT edge
+# is intentionally late enough for gHudRaceStart and the minimap fade to have
+# settled; it flips gHudToggleSettings[THREE_PLAYERS] from its default 1 to 0,
+# which is the production control that makes render_scene consume camera 3.
+
+1250 START 4
+1330 START 4
+
+# Join players 2 and 3.
+1450 A 4 P2
+1490 A 4 P3
+
+# Confirm one character per controller, then accept the group.
+1580 A 4 P1
+1640 A 4 P2
+1700 A 4 P3
+1800 A 4 P1
+
+# Ancient Lake, vehicle confirmation by every player, CPU-count prompt, GO.
+2020 A 4 P1
+2170 A 4 P1
+2170 A 4 P2
+2170 A 4 P3
+2320 A 4 P1
+2470 A 4 P1
+
+# Touch all three physical paths, then enable the TT spectator quadrant.
+2580 A 4 P1
+2580 A 4 P2
+2580 A 4 P3
+2800 CRIGHT 4 P1
+
+# Harmless post-race retries retained from the general multiplayer fixture.
+7600 A 4 P1
+7900 A 4 P1
+8200 A 4 P1
+8500 A 4 P1
+8800 A 4 P1
+9100 A 4 P1
+9400 A 4 P1

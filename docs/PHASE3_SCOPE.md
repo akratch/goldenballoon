@@ -3,7 +3,7 @@
 > **Historical phase plan.** Statements below that 3P, challenge/battle,
 > first-boss, Taj, or trophy paths were untouched describe their original
 > checkpoints. The defined Waves 1–3 are now 23/23 complete, and the manifest
-> has since grown to 69 scripts / 76 tasks. Current status lives in
+> has since grown to 91 scripts / 100 tasks. Current status lives in
 > [`DEVELOPER_HANDBOOK.md`](DEVELOPER_HANDBOOK.md) §1/§6.
 >
 > **For any defect named below, [`open-items/`](open-items/README.md) is

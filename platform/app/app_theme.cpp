@@ -1,6 +1,7 @@
 // app_theme.cpp — see app_theme.h.
 #include "app_theme.h"
 #include "app_font.h"
+#include "app_ui_policy.h"
 
 namespace AppTheme {
 
@@ -9,6 +10,25 @@ static float      g_fbScale   = 1.0f;   // framebuffer/logical ratio from setup(
 static float      g_uiScale   = 1.0f;   // player UI.Scale multiplier
 static ImGuiStyle g_baseStyle;          // metrics at scale 1.0, captured in setup()
 static bool       g_baseCaptured = false;
+static bool       g_scalePending = false;
+static float      g_pendingScale = 1.0f;
+static AppUiDpiState g_dpiState;
+
+static void buildFonts(float fbScale) {
+    ImGuiIO &io = ImGui::GetIO();
+    io.Fonts->Clear();
+    // Roboto Medium is the sole redistributable family currently embedded in
+    // the application. Size and color provide the hierarchy without reaching
+    // into a platform font path that would make release output non-reproducible.
+    g_fonts.body = io.Fonts->AddFontFromMemoryCompressedBase85TTF(
+        RobotoMedium_compressed_data_base85, 17.0f * fbScale);
+    g_fonts.title = io.Fonts->AddFontFromMemoryCompressedBase85TTF(
+        RobotoMedium_compressed_data_base85, 24.0f * fbScale);
+    g_fonts.small = io.Fonts->AddFontFromMemoryCompressedBase85TTF(
+        RobotoMedium_compressed_data_base85, 13.0f * fbScale);
+    io.FontDefault = g_fonts.body;
+    io.FontGlobalScale = g_uiScale / fbScale;
+}
 
 ImVec4 hex(unsigned rgb, float a) {
     return ImVec4(((rgb >> 16) & 0xFF) / 255.0f,
@@ -104,10 +124,11 @@ static void applyStyle() {
 }
 
 float uiScale() { return g_uiScale; }
+unsigned atlasGeneration() { return g_dpiState.atlasGeneration; }
 
 void setUiScale(float uiScale) {
-    if (uiScale < 0.5f) uiScale = 0.5f;
-    if (uiScale > 3.0f) uiScale = 3.0f;
+    if (uiScale < 0.75f) uiScale = 0.75f;
+    if (uiScale > 2.0f) uiScale = 2.0f;
     if (!g_baseCaptured) return;             // setup() not run yet
     if (uiScale == g_uiScale) return;        // no-op: cheap to call every frame
     g_uiScale = uiScale;
@@ -121,9 +142,24 @@ void setUiScale(float uiScale) {
     ImGui::GetIO().FontGlobalScale = uiScale / g_fbScale;
 }
 
+void requestUiScale(float uiScale) {
+    if (uiScale < 0.75f) uiScale = 0.75f;
+    if (uiScale > 2.0f) uiScale = 2.0f;
+    g_pendingScale = uiScale;
+    g_scalePending = true;
+}
+
+void applyPendingUiScale() {
+    if (!g_scalePending) return;
+    g_scalePending = false;
+    setUiScale(g_pendingScale);
+}
+
 void setup(float fbScale) {
     if (fbScale < 1.0f) fbScale = 1.0f;
     g_fbScale = fbScale;
+    g_dpiState.framebufferScale = fbScale;
+    g_dpiState.atlasGeneration = 1;
 
     applyStyle();
     // Capture the scale-1.0 metrics so setUiScale can rescale from a clean base.
@@ -131,21 +167,14 @@ void setup(float fbScale) {
     g_baseCaptured = true;
     g_uiScale = 1.0f;
 
-    ImGuiIO &io = ImGui::GetIO();
-    io.Fonts->Clear();
-    // Rasterize at physical pixels for crispness; FontGlobalScale brings the
-    // displayed size back to logical points.
-    // A clear size hierarchy (body 17 / title 24 / small 13) so titles read as
-    // titles even at one weight. Rasterized at physical px for Retina crispness.
-    g_fonts.body  = io.Fonts->AddFontFromMemoryCompressedBase85TTF(
-        RobotoMedium_compressed_data_base85, 17.0f * fbScale);
-    g_fonts.title = io.Fonts->AddFontFromMemoryCompressedBase85TTF(
-        RobotoMedium_compressed_data_base85, 24.0f * fbScale);
-    g_fonts.small = io.Fonts->AddFontFromMemoryCompressedBase85TTF(
-        RobotoMedium_compressed_data_base85, 13.0f * fbScale);
-    // NOTE: this ImGui builds the atlas lazily (dynamic textures); no Build().
-    io.FontGlobalScale = 1.0f / fbScale;
-    io.FontDefault = g_fonts.body;
+    buildFonts(fbScale);
+}
+
+void refreshFramebufferScale(float fbScale) {
+    if (!g_baseCaptured) return;
+    if (!AppUi_applyDpiTransition(&g_dpiState, fbScale)) return;
+    g_fbScale = g_dpiState.framebufferScale;
+    buildFonts(g_fbScale);
 }
 
 }  // namespace AppTheme

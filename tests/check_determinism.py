@@ -31,12 +31,15 @@ still exits 0 -- so nothing caught it.  Hence this check.
 
 What it asserts
 ---------------
-For each fixture: run it N times (default 2) and require every dumped frame to be
-byte-identical across runs.  A single differing byte fails.
+For each fixture and native backend: run it N times (default 2) and require
+every dumped frame to be byte-identical across runs. A single differing byte
+fails. GL and WebGPU are selected explicitly so a default-policy change cannot
+silently remove either backend from this determinism gate.
 
 Usage:
     tests/check_determinism.py [--build build] [--rom baserom.us.v80.z64]
                                [--runs N] [--frames N] [--every N]
+                               [--renderer gl|webgpu|default ...]
                                [--fixture NAME ...] [-v]
 
 Always runs muted + headless (MDKR_AUDIO=0 and --headless-frames), per
@@ -59,11 +62,19 @@ DEFAULT_FIXTURES = [
 ]
 
 
-def frame_hashes(build, rom, script, outdir, frames, every, verbose):
+def frame_hashes(build, rom, script, outdir, frames, every, verbose,
+                 renderer):
     """Run one headless pass and return {frame_name: sha1} for every dumped frame."""
-    env = dict(os.environ)
+    # Preferences and developer diagnostics must not change what the gate runs.
+    # This mirrors the stricter timing/oracle harnesses and makes injected
+    # MDKR_RENDERER, MDKR_PRESENT_RATE, or GE007_* values harmless.
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(("MDKR", "GE007_"))}
     env["MDKR_AUDIO"] = "0"          # belt-and-braces; --headless-frames is the guarantee
     env["MDKR_DUMP_EVERY"] = str(every)
+    env["MDKR_SAVE_DIR"] = os.path.join(outdir, "save")
+    if renderer != "default":
+        env["MDKR_RENDERER"] = renderer
     cmd = [build, "--headless-frames", str(frames), "--rom", rom,
            "--dump-frames", outdir]
     if script:
@@ -99,7 +110,7 @@ def first_difference(a_dir, b_dir, name):
     return n if len(a) != len(b) else -1
 
 
-def check_fixture(fixture, args):
+def check_fixture(fixture, args, renderer):
     script = None
     if fixture != "__boot__":
         script = os.path.join("tests", "input_scripts", fixture + ".txt")
@@ -116,13 +127,15 @@ def check_fixture(fixture, args):
             d = tempfile.mkdtemp(prefix="mdkr_det_")
             dirs.append(d)
             runs.append(frame_hashes(args.build, args.rom, script, d,
-                                     args.frames, args.every, args.verbose))
+                                     args.frames, args.every, args.verbose,
+                                     renderer))
 
         names = sorted(runs[0])
         for r in range(1, args.runs):
             if sorted(runs[r]) != names:
                 print("  %-28s FAIL: run %d dumped a different set of frames "
-                      "(%d vs %d)" % (fixture, r + 1, len(runs[r]), len(names)))
+                      "(%d vs %d)" % (f"{fixture} [{renderer}]", r + 1,
+                                      len(runs[r]), len(names)))
                 return False
 
         bad = []
@@ -134,7 +147,8 @@ def check_fixture(fixture, args):
 
         if bad:
             print("  %-28s FAIL: %d of %d frames differ across %d runs"
-                  % (fixture, len(bad), len(names), args.runs))
+                  % (f"{fixture} [{renderer}]", len(bad), len(names),
+                     args.runs))
             for name, off in bad[:5]:
                 print("      %s: first differing byte at offset %d" % (name, off))
             if len(bad) > 5:
@@ -144,11 +158,12 @@ def check_fixture(fixture, args):
         # Fail closed: "identical" over an empty frame set is vacuous. Comparing
         # zero frames means the fixture produced no evidence, so it cannot pass.
         if not names:
-            print("  %-28s FAIL: no frames to compare" % fixture)
+            print("  %-28s FAIL: no frames to compare" %
+                  f"{fixture} [{renderer}]")
             return False
 
         print("  %-28s ok (%d frames identical across %d runs)"
-              % (fixture, len(names), args.runs))
+              % (f"{fixture} [{renderer}]", len(names), args.runs))
         return True
     finally:
         for d in dirs:
@@ -164,6 +179,10 @@ def main():
     ap.add_argument("--frames", type=int, default=1500)
     ap.add_argument("--every", type=int, default=350)
     ap.add_argument("--fixture", action="append", dest="fixtures")
+    ap.add_argument(
+        "--renderer", action="append", choices=("gl", "webgpu", "default"),
+        dest="renderers",
+        help="backend to check (repeatable; default: explicit gl and webgpu)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
     args.build = resolve_binary(args.build)
@@ -174,15 +193,19 @@ def main():
         sys.exit("no ROM at %s" % args.rom)
 
     fixtures = args.fixtures or DEFAULT_FIXTURES
-    print("check_determinism: %d run(s) per fixture, %d frames, dumping every %d"
-          % (args.runs, args.frames, args.every))
+    renderers = args.renderers or ["gl", "webgpu"]
+    print("check_determinism: %d run(s) per fixture/backend, %d frames, "
+          "dumping every %d; renderers=%s"
+          % (args.runs, args.frames, args.every, ",".join(renderers)))
     ok = True
-    for fx in fixtures:
-        try:
-            ok &= check_fixture(fx, args)
-        except RuntimeError as e:
-            print("  %-28s FAIL: %s" % (fx, e))
-            ok = False
+    for renderer in renderers:
+        for fx in fixtures:
+            try:
+                ok &= check_fixture(fx, args, renderer)
+            except RuntimeError as e:
+                print("  %-28s FAIL: %s" %
+                      (f"{fx} [{renderer}]", e))
+                ok = False
 
     print("check_determinism: %s" % ("PASS" if ok else "FAIL"))
     return 0 if ok else 1

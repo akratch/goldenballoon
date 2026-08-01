@@ -43,9 +43,53 @@ const touchPadState = {
   buttons: 0,
   stickX: 0,
   stickY: 0,
+  events: [],
+  overflow: 0,
+  sequence: 0,
 };
 
+const TOUCH_EDGE_CAPACITY = 128;
+let lastTouchSnapshot = null;
+
 function publishTouchPad() {
+  const snapshot = {
+    enabled: touchPadState.enabled !== false,
+    buttons: Number(touchPadState.buttons) >>> 0,
+    stickX: Number(touchPadState.stickX) | 0,
+    stickY: Number(touchPadState.stickY) | 0,
+    sequence: ++touchPadState.sequence,
+  };
+  const changed = !lastTouchSnapshot ||
+    snapshot.enabled !== lastTouchSnapshot.enabled ||
+    snapshot.buttons !== lastTouchSnapshot.buttons ||
+    snapshot.stickX !== lastTouchSnapshot.stickX ||
+    snapshot.stickY !== lastTouchSnapshot.stickY;
+  if (changed) {
+    if (touchPadState.events.length >= TOUCH_EDGE_CAPACITY) {
+      // A bounded overflow must never strand an old press. Retire the backlog
+      // with an explicit neutral sample; the next changed pointer state can
+      // enqueue normally and the counter makes the loss observable.
+      touchPadState.events.length = 0;
+      touchPadState.events.push({
+        enabled: snapshot.enabled,
+        buttons: 0,
+        stickX: 0,
+        stickY: 0,
+        sequence: snapshot.sequence,
+        overflow: true,
+      });
+      touchPadState.overflow++;
+      lastTouchSnapshot = {
+        enabled: snapshot.enabled,
+        buttons: 0,
+        stickX: 0,
+        stickY: 0,
+      };
+    } else {
+      touchPadState.events.push(snapshot);
+      lastTouchSnapshot = snapshot;
+    }
+  }
   if (module) module.__mdkrTouchPad = touchPadState;
 }
 
@@ -76,6 +120,55 @@ const testState = testConfig ? {
   module: null,
 } : null;
 if (testState) globalThis.__mdkrTestState = testState;
+
+// The engine's sole browser frame boundary calls this instead of reaching rAF
+// directly. Normal visitors receive the real DOMHighResTimeStamp. The browser
+// schedule gate may supply bounded synthetic deltas while still yielding once
+// to the real event loop per opportunity. Hidden documents wait for visibility
+// instead of doing expensive 1 Hz background replays; the C clock rebases the
+// resumed interval.
+const testRafDeltas = (() => {
+  const values = testConfig && testConfig.rafDeltasMs;
+  if (!Array.isArray(values) || !values.length || values.length > 256) return null;
+  const parsed = values.map(Number);
+  return parsed.every((value) => Number.isFinite(value) && value > 0 && value <= 250)
+    ? parsed : null;
+})();
+const testRafDeltasNs = (() => {
+  const values = testConfig && testConfig.rafDeltasNs;
+  if (!Array.isArray(values) || !values.length || values.length > 256) return null;
+  const parsed = values.map(Number);
+  return parsed.every((value) => Number.isSafeInteger(value) &&
+      value > 0 && value <= 250000000) ? parsed : null;
+})();
+let testRafIndex = 0;
+let testRafNow = null;
+globalThis.__mdkrLastAnimationFrameDeltaNs = 0;
+globalThis.__mdkrSyntheticAnimationFrameClock =
+  testRafDeltas !== null || testRafDeltasNs !== null;
+globalThis.__mdkrWaitAnimationFrame = async function () {
+  while (document.visibilityState === "hidden") {
+    await new Promise((resolve) => {
+      const visible = () => {
+        if (document.visibilityState !== "hidden") {
+          document.removeEventListener("visibilitychange", visible);
+          resolve();
+        }
+      };
+      document.addEventListener("visibilitychange", visible);
+    });
+  }
+  const actual = await new Promise((resolve) => requestAnimationFrame(resolve));
+  if (!testRafDeltas && !testRafDeltasNs) return actual;
+  if (testRafNow === null) testRafNow = actual;
+  const index = testRafIndex++;
+  const deltaNs = testRafDeltasNs
+    ? testRafDeltasNs[index % testRafDeltasNs.length]
+    : Math.round(testRafDeltas[index % testRafDeltas.length] * 1000000);
+  globalThis.__mdkrLastAnimationFrameDeltaNs = deltaNs;
+  testRafNow += deltaNs / 1000000;
+  return testRafNow;
+};
 
 function testMark(phase) {
   if (testState) testState.phase = phase;
@@ -258,29 +351,37 @@ function validateRom(bytes, name) {
 // from the URL so a shared link opens on the same settings.
 const PREF_MODE = "mdkr64.mode";
 const PREF_SCALE = "mdkr64.scale";
+const PREF_RATE = "mdkr64.rate";
 let qualityModeDirty = false;
 let qualityScaleDirty = false;
+let qualityRateDirty = false;
 function initQualityControls() {
   const qsp = new URLSearchParams(location.search);
   const mode = $("mode");
   const scale = $("scale");
-  if (!mode || !scale) return;
+  const rate = $("rate");
+  if (!mode || !scale || !rate) return;
   try {
     const m = qsp.get("mode") || localStorage.getItem(PREF_MODE);
     const s = qsp.get("scale") || localStorage.getItem(PREF_SCALE);
+    const r = qsp.get("rate") || localStorage.getItem(PREF_RATE);
     if (m && [...mode.options].some((o) => o.value === m)) mode.value = m;
     if (s !== null && [...scale.options].some((o) => o.value === s)) scale.value = s;
+    if (r && [...rate.options].some((o) => o.value === r)) rate.value = r;
   } catch (_) { /* private mode: fall back to the defaults in the markup */ }
   const save = (event) => {
     if (event && event.currentTarget === mode) qualityModeDirty = true;
     if (event && event.currentTarget === scale) qualityScaleDirty = true;
+    if (event && event.currentTarget === rate) qualityRateDirty = true;
     try {
       localStorage.setItem(PREF_MODE, mode.value);
       localStorage.setItem(PREF_SCALE, scale.value);
+      localStorage.setItem(PREF_RATE, rate.value);
     } catch (_) { /* nothing to do if storage is unavailable */ }
   };
   mode.addEventListener("change", save);
   scale.addEventListener("change", save);
+  rate.addEventListener("change", save);
 }
 
 function parseIniSection(text, wantedSection) {
@@ -314,9 +415,11 @@ function applyStoredVideoControls(qs) {
   }
   const mode = $("mode");
   const scale = $("scale");
+  const rate = $("rate");
   const video = parseIniSection(text, "video");
   const storedMode = (video.get("mode") || "").toLowerCase();
   const storedScale = video.get("renderscale") || "";
+  const storedRate = (video.get("framelimit") || "").toLowerCase();
   if (mode && !qualityModeDirty && !qs.has("mode") &&
       /^(pure|restored|remastered)$/.test(storedMode)) {
     mode.value = storedMode;
@@ -324,6 +427,15 @@ function applyStoredVideoControls(qs) {
   if (scale && !qualityScaleDirty && !qs.has("scale") &&
       /^[1-4](?:\.0+)?$/.test(storedScale)) {
     scale.value = String(Math.trunc(Number(storedScale)));
+  }
+  if (rate && !qualityRateDirty && !qs.has("rate")) {
+    if ([...rate.options].some((option) => option.value === storedRate)) {
+      rate.value = storedRate;
+    } else if (storedRate === "uncapped") {
+      // A config shared from native remains loadable, but rAF is the effective
+      // browser ceiling and the launcher must reflect that honestly.
+      rate.value = "display";
+    }
   }
   return true;
 }
@@ -913,17 +1025,23 @@ async function boot() {
   const MODES = ["pure", "restored", "remastered"];
   const modeSel = $("mode");
   const scaleSel = $("scale");
+  const rateSel = $("rate");
   let mode = (qs.get("mode") || (modeSel && modeSel.value) || "").toLowerCase();
   let scale = qs.get("scale") || (scaleSel && scaleSel.value) || "";
+  let rate = (qs.get("rate") || (rateSel && rateSel.value) || "original").toLowerCase();
   const seedMode = !hasStoredVideoConfig || qualityModeDirty || qs.has("mode");
   const seedScale = !hasStoredVideoConfig || qualityScaleDirty || qs.has("scale");
+  const seedRate = !hasStoredVideoConfig || qualityRateDirty || qs.has("rate");
   if (seedMode && MODES.includes(mode)) {
     mainArgs.push("--video-launch-mode", mode);
   }
   if (seedScale && /^[1-4]$/.test(scale)) {
     mainArgs.push("--video-launch-set", "Video.RenderScale=" + scale);
   }
-  if (seedMode || seedScale) mainArgs.push("--video-launch-persist");
+  if (seedRate && /^(?:original|display|30|60|90|120|144)$/.test(rate)) {
+    mainArgs.push("--video-launch-set", "Video.FrameLimit=" + rate);
+  }
+  if (seedMode || seedScale || seedRate) mainArgs.push("--video-launch-persist");
 
   const aspect = qs.get("aspect");
   const fov = qs.get("fov");
@@ -948,6 +1066,10 @@ async function boot() {
     const frames = Number(testConfig.headlessFrames);
     if (Number.isInteger(frames) && frames > 0 && frames <= 100000) {
       mainArgs.push("--headless-frames", String(frames));
+    }
+    const ticks = Number(testConfig.headlessTicks);
+    if (Number.isInteger(ticks) && ticks > 0 && ticks <= 100000) {
+      mainArgs.push("--headless-ticks", String(ticks));
     }
     testState.storage = {
       mounted: storageMounted,
@@ -1163,27 +1285,26 @@ async function probeStoredRom() {
 }
 
 // ---- Frame-rate readout ----------------------------------------------------
-// The engine suspends to requestAnimationFrame once per frame, so counting rAF
-// callbacks measures the ENGINE's frame rate, not just the display refresh. If this
-// reads ~120 on a 120 Hz panel while the game feels double speed, the pacing floor
-// is not holding; if it reads ~60 and the game still feels fast, the problem is
-// upstream of pacing. Toggle with F3.
+// Count images that the engine actually committed to the canvas. Numeric caps
+// can deliberately yield through rAF without producing a new image, and the
+// shell has unrelated rAF users for resize/touch work, so wrapping
+// requestAnimationFrame would report host opportunities rather than visual FPS.
+// Toggle with F3.
 function wireFpsReadout() {
   const el = $("fps");
   if (!el) return;
-  let frames = 0, since = performance.now(), shown = false;
-  const rawRAF = window.requestAnimationFrame.bind(window);
-  window.requestAnimationFrame = function (cb) {
-    frames++;
-    return rawRAF(cb);
-  };
+  let lastEngineFrames = 0, since = performance.now(), shown = false;
   setInterval(() => {
     const now = performance.now();
     const dt = now - since;
     if (dt >= 500) {
-      const fps = (frames * 1000) / dt;
-      el.textContent = fps.toFixed(0) + " fps  ·  " + (1000 / Math.max(fps, 0.001)).toFixed(1) + " ms";
-      frames = 0; since = now;
+      const engineFrames = module && Number.isFinite(module.__mdkrFrames)
+        ? module.__mdkrFrames : 0;
+      const presented = Math.max(0, engineFrames - lastEngineFrames);
+      const fps = (presented * 1000) / dt;
+      el.textContent = fps.toFixed(0) + " visual fps  ·  " + (1000 / Math.max(fps, 0.001)).toFixed(1) + " ms";
+      lastEngineFrames = engineFrames;
+      since = now;
     }
   }, 500);
   addEventListener("keydown", (e) => {

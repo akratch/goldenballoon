@@ -38,19 +38,33 @@ class Check:
     script: str
     role: str
     description: str
+    args: tuple[str, ...] = ()
 
 
 # Cheap, broad gates lead; long scenario/matrix checks follow. Keep every
 # tests/check_*.py represented at least once: validate_manifest() enforces it.
 CHECKS = (
     Check("rom_free_units", "", "ctest",
-          "ROM-free display, endian, object-layout, and allocator unit tests"),
+          "ROM-free display, endian, magic-code, object-layout, allocator, "
+          "and subsystem contract unit tests"),
     Check("asset_swap_invariants", "check_asset_swap_invariants.py", "rom",
           "field-level byte-swap audit: spec-derived ROM invariants with "
           "byte-reversed positive controls, plus raw asset_load() swap coverage"),
     Check("math_tables", "check_math_tables.py", "native",
           "ROM math-table fidelity and strong required-provider symbols"),
     Check("math_rotpy", "check_math_rotpy.py", "native", "hand-assembly rotation parity"),
+    Check("shell_dropfile", "check_shell_dropfile.py", "native",
+          "app-shell SDL_DROPFILE ROM acquisition: accepted and refused, "
+          "isolated from shared prefs"),
+    Check("app_adopted_pacing", "check_app_adopted_pacing.py", "native",
+          "app-shell WebGPU-default and GL adopted handoffs at numeric and "
+          "uncapped rates"),
+    Check("app_capture", "check_app_capture.py", "native",
+          "launcher screenshot dimensions, contrast, palette, draw bounds, "
+          "and broken-direction mutations"),
+    Check("app_ui_input", "check_app_ui_input.py", "native",
+          "real ImGui keyboard/gamepad selection, reload, scale matrix, "
+          "save failure, and retry"),
     Check("collision_untextured", "check_collision_untextured.py", "native",
           "untextured terrain collision"),
     Check("runtime_safety", "check_runtime_safety.py", "native",
@@ -80,18 +94,48 @@ CHECKS = (
           "GL/WebGPU cascaded maps, receivers, state invariance, and truthful decal fallback"),
     Check("render_purity", "check_render_purity.py", "release",
           "skip-render authoritative invariance (spec 12.2.1) with divergence control"),
+    Check("camera_snapshot_coverage", "check_camera_snapshot_coverage.py", "release",
+          "real 2P camera 1 and 3P time-trial camera 3 snapshot interpolation, "
+          "WebGPU cutscene-bank camera 4, pixels, and frozen controls"),
+    Check("hud_render_authority", "check_hud_render_authority.py", "release",
+          "1P/2P/4P countdown, wrong-way RNG/timer, audio, and event "
+          "invariance under skipped presentation"),
+    Check("fixed_tick_schedules", "check_fixed_tick_schedules.py", "release",
+          "fixed two-field authority across lateness, catch-up, suspension, "
+          "state/event invariance, and sensitivity controls"),
+    Check("arbitrary_presentation_rates", "check_arbitrary_presentation_rates.py",
+          "release", "exact original/30/60/120/144/165/240/uncapped native "
+          "presentation with NTSC/PAL state, event, input, and PCM invariance"),
     Check("presentation_matrix", "check_presentation_matrix.py", "release",
-          "presentation rate vs authoritative tick (spec 12.2.2): parallel "
-          "clock agreement"),
+          "presentation rate vs fixed-ticket state/event authority and pixels "
+          "(spec 12.2.2)"),
     Check("presentation_breadth", "check_presentation_breadth.py", "release",
           "presentation-rate invariance across spec 12.3 content breadth: "
           "bosses, all challenge types, car/hovercraft/plane, 1P-4P, NTSC/PAL"),
+    Check("presentation_lifecycle", "check_presentation_lifecycle.py", "release",
+          "presentation-rate state/event/input/PCM invariance across pause quit, "
+          "race restart, post-race results, and arena teardown/reissue"),
+    Check("presentation_lifecycle_asan", "check_presentation_lifecycle.py", "asan",
+          "ASan witness for retained replay teardown on 2P pause-to-menu quit",
+          ("--only", "pause-quit")),
     Check("state_hash", "check_state_hash.py", "release",
           "authoritative-hash determinism, window/backend invariance, legacy-RNG control"),
+    Check("weather_rng_order", "check_weather_rng_order.py", "release",
+          "weather-enabled authored object/weather/HUD RNG order and presentation invariance"),
+    Check("viewport_route_isolation", "check_viewport_route_isolation.py", "release",
+          "2P/4P per-viewport object pass, opacity, shadow/water, and pixel isolation"),
+    Check("authored_rng_compat", "check_authored_rng_compat.py", "native",
+          "exact legacy all-racer state and authored-RNG stream compatibility"),
     Check("shadow_stage_reset", "check_shadow_stage_reset.py", "native",
           "shipping-build shadow stage reset at level load, with a suppressed-reset control"),
+    Check("shadow_plausibility", "check_shadow_plausibility.py", "native",
+          "caster provenance and shadow attribution across 3 worlds and every "
+          "1P-4P budget tier, with an injected bogus-caster control"),
     Check("menu_anim_rate", "check_menu_anim_rate.py", "native",
           "menu animation timing"),
+    Check("charselect_motion", "check_charselect_motion.py", "native",
+          "character-select dancer motion ensemble, with a frozen-frame "
+          "broken-direction control"),
     Check("attract_demo", "check_attract_demo.py", "native",
           "rolling-demo vehicle/path selection, soak, and input teardown"),
     Check("nav_fixtures", "check_nav_fixtures.py", "native", "all menu routes"),
@@ -100,11 +144,16 @@ CHECKS = (
     Check("determinism", "check_determinism.py", "native",
           "byte-reproducible frame output"),
     Check("renderer_backends", "check_renderer_backends.py", "native",
-          "GL/WebGPU race parity and fallback"),
+          "GL/WebGPU coarse route parity, fail-closed startup, and dense "
+          "default-WebGPU intro identity"),
+    Check("gpu_backpressure", "check_gpu_backpressure.py", "native",
+          "live uncapped GL fences and bounded WebGPU queue completions"),
+    Check("surface_suspension", "check_surface_suspension.py", "native",
+          "minimized GL/WebGPU render elision and resume rebase"),
     Check("final_shutdown", "check_final_shutdown.py", "native",
           "cooperative GL/WebGPU/audio/platform final teardown"),
     Check("webgpu_recovery", "check_webgpu_recovery.py", "native",
-          "WebGPU lifecycle fault injection and native GL recovery"),
+          "WebGPU lifecycle fault injection and fail-closed recovery policy"),
     Check("webgpu_fault_matrix", "check_webgpu_fault_matrix.py", "source",
           "every WebGPU fault point wired and product-route classified"),
     Check("ci_contract", "check_ci_contract.py", "source",
@@ -127,6 +176,9 @@ CHECKS = (
           "moving-camera projected-shadow pixel A/B"),
     Check("audio_output", "check_audio_output.py", "native",
           "audio content, timing, and reverb"),
+    Check("audio_level_reference", "check_audio_level_reference.py", "native",
+          "absolute output level: RMS/crest/true-peak/per-band/per-slice against "
+          "the frozen baseline, with injected-gain controls"),
     Check("resource_plateau", "check_resource_plateau.py", "native",
           "repeated GL/WebGPU stage, pool/audio/GPU/registry ownership plateau"),
     Check("raw16_audio", "check_raw16_audio.py", "native",
@@ -136,7 +188,14 @@ CHECKS = (
     Check("race_drive", "check_race_drive.py", "native",
           "closed-loop racing and rendered scene"),
     Check("race_2p_split", "check_race_2p_split.py", "native",
-          "two-player split-screen race"),
+          "two-player split-screen race at the shipping original cadence",
+          ("--cadence", "original")),
+    Check("2p_human_binding", "check_2p_human_binding.py", "native",
+          "direct two-player controller/racer binding and motion across "
+          "GL/WebGPU at 60/120 Hz"),
+    Check("race_2p_split_enhanced", "check_race_2p_split.py", "native",
+          "two-player split-screen race at the opt-in enhanced cadence",
+          ("--cadence", "enhanced")),
     Check("race_multiplayer", "check_race_multiplayer.py", "native",
           "three-/four-player racers, quadrants, minimap, and results flow"),
     Check("challenge_modes", "check_challenge_modes.py", "native",
@@ -157,6 +216,9 @@ CHECKS = (
           "all four Adventure trophy championships, quit/retry, and EEPROM reload"),
     Check("race_finish_time", "check_race_finish_time.py", "native",
           "three-lap finish and EEPROM time"),
+    Check("boost_magnitude", "check_boost_magnitude.py", "native",
+          "zip-pad boost per-frame speed trace, racer-count independence, and "
+          "perturbed-boost-constant positive controls"),
     Check("save_failsafe", "check_save_failsafe.py", "native",
           "EEPROM recovery and persistence"),
     Check("boss_win_verdict", "check_boss_win_verdict.py", "native",
@@ -165,6 +227,9 @@ CHECKS = (
           "legal fourth Dino race through Tricky 1 save/reload"),
     Check("collision_gridmask", "check_collision_gridmask.py", "native",
           "collision candidate filter and boss flow"),
+    Check("collision_headroom", "check_collision_headroom.py", "native",
+          "per-level collision-candidate high-water sweep, guard-present check, "
+          "and forced-saturation positive control"),
     Check("rom_revision", "check_rom_revision.py", "native",
           "ROM identity, byte order, and revision parity"),
     Check("track_sweep", "check_track_sweep.py", "native",
@@ -200,7 +265,10 @@ CHECKS = (
     Check("browser_resource_plateau", "check_browser_resource_plateau.py", "browser",
           "repeated wasm stage/audio/WebGPU/host ownership conservation"),
     Check("touch_controls", "check_touch_controls.py", "browser",
-          "touch overlay gating/persistence and CDP chord -> osContGetReadData -> neutral"),
+          "bounded touch edge transport, overlay gating/persistence, chord and neutral"),
+    Check("browser_presentation_rates", "check_browser_presentation_rates.py",
+          "browser", "display/capped/irregular rAF scheduling, fixed authority, "
+          "and explicit uncapped-to-display semantics"),
     Check("browser_runtime", "check_browser_runtime.py", "browser",
           "real Chromium WebGPU, pacing, rendering, IDBFS, and privacy"),
 )
@@ -307,6 +375,8 @@ def command_for(
             "--test-dir",
             str(native.parent),
             "--output-on-failure",
+            "-LE",
+            "gpu",
         ]
     cmd = [sys.executable, str(TESTS / check.script)]
     if check.role == "source":
@@ -358,8 +428,9 @@ def command_for(
     # simulation_cadence does: spec 12.3's region clause is NTSC *and* PAL, and
     # the PAL release is not the default --rom.
     if check.name in {"rom_revision", "simulation_cadence",
-                      "presentation_breadth"}:
+                      "arbitrary_presentation_rates", "presentation_breadth"}:
         cmd += ["--roms", str(roms)]
+    cmd += list(check.args)
     return cmd
 
 
@@ -531,7 +602,13 @@ def main() -> int:
         for key, value in os.environ.items()
         if not key.startswith("MDKR")
     }
-    environment.update({"MDKR_AUDIO": "0", "PYTHONUNBUFFERED": "1"})
+    environment.update({
+        "MDKR_AUDIO": "0",
+        # Never inherit a developer's playable repository config. Individual
+        # configuration/migration checks replace this with a writable fixture.
+        "MDKR_VIDEO_CONFIG_PATH": os.devnull,
+        "PYTHONUNBUFFERED": "1",
+    })
 
     print(
         f"run_checks: {len(checks)} task(s); native={native}; "

@@ -25,6 +25,9 @@ jobs:
       - name: Build (WebGPU browser target)
         run: EMSDK_DIR="$EMSDK" tools/web/build_web.sh
 
+      - name: Validate linked wasm wave table
+        run: python3 tests/check_wave_visible_table.py --wasm dist/web/mdkr64_web.wasm
+
       # build_web.sh already enforces both of the following. They are repeated here
       # so the release gate does not depend on a script the build could have
       # skipped, and so the failure is visible as its own red step.

@@ -57,6 +57,15 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME endian_utils COMMAND mdkr_endian_utils_test)
 
+    add_executable(mdkr_magic_codes_test
+        ${CMAKE_SOURCE_DIR}/tests/test_magic_codes.c
+        ${CMAKE_SOURCE_DIR}/platform/asset_swap.c)
+    target_include_directories(mdkr_magic_codes_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_definitions(mdkr_magic_codes_test PRIVATE VERSION_us_v80)
+    add_test(NAME magic_codes COMMAND mdkr_magic_codes_test)
+
     add_executable(mdkr_object_layout_test
         ${CMAKE_SOURCE_DIR}/tests/test_object_layout.c
         ${CMAKE_SOURCE_DIR}/game/src/object_layout.c)
@@ -164,13 +173,27 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform/video_config.c
         ${CMAKE_SOURCE_DIR}/platform/pacing_policy.c
         ${CMAKE_SOURCE_DIR}/platform/video_config_runtime.c
-        ${CMAKE_SOURCE_DIR}/platform/config_ini.c)
+        ${CMAKE_SOURCE_DIR}/platform/user_paths.c
+        ${CMAKE_SOURCE_DIR}/platform/config_ini.c
+        # publish() asks the cascade planner for the 1P shadow budget instead of
+        # republishing a hardcoded resolution nothing read. gfx_shadow_cascade.c
+        # is pure (no globals, no GPU), so the ROM-free seam survives.
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_shadow_cascade.c)
     target_include_directories(mdkr_video_config_runtime_test PRIVATE
         ${CMAKE_SOURCE_DIR}/platform)
     if(NOT MSVC)
         target_link_libraries(mdkr_video_config_runtime_test PRIVATE m)
     endif()
     add_test(NAME video_config_runtime COMMAND mdkr_video_config_runtime_test)
+
+    add_executable(mdkr_user_paths_test
+        ${CMAKE_SOURCE_DIR}/tests/test_user_paths.c
+        ${CMAKE_SOURCE_DIR}/platform/user_paths.c)
+    target_include_directories(mdkr_user_paths_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME user_paths COMMAND mdkr_user_paths_test)
+    add_test(NAME user_paths_pref_failure
+        COMMAND mdkr_user_paths_test --pref-fail)
 
     add_executable(mdkr_pacing_policy_test
         ${CMAKE_SOURCE_DIR}/tests/test_pacing_policy.c
@@ -265,6 +288,43 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform)
     add_test(NAME sim_sched COMMAND mdkr_sim_sched_test)
 
+    add_executable(mdkr_host_frame_driver_test
+        ${CMAKE_SOURCE_DIR}/tests/test_host_frame_driver.c
+        ${CMAKE_SOURCE_DIR}/platform/host_frame_driver.c
+        ${CMAKE_SOURCE_DIR}/platform/sim_sched.c)
+    target_include_directories(mdkr_host_frame_driver_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME host_frame_driver COMMAND mdkr_host_frame_driver_test)
+
+    add_executable(mdkr_input_tick_queue_test
+        ${CMAKE_SOURCE_DIR}/tests/test_input_tick_queue.c
+        ${CMAKE_SOURCE_DIR}/platform/input_tick_queue.c)
+    target_include_directories(mdkr_input_tick_queue_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME input_tick_queue COMMAND mdkr_input_tick_queue_test)
+
+    add_executable(mdkr_viewport_route_cache_test
+        ${CMAKE_SOURCE_DIR}/tests/test_viewport_route_cache.c
+        ${CMAKE_SOURCE_DIR}/platform/viewport_route_cache.c)
+    target_include_directories(mdkr_viewport_route_cache_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME viewport_route_cache COMMAND mdkr_viewport_route_cache_test)
+
+    add_executable(mdkr_audio_service_clock_test
+        ${CMAKE_SOURCE_DIR}/tests/test_audio_service_clock.c
+        ${CMAKE_SOURCE_DIR}/platform/audio_service_clock.c)
+    target_include_directories(mdkr_audio_service_clock_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME audio_service_clock COMMAND mdkr_audio_service_clock_test)
+
+    add_executable(mdkr_audio_queue_controller_test
+        ${CMAKE_SOURCE_DIR}/tests/test_audio_queue_controller.c
+        ${CMAKE_SOURCE_DIR}/platform/audio_queue_controller.c)
+    target_include_directories(mdkr_audio_queue_controller_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME audio_queue_controller
+        COMMAND mdkr_audio_queue_controller_test)
+
     add_executable(mdkr_presentation_snapshot_test
         ${CMAKE_SOURCE_DIR}/tests/test_presentation_snapshot.c
         ${CMAKE_SOURCE_DIR}/platform/presentation_snapshot.c)
@@ -272,6 +332,13 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform)
     add_test(NAME presentation_snapshot
         COMMAND mdkr_presentation_snapshot_test)
+
+    add_executable(mdkr_presentation_packet_test
+        ${CMAKE_SOURCE_DIR}/tests/test_presentation_packet.c
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_presentation_packet.c)
+    target_include_directories(mdkr_presentation_packet_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/fast3d)
+    add_test(NAME presentation_packet COMMAND mdkr_presentation_packet_test)
 
     add_executable(mdkr_shadow_cascade_test
         ${CMAKE_SOURCE_DIR}/tests/test_shadow_cascade.c
@@ -361,9 +428,65 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_include_directories(mdkr_webgpu_lifecycle_test PRIVATE
         ${CMAKE_SOURCE_DIR}/platform)
     add_test(NAME webgpu_lifecycle COMMAND mdkr_webgpu_lifecycle_test)
+
+    add_executable(mdkr_webgpu_callback_latch_test
+        ${CMAKE_SOURCE_DIR}/tests/test_webgpu_callback_latch.c
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_callback_latch.c)
+    target_include_directories(mdkr_webgpu_callback_latch_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/fast3d)
+    find_package(Threads REQUIRED)
+    target_link_libraries(mdkr_webgpu_callback_latch_test PRIVATE Threads::Threads)
+    if(MSVC)
+        target_compile_options(mdkr_webgpu_callback_latch_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_webgpu_callback_latch_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME webgpu_callback_latch COMMAND mdkr_webgpu_callback_latch_test)
+
+    add_executable(mdkr_webgpu_async_request_test
+        ${CMAKE_SOURCE_DIR}/tests/test_webgpu_async_request.c
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_async_request.c)
+    target_include_directories(mdkr_webgpu_async_request_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/fast3d)
+    target_link_libraries(mdkr_webgpu_async_request_test PRIVATE Threads::Threads)
+    if(MSVC)
+        target_compile_options(mdkr_webgpu_async_request_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_webgpu_async_request_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME webgpu_async_request COMMAND mdkr_webgpu_async_request_test)
+
+    add_executable(mdkr_webgpu_surface_policy_test
+        ${CMAKE_SOURCE_DIR}/tests/test_webgpu_surface_policy.c
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_surface_policy.c)
+    target_include_directories(mdkr_webgpu_surface_policy_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/fast3d)
+    if(MSVC)
+        target_compile_options(mdkr_webgpu_surface_policy_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_webgpu_surface_policy_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME webgpu_surface_policy COMMAND mdkr_webgpu_surface_policy_test)
     add_test(NAME webgpu_artifacts
         COMMAND ${CMAKE_COMMAND} -P
                 ${CMAKE_SOURCE_DIR}/tests/check_webgpu_artifacts.cmake)
+endif()
+
+# Repository-publication policy is backend-independent and must run in every
+# native CTest configuration, including OpenGL-only and sanitizer lanes.
+if(BUILD_TESTING)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(
+        NAME public_surface
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_public_surface.py)
+    add_test(
+        NAME oracle_reference_replay
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_oracle_reference_replay.py)
 endif()
 
 # --- Dependencies ---------------------------------------------------------
@@ -378,6 +501,30 @@ if(NOT EMSCRIPTEN)
     else()
         find_package(OpenGL REQUIRED)
     endif()
+endif()
+
+# SDL queue-mode contract: still ROM-free, but deliberately placed after the
+# dependency finder. CI selects SDL's silent dummy driver; running the same
+# executable without that override is an inaudible physical-device witness.
+if(BUILD_TESTING AND NOT EMSCRIPTEN)
+    add_executable(mdkr_audio_sink_contract_test
+        ${CMAKE_SOURCE_DIR}/tests/test_audio_sink_contract.c
+        ${CMAKE_SOURCE_DIR}/platform/audio_queue_controller.c)
+    target_include_directories(mdkr_audio_sink_contract_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${SDL2_INCLUDE_DIRS})
+    target_link_directories(mdkr_audio_sink_contract_test PRIVATE
+        ${SDL2_LIBRARY_DIRS})
+    target_compile_definitions(mdkr_audio_sink_contract_test PRIVATE
+        SDL_MAIN_HANDLED)
+    target_link_libraries(mdkr_audio_sink_contract_test PRIVATE
+        ${SDL2_LIBRARIES})
+    add_test(NAME audio_sink_contract
+        COMMAND mdkr_audio_sink_contract_test
+                --duration-ms 750
+                --require-driver dummy)
+    set_tests_properties(audio_sink_contract PROPERTIES
+        ENVIRONMENT "SDL_AUDIODRIVER=dummy")
 endif()
 
 if(NOT EMSCRIPTEN)
@@ -430,14 +577,14 @@ else()
 endif()
 
 # --- WebGPU backend (M4.5 / M8) -------------------------------------------
-# WebGPU (wgpu-native) is the DEFAULT native render backend and the ONLY
-# in-browser backend (M8); GL stays the guaranteed native runtime fallback.
+# WebGPU (wgpu-native) is the qualified native default and the ONLY in-browser
+# backend (M8); GL stays compiled as an explicit native diagnostic path.
 # Under Emscripten the code is ALWAYS on (there is no GL fallback in the
 # browser) and cmake/webgpu.cmake returns an INTERFACE `webgpu` target wired to
-# `--use-port=emdawnwebgpu` (Dawn's webgpu.h — same C API as wgpu-native, so the
-# vendored gfx_webgpu.c compiles unchanged). Set -DMDKR_WEBGPU_BACKEND=OFF for a
+# `--use-port=emdawnwebgpu` (Dawn's webgpu.h — the compatibility seam lets this
+# repository's gfx_webgpu.c compile for both APIs). Set -DMDKR_WEBGPU_BACKEND=OFF for a
 # native GL-only binary with no wgpu dep. Runtime selection: MDKR_RENDERER.
-option(MDKR_WEBGPU_BACKEND "Build the WebGPU render backend (default backend)" ON)
+option(MDKR_WEBGPU_BACKEND "Build the default native WebGPU render backend" ON)
 if(EMSCRIPTEN)
     set(MDKR_WEBGPU_BACKEND ON CACHE BOOL "" FORCE)   # web = WebGPU only
 endif()
@@ -466,9 +613,9 @@ endif()
 
 # --- Sources --------------------------------------------------------------
 # Game logic (decompiled C). hasm/ supplies the NON_MATCHING C bodies for
-# math_util.c + collision.c; hasm_native/ (written by another agent) is globbed
-# so its C hand-asm replacements auto-join when they appear. The .s files and
-# the hasm/ido/ alternate sources are intentionally NOT globbed.
+# math_util.c + collision.c; hasm_native/ contains the native C replacements
+# for hand-written assembly. The .s files and the hasm/ido/ alternate sources
+# are intentionally NOT globbed.
 file(GLOB GAME_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_SOURCE_DIR}/game/src/*.c
     ${CMAKE_SOURCE_DIR}/game/src/hasm/*.c
@@ -485,23 +632,24 @@ file(GLOB GAME_SOURCES CONFIGURE_DEPENDS
 # GoldenEye-only concept (speedgraphframes), so none of them could ever have
 # compiled here. mgb64 remains their home; recover from git history if a
 # milestone genuinely needs one.
-#
-# host_window.c is the deliberate exception: it still sits here uncompiled
-# because gfx_webgpu.c really does call platformHasHostWebGpu() /
-# platformHostWgpuDevice(). Those symbols are satisfied by the inert
-# gfx_webgpu_stubs.c below, so host_window.c and gfx_webgpu_stubs.c are mutually
-# exclusive — adding host_window.c to this list without dropping the stubs is a
-# duplicate-symbol link error, not a merge.
 set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/main_pc.c
     ${CMAKE_SOURCE_DIR}/platform/display_config.c
     ${CMAKE_SOURCE_DIR}/platform/config_ini.c       # INI engine (game-agnostic)
     ${CMAKE_SOURCE_DIR}/platform/video_config.c     # presentation modes (pure core)
     ${CMAKE_SOURCE_DIR}/platform/video_config_runtime.c  # ini/env/argv + g_pc* publication
+    ${CMAKE_SOURCE_DIR}/platform/user_paths.c       # immutable bundle vs mutable user-data policy
     ${CMAKE_SOURCE_DIR}/platform/pacing_policy.c    # original/enhanced simulation cadence
-    ${CMAKE_SOURCE_DIR}/platform/sim_sched.c        # fixed-authority clock/accumulator (Phase 1)
+    ${CMAKE_SOURCE_DIR}/platform/sim_sched.c        # exact fixed-authority accumulator
+    ${CMAKE_SOURCE_DIR}/platform/host_frame_driver.c # exact host-time -> fixed tick tickets
+    ${CMAKE_SOURCE_DIR}/platform/input_tick_queue.c  # bounded host edges -> tick pad state
+    ${CMAKE_SOURCE_DIR}/platform/viewport_route_cache.c  # object x viewport draw admission
+    ${CMAKE_SOURCE_DIR}/platform/audio_service_clock.c # host audio time -> bounded PCM debt
+    ${CMAKE_SOURCE_DIR}/platform/audio_queue_controller.c # sink drain -> bounded PCM block
     ${CMAKE_SOURCE_DIR}/platform/present_sched.c    # its retrace-branch wiring (Phase 3 Wave B)
     ${CMAKE_SOURCE_DIR}/platform/sim_hash.c         # authoritative-state hash (Phase 1)
+    ${CMAKE_SOURCE_DIR}/platform/gameplay_event_trace.c # ordered transient authority events
+    ${CMAKE_SOURCE_DIR}/platform/input_consumption_trace.c # tick-consumed pad trace
     ${CMAKE_SOURCE_DIR}/platform/presentation_snapshot.c       # presentation shadow state (Phase 3 Wave A)
     ${CMAKE_SOURCE_DIR}/platform/presentation_snapshot_walk.c  # its gObjPtrList/camera capture wiring
     ${CMAKE_SOURCE_DIR}/platform/platform_sdl_min.c
@@ -519,7 +667,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/hasm_stubs_temp.c
     ${CMAKE_SOURCE_DIR}/platform/math_stubs_temp.c
     ${CMAKE_SOURCE_DIR}/platform/mixer.c            # M5: software aspMain audio mixer
-    ${CMAKE_SOURCE_DIR}/platform/audi_port_dkr.c    # M5: audio out + per-frame synth pump
+    ${CMAKE_SOURCE_DIR}/platform/audi_port_dkr.c    # audio-time service + SDL/worklet sinks
     ${CMAKE_SOURCE_DIR}/platform/audio_compat.c     # clean-room synth: banks, filters, CSP player
     ${CMAKE_SOURCE_DIR}/platform/audio_event_queue.c # clean-room ALEventQueue + occupancy stats
     ${CMAKE_SOURCE_DIR}/platform/audio_fx_transfer.c # reverb delay-line transfer planner + guard
@@ -550,7 +698,10 @@ file(GLOB FAST3D_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/platform/fast3d/*
 list(REMOVE_ITEM FAST3D_SOURCES ${CMAKE_SOURCE_DIR}/platform/fast3d/screenshot_series.c)
 list(REMOVE_ITEM FAST3D_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu.c
+    ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_async_request.c
+    ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_callback_latch.c
     ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_fault.c
+    ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_surface_policy.c
     ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_shader.c)
 if(EMSCRIPTEN)
     list(REMOVE_ITEM FAST3D_SOURCES ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_opengl.c)
@@ -558,7 +709,10 @@ endif()
 if(MDKR_WEBGPU_BACKEND)
     list(APPEND FAST3D_SOURCES
         ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu.c
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_async_request.c
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_callback_latch.c
         ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_fault.c
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_surface_policy.c
         ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_shader.c)
     # Backend support TUs (only meaningful with the webgpu code):
     #   port_env.c         — port_env_bool used by the (dormant) pipeline prewarm
@@ -639,7 +793,7 @@ target_compile_definitions(${MDKR_TARGET} PRIVATE
 # CFBundleShortVersionString, which macos/Scripts/build_app_bundle.sh stamps
 # from this same value via PlistBuddy. Kept as its own standalone statement
 # (not folded into the block above) so it stays a one-line, low-conflict diff.
-set(MDKR_VERSION "1.0.0" CACHE STRING "mdkr64 release version (semver)")
+set(MDKR_VERSION "1.0.1" CACHE STRING "mdkr64 release version (semver)")
 target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_VERSION_STRING="${MDKR_VERSION}")
 
 # --- Flags ----------------------------------------------------------------
@@ -686,6 +840,15 @@ if(CMAKE_C_COMPILER_ID MATCHES "Clang" OR EMSCRIPTEN)
         -Werror=implicit-function-declaration
     )
 endif()
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    # GCC's object-size analysis catches writes that cross scalar subobjects
+    # and loops whose runtime bound can exceed the destination array. Both are
+    # native memory-safety defects, even when the surrounding struct happens
+    # to place the next field contiguously today.
+    target_compile_options(${MDKR_TARGET} PRIVATE
+        -Werror=stringop-overflow
+    )
+endif()
 
 # --- Sweep hook: flags that must land AFTER -Wno-everything ----------------
 # `-Wno-everything` above silences the whole warning set, which also disables
@@ -717,7 +880,14 @@ if(NOT EMSCRIPTEN)
         target_link_libraries(${MDKR_TARGET} PRIVATE
             mingw32 SDL2main "-Wl,-Bstatic" SDL2 "-Wl,-Bdynamic" m)
     else()
-        target_link_libraries(${MDKR_TARGET} PRIVATE ${SDL2_LIBRARIES} m)
+        # The app-shell library publishes SDL2 to its sole consumer. Avoid
+        # spelling the same dylib both here and through mdkr64_app: ld64 warns
+        # about the duplicate even though it is harmless. CLI-only builds do
+        # not have that interface and link SDL2 directly.
+        if(NOT MDKR_APP)
+            target_link_libraries(${MDKR_TARGET} PRIVATE ${SDL2_LIBRARIES})
+        endif()
+        target_link_libraries(${MDKR_TARGET} PRIVATE m)
     endif()
     if(APPLE)
         target_link_libraries(${MDKR_TARGET} PRIVATE ${OPENGL_LIB})
@@ -767,7 +937,9 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/file_dialog_stub.cpp)
         if(APPLE)
             enable_language(OBJCXX)
-            list(APPEND APP_SOURCES ${CMAKE_SOURCE_DIR}/platform/app/file_dialog_mac.mm)
+            list(APPEND APP_SOURCES
+                ${CMAKE_SOURCE_DIR}/platform/app/app_activation_mac.mm
+                ${CMAKE_SOURCE_DIR}/platform/app/file_dialog_mac.mm)
         elseif(WIN32)
             list(APPEND APP_SOURCES ${CMAKE_SOURCE_DIR}/platform/app/file_dialog_win.cpp)
         else()
@@ -813,7 +985,7 @@ if(NOT EMSCRIPTEN)
         endif()
         if(APPLE)
             # AppKit: NSOpenPanel. UniformTypeIdentifiers: the UTType extension
-            # filter (weak-linked; the 10.x fallback path is compiled too).
+            # filter available throughout the supported macOS 13+ range.
             target_link_libraries(mdkr64_app PUBLIC
                 ${OPENGL_LIB}
                 "-framework AppKit"
@@ -856,12 +1028,50 @@ if(NOT EMSCRIPTEN)
             target_compile_features(mdkr_app_shell_test PRIVATE cxx_std_17)
             add_test(NAME app_shell COMMAND mdkr_app_shell_test)
 
+            add_executable(mdkr_app_ui_policy_test
+                ${CMAKE_SOURCE_DIR}/tests/test_app_ui_policy.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/app_ui_policy.cpp)
+            target_include_directories(mdkr_app_ui_policy_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_app_ui_policy_test PRIVATE cxx_std_17)
+            add_test(NAME app_ui_policy COMMAND mdkr_app_ui_policy_test)
+
+            add_executable(mdkr_app_lifecycle_test
+                ${CMAKE_SOURCE_DIR}/tests/test_app_lifecycle.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/app_relaunch.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/diag_log.cpp)
+            target_include_directories(mdkr_app_lifecycle_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform
+                ${CMAKE_SOURCE_DIR}/platform/app
+                ${SDL2_INCLUDE_DIRS})
+            target_link_directories(mdkr_app_lifecycle_test PRIVATE
+                ${SDL2_LIBRARY_DIRS})
+            target_compile_features(mdkr_app_lifecycle_test PRIVATE cxx_std_17)
+            find_package(Threads REQUIRED)
+            target_link_libraries(mdkr_app_lifecycle_test PRIVATE
+                ${SDL2_LIBRARIES} Threads::Threads)
+            file(MAKE_DIRECTORY
+                "${CMAKE_CURRENT_BINARY_DIR}/app-test-data/lifecycle-prefs")
+            add_test(NAME app_lifecycle COMMAND mdkr_app_lifecycle_test)
+            set_tests_properties(app_lifecycle PROPERTIES
+                ENVIRONMENT "MDKR_APP_PREFS_DIR=${CMAKE_CURRENT_BINARY_DIR}/app-test-data/lifecycle-prefs"
+                PASS_REGULAR_EXPRESSION "app lifecycle passed"
+                TIMEOUT 30)
+            add_test(NAME cli_version_exact
+                COMMAND ${CMAKE_COMMAND}
+                    -DMDKR_EXECUTABLE=$<TARGET_FILE:${MDKR_TARGET}>
+                    -DMDKR_EXPECTED_VERSION=${MDKR_VERSION}
+                    -P ${CMAKE_SOURCE_DIR}/tests/check_cli_version.cmake)
+
             # Schema round-trip: every key the settings panel renders must have a
             # category, a label, help text, and must resolve back by name. Runs
             # fully headless (no window, no GPU) via the shell's own self-check.
+            set(MDKR_FRAME_LIMIT_UI_CONTRACT_REGEX
+                "recommended=\"Original \\(Recommended / Proven\\)\" group=\"Experimental — Under Construction\" caveat=\"Non-Original choices only alter host pacing and input/event-pump opportunities. In 1.0.1 they do not increase unique visual FPS; the supported US 1.1 game remains at its authored ~30 FPS. Any benefit may be negligible, while higher settings can use more CPU. Original is Recommended / Proven.\"")
             add_test(NAME app_schema COMMAND ${MDKR_TARGET})
             set_tests_properties(app_schema PROPERTIES
-                ENVIRONMENT "MDKR_APP_DUMP_SCHEMA=1;MDKR_AUDIO=0")
+                ENVIRONMENT "MDKR_APP_DUMP_SCHEMA=1;MDKR_AUDIO=0"
+                PASS_REGULAR_EXPRESSION "${MDKR_FRAME_LIMIT_UI_CONTRACT_REGEX}")
 
             # Shell render smoke: drive the launcher for a few frames and require
             # a real captured frame. This is what makes the gate honest — it
@@ -869,9 +1079,105 @@ if(NOT EMSCRIPTEN)
             # 0 (main_app.cpp fails the run when a requested capture is missing).
             # Needs a GPU, so it is skipped when MDKR_SKIP_GPU_TESTS is set.
             if(NOT MDKR_SKIP_GPU_TESTS)
+                set(MDKR_APP_TEST_ROOT "${CMAKE_CURRENT_BINARY_DIR}/app-test-data")
+                file(MAKE_DIRECTORY
+                    "${MDKR_APP_TEST_ROOT}/shell/prefs"
+                    "${MDKR_APP_TEST_ROOT}/shell/saves"
+                    "${MDKR_APP_TEST_ROOT}/settings/prefs"
+                    "${MDKR_APP_TEST_ROOT}/settings/saves"
+                    "${MDKR_APP_TEST_ROOT}/minimum/prefs"
+                    "${MDKR_APP_TEST_ROOT}/minimum/saves"
+                    "${MDKR_APP_TEST_ROOT}/dpi/prefs"
+                    "${MDKR_APP_TEST_ROOT}/dpi/saves"
+                    "${MDKR_APP_TEST_ROOT}/gl/prefs"
+                    "${MDKR_APP_TEST_ROOT}/gl/saves")
+                file(REMOVE
+                    "${MDKR_APP_TEST_ROOT}/shell/video.ini"
+                    "${MDKR_APP_TEST_ROOT}/settings/video.ini"
+                    "${MDKR_APP_TEST_ROOT}/minimum/video.ini"
+                    "${MDKR_APP_TEST_ROOT}/dpi/video.ini"
+                    "${MDKR_APP_TEST_ROOT}/gl/video.ini")
+                file(WRITE "${MDKR_APP_TEST_ROOT}/shell/prefs/mdkr64_app.ini"
+                    "# isolated first-run shell\n")
+                file(WRITE "${MDKR_APP_TEST_ROOT}/settings/prefs/mdkr64_app.ini"
+                    "# isolated first-run settings\n")
+                file(WRITE "${MDKR_APP_TEST_ROOT}/minimum/prefs/mdkr64_app.ini"
+                    "# responsive-layout qualification\nui_scale=2.00\n")
+                file(WRITE "${MDKR_APP_TEST_ROOT}/gl/prefs/mdkr64_app.ini"
+                    "# isolated GL fallback\n")
+                file(WRITE "${MDKR_APP_TEST_ROOT}/dpi/prefs/mdkr64_app.ini"
+                    "# isolated DPI lifecycle\n")
+
                 add_test(NAME app_shell_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_shell_smoke PROPERTIES
-                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_shell_smoke.bmp;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_shell_smoke.bmp;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/shell/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/shell/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/shell/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    LABELS gpu
+                    TIMEOUT 180)
+
+                # Keep the first-run Settings view in the rendered contract:
+                # frame-rate controls must remain discoverable without a ROM.
+                add_test(NAME app_settings_smoke COMMAND ${MDKR_TARGET})
+                set_tests_properties(app_settings_smoke PROPERTIES
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_settings_smoke.bmp;MDKR_APP_PANEL=Settings;MDKR_APP_UI_TRACE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/settings/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/settings/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/settings/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    LABELS gpu
+                    PASS_REGULAR_EXPRESSION "${MDKR_FRAME_LIMIT_UI_CONTRACT_REGEX}"
+                    TIMEOUT 180)
+
+                add_test(NAME app_settings_capture_content
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_app_capture.py
+                        ${CMAKE_CURRENT_BINARY_DIR}/app_settings_smoke.bmp
+                        --self-test)
+                set_tests_properties(app_settings_capture_content PROPERTIES
+                    DEPENDS app_settings_smoke
+                    LABELS gpu
+                    TIMEOUT 60)
+
+                add_test(NAME app_settings_minimum_scale2 COMMAND ${MDKR_TARGET})
+                set_tests_properties(app_settings_minimum_scale2 PROPERTIES
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_settings_minimum_scale2.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_PANEL=Settings;MDKR_APP_UI_TRACE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/minimum/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/minimum/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/minimum/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    LABELS gpu
+                    PASS_REGULAR_EXPRESSION "ui-scale loaded=2.00"
+                    TIMEOUT 180)
+                add_test(NAME app_settings_minimum_scale2_content
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_app_capture.py
+                        ${CMAKE_CURRENT_BINARY_DIR}/app_settings_minimum_scale2.bmp
+                        --self-test)
+                set_tests_properties(app_settings_minimum_scale2_content PROPERTIES
+                    DEPENDS app_settings_minimum_scale2
+                    LABELS gpu
+                    TIMEOUT 60)
+
+                add_test(NAME app_ui_input_persistence
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_app_ui_input.py
+                        $<TARGET_FILE:${MDKR_TARGET}>)
+                set_tests_properties(app_ui_input_persistence PROPERTIES
+                    LABELS gpu
+                    TIMEOUT 900)
+
+                add_test(NAME app_dpi_transition_smoke COMMAND ${MDKR_TARGET})
+                set_tests_properties(app_dpi_transition_smoke PROPERTIES
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=5;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_dpi_transition.bmp;MDKR_APP_SMOKE_DPI_SEQUENCE=1,2,1;MDKR_APP_PANEL=Settings;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/dpi/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/dpi/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/dpi/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    LABELS gpu
+                    PASS_REGULAR_EXPRESSION "dpi transition scale=2 atlasGeneration="
+                    TIMEOUT 180)
+                add_test(NAME app_dpi_transition_content
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_app_capture.py
+                        ${CMAKE_CURRENT_BINARY_DIR}/app_dpi_transition.bmp
+                        --self-test)
+                set_tests_properties(app_dpi_transition_content PROPERTIES
+                    DEPENDS app_dpi_transition_smoke
+                    LABELS gpu
+                    TIMEOUT 60)
+
+                add_test(NAME app_gl_swap_interval_fallback COMMAND ${MDKR_TARGET})
+                set_tests_properties(app_gl_swap_interval_fallback PROPERTIES
+                    ENVIRONMENT "MDKR_RENDERER=gl;MDKR_TEST_GL_SWAP_INTERVAL_FAILURE=1;MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/gl/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/gl/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/gl/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    LABELS gpu
+                    PASS_REGULAR_EXPRESSION "OpenGL swap interval unavailable; using bounded 60 Hz launcher pacing"
                     TIMEOUT 180)
             endif()
         endif()
@@ -1068,13 +1374,10 @@ if(WIN32)
     # is generated from dist/web/assets/favicon.png by tools/wrap_png_as_ico.sh
     # and committed.
     #
-    # MDKR_VERSION is declared here rather than at the top of the file because
-    # the Windows resource is currently its only consumer — this whole block is
-    # meant to stay liftable as one unit. Move it up the moment a second
-    # platform needs a compiled-in version.
+    # MDKR_VERSION is the shared release value declared above: the CLI, app
+    # shell, macOS plist, and this Windows VERSIONINFO resource must agree.
     if(EXISTS "${CMAKE_SOURCE_DIR}/windows/mdkr64.ico")
         enable_language(RC)
-        set(MDKR_VERSION "0.0.0" CACHE STRING "Version embedded in the Windows VERSIONINFO resource")
         set(MDKR_VER_STR "${MDKR_VERSION}")
         if(MDKR_VER_STR STREQUAL "" OR MDKR_VER_STR STREQUAL "0.0.0")
             set(MDKR_VER_STR "0.0.0-dev")

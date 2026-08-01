@@ -5,9 +5,9 @@
 #
 # Ported from mgb64's scripts/release/stamp_provenance.sh (as tools/release/,
 # mirroring mdkr64's tools/ top-level convention -- this repo has no
-# top-level scripts/). Logic is unchanged except the artifact naming
-# convention (mdkr64-<platform>-<version> instead of mgb64-<platform>-...)
-# and the schema tag.
+# top-level scripts/). The public artifact family is
+# `Golden-Balloon-<version>-<platform>-<arch>`; filenames are checked exactly
+# before a sidecar is written.
 #
 # Usage: tools/release/stamp_provenance.sh <asset-path> <version>
 #
@@ -25,6 +25,10 @@ set -euo pipefail
 asset="${1:?usage: stamp_provenance.sh <asset-path> <version>}"
 version="${2:?usage: stamp_provenance.sh <asset-path> <version>}"
 [[ -f "$asset" ]] || { echo "ERROR: asset not found: $asset" >&2; exit 1; }
+if [[ "$version" != "dev" && ! "$version" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
+  echo "ERROR: version must be dev or bare semver (for example 1.0.1)." >&2
+  exit 1
+fi
 
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}';
@@ -41,6 +45,16 @@ digest="$(sha256_of "$asset")"
 commit="${GITHUB_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
 [[ "$commit" != "unknown" ]] || { echo "ERROR: cannot resolve source commit for $asset." >&2; exit 1; }
 
+source_dirty=false
+if [[ -n "$(git status --porcelain --untracked-files=all 2>/dev/null)" ]]; then
+  source_dirty=true
+fi
+if [[ -n "${GITHUB_ACTIONS:-}" && "$source_dirty" == true ]]; then
+  echo "ERROR: hosted release provenance requires a clean tracked source tree." >&2
+  git status --short --untracked-files=all >&2
+  exit 1
+fi
+
 if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
   builder="github-actions"
 else
@@ -51,8 +65,23 @@ run_number="${GITHUB_RUN_NUMBER:-local}"
 workflow="${GITHUB_WORKFLOW:-local}"
 
 base="$(basename "$asset")"
-# Derive the platform label from mdkr64-<platform>-<version>.<ext>.
-platform="$(printf '%s\n' "$base" | sed -E 's/^mdkr64-([A-Za-z0-9]+)-.*/\1/')"
+# Public filenames share one product family while executable and bundle
+# identifiers remain mdkr64 internally.
+macos_unsigned="Golden-Balloon-${version}-macos-arm64-unsigned.dmg"
+macos_trusted="Golden-Balloon-${version}-macos-arm64-signed-notarized.dmg"
+windows_zip="Golden-Balloon-${version}-windows-x64.zip"
+linux_appimage="Golden-Balloon-${version}-linux-x86_64.AppImage"
+linux_tarball="Golden-Balloon-${version}-linux-x86_64.tar.gz"
+case "$base" in
+  "$macos_unsigned"|"$macos_trusted")
+    platform="macos"
+    ;;
+  "$windows_zip") platform="windows" ;;
+  "$linux_appimage"|"$linux_tarball")
+    platform="linux"
+    ;;
+  *) echo "ERROR: cannot derive release platform from asset name: $base" >&2; exit 1 ;;
+esac
 
 out="${asset}.provenance.json"
 cat > "$out" <<EOF
@@ -65,6 +94,7 @@ cat > "$out" <<EOF
   "run_id": "$(json_str "$run_id")",
   "run_number": "$(json_str "$run_number")",
   "sha256": "$(json_str "$digest")",
+  "source_dirty": $source_dirty,
   "version": "$(json_str "$version")",
   "workflow": "$(json_str "$workflow")"
 }

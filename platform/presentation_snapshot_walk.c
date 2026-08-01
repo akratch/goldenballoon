@@ -19,15 +19,18 @@
 
 #include "structs.h"
 #include "camera.h"
+#include "game.h"
+#include "game_ui.h"
 #include "objects.h"
 #include "particles.h"
+#include "racer.h"
 #include "textures_sprites.h" /* OBJ_FLAGS_PARTICLE */
+#include "thread3_main.h"
+#include "tracks.h"
 
 #include "presentation_snapshot.h"
 
-extern Camera gCameras[8];
-extern s32 gNumCameras;
-extern s8 gCutsceneCameraActive;
+extern Camera gCameras[PRESENTATION_SNAPSHOT_MAX_CAMERAS];
 extern f32 gCurCamFOV;
 extern s32 gNoCamShake;
 extern ScreenViewport gScreenViewports[];
@@ -44,7 +47,6 @@ extern ScreenViewport gScreenViewports[];
 static void capture_particle(const Object *object) {
     const Particle *particle = (const Particle *)object;
     PresentationObjectEntry sample;
-    s16 opacity;
 
     memset(&sample, 0, sizeof(sample));
     sample.address = object;
@@ -55,18 +57,14 @@ static void capture_particle(const Object *object) {
     sample.rotation_y = particle->trans.rotation.y_rotation;
     sample.rotation_x = particle->trans.rotation.x_rotation;
     sample.rotation_z = particle->trans.rotation.z_rotation;
-    sample.model_index = -1;
+    /* Particle kind is the stable topology selector used by retained point/
+     * line meshes. It is presentation metadata only, not an Object model ID. */
+    sample.model_index = particle->kind;
     /* A particle's "animation" is its texture frame; there is no
      * ModelInstance to read an animationID/animationFrame from. */
     sample.animation_id = particle->textureFrame;
     sample.animation_frame = 0;
-    opacity = particle->opacity;
-    if (opacity < 0) {
-        opacity = 0;
-    } else if (opacity > 255) {
-        opacity = 255;
-    }
-    sample.opacity = (u8)opacity;
+    sample.opacity = presentation_particle_opacity_u8(particle->opacity);
     sample.is_particle = 1;
     presentation_snapshot_capture_object(&sample);
 }
@@ -105,21 +103,38 @@ static void capture_object(const Object *object) {
     presentation_snapshot_capture_object(&sample);
 }
 
-static void capture_cameras(void) {
-    s32 viewports = gNumCameras;
+static void capture_cameras(uint64_t authored_tick) {
+    s32 cameraIds[PRESENTATION_SNAPSHOT_MAX_VIEWPORTS];
+    s32 cameraCount;
+    s32 gameMode;
+    const LevelHeader *levelHeader;
     s32 viewport;
 
-    if (viewports < 1) {
-        viewports = 1;
+    gameMode = get_game_mode();
+    /* Ordinary menus temporarily borrow camera-shaped matrices and may restore
+     * gCameras[] before this boundary, so they deliberately keep their authored
+     * view-projection. A loaded cutscene level is different: render_scene owns
+     * its bank-4 camera for the full pass, even though the cinematic shell runs
+     * it under GAMEMODE_MENU. Its exact viewport IDs are safe to snapshot. */
+    if (gameMode != GAMEMODE_INGAME && gameMode != GAMEMODE_MENU) {
+        return;
     }
-    if (viewports > PRESENTATION_SNAPSHOT_MAX_VIEWPORTS) {
-        viewports = PRESENTATION_SNAPSHOT_MAX_VIEWPORTS;
+    if (gameMode == GAMEMODE_MENU) {
+        levelHeader = level_header();
+        if (levelHeader == NULL ||
+            (levelHeader->race_type != RACETYPE_CUTSCENE_1 &&
+             levelHeader->race_type != RACETYPE_CUTSCENE_2)) {
+            return;
+        }
     }
 
-    for (viewport = 0; viewport < viewports; viewport++) {
-        /* cam_get_active_camera()'s selection: the cutscene bank is the same
-         * index offset by 4. */
-        const s32 cameraId = gCutsceneCameraActive ? viewport + 4 : viewport;
+    cameraCount = (s32)presentation_snapshot_authored_cameras_copy(
+        authored_tick, cameraIds, ARRAY_COUNT(cameraIds));
+
+    for (viewport = 0; viewport < cameraCount; viewport++) {
+        /* IDs were latched by viewport_main while P2 promotion, cutscene-bank
+         * selection and the TT viewport's local mask were authoritative. */
+        const s32 cameraId = cameraIds[viewport];
         const Camera *camera = &gCameras[cameraId];
         const ScreenViewport *screen = &gScreenViewports[viewport];
         PresentationCameraEntry sample;
@@ -171,7 +186,7 @@ static void capture_cameras(void) {
     }
 }
 
-void presentation_snapshot_capture(void) {
+void presentation_snapshot_capture(uint64_t authored_tick) {
     Object **objects;
     s32 first = 0;
     s32 count = 0;
@@ -181,7 +196,7 @@ void presentation_snapshot_capture(void) {
         return;
     }
 
-    presentation_snapshot_capture_begin();
+    presentation_snapshot_capture_begin_authored(authored_tick);
 
     objects = objGetObjList(&first, &count);
     if (objects != NULL) {
@@ -204,6 +219,6 @@ void presentation_snapshot_capture(void) {
         }
     }
 
-    capture_cameras();
+    capture_cameras(authored_tick);
     presentation_snapshot_capture_commit();
 }

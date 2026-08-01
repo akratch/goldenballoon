@@ -72,12 +72,8 @@ if [ -e "$out" ] && [ "$force" -ne 1 ]; then
 fi
 
 echo "== Running release guard =="
-# MGB64's scripts/ci/check_release_ready.sh has no counterpart here; mdkr64
-# splits the same job across smaller, real tools already used by this repo's
-# own CI (see tools/create_public_launch_repo.sh for the same substitution).
-./tools/check_clean_room.sh
-python3 tools/check_markdown_links.py --repo-root .
-python3 tools/check_shell_syntax.py --repo-root .
+# Validate the exact public repository before archiving its tracked tree.
+./tools/ci/check_release_ready.sh
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/mdkr64-archive.XXXXXX")"
 trap 'rm -rf "$tmpdir"' EXIT

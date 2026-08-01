@@ -33,6 +33,11 @@ extern "C" {
 // mdkr64_headless_main(); 0 when the interactive shell should open.
 int mdkr_is_automation_invocation(int argc, char **argv);
 
+// Returns 1 only for the exact, path-independent informational forms that can
+// run before packaged user paths are initialized. Keeping this deliberately
+// narrow preserves the engine parser's ordering for compound invocations.
+int mdkr_is_side_effect_free_info_invocation(int argc, char **argv);
+
 // Returns 1 if argv contains the explicit `--ui` opt-in (which is stripped
 // before the engine ever sees it). Exposed for the unit test.
 int mdkr_argv_requests_ui(int argc, char **argv);

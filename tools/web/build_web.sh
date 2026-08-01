@@ -63,7 +63,7 @@ fi
 # publisher refuses to publish a dirty tree without an explicit override.
 SRC_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 SRC_SHORT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-if git diff --quiet 2>/dev/null && git diff --cached --quiet 2>/dev/null; then
+if [[ -z "$(git status --porcelain --untracked-files=all 2>/dev/null)" ]]; then
     SRC_DIRTY=false
 else
     SRC_DIRTY=true

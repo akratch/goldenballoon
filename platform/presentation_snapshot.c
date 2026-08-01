@@ -187,6 +187,49 @@ void presentation_snapshot_note_free(const void *object) {
     identity_erase(entry);
 }
 
+bool presentation_snapshot_identity_generation(const void *object,
+                                                uint64_t *generation) {
+    const SnapIdentity *entry;
+
+    if (object == NULL || generation == NULL ||
+        !presentation_snapshot_enabled()) {
+        return false;
+    }
+    entry = identity_find(object);
+    if (entry == NULL || entry->generation == 0u) {
+        return false;
+    }
+    *generation = entry->generation;
+    return true;
+}
+
+bool presentation_snapshot_identity_ensure_generation(
+    const void *object, uint64_t *generation) {
+    SnapIdentity *entry;
+
+    if (object == NULL || generation == NULL ||
+        !presentation_snapshot_enabled()) {
+        return false;
+    }
+    entry = identity_find(object);
+    if (entry == NULL) {
+        entry = identity_insert(object);
+        if (entry == NULL) {
+            return false;
+        }
+        entry->generation = ++s_generation_serial;
+        entry->last_capture = 0u;
+        entry->last_position[0] = 0.0f;
+        entry->last_position[1] = 0.0f;
+        entry->last_position[2] = 0.0f;
+    }
+    if (entry->generation == 0u) {
+        return false;
+    }
+    *generation = entry->generation;
+    return true;
+}
+
 /* ---- publish ring -------------------------------------------------------- */
 
 /*
@@ -227,7 +270,74 @@ typedef struct SnapCameraHistory {
 
 static SnapCameraHistory s_camera_history[PRESENTATION_SNAPSHOT_MAX_VIEWPORTS];
 
+typedef struct AuthoredCameraSet {
+    uint64_t tick;
+    uint8_t valid_mask;
+    uint8_t conflict_mask;
+    int32_t ids[PRESENTATION_SNAPSHOT_MAX_VIEWPORTS];
+    bool active;
+} AuthoredCameraSet;
+
+static AuthoredCameraSet s_authored_cameras;
+
 static PresentationSnapshotStats s_stats;
+
+void presentation_snapshot_authored_cameras_begin(uint64_t authored_tick) {
+    memset(&s_authored_cameras, 0, sizeof(s_authored_cameras));
+    if (!presentation_snapshot_enabled()) {
+        return;
+    }
+    s_authored_cameras.tick = authored_tick;
+    s_authored_cameras.active = true;
+}
+
+bool presentation_snapshot_authored_camera_record(int viewport_index,
+                                                  int camera_id) {
+    uint8_t viewport_mask;
+
+    if (!s_authored_cameras.active || viewport_index < 0 ||
+        viewport_index >= PRESENTATION_SNAPSHOT_MAX_VIEWPORTS ||
+        camera_id < 0 || camera_id >= PRESENTATION_SNAPSHOT_MAX_CAMERAS) {
+        return false;
+    }
+    viewport_mask = (uint8_t)(1u << viewport_index);
+    if ((s_authored_cameras.valid_mask & viewport_mask) != 0u &&
+        s_authored_cameras.ids[viewport_index] != camera_id) {
+        /* One replayed viewport cannot safely substitute two authored cameras.
+         * Preserve the first identity and make the whole set fail closed. */
+        s_authored_cameras.conflict_mask |= viewport_mask;
+        return false;
+    }
+    s_authored_cameras.ids[viewport_index] = camera_id;
+    s_authored_cameras.valid_mask |= viewport_mask;
+    return true;
+}
+
+size_t presentation_snapshot_authored_cameras_copy(
+    uint64_t authored_tick, int32_t *out, size_t capacity) {
+    size_t count = 0u;
+
+    if (!s_authored_cameras.active || s_authored_cameras.tick != authored_tick ||
+        s_authored_cameras.conflict_mask != 0u || out == NULL ||
+        capacity == 0u) {
+        return 0u;
+    }
+    while (count < PRESENTATION_SNAPSHOT_MAX_VIEWPORTS &&
+           (s_authored_cameras.valid_mask & (uint8_t)(1u << count)) != 0u) {
+        if (count >= capacity) {
+            return 0u;
+        }
+        out[count] = s_authored_cameras.ids[count];
+        count++;
+    }
+    /* Sparse ownership is not a camera list. Fail closed instead of shifting
+     * a later viewport into an earlier snapshot slot. */
+    if (s_authored_cameras.valid_mask !=
+        (uint8_t)((1u << count) - 1u)) {
+        return 0u;
+    }
+    return count;
+}
 
 static int pick_write_slot(void) {
     for (int slot = 0; slot < 3; slot++) {
@@ -280,7 +390,7 @@ static float distance_squared(const float a[3], const float b[3]) {
     return dx * dx + dy * dy + dz * dz;
 }
 
-void presentation_snapshot_capture_begin(void) {
+static void presentation_snapshot_capture_begin_impl(uint64_t authored_tick) {
     PresentationSnapshot *write;
 
     if (!presentation_snapshot_enabled()) {
@@ -292,10 +402,21 @@ void presentation_snapshot_capture_begin(void) {
     write->valid = false;
     write->generation = 0;
     write->stage_generation = s_stage_generation;
+    write->authored_tick = authored_tick;
     write->object_count = 0;
     write->camera_count = 0;
     s_write_failed = false;
     s_capturing = true;
+}
+
+void presentation_snapshot_capture_begin(void) {
+    /* Unit/synthetic writers get a deterministic adjacent timeline without
+     * needing to know the production scheduler's tick index. */
+    presentation_snapshot_capture_begin_impl(s_capture_serial);
+}
+
+void presentation_snapshot_capture_begin_authored(uint64_t authored_tick) {
+    presentation_snapshot_capture_begin_impl(authored_tick);
 }
 
 bool presentation_snapshot_capture_object(
@@ -455,6 +576,11 @@ void presentation_snapshot_capture_commit(void) {
         if (entry->discontinuity) {
             s_stats.discontinuities++;
         }
+        if (entry->camera_id >= 0 &&
+            entry->camera_id < PRESENTATION_SNAPSHOT_MAX_CAMERAS) {
+            s_stats.camera_id_mask |= 1ull << (unsigned)entry->camera_id;
+            s_stats.camera_captures[entry->camera_id]++;
+        }
     }
 
     s_previous = s_current;
@@ -484,8 +610,10 @@ void presentation_snapshot_stage_reset(void) {
         s_frames[slot].object_count = 0;
         s_frames[slot].camera_count = 0;
         s_frames[slot].generation = 0;
+        s_frames[slot].authored_tick = 0;
     }
     memset(s_camera_history, 0, sizeof(s_camera_history));
+    memset(&s_authored_cameras, 0, sizeof(s_authored_cameras));
     identity_reset();
     s_current = -1;
     s_previous = -1;
@@ -510,6 +638,23 @@ const PresentationSnapshot *presentation_snapshot_previous(void) {
     return &s_frames[s_previous];
 }
 
+bool presentation_snapshot_replay_target_tick(
+    uint64_t authored_task_tick, uint64_t *target_tick) {
+    const PresentationSnapshot *current = presentation_snapshot_current();
+    const PresentationSnapshot *previous = presentation_snapshot_previous();
+
+    if (target_tick == NULL || current == NULL || previous == NULL ||
+        !current->valid || !previous->valid ||
+        current->stage_generation != previous->stage_generation ||
+        authored_task_tick == UINT64_MAX ||
+        previous->authored_tick != authored_task_tick ||
+        current->authored_tick != authored_task_tick + 1u) {
+        return false;
+    }
+    *target_tick = current->authored_tick;
+    return true;
+}
+
 void presentation_snapshot_get_stats(PresentationSnapshotStats *out) {
     if (out != NULL) {
         *out = s_stats;
@@ -519,6 +664,7 @@ void presentation_snapshot_get_stats(PresentationSnapshotStats *out) {
 void presentation_snapshot_shutdown(void) {
     memset(s_frames, 0, sizeof(s_frames));
     memset(s_camera_history, 0, sizeof(s_camera_history));
+    memset(&s_authored_cameras, 0, sizeof(s_authored_cameras));
     identity_reset();
     memset(&s_stats, 0, sizeof(s_stats));
     s_current = -1;
@@ -534,12 +680,34 @@ void presentation_snapshot_shutdown(void) {
 
 static void presentation_snapshot_report(void) {
     printf("[SNAPSHOT] captures=%llu objects_peak=%llu discontinuities=%llu "
-           "overflows=%llu resets=%llu\n",
+           "overflows=%llu resets=%llu camera_mask=%llu "
+           "cam0=%llu cam1=%llu cam2=%llu cam3=%llu "
+           "cam4=%llu cam5=%llu cam6=%llu cam7=%llu "
+           "caminterp0=%llu caminterp1=%llu caminterp2=%llu "
+           "caminterp3=%llu caminterp4=%llu caminterp5=%llu "
+           "caminterp6=%llu caminterp7=%llu\n",
            (unsigned long long)s_stats.captures,
            (unsigned long long)s_stats.objects_peak,
            (unsigned long long)s_stats.discontinuities,
            (unsigned long long)s_stats.overflows,
-           (unsigned long long)s_stats.resets);
+           (unsigned long long)s_stats.resets,
+           (unsigned long long)s_stats.camera_id_mask,
+           (unsigned long long)s_stats.camera_captures[0],
+           (unsigned long long)s_stats.camera_captures[1],
+           (unsigned long long)s_stats.camera_captures[2],
+           (unsigned long long)s_stats.camera_captures[3],
+           (unsigned long long)s_stats.camera_captures[4],
+           (unsigned long long)s_stats.camera_captures[5],
+           (unsigned long long)s_stats.camera_captures[6],
+           (unsigned long long)s_stats.camera_captures[7],
+           (unsigned long long)s_stats.camera_interpolations[0],
+           (unsigned long long)s_stats.camera_interpolations[1],
+           (unsigned long long)s_stats.camera_interpolations[2],
+           (unsigned long long)s_stats.camera_interpolations[3],
+           (unsigned long long)s_stats.camera_interpolations[4],
+           (unsigned long long)s_stats.camera_interpolations[5],
+           (unsigned long long)s_stats.camera_interpolations[6],
+           (unsigned long long)s_stats.camera_interpolations[7]);
     fflush(stdout);
 }
 
@@ -579,6 +747,29 @@ void presentation_lerp3(const float a[3], const float b[3],
         out[axis] = presentation_lerp1(a[axis], b[axis], numerator,
                                        denominator);
     }
+}
+
+uint8_t presentation_lerp_u8(uint8_t a, uint8_t b, uint64_t numerator,
+                             uint64_t denominator) {
+    const float value =
+        presentation_lerp1((float)a, (float)b, numerator, denominator);
+    return (uint8_t)(value + 0.5f);
+}
+
+uint8_t presentation_particle_opacity_u8(int16_t opacity) {
+    return (uint8_t)(((uint16_t)opacity) >> 8);
+}
+
+uint8_t presentation_scale_opacity_u8(uint8_t authored, uint8_t current,
+                                      uint8_t target) {
+    uint32_t scaled;
+
+    if (current == 0u || current == target || authored == 0u) {
+        return authored;
+    }
+    scaled = ((uint32_t)authored * (uint32_t)target + current / 2u) /
+             current;
+    return (uint8_t)(scaled > UINT8_MAX ? UINT8_MAX : scaled);
 }
 
 int16_t presentation_lerp_angle(int16_t a, int16_t b, uint64_t numerator,
@@ -628,13 +819,6 @@ static void object_pose_from_entry(const PresentationObjectEntry *entry,
     out->interpolated = 0u;
 }
 
-static uint8_t lerp_u8(uint8_t a, uint8_t b, uint64_t numerator,
-                       uint64_t denominator) {
-    const float value =
-        presentation_lerp1((float)a, (float)b, numerator, denominator);
-    return (uint8_t)(value + 0.5f);
-}
-
 static bool resolve_object_pair(const PresentationSnapshot *current,
                                 size_t index, uint64_t numerator,
                                 uint64_t denominator,
@@ -677,8 +861,8 @@ static bool resolve_object_pair(const PresentationSnapshot *current,
     out->rotation_z = presentation_lerp_angle(before->rotation_z,
                                               entry->rotation_z, numerator,
                                               denominator);
-    out->opacity =
-        lerp_u8(before->opacity, entry->opacity, numerator, denominator);
+    out->opacity = presentation_lerp_u8(
+        before->opacity, entry->opacity, numerator, denominator);
 
     /* Discrete: previous until the tick completes (see the header). */
     use_current = presentation_discrete_use_current(numerator, denominator);
@@ -707,6 +891,80 @@ bool presentation_snapshot_resolve_object(const void *address,
         return false;
     }
     return resolve_object_pair(current, index, numerator, denominator, out);
+}
+
+bool presentation_snapshot_resolve_object_generation(
+    const void *address, uint64_t generation, uint64_t numerator,
+    uint64_t denominator, PresentationObjectPose *out) {
+    const PresentationSnapshot *current = presentation_snapshot_current();
+    size_t index;
+
+    if (out == NULL || current == NULL || !current->valid || generation == 0u) {
+        return false;
+    }
+    index = frame_lookup(current, address);
+    if (index == (size_t)-1 ||
+        current->objects[index].generation != generation) {
+        return false;
+    }
+    return resolve_object_pair(current, index, numerator, denominator, out);
+}
+
+bool presentation_snapshot_deformation_compatible(const void *address,
+                                                   uint64_t generation) {
+    const PresentationSnapshot *current = presentation_snapshot_current();
+    const PresentationSnapshot *previous = presentation_snapshot_previous();
+    const PresentationObjectEntry *now;
+    const PresentationObjectEntry *before;
+    size_t now_index;
+    size_t before_index;
+
+    if (address == NULL || generation == 0u || current == NULL ||
+        previous == NULL || !current->valid || !previous->valid ||
+        current->stage_generation != previous->stage_generation) {
+        return false;
+    }
+    now_index = frame_lookup(current, address);
+    before_index = frame_lookup(previous, address);
+    if (now_index == (size_t)-1 || before_index == (size_t)-1) {
+        return false;
+    }
+    now = &current->objects[now_index];
+    before = &previous->objects[before_index];
+    return !now->discontinuity && !before->discontinuity &&
+           !now->is_particle && !before->is_particle &&
+           now->generation == generation &&
+           before->generation == generation &&
+           now->model_index == before->model_index &&
+           now->animation_id == before->animation_id;
+}
+
+bool presentation_snapshot_particle_deformation_compatible(
+    const void *address, uint64_t generation) {
+    const PresentationSnapshot *current = presentation_snapshot_current();
+    const PresentationSnapshot *previous = presentation_snapshot_previous();
+    const PresentationObjectEntry *now;
+    const PresentationObjectEntry *before;
+    size_t now_index;
+    size_t before_index;
+
+    if (address == NULL || generation == 0u || current == NULL ||
+        previous == NULL || !current->valid || !previous->valid ||
+        current->stage_generation != previous->stage_generation) {
+        return false;
+    }
+    now_index = frame_lookup(current, address);
+    before_index = frame_lookup(previous, address);
+    if (now_index == (size_t)-1 || before_index == (size_t)-1) {
+        return false;
+    }
+    now = &current->objects[now_index];
+    before = &previous->objects[before_index];
+    return !now->discontinuity && !before->discontinuity &&
+           now->is_particle && before->is_particle &&
+           now->generation == generation &&
+           before->generation == generation &&
+           now->model_index == before->model_index;
 }
 
 bool presentation_snapshot_resolve_object_at(size_t index,
@@ -738,6 +996,7 @@ bool presentation_snapshot_resolve_camera(int viewport_index,
     }
     entry = &current->cameras[viewport_index];
 
+    out->camera_id = entry->camera_id;
     out->position[0] = entry->position[0];
     out->position[1] = entry->position[1];
     out->position[2] = entry->position[2];
@@ -803,5 +1062,9 @@ bool presentation_snapshot_resolve_camera(int viewport_index,
             ? entry->apply_shake
             : before->apply_shake;
     out->interpolated = 1u;
+    if (entry->camera_id >= 0 &&
+        entry->camera_id < PRESENTATION_SNAPSHOT_MAX_CAMERAS) {
+        s_stats.camera_interpolations[entry->camera_id]++;
+    }
     return true;
 }

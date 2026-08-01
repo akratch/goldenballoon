@@ -11,7 +11,7 @@ checked-in game data is required.
 The first browser document must:
 
 * pass the real adapter gate and ROM identity/byte-order path;
-* instantiate WebGPU/wasm and advance a 3600-frame rAF-driven loop;
+* instantiate WebGPU/wasm and advance a 3600-opportunity rAF-driven loop;
 * follow the title-to-Time-Trial fixture into an actual race;
 * produce non-flat, changing screenshots across menus and gameplay;
 * sustain the contained authored ~30 Hz NTSC complete-loop cadence without
@@ -71,6 +71,7 @@ ROM_BYTES = 12 * 1024 * 1024
 BROWSER_FRAME_P95_BUDGET_MS = 40.0
 BROWSER_FRAME_P99_BUDGET_MS = 45.0
 BROWSER_PIPELINE_FRAME_BUDGET = 2
+BROWSER_GPU_IN_FLIGHT_CAP = 2
 
 PACE_RE = re.compile(
     r"\[PACE\] frame=(\d+) R=(\d+) wf=(\d+) cumwf=(\d+) dtms=([0-9.]+)"
@@ -121,6 +122,8 @@ WGPU_PERF_RE = re.compile(
     r"asyncFailed=(\d+)\s+holdFrames=(\d+)\s+maxHoldStreak=(\d+)\s+"
     r"maxPipelineFrames=(\d+)\s+maxPending=(\d+)"
 )
+WGPU_BACKPRESSURE_RE = re.compile(r"\[WGPU-BACKPRESSURE\]\s+(.*)")
+PRESENT_SCHED_SUMMARY_RE = re.compile(r"\[PRESENTSCHED-SUMMARY\]\s+(.*)")
 WORLD_SHADOW_RE = re.compile(
     r"\[WORLD-SHADOW\]\s+backend=webgpu\s+attempted=(\d+)\s+"
     r"complete=(\d+)\s+fallback=(\d+)\s+resourceFailures=(\d+)\s+"
@@ -151,6 +154,19 @@ class CheckFailure(RuntimeError):
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise CheckFailure(message)
+
+
+def parse_single_integer_summary(
+    lines: list[str], pattern: re.Pattern[str], name: str
+) -> dict[str, int]:
+    rows = [match.group(1) for line in lines if (match := pattern.search(line))]
+    require(len(rows) == 1, f"browser emitted {len(rows)} {name} rows")
+    fields: dict[str, int] = {}
+    for token in rows[0].split():
+        key, separator, value = token.partition("=")
+        if separator:
+            fields[key] = int(value)
+    return fields
 
 
 def resolve_path(value: str) -> Path:
@@ -1327,6 +1343,7 @@ def run_check(args: argparse.Namespace) -> None:
                 "persistDelayOnceMs": 150,
                 "env": {
                     "MDKR_TRACE": "1",
+                    "MDKR_PRESENT_SCHED_TRACE": "1",
                     "MDKR_AUTOPILOT": "1",
                     "MDKR_AUDIO": "1",
                     "MDKR_EVTQ_STATS": "1",
@@ -1784,10 +1801,18 @@ def run_check(args: argparse.Namespace) -> None:
                 "browser AudioWorklet did not run, consume PCM, and close "
                 f"cleanly (or starved its ring): {audio}",
             )
+            # `--headless-frames` budgets host opportunities. The browser
+            # bridge deliberately publishes only successful canvas commits,
+            # which can be fewer while WebGPU holds an incomplete async-
+            # pipeline frame. The exact relationship is proved below by
+            # joining scheduler and backend shutdown telemetry.
+            surface_frames = first_snapshot.get("frames")
             require(
-                first_snapshot.get("frames") == args.frames,
-                f"wasm stopped at frame {first_snapshot.get('frames')}, "
-                f"wanted {args.frames}",
+                isinstance(surface_frames, (int, float))
+                and float(surface_frames).is_integer()
+                and 0 < surface_frames <= args.frames,
+                "browser published an invalid committed-surface count: "
+                f"{surface_frames}",
             )
             first_save = first_snapshot.get("save", {})
             require(
@@ -1986,11 +2011,135 @@ def run_check(args: argparse.Namespace) -> None:
                 async_creates > 0
                 and async_ready == async_creates
                 and async_failed == 0
+                and hold_frames
+                    <= async_creates * BROWSER_PIPELINE_FRAME_BUDGET
                 and max_hold_streak <= BROWSER_PIPELINE_FRAME_BUDGET
                 and max_pipeline_frames <= BROWSER_PIPELINE_FRAME_BUDGET
                 and 0 < max_pending <= async_creates,
                 "browser async-pipeline telemetry is incoherent: "
                 f"{wgpu_perf_rows[0]}",
+            )
+            sched = parse_single_integer_summary(
+                cdp.console,
+                PRESENT_SCHED_SUMMARY_RE,
+                "PRESENTSCHED-SUMMARY",
+            )
+            required_sched = {
+                "entries",
+                "ticks",
+                "presents",
+                "surfaceupdates",
+                "simticks",
+                "issued",
+                "pending",
+                "catchup",
+                "elided",
+                "updates",
+                "updatebad",
+                "updatemin",
+                "updatemax",
+                "effectiveupdates",
+                "bootstrap",
+                "effectivebootstrap",
+                "tickfields",
+            }
+            require(
+                required_sched <= sched.keys(),
+                "browser scheduler summary is missing accounting fields: "
+                f"{sorted(required_sched - sched.keys())}",
+            )
+            require(
+                sched["entries"] == args.frames
+                and sched["presents"] == args.frames
+                and sched["ticks"] == sched["simticks"]
+                and sched["ticks"] == sched["issued"]
+                and sched["ticks"]
+                    == sched["entries"] + sched["catchup"]
+                and sched["elided"] == sched["catchup"]
+                and sched["pending"] == 0,
+                "browser host opportunities, catch-up ticks, and issued work "
+                f"do not account exactly: {sched}",
+            )
+            require(
+                sched["updates"] + 1 == sched["simticks"]
+                and sched["effectiveupdates"] + 1 == sched["simticks"]
+                and sched["effectivebootstrap"] == sched["bootstrap"],
+                "browser fixed-tick accounting does not include exactly one "
+                f"matching bootstrap update: {sched}",
+            )
+            require(
+                sched["updatebad"] == 0
+                and sched["updatemin"] == sched["tickfields"]
+                and sched["updatemax"] == sched["tickfields"],
+                "browser emitted a non-fixed steady-state game update: "
+                f"{sched}",
+            )
+            backpressure = parse_single_integer_summary(
+                cdp.console,
+                WGPU_BACKPRESSURE_RE,
+                "WGPU-BACKPRESSURE",
+            )
+            required_backpressure = {
+                "cap",
+                "submitted",
+                "completed",
+                "presented",
+                "held",
+                "unavailable",
+                "inflight",
+                "highwater",
+                "skips",
+                "failures",
+                "abandoned",
+            }
+            require(
+                required_backpressure <= backpressure.keys(),
+                "browser WebGPU backpressure row is missing accounting "
+                "fields: "
+                f"{sorted(required_backpressure - backpressure.keys())}",
+            )
+            startup_non_submitted = (
+                sched["presents"] - backpressure["submitted"]
+            )
+            require(
+                0 <= startup_non_submitted <= 3,
+                "browser exceeded its bounded three-opportunity graphics "
+                f"bootstrap: {startup_non_submitted} opportunities; "
+                f"scheduler={sched} backpressure={backpressure}",
+            )
+            accounted_submissions = (
+                backpressure["presented"]
+                + backpressure["held"]
+                + backpressure["unavailable"]
+            )
+            accounted_opportunities = (
+                startup_non_submitted + backpressure["submitted"]
+            )
+            require(
+                backpressure["submitted"]
+                    == accounted_submissions
+                and sched["presents"] == accounted_opportunities
+                and backpressure["presented"]
+                    == sched["surfaceupdates"]
+                    == int(surface_frames)
+                and backpressure["held"] == hold_frames
+                and backpressure["unavailable"] == 0,
+                "browser canvas commits, WebGPU holds, and startup bootstrap "
+                "do not exactly account for every host opportunity: "
+                f"surface={surface_frames} holdFrames={hold_frames} "
+                f"startup={startup_non_submitted} scheduler={sched} "
+                f"backpressure={backpressure}",
+            )
+            require(
+                backpressure["completed"] == backpressure["submitted"]
+                and backpressure["inflight"] == 0
+                and backpressure["cap"] == BROWSER_GPU_IN_FLIGHT_CAP
+                and 0 < backpressure["highwater"] <= backpressure["cap"]
+                and backpressure["skips"] == 0
+                and backpressure["failures"] == 0
+                and backpressure["abandoned"] == 0,
+                "browser WebGPU queue did not drain cleanly within its "
+                f"declared cap: {backpressure}",
             )
             gfx_shutdown_rows = [
                 tuple(int(value) for value in match.groups())
@@ -2694,7 +2843,8 @@ def run_check(args: argparse.Namespace) -> None:
 
             print(
                 "check_browser_runtime: PASS — "
-                f"{args.frames} wasm/WebGPU frames, median {fps:.1f} fps "
+                f"{args.frames} wasm/WebGPU host opportunities, "
+                f"{int(surface_frames)} canvas updates, median {fps:.1f} fps "
                 f"({stable_ratio:.1%} R=2, no sub-two-field updates), "
                 f"p95/p99/max "
                 f"{p95_dt:.2f}/{p99_dt:.2f}/{max_dt:.2f} ms "

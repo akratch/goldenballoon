@@ -1,6 +1,5 @@
 /*
- * present_sched.c — parallel authoritative accumulator for the retrace branch.
- * See present_sched.h for why it is fed the pacer's committed field count.
+ * present_sched.c — presentation facade for the authoritative host driver.
  */
 #include "present_sched.h"
 
@@ -9,18 +8,20 @@
 #include <string.h>
 #include <time.h>
 
+#include "host_frame_driver.h"
+#include "pacing_policy.h"
 #include "platform_os.h"
 #include "presentation_snapshot.h"
-#include "sim_sched.h"
+#include "fast3d/gfx_presentation_packet.h"
+#include "fast3d/gfx_shadow_frame.h"
 
 int g_simTickCounter = 0;
 
-static SimSched s_sched;
+static HostFrameDriver s_driver;
 static int      s_ready = 0;
 static int      s_trace = -1;
 
-/* Divergence census: how often the accumulator disagreed with the containment
- * loop's "one branch entry == one tick", and by how much at worst. */
+/* Clock/ticket census: due-ticket burst shape and maximum unissued debt. */
 static uint64_t s_entries = 0;
 static uint64_t s_zero_due = 0;      /* entries the accumulator called idle */
 static uint64_t s_multi_due = 0;     /* entries it wanted to catch up on */
@@ -29,6 +30,21 @@ static long long s_worst_lag = 0;    /* min (ticks - presents) */
 static uint64_t s_interpolated = 0;  /* presents drawn between two ticks */
 static uint64_t s_interpolated_views = 0; /* cameras actually substituted */
 static uint64_t s_stale = 0;         /* presents that found a stale list */
+static uint64_t s_real_endpoints = 0;
+static uint64_t s_replayed_endpoints = 0;
+static uint64_t s_elided = 0;        /* catch-up ticks not submitted/presented */
+static bool s_render_elided;
+static bool s_surface_elided;
+static uint64_t s_game_updates = 0;
+static uint64_t s_bad_game_updates = 0;
+static unsigned s_game_update_min = 0;
+static unsigned s_game_update_max = 0;
+static unsigned s_bootstrap_update = 0;
+static uint64_t s_effective_updates = 0;
+static uint64_t s_effective_diverged = 0;
+static unsigned s_effective_update_min = 0;
+static unsigned s_effective_update_max = 0;
+static unsigned s_bootstrap_effective = 0;
 
 static void present_sched_lazy_init(void) {
     if (s_ready) {
@@ -37,27 +53,119 @@ static void present_sched_lazy_init(void) {
     /* The pacer's resolved field clock, not platform_source_field_hz(): a
      * MDKR_FIELD_HZ diagnostic override must move both or the accumulator
      * would model a different second than the pacer is enforcing. */
-    sim_sched_init(&s_sched, (unsigned)platform_pace_field_hz());
+    host_frame_driver_init(
+        &s_driver, (unsigned)platform_pace_field_hz(),
+        (unsigned)platform_sim_tick_fields());
     s_ready = 1;
 }
 
-static int s_present_rate = -1;
+static MdkrPresentPolicy s_present_policy = {
+    MDKR_PRESENT_ORIGINAL, 0u
+};
+static MdkrPresentPolicy s_present_requested_policy = {
+    MDKR_PRESENT_ORIGINAL, 0u
+};
+static int s_present_policy_ready;
 static int s_test_replay_walk = -1;
 static int s_snapshot_forced = 0;
 static int s_smoothing = -1;
+static int s_test_presentation_replay = -1;
+static int s_internal_replay_test = -1;
+
+bool present_sched_internal_replay_test_enabled(void) {
+    if (s_internal_replay_test < 0) {
+        const char *token = getenv("MDKR_INTERNAL_TEST_TOKEN");
+        s_internal_replay_test =
+            token != NULL &&
+            strcmp(token, "mdkr64-presentation-replay-v1") == 0;
+    }
+    return s_internal_replay_test != 0;
+}
+
+static void present_policy_lazy_init(void) {
+    const char *value;
+
+    if (s_present_policy_ready) {
+        return;
+    }
+    value = getenv("MDKR_PRESENT_RATE");
+    if (value == NULL || value[0] == '\0' ||
+        !mdkr_present_policy_parse(value, &s_present_requested_policy)) {
+        s_present_requested_policy.kind = MDKR_PRESENT_ORIGINAL;
+        s_present_requested_policy.rate = 0u;
+    }
+    s_present_policy = s_present_requested_policy;
+#ifdef __EMSCRIPTEN__
+    if (s_present_policy.kind == MDKR_PRESENT_UNCAPPED) {
+        /* rAF is the browser's presentation ceiling. `uncapped` can arrive
+         * from a shared config file or diagnostic env, but must never imply a
+         * native-style unbounded swapchain in this build. */
+        s_present_policy.kind = MDKR_PRESENT_DISPLAY;
+        s_present_policy.rate = 0u;
+        fprintf(stderr,
+                "[PRESENT-POLICY] platform=web requested=uncapped "
+                "effective=display reason=raf-ceiling\n");
+    }
+#endif
+    s_present_policy_ready = 1;
+}
 
 unsigned present_sched_present_rate(void) {
-    if (s_present_rate < 0) {
-        const char *value = getenv("MDKR_PRESENT_RATE");
-        int parsed = (value != NULL && value[0] != '\0') ? atoi(value) : 0;
-        /* Bounded like the pacing policy's field clock: a nonsense rate must
-         * become "off", never an unbounded present subloop. */
-        if (parsed < 0 || parsed > 480) {
-            parsed = 0;
-        }
-        s_present_rate = parsed;
+    present_policy_lazy_init();
+    return s_present_policy.kind == MDKR_PRESENT_CAPPED
+        ? s_present_policy.rate : 0u;
+}
+
+MdkrPresentPolicyKind present_sched_present_kind(void) {
+    present_policy_lazy_init();
+    return s_present_policy.kind;
+}
+
+unsigned present_sched_present_requested_rate(void) {
+    present_policy_lazy_init();
+    return s_present_requested_policy.kind == MDKR_PRESENT_CAPPED
+        ? s_present_requested_policy.rate : 0u;
+}
+
+MdkrPresentPolicyKind present_sched_present_requested_kind(void) {
+    present_policy_lazy_init();
+    return s_present_requested_policy.kind;
+}
+
+bool present_sched_present_subloop(void) {
+    const unsigned tick_rate =
+        (unsigned)platform_pace_field_hz() /
+        (unsigned)platform_sim_tick_fields();
+    present_policy_lazy_init();
+    return mdkr_present_policy_needs_subloop(
+        &s_present_policy, tick_rate) != 0;
+}
+
+bool present_sched_backend_vsync_enabled(void) {
+    present_policy_lazy_init();
+    return mdkr_present_policy_uses_vsync(&s_present_policy) != 0;
+}
+
+const char *present_sched_present_policy_name(void) {
+    present_policy_lazy_init();
+    switch (s_present_policy.kind) {
+        case MDKR_PRESENT_CAPPED: return "capped";
+        case MDKR_PRESENT_DISPLAY: return "display";
+        case MDKR_PRESENT_UNCAPPED: return "uncapped";
+        case MDKR_PRESENT_ORIGINAL:
+        default: return "original";
     }
-    return (unsigned)s_present_rate;
+}
+
+const char *present_sched_present_requested_policy_name(void) {
+    present_policy_lazy_init();
+    switch (s_present_requested_policy.kind) {
+        case MDKR_PRESENT_CAPPED: return "capped";
+        case MDKR_PRESENT_DISPLAY: return "display";
+        case MDKR_PRESENT_UNCAPPED: return "uncapped";
+        case MDKR_PRESENT_ORIGINAL:
+        default: return "original";
+    }
 }
 
 static void replay_walk_lazy_init(void) {
@@ -66,6 +174,10 @@ static void replay_walk_lazy_init(void) {
     }
     {
         const char *value = getenv("MDKR_TEST_REPLAY_WALK");
+        if (!present_sched_internal_replay_test_enabled()) {
+            s_test_replay_walk = 0;
+            return;
+        }
         if (value == NULL || value[0] == '\0') {
             s_test_replay_walk = 0;
         } else if (strcmp(value, "recompose") == 0) {
@@ -88,21 +200,54 @@ bool present_sched_test_force_recompose(void) {
     return s_test_replay_walk == 2;
 }
 
+static bool test_presentation_replay_enabled(void) {
+    if (s_test_presentation_replay < 0) {
+        const char *explicit_test =
+            getenv("MDKR_TEST_PRESENTATION_REPLAY");
+        const char *delayed_control =
+            getenv("MDKR_TEST_DELAYED_ENDPOINT_REPLAY");
+        s_test_presentation_replay =
+            present_sched_internal_replay_test_enabled() &&
+            ((explicit_test != NULL && explicit_test[0] == '1') ||
+             (delayed_control != NULL && delayed_control[0] == '1'))
+                ? 1
+                : 0;
+    }
+    return s_test_presentation_replay != 0;
+}
+
 bool present_sched_smoothing_enabled(void) {
     if (s_smoothing < 0) {
         const char *value = getenv("MDKR_PRESENT_SMOOTHING");
-        s_smoothing = !(value != NULL &&
-                        (strcmp(value, "off") == 0 ||
-                         strcmp(value, "0") == 0));
+        s_smoothing =
+            value == NULL
+                ? (test_presentation_replay_enabled() ? 1 : 0)
+                : !((strcmp(value, "off") == 0) ||
+                    (strcmp(value, "0") == 0));
     }
-    return s_smoothing != 0;
+    /* 1.0.1 fail-closed policy: delayed display-list replay still has mutable
+     * dependencies after the next CPU list build. Keep the implementation
+     * available to its adversarial gates, but never arm it from user config. */
+    return s_smoothing != 0 && test_presentation_replay_enabled();
 }
 
 void mdkr_present_set_frame_limit(const char *value) {
-    /* "60" -> 60 presents/sec (the only engaged rate slice 2 supports);
-     * anything else, including "original", is the off value present_sched
-     * already treats as historical one-present-per-tick behaviour. */
-    s_present_rate = (value != NULL && strcmp(value, "60") == 0) ? 60 : 0;
+    if (value == NULL ||
+        !mdkr_present_policy_parse(value, &s_present_requested_policy)) {
+        s_present_requested_policy.kind = MDKR_PRESENT_ORIGINAL;
+        s_present_requested_policy.rate = 0u;
+    }
+    s_present_policy = s_present_requested_policy;
+#ifdef __EMSCRIPTEN__
+    if (s_present_policy.kind == MDKR_PRESENT_UNCAPPED) {
+        s_present_policy.kind = MDKR_PRESENT_DISPLAY;
+        s_present_policy.rate = 0u;
+        fprintf(stderr,
+                "[PRESENT-POLICY] platform=web requested=uncapped "
+                "effective=display reason=raf-ceiling\n");
+    }
+#endif
+    s_present_policy_ready = 1;
 }
 
 void mdkr_present_set_motion_smoothing(const char *value) {
@@ -113,23 +258,18 @@ bool present_sched_replay_armed(void) {
     if (present_sched_test_replay_walk()) {
         return true;
     }
-    /* A present rate at or below the authoritative tick rate needs no replay:
-     * the one real walk per tick already produces every image. */
-    if (present_sched_present_rate() <=
-        (unsigned)(platform_pace_field_hz() /
-                   (int)PRESENT_SCHED_FIELDS_PER_TICK)) {
+    /* A rate at or below the authoritative tick rate needs no replay: the one
+     * real walk per rendered tick already produces every image. */
+    if (!present_sched_present_subloop()) {
         return false;
     }
     /*
-     * An interpolated present needs the camera snapshot pair, so asking for a
-     * present rate above the tick rate implies asking for the snapshot. An
-     * EXPLICIT MDKR_PRESENT_SNAPSHOT still wins, which is what lets a gate run
-     * the subloop with interpolation switched off as a positive control:
-     * without a pair every present redraws the tick's own camera, and the
-     * intermediate frames become byte-identical to the ones bracketing them.
+     * Only explicit internal replay seams can make smoothing true in 1.0.1.
+     * Those diagnostics need a camera pair; a production rate request alone
+     * never reaches this point and never freezes the retained list registry.
      */
     if (!present_sched_smoothing_enabled()) {
-        /* Repeating the tick's image needs no replay and no snapshot. */
+        /* A no-image host opportunity needs no replay, snapshot, or swap. */
         return false;
     }
     if (!s_snapshot_forced) {
@@ -149,16 +289,25 @@ bool present_sched_trace_enabled(void) {
     return s_trace != 0;
 }
 
-unsigned present_sched_advance_fields(unsigned fields) {
-    unsigned due;
-    present_sched_lazy_init();
+unsigned present_sched_advance_fields(unsigned fields, bool rebase) {
     if (fields == 0) {
         fields = 1;
     }
     /* One source field is exactly 1e9 accumulator units — see
      * sim_sched_advance_units on why this must not route through nanoseconds. */
-    due = sim_sched_advance_units(
-        &s_sched, (unsigned long long)fields * 1000000000ull, 0u);
+    return present_sched_advance_units(
+        (uint64_t)fields * UINT64_C(1000000000), rebase);
+}
+
+unsigned present_sched_advance_units(uint64_t units, bool rebase) {
+    unsigned due;
+    present_sched_lazy_init();
+    if (rebase) {
+        /* Never interpolate across debugger/sleep/hidden-window time. The
+         * first post-resume tick seeds a fresh snapshot history. */
+        presentation_snapshot_stage_reset();
+    }
+    due = host_frame_driver_advance_units(&s_driver, units, rebase);
     s_entries++;
     if (due == 0) {
         s_zero_due++;
@@ -168,9 +317,119 @@ unsigned present_sched_advance_fields(unsigned fields) {
     return due;
 }
 
+bool present_sched_take_tick(void) {
+    present_sched_lazy_init();
+    return host_frame_driver_take_tick(&s_driver);
+}
+
+uint64_t present_sched_pending_ticks(void) {
+    present_sched_lazy_init();
+    return host_frame_driver_pending_ticks(&s_driver);
+}
+
+uint64_t present_sched_issued_ticks(void) {
+    present_sched_lazy_init();
+    return host_frame_driver_issued_ticks(&s_driver);
+}
+
+unsigned present_sched_tick_fields(void) {
+    present_sched_lazy_init();
+    return host_frame_driver_fields_per_tick(&s_driver);
+}
+
+uint64_t present_sched_input_target_tick(void) {
+    uint64_t clock_ticks;
+    uint64_t issued_ticks;
+    present_sched_lazy_init();
+    clock_ticks = host_frame_driver_clock_ticks(&s_driver);
+    issued_ticks = host_frame_driver_issued_ticks(&s_driver);
+    if (clock_ticks > issued_ticks) {
+        return clock_ticks;
+    }
+    return clock_ticks + 1u;
+}
+
+bool present_sched_should_elide_render(void) {
+    present_sched_lazy_init();
+    return host_frame_driver_pending_ticks(&s_driver) != 0u;
+}
+
+void present_sched_set_render_elided(bool elided) {
+    s_render_elided = elided;
+    if (elided) {
+        /* main_game_loop suppresses the catch-up graphics task before it can
+         * reach the dispatcher, so count that elision at the decision seam. */
+        s_elided++;
+    }
+}
+
+void present_sched_set_surface_elided(bool elided) {
+    s_surface_elided = elided;
+}
+
+bool present_sched_render_elided(void) {
+    return s_render_elided || s_surface_elided;
+}
+
+void present_sched_note_render_elided(void) {
+    s_elided++;
+}
+
+void present_sched_note_game_update(unsigned ticket_width,
+                                    unsigned effective_rate) {
+    present_sched_lazy_init();
+    if (g_simTickCounter == 0) {
+        s_bootstrap_update = ticket_width;
+        s_bootstrap_effective = effective_rate;
+        return;
+    }
+    if (s_game_updates == 0 || ticket_width < s_game_update_min) {
+        s_game_update_min = ticket_width;
+    }
+    if (ticket_width > s_game_update_max) {
+        s_game_update_max = ticket_width;
+    }
+    s_game_updates++;
+    if (ticket_width != host_frame_driver_fields_per_tick(&s_driver)) {
+        s_bad_game_updates++;
+        if (present_sched_trace_enabled()) {
+            fprintf(stderr,
+                    "[PRESENTSCHED-BAD-UPDATE] tick=%d update=%u expected=%u bootstrap=%u\n",
+                    g_simTickCounter, ticket_width,
+                    host_frame_driver_fields_per_tick(&s_driver),
+                    s_bootstrap_update);
+        }
+    }
+    if (s_effective_updates == 0 ||
+        effective_rate < s_effective_update_min) {
+        s_effective_update_min = effective_rate;
+    }
+    if (effective_rate > s_effective_update_max) {
+        s_effective_update_max = effective_rate;
+    }
+    s_effective_updates++;
+    if (effective_rate != ticket_width) {
+        s_effective_diverged++;
+    }
+}
+
 void present_sched_note_interpolated(unsigned viewports) {
     s_interpolated++;
     s_interpolated_views += viewports;
+}
+
+void present_sched_note_endpoint(bool replayed, uint64_t authored_tick) {
+    if (replayed) {
+        s_replayed_endpoints++;
+    } else {
+        s_real_endpoints++;
+    }
+    if (present_sched_trace_enabled()) {
+        fprintf(stderr,
+                "[PRESENT-ENDPOINT] frame=%d authored=%llu source=%s\n",
+                g_frameCounter, (unsigned long long)authored_tick,
+                replayed ? "replay" : "real");
+    }
 }
 
 void present_sched_note_stale(void) {
@@ -181,7 +440,7 @@ void present_sched_alpha(uint64_t *numerator, uint64_t *denominator) {
     unsigned long long num = 0;
     unsigned long long den = 1;
     present_sched_lazy_init();
-    sim_sched_alpha(&s_sched, &num, &den);
+    host_frame_driver_alpha(&s_driver, &num, &den);
     if (numerator != NULL) {
         *numerator = (uint64_t)num;
     }
@@ -192,7 +451,7 @@ void present_sched_alpha(uint64_t *numerator, uint64_t *denominator) {
 
 uint64_t present_sched_ticks(void) {
     present_sched_lazy_init();
-    return (uint64_t)s_sched.stats.ticks;
+    return host_frame_driver_clock_ticks(&s_driver);
 }
 
 void present_sched_trace_entry(unsigned fields, unsigned due,
@@ -202,7 +461,8 @@ void present_sched_trace_entry(unsigned fields, unsigned due,
     long long delta;
 
     present_sched_lazy_init();
-    delta = (long long)s_sched.stats.ticks - (long long)frame_counter;
+    delta = (long long)host_frame_driver_clock_ticks(&s_driver) -
+            (long long)host_frame_driver_issued_ticks(&s_driver);
     if (delta > s_worst_lead) {
         s_worst_lead = delta;
     }
@@ -213,20 +473,19 @@ void present_sched_trace_entry(unsigned fields, unsigned due,
         return;
     }
     present_sched_alpha(&num, &den);
-    /*
-     * `ticks` is the accumulator's opinion, `frame` is g_frameCounter (the
-     * presents the containment loop actually performed). Slice 0's whole
-     * purpose is that delta stays 0 on the fixture route.
-     */
+    /* `delta` is due clock ticks minus issued game-loop tickets. It is zero in
+     * steady state and positive only while ordinary catch-up debt is draining;
+     * `frame` is separately the presentation count. */
     fprintf(stderr,
             "[PRESENTSCHED] entry=%llu fields=%u due=%u ticks=%llu frame=%d "
             "delta=%lld alpha=%llu/%llu catchup=%llu skips=%llu rebases=%llu\n",
             (unsigned long long)s_entries, fields, due,
-            (unsigned long long)s_sched.stats.ticks, frame_counter, delta,
+            (unsigned long long)host_frame_driver_clock_ticks(&s_driver),
+            frame_counter, delta,
             (unsigned long long)num, (unsigned long long)den,
-            (unsigned long long)s_sched.stats.catchup_steps,
-            (unsigned long long)s_sched.stats.render_skips_owed,
-            (unsigned long long)s_sched.stats.rebases);
+            (unsigned long long)s_driver.clock.stats.catchup_steps,
+            (unsigned long long)s_driver.clock.stats.render_skips_owed,
+            (unsigned long long)s_driver.clock.stats.rebases);
     fflush(stderr);
 }
 
@@ -352,6 +611,10 @@ void present_perf_summary(void) {
 extern void gfx_dkr_replay_get_stats(
     uint64_t *walks, uint64_t *matrix_hits, uint64_t *matrix_misses,
     uint64_t *matrix_rejects, uint64_t *real_walks);
+extern void gfx_dkr_replay_get_object_stats(uint64_t *hits, uint64_t *holds);
+extern void gfx_dkr_replay_get_billboard_stats(
+    uint64_t *matrix_hits, uint64_t *matrix_holds,
+    uint64_t *vertex_hits, uint64_t *vertex_holds);
 extern void gfx_dkr_replay_get_reject_stats(
     uint64_t *tolerant, uint64_t *tolerant_worst, uint64_t *reject_least,
     bool *reject_least_valid);
@@ -371,13 +634,29 @@ void present_sched_trace_summary(void) {
         uint64_t freezes = 0, restores = 0, failures = 0;
         uint64_t restore_failures = 0;
         uint64_t tolerant = 0, tolerant_worst = 0, reject_least = 0;
+        uint64_t object_hits = 0, object_holds = 0;
+        uint64_t billboard_matrix_hits = 0, billboard_matrix_holds = 0;
+        uint64_t billboard_vertex_hits = 0, billboard_vertex_holds = 0;
+        GfxPresentationOwnerStats owner_stats;
+        GfxPresentationPacketStats packet_stats;
+        GfxShadowCameraEndpointStats camera_endpoint_stats;
         bool reject_least_valid = false;
+        memset(&owner_stats, 0, sizeof(owner_stats));
+        memset(&packet_stats, 0, sizeof(packet_stats));
+        memset(&camera_endpoint_stats, 0, sizeof(camera_endpoint_stats));
         gfx_dkr_replay_get_stats(&walks, &hits, &misses, &rejects,
                                  &real_walks);
         gfx_dkr_replay_get_reject_stats(&tolerant, &tolerant_worst,
                                         &reject_least, &reject_least_valid);
+        gfx_dkr_replay_get_object_stats(&object_hits, &object_holds);
+        gfx_dkr_replay_get_billboard_stats(
+            &billboard_matrix_hits, &billboard_matrix_holds,
+            &billboard_vertex_hits, &billboard_vertex_holds);
+        gfx_shadow_presentation_owner_get_stats(&owner_stats);
+        gfx_presentation_packet_get_stats(&packet_stats);
         gfx_shadow_replay_get_stats(&freezes, &restores, &failures,
                                     &restore_failures);
+        gfx_shadow_camera_endpoint_get_stats(&camera_endpoint_stats);
         /*
          * `mtxreject` counts gameplay matrices whose (world, view_projection)
          * decomposition failed to reproduce the display list even to within the
@@ -397,7 +676,8 @@ void present_sched_trace_summary(void) {
                 "[REPLAY-SUMMARY] walks=%llu realwalks=%llu mtxhit=%llu "
                 "mtxmiss=%llu mtxreject=%llu mtxtol=%llu mtxtolworst=%llu "
                 "mtxrejectleast=%lld staletenants=%llu freezes=%llu "
-                "restores=%llu freezefail=%llu restorefail=%llu\n",
+                "restores=%llu freezefail=%llu restorefail=%llu "
+                "objhit=%llu objhold=%llu\n",
                 (unsigned long long)walks, (unsigned long long)real_walks,
                 (unsigned long long)hits, (unsigned long long)misses,
                 (unsigned long long)rejects,
@@ -407,25 +687,179 @@ void present_sched_trace_summary(void) {
                 (unsigned long long)gfx_dkr_shadow_stale_tenant_count(),
                 (unsigned long long)freezes, (unsigned long long)restores,
                 (unsigned long long)failures,
-                (unsigned long long)restore_failures);
+                (unsigned long long)restore_failures,
+                (unsigned long long)object_hits,
+                (unsigned long long)object_holds);
+        fprintf(stderr,
+                "[PRESENT-OWNERS] registrations=%llu roots=%llu children=%llu "
+                "effects=%llu unowned=%llu\n",
+                (unsigned long long)owner_stats.registrations,
+                (unsigned long long)owner_stats.roots,
+                (unsigned long long)owner_stats.children,
+                (unsigned long long)owner_stats.effects,
+                (unsigned long long)owner_stats.unowned);
+        fprintf(stderr,
+                "[PRESENT-PACKET] matrixreg=%llu vertexreg=%llu "
+                "particlevertexreg=%llu freezes=%llu "
+                "freezefail=%llu matrixhit=%llu matrixmiss=%llu "
+                "vertexhit=%llu vertexmiss=%llu stale=%llu "
+                "stalematrixhold=%llu stalevertexhold=%llu "
+                "unsafestalefallback=%llu forcedmatrixrewrite=%llu "
+                "forcedvertexrewrite=%llu dependencychecks=%llu "
+                "dependencymismatch=%llu dependencyexpected=%llu "
+                "dependencyactual=%llu "
+                "frozenmatrices=%zu frozenvertices=%zu matrixpeak=%zu "
+                "vertexpeak=%zu matrixoverride=%llu matrixhold=%llu "
+                "vertexoverride=%llu vertexhold=%llu deformreg=%llu "
+                "deformhit=%llu deformhold=%llu deformphasehold=%llu "
+                "deformoverride=%llu "
+                "deformmiss=%llu "
+                "deformincompatible=%llu deformcollision=%llu "
+                "colorhit=%llu coloroverride=%llu "
+                "particledeformhit=%llu particledeformoverride=%llu "
+                "particlecolorhit=%llu particlecoloroverride=%llu "
+                "primalphahit=%llu primalphaoverride=%llu "
+                "particleprimalphahit=%llu "
+                "particleprimalphaoverride=%llu "
+                "effectreg=%llu effecthit=%llu effectoverride=%llu "
+                "effectphasehold=%llu effectmiss=%llu effectcollision=%llu "
+                "endpointchecks=%llu endpointmismatch=%llu "
+                "endpointexpected=%llu endpointactual=%llu "
+                "deformpeak=%zu\n",
+                (unsigned long long)packet_stats.matrix_registrations,
+                (unsigned long long)packet_stats.vertex_registrations,
+                (unsigned long long)
+                    packet_stats.particle_vertex_registrations,
+                (unsigned long long)packet_stats.freezes,
+                (unsigned long long)packet_stats.freeze_failures,
+                (unsigned long long)packet_stats.matrix_hits,
+                (unsigned long long)packet_stats.matrix_misses,
+                (unsigned long long)packet_stats.vertex_hits,
+                (unsigned long long)packet_stats.vertex_misses,
+                (unsigned long long)packet_stats.stale_keys,
+                (unsigned long long)packet_stats.stale_matrix_holds,
+                (unsigned long long)packet_stats.stale_vertex_holds,
+                (unsigned long long)packet_stats.unsafe_stale_fallbacks,
+                (unsigned long long)packet_stats.forced_matrix_rewrites,
+                (unsigned long long)packet_stats.forced_vertex_rewrites,
+                (unsigned long long)packet_stats.dependency_endpoint_checks,
+                (unsigned long long)
+                    packet_stats.dependency_endpoint_mismatches,
+                (unsigned long long)packet_stats.dependency_expected_hash,
+                (unsigned long long)packet_stats.dependency_actual_hash,
+                packet_stats.frozen_matrices,
+                packet_stats.frozen_vertices,
+                packet_stats.matrix_peak,
+                packet_stats.vertex_peak,
+                (unsigned long long)billboard_matrix_hits,
+                (unsigned long long)billboard_matrix_holds,
+                (unsigned long long)billboard_vertex_hits,
+                (unsigned long long)billboard_vertex_holds,
+                (unsigned long long)packet_stats.deformation_registrations,
+                (unsigned long long)packet_stats.deformation_hits,
+                (unsigned long long)packet_stats.deformation_holds,
+                (unsigned long long)packet_stats.deformation_phase_holds,
+                (unsigned long long)packet_stats.deformation_overrides,
+                (unsigned long long)packet_stats.deformation_misses,
+                (unsigned long long)packet_stats.deformation_incompatible,
+                (unsigned long long)packet_stats.deformation_collisions,
+                (unsigned long long)packet_stats.deformation_color_hits,
+                (unsigned long long)packet_stats.deformation_color_overrides,
+                (unsigned long long)
+                    packet_stats.particle_deformation_hits,
+                (unsigned long long)
+                    packet_stats.particle_deformation_overrides,
+                (unsigned long long)packet_stats.particle_color_hits,
+                (unsigned long long)packet_stats.particle_color_overrides,
+                (unsigned long long)packet_stats.primitive_alpha_hits,
+                (unsigned long long)packet_stats.primitive_alpha_overrides,
+                (unsigned long long)
+                    packet_stats.particle_primitive_alpha_hits,
+                (unsigned long long)
+                    packet_stats.particle_primitive_alpha_overrides,
+                (unsigned long long)packet_stats.effect_registrations,
+                (unsigned long long)packet_stats.effect_hits,
+                (unsigned long long)packet_stats.effect_overrides,
+                (unsigned long long)packet_stats.effect_phase_holds,
+                (unsigned long long)packet_stats.effect_misses,
+                (unsigned long long)packet_stats.effect_collisions,
+                (unsigned long long)packet_stats.endpoint_vertex_checks,
+                (unsigned long long)packet_stats.endpoint_vertex_mismatches,
+                (unsigned long long)packet_stats.endpoint_expected_hash,
+                (unsigned long long)packet_stats.endpoint_actual_hash,
+                packet_stats.deformation_peak);
+        fprintf(stderr,
+                "[CAMERA-VP] alpha0checks=%llu alpha0mismatch=%llu "
+                "alpha0expected=%llu alpha0actual=%llu "
+                "nextchecks=%llu nextmismatch=%llu nextexpected=%llu "
+                "nextactual=%llu midpointchecks=%llu midpointmoved=%llu "
+                "midpointhash=%llu mutationreject=%llu\n",
+                (unsigned long long)camera_endpoint_stats.alpha_zero_checks,
+                (unsigned long long)
+                    camera_endpoint_stats.alpha_zero_mismatches,
+                (unsigned long long)
+                    camera_endpoint_stats.alpha_zero_expected_hash,
+                (unsigned long long)
+                    camera_endpoint_stats.alpha_zero_actual_hash,
+                (unsigned long long)
+                    camera_endpoint_stats.next_endpoint_checks,
+                (unsigned long long)
+                    camera_endpoint_stats.next_endpoint_mismatches,
+                (unsigned long long)camera_endpoint_stats.next_expected_hash,
+                (unsigned long long)camera_endpoint_stats.next_actual_hash,
+                (unsigned long long)camera_endpoint_stats.midpoint_checks,
+                (unsigned long long)camera_endpoint_stats.midpoint_moved,
+                (unsigned long long)camera_endpoint_stats.midpoint_hash,
+                (unsigned long long)
+                    camera_endpoint_stats.mutation_control_rejections);
     }
     fprintf(stderr,
             "[PRESENTSCHED-SUMMARY] entries=%llu ticks=%llu presents=%d "
-            "simticks=%d interp=%llu interpviews=%llu stale=%llu zerodue=%llu "
+            "surfaceupdates=%llu "
+            "simticks=%d issued=%llu pending=%llu interp=%llu "
+            "interpviews=%llu realendpoints=%llu replayendpoints=%llu "
+            "stale=%llu elided=%llu zerodue=%llu "
             "multidue=%llu lead=%lld lag=%lld "
-            "catchup=%llu skips=%llu rebases=%llu fieldhz=%u\n",
+            "catchup=%llu skips=%llu rebases=%llu blocked=%llu "
+            "maxpending=%llu fieldhz=%u tickfields=%u "
+            "updates=%llu updatebad=%llu updatemin=%u updatemax=%u "
+            "effectiveupdates=%llu effectivediverged=%llu "
+            "effectivemin=%u effectivemax=%u "
+            "presentkind=%d presentrate=%u requestedkind=%d "
+            "requestedrate=%u bootstrap=%u effectivebootstrap=%u\n",
             (unsigned long long)s_entries,
-            (unsigned long long)s_sched.stats.ticks,
-            g_frameCounter, g_simTickCounter,
+            (unsigned long long)host_frame_driver_clock_ticks(&s_driver),
+            g_frameCounter,
+            (unsigned long long)g_surfaceFrameCounter,
+            g_simTickCounter,
+            (unsigned long long)host_frame_driver_issued_ticks(&s_driver),
+            (unsigned long long)host_frame_driver_pending_ticks(&s_driver),
             (unsigned long long)s_interpolated,
             (unsigned long long)s_interpolated_views,
+            (unsigned long long)s_real_endpoints,
+            (unsigned long long)s_replayed_endpoints,
             (unsigned long long)s_stale,
+            (unsigned long long)s_elided,
             (unsigned long long)s_zero_due,
             (unsigned long long)s_multi_due,
             s_worst_lead, s_worst_lag,
-            (unsigned long long)s_sched.stats.catchup_steps,
-            (unsigned long long)s_sched.stats.render_skips_owed,
-            (unsigned long long)s_sched.stats.rebases,
-            s_sched.field_hz);
+            (unsigned long long)s_driver.clock.stats.catchup_steps,
+            (unsigned long long)s_driver.clock.stats.render_skips_owed,
+            (unsigned long long)s_driver.clock.stats.rebases,
+            (unsigned long long)s_driver.stats.blocked_advances,
+            (unsigned long long)s_driver.stats.max_pending_tickets,
+            s_driver.clock.field_hz,
+            host_frame_driver_fields_per_tick(&s_driver),
+            (unsigned long long)s_game_updates,
+            (unsigned long long)s_bad_game_updates,
+            s_game_update_min, s_game_update_max,
+            (unsigned long long)s_effective_updates,
+            (unsigned long long)s_effective_diverged,
+            s_effective_update_min, s_effective_update_max,
+            (int)present_sched_present_kind(),
+            present_sched_present_rate(),
+            (int)present_sched_present_requested_kind(),
+            present_sched_present_requested_rate(), s_bootstrap_update,
+            s_bootstrap_effective);
     fflush(stderr);
 }

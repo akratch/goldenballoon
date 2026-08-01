@@ -37,15 +37,19 @@ that isolates the reported boss-speed divergence. The Bubbler lane settled the
 simulation-cadence question — retail and authored finish at ticks 3,459/3,458
 with a 1.00047× speed ratio, against 3,022 and 1.13965× for the historical
 one-field arm — and `Gameplay.SimulationCadence=original` is the default because
-of it.
+of it. Ancient Lake now also has a fail-closed diagnostic that replays the
+real ROM's observed update widths and input states. It makes checkpoint clocks
+0–3 exact and moves the first five-unit position separation from clock 18 to
+767, classifying the early mismatch as timestep partitioning rather than a
+different game-speed policy.
 
 **What remains.** Everything the two lanes do not cover: challenge breadth,
 multiplayer, progression and save, audio, renderer state, and the
-fixed-update/interpolated-render architecture. The Ancient Lake lane also still
-shows broader racing-line differences (checkpoint agreement measured at 63.7% on
-authored cadence) whose root cause is epic-sized and has no player-visible
-payoff, so it is retained as an instrument rather than treated as a defect to
-close.
+higher-rate rendering experiments. Ancient Lake still develops
+sub-unit floating-point drift into a different long-horizon open-loop line
+(39.241% authored and 67.747% reference-replay checkpoint agreement), so it is
+retained as a strict red instrument rather than declared equivalent through a
+permissive tolerance.
 
 **Condition to take it up.** A reported divergence that one of the uncovered
 areas would explain. See
@@ -53,12 +57,11 @@ areas would explain. See
 
 ### Two oracle questions left open
 
-- **The zip-pad boost magnitude has never been checked against the ROM.** A
-  zip-pad reaches 44.9 world units/frame in an eight-racer Tracks race against
-  23.2 for the same pad in a solo Time Trial — 3.2× versus 1.67× the car's top
-  speed. The mechanism is the game's own (`boostTimer = normalise_time(45)`,
-  `BOOST_LARGE`) and no port change touches it, but "no port change touches it"
-  is not the same as "measured".
+- **No current route actually crosses a zip pad under measurement.** The old
+  44.9-versus-23.2 claim no longer reproduces; when armed identically, the
+  boost peaks at 22.357 with eight racers and 22.336 solo (0.09% apart), and a
+  source audit finds all 310 boost/velocity statements byte-identical to the
+  decomp baseline. A real pad crossing plus ROM trace is still absent.
 - **The `race_karts` oracle route scores 0.636** where frontend routes score
   0.855–0.998, and nobody has investigated why. It is the only in-race route, so
   the number is either a real in-race fidelity gap or an artefact of the route.
@@ -90,8 +93,9 @@ menu, course, hub and multiplayer routes execute 249,339,186 strict commands
 with zero faults across 29 material IDs and 37 material/pipeline keys; the
 offline gate validates all 445 supported-ROM models, 1,146 level segments and
 16,943 batches including dormant variants; forced 4 KiB segmentation and a
-one-entry shader-index limit prove safe continuation and live GL fallback; and
-the 105-point fault registry is fully classified.
+one-entry shader-index limit prove safe continuation, one same-backend rebuild,
+    and terminal failure without a renderer switch; and the 113-point fault
+registry is fully classified.
 
 **What remains.** Everything that needs hardware or a second implementation:
 complete-corpus and minimum-feature runs on browser hardware, the independent
@@ -118,17 +122,28 @@ question is answered first.
 
 ### Presentation rate above the authored tick
 
-Camera-only interpolated presentation exists and is proven headless/offscreen on
-native builds. `Video.FrameLimit=60` was evaluated for promotion to the native
-default in v0.8.0 and **refused**, with the argument recorded rather than
-implied: four of the seven presentation-rate schedules cannot run at all, 60 does
-not divide PAL's 50 Hz field clock, core-object interpolation does not exist yet,
-and 5–22% of gameplay geometry on race content is still drawn with the tick's
-camera on an interpolated frame.
+Production motion smoothing and retained display-list replay are disabled for
+1.0.1. Release-candidate testing proved that a replay delayed until after task
+`K+1` begins can observe mutable viewport, matrix, vertex, texture, and nested
+display-list storage after the game has started rewriting it. Partial packet
+freezing and generation keys do not establish immutable ownership of that full
+dependency graph.
 
-What would have to land before revisiting the default: object and particle
-interpolation, the live/interactive native slice, browser parity, and the
-input-edge-queue work sequenced ahead of an interactive rate rise.
+Original therefore remains the recommended/default Frame Limit. Match Display,
+numeric, and Uncapped settings remain Experimental host-pacing/input-pump
+policies: they do not add visual frames, never swap a duplicate image, and leave
+the authored cadence at approximately 30 Hz NTSC or 25 Hz PAL. Fixed-ticket
+simulation, tick-indexed input, independent audio service, bounded GPU queues,
+suspension rebasing, and state/event/input/PCM invariance are still useful
+landed prerequisites.
+
+Revisiting higher-rate visuals requires immutable ownership of every dependency
+for a real forward `{T,T+1}` pair, including nested display lists and texture
+state; exact endpoint and midpoint pixel oracles across UI, cutscenes,
+split-screen, particles, and every vehicle part; device-loss/lifecycle coverage;
+and broad physical-platform/DAC qualification. The former interpolation work
+and its broken-direction controls remain historical diagnostic infrastructure,
+not an active release feature.
 
 ### Shadow and visual leftovers
 
@@ -181,11 +196,14 @@ Two honest limitations remain, both recorded in
 
 ### Signing and notarization
 
-Not done, and it is the difference between "a build you can run" and "a build
-your operating system will let you run without arguing". macOS notarization and
-a Windows signing identity both need an account and a paid certificate, so this
-is an ownership question before it is an engineering one. Until it is done,
-release artifacts require the platform's manual override to launch.
+The macOS engineering path is implemented. Local bundles are ad-hoc signed
+after every Mach-O mutation so integrity remains valid; the protected manual
+release workflow imports a Developer ID certificate into an ephemeral
+keychain, signs inside-out with Hardened Runtime, notarizes/staples the app,
+signs and notarizes/staples the DMG, mounts it, and requires Gatekeeper
+acceptance. The remaining external action is configuring the protected GitHub
+environment and completing the first accepted Apple notary run; see
+[`macos/README.md`](macos/README.md). Windows signing remains open.
 
 ### Physical device breadth
 
@@ -222,10 +240,11 @@ cheapest first:
    parity route for any unsupported revision, and audio is unverified for all of
    them.
 
-PAL timing is a fourth, separate question: the pacer synthesises 60 Hz NTSC
-fields, and every calibrated number in `tests/` is NTSC-specific. This does not
-affect European 1.1, whose data is the US build's, but a genuine 50 Hz build
-would need it.
+PAL timing is modelled as a 50 Hz source clock with the same authored two-field
+ticket, so its visual cadence remains 25 Hz. Experimental host-pacing policies
+are independent of that grid but do not add visual frames in 1.0.1. Region-
+specific calibrated gameplay oracles remain a separate expansion question for
+unsupported revisions.
 
 ## Project infrastructure
 

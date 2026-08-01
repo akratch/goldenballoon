@@ -1,0 +1,73 @@
+# DKR title -> OPTIONS -> MAGIC CODES, then exercise the real onscreen keyboard.
+# Submit ARNOLD (retail cheat id 4), dismiss its result, then submit the
+# one-letter near miss ARNOLE. Keyboard rows are ABCDEFG / HIJKLMN / OPQRSTU /
+# VWXYZ + DEL + OK. Inputs are deliberately spaced well beyond edge detection.
+1250 START 4
+1310 DOWN 4
+1380 START 4
+1520 DOWN 4
+1580 DOWN 4
+1640 DOWN 4
+1700 DOWN 4
+1760 DOWN 4
+1840 A 4
+
+# ENTER CODE, starting on A.
+1900 A 4
+
+# ARNOLD
+1940 A 4
+1970 DOWN 4
+2000 DOWN 4
+2030 RIGHT 4
+2060 RIGHT 4
+2090 RIGHT 4
+2120 A 4
+2150 UP 4
+2180 RIGHT 4
+2210 RIGHT 4
+2240 RIGHT 4
+2270 A 4
+2300 DOWN 4
+2330 RIGHT 4
+2360 A 4
+2390 UP 4
+2420 RIGHT 4
+2450 RIGHT 4
+2480 RIGHT 4
+2510 RIGHT 4
+2540 A 4
+2570 UP 4
+2600 LEFT 4
+2630 A 4
+2660 START 4
+
+# Dismiss success and re-enter the keyboard, which starts on A again.
+2710 A 4
+2760 A 4
+
+# ARNOLE (one-letter near miss).
+2800 A 4
+2830 DOWN 4
+2860 DOWN 4
+2890 RIGHT 4
+2920 RIGHT 4
+2950 RIGHT 4
+2980 A 4
+3010 UP 4
+3040 RIGHT 4
+3070 RIGHT 4
+3100 RIGHT 4
+3130 A 4
+3160 DOWN 4
+3190 RIGHT 4
+3220 A 4
+3250 UP 4
+3280 RIGHT 4
+3310 RIGHT 4
+3340 RIGHT 4
+3370 RIGHT 4
+3400 A 4
+3430 UP 4
+3520 A 4
+3550 START 4

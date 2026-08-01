@@ -10,6 +10,221 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ## [Unreleased]
 
+No changes yet.
+
+## [1.0.1] — 2026-08-01
+
+### Changed
+
+- **1.0.1 keeps visual presentation at the authored rate.** Original remains
+  the recommended/default Frame Limit. Match Display, numeric, and Uncapped are
+  **Experimental — Under Construction** host-pacing/input/event-pump policies
+  only; they do not increase unique visual FPS and never swap a duplicate image.
+  Their benefit may be negligible, while higher settings can use more CPU.
+  Production motion smoothing and delayed
+  display-list replay are disabled because a walk after task `K+1` begins can
+  observe rewritten viewport, matrix, vertex, texture, and nested display-list
+  dependencies. The primary US 1.1 build therefore remains at its authored
+  roughly 30 unique visual FPS under every exposed policy. The detailed
+  interpolation entries later in this 1.0.1 section are retained as a
+  historical development record, not as active 1.0.1 behavior.
+
+- **WebGPU remains the native default and the browser renderer.** A
+  controlled M3 Max run of the earlier experimental replay build at 1920×1080,
+  `RenderScale=1`, 60 interpolated presents per 30 Hz authored tick schedule,
+  and 300 synthetic headless ticks completed in 1.15 s on GL versus 9.01 s on
+  WebGPU. GL sustained 698.9 submissions/s with a 2.617 ms mean tick wall;
+  WebGPU sustained 103.1 submissions/s with a 17.377 ms mean tick wall. A
+  five-second sample attributed the WebGPU gap to native presentation rather
+  than game code: the main thread spent about 41% of samples retiring
+  wgpu-native queue work and 27% waiting for `CAMetalLayer` drawables, while
+  snapshot/freeze/interpolation work remained in the low-microsecond range.
+  Those interpolated-present measurements describe the historical experiment,
+  not the authored-frame-only 1.0.1 release path.
+  Raising the experimental WebGPU queue ceiling from two to three did not
+  improve throughput. Production 1.0.1 subsequently removed gameplay-time
+  queue drains entirely because it submits only authored tick images; the
+  browser/internal replay diagnostic retains the two-frame ceiling. Throughput
+  alone was not sufficient to make GL the default: dense capture of the opening sequence
+  exposed large localized sky/terrain texture corruption which sparse
+  whole-frame difference sampling had missed. The same corruption reproduces at the
+  `v1.0.0` source checkpoint, ruling out the fixed-tick/FPS work as its cause.
+  With no selector, the app now chooses WebGPU; `MDKR_RENDERER=gl` remains an
+  explicit diagnostic path while GL parity work continues. A new targeted intro
+  guard requires the two no-selector frames which exposed the corruption to
+  match explicit WebGPU byte for byte.
+
+- **The native launcher is less monolithic and its UX now fails safe.** Panel
+  routing, dropped-ROM intake, navigation, boot actions, and overlay
+  confirmation flows are named, typed helpers instead of one large draw path.
+  ROM replacement is transactional; invalid or unsaved candidates preserve the
+  active ROM. Text, enum, checkbox, and deferred slider edits retain attempted
+  values after persistence failure, expose a visible error, and can commit
+  through **Retry** after write access returns in the same process. Escape and
+  controller B share the popup → confirmation → Settings → overlay back stack.
+  The launcher supports a 640×480 compact top-navigation layout, persists a
+  0.75×–2.00× UI scale without cumulative style drift, and rebuilds its font
+  atlas across standard/HiDPI transitions before frame construction. Keyboard
+  and gamepad navigation, visible focus, scalable contrast, and restrained
+  motion are in scope; a native VoiceOver/UI-Automation semantic tree is not.
+
+- **Portable release identity and Windows packaging are fail closed.** Linux
+  and Windows validation compile the validated workflow version and require the
+  executable to report it before packaging. Linux additionally content-validates
+  built and extracted AppHost frames through software WebGPU and GL before
+  upload. The Windows archive prepared for manual native GPU/gameplay acceptance
+  exposes one `GoldenBalloon.exe`; a shared import-table gate rejects SDL and
+  MinGW runtime DLL dependencies, and the package contains no DLLs.
+
+### Fixed
+
+- **Windows WebGPU no longer stalls gameplay and audio behind synchronous GPU
+  drains.** A post-1.0.0 queue bound waited for the entire native queue after
+  every second submission, before the completed tick could refill audio. The
+  production path now nonblocking-polls completion callbacks and submits only
+  newly authored images; explicit blocking remains outside runtime gameplay.
+  This restores 1.0.0 startup audio and character-select timing. The portable
+  candidate passed manual WebGPU gameplay, controller, audio, save, and relaunch
+  acceptance on Windows hardware.
+
+- **Returning from the in-game overlay to the macOS launcher no longer depends
+  on the process's original working directory.** The shell resolves its absolute
+  executable path before entering the app bundle's Resources directory and uses
+  that path for the overlay re-exec.
+
+- **Numeric and Uncapped frame limits no longer crash the adopted macOS GL
+  path.** The launcher creates the GL context with the system declarations, so
+  the engine must initialize GLAD after adopting that context. FIFO presentation
+  happened not to call the missing sync entry points; interval-zero pacing did
+  and jumped through a null `glFinish`/fence pointer. Adopted contexts now require
+  a successful `SDL_GL_MakeCurrent` and GLAD load before gameplay begins. A new
+  real-launcher gate completes 240 and Uncapped policy handoffs on both default
+  WebGPU and explicit GL, requiring every GPU submission to drain.
+
+### Added
+
+- **Magic-code tables now validate completely and fail closed.** The reported
+  `"Sorry, the code was incorrect"` response plus `8`/blank enabled rows was
+  reproduced on a pre-fix binary: the decrypted table's big-endian count and
+  offsets were read as native values (`29 -> 7424`, `187 -> 47872`,
+  `220 -> 56320`). Current source and the `v1.0.0` tag already contain the
+  original decrypt-then-normalize repair, so the reported DMG was not built
+  reproducibly from that tag. The normalizer now validates every string offset
+  and terminator transactionally, aborts loading instead of exposing a partial
+  table, and has a ROM-free unit test that pins the exact reported misreads,
+  `ARNOLD -> BIG CHARACTERS`, invalid offsets, and rollback. The macOS release
+  lane's commit/version/checksum provenance prevents another stale
+  local binary from being presented as a tagged artifact.
+
+- **Fail-closed macOS bundle integrity with optional Developer ID signing.** A
+  report from an M4 Mac mini on macOS 26.2 distinguished Finder's “damaged”
+  rejection from the
+  expected unidentified-developer warning. The bundle builder was rewriting
+  SDL2's Mach-O load path after the linker's ad-hoc signature, then packaging
+  the invalid code envelope. Homebrew's current `sdl2` also resolves to
+  `sdl2-compat`, a shim which loads an unbundled SDL3 dynamically and therefore
+  escaped ordinary `otool` dependency checks; the reported crash log shows both
+  the bundled shim and `/opt/homebrew` SDL3 in one process. Release packaging
+  now builds SHA-pinned upstream SDL2 2.32.10 for arm64/macOS 13 and rejects
+  sdl2-compat, SDL3, Homebrew load paths, undeclared architectures/targets, and
+  unresolved nested dependencies. The local path now clears inherited xattrs,
+  ad-hoc signs nested SDL2 before sealing the app, and requires strict nested
+  signature/resource/load-path verification. The protected manual release
+  workflow imports a password-protected Developer ID certificate into an
+  ephemeral keychain, uses an App Store Connect API key for `notarytool`, signs
+  nested code explicitly before the app with Hardened Runtime, requires an
+  Accepted notarization plus staple/Gatekeeper validation, then signs,
+  notarizes, staples, mounts, and re-verifies the DMG. Speculative library-
+  validation and unsigned-executable-memory entitlements are removed. This
+  patch's public macOS artifact is intentionally unsigned: macOS may show the
+  ordinary unidentified-developer warning, but bundle verification must pass
+  and Finder must not report that the app is damaged. The credentialed signing
+  and notarization lane remains ready for a later release.
+
+- **A ROM-free native audio-sink qualification seam.** The game's
+  queue-occupancy controller is now a shared pure module with deterministic
+  30/60/120/144/240/1000 Hz, counter-wrap, alignment, capacity and stall
+  contracts. A second CTest opens SDL queue mode with silence, requires exact
+  22050 Hz stereo-s16 output, observes real drain, and verifies bounded
+  backlog plus pause/clear behavior under SDL's dummy driver. The same binary
+  passed a five-second physical CoreAudio run with 476 controller calls, 214
+  observed drains, zero queue failures/stall guards, and a 1,193-frame queue
+  high-water. A 1,000-tick before/after headless capture remained byte-exact
+  (`bf2c44b9...97b7f1`). Hidden hardware-buffer underruns, speaker output and
+  DAC drift still require the cross-platform physical release matrix.
+
+- **Historical replay lifecycle qualification covered destructive edges.** The
+  experimental path compared Original and higher-rate host schedules through a
+  2P pause-to-Track-Select teardown, race restart, and Adventure return while
+  checking state, events, input, PCM, packet lifetime, and arena retirement.
+  This remains useful diagnostic infrastructure, but retained walks are not
+  enabled in the production 1.0.1 renderer.
+
+- **Exact arbitrary-rate host pacing, independent of the authored simulation.**
+  `Video.FrameLimit` accepts `original`, `display`, bounded integer policies
+  from 30 through 1000, and `uncapped`; the app exposes curated choices while
+  retaining Original as the recommended, proven default. Numeric policies use
+  absolute rational monotonic deadlines. Sub-field host time feeds the fixed-
+  ticket driver and independent audio clock, and native/browser schedule gates
+  require byte-identical state, ordered events, consumed input, and PCM.
+  Production 1.0.1 frame admission submits only a newly authored task, so these
+  policies change host/input-pump opportunities without adding visual frames or
+  duplicate swaps. Native WebGPU polls completion without a runtime drain, GL
+  retains its fence bound, minimized windows stop GPU walks, and resume rebases
+  rather than accumulating catch-up.
+
+- **Historical experiment — generation-keyed core-object interpolation.** The
+  following describes the retained-replay prototype and its diagnostic seams;
+  it is not active in the production 1.0.1 renderer. Presentation replay binds
+  registered 3D root matrices to the exact `(pool address, spawn generation)`
+  that built them and reconstructs roots, racer heads and vehicle-part child
+  matrices from the immutable previous/current snapshot pair. Render-only
+  tumble/bob/scale residuals are carried without reading or writing a live
+  object. Recycled addresses, spawns, teleports and missing history fail closed
+  to the tick pose. The presentation matrix gate requires nonzero object
+  rebuilds, reconciles every owned/unowned registration, and disables object
+  interpolation while retaining the same interpolated camera to prove the path
+  changes backend pixels. A bounded retained packet now also owns billboard-
+  local matrices and world-space anchor vertices through the last present of a
+  tick; sprite objects and sprite particles therefore interpolate position,
+  scale and camera-facing roll without trusting rewritten arena addresses.
+  Parent-relative attachment anchors follow their already-interpolated parent
+  exactly once. A tick-stamped previous/current packet now also retains model
+  vertex batches and blends their XYZ deformation plus shade RGBA across the
+  exact same object generation, model, animation, topology and root stream.
+  Spawn,
+  teleport, transition, skipped-tick and duplicate-key cases hold the authored
+  pose. The rate gate proves 315,974 changed batches over its route and a
+  deformation-only control changes 20/20 sampled intermediate race frames
+  while camera/root/billboard smoothing stays enabled. Direct world-space
+  point/line particle meshes now use the same exact retained endpoints under a
+  generation/kind/topology/tick-adjacency contract; line topology changes hold,
+  repeated multi-viewport submissions collapse only when byte-identical, and
+  conflicting keys fail closed. Particle opacity capture now decodes the
+  unsigned 8.8 value stored in the signed field instead of clamping its upper
+  half to zero. The battle witness blends 21,994 changed point-trail XYZ/RGBA
+  batches; independent geometry and color controls each change 50/50
+  intermediate backend frames without changing the authoritative hash.
+  Sprite/model/line-particle primitive alpha preserves draw-local modifiers
+  while replacing current object opacity with the interpolated value; it
+  applies 54,859 changed draws and its isolated control changes 33/50 frames.
+  Point trails remain single-scaled because their opacity is already retained
+  in vertex alpha. Shield and magnet shear
+  matrices now retain a semantic two-lifetime recipe (racer generation plus
+  shared effect-object generation) and reconstruct both the interpolated racer
+  root and continuous local rotation/scale/shear without lerping matrix cells.
+  Ambiguous effect keys fail closed; the forced-shield control applies 5,676
+  overrides and changes 30/30 intermediate backend frames with byte-identical
+  authoritative state. Smoothed presentation now also exposes the retained
+  previous-tick endpoint before its intermediate frames. The old order exposed
+  the new authoritative image first and then drew a previous-to-current
+  midpoint, visibly reversing motion every other present. Final qualification
+  showed that delayed replay after task `K+1` begins can still read rewritten
+  viewport, matrix, vertex, texture, and nested display-list dependencies. The
+  release path therefore disables motion smoothing and retained replay
+  completely; a future implementation requires immutable ownership of every
+  dependency through an exact forward `{T,T+1}` pair.
+
 ## [1.0.0] — 2026-07-30
 
 ### Release-night additions (folded at tag time)
@@ -52,10 +267,10 @@ The following landed between the 1.0.0 cut and the tag, and ships in 1.0.0.
   revision table it carried. One binary, one revision table. Any invocation
   *with* arguments still runs the unchanged engine path, so every existing script
   behaves exactly as before.
-- **Player-facing surfaces use the product name "Golden Balloon".** `mdkr64`
-  remains the internal name (repository, build target, binary filename,
-  environment prefix) and no longer appears on anything a player reads. The macOS
-  bundle display name and the DMG volume/filename follow the same rule.
+- **Branded GUI surfaces use the product name "Golden Balloon".** `mdkr64`
+  remains the internal name (repository, build target, technical filenames,
+  environment prefix), while application and game-window titles, the macOS
+  bundle display name, and the DMG volume/filename use the public brand.
 - Windows builds now link `libstdc++` statically. Without it the shell's C++ would
   have added a `libstdc++-6.dll` import, which the import-table allowlist
   correctly rejects.
@@ -106,16 +321,11 @@ rather than the order in which it was written, an honest statement of what is
   split by subsystem into ten files plus an index. Every entry is preserved
   verbatim, closed ones included: a closed entry is the only warning the next
   person gets that the same trap exists.
-- **`docs/SDK_INVENTORY.md` (internal inventory)** — provenance
-  classification of all 108 files carrying an N64 SDK / libultra legend header.
-- **`docs/archive/` (internal archive)** — the dated implementation
-  reports, audits and reviews written while the port was built, each with a
-  one-line triage verdict. Kept for the evidence in them; removed from the
-  public release cut and retained only in the private development repository.
 - **Repository standards that are enforced:** `.editorconfig`, `.clang-format`,
   pre-commit and pre-push hooks, issue and pull-request templates, a shell-syntax
-  check, and `tools/check_markdown_links.py`, which validates every local
-  Markdown link and heading anchor in the tree.
+  check, `tools/check_markdown_links.py`, which validates every local Markdown
+  link and heading anchor, and a public-surface guard for tracked paths, text,
+  commit identities, commit messages, and annotated tags.
 
 ### Changed
 
@@ -125,11 +335,10 @@ rather than the order in which it was written, an honest statement of what is
   rewritten as a map keyed on what someone is trying to do; and every public
   document reads as the documentation of a maintained project rather than a log
   of how it was produced.
-- **The public/internal documentation boundary is by location, not by
-  filename.** It was a glob matching dated filenames, which needed a new line
-  every calendar year and would silently publish any internal note named
-  without a date. Internal material now lives under known internal planning
-  directories, which are removed wholesale when the public release is cut.
+- **The source repository is itself the public boundary.** It keeps ordinary
+  Git history; temporary plans, handoffs, transcripts, and personal paths stay
+  outside tracked files, while durable decisions are written into maintained
+  architecture, status, or open-item documents.
 
 ### Removed
 
@@ -159,8 +368,7 @@ two-camera mixing fix, and the S-tier web shell polish.
   eligible levels byte-identical**, with zero overflows and zero registry
   failures; three levels were excluded for an unrelated defect hunt. So: **all
   66 levels are process deterministic, and the presentation-invariance sweep
-  covered 63 of 63 eligible ones.** The full per-level table is in the
-  presentation-oracle breadth report (internal archive). Four-player split screen
+  covered 63 of 63 eligible ones.** Four-player split screen
   substitutes 2.49 view-projections per interpolated present, which is the first
   machine-checked evidence for the design doc's multi-viewport claim (R2) —
   every gate run before this was one player.
@@ -211,7 +419,7 @@ two-camera mixing fix, and the S-tier web shell polish.
   left in the hottest matrix path. Registrations now carry a site tag, which
   attributes 13 of level 40's 14 rejects to `mtx_cam_push` and only 1 to the head
   push — the attribution-by-elimination that produced the wrong theory is no
-  longer possible. See the presentation-oracle breadth report (internal archive) §6.2.
+  longer possible.
 
 ### Changed
 
@@ -239,12 +447,11 @@ two-camera mixing fix, and the S-tier web shell polish.
   half of the spec's own Phase 3 checklist item — does not exist yet, and the
   design doc admits camera-only only on condition it is not shipped as the final
   behaviour; the live/interactive and input-edge-queue slices that are sequenced
-  before an interactive rate rise have not landed; and 5–22% of gameplay
-  geometry on race content is still drawn with the tick's camera on an
-  interpolated frame. The full argument, and a recorded mechanical trap (flipping
+  before an interactive rate rise have not landed. The 5–22% camera-mixing
+  population measured during development was subsequently eliminated by the
+  stale-tenancy and tolerance fixes above. One mechanical trap remains: flipping
   the default string alone would be *inert*, because the config runtime only
-  pushes the key when it did not come from the default), are in
-  the presentation-oracle breadth report (internal archive) §8.
+  pushes the key when it did not come from the default.
 
 - **Phase 3 fidelity architecture: camera-only interpolated presentation
   (headless/offscreen, off by default).** A presentation subloop can now
@@ -267,8 +474,7 @@ two-camera mixing fix, and the S-tier web shell polish.
   registry silently emptied by its own restore path, and two clock-phase
   bugs (a synthetic clock advancing per present instead of per tick, and
   the tick counter bumping before the interpolated presents that still owed
-  it input). See the render-mutation census (internal archive)'s "Phase 3
-  landed state" section for the full account.
+  it input).
 
 ### Fixed
 
@@ -512,8 +718,9 @@ two-camera mixing fix, and the S-tier web shell polish.
   viewport scale is translated into a valid mirrored modern viewport without
   mirroring the safe-4:3 HUD.
 - **WebGPU recovery and capacity fail closed.** Surface/device loss can rebuild
-  once or select the live GL fallback natively; browser failures retain save
-  access and actionable UI. Per-frame vertex data grows through bounded
+  WebGPU once; a second failure stops cleanly without switching to the
+  unqualified GL diagnostic backend. Browser failures retain save access and
+  actionable UI. Per-frame vertex data grows through bounded
   segments instead of a fixed ceiling, and every shipped creation fault has a
   classified outcome.
 - **Stage changes and final shutdown release their real owners.** Queued display

@@ -17,7 +17,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 HEADER = ROOT / "platform" / "fast3d" / "gfx_webgpu_fault.h"
 BACKEND = ROOT / "platform" / "fast3d" / "gfx_webgpu.c"
+APP_HOST = ROOT / "platform" / "app" / "app_host.cpp"
+IMGUI_BACKEND = ROOT / "platform" / "fast3d" / "gfx_webgpu_imgui.cpp"
 NATIVE_RUNTIME = ROOT / "tests" / "check_webgpu_recovery.py"
+APP_RUNTIME = ROOT / "tests" / "check_app_adopted_pacing.py"
 BROWSER_RUNTIME = ROOT / "tests" / "check_browser_runtime.py"
 
 REGISTRY_RE = re.compile(
@@ -78,7 +81,8 @@ DORMANT = (
     | DORMANT_RDP_DIAGNOSTIC
     | {"shader.pipeline-prewarm"}
 )
-BROWSER_ONLY = {"shader.pipeline-async", "overlay.view", "overlay.pass"}
+BROWSER_ONLY = {"shader.pipeline-async"}
+NATIVE_APP_BROWSER_DIVERGENT = {"overlay.view", "overlay.pass"}
 NATIVE_ONLY = {"capture.surface-buffer"}
 LOCAL_DIAGNOSTIC = {
     "capture.frame-buffer",
@@ -94,8 +98,6 @@ LOCAL_DEGRADE = {
     "texture.mip-texture",
     "texture.mip-view",
     "surface.direct-view",
-    "overlay.view",
-    "overlay.pass",
 }
 BOUNDED_RETRY = {
     "surface.suboptimal",
@@ -105,7 +107,7 @@ BOUNDED_RETRY = {
 }
 FEATURE_DEGRADE = {"capabilities.depth-clip-absent"}
 LIMIT_RETRY = {"bringup.device-limits"}
-STARTUP_FALLBACK = {
+STARTUP_FAIL_CLOSED = {
     "bringup.instance",
     "bringup.surface",
     "bringup.adapter",
@@ -134,6 +136,12 @@ def classify(name: str) -> Classification:
     if name in NATIVE_ONLY:
         return Classification(
             "native-surface-capture", "native", "local-diagnostic-failure"
+        )
+
+    if name in NATIVE_APP_BROWSER_DIVERGENT:
+        return Classification(
+            "shipped-app-overlay", "native+browser",
+            "native-fatal-browser-local-degrade",
         )
 
     if name in BROWSER_ONLY:
@@ -165,9 +173,13 @@ def classify(name: str) -> Classification:
         return Classification(
             "shipped-bringup", "native+browser", "retry-default-limits"
         )
-    if name in STARTUP_FALLBACK:
+    if name in STARTUP_FAIL_CLOSED:
         return Classification(
-            "shipped-bringup", "native+browser", "native-gl-or-browser-panel"
+            "shipped-bringup", "native+browser", "fatal-at-boundary"
+        )
+    if name.startswith("host."):
+        return Classification(
+            "native-app-host-surface", "native", "fatal-at-boundary"
         )
     if name.startswith(("resolve.", "post.")):
         return Classification(
@@ -242,7 +254,11 @@ def main() -> int:
     if len(names) != len(set(names)):
         raise AssertionError("duplicate public fault name")
 
-    wired = wired_symbols(BACKEND.read_text(encoding="utf-8"))
+    wired = (
+        wired_symbols(BACKEND.read_text(encoding="utf-8"))
+        | wired_symbols(APP_HOST.read_text(encoding="utf-8"))
+        | wired_symbols(IMGUI_BACKEND.read_text(encoding="utf-8"))
+    )
     missing_wiring = sorted(set(symbols) - wired)
     stale_wiring = sorted(wired - set(symbols))
     if missing_wiring or stale_wiring:
@@ -266,6 +282,8 @@ def main() -> int:
     public_names = set(names)
     native_runtime = named_runtime_points(
         NATIVE_RUNTIME.read_text(encoding="utf-8"), public_names
+    ) | named_runtime_points(
+        APP_RUNTIME.read_text(encoding="utf-8"), public_names
     )
     browser_runtime = named_runtime_points(
         BROWSER_RUNTIME.read_text(encoding="utf-8"), public_names
@@ -278,7 +296,7 @@ def main() -> int:
     browser_required = {
         name
         for name, item in classifications.items()
-        if item.dialect == "browser"
+        if item.dialect == "browser" or name in NATIVE_APP_BROWSER_DIVERGENT
     }
     dormant_set = set(dormant)
     missing_native = sorted(native_required - native_runtime)

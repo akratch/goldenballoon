@@ -20,7 +20,8 @@ extern "C" {
 // (the automation path never registers them, so it stays byte-identical).
 void platformOverlayProcessEvent(const void *sdl_event);
 int  platformOverlayWantsInput(void);
-void platformOverlayRender(void);
+int  platformOverlayWantsRender(void);
+int  platformOverlayRender(void);
 
 #ifdef __cplusplus
 }

@@ -110,14 +110,13 @@ static void test_presets(void) {
     expect_true("default simulation cadence is original",
                 !strcmp(cfg.values[MDKR_VIDEO_SIMULATION_CADENCE].text,
                         "original"));
-    /* spec §11's example ini shows FrameLimit=60 as the eventual shipped
-     * default; today only camera-only interpolation has landed (Wave B slice
-     * 2), so the conservative default stays "original" until promotion. */
+    /* 1.0.1 keeps authored pacing as the proven default. Higher host-rate
+     * settings add no intermediate images while delayed replay is quarantined. */
     expect_true("default frame limit is original",
                 !strcmp(cfg.values[MDKR_VIDEO_FRAME_LIMIT].text, "original"));
-    expect_true("default motion smoothing is interpolate",
+    expect_true("default motion smoothing is fail-closed",
                 !strcmp(cfg.values[MDKR_VIDEO_MOTION_SMOOTHING].text,
-                        "interpolate"));
+                        "off"));
     expect_true("defaults are DEFAULT-sourced",
                 cfg.values[MDKR_VIDEO_RENDER_SCALE].source == MDKR_VIDEO_SOURCE_DEFAULT);
 
@@ -147,7 +146,7 @@ static void test_presets(void) {
                 !strcmp(cfg.values[MDKR_VIDEO_FRAME_LIMIT].text, "original"));
     expect_true("pure leaves motion smoothing unchanged",
                 !strcmp(cfg.values[MDKR_VIDEO_MOTION_SMOOTHING].text,
-                        "interpolate"));
+                        "off"));
 
     mdkr_video_config_apply_preset(&cfg, MDKR_VIDEO_MODE_RESTORED);
     expect_true("restored widescreen on",
@@ -169,7 +168,7 @@ static void test_presets(void) {
                 !strcmp(cfg.values[MDKR_VIDEO_FRAME_LIMIT].text, "original"));
     expect_true("remastered leaves motion smoothing unchanged",
                 !strcmp(cfg.values[MDKR_VIDEO_MOTION_SMOOTHING].text,
-                        "interpolate"));
+                        "off"));
 
     /* Positive control: a resolved FrameLimit=60/MotionSmoothing=off survives
      * every preset switch, exactly like SimulationCadence=enhanced below --
@@ -332,18 +331,30 @@ static void test_precedence(void) {
                mdkr_video_config_set(
                    &cfg, MDKR_VIDEO_FRAME_LIMIT, "60",
                    MDKR_VIDEO_SOURCE_CLI), 1);
-    expect_int("frame limit rejects 120 -- slice 2 does not support it",
+    expect_int("frame limit accepts 120",
                mdkr_video_config_set(
                    &cfg, MDKR_VIDEO_FRAME_LIMIT, "120",
-                   MDKR_VIDEO_SOURCE_CLI), 0);
-    expect_int("frame limit rejects uncapped",
+                   MDKR_VIDEO_SOURCE_CLI), 1);
+    expect_int("frame limit accepts display",
+               mdkr_video_config_set(
+                   &cfg, MDKR_VIDEO_FRAME_LIMIT, "display",
+                   MDKR_VIDEO_SOURCE_CLI), 1);
+    expect_int("frame limit accepts uncapped",
                mdkr_video_config_set(
                    &cfg, MDKR_VIDEO_FRAME_LIMIT, "uncapped",
+                   MDKR_VIDEO_SOURCE_CLI), 1);
+    expect_int("frame limit rejects a low numeric cap",
+               mdkr_video_config_set(
+                   &cfg, MDKR_VIDEO_FRAME_LIMIT, "29",
                    MDKR_VIDEO_SOURCE_CLI), 0);
-    expect_int("motion smoothing accepts interpolate",
+    expect_int("frame limit rejects a cap above the policy bound",
+               mdkr_video_config_set(
+                   &cfg, MDKR_VIDEO_FRAME_LIMIT, "1001",
+                   MDKR_VIDEO_SOURCE_CLI), 0);
+    expect_int("motion smoothing quarantines interpolate",
                mdkr_video_config_set(
                    &cfg, MDKR_VIDEO_MOTION_SMOOTHING, "interpolate",
-                   MDKR_VIDEO_SOURCE_CLI), 1);
+                   MDKR_VIDEO_SOURCE_CLI), 0);
     expect_int("motion smoothing accepts off",
                mdkr_video_config_set(
                    &cfg, MDKR_VIDEO_MOTION_SMOOTHING, "off",

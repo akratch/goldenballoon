@@ -12,13 +12,16 @@ what sufficient looks like: every boss, representative car/hovercraft/plane
 races, standard AI races, battle and all challenge types, 1P through 4P, hub and
 progression transitions, cutscenes, NTSC and PAL, and a long-running soak.
 
-This gate is that breadth, mechanised. It re-uses the matrix gate's arm B
+This gate is that breadth, mechanised for the explicitly test-only replay
+implementation. Production 1.0.1 keeps delayed replay disabled; its fail-closed
+surface behavior is pinned separately by the matrix and arbitrary-rate gates.
+This suite re-uses the matrix gate's authority comparison --
 comparison -- the per-tick ``[SIMHASH]`` stream with ``MDKR_PRESENT_RATE``
 unset versus engaged must be BYTE-IDENTICAL -- and runs it over a content set
 instead of a single route, via the ``MDKR_LOAD_TRACK=<level>[:<vehicle>]`` hook
 that retargets the fixture route's race load.
 
-It also records, per arm, the four presentation-side quantities that can degrade
+It also records, per arm, presentation-side quantities that can degrade
 without moving a single authoritative bit, and therefore cannot be caught by the
 hash comparison at all:
 
@@ -35,6 +38,12 @@ hash comparison at all:
     registrations;
   * snapshot capture OVERFLOWS, which drop a whole publish and leave the
     previous pair in place;
+  * retained-packet FREEZE FAILURES and ambiguous deformation keys, which
+    safely hold animation but expose a capacity or stable-recipe gap;
+  * retained point/line particle batches and phase-correct exact endpoint
+    holds. The battle-challenge arm is the positive capture witness; until a
+    task-to-next endpoint packet exists, any changed XYZ/RGBA blend is a lagged
+    gameplay regression and must remain zero;
   * INTERPOLATION CONTINUITY -- how many presents found nothing to draw
     (``stale``) and how many actually substituted a camera.
 
@@ -43,8 +52,7 @@ The full 0-65 sweep behind this gate's subset
 
 Levels 0-65 minus 37/41/54 -- 63 levels, every one reaching its race -- were run
 once at 5,000 ticks per arm on this branch, and all 63 were byte-identical with
-zero overflows and zero freeze/restore failures. The recorded per-level table is
-in ``docs/PRESENTATION_ORACLE_BREADTH_2026-07-30.md``. 37/41/54 are excluded
+zero overflows and zero freeze/restore failures. Levels 37/41/54 are excluded
 because they are the subject of a separate, unrelated defect hunt; measured
 here, 37 and 41 are self-consistent (a base-vs-base rerun is byte-identical) and
 54 is NOT -- it diverges from itself at tick 2621, its own race load -- so
@@ -53,9 +61,11 @@ excluding all three is conservative rather than convenient.
 This gate runs a SUBSET of that sweep, chosen for spec 12.3's shape rather than
 for coverage arithmetic, because 63 levels x 2 arms is ~45 minutes and the suite
 is sequential. Each entry states which 12.3 clause it stands for. The subset
-deliberately includes both extremes of the measured reject ratio (level 17 at
-22.2%, the worst of all 63; level 21 at 0.012%, the best), so a regression in
-the recomposition shows up against a bound rather than against an average.
+deliberately includes both extremes of the historical pre-tolerance reject
+ratio (level 17 at 22.2%, level 21 at 0.012%). The verified geometric tolerance
+now accepts the benign re-association population and all 17 current arms report
+zero hard rejects; retaining those endpoints makes a tolerance regression
+visible against the broadest known numeric spread.
 
 Always muted + headless. Exit 0 = pass.
 """
@@ -85,19 +95,24 @@ RACE_LOAD_TICK = 2621
 # 4P joins four controllers through the character/vehicle prompts first.
 TICKS_4P = 4800
 
-# Presents per tick when the subloop engages: the tick floor is two source
-# fields and a present is one, on both field clocks (60 Hz NTSC, 50 Hz PAL).
+# Every content arm uses the same complete authority contract as the focused
+# matrix and render-purity gates.
+HASH_VERSION = "3"
+
+# Presents per tick for this breadth gate's selected 60 Hz NTSC / 50 Hz PAL
+# arms. Arbitrary and sub-field rates, including PAL 60, are covered separately
+# by check_arbitrary_presentation_rates.py.
 PRESENTS_PER_TICK = 2
 
 # Bounds, all set from the measured 63-level sweep (see the doc above), and all
 # far from the measured worst rather than fitted to it.
 #
 # MAX_REJECT_RATIO is 0.50 -- deliberately the SAME bound
-# check_render_purity.py's arm E uses, not a looser one. Worst measured over 63
-# levels: 22.2% (level 17). A recomposition regressed to near-total rejection
-# still passes every hash and pixel assertion, because falling back to the
-# display list's own matrix is bit-exact by construction, so this bound is the
-# only thing that can see it.
+# check_render_purity.py's arm E uses, not a looser one. The current hard-reject
+# population is zero; 22.2% on level 17 was the historical pre-tolerance worst.
+# A recomposition regressed to near-total rejection still passes every hash and
+# pixel assertion because fallback is bit-exact, so the ratio plus the tenancy
+# positive control remain necessary.
 MAX_REJECT_RATIO = 0.50
 # stale = presents that drew nothing. Measured 11-13 per 5,000 ticks (0.26%) on
 # every one of the 63 levels; they are the stage-transition passes where the
@@ -113,7 +128,8 @@ MAX_STALE_RATIO = 0.01
 # mixed two cameras across up to a fifth of its scene. The verification is now a
 # distance rather than an identity on the vp-overridden path
 # (DKR_RECOMPOSE_TOLERANCE_LSB = 4096 s15.16 LSBs = 1/16 world unit,
-# gfx_pc_dkr.c), and what is left is the genuine mis-association population.
+# gfx_pc_dkr.c). The stale-tenant guard and owner-specific replay now leave no
+# production hard-reject population at all.
 #
 # These four bounds are the tolerance's gate, and they are deliberately shaped to
 # fail from BOTH sides -- a tolerance that stopped working and a tolerance that
@@ -138,15 +154,12 @@ MAX_STALE_RATIO = 0.01
 # 17, 20, 21, 26, 38, 40, 46) and `mtxrejectleast` reports -1: there is nothing
 # left to reject. So the bound is equality at zero, which is 64x tighter than
 # what it replaces, and the control that the old non-zero assertion provided
-# now lives in check_tenancy_control() where it can still be measured.
-# MIN_GENUINE_REJECT_LSB: the POSITIVE CONTROL, now stated on the guard-disabled
-# arm rather than on production content. With MDKR_SHADOW_TENANCY=0 the dead
-# tenants are served again and must still be REJECTED and still be enormous:
-# measured least 9,543,536 LSBs (~146 world units) on levels 38 and 46 and
-# 10,453,373 (~160 units) on level 40, against a tolerance of 4096. Set at
-# 1,000,000 LSBs (~15 world units): 9.5x below the measured least and 244x above
-# the threshold, so it cannot be satisfied by anything the tolerance is for.
-MIN_GENUINE_REJECT_LSB = 1_000_000
+# now lives in check_tenancy_control() as a deterministic injected mismatch.
+# MIN_CONTROL_REJECT_LSB: the POSITIVE CONTROL injects one 2,000,000-LSB
+# verification error after disabling the stale-tenant guard. The lower bound is
+# 1,000,000 LSBs (~15 world units), still 244x above the production tolerance,
+# so a widened threshold cannot make the control pass accidentally.
+MIN_CONTROL_REJECT_LSB = 1_000_000
 # MAX_TOLERATED_LSB: the other side. The worst mismatch the tolerance ACCEPTED,
 # measured across those 21 levels, ranged 30-193 LSBs -- 0.0005 to 0.003 world
 # units -- and 320 LSBs (0.005 units) on the PAL arms, whose 25 Hz tick makes the
@@ -157,8 +170,8 @@ MIN_GENUINE_REJECT_LSB = 1_000_000
 # something other than rounding is being accepted and this says so before the
 # threshold does.
 MAX_TOLERATED_LSB = 1024
-# MIN_SEPARATION: the emptiness of the gap, asserted directly. Measured tightest
-# 10,433,740 / 64 = 163,000x (level 38); on non-boss content it is 505,000x. A
+# MIN_SEPARATION: the emptiness of the gap, asserted directly. The injected
+# 2,000,000-LSB mismatch is over 35,000x the current accepted worst of 56. A
 # threshold is only principled if it sits in a region with nothing in it, and
 # this is the assertion that the region is still empty -- it fails if either
 # population ever drifts toward the other, whichever one moves.
@@ -167,6 +180,7 @@ MIN_SEPARATION = 1000
 SUMMARY_RE = re.compile(r"\[PRESENTSCHED-SUMMARY\] (.*)")
 REPLAY_RE = re.compile(r"\[REPLAY-SUMMARY\] (.*)")
 SNAPSHOT_RE = re.compile(r"\[SNAPSHOT\] (.*)")
+PACKET_RE = re.compile(r"\[PRESENT-PACKET\] (.*)")
 LOAD_RE = re.compile(r"level_load: levelId=(\d+) numPlayers=(-?\d+)")
 
 
@@ -234,15 +248,14 @@ def ntsc_arms() -> list[Arm]:
         Arm("boss-tricky", "boss", "38"),
         Arm("boss-bluey", "boss", "40"),
         Arm("boss-smokey", "boss", "46"),
-        # The two ends of the measured recomposition-reject spread. These are
-        # what give MAX_REJECT_RATIO something to be a bound OVER.
-        Arm("worst-reject", "worst measured reject ratio (22.2%)", "17"),
+        # Historical pre-tolerance endpoints retained as numeric stress arms.
+        Arm("worst-reject", "pre-tolerance worst (22.2%; now zero hard rejects)", "17"),
         # Level 21 draws no racers, so it produces NO float-re-association
         # mismatches at all -- its whole pre-tolerance reject count was the 3
         # genuine mis-associations. It is the arm that shows the hard-reject
         # count is content-independent, and the one arm where a zero tolerance
         # count is the correct answer rather than a broken tolerance.
-        Arm("best-reject", "best measured reject ratio (0.012%)", "21",
+        Arm("best-reject", "pre-tolerance best (0.012%; now zero hard rejects)", "21",
             expects_tolerance=False),
         # "1P through 4P". Every gate run before this branch was 1P, and the
         # design doc's R2 (multi-viewport) was recorded as structurally
@@ -255,8 +268,9 @@ def ntsc_arms() -> list[Arm]:
 
 def pal_arms(pal_rom: str) -> list[Arm]:
     return [
-        # "NTSC and PAL". PAL's field clock is 50 Hz, so the rate that engages
-        # the subloop is 50, not 60 -- see the refusal assertion in main().
+        # "NTSC and PAL". A 50 Hz policy gives this content-breadth gate the
+        # same two presentation opportunities per tick as its NTSC arms.
+        # PAL 60's exact 2.4 opportunities/tick has its own clock/stream gate.
         Arm("pal-ancient-lake", "PAL: standard AI race", "5",
             rate=50, rom=pal_rom),
         Arm("pal-boss", "PAL: boss", "38", rate=50, rom=pal_rom),
@@ -302,7 +316,7 @@ def run(binary: Path, rom: Path, label: str, root: Path, arm: Arm,
     env.update(
         LC_ALL="C",
         MDKR_AUDIO="0",
-        MDKR_STATE_HASH="1",
+        MDKR_STATE_HASH=HASH_VERSION,
         MDKR_AUTOPILOT="1",
         MDKR_TRACE="1",
         MDKR_LOAD_TRACK=arm.track,
@@ -349,7 +363,12 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
                timeout, verbose)
     high = run(binary, rom, f"{arm.name}-rate", root, arm,
                {"MDKR_PRESENT_RATE": str(arm.rate),
-                "MDKR_PRESENT_SCHED_TRACE": "1"},
+                "MDKR_INTERNAL_TEST_TOKEN":
+                    "mdkr64-presentation-replay-v1",
+                "MDKR_PRESENT_SMOOTHING": "interpolate",
+                "MDKR_TEST_PRESENTATION_REPLAY": "1",
+                "MDKR_PRESENT_SCHED_TRACE": "1",
+                "MDKR_TEST_ENDPOINT_VERTEX_BYTES": "1"},
                ticks * PRESENTS_PER_TICK, timeout, verbose)
 
     base_rows = sim_hash_rows(base)
@@ -391,7 +410,8 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
     sched = parse_row(high, SUMMARY_RE)
     replay = parse_row(high, REPLAY_RE)
     snapshot = parse_row(high, SNAPSHOT_RE)
-    if not sched or not replay:
+    packet = parse_row(high, PACKET_RE)
+    if not sched or not replay or not packet:
         failures.append(f"{prefix}: no presentation telemetry was emitted")
         return failures, []
 
@@ -422,11 +442,18 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
             f"{prefix}: {stale} of {ticks} interpolated presents drew nothing "
             f"({stale / ticks:.2%}, bound {MAX_STALE_RATIO:.0%}) -- "
             "interpolation is dropping out on this content")
-    if replay.get("walks") != sched.get("interp"):
+    # Successful replay walks now include the alpha-zero retained endpoint at
+    # each fresh tick as well as the intermediate presents counted by `interp`.
+    # The endpoint count is bounded by the number of ticks; stage-transition
+    # passes with no fresh display list correctly contribute neither.
+    replay_walks = replay.get("walks", 0)
+    interp_walks = sched.get("interp", 0)
+    endpoint_walks = replay_walks - interp_walks
+    if endpoint_walks <= 0 or endpoint_walks > ticks:
         failures.append(
-            f"{prefix}: {replay.get('walks')} replay walks against "
-            f"{sched.get('interp')} interpolated presents -- a present was "
-            "counted as interpolated without a walk behind it, or vice versa")
+            f"{prefix}: {replay_walks} replay walks against {interp_walks} "
+            f"interpolated presents imply {endpoint_walks} retained endpoint "
+            f"walks, expected 1..{ticks}")
     if replay.get("restores") != replay.get("walks"):
         failures.append(
             f"{prefix}: {replay.get('restores')} registry restores for "
@@ -445,6 +472,65 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
         failures.append(
             f"{prefix}: {snapshot.get('captures')} snapshot captures for "
             f"{ticks} ticks -- capture is not running once per tick")
+    if packet.get("freezefail", 0) != 0:
+        failures.append(
+            f"{prefix}: {packet.get('freezefail')} retained presentation "
+            "packet freezes failed whole -- a capacity/allocation limit held "
+            "the authored image")
+    if packet.get("unsafestalefallback", -1) != 0:
+        failures.append(
+            f"{prefix}: replay used {packet.get('unsafestalefallback')} "
+            "rewritten live matrix/anchor dependencies instead of frozen "
+            "real-walk bytes")
+    if (packet.get("stale", 0) > 0 and
+            packet.get("stalematrixhold", 0) +
+            packet.get("stalevertexhold", 0) <= 0):
+        failures.append(
+            f"{prefix}: {packet.get('stale')} rewritten dependencies were "
+            "detected but none were retained safely")
+    if packet.get("deformcollision", 0) != 0:
+        failures.append(
+            f"{prefix}: {packet.get('deformcollision')} retained deformation "
+            "keys were ambiguous -- this content needs a more specific stable "
+            "root-stream recipe")
+    if packet.get("deformreg", 0) <= 0 or packet.get("deformpeak", 0) <= 0:
+        failures.append(
+            f"{prefix}: deformation packet never captured model vertices "
+            f"(registrations={packet.get('deformreg')}, "
+            f"peak={packet.get('deformpeak')})")
+    if packet.get("deformhold", 0) <= 0:
+        failures.append(
+            f"{prefix}: retained vertex fallback held no exact authored "
+            "bytes; replay may be reading a reused arena pointer")
+    if packet.get("deformphasehold", 0) <= 0:
+        failures.append(
+            f"{prefix}: retained vertices recorded no task-to-next phase gap; "
+            "the gate cannot prove lagged pairs are refused")
+    for key in ("deformhit", "deformoverride", "colorhit",
+                "coloroverride"):
+        if packet.get(key, -1) != 0:
+            failures.append(
+                f"{prefix}: retained model {key}={packet.get(key)}, expected "
+                "zero; replay used a phase-shifted endpoint pair")
+    if (packet.get("endpointchecks", 0) <= 0 or
+            packet.get("endpointmismatch", -1) != 0 or
+            packet.get("endpointexpected", 0) == 0 or
+            packet.get("endpointexpected") != packet.get("endpointactual")):
+        failures.append(
+            f"{prefix}: alpha-zero G_VTX semantics do not hash exactly to the "
+            "task-authored retained endpoint")
+    if arm.name == "challenge-battle-1":
+        if packet.get("particlevertexreg", 0) <= 0:
+            failures.append(
+                f"{prefix}: battle point-trail witness captured no retained "
+                "particle batches")
+        for key in ("particledeformhit", "particledeformoverride",
+                    "particlecolorhit", "particlecoloroverride"):
+            if packet.get(key, -1) != 0:
+                failures.append(
+                    f"{prefix}: battle point-trail witness {key}="
+                    f"{packet.get(key)}, expected zero while its true next "
+                    "endpoint is unavailable")
 
     hits = replay.get("mtxhit", 0)
     rejects = replay.get("mtxreject", 0)
@@ -494,10 +580,10 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
         # asserted the tolerance had not swallowed the genuine population, and
         # it can no longer be stated on this arm because the population is
         # gone. It is not dropped: it MOVES to check_tenancy_control(), which
-        # brings the population back with MDKR_SHADOW_TENANCY=0 and requires it
-        # to be rejected and enormous exactly as before. Asserting zero here
-        # while proving elsewhere that the tolerance still refuses the real
-        # thing is strictly stronger than the pair it replaces.
+        # disables the guard to prove that switch and independently injects a
+        # 2,000,000-LSB verification error. Asserting zero here while proving
+        # elsewhere that the tolerance still refuses a gross geometric error
+        # is strictly stronger than the pair it replaces.
         if rejects != 0:
             failures.append(
                 f"{prefix}: {rejects} matrices were rejected outright; the "
@@ -562,49 +648,19 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
             f"snapshot: {snapshot.get('captures', 0)} captures, "
             f"{snapshot.get('discontinuities', 0)} discontinuities, "
             f"{snapshot.get('overflows', 0)} overflows, "
-            f"{snapshot.get('resets', 0)} resets")
+            f"{snapshot.get('resets', 0)} resets; "
+            f"deformation: {packet.get('deformreg', 0)} captures, "
+            f"{packet.get('deformhold', 0)} exact holds, "
+            f"{packet.get('deformphasehold', 0)} phase gaps, "
+            f"{packet.get('endpointchecks', 0)} exact alpha-zero checks, "
+            f"{packet.get('deformcollision', 0)} collisions, "
+            f"peak {packet.get('deformpeak', 0)}; "
+            f"rewritten dependencies: {packet.get('stale', 0)} observed, "
+            f"{packet.get('stalematrixhold', 0)} matrix and "
+            f"{packet.get('stalevertexhold', 0)} anchor holds, "
+            f"particles: {packet.get('particlevertexreg', 0)} batches, "
+            f"{packet.get('particledeformhit', 0)} lagged blends")
     return failures, [note]
-
-
-def check_pal_refusal(binary: Path, rom: Path, root: Path, timeout: int,
-                      verbose: bool) -> tuple[list[str], list[str]]:
-    """A 60 Hz present rate must be REFUSED on a 50 Hz field clock, not rounded.
-
-    This is an assertion about honesty, and it is the reason Video.FrameLimit=60
-    cannot be the promoted default as written: 60 does not divide 50, so on a
-    PAL release the subloop declines to engage and the setting silently means
-    `original`. Rounding it to 50 behind the player's back would be worse -- it
-    would make a presentation-rate request mean a different rate than it says --
-    so the engine refuses, and this arm keeps that refusal explicit rather than
-    letting a future change quietly approximate it.
-    """
-    arm = Arm("pal-refuses-60", "PAL: 60 does not divide the 50 Hz field clock",
-              "5", rate=60)
-    output = run(binary, rom, "pal-refuses-60", root, arm,
-                 {"MDKR_PRESENT_RATE": "60", "MDKR_PRESENT_SCHED_TRACE": "1"},
-                 400, timeout, verbose)
-    failures: list[str] = []
-    sched = parse_row(output, SUMMARY_RE)
-    if "[ROM] source video: PAL (50 Hz fields)" not in output:
-        failures.append("pal-refuses-60: the PAL ROM did not publish a 50 Hz "
-                        "source clock, so this arm proved nothing")
-    if sched.get("fieldhz") != 50:
-        failures.append(
-            f"pal-refuses-60: pacer field clock is {sched.get('fieldhz')}, "
-            "expected 50")
-    if sched.get("interp", 0) != 0:
-        failures.append(
-            f"pal-refuses-60: {sched.get('interp')} interpolated presents were "
-            "issued at a rate the field grid cannot express -- 60 was "
-            "approximated instead of refused")
-    if "subloop not engaged" not in output:
-        failures.append(
-            "pal-refuses-60: the pacer did not say it was declining the rate; "
-            "a refusal that is not traced is indistinguishable from a bug")
-    return failures, [
-        "pal-refuses-60         Video.FrameLimit=60 is REFUSED on the 50 Hz "
-        "PAL field clock (0 interpolated presents): 60 is an NTSC-only rate, "
-        "and a promoted `60` default would silently mean `original` there"]
 
 
 def check_tenancy_control(binary: Path, rom: Path, root: Path, timeout: int,
@@ -614,26 +670,28 @@ def check_tenancy_control(binary: Path, rom: Path, root: Path, timeout: int,
     Every content arm above asserts ZERO hard rejects. On its own that is a
     weak statement: a tolerance that had grown until it accepted everything
     would satisfy it just as well as a guard that correctly refuses dead
-    tenants. The two are told apart by disabling the guard.
+    tenants. The two mechanisms are checked independently here.
 
     ``MDKR_SHADOW_TENANCY=0`` restores the pre-fix lookup -- serve the first
     tenant's binding without checking that it still describes what is at the
-    key -- on the SAME binary, one env var apart. That brings the wrong worlds
-    back, and this arm requires that when they come back they are still
-    REJECTED and still enormous. So it re-proves, on live data, both halves of
-    what the per-arm zero can no longer say by itself:
+    key -- on the SAME binary, one env var apart. Owner-specific interpolation
+    can now supersede those stale worlds before recomposition, so allocator
+    reuse is no longer a deterministic rejection injector. The control pairs
+    the switch with ``MDKR_TEST_RECOMPOSE_REJECT=1``, which moves one stack-local
+    verification element by exactly 2,000,000 LSBs. It therefore proves both
+    mechanisms without depending on a stale binding remaining visually live:
 
-      * the tolerance has not swallowed the genuine population (it is still
-        refusing mismatches of ~10^7 LSBs), and
-      * the zero above is caused by the guard, not by the tolerance.
+      * the production guard still fires on natural dead tenants, and the
+        control switch really disables its counter; and
+      * the tolerance still rejects a geometric error far above its 4,096-LSB
+        acceptance band.
 
     It also asserts the guard actually FIRES on this content, so a build where
     the tenancy check silently became a no-op fails here rather than passing
     everything.
 
-    Boss content is used because that is where the in-race dead-tenant burst
-    was measured (level 38: 8 hard rejects with the guard off, 16 refusals with
-    it on; level 40: 11 and 22; level 46: 7 and 14).
+    Boss content is used because it still produces the in-race dead-tenant burst
+    (24 guard refusals on the current level-38 route).
     """
     failures: list[str] = []
     notes: list[str] = []
@@ -642,12 +700,21 @@ def check_tenancy_control(binary: Path, rom: Path, root: Path, timeout: int,
 
     guarded = run(binary, rom, "tenancy-on", root, arm,
                   {"MDKR_PRESENT_RATE": str(arm.rate),
+                   "MDKR_INTERNAL_TEST_TOKEN":
+                       "mdkr64-presentation-replay-v1",
+                   "MDKR_PRESENT_SMOOTHING": "interpolate",
+                   "MDKR_TEST_PRESENTATION_REPLAY": "1",
                    "MDKR_PRESENT_SCHED_TRACE": "1"},
                   frames, timeout, verbose)
     control_out = run(binary, rom, "tenancy-off", root, arm,
                       {"MDKR_PRESENT_RATE": str(arm.rate),
+                       "MDKR_INTERNAL_TEST_TOKEN":
+                           "mdkr64-presentation-replay-v1",
+                       "MDKR_PRESENT_SMOOTHING": "interpolate",
+                       "MDKR_TEST_PRESENTATION_REPLAY": "1",
                        "MDKR_PRESENT_SCHED_TRACE": "1",
-                       "MDKR_SHADOW_TENANCY": "0"},
+                       "MDKR_SHADOW_TENANCY": "0",
+                       "MDKR_TEST_RECOMPOSE_REJECT": "1"},
                       frames, timeout, verbose)
 
     on = parse_row(guarded, REPLAY_RE)
@@ -665,7 +732,7 @@ def check_tenancy_control(binary: Path, rom: Path, root: Path, timeout: int,
     if stale == 0:
         failures.append(
             f"{prefix}: the guard refused ZERO dead tenants on content "
-            "measured to produce 16 of them. Either the slot-2 pushers stopped "
+            "measured to produce 24 of them. Either the slot-2 pushers stopped "
             "re-using registered matrix addresses, or the tenancy check has "
             "become a no-op -- and the second silently restores wrong "
             "shadow-caster worlds while every other arm still passes")
@@ -674,26 +741,32 @@ def check_tenancy_control(binary: Path, rom: Path, root: Path, timeout: int,
             f"{prefix}: {on.get('mtxreject')} hard rejects with the guard "
             "ENABLED; this arm must match the others at zero")
 
-    # With the guard off the population must come BACK -- that is the control.
+    # The off arm must prove the switch itself, independently of the injected
+    # tolerance failure below.
+    off_stale = off.get("staletenants", -1)
+    if off_stale != 0:
+        failures.append(
+            f"{prefix}: MDKR_SHADOW_TENANCY=0 still reported {off_stale} "
+            "stale tenants; the broken-direction switch no longer disables "
+            "the guard it exists to test")
+
+    # The deterministic verification error must be rejected. Natural dead
+    # tenants are no longer used for this because owner-specific replay can
+    # safely supersede their stale worlds before recomposition.
     off_rejects = off.get("mtxreject", 0)
     off_least = off.get("mtxrejectleast", -1)
     off_tol_worst = off.get("mtxtolworst", 0)
     if off_rejects == 0:
         failures.append(
-            f"{prefix}: MDKR_SHADOW_TENANCY=0 produced ZERO hard rejects. The "
-            "control is supposed to reinstate the dead-tenant worlds (8 were "
-            "measured on this level), so either the switch no longer disables "
-            "the guard or the tolerance has grown enough to accept the wrong "
-            "worlds outright -- which is exactly what the per-arm zero cannot "
-            "distinguish on its own")
-    elif off_least < MIN_GENUINE_REJECT_LSB:
+            f"{prefix}: MDKR_TEST_RECOMPOSE_REJECT=1 produced ZERO hard "
+            "rejects; the 2,000,000-LSB error was swallowed, so the production "
+            "zero-reject bound no longer proves the tolerance is selective")
+    elif off_least < MIN_CONTROL_REJECT_LSB:
         failures.append(
-            f"{prefix}: with the guard off the smallest rejected mismatch is "
+            f"{prefix}: the smallest rejected mismatch is "
             f"{off_least} LSBs ({off_least / 65536:.3f} world units), under "
-            f"the {MIN_GENUINE_REJECT_LSB} bound. The dead-tenant worlds are "
-            "supposed to be wrong by ~159 world units at the very least; "
-            "something far closer to the tolerance is now being rejected, so "
-            "the threshold is no longer sitting in empty space")
+            f"the {MIN_CONTROL_REJECT_LSB} control bound; the injected error "
+            "did not reach the comparison as specified")
     elif off_tol_worst > 0:
         separation = off_least / off_tol_worst
         if separation < MIN_SEPARATION:
@@ -706,7 +779,8 @@ def check_tenancy_control(binary: Path, rom: Path, root: Path, timeout: int,
         else:
             notes.append(
                 f"{prefix}: guard on -> {stale} dead tenants refused, 0 hard "
-                f"rejects; guard off -> {off_rejects} hard rejects, least "
+                f"rejects; guard off + injected error -> {off_rejects} hard "
+                f"rejects, least "
                 f"{off_least} LSBs ({off_least / 65536:.0f} world units), "
                 f"{separation:.0f}x above the worst tolerated")
 
@@ -774,25 +848,17 @@ def main() -> int:
             else:
                 failures.extend(control_failures)
                 notes.extend(control_notes)
-        if not args.only or "pal-refuses-60" in args.only:
-            try:
-                refusal_failures, refusal_notes = check_pal_refusal(
-                    binary, pal_rom, root, args.timeout, args.verbose)
-            except RuntimeError as error:
-                failures.append(str(error))
-            else:
-                failures.extend(refusal_failures)
-                notes.extend(refusal_notes)
-
     if failures:
         print("check_presentation_breadth: FAIL")
         for failure in failures:
             print(f"  - {failure}")
         return 1
+    scope = ("selected content" if args.only else
+             "bosses, all challenge types, car/hovercraft/plane, 1P and 4P, "
+             "NTSC and PAL")
     print(f"check_presentation_breadth: PASS -- [SIMHASH] byte-identical with "
           f"the presentation subloop engaged over {len(arms)} content arms "
-          f"(bosses, all challenge types, car/hovercraft/plane, 1P and 4P, "
-          f"NTSC and PAL)")
+          f"({scope})")
     for note in notes:
         print(f"  - {note}")
     return 0

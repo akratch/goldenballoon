@@ -33,13 +33,18 @@ FRAMES = 9600
 VISUAL_FIRST = 3000
 VISUAL_LAST = 7000
 VISUAL_EVERY = 800
-MIN_ACTIVE_ROWS = 3500
+MIN_ACTIVE_ROWS = 4500
 MAX_STEP = 60.0
 Y_MIN, Y_MAX = -250.0, 500.0
 MIN_FINAL_CHECKPOINT = 40
 MIN_FINAL_LAP = 2
+# In an ordinary multiplayer race, production ends the race once every racer
+# except one has finished, marks the remaining racer last, and advances to the
+# results screen.  That one classified DNF still has to have raced substantially.
+MIN_DNF_CHECKPOINT = 32
+MIN_DNF_LAP = 1
 STALL_WINDOW = 240
-MIN_STALL_MEAN = 0.5
+MIN_STALL_MEAN = 1.0
 MIN_PAIR_MEDIAN_SEPARATION = 30.0
 
 MENU_RESULTS = 17
@@ -64,6 +69,11 @@ PACEN_RE = re.compile(
 UI_RE = re.compile(
     r"\[UI-3\] frame=\d+ active=(\d+) draws=(\d+) lateWorld=(\d+) "
     r".*beginFailures=(\d+)"
+)
+ORACLE_RE = re.compile(
+    r"\[ORACLE\] frame=(\d+) map=(\d+) slot=(\d+) .* "
+    r"cp=(-?\d+) next=-?\d+ lap=(-?\d+) countlap=-?\d+ "
+    r"fin=(-?\d+) fpos=(-?\d+) ridx=-?\d+ pidx=(-?\d+)"
 )
 
 
@@ -92,6 +102,15 @@ class Pace:
     clock: int
     checkpoint: int
     lap: int
+
+
+@dataclass(frozen=True)
+class Terminal:
+    frame: int
+    checkpoint: int
+    lap: int
+    finished: int
+    position: int
 
 
 @dataclass(frozen=True)
@@ -302,15 +321,6 @@ def check_motion(
         )
 
     last = max(rows.values(), key=lambda row: row.clock)
-    if last.checkpoint < MIN_FINAL_CHECKPOINT:
-        failures.append(
-            f"P{player}: final checkpoint {last.checkpoint} "
-            f"(want >= {MIN_FINAL_CHECKPOINT})"
-        )
-    if last.lap < MIN_FINAL_LAP:
-        failures.append(
-            f"P{player}: final lap {last.lap} (want >= {MIN_FINAL_LAP})"
-        )
 
     return (
         {
@@ -322,6 +332,26 @@ def check_motion(
         },
         set(active),
     )
+
+
+def parse_terminal_states(output: str, players: int) -> dict[int, Terminal]:
+    """Latest end-of-update Ancient Lake state for each human controller."""
+    terminal: dict[int, Terminal] = {}
+    for line in output.splitlines():
+        match = ORACLE_RE.search(line)
+        if match is None or int(match.group(2)) != ANCIENT_LAKE:
+            continue
+        player_index = int(match.group(8))
+        if not 0 <= player_index < players:
+            continue
+        terminal[player_index + 1] = Terminal(
+            frame=int(match.group(1)),
+            checkpoint=int(match.group(4)),
+            lap=int(match.group(5)),
+            finished=int(match.group(6)),
+            position=int(match.group(7)),
+        )
+    return terminal
 
 
 def print_result(failures: list[str]) -> int:
@@ -350,13 +380,17 @@ def run_case(
     else:
         frame_dir = tempfile.mkdtemp(prefix=f"mdkr_{case.players}p_")
 
-    env = dict(
-        os.environ,
+    env = {
+        key: value for key, value in os.environ.items()
+        if not key.startswith(("MDKR", "GE007_"))
+    }
+    env.update(
         MDKR_AUDIO="0",
         MDKR_SIMULATION_CADENCE="enhanced",
         MDKR_SYNTH_FIELDS="1",
         MDKR_TRACE="1",
         MDKR_AUTOPILOT="1",
+        MDKR_ORACLE_STATE="1",
         MDKR_UI_OVERLAY_TRACE="1",
         MDKR_SAVE_DIR=os.path.join(frame_dir, "save"),
         MDKR_DUMP_FROM=str(VISUAL_FIRST),
@@ -379,7 +413,16 @@ def run_case(
     ]
     if verbose:
         print(f"$ {' '.join(command)}")
-    process = subprocess.run(command, capture_output=True, text=True, env=env)
+    # Frame-indexed input fixtures require a hermetic Original presentation
+    # clock. A developer's repo-local mdkr64.ini may select 240/uncapped, making
+    # every menu input arrive before the corresponding game tick. Point config
+    # resolution at a private nonexistent file rather than inheriting CWD.
+    with tempfile.TemporaryDirectory(
+            prefix=f"mdkr_{case.players}p_config_") as config_root:
+        env["MDKR_VIDEO_CONFIG_PATH"] = os.path.join(
+            config_root, "mdkr64.ini")
+        process = subprocess.run(
+            command, capture_output=True, text=True, env=env)
     output = process.stdout + process.stderr
 
     if process.returncode != 0:
@@ -445,6 +488,59 @@ def run_case(
         active_sets[player] = active
         if summary:
             summaries[player] = summary
+
+    # The historical [PACE] probes live inside update_player_racer() and stop
+    # carrying terminal state as soon as raceFinished flips.  [ORACLE] is sampled
+    # after the complete update for every racer, so it can prove the production
+    # finish-position contract without changing any game state.
+    terminal = parse_terminal_states(output, case.players)
+    positions: list[int] = []
+    classified_dnfs: list[int] = []
+    for player in range(1, case.players + 1):
+        state = terminal.get(player)
+        if state is None:
+            failures.append(f"P{player}: no terminal [ORACLE] state")
+            continue
+        if state.finished != 1:
+            failures.append(
+                f"P{player}: raceFinished stayed {state.finished} at frame {state.frame}"
+            )
+        positions.append(state.position)
+
+        summary = summaries.get(player)
+        if summary is None:
+            continue
+        checkpoint = int(summary["checkpoint"])
+        lap = int(summary["lap"])
+        if checkpoint >= MIN_FINAL_CHECKPOINT and lap >= MIN_FINAL_LAP:
+            continue
+        # race_check_finish() deliberately classifies the sole remaining racer
+        # last once N-1 racers finish. Permit exactly that authored DNF shape,
+        # while retaining substantial progress and every terminal-state check.
+        if (
+            state.finished == 1
+            and state.position == case.players
+            and checkpoint >= MIN_DNF_CHECKPOINT
+            and lap >= MIN_DNF_LAP
+        ):
+            classified_dnfs.append(player)
+            continue
+        failures.append(
+            f"P{player}: insufficient progress: checkpoint {checkpoint}, lap {lap}; "
+            f"want >= {MIN_FINAL_CHECKPOINT}/{MIN_FINAL_LAP}, or the sole "
+            f"last-place DNF at >= {MIN_DNF_CHECKPOINT}/{MIN_DNF_LAP}"
+        )
+
+    if sorted(positions) != list(range(1, case.players + 1)):
+        failures.append(
+            f"{case.players}P: terminal human finish positions are {sorted(positions)}; "
+            f"want each of 1..{case.players} exactly once"
+        )
+    if len(classified_dnfs) > 1:
+        failures.append(
+            f"{case.players}P: multiple early last-place classifications: "
+            f"{classified_dnfs}"
+        )
 
     for first, second in itertools.combinations(range(1, case.players + 1), 2):
         common = sorted(active_sets[first] & active_sets[second])
@@ -553,7 +649,13 @@ def run_case(
                 f"    P{player}: rows={summary['rows']} "
                 f"cp={summary['checkpoint']} lap={summary['lap']} "
                 f"maxStep={summary['max_step']:.1f} "
-                f"slowest={summary['worst_mean']:.2f}"
+                f"slowest={summary['worst_mean']:.2f} "
+                + (
+                    "terminal=missing"
+                    if player not in terminal
+                    else f"terminal=fin{terminal[player].finished}/"
+                         f"pos{terminal[player].position}/lap{terminal[player].lap}"
+                )
             )
 
     if not keep_root:

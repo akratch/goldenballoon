@@ -4,6 +4,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <algorithm>
 
 namespace ui {
 
@@ -11,7 +12,11 @@ namespace ui {
 ImVec2 kBtnPrimary()   { float s = AppTheme::uiScale(); return ImVec2(190 * s, 46 * s); }
 ImVec2 kBtnSecondary() { float s = AppTheme::uiScale(); return ImVec2(190 * s, 40 * s); }
 ImVec2 kBtnWide()      { float s = AppTheme::uiScale(); return ImVec2(210 * s, 40 * s); }
-float  kControlWidth() { return 340.0f * AppTheme::uiScale(); }
+float  kControlWidth(float multiplier) {
+    const float requested = 340.0f * AppTheme::uiScale() * multiplier;
+    const float available = ImGui::GetContentRegionAvail().x;
+    return std::max(1.0f, std::min(requested, available));
+}
 float  kNavWidth()     { return 244.0f * AppTheme::uiScale(); }
 
 void Gap(float y) { ImGui::Dummy(ImVec2(0.0f, y)); }
@@ -27,13 +32,24 @@ void TextSubtle(const char *fmt, ...) {
     ImGui::PopStyleColor();
 }
 
+void TextSubtleWrapped(const char *fmt, ...) {
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::subtle());
+    ImGui::TextWrapped("%s", buf);
+    ImGui::PopStyleColor();
+}
+
 void SectionHeader(const char *title, const char *subtitle) {
     ImGui::PushFont(AppTheme::fonts().title);
     ImGui::TextUnformatted(title);
     ImGui::PopFont();
     if (subtitle && subtitle[0]) {
         ImGui::PushFont(AppTheme::fonts().small);
-        TextSubtle("%s", subtitle);
+        TextSubtleWrapped("%s", subtitle);
         ImGui::PopFont();
     }
     Gap(kGapS);
@@ -47,7 +63,9 @@ void RestartBadge() {
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(c.x, c.y, c.z, 0.14f));
     ImGui::PushStyleColor(ImGuiCol_Text, c);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(7, 2));
-    ImGui::SmallButton("restart");   // non-interactive chip look
+    ImGui::BeginDisabled();
+    ImGui::SmallButton("restart required");
+    ImGui::EndDisabled();
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(2);
 }
@@ -76,7 +94,10 @@ bool PrimaryButton(const char *label, const ImVec2 &size) {
 
 bool CardBegin(const char *id, const ImVec4 &borderColor, float height) {
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(borderColor.x, borderColor.y, borderColor.z, 0.55f));
-    bool open = ImGui::BeginChild(id, ImVec2(0, height), true);
+    const ImGuiChildFlags flags = height > 0.0f
+        ? ImGuiChildFlags_Borders
+        : ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY;
+    bool open = ImGui::BeginChild(id, ImVec2(0, height), flags);
     return open;
 }
 

@@ -125,6 +125,27 @@ html, body {
            max(20px, env(safe-area-inset-left));
   text-align: center;
 }
+.intro-links {
+  margin: 14px auto 0; text-align: center;
+  display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;
+}
+.intro-links a {
+  display: inline-block; padding: 7px 14px; border-radius: 999px;
+  background: rgba(9, 30, 58, .78); color: #ffd76a;
+  font-weight: 700; font-size: 13.5px; text-decoration: none;
+  border: 1px solid rgba(255, 196, 46, .5);
+  box-shadow: var(--glass-edge);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  transition: background .12s var(--ease-out), transform .1s var(--ease-out);
+  -webkit-tap-highlight-color: transparent;
+}
+.intro-links a:hover { background: rgba(9, 30, 58, .92); }
+.intro-links a:active { transform: scale(.97); background: rgba(9, 30, 58, .95); }
+@media (prefers-reduced-transparency: reduce) {
+  .intro-links a { background: rgb(9, 30, 58); backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+
 .lede {
   max-width: 56ch; margin: 0 auto;
   color: #08284f; font-size: clamp(16px, 1.8vw, 19px); font-weight: 500;

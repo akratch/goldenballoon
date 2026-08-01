@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "gfx_webgpu_compat.h"   /* dialect seam: webgpu.h/wgpu.h, pump, waits, surface */
 
@@ -36,6 +37,7 @@
 #include "gfx_rendering_api.h"
 #include "gfx_shadow_cascade.h"
 #include "gfx_shadow_frame.h"
+#include "present_sched.h"
 
 /* platform/fast3d/gfx_pc_dkr.c — declared rather than included: gfx_pc_dkr.h
  * pulls in the F3DDKR/gbi headers, which redefine this file's GfxDimensions. */
@@ -47,6 +49,9 @@ bool gfx_dkr_replay_pass_active(void);
 extern const char *savedirPath(const char *filename);
 
 #include "gfx_webgpu.h"          /* public surface helper (shared with AppHost) */
+#include "gfx_webgpu_callback_latch.h"
+#include "gfx_webgpu_async_request.h"
+#include "gfx_webgpu_surface_policy.h"
 #include "gfx_webgpu_fault.h"    /* deterministic lifecycle/allocation faults */
 #include "gfx_webgpu_shader.h"   /* WGSL combiner emitter */
 #include "gfx_uniforms.h"        /* g_pc* render/post-FX uniform state (shared w/ GL/Metal) */
@@ -82,12 +87,45 @@ static bool              s_ready    = false;   /* device + surface both live */
  * queue, validation, or allocation failure and stops simulation at the next
  * scheduler boundary.
  */
-static volatile enum GfxRenderingStatus s_runtime_status =
+static enum GfxRenderingStatus s_runtime_status =
     GFX_RENDERING_UNINITIALIZED;
 static unsigned s_surface_recovery_attempts = 0;
 static bool s_native_recovery_attempted = false;
+static bool s_callback_recovery_pending = false;
 static uintptr_t s_next_device_generation = 0;
-static uintptr_t s_active_device_generation = 0;
+/* Device callbacks are registered once in WGPUDeviceDescriptor and remain
+ * attached for the complete device lifetime, including AppHost -> engine ->
+ * AppHost borrowing. Work callbacks instead carry raw engine-session state and
+ * must be invalidated as soon as that session shuts down. */
+static uintptr_t s_active_work_generation = 0;
+static WGPUDevice s_callback_device = NULL;
+
+/* PAC-005: bound WebGPU work only where the host can produce real images faster
+ * than the authored cadence. Browser rendering and explicit internal replay
+ * stress admit at most two submitted frames, then skip/hold until completion.
+ *
+ * Native production 1.0.1 submits only newly authored tick images. It tracks
+ * and nonblocking-polls every completion, but deliberately retains 1.0.0's
+ * no-runtime-drain contract so D3D12 cannot starve the cooperative game/audio
+ * thread. Orderly shutdown may still drain after gameplay service has stopped. */
+#define WGPU_FRAME_IN_FLIGHT_MAX 2u
+static unsigned s_gpu_frames_in_flight;
+static unsigned s_gpu_frames_in_flight_high_water;
+static uint64_t s_gpu_frame_submissions;
+static uint64_t s_gpu_frame_completions;
+static uint64_t s_gpu_surface_presents;
+static uint64_t s_gpu_surface_holds;
+static uint64_t s_gpu_surface_unavailable;
+static uint64_t s_gpu_backpressure_waits;
+static uint64_t s_gpu_backpressure_polls;
+static uint64_t s_gpu_backpressure_skips;
+static uint64_t s_gpu_completion_failures;
+static uint64_t s_gpu_abandoned_completions;
+static uint64_t s_gpu_backpressure_wait_ns;
+static uint64_t s_gpu_runtime_waits;
+static uint64_t s_gpu_runtime_wait_ns;
+static uint64_t s_gpu_first_submit_ns;
+static uint64_t s_gpu_last_submit_ns;
 /* When the app shell owns the device/surface (launcher → game handoff), the
  * engine adopts them and must NOT release them at teardown. False = we created
  * them ourselves (standalone --level boot) and own their lifetime. */
@@ -109,6 +147,13 @@ extern void *platformHostWgpuDevice(void);
 extern void *platformHostWgpuQueue(void);
 extern void *platformHostWgpuSurface(void);
 extern int   platformHostWgpuSurfaceFormat(void);
+extern int   platformHasHostWebGpuRecovery(void);
+extern int   platformRecoverHostWebGpu(int phase);
+enum {
+    HOST_WEBGPU_RECOVERY_PREPARE = 1,
+    HOST_WEBGPU_RECOVERY_COMMIT = 2,
+    HOST_WEBGPU_RECOVERY_ABORT = 3,
+};
 
 /* Configured swapchain size; 0 forces a (re)configure on the next start_frame. */
 static uint32_t s_cfg_w = 0, s_cfg_h = 0;
@@ -440,13 +485,130 @@ static bool wgpu_depth_is_decal(void) {
  * Async request helpers (wgpu-native fires these during processEvents), mirroring
  * the validated spike (tests/test_webgpu_spike.c).
  * ---------------------------------------------------------------------- */
-typedef struct { WGPUAdapter adapter; int done; WGPURequestAdapterStatus status; } AdapterReq;
-static void on_adapter(WGPURequestAdapterStatus s, WGPUAdapter a, WGPUStringView m, void *u1, void *u2) {
-    (void)m; (void)u2; AdapterReq *r = (AdapterReq *)u1; r->status = s; r->adapter = a; r->done = 1;
+static void release_adapter_request_handle(void *handle) {
+    if (handle != NULL) wgpuAdapterRelease((WGPUAdapter)handle);
 }
-typedef struct { WGPUDevice device; int done; WGPURequestDeviceStatus status; } DeviceReq;
+
+static void on_adapter(WGPURequestAdapterStatus s, WGPUAdapter a, WGPUStringView m, void *u1, void *u2) {
+    (void)m;
+    (void)u2;
+    gfx_webgpu_async_request_complete(
+        (GfxWebgpuAsyncRequest *)u1, (int)s, (void *)a,
+        release_adapter_request_handle);
+}
+
+static void release_device_request_handle(void *handle) {
+    if (handle != NULL) {
+        wgpuDeviceDestroy((WGPUDevice)handle);
+        wgpuDeviceRelease((WGPUDevice)handle);
+    }
+}
+
 static void on_device(WGPURequestDeviceStatus s, WGPUDevice d, WGPUStringView m, void *u1, void *u2) {
-    (void)m; (void)u2; DeviceReq *r = (DeviceReq *)u1; r->status = s; r->device = d; r->done = 1;
+    (void)m;
+    (void)u2;
+    gfx_webgpu_async_request_complete(
+        (GfxWebgpuAsyncRequest *)u1, (int)s, (void *)d,
+        release_device_request_handle);
+}
+
+static bool wgpu_request_adapter_attempt(
+        WGPUInstance instance, const WGPURequestAdapterOptions *options,
+        bool inject_failure, WGPUAdapter *out_adapter,
+        WGPURequestAdapterStatus *out_status) {
+    GfxWebgpuAsyncRequest *request = gfx_webgpu_async_request_create();
+    if (request == NULL ||
+        !gfx_webgpu_async_request_retain_callback(request)) {
+        gfx_webgpu_async_request_release(request);
+        return false;
+    }
+
+    WGPURequestAdapterCallbackInfo callback = {0};
+    callback.mode = WGPUCallbackMode_AllowProcessEvents;
+    callback.callback = on_adapter;
+    callback.userdata1 = request;
+    if (inject_failure) {
+        on_adapter(WGPURequestAdapterStatus_Unavailable, NULL,
+                   (WGPUStringView){0}, request, NULL);
+    } else {
+        wgpuInstanceRequestAdapter(instance, options, callback);
+    }
+    WGPU_COMPAT_WAIT(
+        gfx_webgpu_async_request_completed(request), instance, NULL,
+        WGPU_COMPAT_BRINGUP_WAIT_ITERS);
+
+    int status = (int)WGPURequestAdapterStatus_Unavailable;
+    void *handle = NULL;
+    const bool completed = gfx_webgpu_async_request_finish(
+        request, &status, &handle);
+    gfx_webgpu_async_request_release(request);
+    if (out_status != NULL) {
+        *out_status = (WGPURequestAdapterStatus)status;
+    }
+    if (!completed || status != (int)WGPURequestAdapterStatus_Success ||
+        handle == NULL) {
+        release_adapter_request_handle(handle);
+        return false;
+    }
+    *out_adapter = (WGPUAdapter)handle;
+    return true;
+}
+
+static bool wgpu_request_device_attempt(
+        WGPUInstance instance, WGPUAdapter adapter,
+        WGPUDeviceDescriptor *descriptor, bool inject_failure,
+        WGPUDevice *out_device, uintptr_t *out_generation,
+        WGPURequestDeviceStatus *out_status) {
+    const uintptr_t generation = ++s_next_device_generation;
+    if (!gfx_webgpu_callback_latch_begin(generation)) {
+        fprintf(stderr,
+                "[webgpu] no callback slot for device generation %llu\n",
+                (unsigned long long)generation);
+        return false;
+    }
+
+    descriptor->uncapturedErrorCallbackInfo.userdata1 = (void *)generation;
+    descriptor->deviceLostCallbackInfo.userdata1 = (void *)generation;
+
+    GfxWebgpuAsyncRequest *request = gfx_webgpu_async_request_create();
+    if (request == NULL ||
+        !gfx_webgpu_async_request_retain_callback(request)) {
+        gfx_webgpu_async_request_release(request);
+        gfx_webgpu_callback_latch_retire(generation);
+        return false;
+    }
+
+    WGPURequestDeviceCallbackInfo callback = {0};
+    callback.mode = WGPUCallbackMode_AllowProcessEvents;
+    callback.callback = on_device;
+    callback.userdata1 = request;
+    if (inject_failure) {
+        on_device(WGPURequestDeviceStatus_Error, NULL,
+                  (WGPUStringView){0}, request, NULL);
+    } else {
+        wgpuAdapterRequestDevice(adapter, descriptor, callback);
+    }
+    WGPU_COMPAT_WAIT(
+        gfx_webgpu_async_request_completed(request), instance, NULL,
+        WGPU_COMPAT_BRINGUP_WAIT_ITERS);
+
+    int status = (int)WGPURequestDeviceStatus_Error;
+    void *handle = NULL;
+    const bool completed = gfx_webgpu_async_request_finish(
+        request, &status, &handle);
+    gfx_webgpu_async_request_release(request);
+    if (out_status != NULL) {
+        *out_status = (WGPURequestDeviceStatus)status;
+    }
+    if (!completed || status != (int)WGPURequestDeviceStatus_Success ||
+        handle == NULL) {
+        release_device_request_handle(handle);
+        gfx_webgpu_callback_latch_retire(generation);
+        return false;
+    }
+    *out_device = (WGPUDevice)handle;
+    *out_generation = generation;
+    return true;
 }
 
 static WGPUStringView wgpu_sv(const char *s) {
@@ -457,6 +619,190 @@ static void wgpu_runtime_fatal(const char *message) {
     s_ready = false;
     s_runtime_status = GFX_RENDERING_FATAL;
     WGPU_COMPAT_REPORT_FAILURE(message);
+}
+
+/* Spontaneous WebGPU callbacks never mutate renderer state.  Consume their
+ * generation-scoped atomic record only at a renderer-thread boundary. */
+static bool wgpu_consume_callback_failure(void) {
+    enum GfxWebgpuCallbackEvent event = GFX_WEBGPU_CALLBACK_NONE;
+    const uintptr_t generation =
+        gfx_webgpu_callback_latch_active_generation();
+    if (!gfx_webgpu_callback_latch_consume(generation, &event)) {
+        return false;
+    }
+    if (event == GFX_WEBGPU_CALLBACK_DEVICE_LOST) {
+        wgpu_runtime_fatal(
+            "The graphics device was lost - reload the page to continue from "
+            "your last auto-save.");
+    } else {
+        wgpu_runtime_fatal(
+            "The graphics backend reported an unrecoverable error. Reload the "
+            "page to continue from the last persisted save.");
+    }
+    s_callback_recovery_pending = true;
+    return true;
+}
+
+static uint64_t wgpu_monotonic_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * UINT64_C(1000000000) +
+           (uint64_t)ts.tv_nsec;
+}
+
+static void wgpu_reset_backpressure_stats(void) {
+    s_gpu_frames_in_flight = 0u;
+    s_gpu_frames_in_flight_high_water = 0u;
+    s_gpu_frame_submissions = 0u;
+    s_gpu_frame_completions = 0u;
+    s_gpu_surface_presents = 0u;
+    s_gpu_surface_holds = 0u;
+    s_gpu_surface_unavailable = 0u;
+    s_gpu_backpressure_waits = 0u;
+    s_gpu_backpressure_polls = 0u;
+    s_gpu_backpressure_skips = 0u;
+    s_gpu_completion_failures = 0u;
+    s_gpu_abandoned_completions = 0u;
+    s_gpu_backpressure_wait_ns = 0u;
+    s_gpu_runtime_waits = 0u;
+    s_gpu_runtime_wait_ns = 0u;
+    s_gpu_first_submit_ns = 0u;
+    s_gpu_last_submit_ns = 0u;
+}
+
+WGPU_COMPAT_QUEUE_DONE_CALLBACK(wgpu_on_frame_work_done) {
+    const uintptr_t generation = (uintptr_t)userdata;
+    WGPU_COMPAT_QUEUE_DONE_UNUSED();
+    if (generation == 0u || generation != s_active_work_generation) {
+        return;
+    }
+    if (s_gpu_frames_in_flight > 0u) {
+        s_gpu_frames_in_flight--;
+        s_gpu_frame_completions++;
+    } else {
+        s_gpu_completion_failures++;
+    }
+    if (status != WGPUQueueWorkDoneStatus_Success) {
+        s_gpu_completion_failures++;
+        fprintf(stderr,
+                "[webgpu] submitted frame completion failed (status=%d)\n",
+                (int)status);
+        wgpu_runtime_fatal(
+            "The graphics queue could not complete a submitted frame. Reload "
+            "the page to continue from the last persisted save.");
+    }
+}
+
+static bool wgpu_backpressure_check_below(
+    unsigned limit, bool enforce, bool runtime) {
+    WGPU_COMPAT_QUEUE_POLL(s_instance, s_device);
+    s_gpu_backpressure_polls++;
+    if (s_gpu_frames_in_flight < limit || !enforce) {
+        return true;
+    }
+    if (!WGPU_COMPAT_QUEUE_CAN_BLOCK) {
+        s_gpu_backpressure_skips++;
+        return false;
+    }
+
+    const uint64_t started = wgpu_monotonic_ns();
+    unsigned stalled = 0u;
+    s_gpu_backpressure_waits++;
+    while (s_gpu_frames_in_flight >= limit && stalled < 8u) {
+        const unsigned before = s_gpu_frames_in_flight;
+        WGPU_COMPAT_QUEUE_BLOCK(s_instance, s_device);
+        WGPU_COMPAT_QUEUE_POLL(s_instance, s_device);
+        s_gpu_backpressure_polls++;
+        stalled = s_gpu_frames_in_flight < before ? 0u : stalled + 1u;
+    }
+    const uint64_t elapsed = wgpu_monotonic_ns() - started;
+    s_gpu_backpressure_wait_ns += elapsed;
+    if (runtime) {
+        s_gpu_runtime_waits++;
+        s_gpu_runtime_wait_ns += elapsed;
+    }
+    if (s_gpu_frames_in_flight >= limit) {
+        s_gpu_completion_failures++;
+        fprintf(stderr,
+                "[webgpu] frame queue failed to retire below %u in-flight\n",
+                limit);
+        wgpu_runtime_fatal(
+            "The graphics queue stopped completing frames. Reload the page to "
+            "continue from the last persisted save.");
+        return false;
+    }
+    return true;
+}
+
+static bool wgpu_backpressure_required_before_frame(void) {
+    /* The browser needs the nonblocking queue bound for every rAF policy.
+     * Native production 1.0.1 submits only authored tick images—even when an
+     * experimental high-rate policy creates extra host opportunities—so it
+     * retains 1.0.0's nonblocking submission contract. Internal replay stress
+     * can genuinely generate faster than the authored cadence and keeps the
+     * native bound. Every path still polls once per attempted frame so queue
+     * completions and device callbacks retire promptly. */
+    return !WGPU_COMPAT_QUEUE_CAN_BLOCK || present_sched_replay_armed();
+}
+
+static void wgpu_track_frame_submission(void) {
+    const uint64_t now = wgpu_monotonic_ns();
+    if (s_gpu_first_submit_ns == 0u) {
+        s_gpu_first_submit_ns = now;
+    }
+    s_gpu_last_submit_ns = now;
+    s_gpu_frame_submissions++;
+    s_gpu_frames_in_flight++;
+    if (s_gpu_frames_in_flight > s_gpu_frames_in_flight_high_water) {
+        s_gpu_frames_in_flight_high_water = s_gpu_frames_in_flight;
+    }
+    WGPU_COMPAT_QUEUE_ON_DONE(
+        s_queue, wgpu_on_frame_work_done,
+        (void *)s_active_work_generation);
+
+    /* Never wait after submission. The fixed-tick adapter services audio only
+     * after end_frame returns, so a synchronous device drain here can starve
+     * the SDL queue on a slow D3D12 completion. Browser/internal replay bounds
+     * are checked before a later frame, after the completed tick refills audio. */
+}
+
+static void wgpu_abandon_in_flight(void) {
+    s_gpu_abandoned_completions += s_gpu_frames_in_flight;
+    s_gpu_frames_in_flight = 0u;
+}
+
+static void wgpu_report_backpressure(void) {
+    uint64_t rate_millihz = 0u;
+    if (s_gpu_frame_submissions > 1u &&
+        s_gpu_last_submit_ns > s_gpu_first_submit_ns) {
+        const uint64_t elapsed = s_gpu_last_submit_ns - s_gpu_first_submit_ns;
+        const uint64_t intervals = s_gpu_frame_submissions - 1u;
+        rate_millihz = elapsed > 0u &&
+                intervals <= UINT64_MAX / UINT64_C(1000000000000)
+            ? intervals * UINT64_C(1000000000000) / elapsed : 0u;
+    }
+    fprintf(stderr,
+            "[WGPU-BACKPRESSURE] cap=%u submitted=%llu completed=%llu "
+            "presented=%llu held=%llu unavailable=%llu "
+            "inflight=%u highwater=%u waits=%llu polls=%llu skips=%llu "
+            "failures=%llu abandoned=%llu waitns=%llu runtimewaits=%llu "
+            "runtimewaitns=%llu rateMilliHz=%llu\n",
+            WGPU_FRAME_IN_FLIGHT_MAX,
+            (unsigned long long)s_gpu_frame_submissions,
+            (unsigned long long)s_gpu_frame_completions,
+            (unsigned long long)s_gpu_surface_presents,
+            (unsigned long long)s_gpu_surface_holds,
+            (unsigned long long)s_gpu_surface_unavailable,
+            s_gpu_frames_in_flight, s_gpu_frames_in_flight_high_water,
+            (unsigned long long)s_gpu_backpressure_waits,
+            (unsigned long long)s_gpu_backpressure_polls,
+            (unsigned long long)s_gpu_backpressure_skips,
+            (unsigned long long)s_gpu_completion_failures,
+            (unsigned long long)s_gpu_abandoned_completions,
+            (unsigned long long)s_gpu_backpressure_wait_ns,
+            (unsigned long long)s_gpu_runtime_waits,
+            (unsigned long long)s_gpu_runtime_wait_ns,
+            (unsigned long long)rate_millihz);
 }
 
 static bool wgpu_submit_commands(
@@ -480,15 +826,11 @@ static void on_device_error(WGPUDevice const *device, WGPUErrorType type,
                             WGPUStringView msg, void *u1, void *u2) {
     (void)device; (void)u2;
     uintptr_t generation = (uintptr_t)u1;
-    if (generation != 0 && generation != s_active_device_generation) {
-        return; /* late callback from a device that has already been replaced */
-    }
+    if (!gfx_webgpu_callback_latch_publish(
+            generation, GFX_WEBGPU_CALLBACK_DEVICE_ERROR)) return;
     fprintf(stderr, "[webgpu] device error (type=%d): %.*s\n",
             (int)type, (int)msg.length, msg.data ? msg.data : "");
     fflush(stderr);
-    wgpu_runtime_fatal(
-        "The graphics backend reported an unrecoverable error. Reload the page "
-        "to continue from the last persisted save.");
 }
 
 /* GPU-process restart, driver reset, or TDR. The callback only latches fatal
@@ -498,18 +840,14 @@ static void on_device_lost(WGPUDevice const *device, WGPUDeviceLostReason reason
                            WGPUStringView msg, void *u1, void *u2) {
     (void)device; (void)u2;
     uintptr_t generation = (uintptr_t)u1;
-    if (generation != 0 && generation != s_active_device_generation) {
-        return; /* late callback from a device that has already been replaced */
-    }
     if (reason == WGPUDeviceLostReason_Destroyed) {
         return;
     }
+    if (!gfx_webgpu_callback_latch_publish(
+            generation, GFX_WEBGPU_CALLBACK_DEVICE_LOST)) return;
     fprintf(stderr, "[webgpu] device lost (reason=%d): %.*s\n",
             (int)reason, (int)msg.length, msg.data ? msg.data : "");
     fflush(stderr);
-    wgpu_runtime_fatal(
-        "The graphics device was lost - reload the page to continue from your "
-        "last auto-save.");
 }
 
 /* ------------------------------------------------------------------------
@@ -641,16 +979,11 @@ static WGPUTextureFormat wgpu_choose_format(WGPUSurface surface, WGPUAdapter ada
  * bleeds the page through wherever a frame's alpha carries sub-1 coverage (the
  * fence/glass RDP memory-blend surfaces). Opaque tells the compositor to ignore
  * frame alpha. Fall back to Auto only when the surface does not advertise Opaque
- * (Auto is guaranteed valid). Cached: the capability query runs once. Uses the
- * s_surface/s_adapter statics, so it is called from wgpu_configure_surface after
- * bring-up has assigned them (both the standalone and host-handoff paths do). */
+ * (Auto is guaranteed valid). Resolve against the active adapter/surface on
+ * every configuration: native recovery may replace them with a generation
+ * advertising a narrower capability set. */
 static WGPUCompositeAlphaMode wgpu_choose_alpha_mode(void) {
-    static int resolved = 0;
-    static WGPUCompositeAlphaMode mode = WGPUCompositeAlphaMode_Auto;
-    if (resolved) {
-        return mode;
-    }
-    resolved = 1;
+    WGPUCompositeAlphaMode mode = WGPUCompositeAlphaMode_Auto;
     if (s_surface == NULL || s_adapter == NULL) {
         return mode;   /* Auto — caps unavailable */
     }
@@ -658,12 +991,17 @@ static WGPUCompositeAlphaMode wgpu_choose_alpha_mode(void) {
     if (!gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_CAPS_ALPHA) &&
         wgpuSurfaceGetCapabilities(s_surface, s_adapter, &caps) ==
             WGPUStatus_Success) {
+        bool opaque_advertised = false;
         for (size_t i = 0; i < caps.alphaModeCount; ++i) {
             if (caps.alphaModes[i] == WGPUCompositeAlphaMode_Opaque) {
-                mode = WGPUCompositeAlphaMode_Opaque;
+                opaque_advertised = true;
                 break;
             }
         }
+        mode = (WGPUCompositeAlphaMode)gfx_webgpu_surface_select_alpha(
+            (uint32_t)WGPUCompositeAlphaMode_Auto,
+            (uint32_t)WGPUCompositeAlphaMode_Opaque,
+            opaque_advertised);
     }
     wgpuSurfaceCapabilitiesFreeMembers(caps);
     return mode;
@@ -676,8 +1014,8 @@ static WGPUCompositeAlphaMode wgpu_choose_alpha_mode(void) {
  * exceed the refresh rate under FIFO):
  *     fifo (default) | mailbox | immediate
  * The requested mode is selected ONLY when the surface capabilities advertise it;
- * otherwise it falls back to FIFO with one stderr note. Latched once — the env is
- * process-constant, and this runs from wgpu_configure_surface (called every resize).
+ * otherwise it falls back to FIFO with one stderr note. The requested policy is
+ * process-constant, but support is resolved per active surface generation.
  *
  * Web: the browser present is rAF-driven (emdawnwebgpu no-ops the present, see
  * gfx_webgpu_compat.h), so present mode is a native concern; the knob is harmless
@@ -685,15 +1023,42 @@ static WGPUCompositeAlphaMode wgpu_choose_alpha_mode(void) {
  * env is never set on the web build. No inline __EMSCRIPTEN__ guard needed (seam
  * rule): the default path is identical on both platforms. */
 static WGPUPresentMode wgpu_choose_present_mode(void) {
-    static int resolved = 0;
-    static WGPUPresentMode mode = WGPUPresentMode_Fifo;
-    if (resolved) {
+    WGPUPresentMode mode = WGPUPresentMode_Fifo;
+    const char *want = getenv("GE007_WEBGPU_PRESENT");
+    const bool diagnostic_override = want != NULL && want[0] != '\0';
+#ifdef __EMSCRIPTEN__
+    if (!diagnostic_override) {
+        /* Browser canvas presentation is owned by rAF/the user agent. Numeric
+         * caps skip rAF opportunities in the host clock; they do not request a
+         * native immediate swapchain the browser cannot expose. */
+        fprintf(stderr,
+                "[PRESENT-MODE] backend=webgpu platform=web requestedPolicy=%s "
+                "effectivePolicy=%s rate=%u requested=fifo effective=fifo "
+                "supported=1 reason=raf-ceiling\n",
+                present_sched_present_requested_policy_name(),
+                present_sched_present_policy_name(),
+                present_sched_present_rate());
         return mode;
     }
-    resolved = 1;
-    const char *want = getenv("GE007_WEBGPU_PRESENT");
-    if (want == NULL || *want == '\0' || strcmp(want, "fifo") == 0) {
-        return mode;   /* default / explicit FIFO — the byte-identity baseline */
+#endif
+    if (!diagnostic_override) {
+        if (present_sched_backend_vsync_enabled()) {
+            fprintf(stderr,
+                    "[PRESENT-MODE] backend=webgpu policy=%s rate=%u "
+                    "requested=fifo effective=fifo supported=1\n",
+                    present_sched_present_policy_name(),
+                    present_sched_present_rate());
+            return mode;
+        }
+        want = "immediate";
+    }
+    if (strcmp(want, "fifo") == 0) {
+        fprintf(stderr,
+                "[PRESENT-MODE] backend=webgpu policy=%s rate=%u "
+                "requested=fifo effective=fifo supported=1 override=%d\n",
+                present_sched_present_policy_name(),
+                present_sched_present_rate(), diagnostic_override ? 1 : 0);
+        return mode;
     }
     WGPUPresentMode requested;
     if (strcmp(want, "mailbox") == 0) {
@@ -721,13 +1086,27 @@ static WGPUPresentMode wgpu_choose_present_mode(void) {
                 break;
             }
         }
+        mode = (WGPUPresentMode)gfx_webgpu_surface_select_present(
+            (uint32_t)WGPUPresentMode_Fifo,
+            (uint32_t)requested,
+            advertised);
     }
     wgpuSurfaceCapabilitiesFreeMembers(caps);
     if (advertised) {
-        mode = requested;
+        fprintf(stderr,
+                "[PRESENT-MODE] backend=webgpu policy=%s rate=%u "
+                "requested=%s effective=%s supported=1 override=%d\n",
+                present_sched_present_policy_name(),
+                present_sched_present_rate(), want, want,
+                diagnostic_override ? 1 : 0);
     } else {
-        fprintf(stderr, "[webgpu] present mode '%s' not advertised by the surface; "
-                        "using fifo\n", want);
+        fprintf(stderr,
+                "[PRESENT-MODE] backend=webgpu policy=%s rate=%u "
+                "requested=%s effective=fifo supported=0 override=%d "
+                "reason=capability-fallback using fifo\n",
+                present_sched_present_policy_name(),
+                present_sched_present_rate(), want,
+                diagnostic_override ? 1 : 0);
     }
     return mode;
 }
@@ -858,6 +1237,7 @@ bool gfx_webgpu_bringup(void *metal_layer, void *sdl_window,
     WGPUDevice   device   = NULL;
     WGPUQueue    queue    = NULL;
     WGPUTextureFormat format = WGPUTextureFormat_Undefined;
+    uintptr_t device_generation = 0;
 
     instance = WGPU_FAULT_CREATE(
         BRINGUP_INSTANCE, wgpuCreateInstance(NULL));
@@ -874,35 +1254,23 @@ bool gfx_webgpu_bringup(void *metal_layer, void *sdl_window,
         goto fail;
     }
 
-    /* WEB-026: the request-result structs are STATIC, not stack locals. On a
-     * timed-out bring-up the WGPU_COMPAT_WAIT loop returns while the request is
-     * still pending; when the callback finally resolves it writes its result
-     * through the userdata pointer. A stack local would be a dead frame by then
-     * (silent wasm-stack corruption on exactly the slow machines where bring-up
-     * times out); a file-scope static is always a live, harmless landing site.
-     * Reset before each use. Bring-up runs once per process (single caller), so
-     * the shared statics are never re-entered. */
-    static AdapterReq areq;
-    areq = (AdapterReq){0};
-    WGPURequestAdapterCallbackInfo acb = {0};
-    acb.mode = WGPUCallbackMode_AllowProcessEvents;
-    acb.callback = on_adapter;
-    acb.userdata1 = &areq;
+    /* Each request attempt has a distinct refcounted callback context. A timed
+     * out callback can therefore resolve after this bring-up, its retry, or a
+     * later recovery without writing into reused state; a late success releases
+     * the adapter in the callback. */
     WGPURequestAdapterOptions aopts = {0};
     aopts.compatibleSurface = surface;
     aopts.powerPreference = WGPUPowerPreference_HighPerformance;
-    if (gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_BRINGUP_ADAPTER)) {
-        areq.done = 1;
-        areq.status = WGPURequestAdapterStatus_Unavailable;
-    } else {
-        wgpuInstanceRequestAdapter(instance, &aopts, acb);
-    }
-    WGPU_COMPAT_WAIT(areq.done, instance, NULL, WGPU_COMPAT_BRINGUP_WAIT_ITERS);
-    if (!areq.done || areq.status != WGPURequestAdapterStatus_Success || areq.adapter == NULL) {
-        fprintf(stderr, "[webgpu] adapter request failed (status=%d)\n", (int)areq.status);
+    WGPURequestAdapterStatus adapter_status =
+        WGPURequestAdapterStatus_Unavailable;
+    if (!wgpu_request_adapter_attempt(
+            instance, &aopts,
+            gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_BRINGUP_ADAPTER),
+            &adapter, &adapter_status)) {
+        fprintf(stderr, "[webgpu] adapter request failed (status=%d)\n",
+                (int)adapter_status);
         goto fail;
     }
-    adapter = areq.adapter;
 
     WGPUAdapterInfo info = {0};
     wgpuAdapterGetInfo(adapter, &info);
@@ -911,11 +1279,6 @@ bool gfx_webgpu_bringup(void *metal_layer, void *sdl_window,
             info.device.data ? info.device.data : "");
     wgpuAdapterInfoFreeMembers(info);
 
-    static DeviceReq dreq;   /* WEB-026: static — see the adapter-request note above. */
-    WGPURequestDeviceCallbackInfo dcb = {0};
-    dcb.mode = WGPUCallbackMode_AllowProcessEvents;
-    dcb.callback = on_device;
-    dcb.userdata1 = &dreq;
     /* WEB-015: raise maxTextureDimension2D from WebGPU's 8192 default to the
      * adapter's real maximum. Query the adapter, ask the device for up to that
      * in requiredLimits (all other fields stay UNDEFINED = library defaults), so
@@ -932,7 +1295,6 @@ bool gfx_webgpu_bringup(void *metal_layer, void *sdl_window,
     required_limits.maxTextureDimension2D = want_max_tex;
 
     WGPUDeviceDescriptor ddesc = {0};
-    uintptr_t device_generation = ++s_next_device_generation;
     ddesc.label = wgpu_sv("mdkr64-device");
     ddesc.requiredLimits = &required_limits;
     /* DAM-R1 root cause (DAM_PARITY_DEEP_DIVE 2026-07-17 §4.1): gfx_init sets
@@ -956,16 +1318,12 @@ bool gfx_webgpu_bringup(void *metal_layer, void *sdl_window,
                 "geometry will use the frontend's homogeneous-z clamp\n");
     }
     ddesc.uncapturedErrorCallbackInfo.callback = on_device_error;
-    ddesc.uncapturedErrorCallbackInfo.userdata1 =
-        (void *)device_generation;
     /* WEB-025: register the device-lost callback at creation so a later GPU loss
      * (process restart / driver reset) surfaces a reload panel instead of a
      * frozen canvas. AllowSpontaneous: it may fire at any time, not only inside
      * a ProcessEvents pump. */
     ddesc.deviceLostCallbackInfo.mode = WGPUCallbackMode_AllowSpontaneous;
     ddesc.deviceLostCallbackInfo.callback = on_device_lost;
-    ddesc.deviceLostCallbackInfo.userdata1 = (void *)device_generation;
-    dreq = (DeviceReq){0};
     /*
      * Selecting the fallback-specific point also forces entry into the fallback
      * without consuming its occurrence. Otherwise a capable adapter would
@@ -973,39 +1331,29 @@ bool gfx_webgpu_bringup(void *metal_layer, void *sdl_window,
      */
     bool test_default_device_path = gfx_webgpu_fault_selected(
         GFX_WEBGPU_FAULT_BRINGUP_DEVICE_DEFAULTS);
-    if (test_default_device_path ||
-        gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_BRINGUP_DEVICE_LIMITS)) {
-        dreq.done = 1;
-        dreq.status = WGPURequestDeviceStatus_Error;
-    } else {
-        wgpuAdapterRequestDevice(adapter, &ddesc, dcb);
-    }
-    WGPU_COMPAT_WAIT(dreq.done, instance, NULL, WGPU_COMPAT_BRINGUP_WAIT_ITERS);
-    if (!dreq.done || dreq.status != WGPURequestDeviceStatus_Success || dreq.device == NULL) {
+    WGPURequestDeviceStatus device_status = WGPURequestDeviceStatus_Error;
+    if (!wgpu_request_device_attempt(
+            instance, adapter, &ddesc,
+            test_default_device_path ||
+                gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_BRINGUP_DEVICE_LIMITS),
+            &device, &device_generation, &device_status)) {
         /* WEB-015/WEB-026: a blocklisted or limited adapter can reject the raised
          * maxTextureDimension2D. Retry once with library-default limits so device
          * creation still succeeds (at the 8192 default cap; s_max_tex_dim stays
          * at its floor). Covers native wgpu-native and web alike. */
         fprintf(stderr, "[webgpu] device request failed (status=%d); retrying with default limits\n",
-                (int)dreq.status);
+                (int)device_status);
         ddesc.requiredLimits = NULL;
-        dreq = (DeviceReq){0};
-        if (gfx_webgpu_fault_hit(
-                GFX_WEBGPU_FAULT_BRINGUP_DEVICE_DEFAULTS)) {
-            dreq.done = 1;
-            dreq.status = WGPURequestDeviceStatus_Error;
-        } else {
-            wgpuAdapterRequestDevice(adapter, &ddesc, dcb);
-        }
-        WGPU_COMPAT_WAIT(dreq.done, instance, NULL, WGPU_COMPAT_BRINGUP_WAIT_ITERS);
-        if (!dreq.done || dreq.status != WGPURequestDeviceStatus_Success || dreq.device == NULL) {
+        if (!wgpu_request_device_attempt(
+                instance, adapter, &ddesc,
+                gfx_webgpu_fault_hit(
+                    GFX_WEBGPU_FAULT_BRINGUP_DEVICE_DEFAULTS),
+                &device, &device_generation, &device_status)) {
             fprintf(stderr, "[webgpu] device request failed after default-limits retry (status=%d)\n",
-                    (int)dreq.status);
+                    (int)device_status);
             goto fail;
         }
     }
-    device = dreq.device;
-    s_active_device_generation = device_generation;
 
     /* WEB-015: record the max texture dimension the device actually granted, so
      * gfx_webgpu_max_offscreen_dim() and the upload reject use the true cap. */
@@ -1027,6 +1375,44 @@ bool gfx_webgpu_bringup(void *metal_layer, void *sdl_window,
         goto fail;
     }
 
+    /* Commit only after queue and surface format validation. Any loss/error
+     * delivered from request completion through this point was retained in the
+     * provisional slot; the prior live device remained active throughout. */
+    if (!gfx_webgpu_callback_latch_commit(device_generation)) {
+        fprintf(stderr,
+                "[webgpu] device callback generation could not be committed\n");
+        goto fail;
+    }
+
+#ifndef __EMSCRIPTEN__
+    {
+        const char *candidate_failure =
+            getenv("MDKR_TEST_WEBGPU_RECOVERY_FAIL");
+        if (s_native_recovery_attempted && candidate_failure != NULL &&
+            strcmp(candidate_failure, "candidate-callback") == 0) {
+            (void)gfx_webgpu_callback_latch_publish(
+                device_generation, GFX_WEBGPU_CALLBACK_DEVICE_LOST);
+        }
+    }
+#endif
+    {
+        enum GfxWebgpuCallbackEvent candidate_event =
+            GFX_WEBGPU_CALLBACK_NONE;
+        if (gfx_webgpu_callback_latch_consume(
+                device_generation, &candidate_event)) {
+            fprintf(stderr,
+                    "[webgpu] candidate device failed before root transaction "
+                    "commit (event=%d)\n",
+                    (int)candidate_event);
+            goto fail;
+        }
+    }
+
+    /* Remember the exact device whose immutable callbacks carry
+     * device_generation. A borrowed engine session must preserve this token; it
+     * is cleared only when the owner releases the actual device. */
+    s_callback_device = device;
+
     *out_instance = instance;
     *out_adapter  = adapter;
     *out_device   = device;
@@ -1038,6 +1424,7 @@ bool gfx_webgpu_bringup(void *metal_layer, void *sdl_window,
     /* WEB-026: release everything acquired so far on any failure (the P3 leak
      * fold-in). NULL-guarded, so it is safe from every early exit above. */
 fail:
+    gfx_webgpu_callback_latch_retire(device_generation);
     if (queue    != NULL) wgpuQueueRelease(queue);
     if (device   != NULL) wgpuDeviceRelease(device);
     if (adapter  != NULL) wgpuAdapterRelease(adapter);
@@ -1046,14 +1433,33 @@ fail:
     return false;
 }
 
+bool gfx_webgpu_device_failed(void) {
+    (void)wgpu_consume_callback_failure();
+    return s_runtime_status == GFX_RENDERING_FATAL;
+}
+
+void gfx_webgpu_host_device_will_release(WGPUDevice device) {
+    if (device != NULL && device == s_callback_device) {
+        /* Invalidate the immutable device callbacks before the owner destroys
+         * the root. Destroyed callbacks and any delayed validation report then
+         * belong to no live device generation. */
+        gfx_webgpu_callback_latch_retire(
+            gfx_webgpu_callback_latch_active_generation());
+        s_callback_device = NULL;
+    }
+}
+
 /* ------------------------------------------------------------------------
  * Vtable: init / resize / frame lifecycle
  * ---------------------------------------------------------------------- */
 static bool wgpu_init(void) {
     s_ready = false;
     s_runtime_status = GFX_RENDERING_UNINITIALIZED;
+    wgpu_reset_backpressure_stats();
     s_surface_recovery_attempts = 0;
     s_native_recovery_attempted = false;
+    s_callback_recovery_pending = false;
+    s_active_work_generation = ++s_next_device_generation;
     if (!gfx_webgpu_fault_configure()) {
         fprintf(stderr, "[webgpu] invalid fault configuration: %s\n",
                 gfx_webgpu_fault_error());
@@ -1086,10 +1492,17 @@ static bool wgpu_init(void) {
             fprintf(stderr, "[webgpu] host handoff has no surface format\n");
             return false;
         }
-        /* The shell owns the root objects, but backend async work still needs
-         * a unique lifetime token so a late completion cannot dereference
-         * program storage from a finished engine session. */
-        s_active_device_generation = ++s_next_device_generation;
+        /* bringup() installed immutable device callbacks before the handoff.
+         * Keep that device-lifetime generation intact. The separate work token
+         * above protects queue/pipeline callbacks carrying session storage. */
+        if (s_callback_device != s_device ||
+            gfx_webgpu_callback_latch_active_generation() == 0) {
+            fprintf(stderr,
+                    "[webgpu] host handoff lost its device callback lifetime\n");
+            WGPU_COMPAT_REPORT_FAILURE(
+                "The graphics device handoff was incomplete. Restart the app.");
+            return false;
+        }
         s_ready = true;
         s_runtime_status = GFX_RENDERING_READY;
         fprintf(stderr, "[webgpu] adopted host device/surface (format=%d)\n",
@@ -1188,7 +1601,8 @@ static void wgpu_update_light_ubo(void) {
                          params, sizeof(params));
 }
 
-static void wgpu_start_frame(void) {
+static bool wgpu_start_frame(void) {
+    (void)wgpu_consume_callback_failure();
     s_perf_frame_serial++;
     s_frame_open = false;
     s_output_overlay_active = false;
@@ -1205,14 +1619,23 @@ static void wgpu_start_frame(void) {
     s_modern_ubo_used = 0; /* WEB-052: reset the per-frame modern-mesh UBO ring */
     wgpu_reset_pass_dynamic_state(); /* WEB-023-lite: fresh pass = no rect applied yet */
     if (!s_ready) {
-        return;
+        return false;
     }
     if (gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_DEVICE_LOST)) {
         on_device_lost(
             &s_device, WGPUDeviceLostReason_Unknown,
             wgpu_sv("deterministic MDKR_WEBGPU_FAULT injection"),
-            (void *)s_active_device_generation, NULL);
-        return;
+            (void *)gfx_webgpu_callback_latch_active_generation(), NULL);
+        (void)wgpu_consume_callback_failure();
+        return false;
+    }
+    if (!wgpu_backpressure_check_below(
+            WGPU_FRAME_IN_FLIGHT_MAX,
+            wgpu_backpressure_required_before_frame(), true)) {
+        /* Browser/internal replay: both bounded queue slots remain occupied.
+         * Return without opening an encoder so the scheduler stays responsive;
+         * ordinary native production never enforces this admission ceiling. */
+        return false;
     }
 
     /* Render at the frontend's resolution (gfx_current_dimensions) — the same
@@ -1240,7 +1663,7 @@ static void wgpu_start_frame(void) {
         req_h = gfx_current_dimensions.height;
     }
     if (req_w == 0 || req_h == 0) {
-        return;   /* dimensions not established yet — skip this frame cleanly */
+        return false; /* dimensions not established yet — skip cleanly */
     }
 
     /* PERF-020: debounce window-drag resizes. A native window drag changes
@@ -1394,7 +1817,7 @@ static void wgpu_start_frame(void) {
             WGPU_COMPAT_REPORT_FAILURE(
                 "The graphics backend could not allocate render targets. "
                 "Reload the page to continue from the last persisted save.");
-            return;
+            return false;
         }
         if (s_scene_view != NULL) wgpuTextureViewRelease(s_scene_view);
         if (s_scene_tex != NULL) wgpuTextureRelease(s_scene_tex);
@@ -1477,7 +1900,7 @@ static void wgpu_start_frame(void) {
                 WGPU_COMPAT_REPORT_FAILURE(
                     "The graphics backend could not allocate a resolve target. "
                     "Reload the page to continue from the last persisted save.");
-                return;
+                return false;
             }
             if (s_resolve_view != NULL) {
                 wgpuTextureViewRelease(s_resolve_view);
@@ -1513,10 +1936,10 @@ static void wgpu_start_frame(void) {
         WGPU_COMPAT_REPORT_FAILURE(
             "The graphics surface could not be configured. Reload the page to "
             "continue from the last persisted save.");
-        return;
+        return false;
     }
     if (s_scene_view == NULL || s_depth_view == NULL) {
-        return;
+        return false;
     }
 
     /* WEB-027: advance + upload the per-frame noise uniform now that s_scene_h is
@@ -1533,7 +1956,7 @@ static void wgpu_start_frame(void) {
         WGPU_COMPAT_REPORT_FAILURE(
             "The graphics backend could not allocate a frame. Reload the page "
             "to continue from the last persisted save.");
-        return;
+        return false;
     }
 
     /* Replay the previous immutable caster frame before the ordinary scene
@@ -1571,9 +1994,10 @@ static void wgpu_start_frame(void) {
         WGPU_COMPAT_REPORT_FAILURE(
             "The graphics backend could not allocate a frame. Reload the page "
             "to continue from the last persisted save.");
-        return;
+        return false;
     }
     s_frame_open = true;
+    return true;
 }
 
 typedef struct { int done; WGPUMapAsyncStatus status; } WgpuMapReq;
@@ -2296,8 +2720,9 @@ static bool wgpu_readback_possible(void) {
     extern int g_screenshotFrameSessionActive;
     extern int g_autoScreenshotFrame;
     extern int g_autoScreenshotGameTimer;
+    extern const char *g_dumpFramesDir;
     if (g_screenshotFrameSessionActive || g_autoScreenshotFrame >= 0 ||
-        g_autoScreenshotGameTimer >= 0) {
+        g_autoScreenshotGameTimer >= 0 || g_dumpFramesDir != NULL) {
         s_readback_latched = true;
         return true;
     }
@@ -2323,6 +2748,7 @@ static bool wgpu_readback_possible(void) {
 }
 
 static void wgpu_end_frame(void) {
+    (void)wgpu_consume_callback_failure();
     if (!s_frame_open) {
         /* start_frame bailed (not ready / no texture) — nothing to submit. */
         return;
@@ -2373,6 +2799,10 @@ static void wgpu_end_frame(void) {
      * count toward the hold — see s_frame_pending_skips). Native and web
      * --deterministic never store PENDING slots, so the counter is permanently 0
      * there and this block is behavior-neutral for every byte-exact gate. */
+    /* The completed real walk is the exact alpha-zero endpoint. Present it
+     * normally; only later midpoint replays replace the surface image. Holding
+     * it here used to force a delayed alpha-zero redraw after the game had
+     * already built its next list, exposing mutable dependencies to replay. */
     bool hold_present = false;
     if (s_frame_pending_skips > 0 &&
         s_present_hold_streak < WGPU_PRESENT_HOLD_MAX) {
@@ -2386,6 +2816,9 @@ static void wgpu_end_frame(void) {
         s_present_hold_streak = 0;
     }
     s_frame_pending_skips = 0;
+    if (hold_present) {
+        s_gpu_surface_holds++;
+    }
 
     /* Acquire the window drawable up front: the PERF-008 direct-to-surface path below
      * renders the output filter straight into it, and the offscreen path uses it as
@@ -2437,6 +2870,9 @@ static void wgpu_end_frame(void) {
     bool present_ok = st.texture != NULL &&
         (st.status == WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal ||
          st.status == WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal);
+    if (!hold_present && !present_ok) {
+        s_gpu_surface_unavailable++;
+    }
     if (getenv("MDKR_TEST_VISIBLE_HEADLESS") != NULL) {
         static bool reported_test_surface;
         if (!reported_test_surface) {
@@ -2725,15 +3161,24 @@ static void wgpu_end_frame(void) {
      * (e.g. the headless open/close test tick, which advances the engine-frame
      * ordinal) stays in lockstep even on a frame that drops its drawable.
      * The bandwidth-heavy Load+Store surface pass only opens when we actually
-     * have a drawable AND the overlay is visible (platformOverlayWantsInput);
-     * otherwise the overlay's draw is skipped (current_overlay_pass() == NULL) so
+     * have a drawable AND the menu or FPS readout is visible
+     * (platformOverlayWantsRender); input capture remains a separate menu-only
+     * decision in platformOverlayWantsInput. Otherwise the overlay's draw is
+     * skipped (current_overlay_pass() == NULL), so
      * standalone boots (no hooks → 0) and closed-overlay gameplay pay nothing. */
-    extern void platformOverlayRender(void);
-    extern int  platformOverlayWantsInput(void);
+    extern int  platformOverlayRender(void);
+    extern int  platformOverlayWantsRender(void);
+    int overlay_render_ok = 1;
+    bool overlay_target_failed = false;
+    const bool overlay_requested =
+        present_ok && platformOverlayWantsRender();
     WGPUTextureView overlay_view = NULL;
-    if (present_ok && platformOverlayWantsInput()) {
+    if (overlay_requested) {
         overlay_view = WGPU_FAULT_CREATE(
             OVERLAY_VIEW, wgpuTextureCreateView(st.texture, NULL));
+#ifdef MDKR_APP
+        overlay_target_failed = overlay_view == NULL;
+#endif
     }
     if (overlay_view != NULL) {
         WGPURenderPassColorAttachment oa = {0};
@@ -2751,32 +3196,48 @@ static void wgpu_end_frame(void) {
             wgpuTextureViewRelease(overlay_view);
             overlay_view = NULL;
             if (!s_overlay_failure_reported) {
+#ifdef MDKR_APP
+                fprintf(stderr,
+                        "[webgpu] required app overlay pass unavailable\n");
+#else
                 fprintf(stderr,
                         "[webgpu] overlay pass unavailable; presenting game "
                         "frame without overlay\n");
+#endif
                 s_overlay_failure_reported = true;
             }
-            /*
-             * The F1 overlay is optional UI layered after the completed game
-             * frame. Losing only this pass must not stop simulation or discard
-             * the already-rendered scene; keep its per-frame state machine in
-             * lockstep and submit the game frame without overlay decoration.
-             */
-            platformOverlayRender();
+#ifdef MDKR_APP
+            overlay_target_failed = true;
+#endif
+            /* Keep the per-frame UI state machine in lockstep even without a
+             * pass. Browser/CLI overlays are optional local degradation; the
+             * native app marks a requested missing pass fatal below. */
+            overlay_render_ok = platformOverlayRender();
         }
         /* The overlay pass targets the swapchain, which always stays in OUTPUT
          * space even when the scene is supersampled. */
         s_overlay_w = (int)s_cfg_w;
         s_overlay_h = (int)s_cfg_h;
         if (s_overlay_pass != NULL) {
-            platformOverlayRender();
+            overlay_render_ok = platformOverlayRender();
             wgpuRenderPassEncoderEnd(s_overlay_pass);
             wgpuRenderPassEncoderRelease(s_overlay_pass);
             s_overlay_pass = NULL;
             wgpuTextureViewRelease(overlay_view);
         }
     } else {
-        platformOverlayRender();   /* per-frame logic only; no pass, no draw */
+        overlay_render_ok = platformOverlayRender(); /* state only; no pass/draw */
+    }
+    if (overlay_target_failed || !overlay_render_ok) {
+        fprintf(stderr, "[webgpu] ImGui overlay rendering failed\n");
+        /* Do not expose a frame whose required menu was silently omitted. The
+         * command encoder is still finished/submitted below so all already-
+         * encoded child resources retire normally, but this drawable is not
+         * presented and the engine observes a typed fatal renderer state. */
+        present_ok = false;
+        wgpu_runtime_fatal(
+            "The in-game graphics menu could not be rendered. Restart the app "
+            "to continue from the last persisted save.");
     }
 
     /* Optional surface dump: the presented frame (scene + overlay), unlike the
@@ -2866,6 +3327,9 @@ static void wgpu_end_frame(void) {
         return;
     }
     bool submitted = wgpu_submit_commands(s_queue, 1, &cmd);
+    if (submitted) {
+        wgpu_track_frame_submission();
+    }
     wgpuCommandBufferRelease(cmd);
     wgpuCommandEncoderRelease(s_encoder);
     s_encoder = NULL;
@@ -2901,6 +3365,8 @@ static void wgpu_end_frame(void) {
          * JS task yields (requestAnimationFrame), and emscripten's binding
          * aborts on an explicit present — so the browser side is a no-op. */
         WGPU_COMPAT_PRESENT(s_surface);
+        s_gpu_surface_presents++;
+        g_surfaceFrameCounter++;
     }
     if (surface_view != NULL) {
         wgpuTextureViewRelease(surface_view);   /* PERF-008 direct-path render target */
@@ -2938,6 +3404,7 @@ static void wgpu_finish_render(void) {
 }
 
 static enum GfxRenderingStatus wgpu_get_status(void) {
+    (void)wgpu_consume_callback_failure();
     return s_runtime_status;
 }
 
@@ -4555,7 +5022,7 @@ static void on_pipeline_ready(WGPUCreatePipelineAsyncStatus status,
     prg = ctx->prg;
     key = ctx->key;
     if (ctx->generation == 0 ||
-        ctx->generation != s_active_device_generation) {
+        ctx->generation != s_active_work_generation) {
         /* Final shutdown or device replacement invalidated the raw program
          * pointer carried by this completion. Never dereference it. */
         if (pipeline != NULL) {
@@ -4678,7 +5145,7 @@ static bool wgpu_kick_async_pipeline(
     }
     ctx->prg = prg;
     ctx->key = key;
-    ctx->generation = s_active_device_generation;
+    ctx->generation = s_active_work_generation;
     ctx->kick_frame = s_perf_frame_serial;
     ctx->optional_shadow = optional_shadow;
     s_pending_pipelines++;
@@ -6973,7 +7440,7 @@ static bool wgpu_read_framebuffer_rgb(int x, int y, int width, int height, uint8
  * A full-fidelity mesh (float32 pos/nrm/uv + rgba8, u32 indices, RGBA8 texture)
  * drawn into the live scene pass, transformed by the interpreter's MP matrix
  * with the N64 fog curve. Ports gfx_metal.mm's decor shader + cache. Renders
- * scene decoration, which is a no-op on the GL default (AUDIT-0001); needs
+ * scene decoration, which is a no-op on the diagnostic GL backend (AUDIT-0001); needs
  * Video.SceneDecor=1. Per-mesh GPU resources are cached by mesh_id (ids are
  * monotonic/never reused, so a full evict at capacity is safe).
  * ---------------------------------------------------------------------- */
@@ -7411,7 +7878,10 @@ bool gfx_webgpu_runtime_recovery_pending(void) {
 #ifdef __EMSCRIPTEN__
     return false;
 #else
-    return s_owns_device && s_runtime_status == GFX_RENDERING_FATAL;
+    (void)wgpu_consume_callback_failure();
+    return s_runtime_status == GFX_RENDERING_FATAL &&
+        (s_owns_device ||
+         (s_callback_recovery_pending && platformHasHostWebGpuRecovery()));
 #endif
 }
 
@@ -7662,11 +8132,16 @@ static void wgpu_shutdown(void) {
     const bool shadow_resource_latched =
         s_shadow_resource_perma_fail;
 
+    if (s_gpu_frames_in_flight > 0u) {
+        (void)wgpu_backpressure_check_below(1u, true, false);
+    }
+    wgpu_report_backpressure();
+    wgpu_abandon_in_flight();
     s_ready = false;
     s_runtime_status = GFX_RENDERING_UNINITIALIZED;
     /* Invalidate browser async callback contexts before any ShaderProgram is
      * freed. A late callback will release only its returned pipeline + context. */
-    s_active_device_generation = 0;
+    s_active_work_generation = 0;
     wgpu_prewarm_flush();
     if (s_pending_pipelines > 0) {
         WGPU_COMPAT_DRAIN(s_instance);
@@ -7678,6 +8153,7 @@ static void wgpu_shutdown(void) {
         wgpuSurfaceRelease(s_surface);
     }
     if (owned_roots) {
+        gfx_webgpu_host_device_will_release(s_device);
         if (s_device != NULL) {
             wgpuDeviceDestroy(s_device);
         }
@@ -7722,7 +8198,7 @@ static void wgpu_shutdown(void) {
     s_vp_fix_cap = 0;
     s_pending_pipelines = 0;
     s_frame_pending_skips = 0;
-    s_active_device_generation = 0;
+    s_active_work_generation = 0;
 
     fprintf(stderr,
             "[WGPU-SHUTDOWN] roots=%s shaders=%zu textures=%u "
@@ -7749,37 +8225,39 @@ static void wgpu_shutdown(void) {
             s_async_pending_high_water);
 }
 
-void gfx_webgpu_prepare_gl_fallback(void) {
-#ifndef __EMSCRIPTEN__
-    if (s_surface != NULL || s_device != NULL || s_shaders != NULL ||
-        s_tex != NULL || s_diag_ubo_ext != NULL) {
-        /*
-         * GL becomes the active frontend backend after this call, so the
-         * common final shutdown can no longer identify WebGPU as the owner of
-         * these capacity counters. Publish them while their metadata is still
-         * live; the reporter is one-shot, so ordinary WebGPU shutdown keeps
-         * exactly one row as well.
-         */
-        gfx_webgpu_report_limits();
-        wgpu_shutdown();
-    }
-#endif
-}
-
 bool gfx_webgpu_recover_device(void) {
 #ifdef __EMSCRIPTEN__
     return false;
 #else
-    if (!gfx_webgpu_runtime_recovery_pending() || !s_owns_device ||
-        s_native_recovery_attempted) {
+    if (!gfx_webgpu_runtime_recovery_pending()) {
+        return false;
+    }
+    const bool borrowed_roots = !s_owns_device;
+    if (s_native_recovery_attempted) {
+        fprintf(stderr,
+                "[webgpu] native recovery already attempted; stopping after "
+                "the repeated device failure\n");
+        if (borrowed_roots) {
+            /* AppHost owns the user-visible terminal state as well as the
+             * borrowed roots. Record a durable launcher error before the
+             * engine unwinds; stderr alone is not an adequate failure UI. */
+            (void)platformRecoverHostWebGpu(HOST_WEBGPU_RECOVERY_ABORT);
+        }
         return false;
     }
     s_native_recovery_attempted = true;
+    /* The failed generation cannot contribute to the new device's queue cap.
+     * Its late callbacks carry the old generation token and are ignored. */
+    wgpu_abandon_in_flight();
     {
         const char *force_failure =
             getenv("MDKR_TEST_WEBGPU_RECOVERY_FAIL");
         if (force_failure != NULL && force_failure[0] == '1') {
             fprintf(stderr, "[webgpu] injected native recovery failure\n");
+            if (borrowed_roots) {
+                (void)platformRecoverHostWebGpu(
+                    HOST_WEBGPU_RECOVERY_ABORT);
+            }
             return false;
         }
     }
@@ -7794,12 +8272,23 @@ bool gfx_webgpu_recover_device(void) {
 #ifdef __APPLE__
     layer = platformGetMetalLayer();
 #endif
-    fprintf(stderr, "[webgpu] attempting one native device reinitialization\n");
-    if (!gfx_webgpu_bringup(
-            layer, platformGetSdlWindow(), &instance, &adapter, &device,
-            &queue, &surface, &format)) {
+    fprintf(stderr,
+            "[webgpu] attempting one native device reinitialization (%s roots)\n",
+            borrowed_roots ? "AppHost-owned" : "engine-owned");
+    if (borrowed_roots) {
+        if (!platformRecoverHostWebGpu(HOST_WEBGPU_RECOVERY_PREPARE)) {
+            (void)platformRecoverHostWebGpu(HOST_WEBGPU_RECOVERY_ABORT);
+            return false;
+        }
+    } else if (!gfx_webgpu_bringup(
+                   layer, platformGetSdlWindow(), &instance, &adapter, &device,
+                   &queue, &surface, &format)) {
         return false;
     }
+    /* The new device has a new immutable callback token. Give work callbacks a
+     * distinct session token before destroying the old queue/device so their
+     * delayed completions cannot mutate the rebuilt renderer. */
+    s_active_work_generation = ++s_next_device_generation;
 
     WGPUInstance old_instance = s_instance;
     WGPUAdapter old_adapter = s_adapter;
@@ -7808,17 +8297,39 @@ bool gfx_webgpu_recover_device(void) {
     WGPUSurface old_surface = s_surface;
 
     wgpu_release_device_objects();
-    if (old_surface != NULL) {
-        wgpuSurfaceUnconfigure(old_surface);
-        wgpuSurfaceRelease(old_surface);
+    if (borrowed_roots) {
+        /* AppHost owns both root sets. COMMIT runs only after every engine child
+         * above has been released, swaps the bridge as one transaction, then
+         * destroys the failed roots exactly once. */
+        if (!platformRecoverHostWebGpu(HOST_WEBGPU_RECOVERY_COMMIT)) {
+            (void)platformRecoverHostWebGpu(HOST_WEBGPU_RECOVERY_ABORT);
+            return false;
+        }
+        instance = (WGPUInstance)platformHostWgpuInstance();
+        adapter = (WGPUAdapter)platformHostWgpuAdapter();
+        device = (WGPUDevice)platformHostWgpuDevice();
+        queue = (WGPUQueue)platformHostWgpuQueue();
+        surface = (WGPUSurface)platformHostWgpuSurface();
+        format = platformHostWgpuSurfaceFormat();
+        if (instance == NULL || adapter == NULL || device == NULL ||
+            queue == NULL || surface == NULL ||
+            format == (int)WGPUTextureFormat_Undefined) {
+            fprintf(stderr,
+                    "[webgpu] AppHost committed an incomplete replacement\n");
+            (void)platformRecoverHostWebGpu(HOST_WEBGPU_RECOVERY_ABORT);
+            return false;
+        }
+    } else {
+        if (old_surface != NULL) {
+            wgpuSurfaceUnconfigure(old_surface);
+            wgpuSurfaceRelease(old_surface);
+        }
+        if (old_device != NULL) wgpuDeviceDestroy(old_device);
+        if (old_queue != NULL) wgpuQueueRelease(old_queue);
+        if (old_device != NULL) wgpuDeviceRelease(old_device);
+        if (old_adapter != NULL) wgpuAdapterRelease(old_adapter);
+        if (old_instance != NULL) wgpuInstanceRelease(old_instance);
     }
-    if (old_device != NULL) {
-        wgpuDeviceDestroy(old_device);
-    }
-    if (old_queue != NULL) wgpuQueueRelease(old_queue);
-    if (old_device != NULL) wgpuDeviceRelease(old_device);
-    if (old_adapter != NULL) wgpuAdapterRelease(old_adapter);
-    if (old_instance != NULL) wgpuInstanceRelease(old_instance);
 
     s_instance = instance;
     s_adapter = adapter;
@@ -7832,8 +8343,12 @@ bool gfx_webgpu_recover_device(void) {
                                 gfx_output_dimensions.height)) {
         s_ready = false;
         s_runtime_status = GFX_RENDERING_FATAL;
+        if (borrowed_roots) {
+            (void)platformRecoverHostWebGpu(HOST_WEBGPU_RECOVERY_ABORT);
+        }
         return false;
     }
+    s_callback_recovery_pending = false;
     s_runtime_status = GFX_RENDERING_READY;
     return true;
 #endif

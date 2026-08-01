@@ -15,8 +15,6 @@
 #include "engine_entry.h"   // MdkrBootConfig
 #include "rom_validate.h"   // RomInfo
 
-#include <string>
-
 class AppHost;
 
 enum class LauncherActionType { None, Play, Quit };
@@ -30,6 +28,12 @@ struct LauncherAction {
 struct LauncherState {
     char    romPath[1024] = {0};
     RomInfo romInfo{};
+    // A rejected replacement is kept separately so the active, proven ROM and
+    // Play action remain intact until a candidate validates and persists.
+    char    romCandidatePath[1024] = {0};
+    RomInfo romCandidateInfo{};
+    char    romCandidateError[256] = {0};
+    bool    romCandidateVisible = false;
     bool    romInitialized = false;
     // No discovery state: the launcher never searches the disk. The ROM arrives
     // by drag-and-drop, a native open-panel, a typed path, or the remembered
@@ -44,17 +48,20 @@ struct LauncherState {
 void RomPanel_ensureInit(LauncherState &s);                  // load the remembered ROM
 void RomPanel_draw(LauncherState &s, LauncherAction &out);
 void RomPanel_setRom(LauncherState &s, const char *path);    // drag-and-drop entry (validates)
-void SettingsPanel_draw(LauncherState &s, LauncherAction &out);
 void DiagPanel_draw(LauncherState &s, LauncherAction &out);
-void AboutPanel_draw(LauncherState &s, LauncherAction &out);
 
 // Shared helpers.
 void PlayButton_draw(LauncherState &s, LauncherAction &out);  // primary Play (or disabled hint)
-void fillBoot(const LauncherState &s, MdkrBootConfig &boot);  // ROM + staged restart settings
 
 class Launcher {
 public:
     LauncherAction draw(AppHost &host);
+
+    // Read-only view of the shared panel state (ROM path/verdict). Exists for
+    // the headless shell smoke (MDKR_APP_SMOKE_DROP) to observe the outcome of
+    // a smoke-generated SDL_DROPFILE the same way a screenshot proves a
+    // synthetic frame: by reading what the launcher itself ended up holding.
+    const LauncherState &state() const { return state_; }
 
 private:
     LauncherState state_;
