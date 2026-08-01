@@ -55,6 +55,14 @@ void debug_text_bounds(void);
 void debug_text_origin(void);
 void debug_text_newline(void);
 s32 debug_text_parse(Gfx**, char*);
-int vsprintf(char *s, const char *fmt, va_list args);
+
+/* MinGW provides vsprintf as a CRT inline, so the decomp's private formatter
+ * needs a distinct native symbol. Keep the original name for matching builds. */
+#ifdef NATIVE_PORT
+#define DKR_VSPRINTF dkr_vsprintf
+#else
+#define DKR_VSPRINTF vsprintf
+#endif
+int DKR_VSPRINTF(char *s, const char *fmt, va_list args);
 
 #endif

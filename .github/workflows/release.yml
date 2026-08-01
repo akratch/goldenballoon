@@ -128,10 +128,10 @@ jobs:
           version_output="$(./build/mdkr64 --version | tr -d '\r')"
           test "$version_output" = "mdkr64 ${{ needs.validate.outputs.version }}"
           ./macos/Scripts/verify_asset_free.sh build/mdkr64
-          ./build/mdkr64 --help | tee help.txt
-          grep -q '^Usage: ' help.txt
-          ./build/mdkr64 --video-list | tee video.txt
-          grep -qE '^\[video\] mode=' video.txt
+          ./build/mdkr64 --help | tee "$RUNNER_TEMP/linux-help.txt"
+          grep -q '^Usage: ' "$RUNNER_TEMP/linux-help.txt"
+          ./build/mdkr64 --video-list | tee "$RUNNER_TEMP/linux-video.txt"
+          grep -qE '^\[video\] mode=' "$RUNNER_TEMP/linux-video.txt"
       - name: Qualify built AppHost pixels (lavapipe WebGPU + llvmpipe OpenGL)
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"

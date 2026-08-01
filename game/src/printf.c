@@ -201,7 +201,7 @@ UNUSED int sprintf(char *s, const char *format, ...) {
     int done;
 
     va_start(arg, format);
-    done = vsprintf(s, format, arg);
+    done = DKR_VSPRINTF(s, format, arg);
     va_end(arg);
 
     return done;
@@ -233,7 +233,7 @@ UNUSED int sprintf(char *s, const char *format, ...) {
 #define isdigit(c) ((c >= '0') && (c <= '9'))
 
 // Returns the total number of characters written.
-int vsprintf(char *s, const char *fmt, va_list args) {
+int DKR_VSPRINTF(char *s, const char *fmt, va_list args) {
     /* Pointer into the format string.  */
     const char *f;
 
@@ -925,7 +925,7 @@ s32 render_printf(const char *format, ...) {
         return -1;
     }
     sprintfSetSpacingCodes(TRUE);
-    written = vsprintf(gDebugPrintBufferEnd, format, args);
+    written = DKR_VSPRINTF(gDebugPrintBufferEnd, format, args);
     sprintfSetSpacingCodes(FALSE);
     if (written > 0) {
         gDebugPrintBufferEnd = &gDebugPrintBufferEnd[written] + 1;
@@ -1016,7 +1016,7 @@ UNUSED s32 debug_text_width(const char *format, ...) {
 
     stringLength = 0;
     sprintfSetSpacingCodes(TRUE);
-    vsprintf(s, format, args);
+    DKR_VSPRINTF(s, format, args);
     sprintfSetSpacingCodes(FALSE);
     for (ch = (u8 *) &s[0]; *ch != '\0'; ch++) {
         pad = *ch;
