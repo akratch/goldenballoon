@@ -288,6 +288,8 @@ jobs:
           if sidecar.get("sha256") != digest:
               raise SystemExit("provenance sha256 mismatch")
           PY
-          gh release view "$RELEASE_TAG" >/dev/null
+          gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" >/dev/null
           gh release upload "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
             "$DMG_PATH" "${DMG_PATH}.sha256" "${DMG_PATH}.provenance.json"

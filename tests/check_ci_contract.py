@@ -421,6 +421,8 @@ def validate_macos_release(source: str) -> list[str]:
         failures.append("both macOS checksum sidecars must record only the DMG basename")
     if active_source.count('cd "$DMG_DIR"') < 3:
         failures.append("macOS checksum generation/verification is not artifact-local")
+    if active_source.count('--repo "$GITHUB_REPOSITORY"') < 2:
+        failures.append("macOS publish commands do not name the release repository")
     trusted_order = [
         source.find('notarize_artifact.sh "$DMG_PATH"'),
         source.find("--signing developer-id-notarized"),
@@ -2781,6 +2783,9 @@ def main() -> int:
             "trusted macOS publication is disabled until post-sign runtime qualification is automated",
             "trusted artifact accepted",
             1,
+        ),
+        "explicit publish repository": macos_source.replace(
+            '--repo "$GITHUB_REPOSITORY"', ""
         ),
     }
     macos_escaped = [
