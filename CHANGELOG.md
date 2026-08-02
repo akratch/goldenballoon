@@ -10,6 +10,14 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ## [Unreleased]
 
+### Testing
+
+- Made the cached-model material ownership rule fail closed in native builds:
+  the legacy door mutator is no longer part of the native API or binary, the
+  per-door resolver is const-correct, and a ROM-free CTest guards draw-local
+  door/racer selection plus OpenGL sampler texture identity. The existing real
+  Adventure oracle remains the final GL/WebGPU gameplay and pixel gate.
+
 ## [1.0.2] — 2026-08-02
 
 ### Fixed

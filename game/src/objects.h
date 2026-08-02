@@ -576,7 +576,9 @@ void func_8001E89C(void);
 CheckpointNode *func_800230D0(Object *, Object_Racer *);
 void obj_update(s32 updateRate);
 void func_800159C8(Object *, Object *);
+#ifndef NATIVE_PORT
 void obj_door_number(ObjectModel *, Object *);
+#endif
 s16 func_8001CD28(s32 arg0, s32 arg1, s32 arg2, s32 arg3); // NON MATCHING
 f32 func_8001C6C4(Object_NPC *, Object *, f32, f32, s32);
 s32 collision_objectmodel(Object *obj, s32 arg1, s32* arg2, Vec3f *arg3, f32* arg4, f32* arg5, s8* surface);

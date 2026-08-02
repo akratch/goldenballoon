@@ -500,7 +500,8 @@ static Object *gObjectSavedCurVertFor;
 static s32 object_render_model_index(const Object *obj);
 static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
                                       f32 viewDistance, f32 *outScale);
-static s32 obj_door_batch_texture_offset(ObjectModel *model, Object *obj,
+static s32 obj_door_batch_texture_offset(const ObjectModel *model,
+                                         const Object *obj,
                                          s32 batchIndex, s32 *outOffset,
                                          s32 *outDigitPlace);
 #endif
@@ -4799,15 +4800,16 @@ void obj_authoritative_texture_tick(Object *obj, s32 updateRate, f32 viewDistanc
 /**
  * Sets the texture offset on the door number based on the balloon requirement.
  */
-static s32 obj_door_batch_texture_offset(ObjectModel *model, Object *obj,
+static s32 obj_door_batch_texture_offset(const ObjectModel *model,
+                                         const Object *obj,
                                          s32 batchIndex, s32 *outOffset,
                                          s32 *outDigitPlace) {
-    Object_Door *door;
+    const Object_Door *door;
     s32 current;
     s32 remaining;
-    TriangleBatchInfo *batch;
-    TextureInfo *textures;
-    TextureHeader *texture;
+    const TriangleBatchInfo *batch;
+    const TextureInfo *textures;
+    const TextureHeader *texture;
 
     if (model == NULL || obj == NULL || outOffset == NULL ||
         obj->behaviorId != BHV_DOOR || obj->door == NULL ||
@@ -4816,15 +4818,16 @@ static s32 obj_door_batch_texture_offset(ObjectModel *model, Object *obj,
         return FALSE;
     }
 
-    batch = DKR_PTR(TriangleBatchInfo, model->batches);
+    batch = DKR_PTR(const TriangleBatchInfo, model->batches);
     if (!(batch[batchIndex].flags & RENDER_TEX_ANIM) ||
         batch[batchIndex].textureIndex == TEX_INDEX_NO_TEXTURE ||
         batch[batchIndex].textureIndex >= model->numberOfTextures) {
         return FALSE;
     }
-    textures = DKR_PTR(TextureInfo, model->textures);
+    textures = DKR_PTR(const TextureInfo, model->textures);
     texture = DKR_PTR(
-        TextureHeader, textures[batch[batchIndex].textureIndex].texture);
+        const TextureHeader,
+        textures[batch[batchIndex].textureIndex].texture);
     if (texture == NULL) {
         return FALSE;
     }
@@ -4850,6 +4853,11 @@ static s32 obj_door_batch_texture_offset(ObjectModel *model, Object *obj,
     return FALSE;
 }
 
+#ifndef NATIVE_PORT
+/* The original renderer selected a door numeral immediately before emitting
+ * that door's display list. Keep this mutating compatibility path out of the
+ * native build: native ObjectModels are cached and shared, so per-object
+ * material state must be resolved by render_mesh without writing the model. */
 void obj_door_number(ObjectModel *model, Object *obj) {
     s32 i;
     s32 offset;
@@ -4868,6 +4876,7 @@ void obj_door_number(ObjectModel *model, Object *obj) {
         i++;
     }
 }
+#endif
 
 /**
  * Do nothing. Unused.

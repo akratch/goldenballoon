@@ -1771,6 +1771,12 @@ glyphs, and synthesizes blank, common-glyph, and repeated-sampler fail-red
 controls from the live capture. The fixed GL capture agrees with WebGPU within
 normal rasterization noise.
 
+The ROM-free `object_material_ownership` CTest protects the corresponding
+source boundary. It rejects any native exposure of the legacy mutating door
+API, requires door and racer material selection to remain draw-local, and
+requires OpenGL's sampler memoization to include texture-object identity. This
+keeps the failure class closed even in lanes that cannot run the gameplay ROM.
+
 ## Collision grid mask / boss race — `tests/check_collision_gridmask.py` (RUN THIS AFTER ANY COLLISION OR BOSS-FLOW CHANGE)
 
 **The only check that races a BOSS level.** The 20 ids in `check_track_sweep.py`
