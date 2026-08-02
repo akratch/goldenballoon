@@ -1,5 +1,12 @@
 # FPS Uncap Broad-Release Audit and Fix Scope
 
+> **Historical and superseded (2026-08-02):** this is the 2026-08-01 audit
+> ledger that narrowed 1.0.1 to authored visual frames. Its “release blocked”
+> and “current” wording describes that snapshot, not present release status.
+> The 1.0.2 door-glyph hotfix and its final qualification are documented in
+> `RELEASE_NOTES.md`, `CHANGELOG.md`, and `docs/RELEASE_CHECKLIST.md`. The
+> evidence below is intentionally preserved rather than rewritten.
+
 - Status: **release blocked pending final clean-archive qualification**
 - Audit type: historical parallel source review plus a live closure ledger
 - Historical audit boundary: commit `8763dbf` through `5dfaec0`, including the

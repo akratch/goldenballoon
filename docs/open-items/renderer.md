@@ -1098,7 +1098,7 @@ depending on it.
 ## Experimental high-rate native delivery cadence — OPEN
 
 Opt-in non-Original native modes are **Experimental — Under Construction** in
-1.0.1. They alter host pacing and input/event-pump opportunities without
+1.0.1+. They alter host pacing and input/event-pump opportunities without
 increasing unique visual FPS; any practical benefit may be negligible, while
 higher settings can use more CPU. Original remains the proven cadence.
 

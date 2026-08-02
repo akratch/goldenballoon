@@ -38,6 +38,7 @@ SUMMARY_RE = re.compile(r"\[PRESENTSCHED-SUMMARY\] (.*)")
 AUDIO_RE = re.compile(r"\[AUDIO-SERVICE\] (.*)")
 REPLAY_RE = re.compile(r"\[REPLAY-SUMMARY\] (.*)")
 PACKET_RE = re.compile(r"\[PRESENT-PACKET\] (.*)")
+WGPU_RE = re.compile(r"\[WGPU-BACKPRESSURE\] (.*)")
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,7 @@ class Result:
     audio: dict[str, int]
     replay: dict[str, int]
     packet: dict[str, int]
+    pressure: dict[str, int]
 
 
 def parse_last(output: str, pattern: re.Pattern[str], name: str) -> dict[str, int]:
@@ -153,6 +155,8 @@ def run(binary: Path, rom: Path, root: Path, label: str,
         parse_last(output, AUDIO_RE, "AUDIO-SERVICE"),
         parse_last(output, REPLAY_RE, "REPLAY-SUMMARY"),
         parse_last(output, PACKET_RE, "PRESENT-PACKET"),
+        (parse_last(output, WGPU_RE, "WGPU-BACKPRESSURE")
+         if renderer == "webgpu" else {}),
     )
 
 
@@ -221,11 +225,36 @@ def compare_arm(label: str, result: Result, baseline: Result,
             failures.append(
                 f"{label}: surfaceupdates={surface_updates}, expected "
                 f"{expected_surface_updates}")
-    elif not (0 < surface_updates <= expected_surface_updates):
+    elif not (0 <= surface_updates <= expected_surface_updates):
         failures.append(
             f"{label}: WebGPU surfaceupdates={surface_updates}, expected "
-            f"1..{expected_surface_updates}; compositor availability may "
+            f"0..{expected_surface_updates}; compositor availability may "
             "hold authored images but must never create extra ones")
+    elif result.pressure:
+        pressure = result.pressure
+        submitted = pressure.get("submitted", -1)
+        presented = pressure.get("presented", -1)
+        unavailable = pressure.get("unavailable", -1)
+        if pressure.get("completed") != submitted:
+            failures.append(
+                f"{label}: WebGPU completed={pressure.get('completed')}, "
+                f"submitted={submitted}")
+        if presented != surface_updates:
+            failures.append(
+                f"{label}: WebGPU presented={presented} disagrees with "
+                f"surfaceupdates={surface_updates}")
+        if presented + unavailable != submitted:
+            failures.append(
+                f"{label}: WebGPU presented/unavailable outcomes "
+                f"{presented}+{unavailable} do not account for "
+                f"{submitted} submissions")
+        for key in ("failures", "skips", "abandoned", "inflight",
+                    "runtimewaits", "runtimewaitns"):
+            if pressure.get(key, 0) != 0:
+                failures.append(
+                    f"{label}: WebGPU {key}={pressure.get(key)}")
+    elif not exact_surface:
+        failures.append(f"{label}: missing WebGPU completion telemetry")
     for key, value in (
             ("realendpoints", expected_real_endpoints),
             ("replayendpoints", 0)):

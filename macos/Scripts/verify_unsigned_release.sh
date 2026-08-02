@@ -179,7 +179,7 @@ grep -Fq '[app-ui] settings action=play restartPending=0' "${SMOKE_LOG}" ||
 grep -Fq '[app-ui] frame-limit value=original label=Original (Recommended / Proven) restartPending=0' \
     "${SMOKE_LOG}" ||
     die "launcher did not render the safe default frame-limit control"
-grep -Fq '[app-ui] frame-limit-contract recommended="Original (Recommended / Proven)" group="Experimental — Under Construction" caveat="Non-Original choices only alter host pacing and input/event-pump opportunities. In 1.0.1 they do not increase unique visual FPS; the supported US 1.1 game remains at its authored ~30 FPS. Any benefit may be negligible, while higher settings can use more CPU. Original is Recommended / Proven."' \
+grep -Fq '[app-ui] frame-limit-contract recommended="Original (Recommended / Proven)" group="Experimental — Under Construction" caveat="Non-Original choices only alter host pacing and input/event-pump opportunities. In 1.0.1+ they do not increase unique visual FPS; the supported US 1.1 game remains at its authored ~30 FPS. Any benefit may be negligible, while higher settings can use more CPU. Original is Recommended / Proven."' \
     "${SMOKE_LOG}" ||
     die "launcher frame-limit release guidance drifted"
 grep -Eq '^\[app\] smoke: rendered 4 frames, drawable [1-9][0-9]*x[1-9][0-9]*' \

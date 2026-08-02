@@ -500,6 +500,9 @@ static Object *gObjectSavedCurVertFor;
 static s32 object_render_model_index(const Object *obj);
 static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
                                       f32 viewDistance, f32 *outScale);
+static s32 obj_door_batch_texture_offset(ObjectModel *model, Object *obj,
+                                         s32 batchIndex, s32 *outOffset,
+                                         s32 *outDigitPlace);
 #endif
 s8 D_8011ADD4;
 s8 gOverrideDoors;
@@ -4759,6 +4762,11 @@ void obj_tex_animate(Object *obj, s32 updateRate) {
  * fixed-tick authority. The caller supplies this viewport's private distance
  * so racers select the same LOD model the draw would have selected. Render sees
  * texOffsetUpdateRate == 0 afterwards and cannot advance either RNG stream.
+ *
+ * Door numerals are deliberately absent. Multiple door objects share one
+ * ObjectModel, but each object can require a different balloon count. Their
+ * texture offsets therefore belong to display-list construction, where the
+ * current Object is known, rather than to this shared-model tick.
  */
 void obj_authoritative_texture_tick(Object *obj, s32 updateRate, f32 viewDistance) {
     ModelInstance *modInst;
@@ -4781,9 +4789,6 @@ void obj_authoritative_texture_tick(Object *obj, s32 updateRate, f32 viewDistanc
         return;
     }
     model = modInst->objModel;
-    if (obj->behaviorId == BHV_DOOR) {
-        obj_door_number(model, obj);
-    }
     if (model->texOffsetUpdateRate && model->hasAnimatedTexture > 0) {
         obj_tex_animate_model(model, model->texOffsetUpdateRate, TRUE);
         model->texOffsetUpdateRate = 0;
@@ -4794,35 +4799,71 @@ void obj_authoritative_texture_tick(Object *obj, s32 updateRate, f32 viewDistanc
 /**
  * Sets the texture offset on the door number based on the balloon requirement.
  */
-void obj_door_number(ObjectModel *model, Object *obj) {
+static s32 obj_door_batch_texture_offset(ObjectModel *model, Object *obj,
+                                         s32 batchIndex, s32 *outOffset,
+                                         s32 *outDigitPlace) {
     Object_Door *door;
     s32 current;
     s32 remaining;
-    s32 i;
     TriangleBatchInfo *batch;
+    TextureInfo *textures;
+    TextureHeader *texture;
 
-    if (model->hasAnimatedTexture <= 0) {
-        return;
+    if (model == NULL || obj == NULL || outOffset == NULL ||
+        obj->behaviorId != BHV_DOOR || obj->door == NULL ||
+        model->hasAnimatedTexture <= 0 || batchIndex < 0 ||
+        batchIndex >= model->numberOfBatches || model->numberOfTextures <= 0) {
+        return FALSE;
     }
 
+    batch = DKR_PTR(TriangleBatchInfo, model->batches);
+    if (!(batch[batchIndex].flags & RENDER_TEX_ANIM) ||
+        batch[batchIndex].textureIndex == TEX_INDEX_NO_TEXTURE ||
+        batch[batchIndex].textureIndex >= model->numberOfTextures) {
+        return FALSE;
+    }
+    textures = DKR_PTR(TextureInfo, model->textures);
+    texture = DKR_PTR(
+        TextureHeader, textures[batch[batchIndex].textureIndex].texture);
+    if (texture == NULL) {
+        return FALSE;
+    }
     door = obj->door;
     remaining = door->balloonCount;
     current = ((remaining / 10) - 1) * 4;
     remaining = (remaining % 10) * 4;
-    i = 0;
-    batch = DKR_PTR(TriangleBatchInfo, model->batches);
 
+    if (texture->numOfTextures > 0x900) {
+        *outOffset = remaining;
+        if (outDigitPlace != NULL) {
+            *outDigitPlace = 1;
+        }
+        return TRUE;
+    }
+    if (current >= 0) {
+        *outOffset = current;
+        if (outDigitPlace != NULL) {
+            *outDigitPlace = 10;
+        }
+        return TRUE;
+    }
+    return FALSE;
+}
+
+void obj_door_number(ObjectModel *model, Object *obj) {
+    s32 i;
+    s32 offset;
+    TriangleBatchInfo *batch;
+
+    if (model == NULL || model->hasAnimatedTexture <= 0) {
+        return;
+    }
+
+    batch = DKR_PTR(TriangleBatchInfo, model->batches);
+    i = 0;
     while (i < model->numberOfBatches) {
-        if (batch[i].flags & RENDER_TEX_ANIM) {
-            if (batch[i].textureIndex != TEX_INDEX_NO_TEXTURE) {
-                // Fakematch
-                if (DKR_PTR(TextureInfo, model->textures)[batch[i].textureIndex].texture) {}
-                if (DKR_PTR(TextureHeader, DKR_PTR(TextureInfo, model->textures)[batch[i].textureIndex].texture)->numOfTextures > 0x900) {
-                    batch[i].texOffset = remaining;
-                } else if (current >= 0) {
-                    batch[i].texOffset = current;
-                }
-            }
+        if (obj_door_batch_texture_offset(model, obj, i, &offset, NULL)) {
+            batch[i].texOffset = offset;
         }
         i++;
     }
@@ -6567,6 +6608,9 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
     Gfx *dList;
 #ifdef NATIVE_PORT
     Vec3s *batchNormals;
+    s32 doorTexOffset;
+    s32 doorDigitPlace;
+    static s32 sDoorTexTrace = -1;
 #endif
 
     dList = gObjectCurrDisplayList;
@@ -6593,7 +6637,27 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
                     texEnabled = FALSE;
                 } else {
 #ifdef NATIVE_PORT
-                    if (gObjectRenderModelFor == obj &&
+                    if (obj_door_batch_texture_offset(
+                            objModel, obj, i, &doorTexOffset,
+                            &doorDigitPlace)) {
+                        texOffset = doorTexOffset << 14;
+                        if (sDoorTexTrace < 0) {
+                            const char *value = getenv("MDKR_DOOR_TEX_TRACE");
+                            sDoorTexTrace = value != NULL && value[0] != '\0' &&
+                                atoi(value) != 0;
+                        }
+                        if (sDoorTexTrace) {
+                            extern s32 g_frameCounter;
+                            mdkr_trace(
+                                "[DOOR-TEX] frame=%d object=%d model=%p door=%d "
+                                "balloons=%d batch=%d place=%d stored=%d applied=%d",
+                                g_frameCounter, obj->objectID, (void *) objModel,
+                                obj->door->doorID, obj->door->balloonCount, i,
+                                doorDigitPlace,
+                                DKR_PTR(TriangleBatchInfo, objModel->batches)[i].texOffset,
+                                texOffset >> 14);
+                        }
+                    } else if (gObjectRenderModelFor == obj &&
                         (DKR_PTR(TriangleBatchInfo, objModel->batches)[i].flags &
                          0x810000) == RENDER_TEX_ANIM) {
                         texOffset = gObjectRenderRacerTexOffset << 14;

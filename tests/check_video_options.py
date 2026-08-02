@@ -51,6 +51,11 @@ def run_route(
         MDKR_AUDIO="0",
         MDKR_TRACE="1",
         MDKR_SAVE_DIR=str(save),
+        # Product settings now live below the platform preference root. Keep
+        # this gate hermetic and make its atomic-file assertions target the
+        # exact path exercised by the child process.
+        MDKR_VIDEO_CONFIG_PATH=str(cwd / "mdkr64.ini"),
+        MDKR_SYNTH_FIELDS="2",
     )
     if extra_env:
         env.update(extra_env)
@@ -215,7 +220,11 @@ def run_success(binary: Path, rom: Path, script: Path, renderer: str) -> None:
         reload_proc = subprocess.run(
             [str(binary), "--video-list"],
             cwd=root,
-            env=dict(os.environ, MDKR_AUDIO="0"),
+            env=dict(
+                os.environ,
+                MDKR_AUDIO="0",
+                MDKR_VIDEO_CONFIG_PATH=str(config_path),
+            ),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=30,
@@ -301,7 +310,11 @@ def run_malformed_launcher(binary: Path) -> None:
                 "--video-list",
             ],
             cwd=root,
-            env=dict(os.environ, MDKR_AUDIO="0"),
+            env=dict(
+                os.environ,
+                MDKR_AUDIO="0",
+                MDKR_VIDEO_CONFIG_PATH=str(config),
+            ),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=30,

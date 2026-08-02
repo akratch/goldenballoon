@@ -1,3 +1,52 @@
+# Golden Balloon 1.0.2
+
+Golden Balloon 1.0.2 is a focused rendering-correctness hotfix for the native
+1.0.1 patch. No game data is included.
+
+*Released 2026-08-02.*
+
+## What changed
+
+- **Dino Domain door requirements stay attached to the correct door.** The four
+  ordinary race doors require 1, 2, 3, and 5 balloons but share one cached
+  model. Version 1.0.1 wrote a door's selected numeral into that shared model
+  during a view-dependent fixed-tick traversal. Whichever visible door wrote
+  last could therefore put its digit on every sign, and moving the camera could
+  change the displayed numbers without changing progression state. Version
+  1.0.2 resolves each atlas offset from the door being submitted and never
+  mutates the shared model.
+- **OpenGL no longer repeats a selected numeral across the door face.** Its
+  sampler memo now includes texture identity, so a newly bound OpenGL texture
+  receives its own clamp/filter state even when those settings match the prior
+  binding. WebGPU was not affected by this sampler defect and remains the native
+  default.
+- **The regression is covered at the gameplay and pixel boundaries.** A fresh
+  Adventure route reaches the real Dino Domain lobby on GL and WebGPU, proves
+  all four authored requirements remain stable on one shared model, submits all
+  four in one frame, checks one- and two-digit atlas selection, and validates
+  distinct 2/1/3 final pixels while the camera moves. Blank output, a common
+  glyph on every door, repeated sampler output, and the old shared offset are
+  all fail-red controls. Original, 240, and Uncapped presentation policies pass.
+
+## What did not change
+
+- WebGPU remains the proven native and browser default. OpenGL remains an
+  explicit compatibility/diagnostic backend.
+- Original remains **Recommended / Proven**. Every non-Original frame limit is
+  still **Experimental — Under Construction** and changes host pacing/input
+  opportunities only; it does not increase unique visual FPS.
+- The macOS artifact remains intentionally unsigned by a Developer ID. It is
+  still sealed inside-out and the finished DMG must pass the read-only-mounted
+  LaunchServices/WebGPU, dependency, deployment-target, and capture checks.
+- Existing saves, ROM support, controls, and gameplay timing are unchanged.
+- Windows still lets wgpu-native choose Vulkan or Direct3D 12 automatically,
+  and still requires reasonably short, ASCII-only app/ROM paths. Explicit API
+  selection, richer adapter diagnostics, wide-character filesystem APIs, and
+  a reviewed application manifest remain deferred to a future portability
+  release.
+
+---
+
 # Golden Balloon 1.0.1
 
 Windows WebGPU presentation no longer blocks the cooperative game/audio thread
@@ -156,7 +205,8 @@ Windows 1.0.1 also requires reasonably short, ASCII-only paths for the extracted
 app and ROM. If the launcher cannot save an otherwise valid ROM choice, launch
 `GoldenBalloon.exe --rom C:\ASCII\game.z64` from Command Prompt and report it.
 Explicit WebGPU API selection, richer diagnostics, wide-character filesystem
-support, and a reviewed application manifest are deferred to 1.0.2.
+support, and a reviewed application manifest remain deferred to a future
+portability release.
 Non-Original frame-limit
 choices remain Experimental — Under Construction and may add CPU cost without a
 noticeable benefit; use Original for the proven cadence. See

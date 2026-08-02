@@ -166,7 +166,7 @@ constexpr const char *kExperimentalFrameLimitGroup =
     "Experimental \xE2\x80\x94 Under Construction";
 constexpr const char *kExperimentalFrameLimitCaveat =
     "Non-Original choices only alter host pacing and input/event-pump "
-    "opportunities. In 1.0.1 they do not increase unique visual FPS; the "
+    "opportunities. In 1.0.1+ they do not increase unique visual FPS; the "
     "supported US 1.1 game remains at its authored ~30 FPS. Any benefit may "
     "be negligible, while higher settings can use more CPU. Original is "
     "Recommended / Proven.";
@@ -186,7 +186,7 @@ const Option kFrameLimit[] = {
     {"uncapped", "Uncapped (Experimental \xE2\x80\x94 Under Construction)"},
 };
 const Option kSmoothing[] = {
-    {"off", "Unavailable in 1.0.1 (authored images only)"},
+    {"off", "Unavailable in 1.0.1+ (authored images only)"},
 };
 const Option kMode[] = {
     {"pure",       "Pure"},
@@ -231,7 +231,7 @@ const char *helpFor(MdkrVideoKey key, const MdkrVideoSchema *schema) {
         case MDKR_VIDEO_FRAME_LIMIT:
             return kExperimentalFrameLimitCaveat;
         case MDKR_VIDEO_MOTION_SMOOTHING:
-            return "Motion interpolation is disabled for 1.0.1 while retained "
+            return "Motion interpolation is disabled for 1.0.1+ while retained "
                    "render dependencies are completed. The surface updates "
                    "only when a complete authored game image is ready.";
         default:
@@ -648,7 +648,7 @@ bool Settings_draw(bool compact) {
                 ui::TextSubtle(
                     "Original is Recommended / Proven. Every other frame-limit "
                     "choice is Experimental \xE2\x80\x94 Under Construction and does not "
-                    "increase unique visual FPS in 1.0.1.");
+                    "increase unique visual FPS in 1.0.1+.");
                 ImGui::PopTextWrapPos();
             }
             ui::Gap(ui::kGapS);

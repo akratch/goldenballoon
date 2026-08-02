@@ -198,6 +198,7 @@ def main() -> int:
 
     env = dict(os.environ,
                MDKR_AUDIO="0",          # belt-and-braces; --headless-frames is the guarantee
+               MDKR_PRESENT_RATE="original",
                MDKR_SIMULATION_CADENCE="enhanced",
                MDKR_SYNTH_FIELDS="1",
                MDKR_TRACE="1",

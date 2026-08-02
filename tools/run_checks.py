@@ -208,6 +208,8 @@ CHECKS = (
           "Adventure Two unlock/save identity and all twenty mirrored tracks"),
     Check("door_blocks", "check_door_blocks.py", "native",
           "locked-door object collision and legacy positive control"),
+    Check("door_glyphs", "check_door_glyphs.py", "native",
+          "per-door balloon numeral binding across shared models and GL/WebGPU"),
     Check("adventure_race_loop", "check_adventure_race_loop.py", "native",
           "Adventure hub/race return loop"),
     Check("trophy_series", "check_trophy_series.py", "native",

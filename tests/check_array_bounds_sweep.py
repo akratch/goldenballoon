@@ -273,6 +273,45 @@ SHAPE_TRIAGE = {
     # equality-cap: `i == CAP` guarding a write indexed by i, where a second
     # increment can advance i past CAP.
     # ---------------------------------------------------------------------
+    # These HUD_* values are element identifiers, not capacities. The detector
+    # conservatively treats all-caps constants as possible caps, but this block
+    # is a set of per-element scale exceptions inside
+    # `for (i = 0; i < HUD_ELEMENT_COUNT; i++)`. Every entry[i] write is guarded
+    # by that loop bound; the comparisons neither stop nor advance the loop.
+    ("equality-cap", "game/src/game_ui.c",
+     "hud_init_element:i!=HUD_RACE_POSITION"):
+        "NOT A CAPACITY: HUD element ID used by a scale-exception predicate; "
+        "the enclosing i < HUD_ELEMENT_COUNT loop bounds every entry[i] write.",
+    ("equality-cap", "game/src/game_ui.c",
+     "hud_init_element:i!=HUD_RACE_POSITION_END"):
+        "NOT A CAPACITY: same bounded HUD element-exception predicate.",
+    ("equality-cap", "game/src/game_ui.c",
+     "hud_init_element:i!=HUD_WEAPON_DISPLAY"):
+        "NOT A CAPACITY: same bounded HUD element-exception predicate.",
+    ("equality-cap", "game/src/game_ui.c",
+     "hud_init_element:i!=HUD_PRO_AM_LOGO"):
+        "NOT A CAPACITY: same bounded HUD element-exception predicate.",
+    ("equality-cap", "game/src/game_ui.c",
+     "hud_init_element:i!=HUD_CHALLENGE_FINISH_POS_1"):
+        "NOT A CAPACITY: same bounded HUD element-exception predicate.",
+    ("equality-cap", "game/src/game_ui.c",
+     "hud_init_element:i!=HUD_CHALLENGE_FINISH_POS_2"):
+        "NOT A CAPACITY: same bounded HUD element-exception predicate.",
+    ("equality-cap", "game/src/game_ui.c",
+     "hud_init_element:i!=HUD_LAP_COUNT_LABEL"):
+        "NOT A CAPACITY: same bounded HUD element-exception predicate.",
+    ("equality-cap", "game/src/game_ui.c",
+     "hud_init_element:i!=HUD_CHALLENGE_PORTRAIT"):
+        "NOT A CAPACITY: same bounded HUD element-exception predicate.",
+    ("equality-cap", "game/src/game_ui.c",
+     "hud_init_element:i!=HUD_EGG_CHALLENGE_ICON"):
+        "NOT A CAPACITY: same bounded HUD element-exception predicate.",
+    ("equality-cap", "game/src/game_ui.c",
+     "hud_init_element:i==HUD_BANANA_COUNT_SPARKLE"):
+        "NOT A CAPACITY: same bounded HUD element-exception predicate.",
+    ("equality-cap", "game/src/game_ui.c",
+     "hud_init_element:i==HUD_BANANA_COUNT_NUMBER_2"):
+        "NOT A CAPACITY: same bounded HUD element-exception predicate.",
     ("equality-cap", "game/src/hasm/collision.c",
      "generate_collision_candidates:j==MAX_COLLISION_CANDIDATES"):
         "GUARDED (this commit): the ROM's equality test is kept exactly, and a "
@@ -532,6 +571,9 @@ def collect(binary, rom, logdir, verbose):
     for name, extra, frames, script in ROUTES:
         env = dict(os.environ)
         env["MDKR_AUDIO"] = "0"
+        env["MDKR_PRESENT_RATE"] = "original"
+        env["MDKR_SIMULATION_CADENCE"] = "original"
+        env["MDKR_SYNTH_FIELDS"] = "2"
         env["UBSAN_OPTIONS"] = "halt_on_error=0:log_path=%s/%s" % (logdir, name)
         env.update(extra)
         cmd = [binary, "--headless-frames", str(frames), "--rom", rom]
@@ -673,6 +715,9 @@ def controls(binary, rom, logdir, verbose):
     def run(name, env_extra, frames, script):
         env = dict(os.environ)
         env["MDKR_AUDIO"] = "0"
+        env["MDKR_PRESENT_RATE"] = "original"
+        env["MDKR_SIMULATION_CADENCE"] = "original"
+        env["MDKR_SYNTH_FIELDS"] = "2"
         env.update(env_extra)
         cmd = [binary, "--headless-frames", str(frames), "--rom", rom]
         if script:

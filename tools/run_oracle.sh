@@ -178,6 +178,7 @@ ARES_SAVES="$ROUTE_DIR/ares_saves"             # persistent
 NATIVE_SAVES="$ROUTE_DIR/native_saves"         # route-local; never touch user campaign data
 ARES_STATE="$ROUTE_DIR/ares_state.csv"
 NATIVE_LOG="$ROUTE_DIR/native${ARM_SUFFIX}.log"
+NATIVE_VIDEO_CONFIG="$ROUTE_DIR/native_video.ini"
 STATE_REPORT="$CMP_DIR/state_report_${ROUTE}${ARM_SUFFIX}.json"
 REFERENCE_FIELDS="$ROUTE_DIR/native${ARM_SUFFIX}_fields.txt"
 REFERENCE_BASE_INPUT="$ROUTE_DIR/native${ARM_SUFFIX}_base_input.txt"
@@ -220,6 +221,11 @@ echo "marks:"; sed 's/^/  /' "$MARK_PAIRS"
 
 # ---- native run ------------------------------------------------------------
 if [[ "$SKIP_NATIVE" -eq 0 ]]; then
+    # Oracle input events are indexed to authored frame opportunities. Never
+    # inherit a developer/player mdkr64.ini: a saved numeric/uncapped policy
+    # changes opportunity numbering and can fire the route before its menu is
+    # ready while leaving the retail arm untouched.
+    rm -f "$NATIVE_VIDEO_CONFIG" "$NATIVE_VIDEO_CONFIG.tmp"
     if [[ "$COMPARE_FRAMES" -eq 1 ]]; then
         rm -rf "$NATIVE_DIR"; mkdir -p "$NATIVE_DIR"
     fi
@@ -235,6 +241,9 @@ if [[ "$SKIP_NATIVE" -eq 0 ]]; then
     NATIVE_ENV=(
         MDKR_AUDIO=0
         MDKR_SAVE_DIR="$NATIVE_SAVES"
+        MDKR_VIDEO_CONFIG_PATH="$NATIVE_VIDEO_CONFIG"
+        MDKR_PRESENT_RATE=original
+        MDKR_PRESENT_SMOOTHING=off
         MDKR_SIMULATION_CADENCE="$NATIVE_CADENCE"
         MDKR_SYNTH_FIELDS="$NATIVE_SYNTH_FIELDS"
     )

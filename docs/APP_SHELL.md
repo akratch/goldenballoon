@@ -162,7 +162,7 @@ therefore cannot be added without deciding where a player would look for it.
 The launcher presents Pacing first as **Frame rate & timing**, with the safe
 **Original (Recommended / Proven)** choice visible on entry. Match Display,
 numeric caps, and Uncapped are individually marked
-**Experimental — Under Construction**. In 1.0.1 those choices only affect host
+**Experimental — Under Construction**. In 1.0.1+ those choices only affect host
 pacing and input/event-pump opportunities, not unique visual FPS. They never
 change gameplay timing or present duplicate images; the primary US 1.1 build
 remains at its authored roughly 30 unique visual FPS. Their benefit may be
@@ -170,7 +170,7 @@ negligible, while higher settings can use more CPU. The panel directs players
 to Original for the proven release behavior.
 
 `Video.MotionSmoothing` remains a restart-scoped configuration seam, but the
-production 1.0.1 renderer resolves it to off. Delayed display-list replay is not
+production 1.0.1+ renderer resolves it to off. Delayed display-list replay is not
 safe after the next task starts rewriting mutable viewport, matrix, vertex,
 texture, and nested display-list storage, so the launcher must not imply that
 this patch can produce interpolated visual frames.

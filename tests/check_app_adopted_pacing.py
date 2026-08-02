@@ -121,6 +121,11 @@ def validate_pressure(backend: Backend, policy: str,
         if fields.get("abandoned") != 0 or fields.get("skips") != 0:
             raise RuntimeError(
                 f"{backend.label}/{policy}: WebGPU work was dropped: {row}")
+        if (fields.get("presented", 0) + fields.get("unavailable", 0) !=
+                fields.get("submitted", 0)):
+            raise RuntimeError(
+                f"{backend.label}/{policy}: WebGPU surface outcomes do not "
+                f"account for every submission: {row}")
         if host_presented:
             if fields.get("presented", 0) < minimum_submissions:
                 raise RuntimeError(
@@ -210,6 +215,88 @@ def require_overlay_renderer_stop(label: str, output: str) -> None:
         raise RuntimeError(
             f"{label}: missing deliberate renderer-stop boundary\n"
             f"{output[-5000:]}")
+
+
+def stage_macos_sdl2(bundle: Path, executable: Path) -> None:
+    """Make the focused LaunchServices fixture self-contained and sealed.
+
+    Release builds link the pinned standalone SDL2 through ``@rpath``. A bare
+    copy of that executable can make dyld probe the developer build directory;
+    LaunchServices may block that Desktop-folder access before ``main``. The
+    production bundle rewrites the dependency into ``Contents/Frameworks``.
+    Mirror that exact boundary here so this is a packaged-app test, not an
+    accidental test of the build tree's permissions.
+    """
+    linked = subprocess.run(
+        ["otool", "-L", str(executable)], check=True, text=True,
+        stdout=subprocess.PIPE,
+    ).stdout
+    load_paths = sorted({
+        line.strip().split(" (", 1)[0]
+        for line in linked.splitlines()[1:]
+        if "libSDL2" in line and ".dylib" in line
+    })
+    if len(load_paths) != 1:
+        raise RuntimeError(
+            f"FPS overlay fixture expected one SDL2 dependency, got {load_paths}")
+
+    commands = subprocess.run(
+        ["otool", "-l", str(executable)], check=True, text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.splitlines()
+    rpaths: list[Path] = []
+    in_rpath = False
+    for line in commands:
+        fields = line.strip().split()
+        if fields[:2] == ["cmd", "LC_RPATH"]:
+            in_rpath = True
+        elif in_rpath and fields[:1] == ["path"]:
+            rpaths.append(Path(fields[1]))
+            in_rpath = False
+
+    load_path = load_paths[0]
+    if load_path.startswith("@rpath/"):
+        relative = load_path.removeprefix("@rpath/")
+        candidates = [path / relative for path in rpaths if path.is_absolute()]
+    elif Path(load_path).is_absolute():
+        candidates = [Path(load_path)]
+    else:
+        candidates = []
+    sources = [path for path in candidates if path.is_file()]
+    if len(sources) != 1:
+        raise RuntimeError(
+            "FPS overlay fixture could not resolve its SDL2 dependency: "
+            f"load={load_path!r} candidates={candidates}")
+
+    frameworks = bundle / "Contents" / "Frameworks"
+    frameworks.mkdir()
+    bundled_sdl = frameworks / sources[0].name
+    shutil.copy2(sources[0], bundled_sdl)
+    bundled_load_path = f"@executable_path/../Frameworks/{bundled_sdl.name}"
+    subprocess.run(
+        ["install_name_tool", "-change", load_path, bundled_load_path,
+         str(executable)],
+        check=True,
+    )
+    for rpath in rpaths:
+        if rpath.is_absolute():
+            subprocess.run(
+                ["install_name_tool", "-delete_rpath", str(rpath),
+                 str(executable)],
+                check=True,
+            )
+
+    # install_name_tool invalidates the linker's signature. Remove copied
+    # metadata, sign nested code first, then seal the finished outer bundle.
+    subprocess.run(["xattr", "-cr", str(bundle)], check=True)
+    subprocess.run(
+        ["codesign", "--force", "--sign", "-", str(bundled_sdl)], check=True)
+    subprocess.run(
+        ["codesign", "--force", "--sign", "-", str(bundle)], check=True)
+    subprocess.run(
+        ["codesign", "--verify", "--deep", "--strict", str(bundle)],
+        check=True,
+    )
 
 
 def validate_present_mode(backend: Backend, requested: str,
@@ -425,7 +512,7 @@ def run_borrowed_device_loss(binary: Path, rom: Path, timeout: int,
             if forbidden in output:
                 raise RuntimeError(
                     f"borrowed-device/loss: emitted {forbidden!r}")
-        validate_host_presentation(
+        host_presented = validate_host_presentation(
             BACKENDS[0], "borrowed-device-loss", output)
         rows = PRESSURE_RE["webgpu"].findall(output)
         if len(rows) != 1:
@@ -433,7 +520,7 @@ def run_borrowed_device_loss(binary: Path, rom: Path, timeout: int,
                 "borrowed-device/loss: expected one post-recovery WebGPU "
                 f"pressure row, got {len(rows)}")
         validate_pressure(
-            BACKENDS[0], "borrowed-device-loss", rows[0], True,
+            BACKENDS[0], "borrowed-device-loss", rows[0], host_presented,
             minimum_submissions=TICKS - 1)
         if verbose:
             print("  PASS borrowed device loss recreated AppHost roots and "
@@ -797,6 +884,7 @@ def launch_macos_app(binary: Path, rom: Path, root: Path, timeout: int,
             stream,
             sort_keys=True,
         )
+    stage_macos_sdl2(bundle, bundled_binary)
 
     stdout_path = root / "launch.stdout"
     stderr_path = root / "launch.stderr"

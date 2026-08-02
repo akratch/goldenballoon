@@ -328,6 +328,9 @@ coverage:
   1P/4P, while also bounding snapshot, replay, matrix-recomposition, retained-
   packet publication, deformation-key collision health, exact retained holds,
   rewritten-dependency safety, and the battle arm's point-trail registrations.
+  It additionally requires zero delayed alpha-zero endpoint walks/checks: that
+  path is quarantined in 1.0.1+ because the game may already be rewriting the
+  submitted task's mutable display-list dependencies.
   `check_presentation_lifecycle.py` covers the teardown half the content matrix
   cannot see: a 2P pause-to-Track-Select path with no following `level_load`, a
   production pause-menu race restart, and the full Adventure loss/post-race/
@@ -549,7 +552,7 @@ to be taken — `MDKR_BOSS_WIN` replaced `MDKR_BOSS_SLOW` for exactly that reaso
 | `race_3p_split` / `race_4p_split` | 3500 / 9600 | `check_race_multiplayer.py`; `race_4p_split` also `check_shadow_plausibility.py` (4-view tier) | **closed** — every human racer, all four quadrants, 3P minimap, and results→track-select |
 | `adventure_hub_drive` | 2300 / 6500 / 12000 | `check_filename_entry.py`, `check_widescreen_proportions.py`, `check_adventure_hub.py`, `check_save_failsafe.py`, `check_texture_lineswap.py` | **closed** (`MDKR_DRIVE_ROUTE` island tour; filename check stops at the character grid) |
 | `adventure_resume_race` / `adventure_two_resume_race` | 5200 | `check_adventure_two.py` | **closed** — canonical unlock/save identity, all 20 mirrored racing lines, viewport, stereo, minimap, steering, and pixel reflection control |
-| `adventure_race_loop` | 17000 | `check_adventure_race_loop.py` | **closed** (`MDKR_DRIVE_ROUTE` + `MDKR_AUTOPILOT`) |
+| `adventure_race_loop` | 7000 / 17000 | `check_door_glyphs.py`, `check_adventure_race_loop.py` | **closed** (`MDKR_DRIVE_ROUTE` + `MDKR_AUTOPILOT`) |
 
 A run counts as a failure on a non-zero exit, a `[CRASH]` backtrace, a `[FATAL]`
 abort, or a missing assert line.
@@ -1134,6 +1137,12 @@ It uses two hooks, both **no-ops unless set**:
   rewrites only the load matching `gTrackIdToLoad` — DKR's own "track to race"
   global — so menu backgrounds and the track-select preview are untouched.
 - `MDKR_AUTOPILOT=1` drives with DKR's own AI, so no per-track input tuning.
+
+Both sweeps pin Original presentation/cadence with `MDKR_SYNTH_FIELDS=2`,
+producing one authored gameplay ticket per headless host opportunity. They
+therefore measure content and physics coverage, not a developer's persisted
+frame limit, compiler, sanitizer, renderer, or compositor speed; the separate
+pacing gates retain responsibility for real-clock behavior.
 
 Per track it asserts: exit code 0, the level actually loaded as a race, finite
 position samples, real forward progress (`courseCheckpoint` climbing), and no
@@ -1727,6 +1736,40 @@ number: about 1742 on this centered-door route, **9** on boss track 38, 0 on
 tracks 5/32/15. Object
 collision is overwhelmingly a hub-world phenomenon, which is why the pre-fix
 measurement (taken only on race tracks) made the gap look 100x smaller than it was.
+
+## Door numerals stay per door — `tests/check_door_glyphs.py`
+
+```bash
+python3 tests/check_door_glyphs.py -v
+python3 tests/check_door_glyphs.py --rate 240 -v
+python3 tests/check_door_glyphs.py --rate uncapped -v
+```
+
+The four ordinary Dino Domain race doors share one cached `ObjectModel` but require
+different numbers of balloons: Ancient Lake 1, Fossil Canyon 2, Jungle Falls 3,
+and Hot Top Volcano 5. Golden Balloon 1.0.1 moved `obj_door_number()` out of the
+per-object display-list build and into a view-dependent fixed-tick traversal.
+That function writes `TriangleBatchInfo.texOffset` on the shared model, so the
+last admitted door supplied its digit to every visible door. A deterministic
+WebGPU/Original capture rendered all three front signs as 5 at frame 6820 and as
+2 at frame 6880 even though the four `Object_Door.balloonCount` values remained
+1/2/3/5.
+
+This gate enters the real lobby on a fresh Adventure save and records the texture
+offset selected at the material/display-list boundary. Both GL and WebGPU must
+submit all four differently numbered doors in one frame, keep every authored
+door/count pair stable, and choose `balloonCount * 4` independently for each
+one-digit atlas entry. The trace also exposes the cached batch's shared stored
+offset. At least one stored/required mismatch is mandatory: that counterfactual
+proves the test would detect the old shared-state path instead of merely
+confirming that the route reached the lobby. In Original presentation mode the gate also
+captures frame 6820 from both native renderers and compares the three door faces.
+This final-pixel check catches the separate OpenGL sampler-cache defect where a
+new texture object could skip wrap/filter setup and repeat its digit across the
+wood. It rejects blank scene output, requires three visually distinct central
+glyphs, and synthesizes blank, common-glyph, and repeated-sampler fail-red
+controls from the live capture. The fixed GL capture agrees with WebGPU within
+normal rasterization noise.
 
 ## Collision grid mask / boss race — `tests/check_collision_gridmask.py` (RUN THIS AFTER ANY COLLISION OR BOSS-FLOW CHANGE)
 

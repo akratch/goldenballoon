@@ -41,7 +41,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Bare semver for releases (for example 1.0.1, without a v prefix); use dev only for test artifacts"
+        description: "Bare semver for releases (for example 1.2.3, without a v prefix); use dev only for test artifacts"
         required: false
         default: "dev"
       release_tag:
@@ -72,7 +72,7 @@ jobs:
           set -euo pipefail
           if [[ "$RELEASE_VERSION" != "dev" &&
                 ! "$RELEASE_VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
-            echo "version must be dev or bare semver (for example 1.0.1)" >&2
+            echo "version must be dev or bare semver (for example 1.2.3)" >&2
             exit 1
           fi
           if [[ "$RELEASE_VERSION" == "dev" ]]; then

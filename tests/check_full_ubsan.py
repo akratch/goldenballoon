@@ -248,6 +248,12 @@ def main() -> int:
     }
     environment.update(
         MDKR_AUDIO="0",
+        MDKR_PRESENT_RATE="original",
+        MDKR_SIMULATION_CADENCE="original",
+        MDKR_SYNTH_FIELDS="2",
+        MDKR_VIDEO_CONFIG_PATH=str(
+            build_dir / f".full-ubsan-empty-{os.getpid()}.ini"
+        ),
         UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1",
         PYTHONUNBUFFERED="1",
     )
@@ -328,6 +334,9 @@ def main() -> int:
             MDKR_SAVE_DIR=save_dir,
             MDKR_RENDERER="gl",
             MDKR_AUTOPILOT="1",
+            MDKR_PRESENT_RATE="original",
+            MDKR_SIMULATION_CADENCE="original",
+            MDKR_SYNTH_FIELDS="2",
         )
         if not checked_route(
             "7,500-frame race/result soak",

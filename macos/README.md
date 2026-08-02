@@ -1,12 +1,12 @@
 # macOS release packaging
 
-The 1.0.1 patch release intentionally skips Developer ID signing and
+The 1.0.2 patch release intentionally skips Developer ID signing and
 notarization. It is still sealed with an ad-hoc signature after every bundle
 mutation. That signature provides the code/resource integrity Apple silicon
 requires; it is not a trust signature. Players should see macOS's normal
 unidentified-developer warning on first open, never a “damaged” app error.
 
-## Unsigned 1.0.1 release (default)
+## Unsigned 1.0.2 release (default)
 
 Build only from a clean release commit. The provenance sidecar names `HEAD`, so
 stamping an artifact made from uncommitted source would be dishonest.
@@ -18,7 +18,7 @@ if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
   exit 1
 fi
 
-RELEASE_VERSION=1.0.1
+RELEASE_VERSION=1.0.2
 SOURCE_COMMIT="$(git rev-parse HEAD)"
 source ./macos/Scripts/release_sdl2_config.sh
 SDL_PREFIX="$PWD/build-macos-deps/sdl2-${MDKR_RELEASE_SDL2_VERSION}/install"
@@ -85,12 +85,12 @@ The equivalent protected workflow command is:
 
 ```bash
 gh workflow run macos-release.yml \
-  -f version=1.0.1 \
+  -f version=1.0.2 \
   -f trusted_signing=false
 ```
 
 Leave `release_tag` empty while producing a test artifact. Publishing is
-allowed only when it is exactly `v1.0.1` and that tag resolves to the workflow's
+allowed only when it is exactly `v1.0.2` and that tag resolves to the workflow's
 source commit; both the package and publish jobs enforce that binding.
 
 ## Human candidate play-test
@@ -99,7 +99,7 @@ Do this against the exact DMG and its two sidecars produced above, before
 tagging or publishing anything:
 
 1. In the artifact directory, run
-   `shasum -a 256 -c Golden-Balloon-1.0.1-macos-arm64-unsigned.dmg.sha256`.
+   `shasum -a 256 -c Golden-Balloon-1.0.2-macos-arm64-unsigned.dmg.sha256`.
 2. Open the DMG and drag `mdkr64.app` into a new, empty test folder. Launch that
    copy from Finder, with no `MDKR_RENDERER` environment override.
 3. If macOS blocks the unidentified developer, first attempt the launch, then
@@ -124,7 +124,7 @@ certificate and App Store Connect team API key, then dispatch:
 
 ```bash
 gh workflow run macos-release.yml \
-  -f version=1.0.1 \
+  -f version=1.0.2 \
   -f trusted_signing=true
 ```
 
@@ -137,8 +137,8 @@ outside the repository and rotate them immediately if exposed.
 With `trusted_signing=true`, the workflow signs nested code and the app with
 Developer ID + Hardened Runtime, notarizes and staples the app, signs and
 notarizes the DMG, and requires Gatekeeper acceptance. There is no
-`--skip-notarize` path in the workflow. For 1.0.1, that optional artifact is
-exactly `Golden-Balloon-1.0.1-macos-arm64-signed-notarized.dmg` and records
+`--skip-notarize` path in the workflow. For 1.0.2, that optional artifact is
+exactly `Golden-Balloon-1.0.2-macos-arm64-signed-notarized.dmg` and records
 `developer-id-notarized` in provenance.
 
 Gatekeeper acceptance is a static trust check, not a renderer smoke. Before a

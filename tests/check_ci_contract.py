@@ -267,7 +267,7 @@ def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
         ),
         "packaged experimental frame-limit guidance": (
             sources["macos_unsigned_verify"],
-            'frame-limit-contract recommended="Original (Recommended / Proven)" group="Experimental — Under Construction" caveat="Non-Original choices only alter host pacing and input/event-pump opportunities. In 1.0.1 they do not increase unique visual FPS; the supported US 1.1 game remains at its authored ~30 FPS. Any benefit may be negligible, while higher settings can use more CPU. Original is Recommended / Proven."',
+            'frame-limit-contract recommended="Original (Recommended / Proven)" group="Experimental — Under Construction" caveat="Non-Original choices only alter host pacing and input/event-pump opportunities. In 1.0.1+ they do not increase unique visual FPS; the supported US 1.1 game remains at its authored ~30 FPS. Any benefit may be negligible, while higher settings can use more CPU. Original is Recommended / Proven."',
         ),
         "schema and smoke frame-limit contract": (
             sources["cmake"],
@@ -335,7 +335,7 @@ def validate_macos_release(source: str) -> list[str]:
         "pinned standalone SDL2 build": "build_release_sdl2.sh",
         "standalone SDL2 pkg-config selection": "export PKG_CONFIG_PATH=",
         "compiled source provenance": '--build-stamp "$GITHUB_SHA"',
-        "1.0.1 patch-release default": 'default: "1.0.1"',
+        "1.0.2 patch-release default": 'default: "1.0.2"',
         "shared SDL2 release configuration": "release_sdl2_config.sh",
         "exact version release tag": 'EXPECTED_RELEASE_TAG="v${RELEASE_VERSION}"',
         "package tag commit resolution": 'git rev-parse --verify "${RELEASE_TAG}^{commit}"',
@@ -487,9 +487,9 @@ def validate_macos_packaging(sources: dict[str, str]) -> list[str]:
     active_mount_helper = active_shell_source(mount_helper)
     active_unsigned_dmg_verify = active_shell_source(unsigned_dmg_verify)
     required = {
-        "builder 1.0.1 default": (builder, 'APP_VERSION="1.0.1"'),
-        "CMake 1.0.1 default": (cmake_project, 'set(MDKR_VERSION "1.0.1"'),
-        "Info.plist 1.0.1 default": (info_plist, "<string>1.0.1</string>"),
+        "builder 1.0.2 default": (builder, 'APP_VERSION="1.0.2"'),
+        "CMake 1.0.2 default": (cmake_project, 'set(MDKR_VERSION "1.0.2"'),
+        "Info.plist 1.0.2 default": (info_plist, "<string>1.0.2</string>"),
         "pinned SDL2 version": (sdl_config, 'MDKR_RELEASE_SDL2_VERSION="2.32.10"'),
         "pinned SDL2 source hash": (
             sdl_config,
@@ -1868,15 +1868,15 @@ def validate_release_checklist(source: str) -> list[str]:
         failures.append("release checklist browser task count is stale")
     if "After the final Developer ID signatures and stapling" not in source:
         failures.append("release checklist omits signed post-sign runtime gate")
-    if source.count("-f release_tag=v1.0.1") < 2:
+    if source.count("-f release_tag=v1.0.2") < 2:
         failures.append(
             "release checklist must bind both portable and macOS publication "
-            "to v1.0.1"
+            "to v1.0.2"
         )
-    if source.count("--ref v1.0.1") < 2:
+    if source.count("--ref v1.0.2") < 2:
         failures.append(
             "release checklist must dispatch both portable and macOS publication "
-            "from the exact v1.0.1 ref"
+            "from the exact v1.0.2 ref"
         )
     for label, needle in {
         "Windows automatic-publication hold": "Automatic Windows publication is intentionally disabled for this patch",
@@ -2140,7 +2140,7 @@ def main() -> int:
         "packaged experimental guidance deletion": {
             **gpu_routing_sources,
             "macos_unsigned_verify": gpu_routing_sources["macos_unsigned_verify"].replace(
-                'frame-limit-contract recommended="Original (Recommended / Proven)" group="Experimental — Under Construction" caveat="Non-Original choices only alter host pacing and input/event-pump opportunities. In 1.0.1 they do not increase unique visual FPS; the supported US 1.1 game remains at its authored ~30 FPS. Any benefit may be negligible, while higher settings can use more CPU. Original is Recommended / Proven."',
+                'frame-limit-contract recommended="Original (Recommended / Proven)" group="Experimental — Under Construction" caveat="Non-Original choices only alter host pacing and input/event-pump opportunities. In 1.0.1+ they do not increase unique visual FPS; the supported US 1.1 game remains at its authored ~30 FPS. Any benefit may be negligible, while higher settings can use more CPU. Original is Recommended / Proven."',
                 "frame-limit guidance unchecked",
                 1,
             ),
@@ -2787,8 +2787,8 @@ def main() -> int:
         "checksum working directory": macos_source.replace(
             'cd "$DMG_DIR"', "true", 1
         ),
-        "1.0.1 patch-release default": macos_source.replace(
-            'default: "1.0.1"', 'default: "1.0.0"', 1
+        "1.0.2 patch-release default": macos_source.replace(
+            'default: "1.0.2"', 'default: "1.0.1"', 1
         ),
         "publish isolation": macos_source.replace(
             "\n  publish:", "\n  removed-publish:", 1
@@ -3460,10 +3460,10 @@ def main() -> int:
             1,
         ),
         "portable release tag binding": checklist_source.replace(
-            "-f release_tag=v1.0.1", "-f release_tag=", 1
+            "-f release_tag=v1.0.2", "-f release_tag=", 1
         ),
         "release dispatch source ref": checklist_source.replace(
-            "--ref v1.0.1", "--ref main", 1
+            "--ref v1.0.2", "--ref main", 1
         ),
         "Windows automatic-publication hold": checklist_source.replace(
             "Automatic Windows publication is intentionally disabled for this patch",

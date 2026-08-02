@@ -137,6 +137,9 @@ def game_vehicle_matrix(build, rom, timeout):
     """The same thing as the GAME reads it, from level_global_init()'s trace."""
     env = dict(os.environ)
     env["MDKR_AUDIO"] = "0"
+    env["MDKR_PRESENT_RATE"] = "original"
+    env["MDKR_SIMULATION_CADENCE"] = "original"
+    env["MDKR_SYNTH_FIELDS"] = "2"
     env["MDKR_TRACE"] = "1"
     cmd = [build, "--headless-frames", "30", "--rom", rom]
     proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE,
@@ -148,6 +151,9 @@ def game_vehicle_matrix(build, rom, timeout):
 def run_combo(build, rom, script, level, vehicle, frames, timeout):
     env = dict(os.environ)
     env["MDKR_AUDIO"] = "0"          # belt-and-braces; --headless-frames is the guarantee
+    env["MDKR_PRESENT_RATE"] = "original"
+    env["MDKR_SIMULATION_CADENCE"] = "original"
+    env["MDKR_SYNTH_FIELDS"] = "2"   # one authored gameplay ticket per opportunity
     env["MDKR_AUTOPILOT"] = "1"      # drive with DKR's own AI -- no per-track input tuning
     env["MDKR_TRACE"] = "1"          # emit the [PACE] / [PVEH] probes
     env["MDKR_LOAD_TRACK"] = "%d:%d" % (level, vehicle)

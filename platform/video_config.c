@@ -137,7 +137,7 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "Frame limit",
         "original is the Recommended / Proven setting and presents each "
         "authoritative image once. Every other value is Experimental -- Under "
-        "Construction in 1.0.1: it changes host pacing and input/event-pump "
+        "Construction in 1.0.1+: it changes host pacing and input/event-pump "
         "opportunities only, without increasing unique visual FPS or "
         "synthesizing intermediate images. Any benefit may be negligible, while "
         "higher settings can use more CPU. Requires a restart because the host "
@@ -158,7 +158,7 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "Video.MotionSmoothing", "MDKR_PRESENT_SMOOTHING",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
         "Motion smoothing",
-        "Unavailable in 1.0.1. With off, the surface updates only when the next "
+        "Unavailable in 1.0.1+. With off, the surface updates only when the next "
         "complete authored image is ready. Delayed display-list interpolation is "
         "kept disabled until every mutable render dependency can be retained "
         "and proved byte-exact. Original remains the recommended setting.",
@@ -368,7 +368,7 @@ void mdkr_video_config_defaults(MdkrVideoConfig *config) {
      * display-rate qualification remain separate from the deterministic
      * headless proof, so the conservative behavior-preserving default is the
      * honest one.
-     * MotionSmoothing is fail-closed in 1.0.1. A delayed replay after the next
+     * MotionSmoothing is fail-closed in 1.0.1+. A delayed replay after the next
      * CPU list build cannot yet retain every generic render dependency, so
      * higher rates add host pacing opportunities but no duplicate swaps or
      * intermediate surface images.

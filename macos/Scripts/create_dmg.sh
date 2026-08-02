@@ -227,7 +227,7 @@ else
 fi
 
 # Determine output path. The DMG FILENAME is a slug of the brand
-# ("Golden Balloon" -> "golden-balloon-1.0.1.dmg"), not the internal app name.
+# ("Golden Balloon" -> "golden-balloon-1.2.3.dmg"), not the internal app name.
 BRAND_SLUG="$(printf '%s' "${BRAND_NAME}" \
     | tr '[:upper:]' '[:lower:]' \
     | tr -cs 'a-z0-9' '-' \

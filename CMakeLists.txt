@@ -793,7 +793,7 @@ target_compile_definitions(${MDKR_TARGET} PRIVATE
 # CFBundleShortVersionString, which macos/Scripts/build_app_bundle.sh stamps
 # from this same value via PlistBuddy. Kept as its own standalone statement
 # (not folded into the block above) so it stays a one-line, low-conflict diff.
-set(MDKR_VERSION "1.0.1" CACHE STRING "mdkr64 release version (semver)")
+set(MDKR_VERSION "1.0.2" CACHE STRING "mdkr64 release version (semver)")
 target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_VERSION_STRING="${MDKR_VERSION}")
 
 # --- Flags ----------------------------------------------------------------
@@ -1067,7 +1067,7 @@ if(NOT EMSCRIPTEN)
             # category, a label, help text, and must resolve back by name. Runs
             # fully headless (no window, no GPU) via the shell's own self-check.
             set(MDKR_FRAME_LIMIT_UI_CONTRACT_REGEX
-                "recommended=\"Original \\(Recommended / Proven\\)\" group=\"Experimental — Under Construction\" caveat=\"Non-Original choices only alter host pacing and input/event-pump opportunities. In 1.0.1 they do not increase unique visual FPS; the supported US 1.1 game remains at its authored ~30 FPS. Any benefit may be negligible, while higher settings can use more CPU. Original is Recommended / Proven.\"")
+                "recommended=\"Original \\(Recommended / Proven\\)\" group=\"Experimental — Under Construction\" caveat=\"Non-Original choices only alter host pacing and input/event-pump opportunities. In 1.0.1+ they do not increase unique visual FPS; the supported US 1.1 game remains at its authored ~30 FPS. Any benefit may be negligible, while higher settings can use more CPU. Original is Recommended / Proven.\"")
             add_test(NAME app_schema COMMAND ${MDKR_TARGET})
             set_tests_properties(app_schema PROPERTIES
                 ENVIRONMENT "MDKR_APP_DUMP_SCHEMA=1;MDKR_AUDIO=0"

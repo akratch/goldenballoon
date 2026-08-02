@@ -43,6 +43,18 @@
 // "#version 330 core" shaders; valid on the macOS 4.1-core context too.
 static const char *kGlslVersion = "#version 330 core";
 
+static void bindSmokeGamepadToImGui(SDL_GameController *gamepad) {
+    if (gamepad == nullptr) {
+        return;
+    }
+    /* Keep the deterministic virtual device under this test's ownership.
+     * ImGui's normal AutoFirst scan may select a user's physical controller.
+     * Interactive launches have no smoke device and retain AutoFirst. */
+    SDL_GameController *gamepads[] = {gamepad};
+    ImGui_ImplSDL2_SetGamepadMode(
+        ImGui_ImplSDL2_GamepadMode_Manual, gamepads, 1);
+}
+
 bool AppHost::init(const char *title, int width, int height) {
     /* Resolve before the availability check so diagnostics still name an
      * explicitly requested WebGPU backend in a GL-only build. */
@@ -53,6 +65,16 @@ bool AppHost::init(const char *title, int width, int height) {
                      "an automatic fallback.\n");
         return false;
     }
+    const AppUiSmokeInputMode smokeInputMode = AppUi_smokeInputMode();
+    if (smokeInputMode == AppUiSmokeInputMode::Gamepad) {
+        /* Hidden launcher automation has no keyboard focus. SDL otherwise
+         * discards joystick press transitions while any window exists but none
+         * is focused, leaving the virtual controller permanently neutral. This
+         * override is reachable only through the validated smoke contract and
+         * does not change interactive background-input policy. */
+        SDL_SetHintWithPriority(
+            SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1", SDL_HINT_OVERRIDE);
+    }
     if (SDL_WasInit(SDL_INIT_VIDEO) == 0) {
         if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) < 0) {
             std::fprintf(stderr, "[app] SDL_Init failed: %s\n", SDL_GetError());
@@ -61,7 +83,7 @@ bool AppHost::init(const char *title, int width, int height) {
         sdlOwned_ = true;
     }
 
-    if (AppUi_smokeInputMode() == AppUiSmokeInputMode::Gamepad) {
+    if (smokeInputMode == AppUiSmokeInputMode::Gamepad) {
 #if SDL_VERSION_ATLEAST(2, 0, 14)
         smokeGamepadDeviceIndex_ = SDL_JoystickAttachVirtual(
             SDL_JOYSTICK_TYPE_GAMECONTROLLER, SDL_CONTROLLER_AXIS_MAX,
@@ -176,6 +198,7 @@ bool AppHost::initGL(const char *title, int width, int height) {
         return false;
     }
     imguiSdlReady_ = true;
+    bindSmokeGamepadToImGui(smokeGamepad_);
     if (!ImGui_ImplOpenGL3_Init(kGlslVersion)) {
         std::fprintf(stderr, "[app] ImGui_ImplOpenGL3_Init failed\n");
         return false;
@@ -242,6 +265,7 @@ bool AppHost::initWebGpu(const char *title, int width, int height) {
         return false;
     }
     imguiSdlReady_ = true;
+    bindSmokeGamepadToImGui(smokeGamepad_);
     /* The in-house backend's shutdown is null-safe and must run even when a
      * late pipeline allocation makes init return false. */
     imguiRendererReady_ = true;

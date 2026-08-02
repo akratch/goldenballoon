@@ -731,7 +731,10 @@ def check_authored_rate_sequence(
                 failures.append(str(error))
                 continue
             compared += 1
-            if mad > worst_mad:
+            # Record the first successful comparison even when it is byte
+            # identical. Otherwise an ideal all-zero-MAD sequence leaves the
+            # sentinel at -1 and is misreported below as "no frame measured".
+            if worst_frame < 0 or mad > worst_mad:
                 worst_mad = mad
                 worst_frame = present_frame
             if mad > maximum_mad:

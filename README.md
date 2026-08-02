@@ -24,19 +24,19 @@ a desktop build from the
 
 | Platform | File | Notes |
 |---|---|---|
-| macOS (Apple silicon) | `Golden-Balloon-1.0.1-macos-arm64-unsigned.dmg` | Apple silicon patch build. Intentionally unsigned; see the first-open note below |
-| Linux (x86-64) | `Golden-Balloon-1.0.1-linux-x86_64.tar.gz` | Published only if the release workflow's built + extracted WebGPU/GL pixel gates pass; the AppImage accompanies it. SDL2 is bundled; the host graphics driver is still required |
-| Windows (x64) | `Golden-Balloon-1.0.1-windows-x64.zip` | Portable patch build. The final WebGPU candidate passed manual gameplay, controller, audio, save, and relaunch acceptance on Windows hardware |
+| macOS (Apple silicon) | `Golden-Balloon-1.0.2-macos-arm64-unsigned.dmg` | Apple silicon hotfix build. Intentionally unsigned; see the first-open note below |
+| Linux (x86-64) | `Golden-Balloon-1.0.2-linux-x86_64.tar.gz` | Published only if the release workflow's built + extracted WebGPU/GL pixel gates pass; the AppImage accompanies it. SDL2 is bundled; the host graphics driver is still required |
+| Windows (x64) | `Golden-Balloon-1.0.2-windows-x64.zip` | Portable hotfix build. The 1.0.1 WebGPU base passed manual gameplay, controller, audio, save, and relaunch acceptance on Windows hardware; 1.0.2 adds the door-glyph fix |
 
 Hosted Windows CI proves the native binary, import table, exact package, and
 extracted startup, but does not provide a stable GPU environment for rendered
-gameplay. The 1.0.1 candidate therefore received a separate real-hardware pass
+gameplay. The 1.0.1 base therefore received a separate real-hardware pass
 covering its default WebGPU launch, intro and character-select timing, gameplay,
 controller, audio, save, and relaunch. That manual evidence boundary remains
 visible in the release notes.
 
 If the named Linux files are absent from the release, its software-GPU publish
-gate did not pass and there is no qualified 1.0.1 Linux binary; build from
+gate did not pass and there is no qualified 1.0.2 Linux binary; build from
 source instead of redistributing an unverified workflow artifact.
 
 Then:
@@ -51,16 +51,18 @@ Then:
 Each release file ships with a `.provenance.json` naming the exact source
 commit and SHA-256 it was built from.
 
-For a focused human spot check, use the
-**[1.0.1 release-candidate test guide](docs/RELEASE_CANDIDATE_TEST_GUIDE.md)**.
-It pins the exact artifact hashes and covers the startup-audio, menu-animation,
-geometry, wheel, UI-alignment, magic-code, multiplayer, persistence, and
-experimental-frame-limit regressions found during patch development.
+For the current 1.0.2 candidate pass, use the human routes in the
+**[release checklist](docs/RELEASE_CHECKLIST.md#7-post-release-spot-checks)**
+and verify every downloaded sidecar before opening an artifact. The
+**[historical 1.0.1 exact-hash guide](docs/RELEASE_CANDIDATE_TEST_GUIDE.md)**
+is retained as acceptance evidence for that release; it is not a 1.0.2 file
+list. The guide is refreshed with the exact 1.0.2 artifact hashes only after
+those draft assets exist, without moving the release tag.
 
 > **macOS packaging notice:** the known-bad 1.0.0 DMG can produce Finder's
 > “damaged and can't be opened” dialog because its executable was modified
 > after the linker's integrity signature. This is not the ordinary
-> unidentified-developer warning. The 1.0.1 patch is intentionally shipped
+> unidentified-developer warning. The 1.0.2 patch is intentionally shipped
 > without Developer ID signing/notarization, so first launch may show the normal
 > unidentified-developer warning. After the first blocked launch, open **System
 > Settings → Privacy & Security**, scroll down, choose **Open Anyway**, and
@@ -70,7 +72,7 @@ experimental-frame-limit regressions found during patch development.
 > signature integrity, self-contained dependencies, WebGPU selection, and the
 > macOS 13 deployment target. “Damaged” is never an expected result. A future
 > Developer ID/notarized build, if published, has the distinct name
-> `Golden-Balloon-1.0.1-macos-arm64-signed-notarized.dmg` and distinct
+> `Golden-Balloon-1.0.2-macos-arm64-signed-notarized.dmg` and distinct
 > `developer-id-notarized` provenance; it is not the artifact for this patch.
 
 ### No game data is included
@@ -105,7 +107,7 @@ holder.
 | macOS (Apple silicon) | Supported. WebGPU by default; OpenGL is an explicit diagnostic backend pending visual-parity work |
 | Web (WebGPU browser) | Supported. WebAssembly + WebGPU + AudioWorklet |
 | Linux | Best effort. Builds and runs on GL and WebGPU; physical-GPU, Wayland, and controller breadth are unmeasured |
-| Windows | Supported portable x64 patch build. Native CI validates build/package/startup; the final 1.0.1 WebGPU candidate also passed manual gameplay, controller, audio, save, and relaunch acceptance on Windows hardware |
+| Windows | Supported portable x64 patch build. Native CI validates build/package/startup; the 1.0.1 WebGPU base also passed manual gameplay, controller, audio, save, and relaunch acceptance on Windows hardware |
 
 ## Presentation modes
 
@@ -121,14 +123,14 @@ with a restart notice where it does not. Settings persist in `mdkr64.ini`.
 
 `Video.FrameLimit` defaults to **Original (Recommended / Proven)**. Match
 Display, the listed numeric choices, and Uncapped are all
-**Experimental — Under Construction**. In 1.0.1 they only alter host pacing and
+**Experimental — Under Construction**. In 1.0.1+ they only alter host pacing and
 input/event-pump opportunities: they do not increase unique visual FPS,
 manufacture intermediate images, or change gameplay timing. The primary US 1.1
 build remains at its authored roughly 30 unique visual FPS. Any practical
 benefit may be negligible, while higher settings can use more CPU. Use Original
 for the proven release behavior.
 
-Motion smoothing and delayed display-list replay are disabled in 1.0.1. A
+Motion smoothing and delayed display-list replay are disabled in 1.0.1+. A
 delayed replay can run after the game has begun rewriting mutable viewport,
 matrix, vertex, texture, and display-list storage for the next task; that is not
 a safe basis for a release image. Keeping authored frames avoids the off-center
@@ -189,23 +191,23 @@ physical-hardware acceptance. See [ROADMAP.md](ROADMAP.md).
 - Native macOS and the browser use the default WebGPU paths. OpenGL is retained
   only for diagnostics while its known opening-sequence visual-parity issue is
   investigated.
-- The macOS 1.0.1 artifact has an ad-hoc integrity seal but no Developer ID
+- The macOS 1.0.2 artifact has an ad-hoc integrity seal but no Developer ID
   trust signature or Apple notarization, so current macOS requires the manual
   first-open approval above.
 - Linux is best effort and lacks the macOS/WebGPU path's physical-GPU,
   display-server, controller, and OS-version breadth. Windows build/package
   validation is automated; native GPU gameplay, controller, audio, and save
-  acceptance remains a manual real-hardware release gate and passed for 1.0.1.
+  acceptance remains a manual real-hardware release gate; the 1.0.1 base passed.
 - On Windows, wgpu-native automatically selects a compatible API and may use
   Vulkan or Direct3D 12. `MDKR_RENDERER=webgpu|gl` selects the project renderer;
   it does not force either native API. Explicit selection and richer adapter
-  diagnostics are deferred to 1.0.2.
-- Windows 1.0.1 does not yet handle every non-ASCII or very long filesystem
+  diagnostics are deferred to a future portability release.
+- Windows 1.0.2 does not yet handle every non-ASCII or very long filesystem
   path. Keep the extracted app and ROM in reasonably short, ASCII-only paths.
   If the launcher cannot save an otherwise valid ROM choice, run
   `GoldenBalloon.exe --rom C:\ASCII\game.z64` from Command Prompt and report the
   issue. Wide-character filesystem support and an application manifest are
-  deferred to 1.0.2.
+  deferred to a future portability release.
 
 The full deferred scope and the evidence required to close each item are in
 [ROADMAP.md](ROADMAP.md).

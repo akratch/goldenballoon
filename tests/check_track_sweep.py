@@ -40,8 +40,11 @@ Usage:
     tests/check_track_sweep.py --vehicle 1        # force hovercraft
     tests/check_track_sweep.py --expect-fail N    # diagnostic only; release runs use none
 
-Always runs muted + headless (MDKR_AUDIO=0 and --headless-frames), per
-tests/README.md. Exit 0 = every track passed (or failed only as expected).
+Always runs muted + headless (MDKR_AUDIO=0 and --headless-frames), with one
+authored Original-cadence ticket per host opportunity (MDKR_SYNTH_FIELDS=2),
+per tests/README.md. The synthetic clock keeps this content sweep independent
+of renderer/compositor and sanitizer speed. Exit 0 = every track passed (or
+failed only as expected).
 """
 import argparse
 import os
@@ -66,6 +69,9 @@ BAD_RE = re.compile(
 def run_track(build, rom, script, level, frames, vehicle, timeout):
     env = dict(os.environ)
     env["MDKR_AUDIO"] = "0"          # belt-and-braces; --headless-frames is the guarantee
+    env["MDKR_PRESENT_RATE"] = "original"
+    env["MDKR_SIMULATION_CADENCE"] = "original"
+    env["MDKR_SYNTH_FIELDS"] = "2"   # one authored gameplay ticket per opportunity
     env["MDKR_AUTOPILOT"] = "1"      # drive with DKR's own AI
     env["MDKR_TRACE"] = "1"          # emit the [PACE] racer probe
     env["MDKR_LOAD_TRACK"] = str(level) if vehicle is None else "%d:%d" % (level, vehicle)

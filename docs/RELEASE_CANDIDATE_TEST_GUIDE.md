@@ -1,4 +1,9 @@
-# Release-candidate test guide
+# Golden Balloon 1.0.1 acceptance guide (historical)
+
+> This document pins the exact 1.0.1 artifacts and is retained as historical
+> acceptance evidence. It is **not** the 1.0.2 candidate file list. For 1.0.2,
+> use the release checklist and the checksum/provenance sidecars attached to
+> the draft release; exact 1.0.2 hashes are added only after those assets exist.
 
 This is the short human acceptance pass for Golden Balloon 1.0.1. Use the
 published files from the [`v1.0.1` release](https://github.com/akratch/goldenballoon/releases/tag/v1.0.1),

@@ -123,7 +123,7 @@ question is answered first.
 ### Presentation rate above the authored tick
 
 Production motion smoothing and retained display-list replay are disabled for
-1.0.1. Release-candidate testing proved that a replay delayed until after task
+1.0.1+. Release-candidate testing proved that a replay delayed until after task
 `K+1` begins can observe mutable viewport, matrix, vertex, texture, and nested
 display-list storage after the game has started rewriting it. Partial packet
 freezing and generation keys do not establish immutable ownership of that full
@@ -159,12 +159,12 @@ not an active release feature.
 
 ### Windows
 
-The portable x64 build is supported in 1.0.1. Hosted CI checks the product,
+The portable x64 build is supported since 1.0.1. Hosted CI checks the product,
 stock-Windows imports, package shape, ROM-free startup surfaces, and extracted
 archive; the release candidate also passed manual WebGPU gameplay, controller,
 audio, save, and relaunch acceptance on Windows hardware.
 
-The 1.0.2 compatibility backlog is explicit: add user-selectable
+The post-1.0.2 compatibility backlog is explicit: add user-selectable
 auto/Direct3D-12/Vulkan adapter policy and textual GPU diagnostics; preserve
 adapter/device request failure messages; centralize UTF-8-to-UTF-16 filesystem
 and process operations; add Unicode-path tests and a reviewed application
@@ -249,7 +249,7 @@ cheapest first:
 
 PAL timing is modelled as a 50 Hz source clock with the same authored two-field
 ticket, so its visual cadence remains 25 Hz. Experimental host-pacing policies
-are independent of that grid but do not add visual frames in 1.0.1. Region-
+are independent of that grid but do not add visual frames in 1.0.1+. Region-
 specific calibrated gameplay oracles remain a separate expansion question for
 unsupported revisions.
 

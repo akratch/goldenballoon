@@ -123,7 +123,7 @@ Findings that matter for the Emscripten step:
   pacing. A shared config containing `uncapped` resolves to `display` with
   requested/effective diagnostics. Numeric policies skip rAF opportunities on
   the same absolute rational deadline grid as native; `display` consumes one
-  opportunity per callback. In 1.0.1 these are host/input-pump opportunities,
+  opportunity per callback. In 1.0.1+ these are host/input-pump opportunities,
   not extra images: the browser presents only newly authored frames at about
   30 Hz NTSC or 25 Hz PAL and never swaps a duplicate. Hidden documents suspend
   at the Asyncify boundary and the resumed interval rebases instead of

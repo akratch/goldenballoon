@@ -439,6 +439,14 @@ def run_runtime_matrix(
         else RUNTIME_CHECKS
     )
     environment = sanitizer_environment("alignment")
+    environment.update(
+        MDKR_PRESENT_RATE="original",
+        MDKR_SIMULATION_CADENCE="original",
+        MDKR_SYNTH_FIELDS="2",
+        MDKR_VIDEO_CONFIG_PATH=str(
+            align_build / f".native-layout-empty-{os.getpid()}.ini"
+        ),
+    )
     for index, check in enumerate(checks, 1):
         print(
             f"\n[{index}/{len(checks)}] alignment runtime: {check.label}",

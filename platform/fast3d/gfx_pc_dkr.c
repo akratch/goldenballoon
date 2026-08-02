@@ -1844,7 +1844,8 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
                was_hit ? "HIT " : "MISS", hit, (const void *)addr, tw, th, fmt, siz,
                tex_cache[hit].texture_id, src_bytes);
     }
-    rendering_state.bound_texture_id[unit] = tex_cache[hit].texture_id;
+    const uint32_t texture_id = tex_cache[hit].texture_id;
+    const bool texture_changed = rendering_state.bound_texture_id[unit] != texture_id;
     *w = tex_cache[hit].upload_w;
     *h = tex_cache[hit].upload_h;
 
@@ -1870,7 +1871,8 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         font_remastered ? G_TX_CLAMP : rdp.tile[td].cms;
     uint32_t cmt =
         font_remastered ? G_TX_CLAMP : rdp.tile[td].cmt;
-    if (rendering_state.bound_texture_linear[unit] != linear ||
+    if (texture_changed ||
+        rendering_state.bound_texture_linear[unit] != linear ||
         rendering_state.bound_texture_cms[unit] != cms ||
         rendering_state.bound_texture_cmt[unit] != cmt ||
         rendering_state.bound_texture_lod0[unit] != lod0) {
@@ -1882,6 +1884,12 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         rendering_state.bound_texture_cmt[unit] = cmt;
         rendering_state.bound_texture_lod0[unit] = lod0;
     }
+    /* OpenGL stores wrap/filter parameters on each texture object. A newly
+     * bound texture therefore needs its own sampler state even when the
+     * requested values match the previous binding. WebGPU's separate sampler
+     * objects tolerate the same refresh. Publish the binding only after that
+     * decision so texture identity remains part of the memo key. */
+    rendering_state.bound_texture_id[unit] = texture_id;
     return true;
 }
 

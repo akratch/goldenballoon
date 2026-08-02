@@ -442,18 +442,19 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
             f"{prefix}: {stale} of {ticks} interpolated presents drew nothing "
             f"({stale / ticks:.2%}, bound {MAX_STALE_RATIO:.0%}) -- "
             "interpolation is dropping out on this content")
-    # Successful replay walks now include the alpha-zero retained endpoint at
-    # each fresh tick as well as the intermediate presents counted by `interp`.
-    # The endpoint count is bounded by the number of ticks; stage-transition
-    # passes with no fresh display list correctly contribute neither.
+    # Production 1.0.1+ quarantines delayed endpoint replay: after a real task
+    # has been submitted the game may already be rewriting its display-list
+    # dependencies for the next task. The test-only subloop may exercise only
+    # the intermediate walk it owns; an extra retained endpoint walk would
+    # restore the unsafe release path this gate must keep disabled.
     replay_walks = replay.get("walks", 0)
     interp_walks = sched.get("interp", 0)
     endpoint_walks = replay_walks - interp_walks
-    if endpoint_walks <= 0 or endpoint_walks > ticks:
+    if endpoint_walks != 0:
         failures.append(
             f"{prefix}: {replay_walks} replay walks against {interp_walks} "
             f"interpolated presents imply {endpoint_walks} retained endpoint "
-            f"walks, expected 1..{ticks}")
+            "walks, expected 0 while delayed endpoint replay is quarantined")
     if replay.get("restores") != replay.get("walks"):
         failures.append(
             f"{prefix}: {replay.get('restores')} registry restores for "
@@ -512,13 +513,13 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
             failures.append(
                 f"{prefix}: retained model {key}={packet.get(key)}, expected "
                 "zero; replay used a phase-shifted endpoint pair")
-    if (packet.get("endpointchecks", 0) <= 0 or
+    if (packet.get("endpointchecks", -1) != 0 or
             packet.get("endpointmismatch", -1) != 0 or
-            packet.get("endpointexpected", 0) == 0 or
-            packet.get("endpointexpected") != packet.get("endpointactual")):
+            packet.get("endpointexpected", -1) != 0 or
+            packet.get("endpointactual", -1) != 0):
         failures.append(
-            f"{prefix}: alpha-zero G_VTX semantics do not hash exactly to the "
-            "task-authored retained endpoint")
+            f"{prefix}: delayed alpha-zero endpoint replay ran despite the "
+            "production quarantine")
     if arm.name == "challenge-battle-1":
         if packet.get("particlevertexreg", 0) <= 0:
             failures.append(
@@ -652,7 +653,7 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
             f"deformation: {packet.get('deformreg', 0)} captures, "
             f"{packet.get('deformhold', 0)} exact holds, "
             f"{packet.get('deformphasehold', 0)} phase gaps, "
-            f"{packet.get('endpointchecks', 0)} exact alpha-zero checks, "
+            f"{packet.get('endpointchecks', 0)} quarantined alpha-zero checks, "
             f"{packet.get('deformcollision', 0)} collisions, "
             f"peak {packet.get('deformpeak', 0)}; "
             f"rewritten dependencies: {packet.get('stale', 0)} observed, "

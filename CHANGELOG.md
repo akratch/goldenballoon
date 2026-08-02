@@ -10,12 +10,28 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-08-02
+
+### Fixed
+
+- **Dino Domain door numerals no longer change with the camera.** The four race
+  doors carry independent 1/2/3/5 requirements but reuse one cached model.
+  Golden Balloon 1.0.1 selected each digit during a view-dependent fixed-tick
+  traversal by mutating that shared model, so the last visible door could put
+  its numeral on every sign. Display-list construction now resolves the atlas
+  offset directly from the door being submitted without changing shared model
+  state. The same audit found and fixed an older OpenGL sampler-cache omission
+  that could repeat the selected numeral across the door face. A real Adventure
+  route now proves the authored requirements, per-door material bindings, and
+  final GL/WebGPU door pixels. Blank frames, a common glyph on every sign, and
+  repeated sampler output are generated as fail-red controls during the gate.
+
 ### Documentation
 
 - Clarified that Windows WebGPU automatically selects Vulkan or Direct3D 12,
   documented the 1.0.1 ASCII-path workaround, and recorded explicit backend
   selection, wide-character filesystem APIs, and a reviewed application
-  manifest for 1.0.2.
+  manifest for a future portability release.
 - Added an exact-hash 1.0.1 human acceptance guide and consolidated the stale
   pre-character-select animation-rate script into the stronger settled-screen
   motion/rate gate, with explicit frozen and five-frame-loop controls.

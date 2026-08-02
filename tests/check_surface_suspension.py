@@ -163,10 +163,38 @@ def validate_pair(control: Result, minimized: Result) -> list[str]:
             if result.summary.get(key, 0) != 0:
                 failures.append(
                     f"{backend}-{arm}: {key}={result.summary.get(key)}")
-        if result.pressure.get("highwater", 0) > result.pressure.get("cap", 0):
+        highwater = result.pressure.get("highwater", 0)
+        submitted = result.pressure.get("submitted", 0)
+        if backend == "webgpu":
+            # Native WebGPU deliberately polls without synchronously draining
+            # the cooperative game/audio thread; its telemetry `cap` applies
+            # to browser/internal replay, not production native submission.
+            # check_gpu_backpressure owns that contract in detail. Here the
+            # census must still be internally possible and nonblocking.
+            if not (1 <= highwater <= submitted):
+                failures.append(
+                    f"{backend}-{arm}: invalid GPU high-water "
+                    f"{highwater} for {submitted} submissions")
+            if result.pressure.get("runtimewaits", 0) != 0 or \
+                    result.pressure.get("runtimewaitns", 0) != 0:
+                failures.append(
+                    f"{backend}-{arm}: production path synchronously drained "
+                    "the GPU queue")
+        elif highwater > result.pressure.get("cap", 0):
             failures.append(f"{backend}-{arm}: GPU queue exceeded its cap")
         if result.pressure.get("failures", 0) != 0:
             failures.append(f"{backend}-{arm}: GPU completion failure")
+        if backend == "webgpu":
+            for key in ("skips", "abandoned", "inflight"):
+                if result.pressure.get(key, 0) != 0:
+                    failures.append(
+                        f"{backend}-{arm}: {key}="
+                        f"{result.pressure.get(key, 0)}")
+            if (result.pressure.get("presented", 0) +
+                    result.pressure.get("unavailable", 0) != submitted):
+                failures.append(
+                    f"{backend}-{arm}: surface outcomes do not account for "
+                    f"all {submitted} submissions")
 
     if control.surface:
         failures.append(f"{backend}: control unexpectedly changed visibility")

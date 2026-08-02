@@ -49,7 +49,7 @@ with an invalid resource/signature envelope and `spctl` rejected it.
 
 The builder now removes inherited source xattrs, signs the bundled SDL2 image,
 then seals the outer app ad hoc after all mutations. The intentionally unsigned
-1.0.1 path keeps that ad-hoc identity: the exact app in the read-only mounted
+1.0.1+ path keeps that ad-hoc identity: the exact app in the read-only mounted
 DMG must pass strict nested/resource/load-path verification and a LaunchServices
 WebGPU present-and-capture smoke. Its `spctl` result is therefore only the
 expected trust rejection for an ad-hoc identity, never a damaged-app rejection.
@@ -61,7 +61,7 @@ longer disables library validation or W^X speculatively, and the CI contract has
 broken-direction controls for its credentials and signing/notarization steps.
 That trusted artifact remains publication-disabled until an equivalent
 post-sign LaunchServices/WebGPU runtime gate is automated; it is not a
-prerequisite for the ad-hoc unsigned 1.0.1 release.
+prerequisite for the ad-hoc unsigned patch releases.
 
 
 ## FIXED: MIPS numeric conversion closeout
