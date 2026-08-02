@@ -10,6 +10,27 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ## [Unreleased]
 
+## [1.0.3] — 2026-08-02
+
+### Fixed
+
+- Completed the native texture-cache identity with source pitch/span, palette,
+  format, dimensions, row layout, SDF derivation, mip, and cutout policy; cache
+  slot reuse now invalidates sampler memos before replacing the uploaded image.
+- Cleared WebGPU redundant-bind trackers before cached bind-group and pipeline
+  release, preventing opaque handle-address reuse from skipping a required bind.
+- Kept Remastered grading and tonemapping on world pixels at every render scale:
+  output HUD/text now enter the terminal overlay at explicit 1× and at a
+  hardware budget clamp to 1×, matching the already-correct supersampled path.
+- Unified the texture-edge shader and mip-coverage alpha boundary across GL,
+  WebGPU, Metal, and the CPU mip reducer.
+
+### Changed
+
+- Made Restored unambiguously the default in native config, CLI help, launcher,
+  browser, README, and tests. Remastered is opt-in and work in progress. The
+  inert future TexturePack key remains parseable but is no longer advertised.
+
 ### Testing
 
 - Made the cached-model material ownership rule fail closed in native builds:
@@ -17,6 +38,9 @@ save formats). Everything below 1.0.0 predates that commitment.
   per-door resolver is const-correct, and a ROM-free CTest guards draw-local
   door/racer selection plus OpenGL sampler texture identity. The existing real
   Adventure oracle remains the final GL/WebGPU gameplay and pixel gate.
+- Made the odd-row texture corruption oracle hermetic and backend-complete; added
+  exact cache-key units, WebGPU cache-ownership guards, and 1×/2× opaque-HUD
+  finish A/B coverage.
 
 ## [1.0.2] — 2026-08-02
 

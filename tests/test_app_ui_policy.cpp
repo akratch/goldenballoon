@@ -71,6 +71,14 @@ int main() {
     expect(!AppUi_parseScale("2.01", &rejected), "scale above range rejected");
     expect(!AppUi_parseScale("1.5junk", &rejected), "malformed scale rejected");
 
+    expect(!AppUi_videoSettingVisible(MDKR_VIDEO_TEXTURE_PACK),
+           "unimplemented texture-pack setting is hidden");
+    for (int key = 0; key < MDKR_VIDEO_KEY_COUNT; ++key) {
+        if (key == MDKR_VIDEO_TEXTURE_PACK) continue;
+        expect(AppUi_videoSettingVisible(static_cast<MdkrVideoKey>(key)),
+               "implemented video setting remains visible");
+    }
+
     AppUiDpiState dpi;
     expect(!AppUi_applyDpiTransition(&dpi, 1.0f), "same-DPI frame is a no-op");
     expect(AppUi_applyDpiTransition(&dpi, 2.0f), "1x to 2x rebuilds atlas");

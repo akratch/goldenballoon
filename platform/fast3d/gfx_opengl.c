@@ -31,6 +31,7 @@
 
 #include "gfx_cc.h"
 #include "gfx_mipgen.h"        /* mdkr64: g_pcMipmaps, g_gfxSamplerLod0Only */
+#include "gfx_texture_edge.h"
 #include "gfx_rendering_api.h"
 #include "gfx_screen_config.h"
 #include "gfx_shadow_cascade.h"
@@ -1431,8 +1432,9 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     }
 
     if (cc_features.opt_texture_edge && cc_features.opt_alpha) {
-        /* PD uses 0.19 threshold (more permissive than our old 0.3) */
-        append_line(fs_buf, &fs_len, "if (texel.a > 0.19) texel.a = 1.0; else discard;");
+        append_line(fs_buf, &fs_len,
+                    "if (texel.a > " GFX_TEXTURE_EDGE_ALPHA_THRESHOLD_SHADER
+                    ") texel.a = 1.0; else discard;");
     }
 
     if (cc_features.opt_alpha && cc_features.opt_noise) {
@@ -2826,7 +2828,8 @@ static bool gfx_opengl_output_ssao_active(void) {
 
 static bool gfx_opengl_scene_target_enabled(void) {
     float render_scale = gfx_opengl_effective_render_scale();
-    return render_scale > 1.001f ||
+    return g_pcRemasterFX ||
+           render_scale > 1.001f ||
            gfx_opengl_effective_msaa_samples() > 0 ||
            gfx_opengl_output_ssao_active() ||   /* force scene FBO so depth is sampleable */
            gfx_diag_xlu_coverage_stencil_enabled() ||

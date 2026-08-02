@@ -159,8 +159,24 @@ static void test_presets(void) {
     expect_true("restored remasterfx off", cfg.values[MDKR_VIDEO_REMASTER_FX].number == 0.0f);
 
     mdkr_video_config_apply_preset(&cfg, MDKR_VIDEO_MODE_REMASTERED);
+    expect_true("remastered widescreen on",
+                cfg.values[MDKR_VIDEO_WIDESCREEN].number == 1.0f);
+    expect_true("remastered aspect follows window",
+                !strcmp(cfg.values[MDKR_VIDEO_ASPECT].text, "auto"));
+    expect_true("remastered render scale",
+                cfg.values[MDKR_VIDEO_RENDER_SCALE].number == 2.0f);
+    expect_true("remastered msaa off",
+                cfg.values[MDKR_VIDEO_MSAA].number == 0.0f);
     expect_true("remastered aniso", cfg.values[MDKR_VIDEO_ANISOTROPY].number == 16.0f);
+    expect_true("remastered mipmaps on",
+                cfg.values[MDKR_VIDEO_MIPMAPS].number == 1.0f);
     expect_true("remastered remasterfx on", cfg.values[MDKR_VIDEO_REMASTER_FX].number == 1.0f);
+    expect_true("remastered FOV remains authored",
+                !strcmp(cfg.values[MDKR_VIDEO_GAMEPLAY_FOV].text, "authored"));
+    expect_true("remastered world shadows full",
+                !strcmp(cfg.values[MDKR_VIDEO_WORLD_SHADOWS].text, "full"));
+    expect_true("remastered mode value is explicit",
+                !strcmp(cfg.values[MDKR_VIDEO_MODE].text, "remastered"));
     expect_true("remastered leaves default simulation unchanged",
                 !strcmp(cfg.values[MDKR_VIDEO_SIMULATION_CADENCE].text,
                         "original"));

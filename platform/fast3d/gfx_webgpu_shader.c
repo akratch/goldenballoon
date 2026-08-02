@@ -21,6 +21,7 @@
 #include "gfx_webgpu_shader.h"
 
 #include "gfx_cc.h"
+#include "gfx_texture_edge.h"
 #include "gfx_uniforms.h"   /* g_pcTextureAnisotropy: aniso bypasses the in-shader 3-point filter */
 
 #include <stdarg.h>
@@ -543,9 +544,10 @@ char *gfx_webgpu_build_wgsl(uint64_t shader_id0, uint32_t shader_id1,
             P("  texel = vec4<f32>(mix(texel.rgb, in.vFog.rgb, in.vFog.a), texel.a);\n");
         }
     }
-    /* Texture-edge alpha cutout (PD 0.19 threshold). */
+    /* Texture-edge alpha cutout. */
     if (cc.opt_texture_edge && cc.opt_alpha) {
-        P("  if (texel.a > 0.19) { texel.a = 1.0; } else { discard; }\n");
+        P("  if (texel.a > " GFX_TEXTURE_EDGE_ALPHA_THRESHOLD_SHADER
+          ") { texel.a = 1.0; } else { discard; }\n");
     }
     /* AC-3: G_AC_DITHER alpha dissolve — byte-match gfx_opengl.c:1337. Multiplies
      * alpha by floor(noise+0.5), killing ~50% of pixels stochastically (the

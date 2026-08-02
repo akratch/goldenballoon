@@ -2,6 +2,8 @@
 #ifndef MDKR64_APP_UI_POLICY_H
 #define MDKR64_APP_UI_POLICY_H
 
+#include "../video_config.h"
+
 enum class OverlayBackInput { Escape, ControllerB };
 
 struct OverlayBackState {
@@ -50,5 +52,9 @@ AppUiSmokeInputMode AppUi_validateSmokeInput(
     const char *frames, const char *selection, const char *input,
     const char *token);
 AppUiSmokeInputMode AppUi_smokeInputMode();
+
+// Reserved config keys remain parseable for forward compatibility, but the
+// launcher must not advertise settings that the running product cannot apply.
+bool AppUi_videoSettingVisible(MdkrVideoKey key);
 
 #endif  // MDKR64_APP_UI_POLICY_H

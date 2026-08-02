@@ -293,6 +293,13 @@ def run_check(args: argparse.Namespace) -> None:
                     dropRole: document.getElementById("save-drop")
                       .getAttribute("role"),
                     dropTabIndex: document.getElementById("save-drop").tabIndex
+                  },
+                  presentation: {
+                    value: document.getElementById("mode").value,
+                    labels: Array.from(
+                      document.getElementById("mode").options,
+                      option => option.textContent
+                    )
                   }
                 }))()""",
                 lambda item: isinstance(item, dict) and item.get("blocked"),
@@ -314,6 +321,19 @@ def run_check(args: argparse.Namespace) -> None:
                     "dropTabIndex": 0,
                 },
                 f"save accessibility semantics changed: {gate}",
+            )
+            require(
+                gate["presentation"]
+                == {
+                    "value": "restored",
+                    "labels": [
+                        "Restored — original look, modern fidelity",
+                        "Remastered — art-directed effects (work in progress)",
+                        "Pure — original 4:3, no enhancements",
+                    ],
+                },
+                "browser presentation choices are stale or misleading: "
+                f"{gate['presentation']}",
             )
 
             keyboard = cdp.evaluate(

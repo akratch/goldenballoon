@@ -475,6 +475,32 @@ static void wgpu_reset_pass_dynamic_state(void) {
     s_bg_applied   = NULL;   /* PERF-014: fresh pass = no bind group bound */
 }
 
+/* Cache eviction and redundant-bind suppression share raw WebGPU handles.
+ * Never release a cache-owned handle while the current-pass tracker still
+ * names it: native implementations may recycle the C handle address, turning
+ * a later pointer comparison into an ABA false match. The encoder retains the
+ * object it actually bound, so clearing the tracker is sufficient and forces
+ * the next draw to publish its replacement explicitly. */
+static void wgpu_release_cached_pipeline(WGPURenderPipeline pipeline) {
+    if (pipeline == NULL) {
+        return;
+    }
+    if (s_pipe_applied == pipeline) {
+        s_pipe_applied = NULL;
+    }
+    wgpuRenderPipelineRelease(pipeline);
+}
+
+static void wgpu_release_cached_bind_group(WGPUBindGroup bind_group) {
+    if (bind_group == NULL) {
+        return;
+    }
+    if (s_bg_applied == bind_group) {
+        s_bg_applied = NULL;
+    }
+    wgpuBindGroupRelease(bind_group);
+}
+
 /* ZMODE_DEC decal (gfx_opengl.c / gfx_metal.mm): coplanar decals get a negative
  * polygon offset so they win the depth test against the surface they overlay. */
 static bool wgpu_depth_is_decal(void) {
@@ -3575,7 +3601,7 @@ static void wgpu_bg_cache_invalidate_view(WGPUTextureView view) {
         if (e->bg != NULL &&
             (e->key[1] == v || e->key[3] == v ||
              e->key[5] == v || e->key[7] == v)) {
-            wgpuBindGroupRelease(e->bg);
+            wgpu_release_cached_bind_group(e->bg);
             e->bg = NULL;
             memset(e->key, 0, sizeof(e->key));
             if (s_bg_cache_live > 0) {
@@ -4835,7 +4861,7 @@ static int wgpu_pipe_reserve_slot(struct ShaderProgram *prg) {
             return -1;
         }
         if (prg->pipes[slot].pipe != NULL) {
-            wgpuRenderPipelineRelease(prg->pipes[slot].pipe);
+            wgpu_release_cached_pipeline(prg->pipes[slot].pipe);
         }
     }
     return slot;
@@ -5639,7 +5665,7 @@ static void wgpu_bg_cache_invalidate_view_indexed(struct WgpuTexEntry *e) {
              * references v (keeps the decision identical to the full sweep). */
             if (slot->bg != NULL &&
                 (slot->key[1] == v || slot->key[3] == v || slot->key[5] == v)) {
-                wgpuBindGroupRelease(slot->bg);
+                wgpu_release_cached_bind_group(slot->bg);
                 slot->bg = NULL;
                 memset(slot->key, 0, sizeof(slot->key));
                 if (s_bg_cache_live > 0) {
@@ -6829,7 +6855,7 @@ static void wgpu_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
                 if (victim == NULL) {
                     victim = &s_bg_cache_tab[set_base + (s_bg_cache_way & (WGPU_BG_WAYS - 1))];
                     s_bg_cache_way++;
-                    wgpuBindGroupRelease(victim->bg);
+                    wgpu_release_cached_bind_group(victim->bg);
                 } else {
                     s_bg_cache_live++;
                     if (s_bg_cache_live > s_bg_cache_high_water) {
@@ -7902,6 +7928,10 @@ static void wgpu_release_device_objects(void) {
     if (s_encoder != NULL) {
         wgpuCommandEncoderRelease(s_encoder);
     }
+    /* No pass remains capable of consuming cached state. Clear its raw-handle
+     * memo before releasing any cache member so recovery starts from the same
+     * ownership invariant as an ordinary cache eviction. */
+    wgpu_reset_pass_dynamic_state();
 
     wgpu_release_shadow_resources();
     if (s_post_bg != NULL) wgpuBindGroupRelease(s_post_bg);

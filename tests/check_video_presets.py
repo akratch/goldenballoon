@@ -210,9 +210,14 @@ def main() -> int:
     ladder = [
         # No mode flag at all: the schema default, unattributed to any layer.
         ({}, [], "Video.RenderScale", "2", "default"),
+        ({}, [], "Video.Mode", "restored", "default"),
         # Passing the mode explicitly IS a preset application, even when it
         # resolves to the same value the default already held.
         ({}, ["--remastered"], "Video.RenderScale", "2", "preset"),
+        ({}, ["--remastered"], "Video.RemasterFX", "1", "preset"),
+        ({}, ["--remastered"], "Video.AnisotropicFiltering", "16", "preset"),
+        ({}, ["--remastered"], "Video.Mipmaps", "1", "preset"),
+        ({}, ["--remastered"], "Video.WorldShadows", "full", "preset"),
         ({}, ["--pure"], "Video.RenderScale", "1", "preset"),
         ({"MDKR_RENDER_SCALE": "3"}, ["--pure"], "Video.RenderScale", "3", "env"),
         ({"MDKR_RENDER_SCALE": "3"},

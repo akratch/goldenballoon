@@ -15,9 +15,10 @@
  *
  *   pure        the original game presented honestly — authentic 4:3 framing at
  *               the authored FOV, zero enhancements. The oracle reference.
- *   restored    the original art direction at modern fidelity. Changes
- *               sharpness and stability, never look.
- *   remastered  the full art-directed remaster. Default.
+ *   restored    the default: original art direction at modern fidelity.
+ *               Changes sharpness and stability, never the art direction.
+ *   remastered  opt-in, work-in-progress art-directed effects on top of
+ *               Restored.
  */
 #ifndef MDKR64_VIDEO_CONFIG_H
 #define MDKR64_VIDEO_CONFIG_H

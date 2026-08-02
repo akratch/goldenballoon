@@ -180,13 +180,25 @@ def parity(px: list[int], w: int, h: int, pts: list[tuple[int, int]], step: int)
 
 
 def run(binary: str, rom: str, script: str, frames: int, dump_from: int,
-        dump_every: int, frame_dir: str, lineswap_off: bool,
+        dump_every: int, renderer: str, run_dir: str, frame_dir: str,
+        lineswap_off: bool,
         verbose: bool) -> tuple[str, int]:
     os.makedirs(frame_dir, exist_ok=True)
-    env = dict(os.environ,
-               MDKR_AUDIO="0",     # belt-and-braces; --headless-frames is the guarantee
-               MDKR_DUMP_FROM=str(dump_from),
-               MDKR_DUMP_EVERY=str(dump_every))
+    save_dir = os.path.join(run_dir, "save")
+    os.makedirs(save_dir, exist_ok=True)
+    env = {
+        key: value for key, value in os.environ.items()
+        if not key.startswith(("MDKR", "GE007_"))
+    }
+    env.update(
+        MDKR_AUDIO="0",     # belt-and-braces; --headless-frames is the guarantee
+        MDKR_RENDERER=renderer,
+        MDKR_SAVE_DIR=save_dir,
+        MDKR_DUMP_FROM=str(dump_from),
+        MDKR_DUMP_EVERY=str(dump_every),
+        MDKR64_HIDDEN="1",
+        LC_ALL="C",
+    )
     if lineswap_off:
         env["MDKR_LINESWAP"] = "off"
     else:
@@ -195,7 +207,9 @@ def run(binary: str, rom: str, script: str, frames: int, dump_from: int,
            "--dump-frames", frame_dir, "--rom", rom, "--pure"]
     if verbose:
         print("$ " + ("MDKR_LINESWAP=off " if lineswap_off else "") + " ".join(cmd))
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, env=env, cwd=run_dir
+    )
     return proc.stdout + proc.stderr, proc.returncode
 
 
@@ -207,6 +221,10 @@ def main() -> int:
     ap.add_argument("--frames", type=int, default=FRAMES)
     ap.add_argument("--dump-from", type=int, default=DUMP_FROM)
     ap.add_argument("--dump-every", type=int, default=DUMP_EVERY)
+    ap.add_argument(
+        "--renderer", choices=("both", "gl", "webgpu"), default="both",
+        help="renderer coverage (default: both shipped native backends)",
+    )
     ap.add_argument("--roi", default=None,
                     help="x0,y0,x1,y1 as fractions of the frame (default: the "
                          "in-race minimap corner)")
@@ -218,8 +236,10 @@ def main() -> int:
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
-    binary = resolve_binary(args.build)
-    for path in (binary, args.rom, args.script):
+    binary = os.path.abspath(resolve_binary(args.build))
+    rom = os.path.abspath(args.rom)
+    script = os.path.abspath(args.script)
+    for path in (binary, rom, script):
         if not os.path.exists(path):
             print(f"FAIL: missing {path}", file=sys.stderr)
             return 1
@@ -231,92 +251,127 @@ def main() -> int:
             return 1
 
     root = args.keep_frames or tempfile.mkdtemp(prefix="mdkr_lineswap_")
-    dirs = {"on": os.path.join(root, "on"), "off": os.path.join(root, "off")}
+    renderers = (
+        ("webgpu", "gl") if args.renderer == "both" else (args.renderer,)
+    )
     failures: list[str] = []
-    uploads = {}
-    for arm in ("on", "off"):
-        out, rc = run(binary, args.rom, args.script, args.frames, args.dump_from,
-                      args.dump_every, dirs[arm], arm == "off", args.verbose)
-        if rc != 0:
-            failures.append(f"arm {arm}: exit code {rc}")
-        for marker in ("[CRASH]", "[FATAL]"):
-            if marker in out:
-                line = next((l for l in out.splitlines() if marker in l), marker)
-                failures.append(f"arm {arm}: {marker} in output: {line.strip()}")
-        m = TEX_RE.search(out)
-        if not m:
-            failures.append(f"arm {arm}: no '[TEX] lineSwappedUploads=' line — the "
-                            f"decoder no longer reports the path this check tests")
-            uploads[arm] = -1
-        else:
-            uploads[arm] = int(m.group(1))
-            if uploads[arm] < MIN_UPLOADS:
-                failures.append(f"arm {arm}: only {uploads[arm]} dxt==0 texture "
-                                f"uploads (want >= {MIN_UPLOADS}) — this route no "
-                                f"longer loads pre-swizzled textures, so the check "
-                                f"would be vacuous")
-
-    frames_on = sorted(f for f in os.listdir(dirs["on"]) if f.endswith(".ppm"))
-    frames_off = sorted(f for f in os.listdir(dirs["off"]) if f.endswith(".ppm"))
-    common = [f for f in frames_on if f in frames_off]
-    if len(common) < 3:
-        failures.append(f"only {len(common)} frame(s) dumped by both arms (want >= 3)")
-
     rows = []
-    for name in common:
-        w, h, a = luma(os.path.join(dirs["off"], name))   # OFF = pre-fix decode
-        w2, h2, b = luma(os.path.join(dirs["on"], name))  # ON  = un-swizzled
-        if (w, h) != (w2, h2):
-            failures.append(f"{name}: arms differ in size {w}x{h} vs {w2}x{h2}")
-            continue
-        # Texel-row spacing: the HUD is authored in 320x240 and the dump is a
-        # whole multiple of that (1280x960 => 4).
-        step = max(1, w // 320)
+    uploads: dict[tuple[str, str], int] = {}
+    for renderer in renderers:
+        dirs = {
+            arm: os.path.join(root, f"{renderer}-{arm}", "frames")
+            for arm in ("on", "off")
+        }
+        for arm in ("on", "off"):
+            run_dir = os.path.dirname(dirs[arm])
+            out, rc = run(
+                binary, rom, script, args.frames, args.dump_from,
+                args.dump_every, renderer, run_dir, dirs[arm], arm == "off",
+                args.verbose,
+            )
+            label = f"{renderer}/{arm}"
+            if rc != 0:
+                failures.append(f"{label}: exit code {rc}")
+            for marker in ("[CRASH]", "[FATAL]"):
+                if marker in out:
+                    line = next(
+                        (line for line in out.splitlines() if marker in line),
+                        marker,
+                    )
+                    failures.append(f"{label}: {marker} in output: {line.strip()}")
+            match = TEX_RE.search(out)
+            if not match:
+                failures.append(
+                    f"{label}: no '[TEX] lineSwappedUploads=' line — the "
+                    "decoder no longer reports the path this check tests"
+                )
+                uploads[(renderer, arm)] = -1
+            else:
+                uploads[(renderer, arm)] = int(match.group(1))
+                if uploads[(renderer, arm)] < MIN_UPLOADS:
+                    failures.append(
+                        f"{label}: only {uploads[(renderer, arm)]} dxt==0 texture "
+                        f"uploads (want >= {MIN_UPLOADS}) — this route no longer "
+                        "loads pre-swizzled textures, so the check would be vacuous"
+                    )
 
-        changed = [(x, y) for y in range(0, h, 2) for x in range(0, w, 2)
-                   if abs(a[y * w + x] - b[y * w + x]) > MASK_DELTA]
-        roi_pts = [(x, y)
-                   for y in range(int(h * roi[1]), int(h * roi[3]), 2)
-                   for x in range(int(w * roi[0]), int(w * roi[2]), 2)]
+        frames_on = sorted(
+            name for name in os.listdir(dirs["on"]) if name.endswith(".ppm")
+        )
+        frames_off = sorted(
+            name for name in os.listdir(dirs["off"]) if name.endswith(".ppm")
+        )
+        common = [name for name in frames_on if name in frames_off]
+        if len(common) < 3:
+            failures.append(
+                f"{renderer}: only {len(common)} frame(s) dumped by both arms "
+                "(want >= 3)"
+            )
 
-        mask_off = parity(a, w, h, changed, step)
-        mask_on = parity(b, w, h, changed, step)
-        roi_off = parity(a, w, h, roi_pts, step)
-        roi_on = parity(b, w, h, roi_pts, step)
-        rows.append((name, len(changed), mask_off, mask_on, roi_off, roi_on))
+        for name in common:
+            label = f"{renderer}/{name}"
+            w, h, a = luma(os.path.join(dirs["off"], name))
+            w2, h2, b = luma(os.path.join(dirs["on"], name))
+            if (w, h) != (w2, h2):
+                failures.append(
+                    f"{label}: arms differ in size {w}x{h} vs {w2}x{h2}"
+                )
+                continue
+            step = max(1, w // 320)
+            changed = [
+                (x, y) for y in range(0, h, 2) for x in range(0, w, 2)
+                if abs(a[y * w + x] - b[y * w + x]) > MASK_DELTA
+            ]
+            roi_pts = [
+                (x, y)
+                for y in range(int(h * roi[1]), int(h * roi[3]), 2)
+                for x in range(int(w * roi[0]), int(w * roi[2]), 2)
+            ]
+            mask_off = parity(a, w, h, changed, step)
+            mask_on = parity(b, w, h, changed, step)
+            roi_off = parity(a, w, h, roi_pts, step)
+            roi_on = parity(b, w, h, roi_pts, step)
+            rows.append(
+                (label, len(changed), mask_off, mask_on, roi_off, roi_on)
+            )
 
-        # The fixed minimap ROI has known authored texel-row spacing, so its OFF
-        # arm must cross the absolute "combed" threshold. The dynamic changed
-        # mask also includes minified 3D surfaces where one framebuffer row is
-        # not one texel row; there the non-vacuous controls are changed-pixel
-        # count, clean-arm ceiling and OFF/ON improvement ratio.
-        scored = [("minimap-roi", roi_off, roi_on, True)]
-        if len(changed) < MIN_CHANGED_PIXELS:
-            # An empty mask makes the mask parity numbers meaningless, so skip
-            # those — but the fixed ROI is still scored, so a reverted build fails
-            # on TWO independent grounds rather than only on "nothing changed".
-            failures.append(f"{name}: only {len(changed)} pixel(s) differ between the "
-                            f"arms (want >= {MIN_CHANGED_PIXELS}) — the un-swizzle is "
-                            f"not changing the image, so it is not running")
-        else:
-            scored.insert(0, ("changed-mask", mask_off, mask_on, False))
+            scored = [("minimap-roi", roi_off, roi_on, True)]
+            if len(changed) < MIN_CHANGED_PIXELS:
+                failures.append(
+                    f"{label}: only {len(changed)} pixel(s) differ between the "
+                    f"arms (want >= {MIN_CHANGED_PIXELS}) — the un-swizzle is "
+                    "not changing the image, so it is not running"
+                )
+            else:
+                scored.insert(0, ("changed-mask", mask_off, mask_on, False))
 
-        for tag, off, on, require_absolute_off in scored:
-            if on > MAX_PARITY_ON:
-                failures.append(f"{name} {tag}: un-swizzled arm still looks combed "
-                                f"(parity {on:.3f}, want <= {MAX_PARITY_ON})")
-            if require_absolute_off and off < args.min_parity_off:
-                failures.append(f"{name} {tag}: MDKR_LINESWAP=off no longer reproduces "
-                                f"the artifact (parity {off:.3f}, want >= "
-                                f"{args.min_parity_off}) — the positive control is gone")
-            ratio = off / on if on > 0 else 0.0
-            if ratio < MIN_PARITY_RATIO:
-                failures.append(f"{name} {tag}: parity only improved {ratio:.2f}x "
-                                f"(off {off:.3f} -> on {on:.3f}, want >= "
-                                f"{MIN_PARITY_RATIO}x)")
+            for tag, off, on, require_absolute_off in scored:
+                if on > MAX_PARITY_ON:
+                    failures.append(
+                        f"{label} {tag}: un-swizzled arm still looks combed "
+                        f"(parity {on:.3f}, want <= {MAX_PARITY_ON})"
+                    )
+                if require_absolute_off and off < args.min_parity_off:
+                    failures.append(
+                        f"{label} {tag}: MDKR_LINESWAP=off no longer reproduces "
+                        f"the artifact (parity {off:.3f}, want >= "
+                        f"{args.min_parity_off}) — the positive control is gone"
+                    )
+                ratio = off / on if on > 0 else 0.0
+                if ratio < MIN_PARITY_RATIO:
+                    failures.append(
+                        f"{label} {tag}: parity only improved {ratio:.2f}x "
+                        f"(off {off:.3f} -> on {on:.3f}, want >= "
+                        f"{MIN_PARITY_RATIO}x)"
+                    )
 
     if args.verbose or failures:
-        print(f"  dxt==0 uploads: on={uploads.get('on')} off={uploads.get('off')}")
+        for renderer in renderers:
+            print(
+                f"  {renderer} dxt==0 uploads: "
+                f"on={uploads.get((renderer, 'on'))} "
+                f"off={uploads.get((renderer, 'off'))}"
+            )
         for name, nch, mo, mn, ro, rn in rows:
             print(f"  {name}: changed={nch:6d}  mask off={mo:.3f} on={mn:.3f} "
                   f"({mo / mn if mn else 0:.2f}x)  minimap off={ro:.3f} on={rn:.3f} "

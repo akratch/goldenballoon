@@ -30,7 +30,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 if [[ "$version" != "dev" && ! "$version" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
-  echo "ERROR: version must be dev or bare semver (for example 1.0.2)" >&2
+  echo "ERROR: version must be dev or bare semver (for example 1.0.3)" >&2
   exit 1
 fi
 
@@ -109,7 +109,7 @@ Golden Balloon (Windows portable build)
    legally dumped Diddy Kong Racing ROM (.z64, .v64, or .n64).
 3. For command-line use: GoldenBalloon.exe --rom PATH\TO\your.z64
 
-Known 1.0.2 limitation: keep the extracted app and ROM in reasonably short,
+Known 1.0.3 limitation: keep the extracted app and ROM in reasonably short,
 ASCII-only paths. If the launcher cannot save an otherwise valid ROM choice,
 run: GoldenBalloon.exe --rom C:\ASCII\game.z64
 

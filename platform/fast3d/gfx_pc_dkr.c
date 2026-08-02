@@ -73,6 +73,8 @@
 #include "display_config.h"
 
 #include "gfx_mipgen.h"
+#include "gfx_texture_cache_key.h"
+#include "gfx_texture_edge.h"
 #include "gfx_font_sdf.h"
 #include "gfx_level_lighting.h"
 #include "gfx_rl1_experiment.h"
@@ -1343,12 +1345,6 @@ static bool dkr_lineswap_on(void) {
 /* Decode the render tile's texture into RGBA32 and upload it. Standard N64 tile
  * model: source row pitch = tile.line_size_bytes, dimensions from SETTILESIZE
  * (falling back to the loaded block size). */
-/*
- * Alpha-test threshold for cutout mip reduction. The RDP's CVG_X_ALPHA path is
- * effectively a 0.5 cut, so the midpoint is the faithful choice.
- */
-#define DKR_MIP_ALPHA_THRESHOLD 128
-
 /* Scratch for mip levels 1..N-1; grows to the largest texture seen. */
 static uint8_t *tex_mip_buf;
 static size_t tex_mip_cap;
@@ -1368,12 +1364,12 @@ static bool ensure_mip_buf(size_t need) {
     return true;
 }
 
-static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
-                                    uint32_t *out_w, uint32_t *out_h) {
-    if (td >= 8) return false;
-    uint8_t fmt = rdp.tile[td].fmt;
-    uint8_t siz = rdp.tile[td].siz;
+/* Resolve the byte pitch consumed by the software decoder. Keeping this in one
+ * helper is load-bearing: the texture-cache identity must use the exact same
+ * pitch as the upload path or a tile reinterpretation can bind old pixels. */
+static uint32_t dkr_tile_source_line_bytes(uint8_t td, uint32_t source_size_bytes) {
     uint32_t line_bytes = rdp.tile[td].line_size_bytes;
+
     /* F3DDKR / N64 32-bit tile LINE quirk (see PR/gbi.h: G_IM_SIZ_32b_LINE_BYTES
      * == 2, not 4). gDPLoadTextureBlock derives the render tile's `line` field
      * counting only 2 bytes per 32-bit texel, because on real RDP a 32-bit
@@ -1385,20 +1381,31 @@ static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
      * successive rows overlap and read adjacent memory, collapsing glyphs to
      * solid blocks and the logo to vertical bars. (16/8/4-bit LINE_BYTES already
      * equal the real bytes/texel, so only 32-bit needs the correction.) */
-    if (siz == G_IM_SIZ_32b) line_bytes *= 2;
+    if (rdp.tile[td].siz == G_IM_SIZ_32b) line_bytes *= 2;
+    if (line_bytes == 0) {
+        /* No explicit pitch: assume the whole loaded block is one row. */
+        line_bytes = source_size_bytes;
+    }
+    return line_bytes;
+}
+
+static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
+                                    uint32_t *out_w, uint32_t *out_h) {
+    if (td >= 8) return false;
+    uint8_t fmt = rdp.tile[td].fmt;
+    uint8_t siz = rdp.tile[td].siz;
     uint32_t tmem = rdp.tile[td].tmem;
     if (tmem >= 512) tmem = 0;
     const uint8_t *src = rdp.loaded_texture[tmem].addr;
     if (!src) return false;
+    const uint32_t source_size_bytes = rdp.loaded_texture[tmem].size_bytes;
+    const uint32_t line_bytes =
+        dkr_tile_source_line_bytes(td, source_size_bytes);
 
     uint32_t width  = rdp.tile[td].width;
     uint32_t height = rdp.tile[td].height;
-    if (line_bytes == 0) {
-        /* No explicit pitch: assume the whole block is one row. */
-        line_bytes = rdp.loaded_texture[tmem].size_bytes;
-    }
     if (width == 0)  width  = texels_per_row(line_bytes, siz);
-    if (height == 0 && line_bytes) height = rdp.loaded_texture[tmem].size_bytes / line_bytes;
+    if (height == 0 && line_bytes) height = source_size_bytes / line_bytes;
     if (width == 0 || height == 0) return false;
     if (width > 1024) width = 1024;
     if (height > 1024) height = 1024;
@@ -1541,7 +1548,7 @@ static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
             GfxMipChain chain;
             bool built = cutout
                 ? gfx_mip_build_cutout(dst, width, height, tex_mip_buf, need,
-                                       DKR_MIP_ALPHA_THRESHOLD, &chain)
+                                       GFX_TEXTURE_EDGE_ALPHA_THRESHOLD_U8, &chain)
                 : gfx_mip_build(dst, width, height, tex_mip_buf, need, &chain);
             if (built &&
                 gfx_rapi->upload_texture_mipped(chain.level, chain.width,
@@ -1563,24 +1570,34 @@ static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
     return true;
 }
 
-/* --- Texture cache: (addr,fmt,siz,palette,w,h,palhash) → GL texture id --- */
+/* Every non-content value that can change decoded or uploaded bytes belongs in
+ * the key. Source-content lifetime is enforced separately by allocator/font
+ * invalidation above (and audited by MDKR_TEXCACHE_VERIFY). Source pitch/span
+ * affect row addressing and inferred height, while mip/cutout policy changes
+ * the uploaded mip chain without changing level zero. Keeping them explicit
+ * avoids first-use-wins textures. */
 #define DKR_TEXCACHE_SIZE 1024
 struct DkrTexCacheEntry {
-    const uint8_t *addr;
-    uint8_t fmt, siz, palette;
-    bool line_swapped;    /* part of the key: the same bytes decode differently
-                           * depending on the LOADBLOCK dxt (see unswap_row) */
-    bool font_remastered; /* derived and source atlases cannot alias */
-    uint16_t width, height;
-    uint32_t pal_hash;
+    struct DkrTexCacheKey key;
     uint32_t texture_id;
     uint32_t upload_w, upload_h;
-    uint32_t src_bytes;   /* source span this entry was uploaded from */
     uint32_t src_hash;    /* content hash at upload time (verify mode only) */
     bool valid;
 };
 static struct DkrTexCacheEntry tex_cache[DKR_TEXCACHE_SIZE];
 static int tex_cache_next;
+
+static void dkr_forget_texture_binding(uint32_t texture_id) {
+    for (int unit = 0; unit < 2; unit++) {
+        if (rendering_state.bound_texture_id[unit] == texture_id) {
+            rendering_state.bound_texture_id[unit] = 0;
+            rendering_state.bound_texture_linear[unit] = false;
+            rendering_state.bound_texture_cms[unit] = 0;
+            rendering_state.bound_texture_cmt[unit] = 0;
+            rendering_state.bound_texture_lod0[unit] = false;
+        }
+    }
+}
 
 static void dkr_texcache_delete_slot(int slot) {
     uint32_t texture_id;
@@ -1593,15 +1610,7 @@ static void dkr_texcache_delete_slot(int slot) {
         memset(&tex_cache[slot], 0, sizeof(tex_cache[slot]));
         return;
     }
-    for (int unit = 0; unit < 2; unit++) {
-        if (rendering_state.bound_texture_id[unit] == texture_id) {
-            rendering_state.bound_texture_id[unit] = 0;
-            rendering_state.bound_texture_linear[unit] = false;
-            rendering_state.bound_texture_cms[unit] = 0;
-            rendering_state.bound_texture_cmt[unit] = 0;
-            rendering_state.bound_texture_lod0[unit] = false;
-        }
-    }
+    dkr_forget_texture_binding(texture_id);
     if (gfx_rapi != NULL && gfx_rapi->delete_texture != NULL) {
         gfx_rapi->delete_texture(texture_id);
         gfx_dkr_texture_ids_deleted++;
@@ -1654,8 +1663,11 @@ void gfx_dkr_texcache_invalidate_range(const void *base, uint32_t size) {
         /* Overlap test against the span the entry was uploaded from, so an entry
          * whose texels merely START before `base` but reach into it is dropped
          * too. */
-        const uint8_t *elo = tex_cache[i].addr;
-        const uint8_t *ehi = elo + (tex_cache[i].src_bytes ? tex_cache[i].src_bytes : 1);
+        const uint8_t *elo = tex_cache[i].key.addr;
+        const uint32_t source_size_bytes =
+            tex_cache[i].key.source_size_bytes;
+        const uint8_t *ehi =
+            elo + (source_size_bytes ? source_size_bytes : 1);
         if (elo < hi && lo < ehi) {
             dkr_texcache_delete_slot(i);
         }
@@ -1773,6 +1785,9 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
     uint8_t fmt = rdp.tile[td].fmt, siz = rdp.tile[td].siz, pal = rdp.tile[td].palette;
     uint16_t tw = rdp.tile[td].width, th = rdp.tile[td].height;
     uint32_t ph = dkr_palette_hash(fmt);
+    const uint32_t source_size_bytes = rdp.loaded_texture[tmem].size_bytes;
+    const uint32_t source_line_bytes =
+        dkr_tile_source_line_bytes(td, source_size_bytes);
     bool lsw = rdp.loaded_texture[tmem].line_swapped;
     const GfxFontRegistryEntry *font_entry =
         gfx_font_registry_find(&dkr_font_registry, addr);
@@ -1780,21 +1795,33 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         g_pcRemasterFX && dkr_font_sdf_enabled() &&
         dkr_is_font_text_draw() &&
         font_entry != NULL && font_entry->region_count != 0;
+    const struct DkrTexCacheKey key = {
+        .addr = addr,
+        .source_line_bytes = source_line_bytes,
+        .source_size_bytes = source_size_bytes,
+        .palette_hash = ph,
+        .width = tw,
+        .height = th,
+        .fmt = fmt,
+        .siz = siz,
+        .palette = pal,
+        .line_swapped = lsw,
+        .font_remastered = font_remastered,
+        .mipmaps = g_pcMipmaps && gfx_rapi != NULL &&
+            gfx_rapi->upload_texture_mipped != NULL,
+        .cutout = cutout,
+    };
 
     int hit = -1;
     for (int i = 0; i < DKR_TEXCACHE_SIZE; i++) {
-        if (tex_cache[i].valid && tex_cache[i].addr == addr &&
-            tex_cache[i].fmt == fmt && tex_cache[i].siz == siz &&
-            tex_cache[i].palette == pal && tex_cache[i].width == tw &&
-            tex_cache[i].height == th && tex_cache[i].pal_hash == ph &&
-            tex_cache[i].line_swapped == lsw &&
-            tex_cache[i].font_remastered == font_remastered) {
+        if (tex_cache[i].valid &&
+            dkr_texcache_key_equal(&tex_cache[i].key, &key)) {
             hit = i; break;
         }
     }
-    const uint32_t src_bytes = rdp.loaded_texture[tmem].size_bytes;
     const bool verify = dkr_texcache_verify_on();
-    const uint32_t now_hash = verify ? dkr_src_hash(addr, src_bytes) : 0;
+    const uint32_t now_hash =
+        verify ? dkr_src_hash(addr, source_size_bytes) : 0;
     const bool was_hit = (hit >= 0);
     if (hit < 0) {
         int slot = tex_cache_next;
@@ -1807,6 +1834,12 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         }
         if (acquired) {
             dkr_texture_id_acquired(tid);
+        } else {
+            /* The backend object survives cache-slot replacement, but its
+             * decoded pixels and mip layout are about to change. Forget every
+             * frontend sampler memo that names this ID so the first draw of the
+             * replacement republishes filtering, wrap and LOD policy. */
+            dkr_forget_texture_binding(tid);
         }
         gfx_rapi->select_texture(unit, tid);
         uint32_t uw = 0, uh = 0;
@@ -1820,11 +1853,10 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
             dkr_texcache_delete_slot(slot);
             return false;
         }
-        tex_cache[slot] = (struct DkrTexCacheEntry){ .addr = addr, .fmt = fmt, .siz = siz,
-            .line_swapped = lsw, .font_remastered = font_remastered,
-            .palette = pal, .width = tw, .height = th, .pal_hash = ph,
+        tex_cache[slot] = (struct DkrTexCacheEntry){
+            .key = key,
             .texture_id = tid, .upload_w = uw, .upload_h = uh,
-            .src_bytes = src_bytes, .src_hash = now_hash, .valid = true };
+            .src_hash = now_hash, .valid = true };
         hit = slot;
     } else {
         gfx_rapi->select_texture(unit, tex_cache[hit].texture_id);
@@ -1842,7 +1874,7 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
     if (dkr_trace_this_frame) {
         DTRACE("  bind unit=%d %s slot=%d addr=%p %ux%u fmt=%u siz=%u tid=%u sz=%u", unit,
                was_hit ? "HIT " : "MISS", hit, (const void *)addr, tw, th, fmt, siz,
-               tex_cache[hit].texture_id, src_bytes);
+               tex_cache[hit].texture_id, source_size_bytes);
     }
     const uint32_t texture_id = tex_cache[hit].texture_id;
     const bool texture_changed = rendering_state.bound_texture_id[unit] != texture_id;
@@ -3046,7 +3078,8 @@ static void dkr_prepare_draw_target(void) {
         !dkr_native_ui_enabled() ||
         gfx_rapi == NULL ||
         gfx_rapi->begin_output_overlay == NULL ||
-        (gfx_current_dimensions.width == gfx_output_dimensions.width &&
+        (!g_pcRemasterFX &&
+         gfx_current_dimensions.width == gfx_output_dimensions.width &&
          gfx_current_dimensions.height == gfx_output_dimensions.height)) {
         return;
     }
@@ -5110,7 +5143,8 @@ void gfx_run(Gfx *dl) {
     dkr_dbg_clipped = dkr_dbg_clip_dropped = dkr_dbg_clip_degen = 0;
     if (dkr_native_ui_enabled() &&
         gfx_rapi != NULL && gfx_rapi->begin_output_overlay != NULL &&
-        (gfx_current_dimensions.width != gfx_output_dimensions.width ||
+        (g_pcRemasterFX ||
+         gfx_current_dimensions.width != gfx_output_dimensions.width ||
          gfx_current_dimensions.height != gfx_output_dimensions.height)) {
         uintptr_t saved_segments[16];
         DkrOverlayScan scan = {

@@ -72,7 +72,8 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "Video.TexturePack", "MDKR_TEXTURE_PACK",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
         "Texture pack",
-        "Directory of a user-supplied HD texture pack. Empty uses stock textures.",
+        "Reserved for a future user-supplied HD texture pack. This setting has "
+        "no runtime effect yet; stock textures are always used.",
         MDKR_VIDEO_CAT_FIDELITY
     },
     [MDKR_VIDEO_GAMEPLAY_FOV] = {
@@ -168,8 +169,9 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "Video.Mode", "MDKR_VIDEO_MODE",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
         "Presentation",
-        "Pure is the 4:3 reference, Restored preserves the art direction at modern "
-        "fidelity, and Remastered enables the complete art-directed presentation.",
+        "Pure is the 4:3 reference. Restored is the default original art direction "
+        "at modern fidelity. Remastered is an opt-in, work-in-progress presentation "
+        "with SDF text, restrained lighting, world shadows, and a bounded finish.",
         MDKR_VIDEO_CAT_PRESENTATION
     },
     /*
@@ -178,8 +180,10 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
      * Before this key the feed had no setting at all: shadows arrived bundled
      * inside Video.RemasterFX, so "the remaster shadows degrade the UX" — the
      * one complaint the pre-1.0 playthrough left open — could only be answered
-     * by giving up tonemapping, RL-5 lighting, 16x anisotropy and mip chains
-     * along with them. The renderer had already been written as though the
+     * by giving up the RemasterFX group: tonemapping, grading, RL-5 lighting and
+     * SDF text. The preset's anisotropy and mip chains are orthogonal settings
+     * and remain available without RemasterFX. The renderer had already been
+     * written as though the
      * setting existed (gfx_opengl.c's off->on latch reset still names
      * "Video.SunShadow"); this is that setting, under its real name.
      *
@@ -259,8 +263,9 @@ MdkrVideoKey mdkr_video_key_from_name(const char *name) {
 
 /*
  * Preset tables. Rows are keys, columns are modes — see the design spec §2.2.
- * Pure reproduces the authored presentation; Restored and Remastered layer
- * fidelity on top without changing the art direction.
+ * Pure reproduces the authored presentation. Restored adds fidelity without
+ * changing the art direction. Remastered is the opt-in, work-in-progress home
+ * for deliberately look-changing effects on top of Restored.
  */
 static const float s_preset[MDKR_VIDEO_KEY_COUNT][3] = {
     /*                                 pure  restored  remastered */
@@ -339,12 +344,9 @@ void mdkr_video_config_defaults(MdkrVideoConfig *config) {
         return;
     }
     memset(config, 0, sizeof(*config));
-    /* Restored is the default everywhere a player first meets the port —
-     * the web launcher flipped at v0.7.2 ("don't put the incomplete remaster
-     * forward first") and native follows at v1.0.0 by the same owner call.
-     * Remastered remains one click away in the shell's settings. Gates that
-     * assert Remastered features pin mode=remastered explicitly, exactly as
-     * the browser gate learned to at d71fc9c's sibling fix. */
+    /* Restored is the safe default everywhere a player first meets the port.
+     * Remastered remains an explicit opt-in; visual gates select it directly
+     * whenever they exercise Remastered-only features. */
     config->mode = MDKR_VIDEO_MODE_RESTORED;
     for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; i++) {
         const char *text = s_preset_text[i][MDKR_VIDEO_MODE_RESTORED];

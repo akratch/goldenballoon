@@ -9,6 +9,8 @@ production path and with ``MDKR_UI_NATIVE_RES=0``. It requires:
 * byte-identical simulation and byte-identical world pixels across the A/B;
 * all changed pixels to remain in the authored top HUD or minimap regions;
 * materially higher glyph/HUD edge energy in the native-resolution arm.
+* opaque HUD pixels to remain byte-exact when Remastered's world finish is
+  toggled, at both 1x and 2x render scale.
 
 The disabled arm is the positive control: it is the historical path where the
 whole supersampled frame, including UI, is downsampled together.
@@ -54,6 +56,7 @@ class Image:
 class Arm:
     backend: str
     enabled: bool
+    finish_enabled: bool
     image: Image
     pace: tuple[str, ...]
     ui_rows: tuple[tuple[int, ...], ...]
@@ -81,7 +84,10 @@ def normalized_pace(output: str) -> tuple[str, ...]:
     return tuple(rows)
 
 
-def environment(backend: str, enabled: bool, save_dir: Path) -> dict[str, str]:
+def environment(
+    backend: str, enabled: bool, render_scale: int, finish_enabled: bool,
+    save_dir: Path,
+) -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
@@ -91,6 +97,7 @@ def environment(backend: str, enabled: bool, save_dir: Path) -> dict[str, str]:
         MDKR_AUDIO="0",
         MDKR_TRACE="1",
         MDKR_RENDERER=backend,
+        MDKR_RENDER_SCALE=str(render_scale),
         MDKR_UI_NATIVE_RES="1" if enabled else "0",
         MDKR_UI_OVERLAY_TRACE="1",
         MDKR_DUMP_FROM=str(CAPTURE_FRAME),
@@ -100,6 +107,8 @@ def environment(backend: str, enabled: bool, save_dir: Path) -> dict[str, str]:
         MDKR_SAVE_DIR=str(save_dir),
         LC_ALL="C",
     )
+    if not finish_enabled:
+        env["MDKR_TEST_WORLD_FINISH_OFF"] = "1"
     return env
 
 
@@ -108,11 +117,17 @@ def run_arm(
     rom: Path,
     backend: str,
     enabled: bool,
+    render_scale: int,
+    finish_enabled: bool,
     work: Path,
     timeout: int,
     verbose: bool,
 ) -> Arm:
-    label = f"{backend}-{'native' if enabled else 'scaled-control'}"
+    label = (
+        f"{backend}-{render_scale}x-"
+        f"{'native' if enabled else 'scaled-control'}"
+        f"-finish-{'on' if finish_enabled else 'off'}"
+    )
     run_dir = work / label
     dump_dir = run_dir / "frames"
     save_dir = run_dir / "save"
@@ -133,7 +148,9 @@ def run_arm(
         proc = subprocess.run(
             command,
             cwd=run_dir,
-            env=environment(backend, enabled, save_dir),
+            env=environment(
+                backend, enabled, render_scale, finish_enabled, save_dir
+            ),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -161,14 +178,17 @@ def run_arm(
             f"dumps={[path.name for path in dumps]}, uiRows={len(ui_rows)}\n"
             f"{output[-5000:]}"
         )
-    if "scale=2.00" not in output:
-        raise RuntimeError(f"{label}: Remastered arm did not use 2x rendering")
+    if f"scale={render_scale:.2f}" not in output:
+        raise RuntimeError(
+            f"{label}: Remastered arm did not use {render_scale}x rendering"
+        )
     pace = normalized_pace(output)
     if not pace:
         raise RuntimeError(f"{label}: no [PACE] stream")
     return Arm(
         backend=backend,
         enabled=enabled,
+        finish_enabled=finish_enabled,
         image=read_ppm(dumps[0]),
         pace=pace,
         ui_rows=ui_rows,
@@ -238,6 +258,50 @@ def scaled_box(
     )
 
 
+def opaque_yellow_hud_mask(images: tuple[Image, ...]) -> list[int]:
+    """Select stable opaque banana/time glyph cores in every A/B image."""
+
+    if not images:
+        return []
+    first = images[0]
+    if any(
+        (image.width, image.height) != (first.width, first.height)
+        for image in images[1:]
+    ):
+        raise ValueError("world-finish A/B dimensions differ")
+
+    # Normalized from the authored 640x480 banana/time HUD region. Requiring the
+    # colour predicate in all four images makes the mask symmetric: neither arm
+    # gets to choose pixels that only it happens to preserve.
+    authored_width = first.height * 4 / 3
+    authored_left = (first.width - authored_width) / 2
+    x0 = round(authored_left + authored_width * 290 / 640)
+    x1 = round(authored_left + authored_width * 600 / 640)
+    y0 = round(first.height * 25 / 480)
+    y1 = round(first.height * 105 / 480)
+    selected: list[int] = []
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            pixel = y * first.width + x
+            offset = pixel * 3
+            if all(
+                image.pixels[offset] >= 245
+                and image.pixels[offset + 1] >= 175
+                and image.pixels[offset + 2] <= 10
+                for image in images
+            ):
+                selected.append(pixel)
+    return selected
+
+
+def masked_changed_pixels(left: Image, right: Image, mask: list[int]) -> int:
+    return sum(
+        left.pixels[pixel * 3:pixel * 3 + 3]
+        != right.pixels[pixel * 3:pixel * 3 + 3]
+        for pixel in mask
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default="build")
@@ -264,16 +328,33 @@ def main() -> int:
             work = Path(temp)
             for backend in backends:
                 on = run_arm(
-                    binary, rom, backend, True, work,
+                    binary, rom, backend, True, 2, True, work,
                     args.timeout, args.verbose,
                 )
                 off = run_arm(
-                    binary, rom, backend, False, work,
+                    binary, rom, backend, False, 2, True, work,
+                    args.timeout, args.verbose,
+                )
+                one_x = run_arm(
+                    binary, rom, backend, True, 1, True, work,
+                    args.timeout, args.verbose,
+                )
+                finish_off_2x = run_arm(
+                    binary, rom, backend, True, 2, False, work,
+                    args.timeout, args.verbose,
+                )
+                finish_off_1x = run_arm(
+                    binary, rom, backend, True, 1, False, work,
                     args.timeout, args.verbose,
                 )
 
-                if on.pace != off.pace:
-                    failures.append(f"{backend}: A/B [PACE] streams differ")
+                if any(
+                    arm.pace != on.pace
+                    for arm in (off, one_x, finish_off_2x, finish_off_1x)
+                ):
+                    failures.append(
+                        f"{backend}: UI/scale arms changed the [PACE] stream"
+                    )
 
                 active_rows = [row for row in on.ui_rows if row[1] == 1]
                 late_rows = [row for row in on.ui_rows if row[3] != 0]
@@ -294,6 +375,71 @@ def main() -> int:
                     failures.append(
                         f"{backend}: disabled positive-control arm still activated"
                     )
+                one_x_active = [row for row in one_x.ui_rows if row[1] == 1]
+                one_x_late = [row for row in one_x.ui_rows if row[3] != 0]
+                one_x_fail = [row for row in one_x.ui_rows if row[6] != 0]
+                if len(one_x_active) < 500:
+                    failures.append(
+                        f"{backend}: only {len(one_x_active)} output-overlay "
+                        "frames at Remastered 1x"
+                    )
+                if one_x_late:
+                    failures.append(
+                        f"{backend}: {len(one_x_late)} world-after-overlay "
+                        "frame(s) at Remastered 1x"
+                    )
+                if one_x_fail:
+                    failures.append(
+                        f"{backend}: output-overlay begin failure at "
+                        "Remastered 1x"
+                    )
+                if (
+                    one_x.image.width != on.image.width or
+                    one_x.image.height != on.image.height or
+                    finish_off_1x.image.width != on.image.width or
+                    finish_off_1x.image.height != on.image.height or
+                    finish_off_2x.image.width != on.image.width or
+                    finish_off_2x.image.height != on.image.height
+                ):
+                    failures.append(
+                        f"{backend}: 1x/2x output dimensions differ"
+                    )
+
+                finish_mask = opaque_yellow_hud_mask((
+                    finish_off_1x.image,
+                    one_x.image,
+                    finish_off_2x.image,
+                    on.image,
+                ))
+                if len(finish_mask) < 200:
+                    failures.append(
+                        f"{backend}: world-finish HUD mask selected only "
+                        f"{len(finish_mask)} stable pixels"
+                    )
+                for scale, finish_off, finish_on in (
+                    (1, finish_off_1x, one_x),
+                    (2, finish_off_2x, on),
+                ):
+                    changed_hud = masked_changed_pixels(
+                        finish_off.image, finish_on.image, finish_mask
+                    )
+                    if changed_hud != 0:
+                        failures.append(
+                            f"{backend}: Remastered world finish changed "
+                            f"{changed_hud}/{len(finish_mask)} opaque HUD "
+                            f"pixels at {scale}x"
+                        )
+                    world_changed = len(changed_pixels(
+                        finish_off.image, finish_on.image
+                    ))
+                    if world_changed < max(
+                        1000,
+                        finish_on.image.width * finish_on.image.height // 100,
+                    ):
+                        failures.append(
+                            f"{backend}: world-finish {scale}x positive "
+                            f"control changed only {world_changed} pixels"
+                        )
 
                 image = on.image
                 if image.width / image.height < 1.7:
@@ -353,7 +499,8 @@ def main() -> int:
                     )
                 summaries.append(
                     f"{backend} active={len(active_rows)} "
-                    f"changed={len(changed)} edge={ratio:.3f}x"
+                    f"1xActive={len(one_x_active)} changed={len(changed)} "
+                    f"edge={ratio:.3f}x finishSafe={len(finish_mask)}"
                 )
 
             if args.keep_frames:

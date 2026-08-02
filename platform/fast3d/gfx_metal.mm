@@ -52,6 +52,7 @@ extern "C" {
 #include "gfx_screen_config.h"
 #include "gfx_uniforms.h"   /* render/post-FX uniform state shared with the GL backend */
 #include "gfx_msaa_util.h"  /* FID-0018: MSAA sample-count resolution (pure, unit-tested) */
+#include "gfx_texture_edge.h"
 /* SMAA (W3.E4) committed reference LUTs (E4.T1): AreaTex 160x560 RG8, SearchTex
  * 64x16 R8 — first-party generated from the MIT SMAA reference (no ROM data). */
 #include "smaa_area_tex.h"
@@ -622,7 +623,8 @@ static void mtl_generate_msl(MetalShader *ms, TB *s) {
     }
 
     if (cc.opt_texture_edge && cc.opt_alpha)
-        tb_str(s, "    if (texel.a > 0.19) { texel.a = 1.0; } else { discard_fragment(); return float4(0.0); }\n");
+        tb_str(s, "    if (texel.a > " GFX_TEXTURE_EDGE_ALPHA_THRESHOLD_SHADER
+                  ") { texel.a = 1.0; } else { discard_fragment(); return float4(0.0); }\n");
 
     if (cc.opt_alpha && cc.opt_noise)
         tb_str(s, "    texel.a *= floor(random(float3(floor(fragCoord * (240.0 / float(u.winH))), float(u.frameCount))) + 0.5);\n");

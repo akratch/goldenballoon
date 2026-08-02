@@ -1,8 +1,8 @@
 # Colour and directional-lighting contract
 
-This document is the CO-1 end-to-end colour-space policy and the RL-2/RL-5
+This document is the CO-1/CO-2 end-to-end colour-space policy and the RL-2/RL-5
 implementation contract. It describes the production GL, WebGPU, browser and
-explicit Metal paths as of Wave 2.
+explicit Metal paths.
 
 ## The boundary
 
@@ -27,10 +27,11 @@ Consequently, hardware automatic sRGB decode/encode must not be enabled for
 these textures or targets without first moving the complete combiner across the
 same explicit boundary.
 
-Post-processing outside RL-5 still consumes the encoded scene image. CO-2 must
-introduce an equally explicit scene-wide decode before a filmic tonemap and one
-encode at output; it must not stack an undocumented gamma approximation on the
-current target. Pure and Restored remain outside that future path.
+Remastered's world finish consumes the encoded scene image at one equally
+explicit CO-2 boundary: it decodes to linear light, applies the bounded
+runtime-derived world grade and filmic shoulder, then encodes once at output.
+Authored 2D is composed after that finish. Pure and Restored bypass it entirely,
+and broader material relighting remains future work.
 
 ## Runtime-derived light
 

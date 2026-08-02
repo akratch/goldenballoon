@@ -17,9 +17,9 @@ pixel effect over a moving-camera interval:
 
 Both arms run in --pure. The strict "only darker" invariant assumes shadow
 coverage is the only thing differing between them, so texture filtering has to
-be held at the reference presentation -- under the default Remastered mode its
-mipmapping and anisotropy flip pixels brighter and the check fails for reasons
-that have nothing to do with shadows.
+be held at the reference presentation -- Remastered's mipmapping and anisotropy
+flip pixels brighter and the check fails for reasons that have nothing to do
+with shadows.
 
 No golden image and no third-party image library are required. The engine emits
 P6 PPM files and this script compares their RGB rasters directly.
@@ -135,8 +135,8 @@ def run_arm(
         # Pin the presentation mode. This check asserts that every pixel the
         # decal fix touches gets DARKER and that nothing else moves -- an
         # invariant that only holds when shadow coverage is the sole difference
-        # between the two arms. The default mode is Remastered, whose mipmaps
-        # and 16x anisotropy change texture filtering, and that was measured
+        # between the two arms. Remastered's mipmaps and 16x anisotropy change
+        # texture filtering, and that was measured
         # flipping 2 RGB components brighter. Filtering is presentation; this is
         # a fidelity check, so it runs against the reference presentation for
         # the same reason the oracle does.

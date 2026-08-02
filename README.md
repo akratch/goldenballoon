@@ -24,9 +24,9 @@ a desktop build from the
 
 | Platform | File | Notes |
 |---|---|---|
-| macOS (Apple silicon) | `Golden-Balloon-1.0.2-macos-arm64-unsigned.dmg` | Apple silicon hotfix build. Intentionally unsigned; see the first-open note below |
-| Linux (x86-64) | `Golden-Balloon-1.0.2-linux-x86_64.tar.gz` | Published only if the release workflow's built + extracted WebGPU/GL pixel gates pass; the AppImage accompanies it. SDL2 is bundled; the host graphics driver is still required |
-| Windows (x64) | `Golden-Balloon-1.0.2-windows-x64.zip` | Portable hotfix build. The 1.0.1 WebGPU base passed manual gameplay, controller, audio, save, and relaunch acceptance on Windows hardware; 1.0.2 adds the door-glyph fix |
+| macOS (Apple silicon) | `Golden-Balloon-1.0.3-macos-arm64-unsigned.dmg` | Apple silicon hotfix build. Intentionally unsigned; see the first-open note below |
+| Linux (x86-64) | `Golden-Balloon-1.0.3-linux-x86_64.tar.gz` | Published only if the release workflow's built + extracted WebGPU/GL pixel gates pass; the AppImage accompanies it. SDL2 is bundled; the host graphics driver is still required |
+| Windows (x64) | `Golden-Balloon-1.0.3-windows-x64.zip` | Portable rendering-correctness hotfix. The 1.0.1 WebGPU base passed manual gameplay, controller, audio, save, and relaunch acceptance on Windows hardware; 1.0.3 hardens glyph/texture caches and Remastered composition |
 
 Hosted Windows CI proves the native binary, import table, exact package, and
 extracted startup, but does not provide a stable GPU environment for rendered
@@ -36,7 +36,7 @@ controller, audio, save, and relaunch. That manual evidence boundary remains
 visible in the release notes.
 
 If the named Linux files are absent from the release, its software-GPU publish
-gate did not pass and there is no qualified 1.0.2 Linux binary; build from
+gate did not pass and there is no qualified 1.0.3 Linux binary; build from
 source instead of redistributing an unverified workflow artifact.
 
 Then:
@@ -51,18 +51,18 @@ Then:
 Each release file ships with a `.provenance.json` naming the exact source
 commit and SHA-256 it was built from.
 
-For the current 1.0.2 candidate pass, use the human routes in the
+For the current 1.0.3 candidate pass, use the human routes in the
 **[release checklist](docs/RELEASE_CHECKLIST.md#7-post-release-spot-checks)**
 and verify every downloaded sidecar before opening an artifact. The
 **[historical 1.0.1 exact-hash guide](docs/RELEASE_CANDIDATE_TEST_GUIDE.md)**
-is retained as acceptance evidence for that release; it is not a 1.0.2 file
-list. The guide is refreshed with the exact 1.0.2 artifact hashes only after
+is retained as acceptance evidence for that release; it is not a 1.0.3 file
+list. The guide is refreshed with the exact 1.0.3 artifact hashes only after
 those draft assets exist, without moving the release tag.
 
 > **macOS packaging notice:** the known-bad 1.0.0 DMG can produce Finder's
 > “damaged and can't be opened” dialog because its executable was modified
 > after the linker's integrity signature. This is not the ordinary
-> unidentified-developer warning. The 1.0.2 patch is intentionally shipped
+> unidentified-developer warning. The 1.0.3 patch is intentionally shipped
 > without Developer ID signing/notarization, so first launch may show the normal
 > unidentified-developer warning. After the first blocked launch, open **System
 > Settings → Privacy & Security**, scroll down, choose **Open Anyway**, and
@@ -72,7 +72,7 @@ those draft assets exist, without moving the release tag.
 > signature integrity, self-contained dependencies, WebGPU selection, and the
 > macOS 13 deployment target. “Damaged” is never an expected result. A future
 > Developer ID/notarized build, if published, has the distinct name
-> `Golden-Balloon-1.0.2-macos-arm64-signed-notarized.dmg` and distinct
+> `Golden-Balloon-1.0.3-macos-arm64-signed-notarized.dmg` and distinct
 > `developer-id-notarized` provenance; it is not the artifact for this patch.
 
 ### No game data is included
@@ -115,7 +115,7 @@ holder.
 |---|---|
 | `--pure` | The original game presented honestly: authentic 4:3 framing at the authored FOV, no enhancements. This is the reference the fidelity suite scores against |
 | `--restored` | **The default.** The original art direction at modern fidelity: widescreen, supersampling, output-resolution HUD text, anisotropic filtering, mipmaps. Changes sharpness and stability, never look |
-| `--remastered` | Work in progress. Adds runtime SDF text and restrained level-derived directional lighting on top of Restored. Tonemapping, broader materials, and color grading are future work |
+| `--remastered` | **Opt-in and work in progress.** Adds runtime SDF text, restrained level-derived directional lighting for racers and character objects, terrain-projected world shadows, and a bounded linear-light finish with per-world grading on top of Restored. Broader material relighting remains future work |
 
 The in-game Options → Video Options screen exposes all of this, plus aspect
 ratio, FOV, and supersampling, applied live where the renderer allows and saved
@@ -191,7 +191,7 @@ physical-hardware acceptance. See [ROADMAP.md](ROADMAP.md).
 - Native macOS and the browser use the default WebGPU paths. OpenGL is retained
   only for diagnostics while its known opening-sequence visual-parity issue is
   investigated.
-- The macOS 1.0.2 artifact has an ad-hoc integrity seal but no Developer ID
+- The macOS 1.0.3 artifact has an ad-hoc integrity seal but no Developer ID
   trust signature or Apple notarization, so current macOS requires the manual
   first-open approval above.
 - Linux is best effort and lacks the macOS/WebGPU path's physical-GPU,
@@ -202,7 +202,7 @@ physical-hardware acceptance. See [ROADMAP.md](ROADMAP.md).
   Vulkan or Direct3D 12. `MDKR_RENDERER=webgpu|gl` selects the project renderer;
   it does not force either native API. Explicit selection and richer adapter
   diagnostics are deferred to a future portability release.
-- Windows 1.0.2 does not yet handle every non-ASCII or very long filesystem
+- Windows 1.0.3 does not yet handle every non-ASCII or very long filesystem
   path. Keep the extracted app and ROM in reasonably short, ASCII-only paths.
   If the launcher cannot save an otherwise valid ROM choice, run
   `GoldenBalloon.exe --rom C:\ASCII\game.z64` from Command Prompt and report the

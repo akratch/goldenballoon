@@ -1,37 +1,47 @@
-# Golden Balloon 1.0.2
+# Golden Balloon 1.0.3
 
-Golden Balloon 1.0.2 is a focused rendering-correctness hotfix for the native
-1.0.1 patch. No game data is included.
+Golden Balloon 1.0.3 closes a family of texture, glyph, and Remastered
+composition defects found after 1.0.2. Restored remains the default and gameplay
+timing is unchanged. No game data is included.
 
 *Released 2026-08-02.*
 
 ## What changed
 
-- **Dino Domain door requirements stay attached to the correct door.** The four
-  ordinary race doors require 1, 2, 3, and 5 balloons but share one cached
-  model. Version 1.0.1 wrote a door's selected numeral into that shared model
-  during a view-dependent fixed-tick traversal. Whichever visible door wrote
-  last could therefore put its digit on every sign, and moving the camera could
-  change the displayed numbers without changing progression state. Version
-  1.0.2 resolves each atlas offset from the door being submitted and never
-  mutates the shared model.
-- **OpenGL no longer repeats a selected numeral across the door face.** Its
-  sampler memo now includes texture identity, so a newly bound OpenGL texture
-  receives its own clamp/filter state even when those settings match the prior
-  binding. WebGPU was not affected by this sampler defect and remains the native
-  default.
-- **The regression is covered at the gameplay and pixel boundaries.** A fresh
-  Adventure route reaches the real Dino Domain lobby on GL and WebGPU, proves
-  all four authored requirements remain stable on one shared model, submits all
-  four in one frame, checks one- and two-digit atlas selection, and validates
-  distinct 2/1/3 final pixels while the camera moves. Blank output, a common
-  glyph on every door, repeated sampler output, and the old shared offset are
-  all fail-red controls. Original, 240, and Uncapped presentation policies pass.
-- **Windows save custody stays byte-exact.** Legacy preference/save migration
-  now uses an exclusive binary destination on Windows, and the save utility's
-  staging files bypass CRT text translation. The native Windows release gate
-  compiles and executes these paths, the public-surface guard, and all other
-  ROM-free CTests before packaging is allowed.
+- **Texture cache entries now describe the complete uploaded image.** Source
+  row pitch and span, palette, format, dimensions, LOADBLOCK row layout, SDF
+  derivation, mip policy, and cutout policy all participate in cache identity.
+  Recycled GPU texture IDs also invalidate their sampler memo before upload.
+  This removes first-use-wins behavior that could bind old pixels or filtering
+  after menu/level asset churn.
+- **WebGPU cache eviction cannot inherit a stale material or pipeline.** The
+  redundant-bind trackers are cleared before releasing a cached bind group or
+  pipeline. A native implementation may recycle opaque handle addresses; the
+  old ordering could mistake a replacement for the object already bound and
+  skip a required bind.
+- **Remastered never applies world finishing to the HUD.** At 1× render scale,
+  or when the render-pixel budget clamps supersampling to 1×, terminal HUD and
+  text are now composed after grading and tonemapping just as they are at 2×.
+  The maintained GL/WebGPU gate proves 8,350 opaque HUD pixels are byte-exact
+  across the finish A/B at both scales while the world changes materially.
+- **Cutout mipmaps preserve the silhouette the GPU actually draws.** Mip
+  coverage previously used alpha 128 while GL, WebGPU, and Metal discarded at
+  a strict 0.19 boundary (RGBA8 alpha 49). One shared contract now drives every
+  shader and the CPU mip reducer, preventing masked foliage, fences, decals,
+  and similar details from changing thickness or disappearing with distance.
+- **Restored is consistently the safe default.** Native defaults, CLI help,
+  launcher copy, browser copy, README, and tests now identify Remastered as an
+  opt-in work-in-progress mode. The reserved TexturePack setting remains
+  parseable for forward compatibility but is hidden until a loader exists.
+- **The 1.0.2 door-numeral fix is now structurally guarded as an ownership
+  rule.** Per-door and racer material choices remain draw-local; native code
+  cannot reintroduce the shared-model mutation. The real Adventure GL/WebGPU
+  oracle still proves stable 1/2/3/5 requirements and distinct final glyphs.
+- **The corruption gates are fail-red and backend-complete.** Odd-row texture
+  decode now runs from isolated configuration/save directories on both GL and
+  WebGPU, with deliberately broken decode controls. Runtime SDF, door glyph,
+  moving mip, cache-ownership, and 1×/2× HUD composition checks cover the
+  associated failure modes rather than one screenshot.
 
 ## What did not change
 
@@ -43,7 +53,8 @@ Golden Balloon 1.0.2 is a focused rendering-correctness hotfix for the native
 - The macOS artifact remains intentionally unsigned by a Developer ID. It is
   still sealed inside-out and the finished DMG must pass the read-only-mounted
   LaunchServices/WebGPU, dependency, deployment-target, and capture checks.
-- Existing saves, ROM support, controls, and gameplay timing are unchanged.
+- Existing saves, ROM support, controls, simulation, input, events, and audio
+  timing are unchanged.
 - Windows still lets wgpu-native choose Vulkan or Direct3D 12 automatically,
   and still requires reasonably short, ASCII-only app/ROM paths. Explicit API
   selection, richer adapter diagnostics, wide-character filesystem APIs, and

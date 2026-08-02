@@ -221,6 +221,12 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME mip_chain COMMAND mdkr_mip_chain_test)
 
+    add_executable(mdkr_texture_cache_key_test
+        ${CMAKE_SOURCE_DIR}/tests/test_texture_cache_key.c)
+    target_include_directories(mdkr_texture_cache_key_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME texture_cache_key COMMAND mdkr_texture_cache_key_test)
+
     add_executable(mdkr_sprite_layout_test
         ${CMAKE_SOURCE_DIR}/tests/test_sprite_layout.c
         ${CMAKE_SOURCE_DIR}/game/src/sprite_layout.c)
@@ -491,6 +497,14 @@ if(BUILD_TESTING)
         NAME object_material_ownership
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_object_material_ownership.py)
+    add_test(
+        NAME webgpu_cached_bind_ownership
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_webgpu_cached_bind_ownership.py)
+    add_test(
+        NAME texture_cache_identity
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_texture_cache_identity.py)
 endif()
 
 # --- Dependencies ---------------------------------------------------------
@@ -797,7 +811,7 @@ target_compile_definitions(${MDKR_TARGET} PRIVATE
 # CFBundleShortVersionString, which macos/Scripts/build_app_bundle.sh stamps
 # from this same value via PlistBuddy. Kept as its own standalone statement
 # (not folded into the block above) so it stays a one-line, low-conflict diff.
-set(MDKR_VERSION "1.0.2" CACHE STRING "mdkr64 release version (semver)")
+set(MDKR_VERSION "1.0.3" CACHE STRING "mdkr64 release version (semver)")
 target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_VERSION_STRING="${MDKR_VERSION}")
 
 # --- Flags ----------------------------------------------------------------

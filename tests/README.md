@@ -1699,6 +1699,14 @@ fail. Verified in both directions
 `MDKR_NEARCLIP=off`. The `[TEX] lineSwappedUploads=N` line printed at headless exit
 is how you confirm a route reaches the path at all (0 = the route loads no
 pre-swizzled texture, so any assertion on it would be vacuous).
+
+The ROM-free `texture_cache_identity` CTest protects the decoder/cache boundary.
+It requires the cache key to include the resolved source-row pitch and loaded
+span as well as palette, font derivation, mipmap, and cutout policy, and requires
+the lookup and insertion paths to use that complete key. This prevents a
+same-address tile reinterpretation or first-use mip policy from silently binding
+pixels uploaded for a different material.
+
 ## Locked doors block — `tests/check_door_blocks.py` (RUN THIS AFTER ANY CHANGE TO OBJECT-MODEL COLLISION OR `obj_loop_door` / `obj_loop_exit`)
 
 ```bash

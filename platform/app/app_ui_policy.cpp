@@ -83,3 +83,12 @@ AppUiSmokeInputMode AppUi_smokeInputMode() {
         std::getenv("MDKR_APP_SMOKE_INPUT"),
         std::getenv("MDKR_APP_SMOKE_INPUT_TOKEN"));
 }
+
+bool AppUi_videoSettingVisible(MdkrVideoKey key) {
+    switch (key) {
+        // Keep the reserved config key parseable, but hide it until a
+        // texture-pack loader actually consumes it.
+        case MDKR_VIDEO_TEXTURE_PACK: return false;
+        default: return true;
+    }
+}

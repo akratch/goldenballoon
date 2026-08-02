@@ -8,6 +8,7 @@
  * times in three backends.
  */
 #include "fast3d/gfx_mipgen.h"
+#include "fast3d/gfx_texture_edge.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -290,8 +291,19 @@ static void test_alpha_coverage_preserved(void) {
     }
 }
 
+static void test_texture_edge_threshold_contract(void) {
+    const float rejected = (float) (GFX_TEXTURE_EDGE_ALPHA_THRESHOLD_U8 - 1u) / 255.0f;
+    const float accepted = (float) GFX_TEXTURE_EDGE_ALPHA_THRESHOLD_U8 / 255.0f;
+
+    expect_true("texture-edge previous byte is rejected",
+                rejected <= GFX_TEXTURE_EDGE_ALPHA_THRESHOLD);
+    expect_true("texture-edge threshold byte is accepted",
+                accepted > GFX_TEXTURE_EDGE_ALPHA_THRESHOLD);
+}
+
 int main(void) {
     test_alpha_coverage_preserved();
+    test_texture_edge_threshold_contract();
     test_level_count();
     test_uniform_is_lossless();
     test_linear_space_average();

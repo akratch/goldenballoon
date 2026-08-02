@@ -155,8 +155,8 @@ const char *sourceName(MdkrVideoSource src) {
 // --- Enumerated string options --------------------------------------------
 // The schema constrains these values in mdkr_video_config_set(); the tables
 // here mirror exactly what those validators accept, so the UI can only ever
-// offer a value the config layer will take. Anything with an open-ended domain
-// (Aspect, GameplayFOV, TexturePack) gets a text field instead of a combo.
+// offer a value the config layer will take. Implemented settings with an
+// open-ended domain (Aspect and GameplayFOV) get a text field instead.
 struct Option { const char *value; const char *label; };
 struct Options { const Option *items; int count; };
 
@@ -191,7 +191,7 @@ const Option kSmoothing[] = {
 const Option kMode[] = {
     {"pure",       "Pure"},
     {"restored",   "Restored"},
-    {"remastered", "Remastered"},
+    {"remastered", "Remastered (Work in Progress)"},
     {"custom",     "Custom"},
 };
 // The canonical spellings only. mdkr_video_world_shadows_canonical() also takes
@@ -327,8 +327,8 @@ bool drawKey(MdkrVideoKey k, bool compact) {
             ImGui::EndCombo();
         }
     } else if (s->type == MDKR_VIDEO_TYPE_STRING) {
-        // Open domain (aspect expressions, "authored" or a FOV number, a texture
-        // pack path). Commit on Enter/blur so a half-typed value is never sent
+        // Open domain (aspect expressions, or "authored" / a FOV number).
+        // Commit on Enter/blur so a half-typed value is never sent
         // to the validator and reported as invalid mid-keystroke.
         if (!editState.initialized ||
             (!editState.active && !editState.dirty &&
@@ -634,7 +634,9 @@ bool Settings_draw(bool compact) {
         // Count first so an empty category never renders a bare header.
         int inCat = 0;
         for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
-            const MdkrVideoSchema *s = mdkr_video_schema((MdkrVideoKey)i);
+            const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
+            if (!AppUi_videoSettingVisible(key)) continue;
+            const MdkrVideoSchema *s = mdkr_video_schema(key);
             if (s && (int)s->category == c) ++inCat;
         }
         if (inCat == 0) continue;
@@ -654,9 +656,11 @@ bool Settings_draw(bool compact) {
             ui::Gap(ui::kGapS);
             ImGui::Indent(ui::kGapM);
             for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
-                const MdkrVideoSchema *s = mdkr_video_schema((MdkrVideoKey)i);
+                const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
+                if (!AppUi_videoSettingVisible(key)) continue;
+                const MdkrVideoSchema *s = mdkr_video_schema(key);
                 if (!s || (int)s->category != c) continue;
-                changed |= drawKey((MdkrVideoKey)i, compact);
+                changed |= drawKey(key, compact);
             }
             ImGui::Unindent(ui::kGapM);
         }

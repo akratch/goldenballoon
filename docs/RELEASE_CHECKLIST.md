@@ -292,11 +292,11 @@ git.
 ## 5. Desktop packaging and publication
 
 Desktop workflow version inputs are filename components, so public releases use
-bare semantic versions such as `1.0.2`, never `v1.0.2`. The `v` prefix belongs
-only to the Git tag. For version 1.0.2, the portable workflow must produce:
+bare semantic versions such as `1.0.3`, never `v1.0.3`. The `v` prefix belongs
+only to the Git tag. For version 1.0.3, the portable workflow must produce:
 
-- `Golden-Balloon-1.0.2-linux-x86_64.AppImage`
-- `Golden-Balloon-1.0.2-linux-x86_64.tar.gz`
+- `Golden-Balloon-1.0.3-linux-x86_64.AppImage`
+- `Golden-Balloon-1.0.3-linux-x86_64.tar.gz`
 
 Automatic Windows publication is intentionally disabled for this patch because
 `windows-latest` does not guarantee a qualifying D3D12/Vulkan adapter or GL 3.3
@@ -305,7 +305,7 @@ rendered launcher or gameplay gate. The workflow still builds, unit-tests,
 import-checks, packages, extracts, and launches `GoldenBalloon.exe` from an
 unrelated CWD.
 
-The exact-manifest `Golden-Balloon-1.0.2-windows-x64.zip` may be attached only
+The exact-manifest `Golden-Balloon-1.0.3-windows-x64.zip` may be attached only
 after manual acceptance on Windows hardware proves the extracted package can:
 
 1. open the real launcher through default WebGPU;
@@ -324,9 +324,9 @@ automated GPU-qualification claim.
 Dispatch it with:
 
 ```bash
-gh workflow run release.yml --ref v1.0.2 \
-  -f version=1.0.2 \
-  -f release_tag=v1.0.2
+gh workflow run release.yml --ref v1.0.3 \
+  -f version=1.0.3 \
+  -f release_tag=v1.0.3
 ```
 
 Use `version=dev` only for disposable test artifacts, never for a public
@@ -352,9 +352,9 @@ pass in the same job before the Linux artifacts are uploaded. If any part of
 that job fails or is unavailable, publish no Linux artifact and do not attach a
 locally produced replacement under the canonical release filenames.
 
-### macOS 1.0.2 — unsigned/ad-hoc patch artifact
+### macOS 1.0.3 — unsigned/ad-hoc patch artifact
 
-The public 1.0.2 macOS artifact intentionally skips Developer ID signing and
+The public 1.0.3 macOS artifact intentionally skips Developer ID signing and
 notarization. “Unsigned” in its filename means there is no trusted signing
 identity: the app must still have a valid inside-out ad-hoc integrity seal. The
 only expected first-launch interruption is macOS's unidentified-developer
@@ -362,22 +362,22 @@ warning; a “damaged” warning is always a release failure.
 
 The exact public files are:
 
-- `Golden-Balloon-1.0.2-macos-arm64-unsigned.dmg`
-- `Golden-Balloon-1.0.2-macos-arm64-unsigned.dmg.sha256`
-- `Golden-Balloon-1.0.2-macos-arm64-unsigned.dmg.provenance.json`
+- `Golden-Balloon-1.0.3-macos-arm64-unsigned.dmg`
+- `Golden-Balloon-1.0.3-macos-arm64-unsigned.dmg.sha256`
+- `Golden-Balloon-1.0.3-macos-arm64-unsigned.dmg.provenance.json`
 
 The provenance sidecar must name that exact DMG, the exact 40-character source
-commit, version `1.0.2`, platform `macos`, the DMG SHA-256, and
+commit, version `1.0.3`, platform `macos`, the DMG SHA-256, and
 `macos_signing: ad-hoc-unsigned`.
 
 Before producing the candidate:
 
 - [ ] The source tree and index are clean.
 - [ ] `CMakeLists.txt`, `macos/Resources/Info.plist`, the app's `--version`
-      output, and the release notes all agree on `1.0.2`.
-- [ ] The release commit is the intended `v1.0.2` tag commit. A test artifact
+      output, and the release notes all agree on `1.0.3`.
+- [ ] The release commit is the intended `v1.0.3` tag commit. A test artifact
       may omit `release_tag`; an artifact may be published only with
-      `release_tag=v1.0.2` resolving to the workflow's exact source commit.
+      `release_tag=v1.0.3` resolving to the workflow's exact source commit.
 - [ ] The pinned standalone SDL2 build is used for arm64/macOS 13. Homebrew
       `sdl2-compat`, SDL3, Homebrew load paths, mixed architectures, and a
       deployment target newer than 13.0 are release blockers.
@@ -386,7 +386,7 @@ Build and validate a non-publishing candidate through the protected workflow:
 
 ```bash
 gh workflow run macos-release.yml \
-  -f version=1.0.2 \
+  -f version=1.0.3 \
   -f trusted_signing=false
 ```
 
@@ -395,7 +395,7 @@ accepted:
 
 - [ ] Build SHA-pinned standalone SDL2 2.32.10 for arm64/macOS 13.
 - [ ] Build `mdkr64.app` with `--strict-deployment-target`, embed version
-      `1.0.2` and the exact source commit, bundle SDL2, then seal nested code
+      `1.0.3` and the exact source commit, bundle SDL2, then seal nested code
       before the outer app.
 - [ ] Run `verify_asset_free.sh`, `verify_gatekeeper_bundle.sh`, and
       `verify_unsigned_release.sh`. The last check must prove the ad-hoc seal,
@@ -415,30 +415,30 @@ For a local reconstruction of those same build and verification steps, use the
 commands in [`../macos/README.md`](../macos/README.md). Do not replace its
 pinned SDL2 prefix with a machine-local Homebrew package.
 
-After the test artifact passes and `v1.0.2` exists on the exact candidate
+After the test artifact passes and `v1.0.3` exists on the exact candidate
 commit, publish by dispatching the same source commit with the binding enabled:
 
 ```bash
-gh workflow run macos-release.yml --ref v1.0.2 \
-  -f version=1.0.2 \
+gh workflow run macos-release.yml --ref v1.0.3 \
+  -f version=1.0.3 \
   -f trusted_signing=false \
-  -f release_tag=v1.0.2
+  -f release_tag=v1.0.3
 ```
 
 The publish job must independently re-check the tag/commit binding, checksum,
 exact artifact name, provenance fields, and provenance digest before uploading
-to the existing `v1.0.2` GitHub Release.
+to the existing `v1.0.3` GitHub Release.
 
 ### Optional trusted macOS artifact
 
-The credentialed path is not part of the unsigned 1.0.2 release. If it is used
+The credentialed path is not part of the unsigned 1.0.3 release. If it is used
 later, its exact artifact name is
-`Golden-Balloon-1.0.2-macos-arm64-signed-notarized.dmg`, with matching
+`Golden-Balloon-1.0.3-macos-arm64-signed-notarized.dmg`, with matching
 `.sha256` and `.provenance.json` sidecars and
 `macos_signing: developer-id-notarized`. Dispatch with
 `trusted_signing=true`; the workflow must Developer ID-sign with Hardened
 Runtime, notarize and staple the app, sign and notarize the DMG, require
-Gatekeeper acceptance, and still enforce `release_tag=v1.0.2` against the exact
+Gatekeeper acceptance, and still enforce `release_tag=v1.0.3` against the exact
 workflow commit before publication. There is no release-approved skip-notary
 path.
 
@@ -468,7 +468,7 @@ Before dispatching:
 
 For the concise human route, use
 [`RELEASE_CANDIDATE_TEST_GUIDE.md`](RELEASE_CANDIDATE_TEST_GUIDE.md). After the
-1.0.2 artifacts exist, update that guide on `main` with their exact source
+1.0.3 artifacts exist, update that guide on `main` with their exact source
 commit and hashes; do not move the release tag to include that post-release
 documentation commit. The steps below remain the policy-level detail behind
 that guide.
