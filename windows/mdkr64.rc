@@ -15,8 +15,9 @@ IDI_ICON1 ICON "mdkr64.ico"
 // The numeric FILEVERSION/PRODUCTVERSION and the human FileVersion/
 // ProductVersion strings are overridable at build time via -DMDKR_VER_CSV and
 // -DMDKR_VER_STR, which CMake derives from the MDKR_VERSION cache variable
-// (default 0.0.0 -> "0.0.0-dev"). The #ifndef defaults keep a bare
-// `windres mdkr64.rc` invocation (no -D) working standalone.
+// (currently 1.0.2). The 0.0.0-dev #ifndef defaults keep a bare `windres
+// mdkr64.rc` invocation (no -D) working standalone without impersonating a
+// release build.
 #include <windows.h>
 
 #ifndef MDKR_VER_CSV

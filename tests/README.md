@@ -195,7 +195,7 @@ coverage:
   control remains. The exact field table and exclusions live beside the
   implementation in `platform/sim_hash.c`.
 
-  **1.0.1 production policy:** motion smoothing and delayed display-list replay
+  **1.0.1+ production policy:** motion smoothing and delayed display-list replay
   are disabled. Non-Original Frame Limit values schedule host/input-pump
   opportunities but submit only newly authored images, so they neither add
   visual frames nor swap duplicates. Replay/interpolation arms described below
@@ -228,7 +228,7 @@ coverage:
   pixels untouched — its first run found 5178 of 35119 matrices did not
   recompose back to their own display list, the path camera-only
   interpolation now verifies per matrix before trusting it, falling back to
-  the list's own matrix when the decomposition does not hold. Production 1.0.1
+  the list's own matrix when the decomposition does not hold. Production 1.0.1+
   keeps all delayed replay quarantined and only exposes completed real walks.
 - `check_camera_snapshot_coverage.py` closes the non-sequential camera-ID
   boundary with real content. A two-player race must capture/interpolate camera

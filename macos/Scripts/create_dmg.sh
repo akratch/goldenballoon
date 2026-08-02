@@ -226,15 +226,15 @@ else
     warn "Could not read version from Info.plist. Using 'unknown'."
 fi
 
-# Determine output path. The DMG FILENAME is a slug of the brand
-# ("Golden Balloon" -> "golden-balloon-1.2.3.dmg"), not the internal app name.
-BRAND_SLUG="$(printf '%s' "${BRAND_NAME}" \
-    | tr '[:upper:]' '[:lower:]' \
-    | tr -cs 'a-z0-9' '-' \
+# Determine output path. The DMG filename is the canonical, case-preserving
+# brand stem ("Golden Balloon" -> "Golden-Balloon-1.2.3.dmg"), not the
+# internal app name.
+BRAND_FILE_STEM="$(printf '%s' "${BRAND_NAME}" \
+    | tr -cs 'A-Za-z0-9' '-' \
     | sed -e 's/^-*//' -e 's/-*$//')"
-[[ -n "${BRAND_SLUG}" ]] || BRAND_SLUG="${APP_NAME}"
+[[ -n "${BRAND_FILE_STEM}" ]] || BRAND_FILE_STEM="${APP_NAME}"
 if [[ -z "${OUTPUT_DMG}" ]]; then
-    OUTPUT_DMG="$(dirname "${APP_PATH}")/${BRAND_SLUG}-${VERSION}.dmg"
+    OUTPUT_DMG="$(dirname "${APP_PATH}")/${BRAND_FILE_STEM}-${VERSION}.dmg"
 fi
 
 # Canonicalize and narrow the exact file before the replacement below. Public
