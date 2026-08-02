@@ -32,10 +32,10 @@ the gate a release has to pass.
 ### F-18 — independent state reference breadth
 
 **Where it stands.** Two lanes compare the port's own simulation against an
-independent reference: a full Ancient Lake lap, and an all-racer Bubbler lane
-that isolates the reported boss-speed divergence. The Bubbler lane settled the
-simulation-cadence question — retail and authored finish at ticks 3,459/3,458
-with a 1.00047× speed ratio, against 3,022 and 1.13965× for the historical
+independent reference: a full Ancient Lake lap, and an all-racer Bluey 2 lane
+that isolates the reported boss-speed divergence. The Bluey lane settled the
+simulation-cadence question — retail and Original finish at ticks 3,459/3,458
+with a 1.00065× speed ratio, against 3,022 and 1.13982× for the Enhanced
 one-field arm — and `Gameplay.SimulationCadence=original` is the default because
 of it. Ancient Lake now also has a fail-closed diagnostic that replays the
 real ROM's observed update widths and input states. It makes checkpoint clocks

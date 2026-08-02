@@ -1,7 +1,7 @@
 {
   "schema": "mdkr64.oracle.route.v1",
   "name": "race_state_oracle",
-  "description": "State-only US 1.1 reference route. It enters Ancient Lake through the same one-player Tracks path in both runners, holds throttle, and applies the established short-left-pulse line through a real lap. The native arm uses the authored two-field gameplay cadence and proportionally scaled input frames; the shipping 60 Hz enhancement remains a separate product-policy arm and is not scored here. The comparison joins native and real-ROM racer state on the in-game lap clock, not presentation frames. No PPMs are captured.",
+  "description": "State-only US 1.1 reference route. It enters Ancient Lake through the same one-player Tracks path in both runners, holds throttle, and applies the established short-left-pulse line through a real lap. The native arm uses Original two-field gameplay cadence and proportionally scaled input frames; Enhanced one-field simulation remains a separate product-policy arm and is not scored here. The comparison joins native and real-ROM racer state on the in-game lap clock, not presentation frames. No PPMs are captured.",
   "compare_frames": false,
   "state_trace": true,
   "native_cadence": "original",
@@ -9,14 +9,14 @@
   "native_event_divisor": 2,
   "native_arms": [
     {
-      "name": "authored",
+      "name": "original",
       "cadence": "original",
       "frames": 4800,
       "synth_fields": 2,
       "event_divisor": 2
     },
     {
-      "name": "shipping_60hz",
+      "name": "enhanced",
       "cadence": "enhanced",
       "frames": 9500,
       "synth_fields": 1,

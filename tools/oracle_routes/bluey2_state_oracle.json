@@ -1,7 +1,7 @@
 {
   "schema": "mdkr64.oracle.route.v1",
-  "name": "bubbler_state_oracle",
-  "description": "State-only US 1.1 Bubbler 1 oracle. Both runners follow the proven one-player Tracks route to Ancient Lake; a narrow level_load argument override retargets only that gameplay load to Bubbler 1 (course 52). Every racer is sampled after presentation and racer index 1 (Bubbler) is joined on the race clock. This characterizes authored 30 Hz and shipping 60 Hz native cadence against retail without changing retail gameplay code or hand-tuning the boss.",
+  "name": "bluey2_state_oracle",
+  "description": "State-only US 1.1 Bluey 2 oracle. Both runners follow the proven one-player Tracks route to Ancient Lake; a narrow level_load argument override retargets only that gameplay load to the Bluey rematch (course 52). Every racer is sampled after presentation and racer index 1 (Bluey, vehicle 6) is joined on the race clock. Original two-field simulation is the reference. Enhanced one-field simulation is retained as a positive control that reproduces the reported faster-boss behavior; it is not the shipping default.",
   "compare_frames": false,
   "state_trace": true,
   "state_require_finish": true,
@@ -18,14 +18,14 @@
   "native_event_divisor": 2,
   "native_arms": [
     {
-      "name": "authored",
+      "name": "original",
       "cadence": "original",
       "frames": 4800,
       "synth_fields": 2,
       "event_divisor": 2
     },
     {
-      "name": "shipping_60hz",
+      "name": "enhanced",
       "cadence": "enhanced",
       "frames": 9500,
       "synth_fields": 1,

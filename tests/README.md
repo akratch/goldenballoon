@@ -1470,7 +1470,7 @@ env -i PATH="$PATH" LC_ALL=C MDKR_AUDIO=0 \
   MDKR_SAVE_DIR=/tmp/mdkr-authored-reference/reference-save \
   ./build-reference/mdkr64 --headless-frames 4800 \
   --input-script <(python3 tools/dkr_oracle_route.py native-script \
-    race_state_oracle --arm authored) --rom /path/to/owned-us-v11.z64 2>&1 | \
+    race_state_oracle --arm original) --rom /path/to/owned-us-v11.z64 2>&1 | \
   python3 -c "import hashlib,sys; r=[x for x in sys.stdin.buffer if b'[ORACLE]' in x]; print(len(r), hashlib.sha256(b''.join(r)).hexdigest())"
 cd -
 git worktree remove --force /tmp/mdkr-authored-reference
@@ -2035,6 +2035,34 @@ Two hooks, both no-ops unless set (`platform/mdkr_adventure.c`):
   (`RACE_VISITED|RACE_CLEARED` plus the world's `bosses` bit), i.e. the state a
   save carries once the boss has been beaten once. Re-applied every frame because
   FILE SELECT reallocates `Settings` and `clear_game_progress()` would wipe it.
+
+## Bluey 2 rematch — `tests/check_bluey2_rematch.py`
+
+```bash
+python3 tests/check_bluey2_rematch.py --build build --rom /path/to/owned-us-v11.z64
+```
+
+This is the standing regression for the reported faster Bluey rematch. It
+builds a checksum-valid checkpoint with Bluey 1 and the four Snowflake silver
+races complete, marks Bluey 2 visited, resumes the file, and traverses the
+production hub/lobby route before retargeting the final race load to course 52.
+No first-visit cutscene redirect is allowed. Bluey must naturally finish first
+at checkpoint 24/lap 2, and the human's production boss verdict must be a loss.
+
+Original two-field simulation is the product contract. Enhanced one-field
+simulation is the fail-red control: on the reference build Original finishes at
+3,518 logic ticks while Enhanced finishes at 3,019 with 1.1696x mean object
+speed. The check requires a materially earlier/faster Enhanced result, then
+substitutes the Original result for that control and verifies that its own
+sensitivity assertions reject the pair.
+
+The Original arm also dumps headless PCM to its temporary directory. It pins
+the authored sequence-30 stop and sequence-57 race-cue start (3.204 seconds
+apart, with the race cue 0.968 seconds after GO) while requiring every 250 ms
+window around GO to remain active. This distinguishes the original game's cue
+transition from an audio-device or mixer dropout. Full release/Ares measurements
+and the visible-timer explanation are in
+[`docs/BLUEY2_PARITY.md`](../docs/BLUEY2_PARITY.md).
 
 ## First boss campaign progression — `tests/check_first_boss_progression.py`
 

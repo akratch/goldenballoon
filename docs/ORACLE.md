@@ -14,8 +14,10 @@ Modeled on mgb64's ROM oracle (`tools/prepare_ares_movement_oracle_build.sh`,
 `rom_oracle_route.py`, `movement_oracle_capture.sh`) but deliberately focused.
 The visual lane has no RDP/game-memory trace: input and frame dumps are keyed on
 the emulator's presented-frame counter. The US 1.1 state-only lane adds one
-compact, version-locked racer record from emulated RDRAM; the current contract
-is implemented by `tests/check_race_state_oracle.py`.
+compact, version-locked racer record from emulated RDRAM.
+`tools/compare_oracle_state.py` enforces the independent-runner contract, while
+`tests/check_bluey2_rematch.py` is the progression-valid native regression for
+the passing boss lane.
 
 ---
 
@@ -200,8 +202,8 @@ python3 tools/dkr_oracle_route.py validate       title_to_options
 ```
 tools/run_oracle.sh boot_to_title
 tools/run_oracle.sh title_to_options --ares-timeout 280
-tools/run_oracle.sh race_state_oracle  # reference + default authored arm
-tools/run_oracle.sh race_state_oracle --native-arm shipping_60hz --skip-ares
+tools/run_oracle.sh race_state_oracle  # reference + default Original arm
+tools/run_oracle.sh race_state_oracle --native-arm enhanced --skip-ares
 # Second stage: reuse the freshly captured real-ROM trace and replay its exact
 # observed update widths/input states in the native diagnostic lane.
 tools/run_oracle.sh race_state_oracle --native-arm reference_replay --skip-ares
@@ -220,18 +222,18 @@ For `race_state_oracle`, no PPMs are created. The additional outputs are:
 
 ```text
 ares_state.csv
-native_authored.log
-native_shipping_60hz.log
+native_original.log
+native_enhanced.log
 native_reference_replay.log
-compare/state_report_race_state_oracle_authored.json
-compare/state_report_race_state_oracle_shipping_60hz.json
+compare/state_report_race_state_oracle_original.json
+compare/state_report_race_state_oracle_enhanced.json
 compare/state_report_race_state_oracle_reference_replay.json
 native_saves/   # isolated from the player's normal save directory
 ares_saves/
 ```
 
 The Ancient Lake state arms are currently expected to return nonzero. The
-authored and enhanced arms complete a lap, but the strict contract exposes a
+Original and Enhanced arms complete a lap, but the strict contract exposes a
 cadence-sensitive open-loop racing line. `reference_replay` is a diagnostic,
 not a product mode: `MDKR_ORACLE_UPDATE_FIELDS` exists only as an environment-
 gated test seam and its schedule must be consumed completely. The replay moves
@@ -239,8 +241,8 @@ the first five-unit position separation from race clock 18 to 767, and matches
 the ROM's checkpoint clocks exactly through checkpoints 0–3 (3, 349, 463,
 707), classifying the early difference as timestep partitioning. Sub-unit
 floating-point drift still grows into a different open-loop line; that strict
-arm remains red rather than hiding it behind a tolerance. Bubbler remains the
-passing gameplay-cadence oracle.
+arm remains red rather than hiding it behind a tolerance. Bluey 2 remains the
+passing gameplay-cadence oracle; see [`BLUEY2_PARITY.md`](BLUEY2_PARITY.md).
 
 ares samples RDRAM on VI observations while the CPU can begin the next update
 under an unchanged framebuffer. State normalization therefore retains the

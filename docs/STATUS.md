@@ -135,12 +135,14 @@ measures 7.526% and 7,767.070. Both complete a lap and both fail strict parity.
 F-18 is therefore partial, not open; challenge breadth, multiplayer,
 progression/save, audio, renderer-state, and standard-race parity remain.
 
-The new all-racer Bubbler lane closes the cadence-policy part of that gap.
-Unmodified US 1.1 Bubbler finishes at tick 3,459; native two-field Bubbler at
-3,458 with a 1.00047× mean-speed ratio, while the historical one-field arm
-finishes at 3,022 with a 1.13965× speed ratio. Interactive gameplay therefore
-defaults to persisted `Gameplay.SimulationCadence=original`; the old one-field
-behavior remains an explicit restart-scoped `enhanced` option.
+The new all-racer Bluey 2 lane closes the cadence-policy part of that gap.
+Unmodified US 1.1 Bluey finishes at tick 3,459; native Original two-field Bluey
+at 3,458 with a 1.00065× mean-speed ratio, while the Enhanced one-field arm
+finishes at 3,022 with a 1.13982× speed ratio. Interactive gameplay therefore
+defaults to persisted `Gameplay.SimulationCadence=original`; the one-field
+behavior remains an explicit restart-scoped `enhanced` option. The release,
+progression, audio, and timer-sampling evidence is in
+[`BLUEY2_PARITY.md`](BLUEY2_PARITY.md).
 
 The Remastered world-depth and colour epic is complete: typed capture-once caster geometry, stable 1P–4P cascaded
 shadows on GL/WebGPU/browser, truthful projected-decal fallback, a scene-linear
