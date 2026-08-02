@@ -63,16 +63,16 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       # Mirror release.yml's Windows toolchain EXACTLY (same MINGW64 msystem,
-      # same package set) so the build half is known-good by construction. `python`
-      # is added for the asset-free verifier's ROM-magic byte scan (a Python
-      # heredoc) and for the save_cli ctest; it is not needed by the build.
+      # same package set) so the build half is known-good by construction.
+      # `python` is added for the asset-free verifier and Python CTests; `git`
+      # is added for the public-surface tests' isolated-repository fixtures.
       - uses: msys2/setup-msys2@d40200dc2db4c351366b048a9565ad82919e1c24 # v2
         with:
           msystem: MINGW64
           update: true
           install: >-
             mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-SDL2
-            mingw-w64-x86_64-pkg-config mingw-w64-x86_64-ninja zip unzip python
+            mingw-w64-x86_64-pkg-config mingw-w64-x86_64-ninja zip unzip python git
 
       # Same CMake config as the release.yml Windows job, plus BUILD_TESTING
       # (ON by default via include(CTest) in CMakeLists.txt) so the ROM-free

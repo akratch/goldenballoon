@@ -18,6 +18,9 @@
 #ifndef O_DIRECTORY
 #define O_DIRECTORY 0
 #endif
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
 
 typedef struct InputFile {
     uint8_t *bytes;
@@ -233,7 +236,7 @@ static int write_atomic(const char *path, const uint8_t *bytes, size_t size,
         fprintf(stderr, "mdkr-save: output path is too long\n");
         goto done;
     }
-    descriptor = open(staging, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    descriptor = open(staging, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0600);
     if (descriptor < 0) {
         fprintf(stderr, "mdkr-save: failed while staging %s: %s\n", path,
                 strerror(errno));

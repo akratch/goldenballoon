@@ -8,6 +8,7 @@
  */
 #include "display_config.h"
 #include "present_sched.h"
+#include "test_platform_compat.h"
 #include "video_config.h"
 
 #include <math.h>
@@ -27,26 +28,6 @@ char *SDL_GetPrefPath(const char *organization, const char *application) {
 void SDL_free(void *memory) {
     (void)memory;
 }
-
-#ifdef _WIN32
-/* Keep the test's POSIX-style environment helpers portable to the Windows
- * CRT. An empty assignment removes a variable there, which is what this test
- * needs so getenv() returns NULL for the env-override cases below. */
-static void mdkr_test_unsetenv(const char *name) {
-    char assignment[256];
-    snprintf(assignment, sizeof(assignment), "%s=", name);
-    (void) _putenv(assignment);
-}
-static int mdkr_test_setenv(const char *name, const char *value, int overwrite) {
-    if (!overwrite && getenv(name) != NULL) {
-        return 0;
-    }
-    return _putenv_s(name, value);
-}
-#define unsetenv(name) mdkr_test_unsetenv(name)
-#define setenv(name, value, overwrite) \
-    mdkr_test_setenv((name), (value), (overwrite))
-#endif
 
 float g_pcRenderScale;
 int g_pcMsaaSamples;
@@ -186,7 +167,7 @@ static int read_config(char *out, size_t capacity) {
 }
 
 int main(void) {
-    char temporary[] = "/tmp/mdkr-video-runtime-XXXXXX";
+    char temporary[2048];
     char original[2048];
     char text[32768];
     char *argv[] = {
@@ -207,18 +188,21 @@ int main(void) {
         "MDKR_VIDEO_CONFIG_PATH",
     };
 
-    expect("temporary directory created", mkdtemp(temporary) != NULL);
+    expect("temporary directory created",
+           mdkr_test_make_temp_directory(
+               temporary, sizeof(temporary), "mdkr-video-runtime"));
     if (s_failures != 0) return 1;
     expect("original cwd captured", getcwd(original, sizeof(original)) != NULL);
     expect("entered temporary directory", chdir(temporary) == 0);
     for (size_t i = 0; i < sizeof(env_names) / sizeof(env_names[0]); i++) {
-        unsetenv(env_names[i]);
+        (void) mdkr_test_env_unset(env_names[i]);
     }
     {
         char config_path[2300];
         snprintf(config_path, sizeof(config_path), "%s/mdkr64.ini", temporary);
         expect("explicit video config path override set",
-               setenv("MDKR_VIDEO_CONFIG_PATH", config_path, 1) == 0);
+               mdkr_test_env_set(
+                   "MDKR_VIDEO_CONFIG_PATH", config_path, 1) == 0);
     }
     expect("initial config written", write_initial_config());
 

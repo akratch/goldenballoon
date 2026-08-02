@@ -1,4 +1,5 @@
 #include "user_paths.h"
+#include "test_platform_compat.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -6,23 +7,6 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-#ifdef _WIN32
-static int mdkr_test_setenv(const char *name, const char *value, int overwrite) {
-    if (!overwrite && getenv(name) != NULL) {
-        return 0;
-    }
-    return _putenv_s(name, value);
-}
-
-static int mdkr_test_unsetenv(const char *name) {
-    return _putenv_s(name, "");
-}
-
-#define setenv(name, value, overwrite) \
-    mdkr_test_setenv((name), (value), (overwrite))
-#define unsetenv(name) mdkr_test_unsetenv(name)
-#endif
 
 static int s_failures;
 static const char *s_mock_pref;
@@ -63,11 +47,7 @@ static int join(char *output, size_t output_size,
 }
 
 static int make_directory(const char *path) {
-#ifdef _WIN32
-    return mkdir(path) == 0 || errno == EEXIST;
-#else
-    return mkdir(path, 0700) == 0 || errno == EEXIST;
-#endif
+    return mdkr_test_make_directory(path);
 }
 
 static int write_bytes(const char *path, const void *bytes, size_t size) {
@@ -114,7 +94,7 @@ static int run_pref_failure(void) {
 }
 
 int main(int argc, char **argv) {
-    char temporary[] = "/tmp/mdkr-user-paths-XXXXXX";
+    char temporary[4096];
     char original[4096];
     char app[4096];
     char contents[4096];
@@ -147,7 +127,9 @@ int main(int argc, char **argv) {
         return run_pref_failure();
     }
     expect("captured original cwd", getcwd(original, sizeof(original)) != NULL);
-    expect("fixture root created", mkdtemp(temporary) != NULL);
+    expect("fixture root created",
+           mdkr_test_make_temp_directory(
+               temporary, sizeof(temporary), "mdkr-user-paths"));
     expect("app path", join(app, sizeof(app), temporary, "Fixture.app"));
     expect("Contents path", join(contents, sizeof(contents), app, "Contents"));
     expect("MacOS path", join(executable_dir, sizeof(executable_dir),
@@ -233,8 +215,10 @@ int main(int argc, char **argv) {
     expect("override save path",
            join(override_save, sizeof(override_save), override_dir, "save"));
     expect("set video override",
-           setenv("MDKR_VIDEO_CONFIG_PATH", override_config, 1) == 0);
-    expect("set save override", setenv("MDKR_SAVE_DIR", override_save, 1) == 0);
+           mdkr_test_env_set(
+               "MDKR_VIDEO_CONFIG_PATH", override_config, 1) == 0);
+    expect("set save override",
+           mdkr_test_env_set("MDKR_SAVE_DIR", override_save, 1) == 0);
     expect("entered launch cwd", chdir(cwd) == 0);
     s_mock_pref = pref;
     expect("packaged paths initialized", mdkr_user_paths_init(executable) == 1);
@@ -252,8 +236,8 @@ int main(int argc, char **argv) {
     expect("default save absent while override active",
            join(path, sizeof(path), pref, "save") && missing(path));
 
-    unsetenv("MDKR_VIDEO_CONFIG_PATH");
-    unsetenv("MDKR_SAVE_DIR");
+    (void) mdkr_test_env_unset("MDKR_VIDEO_CONFIG_PATH");
+    (void) mdkr_test_env_unset("MDKR_SAVE_DIR");
     /* A killed prior copier can leave only a sibling stage. It must never be
      * interpreted as the live save directory or partly installed over it. */
     expect("interrupted stage path",

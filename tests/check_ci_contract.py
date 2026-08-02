@@ -1433,6 +1433,9 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
 def validate_windows_nonpublishing(source: str) -> list[str]:
     """Keep hosted Windows useful without mistaking it for a GPU release gate."""
     required = {
+        "Git for public-surface fixtures": (
+            "mingw-w64-x86_64-ninja zip unzip python git"
+        ),
         "native Windows execution": "./build/mdkr64.exe --help",
         "GPU-free CTest routing": (
             "ctest --test-dir build --output-on-failure -LE gpu -E 'audio|mixer'"
