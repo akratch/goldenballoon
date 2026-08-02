@@ -27,6 +27,11 @@ Golden Balloon 1.0.2 is a focused rendering-correctness hotfix for the native
   distinct 2/1/3 final pixels while the camera moves. Blank output, a common
   glyph on every door, repeated sampler output, and the old shared offset are
   all fail-red controls. Original, 240, and Uncapped presentation policies pass.
+- **Windows save custody stays byte-exact.** Legacy preference/save migration
+  now uses an exclusive binary destination on Windows, and the save utility's
+  staging files bypass CRT text translation. The native Windows release gate
+  compiles and executes these paths, the public-surface guard, and all other
+  ROM-free CTests before packaging is allowed.
 
 ## What did not change
 

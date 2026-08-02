@@ -25,6 +25,11 @@ save formats). Everything below 1.0.0 predates that commitment.
   route now proves the authored requirements, per-door material bindings, and
   final GL/WebGPU door pixels. Blank frames, a common glyph on every sign, and
   repeated sampler output are generated as fail-red controls during the gate.
+- **Windows save migration and tooling preserve exact bytes.** Exclusive legacy
+  preference/save migration and save-utility staging now open binary files with
+  native Windows semantics, avoiding CRT newline translation. Portable
+  environment, temporary-directory, and shell fixtures let the hosted Windows
+  lane compile and execute the complete ROM-free release suite.
 
 ### Documentation
 

@@ -23,6 +23,20 @@ sys.modules[SPEC.name] = guard
 SPEC.loader.exec_module(guard)
 
 
+def bash_executable() -> str:
+    """Return Bash without accidentally selecting Windows' WSL launcher."""
+    if sys.platform == "win32":
+        # System32/bash.exe is a WSL launcher, not a shell. GitHub's hosted
+        # Windows image exposes it before MSYS2's Bash in PATH, so resolve the
+        # unambiguous MSYS2 `sh.exe` and use its sibling instead.
+        sh_executable = shutil.which("sh.exe")
+        if sh_executable is not None:
+            msys_bash = Path(sh_executable).with_name("bash.exe")
+            if msys_bash.is_file():
+                return str(msys_bash)
+    return shutil.which("bash") or "bash"
+
+
 class PublicSurfaceGuardTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -356,7 +370,7 @@ class PublicSurfaceGuardTests(unittest.TestCase):
                 f"refs/heads/publish {zero}\n"
             )
             result = subprocess.run(
-                ["bash", "tools/ci/check_public_push.sh", "origin"],
+                [bash_executable(), "tools/ci/check_public_push.sh", "origin"],
                 cwd=repo,
                 input=hook_input,
                 text=True,
