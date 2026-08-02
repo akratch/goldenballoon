@@ -66,10 +66,10 @@ def validate(rows: list[str]) -> str:
 def run(binary: Path, rom: Path, timeout: int, verbose: bool) -> list[str]:
     with tempfile.TemporaryDirectory(prefix="mdkr-authored-rng-") as tmp:
         run_dir = Path(tmp)
-        script = run_dir / "race_state_oracle_authored.txt"
+        script = run_dir / "race_state_oracle_original.txt"
         route = subprocess.run(
             [sys.executable, str(ROUTE_TOOL), "native-script", "race_state_oracle",
-             "--arm", "authored"],
+             "--arm", "original"],
             cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             timeout=30, check=False,
         )

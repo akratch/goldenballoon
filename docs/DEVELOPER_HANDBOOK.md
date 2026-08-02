@@ -565,13 +565,15 @@ caused the early mismatch. Sub-unit floating-point drift still compounds into
 a different open-loop line, so the diagnostic remains red rather than
 manufacturing parity with a permissive tolerance.
 
-The later all-racer Bubbler lane closes the cadence choice. Retail and authored
-two-field Bubbler finish at ticks 3,459 and 3,458 with a 1.00047× mean-speed
-ratio; the historical one-field arm finishes at 3,022 with a 1.13965× ratio.
-Interactive gameplay now defaults to persisted original cadence, with the old
-one-field simulation retained explicitly as enhanced compatibility. F-18
-remains partial for broader challenge, multiplayer, progression/save, audio,
-renderer-state, and standard-race parity.
+The later all-racer Bluey 2 lane closes the cadence choice. Retail and Original
+two-field Bluey finish at ticks 3,459 and 3,458 with a 1.00065× mean-speed
+ratio; the Enhanced one-field arm finishes at 3,022 with a 1.13982× ratio.
+Interactive gameplay now defaults to persisted Original cadence, with the old
+one-field simulation retained explicitly as Enhanced compatibility. The
+progression/audio regression and release-bound evidence are recorded in
+[`BLUEY2_PARITY.md`](BLUEY2_PARITY.md). F-18 remains partial for broader
+challenge, multiplayer, progression/save, audio, renderer-state, and
+standard-race parity beyond this boss lane.
 
 The target architecture keeps authoritative gameplay on its original cadence
 and permits higher-rate presentation only after state-hash and render-purity

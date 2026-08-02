@@ -180,15 +180,20 @@ against the US 1.1 ROM running in the pinned, instrumented ares build:
 
 ```bash
 tools/prepare_ares_oracle.sh
-tools/run_oracle.sh bubbler_state_oracle \
-  --native-bin build-rel/mdkr64 --native-arm authored
+tools/run_oracle.sh bluey2_state_oracle \
+  --native-bin build-rel/mdkr64 --native-arm original
 ```
 
 Expected: `compare_oracle_state: PASS`. Both runners must finish, reach the same
 lap and checkpoint, retain at least 95% checkpoint/lap agreement, and keep
-position p95 within 200 world units. Do not use the enhanced one-field arm as
+position p95 within 200 world units. Do not use the Enhanced one-field arm as
 the reference: that is the intentional positive control which reproduces the
 historical boss-speed error.
+
+Run `python3 tests/check_bluey2_rematch.py --build build-rel --rom <owned ROM>`
+as the progression-valid, audio-bearing standing gate. The measured release
+closeout and timer-sampling explanation are in
+[`BLUEY2_PARITY.md`](BLUEY2_PARITY.md).
 
 The broader Ancient Lake `race_state_oracle` remains a deliberately red
 diagnostic for longstanding open-loop floating-point drift, as documented in

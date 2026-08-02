@@ -223,6 +223,9 @@ CHECKS = (
           "EEPROM recovery and persistence"),
     Check("boss_win_verdict", "check_boss_win_verdict.py", "native",
           "boss win/lose state contract"),
+    Check("bluey2_rematch", "check_bluey2_rematch.py", "native",
+          "progression-valid Bluey rematch parity, Enhanced fail-red control, "
+          "and authored cue-transition PCM"),
     Check("first_boss_progression", "check_first_boss_progression.py", "native",
           "legal fourth Dino race through Tricky 1 save/reload"),
     Check("collision_gridmask", "check_collision_gridmask.py", "native",
