@@ -7,6 +7,23 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef _WIN32
+static int mdkr_test_setenv(const char *name, const char *value, int overwrite) {
+    if (!overwrite && getenv(name) != NULL) {
+        return 0;
+    }
+    return _putenv_s(name, value);
+}
+
+static int mdkr_test_unsetenv(const char *name) {
+    return _putenv_s(name, "");
+}
+
+#define setenv(name, value, overwrite) \
+    mdkr_test_setenv((name), (value), (overwrite))
+#define unsetenv(name) mdkr_test_unsetenv(name)
+#endif
+
 static int s_failures;
 static const char *s_mock_pref;
 static int s_mock_pref_failure;
@@ -46,7 +63,11 @@ static int join(char *output, size_t output_size,
 }
 
 static int make_directory(const char *path) {
+#ifdef _WIN32
+    return mkdir(path) == 0 || errno == EEXIST;
+#else
     return mkdir(path, 0700) == 0 || errno == EEXIST;
+#endif
 }
 
 static int write_bytes(const char *path, const void *bytes, size_t size) {
