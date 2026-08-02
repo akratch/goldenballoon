@@ -368,17 +368,13 @@ def release_history_revision(root: Path) -> str:
         return "HEAD"
 
     revision = "refs/remotes/public/main"
-    process = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "--verify", f"{revision}^{{commit}}"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if process.returncode != 0:
+    try:
+        run_git(root, ["show-ref", "--verify", "--quiet", revision])
+    except GuardError:
         raise GuardError(
             "public remote is configured but public/main is unavailable; "
             "run 'git fetch public main' before release readiness"
-        )
+        ) from None
     return revision
 
 

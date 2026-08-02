@@ -366,7 +366,7 @@ class PublicSurfaceGuardTests(unittest.TestCase):
             )
             output = result.stdout + result.stderr
             self.assertEqual(result.returncode, 1, output)
-            self.assertIn("unsafe.md", result.stderr)
+            self.assertIn("unsafe.md", output)
             self.assertNotRegex(
                 output,
                 r"\[CRASH\]|\[FATAL\]|AddressSanitizer|"

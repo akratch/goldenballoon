@@ -10,6 +10,7 @@
 #include <unistd.h>
 #elif defined(_WIN32)
 #include <direct.h>
+#include <fcntl.h>
 #include <io.h>
 #include <process.h>
 #include <windows.h>
@@ -173,7 +174,20 @@ static int copy_regular_file(const char *source, const char *destination) {
     /* Every migration destination is a private staging name. Exclusive create
      * prevents a stale file or same-user concurrent launch from being
      * truncated between the existence check and fopen. */
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+    {
+        int descriptor = _open(destination,
+                               _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY,
+                               _S_IREAD | _S_IWRITE);
+        output = descriptor >= 0 ? _fdopen(descriptor, "wb") : NULL;
+        if (output == NULL && descriptor >= 0) {
+            (void)_close(descriptor);
+            (void)remove(destination);
+        }
+    }
+#else
     output = fopen(destination, "wbx");
+#endif
     if (output == NULL) {
         (void)fclose(input);
         return -1;
