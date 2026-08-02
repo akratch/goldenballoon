@@ -29,16 +29,23 @@ void SDL_free(void *memory) {
 }
 
 #ifdef _WIN32
-/* The Windows CRT has no POSIX unsetenv(). Assigning an EMPTY value with
- * _putenv is the documented way to REMOVE a variable there — which is what
- * this test needs, since getenv() must come back NULL for the env-override
- * cases to be exercised at all. */
+/* Keep the test's POSIX-style environment helpers portable to the Windows
+ * CRT. An empty assignment removes a variable there, which is what this test
+ * needs so getenv() returns NULL for the env-override cases below. */
 static void mdkr_test_unsetenv(const char *name) {
     char assignment[256];
     snprintf(assignment, sizeof(assignment), "%s=", name);
     (void) _putenv(assignment);
 }
+static int mdkr_test_setenv(const char *name, const char *value, int overwrite) {
+    if (!overwrite && getenv(name) != NULL) {
+        return 0;
+    }
+    return _putenv_s(name, value);
+}
 #define unsetenv(name) mdkr_test_unsetenv(name)
+#define setenv(name, value, overwrite) \
+    mdkr_test_setenv((name), (value), (overwrite))
 #endif
 
 float g_pcRenderScale;
