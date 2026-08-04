@@ -342,7 +342,7 @@ def run_check(args: argparse.Namespace) -> None:
                 == {
                     "value": "restored",
                     "labels": [
-                        "Restored — original look, modern fidelity",
+                        "Restored — recommended, original look with modern fidelity",
                         "Remastered — art-directed effects (work in progress)",
                         "Pure — original 4:3, no enhancements",
                     ],
