@@ -343,13 +343,13 @@ const char *menuButtonName() {
     }
 }
 
-bool usingWebGpu() {
+// The OpenGL-only build compiles out every caller, so compile out the helper as
+// well rather than leaving an unused function under the strict warning gate.
 #ifdef MDKR_WEBGPU_BACKEND
+bool usingWebGpu() {
     return mdkr_render_backend() == MDKR_BACKEND_WEBGPU;
-#else
-    return false;
-#endif
 }
+#endif
 
 void beginImGuiFrame() {
     float framebufferScale = 1.0f;
