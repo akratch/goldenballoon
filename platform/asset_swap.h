@@ -89,9 +89,10 @@
  * ============================================================================
  *  PUNTED / PARTIAL (see docs/asset_swap_notes.md for the full table)
  * ============================================================================
- *  - ASSET_AUDIO: punted. Bank/sequence headers (ALBankFile/ALSeqFile, patched
- *    by libultra alBnkfNew/alSeqFileNew) need swapping, but audio is stubbed to
- *    silence for bring-up; handle in the audio milestone.
+ *  - ASSET_AUDIO: heterogeneous and owned by typed consumers. Bank/sequence
+ *    images use explicit BE parsers, SoundData and MIDI headers convert at
+ *    their call sites, raw samples/event streams remain byte-oriented, and
+ *    VehicleSoundAsset records use asset_swap_vehicle_sound().
  *  - ASSET_LEVEL_OBJECT_MAPS: partial (file header + per-entry x/y/z; per-
  *    behavior body params punted).
  *  - ASSET_MISC, ASSET_JAPANESE_FONTS*: punted (heterogeneous / not used by
@@ -128,6 +129,20 @@ void asset_swap_normalize(int assetType, void *data, uint32_t size);
  * size/4 words in place.
  */
 void asset_swap_lut(void *data, uint32_t size);
+
+/**
+ * Normalize one 0x4C-byte vehicle-engine sound record from ASSET_AUDIO.
+ *
+ * ASSET_AUDIO is heterogeneous and cannot be passed to
+ * asset_swap_normalize() as a whole. Vehicle records contain two u16 sound
+ * IDs, ten u16 pitch control points, and seven s16 pitch-scale fields mixed
+ * with byte-sized control data. This helper swaps only those serialized
+ * multi-byte fields and leaves the u8 tables untouched.
+ *
+ * @return 1 when a complete record was normalized, otherwise 0. A short or
+ *         NULL buffer is rejected without modification.
+ */
+int asset_swap_vehicle_sound(void *data, uint32_t size);
 
 /**
  * Full normalization of one ASSET_OBJECT_ANIMATIONS blob (post-inflate).

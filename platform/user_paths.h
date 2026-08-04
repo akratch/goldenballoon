@@ -24,6 +24,10 @@ int mdkr_user_paths_init(const char *executable_path);
  * destinations that already exist are never replaced. */
 int mdkr_user_paths_prepare_packaged_data(void);
 
+/* Human-readable detail for the most recent packaged-path failure. The pointer
+ * has process lifetime and is empty when no more specific recovery exists. */
+const char *mdkr_user_paths_last_error(void);
+
 int mdkr_user_paths_is_packaged(void);
 int mdkr_user_video_config_path(char *output, size_t output_size);
 int mdkr_user_save_directory(char *output, size_t output_size);

@@ -13,9 +13,10 @@ edges the original completion contract named explicitly:
 For each route, original-rate and production 60 Hz host pacing must produce
 byte-identical v3 state, ordered gameplay events, consumed input, and temporary
 PCM. The production arm deliberately requests public ``interpolate`` and must
-still perform no replay. A separate explicit test seam exercises replay-history
-retirement without snapshot, packet, matrix-freeze, or key-collision failure.
-A one-row state-hash perturbation is a same-binary comparator control.
+perform real immutable replay across every retirement boundary. The presentation
+matrix separately poisons the complete live arena on every replay; this gate
+focuses its longer budget on unload/reissue coverage. A one-row state-hash
+perturbation is a same-binary comparator control.
 
 Always muted + headless. Exit 0 = pass.
 """
@@ -32,7 +33,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import completed_tick_conservation, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -42,6 +43,7 @@ SUMMARY_RE = re.compile(r"\[PRESENTSCHED-SUMMARY\] (.*)")
 AUDIO_RE = re.compile(r"\[AUDIO-SERVICE\] (.*)")
 REPLAY_RE = re.compile(r"\[REPLAY-SUMMARY\] (.*)")
 PACKET_RE = re.compile(r"\[PRESENT-PACKET\] (.*)")
+RETAINED_RE = re.compile(r"\[RETAINED-TASK\] (.*)")
 SNAPSHOT_RE = re.compile(r"\[SNAPSHOT\] (.*)")
 LOAD_RE = re.compile(
     r"level_load: levelId=(-?\d+) numPlayers=(-?\d+) entrance=(-?\d+) "
@@ -74,6 +76,7 @@ class Result:
     audio: dict[str, int]
     replay: dict[str, int]
     packet: dict[str, int]
+    retained: dict[str, int]
     snapshot: dict[str, int]
 
 
@@ -151,6 +154,7 @@ def run(binary: Path, rom: Path, root: Path, scenario: Scenario,
         MDKR_RENDERER="gl",
         MDKR_SAVE_DIR=str(save_dir),
         MDKR_STATE_HASH=HASH_VERSION,
+        MDKR_TEST_SCRIPT_ONLY_INPUT="1",
         MDKR_TRACE="1",
     )
     env.update(scenario.environment)
@@ -189,6 +193,7 @@ def run(binary: Path, rom: Path, root: Path, scenario: Scenario,
         audio=parse_last(output, AUDIO_RE, "AUDIO-SERVICE"),
         replay=parse_last(output, REPLAY_RE, "REPLAY-SUMMARY"),
         packet=parse_last(output, PACKET_RE, "PRESENT-PACKET"),
+        retained=parse_last(output, RETAINED_RE, "RETAINED-TASK"),
         snapshot=parse_last(output, SNAPSHOT_RE, "SNAPSHOT"),
     )
 
@@ -250,7 +255,7 @@ def first_difference(reference: list[str], actual: list[str]) -> int | None:
 
 
 def validate_pair(scenario: Scenario, baseline: Result,
-                  high: Result, mechanism: bool) -> list[str]:
+                  high: Result, poison: bool) -> list[str]:
     failures: list[str] = []
     prefix = scenario.name
     failures.extend(coverage_failures(scenario, baseline, "original"))
@@ -275,15 +280,18 @@ def validate_pair(scenario: Scenario, baseline: Result,
             ("original", baseline, scenario.ticks, 0, 0),
             ("60", high, scenario.ticks * 2, 1, 60)):
         summary = result.summary
+        conservation_error = completed_tick_conservation(
+            summary, scenario.ticks, f"{prefix}-{label}")
+        if conservation_error:
+            failures.append(conservation_error)
         for key, expected in (
-                ("ticks", scenario.ticks), ("simticks", scenario.ticks),
-                ("issued", scenario.ticks), ("presents", presents),
+                ("presents", presents),
                 ("entries", presents), ("presentkind", kind),
                 ("presentrate", rate), ("updatebad", 0)):
             if summary.get(key) != expected:
                 failures.append(
                     f"{prefix}-{label}: {key}={summary.get(key)}, expected {expected}")
-        for key in ("pending", "multidue", "catchup", "skips", "rebases",
+        for key in ("multidue", "catchup", "skips", "rebases",
                     "blocked"):
             if summary.get(key, 0) != 0:
                 failures.append(
@@ -291,47 +299,44 @@ def validate_pair(scenario: Scenario, baseline: Result,
         audio = result.audio
         for key, expected in (
                 ("fields", scenario.ticks * 2), ("due", scenario.ticks),
-                ("serviced", scenario.ticks - 1), ("pending", 1),
+                ("serviced", scenario.ticks), ("pending", 0),
                 ("retired", 0), ("rebases", 0),
-                ("calls", scenario.ticks - 1), ("dropped", 0)):
+                ("calls", scenario.ticks), ("dropped", 0)):
             if audio.get(key) != expected:
                 failures.append(
                     f"{prefix}-{label}: audio {key}={audio.get(key)}, "
                     f"expected {expected}")
 
-    if mechanism:
-        if (high.summary.get("interp", 0) <= 0 or
-                high.replay.get("walks", 0) <= 0):
-            failures.append(
-                f"{prefix}: internal 60 Hz mechanism never replayed an "
-                "intermediate frame")
-        expected_surface = (high.summary.get("realendpoints", 0) +
-                            high.summary.get("interp", 0))
-        if high.summary.get("surfaceupdates") != expected_surface:
-            failures.append(
-                f"{prefix}: internal mechanism surfaceupdates="
-                f"{high.summary.get('surfaceupdates')}, expected "
-                f"real+interpolated={expected_surface}")
-    else:
-        for name, actual in (
-                ("interp", high.summary.get("interp", -1)),
-                ("replay endpoints", high.summary.get("replayendpoints", -1)),
-                ("replay walks", high.replay.get("walks", -1))):
-            if actual != 0:
-                failures.append(
-                    f"{prefix}: production public-interpolate bypass "
-                    f"{name}={actual}, expected 0")
-        real_endpoints = high.summary.get("realendpoints", -1)
-        if not (scenario.ticks - 64 <= real_endpoints <= scenario.ticks):
-            failures.append(
-                f"{prefix}: production real endpoints={real_endpoints}, "
-                f"expected within the bounded transition window "
-                f"{scenario.ticks - 64}..{scenario.ticks}")
-        if high.summary.get("surfaceupdates") != real_endpoints:
-            failures.append(
-                f"{prefix}: production committed "
-                f"{high.summary.get('surfaceupdates')} surface images for "
-                f"{real_endpoints} completed authored endpoints")
+    if (high.summary.get("interp", 0) <= 0 or
+            high.replay.get("walks", 0) <= 0 or
+            high.replay.get("walks") != high.summary.get("interp")):
+        failures.append(
+            f"{prefix}: public 60 Hz smoothing did not produce matching "
+            "replay walks and interpolated images")
+    expected_surface = (high.summary.get("realendpoints", 0) +
+                        high.summary.get("interp", 0))
+    if high.summary.get("surfaceupdates") != expected_surface:
+        failures.append(
+            f"{prefix}: production surfaceupdates="
+            f"{high.summary.get('surfaceupdates')}, expected "
+            f"real+interpolated={expected_surface}")
+    if high.summary.get("replayendpoints", -1) != 0:
+        failures.append(
+            f"{prefix}: ordinary production redrew "
+            f"{high.summary.get('replayendpoints')} endpoints")
+    expected_poison = high.replay.get("walks", 0) if poison else 0
+    if (high.retained.get("captures", 0) <= 0 or
+            high.retained.get("captures") != high.retained.get("begins") or
+            high.retained.get("failures", -1) != 0 or
+            high.retained.get("rejects", -1) != 0 or
+            high.retained.get("arenaResolve", 0) <= 0 or
+            high.retained.get("externalResolve", 0) <= 0 or
+            high.retained.get("livePoison", -1) != expected_poison or
+            high.packet.get("futurecaptures", 0) <= 0 or
+            high.packet.get("futurefailures", -1) != 0):
+        failures.append(
+            f"{prefix}: retained/future publication contract failed "
+            f"(retained={high.retained}, poison={expected_poison})")
     for owner, fields in (
             ("replay", ("freezefail", "restorefail", "mtxreject")),
             ("packet", ("freezefail", "deformcollision", "effectcollision")),
@@ -400,42 +405,22 @@ def main() -> int:
                 production = run(
                     binary, rom, root, scenario, "60", args.timeout,
                     args.verbose,
-                    {"MDKR_PRESENT_SMOOTHING": "interpolate",
-                     "MDKR_TEST_PRESENTATION_REPLAY": "1"},
-                    "production-bypass")
-                mechanism = run(
-                    binary, rom, root, scenario, "60", args.timeout,
-                    args.verbose,
-                    {"MDKR_INTERNAL_TEST_TOKEN":
-                         "mdkr64-presentation-replay-v1",
-                     "MDKR_PRESENT_SMOOTHING": "interpolate",
-                     "MDKR_TEST_PRESENTATION_REPLAY": "1"},
-                    "mechanism")
-                high_results[scenario.name] = mechanism
+                    {"MDKR_PRESENT_SMOOTHING": "interpolate"},
+                    "production")
+                high_results[scenario.name] = production
                 failures.extend(validate_pair(
                     scenario, baseline, production, False))
-                failures.extend(validate_pair(
-                    scenario, baseline, mechanism, True))
-                if (production.summary.get("realendpoints") !=
-                        mechanism.summary.get("realendpoints")):
-                    failures.append(
-                        f"{scenario.name}: production/internal completed-real-"
-                        "endpoint counts differ")
                 notes.append(
                     f"{scenario.name}: {scenario.ticks} fixed ticks, "
-                    f"production {production.summary.get('surfaceupdates')} "
-                    "authored surface updates and zero replays; internal "
-                    f"mechanism {mechanism.replay.get('walks')} retained walks")
+                    f"production {production.replay.get('walks')} immutable "
+                    "replays across the lifecycle boundary")
             if "pause-quit" in high_results:
                 scenario = next(item for item in scenarios
                                 if item.name == "pause-quit")
                 control = run(
                     binary, rom, root, scenario, "60", args.timeout,
                     args.verbose,
-                    {"MDKR_INTERNAL_TEST_TOKEN":
-                         "mdkr64-presentation-replay-v1",
-                     "MDKR_PRESENT_SMOOTHING": "interpolate",
-                     "MDKR_TEST_PRESENTATION_REPLAY": "1",
+                    {"MDKR_PRESENT_SMOOTHING": "interpolate",
                      "MDKR_TEST_HASH_PERTURB": "global:4000"},
                     "hash-control",
                 )

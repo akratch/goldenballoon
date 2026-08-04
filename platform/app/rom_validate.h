@@ -7,13 +7,16 @@
 // lives at a different offset (see platform/rom_id.c for the four measured
 // SIGSEGVs that motivated the real gate).
 //
-// So this module does NOT re-implement validation. It reads the 64-byte header,
-// normalizes byte order, and delegates to the SAME dkr_rom_identify() the CLI
-// (platform/rom_io.c) and the browser shell mirror. One revision table, one
-// verdict, three front-ends. Reading 64 bytes keeps the picker responsive: no
-// 12 MB read to tell the user their cart is the Japanese one.
+// This module does NOT re-implement validation. It reads the complete image and
+// delegates size, byte-order, revision, full-image SHA-256, and asset-layout
+// checks to platform/rom_validation.c — the same authoritative contract used by
+// the engine at boot. The launcher performs the complete 12 MB read on a
+// cancellable worker so a slow removable/network drive cannot stall ImGui, and
+// a header-only false positive can never become "Ready".
 #ifndef MDKR64_ROM_VALIDATE_H
 #define MDKR64_ROM_VALIDATE_H
+
+#include "rom_validation.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -29,11 +32,25 @@ typedef struct {
     unsigned crc1, crc2;    // header CRC pair (the strongest revision signal)
     int  matched_by_crc;    // 1 when the CRC pair (not the weaker keys) matched
     unsigned size_bytes;
-    char message[320];      // human-readable status (dkr_rom_describe)
+    DkrRomValidationCode validation_code;
+    int  integrity_verified;
+    int  cancelled;
+    char sha256[MDKR_SHA256_HEX_SIZE];
+    char message[512];      // human-readable, actionable validation status
 } RomInfo;
 
 // Validate the file at `path`. Never modifies global state; safe on any thread.
 RomInfo mdkr_validate_rom(const char *path);
+
+/* Chunked variant for the native launcher worker. `progress` returns nonzero
+ * to continue or zero to cancel; it is called at byte boundaries and never
+ * from the UI thread unless the caller invokes this function there. */
+typedef int (*MdkrRomValidationProgress)(unsigned completed_bytes,
+                                         unsigned total_bytes,
+                                         void *context);
+RomInfo mdkr_validate_rom_progress(const char *path,
+                                   MdkrRomValidationProgress progress,
+                                   void *context);
 
 // "US 1.1 (NTSC-U, Rev 1) (us.v80) and European 1.1 (PAL, Rev 1) (pal.v80)" —
 // the supported set, for the picker's empty/failed state.

@@ -5,7 +5,9 @@
 > and “current” wording describes that snapshot, not present release status.
 > The 1.0.2 door-glyph hotfix and its final qualification are documented in
 > `RELEASE_NOTES.md`, `CHANGELOG.md`, and `docs/RELEASE_CHECKLIST.md`. The
-> evidence below is intentionally preserved rather than rewritten.
+> evidence below is intentionally preserved rather than rewritten. The later
+> immutable production design and its current evidence contract are documented
+> in [`UNCAPPED_PRESENTATION.md`](UNCAPPED_PRESENTATION.md).
 
 - Status: **release blocked pending final clean-archive qualification**
 - Audit type: historical parallel source review plus a live closure ledger
@@ -626,7 +628,9 @@ UX-006 user UI scale
   scaling.
 - **Acceptance evidence:** 0.75, 1.0, 1.5, and 2.0 persist across restart; font,
   button, navigation, and control metrics scale; responsive-layout matrix remains
-  unclipped; focus indication stays visible.
+  unclipped; focus indication stays visible. A real held-pointer sweep leaves
+  both applied theme scale and slider geometry unchanged, then release produces
+  exactly one layout application and one durable write.
 
 ### TEST-002 — Isolate launcher smoke preferences and drive actual ImGui input
 

@@ -1,8 +1,9 @@
 # Golden Balloon
 
 A native and browser source port of the 1997 Nintendo 64 kart racer. Not an
-emulator: the game is compiled for your machine and renders through WebGPU or
-OpenGL, using a ROM you already own.
+emulator: the game is compiled for your machine, using a ROM you already own.
+WebGPU with the Restored presentation is the qualified visual path; OpenGL and
+Remastered remain available for diagnostics and experimentation.
 
 > **Two repositories, one project — the hyphen matters:**
 >
@@ -18,17 +19,18 @@ OpenGL, using a ROM you already own.
 ## Download and play
 
 **[Play in your browser](https://akratch.github.io/golden-balloon/)** (WebGPU
-browser required: Chrome/Edge 113+, or WebGPU-enabled Firefox/Safari), or grab
-a desktop build from the
+required; current Chrome or Edge is the qualified browser path, while other
+WebGPU implementations are capability-detected but not yet in this project's
+runtime matrix), or grab a desktop build from the
 **[latest release](https://github.com/akratch/goldenballoon/releases/latest)**:
 
 | Platform | File | Notes |
 |---|---|---|
-| macOS (Apple silicon) | `Golden-Balloon-1.0.3-macos-arm64-unsigned.dmg` | Apple silicon hotfix build. Intentionally unsigned; see the first-open note below |
-| Linux (x86-64) | `Golden-Balloon-1.0.3-linux-x86_64.tar.gz` | Published only if the release workflow's built + extracted WebGPU/GL pixel gates pass; the AppImage accompanies it. SDL2 is bundled; the host graphics driver is still required |
-| Windows (x64) | `Golden-Balloon-1.0.3-windows-x64.zip` | Portable rendering-correctness hotfix. The 1.0.1 WebGPU base passed manual gameplay, controller, audio, save, and relaunch acceptance on Windows hardware; 1.0.3 hardens glyph/texture caches and Remastered composition |
+| macOS (Apple silicon) | `Golden-Balloon-1.0.4-macos-arm64-unsigned.dmg` | Candidate filename; publication remains blocked until the full human acceptance pass. Intentionally unsigned; see the first-open note below |
+| Linux (x86-64) | `Golden-Balloon-1.0.4-linux-x86_64.tar.gz` | Published only if the release workflow's built + extracted WebGPU/GL pixel gates pass; the AppImage accompanies it. SDL2 is bundled; the host graphics driver is still required |
+| Windows (x64) | `Golden-Balloon-1.0.4-windows-x64.zip` | Candidate filename; the exact extracted archive requires current Windows hardware acceptance for WebGPU, controller, audio, saves, Unicode/long paths, and relaunch |
 
-Hosted Windows CI proves the native binary, import table, exact package, and
+Hosted Windows CI validates the native binary, import table, package, and
 extracted startup, but does not provide a stable GPU environment for rendered
 gameplay. The 1.0.1 base therefore received a separate real-hardware pass
 covering its default WebGPU launch, intro and character-select timing, gameplay,
@@ -36,14 +38,17 @@ controller, audio, save, and relaunch. That manual evidence boundary remains
 visible in the release notes.
 
 If the named Linux files are absent from the release, its software-GPU publish
-gate did not pass and there is no qualified 1.0.3 Linux binary; build from
+gate did not pass and there is no qualified 1.0.4 Linux binary; build from
 source instead of redistributing an unverified workflow artifact.
 
 Then:
 
-1. Launch the app. It opens with a ROM picker.
+1. Launch the app. macOS and Windows offer a native ROM picker. On Linux,
+   drag the ROM onto the launcher or paste its absolute path; the app does not
+   search your disk.
 2. Point it at your own legally-dumped ROM of the original game (`.z64`,
-   `.v64`, and `.n64` all work; US 1.1 and European 1.1 are supported).
+   `.v64`, and `.n64` all work; US 1.1 and European 1.1 are supported). The
+   complete normalized image is verified before Play becomes available.
 3. Play. A gamepad is recommended. On keyboard: arrows or WASD steer, `X`
    accelerates, `Z` brakes, `Space` hops and power-slides, `Shift` fires
    items, `Enter` is Start. `F1` opens the settings overlay in-game.
@@ -51,18 +56,16 @@ Then:
 Each release file ships with a `.provenance.json` naming the exact source
 commit and SHA-256 it was built from.
 
-For the current 1.0.3 candidate pass, use the human routes in the
-**[release checklist](docs/RELEASE_CHECKLIST.md#7-post-release-spot-checks)**
-and verify every downloaded sidecar before opening an artifact. The
-**[historical 1.0.1 exact-hash guide](docs/RELEASE_CANDIDATE_TEST_GUIDE.md)**
-is retained as acceptance evidence for that release; it is not a 1.0.3 file
-list. The guide is refreshed with the exact 1.0.3 artifact hashes only after
-those draft assets exist, without moving the release tag.
+For the current 1.0.4 candidate, follow the
+**[human acceptance guide](docs/RELEASE_CANDIDATE_TEST_GUIDE.md)** and verify
+each artifact's checksum and provenance sidecar before opening it. Maintainer
+policy and automated release gates are in the
+**[release checklist](docs/RELEASE_CHECKLIST.md)**.
 
 > **macOS packaging notice:** the known-bad 1.0.0 DMG can produce Finder's
 > “damaged and can't be opened” dialog because its executable was modified
 > after the linker's integrity signature. This is not the ordinary
-> unidentified-developer warning. The 1.0.3 patch is intentionally shipped
+> unidentified-developer warning. The 1.0.4 candidate is intended to ship
 > without Developer ID signing/notarization, so first launch may show the normal
 > unidentified-developer warning. After the first blocked launch, open **System
 > Settings → Privacy & Security**, scroll down, choose **Open Anyway**, and
@@ -72,16 +75,15 @@ those draft assets exist, without moving the release tag.
 > signature integrity, self-contained dependencies, WebGPU selection, and the
 > macOS 13 deployment target. “Damaged” is never an expected result. A future
 > Developer ID/notarized build, if published, has the distinct name
-> `Golden-Balloon-1.0.3-macos-arm64-signed-notarized.dmg` and distinct
+> `Golden-Balloon-1.0.4-macos-arm64-signed-notarized.dmg` and distinct
 > `developer-id-notarized` provenance; it is not the artifact for this patch.
 
 ### No game data is included
 
 No ROM, textures, audio, music, models, or level data are distributed here.
-None in the repository, none in its git history, none in the releases. Golden
-Balloon reads everything at runtime from your copy of the game. In the browser
-the ROM is read locally and never uploaded, transmitted, or stored on any
-server. Every release packaging path runs a structural asset/ROM guard:
+Golden Balloon reads everything at runtime from your copy of the game. In the
+browser the ROM is read locally and never uploaded, transmitted, or stored on
+any server. Every release packaging path runs a structural asset/ROM guard:
 [`tools/check_no_rom.sh`](tools/check_no_rom.sh) checks staged portable and web
 artifacts, while [`macos/Scripts/verify_asset_free.sh`](macos/Scripts/verify_asset_free.sh)
 checks the exact macOS bundle. This promise is checked rather than merely
@@ -104,8 +106,8 @@ holder.
 
 | Platform | Status |
 |---|---|
-| macOS (Apple silicon) | Supported. WebGPU by default; OpenGL is an explicit diagnostic backend pending visual-parity work |
-| Web (WebGPU browser) | Supported. WebAssembly + WebGPU + AudioWorklet |
+| macOS (Apple silicon) | Supported. WebGPU with Restored presentation is the qualified path; OpenGL is an explicit diagnostic backend pending visual-parity work |
+| Web (WebGPU browser) | WebGPU with Restored presentation is runtime-qualified on current Chromium. Safari/Firefox WebGPU is capability-detected but not yet in the project's release matrix |
 | Linux | Best effort. Builds and runs on GL and WebGPU; physical-GPU, Wayland, and controller breadth are unmeasured |
 | Windows | Supported portable x64 patch build. Native CI validates build/package/startup; the 1.0.1 WebGPU base also passed manual gameplay, controller, audio, save, and relaunch acceptance on Windows hardware |
 
@@ -113,35 +115,53 @@ holder.
 
 | Mode | What it is |
 |---|---|
-| `--pure` | The original game presented honestly: authentic 4:3 framing at the authored FOV, no enhancements. This is the reference the fidelity suite scores against |
-| `--restored` | **The default.** The original art direction at modern fidelity: widescreen, supersampling, output-resolution HUD text, anisotropic filtering, mipmaps. Changes sharpness and stability, never look |
-| `--remastered` | **Opt-in and work in progress.** Adds runtime SDF text, restrained level-derived directional lighting for racers and character objects, terrain-projected world shadows, and a bounded linear-light finish with per-world grading on top of Restored. Broader material relighting remains future work |
+| `--pure` | Original 4:3 framing and authored FOV, without presentation enhancements |
+| `--restored` | **The qualified default.** Widescreen, supersampling, output-resolution HUD text, anisotropic filtering, and mipmaps while retaining the original art direction |
+| `--remastered` | **Opt-in and work in progress.** Adds runtime SDF text, restrained level-derived directional lighting for racers and character objects, terrain-projected world shadows, and a bounded linear-light finish with per-world grading on top of Restored. It is not a qualified visual path until its remaining visual gates close. Broader material relighting remains future work |
 
 The in-game Options → Video Options screen exposes all of this, plus aspect
 ratio, FOV, and supersampling, applied live where the renderer allows and saved
 with a restart notice where it does not. Settings persist in `mdkr64.ini`.
 
-`Video.FrameLimit` defaults to **Original (Recommended / Proven)**. Match
-Display, the listed numeric choices, and Uncapped are all
-**Experimental — Under Construction**. In 1.0.1+ they only alter host pacing and
-input/event-pump opportunities: they do not increase unique visual FPS,
-manufacture intermediate images, or change gameplay timing. The primary US 1.1
-build remains at its authored roughly 30 unique visual FPS. Any practical
-benefit may be negligible, while higher settings can use more CPU. Use Original
-for the proven release behavior.
+Native Settings also provides persistent window, controller, rumble, master,
+music, and effects controls. Fullscreen is borderless desktop fullscreen and
+can also be toggled with **F11** or **Alt+Enter**. Every normalized controller
+button, D-pad direction, trigger, and right-stick direction can be remapped to
+an N64 button or left unbound; the left stick remains analog steering. Rumble
+can be disabled or set to Light, Balanced, or Strong without making the game's
+Rumble Pak disappear. Audio previews audibly while dragged and ramps changes to
+avoid clicks. If a restart-scoped presentation change is staged during play,
+**Restart & Apply** performs an orderly engine shutdown and relaunches the same
+validated ROM; the launcher applies the same change on the next **Play**. If
+the replacement cannot stage or start, its one-shot handoff is cleared and the
+normal launcher returns with a visible recovery message instead of exiting.
 
-Motion smoothing and delayed display-list replay are disabled in 1.0.1+. A
-delayed replay can run after the game has begun rewriting mutable viewport,
-matrix, vertex, texture, and display-list storage for the next task; that is not
-a safe basis for a release image. Keeping authored frames avoids the off-center
-UI, missing vehicle parts, fractured geometry, and related artifacts found
-during release-candidate play-testing.
+`Video.FrameLimit` defaults to **Original**, which presents the game's authored
+motion. Native Settings keeps Frame Limit and Motion smoothing directly visible
+and separates them from the gameplay-changing cadence control. Match Display,
+numeric caps, and native Uncapped change presentation
+opportunities without changing gameplay speed. Pair one of those policies with
+`Video.MotionSmoothing=interpolate` to draw unique in-between images from
+adjacent authored tasks; leave smoothing off to hold the latest authored image.
+The browser is bounded by `requestAnimationFrame`, so a shared `uncapped`
+setting maps honestly to Match Display there. WebGPU admission is nonblocking:
+if the GPU is saturated, presentation holds a complete image and the game/audio
+thread continues.
 
-Gameplay runs at DKR's authored simulation cadence in every mode. The
-historical port behavior (a faster, gameplay-changing 60 Hz simulation) remains
-available explicitly: `--video-set Gameplay.SimulationCadence=enhanced`. The
-authored cadence is the default because an independent-emulator measurement
-showed the faster cadence finishing a boss lane 13.9% early.
+With Motion smoothing Off, Match Display and native Uncapped service held
+authored images at the display cadence. Repeating the same image faster cannot
+add motion and previously allowed an unbounded no-swap loop to consume a core
+and disrupt audio service. Interpolated Uncapped remains genuinely uncapped.
+
+The interpolation design, supported content, and known limits are documented in
+[the uncapped-presentation notes](docs/UNCAPPED_PRESENTATION.md).
+
+Every presentation and rendering mode keeps DKR's authored simulation cadence
+unless the player explicitly selects Enhanced. That historical compatibility
+path runs a faster, gameplay-changing 60 Hz simulation and remains available as
+`--video-set Gameplay.SimulationCadence=enhanced`. Original is the default
+because the independent-emulator Bluey lane measured Enhanced about 14% faster,
+finishing 437 fields (7.28 seconds) early.
 
 ## Native launcher
 
@@ -154,30 +174,39 @@ its fonts before the next frame.
 ROM and settings changes are transactional. An invalid ROM candidate never
 replaces the last playable selection, and a setting that cannot be written
 keeps the attempted value visible. Restore write access and press **Retry** to
-save it in the same app session. The native accessibility scope does not yet
-include a VoiceOver, UI-Automation, or other screen-reader semantic tree.
+save it in the same app session. On first use, a verified ROM remains playable
+for the current session even if its path cannot be remembered; the launcher
+says that it must be chosen again next time. If a validated ROM still fails
+during engine boot, the engine tears down and returns to the launcher with the failure
+visible; it does not leave the player at a terminal or dead window. F1 opens a
+true pause boundary: simulation state and the race clock remain fixed while the
+overlay owns input. Existing audio continues naturally, while game-timed audio
+cues are frozen with the simulation. Native accessibility supports keyboard and
+gamepad use,
+visible focus, scalable high-contrast UI, and restrained motion. It does not
+include a VoiceOver, UI Automation, or other screen-reader semantic tree, so
+the desktop app is not advertised as screen-reader compatible.
 
 ## Status
 
-Every claim in this table names the check that demonstrates it. The full suite
-is 91 check scripts expanding to 100 tasks; the manifest fails if a new check is
-not registered, and each check is validated in both directions. See
-[tests/README.md](tests/README.md).
+The main automated coverage is summarized below. See
+[tests/README.md](tests/README.md) for the full inventory and scope.
 
 | Area | State | Demonstrated by |
 |---|---|---|
 | Boot and menus | Every screen navigable. Pixel fidelity vs the real ROM: 85.5–99.8% on frontend screens, 63.6% in-race | `check_nav_fixtures.py`; [the oracle](docs/ORACLE.md) (manual run) |
 | Racing | All 20 tracks, all three vehicles, all 47 legal combinations. Full 3-lap Time Trial with saved and reloaded times | `check_track_sweep.py`, `check_vehicle_sweep.py`, `check_race_finish_time.py` |
-| Renderers | WebGPU is the native default and the browser backend; OpenGL remains an explicit diagnostic backend while its parity work continues. Production submits only authored images, WebGPU completion polling does not block gameplay/audio, and minimized windows stop GPU walks | `check_renderer_backends.py`, `check_gpu_backpressure.py`, and `check_surface_suspension.py` |
-| Widescreen, UI, shadows | Hor+ world rendering, authored-FOV preservation, output-resolution HUD in the 4:3 safe region, live resize/HiDPI, split-screen projection, terrain-projected shadows | `check_native_ui_resolution.py`, `check_widescreen_proportions.py`, shadow and 2–4P gates on both backends |
+| Renderers | WebGPU with Restored presentation is the qualified visual path. OpenGL remains an explicit diagnostic backend while its parity work continues, and Remastered remains opt-in WIP pending visual qualification. Optional presentation-only interpolation produces unique in-between images from immutable adjacent tasks; WebGPU never waits on gameplay/audio, drops excess visual work under saturation, and minimized windows stop GPU walks | `check_presentation_matrix.py`, `check_renderer_backends.py`, `check_gpu_backpressure.py`, and `check_surface_suspension.py` |
+| Widescreen, UI, shadows | Hor+ world rendering, authored-FOV preservation, widescreen cinematics with contained wooden-frame previews, discrete safe/wide interpolation boundaries, output-resolution HUD in the 4:3 safe region, live resize/HiDPI, split-screen projection, terrain-projected shadows | `check_native_ui_resolution.py`, `check_widescreen_proportions.py`, `check_framed_world_views.py`, shadow and 2–4P gates on both backends |
 | Memory-layout safety | Host-aligned object tails, bounds-checked object-map records | `check_native_layout.py` under halt-on-error alignment UBSan, with broken-direction controls |
 | Local multiplayer | 2–4 player layouts, direct per-controller racer binding, per-player HUD, multiplayer results | `check_2p_human_binding.py`, `check_race_2p_split.py`, `check_race_multiplayer.py` |
-| Audio | Music, SFX, and reverb through the clean-room audio engine | `check_audio_output.py`, `check_raw16_audio.py` |
-| Browser | Real Chromium boots the wasm build, races, runs the AudioWorklet, restores ROM and saves across reload, and never sends the ROM over the network; display/numeric host schedules preserve the authored visual cadence and fixed state/event/input/PCM | `check_browser_runtime.py` (3,600-frame live run) + `check_browser_presentation_rates.py` |
+| Playable Taj mod | Visible contiguous picker actor in every retail unlock layout; P1–P4 ownership; car/hovercraft/plane tuning; all 47 legal course/vehicle pairs; P2-led Adventure rebinding; native Rankings portrait; persistence and Time Trial quarantine | `check_taj_character_select.py`, `check_taj_playable.py`, `check_taj_p2_adventure.py`, `check_taj_results_portrait.py`, `check_taj_speed_profile.py`, Taj `check_vehicle_sweep.py`, and the browser Taj gates |
+| Audio | Music, SFX, reverb, responsive vehicle engines, the final-lap tempo change, and the F1 pause mix through the clean-room audio engine | `check_audio_output.py`, `check_final_lap_music.py`, `check_vehicle_audio.py`, `check_raw16_audio.py`, `check_overlay_pause.py` |
+| Browser | Real Chromium boots the wasm build, races, runs the AudioWorklet, restores ROM and saves across reload, and never sends the ROM over the network; display/numeric host schedules preserve fixed state/event/input/PCM and can fill rAF opportunities with presentation-only interpolation | `check_browser_runtime.py` (3,600-frame live run) + `check_browser_presentation_rates.py` |
 | Mobile touch | Analog stick plus chorded Go/Brake/Drift/Item controls with safe-area placement | `check_touch_controls.py`, including a CDP three-finger chord traced to the game's own input read |
 | Adventure mode | Both Adventure-mode loop variants: hub, balloons, lobby, races, mirrored Adventure Two, and win/loss persistence. This is not a claim that either full campaign is automated end to end; see [Current limitations](#current-limitations) | `check_adventure_hub.py`, `check_adventure_race_loop.py`, `check_adventure_two.py` |
-| Bosses, challenges, trophies | All ten boss levels; the full first-boss progression with persistence; every authored challenge course; all four trophy championships | `check_first_boss_progression.py`, `check_challenge_modes.py`, `check_taj_challenges.py`, `check_trophy_series.py` |
-| ROM support | US 1.1 and European 1.1 (byte-identical racing). Other revisions are identified by CRC and refused by name | `check_rom_revision.py`, [docs/ROM_REVISIONS.md](docs/ROM_REVISIONS.md) |
+| Boss/challenge/trophy coverage (not campaign completion) | All ten boss levels; the full first-boss progression with persistence; every authored challenge course; all four trophy championships | `check_first_boss_progression.py`, `check_challenge_modes.py`, `check_taj_challenges.py`, `check_trophy_series.py` |
+| ROM support | US 1.1 and European 1.1 (byte-identical racing). Selection and every engine boot require exact size, byte-order normalization, revision identity, complete-image SHA-256, and valid asset-table bounds. Other revisions are refused by name | `test_app_shell`, `check_shell_dropfile.py`, `check_rom_revision.py`, [docs/ROM_REVISIONS.md](docs/ROM_REVISIONS.md) |
 
 Hosted CI covers Linux GL/WebGPU, macOS, sanitizers, wasm, and clean-room
 guards. Platform claims above still distinguish automated coverage from manual
@@ -188,10 +217,14 @@ physical-hardware acceptance. See [ROADMAP.md](ROADMAP.md).
 - The complete start-to-credits campaign is not automated or claimed complete.
   Silver-coin progression, later boss rematches, both Wizpig races, and the
   credits path remain outside the current gate breadth.
-- Native macOS and the browser use the default WebGPU paths. OpenGL is retained
-  only for diagnostics while its known opening-sequence visual-parity issue is
-  investigated.
-- The macOS 1.0.3 artifact has an ad-hoc integrity seal but no Developer ID
+- Linux does not yet have a native **Choose ROM File** dialog. Drag and drop a
+  ROM onto the launcher or enter its full path instead; the limitation avoids a
+  new desktop-portal dependency and is not a disabled button that fails later.
+- WebGPU with Restored presentation is the qualified visual path. OpenGL is
+  retained only for diagnostics while its known opening-sequence visual-parity
+  issue is investigated; Remastered remains opt-in WIP until its visual gates
+  close.
+- The planned macOS 1.0.4 artifact has an ad-hoc integrity seal but no Developer ID
   trust signature or Apple notarization, so current macOS requires the manual
   first-open approval above.
 - Linux is best effort and lacks the macOS/WebGPU path's physical-GPU,
@@ -202,12 +235,10 @@ physical-hardware acceptance. See [ROADMAP.md](ROADMAP.md).
   Vulkan or Direct3D 12. `MDKR_RENDERER=webgpu|gl` selects the project renderer;
   it does not force either native API. Explicit selection and richer adapter
   diagnostics are deferred to a future portability release.
-- Windows 1.0.3 does not yet handle every non-ASCII or very long filesystem
-  path. Keep the extracted app and ROM in reasonably short, ASCII-only paths.
-  If the launcher cannot save an otherwise valid ROM choice, run
-  `GoldenBalloon.exe --rom C:\ASCII\game.z64` from Command Prompt and report the
-  issue. Wide-character filesystem support and an application manifest are
-  deferred to a future portability release.
+- The published Windows 1.0.3 archive predates the current source tree's
+  UTF-8/extended-length filesystem boundary and reviewed application manifest.
+  The 1.0.4 candidate must pass its Unicode and >260-character path gate on
+  Windows hardware before those new guarantees can be claimed for a release.
 
 The full deferred scope and the evidence required to close each item are in
 [ROADMAP.md](ROADMAP.md).
@@ -253,8 +284,10 @@ backup, see [save management](docs/SAVE_MANAGEMENT.md).
 
 `MDKR_RENDERER=webgpu|gl` selects the backend. Settings resolve in one
 documented order (schema defaults, then `mdkr64.ini`, preset, in-game menu,
-environment, CLI), and `--pure` never rewrites `mdkr64.ini`, so comparing
-against the reference cannot disturb a saved setup.
+environment, CLI). `--pure` never rewrites presentation or gameplay values, so
+reference comparisons cannot disturb a saved Remastered setup; master, music,
+effects, window, controller-mapping, and rumble settings remain adjustable as
+comfort-only exceptions.
 
 ## For developers
 

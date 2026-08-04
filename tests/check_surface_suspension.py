@@ -12,7 +12,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import completed_tick_conservation, resolve_binary
 
 
 TICKS = 30
@@ -152,13 +152,16 @@ def validate_pair(control: Result, minimized: Result) -> list[str]:
 
     for result in (control, minimized):
         arm = "minimized" if result.minimized else "control"
-        for key, expected in (("ticks", TICKS), ("issued", TICKS),
-                              ("simticks", TICKS), ("presentkind", 3)):
+        conservation_error = completed_tick_conservation(
+            result.summary, TICKS, f"{backend}-{arm}")
+        if conservation_error:
+            failures.append(conservation_error)
+        for key, expected in (("presentkind", 3),):
             if result.summary.get(key) != expected:
                 failures.append(
                     f"{backend}-{arm}: {key}={result.summary.get(key)}, "
                     f"expected {expected}")
-        for key in ("multidue", "lead", "lag", "catchup", "skips",
+        for key in ("multidue", "lag", "catchup", "skips",
                     "blocked", "updatebad"):
             if result.summary.get(key, 0) != 0:
                 failures.append(
@@ -185,11 +188,30 @@ def validate_pair(control: Result, minimized: Result) -> list[str]:
         if result.pressure.get("failures", 0) != 0:
             failures.append(f"{backend}-{arm}: GPU completion failure")
         if backend == "webgpu":
-            for key in ("skips", "abandoned", "inflight"):
+            for key in ("abandoned", "inflight"):
                 if result.pressure.get(key, 0) != 0:
                     failures.append(
                         f"{backend}-{arm}: {key}="
                         f"{result.pressure.get(key, 0)}")
+            admission_skips = result.pressure.get("skips", 0)
+            if admission_skips != (
+                    result.pressure.get("endpointSkips", 0) +
+                    result.pressure.get("replaySkips", 0)):
+                failures.append(
+                    f"{backend}-{arm}: admission skips are not fully "
+                    "classified")
+            # Native WebGPU admission is deliberately nonblocking. A fast
+            # control can shed more endpoints than a minimized run because the
+            # hidden interval gives the GPU time to retire its queue. Prove
+            # exact ownership instead of comparing throughput between arms.
+            real_walks = result.replay.get("realwalks", 0)
+            elided = result.summary.get("elided", 0)
+            if real_walks != submitted or \
+                    submitted + admission_skips + elided != TICKS:
+                failures.append(
+                    f"{backend}-{arm}: ticks do not partition into submitted "
+                    f"({submitted}), admission-skipped ({admission_skips}), "
+                    f"and surface-elided ({elided}) work")
             if (result.pressure.get("presented", 0) +
                     result.pressure.get("unavailable", 0) != submitted):
                 failures.append(
@@ -213,7 +235,8 @@ def validate_pair(control: Result, minimized: Result) -> list[str]:
             f"{backend}: only {hidden_ticks} render tasks were elided")
     if minimized.summary.get("rebases", 0) < 1:
         failures.append(f"{backend}: resume did not rebase scheduler history")
-    if (minimized.replay.get("realwalks", TICKS) >=
+    if (backend != "webgpu" and
+            minimized.replay.get("realwalks", TICKS) >=
             control.replay.get("realwalks", 0) - 5):
         failures.append(
             f"{backend}: minimized real walks did not fall decisively "

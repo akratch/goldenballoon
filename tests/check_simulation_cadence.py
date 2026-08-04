@@ -241,8 +241,8 @@ def main() -> int:
         if "source video: NTSC (60 Hz fields)" not in output:
             raise AssertionError("NTSC ROM did not publish its source clock")
         require_audio_clock(
-            output, fields=6, due=3, serviced=2, pending=1,
-            calls=2, idle=0)
+            output, fields=6, due=3, serviced=3, pending=0,
+            calls=3, idle=0)
 
         _, rows, output = run_probe(binary, ntsc_rom, frames=120)
         if rows != [(2, 2)] * 120:
@@ -258,8 +258,8 @@ def main() -> int:
         if "source video: PAL (50 Hz fields)" not in output:
             raise AssertionError("PAL ROM did not publish its source clock")
         require_audio_clock(
-            output, fields=6, due=3, serviced=2, pending=1,
-            calls=2, idle=0)
+            output, fields=6, due=3, serviced=3, pending=0,
+            calls=3, idle=0)
 
         init, rows, output = run_probe(
             binary,
@@ -274,7 +274,7 @@ def main() -> int:
         require_fixed_effective_rate(output, 1)
         require_audio_clock(
             output, fields=3, due=1, serviced=1, pending=0,
-            calls=2, idle=1)
+            calls=3, idle=2)
 
         _, _, output = run_probe(
             binary,

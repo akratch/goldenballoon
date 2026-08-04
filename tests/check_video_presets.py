@@ -301,6 +301,77 @@ def main() -> int:
         elif args.verbose:
             print(f"  supersampling ok: {d1} at both scales, images differ")
 
+    # ---- 3c. Odd-size Pure gutters are gap-free -----------------------------
+    # A playthrough of an older build described a couple of stray edge pixels.
+    # Exercise non-integral 4:3 fitting directly: both gutters may use the
+    # authored scene-clear colour, but each must be spatially uniform and the
+    # two sides must match. Black-only would be the wrong assertion because the
+    # full-bleed clear intentionally prevents stale pixels between frames.
+    with tempfile.TemporaryDirectory(prefix="mdkr_pure_gutters_") as run_dir:
+        frames = Path(run_dir) / "frames"
+        frames.mkdir()
+        command = [
+            str(binary), "--rom", str(rom),
+            "--headless-frames", "1200",
+            "--input-script", str(SCRIPT),
+            "--window-size", "641x361",
+            "--dump-frames", str(frames),
+            "--pure",
+        ]
+        env = clean_environment({"MDKR_DUMP_FROM": "1100",
+                                 "MDKR_DUMP_EVERY": "999"})
+        env["MDKR_VIDEO_CONFIG_PATH"] = str(Path(run_dir) / "video.ini")
+        env["MDKR_SAVE_DIR"] = str(Path(run_dir) / "save")
+        proc = subprocess.run(command, cwd=run_dir, env=env, text=True,
+                              capture_output=True, timeout=TIMEOUT, check=False)
+        dumps = sorted(frames.glob("*.ppm"))
+        if proc.returncode != 0 or not dumps:
+            failures.append(
+                f"odd-size Pure gutters: exit {proc.returncode}, {len(dumps)} frames")
+        else:
+            parts = dumps[0].read_bytes().split(maxsplit=4)
+            if len(parts) != 5 or parts[0] != b"P6":
+                failures.append("odd-size Pure gutters: malformed PPM capture")
+            else:
+                width, height = int(parts[1]), int(parts[2])
+                pixels = parts[4]
+                presentation_width = height * 4.0 / 3.0
+                left_end = int((width - presentation_width) * 0.5 + 0.5)
+                right_start = int((width + presentation_width) * 0.5 + 0.5)
+                expected_bytes = width * height * 3
+                if (len(pixels) != expected_bytes or left_end <= 0 or
+                        right_start >= width):
+                    failures.append(
+                        f"odd-size Pure gutters: invalid capture/layout "
+                        f"{width}x{height}, gutters {left_end}/{width-right_start}, "
+                        f"payload {len(pixels)}/{expected_bytes}")
+                else:
+                    left_colour = pixels[0:3]
+                    right_colour = pixels[right_start * 3:right_start * 3 + 3]
+                    leaked = False
+                    for y in range(height):
+                        row = y * width * 3
+                        for x in range(left_end):
+                            if pixels[row + x * 3:row + x * 3 + 3] != left_colour:
+                                leaked = True
+                                break
+                        if leaked:
+                            break
+                        for x in range(right_start, width):
+                            if pixels[row + x * 3:row + x * 3 + 3] != right_colour:
+                                leaked = True
+                                break
+                        if leaked:
+                            break
+                    if leaked or left_colour != right_colour:
+                        failures.append(
+                            "odd-size Pure gutters contain edge leakage or do not match")
+                    elif args.verbose:
+                        print(
+                            f"  odd-size gutters ok: {width}x{height}, "
+                            f"left={left_end}, right={width-right_start}, "
+                            f"colour=#{left_colour.hex()}")
+
     # ---- 4. POSITIVE CONTROL: the comparator must be able to fail -----------
     if baseline:
         rc, output = run(binary, rom, "--pure", "1280x720",

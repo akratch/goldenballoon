@@ -123,11 +123,12 @@ Findings that matter for the Emscripten step:
   pacing. A shared config containing `uncapped` resolves to `display` with
   requested/effective diagnostics. Numeric policies skip rAF opportunities on
   the same absolute rational deadline grid as native; `display` consumes one
-  opportunity per callback. In 1.0.1+ these are host/input-pump opportunities,
-  not extra images: the browser presents only newly authored frames at about
-  30 Hz NTSC or 25 Hz PAL and never swaps a duplicate. Hidden documents suspend
-  at the Asyncify boundary and the resumed interval rebases instead of
-  producing background catch-up.
+  opportunity per callback. With motion smoothing Off, those opportunities hold
+  the latest authored image. With Interpolated selected, they submit unique
+  images reconstructed from immutable adjacent authored tasks while authority
+  remains at 30 Hz NTSC or 25 Hz PAL. Hidden documents suspend at the Asyncify
+  boundary and the resumed interval rebases instead of producing background
+  catch-up.
 
 ## Watch-items
 - The `_Static_assert` offset locks (architecture decision 8) will re-validate at wasm32 pointer
@@ -141,11 +142,10 @@ Findings that matter for the Emscripten step:
 Implemented (`M8:` commits). The wasm engine COMPILES + LINKS clean, BOOTS in a
 real browser, brings up WebGPU, and runs the full game loop through the
 Asyncify/rAF frame boundary. Original mode retains the authored 30 Hz complete
-loop; opt-in display/numeric policies are marked Experimental — Under
-Construction and change only host pacing and input/event-pump opportunities.
-They do not increase unique visual FPS and may add CPU cost without a noticeable
-benefit. Production motion smoothing/display-list replay is disabled,
-so every submitted image is a new authored frame. Verified in headless Chrome
+loop; opt-in display/numeric policies change presentation and input/event-pump
+opportunities without changing the fixed gameplay tick. Production motion
+smoothing can fill those opportunities with immutable adjacent-task
+interpolation; excess GPU work is held nonblockingly. Verified in headless Chrome
 150 (Apple Metal-3,
 `--headless=new --enable-unsafe-webgpu`) by the committed, dependency-free
 `tests/check_browser_runtime.py` gate driving the actual `mdkr64_web.wasm`.
@@ -167,8 +167,8 @@ so every submitted image is a new authored frame. Verified in headless Chrome
     opportunities before an authored image is ready. KEEPS the VI-field `updateRate` semantics — field count is
     derived from real (rAF-timed) wall clock, so the slow-motion fix holds
     in-browser. Original mode measures 30fps complete ticks (`R=2`); display
-    and numeric policies preserve that tick stream without presenting between
-    authored images.
+    and numeric policies preserve that tick stream; Interpolated motion can
+    present between authored images without advancing it.
   - Web window (platform_sdl_min.c): a plain SDL window (no GL/Metal) bound to the
     page `#canvas`; the WebGPU surface comes from the `"#canvas"` selector
     (gfx_webgpu_compat.h) — kept in sync with the index.html canvas id.

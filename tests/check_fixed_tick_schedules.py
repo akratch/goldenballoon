@@ -35,7 +35,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import completed_tick_conservation, resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
@@ -148,6 +148,7 @@ def run(binary: Path, rom: Path, run_root: Path, label: str,
         MDKR_RENDERER=renderer,
         MDKR_SAVE_DIR=str(save_dir),
         MDKR_STATE_HASH="3",
+        MDKR_TEST_SCRIPT_ONLY_INPUT="1",
     )
     env.update(extra_env)
     command = [
@@ -287,10 +288,12 @@ def main() -> int:
                 failures.append(
                     f"{label}: input ticks={input_summary.get('ticks')}, "
                     f"expected {TICKS}")
-            if inputq_summary.get("ticks") != TICKS:
+            # The bootstrap pass owns no host-issued input ticket, and clean
+            # shutdown does not consume a sample for the undispatched pass.
+            if inputq_summary.get("ticks") != TICKS - 1:
                 failures.append(
                     f"{label}: queue ticks={inputq_summary.get('ticks')}, "
-                    f"expected {TICKS}")
+                    f"expected {TICKS - 1}")
             for key in ("overflow", "reordered", "pending"):
                 if inputq_summary.get(key) != 0:
                     failures.append(
@@ -298,8 +301,8 @@ def main() -> int:
                         f"{inputq_summary.get(key)}, expected 0")
             for key, expected in (
                     ("fields", TICKS * 2), ("due", TICKS),
-                    ("serviced", TICKS - 1), ("pending", 1),
-                    ("retired", 0), ("calls", TICKS - 1),
+                    ("serviced", TICKS), ("pending", 0),
+                    ("retired", 0), ("calls", TICKS),
                     ("idle", 0), ("notready", 0), ("dropped", 0),
                     ("quantumfields", 2)):
                 if audio_summary.get(key) != expected:
@@ -322,10 +325,10 @@ def main() -> int:
                 failures.append(
                     f"{label}: audio maxpending={audio_max_pending}, "
                     "expected 1..30")
-            for key in ("ticks", "simticks", "issued"):
-                if summary.get(key) != TICKS:
-                    failures.append(
-                        f"{label}: {key}={summary.get(key)}, expected {TICKS}")
+            conservation_error = completed_tick_conservation(summary, TICKS,
+                                                              label)
+            if conservation_error:
+                failures.append(conservation_error)
             if summary.get("presents", 0) + summary.get("elided", 0) != TICKS:
                 failures.append(
                     f"{label}: presents+elided="
@@ -335,13 +338,12 @@ def main() -> int:
                 failures.append(
                     f"{label}: presents={summary.get('presents')} but host "
                     f"entries={summary.get('entries')}")
-            expected_updates = TICKS - 1  # original boot bootstrap is separate
-            if summary.get("updates") != expected_updates:
+            if summary.get("updates", -1) + 1 != summary.get("simticks"):
                 failures.append(
-                    f"{label}: updates={summary.get('updates')}, "
-                    f"expected {expected_updates}")
+                    f"{label}: completed game updates do not include exactly "
+                    f"one bootstrap pass: {summary}")
             for key, expected in (
-                    ("pending", 0), ("blocked", 0), ("updatebad", 0),
+                    ("blocked", 0), ("updatebad", 0),
                     ("updatemin", 2), ("updatemax", 2),
                     ("tickfields", 2)):
                 if summary.get(key) != expected:
@@ -428,20 +430,19 @@ def main() -> int:
         for label, result in multiplayer.items():
             summary = result[2]
             inputq_summary = result[6]
-            for key in ("ticks", "simticks", "issued"):
-                if summary.get(key) != MULTIPLAYER_TICKS:
-                    failures.append(
-                        f"{label}: {key}={summary.get(key)}, expected "
-                        f"{MULTIPLAYER_TICKS}")
+            conservation_error = completed_tick_conservation(
+                summary, MULTIPLAYER_TICKS, label)
+            if conservation_error:
+                failures.append(conservation_error)
             if summary.get("presents", 0) + summary.get("elided", 0) != \
                     MULTIPLAYER_TICKS:
                 failures.append(
                     f"{label}: presents+elided={summary.get('presents')}+"
                     f"{summary.get('elided')}, expected {MULTIPLAYER_TICKS}")
-            if inputq_summary.get("ticks") != MULTIPLAYER_TICKS:
+            if inputq_summary.get("ticks") != MULTIPLAYER_TICKS - 1:
                 failures.append(
                     f"{label}: input queue ticks={inputq_summary.get('ticks')}, "
-                    f"expected {MULTIPLAYER_TICKS}")
+                    f"expected {MULTIPLAYER_TICKS - 1}")
             for key in ("overflow", "reordered", "pending"):
                 if inputq_summary.get(key) != 0:
                     failures.append(

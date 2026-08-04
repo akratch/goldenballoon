@@ -193,7 +193,8 @@ game controller via SDL_GameController); osGetCount/osGetTime from host clock
       bank parser was rewritten as a big-endian, LP64-safe parser building
       arena-resident host
       bank structs (the ASSET_AUDIO byteswap deferral is closed); real sequence
-      table + MIDI header swap; SoundData u16 swap; sndp_play / sound_count
+      table + MIDI header swap; SoundData u16 and VehicleSoundAsset mixed-field
+      swap; sndp_play / sound_count
       un-stubbed. Addressing solved by routing all audio memory through the arena
       and reconstructing the truncated 32-bit synth ABI addresses in the mixer via
       dkr_lo32_to_ptr. VERIFIED objectively (headless PCM dump, MDKR_AUDIO_DUMP):

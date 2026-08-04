@@ -1,9 +1,9 @@
-// app_theme.h — mdkr64 app visual identity: palette, metrics, embedded fonts.
+// app_theme.h — Golden Balloon native identity: palette, metrics, embedded fonts.
 //
-// One place defines the look so every panel reads as one system. Colors come
-// from macos/BRANDING.md (Steel Blue primary, Amber Gold accent, charcoal
-// surfaces). Fonts are the embedded Roboto Medium (app_font.h), rasterized at
-// the physical pixel size for Retina crispness.
+// One place defines the look so every panel reads as one system. Brand cobalt,
+// Amber Gold, website sky blue, and charcoal surfaces carry the public brand
+// without importing web-only artwork. Fonts are the embedded Roboto Medium
+// (app_font.h), rasterized at the physical pixel size for Retina crispness.
 #ifndef MDKR_APP_THEME_H
 #define MDKR_APP_THEME_H
 
@@ -29,12 +29,12 @@ void refreshFramebufferScale(float fbScale);
 
 // RX.2: apply the player's UI.Scale (0.75-2.0). Rescales the style metrics
 // (padding, spacing, min sizes) from the captured base and sets FontGlobalScale
-// so text grows too. Cheap + idempotent (early-outs when unchanged), so the
-// app can call it every frame from the live config value. Call after setup().
+// so text grows too. This changes the geometry of the entire interface; call it
+// only at a stable frame boundary, never while its slider is being dragged.
 void setUiScale(float uiScale);
 
-// Queue a live UI-scale preview while widgets are being drawn, then apply it
-// at the next pre-NewFrame safe point so one frame never mixes metric scales.
+// Queue a committed UI-scale change while widgets are being drawn, then apply
+// it at the next pre-NewFrame safe point so one frame never mixes metrics.
 void requestUiScale(float uiScale);
 void applyPendingUiScale();
 
@@ -42,12 +42,16 @@ void applyPendingUiScale();
 // scale their explicit button/control sizes in step with the style metrics.
 float uiScale();
 unsigned atlasGeneration();
+// Monotonic count of effective UI-scale changes. The launcher drag smoke uses
+// this to prove a held pointer cannot repeatedly rebuild the whole layout.
+unsigned uiScaleApplicationCount();
 
 const AppFonts &fonts();
 
 // Brand colors for direct use in panels (ImGui-normalized RGBA).
-ImVec4 primary();     // steel blue — active/interactive
+ImVec4 primary();     // brand cobalt — active location/selection
 ImVec4 accent();      // amber gold — highlights, valid states
+ImVec4 brandSky();    // bright website blue — wordmark only
 ImVec4 surface();     // graphite card
 ImVec4 subtle();      // secondary text
 ImVec4 good();        // success/valid

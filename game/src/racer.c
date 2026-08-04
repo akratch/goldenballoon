@@ -1,4 +1,12 @@
 #include "racer.h"
+#ifdef NATIVE_PORT
+#include "taj_mod.h"
+#include "taj_physics.h"
+#define TAJ_RACER_ABSORBS_ATTACK(racer, attack) \
+    taj_physics_absorb_attack((racer), (attack))
+#else
+#define TAJ_RACER_ABSORBS_ATTACK(racer, attack) FALSE
+#endif
 #include "mdkr_trace.h"
 #include "runtime_contracts.h"
 #include "memory.h"
@@ -4165,11 +4173,17 @@ void obj_init_racer(Object *obj, LevelObjectEntry_Racer *racer) {
     // Decide which player ID to assign to this object. Human players get a value from 0-3.
     // Computer players will be -1.
     if (player >= PLAYER_ONE && player <= PLAYER_FOUR) {
+#ifdef NATIVE_PORT
+        ActivePlayers selectedPlayer = player;
+#endif
         if (is_race_started_by_player_two()) {
             //!@bug player ID could be negative if there are more than two players
             player = 1 - player;
         }
         tempRacer->playerIndex = player;
+#ifdef NATIVE_PORT
+        taj_mod_bind_racer_player(selectedPlayer, player);
+#endif
     } else {
         tempRacer->playerIndex = PLAYER_COMPUTER;
     }
@@ -4294,6 +4308,9 @@ void update_player_racer(Object *obj, s32 updateRate) {
     gRaceStartTimer = get_race_countdown();
     updateRateF = updateRate;
     tempRacer = obj->racer;
+#ifdef NATIVE_PORT
+    taj_physics_pre_vehicle_update(obj, tempRacer);
+#endif
     // Cap all of the velocities on the different axes.
     // Unfortunately, Rareware didn't appear to use a clamp macro here, which would've saved a lot of real estate.
     if (obj->x_velocity > 50.0) {
@@ -4681,15 +4698,24 @@ void update_player_racer(Object *obj, s32 updateRate) {
         switch (tempRacer->vehicleID) {
             case VEHICLE_CAR:
                 func_8004F7F4(updateRate, updateRateF, obj, tempRacer);
+#ifdef NATIVE_PORT
+                taj_physics_post_vehicle_update(obj, tempRacer, updateRate, updateRateF, gCurrentRacerInput);
+#endif
                 break;
             case VEHICLE_LOOPDELOOP:
                 func_8004CC20(updateRate, updateRateF, obj, tempRacer);
                 break;
             case VEHICLE_HOVERCRAFT:
                 func_80046524(updateRate, updateRateF, obj, tempRacer);
+#ifdef NATIVE_PORT
+                taj_physics_post_vehicle_update(obj, tempRacer, updateRate, updateRateF, gCurrentRacerInput);
+#endif
                 break;
             case VEHICLE_PLANE:
                 func_80049794(updateRate, updateRateF, obj, tempRacer);
+#ifdef NATIVE_PORT
+                taj_physics_post_vehicle_update(obj, tempRacer, updateRate, updateRateF, gCurrentRacerInput);
+#endif
                 break;
             case VEHICLE_FLYING_CAR: /* fall through */
             case VEHICLE_CARPET:
@@ -4919,7 +4945,11 @@ void update_player_racer(Object *obj, s32 updateRate) {
             audspat_point_set_position(tempRacer->bananaSoundMask, obj->trans.x_position, obj->trans.y_position,
                                        obj->trans.z_position);
         }
-        if (is_in_time_trial() && tempRacer->playerIndex == PLAYER_ONE && gRaceStartTimer == 0) {
+        if (is_in_time_trial() && tempRacer->playerIndex == PLAYER_ONE && gRaceStartTimer == 0
+#ifdef NATIVE_PORT
+            && taj_physics_canonical_records_allowed(tempRacer)
+#endif
+        ) {
             timetrial_ghost_write(obj, updateRate);
         }
         if (tempRacer->soundMask) {
@@ -7088,13 +7118,20 @@ void func_80054FD0(Object *racerObj, Object_Racer *racer, s32 updateRate) {
         }
     }
     if (sp5C && numCollisions >= 3) {
-        if (racer->playerIndex != PLAYER_COMPUTER && racer->unk20 == 0 && racer->shieldTimer <= 0) {
-            sound_play(SOUND_SPLAT, &racer->unk20);
-        }
-        if (racer->squish_timer == 0) {
-            racer->attackType = ATTACK_SQUISHED;
+        if (TAJ_RACER_ABSORBS_ATTACK(racer, ATTACK_SQUISHED)) {
+#ifdef NATIVE_PORT
+            racer->squish_timer = 0;
+#endif
         } else {
-            racer->squish_timer = 60;
+            if (racer->playerIndex != PLAYER_COMPUTER &&
+                racer->unk20 == 0 && racer->shieldTimer <= 0) {
+                sound_play(SOUND_SPLAT, &racer->unk20);
+            }
+            if (racer->squish_timer == 0) {
+                racer->attackType = ATTACK_SQUISHED;
+            } else {
+                racer->squish_timer = 60;
+            }
         }
     }
     racer->unk1E4 = flags;
@@ -7261,10 +7298,16 @@ void onscreen_ai_racer_physics(Object *obj, Object_Racer *racer, UNUSED s32 upda
         racer->groundedWheels = 4;
     }
     if (shouldSquish && hasCollision) {
-        if (racer->squish_timer == 0) {
-            racer->attackType = ATTACK_SQUISHED;
+        if (TAJ_RACER_ABSORBS_ATTACK(racer, ATTACK_SQUISHED)) {
+#ifdef NATIVE_PORT
+            racer->squish_timer = 0;
+#endif
         } else {
-            racer->squish_timer = 60;
+            if (racer->squish_timer == 0) {
+                racer->attackType = ATTACK_SQUISHED;
+            } else {
+                racer->squish_timer = 60;
+            }
         }
     }
     for (i = 0; i < 3; i++) {
@@ -7623,6 +7666,16 @@ void handle_racer_items(Object *obj, Object_Racer *racer, UNUSED s32 updateRate)
  * Honk honk
  */
 void play_char_horn_sound(Object *obj, Object_Racer *racer) {
+#ifdef NATIVE_PORT
+    if (taj_physics_is_taj(racer)) {
+        /* Keep the authored vehicle loop for useful speed feedback, but give
+         * the carpet a magic call instead of leaking Diddy's donor horn. */
+        MDKR_TRACE("taj_horn: player=%d sound=%d",
+                   racer->playerIndex, SOUND_VOICE_TAJ_ALAKAZAM);
+        racer_play_sound(obj, SOUND_VOICE_TAJ_ALAKAZAM);
+        return;
+    }
+#endif
     if (get_filtered_cheats() & CHEAT_HORN_CHEAT) {
         // Play character voice instead of horn.
         play_random_character_voice(obj, SOUND_VOICE_CHARACTER_POSITIVE, 8, 130);
@@ -7792,6 +7845,18 @@ void racer_play_sound_after_delay(Object *obj, s32 soundID, s32 delay) {
 void play_random_character_voice(Object *obj, s32 soundID, s32 range, s32 flags) {
     s32 soundIndex;
     Object_Racer *tempRacer;
+#ifdef NATIVE_PORT
+    static const u16 tajPositiveVoices[] = {
+        SOUND_VOICE_TAJ_WAHEY,
+        SOUND_VOICE_TAJ_HOHO,
+        SOUND_VOICE_TAJ_ALAKAZAM,
+        SOUND_VOICE_TAJ_ALAKAZOOM2,
+    };
+    static const u16 tajNegativeVoices[] = {
+        SOUND_VOICE_TAJ_WOAH,
+        SOUND_VOICE_TAJ_HOHO,
+    };
+#endif
 
     tempRacer = obj->racer;
     if (tempRacer->exitObj == 0 && (!(flags & 0x80) || gCurrentPlayerIndex != PLAYER_COMPUTER)) {
@@ -7803,6 +7868,26 @@ void play_random_character_voice(Object *obj, s32 soundID, s32 range, s32 flags)
         }
         if (tempRacer->soundMask == NULL && (flags != 3 || rand_range(0, 1))) {
             tempRacer->unk2A = soundID;
+#ifdef NATIVE_PORT
+            if (taj_physics_is_taj(tempRacer)) {
+                const u16 *voices;
+                s32 voiceCount;
+
+                if (soundID == SOUND_VOICE_CHARACTER_NEGATIVE) {
+                    voices = tajNegativeVoices;
+                    voiceCount = ARRAY_COUNT(tajNegativeVoices);
+                } else {
+                    voices = tajPositiveVoices;
+                    voiceCount = ARRAY_COUNT(tajPositiveVoices);
+                }
+                soundIndex = voices[rand_range(0, voiceCount - 1)];
+                if (voiceCount > 1) {
+                    while (soundIndex == tempRacer->lastSoundID) {
+                        soundIndex = voices[rand_range(0, voiceCount - 1)];
+                    }
+                }
+            } else {
+#endif
             soundID += tempRacer->characterId;
             soundIndex = (rand_range(0, range - 1) * 12) + soundID;
             if (range - 1 > 0) {
@@ -7810,6 +7895,9 @@ void play_random_character_voice(Object *obj, s32 soundID, s32 range, s32 flags)
                     soundIndex = (rand_range(0, range - 1) * 12) + soundID;
                 }
             }
+#ifdef NATIVE_PORT
+            }
+#endif
             audspat_play_sound_at_position(soundIndex, obj->trans.x_position, obj->trans.y_position,
                                            obj->trans.z_position, AUDIO_POINT_FLAG_ONE_TIME_TRIGGER,
                                            &tempRacer->soundMask);
@@ -7964,6 +8052,12 @@ void drop_bananas(Object *obj, Object_Racer *racer, s32 number) {
     Object *bananaObj;
     f32 variance;
 
+#ifdef NATIVE_PORT
+    if (taj_physics_is_taj(racer)) {
+        racer->unk188 = 0;
+        return;
+    }
+#endif
     if (!(get_filtered_cheats() & CHEAT_START_WITH_10_BANANAS)) {
         racer->unk188 = 0;
         if (racer->bananas < number) {
@@ -8783,6 +8877,12 @@ void timetrial_free_staff_ghost(void) {
  * Returns the controller pak status when finished.
  */
 SIDeviceStatus timetrial_write_player_ghost(s32 controllerIndex, s32 mapId, s16 arg2, s16 arg3, s16 arg4) {
+#ifdef NATIVE_PORT
+    if (taj_physics_run_is_noncanonical()) {
+        taj_physics_trace_record_suppressed(NULL);
+        return CONTROLLER_PAK_BAD_DATA;
+    }
+#endif
     return func_80075000(controllerIndex, (s16) mapId, arg2, arg3, arg4, gGhostNodeCount[gCurrentGhostIndex],
                          (unk80075000_body *) gGhostData[gCurrentGhostIndex]);
 }
@@ -8797,6 +8897,11 @@ void timetrial_ghost_write(Object *obj, s32 updateRate) {
     GhostNode *ghostNode;
 
     racer = obj->racer;
+#ifdef NATIVE_PORT
+    if (!taj_physics_canonical_records_allowed(racer)) {
+        return;
+    }
+#endif
     yOffset = coss_f(racer->z_rotation_offset) * coss_f(racer->x_rotation_offset - racer->unk166);
     if (yOffset < 0) {
         yOffset *= 0.5;
@@ -9132,6 +9237,11 @@ void update_AI_racer(Object *obj, Object_Racer *racer, s32 updateRate, f32 updat
     f32 temp_fv1_2;
 
     gCurrentPlayerIndex = -1;
+#ifdef NATIVE_PORT
+    /* This also runs for a finished local human after its handoff to AI. Clear
+     * Taj's ordinary attack state before the generic bubble slowdown below. */
+    taj_physics_pre_vehicle_update(obj, racer);
+#endif
     gameMode = get_game_mode();
     levelHeader = level_header();
     if (racer->unk1F6 > 0) {
@@ -9264,10 +9374,25 @@ void update_AI_racer(Object *obj, Object_Racer *racer, s32 updateRate, f32 updat
         // clang-format off
         // The case statements break must be on the same line as the function call in order to match
         switch (racer->vehicleID) {
-        case VEHICLE_CAR: func_8004F7F4(updateRate, updateRateF, obj, racer); break;
+        case VEHICLE_CAR:
+            func_8004F7F4(updateRate, updateRateF, obj, racer);
+#ifdef NATIVE_PORT
+            taj_physics_post_vehicle_update(obj, racer, updateRate, updateRateF, gCurrentRacerInput);
+#endif
+            break;
         case VEHICLE_LOOPDELOOP: func_8004CC20(updateRate, updateRateF, obj, racer); break;
-        case VEHICLE_HOVERCRAFT: func_80046524(updateRate, updateRateF, obj, racer); break;
-        case VEHICLE_PLANE: func_80049794(updateRate, updateRateF, obj, racer); break;
+        case VEHICLE_HOVERCRAFT:
+            func_80046524(updateRate, updateRateF, obj, racer);
+#ifdef NATIVE_PORT
+            taj_physics_post_vehicle_update(obj, racer, updateRate, updateRateF, gCurrentRacerInput);
+#endif
+            break;
+        case VEHICLE_PLANE:
+            func_80049794(updateRate, updateRateF, obj, racer);
+#ifdef NATIVE_PORT
+            taj_physics_post_vehicle_update(obj, racer, updateRate, updateRateF, gCurrentRacerInput);
+#endif
+            break;
         case VEHICLE_FLYING_CAR: /* fall through */
         case VEHICLE_CARPET: update_carpet(updateRate, updateRateF, obj, racer); break;
         case VEHICLE_TRICKY: update_tricky(updateRate, updateRateF, obj, racer, &gCurrentRacerInput, &gCurrentButtonsPressed, &gRaceStartTimer); break;

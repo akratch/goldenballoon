@@ -58,6 +58,20 @@ static void test_schema(void) {
     expect_int("motion smoothing key",
                (int) mdkr_video_key_from_name("Video.MotionSmoothing"),
                MDKR_VIDEO_MOTION_SMOOTHING);
+    expect_int("window mode key",
+               (int)mdkr_video_key_from_name("Window.Mode"),
+               MDKR_WINDOW_MODE);
+    expect_int("controller A key",
+               (int)mdkr_video_key_from_name("Input.ControllerA"),
+               MDKR_INPUT_CONTROLLER_A);
+    expect_int("master volume key",
+               (int)mdkr_video_key_from_name("Audio.MasterVolume"),
+               MDKR_AUDIO_MASTER_VOLUME);
+    s = mdkr_video_schema(MDKR_AUDIO_MASTER_VOLUME);
+    expect_true("master volume is live percentage",
+                s != NULL && s->type == MDKR_VIDEO_TYPE_INT &&
+                s->scope == MDKR_VIDEO_SCOPE_LIVE &&
+                s->min == 0.0f && s->max == 100.0f);
 
     /*
      * RESTART, not LIVE. Both seams latch (present_pace_lazy_init's
@@ -119,8 +133,41 @@ static void test_presets(void) {
                         "off"));
     expect_true("defaults are DEFAULT-sourced",
                 cfg.values[MDKR_VIDEO_RENDER_SCALE].source == MDKR_VIDEO_SOURCE_DEFAULT);
+    expect_true("audio defaults to authored unity",
+                cfg.values[MDKR_AUDIO_MASTER_VOLUME].number == 100.0f &&
+                cfg.values[MDKR_AUDIO_MUSIC_VOLUME].number == 100.0f &&
+                cfg.values[MDKR_AUDIO_EFFECTS_VOLUME].number == 100.0f);
+    expect_true("window defaults decorated",
+                !strcmp(cfg.values[MDKR_WINDOW_MODE].text, "windowed"));
+    expect_true("rumble defaults enabled at prior amplitude",
+                cfg.values[MDKR_INPUT_RUMBLE_ENABLED].number == 1.0f &&
+                !strcmp(cfg.values[MDKR_INPUT_RUMBLE_PROFILE].text, "strong"));
+    expect_true("controller defaults preserve alternate bindings",
+                !strcmp(cfg.values[MDKR_INPUT_CONTROLLER_B].text, "b") &&
+                !strcmp(cfg.values[MDKR_INPUT_CONTROLLER_X].text, "b") &&
+                !strcmp(cfg.values[MDKR_INPUT_CONTROLLER_LEFT_TRIGGER].text, "z") &&
+                !strcmp(cfg.values[MDKR_INPUT_CONTROLLER_RIGHT_TRIGGER].text, "z"));
+
+    expect_int("player can set master volume",
+               mdkr_video_config_set(&cfg, MDKR_AUDIO_MASTER_VOLUME, "42",
+                                     MDKR_VIDEO_SOURCE_FILE), 1);
+    expect_int("master volume rejects overflow",
+               mdkr_video_config_set(&cfg, MDKR_AUDIO_MASTER_VOLUME, "101",
+                                     MDKR_VIDEO_SOURCE_FILE), 0);
+    expect_int("controller remap applies",
+               mdkr_video_config_set(&cfg, MDKR_INPUT_CONTROLLER_A, "r",
+                                     MDKR_VIDEO_SOURCE_FILE), 1);
+    expect_int("fullscreen preference applies",
+               mdkr_video_config_set(&cfg, MDKR_WINDOW_MODE, "fullscreen",
+                                     MDKR_VIDEO_SOURCE_FILE), 1);
 
     mdkr_video_config_apply_preset(&cfg, MDKR_VIDEO_MODE_PURE);
+    expect_true("pure preserves player master volume",
+                cfg.values[MDKR_AUDIO_MASTER_VOLUME].number == 42.0f);
+    expect_true("pure preserves controller remap",
+                !strcmp(cfg.values[MDKR_INPUT_CONTROLLER_A].text, "r"));
+    expect_true("pure preserves fullscreen preference",
+                !strcmp(cfg.values[MDKR_WINDOW_MODE].text, "fullscreen"));
     expect_true("pure render scale", cfg.values[MDKR_VIDEO_RENDER_SCALE].number == 1.0f);
     expect_true("pure msaa", cfg.values[MDKR_VIDEO_MSAA].number == 0.0f);
     expect_true("pure aniso", cfg.values[MDKR_VIDEO_ANISOTROPY].number == 1.0f);
@@ -149,6 +196,8 @@ static void test_presets(void) {
                         "off"));
 
     mdkr_video_config_apply_preset(&cfg, MDKR_VIDEO_MODE_RESTORED);
+    expect_true("restored preserves player master volume",
+                cfg.values[MDKR_AUDIO_MASTER_VOLUME].number == 42.0f);
     expect_true("restored widescreen on",
                 cfg.values[MDKR_VIDEO_WIDESCREEN].number == 1.0f);
     expect_true("restored aspect follows window",
@@ -159,6 +208,8 @@ static void test_presets(void) {
     expect_true("restored remasterfx off", cfg.values[MDKR_VIDEO_REMASTER_FX].number == 0.0f);
 
     mdkr_video_config_apply_preset(&cfg, MDKR_VIDEO_MODE_REMASTERED);
+    expect_true("remastered preserves player master volume",
+                cfg.values[MDKR_AUDIO_MASTER_VOLUME].number == 42.0f);
     expect_true("remastered widescreen on",
                 cfg.values[MDKR_VIDEO_WIDESCREEN].number == 1.0f);
     expect_true("remastered aspect follows window",
@@ -186,7 +237,7 @@ static void test_presets(void) {
                 !strcmp(cfg.values[MDKR_VIDEO_MOTION_SMOOTHING].text,
                         "off"));
 
-    /* Positive control: a resolved FrameLimit=60/MotionSmoothing=off survives
+    /* Positive control: a resolved FrameLimit=60/MotionSmoothing=interpolate survives
      * every preset switch, exactly like SimulationCadence=enhanced below --
      * proving "presets never touch these" isn't vacuously true because nothing
      * ever tried to set them to something other than the default. */
@@ -195,15 +246,16 @@ static void test_presets(void) {
                mdkr_video_config_set(
                    &cfg, MDKR_VIDEO_FRAME_LIMIT, "60",
                    MDKR_VIDEO_SOURCE_FILE), 1);
-    expect_int("file may request MotionSmoothing=off",
+    expect_int("file may request MotionSmoothing=interpolate",
                mdkr_video_config_set(
-                   &cfg, MDKR_VIDEO_MOTION_SMOOTHING, "off",
+                   &cfg, MDKR_VIDEO_MOTION_SMOOTHING, "interpolate",
                    MDKR_VIDEO_SOURCE_FILE), 1);
     mdkr_video_config_apply_preset(&cfg, MDKR_VIDEO_MODE_PURE);
     expect_true("pure preserves resolved frame limit",
                 !strcmp(cfg.values[MDKR_VIDEO_FRAME_LIMIT].text, "60"));
     expect_true("pure preserves resolved motion smoothing",
-                !strcmp(cfg.values[MDKR_VIDEO_MOTION_SMOOTHING].text, "off"));
+                !strcmp(cfg.values[MDKR_VIDEO_MOTION_SMOOTHING].text,
+                        "interpolate"));
     mdkr_video_config_apply_preset(&cfg, MDKR_VIDEO_MODE_RESTORED);
     expect_true("restored preserves resolved frame limit",
                 !strcmp(cfg.values[MDKR_VIDEO_FRAME_LIMIT].text, "60"));
@@ -211,7 +263,8 @@ static void test_presets(void) {
     expect_true("remastered preserves resolved frame limit",
                 !strcmp(cfg.values[MDKR_VIDEO_FRAME_LIMIT].text, "60"));
     expect_true("remastered preserves resolved motion smoothing",
-                !strcmp(cfg.values[MDKR_VIDEO_MOTION_SMOOTHING].text, "off"));
+                !strcmp(cfg.values[MDKR_VIDEO_MOTION_SMOOTHING].text,
+                        "interpolate"));
 
     mdkr_video_config_defaults(&cfg);
     expect_int("file may request enhanced simulation",
@@ -367,10 +420,17 @@ static void test_precedence(void) {
                mdkr_video_config_set(
                    &cfg, MDKR_VIDEO_FRAME_LIMIT, "1001",
                    MDKR_VIDEO_SOURCE_CLI), 0);
-    expect_int("motion smoothing quarantines interpolate",
+    expect_int("motion smoothing accepts interpolate",
                mdkr_video_config_set(
                    &cfg, MDKR_VIDEO_MOTION_SMOOTHING, "interpolate",
-                   MDKR_VIDEO_SOURCE_CLI), 0);
+                   MDKR_VIDEO_SOURCE_CLI), 1);
+    expect_int("motion smoothing canonicalizes case",
+               mdkr_video_config_set(
+                   &cfg, MDKR_VIDEO_MOTION_SMOOTHING, "INTERPOLATE",
+                   MDKR_VIDEO_SOURCE_CLI), 1);
+    expect_true("motion smoothing stores its canonical spelling",
+                !strcmp(cfg.values[MDKR_VIDEO_MOTION_SMOOTHING].text,
+                        "interpolate"));
     expect_int("motion smoothing accepts off",
                mdkr_video_config_set(
                    &cfg, MDKR_VIDEO_MOTION_SMOOTHING, "off",
@@ -379,6 +439,15 @@ static void test_precedence(void) {
                mdkr_video_config_set(
                    &cfg, MDKR_VIDEO_MOTION_SMOOTHING, "on",
                    MDKR_VIDEO_SOURCE_CLI), 0);
+    expect_int("window mode rejects unknown value",
+               mdkr_video_config_set(&cfg, MDKR_WINDOW_MODE, "maximized",
+                                     MDKR_VIDEO_SOURCE_CLI), 0);
+    expect_int("rumble profile rejects unknown value",
+               mdkr_video_config_set(&cfg, MDKR_INPUT_RUMBLE_PROFILE, "wild",
+                                     MDKR_VIDEO_SOURCE_CLI), 0);
+    expect_int("controller action rejects unknown value",
+               mdkr_video_config_set(&cfg, MDKR_INPUT_CONTROLLER_A, "jump",
+                                     MDKR_VIDEO_SOURCE_CLI), 0);
 
     /* Strings bypass numeric range but honor capacity and precedence. */
     expect_int("string set applies",

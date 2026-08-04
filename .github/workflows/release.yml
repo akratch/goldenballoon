@@ -276,6 +276,38 @@ jobs:
         run: |
           version_output="$(./build/mdkr64.exe --version | tr -d '\r')"
           test "$version_output" = "mdkr64 ${{ needs.validate.outputs.version }}"
+          if [[ "${{ needs.validate.outputs.version }}" == "dev" ]]; then
+            manifest_version="0.0.0.0"
+          else
+            IFS=. read -r manifest_major manifest_minor manifest_patch <<< "${{ needs.validate.outputs.version }}"
+            manifest_version="${manifest_major}.${manifest_minor}.${manifest_patch}.0"
+          fi
+          python3 - "$manifest_version" build/mdkr64.exe <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          version, executable = sys.argv[1:]
+          expected = re.compile(
+              rb'<assemblyIdentity\s+version="' + re.escape(version.encode()) +
+              rb'"\s+processorArchitecture="amd64"\s+name="GoldenBalloon"\s+'
+              rb'type="win32"/>')
+          data = Path(executable).read_bytes()
+          if expected.search(data) is None:
+              raise SystemExit(
+                  f"embedded manifest identity missing or wrong for {version}")
+          print(f"embedded manifest identity: {version}")
+          required = {
+              "long paths": b">true</longPathAware>",
+              "UTF-8 active code page": b">UTF-8</activeCodePage>",
+          }
+          missing = [label for label, marker in required.items()
+                     if marker not in data]
+          if missing:
+              raise SystemExit(
+                  "embedded manifest missing: " + ", ".join(missing))
+          print("embedded manifest Windows settings: UTF-8 + long paths")
+          PY
           ./tools/check_windows_imports.sh build/mdkr64.exe
           ./macos/Scripts/verify_asset_free.sh build/mdkr64.exe
           ctest --test-dir build --output-on-failure --no-tests=error -R '^memory_allocator$'

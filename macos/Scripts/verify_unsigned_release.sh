@@ -122,14 +122,19 @@ grep -aFq "${COMMIT}" "${EXECUTABLE}" ||
 # in that state so maintainers get an actionable prerequisite instead of a
 # misleading capture-only result (which is never accepted as a present).
 CONSOLE_SESSION_STATE="$(/usr/sbin/ioreg -n Root -d1 2>/dev/null || true)"
-if printf '%s\n' "${CONSOLE_SESSION_STATE}" |
-        grep -Eqi '"CGSSessionScreenIsLocked"[[:space:]]*=[[:space:]]*(Yes|true|1)'; then
+# Avoid a grep -q pipeline here. With pipefail enabled, grep can close the pipe
+# after its first match and make printf report SIGPIPE, turning a real match
+# into a false condition when ioreg returns the session as one long line.
+if grep -Eqi '"CGSSessionScreenIsLocked"[[:space:]]*=[[:space:]]*(Yes|true|1)' \
+        <<<"${CONSOLE_SESSION_STATE}"; then
     die "console session is locked; unlock it before strict WebGPU surface-present verification (capture-only proof is not accepted)"
 fi
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mdkr-unsigned-verify.XXXXXX")"
 cleanup() { rm -rf "${WORK_DIR}"; }
 trap cleanup EXIT
+SCHEMA_LOG="${WORK_DIR}/schema.log"
+DEFAULTS_LOG="${WORK_DIR}/defaults.log"
 SMOKE_BMP="${WORK_DIR}/launcher.bmp"
 SMOKE_LOG="${WORK_DIR}/launcher.log"
 SMOKE_STDOUT="${WORK_DIR}/launcher.stdout.log"
@@ -141,6 +146,29 @@ LAUNCH_TIMEOUT_SECONDS="${MDKR_RELEASE_LAUNCH_TIMEOUT_SECONDS:-60}"
     die "MDKR_RELEASE_LAUNCH_TIMEOUT_SECONDS must be a positive integer"
 (( LAUNCH_TIMEOUT_SECONDS <= 600 )) ||
     die "MDKR_RELEASE_LAUNCH_TIMEOUT_SECONDS must not exceed 600"
+
+# Prove the packaged binary's semantic contract and clean defaults directly,
+# then use the rendered smoke below to prove the frame-rate controls remain
+# visible and separate from the gameplay-changing cadence setting.
+MDKR_APP_DUMP_SCHEMA=1 MDKR_AUDIO=0 "${EXECUTABLE}" \
+    >"${SCHEMA_LOG}" 2>&1 || die "packaged settings schema self-check failed"
+grep -Fq '[app] frame-limit UI contract: recommended="Original (recommended)" group="Higher refresh rates" caveat="Original presents each authored image once. Higher rates repeat authored images when smoothing is Off, or create in-between images when it is Interpolated. Gameplay speed does not change. Higher rates can use more CPU and GPU time. Uncapped removes the native limit only when new interpolated images are available; held frames stay display-paced. A browser always maps Uncapped to Match Display."' \
+    "${SCHEMA_LOG}" || die "packaged frame-limit guidance drifted"
+
+mkdir -p "${WORK_DIR}/defaults-prefs"
+MDKR_VIDEO_CONFIG_PATH="${WORK_DIR}/defaults.ini" \
+MDKR_APP_PREFS_DIR="${WORK_DIR}/defaults-prefs" \
+MDKR_SAVE_DIR="${WORK_DIR}/defaults-save" \
+MDKR_AUDIO=0 "${EXECUTABLE}" --video-list \
+    >"${DEFAULTS_LOG}" 2>&1 || die "packaged video-default self-check failed"
+grep -Eq '^  Gameplay\.SimulationCadence[[:space:]]+original[[:space:]]+\[default\]$' \
+    "${DEFAULTS_LOG}" || die "packaged gameplay cadence is not Original by default"
+grep -Eq '^  Video\.FrameLimit[[:space:]]+original[[:space:]]+\[default\]$' \
+    "${DEFAULTS_LOG}" || die "packaged frame delivery is not Original by default"
+grep -Eq '^  Video\.MotionSmoothing[[:space:]]+off[[:space:]]+\[default\]$' \
+    "${DEFAULTS_LOG}" || die "packaged motion smoothing is not Off by default"
+grep -Eq '^  Video\.Mode[[:space:]]+restored[[:space:]]+\[default\]$' \
+    "${DEFAULTS_LOG}" || die "packaged presentation is not Restored by default"
 
 if "${SCRIPT_DIR}/run_launchservices_probe.py" \
         --timeout "${LAUNCH_TIMEOUT_SECONDS}" \
@@ -176,12 +204,11 @@ grep -Fq '[app] host: WebGPU' "${SMOKE_LOG}" || {
 }
 grep -Fq '[app-ui] settings action=play restartPending=0' "${SMOKE_LOG}" ||
     die "launcher did not render the default Settings action"
-grep -Fq '[app-ui] frame-limit value=original label=Original (Recommended / Proven) restartPending=0' \
+grep -Fq '[app-ui] frame-rate-controls visible=1 gameplay-accuracy-separated=1' \
     "${SMOKE_LOG}" ||
-    die "launcher did not render the safe default frame-limit control"
-grep -Fq '[app-ui] frame-limit-contract recommended="Original (Recommended / Proven)" group="Experimental — Under Construction" caveat="Non-Original choices only alter host pacing and input/event-pump opportunities. In 1.0.1+ they do not increase unique visual FPS; the supported US 1.1 game remains at its authored ~30 FPS. Any benefit may be negligible, while higher settings can use more CPU. Original is Recommended / Proven."' \
-    "${SMOKE_LOG}" ||
-    die "launcher frame-limit release guidance drifted"
+    die "launcher did not render the visible frame-rate controls"
+grep -Fq '[app-ui] frame-limit value=original' "${SMOKE_LOG}" ||
+    die "launcher did not expose the Original frame-limit default"
 grep -Eq '^\[app\] smoke: rendered 4 frames, drawable [1-9][0-9]*x[1-9][0-9]*' \
     "${SMOKE_LOG}" || die "launcher smoke did not render four drawable frames"
 SMOKE_PRESENT_COUNT="$(grep -Ec '^\[app\] smoke: surface presents=' "${SMOKE_LOG}" || true)"

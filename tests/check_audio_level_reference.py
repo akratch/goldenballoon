@@ -49,22 +49,22 @@ What is asserted, and why each number is not redundant
     wrong amount of material is not the measurement it claims to be.
 
  2. WHOLE-CAPTURE RMS, in dBFS, within +-1.0 dB of the frozen baseline
-    -13.135 dBFS (7222.6 of 32768). This is the primary detector. A flat +-3 dB
+    -12.857 dBFS (7457.9 of 32768). This is the primary detector. A flat +-3 dB
     bias misses it by 3x the tolerance.
 
  3. PER-CHANNEL RMS, L and R separately, within +-1.2 dB. A gain error confined to
     one side of the pan law, or to one bus, moves one of these and not the other.
 
- 4. CREST FACTOR (sample peak minus RMS), within +-1.0 dB of 13.135 dB. This is an
+ 4. CREST FACTOR (sample peak minus RMS), within +-1.0 dB of 12.857 dB. This is an
     INDEPENDENT detector of a positive bias and it is the one that survives
     tolerance drift: the program already touches full scale, so a build that got
     louder cannot raise its peak — it can only raise its RMS, which closes the
-    crest. Under the +3 dB engine control the crest falls to 10.329 dB, 2.8 dB out,
+    crest. Under the +3 dB engine control the crest falls to 10.058 dB, 2.8 dB out,
     even though the peak is bit-identical at 32768.
 
- 5. SATURATION. Railed-sample fraction 0.06504 % against a ceiling, and the
-    engine's own `[AUDIO] mainbus clip` accounting (4109/6328128 = 0.06493 %, worst
-    pre-clamp magnitude 35784 = +0.76 dBFS) against ceilings of its own. The two
+ 5. SATURATION. Railed-sample fraction 0.07248 % against a ceiling, and the
+    engine's own `[AUDIO] mainbus clip` accounting (4578/6329600 = 0.07233 %, worst
+    pre-clamp magnitude 35951 = +0.81 dBFS) against ceilings of its own. The two
     are different measurements — the mixer's count is of the master-bus accumulate
     wanting to exceed full scale, the WAV's is of samples that actually ended at
     the rail — and a gain applied after the mixer moves the second without moving
@@ -75,7 +75,7 @@ What is asserted, and why each number is not redundant
     reaches the rail and the RSP saturates on hardware too.
 
  6. TRUE PEAK, 4x oversampled with a windowed-sinc interpolator around every
-    near-peak region. Measured L +1.002 dBFS, R +2.045 dBFS: the emitted s16 rails
+    near-peak region. Measured L +1.002 dBFS, R +1.478 dBFS: the emitted s16 rails
     at 0.0 dBFS but the underlying waveform overshoots between samples, and that
     overshoot is what a real reconstruction filter (and every downstream resampler)
     actually produces. Sample peak cannot see it, because sample peak is pinned.
@@ -100,18 +100,17 @@ does not by itself prove that what it does is right. That is what section 9 is f
     same cadence, same field count, same taps — then envelope-aligned and
     compared as an RMS ratio, whole and per band.
 
-    Measured on `race_state_oracle` (title -> menus -> Ancient Lake): console
-    -11.924 dBFS, port -12.413 dBFS, **port/console -0.488 dB** over a 153.21 s
-    aligned overlap (lag -5.60 s, envelope correlation +0.7633). Per band the
-    port runs 1-2 dB shy through the low-mids and progressively brighter above
-    1.6 kHz, reaching +3.823 dB in the 6.4-11 kHz band — a spectral tilt, not a
-    gain error; see `docs/open-items/audio.md`.
+    Refreshed after the retail vehicle-audio path was restored: console
+    -11.924 dBFS, port -11.908 dBFS, **port/console +0.016 dB** over a 153.16 s
+    aligned overlap (lag -5.65 s, envelope correlation +0.7816). Per-band
+    deltas remain within 3.425 dB; see `docs/open-items/audio.md`.
 
     Tolerances here are deliberately loose (+-1.5 dB broadband, +-6 dB per band):
     the two runners do NOT hold frame-precise alignment through a multi-tap menu
     route (`docs/ORACLE.md` limitation 3), so the overlap is the same *program*
-    but not the same *instants*. The +-1.5 dB still catches the engine controls:
-    +3 dB reads +2.309 dB and -3 dB reads -3.488 dB.
+    but not the same *instants*. Engine-level controls independently prove the
+    frozen port-side baseline can fail; the ROM-derived reference remains an
+    opt-in comparison rather than a synthetic control fixture.
 
     The reference is ROM-derived and CANNOT be committed, so this section is
     skipped — loudly — when no path is given, and the registered gate runs the
@@ -134,9 +133,9 @@ than the analysis. The seam REFUSES to act whenever a host output device is open
 so it can never make sound; and with the variable unset the capture is bit-identical
 to a build compiled without it (verified).
 
-    --control gain+3   -> whole RMS -10.329 dBFS (+2.806 dB), crest 10.329 dB,
-                          rails 1.09181 % — assertions 2, 3, 4, 5, 7 and 8 fail
-    --control gain-3   -> whole RMS -16.140 dBFS (-3.005 dB), peak 23198 —
+    --control gain+3   -> whole RMS -10.058 dBFS (+2.799 dB), crest 10.058 dB,
+                          rails 1.21170 % — assertions 2, 3, 4, 5, 7 and 8 fail
+    --control gain-3   -> whole RMS -15.857 dBFS (-3.000 dB), peak 23198 —
                           assertions 2, 3, 6, 7 and 8 fail
 
 What this does NOT cover
@@ -185,28 +184,28 @@ FULL_SCALE = 32768.0
 WANT_RATE = 22050
 WANT_CHANNELS = 2
 WANT_WIDTH = 2
-WANT_FRAMES = 3164064
+WANT_FRAMES = 3164800
 FRAMES_TOL = 8192           # ~0.37 s; the pump's last block may be short
 
 # ---- assertions 2-4: level ------------------------------------------------
-BASE_RMS_DBFS = -13.135     # 7222.6 / 32768
-BASE_RMS_L_DBFS = -13.120   # 7235.0
-BASE_RMS_R_DBFS = -13.150   # 7210.2
+BASE_RMS_DBFS = -12.857     # 7457.9 / 32768
+BASE_RMS_L_DBFS = -12.857   # 7457.3
+BASE_RMS_R_DBFS = -12.856   # 7458.6
 RMS_TOL_DB = 1.0
 RMS_CHANNEL_TOL_DB = 1.2
 
-BASE_CREST_DB = 13.135      # sample peak (32768, 0.0 dBFS) - whole RMS
+BASE_CREST_DB = 12.857      # sample peak (32768, 0.0 dBFS) - whole RMS
 CREST_TOL_DB = 1.0
 
 # ---- assertion 5: saturation ----------------------------------------------
-BASE_RAIL_FRAC = 0.0006504  # 4116 / 6328128
-RAIL_FRAC_CEIL = 0.0030     # 4.6x the baseline; +3 dB gives 0.0109
-CLIP_FRAC_CEIL = 0.0030     # engine's own mainbus clip rate (measured 0.00065)
-OVERSHOOT_DB_CEIL = 4.0     # worst pre-clamp magnitude, dBFS (measured +0.76)
+BASE_RAIL_FRAC = 0.0007248  # 4588 / 6329600
+RAIL_FRAC_CEIL = 0.0030     # 4.1x the baseline; +3 dB gives 0.01212
+CLIP_FRAC_CEIL = 0.0030     # engine's own mainbus clip rate (measured 0.00072)
+OVERSHOOT_DB_CEIL = 4.0     # worst pre-clamp magnitude, dBFS (measured +0.81)
 
 # ---- assertion 6: true peak ----------------------------------------------
 BASE_TRUE_PEAK_L_DBFS = +1.002
-BASE_TRUE_PEAK_R_DBFS = +2.045
+BASE_TRUE_PEAK_R_DBFS = +1.478
 TRUE_PEAK_TOL_DB = 2.0
 TRUE_PEAK_OVERSAMPLE = 4
 TRUE_PEAK_HALF_TAPS = 16
@@ -215,17 +214,17 @@ TRUE_PEAK_TRIGGER = 0.85    # fraction of sample peak that opens a region
 
 # ---- assertion 7: per-band RMS -------------------------------------------
 BANDS_HZ = (0, 100, 200, 400, 800, 1600, 3200, 6400, 11025)
-BASE_BAND_DBFS = (-18.262, -21.193, -21.925, -21.856,
-                  -23.267, -24.711, -27.231, -32.858)
+BASE_BAND_DBFS = (-17.949, -19.357, -21.587, -21.877,
+                  -22.934, -24.898, -27.279, -32.869)
 BAND_TOL_DB = 2.5
 BAND_WINDOWS = 192
 BAND_FFT = 2048
 
 # ---- assertion 8: per-slice RMS ------------------------------------------
 SLICE_SECONDS = 10
-BASE_SLICE_DBFS = (-21.790, -19.440, -13.792, -11.569, -12.188,
-                   -15.232, -15.961, -15.567, -15.790, -12.087,
-                   -10.883, -10.915, -11.488, -11.174, -11.266)
+BASE_SLICE_DBFS = (-21.790, -19.440, -13.792, -11.569, -12.179,
+                   -15.205, -16.009, -15.532, -15.684, -12.008,
+                   -10.362, -10.372, -10.729, -10.829, -10.803)
 SLICE_TOL_DB = 2.0
 SLICE_MIN_FRAMES = 22050    # a slice shorter than 1 s is not scored
 
@@ -780,6 +779,13 @@ def capture_reference_arm(build, rom, tmp, route, gain_db, fail, note):
 
 def assert_reference(port_samples, port_rate, ref_path, fail, note):
     ref, ref_rate, ref_ch, ref_width = load_reference(ref_path)
+    if (ref_ch, ref_width) != (WANT_CHANNELS, WANT_WIDTH):
+        fail("console reference is %d ch / %d-bit, want %d ch / %d-bit"
+             % (ref_ch, ref_width * 8, WANT_CHANNELS, WANT_WIDTH * 8))
+        return
+    if ref_rate <= 0:
+        fail("console reference has invalid sample rate %d" % ref_rate)
+        return
     ref_frames = len(ref) // ref_ch
     note("console reference %s: %d Hz / %d ch, %d sample-frames = %.2f s"
          % (ref_path, ref_rate, ref_ch, ref_frames, ref_frames / float(ref_rate)))

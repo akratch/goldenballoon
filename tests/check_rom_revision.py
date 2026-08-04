@@ -196,6 +196,7 @@ def resolve_roms(*dirs):
 # The race route is the one with real forward progress; at 4300 frames the clock
 # is past the countdown and the kart has crossed 8 checkpoints (measured).
 RACE_SCRIPT = "tests/input_scripts/race_drive_long.txt"
+LANGUAGE_SCRIPT = "tests/input_scripts/options_language_cycle.txt"
 MIN_FRAMES = 5          # dumping every 900 over 4300 frames
 DUMP_EVERY = 900
 
@@ -512,6 +513,59 @@ def check_supported_parity(args, failures, workdir):
 
 
 # --------------------------------------------------------------------------
+# 6. PAL v80 retains its authored language selector
+# --------------------------------------------------------------------------
+LANGUAGE_TRACE_RE = re.compile(
+    r"menu_language: selected=(?P<language>\d+) european_rom=(?P<european>[01])"
+)
+
+
+def check_language_capability(args, failures):
+    """Exercise the real Options route, not just the loader's German asset arm.
+
+    Starting with English, the full small cycle proves both directions: PAL is
+    EN -> DE -> EN -> FR -> DE, while the US selector remains EN <-> FR. This
+    catches accidental removal of PAL German and accidental exposure of it for
+    US carts.
+    """
+    print("6. PAL v80 Options cycle exposes German; US stays English/French")
+    script = LANGUAGE_SCRIPT
+    if not os.path.exists(script):
+        failures.append("language selector fixture is missing: %s" % script)
+        print("   FAIL missing fixture")
+        return
+    expected = {
+        "us.v80": ([2, 0, 2, 0], 0, "EN <-> FR"),
+        "pal.v80": ([1, 0, 2, 1], 1, "EN -> DE -> EN -> FR -> DE"),
+    }
+    for short, (want_languages, want_european, label) in expected.items():
+        rom = args.found.get(short)
+        if not rom:
+            print("   %-8s SKIP (not present)" % short)
+            continue
+        with tempfile.TemporaryDirectory(prefix="mdkr-language-") as run_root:
+            save = os.path.join(run_root, "save")
+            os.mkdir(save)
+            rc, out = run_engine(
+                args.build, rom, 1900, script=script,
+                extra_env={"MDKR_TRACE": "1", "MDKR_SAVE_DIR": save},
+                verbose=args.verbose)
+        events = [(int(m.group("language")), int(m.group("european")))
+                  for m in LANGUAGE_TRACE_RE.finditer(out)]
+        got_languages = [language for language, _ in events]
+        got_european = {european for _, european in events}
+        if (rc != 0 or got_languages != want_languages or
+                got_european != {want_european}):
+            failures.append(
+                "%s language selector got %s (events %s, exit %d), want %s/%d (%s)"
+                % (short, got_languages, events, rc, want_languages,
+                   want_european, label))
+            print("   %-8s FAIL got %s" % (short, got_languages))
+        else:
+            print("   %-8s ok  %s" % (short, label))
+
+
+# --------------------------------------------------------------------------
 # 4. native <-> browser agreement
 # --------------------------------------------------------------------------
 C_ROW = re.compile(
@@ -637,6 +691,7 @@ def main():
         check_byte_order(args, failures, workdir)
         check_mirror(args, failures)
         check_supported_parity(args, failures, workdir)
+        check_language_capability(args, failures)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 

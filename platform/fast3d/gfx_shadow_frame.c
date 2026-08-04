@@ -1,6 +1,7 @@
 #include "gfx_shadow_frame.h"
 
 #include <float.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -279,6 +280,26 @@ static void camera_endpoint_observe(
             &expected, &actual);
         if (memcmp(&expected, &actual, sizeof(expected)) != 0) {
             s_camera_endpoint_stats.alpha_zero_mismatches++;
+            fprintf(stderr,
+                    "[CAMERA-VP-MISMATCH] viewport=%d camera=%d tick=%llu",
+                    viewport, override->camera_id,
+                    (unsigned long long)override->authored_tick);
+            for (int row = 0; row < 4; row++) {
+                for (int column = 0; column < 4; column++) {
+                    uint32_t expected_bits;
+                    uint32_t actual_bits;
+                    memcpy(&expected_bits, &captured[row][column],
+                           sizeof(expected_bits));
+                    memcpy(&actual_bits,
+                           &override->view_projection[row][column],
+                           sizeof(actual_bits));
+                    if (expected_bits != actual_bits) {
+                        fprintf(stderr, " m%d%d=%08x/%08x", row, column,
+                                expected_bits, actual_bits);
+                    }
+                }
+            }
+            fputc('\n', stderr);
         }
 
         if (s_camera_next_endpoint[viewport].valid &&
@@ -1056,7 +1077,8 @@ bool gfx_shadow_replay_restore(
     for (size_t index = 0; index < s_matrix_count; index++) {
         GfxShadowMatrixEntry *entry = &s_matrix_entries[index];
         entry->binding.vp_overridden = false;
-        if (overrides == NULL || !entry->gameplay_vp || entry->viewport < 0 ||
+        if (overrides == NULL || !entry->gameplay_vp ||
+            !entry->binding.walked_key_bytes_valid || entry->viewport < 0 ||
             (size_t)entry->viewport >= override_count ||
             !overrides[entry->viewport].valid) {
             continue;
@@ -1094,7 +1116,8 @@ void gfx_shadow_camera_endpoint_validate(
     }
     for (size_t index = 0; index < s_frozen_matrix_count; index++) {
         const GfxShadowMatrixEntry *entry = &s_frozen_matrices[index];
-        if (!entry->gameplay_vp || entry->viewport < 0 ||
+        if (!entry->gameplay_vp ||
+            !entry->binding.walked_key_bytes_valid || entry->viewport < 0 ||
             entry->viewport >= GFX_SHADOW_MAX_VIEWS ||
             (size_t)entry->viewport >= override_count ||
             observed[entry->viewport] ||

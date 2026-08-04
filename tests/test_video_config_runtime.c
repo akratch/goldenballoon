@@ -7,11 +7,14 @@
  * publication, and restart staging without touching a player's real config.
  */
 #include "display_config.h"
+#include "audio_volume.h"
+#include "config_ini.h"
 #include "present_sched.h"
 #include "test_platform_compat.h"
 #include "video_config.h"
 
 #include <math.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -79,6 +82,24 @@ static char s_presentFrameLimit[32] = "(never called)";
 static char s_presentSmoothing[32] = "(never called)";
 static int s_presentFrameLimitCalls;
 static int s_presentSmoothingCalls;
+static const char *const s_config_env_names[] = {
+    "MDKR_REMASTER_FX", "MDKR_WIDESCREEN", "MDKR_ASPECT",
+    "MDKR_RENDER_SCALE", "MDKR_MSAA", "MDKR_ANISOTROPY",
+    "MDKR_MIPMAPS", "MDKR_TEXTURE_PACK", "MDKR_FOV",
+    "MDKR_VIDEO_MODE", "MDKR_PRESENT_RATE", "MDKR_PRESENT_SMOOTHING",
+    "MDKR_MASTER_VOLUME", "MDKR_MUSIC_VOLUME", "MDKR_EFFECTS_VOLUME",
+    "MDKR_WINDOW_MODE", "MDKR_RUMBLE_ENABLED", "MDKR_RUMBLE_PROFILE",
+    "MDKR_CONTROLLER_A", "MDKR_CONTROLLER_B", "MDKR_CONTROLLER_X",
+    "MDKR_CONTROLLER_Y", "MDKR_CONTROLLER_START",
+    "MDKR_CONTROLLER_LEFT_STICK", "MDKR_CONTROLLER_RIGHT_STICK",
+    "MDKR_CONTROLLER_LEFT_SHOULDER", "MDKR_CONTROLLER_RIGHT_SHOULDER",
+    "MDKR_CONTROLLER_DPAD_UP", "MDKR_CONTROLLER_DPAD_DOWN",
+    "MDKR_CONTROLLER_DPAD_LEFT", "MDKR_CONTROLLER_DPAD_RIGHT",
+    "MDKR_CONTROLLER_LEFT_TRIGGER", "MDKR_CONTROLLER_RIGHT_TRIGGER",
+    "MDKR_CONTROLLER_RIGHT_STICK_UP", "MDKR_CONTROLLER_RIGHT_STICK_DOWN",
+    "MDKR_CONTROLLER_RIGHT_STICK_LEFT", "MDKR_CONTROLLER_RIGHT_STICK_RIGHT",
+    "MDKR_VIDEO_CONFIG_PATH",
+};
 
 void mdkr_present_set_frame_limit(const char *value) {
     s_presentFrameLimitCalls++;
@@ -166,7 +187,82 @@ static int read_config(char *out, size_t capacity) {
     return 1;
 }
 
-int main(void) {
+static int read_file_bytes(const char *path, unsigned char *out,
+                           size_t capacity, size_t *out_size) {
+    FILE *file;
+    size_t count;
+    if (path == NULL || out == NULL || out_size == NULL || capacity == 0u) {
+        return 0;
+    }
+    file = fopen(path, "rb");
+    if (file == NULL) return 0;
+    count = fread(out, 1, capacity, file);
+    if (ferror(file) || fclose(file) != 0) return 0;
+    *out_size = count;
+    return 1;
+}
+
+static int write_file_bytes(const char *path, const unsigned char *bytes,
+                            size_t size) {
+    FILE *file = fopen(path, "wb");
+    if (file == NULL) return 0;
+    if (fwrite(bytes, 1, size, file) != size) {
+        fclose(file);
+        return 0;
+    }
+    return fclose(file) == 0;
+}
+
+static int config_has_entry(const char *text, const char *key,
+                            const char *value) {
+    ConfigIniEntry entries[128];
+    int count = 0;
+    if (text == NULL || key == NULL || value == NULL ||
+        !config_ini_parse(text, entries,
+                          (int)(sizeof(entries) / sizeof(entries[0])),
+                          &count)) {
+        return 0;
+    }
+    for (int i = 0; i < count; i++) {
+        if (!strcmp(entries[i].key, key) && !strcmp(entries[i].value, value)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int no_config_staging_files(const char *directory) {
+    DIR *dir = opendir(directory);
+    struct dirent *entry;
+    int clean = dir != NULL;
+    if (dir == NULL) return 0;
+    while ((entry = readdir(dir)) != NULL) {
+        if (!strncmp(entry->d_name, "mdkr64.ini.tmp.", 15)) clean = 0;
+    }
+    closedir(dir);
+    return clean;
+}
+
+static void remove_config_artifacts(const char *directory) {
+    char path[2300];
+    DIR *dir;
+    struct dirent *entry;
+    snprintf(path, sizeof(path), "%s/mdkr64.ini", directory);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/mdkr64.ini.lock", directory);
+    unlink(path);
+    dir = opendir(directory);
+    if (dir == NULL) return;
+    while ((entry = readdir(dir)) != NULL) {
+        if (!strncmp(entry->d_name, "mdkr64.ini.tmp.", 15)) {
+            snprintf(path, sizeof(path), "%s/%s", directory, entry->d_name);
+            unlink(path);
+        }
+    }
+    closedir(dir);
+}
+
+static int run_primary_case(void) {
     char temporary[2048];
     char original[2048];
     char text[32768];
@@ -180,22 +276,15 @@ int main(void) {
         "--video-set",
         "Video.FrameLimit=240",
     };
-    static const char *const env_names[] = {
-        "MDKR_REMASTER_FX", "MDKR_WIDESCREEN", "MDKR_ASPECT",
-        "MDKR_RENDER_SCALE", "MDKR_MSAA", "MDKR_ANISOTROPY",
-        "MDKR_MIPMAPS", "MDKR_TEXTURE_PACK", "MDKR_FOV",
-        "MDKR_VIDEO_MODE", "MDKR_PRESENT_RATE", "MDKR_PRESENT_SMOOTHING",
-        "MDKR_VIDEO_CONFIG_PATH",
-    };
-
     expect("temporary directory created",
            mdkr_test_make_temp_directory(
                temporary, sizeof(temporary), "mdkr-video-runtime"));
     if (s_failures != 0) return 1;
     expect("original cwd captured", getcwd(original, sizeof(original)) != NULL);
     expect("entered temporary directory", chdir(temporary) == 0);
-    for (size_t i = 0; i < sizeof(env_names) / sizeof(env_names[0]); i++) {
-        (void) mdkr_test_env_unset(env_names[i]);
+    for (size_t i = 0;
+         i < sizeof(s_config_env_names) / sizeof(s_config_env_names[0]); i++) {
+        (void)mdkr_test_env_unset(s_config_env_names[i]);
     }
     {
         char config_path[2300];
@@ -215,11 +304,65 @@ int main(void) {
     expect("CLI mipmap value effective", g_pcMipmaps == 0);
     expect("restored grade is disabled",
            g_pcGradePresets == 0 && g_pcTonemap == 0);
+    {
+        MdkrAudioVolumeState volume;
+        mdkr_audio_volume_snapshot(&volume);
+        expect("audio defaults publish at authored unity",
+               volume.master == 100 && volume.music == 100 &&
+               volume.effects == 100);
+    }
     expect("CLI setting reports locked",
            mdkr_video_config_runtime_locked(MDKR_VIDEO_MIPMAPS));
     expect("locked setting rejected",
            mdkr_video_config_runtime_set(MDKR_VIDEO_MIPMAPS, "1") ==
                MDKR_VIDEO_RUNTIME_LOCKED);
+
+    expect("master volume applies live",
+           mdkr_video_config_runtime_set(MDKR_AUDIO_MASTER_VOLUME, "55") ==
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("audio-only edit keeps presentation preset",
+           mdkr_video_config_desired()->mode == MDKR_VIDEO_MODE_RESTORED);
+    {
+        MdkrAudioVolumeState volume;
+        mdkr_audio_volume_snapshot(&volume);
+        expect("master volume reached output policy", volume.master == 55);
+    }
+    expect("music preview applies without changing config",
+           mdkr_audio_config_runtime_preview(MDKR_AUDIO_MUSIC_VOLUME, 12));
+    {
+        MdkrAudioVolumeState volume;
+        mdkr_audio_volume_snapshot(&volume);
+        expect("audible preview reached output policy", volume.music == 12);
+        expect("preview did not mutate persisted desired state",
+               mdkr_video_config_desired()
+                       ->values[MDKR_AUDIO_MUSIC_VOLUME].number == 100.0f);
+    }
+    mdkr_audio_config_runtime_cancel_preview();
+    {
+        MdkrAudioVolumeState volume;
+        mdkr_audio_volume_snapshot(&volume);
+        expect("cancel restored committed music", volume.music == 100);
+    }
+    expect("original game sliders persist atomically",
+           mdkr_audio_config_runtime_set_game_levels(128, 64) ==
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("game slider mapping is rounded to percentages",
+           mdkr_video_config_current()->values[MDKR_AUDIO_MUSIC_VOLUME].number ==
+                   50.0f &&
+               mdkr_video_config_current()
+                       ->values[MDKR_AUDIO_EFFECTS_VOLUME].number == 25.0f);
+
+    expect("rumble disable applies live",
+           mdkr_video_config_runtime_set(MDKR_INPUT_RUMBLE_ENABLED, "0") ==
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("controller button remap applies live",
+           mdkr_video_config_runtime_set(MDKR_INPUT_CONTROLLER_A, "r") ==
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("window mode preference applies live in config transaction",
+           mdkr_video_config_runtime_set(MDKR_WINDOW_MODE, "fullscreen") ==
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("comfort edits keep presentation preset",
+           mdkr_video_config_desired()->mode == MDKR_VIDEO_MODE_RESTORED);
 
     expect("aspect applies live",
            mdkr_video_config_runtime_set(MDKR_VIDEO_ASPECT, "21:9") ==
@@ -267,7 +410,8 @@ int main(void) {
     expect("frame limit restart is pending",
            mdkr_video_config_restart_pending());
     expect("motion smoothing stages for restart",
-           mdkr_video_config_runtime_set(MDKR_VIDEO_MOTION_SMOOTHING, "off") ==
+           mdkr_video_config_runtime_set(
+               MDKR_VIDEO_MOTION_SMOOTHING, "interpolate") ==
                MDKR_VIDEO_RUNTIME_RESTART);
     expect("staged motion smoothing did not reach present_sched",
            s_presentSmoothingCalls == 0);
@@ -277,7 +421,8 @@ int main(void) {
                        ->values[MDKR_VIDEO_FRAME_LIMIT].text, "240"));
     expect("staged motion smoothing is in the desired config",
            !strcmp(mdkr_video_config_desired()
-                       ->values[MDKR_VIDEO_MOTION_SMOOTHING].text, "off"));
+                       ->values[MDKR_VIDEO_MOTION_SMOOTHING].text,
+                   "interpolate"));
 
     expect("remaster effects stage for restart",
            mdkr_video_config_runtime_set(MDKR_VIDEO_REMASTER_FX, "1") ==
@@ -295,9 +440,55 @@ int main(void) {
     expect("aspect persisted", strstr(text, "Aspect=21:9") != NULL);
     expect("FOV persisted", strstr(text, "GameplayFOV=75") != NULL);
     expect("live render scale persisted", strstr(text, "RenderScale=3") != NULL);
+    expect("rumble disable persisted", strstr(text, "RumbleEnabled=0") != NULL);
+    expect("controller remap persisted", strstr(text, "ControllerA=r") != NULL);
+    expect("window mode persisted", config_has_entry(
+               text, "Window.Mode", "fullscreen"));
     expect("temporary CLI value not baked into config",
            strstr(text, "Mipmaps=1") != NULL);
-    expect("atomic temporary file removed", access("mdkr64.ini.tmp", F_OK) != 0);
+    expect("all unique atomic temporary files removed",
+           no_config_staging_files("."));
+
+    /* The native Restore controller defaults action builds this exact bounded
+     * multi-key transaction. Exercise all mappings and both rumble fields as
+     * one commit so a partial restore can never become a UI-only assumption. */
+    {
+        MdkrVideoConfig defaults;
+        MdkrVideoRuntimeChange changes[MDKR_VIDEO_KEY_COUNT];
+        char values[MDKR_VIDEO_KEY_COUNT][MDKR_VIDEO_STRING_MAX];
+        int count = 0;
+        mdkr_video_config_defaults(&defaults);
+        for (int key = MDKR_INPUT_FIRST_KEY; key <= MDKR_INPUT_LAST_KEY; key++) {
+            const MdkrVideoSchema *schema =
+                mdkr_video_schema((MdkrVideoKey)key);
+            if (schema->type == MDKR_VIDEO_TYPE_STRING) {
+                snprintf(values[count], sizeof(values[count]), "%s",
+                         defaults.values[key].text);
+            } else {
+                snprintf(values[count], sizeof(values[count]), "%d",
+                         (int)defaults.values[key].number);
+            }
+            changes[count].key = (MdkrVideoKey)key;
+            changes[count].value = values[count];
+            count++;
+        }
+        expect("controller defaults restore is one live transaction",
+               mdkr_video_config_runtime_set_many(changes, count) ==
+                   MDKR_VIDEO_RUNTIME_LIVE);
+        expect("controller defaults restore covers mappings and rumble",
+               mdkr_video_config_current()
+                       ->values[MDKR_INPUT_RUMBLE_ENABLED].number == 1.0f &&
+                   !strcmp(mdkr_video_config_current()
+                               ->values[MDKR_INPUT_RUMBLE_PROFILE].text,
+                           "strong") &&
+                   !strcmp(mdkr_video_config_current()
+                               ->values[MDKR_INPUT_CONTROLLER_A].text,
+                           "a") &&
+                   !strcmp(mdkr_video_config_current()
+                               ->values[MDKR_INPUT_CONTROLLER_RIGHT_STICK_RIGHT]
+                               .text,
+                           "c_right"));
+    }
 
     /*
      * The launcher and engine share this process. A normal second init must
@@ -332,14 +523,8 @@ int main(void) {
            !mdkr_video_config_handoff_to_engine(3, engine_argv));
 
     expect("returned to original cwd", chdir(original) == 0);
-    {
-        char path[2300];
-        snprintf(path, sizeof(path), "%s/mdkr64.ini", temporary);
-        unlink(path);
-        snprintf(path, sizeof(path), "%s/mdkr64.ini.tmp", temporary);
-        unlink(path);
-    }
-    rmdir(temporary);
+    remove_config_artifacts(temporary);
+    expect("primary config artifacts cleaned", rmdir(temporary) == 0);
 
     if (s_failures != 0) {
         fprintf(stderr, "%d failure(s)\n", s_failures);
@@ -347,4 +532,321 @@ int main(void) {
     }
     printf("all video_config runtime tests passed\n");
     return 0;
+}
+
+static int run_pure_comfort_case(void) {
+    char temporary[2048];
+    char original[2048];
+    char text[32768];
+    char config_path[2300];
+    char *argv[] = { "mdkr-video-runtime-test", "--pure" };
+
+    s_failures = 0;
+    expect("pure-comfort temporary directory created",
+           mdkr_test_make_temp_directory(
+               temporary, sizeof(temporary), "mdkr-pure-comfort-runtime"));
+    if (s_failures != 0) return 1;
+    expect("pure-comfort original cwd captured",
+           getcwd(original, sizeof(original)) != NULL);
+    expect("pure-comfort entered temporary directory", chdir(temporary) == 0);
+    for (size_t i = 0;
+         i < sizeof(s_config_env_names) / sizeof(s_config_env_names[0]); i++) {
+        (void)mdkr_test_env_unset(s_config_env_names[i]);
+    }
+    snprintf(config_path, sizeof(config_path), "%s/mdkr64.ini", temporary);
+    expect("pure-comfort config path override set",
+           mdkr_test_env_set("MDKR_VIDEO_CONFIG_PATH", config_path, 1) == 0);
+    expect("pure-comfort initial config written", write_initial_config());
+
+    mdkr_video_config_init(2, argv);
+    mdkr_video_config_publish();
+    expect("explicit Pure session is presentation read-only",
+           mdkr_video_config_is_readonly());
+    expect("Pure audio comfort edit applies live",
+           mdkr_video_config_runtime_set(MDKR_AUDIO_MASTER_VOLUME, "44") ==
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("Pure controller comfort edit applies live",
+           mdkr_video_config_runtime_set(MDKR_INPUT_CONTROLLER_A, "r") ==
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("Pure rumble comfort edit applies live",
+           mdkr_video_config_runtime_set(MDKR_INPUT_RUMBLE_ENABLED, "0") ==
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("Pure rumble profile edit applies live",
+           mdkr_video_config_runtime_set(MDKR_INPUT_RUMBLE_PROFILE, "light") ==
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("Pure window comfort edit applies live",
+           mdkr_video_config_runtime_set(MDKR_WINDOW_MODE, "fullscreen") ==
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("Pure comfort persistence is readable",
+           read_config(text, sizeof(text)));
+    expect("Pure comfort persistence keeps prior mode",
+           strstr(text, "Mode=restored") != NULL &&
+               strstr(text, "Mode=pure") == NULL);
+    expect("Pure comfort persistence keeps prior framing",
+           strstr(text, "Aspect=16:10") != NULL &&
+               strstr(text, "GameplayFOV=authored") != NULL);
+    expect("Pure comfort persistence keeps prior fidelity",
+           strstr(text, "Mipmaps=1") != NULL);
+    expect("Pure comfort persistence writes audio value",
+           strstr(text, "MasterVolume=44") != NULL);
+    expect("Pure persistence writes controller comfort value",
+           strstr(text, "ControllerA=r") != NULL);
+    expect("Pure persistence writes rumble comfort value",
+           strstr(text, "RumbleEnabled=0") != NULL);
+    expect("Pure persistence writes rumble profile comfort value",
+           strstr(text, "RumbleProfile=light") != NULL);
+    expect("Pure persistence writes window comfort value",
+           config_has_entry(text, "Window.Mode", "fullscreen"));
+    expect("Pure comfort persistence keeps unknown settings",
+           strstr(text, "OwnedByNewerBuild=keep-me") != NULL);
+    expect("Pure session remains active after comfort edits",
+           mdkr_video_config_current()->mode == MDKR_VIDEO_MODE_PURE);
+
+    expect("pure-comfort returned to original cwd", chdir(original) == 0);
+    remove_config_artifacts(temporary);
+    expect("pure-comfort config artifacts cleaned", rmdir(temporary) == 0);
+    if (s_failures != 0) {
+        fprintf(stderr, "%d pure-comfort failure(s)\n", s_failures);
+        return 1;
+    }
+    printf("Pure comfort persistence tests passed\n");
+    return 0;
+}
+
+static int run_corrupt_handoff_case(void) {
+    char temporary[2048];
+    char original[2048];
+    char config_path[2300];
+    char *argv[] = { "mdkr-video-runtime-test" };
+    char *engine_argv[] = {
+        "mdkr-video-runtime-test", "--video-set", "Video.FrameLimit=120",
+    };
+    FILE *file;
+    char byte = 'x';
+    long size;
+
+    s_failures = 0;
+    expect("corrupt-handoff temporary directory created",
+           mdkr_test_make_temp_directory(temporary, sizeof(temporary),
+                                         "mdkr-corrupt-video-runtime"));
+    if (s_failures != 0) return 1;
+    expect("corrupt-handoff original cwd captured",
+           getcwd(original, sizeof(original)) != NULL);
+    expect("corrupt-handoff entered temporary directory", chdir(temporary) == 0);
+    for (size_t i = 0;
+         i < sizeof(s_config_env_names) / sizeof(s_config_env_names[0]); i++) {
+        (void)mdkr_test_env_unset(s_config_env_names[i]);
+    }
+    snprintf(config_path, sizeof(config_path), "%s/mdkr64.ini", temporary);
+    expect("corrupt-handoff config path override set",
+           mdkr_test_env_set("MDKR_VIDEO_CONFIG_PATH", config_path, 1) == 0);
+    file = fopen("mdkr64.ini", "wb");
+    expect("corrupt-handoff oversized config opened", file != NULL);
+    if (file != NULL) {
+        for (int i = 0; i < 32768; i++) {
+            if (fwrite(&byte, 1, 1, file) != 1) break;
+        }
+        expect("corrupt-handoff oversized config written", fclose(file) == 0);
+    }
+    mdkr_video_config_init(1, argv);
+    expect("corrupt config does not block engine handoff",
+           mdkr_video_config_handoff_to_engine(3, engine_argv));
+    expect_complete_config("corrupt handoff config", mdkr_video_config_current());
+    expect("corrupt handoff retains engine CLI", !strcmp(
+        mdkr_video_config_current()->values[MDKR_VIDEO_FRAME_LIMIT].text, "120"));
+    expect("corrupt config refuses mutation rather than overwriting it",
+           mdkr_video_config_runtime_set(MDKR_AUDIO_MASTER_VOLUME, "44") ==
+               MDKR_VIDEO_RUNTIME_SAVE_FAILED);
+    file = fopen("mdkr64.ini", "rb");
+    size = -1;
+    if (file != NULL) {
+        fseek(file, 0, SEEK_END);
+        size = ftell(file);
+        fclose(file);
+    }
+    expect("corrupt config remains byte-count unchanged", size == 32768);
+    expect("corrupt-handoff returned to original cwd", chdir(original) == 0);
+    expect("corrupt config leaves no staging file", no_config_staging_files(temporary));
+    remove_config_artifacts(temporary);
+    expect("corrupt-handoff config artifacts cleaned", rmdir(temporary) == 0);
+    if (s_failures != 0) {
+        fprintf(stderr, "%d corrupt-handoff failure(s)\n", s_failures);
+        return 1;
+    }
+    printf("Corrupt config handoff tests passed\n");
+    return 0;
+}
+
+static int run_embedded_nul_case(void) {
+    static const unsigned char fixture[] =
+        "[Video]\nMode=restored\n\0[Video]\nMasterVolume=1\n";
+    char temporary[2048];
+    char original[2048];
+    char config_path[2300];
+    unsigned char before[sizeof(fixture)];
+    unsigned char after[sizeof(fixture)];
+    size_t before_size = 0u;
+    size_t after_size = 0u;
+    char *argv[] = { "mdkr-video-runtime-test" };
+
+    s_failures = 0;
+    expect("embedded-NUL temporary directory created",
+           mdkr_test_make_temp_directory(temporary, sizeof(temporary),
+                                         "mdkr-nul-video-runtime"));
+    if (s_failures != 0) return 1;
+    expect("embedded-NUL original cwd captured",
+           getcwd(original, sizeof(original)) != NULL);
+    expect("embedded-NUL entered temporary directory", chdir(temporary) == 0);
+    snprintf(config_path, sizeof(config_path), "%s/mdkr64.ini", temporary);
+    expect("embedded-NUL config path override set",
+           mdkr_test_env_set("MDKR_VIDEO_CONFIG_PATH", config_path, 1) == 0);
+    expect("embedded-NUL fixture written",
+           write_file_bytes("mdkr64.ini", fixture, sizeof(fixture) - 1u));
+    expect("embedded-NUL fixture captured",
+           read_file_bytes("mdkr64.ini", before, sizeof(before), &before_size));
+    mdkr_video_config_init(1, argv);
+    expect("embedded-NUL config refuses mutation",
+           mdkr_video_config_runtime_set(MDKR_AUDIO_MASTER_VOLUME, "44") ==
+               MDKR_VIDEO_RUNTIME_SAVE_FAILED);
+    expect("embedded-NUL fixture remains readable",
+           read_file_bytes("mdkr64.ini", after, sizeof(after), &after_size));
+    expect("embedded-NUL config remains byte-for-byte unchanged",
+           after_size == before_size && memcmp(after, before, before_size) == 0);
+    expect("embedded-NUL returned to original cwd", chdir(original) == 0);
+    remove_config_artifacts(temporary);
+    expect("embedded-NUL artifacts cleaned", rmdir(temporary) == 0);
+    if (s_failures != 0) {
+        fprintf(stderr, "%d embedded-NUL failure(s)\n", s_failures);
+        return 1;
+    }
+    printf("Embedded-NUL video config tests passed\n");
+    return 0;
+}
+
+static int run_durability_case(void) {
+    char temporary[2048];
+    char original[2048];
+    char config_path[2300];
+    char text[32768];
+    char *argv[] = { "mdkr-video-runtime-test" };
+
+    s_failures = 0;
+    expect("durability temporary directory created",
+           mdkr_test_make_temp_directory(temporary, sizeof(temporary),
+                                         "mdkr-durable-video-runtime"));
+    if (s_failures != 0) return 1;
+    expect("durability original cwd captured",
+           getcwd(original, sizeof(original)) != NULL);
+    expect("durability entered temporary directory", chdir(temporary) == 0);
+    snprintf(config_path, sizeof(config_path), "%s/mdkr64.ini", temporary);
+    expect("durability config path override set",
+           mdkr_test_env_set("MDKR_VIDEO_CONFIG_PATH", config_path, 1) == 0);
+    expect("durability initial config written", write_initial_config());
+    mdkr_video_config_init(1, argv);
+    mdkr_video_test_force_directory_sync_failure(1);
+    expect("runtime outcome helper rejects actual save failures",
+           !mdkr_video_runtime_result_applied(MDKR_VIDEO_RUNTIME_SAVE_FAILED));
+    expect("directory-sync uncertainty is distinct from durable success",
+           mdkr_video_config_runtime_set(MDKR_AUDIO_MASTER_VOLUME, "44") ==
+               MDKR_VIDEO_RUNTIME_SAVE_UNCONFIRMED);
+    expect("runtime outcome helper accepts visible unconfirmed changes",
+           mdkr_video_runtime_result_applied(
+               MDKR_VIDEO_RUNTIME_SAVE_UNCONFIRMED));
+    mdkr_video_test_force_directory_sync_failure(0);
+    expect("unconfirmed replacement remains visibly readable",
+           read_config(text, sizeof(text)) &&
+               config_has_entry(text, "Audio.MasterVolume", "44"));
+    expect("unconfirmed live value remains active",
+           mdkr_video_config_current()
+                   ->values[MDKR_AUDIO_MASTER_VOLUME].number == 44.0f &&
+               mdkr_video_config_desired()
+                   ->values[MDKR_AUDIO_MASTER_VOLUME].number == 44.0f);
+    expect("durability returned to original cwd", chdir(original) == 0);
+    remove_config_artifacts(temporary);
+    expect("durability artifacts cleaned", rmdir(temporary) == 0);
+    if (s_failures != 0) {
+        fprintf(stderr, "%d durability failure(s)\n", s_failures);
+        return 1;
+    }
+    printf("Video config durability tests passed\n");
+    return 0;
+}
+
+static void write_launcher_interleaving_commit(void) {
+    static const char text[] =
+        "[Future]\nOwnedByOtherProcess=keep-me\n\n"
+        "[Video]\nMode=restored\n\n"
+        "[Window]\nMode=windowed\n\n[Audio]\nMasterVolume=37\n";
+    FILE *file = fopen("mdkr64.ini", "wb");
+    if (file == NULL || fwrite(text, 1, strlen(text), file) != strlen(text) ||
+        fclose(file) != 0) {
+        fprintf(stderr, "FAIL launcher interleaving writer\n");
+        s_failures++;
+    }
+}
+
+static int run_launcher_merge_case(void) {
+    char temporary[2048];
+    char original[2048];
+    char config_path[2300];
+    char text[32768];
+    char *argv[] = {
+        "mdkr-video-runtime-test", "--video-launch-set", "Window.Mode=fullscreen",
+        "--video-launch-persist"
+    };
+
+    s_failures = 0;
+    expect("launcher-merge temporary directory created",
+           mdkr_test_make_temp_directory(temporary, sizeof(temporary),
+                                         "mdkr-launcher-merge"));
+    if (s_failures != 0) return 1;
+    expect("launcher-merge original cwd captured",
+           getcwd(original, sizeof(original)) != NULL);
+    expect("launcher-merge entered temporary directory", chdir(temporary) == 0);
+    snprintf(config_path, sizeof(config_path), "%s/mdkr64.ini", temporary);
+    expect("launcher-merge config path override set",
+           mdkr_test_env_set("MDKR_VIDEO_CONFIG_PATH", config_path, 1) == 0);
+    expect("launcher-merge initial config written", write_initial_config());
+    /* This deterministic interleaving commits another process's complete
+     * replacement after launcher startup read but before its lock acquisition. */
+    mdkr_video_test_set_launcher_persist_hook(write_launcher_interleaving_commit);
+    mdkr_video_config_init(4, argv);
+    mdkr_video_test_set_launcher_persist_hook(NULL);
+    expect("launcher merge retained independent committed audio edit",
+           read_config(text, sizeof(text)) &&
+               config_has_entry(text, "Audio.MasterVolume", "37"));
+    expect("launcher merge persisted its own requested key",
+           config_has_entry(text, "Window.Mode", "fullscreen"));
+    expect("launcher merge uses launcher intent for concurrently changed key",
+           !config_has_entry(text, "Window.Mode", "windowed"));
+    expect("launcher merge retained unknown concurrent key",
+           strstr(text, "OwnedByOtherProcess=keep-me") != NULL);
+    expect("launcher-merge returned to original cwd", chdir(original) == 0);
+    remove_config_artifacts(temporary);
+    expect("launcher-merge artifacts cleaned", rmdir(temporary) == 0);
+    if (s_failures != 0) {
+        fprintf(stderr, "%d launcher-merge failure(s)\n", s_failures);
+        return 1;
+    }
+    printf("Launcher merge transaction tests passed\n");
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--pure-comfort-case")) {
+        return run_pure_comfort_case();
+    }
+    if (argc == 2 && !strcmp(argv[1], "--corrupt-handoff-case")) {
+        return run_corrupt_handoff_case();
+    }
+    if (argc == 2 && !strcmp(argv[1], "--embedded-nul-case")) {
+        return run_embedded_nul_case();
+    }
+    if (argc == 2 && !strcmp(argv[1], "--durability-case")) {
+        return run_durability_case();
+    }
+    if (argc == 2 && !strcmp(argv[1], "--launcher-merge-case")) {
+        return run_launcher_merge_case();
+    }
+    return run_primary_case();
 }

@@ -204,6 +204,12 @@ def check_shell_arms(
                 {"width": 960, "height": 540,
                  "deviceScaleFactor": 1, "mobile": False},
             )
+            # wait_launcher deliberately rejects a ready-looking document
+            # from before a navigation. Give both shell-only arms the same
+            # per-document identity contract used by the engine-backed arm;
+            # Page.addScriptToEvaluateOnNewDocument persists across the
+            # second navigation below and installs the token afresh there.
+            add_config_script(cdp, {})
 
             # Arm 1: ordinary desktop load — overlay and toggle stay hidden and
             # the launcher still becomes ready (touch wiring must be non-fatal).

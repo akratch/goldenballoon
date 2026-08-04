@@ -219,6 +219,12 @@ bool gfx_dkr_replay_walk_interpolated(
     const GfxShadowReplayViewProjection *overrides, size_t override_count,
     uint64_t numerator, uint64_t denominator);
 
+/* Read-only dependency census of the complete alternate-buffer task that
+ * follows the task being replayed. Publishes true forward animated-vertex,
+ * particle, fade, and effect data for {T,T+1}; it never submits a draw. */
+bool gfx_dkr_capture_future_deformations(const Gfx *begin, const Gfx *end,
+                                         uint64_t authored_tick);
+
 /** True while a replay walk is in progress — the guard every "must not happen
  *  twice per tick" side effect in the walk is gated on. */
 bool gfx_dkr_replay_pass_active(void);

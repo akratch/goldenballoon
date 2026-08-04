@@ -45,8 +45,8 @@ class Check:
 # tests/check_*.py represented at least once: validate_manifest() enforces it.
 CHECKS = (
     Check("rom_free_units", "", "ctest",
-          "ROM-free display, endian, magic-code, object-layout, allocator, "
-          "and subsystem contract unit tests"),
+          "ROM-free display, endian, vehicle-audio, magic-code, object-layout, "
+          "allocator, and subsystem contract unit tests"),
     Check("asset_swap_invariants", "check_asset_swap_invariants.py", "rom",
           "field-level byte-swap audit: spec-derived ROM invariants with "
           "byte-reversed positive controls, plus raw asset_load() swap coverage"),
@@ -59,12 +59,21 @@ CHECKS = (
     Check("app_adopted_pacing", "check_app_adopted_pacing.py", "native",
           "app-shell WebGPU-default and GL adopted handoffs at numeric and "
           "uncapped rates"),
+    Check("overlay_pause", "check_overlay_pause.py", "native",
+          "production WebGPU app overlay holds exact race state, clock, kart, "
+          "checkpoint, and lap before resuming"),
+    Check("restart_apply", "check_restart_apply.py", "native",
+          "package-like Unicode/deep-path Restart & Apply process replacement, "
+          "ROM/settings persistence, and boot/staging failure recovery"),
     Check("app_capture", "check_app_capture.py", "native",
           "launcher screenshot dimensions, contrast, palette, draw bounds, "
           "and broken-direction mutations"),
     Check("app_ui_input", "check_app_ui_input.py", "native",
           "real ImGui keyboard/gamepad selection, reload, scale matrix, "
           "save failure, and retry"),
+    Check("audio_options_persistence", "check_audio_options_persistence.py", "native",
+          "original Audio Options durable exit, visible save failure, retry, "
+          "and explicit session-only state"),
     Check("collision_untextured", "check_collision_untextured.py", "native",
           "untextured terrain collision"),
     Check("runtime_safety", "check_runtime_safety.py", "native",
@@ -109,6 +118,9 @@ CHECKS = (
     Check("presentation_matrix", "check_presentation_matrix.py", "release",
           "presentation rate vs fixed-ticket state/event authority and pixels "
           "(spec 12.2.2)"),
+    Check("presentation_shadows", "check_presentation_shadows.py", "release",
+          "terrain-projected kart-shadow replay stays rigid, exact at authored "
+          "endpoints, and measurably reduces the historical vertex-lerp pulse"),
     Check("presentation_breadth", "check_presentation_breadth.py", "release",
           "presentation-rate invariance across spec 12.3 content breadth: "
           "bosses, all challenge types, car/hovercraft/plane, 1P-4P, NTSC/PAL"),
@@ -156,6 +168,8 @@ CHECKS = (
           "every WebGPU fault point wired and product-route classified"),
     Check("ci_contract", "check_ci_contract.py", "source",
           "push/PR native, sanitizer, wasm, save-custody, and ROM policy"),
+    Check("release_ready_web_provenance", "check_release_ready_web_provenance.py", "source",
+          "candidate staged-web source-commit and clean-provenance fixtures"),
     Check("address_domains", "check_address_domains.py", "source",
           "raw pointer/token narrowing confined to typed boundary helpers"),
     Check("rom_model_corpus", "check_rom_model_corpus.py", "rom",
@@ -170,10 +184,20 @@ CHECKS = (
           "precedence ladder"),
     Check("widescreen_proportions", "check_widescreen_proportions.py", "native",
           "pixel-level HUD/world billboard proportions across aspect and FOV"),
+    Check("framed_world_views", "check_framed_world_views.py", "native",
+          "fixed-aspect live menu views remain inside their 4:3 regions"),
     Check("shadow_visual_ab", "check_shadow_visual_ab.py", "native",
           "moving-camera projected-shadow pixel A/B"),
     Check("audio_output", "check_audio_output.py", "native",
           "audio content, timing, and reverb"),
+    Check("final_lap_music", "check_final_lap_music.py", "native",
+          "real three-lap race, live sequencer tempo change, PCM beat grid, "
+          "and stale-tempo control"),
+    Check("audio_sink_evidence", "check_audio_sink_evidence.py", "native",
+          "real-ROM accepted-SDL PCM capture, loss telemetry, and headless opt-out"),
+    Check("vehicle_audio", "check_vehicle_audio.py", "native",
+          "ROM-derived vehicle sound IDs, engine-loop activation, pitch, and "
+          "idle/main crossfade"),
     Check("audio_level_reference", "check_audio_level_reference.py", "native",
           "absolute output level: RMS/crest/true-peak/per-band/per-slice against "
           "the frozen baseline, with injected-gain controls"),
@@ -202,6 +226,40 @@ CHECKS = (
     Check("taj_challenges", "check_taj_challenges.py", "native",
           "car, hovercraft, and plane Taj challenges: first win, loss, abort, "
           "replay, completion controls, and save reload"),
+    Check("taj_character_select", "check_taj_character_select.py", "native",
+          "visible, contiguous Taj roster tile and real selection across all "
+          "four 8/9/9/10-character retail layouts"),
+    Check("taj_character_select_webgpu", "check_taj_character_select.py", "native",
+          "complete Taj roster/model/shadow qualification on native WebGPU",
+          ("--renderer", "webgpu")),
+    Check("taj_character_select_ultrawide", "check_taj_character_select.py", "native",
+          "Taj picker actor and authored roster safe area at 21:9",
+          ("--layout", "base", "--aspect", "21:9")),
+    Check("taj_character_select_pal", "check_taj_character_select.py", "native",
+          "supported PAL Rev 1 Taj picker actor, scale, shadow, and navigation",
+          ("--layout", "base", "--require-pal")),
+    Check("taj_results_portrait", "check_taj_results_portrait.py", "native",
+          "real two-player Rankings ownership and visible retail-sized native "
+          "Taj portrait with an ordinary Diddy negative control"),
+    Check("taj_hud_portrait", "check_taj_hud_portrait.py", "native",
+          "real P2 Adventure hub HUD portrait pixels with observation-only "
+          "lead state"),
+    Check("taj_playable", "check_taj_playable.py", "native",
+          "Taj unlock, virtual select, carpet lifecycle, OP handling, two-player "
+          "identity, sidecar persistence, and Time Trial quarantine"),
+    Check("taj_p2_adventure", "check_taj_p2_adventure.py", "native",
+          "P2-visible Taj selection, retail Adventure lead handoff, post-swap "
+          "live-port rebinding, and no virtual character IDs"),
+    Check("taj_speed_profile", "check_taj_speed_profile.py", "native",
+          "paired car, hovercraft, and plane real-ROM controls for Taj's 1.35x "
+          "sustained-speed profile"),
+    Check("taj_visual_lifecycle", "check_taj_visual_lifecycle.py", "native",
+          "atomic picker/race companion loss, donor restoration, and bounded "
+          "fresh-generation recomposition"),
+    Check("taj_vehicle_sweep", "check_vehicle_sweep.py", "native",
+          "Taj identity, presentation, shield anchoring, and dash evidence over "
+          "all forty-seven legal track/vehicle pairs",
+          ("--taj", "--frames", "5200")),
     Check("adventure_hub", "check_adventure_hub.py", "native",
           "Adventure hub traversal"),
     Check("adventure_two", "check_adventure_two.py", "native",
@@ -272,14 +330,30 @@ CHECKS = (
     Check("browser_presentation_rates", "check_browser_presentation_rates.py",
           "browser", "display/capped/irregular rAF scheduling, fixed authority, "
           "and explicit uncapped-to-display semantics"),
+    Check("browser_taj_character_select",
+          "check_browser_taj_character_select.py", "browser",
+          "real Chrome/WebGPU Taj unlock, physical picker actor, P1 placard, "
+          "animation, identity mapping, privacy, and clean teardown"),
+    Check("browser_taj_persistence", "check_browser_taj_persistence.py",
+          "browser", "real rejected Taj IDBFS commit, exact retry bytes, and "
+          "durable unlock restoration after document reload"),
     Check("browser_runtime", "check_browser_runtime.py", "browser",
           "real Chromium WebGPU, pacing, rendering, IDBFS, and privacy"),
 )
 
+# These check-shaped scripts are invoked by dependent CTests and require
+# artifacts produced inside that CTest fixture rather than the runner's normal
+# role arguments. ``rom_free_units`` owns their execution.
+CTEST_COMPANION_SCRIPTS = {
+    "check_controller_settings_persistence.py",
+    "check_host_input_focus.py",
+}
+
 
 def validate_manifest() -> None:
     discovered = {path.name for path in TESTS.glob("check_*.py")}
-    registered = {check.script for check in CHECKS if check.script}
+    registered = ({check.script for check in CHECKS if check.script} |
+                  CTEST_COMPANION_SCRIPTS)
     missing = sorted(discovered - registered)
     stale = sorted(registered - discovered)
     duplicate_names = sorted(
@@ -378,8 +452,6 @@ def command_for(
             "--test-dir",
             str(native.parent),
             "--output-on-failure",
-            "-LE",
-            "gpu",
         ]
     cmd = [sys.executable, str(TESTS / check.script)]
     if check.role == "source":
@@ -410,7 +482,7 @@ def command_for(
     elif check.role == "browser":
         cmd += [
             "--engine-dir",
-            str(wasm.parent),
+            str(ROOT / "dist" / "web"),
             "--shell-dir",
             str(ROOT / "dist" / "web"),
             "--rom",
@@ -419,7 +491,7 @@ def command_for(
     elif check.role == "browser_save":
         cmd += [
             "--engine-dir",
-            str(wasm.parent),
+            str(ROOT / "dist" / "web"),
             "--shell-dir",
             str(ROOT / "dist" / "web"),
             "--cli",
@@ -431,7 +503,8 @@ def command_for(
     # simulation_cadence does: spec 12.3's region clause is NTSC *and* PAL, and
     # the PAL release is not the default --rom.
     if check.name in {"rom_revision", "simulation_cadence",
-                      "arbitrary_presentation_rates", "presentation_breadth"}:
+                      "arbitrary_presentation_rates", "presentation_breadth",
+                      "taj_character_select_pal"}:
         cmd += ["--roms", str(roms)]
     cmd += list(check.args)
     return cmd
@@ -470,15 +543,25 @@ def preflight(
         required.append(("Release binary", release))
     if roles & {"asan", "layout"}:
         required.append(("ASan binary", asan))
-    if roles & {"wasm", "browser"}:
-        required.append(("wasm", wasm))
+    if "wasm" in roles:
+        required.extend(
+            [("wasm", wasm), ("wasm loader", wasm.with_suffix(".js"))]
+        )
     if "browser" in roles:
-        required.append(("wasm loader", wasm.with_suffix(".js")))
+        required.extend(
+            [
+                ("staged wasm", ROOT / "dist" / "web" / "mdkr64_web.wasm"),
+                ("staged wasm loader", ROOT / "dist" / "web" /
+                 "mdkr64_web.js"),
+            ]
+        )
     if roles & {"browser", "browser_save"}:
         required.extend(
             [
-                ("save-tools wasm", wasm.parent / "mdkr-save-tools.wasm"),
-                ("save-tools loader", wasm.parent / "mdkr-save-tools.js"),
+                ("save-tools wasm", ROOT / "dist" / "web" /
+                 "mdkr-save-tools.wasm"),
+                ("save-tools loader", ROOT / "dist" / "web" /
+                 "mdkr-save-tools.js"),
             ]
         )
     if "browser_save" in roles:

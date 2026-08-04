@@ -17,8 +17,11 @@ ares frames are derived from the authoritative native frames by that offset:
     ares_abs = native_abs + delta
 
 Event frames are given as absolute NATIVE present-frames (so a route reproduces
-the proven tests/input_scripts fixtures verbatim). "marks" are capture points
-given as logical offsets from the sync event, resolved per-runner.
+the proven tests/input_scripts fixtures). The fixed-ticket input boundary
+publishes a script entry at N to the simulation sample traced at N+1, so the
+native compiler emits each positive event one ticket early to preserve the
+route's authored present-frame phase. "marks" are capture points given as
+logical offsets from the sync event, resolved per-runner.
 """
 
 from __future__ import annotations
@@ -61,6 +64,7 @@ STICK_DELTA = {
 }
 
 DEFAULT_HOLD = 4
+NATIVE_SCRIPT_TICK_LEAD = 1
 ARM_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -163,7 +167,12 @@ def emit_native_script(route: dict[str, Any], arm_name: str | None = None) -> No
     arm = native_arm(route, arm_name) if arm_name is not None else {}
     divisor = int(arm.get("event_divisor", route.get("native_event_divisor", 1)))
     for event in route.get("events", []):
-        frame = (int(event["frame"]) + divisor // 2) // divisor
+        authored_frame = (int(event["frame"]) + divisor // 2) // divisor
+        # platform_input_commit_tick() merges script entry N into the next
+        # authoritative sample (traced at N+1). Route JSON frames name the
+        # intended present/tick phase, so lead positive entries by one here.
+        # Frame zero has no earlier representable ticket and remains zero.
+        frame = max(0, authored_frame - NATIVE_SCRIPT_TICK_LEAD)
         hold = max(1, (int(event.get("hold", DEFAULT_HOLD)) + divisor - 1) // divisor)
         tokens = [NATIVE_TOKEN[b] for b in event_buttons(event)]
         if not tokens:

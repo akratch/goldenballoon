@@ -67,7 +67,8 @@ def _near(color: tuple[int, int, int], target: tuple[int, int, int], tolerance: 
                for component, expected in zip(color, target))
 
 
-def validate(bitmap: Bitmap) -> list[str]:
+def validate(bitmap: Bitmap, expect_recovery: bool = False,
+             compact_palette: bool = False) -> list[str]:
     failures: list[str] = []
     width, height, pixels = bitmap.width, bitmap.height, bitmap.pixels
     if width < 640 or height < 480:
@@ -88,18 +89,30 @@ def validate(bitmap: Bitmap) -> list[str]:
             f"frame lacks readable tonal contrast: range={max(lumas)-min(lumas):.1f} "
             f"stddev={deviation:.1f}")
 
-    # Theme contract: a real launcher includes light text plus Steel Blue and
-    # Amber Gold UI pixels. Tolerance accounts for font antialiasing and color
-    # conversion while remaining far tighter than the dark backgrounds.
+    # Theme contract: a real launcher includes light text, cobalt selection,
+    # and Amber Gold action/focus pixels. Tolerance accounts for antialiasing
+    # and color conversion while remaining far tighter than the backgrounds.
     light = sum(luma >= 150 for luma in lumas)
-    blue = sum(_near(color, (74, 111, 165), 24) for color in sample)
+    blue = sum(_near(color, (49, 92, 152), 24) for color in sample)
     gold = sum(_near(color, (212, 168, 67), 24) for color in sample)
     if light < max(40, len(sample) // 2000):
         failures.append("expected foreground text is absent or matches the background")
-    if blue < max(20, len(sample) // 6000):
-        failures.append("Steel Blue action/focus pixels are absent")
+    if not compact_palette and blue < max(20, len(sample) // 6000):
+        failures.append("cobalt selection pixels are absent")
+    # Dense mode replaces the colored destination surface with a section
+    # dropdown, so cobalt is legitimately absent. The persistent primary
+    # action remains gold at every breakpoint and must never be waived.
     if gold < max(12, len(sample) // 8000):
-        failures.append("Amber Gold brand/focus pixels are absent")
+        failures.append("Amber Gold action/focus pixels are absent")
+    if expect_recovery:
+        # The recovery card uses the theme's E5675E error color for both its
+        # border and heading. Requiring a visible population catches a banner
+        # that is set in state but clipped or never submitted to the renderer.
+        recovery = sum(_near(color, (229, 103, 94), 12) for color in pixels)
+        if recovery < 40:
+            failures.append(
+                "boot-recovery card is absent or clipped "
+                f"({recovery} matching error-color pixels)")
 
     # Reject a panel translated wholly to one side. At least some readable
     # foreground must exist in both horizontal halves and across a meaningful
@@ -148,7 +161,7 @@ def run_mutation_controls(bitmap: Bitmap) -> None:
 
     invisible = tuple(
         background if ((77 * r + 150 * g + 29 * b) / 256.0 >= 105 or
-                       _near((r, g, b), (74, 111, 165), 24) or
+                       _near((r, g, b), (49, 92, 152), 24) or
                        _near((r, g, b), (212, 168, 67), 24))
         else (r, g, b)
         for r, g, b in bitmap.pixels
@@ -169,7 +182,7 @@ def synthetic_contract_fixture() -> Bitmap:
             if 30 <= y < 55 and 30 <= x < 610:
                 color = (212, 168, 67)
             elif 100 <= y < 150 and (30 <= x < 230 or 410 <= x < 610):
-                color = (74, 111, 165)
+                color = (49, 92, 152)
             elif ((180 <= y < 195 or 300 <= y < 315) and
                   (50 <= x < 280 or 360 <= x < 590)):
                 color = (236, 236, 238)
@@ -184,6 +197,10 @@ def main() -> int:
     parser.add_argument("--rom", help="accepted for tools/run_checks.py compatibility")
     parser.add_argument("--self-test", action="store_true",
                         help="also require the three broken-direction controls to fail")
+    parser.add_argument("--expect-recovery", action="store_true",
+                        help="require the visible red boot-recovery card")
+    parser.add_argument("--compact-palette", action="store_true",
+                        help="allow constrained navigation to omit brand colors")
     args = parser.parse_args()
 
     temporary: Path | None = None
@@ -191,7 +208,8 @@ def main() -> int:
     if bmp is None:
         if args.self_test and not args.build:
             bitmap = synthetic_contract_fixture()
-            failures = validate(bitmap)
+            failures = validate(bitmap, args.expect_recovery,
+                                args.compact_palette)
             if failures:
                 print("app capture validation failed: standalone fixture: " +
                       "; ".join(failures))
@@ -229,7 +247,7 @@ def main() -> int:
 
     try:
         bitmap = load_bmp(bmp)
-        failures = validate(bitmap)
+        failures = validate(bitmap, args.expect_recovery, args.compact_palette)
         if failures:
             raise CaptureError("; ".join(failures))
         if args.self_test:

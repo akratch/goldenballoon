@@ -78,6 +78,20 @@ static int read_equals(const char *path, const void *bytes, size_t size) {
     return got == size && trailing == EOF && memcmp(buffer, bytes, size) == 0;
 }
 
+static int write_migration_owner_fixture(const char *stage,
+                                         const char *destination) {
+    char owner[4096];
+    char text[8192];
+    int written;
+    if (!join(owner, sizeof(owner), stage, ".mdkr64-migration-owner")) {
+        return 0;
+    }
+    written = snprintf(text, sizeof(text),
+                       "mdkr64-save-migration-v1\n%s", destination);
+    return written >= 0 && (size_t)written < sizeof(text) &&
+           write_bytes(owner, text, (size_t)written);
+}
+
 static int missing(const char *path) {
     struct stat status;
     return stat(path, &status) != 0 && errno == ENOENT;
@@ -112,6 +126,11 @@ int main(int argc, char **argv) {
     char other[4096];
     char interrupted_stage[4096];
     char interrupted_partial[4096];
+#if !defined(_WIN32)
+    char linked_stage_target[4096];
+    char linked_stage_sentinel[4096];
+    char linked_stage_owner[4096];
+#endif
     static const char controller_bytes[] = "immutable-controller-db\n";
     static const char resource_config[] = "Mode=restored\n";
     static const char cwd_config[] = "Mode=pure\n";
@@ -244,6 +263,44 @@ int main(int argc, char **argv) {
            snprintf(interrupted_stage, sizeof(interrupted_stage),
                     "%s/save.migrate-%ld.tmp",
                     pref, (long)getpid()) > 0);
+#if !defined(_WIN32)
+    /* A symlinked stage can carry valid-looking ownership metadata. Recovery
+     * must reject the stage itself rather than follow it and unlink known save
+     * names in the target directory. */
+    expect("destination save path for linked stage",
+           join(other, sizeof(other), pref, "save"));
+    expect("linked stage target path",
+           join(linked_stage_target, sizeof(linked_stage_target),
+                pref, "linked-stage-target"));
+    expect("created linked stage target", make_directory(linked_stage_target));
+    expect("linked stage sentinel path",
+           join(linked_stage_sentinel, sizeof(linked_stage_sentinel),
+                linked_stage_target, "eeprom.bin"));
+    expect("wrote linked stage sentinel",
+           write_bytes(linked_stage_sentinel, cwd_eeprom, sizeof(cwd_eeprom)));
+    expect("linked stage owner path",
+           join(linked_stage_owner, sizeof(linked_stage_owner),
+                linked_stage_target, ".mdkr64-migration-owner"));
+    expect("wrote linked stage ownership metadata",
+           write_migration_owner_fixture(linked_stage_target, other));
+    expect("created symlinked interrupted stage",
+           symlink(linked_stage_target, interrupted_stage) == 0);
+    expect("symlinked stage fails closed",
+           !mdkr_user_paths_prepare_packaged_data());
+    expect("symlink target sentinel stays untouched",
+           read_equals(linked_stage_sentinel, cwd_eeprom, sizeof(cwd_eeprom)));
+    expect("removed symlinked interrupted stage", unlink(interrupted_stage) == 0);
+    expect("removed linked stage owner", remove(linked_stage_owner) == 0);
+    expect("removed linked stage sentinel", remove(linked_stage_sentinel) == 0);
+    expect("removed linked stage target", rmdir(linked_stage_target) == 0);
+    expect("created dangling interrupted stage",
+           symlink(linked_stage_target, interrupted_stage) == 0);
+    expect("dangling stage fails closed with recovery guidance",
+           !mdkr_user_paths_prepare_packaged_data() &&
+           strstr(mdkr_user_paths_last_error(), interrupted_stage) != NULL &&
+           strstr(mdkr_user_paths_last_error(), "Move this folder aside") != NULL);
+    expect("removed dangling interrupted stage", unlink(interrupted_stage) == 0);
+#endif
     expect("created interrupted stage", make_directory(interrupted_stage));
     expect("interrupted partial path",
            join(interrupted_partial, sizeof(interrupted_partial),
@@ -252,16 +309,30 @@ int main(int argc, char **argv) {
            write_bytes(interrupted_partial, cwd_eeprom, sizeof(cwd_eeprom)));
     expect("interrupted stage fails closed",
            !mdkr_user_paths_prepare_packaged_data());
+    expect("unowned stage reports actionable recovery",
+           strstr(mdkr_user_paths_last_error(), interrupted_stage) != NULL &&
+           strstr(mdkr_user_paths_last_error(), "Move this folder aside") != NULL);
     expect("partial stage is not authoritative",
            join(other, sizeof(other), pref, "save") && missing(other));
     expect("partial stage retained for explicit cleanup",
            read_equals(interrupted_partial, cwd_eeprom, sizeof(cwd_eeprom)));
-    /* The fixture owns this exact staged target, so only the fixture removes
-     * it before retrying. Production never deletes an unvalidated stale dir. */
+    /* An unowned directory stays fail-closed. The test explicitly clears it,
+     * then models a stage written by this version so recovery can be proved. */
     expect("removed interrupted partial", remove(interrupted_partial) == 0);
     expect("removed interrupted stage", rmdir(interrupted_stage) == 0);
-    expect("copy-only migration completed",
+    expect("recreated owned interrupted stage", make_directory(interrupted_stage));
+    expect("rewrote owned interrupted partial",
+           write_bytes(interrupted_partial, cwd_eeprom, sizeof(cwd_eeprom)));
+    expect("destination save path before migration",
+           join(other, sizeof(other), pref, "save"));
+    expect("wrote migration ownership metadata",
+           write_migration_owner_fixture(interrupted_stage, other));
+    expect("owned abandoned migration recovered and copy completed",
            mdkr_user_paths_prepare_packaged_data());
+    expect("owned abandoned stage removed", missing(interrupted_stage));
+    expect("completed migration marker removed",
+           join(path, sizeof(path), other, ".mdkr64-migration-owner") &&
+           missing(path));
     expect("packaged config resolves below prefs",
            mdkr_user_video_config_path(path, sizeof(path)) &&
            join(other, sizeof(other), pref, "mdkr64.ini") &&

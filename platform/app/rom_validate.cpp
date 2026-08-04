@@ -1,9 +1,12 @@
 // rom_validate.cpp — see rom_validate.h.
 #include "rom_validate.h"
+#include "fs_utf8.h"
 
-#include "rom_id.h"   // dkr_rom_identify / _describe / _normalize_byte_order / _supported_list
+#include "rom_id.h"
+#include "rom_validation.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cstdint>
 
@@ -18,55 +21,102 @@ void put(char *dst, size_t cap, const char *src) {
 
 }  // namespace
 
-RomInfo mdkr_validate_rom(const char *path) {
+RomInfo mdkr_validate_rom_progress(const char *path,
+                                   MdkrRomValidationProgress progress,
+                                   void *context) {
     RomInfo info;
     std::memset(&info, 0, sizeof(info));
     put(info.byte_order, sizeof(info.byte_order), "???");
     put(info.region, sizeof(info.region), "??");
+    info.validation_code = DKR_ROM_VALIDATION_WRONG_SIZE;
 
     if (path == nullptr || path[0] == '\0') {
         put(info.message, sizeof(info.message), "No ROM selected.");
         return info;
     }
 
-    std::FILE *f = std::fopen(path, "rb");
+    std::FILE *f = mdkr_fopen_utf8(path, "rb");
     if (f == nullptr) {
         std::snprintf(info.message, sizeof(info.message),
                       "Could not open '%s'. Check the path and permissions.", path);
         return info;
     }
 
-    // Size first (for display + the "this is far too small to be a cart" case).
-    if (std::fseek(f, 0, SEEK_END) == 0) {
-        long end = std::ftell(f);
-        if (end > 0) info.size_bytes = (unsigned)end;
-    }
-    std::rewind(f);
-
-    uint8_t hdr[0x40];
-    size_t got = std::fread(hdr, 1, sizeof(hdr), f);
-    std::fclose(f);
-    if (got != sizeof(hdr)) {
+    if (std::fseek(f, 0, SEEK_END) != 0) {
+        std::fclose(f);
         std::snprintf(info.message, sizeof(info.message),
-                      "'%s' is only %u bytes — too small to be an N64 ROM.",
-                      path, info.size_bytes);
-        return info;
-    }
-
-    // Normalizing a 64-byte buffer is enough: dkr_rom_normalize_byte_order only
-    // needs >= 0x40 bytes and swaps in place, and every field dkr_rom_identify
-    // reads (CRC pair, title, game code, version) lives inside the header.
-    const char *order = dkr_rom_normalize_byte_order(hdr, (uint32_t)sizeof(hdr));
-    if (order == nullptr) {
-        std::snprintf(info.message, sizeof(info.message),
-                      "'%s' is not an N64 ROM (no 80 37 12 40 magic in any byte order).",
+                      "Could not determine the size of '%s'. Check the file and permissions.",
                       path);
         return info;
     }
-    put(info.byte_order, sizeof(info.byte_order), order);
+    const long end = std::ftell(f);
+    if (end > 0 && static_cast<unsigned long>(end) <= UINT32_MAX) {
+        info.size_bytes = static_cast<unsigned>(end);
+    }
+    std::rewind(f);
 
-    DkrRomId id;
-    dkr_rom_identify(hdr, &id);
+    if (end <= 0 || static_cast<unsigned long>(end) != DKR_ROM_SIZE_BYTES) {
+        DkrRomValidation validation;
+        dkr_rom_validate_image(nullptr, info.size_bytes, path, nullptr, &validation);
+        info.validation_code = validation.code;
+        put(info.message, sizeof(info.message), validation.message);
+        std::fclose(f);
+        return info;
+    }
+
+    auto *bytes = static_cast<uint8_t *>(std::malloc(DKR_ROM_SIZE_BYTES));
+    if (bytes == nullptr) {
+        std::fclose(f);
+        std::snprintf(info.message, sizeof(info.message),
+                      "Could not allocate memory to verify '%s'. Close other applications and try again.",
+                      path);
+        return info;
+    }
+    size_t got = 0u;
+    constexpr size_t kReadChunk = 64u * 1024u;
+    if (progress != nullptr && !progress(0u, DKR_ROM_SIZE_BYTES, context)) {
+        info.cancelled = 1;
+    }
+    while (!info.cancelled && got < DKR_ROM_SIZE_BYTES) {
+        const size_t remaining = DKR_ROM_SIZE_BYTES - got;
+        const size_t requested = remaining < kReadChunk ? remaining : kReadChunk;
+        const size_t count = std::fread(bytes + got, 1u, requested, f);
+        got += count;
+        if (count != requested) {
+            break;
+        }
+        if (progress != nullptr &&
+            !progress(static_cast<unsigned>(got), DKR_ROM_SIZE_BYTES, context)) {
+            info.cancelled = 1;
+        }
+    }
+    std::fclose(f);
+    if (info.cancelled) {
+        std::free(bytes);
+        put(info.message, sizeof(info.message), "ROM validation cancelled.");
+        return info;
+    }
+    if (got != DKR_ROM_SIZE_BYTES) {
+        std::free(bytes);
+        std::snprintf(info.message, sizeof(info.message),
+                      "Could not read all of '%s' (%zu of %u bytes). Check the drive and try again.",
+                      path, got, DKR_ROM_SIZE_BYTES);
+        return info;
+    }
+
+    const DkrRomValidationOptions options = dkr_rom_validation_options_from_env();
+    DkrRomValidation validation;
+    info.valid = dkr_rom_validate_image(bytes, DKR_ROM_SIZE_BYTES, path,
+                                        &options, &validation);
+    std::free(bytes);
+
+    const DkrRomId &id = validation.id;
+    info.validation_code = validation.code;
+    put(info.byte_order, sizeof(info.byte_order), validation.byteOrder);
+    put(info.sha256, sizeof(info.sha256), validation.sha256);
+    const char *expected = dkr_rom_reference_sha256(id.decompBuild);
+    info.integrity_verified =
+        expected != nullptr && std::strcmp(validation.sha256, expected) == 0;
 
     put(info.title, sizeof(info.title), id.title);
     put(info.revision, sizeof(info.revision), id.revisionName ? id.revisionName : "");
@@ -84,10 +134,12 @@ RomInfo mdkr_validate_rom(const char *path) {
         default:  put(info.region, sizeof(info.region), "??"); break;
     }
 
-    // The verdict is the engine's, not ours: only DKR_ROM_SUPPORTED may boot.
-    info.valid = (id.verdict == DKR_ROM_SUPPORTED) ? 1 : 0;
-    dkr_rom_describe(&id, path, info.message, sizeof(info.message));
+    put(info.message, sizeof(info.message), validation.message);
     return info;
+}
+
+RomInfo mdkr_validate_rom(const char *path) {
+    return mdkr_validate_rom_progress(path, nullptr, nullptr);
 }
 
 const char *mdkr_supported_rom_list(void) {

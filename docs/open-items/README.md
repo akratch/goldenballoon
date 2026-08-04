@@ -37,14 +37,14 @@ unchanged.
 their own table — **nothing is deleted when it is fixed**, because a closed
 entry is the only warning the next person gets that the trap exists.
 
-> **1.0.1+ release scope:** production motion smoothing and delayed display-list
-> replay are disabled. Non-Original Frame Limit choices are **Experimental —
-> Under Construction** host-pacing/input/event-pump policies; they submit only
-> new authored images and never swap duplicates. The long fidelity-architecture
-> row below preserves the
-> historical replay experiment and its diagnostic coverage, not shipped 1.0.1+
-> behavior. Re-enabling it requires immutable ownership of every replay
-> dependency through a real forward `{T,T+1}` pair.
+> **Current presentation scope:** the 1.0.1 authored-image containment has been
+> superseded by the immutable-presentation wave. Public interpolation owns a
+> complete private task and a real forward `{T,T+1}` pair while Original
+> gameplay cadence remains fixed. The long fidelity-architecture row below is
+> retained as the pre-promotion breadth ledger; its “authored images only”
+> production wording is historical. Current design and evidence live in
+> [`UNCAPPED_PRESENTATION.md`](../UNCAPPED_PRESENTATION.md). Remaining external
+> platform/device breadth is still tracked separately.
 
 | Item | Where |
 |---|---|
@@ -127,7 +127,7 @@ what was done and what proves it.
 - [P3.5 Adventure — the hub is drivable and the trophy series is covered](gameplay.md#p35-adventure--the-hub-is-drivable-and-the-trophy-series-is-covered)
 - [Playability wave — memory safety, saves, and the race finish](gameplay.md#playability-wave--memory-safety-saves-and-the-race-finish)
 - [Race gameplay — tiny racer models + crawl speed — FIXED (single root cause)](gameplay.md#race-gameplay--tiny-racer-models--crawl-speed--fixed-single-root-cause)
-- [Experimental high-rate native delivery cadence — OPEN](renderer.md#experimental-high-rate-native-delivery-cadence--open)
+- [High-rate native delivery cadence — CLOSED (immutable-presentation wave)](renderer.md#high-rate-native-delivery-cadence--closed-immutable-presentation-wave)
 - [Frame pacing / slow-motion — RESOLVED (pacing wave)](renderer.md#frame-pacing--slow-motion--resolved-pacing-wave)
 
 **Renderer and visual fidelity**
@@ -149,7 +149,7 @@ what was done and what proves it.
 
 **Audio**
 
-- [MEASURED: absolute output level vs the real ROM — port is −0.49 dB](audio.md#measured-absolute-output-level-vs-the-real-rom--port-is-049-db)
+- [MEASURED: absolute output level vs the real ROM — port/console is +0.016 dB](audio.md#measured-absolute-output-level-vs-the-real-rom--portconsole-is-0016-db)
 - [FIXED: RAW16 bass was decoded as host-endian noise — wave "raw16"](audio.md#fixed-raw16-bass-was-decoded-as-host-endian-noise--wave-raw16)
 - [M5 audio — DONE (music + SFX via the aspMain software mixer)](audio.md#m5-audio--done-music--sfx-via-the-aspmain-software-mixer)
 

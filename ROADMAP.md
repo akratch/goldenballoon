@@ -122,28 +122,29 @@ question is answered first.
 
 ### Presentation rate above the authored tick
 
-Production motion smoothing and retained display-list replay are disabled for
-1.0.1+. Release-candidate testing proved that a replay delayed until after task
-`K+1` begins can observe mutable viewport, matrix, vertex, texture, and nested
-display-list storage after the game has started rewriting it. Partial packet
-freezing and generation keys do not establish immutable ownership of that full
-dependency graph.
+The unsafe 1.0.1 retained-replay experiment is retired, but the replacement is
+now a production feature. Optional **Motion smoothing: Interpolated** owns a
+private copy of each complete graphics arena plus the immutable adjacent task,
+then produces presentation-only in-between images. It never advances physics,
+AI, timers, input, events, audio, or saves. With Motion smoothing Off, extra
+presentation opportunities hold the latest authored image instead.
 
-Original therefore remains the recommended/default Frame Limit. Match Display,
-numeric, and Uncapped settings remain Experimental host-pacing/input-pump
-policies: they do not add visual frames, never swap a duplicate image, and leave
-the authored cadence at approximately 30 Hz NTSC or 25 Hz PAL. Fixed-ticket
-simulation, tick-indexed input, independent audio service, bounded GPU queues,
-suspension rebasing, and state/event/input/PCM invariance are still useful
-landed prerequisites.
+Original remains the recommended/default Frame Limit. Match Display, numeric
+caps, and native Uncapped can use the immutable presentation path when
+Interpolated is selected; saturation deliberately holds an image rather than
+blocking gameplay or audio. Fixed-ticket simulation, tick-indexed input,
+independent audio service, bounded GPU queues, suspension rebasing, and
+state/event/input/PCM invariance remain the authority boundary. The measured
+contracts cover exact endpoints, distinct in-between images, lifecycle/device
+loss, UI, cutscenes, split-screen, particles, vehicles, GL/WebGPU, and browser
+presentation schedules.
 
-Revisiting higher-rate visuals requires immutable ownership of every dependency
-for a real forward `{T,T+1}` pair, including nested display lists and texture
-state; exact endpoint and midpoint pixel oracles across UI, cutscenes,
-split-screen, particles, and every vehicle part; device-loss/lifecycle coverage;
-and broad physical-platform/DAC qualification. The former interpolation work
-and its broken-direction controls remain historical diagnostic infrastructure,
-not an active release feature.
+The historical 1.0.1 decision was still correct: a replay that retained only
+mutable display-list pointers could observe rewritten viewport, matrix, vertex,
+texture, and nested-list storage after task `K+1` began. The present path does
+not revive that design; its retained ownership and fail-closed generation rules
+are the reason smoothing is now safe to expose. Remaining work is broader
+physical-platform and DAC acceptance, not a disabled product feature.
 
 ### Shadow and visual leftovers
 
@@ -164,13 +165,12 @@ stock-Windows imports, package shape, ROM-free startup surfaces, and extracted
 archive; the release candidate also passed manual WebGPU gameplay, controller,
 audio, save, and relaunch acceptance on Windows hardware.
 
-The post-1.0.2 compatibility backlog is explicit: add user-selectable
-auto/Direct3D-12/Vulkan adapter policy and textual GPU diagnostics; preserve
-adapter/device request failure messages; centralize UTF-8-to-UTF-16 filesystem
-and process operations; add Unicode-path tests and a reviewed application
-manifest; then broaden physical coverage across Intel, AMD, NVIDIA, hybrid-GPU,
-Windows on Arm, and negative VM/RDP configurations. Until the wide-path work
-lands, keep the extracted app and ROM in short, ASCII-only paths.
+The UTF-8-to-UTF-16 filesystem/process boundary, extended-length path handling,
+Unicode-path gate, and reviewed non-elevating/DPI/long-path manifest have landed
+in source. Remaining portability work is user-selectable auto/Direct3D-12/
+Vulkan adapter policy, richer textual GPU diagnostics, a hosted Windows pass of
+the new boundary, and broader physical coverage across Intel, AMD, NVIDIA,
+hybrid-GPU, Windows on Arm, and negative VM/RDP configurations.
 
 ### Linux
 
@@ -184,22 +184,20 @@ is tracked as F-03; see
 ### Native app shell — shipped
 
 **No longer deferred.** The native ImGui app shell (`platform/app/`) ships: a
-first-run launcher with ROM discovery and per-revision CRC validation, a
+first-run launcher with explicit user-selected ROM intake and complete-image
+SHA-256 plus asset-table validation, a
 settings panel generated from the video/gameplay schema with honest LIVE vs
 RESTART presentation, an in-game F1 overlay, F10 FPS readout, and a diagnostics
 log view. It builds on macOS, Windows (MinGW cross) and Linux, and the macOS
 `.app` now launches it directly — the bash/AppleScript first-run picker shim
 that stood in for it is retired.
 
-Two honest limitations remain, both recorded in
-[`docs/APP_SHELL.md`](docs/APP_SHELL.md):
-
-- The overlay does **not** pause the simulation. It swallows input so the kart
-  coasts, and the footer says the race is still running. A real pause needs a
-  seam in game code that does not exist yet.
-- Return-to-launcher re-execs the process and is therefore POSIX-only; on
-  Windows the overlay offers "Quit to Desktop" instead of mislabelling a
-  silent quit.
+The F1 overlay now owns a real simulation pause boundary, proven during a live
+Time Trial by exact state hash, kart, race-clock, checkpoint, and lap stability.
+Return-to-launcher uses the same orderly process replacement on POSIX and the
+Windows wide-character runtime. The remaining native semantic-accessibility and
+Linux file-picker limitations are recorded in
+[`docs/APP_SHELL.md`](docs/APP_SHELL.md).
 
 ### Signing and notarization
 
@@ -224,8 +222,10 @@ outstanding.
 
 The supported set is **US 1.1 and European 1.1**, which race byte-identically.
 US 1.0, European 1.0 and the Japanese release are identified from their header
-CRCs and **refused by name** — not silently, and not by a boolean that could be
-flipped.
+CRCs and **refused by name**. Supported images additionally require an exact
+normalized whole-image SHA-256 and valid revision-specific asset-table bounds,
+so a header-correct damaged or mixed dump cannot cross the launcher or engine
+boot boundary.
 
 Expanding that set is future product scope, and
 [`docs/ROM_REVISIONS.md`](docs/ROM_REVISIONS.md) §6 states the gates. In order,

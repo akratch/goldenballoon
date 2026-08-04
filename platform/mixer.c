@@ -25,6 +25,7 @@
 #include <stdlib.h>
 
 #include "endian_utils.h"
+#include "fs_utf8.h"
 #include "mixer.h"
 
 /* ===== Constants ===== */
@@ -120,7 +121,7 @@ static FILE *mixerPoleTraceFile(void) {
     initialized = 1;
     path = getenv("GE007_AUDIO_POLE_TRACE_JSONL");
     if (path != NULL && *path != '\0') {
-        fp = fopen(path, "w");
+        fp = mdkr_fopen_utf8(path, "w");
     }
 
     return fp;

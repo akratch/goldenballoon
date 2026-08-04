@@ -136,13 +136,12 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "Video.FrameLimit", "MDKR_PRESENT_RATE",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
         "Frame limit",
-        "original is the Recommended / Proven setting and presents each "
-        "authoritative image once. Every other value is Experimental -- Under "
-        "Construction in 1.0.1+: it changes host pacing and input/event-pump "
-        "opportunities only, without increasing unique visual FPS or "
-        "synthesizing intermediate images. Any benefit may be negligible, while "
-        "higher settings can use more CPU. Requires a restart because the host "
-        "pacer resolves this value once at startup.",
+        "original presents each authored image once. display follows the "
+        "monitor, a number sets a native cap, and uncapped removes the native "
+        "software cap (the browser maps it to display). Pair a rate above "
+        "original with Motion smoothing = Interpolated for unique in-between "
+        "images. Gameplay remains on its fixed original cadence. Requires a "
+        "restart because the host pacer resolves this value once at startup.",
         MDKR_VIDEO_CAT_PACING
     },
     /*
@@ -159,10 +158,10 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "Video.MotionSmoothing", "MDKR_PRESENT_SMOOTHING",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
         "Motion smoothing",
-        "Unavailable in 1.0.1+. With off, the surface updates only when the next "
-        "complete authored image is ready. Delayed display-list interpolation is "
-        "kept disabled until every mutable render dependency can be retained "
-        "and proved byte-exact. Original remains the recommended setting.",
+        "interpolate draws presentation-only in-between images from adjacent "
+        "authored tasks. It does not advance physics, AI, timers, audio, or input "
+        "more often. off presents only the game's authored images. Requires a "
+        "restart because retained replay resources are armed at startup.",
         MDKR_VIDEO_CAT_PACING
     },
     [MDKR_VIDEO_MODE] = {
@@ -217,6 +216,124 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "objects. Part of Remaster effects; inert in Pure and Restored.",
         MDKR_VIDEO_CAT_FIDELITY
     },
+    [MDKR_AUDIO_MASTER_VOLUME] = {
+        "Audio.MasterVolume", "MDKR_MASTER_VOLUME",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 100.0f,
+        "Master volume",
+        "Controls everything you hear. The maximum preserves the authored mix "
+        "at unity gain; lower values use a smooth perceptual curve.",
+        MDKR_VIDEO_CAT_AUDIO
+    },
+    [MDKR_AUDIO_MUSIC_VOLUME] = {
+        "Audio.MusicVolume", "MDKR_MUSIC_VOLUME",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 100.0f,
+        "Music",
+        "Adjusts DKR's music bus without changing sound effects.",
+        MDKR_VIDEO_CAT_AUDIO
+    },
+    [MDKR_AUDIO_EFFECTS_VOLUME] = {
+        "Audio.EffectsVolume", "MDKR_EFFECTS_VOLUME",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 100.0f,
+        "Sound effects",
+        "Adjusts vehicles, voices, jingles, and effects without changing music.",
+        MDKR_VIDEO_CAT_AUDIO
+    },
+    [MDKR_WINDOW_MODE] = {
+        "Window.Mode", "MDKR_WINDOW_MODE",
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 0.0f,
+        "Window mode",
+        "Windowed keeps normal desktop decorations. Fullscreen uses the current "
+        "desktop resolution without borders or a display-mode switch. F11 or "
+        "Alt+Enter toggles the same setting.",
+        MDKR_VIDEO_CAT_INTERFACE
+    },
+    [MDKR_INPUT_RUMBLE_ENABLED] = {
+        "Input.RumbleEnabled", "MDKR_RUMBLE_ENABLED",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 1.0f,
+        "Rumble",
+        "Mutes host controller vibration without making the connected Rumble "
+        "Pak disappear from the game.",
+        MDKR_VIDEO_CAT_INPUT
+    },
+    [MDKR_INPUT_RUMBLE_PROFILE] = {
+        "Input.RumbleProfile", "MDKR_RUMBLE_PROFILE",
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 0.0f,
+        "Rumble profile",
+        "Light and Balanced reduce both controller motors. Strong preserves "
+        "the previous full-amplitude host behavior; DKR still controls each "
+        "effect's authored pulse timing.",
+        MDKR_VIDEO_CAT_INPUT
+    },
+#define CONTROLLER_BINDING_SCHEMA(KEY, NAME, ENV, LABEL) \
+    [KEY] = { \
+        NAME, ENV, \
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 0.0f, \
+        LABEL, \
+        "Choose which N64 button this normalized controller input activates. " \
+        "None leaves it unbound; the left analog stick remains steering.", \
+        MDKR_VIDEO_CAT_INPUT \
+    }
+    CONTROLLER_BINDING_SCHEMA(
+        MDKR_INPUT_CONTROLLER_A, "Input.ControllerA", "MDKR_CONTROLLER_A",
+        "A button"),
+    CONTROLLER_BINDING_SCHEMA(
+        MDKR_INPUT_CONTROLLER_B, "Input.ControllerB", "MDKR_CONTROLLER_B",
+        "B button"),
+    CONTROLLER_BINDING_SCHEMA(
+        MDKR_INPUT_CONTROLLER_X, "Input.ControllerX", "MDKR_CONTROLLER_X",
+        "X button"),
+    CONTROLLER_BINDING_SCHEMA(
+        MDKR_INPUT_CONTROLLER_Y, "Input.ControllerY", "MDKR_CONTROLLER_Y",
+        "Y button"),
+    CONTROLLER_BINDING_SCHEMA(
+        MDKR_INPUT_CONTROLLER_START, "Input.ControllerStart",
+        "MDKR_CONTROLLER_START", "Start button"),
+    CONTROLLER_BINDING_SCHEMA(
+        MDKR_INPUT_CONTROLLER_LEFT_STICK, "Input.ControllerLeftStick",
+        "MDKR_CONTROLLER_LEFT_STICK", "Left stick click"),
+    CONTROLLER_BINDING_SCHEMA(
+        MDKR_INPUT_CONTROLLER_RIGHT_STICK, "Input.ControllerRightStick",
+        "MDKR_CONTROLLER_RIGHT_STICK", "Right stick click"),
+    CONTROLLER_BINDING_SCHEMA(
+        MDKR_INPUT_CONTROLLER_LEFT_SHOULDER, "Input.ControllerLeftShoulder",
+        "MDKR_CONTROLLER_LEFT_SHOULDER", "Left shoulder"),
+    CONTROLLER_BINDING_SCHEMA(
+        MDKR_INPUT_CONTROLLER_RIGHT_SHOULDER, "Input.ControllerRightShoulder",
+        "MDKR_CONTROLLER_RIGHT_SHOULDER", "Right shoulder"),
+    CONTROLLER_BINDING_SCHEMA(
+        MDKR_INPUT_CONTROLLER_DPAD_UP, "Input.ControllerDpadUp",
+        "MDKR_CONTROLLER_DPAD_UP", "D-pad up"),
+    CONTROLLER_BINDING_SCHEMA(
+        MDKR_INPUT_CONTROLLER_DPAD_DOWN, "Input.ControllerDpadDown",
+        "MDKR_CONTROLLER_DPAD_DOWN", "D-pad down"),
+    CONTROLLER_BINDING_SCHEMA(
+        MDKR_INPUT_CONTROLLER_DPAD_LEFT, "Input.ControllerDpadLeft",
+        "MDKR_CONTROLLER_DPAD_LEFT", "D-pad left"),
+    CONTROLLER_BINDING_SCHEMA(
+        MDKR_INPUT_CONTROLLER_DPAD_RIGHT, "Input.ControllerDpadRight",
+        "MDKR_CONTROLLER_DPAD_RIGHT", "D-pad right"),
+    CONTROLLER_BINDING_SCHEMA(
+        MDKR_INPUT_CONTROLLER_LEFT_TRIGGER, "Input.ControllerLeftTrigger",
+        "MDKR_CONTROLLER_LEFT_TRIGGER", "Left trigger"),
+    CONTROLLER_BINDING_SCHEMA(
+        MDKR_INPUT_CONTROLLER_RIGHT_TRIGGER, "Input.ControllerRightTrigger",
+        "MDKR_CONTROLLER_RIGHT_TRIGGER", "Right trigger"),
+    CONTROLLER_BINDING_SCHEMA(
+        MDKR_INPUT_CONTROLLER_RIGHT_STICK_UP, "Input.ControllerRightStickUp",
+        "MDKR_CONTROLLER_RIGHT_STICK_UP", "Right stick up"),
+    CONTROLLER_BINDING_SCHEMA(
+        MDKR_INPUT_CONTROLLER_RIGHT_STICK_DOWN,
+        "Input.ControllerRightStickDown", "MDKR_CONTROLLER_RIGHT_STICK_DOWN",
+        "Right stick down"),
+    CONTROLLER_BINDING_SCHEMA(
+        MDKR_INPUT_CONTROLLER_RIGHT_STICK_LEFT,
+        "Input.ControllerRightStickLeft", "MDKR_CONTROLLER_RIGHT_STICK_LEFT",
+        "Right stick left"),
+    CONTROLLER_BINDING_SCHEMA(
+        MDKR_INPUT_CONTROLLER_RIGHT_STICK_RIGHT,
+        "Input.ControllerRightStickRight", "MDKR_CONTROLLER_RIGHT_STICK_RIGHT",
+        "Right stick right"),
+#undef CONTROLLER_BINDING_SCHEMA
 };
 
 const char *mdkr_video_category_name(MdkrVideoCategory category) {
@@ -224,6 +341,9 @@ const char *mdkr_video_category_name(MdkrVideoCategory category) {
         case MDKR_VIDEO_CAT_PRESENTATION: return "Presentation";
         case MDKR_VIDEO_CAT_FIDELITY:     return "Fidelity";
         case MDKR_VIDEO_CAT_PACING:       return "Pacing";
+        case MDKR_VIDEO_CAT_AUDIO:        return "Audio";
+        case MDKR_VIDEO_CAT_INTERFACE:    return "Interface";
+        case MDKR_VIDEO_CAT_INPUT:        return "Controller";
         default:                          return NULL;
     }
 }
@@ -233,6 +353,21 @@ const MdkrVideoSchema *mdkr_video_schema(MdkrVideoKey key) {
         return NULL;
     }
     return &s_schema[key];
+}
+
+int mdkr_video_key_is_audio(MdkrVideoKey key) {
+    return key == MDKR_AUDIO_MASTER_VOLUME ||
+           key == MDKR_AUDIO_MUSIC_VOLUME ||
+           key == MDKR_AUDIO_EFFECTS_VOLUME;
+}
+
+int mdkr_video_key_is_input(MdkrVideoKey key) {
+    return key >= MDKR_INPUT_FIRST_KEY && key <= MDKR_INPUT_LAST_KEY;
+}
+
+int mdkr_video_key_is_player_comfort(MdkrVideoKey key) {
+    return mdkr_video_key_is_audio(key) || mdkr_video_key_is_input(key) ||
+           key == MDKR_WINDOW_MODE;
 }
 
 static int mdkr_video_ci_equal(const char *a, const char *b) {
@@ -247,6 +382,43 @@ static int mdkr_video_ci_equal(const char *a, const char *b) {
         b++;
     }
     return *a == '\0' && *b == '\0';
+}
+
+const char *mdkr_window_mode_canonical(const char *value) {
+    if (mdkr_video_ci_equal(value, "windowed") ||
+        mdkr_video_ci_equal(value, "window")) {
+        return "windowed";
+    }
+    if (mdkr_video_ci_equal(value, "fullscreen") ||
+        mdkr_video_ci_equal(value, "borderless")) {
+        return "fullscreen";
+    }
+    return NULL;
+}
+
+const char *mdkr_rumble_profile_canonical(const char *value) {
+    if (mdkr_video_ci_equal(value, "light")) return "light";
+    if (mdkr_video_ci_equal(value, "balanced") ||
+        mdkr_video_ci_equal(value, "medium")) {
+        return "balanced";
+    }
+    if (mdkr_video_ci_equal(value, "strong") ||
+        mdkr_video_ci_equal(value, "full")) {
+        return "strong";
+    }
+    return NULL;
+}
+
+const char *mdkr_controller_action_canonical(const char *value) {
+    static const char *const actions[] = {
+        "none", "a", "b", "z", "start", "l", "r",
+        "dpad_up", "dpad_down", "dpad_left", "dpad_right",
+        "c_up", "c_down", "c_left", "c_right",
+    };
+    for (size_t i = 0; i < sizeof(actions) / sizeof(actions[0]); i++) {
+        if (mdkr_video_ci_equal(value, actions[i])) return actions[i];
+    }
+    return NULL;
 }
 
 MdkrVideoKey mdkr_video_key_from_name(const char *name) {
@@ -283,6 +455,9 @@ static const float s_preset[MDKR_VIDEO_KEY_COUNT][3] = {
     [MDKR_VIDEO_MOTION_SMOOTHING] = {  0.0f,     0.0f,       0.0f }, /* string; see below */
     [MDKR_VIDEO_MODE]         = {       0.0f,     0.0f,       0.0f }, /* string; see below */
     [MDKR_VIDEO_WORLD_SHADOWS] = {      0.0f,     0.0f,       0.0f }, /* string; see below */
+    [MDKR_AUDIO_MASTER_VOLUME] = {    100.0f,   100.0f,     100.0f },
+    [MDKR_AUDIO_MUSIC_VOLUME] = {     100.0f,   100.0f,     100.0f },
+    [MDKR_AUDIO_EFFECTS_VOLUME] = {   100.0f,   100.0f,     100.0f },
 };
 
 /*
@@ -366,14 +541,10 @@ void mdkr_video_config_defaults(MdkrVideoConfig *config) {
     /*
      * FrameLimit defaults to "original", NOT the "60" the spec §11 example ini
      * shows as its "suggested final semantics". Arbitrary-rate presentation is
-     * opt-in for its first release: native live sink/backpressure and browser
-     * display-rate qualification remain separate from the deterministic
-     * headless proof, so the conservative behavior-preserving default is the
-     * honest one.
-     * MotionSmoothing is fail-closed in 1.0.1+. A delayed replay after the next
-     * CPU list build cannot yet retain every generic render dependency, so
-     * higher rates add host pacing opportunities but no duplicate swaps or
-     * intermediate surface images.
+     * opt-in: Original is the conservative default that preserves authored
+     * visual motion without allocating replay resources. MotionSmoothing also
+     * defaults to off; players who choose a higher presentation rate can opt
+     * into immutable adjacent-task interpolation explicitly.
      */
     snprintf(
         config->values[MDKR_VIDEO_FRAME_LIMIT].text,
@@ -383,6 +554,36 @@ void mdkr_video_config_defaults(MdkrVideoConfig *config) {
         config->values[MDKR_VIDEO_MOTION_SMOOTHING].text,
         sizeof(config->values[MDKR_VIDEO_MOTION_SMOOTHING].text),
         "%s", "off");
+
+    /* Window/input choices are player comfort, not presentation-mode state.
+     * These defaults exactly preserve the pre-remapping SDL behavior, including
+     * B/X as alternate N64 B inputs and both triggers as N64 Z. */
+#define SET_DEFAULT_TEXT(KEY, VALUE) \
+    snprintf(config->values[KEY].text, sizeof(config->values[KEY].text), \
+             "%s", VALUE)
+    SET_DEFAULT_TEXT(MDKR_WINDOW_MODE, "windowed");
+    config->values[MDKR_INPUT_RUMBLE_ENABLED].number = 1.0f;
+    SET_DEFAULT_TEXT(MDKR_INPUT_RUMBLE_PROFILE, "strong");
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_A, "a");
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_B, "b");
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_X, "b");
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_Y, "c_up");
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_START, "start");
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_LEFT_STICK, "none");
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_RIGHT_STICK, "none");
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_LEFT_SHOULDER, "l");
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_RIGHT_SHOULDER, "r");
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_DPAD_UP, "dpad_up");
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_DPAD_DOWN, "dpad_down");
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_DPAD_LEFT, "dpad_left");
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_DPAD_RIGHT, "dpad_right");
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_LEFT_TRIGGER, "z");
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_RIGHT_TRIGGER, "z");
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_RIGHT_STICK_UP, "c_up");
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_RIGHT_STICK_DOWN, "c_down");
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_RIGHT_STICK_LEFT, "c_left");
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_RIGHT_STICK_RIGHT, "c_right");
+#undef SET_DEFAULT_TEXT
 }
 
 int mdkr_video_config_apply_preset_from(MdkrVideoConfig *config,
@@ -405,7 +606,8 @@ int mdkr_video_config_apply_preset_from(MdkrVideoConfig *config,
         const MdkrVideoSchema *s = &s_schema[i];
         char number[64];
 
-        if (i == MDKR_VIDEO_MODE) {
+        if (i == MDKR_VIDEO_MODE ||
+            mdkr_video_key_is_player_comfort((MdkrVideoKey)i)) {
             continue;
         }
         if (s->type == MDKR_VIDEO_TYPE_STRING) {
@@ -485,7 +687,8 @@ static int mdkr_video_validate_frame_limit(const char *value) {
 }
 
 static int mdkr_video_validate_motion_smoothing(const char *value) {
-    return mdkr_video_ci_equal(value, "off");
+    return mdkr_video_ci_equal(value, "off") ||
+           mdkr_video_ci_equal(value, "interpolate");
 }
 
 /*
@@ -553,8 +756,25 @@ int mdkr_video_config_set(MdkrVideoConfig *config,
     }
 
     if (schema->type == MDKR_VIDEO_TYPE_STRING) {
+        const char *canonical = NULL;
         if (strchr(value, '\n') != NULL || strchr(value, '\r') != NULL) {
             return 0;
+        }
+        if (key == MDKR_WINDOW_MODE) {
+            canonical = mdkr_window_mode_canonical(value);
+        } else if (key == MDKR_INPUT_RUMBLE_PROFILE) {
+            canonical = mdkr_rumble_profile_canonical(value);
+        } else if (key >= MDKR_INPUT_CONTROLLER_A &&
+                   key <= MDKR_INPUT_CONTROLLER_RIGHT_STICK_RIGHT) {
+            canonical = mdkr_controller_action_canonical(value);
+        }
+        if (key == MDKR_WINDOW_MODE || key == MDKR_INPUT_RUMBLE_PROFILE ||
+            (key >= MDKR_INPUT_CONTROLLER_A &&
+             key <= MDKR_INPUT_CONTROLLER_RIGHT_STICK_RIGHT)) {
+            if (canonical == NULL) return 0;
+            snprintf(slot->text, sizeof(slot->text), "%s", canonical);
+            slot->source = source;
+            return 1;
         }
         if (key == MDKR_VIDEO_MODE) {
             int mode = mdkr_video_mode_from_name(value);
@@ -576,6 +796,14 @@ int mdkr_video_config_set(MdkrVideoConfig *config,
                 return 0;
             }
             snprintf(slot->text, sizeof(slot->text), "%s", canonical);
+            slot->source = source;
+            return 1;
+        }
+        if (key == MDKR_VIDEO_MOTION_SMOOTHING &&
+            mdkr_video_validate_motion_smoothing(value)) {
+            snprintf(slot->text, sizeof(slot->text), "%s",
+                     mdkr_video_ci_equal(value, "interpolate")
+                         ? "interpolate" : "off");
             slot->source = source;
             return 1;
         }

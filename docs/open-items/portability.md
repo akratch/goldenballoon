@@ -835,7 +835,8 @@ shows up), and the live-path case-1 count is zero. Tracked as future work.
   representation through `aLoadRaw16Buffer`; the ADPCM byte-stream load remains
   untouched. Also swapped at load: the
   compressed-MIDI ALCMidiHdr (trackOffset[16]+division, in music_sequence_init)
-  and SoundData.soundBite/.range u16 (audio_init).
+  SoundData.soundBite/.range u16 (audio_init), and the mixed u16/s16 fields in
+  each VehicleSoundAsset record (racer_sound_init).
 - [x] `ASSET_EMPTY_14` remains byte-order-defined intentionally: TLUT entries are
   loaded as raw bytes and the HLE reconstructs each RGBA16/IA16 entry MSB-first.
   CI palette bounds and transactional loads are enforced before commit.

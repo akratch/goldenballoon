@@ -15,6 +15,9 @@ void dkr_audio_out_shutdown(void);
 void dkr_audio_advance_fields(unsigned fields, bool rebase);
 void dkr_audio_service_tick(void);
 void dkr_audio_service_summary(void);
+/* Diagnostic timestamp for audio/pause gates; zero when no measured output has
+ * been produced. This never drives synthesis or gameplay. */
+unsigned long long dkr_audio_output_frame_count(void);
 
 #ifdef __cplusplus
 }

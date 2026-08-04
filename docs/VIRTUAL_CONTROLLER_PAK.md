@@ -88,6 +88,12 @@ when available; browser controllers use their Gamepad vibration actuator.
 Disconnect and shutdown cancel active feedback. A device without haptics keeps
 fully functional controls and storage.
 
+Native Settings exposes rumble as a player comfort preference. Off sends zero
+amplitude and immediately cancels a live effect while the game still sees the
+connected Rumble Pak. Light, Balanced, and Strong use 35%, 65%, and 100% motor
+amplitude respectively; DKR remains responsible for the authored effect timing.
+The selection persists in `mdkr64.ini` and is independent of presentation mode.
+
 ## Evidence and remaining matrix
 
 The implementation passed:

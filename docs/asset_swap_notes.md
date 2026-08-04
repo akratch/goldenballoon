@@ -330,8 +330,8 @@ Notes:
 > deliberately — the HLE reconstructs each TLUT entry MSB-first from raw bytes.
 
 
-Every item below was closed by the field-level audit on branch
-`codex/asset-swap-audit`. Answers and evidence follow; nothing here is still
+Every item below was closed by the field-level asset-swap audit. Answers and
+evidence follow; nothing here is still
 open. New findings that the audit could NOT close are in "Residual risks".
 
 1. **Animated (multi-frame) textures.** *CLOSED — not a gap; the generic
@@ -373,19 +373,30 @@ open. New findings that the audit could NOT close are in "Residual risks".
    `asset_table_load()`, so the generic `keyframeCount`-only case does not also
    run: no double swap.
 
-### `ASSET_AUDIO` — punt is STALE, the swap is real
+### `ASSET_AUDIO` — heterogeneous, with typed ownership
 
 The punt below was written when audio was stubbed to silence for bring-up.
-Audio is live and on by default now (M5), and the byte-swap work was done — just
-not in this module. `game/libultra/src/audio/bnkf.c` under `NATIVE_PORT` is a
-full rewrite of `alBnkfNew`/`alSeqFileNewFrom` that parses the bank image
-through explicit big-endian byte accessors (`bank_ctl_u16/s16/u32/s32`) and
-builds native host structs, which also solves the LP64 4-byte-offset problem.
-`ALSeqFile.seqCount`/`seqArray[].offset` are handled there too, and
-`SoundData.soundBite`/`.range` get a manual u16 swap in `audio.c`. Raw ADPCM
-sample bytes correctly stay unswapped. **No live defect.** The
-`case ASSET_AUDIO:` no-op in the dispatch is correct as written, because
-`audio.c` never calls `asset_swap_normalize()` on audio data at all.
+Audio is live and on by default now (M5), but the section still cannot be sent
+through one blanket swap: it mixes pointer-bearing bank images, byte streams,
+small typed tables, and raw samples. Ownership is therefore per consumer:
+
+- `platform/audio_compat.c` implements `alBnkfNew`/`alSeqFileNewFrom` with
+  explicit `bank_ctl_u16/s16/u32/s32` reads and builds native host structs,
+  which also solves the LP64 4-byte-offset problem.
+- `SoundData.soundBite`/`.range`, the custom-FX s32 array, and the compressed
+  MIDI header convert at their load sites. `MusicData` is three `u8` fields.
+- Raw ADPCM/RAW16/event bytes retain their format-defined representation until
+  their typed decoder consumes them.
+- The 30 `VehicleSoundAsset` records at `ASSET_AUDIO_7` mix u8 data with u16/s16
+  fields. They are normalized by `asset_swap_vehicle_sound()` immediately after
+  each raw record load.
+
+That last owner was missing: normal kart sound ID 115 decoded as 29440, so the
+main engine loop could not start, while its byte-sized idle ID remained valid.
+The source-coverage arm now inventories all 16 textual `ASSET_AUDIO` raw-load
+sites and fails if a new heterogeneous consumer is added without an audit. The
+`case ASSET_AUDIO:` no-op in the generic dispatch remains correct because audio
+data is never homogeneous enough for `asset_swap_normalize()`.
 
 ---
 

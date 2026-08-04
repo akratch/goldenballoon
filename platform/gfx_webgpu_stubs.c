@@ -66,16 +66,6 @@ int   platformHostWgpuSurfaceFormat(void){ return 0; }
 int   platformHasHostWebGpuRecovery(void){ return 0; }
 int   platformRecoverHostWebGpu(int phase) { (void)phase; return 0; }
 
-/* ---- In-game overlay (ImGui F1 menu) — absent without the shell. ---- */
-int platformOverlayRender(void)       { return 1; /* no overlay */ }
-int platformOverlayWantsInput(void) {
-    const char *test = getenv("MDKR_TEST_WEBGPU_OVERLAY");
-    return test != NULL && test[0] == '1';
-}
-int platformOverlayWantsRender(void) {
-    return platformOverlayWantsInput();
-}
-
 #endif /* !MDKR_APP */
 
 /* ---- Minimap/radar overlay (mgb64 remaster HUD) — absent in mdkr64. ---- */

@@ -18,6 +18,7 @@
 #define AL_SNDP_STOP_EVT (1 << 10)
 #define AL_SNDP_GROUP_VOL_EVT (1 << 11)
 #define AL_SNDP_RELEASE_NEXT_EVT (1 << 12)
+#define AL_SNDP_GLOBAL_VOL_EVT (1 << 13)
 
 #define AL_SNDP_PRIORITY_DEFAULT 64
 #define AL_SNDP_GROUP_VOLUME_MAX 32767
@@ -108,6 +109,11 @@ typedef struct audioMgrConfig_s{
 
 void sndp_set_global_volume(u32 volume);
 s32 sndp_get_global_volume(void);
+#ifdef NATIVE_PORT
+void sndp_set_overlay_pause(s32 paused);
+s32 sndp_overlay_pause_active(void);
+u16 sndp_get_effective_group_volume(u8 groupID);
+#endif
 void sndp_set_active_sound_limit(s32 numSounds);
 void sndp_init_player(audioMgrConfig *c);
 ALMicroTime  sndp_voice_handler(void *node);

@@ -715,6 +715,63 @@ if "mdkr64OracleMaybeForceTrack" not in text:
         helper + anchor + "  mdkr64OracleMaybeForceTrack(*this);\n",
         1,
     )
+if "mdkr64OracleTraceVehicleRng" not in text:
+    anchor = "auto CPU::instruction() -> bool {\n"
+    if anchor not in text:
+        raise SystemExit("FAIL: cpu.cpp vehicle-RNG anchor not found")
+    helper = r'''static auto mdkr64OracleTraceVehicleRng(CPU& cpu) -> void {
+  static bool configured = false;
+  static FILE* trace = nullptr;
+  static u64 ordinal = 0;
+  if(!configured) {
+    configured = true;
+    if(const char* path = getenv("MDKR64_ARES_VEHICLE_RNG_TRACE")) {
+      if(*path) {
+        trace = fopen(path, "wb");
+        if(!trace) {
+          fprintf(stderr,
+            "mdkr64 oracle: cannot open vehicle RNG trace %s\n", path);
+        } else {
+          fprintf(trace,
+            "ordinal,pc,ra,seed_before,min,max,racer,player,vehicle\n");
+        }
+      }
+    }
+  }
+  if(!trace || (u32)cpu.ipu.pc != 0x8006fb8c) return;
+
+  /*
+   * US 1.1 mathRnd/rand_range entry. A return address inside
+   * racer_sound_car proves that the retail car-audio routine itself consumes
+   * the shared authored RNG stream. gSoundRacerObj identifies whether the
+   * caller is an ordinary player car or a special vehicle.
+   */
+  u32 ra = (u32)cpu.ipu.r[31].u64;
+  if(ra < 0x80005254 || ra >= 0x80005d08) return;
+  /* Read through the CPU's debug path so dirty KSEG0 D-cache lines are
+   * authoritative. Reading backing RDRAM here can report the prior seed. */
+  u32 seed = (u32)cpu.readDebug<Word>(0xffff'ffff'800d'd9a4ull);
+  u32 racer = (u32)cpu.readDebug<Word>(0xffff'ffff'8011'a1bcull);
+  s32 player = -32768;
+  s32 vehicle = -128;
+  if((racer & 0x1fffffff) < 0x00800000) {
+    u32 address = racer & 0x1fffffff;
+    player = (s16)cpu.readDebug<Half>(0xffff'ffff'8000'0000ull + address);
+    vehicle = (s8)cpu.readDebug<Byte>(
+      0xffff'ffff'8000'0000ull + address + 0x1d7);
+  }
+  fprintf(trace, "%llu,0x%08x,0x%08x,%u,%d,%d,0x%08x,%d,%d\n",
+    (unsigned long long)++ordinal, (u32)cpu.ipu.pc, ra, seed,
+    cpu.ipu.r[4].s32, cpu.ipu.r[5].s32, racer, player, vehicle);
+  fflush(trace);
+}
+
+'''
+    text = text.replace(
+        anchor,
+        helper + anchor + "  mdkr64OracleTraceVehicleRng(*this);\n",
+        1,
+    )
 cpu_cpp.write_text(text, encoding="utf-8")
 
 # --- macOS build fixes (same as mgb64's oracle build) -----------------------

@@ -1,0 +1,27 @@
+# Persisted Taj unlock -> four-player race with P4 as Taj.
+1250 START 4 P1
+1330 START 4 P1
+
+# P1 Diddy, P2 Krunch, P3 Bumper, P4 starts on Banjo and moves through
+# Timber and Pipsy to Taj.
+1450 A 4 P2
+1490 A 4 P3
+1530 A 4 P4
+1590 DOWN 4 P4
+1650 LEFT 4 P4
+1710 LEFT 4 P4
+
+1800 A 4 P1
+1840 A 4 P2
+1880 A 4 P3
+1920 A 4 P4
+2000 A 4 P1
+
+# Track, all vehicle confirmations, CPU count, GO.
+2180 A 4 P1
+2340 A 4 P1
+2340 A 4 P2
+2340 A 4 P3
+2340 A 4 P4
+2490 A 4 P1
+2640 A 4 P1

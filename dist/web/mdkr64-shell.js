@@ -31,6 +31,12 @@ const ROM_PATH = "/rom/baserom.us.v80.z64";
 const $ = (id) => document.getElementById(id);
 
 let romBytes = null;     // freshly-picked ROM bytes (null once written to FS)
+let selectedRomName = ""; // user-facing name for an unpersisted valid pick
+let storedRomAvailable = false; // true only after full-image validation
+let romSessionOnlyWarning = ""; // visible if a fresh pick could not reach IDBFS
+let romPersistencePending = false; // a retry can promote this in-memory ROM
+let romStorageMounted = false;
+let romSelectionEpoch = 0; // latest user pick wins across async read/hash work
 let module = null;       // the instantiated engine Module
 let booted = false;
 let savedOnce = false;
@@ -143,6 +149,8 @@ const testRafDeltasNs = (() => {
 })();
 let testRafIndex = 0;
 let testRafNow = null;
+let testActualRafLast = null;
+globalThis.__mdkrActualRafDeltas = testConfig ? [] : null;
 globalThis.__mdkrLastAnimationFrameDeltaNs = 0;
 globalThis.__mdkrSyntheticAnimationFrameClock =
   testRafDeltas !== null || testRafDeltasNs !== null;
@@ -159,6 +167,15 @@ globalThis.__mdkrWaitAnimationFrame = async function () {
     });
   }
   const actual = await new Promise((resolve) => requestAnimationFrame(resolve));
+  if (globalThis.__mdkrActualRafDeltas) {
+    if (testActualRafLast !== null) {
+      globalThis.__mdkrActualRafDeltas.push(actual - testActualRafLast);
+      if (globalThis.__mdkrActualRafDeltas.length > 12000) {
+        globalThis.__mdkrActualRafDeltas.shift();
+      }
+    }
+    testActualRafLast = actual;
+  }
   if (!testRafDeltas && !testRafDeltasNs) return actual;
   if (testRafNow === null) testRafNow = actual;
   const index = testRafIndex++;
@@ -181,6 +198,130 @@ function testError(value) {
   if (testState.errors.length > 32) testState.errors.shift();
 }
 
+let romPersistenceNoticeTimer = null;
+let romPersistenceRetryRequested = false;
+
+function focusLauncherRecovery(target) {
+  if (!target) return;
+  requestAnimationFrame(() => {
+    const gate = $("gate");
+    if (gate && !gate.hidden && target.isConnected) {
+      target.focus({ preventScroll: true });
+    }
+  });
+}
+
+function showRomPersistenceNotice(message, canRetry, success = false,
+                                  retrying = false) {
+  const banner = $("rom-session-banner");
+  const text = $("rom-session-message");
+  const retry = $("rom-storage-retry");
+  if (!banner || !text || !retry) return;
+  if (romPersistenceNoticeTimer !== null) {
+    clearTimeout(romPersistenceNoticeTimer);
+    romPersistenceNoticeTimer = null;
+  }
+  banner.hidden = false;
+  banner.classList.toggle("ok", success);
+  text.textContent = message;
+  // Do not hide an invoked button while it owns keyboard focus. A visible,
+  // disabled pending control keeps both focus and the operation's state clear.
+  retry.hidden = !canRetry && !retrying;
+  retry.disabled = retrying;
+  retry.textContent = retrying ? "Retrying…" : "Retry browser storage";
+}
+
+function focusRomPersistenceRetry() {
+  const banner = $("rom-session-banner");
+  const retry = $("rom-storage-retry");
+  requestAnimationFrame(() => {
+    if (banner && !banner.hidden && retry && !retry.hidden &&
+        !retry.disabled && retry.isConnected) {
+      retry.focus({ preventScroll: true });
+    }
+  });
+}
+
+function focusRomPersistenceSuccess() {
+  requestAnimationFrame(() => {
+    const stage = $("stage");
+    const canvas = $("canvas");
+    if (stage && !stage.hidden && canvas && canvas.isConnected) {
+      canvas.focus({ preventScroll: true });
+      return;
+    }
+    focusLauncherRecovery($("gate-msg"));
+  });
+}
+
+function clearRomSessionOnlyWarning() {
+  romSessionOnlyWarning = "";
+  const banner = $("rom-session-banner");
+  const text = $("rom-session-message");
+  const retry = $("rom-storage-retry");
+  if (romPersistenceNoticeTimer !== null) {
+    clearTimeout(romPersistenceNoticeTimer);
+    romPersistenceNoticeTimer = null;
+  }
+  if (banner) {
+    banner.hidden = true;
+    banner.classList.remove("ok");
+  }
+  if (text) text.textContent = "";
+  if (retry) {
+    retry.hidden = true;
+    retry.disabled = false;
+    retry.textContent = "Retry browser storage";
+  }
+}
+
+function noteRomPersistenceConfirmed() {
+  if (!romPersistencePending || !romStorageMounted) return;
+  romPersistencePending = false;
+  storedRomAvailable = true;
+  romSessionOnlyWarning = "";
+  showRomPersistenceNotice("ROM saved to browser storage.", false, true);
+  if (romPersistenceRetryRequested) focusRomPersistenceSuccess();
+  romPersistenceRetryRequested = false;
+  romPersistenceNoticeTimer = setTimeout(() => {
+    clearRomSessionOnlyWarning();
+  }, 4000);
+}
+
+function retryRomPersistence() {
+  if (!romPersistencePending || !romStorageMounted) {
+    return Promise.resolve({ storedRomAvailable, romSessionOnlyWarning });
+  }
+  romPersistenceRetryRequested = true;
+  showRomPersistenceNotice("Retrying browser storage…", false, false, true);
+  return persist({ reason: "rom-retry", urgent: true }).then(() => ({
+    storedRomAvailable,
+    romSessionOnlyWarning,
+  })).catch((error) => {
+    testError("ROM persistence retry failed: " +
+      String(error && error.message ? error.message : error));
+    romSessionOnlyWarning =
+      "The ROM still could not be saved to browser storage. It remains " +
+      "available for this session; keep the original file and try again.";
+    romPersistenceRetryRequested = false;
+    showRomPersistenceNotice(romSessionOnlyWarning, true);
+    focusRomPersistenceRetry();
+    throw error;
+  });
+}
+
+function retireRomPersistenceSession() {
+  romPersistencePending = false;
+  romStorageMounted = false;
+  romPersistenceRetryRequested = false;
+  clearRomSessionOnlyWarning();
+  if (testConfig) {
+    delete globalThis.__mdkrTestForceSavePersistenceFailure;
+    delete globalThis.__mdkrTestForceAudioOverflow;
+    delete globalThis.__mdkrTestRetryRomPersistence;
+  }
+}
+
 // Called synchronously by the wasm WebGPU seam when device bring-up or a live
 // device fails. Keep recovery outside the renderer: expose the launcher (and
 // its independent Clear Save / Forget ROM controls), hide the frozen canvas,
@@ -198,6 +339,7 @@ window.mdkr64ShowError = (message) => {
   const status = $("gate-msg");
   status.className = "status-line err";
   status.textContent = text;
+  focusLauncherRecovery(status);
   const play = $("play");
   play.disabled = true;
   play.title = text;
@@ -254,6 +396,12 @@ function testAudioInfo() {
     posted: Number(audio.posted) || 0,
     ring: Number(audio.statRing) || 0,
     underflows: Number(audio.under) || 0,
+    ringDroppedFrames: Number(audio.droppedTotal) || 0,
+    pendingDroppedFrames: Number(audio.pendingDroppedFrames) || 0,
+    recoveries: Number(audio.recoveries) || 0,
+    recoveryFrames: Number(audio.recoveryFrames) || 0,
+    recoverySamples: Number(audio.recoverySamples) || 0,
+    completedRecoveries: Number(audio.completedRecoveries) || 0,
     contextState: audio.ctx ? String(audio.ctx.state) : "missing",
     shutdownComplete: audio.shutdownComplete === true,
   };
@@ -295,6 +443,8 @@ if (testState) {
       },
       saveDurability: module && module.__mdkrSaveDurability
         ? { ...module.__mdkrSaveDurability } : null,
+      storedRomAvailable,
+      romSessionOnlyWarning,
       persistenceWait: testState.persistenceWait
         ? { ...testState.persistenceWait } : null,
       audio: testAudioInfo(),
@@ -332,8 +482,9 @@ async function gate() {
 // garbage. rom-id.js says exactly which revision it is instead.
 //
 // Returns an error string to show the user, or null to accept. Mutates `bytes`
-// into .z64 order on success.
-function validateRom(bytes, name) {
+// into .z64 order before hashing so .z64/.v64/.n64 all compare against one
+// canonical identity.
+async function validateRom(bytes, name) {
   if (typeof dkrValidateRom !== "function") {
     return "rom-id.js failed to load, so this page cannot check your ROM. Reload the page.";
   }
@@ -342,6 +493,29 @@ function validateRom(bytes, name) {
   if (res.warning) console.warn("[ROM] " + res.warning);
   if (res.order && res.order !== "z64") {
     console.info(`[ROM] .${res.order} image converted to big-endian .z64 order.`);
+  }
+  if (!globalThis.crypto || !globalThis.crypto.subtle ||
+      typeof dkrReferenceSha256 !== "function") {
+    return "This browser cannot perform the complete ROM integrity check. " +
+           "Use the current HTTPS page in a supported browser.";
+  }
+  const expected = dkrReferenceSha256(res.id && res.id.decompBuild);
+  if (!expected) {
+    return `${name || "That file"} has no supported full-image identity in this build.`;
+  }
+  let actual;
+  try {
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+    actual = Array.from(new Uint8Array(digest), (value) =>
+      value.toString(16).padStart(2, "0")).join("");
+  } catch (error) {
+    return "The browser could not complete the ROM integrity check (" +
+      (error && error.message ? error.message : error) + ").";
+  }
+  if (actual !== expected) {
+    return `${name || "That file"} identifies as ${res.id.revisionName}, but its ` +
+      "complete SHA-256 does not match the supported reference image. The dump " +
+      "is modified or damaged; choose a clean copy of your cartridge.";
   }
   return null;
 }
@@ -352,36 +526,57 @@ function validateRom(bytes, name) {
 const PREF_MODE = "mdkr64.mode";
 const PREF_SCALE = "mdkr64.scale";
 const PREF_RATE = "mdkr64.rate";
+const PREF_SMOOTHING = "mdkr64.smoothing";
 let qualityModeDirty = false;
 let qualityScaleDirty = false;
 let qualityRateDirty = false;
+let qualitySmoothingDirty = false;
+function revealConfiguredExperimentalPresentation() {
+  const disclosure = $("experimental-presentation");
+  const rate = $("rate");
+  const smoothing = $("smoothing");
+  if (disclosure && rate && smoothing &&
+      (rate.value !== "original" || smoothing.value !== "off")) {
+    disclosure.open = true;
+  }
+}
 function initQualityControls() {
   const qsp = new URLSearchParams(location.search);
   const mode = $("mode");
   const scale = $("scale");
   const rate = $("rate");
-  if (!mode || !scale || !rate) return;
+  const smoothing = $("smoothing");
+  if (!mode || !scale || !rate || !smoothing) return;
   try {
     const m = qsp.get("mode") || localStorage.getItem(PREF_MODE);
     const s = qsp.get("scale") || localStorage.getItem(PREF_SCALE);
     const r = qsp.get("rate") || localStorage.getItem(PREF_RATE);
+    const motion = qsp.get("smoothing") ||
+      localStorage.getItem(PREF_SMOOTHING);
     if (m && [...mode.options].some((o) => o.value === m)) mode.value = m;
     if (s !== null && [...scale.options].some((o) => o.value === s)) scale.value = s;
     if (r && [...rate.options].some((o) => o.value === r)) rate.value = r;
+    if (motion && [...smoothing.options].some((o) => o.value === motion)) {
+      smoothing.value = motion;
+    }
   } catch (_) { /* private mode: fall back to the defaults in the markup */ }
+  revealConfiguredExperimentalPresentation();
   const save = (event) => {
     if (event && event.currentTarget === mode) qualityModeDirty = true;
     if (event && event.currentTarget === scale) qualityScaleDirty = true;
     if (event && event.currentTarget === rate) qualityRateDirty = true;
+    if (event && event.currentTarget === smoothing) qualitySmoothingDirty = true;
     try {
       localStorage.setItem(PREF_MODE, mode.value);
       localStorage.setItem(PREF_SCALE, scale.value);
       localStorage.setItem(PREF_RATE, rate.value);
+      localStorage.setItem(PREF_SMOOTHING, smoothing.value);
     } catch (_) { /* nothing to do if storage is unavailable */ }
   };
   mode.addEventListener("change", save);
   scale.addEventListener("change", save);
   rate.addEventListener("change", save);
+  smoothing.addEventListener("change", save);
 }
 
 function parseIniSection(text, wantedSection) {
@@ -416,10 +611,13 @@ function applyStoredVideoControls(qs) {
   const mode = $("mode");
   const scale = $("scale");
   const rate = $("rate");
+  const smoothing = $("smoothing");
   const video = parseIniSection(text, "video");
   const storedMode = (video.get("mode") || "").toLowerCase();
   const storedScale = video.get("renderscale") || "";
   const storedRate = (video.get("framelimit") || "").toLowerCase();
+  const storedSmoothing =
+    (video.get("motionsmoothing") || "").toLowerCase();
   if (mode && !qualityModeDirty && !qs.has("mode") &&
       /^(pure|restored|remastered)$/.test(storedMode)) {
     mode.value = storedMode;
@@ -437,6 +635,11 @@ function applyStoredVideoControls(qs) {
       rate.value = "display";
     }
   }
+  if (smoothing && !qualitySmoothingDirty && !qs.has("smoothing") &&
+      /^(off|interpolate)$/.test(storedSmoothing)) {
+    smoothing.value = storedSmoothing;
+  }
+  revealConfiguredExperimentalPresentation();
   return true;
 }
 
@@ -463,7 +666,10 @@ globalThis.__mdkrBuildQuery = BUILD_QUERY;
     if (!response.ok) return;
     const info = await response.json();
     const tag = document.getElementById("build-tag");
-    const text = "build " + (info.source_commit_short || "?") +
+    const version = typeof info.version === "string" && info.version
+      ? info.version : "?";
+    const text = "Golden Balloon " + version + " · build " +
+      (info.source_commit_short || "?") +
       (info.source_dirty ? " (dirty)" : "") +
       (info.built_utc ? " · " + info.built_utc : "");
     if (tag) {
@@ -499,6 +705,7 @@ let persistCommitted = 0;
 let persistTail = Promise.resolve();
 let enginePersistenceActive = true;
 let persistenceTimer = null;
+let persistenceListenersArmed = false;
 
 function publishDurability(error = null) {
   if (!module) return;
@@ -511,6 +718,19 @@ function publishDurability(error = null) {
 }
 
 async function syncEngineFs(options) {
+  if (testConfig && testConfig.holdRomPersistenceForPublicRetry &&
+      romPersistencePending && (!options || options.reason !== "rom-retry")) {
+    throw new Error("ROM storage held for public Retry test");
+  }
+  // Keep the browser-runtime custody test honest: its initial ROM sync fails
+  // once, then its first explicitly requested retry fails before a second
+  // retry can establish durable storage. This hook is inert outside tests.
+  if (testConfig && options && options.reason === "rom-retry" &&
+      Number.isInteger(testConfig.romSyncFailCount) &&
+      testConfig.romSyncFailCount > 0) {
+    testConfig.romSyncFailCount--;
+    throw new Error("injected ROM storage sync failure");
+  }
   if (testConfig && options && options.reason === "eeprom") {
     const delay = Number(testConfig.persistDelayOnceMs) || 0;
     const currentFrame = module && Number.isFinite(module.__mdkrFrames)
@@ -536,8 +756,13 @@ async function syncEngineFs(options) {
       return;
     }
     try {
-      module.FS.syncfs(false, (error) =>
-        error ? reject(error) : resolve());
+      module.FS.syncfs(false, (error) => {
+        if (error) reject(error);
+        else {
+          noteRomPersistenceConfirmed();
+          resolve();
+        }
+      });
     } catch (error) {
       reject(error);
     }
@@ -578,6 +803,7 @@ function persist(optionsOrDone) {
 
 function quiesceEnginePersistence(reason, done) {
   if (!enginePersistenceActive) {
+    retireRomPersistenceSession();
     persistTail.then(
       () => { if (done) done(null); },
       (error) => { if (done) done(error); }
@@ -588,6 +814,10 @@ function quiesceEnginePersistence(reason, done) {
     clearInterval(persistenceTimer);
     persistenceTimer = null;
   }
+  /* The in-memory module is being retired. It must never later promote a ROM
+   * that a user has forgotten or leave a session-only warning on a returned
+   * launcher. A future boot creates a new explicit persistence session. */
+  retireRomPersistenceSession();
   /*
    * Enqueue one final generation while the engine still owns /save, then close
    * the producer side immediately. The Promise chain preserves every earlier
@@ -601,6 +831,35 @@ function quiesceEnginePersistence(reason, done) {
     (error) => { if (done) done(error); }
   );
   return finalFlush;
+}
+
+async function beginEnginePersistenceSession() {
+  if (persistenceTimer !== null) {
+    clearInterval(persistenceTimer);
+    persistenceTimer = null;
+  }
+  // A fast retry can begin before the preceding final IDBFS transaction's
+  // callback hands save tooling back. Never let two module views overlap.
+  await persistTail.catch(() => {});
+  persistRequested = 0;
+  persistCommitted = 0;
+  persistTail = Promise.resolve();
+  enginePersistenceActive = true;
+  savedOnce = false;
+  graphicsRecoveryQueued = false;
+  module = null;
+}
+
+function armEnginePersistenceListeners() {
+  if (persistenceListenersArmed) return;
+  persistenceListenersArmed = true;
+  addEventListener("pagehide", () => persist());
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") persist();
+    else resumeAudio();
+  });
+  addEventListener("keydown", resumeAudio, true);
+  addEventListener("pointerdown", resumeAudio);
 }
 
 // ---- Resume the AudioContext on a user gesture (autoplay policy) -----------
@@ -812,15 +1071,35 @@ function wireCanvasResize() {
 async function boot() {
   if (booted) return;
   booted = true;
+  await beginEnginePersistenceSession();
+  const canvas = $("canvas");
+  const status = $("gate-msg");
+  status.className = "status-line";
   // The tiny save-tools module and the engine each have their own in-memory FS
   // view of the same IDBFS database. Hand ownership to the engine only after
   // save tooling has flushed and stopped mutating its view.
-  if (globalThis.MDKRSaveUI) {
-    await globalThis.MDKRSaveUI.release();
+  try {
+    if (globalThis.MDKRSaveUI) {
+      await globalThis.MDKRSaveUI.release();
+    }
+  } catch (error) {
+    booted = false;
+    const detail = String(error && error.message ? error.message : error);
+    testError(detail);
+    testMark("save-ui-release-failed");
+    status.className = "status-line err";
+    status.textContent =
+      "Couldn't prepare browser storage (" + detail.slice(0, 300) +
+      "). Try again; your stored ROM and saves were not changed.";
+    const play = $("play");
+    play.disabled = play.dataset.blocked === "1" ||
+                    (!romBytes && !storedRomAvailable);
+    quiesceEnginePersistence("save-ui-release-failure", () => {
+      if (globalThis.MDKRSaveUI) globalThis.MDKRSaveUI.resume();
+    });
+    return;
   }
   testMark("boot-started");
-  const canvas = $("canvas");
-  const status = $("gate-msg");
   status.textContent = "Downloading engine…";
 
   // Size the surface first so SDL and the first WebGPU configure agree.
@@ -840,8 +1119,16 @@ async function boot() {
     booted = false;
     testError(e && e.message ? e.message : e);
     testMark("factory-failed");
-    status.textContent = "Couldn't load the engine (" + e.message + "). Reload to retry.";
-    $("play").disabled = false;
+    status.className = "status-line err";
+    status.textContent = "Couldn't load the engine (" +
+      String(e && e.message ? e.message : e).slice(0, 300) +
+      "). Try again or reload the page.";
+    const play = $("play");
+    play.disabled = play.dataset.blocked === "1" ||
+                    (!romBytes && !storedRomAvailable);
+    quiesceEnginePersistence("factory-failure", () => {
+      if (globalThis.MDKRSaveUI) globalThis.MDKRSaveUI.resume();
+    });
     return;
   }
 
@@ -876,7 +1163,8 @@ async function boot() {
     loadTrackValue || ""
   ) ? loadTrackValue : null;
 
-  module = await createMDKR64({
+  try {
+    module = await createMDKR64({
     canvas,
     noInitialRun: true,
     // Keep the wasm and any side files on the same cache-busting stamp as the
@@ -913,12 +1201,15 @@ async function boot() {
       }
       // The engine's main() returns nonzero when rom_io.c refuses the ROM.
       if (code && code !== 0) {
+        storedRomAvailable = false;
         $("gate").hidden = false;
         $("stage").hidden = true;
         $("rom-status").className = "err";
         $("rom-status").textContent =
           "The engine refused this ROM (exit " + code + "). Try a different file.";
-        $("play").disabled = false;
+        focusLauncherRecovery($("rom-status"));
+        const play = $("play");
+        play.disabled = play.dataset.blocked === "1" || !romBytes;
         booted = false;
       }
       // main() is no longer mutating IDBFS. Flush the engine view before the
@@ -942,13 +1233,33 @@ async function boot() {
       $("stage").hidden = true;
       $("gate").hidden = false;
       $("play").disabled = true;
+      focusLauncherRecovery(status);
       quiesceEnginePersistence("engine-abort", () => {
         if (globalThis.MDKRSaveUI) {
           globalThis.MDKRSaveUI.resume();
         }
       });
     },
-  });
+    });
+  } catch (error) {
+    booted = false;
+    const detail = String(error && error.message ? error.message : error);
+    testError(detail);
+    testMark("module-failed");
+    status.className = "status-line err";
+    status.textContent =
+      "The engine could not start (" + detail.slice(0, 300) + "). Try again or reload the page.";
+    $("stage").hidden = true;
+    $("gate").hidden = false;
+    const play = $("play");
+    play.disabled = play.dataset.blocked === "1" ||
+                    (!romBytes && !storedRomAvailable);
+    focusLauncherRecovery(status);
+    quiesceEnginePersistence("module-failure", () => {
+      if (globalThis.MDKRSaveUI) globalThis.MDKRSaveUI.resume();
+    });
+    return;
+  }
   publishTouchPad();
   if (testState) testState.module = module;
   testMark("module-ready");
@@ -963,6 +1274,7 @@ async function boot() {
       true, (err) => err ? reject(err) : resolve()
     ));
     storageMounted = true;
+    romStorageMounted = true;
   } catch (e) {
     testError("IDBFS mount/sync failed: " + (e && e.message ? e.message : e));
     console.warn("IDBFS mount/sync failed; running from memory only:", e);
@@ -975,16 +1287,39 @@ async function boot() {
   // Write the freshly-picked ROM (if any) and persist it for next visit.
   let pickedRomWritten = false;
   if (romBytes) {
+    const pickedName = selectedRomName || "The selected ROM";
     module.FS.writeFile(ROM_PATH, romBytes);
     romBytes = null;
+    selectedRomName = "";
     pickedRomWritten = true;
+    let romPersisted = false;
     try {
+      if (testConfig && Number.isInteger(testConfig.romSyncFailCount) &&
+          testConfig.romSyncFailCount > 0) {
+        testConfig.romSyncFailCount--;
+        throw new Error("injected ROM storage sync failure");
+      }
+      if (testConfig && testConfig.romSyncFailOnce) {
+        testConfig.romSyncFailOnce = false;
+        throw new Error("injected ROM storage sync failure");
+      }
       await new Promise((resolve, reject) => module.FS.syncfs(
         false, (err) => err ? reject(err) : resolve()
       ));
+      romPersisted = true;
+      romPersistencePending = false;
+      clearRomSessionOnlyWarning();
     } catch (e) {
       testError("ROM persistence failed: " + (e && e.message ? e.message : e));
+      romSessionOnlyWarning =
+        `${pickedName} is running for this session only. Browser storage ` +
+        "could not be updated, so reloading may restore an earlier ROM or " +
+        "ask you to choose it again. Keep the original file available.";
+      romPersistencePending = storageMounted;
     }
+    // The in-memory engine copy is valid even when persistence is unavailable;
+    // only advertise a reusable stored copy after IDBFS was actually mounted.
+    storedRomAvailable = storageMounted && romPersisted;
   }
 
   // The engine's post-EEPROM-write sync calls this, so the whole page shares one
@@ -999,20 +1334,57 @@ async function boot() {
         String(message || "").slice(0, 300);
     }
   };
+  if (testConfig) {
+    /* Browser gate seam: exercise the same save-failure handler that wasm
+     * invokes, alongside the independently injected ROM-sync failure. */
+    globalThis.__mdkrTestForceSavePersistenceFailure = () =>
+      module.__mdkrPersistFailed("injected save storage failure");
+    /* Browser-gate seam: inject more PCM than the worklet's bounded ring can
+     * hold. This deliberately uses the production message path, not a mock,
+     * and is exposed only under __mdkrTestConfig. The worklet must report the
+     * loss and start its short continuity recovery envelope. */
+    globalThis.__mdkrTestForceAudioOverflow = () => {
+      const audio = module.mdkrAudio;
+      if (!audio || audio.ready !== true || !audio.node) return null;
+      const frames = Math.max(Math.ceil((Number(audio.srcRate) || 22050) * 0.5), 12000);
+      const pcm = new Int16Array(frames * 2);
+      for (let index = 0; index < frames; index += 1) {
+        const sample = index & 1 ? -12288 : 12288;
+        pcm[index * 2] = sample;
+        pcm[index * 2 + 1] = sample;
+      }
+      audio.node.port.postMessage({ cmd: "pcm", buf: pcm.buffer }, [pcm.buffer]);
+      return {
+        frames,
+        capacity: Math.max(
+          8192,
+          Math.floor((Number(audio.srcRate) || 22050) * 0.4),
+        ),
+      };
+    };
+    globalThis.__mdkrTestRetryRomPersistence = () => retryRomPersistence();
+  }
 
   // Arm persistence + audio-resume gestures (once).
-  persistenceTimer = setInterval(persist, 5000);
-  addEventListener("pagehide", persist);
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") persist();
-    else resumeAudio();
-  });
-  addEventListener("keydown", resumeAudio, true);
-  addEventListener("pointerdown", resumeAudio);
+  // Browser-runtime custody tests can hold automatic retries while they prove
+  // the public Retry control itself owns the recovery transition.
+  if (!(testConfig && testConfig.disableAutoPersistence)) {
+    persistenceTimer = setInterval(persist, 5000);
+  }
+  armEnginePersistenceListeners();
 
   // Show the game view and run.
   $("gate").hidden = true;
   $("stage").hidden = false;
+  const romSessionBanner = $("rom-session-banner");
+  if (romSessionBanner) {
+    if (romSessionOnlyWarning) {
+      showRomPersistenceNotice(romSessionOnlyWarning,
+                               romPersistencePending && romStorageMounted);
+    } else {
+      clearRomSessionOnlyWarning();
+    }
+  }
   armViewportSettleWatch(2500);
   canvas.focus();
   status.textContent = "";
@@ -1026,12 +1398,17 @@ async function boot() {
   const modeSel = $("mode");
   const scaleSel = $("scale");
   const rateSel = $("rate");
+  const smoothingSel = $("smoothing");
   let mode = (qs.get("mode") || (modeSel && modeSel.value) || "").toLowerCase();
   let scale = qs.get("scale") || (scaleSel && scaleSel.value) || "";
   let rate = (qs.get("rate") || (rateSel && rateSel.value) || "original").toLowerCase();
+  let smoothing = (qs.get("smoothing") ||
+    (smoothingSel && smoothingSel.value) || "off").toLowerCase();
   const seedMode = !hasStoredVideoConfig || qualityModeDirty || qs.has("mode");
   const seedScale = !hasStoredVideoConfig || qualityScaleDirty || qs.has("scale");
   const seedRate = !hasStoredVideoConfig || qualityRateDirty || qs.has("rate");
+  const seedSmoothing = !hasStoredVideoConfig || qualitySmoothingDirty ||
+    qs.has("smoothing");
   if (seedMode && MODES.includes(mode)) {
     mainArgs.push("--video-launch-mode", mode);
   }
@@ -1041,7 +1418,12 @@ async function boot() {
   if (seedRate && /^(?:original|display|30|60|90|120|144)$/.test(rate)) {
     mainArgs.push("--video-launch-set", "Video.FrameLimit=" + rate);
   }
-  if (seedMode || seedScale || seedRate) mainArgs.push("--video-launch-persist");
+  if (seedSmoothing && /^(?:off|interpolate)$/.test(smoothing)) {
+    mainArgs.push("--video-launch-set", "Video.MotionSmoothing=" + smoothing);
+  }
+  if (seedMode || seedScale || seedRate || seedSmoothing) {
+    mainArgs.push("--video-launch-persist");
+  }
 
   const aspect = qs.get("aspect");
   const fov = qs.get("fov");
@@ -1141,7 +1523,44 @@ async function idbCount(dbName) {
   });
 }
 
+// Read one IDBFS file without instantiating the engine. Emscripten stores a
+// record shaped as { timestamp, mode, contents } under its absolute path.
+// Copy the bytes before closing the database so validation never depends on an
+// implementation-owned backing buffer.
+async function idbReadFile(dbName, path) {
+  const db = await idbOpen(dbName);
+  if (!db) return null;
+  if (!db.objectStoreNames.contains(IDB_STORE)) { db.close(); return null; }
+  return new Promise((resolve) => {
+    try {
+      const req = db.transaction(IDB_STORE, "readonly")
+        .objectStore(IDB_STORE).get(path);
+      req.onsuccess = () => {
+        const record = req.result;
+        const contents = record && record.contents;
+        let copy = null;
+        try {
+          if (contents instanceof ArrayBuffer) {
+            copy = new Uint8Array(contents.slice(0));
+          } else if (ArrayBuffer.isView(contents)) {
+            copy = new Uint8Array(
+              contents.buffer.slice(
+                contents.byteOffset, contents.byteOffset + contents.byteLength));
+          }
+        } catch (_) { copy = null; }
+        db.close();
+        resolve(copy);
+      };
+      req.onerror = () => { db.close(); resolve(null); };
+    } catch (e) { db.close(); resolve(null); }
+  });
+}
+
 async function idbClear(dbName) {
+  if (testConfig && testConfig.idbClearFailOnce && dbName === "/rom") {
+    testConfig.idbClearFailOnce = false;
+    return false;
+  }
   const db = await idbOpen(dbName);
   if (!db) return false;
   if (!db.objectStoreNames.contains(IDB_STORE)) { db.close(); return true; }
@@ -1178,24 +1597,36 @@ function wireRomUi() {
   // drift apart.
   async function acceptFile(file) {
     if (!file) return;
+    const selection = ++romSelectionEpoch;
+    input.value = "";
+    const hadActiveRom = romBytes !== null || storedRomAvailable;
     romStatus.className = "";
     romStatus.textContent = "Reading " + file.name + "…";
     let buf;
     try {
       buf = new Uint8Array(await file.arrayBuffer());
     } catch (e) {
+      if (selection !== romSelectionEpoch) return;
       romStatus.className = "err";
-      romStatus.textContent = "Couldn't read that file (" + (e.message || e) + ").";
+      romStatus.textContent = "Couldn't read that file (" + (e.message || e) + ")." +
+        (hadActiveRom ? " Your previously verified ROM is still selected." : "");
+      play.disabled = play.dataset.blocked === "1" || !hadActiveRom;
+      input.value = "";
       return;
     }
-    const err = validateRom(buf, file.name);
+    if (selection !== romSelectionEpoch) return;
+    const err = await validateRom(buf, file.name);
+    if (selection !== romSelectionEpoch) return;
     if (err) {
       romStatus.className = "err";
-      romStatus.textContent = err;
-      play.disabled = true;
+      romStatus.textContent = err + (hadActiveRom
+        ? " Your previously verified ROM is still selected; you can keep playing it."
+        : "");
+      play.disabled = play.dataset.blocked === "1" || !hadActiveRom;
       return;
     }
     romBytes = buf;
+    selectedRomName = file.name || "Selected ROM";
     romStatus.className = "ok";
     if (play.dataset.blocked) {
       // Valid ROM, but this browser can't run the engine. Say so here too, since
@@ -1204,20 +1635,18 @@ function wireRomUi() {
         " looks good — but this browser can't run WebGPU (see above).";
       return;
     }
-    romStatus.textContent = "✓ " + file.name + " looks good — press Play.";
+    romStatus.textContent = "✓ " + file.name +
+      " looks good — full-image integrity verified; press Play.";
     play.disabled = false;
     play.focus();
   }
 
   input.addEventListener("change", () => acceptFile(input.files && input.files[0]));
 
-  // ---- drop zone: click, keyboard, and drag-and-drop ----
+  // ---- drop zone: native button activation and drag-and-drop ----
   const drop = $("drop");
   if (drop) {
     drop.addEventListener("click", () => input.click());
-    drop.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); }
-    });
     // dragover must be prevented or the browser navigates to the file instead.
     ["dragenter", "dragover"].forEach((ev) =>
       drop.addEventListener(ev, (e) => {
@@ -1237,6 +1666,12 @@ function wireRomUi() {
     window.addEventListener(ev, (e) => { e.preventDefault(); }));
 
   play.addEventListener("click", () => {
+    if (!romBytes && !storedRomAvailable) {
+      romStatus.className = "err";
+      romStatus.textContent = "Choose a clean supported ROM before playing.";
+      play.disabled = true;
+      return;
+    }
     play.disabled = true;
     if (!romBytes) {
       // Boot from the ROM already persisted in IDBFS (checked at boot time).
@@ -1251,20 +1686,70 @@ function wireRomUi() {
   // there — so it downloaded the whole engine and deleted nothing. It also had no
   // code path that ever un-hid the button, so it was unreachable as well as
   // ineffective. Both are fixed: it clears the "/rom" store directly.
-  $("forget").addEventListener("click", async () => {
+  const forgetDialog = $("forget-rom-dialog");
+  const forgetButton = $("forget");
+  const forgetCancel = $("forget-rom-cancel");
+  let forgetReturnFocus = null;
+  let forgetPending = false;
+  forgetButton.addEventListener("click", () => {
+    // The invoking button is the stable focus anchor even when automation,
+    // assistive technology, or a browser's pointer policy dispatches click
+    // without first moving document.activeElement onto the control.
+    forgetReturnFocus = forgetButton;
+    if (forgetDialog && typeof forgetDialog.showModal === "function") {
+      forgetDialog.showModal();
+      $("forget-rom-cancel").focus();
+    } else if (globalThis.confirm(
+        "Forget this browser's stored ROM? Your original file and saves will not change.")) {
+      $("forget-rom-confirm").click();
+    }
+  });
+  forgetCancel.addEventListener("click", () => {
+    if (!forgetPending && forgetDialog.open) forgetDialog.close();
+  });
+  forgetDialog.addEventListener("cancel", (event) => {
+    if (forgetPending) event.preventDefault();
+  });
+  forgetDialog.addEventListener("close", () => {
+    if (forgetReturnFocus && forgetReturnFocus.isConnected &&
+        typeof forgetReturnFocus.focus === "function") {
+      forgetReturnFocus.focus();
+    }
+    forgetReturnFocus = null;
+  });
+  $("forget-rom-confirm").addEventListener("click", async () => {
     const btn = $("forget");
+    const confirm = $("forget-rom-confirm");
+    forgetPending = true;
     btn.disabled = true;
-    fsUnlinkAll("/rom");
+    confirm.disabled = true;
+    forgetCancel.disabled = true;
+    if (!enginePersistenceActive) await persistTail.catch(() => {});
     const ok = await idbClear("/rom");
-    persist();
-    romBytes = null;
+    if (ok) {
+      storedRomAvailable = false;
+      romPersistencePending = false;
+      romStorageMounted = false;
+      clearRomSessionOnlyWarning();
+      fsUnlinkAll("/rom");
+    }
+    forgetPending = false;
     btn.disabled = false;
-    btn.hidden = true;
+    confirm.disabled = false;
+    forgetCancel.disabled = false;
+    if (ok) forgetReturnFocus = null;
+    if (forgetDialog.open) forgetDialog.close();
+    btn.hidden = ok;
     $("rom-status").className = ok ? "" : "err";
     $("rom-status").textContent = ok
-      ? "Stored ROM forgotten. Pick a file to play."
-      : "Couldn't clear the stored ROM — clear this site's data in your browser settings.";
-    $("play").disabled = true;
+      ? (romBytes
+          ? `Stored browser copy forgotten. ${selectedRomName} remains selected — press Play.`
+          : "Stored browser copy forgotten. Your original ROM file and saved progress were not changed.")
+      : "Couldn't clear the stored ROM. Try again; if it keeps failing, " +
+        "clear this site's data in your browser settings.";
+    $("play").disabled = $("play").dataset.blocked === "1" ||
+                          (!romBytes && !storedRomAvailable);
+    if (ok) $("drop").focus();
   });
 
 }
@@ -1274,13 +1759,34 @@ function wireRomUi() {
 // #forget stayed hidden until a file was picked, so "the ROM persists across
 // reloads" was true of the storage and false of the UI.
 async function probeStoredRom() {
-  if ((await idbCount("/rom")) === 0) return;
+  const selection = romSelectionEpoch;
+  if ((await idbCount("/rom")) === 0 || selection !== romSelectionEpoch) return;
   $("forget").hidden = false;
   const play = $("play");
+  const stored = await idbReadFile("/rom", ROM_PATH);
+  if (selection !== romSelectionEpoch) return;
+  if (!stored) {
+    $("rom-status").className = "err";
+    $("rom-status").textContent =
+      "A stored ROM entry exists but could not be read. Forget it or choose a clean ROM.";
+    play.disabled = true;
+    return;
+  }
+  const error = await validateRom(stored, "Stored ROM");
+  if (selection !== romSelectionEpoch) return;
+  if (error) {
+    $("rom-status").className = "err";
+    $("rom-status").textContent = error +
+      " The stored copy was not started; forget it or choose a clean ROM.";
+    play.disabled = true;
+    return;
+  }
+  storedRomAvailable = true;
   if (!play.dataset.blocked) {
     play.disabled = false;
     $("rom-status").className = "ok";
-    $("rom-status").textContent = "✓ Using the ROM stored in this browser — press Play.";
+    $("rom-status").textContent =
+      "✓ Using the ROM stored in this browser — full-image integrity verified; press Play.";
   }
 }
 
@@ -1673,17 +2179,32 @@ function wireFullscreen() {
   const stage = $("stage");
   const canvas = $("canvas");
   let transition = null;
+  const stageStatus = $("stage-status");
 
-  // iPhone Safari has no Fullscreen API for page elements (iPad does). A
-  // visible button that can only ever fail is worse than none: hide it and
-  // let the browser chrome own the experience there.
+  const clearStageStatus = () => {
+    if (!stageStatus) return;
+    stageStatus.hidden = true;
+    stageStatus.textContent = "";
+  };
+
+  const reportFullscreenFailure = (exiting = false) => {
+    if (!stageStatus) return;
+    stageStatus.textContent =
+      exiting
+        ? "Couldn't exit fullscreen. Press Escape or use your browser's fullscreen control."
+        : "Fullscreen was blocked by this browser. Continue in the current window.";
+    stageStatus.hidden = false;
+  };
+
+  // Feature-detect rather than browser-sniff: current iPhone Safari supports
+  // element fullscreen, while older WebKit builds and some embedded browsers
+  // do not. A visible button that can only fail is worse than none.
   if (btn && stage &&
       typeof stage.requestFullscreen !== "function" &&
       typeof stage.webkitRequestFullscreen !== "function") {
     btn.hidden = true;
-    // Give iPhone players the real path to a chromeless game: Safari has no
-    // element fullscreen, but an installed home-screen app launches with the
-    // manifest's fullscreen display mode.
+    // A home-screen app remains the fallback path to chromeless play when this
+    // browser exposes no element-fullscreen API.
     try {
       const standalone = navigator.standalone === true ||
         (typeof matchMedia === "function" &&
@@ -1717,6 +2238,7 @@ function wireFullscreen() {
     // target creation. Serialize the transition as one state change.
     if (transition) return transition;
     transition = (async () => {
+      clearStageStatus();
       try {
         if (document.fullscreenElement) {
           await document.exitFullscreen();
@@ -1757,6 +2279,8 @@ function wireFullscreen() {
         canvas.focus({ preventScroll: true });
       } catch (error) {
         console.warn("[shell] fullscreen transition failed:", error);
+        reportFullscreenFailure(document.fullscreenElement === stage ||
+                                document.webkitFullscreenElement === stage);
       } finally {
         transition = null;
         updateButton();
@@ -1767,11 +2291,14 @@ function wireFullscreen() {
   };
 
   document.addEventListener("fullscreenchange", () => {
+    clearStageStatus();
     scheduleCanvasResize();
     updateButton();
   });
   document.addEventListener("fullscreenerror", (event) => {
     console.warn("[shell] fullscreen error:", event);
+    reportFullscreenFailure(document.fullscreenElement === stage ||
+                            document.webkitFullscreenElement === stage);
     updateButton();
   });
   if (btn) btn.addEventListener("click", go);
@@ -1795,6 +2322,12 @@ function wireFullscreen() {
 // ---- Startup ---------------------------------------------------------------
 (async () => {
   wireRomUi();
+  const romRetry = $("rom-storage-retry");
+  if (romRetry) {
+    romRetry.addEventListener("click", () => {
+      retryRomPersistence().catch(() => {});
+    });
+  }
   wireFullscreen();
   wireFpsReadout();
   wireCanvasResize();

@@ -66,7 +66,7 @@ the target column.
 | FIXED: no near-plane clipping in the HLE (wave "nearclip") | [open-items/renderer.md](open-items/renderer.md#fixed-no-near-plane-clipping-in-the-hle-wave-nearclip) |
 | FIXED: headless renders were NOT reproducible (wave "determinism") | [open-items/renderer.md](open-items/renderer.md#fixed-headless-renders-were-not-reproducible-wave-determinism) |
 | LP64 pointer-truncation crash class — SYSTEMATIC SWEEP (robust: wave) | [open-items/portability.md](open-items/portability.md#lp64-pointer-truncation-crash-class--systematic-sweep-robust-wave) |
-| Experimental high-rate native delivery cadence — OPEN | [open-items/renderer.md](open-items/renderer.md#experimental-high-rate-native-delivery-cadence--open) |
+| High-rate native delivery cadence — CLOSED (immutable-presentation wave) | [open-items/renderer.md](open-items/renderer.md#high-rate-native-delivery-cadence--closed-immutable-presentation-wave) |
 | Frame pacing / slow-motion — RESOLVED (pacing wave) | [open-items/renderer.md](open-items/renderer.md#frame-pacing--slow-motion--resolved-pacing-wave) |
 | M4 render state (this wave — input + interactive menus) | [open-items/renderer.md](open-items/renderer.md#m4-render-state-this-wave--input--interactive-menus) |
 | From asset-swap workstream (M2-swap, commit b1600b2) | [open-items/portability.md](open-items/portability.md#from-asset-swap-workstream-m2-swap-commit-b1600b2) |

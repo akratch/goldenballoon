@@ -84,6 +84,7 @@ ScreenViewport gScreenViewports[5] = {
 _Static_assert(ARRAY_COUNT(gScreenViewports) > 4,
                "viewport_reset() sets gActiveCameraID = 4 and then indexes this array with it, "
                "so index 4 must be a real element and not whatever the linker placed after it");
+static ViewportWorldRegion sViewportWorldRegions[ARRAY_COUNT(gScreenViewports)];
 #else
 ScreenViewport gScreenViewports[4] = {
     { DEFAULT_VIEWPORT },
@@ -614,6 +615,7 @@ f32 gEffectiveCamHFOV = 75.17818f; /* 60-degree vertical lens at 4:3 */
 f32 gEffectiveCamAspect = CAMERA_ASPECT;
 static f32 sProjectionLogicalWidth = SCREEN_WIDTH_FLOAT;
 static f32 sProjectionLogicalHeight = SCREEN_HEIGHT_FLOAT;
+static s32 sProjectionUsesSafeWorldRegion = FALSE;
 static s32 sNativeOrthoDrawSpace = G_MTX_DKR_SPACE_SAFE_2D;
 #endif
 
@@ -627,10 +629,13 @@ extern s32 D_B0000578; // Used as a symbol for anti-piracy checks in the game.
  *
  * DKR clips two-player views with scissors while retaining a full-height RSP
  * viewport, so the logical dimensions passed by viewport_main are intentionally
- * the RSP viewport dimensions, not the scissor rectangle.  This preserves the
+ * the RSP viewport dimensions, not the scissor rectangle. This preserves the
  * original vertical crop while fixing the host aspect and object proportions.
+ * Framed menu views opt into the safe 4:3 region instead of the wider gameplay
+ * presentation region.
  */
-static void cam_rebuild_native_projection(f32 logicalWidth, f32 logicalHeight) {
+static void cam_rebuild_native_projection(f32 logicalWidth, f32 logicalHeight,
+                                          s32 safeWorldRegion) {
     MdkrDisplayLayout layout;
     MdkrProjection projection;
     s32 gameplayCamera;
@@ -641,15 +646,18 @@ static void cam_rebuild_native_projection(f32 logicalWidth, f32 logicalHeight) {
     }
     sProjectionLogicalWidth = logicalWidth;
     sProjectionLogicalHeight = logicalHeight;
+    sProjectionUsesSafeWorldRegion = safeWorldRegion != FALSE;
 
     layout = mdkr_display_layout();
     gameplayCamera =
-        (get_game_mode() == GAMEMODE_INGAME) && !gCutsceneCameraActive;
+        (get_game_mode() == GAMEMODE_INGAME) && !gCutsceneCameraActive &&
+        !sProjectionUsesSafeWorldRegion;
     projection = mdkr_display_calculate_projection(
         gCurCamFOV,
         logicalWidth,
         logicalHeight,
-        layout.presentation_aspect,
+        sProjectionUsesSafeWorldRegion ? CAMERA_ASPECT
+                                       : layout.presentation_aspect,
         mdkr_display_widescreen_enabled(),
         gameplayCamera,
         mdkr_display_gameplay_fov(),
@@ -721,7 +729,8 @@ void cam_init(void) {
 
     gCurCamFOV = CAMERA_DEFAULT_FOV;
 #ifdef NATIVE_PORT
-    cam_rebuild_native_projection(SCREEN_WIDTH_FLOAT, SCREEN_HEIGHT_FLOAT);
+    cam_rebuild_native_projection(SCREEN_WIDTH_FLOAT, SCREEN_HEIGHT_FLOAT,
+                                  FALSE);
 #else
     guPerspectiveF(gPerspectiveMatrixF, &perspNorm, CAMERA_DEFAULT_FOV, CAMERA_ASPECT, CAMERA_NEAR, CAMERA_FAR,
                    CAMERA_SCALE);
@@ -776,7 +785,9 @@ void cam_set_fov(f32 camFieldOfView) {
     if (CAMERA_MIN_FOV < camFieldOfView && camFieldOfView < CAMERA_MAX_FOV && camFieldOfView != gCurCamFOV) {
         gCurCamFOV = camFieldOfView;
 #ifdef NATIVE_PORT
-        cam_rebuild_native_projection(sProjectionLogicalWidth, sProjectionLogicalHeight);
+        cam_rebuild_native_projection(sProjectionLogicalWidth,
+                                      sProjectionLogicalHeight,
+                                      sProjectionUsesSafeWorldRegion);
 #else
         guPerspectiveF(gPerspectiveMatrixF, &perspNorm, camFieldOfView, CAMERA_ASPECT, CAMERA_NEAR, CAMERA_FAR,
                        CAMERA_SCALE);
@@ -791,7 +802,9 @@ void cam_set_fov(f32 camFieldOfView) {
 UNUSED void cam_reset_fov(void) {
 #ifdef NATIVE_PORT
     gCurCamFOV = CAMERA_DEFAULT_FOV;
-    cam_rebuild_native_projection(sProjectionLogicalWidth, sProjectionLogicalHeight);
+    cam_rebuild_native_projection(sProjectionLogicalWidth,
+                                  sProjectionLogicalHeight,
+                                  sProjectionUsesSafeWorldRegion);
 #else
     guPerspectiveF(gPerspectiveMatrixF, &perspNorm, CAMERA_DEFAULT_FOV, CAMERA_ASPECT, CAMERA_NEAR, CAMERA_FAR,
                    CAMERA_SCALE);
@@ -1069,6 +1082,36 @@ s32 check_viewport_background_flag(s32 viewPortIndex) {
     return gScreenViewports[viewPortIndex].flags & VIEWPORT_EXTRA_BG;
 }
 
+#ifdef NATIVE_PORT
+/**
+ * Choose how a user viewport's live world maps onto a widescreen drawable.
+ *
+ * VIEWPORT_EXTRA_BG is an original engine rendering mechanism, not a layout
+ * contract: logos and credits use it for a vertically clipped cinematic while
+ * Track Select and the later post-race screens use it for a wooden aperture.
+ * Keep that distinction explicit rather than inferring it from the legacy flag.
+ */
+void viewport_world_region_set(s32 viewPortIndex, ViewportWorldRegion region) {
+    if (viewPortIndex < 0 ||
+        viewPortIndex >= (s32) ARRAY_COUNT(sViewportWorldRegions)) {
+        return;
+    }
+    sViewportWorldRegions[viewPortIndex] =
+        region == VIEWPORT_WORLD_REGION_SAFE_APERTURE
+            ? VIEWPORT_WORLD_REGION_SAFE_APERTURE
+            : VIEWPORT_WORLD_REGION_PRESENTATION;
+}
+
+s32 viewport_world_region_uses_safe_aperture(s32 viewPortIndex) {
+    if (viewPortIndex < 0 ||
+        viewPortIndex >= (s32) ARRAY_COUNT(sViewportWorldRegions)) {
+        return FALSE;
+    }
+    return sViewportWorldRegions[viewPortIndex] ==
+           VIEWPORT_WORLD_REGION_SAFE_APERTURE;
+}
+#endif
+
 /**
  * Sets the intended viewport to the size passed through by arguments.
  * Official Name: camSetUserView
@@ -1222,21 +1265,25 @@ void viewport_main(Gfx **dlist, Mtx **mats) {
         gActiveCameraID = 1;
         savedCameraID = 0;
     }
-#ifdef NATIVE_PORT
-    /* Latch the camera this viewport actually authors while every selection
-     * input is still live. The tick-boundary snapshot runs after render may
-     * have cleared gCutsceneCameraActive, so reconstructing this later can
-     * silently substitute gameplay bank 0..3 for cutscene bank 4..7. */
-    (void)presentation_snapshot_authored_camera_record(
-        savedCameraID,
-        gActiveCameraID + (gCutsceneCameraActive ? 4 : 0));
-#endif
     widthAndHeight = fb_size();
     videoHeight = GET_VIDEO_HEIGHT(widthAndHeight);
     videoWidth = GET_VIDEO_WIDTH(widthAndHeight);
     if (gScreenViewports[savedCameraID].flags & VIEWPORT_EXTRA_BG) {
 #ifdef NATIVE_PORT
-        cam_rebuild_native_projection((f32) videoWidth, (f32) videoHeight);
+        s32 safeAperture =
+            viewport_world_region_uses_safe_aperture(savedCameraID);
+        s32 logicalWidth = videoWidth;
+        s32 logicalHeight = videoHeight;
+
+        if (safeAperture) {
+            logicalWidth = gScreenViewports[savedCameraID].x2 -
+                           gScreenViewports[savedCameraID].x1 + 1;
+            logicalHeight = gScreenViewports[savedCameraID].y2 -
+                            gScreenViewports[savedCameraID].y1 + 1;
+        }
+        cam_rebuild_native_projection((f32) logicalWidth,
+                                      (f32) logicalHeight, safeAperture);
+        gDkrSetWorldRegion((*dlist)++, safeAperture);
 #endif
         tempCameraID = gActiveCameraID;
         gActiveCameraID = savedCameraID;
@@ -1375,7 +1422,9 @@ void viewport_main(Gfx **dlist, Mtx **mats) {
         posX -= 4;
     }
 #ifdef NATIVE_PORT
-    cam_rebuild_native_projection((f32) (sp54_width << 1), (f32) (sp58_height << 1));
+    cam_rebuild_native_projection((f32) (sp54_width << 1),
+                                  (f32) (sp58_height << 1), FALSE);
+    gDkrSetWorldRegion((*dlist)++, FALSE);
 #endif
     viewport_rsp_set(dlist, sp54_width, sp58_height, posX, posY);
     if (mats != NULL) {
@@ -1487,6 +1536,46 @@ void viewport_scissor(Gfx **dList) {
  * Split rather than shared with func_80067D3C below, following the waves_tick
  * pattern: the #ifndef NATIVE_PORT arm keeps the original function body verbatim,
  * so the matching build is untouched. */
+static void mdkr_snapshot_authored_camera_record(s32 viewport,
+                                                 s32 cameraId) {
+    const Camera *camera;
+    const ScreenViewport *screen;
+    PresentationCameraEntry sample;
+
+    if (viewport < 0 || viewport >= PRESENTATION_SNAPSHOT_MAX_VIEWPORTS ||
+        cameraId < 0 || cameraId >= PRESENTATION_SNAPSHOT_MAX_CAMERAS) {
+        return;
+    }
+    camera = &gCameras[cameraId];
+    screen = &gScreenViewports[viewport];
+    memset(&sample, 0, sizeof(sample));
+    sample.camera_id = cameraId;
+    sample.viewport_index = viewport;
+    sample.position[0] = camera->trans.x_position;
+    sample.position[1] = camera->trans.y_position;
+    sample.position[2] = camera->trans.z_position;
+    sample.rotation_x = camera->trans.rotation.x_rotation;
+    sample.rotation_y = camera->trans.rotation.y_rotation;
+    sample.rotation_z = camera->trans.rotation.z_rotation;
+    sample.pitch = camera->pitch;
+    sample.shake_magnitude = camera->shakeMagnitude;
+    sample.apply_shake = gNoCamShake;
+    sample.fov = gCurCamFOV;
+    sample.vertical_fov = gEffectiveCamVFOV;
+    sample.aspect = gEffectiveCamAspect;
+    sample.near_plane = CAMERA_NEAR;
+    sample.far_plane = CAMERA_FAR;
+    sample.world_region =
+        viewport_world_region_uses_safe_aperture(viewport) ? 1u : 0u;
+    sample.viewport[0] = (f32)screen->posX;
+    sample.viewport[1] = (f32)screen->posY;
+    sample.viewport[2] = (f32)screen->width;
+    sample.viewport[3] = (f32)screen->height;
+    memcpy(sample.authored_view_projection, gViewProjMatrixF,
+           sizeof(sample.authored_view_projection));
+    (void)presentation_snapshot_authored_camera_record(&sample);
+}
+
 void cam_build_view_basis(void) {
     s32 originalCamID;
 
@@ -1537,8 +1626,16 @@ void cam_build_view_basis(void) {
 // Official Name: camGetPlayerProjMtx / camSetProjMtx - ??
 void func_80067D3C(Gfx **dList, UNUSED Mtx **mtx) {
 #ifdef NATIVE_PORT
+    const s32 viewport = gActiveCameraID;
+    const s32 cameraId =
+        gActiveCameraID + (gCutsceneCameraActive ? 4 : 0);
+
     gSPPerspNormalize((*dList)++, perspNorm);
     cam_build_view_basis();
+    /* Unlike logic-only cam_build_view_basis() calls, this path emits the
+     * projection normalization into the task and supplies the VP used by its
+     * registered gameplay matrices. Latch only this authored recipe. */
+    mdkr_snapshot_authored_camera_record(viewport, cameraId);
 #else
     s32 originalCamID;
 
@@ -1647,6 +1744,58 @@ void mtx_ortho_fullscreen(Gfx **dList, Mtx **mtx) {
     sNativeOrthoDrawSpace = G_MTX_DKR_SPACE_FULLBLEED;
     mtx_ortho(dList, mtx);
 }
+
+/**
+ * Draw one 320-wide decorative background tile into presentation space while
+ * retaining the safe area's uniform pixel scale and vertical registration.
+ * Adjacent tiles therefore extend fixed menu art without stretching it or
+ * introducing a cover-crop seam at the safe-area boundary.
+ */
+void mtx_ortho_wide_background(Gfx **dList, Mtx **mtx,
+                               f32 authoredTileOffset) {
+    MdkrDisplayLayout layout = mdkr_display_layout();
+    MtxF wideOrtho;
+    f32 horizontalScale = 1.0f;
+    u32 widthAndHeight;
+    s32 width;
+    s32 height;
+    s32 i;
+    s32 j;
+
+    for (i = 0; i < 4; i++) {
+        for (j = 0; j < 4; j++) {
+            wideOrtho[i][j] = gOrthoMatrixF[i][j];
+        }
+    }
+    if (layout.presentation.width > 0.0f) {
+        horizontalScale = layout.safe.width / layout.presentation.width;
+    }
+    wideOrtho[0][0] *= horizontalScale;
+    wideOrtho[3][0] += authoredTileOffset * horizontalScale;
+
+    widthAndHeight = fb_size();
+    height = GET_VIDEO_HEIGHT(widthAndHeight);
+    width = GET_VIDEO_WIDTH(widthAndHeight);
+    mtxf_to_mtx(&wideOrtho, *mtx);
+    gModelMatrix[0] = *mtx;
+    gViewportStack[gActiveCameraID + 5].vp.vscale[0] = width * 2;
+    gViewportStack[gActiveCameraID + 5].vp.vscale[1] = width * 2;
+    gViewportStack[gActiveCameraID + 5].vp.vtrans[0] = width * 2;
+    gViewportStack[gActiveCameraID + 5].vp.vtrans[1] = height * 2;
+    gSPViewport((*dList)++, OS_K0_TO_PHYSICAL(
+        &gViewportStack[gActiveCameraID + 5]));
+    gSPMatrixDKRTagged((*dList)++, OS_K0_TO_PHYSICAL((*mtx)++),
+                       G_MTX_DKR_INDEX_0, G_MTX_DKR_SPACE_WIDE_BG);
+    gModelMatrixStackPos = 0;
+    gMtxOriginID = G_MTX_DKR_INDEX_0;
+
+    for (i = 0; i < 4; i++) {
+        for (j = 0; j < 4; j++) {
+            gViewProjMatrixF[i][j] = wideOrtho[i][j];
+        }
+    }
+    sShadowRegisterGameplayVp = 0;
+}
 #endif
 
 /*
@@ -1729,15 +1878,26 @@ size_t mdkr_camera_interpolated_view_projections(
             continue;
         }
 
-        mdkr_camera_pose_view_projection(
-            &pose, out[viewport].view_projection);
+        if (numerator == 0u) {
+            memcpy(out[viewport].view_projection,
+                   previous->cameras[viewport].authored_view_projection,
+                   sizeof(out[viewport].view_projection));
+        } else if (numerator >= denominator) {
+            memcpy(out[viewport].view_projection,
+                   current->cameras[viewport].authored_view_projection,
+                   sizeof(out[viewport].view_projection));
+        } else {
+            mdkr_camera_pose_view_projection(
+                &pose, out[viewport].view_projection);
+        }
         out[viewport].valid = TRUE;
         out[viewport].camera_id = pose.camera_id;
         if (presentation_snapshot_resolve_camera(
                 (int)viewport, denominator, denominator, &next) &&
             next.interpolated && next.camera_id == pose.camera_id) {
-            mdkr_camera_pose_view_projection(
-                &next, out[viewport].next_view_projection);
+            memcpy(out[viewport].next_view_projection,
+                   current->cameras[viewport].authored_view_projection,
+                   sizeof(out[viewport].next_view_projection));
             out[viewport].next_valid = TRUE;
         }
         produced = viewport + 1;

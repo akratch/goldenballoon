@@ -49,12 +49,13 @@ HASH_VERSION = "3"
 PERTURB_TICK = 2000
 # The scripted route is still in menus at tick 2000 and reaches the race after
 # its final input at 2600. Pin each family to a phase where that target exists.
-# Under the exact-authored Original cadence, exhaust particles are continuously
-# live from ticks 2720 through 2769; tick 2740 is deliberately well inside that
-# window (four particles on both the clean authored reference and this branch).
+# Under the exact-authored Original cadence and the real vehicle-audio RNG
+# sequence, exhaust particles are continuously live from ticks 2703 through
+# 2722. Tick 2710 is deliberately inside that measured window (two particles
+# on the clean release-candidate route).
 CONTROL_TICKS = {
     "object": 2000,
-    "particle": 2740,
+    "particle": 2710,
     "racer": 3300,
     "global": 2000,
     "settings": 2000,

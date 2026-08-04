@@ -47,12 +47,16 @@
 #include <PR/os_cont.h>
 #include <PR/os_time.h>
 #ifdef NATIVE_PORT
+#include <stdio.h>
+#include <stdlib.h>
 #include "platform_os.h"
+#include "app_overlay_hooks.h"
 #include "waves.h"
 #include "fast3d/gfx_pc_dkr.h"
 #include "present_sched.h"
 #include "gameplay_event_trace.h"
 #include "presentation_snapshot.h"
+#include "taj_mod.h"
 #endif
 
 /************ .rodata ************/
@@ -337,6 +341,34 @@ void main_game_loop(void) {
     rdp_init(&gCurrDisplayList);
     bgdraw_render(&gCurrDisplayList, &gGameCurrMatrix, TRUE);
     gSaveDataFlags = input_update(gSaveDataFlags, logicUpdateRate);
+#ifdef NATIVE_PORT
+    /* The application overlay is a real pause boundary, not merely input
+     * capture. Keep polling input and rendering the held scene, but advance
+     * every time-based game/menu/audio/transition consumer with a zero rate.
+     * is_game_paused() below exposes the same state to subsystems with their own
+     * pause gates. Without registered app-shell hooks the input-capture query
+     * is constant-zero, so CLI/browser/oracle behavior remains unchanged. */
+    {
+        const s32 overlayPaused = platformOverlayWantsInput();
+        /* The scripted overlay gate needs the exact simulation boundary, not
+         * the presentation ordinal printed by ImGui. Keep this diagnostic
+         * dormant outside that explicit test contract. */
+        static s32 previousOverlayPaused = -1;
+        if (getenv("MDKR_TEST_OVERLAY_OPEN_FRAME") != NULL ||
+            getenv("MDKR_TEST_OVERLAY_ESCAPE_OPEN_FRAME") != NULL) {
+            if (previousOverlayPaused >= 0 &&
+                previousOverlayPaused != overlayPaused) {
+                printf("[overlay-test] simulation %s at tick %d rate=%d\n",
+                       overlayPaused ? "paused" : "resumed",
+                       g_simTickCounter, logicUpdateRate);
+            }
+            previousOverlayPaused = overlayPaused;
+        }
+        if (overlayPaused) {
+            logicUpdateRate = 0;
+        }
+    }
+#endif
     if (get_lockup_status()) {
         render_epc_lock_up_display();
         gGameMode = GAMEMODE_LOCKUP;
@@ -399,7 +431,7 @@ void main_game_loop(void) {
     }
     gSkipGfxTask = FALSE;
     mempool_free_queue_clear();
-    if (!gIsPaused) {
+    if (!is_game_paused()) {
         disable_cutscene_camera();
     }
     if (gDrawFrameTimer == 2) {
@@ -478,21 +510,19 @@ void load_level_game(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle v
  * Retire the presentation history whose backing memory is about to be freed or
  * reissued.
  *
- * gfx_dkr_replay_walk() holds a BARE POINTER to the last display list a real
- * walk consumed (gfx_pc_dkr.c's dkr_last_walked_dl, plus that walk's entry RDP/
- * RSP/segment-table snapshot) for explicit internal replay diagnostics.
- * Nothing about that pointer is refcounted; the only thing that clears it is
+ * Presentation replay publishes a private authored task, but its ownership
+ * token and matrix/object snapshots still belong to one level generation. The
+ * only operation that retires that complete history is
  * gfx_dkr_replay_invalidate().
  *
  * game.c's level_load() calls gfx_dkr_resource_generation_begin(), which
  * invalidates -- but a quit-to-title never reaches level_load(): it unloads and
  * then loads a MENU with SPECIAL_MAP_ID_NO_LEVEL (:788/:844/:1151/:1190 below),
  * and load_menu_with_level_background skips the level path entirely for that
- * id. The DL heap and the level's geometry are freed underneath a pointer that
- * is still live, and the next internal replay could read freed memory. That is a
- * use-after-free in that test mechanism if teardown forgets to retire it.
- * Production 1.0.1 does not arm delayed replay, but teardown still owns this
- * invariant so the quarantined mechanism cannot hide a lifecycle defect.
+ * id. The DL heap and level geometry are freed there without a following
+ * resource-generation begin. A retained task must not remain eligible after
+ * that boundary even though its private bytes are safe: its owner generations
+ * and next-state pair describe the retired scene.
  *
  * So the invalidation belongs at the FREE, not at the load: every teardown that
  * can release what the replay points into calls this. The snapshot store is
@@ -558,7 +588,7 @@ void mode_game(s32 updateRate) {
     }
 #endif
     // Update all objects
-    if (!gIsPaused) {
+    if (!is_game_paused()) {
         obj_update(updateRate);
         if (check_if_showing_cutscene_camera() == 0 || get_race_countdown()) {
             if (buttonPressedInputs & START_BUTTON && level_properties_get() == 0 && gDrumstickSceneLoadTimer == 0 &&
@@ -1529,6 +1559,11 @@ Settings *get_settings(void) {
  * Returns the value in gIsPaused.
  */
 s8 is_game_paused(void) {
+#ifdef NATIVE_PORT
+    if (platformOverlayWantsInput()) {
+        return TRUE;
+    }
+#endif
     return gIsPaused;
 }
 
@@ -1895,6 +1930,11 @@ void swap_lead_player(void) {
         first_racer_data[i] = second_racer_data[i];
         second_racer_data[i] = temp;
     }
+#ifdef NATIVE_PORT
+    /* The settings rows and Taj's virtual identity are one transaction. Live
+     * racer bindings deliberately remain unchanged until the next race load. */
+    taj_mod_swap_player_selections(PLAYER_ONE, PLAYER_TWO);
+#endif
 }
 
 /**

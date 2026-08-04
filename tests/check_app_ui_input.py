@@ -101,7 +101,8 @@ def main() -> int:
         })
         reload_output = run(
             executable, reload_env,
-            ("frame-limit value=240", "restartPending=0"))
+            ("frame-limit value=240", "restartPending=0",
+             "frame-rate-controls visible=1 gameplay-accuracy-separated=1"))
         if "frame-limit value=240" not in reload_output:
             raise RuntimeError("second process did not reload persisted 240")
 
@@ -126,6 +127,33 @@ def main() -> int:
             marker = f"ui-scale loaded={float(scale):.2f}"
             run(executable, scale_env, (marker, "surface presents="))
             run(executable, scale_env, (marker, "surface presents="))
+
+        # Hold and move the real ImGui slider through five SDL motion frames.
+        # The launcher records its applied theme scale and widget rectangle on
+        # every frame: both must remain fixed until button-up, followed by one
+        # application and one durable preference write.
+        drag = temporary / "scale-drag"
+        drag.mkdir()
+        drag_env = common(drag, drag / "video.ini")
+        drag_capture = drag / "scale-drag-final.bmp"
+        drag_env.update({
+            "MDKR_APP_SMOKE_FRAMES": "11",
+            "MDKR_APP_SMOKE_UI_SCALE_DRAG": "2.00",
+            "MDKR_APP_SMOKE_SHOT": str(drag_capture),
+            "MDKR_APP_SMOKE_WINDOW_SIZE": "900x700",
+        })
+        run(executable, drag_env, (
+            "ui-scale drag requested=2.00 actual=2.00 applications=1 "
+            "stableWhileHeld=1 persisted=1",
+            "surface presents=",
+        ))
+        prefs_text = (drag / "prefs" / "mdkr64_app.ini").read_text(
+            encoding="utf-8")
+        if "ui_scale=2.00" not in prefs_text:
+            raise RuntimeError("UI-scale drag did not persist ui_scale=2.00")
+        capture_bytes = drag_capture.read_bytes()
+        if len(capture_bytes) < 54 or capture_bytes[:2] != b"BM":
+            raise RuntimeError("UI-scale drag did not produce a valid final BMP")
 
         failure = temporary / "failure"
         failure.mkdir()
@@ -158,6 +186,7 @@ def main() -> int:
         })
         run(executable, recovery_env, (
             "frame-limit value=240", "restartPending=0",
+            "frame-rate-controls visible=1 gameplay-accuracy-separated=1",
         ))
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         print(f"app UI input validation failed: {error}")
@@ -165,7 +194,7 @@ def main() -> int:
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
 
-    print("app UI input valid: keyboard, gamepad, reload, same-process Retry, and recovery passed")
+    print("app UI input valid: keyboard, gamepad, stable UI-scale drag, reload, same-process Retry, and recovery passed")
     return 0
 
 

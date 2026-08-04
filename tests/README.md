@@ -25,7 +25,7 @@ python3 tools/run_checks.py \
   --wasm build-web/mdkr64_web.wasm
 ```
 
-The manifest contains all 91 `tests/check_*.py` scripts and expands to 100 tasks:
+The manifest contains all 92 `tests/check_*.py` scripts and expands to 101 tasks:
 it also runs the ROM-free display/endian/magic-code/object-layout/allocator/runtime-contract,
 sprite-layout, RDP-interpolation, font-registry/SDF, and RL-1 CTests, while filename
 entry, locked-door collision, RAW16 audio, native-layout safety, and
@@ -195,12 +195,12 @@ coverage:
   control remains. The exact field table and exclusions live beside the
   implementation in `platform/sim_hash.c`.
 
-  **1.0.1+ production policy:** motion smoothing and delayed display-list replay
-  are disabled. Non-Original Frame Limit values schedule host/input-pump
-  opportunities but submit only newly authored images, so they neither add
-  visual frames nor swap duplicates. Replay/interpolation arms described below
-  are retained diagnostic and broken-direction instruments; their positive
-  witnesses do not describe the production renderer.
+  **Current production policy:** Original gameplay cadence remains authoritative.
+  Non-Original Frame Limit values schedule additional presentation/input-pump
+  opportunities. With MotionSmoothing=off they hold the last authored image;
+  with MotionSmoothing=interpolate they may submit a complete immutable
+  in-between image. Presentation cannot issue a simulation ticket, consume an
+  input ticket, advance audio, or mutate the v3 authority stream.
 - `check_render_purity.py` is the fidelity spec's §12.2.1 gate. Skipping half
   of all scene renders (`MDKR_TEST_SKIP_RENDER=odd`) must leave the raw v3
   `[SIMHASH]` stream byte-identical. There is no test-only state subtraction:
@@ -228,8 +228,10 @@ coverage:
   pixels untouched — its first run found 5178 of 35119 matrices did not
   recompose back to their own display list, the path camera-only
   interpolation now verifies per matrix before trusting it, falling back to
-  the list's own matrix when the decomposition does not hold. Production 1.0.1+
-  keeps all delayed replay quarantined and only exposes completed real walks.
+  the list's own matrix when the decomposition does not hold. These remain
+  versioned broken-direction controls; production uses the same retained HLE
+  replay machinery only after the complete task/dependency transaction and
+  adjacent-state publication succeed.
 - `check_camera_snapshot_coverage.py` closes the non-sequential camera-ID
   boundary with real content. A two-player race must capture/interpolate camera
   1 in the lower half, and the production 3P HUD toggle must replace the minimap
@@ -242,11 +244,14 @@ coverage:
   override to equal the retained task's captured authored VP byte-for-byte and
   carries each alpha-one target forward to prove it becomes the following
   task's exact alpha-zero VP. A one-bit mutation control must be rejected for
-  every observed endpoint; the snapshot unit separately proves a camera-bank
-  switch is a cut, never a cross-bank blend. Snapshot overflow must remain zero
-  and fixed-ticket/present accounting must be exact. The split-screen arms use
-  diagnostic GL for fast, synchronous PPM reads; the cutscene arm uses the
-  shipping WebGPU backend.
+  every observed endpoint. Production latches the complete recipe and canonical
+  VP at display-list projection emission; only matrix keys consumed by the real
+  HLE walk may receive a replay substitution. The shadow-frame unit preserves
+  an unwalked build-only matrix while overriding its walked sibling, and the
+  snapshot unit separately proves a camera-bank switch is a cut, never a
+  cross-bank blend. Snapshot overflow must remain zero and fixed-ticket/present
+  accounting must be exact. The split-screen arms use diagnostic GL for fast,
+  synchronous PPM reads; the cutscene arm uses the shipping WebGPU backend.
 - `check_hud_render_authority.py` drives the race-start and wrong-way HUD state
   machines through 1P, 2P, and 4P routes. Normal presentation and a schedule
   that skips every odd scene draw must produce byte-identical raw v3 state,
@@ -262,15 +267,14 @@ coverage:
   violation on the original schedule. **Arm B** requires both the per-tick
   `[SIMHASH]` state stream, ordered `[EVENTHASH]` gameplay-event stream, and
   `[INPUTHASH]` consumed-pad stream to be byte-identical across
-  `MDKR_PRESENT_RATE` unset, `=30`, and `=60` (`=30`
-  does not divide the tick floor finely enough to engage the subloop at all;
-  `=60` engages it and presents twice per tick). **Arm C** is the smoothness
+  `MDKR_PRESENT_RATE` unset, `=30`, and `=60` (`=30` has one presentation
+  opportunity per tick and no midpoint; `=60` presents twice per tick).
+  **Arm C** is the smoothness
   witness: with `MDKR_PRESENT_RATE=60` every interpolated midpoint must differ
-  from both retained endpoint frames (camera moved, same display list). The
-  endpoint is deliberately the previous tick: GL and WebGPU both retain the
-  real walk off-surface and replay alpha zero before advancing through the
-  interval, providing interpolation's documented one-tick latency without
-  current/midpoint/current motion reversal. The
+  from both retained endpoint frames. Production exposes the completed real
+  walk at alpha zero, then re-walks its immutable private task with camera,
+  object, deformation, particle, fade, and effect state rebuilt at the exact
+  rational alpha. The
   positive control, `MDKR_PRESENT_SMOOTHING=off`, presents at the same rate
   but must repeat the tick's own image, so every intermediate frame is
   byte-identical to its neighbours — without that control arm C could not
@@ -288,22 +292,24 @@ coverage:
   retained packet to publish without allocation failure, observes nonzero
   billboard-matrix and world-anchor registrations/overrides, and bounds the
   stale-key tail. Build-time pointers are refreshed with the exact bytes seen
-  by the real HLE walk; injected matrix and billboard-anchor rewrites must reach
-  both GL and WebGPU from those frozen bytes with matching semantic hashes and
-  zero live-pointer fallback.
+  by the real HLE walk. A delayed alpha-zero GL control injects matrix and
+  billboard-anchor rewrites and must reproduce the frozen bytes with matching
+  semantic hashes and zero live-pointer fallback. A separate real-time WebGPU
+  arm must execute production midpoints from the poisoned-live private task,
+  reconcile every queue admission outcome, and perform no runtime GPU wait.
+  Synthetic WebGPU overload remains a distinct load-shedding assertion: it may
+  hold optional images, but it may not slow or mutate authority.
 
   The packet also retains tick-stamped model/particle vertex batches under
-  generation/model/animation/topology/root-stream keys. The submitted task is
-  one tick behind the newest captured pair, so a packet containing
-  ``{T-1,T}`` is not valid interpolation history for task ``T``. Arm B requires
-  exact current-byte holds, explicit phase-gap telemetry, zero retained
-  XYZ/RGBA overrides, and matching alpha-zero ``G_VTX`` semantic hashes. Arm C
-  proves deformation, point-trail XYZ/RGBA, and shield/effect enabled arms are
-  pixel-identical to their explicit hold controls while the true next endpoint
-  is unavailable. Primitive alpha remains independently interpolated from the
-  aligned snapshot pair and retains its positive pixel control. Ambiguous
-  stable keys, unsafe stale fallbacks, and authoritative-stream differences are
-  all failures. Its
+  generation/model/animation/topology/root-stream keys. A read-only structural
+  census follows the already-authored alternate-buffer task without backend or
+  game callbacks, publishing the true forward ``{T,T+1}`` deformation/effect
+  stream while the frozen task-T owner bindings remain unchanged. Arm B
+  requires nonzero future publications and zero capture failures. Arm C proves
+  deformation, point-trail XYZ/RGBA, primitive-alpha fades, and shield/effect
+  recipes produce independent pixel differences against their exact hold
+  controls. Ambiguous stable keys, phase gaps, unsafe stale fallbacks, and
+  authoritative-stream differences fail closed. Its
   first run diverged from tick 1345 on two real defects, both about phase
   rather than magnitude: the synthetic-pacing COUNTER was being advanced once
   per present instead of once per tick (its monotonic clamp fabricates a tick
@@ -312,7 +318,7 @@ coverage:
   before a tick was applying the next tick's scripted input one tick early.
   `check_arbitrary_presentation_rates.py` extends the same contract beyond the
   old integer-field grid. Over 600 fixed ticks it requires exact rational
-  presentation totals for NTSC `30`, `60`, `120`, `144`, `165`, `240`, and a
+  presentation totals for NTSC `30`, `60`, `90`, `120`, `144`, `165`, `240`, and a
   deterministic 1000 Hz uncapped stand-in, plus PAL `60` at exactly 2.4
   opportunities per 25 Hz tick. Every arm must keep v3 state, ordered events,
   consumed input, temporary PCM, audio time, and fixed two-field update counts
@@ -323,14 +329,21 @@ coverage:
   the exact 300-quantum audio schedule in every arm; a one-quantum timing
   perturbation proves the PCM comparator can detect a real mismatch without
   changing gameplay authority.
+- `check_presentation_shadows.py` is the focused Ancient Lake visual regression
+  for terrain-projected kart decals. It keeps the 3,300-tick v3 state, event,
+  and input streams plus every authored endpoint exact, then compares the
+  production rigid lateral decal translation against a token-gated historical
+  vertex-lerp control. The control must reproduce severe area/residual pulses;
+  production must stay below the fixed visual thresholds while preserving the
+  receiver-authored Y coordinate and mesh identity.
   `check_presentation_breadth.py` applies that v3 comparison to 17 NTSC/PAL
   content arms spanning every boss/challenge class, car/hovercraft/plane, and
   1P/4P, while also bounding snapshot, replay, matrix-recomposition, retained-
-  packet publication, deformation-key collision health, exact retained holds,
-  rewritten-dependency safety, and the battle arm's point-trail registrations.
-  It additionally requires zero delayed alpha-zero endpoint walks/checks: that
-  path is quarantined in 1.0.1+ because the game may already be rewriting the
-  submitted task's mutable display-list dependencies.
+  packet publication, deformation-key collision health, adjacent forward
+  capture, rewritten-dependency safety, and the battle arm's point-trail
+  registrations. Ordinary production must expose real alpha-zero endpoints,
+  perform nonzero immutable midpoint walks, resolve both private-arena and
+  copied-external dependencies, and perform zero delayed endpoint redraws.
   `check_presentation_lifecycle.py` covers the teardown half the content matrix
   cannot see: a 2P pause-to-Track-Select path with no following `level_load`, a
   production pause-menu race restart, and the full Adventure loss/post-race/
@@ -356,7 +369,7 @@ coverage:
   must remain byte-identical, catch-up/elision must be live, and player 2 must
   contribute real press/release edges. The ROM-free `host_frame_driver` CTest
   independently injects rational
-  30/50/60/120/144/165/240 Hz, 59.94-like, irregular, burst, rebase, PAL, and
+  30/50/60/90/120/144/165/240 Hz, 59.94-like, irregular, burst, rebase, PAL, and
   uncapped-like schedules with exact alpha and long-run drift assertions. The
   `audio_service_clock` proves grouped/split host-time equivalence, catch-up
   ordering, suspension debt retirement, and one audio quantum per two source
@@ -366,7 +379,9 @@ coverage:
   stalls. `audio_sink_contract` then opens SDL queue mode with silence and
   requires exact format, active drain, bounded backlog, pause and clear; CI
   uses the dummy driver, while an optional physical-device invocation exercises
-  the same path without ROM audio. The `input_tick_queue`
+  the same path without ROM audio. `audio_volume` independently proves exact
+  unity and mute, perceptual gain, bounded ramps, queue-overflow rejection, and
+  reconnect crossfade state without SDL or a ROM. The `input_tick_queue`
   CTest covers between-tick tap stretching, independent
   buttons/ports, latest-analog policy, disconnect/reconnect, catch-up ticket
   targeting, target reordering, and overflow-to-neutral behavior.
@@ -590,6 +605,20 @@ build, persists through IDBFS, creates a fresh document, and requires the
 16:10/FOV-50/3× state to return. Save-only wipe and ROM forget controls must
 retain `/save/mdkr64.ini`.
 
+## Original Audio Options persistence — `tests/check_audio_options_persistence.py`
+
+```bash
+python3 tests/check_audio_options_persistence.py \
+  --build build --rom baserom.us.v80.z64
+```
+
+This enters the retail Audio Options screen, changes both original sliders, and
+proves the native settings file commits before the menu transition. A second,
+isolated arm uses a missing config parent to force the real atomic writer to
+fail. The menu must stay open, render the save warning, accept an A-button
+retry, and leave only after B explicitly chooses session-only levels. Neither
+arm can touch the player's normal settings or save directory.
+
 ## Native renderer routing and fail-closed selection — `tests/check_renderer_backends.py`
 
 ```bash
@@ -624,6 +653,8 @@ python3 tests/check_gpu_backpressure.py \
   --build build-rel --rom baserom.us.v80.z64
 python3 tests/check_app_adopted_pacing.py \
   --build build-rel --rom baserom.us.v80.z64
+python3 tests/check_overlay_pause.py \
+  --build build-rel --rom baserom.us.v80.z64
 python3 tests/check_surface_suspension.py \
   --build build-rel --rom baserom.us.v80.z64
 ```
@@ -644,6 +675,17 @@ the engine adopt the launcher's context/device. Numeric 240 Hz and Uncapped
 must complete on the WebGPU default and explicit GL path with fully drained GPU
 work and no completion failures. This is the regression for the null GL entry-point crash
 which affected both of those launcher choices.
+
+`check_overlay_pause.py` enters through that same production app-owned WebGPU
+window, navigates the ordinary title-to-Time-Trial route, and opens the ImGui
+overlay only after the kart and race clock are live. The complete v3
+authoritative-state hash plus position, clock, checkpoint, and lap telemetry
+must remain exactly fixed for the whole open interval and advance again after
+close. Its PCM arm also requires the independent overlay pause mix, reduced but
+live music, suppressed race effects, bounded sample edges, and restoration of
+the latest underlying authored mix on resume. This prevents an input-capturing
+overlay from masquerading as a pause menu while gameplay or its dominant
+feedback continues behind it.
 
 `check_surface_suspension.py` compares equal-tick control and minimized arms on
 both native backends. The minimized interval must stop real display-list walks
@@ -985,6 +1027,11 @@ The gate strips every inherited `MDKR_*` variable before running, so a developer
 with `MDKR_RENDER_SCALE` exported cannot accidentally turn every arm into the
 same env-precedence override.
 
+An odd-size Pure framebuffer arm also checks the real captured side gutters.
+Every pixel within each gutter must be uniform and both sides must match; the
+gate deliberately accepts the game's authored clear color instead of assuming
+that unused presentation space is black.
+
 ## Widescreen + shadow-depth check — `tests/check_widescreen_shadow.py`
 
 ```bash
@@ -1054,6 +1101,35 @@ callers — collectibles, weapons/bubbles, boost effects, particles, rain splash
 lens flare, and the magnet reticle — all converge on that builder. Vehicle-part
 sprites use the ordinary isotropic perspective matrix; HUD/menu sprites and
 rectangles use SAFE_2D.
+
+### Cinematic and framed live views — `tests/check_framed_world_views.py`
+
+```bash
+python3 tests/check_framed_world_views.py --build build \
+  --rom baserom.us.v80.z64 -v
+```
+
+This distinguishes unframed cinematics from wooden-frame apertures. Opening
+logos, animated credits, the unframed Track Select setup page, and initial
+post-race footage must fill the horizontal presentation; Track Select's browser
+and zoom phases plus later single-player post-race footage must keep live
+geometry inside their wooden frames. The reverse Track Select transition must
+restore containment before its frame appears. Decorative backgrounds must fill
+the side regions without black gutters. The gate captures 4:3, 16:9, and 21:9
+output on WebGPU and repeats the ultrawide witnesses on OpenGL.
+
+Three additional WebGPU witnesses run Original simulation cadence at 60 Hz
+with interpolation enabled and capture the in-between present crossing Track
+Select setup, its reverse transition, and the first framed post-race phase.
+Safe-aperture/presentation policy changes are discrete: the snapshot must use
+the new camera recipe whole, never blend a safe aperture into a widescreen
+projection. Animated viewport coordinates continue interpolating once the
+policy is stable.
+
+Each arm is paired with `MDKR_TEST_FRAMED_WORLD_UNSAFE=1`. The renderer fault
+must be inert for presentation scenes and all 4:3 captures, while framed scenes
+must reproduce visible side-band bleed at wider ratios. Frontend routes and
+normalized gameplay traces must stay unchanged between the two arms.
 
 `check_shadow_visual_ab.py` is the slower pixel-level companion:
 
@@ -1440,25 +1516,46 @@ and every visual comparison quietly meaningless.
 
 This gate is intentionally narrower and stricter than the general determinism
 suite: it covers only the original/authored two-field cadence on the 4,800-frame
-`race_state_oracle` route. All 27,832 all-racer rows—including positions,
+`race_state_oracle` route. All 27,840 all-racer rows—including positions,
 velocities, race progress, logical delta, and the shared authored RNG—must have
 the raw SHA-256
-`f0cca566b53eebde3bdfe1c31a3eb4ed5b95437c729d90b11c9d94d2de3c8f86`.
+`d74efe02aec07aa59710ce457e54180c28a22022f3d35e7087096d5130dba49b`.
 The check also flips one RNG bit in the first row and fails unless its own
 validator rejects that mutation.
 
-The reference is the healthy parallel integration baseline
-`8763dbf0fed7ae4697723470ec0c56b354dc9604`, later merged as `feeeba5`'s
-second parent alongside the fixed-authority branch. It is not a direct ancestor
-of `9c1c4e2`; naming the merge relationship matters for auditing the baseline.
-It was reproduced from a detached tree—not inferred from the current build—
-with this method (use an empty path for the worktree and your own supported
-ROM):
+The reference is clean commit
+`64936e36b4c9ef7ecdce5beb93cd662d4318548d`. This deliberately replaces the
+pre-vehicle-audio hash. The old port skipped `racer_sound_car()` for ordinary
+cars, so it also skipped the retail routine's shared `rand_range()` draws and
+froze the wrong world/RNG stream.
+
+That authority decision was not inferred from the changed hash. The pinned,
+instrumented ares ran the owned US 1.1 ROM through the same regular-car route
+and trapped the real `rand_range` entry at `0x8006FB8C` only when its return
+address was inside retail `racer_sound_car` (`0x80005254..0x80005D08`). It
+recorded 4,801–4,802 player-zero, vehicle-zero calls (the presented-frame exit
+can admit one terminal first roll): 2,926–2,927 from the first jitter roll and
+1,875 from the conditional second roll, all over `[0,10]`. Two independent runs
+had the same normalized first-3,500-call SHA-256
+`9fd7cb9aebc163b00f9c8e4bfd292f90b684b4d46415ab5e0ef594c8bfb2d16e`.
+This command regenerates and validates that witness; the CSV is ROM-derived and
+must never be committed:
+
+```bash
+tools/prepare_ares_oracle.sh
+tools/run_oracle.sh race_state_oracle --skip-native \
+  --vehicle-rng-trace /tmp/mdkr-ares-car-rng.csv \
+  --rom /path/to/owned-us-v11.z64
+```
+
+The native digest was independently reproduced from the detached accepted
+commit with this method (use an empty path for the worktree and your own
+supported ROM):
 
 ```bash
 set -o pipefail
 git worktree add --detach /tmp/mdkr-authored-reference \
-  8763dbf0fed7ae4697723470ec0c56b354dc9604
+  64936e36b4c9ef7ecdce5beb93cd662d4318548d
 cmake -S /tmp/mdkr-authored-reference \
   -B /tmp/mdkr-authored-reference/build-reference \
   -DCMAKE_BUILD_TYPE=Release -DMDKR_WEBGPU_BACKEND=OFF -DBUILD_TESTING=OFF
@@ -1476,8 +1573,13 @@ cd -
 git worktree remove --force /tmp/mdkr-authored-reference
 ```
 
-That command independently reproduced exactly 27,832 rows and the pinned
-digest on 2026-08-01. The raw trace is ROM-derived and must never be committed.
+That command independently reproduced exactly 27,840 rows and the pinned
+digest on 2026-08-03. The raw trace is ROM-derived and must never be committed.
+Current native route compilation emits positive input entries one ticket early:
+the fixed-ticket host publishes script entry N to the simulation sample traced
+at N+1, while route JSON frames name the intended authored present/tick phase.
+This phase conversion preserves the exact accepted digest above; removing it
+produces 27,832 rows and is the gate's required timing-regression direction.
 
 ## Audio output — `tests/check_audio_output.py` (RUN THIS AFTER ANY CHANGE UNDER `game/src/audio*`, `platform/audio_compat.c`, `platform/audio_event_queue.c`, `platform/audio_fx_transfer.c`, `platform/mixer*` OR `platform/audi_port_dkr.c`)
 
@@ -1539,6 +1641,44 @@ healthy RMS and a healthy beat grid); whether the 0.011 % of clamped samples is
 audible; and realtime pacing, since headless synthesis runs on a fixed cadence so
 underruns and DAC drift are invisible here.
 
+## Final-lap music — `tests/check_final_lap_music.py`
+
+```bash
+python3 tests/check_final_lap_music.py --build build \
+  --rom baserom.us.v80.z64
+```
+
+This finishes a real three-lap Time Trial with the closed-loop racer and proves
+that the final-lap request crosses the complete native audio path. It requires
+lap three, the same sequence changing from 126 to 141 BPM, a matching live
+sequencer change from 476160 to about 425472 microseconds per quarter note, and
+a beat grid at the new tempo in the captured PCM. The WAV is ROM-derived and
+exists only in the test's temporary directory; no audio device is opened.
+
+This deliberately checks both `music_tempo()` and `alCSPGetTempo()`. Updating
+only the former makes the UI/debug value say 141 BPM while the sequencer keeps
+playing at 126 BPM. Its broken-direction control assigns the old live tempo to
+the final-lap PCM window and requires the beat-grid oracle to reject it.
+
+## Accepted SDL sink evidence — `tests/check_audio_sink_evidence.py`
+
+This short real-ROM engine route is the native bridge between deterministic
+pre-sink PCM and the SDL application queue. It uses the test-only
+`MDKR_TEST_HEADLESS_AUDIO=1` opt-in together with `SDL_AUDIODRIVER=dummy`, then
+sets `MDKR_AUDIO_SINK_DUMP` and requires a valid, nonempty 22050 Hz stereo s16 WAV
+whose payload and telemetry exactly match blocks accepted by `SDL_QueueAudio`.
+The route must have zero rejected, dropped, or recovery-repaired blocks. It also runs
+a control proving ordinary headless mode remains sinkless when the opt-in is absent.
+
+```bash
+python3 tests/check_audio_sink_evidence.py
+python3 tests/check_audio_sink_evidence.py --control-no-opt-in
+```
+
+The dummy driver proves queue acceptance only. It does not qualify the device mixer,
+DAC, speakers, hotplug, latency, or audible output; those remain manual physical
+release-matrix work.
+
 The deterministic capture now follows the same source-time contract as the fixed
 simulation clock: original NTSC advances two source fields per game pass and emits
 one 736-sample audio quantum, while enhanced one-field simulation services audio
@@ -1576,19 +1716,19 @@ level move lands in both bodies of evidence:
 
 | # | asserted | measured | tolerance |
 |---|---|---|---|
-| 1 | 22050 Hz / 2 ch / 16-bit and the exact sample-frame count | 3 164 064 frames = 143.49 s | +-8192 frames |
-| 2 | whole-capture RMS | 7222.6 = **-13.135 dBFS** | +-1.0 dB |
-| 3 | per-channel RMS | L -13.120 / R -13.150 dBFS | +-1.2 dB |
-| 4 | crest factor (peak - RMS) | **13.135 dB** | +-1.0 dB |
-| 5 | saturation, WAV side and engine side | rails 0.06504 %, main-bus clip 0.06493 %, worst pre-clamp 35784 = +0.76 dBFS | ceilings |
-| 6 | true peak, 4x oversampled | L **+1.002** / R **+2.045 dBFS** | +-2.0 dB |
-| 7 | absolute per-band RMS, 8 bands | -18.262 / -21.193 / -21.925 / -21.856 / -23.267 / -24.711 / -27.231 / -32.858 dBFS | +-2.5 dB |
-| 8 | per-slice RMS, fifteen 10 s slices | -21.790 … -11.266 dBFS | +-2.0 dB |
+| 1 | 22050 Hz / 2 ch / 16-bit and the exact sample-frame count | 3 164 800 frames = 143.53 s | +-8192 frames |
+| 2 | whole-capture RMS | 7457.9 = **-12.857 dBFS** | +-1.0 dB |
+| 3 | per-channel RMS | L -12.857 / R -12.856 dBFS | +-1.2 dB |
+| 4 | crest factor (peak - RMS) | **12.857 dB** | +-1.0 dB |
+| 5 | saturation, WAV side and engine side | rails 0.07248 %, main-bus clip 0.07233 %, worst pre-clamp 35951 = +0.81 dBFS | ceilings |
+| 6 | true peak, 4x oversampled | L **+1.002** / R **+1.478 dBFS** | +-2.0 dB |
+| 7 | absolute per-band RMS, 8 bands | -17.949 / -19.357 / -21.587 / -21.877 / -22.934 / -24.898 / -27.279 / -32.869 dBFS | +-2.5 dB |
+| 8 | per-slice RMS, fifteen 10 s slices | -21.790 … -10.362 dBFS | +-2.0 dB |
 
 Assertion 4 is the one that keeps working when tolerances drift. The program already
 touches full scale, so a build that got **louder** cannot raise its peak — it closes
 the crest instead. Under the `+3 dB` engine control the sample peak is bit-identical
-at 32768 while the crest falls to 10.329 dB.
+at 32768 while the crest falls to 10.058 dB.
 
 Assertion 6 exists because sample peak is pinned at the rail and therefore carries no
 information; the inter-sample overshoot is what a real reconstruction filter and every
@@ -1603,9 +1743,9 @@ build compiled without the seam (verified by `cmp`).
 
 | arm | whole RMS | crest | rails | verdict |
 |---|---|---|---|---|
-| reference | -13.135 dBFS | 13.135 dB | 0.06504 % | PASS |
-| `--control gain+3` | -10.329 dBFS (+2.806) | 10.329 dB | 1.09181 % | **FAIL, 28 assertions, exit 1** |
-| `--control gain-3` | -16.135 dBFS (-3.000) | 13.135 dB | 0.00000 % | **FAIL, 28 assertions, exit 1** |
+| reference | -12.857 dBFS | 12.857 dB | 0.07248 % | PASS |
+| `--control gain+3` | -10.058 dBFS (+2.799) | 10.058 dB | 1.21170 % | **FAIL, 28 assertions, exit 1** |
+| `--control gain-3` | -15.857 dBFS (-3.000) | 12.857 dB | 0.00000 % | **FAIL, 28 assertions, exit 1** |
 
 Four signal-level controls also run on every invocation (+-3.0 and +-1.5 dB applied to
 the real capture in memory); the check **fails if any of them passes**. The +-1.5 dB
@@ -1617,7 +1757,7 @@ against the real ROM's own synthesiser output, captured from the audio-interface
 stream inside the instrumented ares of [`docs/ORACLE.md`](../docs/ORACLE.md)
 (`MDKR64_ARES_AUDIO_DUMP`). When it is given, the port arm is re-run on the *same*
 oracle route the console capture used, then envelope-aligned and compared. Measured on
-`race_state_oracle`: **port/console -0.488 dB** over a 153.21 s aligned overlap. Full
+`race_state_oracle`: **port/console +0.016 dB** over a 153.16 s aligned overlap. Full
 numbers and the method's limits are in
 [`docs/open-items/audio.md`](../docs/open-items/audio.md).
 
@@ -1660,6 +1800,29 @@ big-endian runtime has not been run.
 
 Actual browser reachability is separate: `check_browser_runtime.py` requires the
 AudioWorklet route to report `mode=fixed` with nonzero RAW16 loads and bytes.
+
+## Vehicle engine audio — `tests/check_vehicle_audio.py` (RUN THIS AFTER VEHICLE SOUND, ASSET_AUDIO, OR ENGINE-PITCH CHANGES)
+
+The broad PCM gate cannot prove which loop is playing or whether its pitch
+tracks throttle and speed. This focused gate independently decodes the selected
+`VehicleSoundAsset` row from the retail ROM, drives production car, hovercraft,
+and plane routes, and reads the opt-in `MDKR_VEHICLE_AUDIO_TRACE` witness after
+the sound handles have been updated.
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_vehicle_audio.py --build build
+```
+
+It requires each runtime sound ID to equal the ROM's big-endian value, changing
+base pitch, and an active main engine handle. The car arm additionally requires
+sustained driving intensity, throttle-pitch ramp, and both sides of the
+idle/main crossfade. The original defect
+fails five independent assertions: sound ID 115 became 29440, the main handle
+never opened, and intensity, throttle pitch, and base pitch remained frozen.
+`vehicle_audio_contract` is its millisecond, ROM-free CTest companion: it checks
+the complete 0x4C mixed-field swap map, byte-field preservation, and
+transactional rejection of short records. `runtime_contracts` exhaustively
+checks the shared vehicle-model mapping used by both initialization and update.
 
 ## Texture "interlace" check — `tests/check_texture_lineswap.py` (RUN THIS AFTER ANY TEXTURE-DECODE CHANGE)
 
@@ -2600,6 +2763,117 @@ The fixture driver contributes only carpet progress/hold events or the same
 quit request used by the pause menu. It never writes the human finish, place,
 result menu, progress flags, or save; the assertions below define the exact
 boundary.
+
+## Playable Taj mod — `tests/check_taj_playable.py`
+
+This is the ROM-backed end-to-end gate for the native virtual Taj character. It
+enters `ABRACADABRA` through the real Magic Codes keyboard, selects the next
+contiguous virtual display identity, races and restarts with the carpet
+composition, then reboots
+against the persisted global sidecar. Separate two-, three-, and four-player
+arms prove Taj belongs to the selecting controller and viewport; the two-player
+arm also proves ordinary Diddy can coexist even though both resolve to retail
+donor row 9. The car/hovercraft/plane arms prove the selected identity reaches
+every ordinary vehicle dispatch. An imported-save arm reconciles existing
+`tajFlags` before the first select visit. Exact audio traces cover the Taj
+highlight, confirmation, and horn paths. A real WebGPU race capture is joined
+to the carpet/rider composition and donor-suppression traces, then checked for
+Taj's purple robe and the red/gold carpet. Instrumented witnesses additionally
+require the ROM-authored carpet clock to publish changing vertex hashes through
+both render buffers and require the playable composition to preserve the retail
+7:15 carpet-to-Park-Warden scale ratio. The rendered lower-centre silhouette
+rejects the former oversized 1:1 donor scale. A negative-control run freezes
+the mesh and restores that 1:1 scale; the same witness validator must reject
+both defects. The two-player arm also A/Bs production against the exact former
+split-screen filter and requires the carpet-only grounding shadow to darken the
+captured raster. The Time Trial arm first establishes
+canonical records, then reaches Taj's normal finish hook, requires the finish
+presentation binding to remain live, and proves those existing record tables
+are byte-semantically unchanged.
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_taj_playable.py --build build \
+  --rom baserom.us.v80.z64 -v
+```
+
+The check is also registered as `taj_playable` in `tools/run_checks.py`. It is
+intentionally not a CTest because it needs a caller-supplied supported ROM; the
+Taj state and tuning seams remain covered by the ROM-free `taj_mod` and
+`taj_physics` CTests; `taj_mod_state_file` separately proves that an atomic
+sidecar store creates a missing save directory and leaves no temporary file.
+
+`tests/check_taj_results_portrait.py` carries the same identity through a real
+two-player race into Rankings. It captures Taj beside an ordinary Diddy,
+requires the project-owned Taj card to match the retail portrait's 40x40
+contract, and checks its authored purple, blue, face, and jewel regions against
+the unchanged Diddy negative control. The route then returns to Track Select,
+starts the race again, and repeats the capture after a full stage/menu teardown;
+this protects both the portrait identity and its native display-list/texture
+lifetime.
+
+`tests/check_taj_hud_portrait.py` proves the same card in the retail P2
+Adventure HUD slot. It selects Taj as P2, reaches the real hub without changing
+lead state, and joins the exact HUD identity trace to visible purple, blue,
+face, and jewel pixels at the authored portrait anchor.
+
+`tests/check_taj_p2_adventure.py` covers the lead-player seam ordinary Tracks
+multiplayer cannot reach. It enters `JOINTVENTURE` through the retail Magic
+Codes keyboard, selects visible Taj as P2, and uses the explicitly test-only
+`MDKR_TAJ_P2_LEAD_HANDOFF=1` at the safe hub boundary to invoke the production
+`swap_lead_player()` transaction. The following real two-player Adventure race
+must bind swapped settings slot 0 to live controller port 2, preserve both
+viewports, and keep every observed ROM-facing character ID in the retail 0..9
+range. `MDKR_TAJ_P2_LEAD_TRACE=1` is observation-only.
+
+`tests/check_taj_speed_profile.py` measures all three vehicles against paired
+ordinary controls and holds sustained speed to 1.35x +/-2%. The registered Taj
+arm of `tests/check_vehicle_sweep.py` runs every one of the ROM's 47 legal
+track/vehicle pairs and requires live Taj identity, carpet/rider presentation,
+shield anchoring, and a deterministic car dash witness.
+
+`tests/check_taj_visual_lifecycle.py` injects loss of each picker and race
+companion only after a complete pair exists. The surviving half must be cleaned
+up atomically, donor rendering must recover during the gap, and a bounded fresh
+generation must recompose without stale ownership.
+
+`tests/check_taj_character_select.py` is the rendered roster gate the gameplay
+journey cannot replace. It constructs the base-eight, Drumstick-only, T.T.-only,
+and complete-ten retail layouts, requires Taj at contiguous indices 8/9/9/10,
+navigates a real controller route into each slot, and checks captured pixels and
+instrumented model probes for the standing Park Warden/Taj actor, unchanged
+ordinary-character hover across every available retail slot, animated Taj
+hover, the structurally verified placard-only asset batch, safe-area occupancy
+of the surrounding cast, and final Taj identity. Focused captures prove the
+authored P2, P3, and P4 placards. A rendered negative control restores the full
+Park Warden shadow that originally remained after Taj was scaled for the picker;
+the oracle requires production to retain a small grounding shadow while
+rejecting the control's large dark footprint. Focused PAL and 21:9 runs qualify
+the supported second ROM revision and widescreen safe area. One injected
+allocation failure must
+recover, while an exhausted retry budget must visibly fail closed and make the
+invisible slot unselectable.
+`taj_select_layout` is the ROM-free companion CTest: the same row definition
+drives both actor placement and every directional cursor candidate. The picker
+gate defaults to OpenGL and accepts `--renderer webgpu`; the release runner
+qualifies the complete roster on both shipped renderer paths and adds a focused
+21:9 arm.
+
+`tests/check_browser_taj_character_select.py` closes the platform gap through
+the shipped shell and a real Chrome/WebGPU process. Starting from a fresh
+browser profile, it enters `ABRACADABRA` through the public keyboard route and
+joins the runtime model/animation probes to four browser screenshots. It fails
+if Taj is not visible before hover, the numbered P1 placard is absent, the pose
+does not animate, final identity mapping is wrong, or the former all-caps badge
+has replaced the physical actor again. It then flushes IDBFS, reloads the same
+isolated profile without entering the code, and requires the physical Taj actor
+and placard to return from durable state. The gate is registered as
+`browser_taj_character_select` in `tools/run_checks.py`.
+
+`tests/check_browser_taj_persistence.py` rejects the first real
+`Module.__mdkrPersist({reason: "taj-mod"})` promise after the C side has replaced
+its MEMFS sidecar. It requires the visible C failure path, exact retained bytes,
+a successful ordinary retry flush, the matching IndexedDB record, and a fresh
+document that restores Taj without re-entering `ABRACADABRA`.
 
 ## Adventure trophy series — `tests/check_trophy_series.py`
 

@@ -67,9 +67,10 @@ REQUIRED = {
     "game/src/audio_vehicle.c": (
         "mdkr_vehicle_sound_row(characterId, vehicleId, &assetRow, &soundVehicleId)",
         "mdkr_asset_rows_fit(table[ASSET_AUDIO_7], table[ASSET_AUDIO_8]",
-        "case VEHICLE_FLYING_CAR:",
+        "asset_swap_vehicle_sound(asset, sizeof(VehicleSoundAsset))",
+        "mdkr_vehicle_sound_model(gSoundRacerObj->vehicleIDPrev)",
+        "case VEHICLE_CAR:",
         "racer_sound_plane(obj, buttonsPressed, buttonsHeld, ticksDelta);",
-        "case VEHICLE_LOOPDELOOP:",
         "racer_sound_car(obj, buttonsPressed, buttonsHeld, ticksDelta);",
     ),
     "game/src/audiomgr.c": (
@@ -109,6 +110,13 @@ REQUIRED = {
     "game/src/weather.c": (
         "DKR_SHL32(1U, rand_range(0, 32) + 5)",
     ),
+    "platform/platform_sdl_min.c": (
+        "static int8_t s_rumbleSupported[DKR_MAXPADS] = { -1, -1, -1, -1 };",
+        "if (s_rumbleSupported[port] >= 0) return s_rumbleSupported[port];",
+        "SDL_GameControllerHasRumble(s_gc[port]) == SDL_TRUE",
+        "zero-strength compatibility probe exactly once per opened controller",
+        "s_rumbleSupported[i] = -1;",
+    ),
 }
 
 FORBIDDEN = {
@@ -128,6 +136,9 @@ FORBIDDEN = {
     ),
     "game/src/save_data.c": (
         "1 << (fileExtensions[fileNum][0] + (BLANK_EXT_CHAR - 1))",
+    ),
+    "platform/platform_sdl_min.c": (
+        "return SDL_GameControllerRumble(s_gc[port], 0, 0, 0) == 0;",
     ),
 }
 
@@ -171,7 +182,7 @@ def validate(sources: dict[str, str]) -> list[str]:
         failures.append("game/src/racer.c: expected both recovery paths to normalize safely")
 
     audio_sfx = sources["game/src/audiosfx.c"]
-    if audio_sfx.count("sndp_group_volume_for_key(keyMap)") != 4:
+    if audio_sfx.count("sndp_group_volume_for_key(keyMap)") != 5:
         failures.append("game/src/audiosfx.c: not every group-volume read uses the bounded helper")
     if audio_sfx.count("groupID >= gSoundGroupCount") != 2:
         failures.append("game/src/audiosfx.c: group getter/setter bounds checks changed")

@@ -322,7 +322,13 @@ def main() -> int:
         binary,
         rom,
         "persistent surface timeout is bounded and terminal after one rebuild",
-        {"MDKR_WEBGPU_FAULT": "surface.timeout@all"},
+        {
+            "MDKR_WEBGPU_FAULT": "surface.timeout@all",
+            # This arm owns the 120-attempt recovery boundary, not the separate
+            # nonblocking-admission policy. Admit each fault deterministically
+            # so two complete streaks fit inside the 300-frame process bound.
+            "MDKR_TEST_RENDER_FULL_ADMISSION": "1",
+        },
         (
             "[webgpu-fault] injected surface.timeout@1",
             "surface recovery failed for 120 consecutive frames",

@@ -1095,12 +1095,39 @@ audio bookkeeping), so it was left alone rather than bundled into this fix — b
 it is the same hazard and should move to the simulated clock if anything starts
 depending on it.
 
-## Experimental high-rate native delivery cadence — OPEN
+## High-rate native delivery cadence — CLOSED (immutable-presentation wave)
 
-Opt-in non-Original native modes are **Experimental — Under Construction** in
-1.0.1+. They alter host pacing and input/event-pump opportunities without
-increasing unique visual FPS; any practical benefit may be negligible, while
-higher settings can use more CPU. Original remains the proven cadence.
+The 1.0.1 containment was correct: delayed replay held only a display-list
+pointer while the game reused its viewport, matrix, vertex, texture, and child
+storage for the next task. Non-Original policies therefore changed host pacing
+without producing safe new images.
+
+The production renderer now keeps gameplay on Original two-field tickets and
+publishes an atomic private rendering task instead. It double-buffers the
+complete 16 MiB arena, rebases the top list and segment table, copies external
+matrix/vertex/triangle/viewport/texture/TLUT/smooth-normal spans observed by the
+real HLE walk, and acquires only an exact authored-tick token. A read-only census
+of the already-authored alternate task supplies the true `{T,T+1}` deformation
+and effect pair without backend or game callbacks. Generation, topology,
+viewport, animation, particle, and effect incompatibility holds task T rather
+than extrapolating.
+
+Public `Video.MotionSmoothing=interpolate` now produces unique intermediate
+camera, object, model, particle, fade, and shield images under Display, numeric,
+and native Uncapped policies. Off retains authored motion. WebGPU admission
+never waits on gameplay/audio, classifies every shed endpoint/replay attempt,
+and reserves one of its two slots for authored work. The native/browser UI
+keeps gameplay cadence, frame delivery, smoothing, and visual preset separate;
+Enhanced remains an explicitly gameplay-changing compatibility mode.
+
+The closure evidence is authority-first: exact v3 state, ordered events,
+consumed input, PCM, audio time, and saves across NTSC/PAL arbitrary rates;
+byte-exact alpha-zero semantics/pixels while the entire live arena is poisoned;
+independent midpoint pixel controls for every retained class; unload/restart/
+post-race lifetime routes; native GL/WebGPU queue accounting; and real Chromium
+rAF schedules. See [`UNCAPPED_PRESENTATION.md`](../UNCAPPED_PRESENTATION.md) and
+`tests/check_presentation_matrix.py`. Physical platform breadth remains release
+qualification, not an open ownership defect.
 
 ## Frame pacing / slow-motion — RESOLVED (pacing wave)
 - [x] **Root cause of in-race slow motion (and high-refresh fast motion).** DKR

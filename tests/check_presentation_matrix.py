@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Presentation rate must not move the authoritative tick (spec 12.2.2).
 
-Phase 3 Wave B decouples host pacing opportunities from authoritative simulation
-ticks. For 1.0.1, production publishes only completed authored images; delayed
-display-list replay is quarantined behind an explicit internal test seam.
+The presentation scheduler decouples host image opportunities from authoritative
+simulation ticks. Production can publish immutable, presentation-only images at
+arbitrary rates while the game continues to receive the original fixed tickets.
 
 Arms
 ----
 
 * **A — fixed-ticket authority.** The promoted ``HostFrameDriver`` clock must
-  issue exactly one two-field ticket per game pass on the floor-paced original
-  schedule. Clock ticks, issued tickets, completed simulation ticks, state rows,
-  and event rows must agree with zero debt or update-rate violations. The
+  conserve every two-field ticket on the floor-paced original schedule. Clock
+  ticks, issued-plus-pending tickets, completed simulation ticks, state rows,
+  and event rows must agree with zero live debt or update-rate violations. The
   authority arm is repeated on WebGPU and compared byte-for-byte with GL.
 
 * **B — rate matrix (slice 2).** The per-tick ``[SIMHASH]`` state stream,
@@ -22,14 +22,13 @@ Arms
   budget to reach the same 3600 TICKS — authority is counted in ticks, not
   images.
 
-  The unset and ``=60`` endpoints are also run on WebGPU. Both 60 Hz arms send
-  the raw public ``MotionSmoothing=interpolate`` request and must still report
-  zero interpolation, replay walks, and replayed endpoints. Their actual
-  surface-update counter must advance exactly once per authored tick.
+  The unset and ``=60`` endpoints are also run on WebGPU. Both 60 Hz arms use
+  the public ``MotionSmoothing=interpolate`` request and must produce real
+  intermediate replay walks while preserving every authority stream.
 
-* **C — quarantined mechanism diagnostics.** With the exact versioned internal
-  test token plus ``MDKR_TEST_PRESENTATION_REPLAY=1``, ``=60`` opportunities alternate a
-  completed real endpoint and an internal interpolated midpoint. Every
+* **C — production mechanism diagnostics.** ``=60`` plus the public
+  ``MotionSmoothing=interpolate`` setting alternates a
+  completed real endpoint and a production interpolated midpoint. Every
   midpoint must differ from BOTH of its neighbours: same retained display
   list, moved camera. The positive
   control is production ``MDKR_PRESENT_SMOOTHING=off``, whose extra host
@@ -42,24 +41,19 @@ Arms
   arm, proving the new object path changes backend pixels rather than merely
   incrementing telemetry.
 
-  A third control, ``MDKR_TEST_DEFORMATION_INTERPOLATION=off``, proves the
-  explicit authored-tick contract. The task being replayed is one authored tick
-  behind the newest retained deformation capture. Until the packet carries the
-  task's true NEXT endpoint, the only phase-correct policy is to hold its exact
-  current bytes. Enabled and disabled arms must therefore be pixel-identical,
-  and a semantic observer at ``G_VTX`` must hash byte-identical expected/actual
-  alpha-zero endpoints. A lagged ``{T-1,T}`` blend fails this observer even if a
-  screenshot happens to hide it.
+  A third control, ``MDKR_TEST_DEFORMATION_INTERPOLATION=off``, proves the true
+  forward-pair path. Enabled replay must consume adjacent ``{T,T+1}`` authored
+  vertex streams and visibly differ from an exact-task hold. A semantic observer
+  at ``G_VTX`` separately requires byte-identical alpha-zero endpoints.
 
   A fourth control, ``MDKR_TEST_PARTICLE_INTERPOLATION=off``, runs the battle
   challenge whose continuous point trails change their world-space mesh from
-  tick to tick. It requires live retained capture, exact task-endpoint holds,
-  and pixel identity against the particle-only hold control.
+  tick to tick. It requires adjacent retained capture and a visible geometry
+  difference against the particle-only hold control.
 
   A fifth control, ``MDKR_TEST_VERTEX_COLOR_INTERPOLATION=off``, independently
-  proves retained shade RGBA is also held at the same authored endpoint while
-  the next endpoint is unavailable. It must be pixel-identical to the normal
-  phase-safe particle arm.
+  proves retained shade RGBA is blended only from the same adjacent pair. It
+  must visibly differ from the color-hold control without changing authority.
 
   A sixth control, ``MDKR_TEST_PRIMITIVE_ALPHA_INTERPOLATION=off``, leaves
   geometry and retained vertex RGBA replay enabled while holding draw-local
@@ -72,9 +66,8 @@ Arms
   level-3 shield path around each racer in both arms. Shield matrices combine a
   shared render object's local rotation/scale/shear recipe with a generation-
   keyed racer root, so this arm requires both identities to remain collision-
-  free, the authoritative stream to remain identical, and the enabled arm to
-  hold the display list's authored effect matrix when no task-to-next packet
-  pair exists. Enabled and disabled effect frames must be byte-identical.
+  free and the authoritative stream to remain identical. Compatible forward
+  recipes must visibly differ from the authored-matrix hold control.
 
 What arm C's pixels are, and are not
 ------------------------------------
@@ -122,7 +115,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import completed_tick_conservation, resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
@@ -134,9 +127,11 @@ HASH_VERSION = "3"
 SUMMARY_RE = re.compile(r"\[PRESENTSCHED-SUMMARY\] (.*)")
 AUDIO_SUMMARY_RE = re.compile(r"\[AUDIO-SERVICE\] (.*)")
 REPLAY_SUMMARY_RE = re.compile(r"\[REPLAY-SUMMARY\] (.*)")
+RETAINED_SUMMARY_RE = re.compile(r"\[RETAINED-TASK\] (.*)")
 OWNER_SUMMARY_RE = re.compile(r"\[PRESENT-OWNERS\] (.*)")
 PACKET_SUMMARY_RE = re.compile(r"\[PRESENT-PACKET\] (.*)")
 WGPU_BACKPRESSURE_RE = re.compile(r"\[WGPU-BACKPRESSURE\] (.*)")
+PERF_RE = re.compile(r"\[PRESENTPERF\] (.*)")
 ENDPOINT_RE = re.compile(
     r"\[PRESENT-ENDPOINT\] frame=(\d+) authored=(\d+) source=(real|replay)")
 # Presents per tick at MDKR_PRESENT_RATE=60 under the 60 Hz field clock: the
@@ -159,9 +154,8 @@ PARTICLE_DUMP_FROM = 8300
 EFFECT_TICKS = 4120
 EFFECT_DUMP_FROM = 8180
 EFFECT_FORCE_WINDOW = "6240:2000"
+PRESENT_WORK_BUDGET_NS = 16_666_667
 TEST_REPLAY_ENV = {
-    "MDKR_INTERNAL_TEST_TOKEN": "mdkr64-presentation-replay-v1",
-    "MDKR_TEST_PRESENTATION_REPLAY": "1",
     "MDKR_PRESENT_SMOOTHING": "interpolate",
 }
 
@@ -206,6 +200,24 @@ def parse_last_fields(text: str, pattern: re.Pattern[str], name: str) -> dict[st
     return fields
 
 
+def parse_perf_fields(text: str) -> dict[str, dict[str, int]]:
+    sections: dict[str, dict[str, int]] = {}
+    for match in PERF_RE.finditer(text):
+        fields: dict[str, int] = {}
+        name = ""
+        for token in match.group(1).split():
+            key, separator, value = token.partition("=")
+            if not separator:
+                continue
+            if key == "section":
+                name = value
+            else:
+                fields[key] = int(value)
+        if name:
+            sections[name] = fields
+    return sections
+
+
 def run(binary: Path, rom: Path, label: str, root: Path,
         extra_env: dict[str, str], frames: int, timeout: int,
         verbose: bool, dump_from: int | None = None,
@@ -226,6 +238,7 @@ def run(binary: Path, rom: Path, label: str, root: Path,
         MDKR_LOAD_TRACK="5",
         MDKR_RENDERER=renderer,
         MDKR_SAVE_DIR=str(save_dir),
+        MDKR_TEST_SCRIPT_ONLY_INPUT="1",
     )
     if renderer == "webgpu":
         # Native hidden WebGPU windows have no drawable by design. The GL/WebGPU
@@ -381,6 +394,10 @@ def main() -> int:
             print(f"check_presentation_matrix: FAIL\n  - arm A: {error}")
             return 1
 
+        conservation_error = completed_tick_conservation(summary, TICKS,
+                                                          "arm A GL")
+        if conservation_error:
+            failures.append(conservation_error)
         if summary["ticks"] != summary["presents"]:
             failures.append(
                 "arm A: the authoritative clock and fixed-ticket adapter "
@@ -404,7 +421,7 @@ def main() -> int:
             if summary.get(key) != expected:
                 failures.append(
                     f"arm A: {key}={summary.get(key)}, expected {expected}")
-        for key in ("lead", "lag", "zerodue", "multidue", "rebases",
+        for key in ("lag", "zerodue", "multidue", "rebases",
                     "catchup", "skips"):
             if summary[key] != 0:
                 failures.append(
@@ -424,9 +441,6 @@ def main() -> int:
             rate60 = run(binary, rom, "rate-60", root,
                          {"MDKR_PRESENT_RATE": "60",
                           "MDKR_PRESENT_SMOOTHING": "interpolate",
-                          "MDKR_TEST_PRESENTATION_REPLAY": "1",
-                          "MDKR_TEST_DELAYED_ENDPOINT_REPLAY": "1",
-                          "MDKR_TEST_REPLAY_WALK": "1",
                           "MDKR_PRESENT_SCHED_TRACE": "1"},
                          TICKS * RATE60_PRESENTS_PER_TICK,
                          args.timeout, args.verbose, audio_capture=True)
@@ -439,9 +453,6 @@ def main() -> int:
                 binary, rom, "webgpu-rate-60", root,
                 {"MDKR_PRESENT_RATE": "60",
                  "MDKR_PRESENT_SMOOTHING": "interpolate",
-                 "MDKR_TEST_PRESENTATION_REPLAY": "1",
-                 "MDKR_TEST_DELAYED_ENDPOINT_REPLAY": "1",
-                 "MDKR_TEST_REPLAY_WALK": "1",
                  "MDKR_PRESENT_SCHED_TRACE": "1"},
                 TICKS * RATE60_PRESENTS_PER_TICK,
                 args.timeout, args.verbose, audio_capture=True,
@@ -523,6 +534,8 @@ def main() -> int:
             rate60_summary = parse_summary(rate60)
             replay_summary = parse_last_fields(
                 rate60, REPLAY_SUMMARY_RE, "REPLAY-SUMMARY")
+            retained_summary = parse_last_fields(
+                rate60, RETAINED_SUMMARY_RE, "RETAINED-TASK")
         except RuntimeError as error:
             print(f"check_presentation_matrix: FAIL\n  - arm B: {error}")
             return 1
@@ -531,24 +544,38 @@ def main() -> int:
                 f"arm B: =60 presented {rate60_summary['presents']} frames for "
                 f"{TICKS} ticks; expected {TICKS * RATE60_PRESENTS_PER_TICK}, "
                 "so the subloop is not actually running at the requested rate")
-        if rate60_summary["interp"] != 0:
+        if rate60_summary["interp"] <= 0:
             failures.append(
-                "arm B: production =60 issued interpolated presents even "
-                "though 1.0.1 quarantines delayed display-list replay")
+                "arm B: public production =60 smoothing produced no "
+                "interpolated images")
         if rate60_summary["simticks"] != TICKS:
             failures.append(
                 f"arm B: =60 advanced {rate60_summary['simticks']} "
                 f"authoritative ticks, expected {TICKS}")
+        conservation_error = completed_tick_conservation(rate60_summary, TICKS,
+                                                          "arm B GL =60")
+        if conservation_error:
+            failures.append(conservation_error)
         try:
             webgpu_unset_summary = parse_summary(webgpu_unset)
             webgpu_rate60_summary = parse_summary(webgpu_rate60)
             webgpu_replay_summary = parse_last_fields(
                 webgpu_rate60, REPLAY_SUMMARY_RE, "REPLAY-SUMMARY")
+            webgpu_retained_summary = parse_last_fields(
+                webgpu_rate60, RETAINED_SUMMARY_RE, "RETAINED-TASK")
             webgpu_backpressure = parse_last_fields(
                 webgpu_rate60, WGPU_BACKPRESSURE_RE, "WGPU-BACKPRESSURE")
         except RuntimeError as error:
             print(f"check_presentation_matrix: FAIL\n  - arm B WebGPU: {error}")
             return 1
+        for backend_label, backend_sched in (
+                ("arm A WebGPU", webgpu_unset_summary),
+                ("arm B WebGPU =60", webgpu_rate60_summary)):
+            conservation_error = completed_tick_conservation(backend_sched,
+                                                              TICKS,
+                                                              backend_label)
+            if conservation_error:
+                failures.append(conservation_error)
         for key in ("ticks", "presents", "simticks", "tickfields",
                     "blocked", "maxpending", "updatebad", "updatemin",
                     "updatemax", "lead", "lag", "zerodue", "multidue",
@@ -564,46 +591,95 @@ def main() -> int:
                 f"arm B: WebGPU =60 presented "
                 f"{webgpu_rate60_summary.get('presents')} frames for {TICKS} "
                 f"ticks; expected {TICKS * RATE60_PRESENTS_PER_TICK}")
-        if webgpu_rate60_summary.get("interp", 0) != 0:
+        if webgpu_rate60_summary.get("interp", 0) <= 0:
             failures.append(
-                "arm B: production WebGPU =60 issued an interpolated present")
+                "arm B: public WebGPU =60 smoothing produced no interpolated image")
         if webgpu_rate60_summary.get("simticks") != TICKS:
             failures.append(
                 f"arm B: WebGPU =60 advanced "
                 f"{webgpu_rate60_summary.get('simticks')} authoritative "
                 f"ticks, expected {TICKS}")
-        for backend_label, backend_sched, backend_replay in (
-                ("GL", rate60_summary, replay_summary),
-                ("WebGPU", webgpu_rate60_summary, webgpu_replay_summary)):
-            if backend_replay.get("walks", -1) != 0:
+        for backend_label, backend_sched, backend_replay, backend_retained in (
+                ("GL", rate60_summary, replay_summary, retained_summary),
+                ("WebGPU", webgpu_rate60_summary, webgpu_replay_summary,
+                 webgpu_retained_summary)):
+            if (backend_replay.get("walks", 0) <= 0 or
+                    backend_replay.get("walks") != backend_sched.get("interp")):
                 failures.append(
-                    f"arm B: production {backend_label} performed "
-                    f"{backend_replay.get('walks')} delayed replay walks")
+                    f"arm B: production {backend_label} replay walks="
+                    f"{backend_replay.get('walks')} do not match successful "
+                    f"interpolated images={backend_sched.get('interp')}")
             if backend_sched.get("replayendpoints", -1) != 0:
                 failures.append(
                     f"arm B: production {backend_label} redrew "
                     f"{backend_sched.get('replayendpoints')} endpoints")
             expected_real_endpoints = TICKS - 3
-            if backend_sched.get("realendpoints") != expected_real_endpoints:
+            if (backend_label == "GL" and
+                    backend_sched.get("realendpoints") !=
+                    expected_real_endpoints):
                 failures.append(
                     f"arm B: production {backend_label} exposed "
                     f"{backend_sched.get('realendpoints')} completed "
                     f"real-walk endpoints, expected {expected_real_endpoints}; "
                     "the three-opportunity bootstrap has no graphics task")
+            intended_updates = (backend_sched.get("realendpoints", 0) +
+                                backend_sched.get("interp", 0))
             surface_updates = backend_sched.get("surfaceupdates", -1)
-            if backend_label == "GL" and \
-                    surface_updates != expected_real_endpoints:
+            if backend_label == "GL" and surface_updates != intended_updates:
                 failures.append(
                     f"arm B: production {backend_label} committed "
                     f"{surface_updates} surface images for "
-                    f"{expected_real_endpoints} real endpoints")
-        if rate60_summary.get("realendpoints") != \
-                webgpu_rate60_summary.get("realendpoints"):
+                    f"{intended_updates} real+interpolated images")
+            if (backend_retained.get("captures", 0) <= 0 or
+                    backend_retained.get("captures") !=
+                    backend_retained.get("begins") or
+                    backend_retained.get("failures", -1) != 0 or
+                    backend_retained.get("rejects", -1) != 0 or
+                    backend_retained.get("arenaResolve", 0) <= 0 or
+                    backend_retained.get("externalResolve", 0) <= 0):
+                failures.append(
+                    f"arm B: production {backend_label} retained-task "
+                    f"publication was incomplete: {backend_retained}")
+        webgpu_endpoint_skips = webgpu_backpressure.get("endpointSkips", -1)
+        webgpu_replay_skips = webgpu_backpressure.get("replaySkips", -1)
+        webgpu_admission_skips = webgpu_backpressure.get("skips", -1)
+        if (webgpu_rate60_summary.get("realendpoints", -1) +
+                webgpu_endpoint_skips != TICKS - 3):
             failures.append(
-                "arm B: GL/WebGPU completed-real-endpoint counts differ")
+                "arm B: WebGPU real endpoints plus endpoint admission holds "
+                f"do not account for {TICKS - 3} authored tasks")
+        if webgpu_admission_skips != (
+                webgpu_endpoint_skips + webgpu_replay_skips):
+            failures.append(
+                "arm B: WebGPU admission skips do not reconcile by endpoint "
+                "and replay class")
+        if (webgpu_backpressure.get("submitted", -1) !=
+                webgpu_rate60_summary.get("realendpoints", 0) +
+                webgpu_rate60_summary.get("interp", 0)):
+            failures.append(
+                "arm B: WebGPU submissions do not match successful real and "
+                "interpolated images")
+        if (webgpu_rate60_summary.get("realendpoints", 0) +
+                webgpu_rate60_summary.get("interp", 0) +
+                webgpu_rate60_summary.get("stale", 0) !=
+                webgpu_rate60_summary.get("presents", -1)):
+            failures.append(
+                "arm B: WebGPU real/interpolated/held images do not account "
+                "for every host opportunity")
+        for key in ("failures", "abandoned", "inflight", "runtimewaits",
+                    "runtimewaitns"):
+            if webgpu_backpressure.get(key, 0) != 0:
+                failures.append(
+                    f"arm B: WebGPU {key}="
+                    f"{webgpu_backpressure.get(key)}, expected 0")
+        if not (1 <= webgpu_backpressure.get("highwater", 0) <= 2):
+            failures.append(
+                "arm B: WebGPU in-flight high-water escaped the two-frame "
+                f"bound: {webgpu_backpressure.get('highwater')}")
         webgpu_surface = webgpu_rate60_summary.get("surfaceupdates", -1)
-        webgpu_deficit = \
-            webgpu_rate60_summary.get("realendpoints", 0) - webgpu_surface
+        webgpu_intended = (webgpu_rate60_summary.get("realendpoints", 0) +
+                           webgpu_rate60_summary.get("interp", 0))
+        webgpu_deficit = webgpu_intended - webgpu_surface
         accounted_holds = (webgpu_backpressure.get("held", 0) +
                            webgpu_backpressure.get("unavailable", 0))
         if webgpu_surface != webgpu_backpressure.get("presented"):
@@ -613,7 +689,7 @@ def main() -> int:
         if (webgpu_deficit < 0 or webgpu_deficit > accounted_holds or
                 webgpu_backpressure.get("failures", -1) != 0):
             failures.append(
-                f"arm B: WebGPU endpoint-to-surface deficit {webgpu_deficit} "
+                f"arm B: WebGPU image-to-surface deficit {webgpu_deficit} "
                 f"is not bounded by held+unavailable={accounted_holds}, or "
                 "the backend reported a completion failure")
         notes.append(
@@ -622,24 +698,27 @@ def main() -> int:
             f"{TICKS} ticks for "
             f"MDKR_PRESENT_RATE unset, =30 and =60; =60 issued "
             f"{rate60_summary['presents']} opportunities, exposed "
-            f"{rate60_summary['realendpoints']} completed real-walk endpoints, "
-            "and performed zero production replay walks despite the raw "
-            "public MotionSmoothing=interpolate request and all three replay "
-            "flags being present without the versioned internal token")
+            f"{rate60_summary['realendpoints']} completed real-walk endpoints "
+            f"plus {rate60_summary['interp']} immutable interpolated images "
+            "through the public MotionSmoothing=interpolate setting")
         notes.append(
             f"arm A/B WebGPU: {webgpu_unset_summary.get('ticks')} debt-free "
             "fixed tickets match GL authority; =60 issued "
             f"{webgpu_rate60_summary.get('presents')} host opportunities with "
             f"{webgpu_rate60_summary.get('realendpoints')} real endpoints and "
-            "zero delayed replay walks, while "
+            f"{webgpu_rate60_summary.get('interp')} interpolated images, while "
             "state/event/input/PCM remained byte-identical to GL unset")
 
         # ---- arm C: the smoothness witness ----------------------------
         try:
             smooth_on = run(binary, rom, "smooth-on", root,
                 {**TEST_REPLAY_ENV, "MDKR_PRESENT_RATE": "60",
+                 "MDKR_PRESENT_PERF": "1",
                  "MDKR_PRESENT_SCHED_TRACE": "1",
-                 "MDKR_TEST_RETAINED_DEPENDENCY_REWRITE": "1"},
+                 "MDKR_TEST_RETAINED_DEPENDENCY_REWRITE": "1",
+                 "MDKR_INTERNAL_TEST_TOKEN":
+                     "mdkr64-presentation-replay-v1",
+                 "MDKR_TEST_RETAINED_ARENA_POISON": "1"},
                 SMOOTH_TICKS * RATE60_PRESENTS_PER_TICK, args.timeout,
                 args.verbose, dump_from=SMOOTH_DUMP_FROM)
             smooth_off = run(binary, rom, "smooth-off", root,
@@ -654,19 +733,20 @@ def main() -> int:
                      "mdkr64-presentation-replay-v1",
                  "MDKR_PRESENT_SCHED_TRACE": "1",
                  "MDKR_TEST_DELAYED_ENDPOINT_REPLAY": "1",
-                 "MDKR_TEST_ENDPOINT_VERTEX_BYTES": "1"},
+                 "MDKR_TEST_ENDPOINT_VERTEX_BYTES": "1",
+                 "MDKR_TEST_RETAINED_DEPENDENCY_REWRITE": "1",
+                 "MDKR_TEST_RETAINED_ARENA_POISON": "1"},
                 SMOOTH_TICKS * RATE60_PRESENTS_PER_TICK, args.timeout,
                 args.verbose, dump_from=SMOOTH_DUMP_FROM)
             webgpu_mechanism = run(
                 binary, rom, "webgpu-mechanism", root,
                 {"MDKR_PRESENT_RATE": "60",
+                 "MDKR_PACE_REALTIME": "1",
                  "MDKR_INTERNAL_TEST_TOKEN":
                      "mdkr64-presentation-replay-v1",
                  "MDKR_PRESENT_SMOOTHING": "interpolate",
                  "MDKR_PRESENT_SCHED_TRACE": "1",
-                 "MDKR_TEST_DELAYED_ENDPOINT_REPLAY": "1",
-                 "MDKR_TEST_ENDPOINT_VERTEX_BYTES": "1",
-                 "MDKR_TEST_RETAINED_DEPENDENCY_REWRITE": "1"},
+                 "MDKR_TEST_RETAINED_ARENA_POISON": "1"},
                 SMOOTH_TICKS * RATE60_PRESENTS_PER_TICK, args.timeout,
                 args.verbose, renderer="webgpu")
             object_off = run(binary, rom, "object-off", root,
@@ -762,16 +842,27 @@ def main() -> int:
         try:
             smooth_replay = parse_last_fields(
                 smooth_on, REPLAY_SUMMARY_RE, "REPLAY-SUMMARY")
+            smooth_retained = parse_last_fields(
+                smooth_on, RETAINED_SUMMARY_RE, "RETAINED-TASK")
             smooth_summary = parse_summary(smooth_on)
             smooth_off_summary = parse_summary(smooth_off)
             delayed_summary = parse_summary(delayed_endpoint)
             delayed_packet = parse_last_fields(
                 delayed_endpoint, PACKET_SUMMARY_RE, "PRESENT-PACKET")
+            delayed_retained = parse_last_fields(
+                delayed_endpoint, RETAINED_SUMMARY_RE, "RETAINED-TASK")
+            smooth_perf = parse_perf_fields(smooth_on)
             smooth_endpoints = endpoint_rows(smooth_on)
             smooth_off_endpoints = endpoint_rows(smooth_off)
             delayed_endpoints = endpoint_rows(delayed_endpoint)
-            webgpu_mechanism_packet = parse_last_fields(
-                webgpu_mechanism, PACKET_SUMMARY_RE, "PRESENT-PACKET")
+            webgpu_mechanism_summary = parse_summary(webgpu_mechanism)
+            webgpu_mechanism_replay = parse_last_fields(
+                webgpu_mechanism, REPLAY_SUMMARY_RE, "REPLAY-SUMMARY")
+            webgpu_mechanism_retained = parse_last_fields(
+                webgpu_mechanism, RETAINED_SUMMARY_RE, "RETAINED-TASK")
+            webgpu_mechanism_backpressure = parse_last_fields(
+                webgpu_mechanism, WGPU_BACKPRESSURE_RE,
+                "WGPU-BACKPRESSURE")
             object_off_replay = parse_last_fields(
                 object_off, REPLAY_SUMMARY_RE, "REPLAY-SUMMARY")
             object_off_packet = parse_last_fields(
@@ -795,6 +886,18 @@ def main() -> int:
         except RuntimeError as error:
             print(f"check_presentation_matrix: FAIL\n  - arm C: {error}")
             return 1
+        for section in ("freeze", "replay"):
+            perf = smooth_perf.get(section, {})
+            if perf.get("hits", 0) <= 0:
+                failures.append(
+                    f"arm C: present performance census has no {section} "
+                    "samples")
+            elif perf.get("meanns", PRESENT_WORK_BUDGET_NS) >= \
+                    PRESENT_WORK_BUDGET_NS:
+                failures.append(
+                    f"arm C: mean {section} work is "
+                    f"{perf.get('meanns')} ns, which consumes an entire "
+                    "60 Hz presentation interval")
         if moved_on == 0:
             failures.append(
                 "arm C: no interpolated frame differed from both of its "
@@ -822,10 +925,13 @@ def main() -> int:
             failures.append(
                 f"arm C: {endpoint_changed}/{endpoint_compared} alpha-zero "
                 "backend frames differ from smoothing-off authored endpoints")
-        if delayed_compared == 0 or delayed_changed == 0:
+        if delayed_compared == 0:
             failures.append(
-                "arm C: delayed-endpoint negative control did not expose the "
-                "mutable-dependency drift that quarantines production replay")
+                "arm C: delayed endpoint control found no comparable frames")
+        elif delayed_changed != 0:
+            failures.append(
+                f"arm C: {delayed_changed}/{delayed_compared} delayed alpha-zero "
+                "frames differ from ordinary authored endpoints")
         for frame in range(SMOOTH_DUMP_FROM,
                            SMOOTH_TICKS * RATE60_PRESENTS_PER_TICK, 2):
             expected = smooth_off_endpoints.get(frame)
@@ -845,8 +951,8 @@ def main() -> int:
                     f"arm C: delayed negative-control frame {frame} did not "
                     f"replay the same authored task ({delayed} vs {expected})")
                 break
-        for label, sched in (("production GL", smooth_off_summary),
-                             ("experimental mechanism", smooth_summary)):
+        for label, sched in (("production smoothing-off", smooth_off_summary),
+                             ("production interpolated", smooth_summary)):
             expected_replays = 0
             if sched.get("replayendpoints", -1) != expected_replays:
                 failures.append(
@@ -858,20 +964,74 @@ def main() -> int:
             failures.append(
                 "arm C: delayed endpoint control was not isolated to endpoint "
                 "replays only")
+        for label, retained, expected_poison in (
+                ("production midpoint", smooth_retained,
+                 smooth_replay.get("walks", 0)),
+                ("delayed endpoint", delayed_retained,
+                 delayed_summary.get("replayendpoints", 0))):
+            if (retained.get("captures", 0) <= 0 or
+                    retained.get("failures", -1) != 0 or
+                    retained.get("rejects", -1) != 0 or
+                    retained.get("arenaResolve", 0) <= 0 or
+                    retained.get("externalResolve", 0) <= 0 or
+                    retained.get("livePoison", -1) != expected_poison):
+                failures.append(
+                    f"arm C: {label} retained-task poison contract failed: "
+                    f"{retained}, expected livePoison={expected_poison}")
         for key in ("forcedmatrixrewrite", "forcedvertexrewrite",
                     "dependencychecks"):
-            if webgpu_mechanism_packet.get(key, 0) <= 0:
+            if delayed_packet.get(key, 0) <= 0:
                 failures.append(
-                    f"arm C: WebGPU retained-dependency control {key}="
-                    f"{webgpu_mechanism_packet.get(key)}")
-        if (webgpu_mechanism_packet.get("unsafestalefallback", -1) != 0 or
-                webgpu_mechanism_packet.get("dependencymismatch", -1) != 0 or
-                webgpu_mechanism_packet.get("dependencyexpected", 0) == 0 or
-                webgpu_mechanism_packet.get("dependencyexpected") !=
-                webgpu_mechanism_packet.get("dependencyactual")):
+                    f"arm C: delayed retained-dependency control {key}="
+                    f"{delayed_packet.get(key)}")
+        if (delayed_packet.get("unsafestalefallback", -1) != 0 or
+                delayed_packet.get("dependencymismatch", -1) != 0 or
+                delayed_packet.get("dependencyexpected", 0) == 0 or
+                delayed_packet.get("dependencyexpected") !=
+                delayed_packet.get("dependencyactual")):
             failures.append(
-                "arm C: WebGPU retained-dependency mechanism did not hold its "
+                "arm C: delayed retained-dependency mechanism did not hold its "
                 "forced rewritten matrix/vertex bytes exactly")
+        webgpu_walks = webgpu_mechanism_replay.get("walks", 0)
+        if (webgpu_mechanism_summary.get("interp", 0) <= 0 or
+                webgpu_walks != webgpu_mechanism_summary.get("interp")):
+            failures.append(
+                "arm C: paced production WebGPU completed no accountable "
+                "interpolated replay walks")
+        if (webgpu_mechanism_summary.get("replayendpoints", -1) != 0 or
+                webgpu_mechanism_summary.get("realendpoints", 0) <= 0):
+            failures.append(
+                "arm C: paced WebGPU mechanism did not use real authored "
+                "endpoints plus production-only midpoints")
+        if (webgpu_mechanism_retained.get("captures", 0) <= 0 or
+                webgpu_mechanism_retained.get("failures", -1) != 0 or
+                webgpu_mechanism_retained.get("rejects", -1) != 0 or
+                webgpu_mechanism_retained.get("arenaResolve", 0) <= 0 or
+                webgpu_mechanism_retained.get("externalResolve", 0) <= 0 or
+                webgpu_mechanism_retained.get("livePoison", -1) !=
+                    webgpu_walks):
+            failures.append(
+                "arm C: paced WebGPU did not complete every admitted replay "
+                "from poisoned-live private task ownership")
+        webgpu_mechanism_skips = webgpu_mechanism_backpressure.get("skips", -1)
+        if webgpu_mechanism_skips != (
+                webgpu_mechanism_backpressure.get("endpointSkips", -2) +
+                webgpu_mechanism_backpressure.get("replaySkips", -2)):
+            failures.append(
+                "arm C: paced WebGPU admission skips do not reconcile by "
+                "endpoint and replay class")
+        if (webgpu_mechanism_backpressure.get("submitted", -1) !=
+                webgpu_mechanism_summary.get("realendpoints", 0) +
+                webgpu_mechanism_summary.get("interp", 0)):
+            failures.append(
+                "arm C: paced WebGPU submissions do not match completed real "
+                "and interpolated images")
+        for key in ("failures", "abandoned", "inflight", "runtimewaits",
+                    "runtimewaitns"):
+            if webgpu_mechanism_backpressure.get(key, 0) != 0:
+                failures.append(
+                    f"arm C: paced WebGPU {key}="
+                    f"{webgpu_mechanism_backpressure.get(key)}, expected 0")
         if smooth_replay.get("objhit", 0) <= 0:
             failures.append(
                 "arm C: full smoothing rebuilt no object matrices")
@@ -893,25 +1053,44 @@ def main() -> int:
                 "arm C: every intermediate frame is byte-identical with object "
                 "interpolation enabled and disabled — the object path has no "
                 "visible effect")
-        for key in ("deformreg", "deformhold", "deformphasehold",
-                    "deformpeak"):
+        for key in ("deformreg", "deformphasehold", "deformpeak",
+                    "futurecaptures", "deformhit", "deformoverride",
+                    "colorhit", "coloroverride"):
             if deformation_on_packet.get(key, 0) <= 0:
                 failures.append(
                     f"arm C: deformation witness {key}="
-                    f"{deformation_on_packet.get(key)}; phase-correct retained "
-                    "endpoint holding is not live")
-        for key in ("deformhit", "deformoverride", "colorhit",
-                    "coloroverride"):
-            if deformation_on_packet.get(key, -1) != 0:
+                    f"{deformation_on_packet.get(key)}; forward authored "
+                    "deformation interpolation is not live")
+        if deformation_on_packet.get("futurefailures", -1) != 0:
+            failures.append(
+                "arm C: future deformation census reported failures")
+        for key in ("projectedshadowvertexreg",
+                    "projectedshadowdeformhit",
+                    "projectedshadowdeformoverride"):
+            if deformation_on_packet.get(key, 0) <= 0:
                 failures.append(
-                    f"arm C: deformation witness {key}="
-                    f"{deformation_on_packet.get(key)}, expected zero; a "
-                    "phase-shifted retained pair reached replay")
+                    f"arm C: projected-shadow smoothing {key}="
+                    f"{deformation_on_packet.get(key)}; the generation-keyed "
+                    "rigid decal replay path is not live")
+        if deformation_on_packet.get("deformcollision", -1) != 0:
+            failures.append(
+                "arm C: projected/model deformation ownership collided "
+                f"(deformcollision="
+                f"{deformation_on_packet.get('deformcollision')})")
         if deformation_off_packet.get("deformoverride", -1) != 0:
             failures.append(
                 "arm C: deformation-off control unexpectedly changed retained "
                 f"batches (deformoverride="
                 f"{deformation_off_packet.get('deformoverride')})")
+        if (deformation_off_packet.get("projectedshadowdeformhit", -1) != 0 or
+                deformation_off_packet.get(
+                    "projectedshadowdeformoverride", -1) != 0):
+            failures.append(
+                "arm C: deformation-off control left projected-shadow "
+                "smoothing enabled "
+                f"(hits={deformation_off_packet.get('projectedshadowdeformhit')}, "
+                "overrides="
+                f"{deformation_off_packet.get('projectedshadowdeformoverride')})")
         if (delayed_packet.get("endpointchecks", 0) <= 0 or
                 delayed_packet.get("endpointmismatch", -1) != 0 or
                 delayed_packet.get("endpointexpected", 0) == 0 or
@@ -924,10 +1103,10 @@ def main() -> int:
             failures.append(
                 "arm C: deformation pixel witness found no comparable "
                 "intermediate frames")
-        elif deformation_changed != 0:
+        elif deformation_changed == 0:
             failures.append(
-                f"arm C: {deformation_changed}/{deformation_compared} retained "
-                "deformation frames differ from the exact-hold control")
+                "arm C: forward deformation interpolation is pixel-identical "
+                "to its exact-task hold control")
         particle_on_rows = sim_hash_rows(particle_on)
         particle_off_rows = sim_hash_rows(particle_off)
         particle_color_off_rows = sim_hash_rows(particle_color_off)
@@ -962,19 +1141,17 @@ def main() -> int:
             failures.append(
                 "arm C: battle point-trail witness captured no retained "
                 "particle vertices")
-        for key in ("deformhold", "deformphasehold"):
+        for key in ("particledeformhit", "particledeformoverride",
+                    "particlecolorhit", "particlecoloroverride"):
             if particle_on_packet.get(key, 0) <= 0:
                 failures.append(
                     f"arm C: particle witness {key}="
-                    f"{particle_on_packet.get(key)}; retained point-trail "
-                    "endpoint holding is not live")
-        for key in ("particledeformhit", "particledeformoverride",
-                    "particlecolorhit", "particlecoloroverride"):
-            if particle_on_packet.get(key, -1) != 0:
-                failures.append(
-                    f"arm C: particle witness {key}="
-                    f"{particle_on_packet.get(key)}, expected zero; lagged "
-                    "retained particle data reached replay")
+                    f"{particle_on_packet.get(key)}; forward point-trail "
+                    "interpolation is not live")
+        if (particle_on_packet.get("futurecaptures", 0) <= 0 or
+                particle_on_packet.get("futurefailures", -1) != 0):
+            failures.append(
+                "arm C: particle witness did not publish its forward tasks")
         if particle_on_packet.get("deformcollision") != 0:
             failures.append(
                 "arm C: particle witness found ambiguous retained keys "
@@ -1012,18 +1189,18 @@ def main() -> int:
             failures.append(
                 "arm C: particle pixel witness found no comparable "
                 "intermediate frames")
-        elif particle_changed != 0:
+        elif particle_changed == 0:
             failures.append(
-                f"arm C: {particle_changed}/{particle_compared} battle "
-                "point-trail frames differ from the phase-safe hold control")
+                "arm C: battle point-trail geometry is pixel-identical to its "
+                "exact-task hold control")
         if particle_color_compared == 0:
             failures.append(
                 "arm C: particle color witness found no comparable "
                 "intermediate frames")
-        elif particle_color_changed != 0:
+        elif particle_color_changed == 0:
             failures.append(
-                f"arm C: {particle_color_changed}/{particle_color_compared} "
-                "battle frames differ from the phase-safe RGBA hold control")
+                "arm C: point-trail RGBA interpolation is pixel-identical to "
+                "its color-hold control")
         if particle_alpha_compared == 0:
             failures.append(
                 "arm C: particle primitive-alpha witness found no comparable "
@@ -1054,10 +1231,10 @@ def main() -> int:
             failures.append(
                 "arm C: forced effects recorded no phase-safe authored holds")
         for key in ("effecthit", "effectoverride"):
-            if effect_on_packet.get(key, -1) != 0:
+            if effect_on_packet.get(key, 0) <= 0:
                 failures.append(
-                    "arm C: lagged authored-tick effect data reached replay "
-                    f"({key}={effect_on_packet.get(key)}, expected 0)")
+                    "arm C: forward authored effect recipes did not reach "
+                    f"replay ({key}={effect_on_packet.get(key)})")
         if effect_on_packet.get("effectcollision") != 0:
             failures.append(
                 "arm C: shield effect witness found ambiguous two-identity "
@@ -1072,13 +1249,13 @@ def main() -> int:
             failures.append(
                 "arm C: shield effect pixel witness found no comparable "
                 "intermediate frames")
-        elif effect_changed != 0:
+        elif effect_changed == 0:
             failures.append(
-                f"arm C: {effect_changed}/{effect_compared} forced-shield "
-                "frames differ from the authored-matrix hold control")
+                "arm C: forced-shield forward recipes are pixel-identical to "
+                "the authored-matrix hold control")
         notes.append(
             f"arm C: with smoothing on, {moved_on}/{moved_on + still_on} "
-            f"internal interpolated backend frames differ from both neighbours; with "
+            f"production interpolated backend frames differ from both neighbours; with "
             f"MDKR_PRESENT_SMOOTHING=off, {moved_off}/{moved_off + still_off} "
             "do (every no-swap backend dump retains the authored image); "
             f"object interpolation changes {object_changed}/{object_compared} "
@@ -1086,18 +1263,19 @@ def main() -> int:
             f"all {endpoint_compared} alpha-zero frames reproduce the authored "
             "endpoint")
         notes.append(
-            f"arm C: {deformation_on_packet.get('deformhold', 0)} retained "
-            "deformation batches hold exact task bytes; enabled/control are "
-            f"identical on {deformation_compared} backend frames and "
+            f"arm C: {deformation_on_packet.get('deformoverride', 0)} retained "
+            "deformation batches blend true forward task bytes; enabled/control "
+            f"differ on {deformation_changed}/{deformation_compared} backend frames and "
             f"{delayed_packet.get('endpointchecks', 0)} delayed alpha-zero "
             "G_VTX semantic controls match")
         notes.append(
-            f"arm C: battle point trails hold task-authored vertex bytes and "
-            f"match the explicit control on all {particle_compared} frames; "
+            f"arm C: battle point trails use adjacent task-authored vertices "
+            f"and differ from the hold control on {particle_changed}/"
+            f"{particle_compared} frames; "
             "authoritative state is byte-identical")
         notes.append(
-            f"arm C: retained point-trail RGBA remains phase-safe and matches "
-            f"its exact-hold control on all {particle_color_compared} frames")
+            f"arm C: retained point-trail RGBA differs from its exact-hold "
+            f"control on {particle_color_changed}/{particle_color_compared} frames")
         notes.append(
             f"arm C: particle primitive alpha applies "
             f"{particle_on_packet.get('particleprimalphaoverride', 0)} changed "
@@ -1110,8 +1288,20 @@ def main() -> int:
         notes.append(
             f"arm C: forced shield/magnet-class recipes hold the display "
             f"list's authored matrix on {effect_on_packet.get('effectphasehold', 0)} "
-            f"phase gaps; enabled/control match all {effect_compared} frames "
+            f"phase gaps and differs on {effect_changed}/{effect_compared} frames "
             "and remain collision-free")
+        notes.append(
+            "arm C: retained-task publication and poison-hardened replay "
+            f"average {smooth_perf.get('freeze', {}).get('meanns', 0) / 1e6:.3f} "
+            "ms and "
+            f"{smooth_perf.get('replay', {}).get('meanns', 0) / 1e6:.3f} ms; "
+            "each remains below one 60 Hz presentation interval")
+        notes.append(
+            "arm C WebGPU: paced production completed "
+            f"{webgpu_mechanism_summary.get('interp', 0)} immutable midpoints "
+            "from a fully poisoned live arena with "
+            f"{webgpu_mechanism_backpressure.get('replaySkips', 0)} replay "
+            "admission holds and zero runtime waits")
 
     if failures:
         print("check_presentation_matrix: FAIL")

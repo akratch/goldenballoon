@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Native high-rate policies cannot starve the authored game/audio thread.
 
-Both real GPU backends run the same visible, finite, synthetic-uncapped route.
-Production 1.0.1 submits only authored tick images, so WebGPU must poll queue
-completion without synchronously draining the device on the cooperative game /
-audio thread. Internal replay stress and the browser retain the explicit
-two-frame cap; OpenGL interval 0 retains completion fences. This is live backend
+Both real GPU backends run the same visible, finite, synthetic-uncapped route
+with motion smoothing off. WebGPU must poll queue completion without
+synchronously draining the device on the cooperative game/audio thread. If the
+synthetic schedule outruns the device, authored attempts may be explicitly held
+at the two-frame admission boundary; every hold must be classified and
+accounted. OpenGL interval 0 retains completion fences. This is live backend
 evidence, not a headless scheduler-only model.
 """
 
@@ -19,7 +20,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import completed_tick_conservation, resolve_binary
 
 
 TICKS = 30
@@ -120,15 +121,18 @@ def validate(run: Run) -> list[str]:
     failures: list[str] = []
     summary = run.summary
     pressure = run.pressure
+    conservation_error = completed_tick_conservation(summary, TICKS,
+                                                      run.backend)
+    if conservation_error:
+        failures.append(conservation_error)
     for key, expected in (
-            ("ticks", TICKS), ("issued", TICKS),
             ("entries", EXPECTED_OPPORTUNITIES),
             ("presents", EXPECTED_OPPORTUNITIES),
             ("presentkind", 3), ("requestedkind", 3)):
         if summary.get(key) != expected:
             failures.append(
                 f"{run.backend}: {key}={summary.get(key)}, expected {expected}")
-    for key in ("multidue", "lead", "lag", "catchup", "skips",
+    for key in ("multidue", "lag", "catchup", "skips",
                 "rebases", "blocked", "updatebad"):
         if summary.get(key, 0) != 0:
             failures.append(
@@ -137,13 +141,17 @@ def validate(run: Run) -> list[str]:
     high_water = pressure.get("highwater", 0)
     submitted = pressure.get("submitted", 0)
     completed = pressure.get("completed", -1)
-    # Production 1.0.1 does not synthesize extra images for high-rate host
-    # opportunities. Only completed authored ticks reach the GPU; this is why
-    # native runtime no longer needs to synchronously drain the queue.
-    if not (TICKS - 3 <= submitted <= TICKS):
+    # Smoothing is off, so only authored tasks attempt GPU admission. GL waits
+    # on its bounded fences; WebGPU may hold an authored image rather than block
+    # the cooperative game/audio thread. Startup can legitimately have up to
+    # three ticks without a graphics task.
+    endpoint_skips = pressure.get("endpointSkips", 0)
+    accounted_authored = submitted + (
+        endpoint_skips if run.backend == "webgpu" else 0)
+    if not (TICKS - 3 <= accounted_authored <= TICKS):
         failures.append(
-            f"{run.backend}: {submitted} live GPU submissions for {TICKS} "
-            "authored ticks")
+            f"{run.backend}: {submitted} submissions + {endpoint_skips} "
+            f"endpoint holds for {TICKS} authored ticks")
     if completed != submitted:
         failures.append(
             f"{run.backend}: completed={completed}, submitted={submitted}")
@@ -167,9 +175,11 @@ def validate(run: Run) -> list[str]:
                 "webgpu: production frame path synchronously waited for GPU "
                 f"completion: {pressure.get('runtimewaits')} waits / "
                 f"{pressure.get('runtimewaitns')} ns")
-        if pressure.get("skips") != 0:
+        if (pressure.get("skips", -1) != endpoint_skips or
+                pressure.get("replaySkips", -1) != 0):
             failures.append(
-                f"webgpu: native run skipped {pressure.get('skips')} frames")
+                "webgpu: smoothing-off admission skips are not exclusively "
+                f"authored endpoints: {pressure}")
         if pressure.get("abandoned") != 0:
             failures.append(
                 f"webgpu: abandoned {pressure.get('abandoned')} completions")

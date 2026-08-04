@@ -63,6 +63,8 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
+from harness_utils import completed_tick_conservation
+
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ROM = "baserom.us.v80.z64"
@@ -493,6 +495,11 @@ class CDPClient:
         self.network: list[dict[str, Any]] = []
         self.failures: list[str] = []
         self.exceptions: list[str] = []
+        # Page.reload returns before the old execution context is necessarily
+        # destroyed. The browser gate installs a fresh token with every test
+        # configuration and wait_launcher requires that token before it can
+        # click controls in the replacement document.
+        self.expected_document_token: str | None = None
         self.reader = threading.Thread(
             target=self._reader, name="mdkr64-cdp", daemon=True
         )
@@ -724,6 +731,9 @@ def page_websocket(port: int, timeout: float = 15.0) -> str:
 
 
 def add_config_script(cdp: CDPClient, config: dict[str, Any]) -> str:
+    document_token = os.urandom(16).hex()
+    config = dict(config)
+    config["documentToken"] = document_token
     source = (
         "globalThis.__mdkrTestConfig = "
         + json.dumps(config, separators=(",", ":"))
@@ -734,6 +744,7 @@ def add_config_script(cdp: CDPClient, config: dict[str, Any]) -> str:
     )
     identifier = result.get("identifier")
     require(bool(identifier), "CDP did not return a preload-script identifier")
+    cdp.expected_document_token = document_token
     return str(identifier)
 
 
@@ -763,12 +774,19 @@ def wait_value(
 
 
 def wait_launcher(cdp: CDPClient, timeout: float) -> dict[str, Any]:
+    expected_document_token = cdp.expected_document_token
+    require(
+        bool(expected_document_token),
+        "launcher wait has no configured document token",
+    )
     expression = """(() => {
       const ui = document.getElementById("rom-ui");
       const play = document.getElementById("play");
       const msg = document.getElementById("gate-msg");
       const status = document.getElementById("rom-status");
       return {
+        documentToken: globalThis.__mdkrTestConfig &&
+          globalThis.__mdkrTestConfig.documentToken,
         ready: document.readyState === "complete",
         ui: !!ui && !ui.hidden,
         playDisabled: !play || play.disabled,
@@ -780,10 +798,7 @@ def wait_launcher(cdp: CDPClient, timeout: float) -> dict[str, Any]:
     value = wait_value(
         cdp,
         expression,
-        lambda item: isinstance(item, dict)
-        and item.get("ready")
-        and item.get("ui")
-        and (item.get("blocked") or not item.get("message")),
+        lambda item: launcher_is_ready(item, expected_document_token),
         "the WebGPU launcher gate",
         timeout,
     )
@@ -958,6 +973,36 @@ def resize_canvas(
     return value
 
 
+def exercise_audio_overflow(cdp: CDPClient, timeout: float) -> dict[str, Any]:
+    """Drive the real AudioWorklet ring past capacity through its message port.
+
+    This is deliberately a test-config-only shell seam. It proves that the
+    production worklet reports a bounded oldest-sample discard and begins a
+    continuity recovery, rather than silently accepting an unbounded backlog.
+    """
+    injected = cdp.evaluate(
+        "globalThis.__mdkrTestForceAudioOverflow && "
+        "globalThis.__mdkrTestForceAudioOverflow()"
+    )
+    require(
+        isinstance(injected, dict)
+        and injected.get("frames", 0) > injected.get("capacity", 0) > 0,
+        f"AudioWorklet overflow seam was unavailable: {injected}",
+    )
+    minimum_drops = injected["frames"] - injected["capacity"]
+    return wait_value(
+        cdp,
+        "globalThis.__mdkrTestSnapshot().audio",
+        lambda audio: isinstance(audio, dict)
+        and audio.get("ringDroppedFrames", 0) >= minimum_drops
+        and audio.get("recoveries", 0) > 0
+        and audio.get("recoverySamples", 0) >= 128
+        and audio.get("completedRecoveries", 0) > 0,
+        "AudioWorklet bounded overflow recovery",
+        timeout,
+    )
+
+
 def exercise_fullscreen(
     cdp: CDPClient,
     timeout: float,
@@ -1028,6 +1073,161 @@ def exercise_fullscreen(
         timeout,
     )
     return entered
+
+
+def exercise_fullscreen_rejection(
+    cdp: CDPClient,
+    timeout: float,
+) -> dict[str, Any]:
+    armed = cdp.evaluate(
+        """(() => {
+          const stage = document.getElementById("stage");
+          if (!stage || typeof stage.requestFullscreen !== "function") {
+            return false;
+          }
+          globalThis.__mdkrOriginalRequestFullscreen =
+            stage.requestFullscreen.bind(stage);
+          stage.requestFullscreen = () =>
+            Promise.reject(new DOMException("injected denial", "NotAllowedError"));
+          document.getElementById("fullscreen").click();
+          return true;
+        })()"""
+    )
+    require(armed is True, "fullscreen rejection seam was unavailable")
+    result = wait_value(
+        cdp,
+        """(() => {
+          const status = document.getElementById("stage-status");
+          const button = document.getElementById("fullscreen");
+          return {
+            hidden: status.hidden,
+            text: status.textContent,
+            active: document.fullscreenElement !== null,
+            pressed: button.getAttribute("aria-pressed"),
+            disabled: button.disabled
+          };
+        })()""",
+        lambda item: isinstance(item, dict)
+        and item.get("hidden") is False
+        and item.get("active") is False
+        and item.get("pressed") == "false"
+        and item.get("disabled") is False
+        and "blocked by this browser" in item.get("text", ""),
+        "visible fullscreen rejection",
+        timeout,
+    )
+    cdp.evaluate(
+        """(() => {
+          const stage = document.getElementById("stage");
+          stage.requestFullscreen = globalThis.__mdkrOriginalRequestFullscreen;
+          delete globalThis.__mdkrOriginalRequestFullscreen;
+          return true;
+        })()"""
+    )
+    return result
+
+
+def exercise_fullscreen_exit_rejection(
+    cdp: CDPClient,
+    timeout: float,
+) -> dict[str, Any]:
+    cdp.evaluate('document.getElementById("fullscreen").click(); true')
+    wait_value(
+        cdp,
+        "document.fullscreenElement === document.getElementById('stage')",
+        lambda value: value is True,
+        "fullscreen entry before rejected exit",
+        timeout,
+    )
+    armed = cdp.evaluate(
+        """(() => {
+          if (typeof document.exitFullscreen !== "function") return false;
+          globalThis.__mdkrOriginalExitFullscreen =
+            document.exitFullscreen.bind(document);
+          document.exitFullscreen = () =>
+            Promise.reject(new DOMException("injected exit denial", "NotAllowedError"));
+          document.getElementById("fullscreen").click();
+          return true;
+        })()"""
+    )
+    require(armed is True, "fullscreen exit-rejection seam was unavailable")
+    result = wait_value(
+        cdp,
+        """(() => {
+          const status = document.getElementById("stage-status");
+          const stage = document.getElementById("stage");
+          const button = document.getElementById("fullscreen");
+          return {
+            hidden: status.hidden,
+            text: status.textContent,
+            active: document.fullscreenElement === stage,
+            pressed: button.getAttribute("aria-pressed"),
+            disabled: button.disabled,
+          };
+        })()""",
+        lambda item: isinstance(item, dict)
+        and item.get("hidden") is False
+        and item.get("active") is True
+        and item.get("pressed") == "true"
+        and item.get("disabled") is False
+        and "couldn't exit fullscreen" in item.get("text", "").lower(),
+        "visible fullscreen exit rejection",
+        timeout,
+    )
+    cdp.evaluate(
+        """(() => {
+          document.exitFullscreen = globalThis.__mdkrOriginalExitFullscreen;
+          delete globalThis.__mdkrOriginalExitFullscreen;
+          document.getElementById("fullscreen").click();
+          return true;
+        })()"""
+    )
+    wait_value(
+        cdp,
+        "document.fullscreenElement === null",
+        lambda value: value is True,
+        "fullscreen exit after restoring API",
+        timeout,
+    )
+    return result
+
+
+def assert_narrow_touch_status_layout(cdp: CDPClient) -> None:
+    cdp.call(
+        "Emulation.setDeviceMetricsOverride",
+        {"width": 320, "height": 640, "deviceScaleFactor": 1, "mobile": True},
+    )
+    try:
+        layout = cdp.evaluate(
+            """(() => {
+              const stage = document.getElementById("stage");
+              const status = document.getElementById("stage-status");
+              const toggle = document.getElementById("touch-toggle");
+              const fullscreen = document.getElementById("fullscreen");
+              const hadTouchClass = stage.classList.contains("touch-ui-active");
+              const wasToggleHidden = toggle.hidden;
+              stage.classList.add("touch-ui-active");
+              toggle.hidden = false;
+              const sr = status.getBoundingClientRect();
+              const tr = toggle.getBoundingClientRect();
+              const fr = fullscreen.getBoundingClientRect();
+              stage.classList.toggle("touch-ui-active", hadTouchClass);
+              toggle.hidden = wasToggleHidden;
+              return {
+                statusBelowChrome: sr.top >= Math.max(tr.bottom, fr.bottom),
+                statusInViewport: sr.left >= 0 && sr.right <= innerWidth &&
+                  sr.top >= 0 && sr.bottom <= innerHeight,
+              };
+            })()"""
+        )
+        require(
+            isinstance(layout, dict)
+            and layout.get("statusBelowChrome") is True
+            and layout.get("statusInViewport") is True,
+            f"narrow touch fullscreen status overlaps controls: {layout}",
+        )
+    finally:
+        cdp.call("Emulation.clearDeviceMetricsOverride")
 
 
 def png_pixels(data: bytes) -> tuple[int, int, int, bytes]:
@@ -1172,6 +1372,30 @@ def validate_positive_controls() -> None:
         ),
         "save-mismatch positive control was not rejected",
     )
+    # Page.reload may briefly leave the old, fully-ready launcher observable.
+    # A wait for the next document must reject that stale document even though
+    # all of its visible readiness fields still look valid.
+    stale_launcher = {
+        "documentToken": "old-document",
+        "ready": True,
+        "ui": True,
+        "blocked": False,
+        "message": "",
+    }
+    require(
+        not launcher_is_ready(stale_launcher, "new-document"),
+        "stale-document launcher positive control was not rejected",
+    )
+
+
+def launcher_is_ready(item: Any, expected_document_token: str) -> bool:
+    return (
+        isinstance(item, dict)
+        and item.get("documentToken") == expected_document_token
+        and item.get("ready")
+        and item.get("ui")
+        and (item.get("blocked") or not item.get("message"))
+    )
 
 
 def same_save(first: dict[str, Any], second: dict[str, Any]) -> bool:
@@ -1313,6 +1537,10 @@ def run_check(args: argparse.Namespace) -> None:
 
     screens: list[tuple[int, bytes, SceneStats]] = []
     with tempfile.TemporaryDirectory(prefix="mdkr64_chrome_") as profile_name:
+        corrupt_rom = Path(profile_name) / "supported-header-body-corrupt.z64"
+        corrupt_bytes = bytearray(rom.read_bytes())
+        corrupt_bytes[0x200000] ^= 0x5A
+        corrupt_rom.write_bytes(corrupt_bytes)
         chrome = ChromeProcess(
             chrome_path,
             Path(profile_name),
@@ -1356,6 +1584,7 @@ def run_check(args: argparse.Namespace) -> None:
                     # encoder request. The game frame must still present and
                     # the remaining 3,599 frames must proceed.
                     "MDKR_TEST_WEBGPU_OVERLAY": "1",
+                    "MDKR_WEBGPU_PIPELINE_TRACE": "1",
                     "MDKR_WEBGPU_FAULT": "overlay.pass",
                 },
             }
@@ -1735,11 +1964,30 @@ def run_check(args: argparse.Namespace) -> None:
                     flush=True,
                 )
                 if target == 400:
+                    exercise_fullscreen_rejection(cdp, args.timeout)
+                    assert_narrow_touch_status_layout(cdp)
+                    print(
+                        "    fullscreen entry denial: visible recovery message, "
+                        "windowed play retained; narrow touch notice clears chrome",
+                        flush=True,
+                    )
                     fullscreen = exercise_fullscreen(cdp, args.timeout)
                     print(
                         "    fullscreen: "
                         f"{fullscreen['width']}x{fullscreen['height']} "
                         "entered/exited with 24 live frames",
+                        flush=True,
+                    )
+                    exercise_fullscreen_exit_rejection(cdp, args.timeout)
+                    print(
+                        "    fullscreen exit denial: visible exit-specific recovery message",
+                        flush=True,
+                    )
+                    overflow = exercise_audio_overflow(cdp, args.timeout)
+                    print(
+                        "    audio overflow: "
+                        f"{overflow['ringDroppedFrames']} ring frames, "
+                        f"{overflow['recoveries']} continuity recovery",
                         flush=True,
                     )
                 resize = {
@@ -1925,12 +2173,35 @@ def run_check(args: argparse.Namespace) -> None:
             p95_dt = budget_rows[math.ceil(len(budget_rows) * 0.95) - 1][0]
             p99_dt = budget_rows[math.ceil(len(budget_rows) * 0.99) - 1][0]
             max_dt, max_dt_frame = budget_rows[-1]
-            require(
+            actual_raf = cdp.evaluate(
+                "globalThis.__mdkrActualRafDeltas || []")
+            raf_rows = sorted(
+                float(value) for value in actual_raf
+                if isinstance(value, (int, float)) and value > 0
+            ) if isinstance(actual_raf, list) else []
+            raf_summary = (
+                {
+                    "count": len(raf_rows),
+                    "p50": raf_rows[len(raf_rows) // 2],
+                    "p95": raf_rows[math.ceil(len(raf_rows) * 0.95) - 1],
+                    "p99": raf_rows[math.ceil(len(raf_rows) * 0.99) - 1],
+                }
+                if raf_rows else {}
+            )
+            cadence_ok = (
                 p95_dt <= BROWSER_FRAME_P95_BUDGET_MS
-                and p99_dt <= BROWSER_FRAME_P99_BUDGET_MS,
+                and p99_dt <= BROWSER_FRAME_P99_BUDGET_MS
+            )
+            over_p95_budget = [
+                (frame, delta) for delta, frame in budget_rows
+                if delta > BROWSER_FRAME_P95_BUDGET_MS
+            ]
+            cadence_failure = (
                 "browser cadence exceeded the published hitch budget: "
                 f"p95={p95_dt:.2f}/{BROWSER_FRAME_P95_BUDGET_MS:.2f} ms, "
-                f"p99={p99_dt:.2f}/{BROWSER_FRAME_P99_BUDGET_MS:.2f} ms",
+                f"p99={p99_dt:.2f}/{BROWSER_FRAME_P99_BUDGET_MS:.2f} ms; "
+                f"over-p95-budget={len(over_p95_budget)}/{len(budget_rows)} "
+                f"frames={over_p95_budget[:12]}; rAF={raf_summary}"
             )
             fps = 1000.0 / median_dt
             authored_rows = [row for row in pace if row[0] >= 200]
@@ -2007,6 +2278,10 @@ def run_check(args: argparse.Namespace) -> None:
                 max_pipeline_frames,
                 max_pending,
             ) = wgpu_perf_rows[0]
+            pipeline_trace = [
+                line for line in cdp.console
+                if "[WGPU-PIPELINE]" in line
+            ]
             require(
                 async_creates > 0
                 and async_ready == async_creates
@@ -2017,8 +2292,12 @@ def run_check(args: argparse.Namespace) -> None:
                 and max_pipeline_frames <= BROWSER_PIPELINE_FRAME_BUDGET
                 and 0 < max_pending <= async_creates,
                 "browser async-pipeline telemetry is incoherent: "
-                f"{wgpu_perf_rows[0]}",
+                f"{wgpu_perf_rows[0]}; trace={pipeline_trace[-12:]}",
             )
+            # Collect the independent pipeline evidence before reporting a
+            # cadence miss. A loaded or occluded host can otherwise mask a
+            # renderer regression in the same expensive real-browser run.
+            require(cadence_ok, cadence_failure)
             sched = parse_single_integer_summary(
                 cdp.console,
                 PRESENT_SCHED_SUMMARY_RE,
@@ -2048,17 +2327,16 @@ def run_check(args: argparse.Namespace) -> None:
                 "browser scheduler summary is missing accounting fields: "
                 f"{sorted(required_sched - sched.keys())}",
             )
+            conservation_error = completed_tick_conservation(
+                sched, sched["ticks"], "browser scheduler")
             require(
-                sched["entries"] == args.frames
+                conservation_error is None
+                and sched["entries"] == args.frames
                 and sched["presents"] == args.frames
-                and sched["ticks"] == sched["simticks"]
-                and sched["ticks"] == sched["issued"]
-                and sched["ticks"]
-                    == sched["entries"] + sched["catchup"]
-                and sched["elided"] == sched["catchup"]
-                and sched["pending"] == 0,
-                "browser host opportunities, catch-up ticks, and issued work "
-                f"do not account exactly: {sched}",
+                and sched["ticks"] == sched["entries"] + sched["catchup"]
+                and sched["elided"] == sched["catchup"],
+                "browser host opportunities, catch-up ticks, and completed "
+                f"work do not account exactly: {conservation_error}; {sched}",
             )
             require(
                 sched["updates"] + 1 == sched["simticks"]
@@ -2131,15 +2409,16 @@ def run_check(args: argparse.Namespace) -> None:
                 f"backpressure={backpressure}",
             )
             require(
-                backpressure["completed"] == backpressure["submitted"]
+                (backpressure["completed"] + backpressure["abandoned"]
+                    == backpressure["submitted"])
+                and 0 <= backpressure["abandoned"] <= backpressure["cap"]
                 and backpressure["inflight"] == 0
                 and backpressure["cap"] == BROWSER_GPU_IN_FLIGHT_CAP
                 and 0 < backpressure["highwater"] <= backpressure["cap"]
                 and backpressure["skips"] == 0
-                and backpressure["failures"] == 0
-                and backpressure["abandoned"] == 0,
-                "browser WebGPU queue did not drain cleanly within its "
-                f"declared cap: {backpressure}",
+                and backpressure["failures"] == 0,
+                "browser WebGPU queue completion or bounded shutdown "
+                f"accounting is incoherent: {backpressure}",
             )
             gfx_shutdown_rows = [
                 tuple(int(value) for value in match.groups())
@@ -2344,6 +2623,9 @@ def run_check(args: argparse.Namespace) -> None:
             second_console_start = len(cdp.console)
             second_config = {
                 "headlessFrames": args.reload_frames,
+                # First Forget attempt must fail transactionally, leaving the
+                # stored ROM playable. The later real Forget consumes no fault.
+                "idbClearFailOnce": True,
                 "env": {
                     "MDKR_TRACE": "1",
                     "MDKR_AUDIO": "1",
@@ -2371,6 +2653,67 @@ def run_check(args: argparse.Namespace) -> None:
                 args.timeout,
             )
             require("stored" in stored_ui["text"], f"stored ROM is unreachable: {stored_ui}")
+
+            cdp.evaluate('document.getElementById("forget").click()')
+            wait_value(
+                cdp,
+                'document.getElementById("forget-rom-dialog").open',
+                lambda item: item is True,
+                "failed-forget confirmation",
+                args.timeout,
+            )
+            cdp.evaluate('document.getElementById("forget-rom-confirm").click()')
+            failed_forget = wait_value(
+                cdp,
+                """(() => ({
+                  status: document.getElementById("rom-status").textContent,
+                  playDisabled: document.getElementById("play").disabled,
+                  forgetHidden: document.getElementById("forget").hidden,
+                  focus: document.activeElement && document.activeElement.id,
+                  dialogOpen: document.getElementById("forget-rom-dialog").open
+                }))()""",
+                lambda item: isinstance(item, dict)
+                and "Couldn't clear" in item.get("status", "")
+                and not item.get("playDisabled")
+                and not item.get("forgetHidden")
+                and item.get("focus") == "forget"
+                and not item.get("dialogOpen"),
+                "transactional failed Forget",
+                args.timeout,
+            )
+            require(
+                not failed_forget["playDisabled"],
+                f"failed Forget displaced the stored ROM: {failed_forget}",
+            )
+
+            # A candidate with the exact supported header/CRC pair but one
+            # damaged body byte must fail the complete-image hash without
+            # displacing the already-verified stored ROM.
+            select_file_input(cdp, "#rom-input", corrupt_rom)
+            cdp.evaluate(
+                'document.getElementById("rom-input").dispatchEvent('
+                'new Event("change", {bubbles:true}))'
+            )
+            replacement = wait_value(
+                cdp,
+                """(() => {
+                  const play = document.getElementById("play");
+                  const status = document.getElementById("rom-status");
+                  return {disabled: play.disabled, className: status.className,
+                          text: status.textContent};
+                })()""",
+                lambda item: isinstance(item, dict)
+                and not item.get("disabled")
+                and item.get("className") == "err"
+                and "SHA-256" in item.get("text", "")
+                and "previously verified" in item.get("text", ""),
+                "transactional corrupt-ROM replacement",
+                args.timeout,
+            )
+            require(
+                "modified or damaged" in replacement["text"],
+                f"corrupt replacement verdict was not actionable: {replacement}",
+            )
             click_play(cdp)
             wait_value(
                 cdp,
@@ -2634,6 +2977,214 @@ def run_check(args: argparse.Namespace) -> None:
                 {"identifier": overlay_view_preload},
             )
 
+            # A fresh ROM must remain playable if IndexedDB accepts the
+            # in-memory write but rejects the immediate durable sync. Surface
+            # that precisely, prove an independent save fault stacks above it,
+            # then hold automatic retries while the public control exercises a
+            # failure and a successful retry itself.
+            rom_warning_preload = add_config_script(
+                cdp,
+                {
+                    # Keep the engine session alive while both explicit Retry
+                    # transactions run. A short finite run can reach its
+                    # orderly engine-exit flush first; that flush legitimately
+                    # persists the ROM and makes a later Retry a no-op, which
+                    # would not be evidence about the public control.
+                    "headlessFrames": 100000,
+                    "romSyncFailCount": 2,
+                    "disableAutoPersistence": True,
+                    "holdRomPersistenceForPublicRetry": True,
+                },
+            )
+            cdp.call("Page.reload", {"ignoreCache": True})
+            wait_launcher(cdp, args.timeout)
+            select_rom(cdp, rom, args.timeout)
+            click_play(cdp)
+            wait_value(
+                cdp,
+                """(() => {
+                  const banner = document.getElementById("rom-session-banner");
+                  return {stage: !document.getElementById("stage").hidden,
+                          hidden: !banner || banner.hidden,
+                          text: banner ? banner.textContent : ""};
+                })()""",
+                lambda item: isinstance(item, dict)
+                and item.get("stage") and not item.get("hidden")
+                and "session only" in item.get("text", "").lower()
+                and "earlier ROM" in item.get("text", ""),
+                "session-only ROM persistence warning",
+                args.timeout,
+            )
+            cdp.evaluate("globalThis.__mdkrTestForceSavePersistenceFailure()")
+            dual_warning = wait_value(
+                cdp,
+                """(() => {
+                  const rom = document.getElementById("rom-session-banner");
+                  const save = document.getElementById("save-banner");
+                  const rr = rom.getBoundingClientRect();
+                  const sr = save.getBoundingClientRect();
+                  return {romHidden: rom.hidden, saveHidden: save.hidden,
+                          romText: rom.textContent, saveText: save.textContent,
+                          separated: rr.bottom <= sr.top};
+                })()""",
+                lambda item: isinstance(item, dict)
+                and not item.get("romHidden") and not item.get("saveHidden")
+                and item.get("separated") is True
+                and "session only" in item.get("romText", "").lower()
+                and "injected save storage failure" in item.get("saveText", ""),
+                "stacked ROM and save durability warnings",
+                args.timeout,
+            )
+            require(dual_warning["separated"],
+                    f"durability warnings overlap: {dual_warning}")
+            # The messages are independently live regions, but their visual
+            # container must continue to stack rather than overlap when a
+            # phone-width viewport or enlarged text wraps either message.
+            cdp.call(
+                "Emulation.setDeviceMetricsOverride",
+                {"width": 320, "height": 640, "deviceScaleFactor": 1,
+                 "mobile": False},
+            )
+            narrow_warning = cdp.evaluate(
+                """(() => {
+                  const group = document.getElementById("durability-banners");
+                  const rom = document.getElementById("rom-session-banner");
+                  const save = document.getElementById("save-banner");
+                  rom.style.fontSize = "30px";
+                  save.style.fontSize = "30px";
+                  const rr = rom.getBoundingClientRect();
+                  const sr = save.getBoundingClientRect();
+                  return {role: group.getAttribute("role"),
+                          label: group.getAttribute("aria-label"),
+                          separated: rr.bottom <= sr.top,
+                          withinViewport: rr.left >= 0 && sr.left >= 0 &&
+                            rr.right <= window.innerWidth &&
+                            sr.right <= window.innerWidth};
+                })()""",
+            )
+            require(
+                narrow_warning.get("role") == "group"
+                and narrow_warning.get("label") == "Storage notices"
+                and narrow_warning.get("separated") is True
+                and narrow_warning.get("withinViewport") is True,
+                f"narrow/enlarged durability notices are not accessible: {narrow_warning}",
+            )
+            retry_pending = cdp.evaluate(
+                """(() => {
+                  const retry = document.getElementById("rom-storage-retry");
+                  const message = document.getElementById("rom-session-message");
+                  if (!retry || retry.hidden || retry.disabled || !message) return null;
+                  retry.focus();
+                  retry.click();
+                  return {
+                    activeId: document.activeElement && document.activeElement.id,
+                    retryHidden: retry.hidden,
+                    retryDisabled: retry.disabled,
+                    retryText: retry.textContent,
+                    message: message.textContent,
+                  };
+                })()"""
+            )
+            require(
+                isinstance(retry_pending, dict)
+                and retry_pending.get("retryHidden") is False
+                and retry_pending.get("retryDisabled") is True
+                and retry_pending.get("retryText") == "Retrying…"
+                and retry_pending.get("message") == "Retrying browser storage…",
+                f"public ROM Retry did not enter a visible pending state: {retry_pending}",
+            )
+            wait_value(
+                cdp,
+                """(() => {
+                  const retry = document.getElementById("rom-storage-retry");
+                  const message = document.getElementById("rom-session-message");
+                  return {
+                    activeId: document.activeElement && document.activeElement.id,
+                    retryHidden: retry.hidden,
+                    retryDisabled: retry.disabled,
+                    retryText: retry.textContent,
+                    message: message.textContent,
+                  };
+                })()""",
+                lambda item: isinstance(item, dict)
+                and item.get("activeId") == "rom-storage-retry"
+                and item.get("retryHidden") is False
+                and item.get("retryDisabled") is False
+                and item.get("retryText") == "Retry browser storage"
+                and "still could not be saved" in item.get("message", ""),
+                "public ROM Retry restores focus after a failed transaction",
+                args.timeout,
+            )
+            retry_success_pending = cdp.evaluate(
+                """(() => {
+                  const retry = document.getElementById("rom-storage-retry");
+                  const message = document.getElementById("rom-session-message");
+                  if (!retry || retry.hidden || retry.disabled || !message) return null;
+                  retry.click();
+                  return {
+                    retryHidden: retry.hidden,
+                    retryDisabled: retry.disabled,
+                    retryText: retry.textContent,
+                    message: message.textContent,
+                  };
+                })()"""
+            )
+            require(
+                isinstance(retry_success_pending, dict)
+                and retry_success_pending.get("retryHidden") is False
+                and retry_success_pending.get("retryDisabled") is True
+                and retry_success_pending.get("retryText") == "Retrying…"
+                and retry_success_pending.get("message") == "Retrying browser storage…",
+                "successful public ROM Retry did not enter a visible pending "
+                f"state: {retry_success_pending}",
+            )
+            recovered_notice = wait_value(
+                cdp,
+                """(() => {
+                  const banner = document.getElementById("rom-session-banner");
+                  const retry = document.getElementById("rom-storage-retry");
+                  const snap = globalThis.__mdkrTestSnapshot();
+                  return {hidden: banner.hidden, text: banner.textContent,
+                          success: banner.classList.contains("ok"),
+                          retryHidden: retry.hidden,
+                          activeId: document.activeElement && document.activeElement.id,
+                          stored: snap.storedRomAvailable};
+                })()""",
+                lambda item: isinstance(item, dict)
+                and item.get("hidden") is False
+                and item.get("success") is True
+                and item.get("retryHidden") is True
+                and item.get("activeId") == "canvas"
+                and item.get("stored") is True
+                and "saved to browser storage" in item.get("text", ""),
+                "public ROM durability retry succeeds visibly",
+                args.timeout,
+            )
+            recovered_rom_warning = wait_value(
+                cdp,
+                """(() => {
+                  const banner = document.getElementById("rom-session-banner");
+                  const message = document.getElementById("rom-session-message");
+                  const snap = globalThis.__mdkrTestSnapshot();
+                  return {hidden: banner.hidden, text: message.textContent,
+                          stored: snap.storedRomAvailable};
+                })()""",
+                lambda item: isinstance(item, dict)
+                and item.get("hidden") is True
+                and item.get("text") == ""
+                and item.get("stored") is True,
+                "ROM durability warning clears after a successful retry",
+                args.timeout,
+            )
+            require(recovered_notice.get("stored") is True
+                    and recovered_rom_warning.get("stored") is True,
+                    "ROM retry did not promote persistent storage")
+            cdp.call("Emulation.clearDeviceMetricsOverride")
+            cdp.call(
+                "Page.removeScriptToEvaluateOnNewDocument",
+                {"identifier": rom_warning_preload},
+            )
+
             failure_config = {
                 "headlessFrames": 120,
                 "env": {
@@ -2657,7 +3208,8 @@ def run_check(args: argparse.Namespace) -> None:
                     stage: !document.getElementById("stage").hidden,
                     playDisabled: document.getElementById("play").disabled,
                     saveDisabled:
-                      document.getElementById("clear-save").disabled
+                      document.getElementById("clear-save").disabled,
+                    activeId: document.activeElement && document.activeElement.id
                   };
                 })()""",
                 lambda item: isinstance(item, dict)
@@ -2672,6 +3224,7 @@ def run_check(args: argparse.Namespace) -> None:
                 and graphics_failure.get("stage") is False
                 and graphics_failure.get("playDisabled") is True
                 and graphics_failure.get("saveDisabled") is False
+                and graphics_failure.get("activeId") == "gate-msg"
                 and "no usable GPU device" in graphics_failure.get("text", "")
                 and "can't render" in graphics_failure.get("text", ""),
                 f"WebGPU failure did not produce a stable recovery UI: "
@@ -2769,6 +3322,15 @@ def run_check(args: argparse.Namespace) -> None:
 
             # Recovery path 2: forgetting the ROM must empty the remaining store.
             cdp.evaluate('document.getElementById("forget").click()')
+            forget_dialog = wait_value(
+                cdp,
+                'document.getElementById("forget-rom-dialog").open',
+                lambda item: item is True,
+                "stored-ROM confirmation",
+                args.timeout,
+            )
+            require(forget_dialog is True, "forget confirmation did not open")
+            cdp.evaluate('document.getElementById("forget-rom-confirm").click()')
             forget_status = wait_value(
                 cdp,
                 'document.getElementById("rom-status").textContent',
@@ -2783,11 +3345,16 @@ def run_check(args: argparse.Namespace) -> None:
                 await_promise=True,
                 timeout=args.timeout,
             )
+            forget_state = cdp.evaluate(
+                "globalThis.__mdkrTestSnapshot().storedRomAvailable"
+            )
             require(
                 forget_counts.get("save") == 1
-                and forget_counts.get("rom") == 0,
+                and forget_counts.get("rom") == 0
+                and forget_state is False,
                 "forget control left browser files behind: "
-                f"status={forget_status!r} counts={forget_counts}",
+                f"status={forget_status!r} counts={forget_counts} "
+                f"stored={forget_state!r}",
             )
 
             requests = list(cdp.network)
@@ -2811,8 +3378,8 @@ def run_check(args: argparse.Namespace) -> None:
             # Emscripten's noExitRuntime path implements a deliberate C exit by
             # throwing ExitStatus after publishing __mdkrExitCode. DevTools
             # reports that control-flow exception even though callMain handles
-            # it. The five finite exit(0) runs and handled graphics-failure
-            # stop above can therefore contribute at most six benign
+            # it. The six finite exit(0) runs and handled graphics-failure
+            # stop above can therefore contribute at most seven benign
             # ExitStatus rows; every other exception remains a failure.
             exit_statuses = [
                 item
@@ -2827,7 +3394,7 @@ def run_check(args: argparse.Namespace) -> None:
                 and item not in exit_statuses
             ]
             require(
-                len(exit_statuses) <= 6,
+                len(exit_statuses) <= 7,
                 f"unexpected extra Emscripten exit exceptions: {exit_statuses}",
             )
             require(

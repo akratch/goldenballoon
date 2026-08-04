@@ -1,0 +1,15 @@
+# DKR: TITLE -> Tracks -> race setup -> back toward Track Select.
+#
+# This is the front half of nav_to_time_trial_race.txt with a B press on the
+# vehicle page. It exercises the reverse wooden-frame transition: the live
+# course may fill widescreen while the setup page is unframed, but must return
+# to the safe aperture before the frame reappears.
+1249 START 4
+1329 START 4
+1449 A 4
+1539 A 4
+1749 A 4
+1899 DOWN 4
+1999 A 4
+2149 A 4
+2319 B 4

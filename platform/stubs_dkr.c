@@ -2,7 +2,7 @@
  * stubs_dkr.c — libultra (OS/scheduler/VI/PI/controller/audio-io) replacement
  * for the mdkr64 native port.
  *
- * DKR keeps its full <PR/*.h> SDK headers (they DECLARE the API); this file
+ * DKR keeps its full PR SDK headers (they DECLARE the API); this file
  * DEFINES it against the single-threaded cooperative model from PLAN.md:
  *   - threads are no-ops; the "threads" collapse into main_pc.c's call chain,
  *   - message queues are ring buffers,
@@ -25,12 +25,12 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include "user_paths.h"
+#include "fs_utf8.h"
+#include "audio.h"
 #ifndef __EMSCRIPTEN__
 #ifdef _WIN32
-#include <direct.h>    /* _mkdir  (Win32 has no mode argument) */
 #include <io.h>        /* _commit, _fileno */
 #include <malloc.h>    /* _aligned_malloc / _aligned_free */
-#include <windows.h>   /* MoveFileExA */
 #else
 #include <fcntl.h>
 #include <unistd.h>
@@ -54,7 +54,7 @@ static int dkr_host_errno(void) {
  *  the mapping is stated once here instead of at each of the three call sites.
  *
  *    fsync(fileno(f))  ->  _commit(_fileno(f))            same guarantee
- *    rename(a, b)      ->  MoveFileExA(MOVEFILE_REPLACE_EXISTING |
+ *    rename(a, b)      ->  MoveFileExW(MOVEFILE_REPLACE_EXISTING |
  *                                      MOVEFILE_WRITE_THROUGH)
  *        NOT rename(): the Windows CRT's rename() FAILS when the destination
  *        already exists, so a plain rename would leave every save after the
@@ -63,9 +63,10 @@ static int dkr_host_errno(void) {
  *    fsync(dirfd)      ->  no-op. Win32 cannot open a directory as a file
  *        descriptor, and MOVEFILE_WRITE_THROUGH already gives the ordering
  *        the directory flush exists to provide.
- *    mkdir(p, 0700)    ->  _mkdir(p). Win32 directories inherit their ACL from
- *        the parent; there is no mode argument. The save directory lives under
- *        the user's own profile, so the inherited ACL is already user-private.
+ *    mkdir(p, 0700)    ->  _wmkdir(p) through the UTF-8 boundary. Win32
+ *        directories inherit their ACL from the parent; there is no mode
+ *        argument. The save directory lives under the user's own profile, so
+ *        the inherited ACL is already user-private.
  *
  *  All three return 0 on success and non-zero on failure, like their POSIX
  *  models, so the call sites read identically on every platform.
@@ -81,8 +82,9 @@ static int dkr_fs_sync_file(FILE *file) {
 #endif
 }
 
+#ifndef __EMSCRIPTEN__
 static int dkr_fs_sync_dir(const char *path) {
-#if defined(__EMSCRIPTEN__) || defined(_WIN32)
+#if defined(_WIN32)
     (void) path;
     return 0;
 #else
@@ -97,21 +99,15 @@ static int dkr_fs_sync_dir(const char *path) {
     return failed;
 #endif
 }
+#endif
 
 static int dkr_fs_replace(const char *from, const char *to) {
-#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
-    return MoveFileExA(from, to,
-                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
-               ? 0
-               : -1;
-#else
-    return rename(from, to);
-#endif
+    return mdkr_move_utf8(from, to, 1, 1);
 }
 
 static int dkr_fs_mkdir_private(const char *path) {
 #if defined(_WIN32) && !defined(__EMSCRIPTEN__)
-    return _mkdir(path);
+    return mdkr_mkdir_utf8(path);
 #else
     return mkdir(path, 0700);
 #endif
@@ -149,6 +145,7 @@ EM_ASYNC_JS(int, mdkr_persist_save_async, (int kind), {
 #endif
 
 #include "platform_os.h"
+#include "tick_dispatch_gate.h"
 #include "pacing_policy.h"
 #include "present_sched.h"
 #include "presentation_snapshot.h"
@@ -159,6 +156,51 @@ EM_ASYNC_JS(int, mdkr_persist_save_async, (int kind), {
 #include "gfx_ptr.h"     /* gfx_ptr_store — register non-arena DL pointers */
 #include "fast3d/gfx_shadow_frame.h"
 #include "fast3d/gfx_pc_dkr.h"
+#include "rcp_dkr.h"
+
+#ifndef __EMSCRIPTEN__
+static void overlay_audio_trace_groups(const char *phase, s32 prior) {
+    if (getenv("MDKR_AUDIO_RMS") != NULL) {
+        printf("[overlay-audio] %s sample=%llu prior=%d authored=%d "
+               "overlay=%d authored-groups=%u,%u,%u,%u "
+               "effective-groups=%u,%u,%u,%u\n",
+               phase, dkr_audio_output_frame_count(), (int)prior,
+               (int)sound_volume_behaviour(), sound_overlay_pause_active(),
+               (unsigned)sndp_get_group_volume(0),
+               (unsigned)sndp_get_group_volume(1),
+               (unsigned)sndp_get_group_volume(2),
+               (unsigned)sndp_get_group_volume(4),
+               (unsigned)sndp_get_effective_group_volume(0),
+               (unsigned)sndp_get_effective_group_volume(1),
+               (unsigned)sndp_get_effective_group_volume(2),
+               (unsigned)sndp_get_effective_group_volume(4));
+    }
+}
+
+void mdkr64_engine_overlay_audio_pause(void) {
+    const s32 prior = sound_volume_behaviour();
+    const char *pending = getenv("MDKR_TEST_OVERLAY_AUDIO_PENDING_MODE");
+
+    sound_overlay_pause_set(TRUE);
+    /* Test-only adversarial seam: model authored zero-rate menu work changing
+     * its desired mode after the independent overlay layer is already active. */
+    if (pending != NULL && pending[0] != '\0') {
+        char *end = NULL;
+        long mode = strtol(pending, &end, 10);
+        if (end != pending && *end == '\0' &&
+            mode >= VOLUME_NORMAL && mode <= VOLUME_UNK03) {
+            sound_volume_change((s32)mode);
+        }
+    }
+    overlay_audio_trace_groups("paused", prior);
+}
+
+void mdkr64_engine_overlay_audio_resume(void) {
+    const s32 authored = sound_volume_behaviour();
+    sound_overlay_pause_set(FALSE);
+    overlay_audio_trace_groups("resumed", authored);
+}
+#endif
 #include "address_domains.h"
 #include "save_codec.h"
 #include "virtual_pak.h"
@@ -651,6 +693,17 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                     const uint64_t perf_snapshot = present_perf_now();
                     presentation_snapshot_capture(
                         (uint64_t)g_simTickCounter);
+                    if (present_sched_replay_armed()) {
+                        const Gfx *future_begin = NULL;
+                        const Gfx *future_end = NULL;
+                        u64 future_tick = 0u;
+                        if (presentation_task_peek_authored(
+                                &future_begin, &future_end, &future_tick)) {
+                            (void)gfx_dkr_capture_future_deformations(
+                                future_begin, future_end,
+                                (uint64_t)future_tick);
+                        }
+                    }
                     present_perf_add(PRESENT_PERF_SNAPSHOT, perf_snapshot);
                 }
                 /* Purity-gate parity: one advance per authoritative tick,
@@ -660,12 +713,9 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
             }
             /*
              * The real walk is already the exact alpha-zero image for its
-             * authored task. Expose that completed image directly: replaying
-             * it here would happen after the game has built the next list, so
-             * any dependency not explicitly retained could have changed even
-             * though the command stream itself is still valid. Production
-             * holds the endpoint below; midpoint walks exist only under the
-             * explicit internal replay seam.
+             * authored task, so expose that completed image directly. Midpoint
+             * replay uses an immutable retained task after the game builds the
+             * next list; it never reads that mutable list/arena in place.
              *
              * MDKR_TEST_DELAYED_ENDPOINT_REPLAY plus the versioned internal
              * token restores the old redraw only as a negative control.
@@ -720,9 +770,9 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                  * burn wall
                  * time one present-quantum at a time
                  * until the next authoritative tick is due, and while it is
-                 * not, hold the completed authored surface image. Production
-                 * 1.0.1 never redraws here. Explicit internal replay seams can
-                 * exercise an interpolated walk of the same display list.
+                 * not, either replay the immutable task at the exact rational
+                 * alpha or hold the completed authored surface image when
+                 * smoothing is off.
                  *
                  * Pacing after the tick endpoint keeps the internal diagnostic
                  * alpha monotonic (0, then 1/2, then the next tick's 0) without
@@ -789,9 +839,8 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                             present_sched_note_stale();
                         }
                     } else {
-                        /* Production, smoothing-off, or a stale list: retain
-                         * the front/surface image without walking memory the
-                         * game may be overwriting. */
+                        /* Smoothing-off or a stale list: retain the front image
+                         * without attempting a replay. */
                         present_sched_note_stale();
                     }
                     /*
@@ -822,46 +871,50 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                 trace_fields = (unsigned)(
                     wall_total_units / UINT64_C(1000000000));
             }
-            if (oracle_variable_ticket) {
-                platform_input_commit_tick((uint64_t)g_simTickCounter + 1u);
-            } else if (present_sched_take_tick()) {
-                platform_input_commit_tick(present_sched_issued_ticks());
-            } else if (!platform_exit_requested()) {
-                fprintf(stderr,
-                        "[scheduler] host boundary produced no fixed-step "
-                        "ticket; stopping before an unscheduled game pass\n");
-                platform_request_exit(EXIT_FAILURE);
-            }
-            /* fb_update consumes one authored ticket. Late time remains
-             * in the driver's bounded debt queue and becomes another game
-             * pass, never one updateRate=4/6 mega-step. The compensation-off
-             * diagnostic retains its deliberate one-field lie. */
-            /*
-             * The tick index advances only after every present belonging to
-             * this tick. Scripted input uses that index, while live host edges
-             * are captured per opportunity and committed above only once per
-             * issued ticket. Catch-up service and extra presents cannot consume
-             * input themselves.
-             */
+            /* osRecvMesg is reached after fb_update has completed the current
+             * authoritative pass. Account for that pass before deciding
+             * whether process exit may suppress the *next* ticket. */
             g_simTickCounter++;
             platform_headless_tick_complete(g_simTickCounter);
             present_sched_trace_entry(trace_fields, ticks_due,
                                       g_frameCounter);
-            /* Credit exactly this completed ticket, then service at most one
-             * independently due audio quantum AFTER the ordered game tick that
-             * queued its music/SFX events. Presentation rate cannot change PCM
-             * timing. Grouped lateness leaves one quantum per catch-up game
-             * pass, and a host suspension rebase is consumed exactly once by
-             * the first ticket produced after it. */
+            /* Credit and service this completed pass even when its headless
+             * completion requested exit. The next-ticket gate below is the
+             * first point at which shutdown can stop work. */
             dkr_audio_advance_fields(
                 oracle_variable_ticket
                     ? (unsigned)oracle_update_fields
                     : present_sched_tick_fields(),
                 s_audioRebasePending);
             s_audioRebasePending = false;
-            if (!platform_exit_requested()) {
-                dkr_audio_service_tick();
+            dkr_audio_service_tick();
+
+            const bool exit_requested = platform_exit_requested();
+            bool ticket_issued = false;
+            if (!exit_requested && oracle_variable_ticket) {
+                platform_input_commit_tick((uint64_t)g_simTickCounter + 1u);
+                ticket_issued = true;
+            } else if (!exit_requested && present_sched_take_tick()) {
+                platform_input_commit_tick(present_sched_issued_ticks());
+                ticket_issued = true;
             }
+            if (!mdkr_next_tick_dispatch_allowed(exit_requested,
+                                                 ticket_issued)) {
+                if (!exit_requested) {
+                    fprintf(stderr,
+                            "[scheduler] host boundary produced no fixed-step "
+                            "ticket; stopping before an unscheduled game pass\n");
+                    platform_request_exit(EXIT_FAILURE);
+                }
+                /* The just-completed pass was already accounted for above.
+                 * There is no next ticket to publish. */
+                present_perf_add(PRESENT_PERF_TICKWALL, perf_entry);
+                return -1;
+            }
+            /* fb_update consumes one authored ticket. Late time remains in
+             * the driver's bounded debt queue and becomes another game pass,
+             * never one updateRate=4/6 mega-step. The accounting above is for
+             * the pass that already consumed the previous ticket. */
             /* Exactly one compatibility notification per fixed ticket. The
              * measured bootstrap logical-delta phase lives in video.c and
              * cannot drain a second simulation ticket. */
@@ -967,9 +1020,9 @@ s32 osPiRawStartDma(s32 dir, u32 devAddr, void *dramAddr, u32 size) {
     return readStatus;
 }
 u32 osPiGetStatus(void)                 { return 0; }
-s32 osPiRawReadIo(u32 a, u32 *d)        { if (d) *d = 0; return 0; }
+s32 osPiRawReadIo(u32 a, u32 *d)        { (void)a; if (d) *d = 0; return 0; }
 s32 osPiRawWriteIo(u32 a, u32 d)        { (void)a; (void)d; return 0; }
-s32 osPiReadIo(u32 a, u32 *d)           { if (d) *d = 0; return 0; }
+s32 osPiReadIo(u32 a, u32 *d)           { (void)a; if (d) *d = 0; return 0; }
 
 /* ======================================================================== *
  *  Timer / counter — host monotonic clock scaled to the N64 COUNTER rate
@@ -1023,26 +1076,31 @@ static u64 host_ns(void) {
  * +16.7 ms: the dance ran backwards through its cycle every 4.7 frames, about 8x
  * too fast, measured against 36-38 frames on the real ROM (tools/anim_period.py).
  *
- * The nudge below costs one tick (21 ns) per extra call in a frame and restores
- * the invariant the game was written against. The comparison is done on the SIGNED
- * difference so a genuine 2^32 wrap (every 91.6 s) still reads as elapsed time and
- * is not mistaken for a repeat -- naively forcing `now > last` would freeze the
- * counter for 91 s at every wrap.
+ * The guard below costs one tick (21 ns) per extra call in a frame and restores
+ * the invariant the game was written against. Its first sample is accepted
+ * unconditionally: host uptime gives that sample an arbitrary 32-bit phase, so
+ * comparing it with an invented zero predecessor would reject the upper half of
+ * all valid starts and make the clock crawl from 1 until the next wrap. Later
+ * comparisons use the SIGNED difference so a genuine 2^32 wrap (every 91.6 s)
+ * still reads as elapsed time and is not mistaken for a repeat -- naively forcing
+ * `now > last` would freeze the counter for 91 s at every wrap.
  */
 u32 osGetCount(void) {
-    static u32 s_lastCount = 0;
+    static MdkrCounterGuard s_counterGuard;
+    const int synthetic = platform_pace_is_synthetic();
     u32 now;
 
-    if (platform_pace_is_synthetic()) {
+    if (synthetic) {
         now = (u32)(platform_sim_field_count() * DKR_COUNTER_TICKS_PER_FIELD);
+        if (!s_counterGuard.initialized) {
+            /* Preserve the historical first synthetic 0 -> 1 nudge. Realtime
+             * has an arbitrary starting phase and must accept its first sample. */
+            s_counterGuard.initialized = 1;
+        }
     } else {
         now = (u32)((host_ns() * 46875ULL) / 1000000ULL);
     }
-    if ((s32)(now - s_lastCount) <= 0) {
-        now = s_lastCount + 1;
-    }
-    s_lastCount = now;
-    return now;
+    return mdkr_counter_guard_commit(&s_counterGuard, now);
 }
 static u64 s_timeBase = 0;
 void osSetTime(u64 t) { s_timeBase = host_ns() - t; }
@@ -1247,10 +1305,24 @@ static int eeprom_init_paths(void) {
 }
 
 static int eeprom_ensure_directory(void) {
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+    int exists = 0;
+    int is_directory = 0;
+#else
     struct stat status;
+#endif
     if (!eeprom_init_paths()) {
         return 0;
     }
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+    mdkr_path_query_utf8(s_eepromDir, &exists, NULL, &is_directory);
+    if (exists) {
+        if (is_directory) return 1;
+        fprintf(stderr, "[SAVE] %s exists but is not a directory\n",
+                s_eepromDir);
+        return 0;
+    }
+#else
     if (stat(s_eepromDir, &status) == 0) {
         if (S_ISDIR(status.st_mode)) {
             return 1;
@@ -1259,7 +1331,14 @@ static int eeprom_ensure_directory(void) {
                 s_eepromDir);
         return 0;
     }
-    if (dkr_host_errno() != ENOENT || dkr_fs_mkdir_private(s_eepromDir) != 0) {
+    if (dkr_host_errno() != ENOENT) {
+        fprintf(stderr, "[SAVE] could not create %s: %s\n", s_eepromDir,
+                strerror(dkr_host_errno()));
+        return 0;
+    }
+#endif
+    if (dkr_fs_mkdir_private(s_eepromDir) != 0 &&
+        dkr_host_errno() != EEXIST) {
         fprintf(stderr, "[SAVE] could not create %s: %s\n", s_eepromDir,
                 strerror(dkr_host_errno()));
         return 0;
@@ -1292,7 +1371,7 @@ static int eeprom_read_exact(const char *path,
     if (path == NULL || image == NULL) {
         return 0;
     }
-    file = fopen(path, "rb");
+    file = mdkr_fopen_utf8(path, "rb");
     if (file == NULL) {
         return 0;
     }
@@ -1312,7 +1391,7 @@ static int eeprom_write_exact(const char *temporary_path,
     size_t wrote;
     int failed = 0;
 
-    file = fopen(temporary_path, "wb");
+    file = mdkr_fopen_utf8(temporary_path, "wb");
     if (file == NULL) {
         return 0;
     }
@@ -1330,7 +1409,7 @@ static int eeprom_write_exact(const char *temporary_path,
         failed = 1;
     }
     if (failed) {
-        (void) remove(temporary_path);
+        (void)mdkr_remove_utf8(temporary_path);
         return 0;
     }
     return 1;
@@ -1400,7 +1479,7 @@ static void eeprom_rotate_snapshots(void) {
          * There is no corresponding safe generation. Remove a stale/corrupt
          * tail rather than advertising it as a recovery point.
          */
-        (void) remove(s_eepromSnapshotPath[destination]);
+        (void)mdkr_remove_utf8(s_eepromSnapshotPath[destination]);
     }
 }
 
@@ -1417,7 +1496,7 @@ static int eeprom_store_image_internal(
     if (image == NULL || !eeprom_ensure_directory()) {
         return 0;
     }
-    file = fopen(s_eepromTmpPath, "wb");
+    file = mdkr_fopen_utf8(s_eepromTmpPath, "wb");
     if (file == NULL) {
         fprintf(stderr, "[SAVE] could not open %s: %s\n", s_eepromTmpPath,
                 strerror(dkr_host_errno()));
@@ -1446,7 +1525,7 @@ static int eeprom_store_image_internal(
 #endif
     if (failed) {
         int saved_errno = dkr_host_errno();
-        (void) remove(s_eepromTmpPath);
+        (void)mdkr_remove_utf8(s_eepromTmpPath);
         fprintf(stderr, "[SAVE] durable write of %s failed: %s\n",
                 s_eepromPath, strerror(saved_errno));
         return 0;
@@ -1493,7 +1572,7 @@ static void eeprom_quarantine(const u8 *bytes, size_t n) {
     if (bytes == NULL || !eeprom_ensure_directory()) {
         return;
     }
-    f = fopen(s_eepromBadPath, "wb");
+    f = mdkr_fopen_utf8(s_eepromBadPath, "wb");
     if (f == NULL) {
         return;
     }
@@ -1656,7 +1735,7 @@ static void eeprom_load(void) {
     if (!eeprom_init_paths()) {
         return;
     }
-    f = fopen(s_eepromPath, "rb");
+    f = mdkr_fopen_utf8(s_eepromPath, "rb");
     if (f == NULL) {
         return;   /* no save yet — a blank EEPROM is exactly a fresh cart */
     }
@@ -1821,7 +1900,7 @@ static int virtual_pak_store(int channel, const MdkrVirtualPak *pak) {
         mdkr_virtual_pak_encode(pak, image, sizeof(image)) != MDKR_VPAK_OK) {
         return 0;
     }
-    file = fopen(s_virtualPakTmpPath[channel], "wb");
+    file = mdkr_fopen_utf8(s_virtualPakTmpPath[channel], "wb");
     if (file == NULL) {
         fprintf(stderr, "[PFS] could not open %s: %s\n",
                 s_virtualPakTmpPath[channel], strerror(dkr_host_errno()));
@@ -1849,7 +1928,7 @@ static int virtual_pak_store(int channel, const MdkrVirtualPak *pak) {
 #endif
     if (failed) {
         int saved_errno = dkr_host_errno();
-        (void)remove(s_virtualPakTmpPath[channel]);
+        (void)mdkr_remove_utf8(s_virtualPakTmpPath[channel]);
         fprintf(stderr, "[PFS] durable write of %s failed: %s\n",
                 s_virtualPakPath[channel], strerror(saved_errno));
         return 0;
@@ -1874,7 +1953,11 @@ static int virtual_pak_store(int channel, const MdkrVirtualPak *pak) {
 
 static void virtual_pak_quarantine(int channel) {
     char bad_path[1200];
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+    int exists;
+#else
     struct stat status;
+#endif
     int suffix;
     for (suffix = 1; suffix <= 99; suffix++) {
         if (snprintf(
@@ -1882,8 +1965,14 @@ static void virtual_pak_quarantine(int channel) {
                 s_virtualPakPath[channel], suffix) < 0) {
             return;
         }
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+        exists = 0;
+        mdkr_path_query_utf8(bad_path, &exists, NULL, NULL);
+        if (!exists) {
+#else
         if (stat(bad_path, &status) != 0 && dkr_host_errno() == ENOENT) {
-            if (rename(s_virtualPakPath[channel], bad_path) == 0) {
+#endif
+            if (mdkr_move_utf8(s_virtualPakPath[channel], bad_path, 0, 1) == 0) {
                 fprintf(stderr, "[PFS] quarantined corrupt pack as %s\n",
                         bad_path);
 #ifdef __EMSCRIPTEN__
@@ -1910,7 +1999,7 @@ static int virtual_pak_load(int channel) {
     if (s_virtualPakState[channel] > 0) return 0;
     if (s_virtualPakState[channel] < 0) return PFS_ERR_BAD_DATA;
     if (!virtual_pak_paths(channel)) return PFS_ERR_DEVICE;
-    file = fopen(s_virtualPakPath[channel], "rb");
+    file = mdkr_fopen_utf8(s_virtualPakPath[channel], "rb");
     if (file == NULL) {
         if (dkr_host_errno() == ENOENT) {
             mdkr_virtual_pak_init(&s_virtualPaks[channel]);

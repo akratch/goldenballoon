@@ -17,6 +17,8 @@
 #ifdef NATIVE_PORT
 #include "asset_swap.h"
 #include "mdkr_trace.h"
+#include "taj_mod.h"
+#include "taj_physics.h"
 #include <stdlib.h>
 #endif
 #include "PRinternal/viint.h"
@@ -31,6 +33,7 @@
 
 #ifdef NATIVE_PORT
 #define hud_rand_range cadence_compat_rand_range
+static s32 sTajMinimapIdentityTraced;
 #else
 #define hud_rand_range rand_range
 #endif
@@ -761,6 +764,71 @@ u8 race_starting(void) {
     return gHudRaceStart;
 }
 
+#ifdef NATIVE_PORT
+static void hud_render_taj_identity(const Object_Racer *racer) {
+    s32 x = SCREEN_WIDTH_HALF;
+    s32 y = 9;
+
+    if (!taj_physics_is_taj(racer)) {
+        return;
+    }
+    if (gHUDNumPlayers == TWO_PLAYERS) {
+        y += gHudCurrentViewport * (SCREEN_HEIGHT / 2);
+    } else if (gHUDNumPlayers >= THREE_PLAYERS) {
+        x = (SCREEN_WIDTH / 4) + (gHudCurrentViewport & 1) * (SCREEN_WIDTH / 2);
+        y += (gHudCurrentViewport >> 1) * (SCREEN_HEIGHT / 2);
+    }
+    set_text_font(ASSET_FONTS_FUNFONT);
+    set_text_background_colour(0, 0, 0, 0);
+    set_text_colour(0, 0, 0, 255, 180);
+    draw_text(&gHudDL, x + 1, y + 1,
+              is_in_time_trial() ? "TAJ - NO RECORD" : "TAJ MAGIC",
+              ALIGN_MIDDLE_CENTER);
+    set_text_colour(255, 224, 96, 0, 235);
+    draw_text(&gHudDL, x, y,
+              is_in_time_trial() ? "TAJ - NO RECORD" : "TAJ MAGIC",
+              ALIGN_MIDDLE_CENTER);
+}
+
+/* Retail HUD portraits have no Taj frame. Keep donor identity out of challenge
+ * and two-player Adventure UI by drawing the same native portrait used by
+ * Rankings at the authored portrait anchor. This remains presentation-only. */
+static void hud_render_identity_portrait(HudElement *portrait, s32 character,
+                                         s32 isTaj, s32 playerIndex) {
+    static u32 tracedPlayers;
+    u32 playerBit;
+    DrawTexture *tajPortrait;
+
+    if (!isTaj) {
+        portrait->spriteID = character + HUD_SPRITE_PORTRAIT;
+        hud_element_render(&gHudDL, &gHudMtx, &gHudVtx, portrait);
+        return;
+    }
+    tajPortrait = menu_taj_portrait();
+    if (tajPortrait != NULL && tajPortrait[0].texture != NULL) {
+        texrect_draw(&gHudDL, tajPortrait,
+                     (s32)portrait->pos.x -
+                         ((s32)tajPortrait[0].texture->width / 2),
+                     (s32)portrait->pos.y -
+                         ((s32)tajPortrait[0].texture->height / 2),
+                     255, 255, 255, 255);
+    }
+    playerBit = taj_mod_player_bit(playerIndex);
+    if (playerBit != 0 && !(tracedPlayers & playerBit)) {
+        tracedPlayers |= playerBit;
+        MDKR_TRACE("taj_hud_portrait: player=%d identity=taj source=native-taj-card",
+                   playerIndex);
+    }
+}
+
+static void hud_render_racer_portrait(HudElement *portrait,
+                                      const Object_Racer *racer) {
+    hud_render_identity_portrait(portrait, racer->characterId,
+                                 taj_physics_is_taj(racer),
+                                 racer->playerIndex);
+}
+#endif
+
 /**
  * Root function for the HUD updating and rendering for individual players.
  * The player can toggle specific overrides and settings for displays based on their current game modes.
@@ -953,6 +1021,12 @@ void hud_render_player(Gfx **dList, Mtx **mtx, Vertex **vertexList, Object *obj,
                     }
                     cam_set_sprite_anim_mode(SPRITE_ANIM_NORMALIZED);
                 }
+#ifdef NATIVE_PORT
+                /* The virtual racer keeps donor-safe ROM portrait indices; a
+                 * small project-owned badge makes that boundary honest in every
+                 * HUD layout and labels OP Time Trial runs noncanonical. */
+                hud_render_taj_identity(racer);
+#endif
 #ifndef NATIVE_PORT
                 gMinimapFade = FALSE;
 #endif
@@ -1894,10 +1968,16 @@ void hud_eggs_portrait(Object_Racer *racer, UNUSED s32 updateRate) {
     s32 i2;
 
     prevY = gCurrentHud->entry[HUD_EGG_CHALLENGE_ICON].pos.x;
-    gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT].spriteID = racer->characterId + HUD_SPRITE_PORTRAIT;
     gHudPALScale = TRUE;
     if (gNumActivePlayers < 3 || (gNumActivePlayers == 3 && racer->playerIndex == PLAYER_COMPUTER)) {
+#ifdef NATIVE_PORT
+        hud_render_racer_portrait(
+            &gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT], racer);
+#else
+        gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT].spriteID =
+            racer->characterId + HUD_SPRITE_PORTRAIT;
         hud_element_render(&gHudDL, &gHudMtx, &gHudVtx, &gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT]);
+#endif
     }
     if (gCurrentHud->entry[HUD_EGG_CHALLENGE_ICON].challengeEggs.alphaTimer < 0) {
         alpha = (gCurrentHud->entry[HUD_EGG_CHALLENGE_ICON].challengeEggs.alphaTimer * 2) + 256;
@@ -2044,10 +2124,16 @@ void hud_battle_portraits(Object *racerObj, s32 updateRate) {
  * In 3/4 player, skips the portrait for all human players. Player 4 has a portrait if it's AI.
  */
 void hud_lives_render(Object_Racer *racer, UNUSED s32 updateRate) {
-    gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT].spriteID = racer->characterId + HUD_SPRITE_PORTRAIT;
     if (gNumActivePlayers < 3 || (gNumActivePlayers == 3 && racer->playerIndex == PLAYER_COMPUTER)) {
         gHudPALScale = TRUE;
+#ifdef NATIVE_PORT
+        hud_render_racer_portrait(
+            &gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT], racer);
+#else
+        gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT].spriteID =
+            racer->characterId + HUD_SPRITE_PORTRAIT;
         hud_element_render(&gHudDL, &gHudMtx, &gHudVtx, &gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT]);
+#endif
         gHudPALScale = FALSE;
         rdp_init(&gHudDL);
         rendermode_reset(&gHudDL);
@@ -2130,8 +2216,14 @@ void hud_main_hub(Object *obj, s32 updateRate) {
         hud_speedometre(obj, updateRate);
         if (is_in_two_player_adventure()) {
             portrait = (HudElement *) &gCurrentHud->entry[HUD_TWO_PLAYER_ADV_PORTRAIT];
+#ifdef NATIVE_PORT
+            hud_render_identity_portrait(
+                portrait, get_settings()->racers[1].character,
+                taj_mod_player_selected(1), PLAYER_TWO);
+#else
             portrait->spriteID = (get_settings()->racers[1].character + HUD_SPRITE_PORTRAIT);
             hud_element_render(&gHudDL, &gHudMtx, &gHudVtx, portrait);
+#endif
         }
         cam_set_sprite_anim_mode(SPRITE_ANIM_NORMALIZED);
     }
@@ -2779,9 +2871,15 @@ void hud_treasure(Object_Racer *racer) {
 
     prevY = gCurrentHud->entry[HUD_TREASURE_METRE].pos.y;
     if (gNumActivePlayers < 3 || (gNumActivePlayers == 3 && racer->playerIndex == PLAYER_COMPUTER)) {
-        gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT].spriteID = racer->characterId + HUD_SPRITE_PORTRAIT;
         gHudPALScale = TRUE;
+#ifdef NATIVE_PORT
+        hud_render_racer_portrait(
+            &gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT], racer);
+#else
+        gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT].spriteID =
+            racer->characterId + HUD_SPRITE_PORTRAIT;
         hud_element_render(&gHudDL, &gHudMtx, &gHudVtx, &gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT]);
+#endif
         gHudPALScale = FALSE;
     }
     for (i = 0; i < 10; i++) {
@@ -4251,14 +4349,20 @@ void hud_render_general(Gfx **dList, Mtx **mtx, Vertex **vtx, s32 updateRate) {
                     gCurrentHud->entry[HUD_BANANA_COUNT_NUMBER_2].pos.y -= temp + 1;
                     gCurrentHud->entry[HUD_BANANA_COUNT_X].pos.x += var_a0_5;
                     gCurrentHud->entry[HUD_BANANA_COUNT_X].pos.y -= temp;
-                    gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT].spriteID =
-                        curRacerObj->characterId + HUD_SPRITE_PORTRAIT;
                     if (osTvType == OS_TV_TYPE_PAL) {
                         gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT].pos.x -= 4.0f;
                         gCurrentHud->entry[HUD_EGG_CHALLENGE_ICON].pos.x -= 4.0f;
                     }
                     gHudPALScale = TRUE;
+#ifdef NATIVE_PORT
+                    hud_render_racer_portrait(
+                        &gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT],
+                        curRacerObj);
+#else
+                    gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT].spriteID =
+                        curRacerObj->characterId + HUD_SPRITE_PORTRAIT;
                     hud_element_render(&gHudDL, &gHudMtx, &gHudVtx, &gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT]);
+#endif
                     gHudPALScale = FALSE;
                     if (gCurrentHud->entry[HUD_BANANA_COUNT_ICON_SPIN].bananaCountIconSpin.visualCounter == 0 &&
                         curRacerObj->bananas == 10) {
@@ -4518,8 +4622,24 @@ void hud_render_general(Gfx **dList, Mtx **mtx, Vertex **vtx, s32 updateRate) {
                 gCurrentHud->entry[HUD_MINIMAP_MARKER].rotation.z_rotation = 0;
                 gCurrentHud->entry[HUD_MINIMAP_MARKER].spriteID = HUD_SPRITE_MAP_DOT;
             }
-            if (is_taj_challenge() && someRacer->vehicleID == VEHICLE_CARPET) {
+            if (
+#ifdef NATIVE_PORT
+                taj_physics_is_taj(someRacer) ||
+#endif
+                (is_taj_challenge() &&
+                 someRacer->vehicleID == VEHICLE_CARPET)) {
+                /* Match the retail hub/challenge Taj marker. The playable
+                 * character is a virtual Diddy donor, so falling through to
+                 * characterId would incorrectly paint Diddy's blue marker. */
                 gDPSetPrimColor(gHudDL++, 0, 0, 255, 0, 255, opacity);
+#ifdef NATIVE_PORT
+                if (taj_physics_is_taj(someRacer) &&
+                    !sTajMinimapIdentityTraced) {
+                    MDKR_TRACE("taj_minimap: identity=taj rgb=255,0,255 player=%d",
+                               someRacer->playerIndex);
+                    sTajMinimapIdentityTraced = TRUE;
+                }
+#endif
             } else {
                 gDPSetPrimColor(gHudDL++, 0, 0, gHudMinimapColours[someRacer->characterId].red,
                                 gHudMinimapColours[someRacer->characterId].green,

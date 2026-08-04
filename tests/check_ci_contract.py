@@ -47,6 +47,7 @@ MACOS_README = ROOT / "macos" / "README.md"
 APP_PACING_CHECK = ROOT / "tests" / "check_app_adopted_pacing.py"
 CMAKE_PROJECT = ROOT / "CMakeLists.txt"
 UI_SETTINGS = ROOT / "platform" / "app" / "ui_settings.cpp"
+APP_SOURCE_DIR = ROOT / "platform" / "app"
 RELEASE_CHECKLIST = ROOT / "docs" / "RELEASE_CHECKLIST.md"
 PINNED_ACTION_RE = re.compile(
     r"^\s*(?:-\s+)?uses:\s+([^@\s]+)@([^\s#]+)", re.MULTILINE
@@ -186,6 +187,69 @@ def validate(source: str) -> list[str]:
     return failures
 
 
+def validate_app_source_manifest(
+    cmake: str, app_cpp_files: tuple[str, ...] | None = None
+) -> list[str]:
+    """Keep owned launcher sources explicit and platform selection complete."""
+    failures: list[str] = []
+    if app_cpp_files is None:
+        app_cpp_files = tuple(sorted(path.name for path in APP_SOURCE_DIR.glob("*.cpp")))
+
+    platform_variants = {"file_dialog_stub.cpp", "file_dialog_win.cpp"}
+    expected_common = sorted(set(app_cpp_files) - platform_variants)
+    manifest = re.search(
+        r"set\(APP_SOURCES(?P<body>.*?)\)\n\s*\n\s*"
+        r"# Native \"open file\" panel",
+        cmake,
+        re.DOTALL,
+    )
+    if "file(GLOB APP_SOURCES" in cmake:
+        failures.append("APP_SOURCES must be an explicit manifest, not a glob")
+    if manifest is None:
+        failures.append("CMake no longer defines the explicit APP_SOURCES manifest")
+        return failures
+
+    listed_common = sorted(re.findall(
+        r"\$\{CMAKE_SOURCE_DIR\}/platform/app/([A-Za-z0-9_]+\.cpp)",
+        manifest.group("body"),
+    ))
+    if listed_common != expected_common:
+        failures.append(
+            "APP_SOURCES does not exactly match the reviewed common launcher "
+            f"sources (expected {expected_common}, found {listed_common})"
+        )
+
+    app_section = cmake[manifest.end():]
+    app_section = app_section.split("add_library(mdkr64_app STATIC", 1)[0]
+    required_platform_routes = {
+        "macOS activation bridge": "platform/app/app_activation_mac.mm",
+        "macOS ROM dialog": "platform/app/file_dialog_mac.mm",
+        "Windows ROM dialog": "platform/app/file_dialog_win.cpp",
+        "portable stub ROM dialog": "platform/app/file_dialog_stub.cpp",
+    }
+    for label, source in required_platform_routes.items():
+        if source not in app_section:
+            failures.append(f"APP_SOURCES platform routing omits {label}: {source}")
+
+    platform_warning_blocks = re.findall(
+        r'set_source_files_properties\(\$\{PLATFORM_SOURCES\} PROPERTIES\s+'
+        r'COMPILE_OPTIONS "([^"]+)"\)', cmake)
+    if sorted(platform_warning_blocks) != sorted(("/W4;/WX", "-Wall;-Wextra;-Werror")):
+        failures.append(
+            "owned platform C sources no longer restore strict warnings after "
+            "the decomp warning suppression"
+        )
+    app_warning_blocks = re.findall(
+        r'set_source_files_properties\(\$\{APP_SOURCES\} PROPERTIES\s+'
+        r'COMPILE_OPTIONS "([^"]+)"\)', cmake)
+    if sorted(app_warning_blocks) != sorted(("/W4;/WX", "-Wall;-Wextra;-Werror")):
+        failures.append(
+            "owned app-shell C++ sources no longer enforce strict warnings "
+            "without applying them to vendored Dear ImGui"
+        )
+    return failures
+
+
 def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
     """Keep real-GPU smoke out of headless CTest without losing release proof."""
     failures: list[str] = []
@@ -211,6 +275,44 @@ def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
         failures.append("app_settings_smoke is not labelled gpu")
     if settings_smoke is None or "MDKR_APP_PANEL=Settings" not in settings_smoke.group("body"):
         failures.append("app_settings_smoke does not render the Settings panel")
+
+    # GPU-labelled CTests run against the process-global graphics stack. They
+    # may be excluded in headless CI, but whenever a maintainer invokes plain
+    # `ctest -j`, every one must share this lock. The CMake helper discovers the
+    # labels after registration, avoiding a fragile duplicated hand-maintained
+    # list. Keep the invocation after the final label so a newly added GPU test
+    # cannot fall outside the sweep.
+    lock_function = re.search(
+        r"function\(mdkr_serialize_gpu_ctests\)(?P<body>.*?)endfunction\(\)",
+        cmake,
+        re.DOTALL,
+    )
+    lock_calls = [
+        match.start()
+        for match in re.finditer(r"^\s*mdkr_serialize_gpu_ctests\(\)\s*$", cmake, re.MULTILINE)
+    ]
+    gpu_labels = list(re.finditer(r"\bLABELS\s+gpu\b", cmake))
+    if lock_function is None:
+        failures.append("CMake no longer defines the native GPU CTest lock sweep")
+    else:
+        lock_body = lock_function.group("body")
+        for required_lock_fragment in (
+            "DIRECTORY PROPERTY TESTS",
+            "PROPERTY LABELS",
+            'list(FIND MDKR_CTEST_LABELS "gpu" MDKR_GPU_LABEL_INDEX)',
+            "RESOURCE_LOCK mdkr_native_gpu",
+        ):
+            if required_lock_fragment not in lock_body:
+                failures.append(
+                    "native GPU CTest lock sweep is missing "
+                    f"{required_lock_fragment!r}"
+                )
+    if len(lock_calls) != 1:
+        failures.append("CMake must invoke the native GPU CTest lock sweep exactly once")
+    elif any(label.start() > lock_calls[0] for label in gpu_labels):
+        failures.append("a GPU-labelled CTest is registered after the lock sweep")
+    elif not gpu_labels:
+        failures.append("CMake has no GPU-labelled CTests for the lock sweep to cover")
 
     required = {
         "native matrix GPU exclusion": (
@@ -261,37 +363,57 @@ def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
             sources["macos_unsigned_verify"],
             "--env MDKR_APP_PANEL=Settings",
         ),
-        "packaged safe frame-limit UI proof": (
+        "packaged safe frame-limit default proof": (
             sources["macos_unsigned_verify"],
-            "frame-limit value=original label=Original (Recommended / Proven) restartPending=0",
+            "Video\\.FrameLimit[[:space:]]+original",
         ),
-        "packaged experimental frame-limit guidance": (
+        "packaged safe gameplay cadence proof": (
             sources["macos_unsigned_verify"],
-            'frame-limit-contract recommended="Original (Recommended / Proven)" group="Experimental — Under Construction" caveat="Non-Original choices only alter host pacing and input/event-pump opportunities. In 1.0.1+ they do not increase unique visual FPS; the supported US 1.1 game remains at its authored ~30 FPS. Any benefit may be negligible, while higher settings can use more CPU. Original is Recommended / Proven."',
+            "Gameplay\\.SimulationCadence[[:space:]]+original",
+        ),
+        "packaged safe smoothing proof": (
+            sources["macos_unsigned_verify"],
+            "Video\\.MotionSmoothing[[:space:]]+off",
+        ),
+        "packaged visible frame-rate proof": (
+            sources["macos_unsigned_verify"],
+            "frame-rate-controls visible=1 gameplay-accuracy-separated=1",
+        ),
+        "packaged Original frame-limit proof": (
+            sources["macos_unsigned_verify"],
+            "frame-limit value=original",
+        ),
+        "packaged frame-limit guidance": (
+            sources["macos_unsigned_verify"],
+            'frame-limit UI contract: recommended="Original (recommended)" group="Higher refresh rates" caveat="Original presents each authored image once.',
         ),
         "schema and smoke frame-limit contract": (
             sources["cmake"],
             "MDKR_FRAME_LIMIT_UI_CONTRACT_REGEX",
         ),
+        "visible frame-rate presentation smoke": (
+            sources["cmake"],
+            'PASS_REGULAR_EXPRESSION "frame-rate-controls visible=1 gameplay-accuracy-separated=1"',
+        ),
         "recommended frame-limit label": (
             sources["ui_settings"],
-            "Original (Recommended / Proven)",
+            "Original (recommended)",
         ),
-        "experimental frame-limit group": (
+        "modern frame-limit group": (
             sources["ui_settings"],
-            "ImGui::SeparatorText(kExperimentalFrameLimitGroup)",
+            "ImGui::SeparatorText(kModernFrameLimitGroup)",
         ),
-        "experimental frame-limit caveat": (
+        "fixed-gameplay frame-limit guidance": (
             sources["ui_settings"],
-            "Non-Original choices only alter host pacing and input/event-pump ",
+            "Gameplay speed does not change. Higher rates can use more ",
         ),
-        "authored visual cadence guidance": (
+        "interpolated image guidance": (
             sources["ui_settings"],
-            "supported US 1.1 game remains at its authored ~30 FPS. Any benefit may ",
+            "images when smoothing is Off, or create in-between images when it is ",
         ),
-        "recommended fallback guidance": (
+        "browser uncapped fallback guidance": (
             sources["ui_settings"],
-            "Original is Recommended / Proven.",
+            "browser always maps Uncapped to Match Display.",
         ),
     }
     failures.extend(
@@ -299,25 +421,28 @@ def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
         for label, (source, needle) in required.items()
         if needle not in active_shell_source(source)
     )
-    if sources["ui_settings"].count(
-        "Experimental \\xE2\\x80\\x94 Under Construction)"
-    ) != 7:
-        failures.append(
-            "every non-Original native frame-limit option must be marked "
-            "Experimental — Under Construction"
-        )
-    if re.search(
-        r'if check\.role == "ctest":.*?"--output-on-failure",\s*'
-        r'"-LE",\s*"gpu",',
+    for value in (
+            "display", "30", "60", "90", "120", "144", "165", "240",
+            "uncapped"):
+        if f'{{"{value}",' not in sources["ui_settings"]:
+            failures.append(f"native frame-limit option {value!r} is missing")
+    ctest_route = re.search(
+        r'if check\.role == "ctest":(?P<body>.*?)\n\s*cmd =',
         sources["run_checks"],
         re.DOTALL,
-    ) is None:
-        failures.append("run_checks ROM-free CTest does not exclude the gpu label")
+    )
+    if ctest_route is None or '"--output-on-failure"' not in ctest_route.group("body"):
+        failures.append("run_checks ROM-free CTest route is missing")
+    elif '"-LE"' in ctest_route.group("body") or '"gpu"' in ctest_route.group("body"):
+        failures.append("run_checks complete local CTest must include GPU-labelled tests")
     if sources["cmake"].count(
         'PASS_REGULAR_EXPRESSION "${MDKR_FRAME_LIMIT_UI_CONTRACT_REGEX}"'
-    ) != 2:
+    ) != 1 or sources["cmake"].count(
+        'PASS_REGULAR_EXPRESSION "frame-rate-controls visible=1 gameplay-accuracy-separated=1"'
+    ) != 1:
         failures.append(
-            "schema and rendered Settings smoke must both assert frame-limit labels"
+            "schema must assert every frame-limit label and rendered Settings "
+            "must assert visible frame-rate controls separated from gameplay cadence"
         )
     return failures
 
@@ -335,7 +460,7 @@ def validate_macos_release(source: str) -> list[str]:
         "pinned standalone SDL2 build": "build_release_sdl2.sh",
         "standalone SDL2 pkg-config selection": "export PKG_CONFIG_PATH=",
         "compiled source provenance": '--build-stamp "$GITHUB_SHA"',
-        "1.0.3 patch-release default": 'default: "1.0.3"',
+        "1.0.4 patch-release default": 'default: "1.0.4"',
         "shared SDL2 release configuration": "release_sdl2_config.sh",
         "exact version release tag": 'EXPECTED_RELEASE_TAG="v${RELEASE_VERSION}"',
         "package tag commit resolution": 'git rev-parse --verify "${RELEASE_TAG}^{commit}"',
@@ -487,9 +612,9 @@ def validate_macos_packaging(sources: dict[str, str]) -> list[str]:
     active_mount_helper = active_shell_source(mount_helper)
     active_unsigned_dmg_verify = active_shell_source(unsigned_dmg_verify)
     required = {
-        "builder 1.0.3 default": (builder, 'APP_VERSION="1.0.3"'),
-        "CMake 1.0.3 default": (cmake_project, 'set(MDKR_VERSION "1.0.3"'),
-        "Info.plist 1.0.3 default": (info_plist, "<string>1.0.3</string>"),
+        "builder 1.0.4 default": (builder, 'APP_VERSION="1.0.4"'),
+        "CMake 1.0.4 default": (cmake_project, 'set(MDKR_VERSION "1.0.4"'),
+        "Info.plist 1.0.4 default": (info_plist, "<string>1.0.4</string>"),
         "pinned SDL2 version": (sdl_config, 'MDKR_RELEASE_SDL2_VERSION="2.32.10"'),
         "pinned SDL2 source hash": (
             sdl_config,
@@ -1023,6 +1148,18 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
             workflow,
             "./macos/Scripts/verify_asset_free.sh build/mdkr64.exe",
         ),
+        "Windows embedded manifest identity": (
+            workflow,
+            "embedded manifest identity",
+        ),
+        "Windows UTF-8 and long-path manifest": (
+            workflow,
+            "embedded manifest Windows settings: UTF-8 + long paths",
+        ),
+        "Windows manifest version normalization": (
+            workflow,
+            "manifest_version=\"${manifest_major}.${manifest_minor}.${manifest_patch}.0\"",
+        ),
         "Windows ROM-free tests": (
             workflow,
             "ctest --test-dir build --output-on-failure",
@@ -1331,6 +1468,7 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
         "Golden-Balloon.AppDir/AppRun",
         "Golden-Balloon.AppDir/LICENSE",
         "Golden-Balloon.AppDir/README.md",
+        "Golden-Balloon.AppDir/RUN_ME.txt",
         "Golden-Balloon.AppDir/mdkr64.desktop",
         "Golden-Balloon.AppDir/mdkr64.png",
         "Golden-Balloon.AppDir/usr/bin/gamecontrollerdb.txt",
@@ -1861,25 +1999,27 @@ def validate_release_checklist(source: str) -> list[str]:
         "touch_controls",
         "browser_runtime",
         "browser_presentation_rates",
+        "browser_taj_character_select",
+        "browser_taj_persistence",
     )
     failures = [
         f"release checklist omits browser task: {task}"
         for task in required_browser_tasks
         if task not in source
     ]
-    if "all six runner tasks PASS" not in source:
+    if "all eight runner tasks PASS" not in source:
         failures.append("release checklist browser task count is stale")
     if "After the final Developer ID signatures and stapling" not in source:
         failures.append("release checklist omits signed post-sign runtime gate")
-    if source.count("-f release_tag=v1.0.3") < 2:
+    if source.count("-f release_tag=v1.0.4") < 2:
         failures.append(
             "release checklist must bind both portable and macOS publication "
-            "to v1.0.3"
+            "to v1.0.4"
         )
-    if source.count("--ref v1.0.3") < 2:
+    if source.count("--ref v1.0.4") < 2:
         failures.append(
             "release checklist must dispatch both portable and macOS publication "
-            "from the exact v1.0.3 ref"
+            "from the exact v1.0.4 ref"
         )
     for label, needle in {
         "Windows automatic-publication hold": "Automatic Windows publication is intentionally disabled for this patch",
@@ -1898,6 +2038,8 @@ def validate_release_checklist(source: str) -> list[str]:
 def main() -> int:
     source = WORKFLOW.read_text(encoding="utf-8")
     failures = validate(source)
+    cmake_source = CMAKE_PROJECT.read_text(encoding="utf-8")
+    failures.extend(validate_app_source_manifest(cmake_source))
     desktop_sources = {
         "workflow": DESKTOP_RELEASE_WORKFLOW.read_text(encoding="utf-8"),
         "windows_packager": WINDOWS_PACKAGER.read_text(encoding="utf-8"),
@@ -1914,7 +2056,7 @@ def main() -> int:
     macos_source = MACOS_WORKFLOW.read_text(encoding="utf-8")
     failures.extend(validate_macos_release(macos_source))
     gpu_routing_sources = {
-        "cmake": CMAKE_PROJECT.read_text(encoding="utf-8"),
+        "cmake": cmake_source,
         "correctness": source,
         "windows_validate": windows_validate_source,
         "desktop_release": desktop_sources["workflow"],
@@ -1943,7 +2085,7 @@ def main() -> int:
         "provenance": MACOS_PROVENANCE.read_text(encoding="utf-8"),
         "sdl_config": MACOS_SDL_CONFIG.read_text(encoding="utf-8"),
         "info_plist": MACOS_INFO_PLIST.read_text(encoding="utf-8"),
-        "cmake_project": CMAKE_PROJECT.read_text(encoding="utf-8"),
+        "cmake_project": cmake_source,
         "macos_readme": MACOS_README.read_text(encoding="utf-8"),
     }
     failures.extend(validate_macos_packaging(packaging_sources))
@@ -2006,6 +2148,40 @@ def main() -> int:
             "CI positive controls unexpectedly passed: " + ", ".join(escaped)
         )
 
+    app_manifest_controls = {
+        "globbed app source manifest": cmake_source.replace(
+            "set(APP_SOURCES", "file(GLOB APP_SOURCES", 1
+        ),
+        "missing common app source": cmake_source.replace(
+            "platform/app/app_config.cpp",
+            "platform/app/removed_app_config.cpp",
+            1,
+        ),
+        "unreviewed new app source": cmake_source,
+        "platform warning baseline deletion": cmake_source.replace(
+            'set_source_files_properties(${PLATFORM_SOURCES} PROPERTIES',
+            'set_source_files_properties(${IMGUI_SOURCES} PROPERTIES',
+        ),
+        "app warning baseline deletion": cmake_source.replace(
+            'set_source_files_properties(${APP_SOURCES} PROPERTIES',
+            'set_source_files_properties(${IMGUI_SOURCES} PROPERTIES',
+        ),
+    }
+    app_manifest_escaped = [
+        name
+        for name, broken in app_manifest_controls.items()
+        if not validate_app_source_manifest(
+            broken,
+            (tuple(sorted(path.name for path in APP_SOURCE_DIR.glob("*.cpp"))) +
+             (("unreviewed_new_launcher.cpp",) if name == "unreviewed new app source" else ())),
+        )
+    ]
+    if app_manifest_escaped:
+        raise AssertionError(
+            "app-source-manifest positive controls unexpectedly passed: "
+            + ", ".join(app_manifest_escaped)
+        )
+
     gpu_routing_controls = {
         "GPU label deletion": {
             **gpu_routing_sources,
@@ -2016,6 +2192,23 @@ def main() -> int:
                 gpu_routing_sources["cmake"],
                 count=1,
                 flags=re.DOTALL,
+            ),
+        },
+        "native GPU lock removal": {
+            **gpu_routing_sources,
+            "cmake": gpu_routing_sources["cmake"].replace(
+                "RESOURCE_LOCK mdkr_native_gpu",
+                "RESOURCE_LOCK removed_gpu_lock",
+                1,
+            ),
+        },
+        "GPU test registered after lock sweep": {
+            **gpu_routing_sources,
+            "cmake": gpu_routing_sources["cmake"].replace(
+                "        mdkr_serialize_gpu_ctests()\n",
+                "        mdkr_serialize_gpu_ctests()\n"
+                "        set_tests_properties(app_shell_smoke PROPERTIES LABELS gpu)\n",
+                1,
             ),
         },
         "app smoke target path mutation": {
@@ -2038,6 +2231,14 @@ def main() -> int:
             **gpu_routing_sources,
             "cmake": gpu_routing_sources["cmake"].replace(
                 "MDKR_APP_PANEL=Settings", "MDKR_APP_PANEL=About", 1
+            ),
+        },
+        "Settings frame-rate visibility mutation": {
+            **gpu_routing_sources,
+            "cmake": gpu_routing_sources["cmake"].replace(
+                "frame-rate-controls visible=1 gameplay-accuracy-separated=1",
+                "frame-rate-controls visible=0 gameplay-accuracy-separated=1",
+                1,
             ),
         },
         "native matrix GPU exclusion deletion": {
@@ -2102,10 +2303,14 @@ def main() -> int:
                 " --output-on-failure -LE gpu", " --output-on-failure", 1
             ),
         },
-        "run_checks GPU exclusion deletion": {
+        "run_checks GPU exclusion insertion": {
             **gpu_routing_sources,
             "run_checks": gpu_routing_sources["run_checks"].replace(
-                '            "-LE",\n            "gpu",\n', "", 1
+                '            "--output-on-failure",\n',
+                '            "--output-on-failure",\n'
+                '            "-LE",\n'
+                '            "gpu",\n',
+                1,
             ),
         },
         "packaged GPU verifier path mutation": {
@@ -2132,18 +2337,50 @@ def main() -> int:
                 1,
             ),
         },
-        "packaged frame-limit UI proof deletion": {
+        "packaged frame-limit default proof deletion": {
             **gpu_routing_sources,
             "macos_unsigned_verify": gpu_routing_sources["macos_unsigned_verify"].replace(
-                "frame-limit value=original label=Original (Recommended / Proven) restartPending=0",
-                "frame-limit UI unchecked",
+                "Video\\.FrameLimit[[:space:]]+original",
+                "frame-limit default unchecked",
                 1,
             ),
         },
-        "packaged experimental guidance deletion": {
+        "packaged gameplay cadence proof deletion": {
             **gpu_routing_sources,
             "macos_unsigned_verify": gpu_routing_sources["macos_unsigned_verify"].replace(
-                'frame-limit-contract recommended="Original (Recommended / Proven)" group="Experimental — Under Construction" caveat="Non-Original choices only alter host pacing and input/event-pump opportunities. In 1.0.1+ they do not increase unique visual FPS; the supported US 1.1 game remains at its authored ~30 FPS. Any benefit may be negligible, while higher settings can use more CPU. Original is Recommended / Proven."',
+                "Gameplay\\.SimulationCadence[[:space:]]+original",
+                "gameplay cadence unchecked",
+                1,
+            ),
+        },
+        "packaged smoothing default proof deletion": {
+            **gpu_routing_sources,
+            "macos_unsigned_verify": gpu_routing_sources["macos_unsigned_verify"].replace(
+                "Video\\.MotionSmoothing[[:space:]]+off",
+                "motion smoothing default unchecked",
+                1,
+            ),
+        },
+        "packaged frame-rate visibility proof deletion": {
+            **gpu_routing_sources,
+            "macos_unsigned_verify": gpu_routing_sources["macos_unsigned_verify"].replace(
+                "frame-rate-controls visible=1 gameplay-accuracy-separated=1",
+                "frame-rate controls unchecked",
+                1,
+            ),
+        },
+        "packaged Original frame-limit proof deletion": {
+            **gpu_routing_sources,
+            "macos_unsigned_verify": gpu_routing_sources["macos_unsigned_verify"].replace(
+                "frame-limit value=original",
+                "frame-limit default visibility unchecked",
+                1,
+            ),
+        },
+        "packaged frame-limit guidance deletion": {
+            **gpu_routing_sources,
+            "macos_unsigned_verify": gpu_routing_sources["macos_unsigned_verify"].replace(
+                'frame-limit UI contract: recommended="Original (recommended)" group="Higher refresh rates"',
                 "frame-limit guidance unchecked",
                 1,
             ),
@@ -2158,40 +2395,39 @@ def main() -> int:
         "recommended frame-limit label mutation": {
             **gpu_routing_sources,
             "ui_settings": gpu_routing_sources["ui_settings"].replace(
-                "Original (Recommended / Proven)",
+                "Original (recommended)",
                 "Original",
-                1,
             ),
         },
-        "experimental frame-limit grouping deletion": {
+        "modern frame-limit grouping deletion": {
             **gpu_routing_sources,
             "ui_settings": gpu_routing_sources["ui_settings"].replace(
-                "ImGui::SeparatorText(kExperimentalFrameLimitGroup)",
+                "ImGui::SeparatorText(kModernFrameLimitGroup)",
                 "ImGui::Separator()",
                 1,
             ),
         },
-        "experimental authored-cadence guidance mutation": {
+        "interpolated-image guidance mutation": {
             **gpu_routing_sources,
             "ui_settings": gpu_routing_sources["ui_settings"].replace(
-                "supported US 1.1 game remains at its authored ~30 FPS. Any benefit may ",
-                "game increases unique visual FPS. Any benefit is guaranteed. ",
+                "images when smoothing is Off, or create in-between images when it is ",
+                "images are always repeated. ",
                 1,
             ),
         },
-        "experimental host-pacing guidance mutation": {
+        "fixed-gameplay guidance mutation": {
             **gpu_routing_sources,
             "ui_settings": gpu_routing_sources["ui_settings"].replace(
-                "Non-Original choices only alter host pacing and input/event-pump ",
-                "Presentation rate changes gameplay and visual timing. ",
+                "Gameplay speed does not change. Higher rates can use more ",
+                "Gameplay speed changes. Higher rates can use more ",
                 1,
             ),
         },
-        "experimental recommended fallback mutation": {
+        "browser fallback guidance mutation": {
             **gpu_routing_sources,
             "ui_settings": gpu_routing_sources["ui_settings"].replace(
-                "Original is Recommended / Proven.",
-                "Experimental is recommended.",
+                "browser always maps Uncapped to Match Display.",
+                "Unbounded in a browser.",
                 1,
             ),
         },
@@ -2790,8 +3026,8 @@ def main() -> int:
         "checksum working directory": macos_source.replace(
             'cd "$DMG_DIR"', "true", 1
         ),
-        "1.0.3 patch-release default": macos_source.replace(
-            'default: "1.0.3"', 'default: "1.0.1"', 1
+        "1.0.4 patch-release default": macos_source.replace(
+            'default: "1.0.4"', 'default: "1.0.1"', 1
         ),
         "publish isolation": macos_source.replace(
             "\n  publish:", "\n  removed-publish:", 1
@@ -3455,7 +3691,13 @@ def main() -> int:
             "browser_presentation_rates", "removed_browser_rate_gate"
         ),
         "browser task count": checklist_source.replace(
-            "all six runner tasks PASS", "all runner tasks PASS", 1
+            "all eight runner tasks PASS", "all runner tasks PASS", 1
+        ),
+        "browser Taj picker": checklist_source.replace(
+            "browser_taj_character_select", "removed_browser_taj_picker", 1
+        ),
+        "browser Taj persistence": checklist_source.replace(
+            "browser_taj_persistence", "removed_taj_state_gate", 1
         ),
         "signed post-sign runtime": checklist_source.replace(
             "After the final Developer ID signatures and stapling",
@@ -3463,10 +3705,10 @@ def main() -> int:
             1,
         ),
         "portable release tag binding": checklist_source.replace(
-            "-f release_tag=v1.0.3", "-f release_tag=", 1
+            "-f release_tag=v1.0.4", "-f release_tag=", 1
         ),
         "release dispatch source ref": checklist_source.replace(
-            "--ref v1.0.3", "--ref main", 1
+            "--ref v1.0.4", "--ref main", 1
         ),
         "Windows automatic-publication hold": checklist_source.replace(
             "Automatic Windows publication is intentionally disabled for this patch",

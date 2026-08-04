@@ -1,4 +1,5 @@
 #include "user_paths.h"
+#include "fs_utf8.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -13,7 +14,6 @@
 #include <fcntl.h>
 #include <io.h>
 #include <process.h>
-#include <windows.h>
 #else
 #include <fcntl.h>
 #include <unistd.h>
@@ -21,6 +21,18 @@
 
 #define MDKR_USER_PATH_MAX 4096
 #define MDKR_PACKAGE_MARKER ".app/Contents/MacOS/"
+#define MDKR_MIGRATION_OWNER ".mdkr64-migration-owner"
+#define MDKR_MIGRATION_OWNER_MAGIC "mdkr64-save-migration-v1\n"
+
+/* Packaged desktop migration is deliberately compiled into the shared web
+ * target so this policy remains one implementation. Emscripten uses fixed
+ * /save paths and never calls the two migration roots, so mark only those
+ * roots (and their desktop preference storage) as intentionally dormant. */
+#ifdef __EMSCRIPTEN__
+#define MDKR_PACKAGED_ONLY __attribute__((unused))
+#else
+#define MDKR_PACKAGED_ONLY
+#endif
 
 #ifndef __EMSCRIPTEN__
 /* Keep this C policy module independent of SDL headers so its packaged-path
@@ -30,10 +42,20 @@ extern void SDL_free(void *memory);
 #endif
 
 static int s_packaged;
-static int s_pref_ready;
+static int s_pref_ready MDKR_PACKAGED_ONLY;
 static char s_resource_dir[MDKR_USER_PATH_MAX];
-static char s_pref_dir[MDKR_USER_PATH_MAX];
+static char s_pref_dir[MDKR_USER_PATH_MAX] MDKR_PACKAGED_ONLY;
 static char s_launch_cwd[MDKR_USER_PATH_MAX];
+static char s_last_error[MDKR_USER_PATH_MAX + 512];
+
+static void set_last_error(const char *message, const char *path) {
+    if (message == NULL) {
+        s_last_error[0] = '\0';
+        return;
+    }
+    (void)snprintf(s_last_error, sizeof(s_last_error),
+                   path != NULL ? "%s: %s" : "%s", message, path);
+}
 
 static int path_copy(char *output, size_t output_size, const char *value) {
     size_t length;
@@ -95,33 +117,57 @@ static int path_parent(char *output, size_t output_size, const char *path) {
 }
 
 static int path_is_directory(const char *path) {
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+    int exists = 0;
+    int directory = 0;
+    mdkr_path_query_utf8(path, &exists, NULL, &directory);
+    return exists && directory;
+#else
     struct stat status;
     return path != NULL && stat(path, &status) == 0 &&
            S_ISDIR(status.st_mode);
+#endif
+}
+
+/* Migration cleanup only ever owns a directory it created. Do not follow a
+ * link/reparse point here: cleanup_staged_save() addresses known child names,
+ * which would otherwise unlink files in an attacker-controlled target. */
+static int path_is_owned_stage_directory(const char *path) {
+    return path_is_directory(path) &&
+           mdkr_path_is_link_or_reparse_utf8(path) == 0;
 }
 
 static int path_is_regular(const char *path) {
-    struct stat status;
 #if !defined(_WIN32)
+    struct stat status;
     if (path == NULL || lstat(path, &status) != 0) {
         return 0;
     }
 #else
-    if (path == NULL || stat(path, &status) != 0) {
-        return 0;
-    }
+    int exists = 0;
+    int regular = 0;
+    mdkr_path_query_utf8(path, &exists, &regular, NULL);
+    return exists && regular;
 #endif
+#if !defined(_WIN32)
     return S_ISREG(status.st_mode);
+#endif
 }
 
 static int path_exists(const char *path) {
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+    int exists = 0;
+    mdkr_path_query_utf8(path, &exists, NULL, NULL);
+    return exists;
+#else
     struct stat status;
     return path != NULL && stat(path, &status) == 0;
+#endif
 }
 
 static int make_private_directory(const char *path) {
 #if defined(_WIN32) && !defined(__EMSCRIPTEN__)
-    return _mkdir(path);
+    return mdkr_mkdir_utf8(path);
 #else
     return mkdir(path, 0700);
 #endif
@@ -167,27 +213,14 @@ static int copy_regular_file(const char *source, const char *destination) {
     if (!path_is_regular(source)) {
         return 0;
     }
-    input = fopen(source, "rb");
+    input = mdkr_fopen_utf8(source, "rb");
     if (input == NULL) {
         return -1;
     }
     /* Every migration destination is a private staging name. Exclusive create
      * prevents a stale file or same-user concurrent launch from being
      * truncated between the existence check and fopen. */
-#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
-    {
-        int descriptor = _open(destination,
-                               _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY,
-                               _S_IREAD | _S_IWRITE);
-        output = descriptor >= 0 ? _fdopen(descriptor, "wb") : NULL;
-        if (output == NULL && descriptor >= 0) {
-            (void)_close(descriptor);
-            (void)remove(destination);
-        }
-    }
-#else
-    output = fopen(destination, "wbx");
-#endif
+    output = mdkr_fopen_utf8(destination, "wbx");
     if (output == NULL) {
         (void)fclose(input);
         return -1;
@@ -215,7 +248,7 @@ static int copy_regular_file(const char *source, const char *destination) {
         failed = 1;
     }
     if (failed) {
-        (void)remove(destination);
+        (void)mdkr_remove_utf8(destination);
         return -1;
     }
     return 1;
@@ -224,12 +257,12 @@ static int copy_regular_file(const char *source, const char *destination) {
 /* Install a staged file without replacing a destination created concurrently. */
 static int install_file_exclusive(const char *staged, const char *destination) {
 #if defined(_WIN32) && !defined(__EMSCRIPTEN__)
-    return MoveFileExA(staged, destination, MOVEFILE_WRITE_THROUGH) ? 1 : 0;
+    return mdkr_move_utf8(staged, destination, 0, 1) == 0 ? 1 : 0;
 #else
     if (link(staged, destination) != 0) {
         return 0;
     }
-    (void)unlink(staged);
+    (void)mdkr_unlink_utf8(staged);
     return 1;
 #endif
 }
@@ -240,7 +273,7 @@ static int install_directory_exclusive(const char *staged,
         return 0;
     }
 #if defined(_WIN32) && !defined(__EMSCRIPTEN__)
-    return MoveFileExA(staged, destination, MOVEFILE_WRITE_THROUGH) ? 1 : 0;
+    return mdkr_move_utf8(staged, destination, 0, 1) == 0 ? 1 : 0;
 #elif defined(__APPLE__)
     return renamex_np(staged, destination, RENAME_EXCL) == 0;
 #else
@@ -263,7 +296,7 @@ static int legacy_candidate(char *output, size_t output_size,
     return relative_from_root(output, output_size, root, relative);
 }
 
-static int migrate_video_config(void) {
+static int MDKR_PACKAGED_ONLY migrate_video_config(void) {
     char destination[MDKR_USER_PATH_MAX];
     char destination_parent[MDKR_USER_PATH_MAX];
     char source[MDKR_USER_PATH_MAX];
@@ -301,14 +334,14 @@ static int migrate_video_config(void) {
         fprintf(stderr, "[paths] could not stage legacy video config from %s\n",
                 source);
         if (staged[0] != '\0') {
-            (void)remove(staged);
+            (void)mdkr_remove_utf8(staged);
         }
         return 0;
     }
     if (!install_file_exclusive(staged, destination)) {
         /* Another process may have installed a destination after our first
          * check. Its file wins; the legacy source remains untouched. */
-        (void)remove(staged);
+        (void)mdkr_remove_utf8(staged);
         if (path_exists(destination)) {
             return 1;
         }
@@ -437,19 +470,137 @@ static int cleanup_save_entry(const char *name, void *opaque) {
     SaveCleanupContext *context = (SaveCleanupContext *)opaque;
     char path[MDKR_USER_PATH_MAX];
     if (path_join(path, sizeof(path), context->staged, name)) {
-        (void)remove(path);
+        (void)mdkr_remove_utf8(path);
     }
     return 1;
 }
 
 static void cleanup_staged_save(const char *staged) {
     SaveCleanupContext context = { staged };
+    char owner[MDKR_USER_PATH_MAX];
     (void)visit_save_names(cleanup_save_entry, &context);
-#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
-    (void)_rmdir(staged);
-#else
-    (void)rmdir(staged);
-#endif
+    if (path_join(owner, sizeof(owner), staged, MDKR_MIGRATION_OWNER)) {
+        (void)mdkr_remove_utf8(owner);
+    }
+    (void)mdkr_rmdir_utf8(staged);
+}
+
+static int migration_owner_text(char *output, size_t output_size,
+                                const char *destination) {
+    int written = snprintf(output, output_size, "%s%s",
+                           MDKR_MIGRATION_OWNER_MAGIC, destination);
+    return written >= 0 && (size_t)written < output_size;
+}
+
+static int write_migration_owner(const char *staged,
+                                 const char *destination) {
+    char path[MDKR_USER_PATH_MAX];
+    char text[MDKR_USER_PATH_MAX + 64];
+    FILE *file;
+    size_t size;
+    int good;
+    if (!path_join(path, sizeof(path), staged, MDKR_MIGRATION_OWNER) ||
+        !migration_owner_text(text, sizeof(text), destination)) {
+        return 0;
+    }
+    file = mdkr_fopen_utf8(path, "wbx");
+    if (file == NULL) {
+        return 0;
+    }
+    size = strlen(text);
+    good = fwrite(text, 1u, size, file) == size;
+    if (fflush(file) != 0 || sync_file(file) != 0) {
+        good = 0;
+    }
+    if (fclose(file) != 0) {
+        good = 0;
+    }
+    if (!good) {
+        (void)mdkr_remove_utf8(path);
+    }
+    return good;
+}
+
+static int migration_owner_matches(const char *directory,
+                                   const char *destination) {
+    char path[MDKR_USER_PATH_MAX];
+    char expected[MDKR_USER_PATH_MAX + 64];
+    char actual[MDKR_USER_PATH_MAX + 64];
+    FILE *file;
+    size_t expected_size;
+    size_t actual_size;
+    int trailing;
+    if (!path_join(path, sizeof(path), directory, MDKR_MIGRATION_OWNER) ||
+        !path_is_regular(path) ||
+        !migration_owner_text(expected, sizeof(expected), destination)) {
+        return 0;
+    }
+    file = mdkr_fopen_utf8(path, "rb");
+    if (file == NULL) {
+        return 0;
+    }
+    expected_size = strlen(expected);
+    actual_size = fread(actual, 1u, sizeof(actual), file);
+    trailing = fgetc(file);
+    (void)fclose(file);
+    return actual_size == expected_size && trailing == EOF &&
+           memcmp(actual, expected, expected_size) == 0;
+}
+
+static int recover_abandoned_save_stage(const char *staged,
+                                        const char *destination) {
+    /* Test the directory entry itself before path_exists(): POSIX stat() and
+     * the ordinary Windows directory query follow a link, so a dangling stage
+     * would otherwise look absent and later fail mkdir() without the recovery
+     * diagnosis. */
+    if (mdkr_path_is_link_or_reparse_utf8(staged) == 1) {
+        set_last_error(
+            "An interrupted save migration could not be verified. Move this "
+            "folder aside (or remove it after preserving any files), then "
+            "reopen Golden Balloon",
+            staged);
+        fprintf(stderr, "[paths] %s\n", s_last_error);
+        return 0;
+    }
+    if (!path_exists(staged)) {
+        return 1;
+    }
+    if (!path_is_owned_stage_directory(staged) ||
+        !migration_owner_matches(staged, destination)) {
+        set_last_error(
+            "An interrupted save migration could not be verified. Move this "
+            "folder aside (or remove it after preserving any files), then "
+            "reopen Golden Balloon",
+            staged);
+        fprintf(stderr, "[paths] %s\n", s_last_error);
+        return 0;
+    }
+    cleanup_staged_save(staged);
+    if (path_exists(staged)) {
+        set_last_error(
+            "An interrupted save migration contains unexpected files. Move "
+            "this folder aside, then reopen Golden Balloon",
+            staged);
+        fprintf(stderr, "[paths] %s\n", s_last_error);
+        return 0;
+    }
+    fprintf(stderr, "[paths] recovered abandoned save migration %s\n", staged);
+    return 1;
+}
+
+static void remove_installed_migration_owner(const char *destination) {
+    char owner[MDKR_USER_PATH_MAX];
+    if (!migration_owner_matches(destination, destination) ||
+        !path_join(owner, sizeof(owner), destination, MDKR_MIGRATION_OWNER)) {
+        return;
+    }
+    if (mdkr_remove_utf8(owner) != 0) {
+        fprintf(stderr,
+                "[paths] warning: could not remove completed migration marker %s\n",
+                owner);
+    } else {
+        sync_directory_best_effort(destination);
+    }
 }
 
 static int source_save_directory(char *output, size_t output_size) {
@@ -477,7 +628,7 @@ static int source_save_directory(char *output, size_t output_size) {
     return 0;
 }
 
-static int migrate_save_directory(void) {
+static int MDKR_PACKAGED_ONLY migrate_save_directory(void) {
     char destination[MDKR_USER_PATH_MAX];
     char destination_parent[MDKR_USER_PATH_MAX];
     char source[MDKR_USER_PATH_MAX];
@@ -494,6 +645,9 @@ static int migrate_save_directory(void) {
         return 0;
     }
     if (path_exists(destination)) {
+        if (path_is_directory(destination)) {
+            remove_installed_migration_owner(destination);
+        }
         return 1;
     }
     if (!source_save_directory(source, sizeof(source))) {
@@ -502,9 +656,15 @@ static int migrate_save_directory(void) {
     written = snprintf(staged, sizeof(staged), "%s.migrate-%ld.tmp",
                        destination, process_id());
     if (written < 0 || (size_t)written >= sizeof(staged) ||
-        path_exists(staged) || make_private_directory(staged) != 0) {
+        !recover_abandoned_save_stage(staged, destination) ||
+        make_private_directory(staged) != 0 ||
+        !write_migration_owner(staged, destination)) {
         fprintf(stderr, "[paths] could not create staged save migration %s\n",
                 staged);
+        if (staged[0] != '\0' && path_is_owned_stage_directory(staged) &&
+            migration_owner_matches(staged, destination)) {
+            cleanup_staged_save(staged);
+        }
         return 0;
     }
     context.source = source;
@@ -528,6 +688,7 @@ static int migrate_save_directory(void) {
                 destination);
         return 0;
     }
+    remove_installed_migration_owner(destination);
     if (path_parent(destination_parent, sizeof(destination_parent),
                     destination)) {
         sync_directory_best_effort(destination_parent);
@@ -547,6 +708,7 @@ int mdkr_user_paths_init(const char *executable_path) {
     size_t resource_prefix;
     int written;
 
+    set_last_error(NULL, NULL);
     if (s_packaged) {
         return mdkr_user_paths_prepare_packaged_data() ? 1 : -1;
     }
@@ -595,6 +757,7 @@ int mdkr_user_paths_prepare_packaged_data(void) {
 #ifdef __EMSCRIPTEN__
     return 1;
 #else
+    set_last_error(NULL, NULL);
     if (!s_packaged) {
         return 1;
     }
@@ -603,6 +766,10 @@ int mdkr_user_paths_prepare_packaged_data(void) {
     }
     return migrate_video_config() && migrate_save_directory();
 #endif
+}
+
+const char *mdkr_user_paths_last_error(void) {
+    return s_last_error;
 }
 
 int mdkr_user_paths_is_packaged(void) {

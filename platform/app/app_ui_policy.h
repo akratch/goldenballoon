@@ -12,6 +12,43 @@ struct OverlayBackState {
     bool confirmation;
 };
 
+struct AppUiButtonPairLayout {
+    float firstWidth;
+    float secondWidth;
+    bool sameLine;
+};
+
+struct AppUiRomPanelVisibility {
+    bool showVerdict;
+    bool showAcquisition;
+};
+
+enum class AppUiRomPlayRequest {
+    Ignore,
+    StartFinalCheck,
+    SupersedeReplacementCheck,
+};
+
+// An in-flight first or remembered-ROM check has no verdict yet. Do not flash
+// a false rejection or replacement controls while that asynchronous state is
+// unresolved; a proven active ROM remains visible during replacement checks.
+AppUiRomPanelVisibility AppUi_romPanelVisibility(
+    bool haveRom, bool ready, bool validationPending, bool changing);
+bool AppUi_romCandidateFeedbackVisible(
+    bool candidateVisible, bool validationPending);
+
+// A proven active ROM remains playable while a replacement is being checked.
+// Play therefore supersedes only that candidate check; an initial/remembered
+// check or an already-running final Play check remains non-actionable.
+AppUiRomPlayRequest AppUi_romPlayRequest(
+    bool ready, bool validationPending, bool playValidationPending);
+
+// Preserve requested button widths when they fit, shrink both actions evenly
+// when they remain comfortably usable, and otherwise stack full-width actions.
+AppUiButtonPairLayout AppUi_fitButtonPair(
+    float availableWidth, float spacing, float firstWidth, float secondWidth,
+    float minimumWidth);
+
 // Popup cancellation belongs to ImGui and leaves our stack unchanged. Escape
 // repeats are ignored; controller B and a non-repeat Escape otherwise match.
 OverlayBackState AppUi_overlayBackTransition(
@@ -55,6 +92,6 @@ AppUiSmokeInputMode AppUi_smokeInputMode();
 
 // Reserved config keys remain parseable for forward compatibility, but the
 // launcher must not advertise settings that the running product cannot apply.
-bool AppUi_videoSettingVisible(MdkrVideoKey key);
+bool AppUi_videoSettingVisible(MdkrVideoKey key, bool webGpuRenderer);
 
 #endif  // MDKR64_APP_UI_POLICY_H

@@ -134,8 +134,17 @@ typedef struct PresentationCameraEntry {
     float near_plane;
     float far_plane;
     float viewport[4];        /* posX, posY, width, height */
+    /* The exact matrix authored from this recipe. Interpolated presents still
+     * rebuild from the blended inputs above; alpha 0/1 copy this canonical
+     * endpoint so no reconstruction rounding or hidden legacy state can alter
+     * an original frame. */
+    float authored_view_projection[4][4];
+    /* Discrete projection/draw-region owner. Zero is the ordinary presentation
+     * region; nonzero is the authored safe aperture. Viewport coordinates may
+     * animate continuously while this remains unchanged. */
+    uint8_t world_region;
     uint8_t discontinuity;
-    uint8_t reserved[3];
+    uint8_t reserved[2];
 } PresentationCameraEntry;
 
 typedef struct PresentationSnapshot {
@@ -254,16 +263,17 @@ bool presentation_snapshot_capture_object(const PresentationObjectEntry *sample)
 bool presentation_snapshot_capture_camera(const PresentationCameraEntry *sample);
 void presentation_snapshot_capture_commit(void);
 
-/* Exact camera ownership latched while the game authors one display list.
- * begin() invalidates the previous list; record() is called by viewport_main
- * after its P2/cutscene/TT selection; copy() succeeds only for the same
- * immutable authored tick. This keeps capture independent of lifecycle flags
- * that render clears before the tick boundary. */
+/* Exact camera inputs latched while the game authors one display list.
+ * begin() invalidates the previous list; record() is called at the point where
+ * camera.c derives the task's view-projection matrix; copy() succeeds only for
+ * the same immutable authored tick. This keeps capture independent of camera
+ * or lifecycle state that may change after the matrix has been authored but
+ * before the tick-boundary snapshot walk. */
 void presentation_snapshot_authored_cameras_begin(uint64_t authored_tick);
-bool presentation_snapshot_authored_camera_record(int viewport_index,
-                                                  int camera_id);
+bool presentation_snapshot_authored_camera_record(
+    const PresentationCameraEntry *sample);
 size_t presentation_snapshot_authored_cameras_copy(
-    uint64_t authored_tick, int32_t *out, size_t capacity);
+    uint64_t authored_tick, PresentationCameraEntry *out, size_t capacity);
 
 /* ---- published pair ---------------------------------------------------- */
 

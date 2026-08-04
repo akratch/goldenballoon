@@ -39,6 +39,7 @@ s32 gGfxTaskIsRunning = FALSE;
 static const Gfx *sPresentationAuthoredCursor;
 static u64 sPresentationAuthoredTick;
 static s32 sPresentationAuthoredValid;
+extern Gfx *gCurrDisplayList;
 
 void presentation_task_authoring_begin(Gfx *cursor) {
     sPresentationAuthoredCursor = cursor;
@@ -46,6 +47,22 @@ void presentation_task_authoring_begin(Gfx *cursor) {
     sPresentationAuthoredValid = TRUE;
     presentation_snapshot_authored_cameras_begin(
         sPresentationAuthoredTick);
+}
+
+s32 presentation_task_peek_authored(const Gfx **begin, const Gfx **end,
+                                    u64 *authoredTick) {
+    const uintptr_t cursor = (uintptr_t)sPresentationAuthoredCursor;
+    const uintptr_t current = (uintptr_t)gCurrDisplayList;
+
+    if (!sPresentationAuthoredValid || sPresentationAuthoredCursor == NULL ||
+        gCurrDisplayList == NULL || current <= cursor || begin == NULL ||
+        end == NULL || authoredTick == NULL) {
+        return false;
+    }
+    *begin = sPresentationAuthoredCursor;
+    *end = gCurrDisplayList;
+    *authoredTick = sPresentationAuthoredTick;
+    return true;
 }
 
 static u64 presentation_task_take_authored_tick(Gfx *begin, Gfx *end) {
@@ -500,6 +517,12 @@ void bgdraw_render(Gfx **dList, Mtx **mtx, s32 drawBG) {
     w = GET_VIDEO_WIDTH(widthAndHeight);
     h = GET_VIDEO_HEIGHT(widthAndHeight);
 
+#ifdef NATIVE_PORT
+    /* Frame and depth clears always cover the presentation surface. Framed
+     * live views select the safe 4:3 world region only after the surrounding
+     * menu background has been drawn. */
+    gDkrSetWorldRegion((*dList)++, FALSE);
+#endif
     gDPPipeSync((*dList)++);
     //!@bug: the scissor does not need the off by one here, despite being intended for fill mode.
     gDPSetScissor((*dList)++, 0, 0, 0, w - 1, h - 1);
@@ -524,6 +547,10 @@ void bgdraw_render(Gfx **dList, Mtx **mtx, s32 drawBG) {
             // Used for secondary viewport backgrounds. This does not need to be 1 cycle, this could easily work with
             // fillmode.
             if (copy_viewport_background_size_to_coords(0, &x1, &y1, &x2, &y2)) {
+#ifdef NATIVE_PORT
+                gDkrSetWorldRegion(
+                    (*dList)++, viewport_world_region_uses_safe_aperture(0));
+#endif
                 gDPSetCycleType((*dList)++, G_CYC_1CYCLE);
                 gDPSetPrimColor((*dList)++, 0, 0, sBGPrimColourR, sBGPrimColourG, sBGPrimColourB, 255);
                 gDPSetCombineMode((*dList)++, G_CC_PRIMITIVE, G_CC_PRIMITIVE);

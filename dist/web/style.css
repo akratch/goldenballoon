@@ -60,6 +60,28 @@ html, body {
   font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
+html { color-scheme: dark; }
+
+.skip-link {
+  position: fixed;
+  z-index: 1000;
+  top: 10px;
+  left: 10px;
+  padding: 10px 14px;
+  border-radius: 3px;
+  background: var(--gold);
+  color: #33220a;
+  font-weight: 800;
+  text-decoration: none;
+  transform: translateY(calc(-100% - 20px));
+  transition: transform .14s var(--ease-out);
+}
+.skip-link:focus-visible { transform: translateY(0); }
+
+:where(button, a, select, input, summary):focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 3px;
+}
 
 .sr-only {
   position: absolute; width: 1px; height: 1px; overflow: hidden;
@@ -235,6 +257,10 @@ h3 { font-size: 15px; letter-spacing: .07em; color: var(--gold); margin-bottom: 
 /* ---------- drop zone ---------- */
 
 .drop {
+  display: block;
+  width: 100%;
+  color: inherit;
+  font: inherit;
   border: 2px dashed rgba(255, 196, 46, .45); border-radius: 3px;
   background: rgba(255, 196, 46, .05);
   padding: 34px 22px; text-align: center; cursor: pointer;
@@ -258,9 +284,9 @@ h3 { font-size: 15px; letter-spacing: .07em; color: var(--gold); margin-bottom: 
               transform .22s var(--ease-spring);
 }
 .drop-icon { width: 32px; height: 32px; color: var(--gold); margin-bottom: 4px; }
-.drop-title { margin: 0 0 6px; font-size: 17px; font-weight: 650; }
+.drop-title { display: block; margin: 0 0 6px; font-size: 17px; font-weight: 650; }
 .drop-title .link { color: var(--gold); text-decoration: underline; }
-.drop-sub { margin: 0; font-size: 13px; color: var(--ink-dim); }
+.drop-sub { display: block; margin: 0; font-size: 13px; color: var(--ink-dim); }
 code {
   background: rgba(255, 255, 255, .08); border-radius: 3px;
   padding: 1px 6px; font-size: 12.5px;
@@ -337,6 +363,10 @@ code {
 /* ---------- save ownership / editor ---------- */
 
 .save-drop {
+  display: block;
+  width: 100%;
+  background: transparent;
+  font: inherit;
   margin-top: 14px;
   padding: 12px 14px;
   border: 1px dashed rgba(160, 190, 230, .45);
@@ -367,6 +397,7 @@ code {
   background: var(--navy-2);
   color: var(--ink);
   overflow: auto;
+  overscroll-behavior: contain;
   /* Materialize rather than just fade (apple-design §12): scale and opacity
      move together so the sheet reads as arriving, not blinking on. Browsers
      without discrete-property transitions just show/hide it instantly, same
@@ -377,6 +408,19 @@ code {
               overlay .22s var(--ease-out) allow-discrete,
               display .22s var(--ease-out) allow-discrete;
 }
+
+.confirm-dialog {
+  width: min(460px, calc(100vw - 28px));
+  padding: var(--grid);
+  border: 1px solid rgba(160, 190, 230, .45);
+  border-left: 4px solid var(--gold);
+  background: var(--navy-2);
+  color: var(--ink);
+  overscroll-behavior: contain;
+}
+.confirm-dialog::backdrop { background: rgba(0, 8, 20, .78); }
+.confirm-dialog h2 { margin-bottom: 12px; }
+.confirm-dialog p { margin: 0; color: var(--ink-dim); }
 @starting-style {
   #save-dialog[open] { opacity: 0; transform: scale(.96); }
 }
@@ -590,7 +634,7 @@ kbd {
    or not the touch pad is on screen next to it. */
 .fs-btn {
   position: fixed; right: 14px; bottom: 14px; z-index: 11;
-  width: 42px; height: 42px; border-radius: 4px; cursor: pointer;
+  width: 44px; height: 44px; border-radius: 4px; cursor: pointer;
   background: rgba(8, 22, 44, .68); color: var(--ink);
   border: 1px solid rgba(150, 185, 230, .3);
   box-shadow: var(--glass-edge);
@@ -601,7 +645,7 @@ kbd {
               background-color .1s var(--ease-out);
   -webkit-tap-highlight-color: transparent;
 }
-.fs-btn:hover, .fs-btn:focus-visible { opacity: 1; outline: none; }
+.fs-btn:hover, .fs-btn:focus-visible { opacity: 1; }
 .fs-btn:active { opacity: 1; transform: scale(.92); background: rgba(8, 22, 44, .85); }
 .fs-btn { touch-action: manipulation; }
 /* With the touch overlay active, the bottom-right corner belongs to the
@@ -614,6 +658,12 @@ kbd {
   bottom: auto;
   z-index: 16;
   opacity: .55;
+}
+#stage.touch-ui-active #stage-status {
+  /* Keep a fullscreen failure message below the top touch chrome rather than
+   * painting across the Controls and fullscreen targets. */
+  top: calc(max(62px, env(safe-area-inset-top) + 58px));
+  width: min(620px, calc(100vw - 24px));
 }
 
 /* ---------- mobile touch controller ----------
@@ -930,6 +980,10 @@ kbd {
     justify-content: center;
     padding: 0;
   }
+  #stage.touch-ui-active #stage-status {
+    /* Portrait also shows the rotate hint below the top controls. */
+    top: calc(max(106px, env(safe-area-inset-top) + 102px));
+  }
 }
 
 @media (max-height: 420px) {
@@ -992,11 +1046,39 @@ kbd {
   color: var(--gold); font: 650 12px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-#save-banner {
+#stage-status {
+  position: fixed; top: max(12px, env(safe-area-inset-top)); left: 50%;
+  z-index: 17; transform: translateX(-50%); box-sizing: border-box;
+  width: min(620px, calc(100vw - 88px)); margin: 0; padding: 9px 14px;
+  border: 1px solid rgba(255, 129, 137, .7); border-radius: 4px;
+  background: rgba(120, 20, 30, .95); color: #fff; text-align: center;
+  font-size: 14px; overflow-wrap: anywhere; pointer-events: none;
+}
+
+#durability-banners {
   position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 20;
+  width: min(640px, calc(100vw - 24px));
+  display: flex; flex-direction: column-reverse; gap: 8px;
+  pointer-events: none;
+}
+#save-banner, #rom-session-banner {
+  box-sizing: border-box; width: 100%;
   background: rgba(120, 20, 30, .95); color: #fff;
   padding: 10px 18px; border-radius: 4px; font-size: 14px;
+  overflow-wrap: anywhere;
 }
+#rom-session-banner { pointer-events: auto; }
+#rom-session-banner.ok { background: rgba(18, 88, 57, .96); color: #fff !important; }
+#rom-session-message { display: block; }
+.banner-action {
+  display: block; margin: 8px auto 0; padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, .65); border-radius: 3px;
+  background: rgba(0, 0, 0, .22); color: #fff;
+}
+.banner-action:hover:not(:disabled), .banner-action:focus-visible {
+  background: rgba(255, 255, 255, .16);
+}
+.banner-action:disabled { opacity: .55; cursor: wait; }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
@@ -1054,6 +1136,31 @@ kbd {
   line-height: 1.5;
   color: var(--ink-dim);
 }
+.quality-advanced {
+  grid-column: 1 / -1;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: rgba(8, 22, 44, .32);
+}
+.quality-advanced > summary {
+  padding: 9px 12px;
+  color: var(--ink-dim);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.quality-advanced[open] > summary {
+  color: var(--ink);
+  border-bottom: 1px solid var(--line);
+}
+.quality-advanced-grid {
+  display: grid;
+  grid-template-columns: minmax(130px, .8fr) minmax(190px, 1.2fr);
+  gap: 10px 14px;
+  align-items: center;
+  padding: 12px;
+}
 @media (max-width: 520px) {
   .quality { grid-template-columns: 1fr; gap: 6px; }
+  .quality-advanced-grid { grid-template-columns: 1fr; gap: 6px; }
 }

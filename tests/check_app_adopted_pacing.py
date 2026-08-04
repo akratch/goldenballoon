@@ -34,6 +34,8 @@ PRESSURE_RE = {
     "gl": re.compile(r"\[GL-BACKPRESSURE\] (.*)"),
     "webgpu": re.compile(r"\[WGPU-BACKPRESSURE\] (.*)"),
 }
+REPLAY_RE = re.compile(r"\[REPLAY-SUMMARY\] (.*)")
+RETAINED_RE = re.compile(r"\[RETAINED-TASK\] (.*)")
 PRESENT_MODE_RE = re.compile(
     r"\[PRESENT-MODE\] backend=(gl|webgpu) policy=([a-z]+) "
     r"rate=(\d+)\b([^\n]*)"
@@ -106,7 +108,14 @@ def validate_pressure(backend: Backend, policy: str,
                       row: str, host_presented: bool,
                       minimum_submissions: int = TICKS) -> None:
     fields = parse_fields(row)
-    if fields.get("submitted", 0) < minimum_submissions:
+    minimum_admitted = minimum_submissions
+    if backend.resolved == "webgpu":
+        endpoint_skips = fields.get("endpointSkips", 0)
+        if endpoint_skips < 0 or endpoint_skips > minimum_submissions:
+            raise RuntimeError(
+                f"{backend.label}/{policy}: impossible endpoint shedding: {row}")
+        minimum_admitted -= endpoint_skips
+    if fields.get("submitted", 0) < minimum_admitted:
         raise RuntimeError(f"{backend.label}/{policy}: too few submissions: {row}")
     if fields.get("completed") != fields.get("submitted"):
         raise RuntimeError(
@@ -118,16 +127,25 @@ def validate_pressure(backend: Backend, policy: str,
         raise RuntimeError(
             f"{backend.label}/{policy}: interval-zero GL was not active: {row}")
     if backend.resolved == "webgpu":
-        if fields.get("abandoned") != 0 or fields.get("skips") != 0:
+        if (fields.get("abandoned") != 0 or
+                fields.get("runtimewaits", 0) != 0 or
+                fields.get("runtimewaitns", 0) != 0):
             raise RuntimeError(
-                f"{backend.label}/{policy}: WebGPU work was dropped: {row}")
+                f"{backend.label}/{policy}: WebGPU blocked or abandoned "
+                f"runtime work: {row}")
+        if fields.get("skips", -1) != (
+                fields.get("endpointSkips", -1) +
+                fields.get("replaySkips", -1)):
+            raise RuntimeError(
+                f"{backend.label}/{policy}: WebGPU admission skips do not "
+                f"reconcile by image class: {row}")
         if (fields.get("presented", 0) + fields.get("unavailable", 0) !=
                 fields.get("submitted", 0)):
             raise RuntimeError(
                 f"{backend.label}/{policy}: WebGPU surface outcomes do not "
                 f"account for every submission: {row}")
         if host_presented:
-            if fields.get("presented", 0) < minimum_submissions:
+            if fields.get("presented", 0) < minimum_admitted:
                 raise RuntimeError(
                     f"{backend.label}/{policy}: too few surface presents: {row}")
         elif (fields.get("presented") != 0 or
@@ -226,6 +244,13 @@ def stage_macos_sdl2(bundle: Path, executable: Path) -> None:
     production bundle rewrites the dependency into ``Contents/Frameworks``.
     Mirror that exact boundary here so this is a packaged-app test, not an
     accidental test of the build tree's permissions.
+
+    Developer machines may resolve ``sdl2`` to Homebrew's ``sdl2-compat``
+    shim. Unlike the release dependency (which packaging deliberately requires
+    to be standalone), that shim loads SDL3 at runtime rather than recording it
+    as a Mach-O dependency. Stage SDL3 beside the shim for this local fixture;
+    otherwise sdl2-compat presents an AppKit error dialog from its initializer
+    before ``main`` and a noninteractive qualification run merely times out.
     """
     linked = subprocess.run(
         ["otool", "-L", str(executable)], check=True, text=True,
@@ -272,6 +297,23 @@ def stage_macos_sdl2(bundle: Path, executable: Path) -> None:
     frameworks.mkdir()
     bundled_sdl = frameworks / sources[0].name
     shutil.copy2(sources[0], bundled_sdl)
+    nested_code = [bundled_sdl]
+    if b"sdl2-compat:" in bundled_sdl.read_bytes():
+        sdl3_libdir = subprocess.run(
+            ["pkg-config", "--variable=libdir", "sdl3"],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ).stdout.strip()
+        sdl3_source = Path(sdl3_libdir) / "libSDL3.dylib"
+        if not sdl3_source.is_file():
+            raise RuntimeError(
+                "FPS overlay fixture resolved sdl2-compat but could not "
+                f"locate its SDL3 runtime at {sdl3_source}")
+        bundled_sdl3 = frameworks / "libSDL3.dylib"
+        shutil.copy2(sdl3_source, bundled_sdl3)
+        nested_code.append(bundled_sdl3)
     bundled_load_path = f"@executable_path/../Frameworks/{bundled_sdl.name}"
     subprocess.run(
         ["install_name_tool", "-change", load_path, bundled_load_path,
@@ -289,8 +331,11 @@ def stage_macos_sdl2(bundle: Path, executable: Path) -> None:
     # install_name_tool invalidates the linker's signature. Remove copied
     # metadata, sign nested code first, then seal the finished outer bundle.
     subprocess.run(["xattr", "-cr", str(bundle)], check=True)
-    subprocess.run(
-        ["codesign", "--force", "--sign", "-", str(bundled_sdl)], check=True)
+    for nested_path in nested_code:
+        subprocess.run(
+            ["codesign", "--force", "--sign", "-", str(nested_path)],
+            check=True,
+        )
     subprocess.run(
         ["codesign", "--force", "--sign", "-", str(bundle)], check=True)
     subprocess.run(
@@ -347,6 +392,8 @@ def run_policy(binary: Path, rom: Path, backend: Backend, policy: str,
             env["MDKR_APP_UI_TRACE"] = "1"
         else:
             env["MDKR_PRESENT_RATE"] = policy
+            env["MDKR_PRESENT_SMOOTHING"] = "interpolate"
+            env["MDKR_PRESENT_SCHED_TRACE"] = "1"
         if backend.selector is not None:
             env["MDKR_RENDERER"] = backend.selector
         command = [str(binary)]
@@ -382,7 +429,7 @@ def run_policy(binary: Path, rom: Path, backend: Backend, policy: str,
                 f"Video.FrameLimit={policy}",
                 "[app-ui] settings action=play-with-changes restartPending=1",
                 f"[app-ui] frame-limit value={policy} label={policy} Hz "
-                "(Experimental — Under Construction) restartPending=1",
+                "restartPending=1",
             ):
                 if marker not in output:
                     raise RuntimeError(
@@ -397,6 +444,33 @@ def run_policy(binary: Path, rom: Path, backend: Backend, policy: str,
                 f"{backend.label}/{policy}: expected one backpressure row, "
                 f"got {len(rows)}")
         validate_pressure(backend, policy, rows[0], host_presented)
+        if not stage_via_launcher:
+            replay_rows = REPLAY_RE.findall(output)
+            retained_rows = RETAINED_RE.findall(output)
+            if len(replay_rows) != 1 or len(retained_rows) != 1:
+                raise RuntimeError(
+                    f"{backend.label}/{policy}: missing public interpolation "
+                    "telemetry")
+            replay = parse_fields(replay_rows[0])
+            retained = parse_fields(retained_rows[0])
+            pressure = parse_fields(rows[0])
+            completed_or_shed = replay.get("walks", 0) > 0
+            if backend.resolved == "webgpu":
+                completed_or_shed = completed_or_shed or (
+                    pressure.get("replaySkips", 0) > 0 and
+                    retained.get("acquires", 0) >=
+                    pressure.get("replaySkips", 0) and
+                    replay.get("restores", 0) >=
+                    pressure.get("replaySkips", 0))
+            if (not completed_or_shed or
+                    replay.get("freezefail", -1) != 0 or
+                    replay.get("restorefail", -1) != 0 or
+                    retained.get("captures", 0) <= 0 or
+                    retained.get("failures", -1) != 0 or
+                    retained.get("rejects", -1) != 0):
+                raise RuntimeError(
+                    f"{backend.label}/{policy}: public immutable replay was "
+                    f"not healthy: replay={replay} retained={retained}")
         if verbose:
             print(f"  PASS {rows[0]}")
 
@@ -909,7 +983,7 @@ def launch_macos_app(binary: Path, rom: Path, root: Path, timeout: int,
         launch_env["MDKR_WEBGPU_FAULT"] = fault
     command = [
         str(LAUNCHSERVICES_PROBE),
-        "--timeout", str(timeout),
+        "--timeout", str(min(timeout, 600)),
         "--executable", str(bundled_binary),
         "--stdout", str(stdout_path),
         "--stderr", str(stderr_path),

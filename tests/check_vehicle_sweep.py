@@ -62,6 +62,7 @@ What it asserts, per combination
 
 Usage:
     tests/check_vehicle_sweep.py                 # the full legitimate matrix (47)
+    tests/check_vehicle_sweep.py --taj           # the same matrix as playable Taj
     tests/check_vehicle_sweep.py --vehicles 1,2  # hovercraft + plane rows only
     tests/check_vehicle_sweep.py --tracks 6,15
     tests/check_vehicle_sweep.py --matrix        # print the matrix and exit
@@ -148,7 +149,7 @@ def game_vehicle_matrix(build, rom, timeout):
     return {int(m[0]): (int(m[1]), int(m[2], 16)) for m in GAME_VEH_RE.findall(out)}
 
 
-def run_combo(build, rom, script, level, vehicle, frames, timeout):
+def run_combo(build, rom, script, level, vehicle, frames, timeout, taj=False):
     env = dict(os.environ)
     env["MDKR_AUDIO"] = "0"          # belt-and-braces; --headless-frames is the guarantee
     env["MDKR_PRESENT_RATE"] = "original"
@@ -157,6 +158,16 @@ def run_combo(build, rom, script, level, vehicle, frames, timeout):
     env["MDKR_AUTOPILOT"] = "1"      # drive with DKR's own AI -- no per-track input tuning
     env["MDKR_TRACE"] = "1"          # emit the [PACE] / [PVEH] probes
     env["MDKR_LOAD_TRACK"] = "%d:%d" % (level, vehicle)
+    if taj:
+        # A test-only identity bootstrap avoids replaying the long frontend
+        # unlock route 47 times. The race still goes through normal character
+        # resolution, racer binding, vehicle dispatch, physics, and rendering.
+        env["MDKR_TAJ_TEST_PLAYER"] = "0"
+        env["MDKR_TAJ_PHYSICS_TRACE"] = "1"
+        env["MDKR_TAJ_VISUAL_TRACE"] = "1"
+        env["MDKR_FORCE_SHIELD"] = "3000:90"
+        if vehicle == 0:
+            env["MDKR_TAJ_TEST_DASH_AT"] = "3200"
     cmd = [build, "--headless-frames", str(frames), "--input-script", script, "--rom", rom]
     try:
         proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE,
@@ -205,6 +216,23 @@ def run_combo(build, rom, script, level, vehicle, frames, timeout):
         why.append("no racer samples")
     if bad:
         why.append("%d bad-log line(s): %s" % (len(bad), bad[0]))
+    if taj:
+        taj_required = (
+            "taj_test_player: player=0 enabled=1",
+            "[TAJPHYS] active racer=0 player=0 vehicle=%d" % vehicle,
+            "[TAJVIS] event=compose",
+            "[TAJVIS] event=donor_suppressed",
+            "[TAJVIS] event=effect_anchor",
+        )
+        for marker in taj_required:
+            if marker not in out:
+                why.append("playable Taj path missing %r" % marker)
+        if vehicle == 0:
+            for marker in ("[TAJPHYS] dash-start racer=0",
+                           "[TAJVIS] event=dash_fx_start",
+                           "[TAJVIS] event=dash_fx_end"):
+                if marker not in out:
+                    why.append("playable Taj dash witness missing %r" % marker)
 
     maxcp = 0
     nonfinite = 0
@@ -263,6 +291,8 @@ def main():
     ap.add_argument("--vehicles", default=None, help="comma-separated vehicle ids to include")
     ap.add_argument("--two-player-mask", action="store_true",
                     help="apply menu.c's 2-player narrowing (no hovercraft on 15, no plane on 28)")
+    ap.add_argument("--taj", action="store_true",
+                    help="run the ROM-derived matrix through playable Taj identity, physics, and presentation")
     ap.add_argument("--matrix", action="store_true", help="print the swept matrix and exit 0")
     ap.add_argument("--expect-fail", default="",
                     help="comma-separated level:vehicle known to fail; reported but tolerated")
@@ -328,13 +358,15 @@ def main():
     print("  agree on all %d swept track(s) (%d levels traced)"
           % (len(set(tracks)), len(game_matrix)))
 
-    print("check_vehicle_sweep: %d combination(s) over %d track(s), %d frames each, autopilot"
-          % (len(combos), len(tracks), args.frames))
+    print("check_vehicle_sweep: %d combination(s) over %d track(s), %d frames each, autopilot%s"
+          % (len(combos), len(tracks), args.frames,
+             " + playable Taj" if args.taj else ""))
 
     unexpected = []
     sigs = {}
     for level, veh in combos:
-        r = run_combo(args.build, args.rom, args.script, level, veh, args.frames, args.timeout)
+        r = run_combo(args.build, args.rom, args.script, level, veh,
+                      args.frames, args.timeout, args.taj)
         why = r["why"]
         if r["sig"] is not None:
             prev = sigs.get((level, r["sig"]))
@@ -365,7 +397,8 @@ def main():
         print("check_vehicle_sweep: FAIL - %d combination(s) broke unexpectedly: %s"
               % (len(unexpected), ", ".join("%d:%d" % c for c in unexpected)))
         return 1
-    print("check_vehicle_sweep: PASS (%d combinations)" % len(combos))
+    print("check_vehicle_sweep: PASS (%d combinations%s)" %
+          (len(combos), ", playable Taj" if args.taj else ""))
     return 0
 
 

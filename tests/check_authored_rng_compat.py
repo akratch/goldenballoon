@@ -2,13 +2,16 @@
 """Freeze the legacy all-racer state/RNG stream for the authored 30 Hz route.
 
 This is a raw compatibility oracle, not a statistical gameplay gate. It
-protects every emitted racer row and the shared authored RNG value against
-commit 8763dbf0fed7ae4697723470ec0c56b354dc9604, the healthy parallel
-integration baseline later merged as feeeba5's second parent. It is not
-a direct ancestor of the fixed-authority branch, so that merge relationship is
-stated explicitly. The fixture was regenerated from a detached Release/GL-only
-build with the command documented in tests/README.md. It is encoded as a row
-count, exact schema, and SHA-256 so no private ROM-derived log is shipped.
+protects every emitted racer row and the shared authored RNG value against the
+accepted vehicle-audio/Taj integration baseline. The prior hash predated the
+ordinary-car audio dispatch and therefore froze a port bug: the retail ROM's
+``racer_sound_car`` consumes the shared RNG stream. That ownership was proved
+directly with the pinned ares PC/return-address witness documented in
+tests/README.md before this oracle was rebaselined. The fixture is encoded as a
+row count, exact schema, and SHA-256 so no private ROM-derived log is shipped.
+The shared route compiler advances native script entries by one fixed ticket,
+matching the host input boundary's N-to-N+1 publication contract; this keeps
+the exact accepted stream stable instead of rebaselining around test timing.
 """
 
 from __future__ import annotations
@@ -27,9 +30,12 @@ from harness_utils import resolve_binary
 ROOT = Path(__file__).resolve().parent.parent
 ROUTE_TOOL = ROOT / "tools" / "dkr_oracle_route.py"
 FRAMES = 4800
-REFERENCE_COMMIT = "8763dbf0fed7ae4697723470ec0c56b354dc9604"
-EXPECTED_ROWS = 27_832
-EXPECTED_SHA256 = "f0cca566b53eebde3bdfe1c31a3eb4ed5b95437c729d90b11c9d94d2de3c8f86"
+REFERENCE_COMMIT = "64936e36b4c9ef7ecdce5beb93cd662d4318548d"
+EXPECTED_ROWS = 27_840
+EXPECTED_SHA256 = "d74efe02aec07aa59710ce457e54180c28a22022f3d35e7087096d5130dba49b"
+ARES_VEHICLE_RNG_PREFIX_SHA256 = (
+    "9fd7cb9aebc163b00f9c8e4bfd292f90b684b4d46415ab5e0ef594c8bfb2d16e"
+)
 FIELDS = (
     "frame", "map", "slot", "x", "y", "z", "xv", "yv", "zv", "fvel",
     "vel", "cp", "next", "lap", "countlap", "fin", "fpos", "ridx",
@@ -133,7 +139,8 @@ def main() -> int:
 
     print(
         "check_authored_rng_compat: PASS "
-        f"({EXPECTED_ROWS} rows, {digest}, reference {REFERENCE_COMMIT[:12]})"
+        f"({EXPECTED_ROWS} rows, {digest}, reference {REFERENCE_COMMIT[:12]}, "
+        f"ares car-RNG witness {ARES_VEHICLE_RNG_PREFIX_SHA256[:12]})"
     )
     return 0
 

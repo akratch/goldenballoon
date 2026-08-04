@@ -49,6 +49,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import re
 import struct
 import sys
@@ -67,6 +68,8 @@ ASSET_LEVEL_HEADERS_TABLE = 22
 ASSET_LEVEL_HEADERS = 23
 ASSET_OBJECT_HEADERS_TABLE = 33
 ASSET_OBJECTS = 34
+ASSET_AUDIO_TABLE = 38
+ASSET_AUDIO = 39
 ASSET_PARTICLE_BEHAVIORS_TABLE = 42
 ASSET_PARTICLE_BEHAVIORS = 43
 ASSET_TTGHOSTS_TABLE = 48
@@ -659,6 +662,65 @@ def check_object_headers(rom, rep):
     rep.note(f"object headers: {walked} walked, all numLightSources == 0")
 
 
+def check_vehicle_audio(rom, rep):
+    """Validate every typed vehicle record inside heterogeneous ASSET_AUDIO."""
+    rep.asset("AUDIO_VEHICLE")
+    raw_table = rom.section(ASSET_AUDIO_TABLE)
+    offsets = struct.unpack(f">{len(raw_table) // 4}i", raw_table)
+    audio = rom.section(ASSET_AUDIO)
+    if len(offsets) <= 8:
+        raise SwapInvariantError("audio table has no vehicle-record bounds")
+
+    record_size = 0x4C
+    record_count = 30
+    span = offsets[8] - offsets[7]
+    if span != record_count * record_size:
+        raise SwapInvariantError(
+            f"vehicle audio span {span:#x}, expected "
+            f"{record_count} * {record_size:#x}")
+    sound_table_span = offsets[7] - offsets[6]
+    if sound_table_span <= 0 or sound_table_span % 10 != 0:
+        raise SwapInvariantError(
+            f"SoundData span {sound_table_span} is not a positive 10-byte table")
+    sound_count = sound_table_span // 10
+
+    sound_ids = []
+    pitch_levels = []
+    pitch_scales = []
+    for row in range(record_count):
+        start = offsets[7] + row * record_size
+        record = audio[start:start + record_size]
+        if len(record) != record_size:
+            raise SwapInvariantError(f"vehicle audio row {row} is truncated")
+        sound_ids.extend(struct.unpack_from(">2H", record, 0x00))
+        pitch_levels.extend(struct.unpack_from(">10H", record, 0x18))
+        pitch_scales.extend(struct.unpack_from(">7h", record, 0x3C))
+
+    ids_ok = all(sound_id < sound_count for sound_id in sound_ids)
+    reversed_ids_ok = all(rev16(sound_id) < sound_count for sound_id in sound_ids)
+    rep.control("vehicle sound IDs address the SoundData table",
+                ids_ok, reversed_ids_ok)
+
+    def pitch_ok(value):
+        return value in (0, 0xFFFF) or 1000 <= value <= 50000
+
+    rep.control("vehicle pitch control points use authored fixed-point range",
+                all(pitch_ok(value) for value in pitch_levels),
+                all(pitch_ok(rev16(value)) for value in pitch_levels))
+
+    def signed_rev16(value):
+        encoded = rev16(value & 0xFFFF)
+        return encoded - 0x10000 if encoded & 0x8000 else encoded
+
+    rep.control("vehicle signed pitch scales stay within authored range",
+                all(-20000 <= value <= 20000 for value in pitch_scales),
+                all(-20000 <= signed_rev16(value) <= 20000
+                    for value in pitch_scales))
+    rep.note(
+        f"vehicle audio: {record_count} x {record_size:#x} records, "
+        f"{sound_count} SoundData entries")
+
+
 # ---------------------------------------------------------------------------
 # ARM 2 -- source coverage of raw asset_load() sites
 # ---------------------------------------------------------------------------
@@ -681,7 +743,9 @@ RAW_LOAD_DISPOSITION = {
     # scan. They are swapped per animation frame inside load_texture()'s own
     # walk (swap_texture_header) rather than at the asset_load() line.
     "ASSET_GAME_TEXT_TABLE": "own",   # 4-word manual swap at the call site
-    "ASSET_AUDIO": "own",             # libultra bnkf.c parses BE explicitly
+    # Heterogeneous: every literal call site is separately enumerated and
+    # ownership-checked by check_audio_source_ownership() below.
+    "ASSET_AUDIO": "audio",
     "ASSET_JAPANESE_FONTS": "own",    # unused for us_v80 (REGION != JP)
     "ASSET_GAME_TEXT": "bytes",       # textbox command byte stream
     "ASSET_MENU_TEXT": "bytes",       # ASCII
@@ -692,6 +756,9 @@ RAW_LOAD_DISPOSITION = {
 
 SWAP_CALL = re.compile(r"asset_swap_(normalize|object_animation|misc_\w+)\s*\(")
 LOAD_CALL = re.compile(r"asset_load\(\s*(ASSET_[A-Z_0-9]+)")
+AUDIO_LOAD_DEST = re.compile(
+    r"asset_load\(\s*ASSET_AUDIO\s*,\s*"
+    r"(?:\((?:uintptr_t|u32)\)\s*)?([A-Za-z_][A-Za-z0-9_]*)")
 
 # Lines to scan after an asset_load() for the swap it owes. Sized to clear the
 # gzip_inflate + bounds-check preamble that the compressed sections run first
@@ -707,17 +774,81 @@ def magic_code_call_order_ok(source):
             decrypt[0].start() < normalize[0].start())
 
 
+def check_audio_source_ownership(rep):
+    """Every heterogeneous ASSET_AUDIO raw load must have a named consumer."""
+    expected = {
+        "game/src/audio.c": Counter({
+            "gSoundBank": 2,
+            "gSoundTable": 2,
+            "gSeqSoundTable": 2,
+            "gSequenceBank": 2,
+            "gSequenceTable": 2,
+            "seqCountRaw": 1,
+            "seqfRaw": 1,
+            "sequence": 1,
+        }),
+        "game/src/audiomgr.c": Counter({"asset8": 2}),
+        "game/src/audio_vehicle.c": Counter({"asset": 1}),
+    }
+    found = {}
+    for path in sorted((ROOT / "game" / "src").rglob("*.c")):
+        source = path.read_text(errors="replace")
+        destinations = Counter(AUDIO_LOAD_DEST.findall(source))
+        if destinations:
+            found[str(path.relative_to(ROOT))] = destinations
+    if found != expected:
+        raise SwapInvariantError(
+            "ASSET_AUDIO raw-load inventory changed; audit the new/removed "
+            f"heterogeneous consumer and update ownership: {found}, expected {expected}")
+
+    audio = (ROOT / "game/src/audio.c").read_text(errors="replace")
+    audiomgr = (ROOT / "game/src/audiomgr.c").read_text(errors="replace")
+    vehicle = (ROOT / "game/src/audio_vehicle.c").read_text(errors="replace")
+    audio_header = (ROOT / "game/src/audio.h").read_text(errors="replace")
+    bank_parser = (ROOT / "platform/audio_compat.c").read_text(
+        errors="replace")
+
+    required = {
+        "bank control parser": "alBnkfNew(gSoundBank" in audio and
+                               "alBnkfNew(gSequenceBank" in audio and
+                               "bank_ctl_u16" in bank_parser and
+                               "bank_ctl_u32" in bank_parser,
+        "SoundData scalar conversion":
+            "gSoundTable[i].soundBite" in audio and
+            "gSoundTable[i].range" in audio,
+        "sequence-file parser": "alSeqFileCount(seqCountRaw)" in audio and
+                                "alSeqFileNewFrom" in audio and
+                                "alSeqFileNew(gSequenceTable" in audio,
+        "compressed-MIDI header conversion":
+            "for (w = 0; w < 17; w++)" in audio and
+            "alCSeqNew(seq, sequence)" in audio,
+        "custom-FX word conversion": "asset_swap_lut(asset8, assetSize)" in audiomgr,
+        "vehicle-record conversion":
+            "asset_swap_vehicle_sound(asset, sizeof(VehicleSoundAsset))" in vehicle,
+        "MusicData byte-only layout": bool(re.search(
+            r"typedef struct MusicData\s*\{\s*"
+            r"u8 volume;\s*u8 tempo;\s*u8 reverb;\s*\} MusicData;",
+            audio_header, re.DOTALL)),
+    }
+    missing = [name for name, present in required.items() if not present]
+    if missing:
+        raise SwapInvariantError(
+            "ASSET_AUDIO ownership proof missing for: " + ", ".join(missing))
+    for name in required:
+        rep.ok(f"ASSET_AUDIO owner: {name}")
+    rep.note("audio source ownership: 16 raw loads, all consumers enumerated")
+
+
 def check_source_coverage(rep):
     """Every raw asset_load() site must have a declared, satisfied disposition."""
     sources = sorted((ROOT / "game" / "src").rglob("*.c"))
     seen = {}
     problems = []
     for path in sources:
-        lines = path.read_text(errors="replace").splitlines()
-        for number, line in enumerate(lines):
-            match = LOAD_CALL.search(line)
-            if not match:
-                continue
+        source = path.read_text(errors="replace")
+        lines = source.splitlines()
+        for match in LOAD_CALL.finditer(source):
+            number = source.count("\n", 0, match.start())
             asset = match.group(1)
             seen.setdefault(asset, []).append(f"{path.relative_to(ROOT)}:{number + 1}")
             disposition = RAW_LOAD_DISPOSITION.get(asset)
@@ -748,6 +879,8 @@ def check_source_coverage(rep):
     if problems:
         raise SwapInvariantError(
             "raw asset_load() coverage failures:\n  " + "\n  ".join(problems))
+
+    check_audio_source_ownership(rep)
 
     objects_source = (ROOT / "game" / "src" / "objects.c").read_text(
         errors="replace")
@@ -787,6 +920,7 @@ def main():
         check_ai_behaviour(rom, rep)
         check_tt_ghosts(rom, rep)
         check_object_headers(rom, rep)
+        check_vehicle_audio(rom, rep)
         rep.require_discriminating()
     except SwapInvariantError as exc:
         print(f"\nFAIL: {exc}", file=sys.stderr)

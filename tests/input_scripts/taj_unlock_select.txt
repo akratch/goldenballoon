@@ -1,0 +1,101 @@
+# Unlock the native Taj mod through its real onscreen-keyboard route, return to
+# character select, move Diddy -> Tiptup -> Taj, and
+# confirm. Keyboard rows are ABCDEFG / HIJKLMN / OPQRSTU / VWXYZ + DEL + OK.
+1250 START 4
+1310 DOWN 4
+1380 START 4
+1520 DOWN 4
+1580 DOWN 4
+1640 DOWN 4
+1700 DOWN 4
+1760 DOWN 4
+1840 A 4
+1900 A 4
+
+# ABRACADABRA
+1940 A 4
+1970 RIGHT 4
+2000 A 4
+2030 DOWN 4
+2060 DOWN 4
+2090 RIGHT 4
+2120 RIGHT 4
+2150 A 4
+2180 UP 4
+2210 UP 4
+2240 LEFT 4
+2270 LEFT 4
+2300 LEFT 4
+2330 A 4
+2360 RIGHT 4
+2390 RIGHT 4
+2420 A 4
+2450 LEFT 4
+2480 LEFT 4
+2510 A 4
+2540 RIGHT 4
+2570 RIGHT 4
+2600 RIGHT 4
+2630 A 4
+2660 LEFT 4
+2690 LEFT 4
+2720 LEFT 4
+2750 A 4
+2780 RIGHT 4
+2810 A 4
+2840 DOWN 4
+2870 DOWN 4
+2900 RIGHT 4
+2930 RIGHT 4
+2960 A 4
+2990 UP 4
+3020 UP 4
+3050 LEFT 4
+3080 LEFT 4
+3110 LEFT 4
+3140 A 4
+3170 START 4
+
+# Dismiss success, return through Options to title, then enter character select.
+3240 A 4
+3310 B 4
+3450 B 4
+3650 START 4
+
+# Walk every ordinary base-roster actor before Taj. This is the direct
+# regression for the old presentation bug where a bare TAJ label followed
+# every hover even though Taj himself was absent.
+3730 LEFT 4
+3755 DOWN 4
+3780 RIGHT 4
+3805 UP 4
+3830 RIGHT 4
+3855 RIGHT 4
+3880 DOWN 4
+3905 LEFT 4
+3930 LEFT 4
+
+# Confirm Taj, then confirm the ready screen.
+4030 A 4
+4110 A 4
+
+# Dismiss the one-time controller pak caution, choose Tracks, and start the
+# first Dino Domain race. This proves the virtual selection survives the real
+# frontend handoff instead of exercising only menu-local state.
+4300 A 4
+4460 DOWN 4
+4560 A 4
+4720 A 4
+4890 A 4
+5030 A 4
+5170 A 4
+
+# Exercise the production restart path after the carpet has been live. The
+# companion lifecycle must tear down and compose again without touching the
+# authoritative racer or leaking a Park Warden interaction.
+5400 Z 4
+5700 Z 4
+6100 Z 4
+6500 START 4
+6540 DOWN 4
+6580 A 4

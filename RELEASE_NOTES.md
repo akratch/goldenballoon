@@ -1,241 +1,174 @@
-# Golden Balloon 1.0.3
+# Golden Balloon 1.0.4
 
-Golden Balloon 1.0.3 closes a family of texture, glyph, and Remastered
-composition defects found after 1.0.2. Restored remains the default and gameplay
-timing is unchanged. No game data is included.
+*Released 2026-08-04.*
+
+Golden Balloon 1.0.4 adds playable Taj, smoother high-refresh presentation,
+and a much better desktop launcher. It also fixes several audio, widescreen,
+controller, and recovery problems found during extended play. No game data is
+included.
+
+## Recommended setup
+
+| Setting | Recommended value | Why |
+|---|---|---|
+| Renderer | **WebGPU** | Qualified native and browser rendering path |
+| Presentation | **Restored** | Widescreen and modern image quality without changing the original art direction |
+| Frame limit | **Original** | Presents the game's authored motion and uses the least extra CPU/GPU time |
+| Motion smoothing | **Off** | Stable default; avoids the known scrolling-surface interpolation limit |
+| Gameplay cadence | **Original** | Preserves the original physics, AI, timers, audio service, and race pace |
+
+These are the defaults for a fresh configuration. Upgrades retain existing
+preferences, so check Settings if you previously selected an experimental
+mode.
+
+For smoother motion, try **Match Display** with **Motion smoothing:
+Interpolated**. Interpolated draws presentation-only in-between images; it does
+not run the game more often. **Enhanced** cadence is a separate compatibility
+option that changes gameplay and ran the measured Bluey 2 route about 14%
+faster. It is not recommended for accurate play. **Remastered** remains a
+visual preview, and **OpenGL** remains a diagnostic backend.
+
+## Playable Taj
+
+- Enter `ABRACADABRA` or complete all three Taj challenges to unlock Taj.
+- Taj appears as a normal character-select choice regardless of how many retail
+  characters are unlocked. He has his own portrait, voice, horn, HUD, results
+  identity, and handling.
+- His magic carpet is scaled to the playable model and has its own animation;
+  the oversized picker shadow and flat-carpet presentation have been removed.
+- Taj works with car, hovercraft, and plane selections and in multiplayer.
+- Taj Time Trials cannot overwrite the original roster's records or ghosts.
+  Unlock state is preserved across relaunches and supported save operations.
+
+## Frame rate, widescreen, and presentation
+
+- Added safe presentation-only interpolation for cameras, racers, supported
+  objects and deformations, particles, fades, and projected shadows. Gameplay,
+  input, timers, RNG, audio, and saves remain on the original fixed tick.
+- Fixed projected kart and character shadows flickering or snapping on
+  interpolated frames.
+- Fixed framed widescreen scenes. Track-select previews and results footage now
+  stay inside their wooden frames instead of bleeding into the side areas.
+- Restored full-width Hor+ presentation where no physical frame is present,
+  including the opening logos, animated credits, Track Select setup, and the
+  initial post-race footage.
+- Track Select now extends its background cleanly on ultrawide displays without
+  exposing incomplete neighboring labels, question marks, or navigation arrows.
+- Transitions between contained and full-width views are treated as camera cuts,
+  preventing one-frame blends between incompatible projections.
+- Fixed high-refresh held-frame pacing that could consume a CPU core and cause
+  audio or frame-time hitches when motion smoothing was Off.
+
+## Audio
+
+- Restored engine sound response to throttle and speed for cars, hovercraft,
+  and planes without changing the gameplay RNG sequence.
+- Fixed final-lap music on native builds. The sequencer now applies the faster
+  tempo instead of changing only the displayed diagnostic value.
+- Added persistent master, music, and sound-effects levels to native Settings.
+  They stay synchronized with the original Audio Options menu, preview with
+  click-free ramps, and report save failures instead of silently reverting.
+- Bounded the native PCM backlog and added smooth recovery after rejected or
+  dropped buffers.
+- Fixed a Windows startup timing fault that could leave audio behind the video
+  through the opening sequence and catch up at character select.
+- F1 now applies a real pause: simulation and race effects stop while the
+  quieter authored music mix continues.
+
+## Launcher, controls, and platform fixes
+
+- Reworked native Settings around Presentation, Frame Rate & Motion, Audio,
+  Controller, and advanced graphics. Play remains visible, compact windows and
+  high UI scales no longer overlap, and dragging UI scale no longer makes the
+  interface flash. Larger controls and direct touch scrolling improve use on
+  handheld PCs and touchscreens.
+- ROM validation runs on a cancellable worker. Invalid or unsaved replacements
+  do not displace the last playable ROM.
+- Added **Restart & Apply** for restart-scoped settings. If relaunch staging or
+  engine startup fails, the app returns to the launcher with diagnostics rather
+  than exiting.
+- Escape now follows the overlay's back and quit-confirmation flow. Controller
+  state is cleared when the native window loses focus.
+- Windows gains borderless fullscreen, **F11** and **Alt+Enter** shortcuts,
+  controller remapping, selectable rumble strength, and Unicode and
+  extended-length path handling.
+- European 1.1 ROMs can select English, German, or French. The US 1.1 language
+  menu remains English/French.
+- Browser ROM and save replacement, local-storage failures, fullscreen denial,
+  keyboard focus, and document navigation now have visible recovery paths.
+
+## Known limitations
+
+- WebGPU with Restored presentation remains the qualified native and browser
+  path. OpenGL is a diagnostic option, and Remastered is still work in progress.
+- Motion smoothing remains a preview. UV-scrolled surfaces such as waterfalls,
+  water, and lava still update on authored game ticks and may shimmer or step
+  during camera motion. Motion smoothing Off is unaffected.
+- The desktop app supports keyboard and gamepad navigation, visible focus,
+  scaling, contrast, and reduced motion. It does not claim a
+  VoiceOver, UI Automation, or other screen-reader semantic tree.
+- Linux still uses drag and drop or a typed ROM path instead of a native file
+  picker.
+- The macOS download is ad-hoc integrity sealed but not Developer ID signed or
+  notarized. macOS may show an unidentified-developer warning on first launch;
+  use **System Settings → Privacy & Security → Open Anyway** if needed.
+
+For implementation details, see [CHANGELOG.md](CHANGELOG.md). Open work is
+listed in [ROADMAP.md](ROADMAP.md).
+
+---
+
+# Golden Balloon 1.0.3
 
 *Released 2026-08-02.*
 
-## What changed
+- Fixed texture-cache identity and stale WebGPU binding state that could show
+  old textures or filtering after menus and levels changed.
+- Kept Remastered grading on the 3D scene instead of applying it to HUD text.
+- Matched cutout mip coverage to the alpha threshold used by the renderers.
+- Made Restored the default everywhere. Remastered remains opt-in.
 
-- **Texture cache entries now describe the complete uploaded image.** Source
-  row pitch and span, palette, format, dimensions, LOADBLOCK row layout, SDF
-  derivation, mip policy, and cutout policy all participate in cache identity.
-  Recycled GPU texture IDs also invalidate their sampler memo before upload.
-  This removes first-use-wins behavior that could bind old pixels or filtering
-  after menu/level asset churn.
-- **WebGPU cache eviction cannot inherit a stale material or pipeline.** The
-  redundant-bind trackers are cleared before releasing a cached bind group or
-  pipeline. A native implementation may recycle opaque handle addresses; the
-  old ordering could mistake a replacement for the object already bound and
-  skip a required bind.
-- **Remastered never applies world finishing to the HUD.** At 1× render scale,
-  or when the render-pixel budget clamps supersampling to 1×, terminal HUD and
-  text are now composed after grading and tonemapping just as they are at 2×.
-  The maintained GL/WebGPU gate proves 8,350 opaque HUD pixels are byte-exact
-  across the finish A/B at both scales while the world changes materially.
-- **Cutout mipmaps preserve the silhouette the GPU actually draws.** Mip
-  coverage previously used alpha 128 while GL, WebGPU, and Metal discarded at
-  a strict 0.19 boundary (RGBA8 alpha 49). One shared contract now drives every
-  shader and the CPU mip reducer, preventing masked foliage, fences, decals,
-  and similar details from changing thickness or disappearing with distance.
-- **Restored is consistently the safe default.** Native defaults, CLI help,
-  launcher copy, browser copy, README, and tests now identify Remastered as an
-  opt-in work-in-progress mode. The reserved TexturePack setting remains
-  parseable for forward compatibility but is hidden until a loader exists.
-- **The 1.0.2 door-numeral fix is now structurally guarded as an ownership
-  rule.** Per-door and racer material choices remain draw-local; native code
-  cannot reintroduce the shared-model mutation. The real Adventure GL/WebGPU
-  oracle still proves stable 1/2/3/5 requirements and distinct final glyphs.
-- **The corruption gates are fail-red and backend-complete.** Odd-row texture
-  decode now runs from isolated configuration/save directories on both GL and
-  WebGPU, with deliberately broken decode controls. Runtime SDF, door glyph,
-  moving mip, cache-ownership, and 1×/2× HUD composition checks cover the
-  associated failure modes rather than one screenshot.
+WebGPU with Restored presentation remains the supported visual path for this
+release. OpenGL and Remastered were not promoted by 1.0.3.
 
-## What did not change
+---
 
-- WebGPU remains the proven native and browser default. OpenGL remains an
-  explicit compatibility/diagnostic backend.
-- Original remains **Recommended / Proven**. Every non-Original frame limit is
-  still **Experimental — Under Construction** and changes host pacing/input
-  opportunities only; it does not increase unique visual FPS.
-- The macOS artifact remains intentionally unsigned by a Developer ID. It is
-  still sealed inside-out and the finished DMG must pass the read-only-mounted
-  LaunchServices/WebGPU, dependency, deployment-target, and capture checks.
-- Existing saves, ROM support, controls, simulation, input, events, and audio
-  timing are unchanged.
-- Windows still lets wgpu-native choose Vulkan or Direct3D 12 automatically,
-  and still requires reasonably short, ASCII-only app/ROM paths. Explicit API
-  selection, richer adapter diagnostics, wide-character filesystem APIs, and
-  a reviewed application manifest remain deferred to a future portability
-  release.
+# Golden Balloon 1.0.2
+
+*Released 2026-08-02.*
+
+- Fixed Dino Domain door numerals changing or repeating as the camera moved.
+- Fixed Windows save migration and save tools opening binary data with text-mode
+  newline conversion.
 
 ---
 
 # Golden Balloon 1.0.1
 
-Windows WebGPU presentation no longer blocks the cooperative game/audio thread
-after each submitted frame. This restores the responsive startup audio and menu
-animation behavior of 1.0.0. Production submits only newly authored images and
-polls GPU completion without a synchronous runtime drain.
-
 *Released 2026-08-01.*
 
-Golden Balloon 1.0.1 is the first native patch release. It repairs the macOS
-package, keeps experimental host-pacing choices separate from the proven
-Original mode, and keeps WebGPU as the native default. No game data is included.
+- Replaced the broken macOS package with a self-contained SDL2 build and
+  corrected its integrity sealing.
+- Made WebGPU the native default after finding an opening-sequence rendering
+  issue in OpenGL.
+- Removed a blocking WebGPU queue wait that slowed Windows audio and menus.
+- Fixed crashes when selecting numeric or Uncapped frame limits.
+- Disabled the original motion-smoothing experiment because its retained data
+  could be rewritten by the next game task.
+- Fixed magic-code table loading and validation.
+- Improved the launcher, in-game overlay, compact-window layout, diagnostics,
+  preference recovery, and Return to Launcher behavior.
 
-## What changed
-
-- **The macOS app is self-contained again.** The old package accidentally
-  bundled Homebrew's `sdl2-compat` shim, which dynamically loaded an unbundled
-  SDL3 from the build machine. The replacement uses SHA-pinned standalone SDL2
-  2.32.10, embeds its license, targets arm64/macOS 13, and rejects Homebrew,
-  SDL3, unresolved load paths, mismatched architectures, and newer hidden
-  deployment targets.
-- **The “damaged and can't be opened” failure is fixed at the package
-  boundary.** Nested code is sealed before the outer app after every bundle
-  mutation, and the finished DMG is checksum-verified, mounted read-only, and
-  revalidated in place. The exact app inside the mounted, read-only DMG must
-  then launch through LaunchServices, select WebGPU, present and capture four
-  real surface frames, and load no Homebrew or SDL3 libraries.
-- **WebGPU is the native default.** Dense opening-sequence captures found
-  localized sky/terrain texture corruption in the OpenGL path that sparse
-  sampling had missed. WebGPU does not show that corruption and is also the
-  project's extensively tested browser backend. OpenGL remains available with
-  `MDKR_RENDERER=gl` as a diagnostic path, not the default release path.
-- **Windows startup audio and menu timing are restored.** A post-1.0.0 queue
-  bound called `wgpuDevicePoll(..., true)` after every second native WebGPU
-  submission, synchronously draining the native WebGPU queue on the same
-  cooperative thread that advances gameplay and refills audio. Production now
-  polls completion without blocking and reserves the explicit queue bound for
-  browser/internal replay stress. The final portable candidate passed a
-  real-hardware Windows retest from launcher through intro, character select,
-  gameplay, audio, and relaunch.
-- **Numeric and Uncapped frame limits no longer crash the native app.** The
-  adopted OpenGL context now initializes its function loader before the pacing
-  code can use sync/fence entry points. Real launcher tests exercise both
-  WebGPU and explicit OpenGL with the 240 and Uncapped policies. For 1.0.1,
-  every non-Original choice is marked **Experimental — Under Construction** in
-  the launcher and affects host pacing/input/event-pump opportunities, not
-  unique visual FPS. Any benefit may be negligible, while higher settings can
-  use more CPU.
-- **Unsafe motion smoothing is disabled for this patch.** Release-candidate
-  play-testing found that delayed display-list replay could run after the game
-  had begun rewriting mutable viewport, matrix, vertex, texture, and display-
-  list dependencies for the following task. The safe 1.0.1 policy submits only
-  new authored images. The primary US 1.1 build remains at its authored roughly
-  30 unique visual FPS, with no duplicate swaps. This removes the off-center
-  UI, missing vehicle parts, fractured geometry, and related high-rate artifacts
-  from the release path.
-- **Gameplay compatibility was re-checked.** Automated Original-mode replay
-  remains byte-exact with the pre-patch baseline. A direct two-player gate now
-  proves exact P1/P2 controller-to-racer binding, button edges, stick input,
-  and independent motion across GL/WebGPU at 60/120 Hz; the determinism and
-  render-purity controls remain green.
-  Numeric and Uncapped choices change host pacing only; they do not accelerate
-  the simulation or increase the authored visual frame rate.
-- **Magic codes load and validate correctly.** The decrypted big-endian table
-  is normalized and fully bounds-checked before publication, fixing the
-  reported `8`/blank enabled-code rows and universal “code was incorrect”
-  result without allowing a partial table through.
-- **The launcher and in-game overlay are cleaner and safer to use.** Navigation,
-  dropped-ROM intake, boot configuration, overlay state, confirmation flows,
-  and panel rendering now have small named owners with typed state instead of
-  a monolithic draw path. Invalid ROM replacements and failed preference writes
-  leave the last-known-good choice active; a failed setting retains the value
-  you entered and can be saved through the visible **Retry** button after write
-  access is restored, without restarting the app. Escape and controller B now
-  follow the same popup → confirmation → Settings → overlay back stack.
-- **The native launcher now adapts to its window and display.** Its supported
-  minimum is 640×480, where the side rail becomes compact top navigation and
-  wide controls/actions stack instead of clipping. A persisted 0.75×–2.00× UI
-  scale changes text, controls, and spacing together; moving between standard
-  and HiDPI displays rebuilds the font atlas before the next frame.
-- **Native accessibility scope is stated explicitly.** The launcher supports
-  keyboard and gamepad navigation, visible focus, scalable high-contrast UI,
-  and restrained motion. This patch does not claim a native VoiceOver,
-  UI-Automation, or other screen-reader semantic tree.
-- **Return to Launcher shuts down cleanly before relaunching.** The engine,
-  borrowed renderer objects, host, and diagnostic log reader unwind before the
-  resolved executable replaces the process. A failed relaunch is visible and
-  returns an error instead of hanging on an orphaned diagnostics pipe.
-- **The Linux portable release is GPU-gated and self-contained.** Linux and
-  Windows validation builds compile the requested version and assert the binary
-  reports it before packaging. The public portable files are
-  `Golden-Balloon-1.0.1-linux-x86_64.AppImage` and
-  `Golden-Balloon-1.0.1-linux-x86_64.tar.gz`. Before upload, deterministic
-  Xvfb + Mesa software-GPU lanes content-validate the real launcher through
-  default WebGPU and explicit GL, then extract the tarball, launch its `AppRun`
-  from an unrelated directory using bundled SDL2, and repeat both pixel gates.
-  Those Linux files are published only if that complete workflow passes; a
-  failed or unavailable lane produces no endorsed Linux binary.
-  Windows builds, import-checks, packages, and launches from its extracted zip,
-  but `windows-latest` cannot guarantee a qualifying GPU/API surface. The 1.0.1
-  Windows zip therefore received a separate manual native WebGPU gameplay,
-  controller, audio, save, and relaunch acceptance pass on Windows hardware;
-  the automated startup checks are not presented as a rendered gameplay gate.
-- **Release checks fail closed more often.** Merge commits and pushed ref tips
-  receive public-surface scans; committed-then-deleted history is checked;
-  privacy and browser-presentation tasks are pinned by the CI contract; and
-  the macOS target, dependencies, runtime loads, version, commit, renderer, and
-  bundled license are independently verified.
-
-## FPS behavior
-
-The launcher identifies Original as **Recommended / Proven** and marks Match
-Display, numeric choices, and Uncapped **Experimental — Under Construction**.
-In 1.0.1 these settings only alter host pacing and input/event-pump
-opportunities. They do not increase unique visual FPS, swap duplicate images,
-or speed up the game's authored simulation. The primary US 1.1 build remains at
-its authored roughly 30 unique visual FPS. Any benefit may be negligible, while
-higher settings can use more CPU.
-
-Motion smoothing and delayed display-list replay are fully disabled for this
-patch. The replay experiment could not prove immutable ownership of every
-viewport, matrix, vertex, texture, and nested display-list dependency through a
-delayed walk. The faster historical one-field simulation remains a separate,
-explicit compatibility option; it is not enabled by Frame Limit. Use Original
-for the recommended release behavior.
+The frame-rate choices in 1.0.1 changed host presentation opportunities only;
+they did not create additional unique game images. Original was the recommended
+setting for that release.
 
 ## macOS first launch
 
-This patch intentionally skips Developer ID signing and Apple notarization.
-The app is ad-hoc signed for code/resource integrity, but macOS may show the
-ordinary unidentified-developer warning. After the first blocked launch, open
-**System Settings → Privacy & Security**, scroll down, choose **Open Anyway**,
-and confirm **Open**. Apple documents that current flow in
-[Open apps safely on your Mac](https://support.apple.com/102445). A “damaged”
-warning is not expected and should be reported as a bug.
-
-The release artifact is Apple silicon only, requires macOS 13 or later, and is
-named `Golden-Balloon-1.0.1-macos-arm64-unsigned.dmg`. Its checksum and
-provenance sidecars identify the exact source commit and record
-`macos_signing: ad-hoc-unsigned` so it cannot be mistaken for the optional
-Developer ID/notarized flavor. If that trusted flavor is published later, its
-exact name is `Golden-Balloon-1.0.1-macos-arm64-signed-notarized.dmg` and its
-provenance records `macos_signing: developer-id-notarized`.
-
-## Current limitations
-
-The patch does not expand its claims beyond the tested WebGPU paths: the
-complete campaign is not automated end to end, OpenGL remains diagnostic while
-its opening-sequence visual-parity issue is open, macOS requires the manual
-first-open approval above, and Linux has less physical-hardware coverage.
-Windows build/package/startup checks are automated, while native GPU gameplay,
-controller, audio, and save acceptance remains a manual gate that passed for
-this candidate. On Windows, wgpu-native automatically selects a compatible API
-and may use Vulkan or Direct3D 12; `MDKR_RENDERER` does not force either one.
-Windows 1.0.1 also requires reasonably short, ASCII-only paths for the extracted
-app and ROM. If the launcher cannot save an otherwise valid ROM choice, launch
-`GoldenBalloon.exe --rom C:\ASCII\game.z64` from Command Prompt and report it.
-Explicit WebGPU API selection, richer diagnostics, wide-character filesystem
-support, and a reviewed application manifest remain deferred to a future
-portability release.
-Non-Original frame-limit
-choices remain Experimental — Under Construction and may add CPU cost without a
-noticeable benefit; use Original for the proven cadence. See
-[README — Current limitations](README.md#current-limitations) and
-[ROADMAP.md](ROADMAP.md) for the exact deferred scope.
-
-## Two related projects
-
-- Native desktop port: [akratch/goldenballoon](https://github.com/akratch/goldenballoon)
-- Browser build: [akratch/golden-balloon](https://github.com/akratch/golden-balloon)
-
-Both still require a legally owned US 1.1 or European 1.1 ROM. The ROM is read
-locally and is never part of a release artifact.
+The 1.0.1 macOS download is not notarized. If macOS blocks it as an unidentified
+developer, open **System Settings → Privacy & Security**, choose **Open Anyway**,
+and confirm. A “damaged and can't be opened” message is not expected from the
+replacement package.
 
 ---
 
@@ -243,165 +176,18 @@ locally and is never part of a release artifact.
 
 *Released 2026-07-30.*
 
-Golden Balloon is a **native source port of the 1997 Nintendo 64 kart racer
-*Diddy Kong Racing***. It is not an emulator: the game is compiled for your CPU
-and renders through WebGPU or OpenGL, natively on your desktop or as WebAssembly
-in a browser.
+The first public release added the native launcher, browser build, WebGPU and
+OpenGL renderers, audio, controls, saves, widescreen modes, and portable build
+support around the decompiled game.
 
-This is the first public release.
+## ROM requirements
 
-> **macOS artifact erratum (2026-08-01):** the original 1.0.0 DMG is known bad
-> and must not be used.
-> Rewriting its SDL2 load path invalidated the linker's ad-hoc signature, so
-> Gatekeeper correctly reported the app as damaged. Source and browser builds
-> are unaffected. Golden Balloon 1.0.1 replaces that artifact with a standalone
-> SDL2 package whose nested and outer ad-hoc seals, dependency closure, WebGPU
-> startup, deployment target, and mounted DMG are verified before publication.
+Golden Balloon does not include game data. It reads assets at runtime from a
+ROM you provide. The 1.0.x releases support verified US 1.1 and European 1.1
+images; unsupported revisions are rejected instead of being loaded.
 
----
+## Project scope
 
-## Before you start: bring your own ROM
-
-**No game data ships with this project.** No ROM, textures, audio, music, models
-or level data — none in the release, none in the repository, and none in its git
-history. Golden Balloon reads everything at runtime from a copy of the original
-game that *you legally own and dumped yourself*.
-
-Every shipped artifact passes a release-packaging guard that fails closed if it
-contains N64 ROM data, so that promise is checked rather than merely stated.
-
-In the browser build your ROM is read **locally, in your own browser**. It is
-never uploaded, transmitted, or stored on any server.
-
-### Which ROM
-
-| Revision | Status |
-|---|---|
-| **US 1.1** (`us.v80`) | Supported |
-| **European 1.1** (`pal.v80`) | Supported — races byte-identically to US 1.1 |
-| US 1.0, European 1.0, Japan | **Refused by name.** Recognised from their header CRCs and rejected before any asset is touched |
-
-`.z64`, `.v64` and `.n64` byte orders are all normalised on load, so it does not
-matter which dump format you have.
-
-The three unsupported revisions are refused deliberately rather than allowed to
-half-work. The reasons, and what adding them would take, are in
-[`docs/ROM_REVISIONS.md`](docs/ROM_REVISIONS.md) and
-[`ROADMAP.md`](ROADMAP.md).
-
-## Platforms
-
-macOS (Apple silicon) and the WebGPU browser build are supported. Linux is
-best-effort. **Windows is new in 1.0**: CI validates its build, import table,
-exact package, and extracted startup; native GPU gameplay acceptance remains a
-manual real-hardware release step with limited coverage breadth.
-The per-platform
-table with the exact caveats is in [`README.md`](README.md#platform-support), which is
-the one place it is maintained.
-
-Release binaries are not signed or notarized, so macOS and Windows will require
-their manual override to launch one. See [`ROADMAP.md`](ROADMAP.md).
-
-## What works
-
-- **The whole frontend.** Every screen navigable, with pixel fidelity against
-  the real ROM measured route by route.
-- **Racing.** All 20 tracks in all three vehicles — every one of the 47
-  (track, vehicle) combinations the game permits. Full three-lap Time Trials
-  finish, and your time is saved and reloaded.
-- **Adventure.** Adventure One closes the full hub → balloon → lobby → race →
-  hub loop with exact win/loss persistence. Adventure Two unlocks from the
-  canonical save block and drives all 20 mirrored racing lines with reflected
-  world, camera, stereo, minimap and steering.
-- **Boss races, challenges and trophies.** All ten boss levels load and drive;
-  the legal first-boss route runs end to end through the four-balloon door to a
-  physical finish, hub return and exact reload. Every authored egg, treasure and
-  battle course, all three Taj vehicle challenges, and all four trophy
-  championships run through production results, progression and EEPROM.
-- **Local multiplayer.** Two, three and four-player split screen with
-  independent human racers, per-player HUD, the three-player minimap quadrant,
-  and multiplayer results.
-- **Audio.** Music, sound effects and reverb, through the decompiled synthesiser
-  driving a software mixer. RAW16 instruments are decoded from their serialised
-  big-endian PCM rather than read as host-endian noise.
-- **Saves you own.** Export, import, inspect, edit, recover or erase your
-  progress — in the browser launcher before a ROM is even selected, and from the
-  native CLI. Four checksummed virtual Controller Paks with ghost custody.
-  Browser storage is not a backup; the downloaded backup is.
-- **Mobile touch controls.** Phones and tablets get an analog steering stick
-  plus simultaneous Go, Brake, Drift, Item, Look and Pause controls with
-  safe-area placement, and an explicit show/hide choice that persists across
-  reload.
-
-## Presentation
-
-Three modes, selectable at launch or from the in-game **Options → Video
-Options** screen:
-
-- **Pure** — the original game presented honestly: authentic 4:3 framing at the
-  authored field of view, no enhancements. This is the reference the fidelity
-  suite scores against.
-- **Restored** *(default)* — the original art direction at modern fidelity. Widescreen,
-  supersampling, output-resolution HUD geometry and text, anisotropic filtering,
-  mipmaps. Changes sharpness and stability, never look.
-- **Remastered** *(work in progress)* — adds runtime-derived SDF text, restrained
-  level-derived directional lighting for racers and character objects, stable
-  terrain-projected world shadows, and a bounded linear-light finish.
-
-Universal Hor+ widescreen preserves authored zooms rather than stretching them,
-and works correctly in split screen. Aspect ratio, field of view and 1×–4×
-supersampling apply live; settings tied to already-created GPU resources are
-saved with an explicit restart notice.
-
-Gameplay defaults to the game's authored two-field simulation cadence in every
-presentation mode, because an independent measurement showed the historical
-one-field cadence finishing a boss lane 13.9% fast. The one-field cadence remains
-available as an explicit, clearly-labelled compatibility choice.
-
-## Known limitations
-
-Stated here so they are not discovered one at a time. The full list, with the
-reason for each and the condition under which it would change, is in
-[`ROADMAP.md`](ROADMAP.md).
-
-- **The campaign is not complete.** Silver-coin challenges, the world 1–4 boss
-  rematches, both Wizpig races and the credits sequence are not covered by any
-  automated route. This is the largest gap in the release.
-- **Windows native gameplay acceptance is manual** and Linux is best-effort;
-  see the table above.
-- **Nothing is signed or notarized.**
-- **One in-race fidelity route scores lower than the rest** (0.636 against
-  0.855–0.998 on frontend routes) and has not been investigated. It is either a
-  real in-race gap or an artefact of that route; nobody has measured which.
-- **The zip-pad boost magnitude has never been checked against the ROM.** The
-  mechanism is the game's own and no port change touches it, but that is not the
-  same as having measured it.
-- **Presentation above the authored tick rate is disabled for 1.0.1.** Motion
-  smoothing and retained replay are not production paths; every Frame Limit
-  policy submits only new authored images and never swaps duplicates.
-- **Hosted continuous integration has never run green.** Every claim in this
-  release rests on local runs of the regression suite.
-- **Three ROM revisions are refused**, as described above.
-
-## Where things are
-
-| | |
-|---|---|
-| Build and run | [`README.md`](README.md) |
-| Everything that changed | [`CHANGELOG.md`](CHANGELOG.md) |
-| What is deferred, and why | [`ROADMAP.md`](ROADMAP.md) |
-| Known and fixed defects, with evidence | [`docs/open-items/`](docs/open-items/README.md) |
-| Contributing | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
-| Legal position | [`DISCLAIMER.md`](DISCLAIMER.md), [`NOTICE.md`](NOTICE.md), [`LICENSE`](LICENSE) |
-
-## Credits
-
-Built on the community
-[Diddy Kong Racing decompilation](https://github.com/DavidSM64/Diddy-Kong-Racing)
-by **DavidSM64** and its contributors — without their work, none of this exists.
-The renderer architecture descends from the **sm64ex / fast3d** lineage. The
-visual oracle is built on [**ares**](https://ares-emu.net/). And the original
-engineering is **Rare's**, which this project exists to study and preserve.
-
-Unaffiliated with and unendorsed by any rights holder. All trademarks belong to
-their respective owners.
+This is an unofficial fan project. It is not affiliated with Nintendo, Rare,
+Microsoft, or the original game's developers. See [DISCLAIMER.md](DISCLAIMER.md)
+and [NOTICE.md](NOTICE.md) for licensing and provenance.

@@ -1,4 +1,5 @@
 #include "host_frame_driver.h"
+#include "tick_dispatch_gate.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -19,6 +20,15 @@ static void expect(const char *name, int condition) {
         fprintf(stderr, "FAIL %s\n", name);
         s_failures++;
     }
+}
+
+static void test_next_tick_dispatch_exit_gate(void) {
+    expect("issued ticket permits the next authoritative pass",
+           mdkr_next_tick_dispatch_allowed(false, true));
+    expect("missing ticket cannot dispatch the next pass",
+           !mdkr_next_tick_dispatch_allowed(false, false));
+    expect("exit request cannot dispatch the next pass",
+           !mdkr_next_tick_dispatch_allowed(true, true));
 }
 
 static uint64_t mix(uint64_t state, uint64_t tick) {
@@ -144,7 +154,9 @@ static Trace run_uncapped_like(unsigned seconds) {
 }
 
 static void test_schedule_matrix(void) {
-    static const unsigned rates[] = { 30u, 50u, 60u, 120u, 144u, 165u, 240u };
+    static const unsigned rates[] = {
+        30u, 50u, 60u, 90u, 120u, 144u, 165u, 240u
+    };
     const unsigned seconds = 120u;
     Trace baseline = run_integer_rate(rates[0], seconds);
     unsigned index;
@@ -244,6 +256,7 @@ static void test_debt_and_rebase(void) {
 }
 
 int main(void) {
+    test_next_tick_dispatch_exit_gate();
     test_schedule_matrix();
     test_5994_and_pal();
     test_debt_and_rebase();

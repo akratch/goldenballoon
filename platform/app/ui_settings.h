@@ -11,6 +11,8 @@
 #ifndef MDKR64_UI_SETTINGS_H
 #define MDKR64_UI_SETTINGS_H
 
+struct SDL_Window;
+
 // Draw the settings sections (one per MdkrVideoCategory) inside the current
 // content region. Shared verbatim by the launcher and the in-game F1 overlay;
 // the only difference is `compact`, which drops the per-key help text so the
@@ -18,7 +20,11 @@
 //
 // Returns true when any setting was changed this frame (the caller may want to
 // re-read live state).
-bool Settings_draw(bool compact = false);
+bool Settings_draw(SDL_Window *window, bool compact = false);
+
+// Discard any in-progress audible Audio slider preview. Used when navigation
+// removes the settings panel before ImGui can emit a normal deactivation.
+void Settings_cancelAudioPreview();
 
 // Apply the persisted app-shell scale after AppConfig::load() and after ImGui
 // setup. Invalid/out-of-range preference text safely resolves to 1.0.
@@ -29,10 +35,25 @@ void Settings_loadUiScalePreference();
 // never mutates UI state or bypasses ImGui input handling.
 bool Settings_smokeFrameLimitCenter(int *x, int *y);
 
+// Observe the real Frame limit popup after it has rendered. Returns false when
+// it is closed; while open, `focusedIndex` is the focused public option or -1
+// until ImGui establishes a navigation anchor.
+bool Settings_smokeFrameLimitPopup(int *focusedIndex);
+
+// Number of downward selections between two public Frame limit values, or -1
+// when either value is absent/backwards. Keeps input smoke navigation tied to
+// the rendered option table instead of a duplicated index count.
+int Settings_smokeFrameLimitDownSteps(const char *from, const char *to);
+
 // Center of the save-failure Retry control for Frame limit. This is exposed
 // only so the shell smoke can route a real SDL click through ImGui after write
 // access is restored in the same process.
 bool Settings_smokeFrameLimitRetryCenter(int *x, int *y);
+
+// Bounds of the rendered UI-scale slider in logical window coordinates.
+// Smoke-only observation used to drive a real held-pointer drag and prove the
+// widget does not move underneath that pointer before the edit is committed.
+bool Settings_smokeUiScaleRect(int *minX, int *minY, int *maxX, int *maxY);
 
 // Collect the settings the player has staged but that the running/next engine
 // has not picked up yet, as "Key=Value" strings, so the launcher can pass them

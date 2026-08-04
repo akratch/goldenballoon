@@ -50,6 +50,7 @@
  */
 
 #include <math.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -81,6 +82,7 @@
 #include "gfx_render_scale.h"
 #include "gfx_rdp_interpolation.h"
 #include "gfx_presentation_packet.h"
+#include "gfx_retained_task.h"
 #include "gfx_shadow_frame.h"
 #include "presentation_snapshot.h"
 #include "present_sched.h"   /* presentation-replay arming seam */
@@ -243,13 +245,17 @@ static uint64_t dkr_replay_object_alpha_numerator = 0;
 static uint64_t dkr_replay_object_alpha_denominator = 1;
 static int dkr_replay_object_interpolation = -1;
 static int dkr_replay_deformation_interpolation = -1;
+static int dkr_replay_projected_shadow_interpolation = -1;
+static int dkr_test_projected_shadow_vertex_lerp = -1;
 static int dkr_replay_particle_interpolation = -1;
 static int dkr_replay_vertex_color_interpolation = -1;
 static int dkr_replay_primitive_alpha_interpolation = -1;
 static int dkr_replay_effect_interpolation = -1;
+static int dkr_test_live_arena_poison = -1;
 static int dkr_test_endpoint_vertex_bytes = -1;
 static Gfx *dkr_last_walked_dl = NULL;
 static uint64_t dkr_last_walked_authored_tick = 0u;
+static uint64_t dkr_future_last_published_tick = UINT64_MAX;
 static uint64_t dkr_replay_matrix_hits = 0;
 static uint64_t dkr_replay_matrix_misses = 0;
 static uint64_t dkr_replay_object_hits = 0;
@@ -273,6 +279,7 @@ static bool dkr_replay_matrix_reject_least_set = false;
 static bool dkr_replay_force_recompose = false;
 static int dkr_test_recompose_reject = -1;
 static bool dkr_test_recompose_reject_used = false;
+static int dkr_test_framed_world_unsafe = -1;
 static uint64_t dkr_replay_walks = 0;
 
 /*
@@ -377,6 +384,15 @@ static bool dkr_test_recompose_reject_enabled(void) {
     return dkr_test_recompose_reject != 0;
 }
 
+static bool dkr_test_framed_world_unsafe_enabled(void) {
+    if (dkr_test_framed_world_unsafe < 0) {
+        const char *value = getenv("MDKR_TEST_FRAMED_WORLD_UNSAFE");
+        dkr_test_framed_world_unsafe =
+            value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+    }
+    return dkr_test_framed_world_unsafe != 0;
+}
+
 static void dkr_mtx_inject_recompose_reject(const void *listed_bytes,
                                             void *built_bytes) {
     const uint32_t *listed = (const uint32_t *)listed_bytes;
@@ -445,6 +461,28 @@ static bool dkr_replay_deformation_interpolation_enabled(void) {
     return dkr_replay_deformation_interpolation != 0;
 }
 
+static bool dkr_replay_projected_shadow_interpolation_enabled(void) {
+    if (dkr_replay_projected_shadow_interpolation < 0) {
+        const char *value =
+            getenv("MDKR_TEST_PROJECTED_SHADOW_INTERPOLATION");
+        dkr_replay_projected_shadow_interpolation =
+            !(present_sched_internal_replay_test_enabled() && value != NULL &&
+              (strcmp(value, "off") == 0 || strcmp(value, "0") == 0));
+    }
+    return dkr_replay_projected_shadow_interpolation != 0;
+}
+
+static bool dkr_test_projected_shadow_vertex_lerp_enabled(void) {
+    if (dkr_test_projected_shadow_vertex_lerp < 0) {
+        const char *value =
+            getenv("MDKR_TEST_PROJECTED_SHADOW_VERTEX_LERP");
+        dkr_test_projected_shadow_vertex_lerp =
+            present_sched_internal_replay_test_enabled() && value != NULL &&
+            value[0] != '\0' && strcmp(value, "0") != 0;
+    }
+    return dkr_test_projected_shadow_vertex_lerp != 0;
+}
+
 static bool dkr_replay_particle_interpolation_enabled(void) {
     if (dkr_replay_particle_interpolation < 0) {
         const char *value = getenv("MDKR_TEST_PARTICLE_INTERPOLATION");
@@ -484,6 +522,16 @@ static bool dkr_replay_effect_interpolation_enabled(void) {
               (strcmp(value, "off") == 0 || strcmp(value, "0") == 0));
     }
     return dkr_replay_effect_interpolation != 0;
+}
+
+static bool dkr_test_live_arena_poison_enabled(void) {
+    if (dkr_test_live_arena_poison < 0) {
+        const char *value = getenv("MDKR_TEST_RETAINED_ARENA_POISON");
+        dkr_test_live_arena_poison =
+            present_sched_internal_replay_test_enabled() && value != NULL &&
+            value[0] != '\0' && strcmp(value, "0") != 0;
+    }
+    return dkr_test_live_arena_poison != 0;
 }
 
 static bool dkr_test_endpoint_vertex_bytes_enabled(void) {
@@ -539,6 +587,8 @@ struct RGBA { uint8_t r, g, b, a; };
 struct XYWidthHeight { int32_t x, y, width, height; };
 struct FloatXYWidthHeight { float x, y, width, height; };
 
+static void dkr_remap_viewport_and_scissor(void);
+
 struct LoadedVertex {
     float x, y, z, w;   /* clip-space (pre perspective divide) */
     float model_x, model_y, model_z; /* diagnostic geometric-normal source */
@@ -568,6 +618,7 @@ static struct {
     uint16_t tex_scale_s, tex_scale_t; /* gSPTexture s/t scale (0.16 fixed)     */
     uint8_t  tile_base;        /* render tile index (G_TX_RENDERTILE)           */
     uint8_t  draw_space;       /* WORLD / SAFE_2D / FULLBLEED matrix tag         */
+    bool world_safe_region;    /* framed world view uses the 4:3 safe rect       */
     uint8_t  remaster_light_class; /* 0 none, 1 racer, 2 character             */
     const Vec3s *smooth_normals; /* current compact ObjectModel normal subspan   */
     float light_direction[3];   /* normalized object-space direction TO sun     */
@@ -701,6 +752,7 @@ static void dkr_replay_apply_primitive_alpha(void) {
     PresentationObjectPose source;
     PresentationObjectPose target;
     bool particle;
+    bool projected_shadow;
     uint8_t alpha;
 
     rdp.prim_color = rdp.authored_prim_color;
@@ -718,6 +770,8 @@ static void dkr_replay_apply_primitive_alpha(void) {
         return;
     }
     particle = source.is_particle != 0u;
+    projected_shadow = rsp.opacity_owner.matrix_class ==
+        GFX_PRESENTATION_MATRIX_PROJECTED_SHADOW_VERTICES;
     /* Point trails carry their opacity in retained per-vertex alpha. Their
      * primitive alpha is deliberately 255 and must not be scaled a second
      * time. Line trails and sprite/model particles use primitive alpha. */
@@ -729,6 +783,10 @@ static void dkr_replay_apply_primitive_alpha(void) {
         rdp.authored_prim_color.a, source.opacity, target.opacity);
     gfx_presentation_packet_note_primitive_alpha(
         particle, alpha != rdp.authored_prim_color.a);
+    if (projected_shadow) {
+        gfx_presentation_packet_note_projected_shadow_primitive_alpha(
+            alpha != rdp.authored_prim_color.a);
+    }
     rdp.prim_color.a = alpha;
 }
 
@@ -739,7 +797,9 @@ static void dkr_replay_bind_opacity_owner(
          owner->matrix_class == GFX_PRESENTATION_MATRIX_CHILD ||
          owner->matrix_class == GFX_PRESENTATION_MATRIX_BILLBOARD ||
          owner->matrix_class ==
-             GFX_PRESENTATION_MATRIX_PARTICLE_VERTICES)) {
+             GFX_PRESENTATION_MATRIX_PARTICLE_VERTICES ||
+         owner->matrix_class ==
+             GFX_PRESENTATION_MATRIX_PROJECTED_SHADOW_VERTICES)) {
         rsp.opacity_owner = *owner;
         rsp.opacity_owner_valid = true;
     } else {
@@ -826,6 +886,19 @@ static inline bool dkr_ptr_plausible(const void *p) {
     return true;
 }
 
+static inline void *dkr_retain_resolved_pointer(void *resolved) {
+    const void *retained = NULL;
+
+    if (!dkr_ptr_plausible(resolved)) {
+        return NULL;
+    }
+    if (dkr_replay_pass && gfx_retained_task_lookup_dependency(
+            resolved, 1u, &retained)) {
+        return (void *)retained;
+    }
+    return resolved;
+}
+
 static inline void *dkr_resolve(uint32_t addr) {
     if (addr == 0) {
         return NULL;
@@ -855,9 +928,25 @@ static inline void *dkr_resolve(uint32_t addr) {
      *     last, so a global's segment-nibble collision can never pre-empt it. */
     uint32_t flip = addr ^ 0x80000000u;
     void *r = gfx_ptr_resolve(flip);          /* OS_K0_TO_PHYSICAL globals */
-    if (dkr_ptr_plausible(r)) return r;
+    if (dkr_ptr_plausible(r)) {
+        return dkr_retain_resolved_pointer(r);
+    }
     r = gfx_ptr_resolve(addr);                /* raw gDma1p-registered globals */
-    if (dkr_ptr_plausible(r)) return r;
+    if (dkr_ptr_plausible(r)) {
+        return dkr_retain_resolved_pointer(r);
+    }
+
+    /* During presentation replay the live arena may already contain task
+     * K+1. Decode task K's tokens against its retained original window and
+     * return the corresponding private bytes before considering the live
+     * arena. Registry/global resolution stays first to preserve its collision
+     * rule (see the ORDER MATTERS note above). */
+    if (dkr_replay_pass) {
+        r = gfx_retained_task_resolve_arena_token(addr);
+        if (dkr_ptr_plausible(r)) {
+            return r;
+        }
+    }
 
     uintptr_t base = (uintptr_t) g_dkrArenaBase;
     uintptr_t end  = base + (uintptr_t) g_dkrArenaSize;
@@ -886,27 +975,33 @@ static inline void *dkr_resolve(uint32_t addr) {
      * Keying this to pointer width, not Emscripten, gives every supported ILP32
      * host the same non-colliding token domains. */
     if (addr >= 0x80000000u) {
-        return flip ? (void *)(uintptr_t)flip : NULL;
+        return flip
+            ? dkr_retain_resolved_pointer((void *)(uintptr_t)flip) : NULL;
     }
     if (addr != 0 && addr < 0x01000000u) {
-        return (void *)(uintptr_t)addr;
+        return dkr_retain_resolved_pointer((void *)(uintptr_t)addr);
     }
 #endif
     r = gfx_resolve_addr(addr);   /* genuine N64 segment tokens */
-    return dkr_ptr_plausible(r) ? r : NULL;
+    return dkr_retain_resolved_pointer(r);
 }
 
-/* Bytes readable from `p` without leaving the arena. Returns SIZE_MAX for
- * non-arena host pointers (globals/rodata — trusted, their extent is unknown
- * here). Used to bound bulk struct/array reads so a resolved edge-of-arena or
- * mis-decoded pointer can never read into an unmapped page just past the 16 MB
- * arena (which faults intermittently depending on the adjacent mapping). */
+/* Bytes readable from `p` without leaving the arena or a private retained
+ * external span. Returns SIZE_MAX for ordinary non-arena host pointers
+ * (globals/rodata — trusted, their extent is unknown here). Used to bound bulk
+ * struct/array reads so a resolved edge-of-arena or retained dependency can
+ * never read beyond its owned image. */
 static inline size_t dkr_arena_room(const void *p) {
     uintptr_t up = (uintptr_t) p;
     uintptr_t base = (uintptr_t) g_dkrArenaBase;
     uintptr_t end = base + (uintptr_t) g_dkrArenaSize;
+    size_t retained_room;
     if (up >= base && up < end) {
         return (size_t)(end - up);
+    }
+    if (dkr_replay_pass &&
+        gfx_retained_task_dependency_room(p, &retained_room)) {
+        return retained_room;
     }
     return (size_t)-1;   /* not arena-backed: trust it */
 }
@@ -967,10 +1062,12 @@ static bool dkr_shadow_tenancy_enabled(void) {
 
 static bool dkr_shadow_lookup_live(
     void *ma, GfxShadowMatrixBinding *out, bool *stale) {
+    const void *identity = gfx_retained_task_original_address(ma);
+
     if (stale != NULL) {
         *stale = false;
     }
-    if (!gfx_shadow_matrix_lookup(ma, out)) {
+    if (!gfx_shadow_matrix_lookup(identity, out)) {
         return false;
     }
     if (!dkr_shadow_tenancy_enabled()) {
@@ -999,7 +1096,7 @@ static bool dkr_shadow_lookup_live(
             fprintf(stderr,
                     "[STALETENANT] frame=%d key=%p site=%d mobility=%d "
                     "deadworld3=[%.3f %.3f %.3f]\n",
-                    dkr_frame_index, ma, out->site, (int)out->mobility,
+                    dkr_frame_index, identity, out->site, (int)out->mobility,
                     out->world[3][0], out->world[3][1], out->world[3][2]);
         }
         dkr_shadow_stale_tenants++;
@@ -1504,7 +1601,9 @@ static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
      */
     {
         const GfxFontRegistryEntry *font_entry =
-            gfx_font_registry_find(&dkr_font_registry, src);
+            gfx_font_registry_find(
+                &dkr_font_registry,
+                gfx_retained_task_original_address(src));
         bool remaster_font =
             g_pcRemasterFX && dkr_font_sdf_enabled() &&
             dkr_is_font_text_draw() &&
@@ -1781,7 +1880,10 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
     if (td >= 8) return false;
     uint32_t tmem = rdp.tile[td].tmem < 512 ? rdp.tile[td].tmem : 0;
     const uint8_t *addr = rdp.loaded_texture[tmem].addr;
+    const uint8_t *source_identity;
     if (!addr) return false;
+    source_identity = (const uint8_t *)
+        gfx_retained_task_original_address(addr);
     uint8_t fmt = rdp.tile[td].fmt, siz = rdp.tile[td].siz, pal = rdp.tile[td].palette;
     uint16_t tw = rdp.tile[td].width, th = rdp.tile[td].height;
     uint32_t ph = dkr_palette_hash(fmt);
@@ -1790,13 +1892,13 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         dkr_tile_source_line_bytes(td, source_size_bytes);
     bool lsw = rdp.loaded_texture[tmem].line_swapped;
     const GfxFontRegistryEntry *font_entry =
-        gfx_font_registry_find(&dkr_font_registry, addr);
+        gfx_font_registry_find(&dkr_font_registry, source_identity);
     bool font_remastered =
         g_pcRemasterFX && dkr_font_sdf_enabled() &&
         dkr_is_font_text_draw() &&
         font_entry != NULL && font_entry->region_count != 0;
     const struct DkrTexCacheKey key = {
-        .addr = addr,
+        .addr = source_identity,
         .source_line_bytes = source_line_bytes,
         .source_size_bytes = source_size_bytes,
         .palette_hash = ph,
@@ -2762,6 +2864,12 @@ static void dkr_sp_polygon(const Triangle *tris, int num_tris, bool tex_enabled)
                 (rdp.other_mode_l & CVG_X_ALPHA) == CVG_X_ALPHA;
             bool alpha_blend =
                 rendering_state.blend_mode == GFX_BLEND_ALPHA;
+            float viewport[4] = {
+                rdp.logical_viewport.x,
+                rdp.logical_viewport.y,
+                rdp.logical_viewport.width,
+                rdp.logical_viewport.height,
+            };
             if (!alpha_blend || texture_edge) {
                 float positions[9] = {
                     a.world_x, a.world_y, a.world_z,
@@ -2769,12 +2877,6 @@ static void dkr_sp_polygon(const Triangle *tris, int num_tris, bool tex_enabled)
                     c.world_x, c.world_y, c.world_z,
                 };
                 float uv[6] = {0};
-                float viewport[4] = {
-                    rdp.logical_viewport.x,
-                    rdp.logical_viewport.y,
-                    rdp.logical_viewport.width,
-                    rdp.logical_viewport.height,
-                };
                 GfxShadowMaterial material = {
                     .texture_id =
                         cur.feat.used_textures[0]
@@ -2956,6 +3058,15 @@ static void dkr_sp_moveword(uint8_t index, uint16_t offset, uint32_t data) {
                 gfx_dkr_remaster_missing_normal_batches++;
             }
             break;
+        case G_MW_DKR_WORLD_REGION: {
+            bool safe_region =
+                data != 0 && !dkr_test_framed_world_unsafe_enabled();
+            if (rsp.world_safe_region != safe_region) {
+                rsp.world_safe_region = safe_region;
+                dkr_remap_viewport_and_scissor();
+            }
+            break;
+        }
         case G_MW_FOG:          /* 0x08 — fog_mul (hi 16) / fog_offset (lo 16) */
             rsp.fog_mul = (int16_t)(data >> 16);
             rsp.fog_offset = (int16_t)(data & 0xffff);
@@ -2986,9 +3097,11 @@ static MdkrDisplayRect dkr_draw_region(uint8_t draw_space) {
             return layout.safe;
         case G_MTX_DKR_SPACE_FULLBLEED:
             return layout.fullbleed;
+        case G_MTX_DKR_SPACE_WIDE_BG:
+            return layout.presentation;
         case G_MTX_DKR_SPACE_WORLD:
         default:
-            return layout.presentation;
+            return rsp.world_safe_region ? layout.safe : layout.presentation;
     }
 }
 
@@ -3045,7 +3158,7 @@ static void dkr_remap_viewport_and_scissor(void) {
 
 static void dkr_set_draw_space(uint8_t draw_space) {
     if (draw_space < G_MTX_DKR_SPACE_WORLD ||
-        draw_space > G_MTX_DKR_SPACE_FULLBLEED ||
+        draw_space > G_MTX_DKR_SPACE_WIDE_BG ||
         rsp.draw_space == draw_space) {
         return;
     }
@@ -3189,6 +3302,10 @@ static void dkr_dp_load_block(uint8_t tile, uint32_t uls, uint32_t ult,
     rdp.loaded_texture[slot].addr = rdp.to_load.addr;
     rdp.loaded_texture[slot].size_bytes = size_bytes;
     rdp.loaded_texture[slot].line_swapped = (dxt == 0);
+    if (!dkr_replay_pass && rdp.to_load.addr != NULL && size_bytes != 0u) {
+        (void)gfx_retained_task_capture_dependency(
+            rdp.to_load.addr, rdp.to_load.addr, size_bytes);
+    }
 }
 
 static void dkr_dp_load_tile(uint8_t tile, uint32_t uls, uint32_t ult,
@@ -3214,6 +3331,12 @@ static void dkr_dp_load_tile(uint8_t tile, uint32_t uls, uint32_t ult,
     rdp.loaded_texture[slot].line_swapped = false;
     rdp.tile[tile].width = (uint16_t)width;
     rdp.tile[tile].height = (uint16_t)height;
+    if (!dkr_replay_pass && rdp.to_load.addr != NULL &&
+        rdp.loaded_texture[slot].size_bytes != 0u) {
+        (void)gfx_retained_task_capture_dependency(
+            rdp.to_load.addr, rdp.to_load.addr,
+            rdp.loaded_texture[slot].size_bytes);
+    }
 }
 
 static void dkr_dp_load_tlut(uint8_t tile, uint32_t uls, uint32_t ult,
@@ -3229,6 +3352,10 @@ static void dkr_dp_load_tlut(uint8_t tile, uint32_t uls, uint32_t ult,
     /* TLUT entries are big-endian ROM bytes (like texels); read MSB-first. */
     const uint8_t *src = (const uint8_t *)rdp.to_load.addr;
     if (!src) return;
+    if (!dkr_replay_pass && count != 0u) {
+        (void)gfx_retained_task_capture_dependency(
+            src, src, (size_t)count * sizeof(uint16_t));
+    }
     for (uint32_t i = 0; i < count; i++)
         rdp.palette[palofs + i] = ((uint16_t)src[i * 2] << 8) | src[i * 2 + 1];
     rdp.palette_fmt = (rdp.other_mode_h & (3U << G_MDSFT_TEXTLUT));
@@ -3605,7 +3732,7 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
             case (uint8_t)G_ENDDL:
                 return;
             case G_MTX: {
-                uint8_t draw_space = (uint8_t)C0(cmd, 16, 8) & 3;
+                uint8_t draw_space = (uint8_t)C0(cmd, 16, 8) & 7;
                 if (draw_space != G_MTX_DKR_SPACE_INHERIT) {
                     scan->draw_space = draw_space;
                 }
@@ -3663,6 +3790,297 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
         }
         cmd++;
     }
+}
+
+/*
+ * Capture the already-authored next task's continuous vertex/effect streams.
+ *
+ * DKR double-buffers graphics tasks. Task T is submitted at the start of the
+ * game pass, then task T+1 is completely built in the alternate buffer before
+ * the host reaches its presentation subloop. Camera/object snapshots already
+ * use that true forward state. This structural census gives deformation the
+ * same {T,T+1} ownership without executing rendering, predicting simulation,
+ * or adding a frame of latency.
+ *
+ * Only flow control, segment/billboard state, object-owner matrices, and G_VTX
+ * batches are interpreted. No backend call, texture upload, primitive setup,
+ * game callback, or authoritative write is reachable from this walker.
+ */
+static bool dkr_scan_future_deformations(Gfx *cmd, int depth, int limit) {
+    Gfx *start;
+    long safety = 0;
+
+    if (cmd == NULL || depth >= DKR_DL_MAX_DEPTH) {
+        return false;
+    }
+    start = cmd;
+    for (;;) {
+        if (limit > 0 && (cmd - start) >= limit) {
+            return true;
+        }
+        if (++safety > 4000000L || dkr_arena_room(cmd) < sizeof(Gfx)) {
+            return false;
+        }
+        switch ((uint8_t)C0(cmd, 24, 8)) {
+            case G_DL: {
+                uint8_t nopush = (uint8_t)C0(cmd, 16, 8);
+                Gfx *sub = (Gfx *)dkr_resolve(cmd->words.w1);
+                if (sub == NULL) {
+                    if (nopush == G_DL_NOPUSH) {
+                        return true;
+                    }
+                    break;
+                }
+                if (nopush == G_DL_NOPUSH) {
+                    cmd = sub;
+                    start = cmd;
+                    continue;
+                }
+                if (!dkr_scan_future_deformations(sub, depth + 1, 0)) {
+                    return false;
+                }
+                break;
+            }
+            case G_DMADL: {
+                int count = (int)C0(cmd, 16, 8);
+                Gfx *sub = (Gfx *)dkr_resolve(cmd->words.w1);
+                if (count <= 0 || (sub != NULL &&
+                    !dkr_scan_future_deformations(
+                        sub, depth + 1, count))) {
+                    return false;
+                }
+                break;
+            }
+            case (uint8_t)G_ENDDL:
+                return true;
+            case (uint8_t)G_MOVEWORD:
+                /* The census needs only address resolution, billboard stream
+                 * boundaries, and explicit matrix-slot selection. Running the
+                 * full interpreter here would also touch fog/remaster-normal
+                 * diagnostics, which are rendering side effects and do not
+                 * belong in this read-only structural pass. */
+                switch ((uint8_t)C0(cmd, 0, 8)) {
+                    case G_MW_SEGMENT:
+                    case G_MW_BILLBOARD:
+                    case G_MW_MVPMATRIX:
+                        dkr_sp_moveword(
+                            (uint8_t)C0(cmd, 0, 8),
+                            (uint16_t)C0(cmd, 8, 16), cmd->words.w1);
+                        break;
+                    default:
+                        break;
+                }
+                break;
+            case G_MTX: {
+                uint8_t matrix_param = (uint8_t)C0(cmd, 16, 8);
+                uint8_t draw_space = matrix_param & 7u;
+                uint8_t effective_draw_space =
+                    draw_space == G_MTX_DKR_SPACE_INHERIT
+                        ? rsp.draw_space
+                        : draw_space;
+                bool world_matrix =
+                    effective_draw_space == G_MTX_DKR_SPACE_WORLD;
+                void *matrix = dkr_resolve(cmd->words.w1);
+                GfxShadowMatrixBinding binding;
+                bool stale = false;
+                bool binding_valid;
+
+                memset(&binding, 0, sizeof(binding));
+                binding_valid = dkr_shadow_lookup_live(
+                    matrix, &binding, &stale);
+                if (world_matrix && binding_valid &&
+                    binding.presentation_owner.valid &&
+                    (binding.presentation_owner.matrix_class ==
+                         GFX_PRESENTATION_MATRIX_ROOT ||
+                     binding.presentation_owner.matrix_class ==
+                         GFX_PRESENTATION_MATRIX_CHILD)) {
+                    const GfxPresentationMatrixOwner *owner =
+                        &binding.presentation_owner;
+                    bool new_root = owner->matrix_class ==
+                        GFX_PRESENTATION_MATRIX_ROOT;
+                    bool new_lifetime =
+                        !rsp.deformation_owner_valid ||
+                        rsp.deformation_owner.address != owner->address ||
+                        rsp.deformation_owner.generation != owner->generation ||
+                        rsp.deformation_viewport != binding.viewport;
+                    rsp.deformation_owner = *owner;
+                    rsp.deformation_viewport = binding.viewport;
+                    if (new_root || new_lifetime) {
+                        rsp.deformation_owner_valid =
+                            dkr_deformation_begin_stream(
+                                owner, binding.viewport);
+                    } else {
+                        rsp.deformation_owner_valid = true;
+                    }
+                } else {
+                    memset(&rsp.deformation_owner, 0,
+                           sizeof(rsp.deformation_owner));
+                    rsp.deformation_viewport = 0;
+                    rsp.deformation_stream = 0u;
+                    rsp.deformation_batch = 0u;
+                    rsp.deformation_owner_valid = false;
+                }
+                if (world_matrix && binding_valid &&
+                    binding.presentation_owner.valid &&
+                    binding.presentation_owner.matrix_class ==
+                        GFX_PRESENTATION_MATRIX_EFFECT) {
+                    const GfxPresentationMatrixOwner *owner =
+                        &binding.presentation_owner;
+                    (void)gfx_presentation_packet_capture_deformation(
+                        owner, binding.viewport, 0u, owner, sizeof(*owner), 1u,
+                        (uint32_t)sizeof(*owner));
+                }
+                if (draw_space != G_MTX_DKR_SPACE_INHERIT) {
+                    rsp.draw_space = draw_space;
+                }
+                break;
+            }
+            case G_VTX: {
+                uint8_t parameter = (uint8_t)C0(cmd, 16, 8);
+                int count = ((parameter >> 3) & 0x1f) + 1;
+                const Vertex *vertices =
+                    (const Vertex *)dkr_resolve(cmd->words.w1);
+                GfxPresentationPacketBinding packet_binding;
+                bool packet_vertex = false;
+
+                if (vertices == NULL || count <= 0 || count > DKR_MAX_VERTICES ||
+                    dkr_arena_room(vertices) <
+                        (size_t)count * sizeof(*vertices)) {
+                    break;
+                }
+                memset(&packet_binding, 0, sizeof(packet_binding));
+                packet_vertex = gfx_presentation_packet_lookup_live_vertex(
+                    vertices, &packet_binding);
+                if (packet_vertex &&
+                    packet_binding.owner.matrix_class ==
+                        GFX_PRESENTATION_MATRIX_PARTICLE_VERTICES) {
+                    (void)gfx_presentation_packet_capture_deformation(
+                        &packet_binding.owner, packet_binding.viewport, 0u,
+                        vertices, (size_t)count * sizeof(*vertices),
+                        (uint32_t)count, (uint32_t)sizeof(*vertices));
+                } else if (packet_vertex &&
+                           packet_binding.owner.matrix_class ==
+                               GFX_PRESENTATION_MATRIX_PROJECTED_SHADOW_VERTICES &&
+                           dkr_test_projected_shadow_vertex_lerp_enabled()) {
+                    (void)gfx_presentation_packet_capture_deformation(
+                        &packet_binding.owner, packet_binding.viewport,
+                        packet_binding.ordinal, vertices,
+                        (size_t)count * sizeof(*vertices), (uint32_t)count,
+                        (uint32_t)sizeof(*vertices));
+                } else if (!rsp.billboard &&
+                           rsp.deformation_owner_valid) {
+                    uint32_t ordinal;
+                    if (dkr_deformation_next_ordinal(&ordinal)) {
+                        (void)gfx_presentation_packet_capture_deformation(
+                            &rsp.deformation_owner,
+                            rsp.deformation_viewport, ordinal, vertices,
+                            (size_t)count * sizeof(*vertices),
+                            (uint32_t)count,
+                            (uint32_t)sizeof(*vertices));
+                    }
+                }
+                break;
+            }
+            default:
+                break;
+        }
+        cmd++;
+    }
+}
+
+bool gfx_dkr_capture_future_deformations(const Gfx *begin, const Gfx *end,
+                                         uint64_t authored_tick) {
+    uintptr_t saved_segments[16];
+    GfxPresentationMatrixOwner saved_deformation_owner;
+    struct DkrDeformationCursor
+        saved_deformation_cursors[DKR_DEFORMATION_OWNERS];
+    uintptr_t begin_address = (uintptr_t)begin;
+    uintptr_t end_address = (uintptr_t)end;
+    uint64_t target_tick = 0u;
+    size_t command_bytes;
+    size_t command_count;
+    size_t saved_deformation_cursor_count;
+    int saved_active_slot;
+    int saved_deformation_viewport;
+    uint32_t saved_deformation_stream;
+    uint32_t saved_deformation_batch;
+    uint8_t saved_draw_space;
+    bool saved_world_safe_region;
+    bool saved_billboard;
+    bool saved_deformation_owner_valid;
+    bool scanned;
+
+    if (begin == NULL || end == NULL || end_address <= begin_address ||
+        !present_sched_replay_armed() ||
+        !presentation_snapshot_replay_target_tick(
+            dkr_last_walked_authored_tick, &target_tick) ||
+        target_tick != authored_tick) {
+        return false;
+    }
+    if (dkr_future_last_published_tick == authored_tick) {
+        return true;
+    }
+    command_bytes = (size_t)(end_address - begin_address);
+    if (command_bytes % sizeof(*begin) != 0u) {
+        gfx_presentation_packet_note_future_capture(false);
+        return false;
+    }
+    command_count = command_bytes / sizeof(*begin);
+    if (command_count == 0u || command_count > (size_t)INT_MAX) {
+        gfx_presentation_packet_note_future_capture(false);
+        return false;
+    }
+    memcpy(saved_segments, gfx_segment_table, sizeof(saved_segments));
+    saved_active_slot = rsp.active_slot;
+    saved_billboard = rsp.billboard;
+    saved_draw_space = rsp.draw_space;
+    saved_world_safe_region = rsp.world_safe_region;
+    saved_deformation_owner = rsp.deformation_owner;
+    saved_deformation_viewport = rsp.deformation_viewport;
+    saved_deformation_stream = rsp.deformation_stream;
+    saved_deformation_batch = rsp.deformation_batch;
+    saved_deformation_owner_valid = rsp.deformation_owner_valid;
+    saved_deformation_cursor_count = rsp.deformation_cursor_count;
+    memcpy(saved_deformation_cursors, rsp.deformation_cursors,
+           sizeof(saved_deformation_cursors));
+    memset(rsp.deformation_cursors, 0, sizeof(rsp.deformation_cursors));
+    rsp.deformation_cursor_count = 0u;
+    memset(&rsp.deformation_owner, 0, sizeof(rsp.deformation_owner));
+    rsp.deformation_owner_valid = false;
+    rsp.deformation_viewport = 0;
+    rsp.deformation_stream = 0u;
+    rsp.deformation_batch = 0u;
+    rsp.billboard = false;
+    rsp.draw_space = G_MTX_DKR_SPACE_WORLD;
+    rsp.world_safe_region = false;
+    gfx_presentation_packet_capture_begin(authored_tick);
+    scanned = dkr_scan_future_deformations(
+        (Gfx *)begin, 0, (int)command_count);
+    memcpy(gfx_segment_table, saved_segments, sizeof(saved_segments));
+    rsp.active_slot = saved_active_slot;
+    rsp.billboard = saved_billboard;
+    rsp.draw_space = saved_draw_space;
+    rsp.world_safe_region = saved_world_safe_region;
+    rsp.deformation_owner = saved_deformation_owner;
+    rsp.deformation_viewport = saved_deformation_viewport;
+    rsp.deformation_stream = saved_deformation_stream;
+    rsp.deformation_batch = saved_deformation_batch;
+    rsp.deformation_owner_valid = saved_deformation_owner_valid;
+    rsp.deformation_cursor_count = saved_deformation_cursor_count;
+    memcpy(rsp.deformation_cursors, saved_deformation_cursors,
+           sizeof(saved_deformation_cursors));
+    if (!scanned) {
+        gfx_presentation_packet_capture_abort();
+        gfx_presentation_packet_note_future_capture(false);
+        return false;
+    }
+    if (!gfx_presentation_packet_publish_deformation()) {
+        gfx_presentation_packet_note_future_capture(false);
+        return false;
+    }
+    dkr_future_last_published_tick = authored_tick;
+    gfx_presentation_packet_note_future_capture(true);
+    return true;
 }
 
 typedef enum DkrRetainedVertexReplay {
@@ -3778,7 +4196,13 @@ static DkrRetainedVertexReplay dkr_replay_deformation_vertices(
                deformation.current_bytes +
                    (size_t)index * deformation.stride,
                sizeof(current));
-        retained[index] = current;
+        /* The replayed command stream belongs to the previous side of the
+         * forward pair (task T). Keep all discrete Vertex fields -- UVs and
+         * flags included -- from T until the next complete authored task is
+         * presented. XYZ and shade RGBA receive explicit continuous overrides
+         * below. This makes alpha zero byte-exact to the real task instead of
+         * accidentally borrowing T+1 texture coordinates. */
+        retained[index] = interpolate ? previous : current;
         if (!interpolate) {
             dkr_note_endpoint_vertex_semantic(
                 owner, viewport, ordinal, (uint32_t)index, &current, false,
@@ -3820,7 +4244,7 @@ static DkrRetainedVertexReplay dkr_replay_deformation_vertices(
                 dkr_replay_object_alpha_denominator);
         }
         dkr_note_endpoint_vertex_semantic(
-            owner, viewport, ordinal, (uint32_t)index, &current, true,
+            owner, viewport, ordinal, (uint32_t)index, &previous, true,
             out[index], &colors[index], interpolate_color);
     }
     if (!interpolate) {
@@ -3833,7 +4257,67 @@ static DkrRetainedVertexReplay dkr_replay_deformation_vertices(
     }
     if (particle) {
         gfx_presentation_packet_note_particle_deformation(changed);
+    } else if (owner->matrix_class ==
+               GFX_PRESENTATION_MATRIX_PROJECTED_SHADOW_VERTICES) {
+        gfx_presentation_packet_note_projected_shadow_deformation(changed);
     }
+    if (changed) {
+        gfx_presentation_packet_note_deformation_override();
+    }
+    return DKR_RETAINED_VERTEX_INTERPOLATED;
+}
+
+/*
+ * Coherent replay for terrain-projected decals. A projected mesh can
+ * change receiver polygons between ticks even when its batch counts and fan
+ * connectivity stay the same. Pairwise vertex lerp then morphs unrelated
+ * ground samples, producing large midpoint shadow pulses. Translate the exact
+ * authored mesh laterally by the owning
+ * object's generation-safe snapshot delta instead: shape/area stay fixed and
+ * the decal still follows the continuously presented racer. Y deliberately
+ * remains receiver-authored: kart bounce/jump height must never lift its
+ * ground decal. A semantic model/animation transition holds the whole batch.
+ */
+static DkrRetainedVertexReplay dkr_replay_projected_shadow_rigid(
+    const GfxPresentationMatrixOwner *owner, const Vertex *authored, int count,
+    Vertex retained[DKR_MAX_VERTICES],
+    float out[DKR_MAX_VERTICES][3]) {
+    PresentationObjectPose before;
+    PresentationObjectPose target;
+    float delta[3];
+    bool changed = false;
+
+    if (owner == NULL || authored == NULL || count <= 0 ||
+        count > DKR_MAX_VERTICES || retained == NULL || out == NULL ||
+        owner->matrix_class !=
+            GFX_PRESENTATION_MATRIX_PROJECTED_SHADOW_VERTICES ||
+        !presentation_snapshot_deformation_compatible(
+            owner->address, owner->generation) ||
+        !presentation_snapshot_resolve_object_generation(
+            owner->address, owner->generation, 0u,
+            dkr_replay_object_alpha_denominator, &before) ||
+        !presentation_snapshot_resolve_object_generation(
+            owner->address, owner->generation,
+            dkr_replay_object_alpha_numerator,
+            dkr_replay_object_alpha_denominator, &target) ||
+        !target.interpolated) {
+        return DKR_RETAINED_VERTEX_UNAVAILABLE;
+    }
+    for (size_t axis = 0; axis < 3; axis++) {
+        delta[axis] = target.position[axis] - before.position[axis];
+        if (!isfinite(delta[axis])) {
+            return DKR_RETAINED_VERTEX_UNAVAILABLE;
+        }
+    }
+    delta[1] = 0.0f;
+    changed = delta[0] != 0.0f || delta[2] != 0.0f;
+    for (int index = 0; index < count; index++) {
+        retained[index] = authored[index];
+        out[index][0] = (float)authored[index].x + delta[0];
+        out[index][1] = (float)authored[index].y + delta[1];
+        out[index][2] = (float)authored[index].z + delta[2];
+    }
+    gfx_presentation_packet_note_projected_shadow_deformation(changed);
     if (changed) {
         gfx_presentation_packet_note_deformation_override();
     }
@@ -3983,7 +4467,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
         case G_MTX: {  /* gSPMatrixDKR — load slot and select it */
             uint8_t matrix_param = (uint8_t)C0(cmd, 16, 8);
             int slot = (int)((matrix_param >> 6) & 3);
-            uint8_t draw_space = matrix_param & 3;
+            uint8_t draw_space = matrix_param & 7;
             uint8_t effective_draw_space =
                 draw_space == G_MTX_DKR_SPACE_INHERIT
                     ? rsp.draw_space
@@ -3991,6 +4475,8 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             bool world_matrix =
                 effective_draw_space == G_MTX_DKR_SPACE_WORLD;
             void *ma = dkr_resolve(cmd->words.w1);
+            const void *matrix_identity =
+                gfx_retained_task_original_address(ma);
             float replay_world[4][4];
             bool object_overridden = false;
             bool effect_overridden = false;
@@ -4007,6 +4493,8 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                     ma, &rsp.shadow_matrix[slot], &shadow_matrix_stale);
             if (!dkr_replay_pass && ma != NULL &&
                 dkr_arena_room(ma) >= sizeof(Mtx)) {
+                (void)gfx_retained_task_capture_dependency(
+                    ma, ma, sizeof(Mtx));
                 (void)gfx_shadow_matrix_note_walked_key(
                     ma, ma, sizeof(Mtx));
                 (void)gfx_presentation_packet_note_walked_matrix(
@@ -4094,8 +4582,8 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             if (world_matrix && dkr_replay_pass &&
                 dkr_replay_object_alpha_valid) {
                 billboard_binding_found =
-                    gfx_presentation_packet_lookup_matrix(
-                        ma, &packet_binding);
+                    gfx_presentation_packet_lookup_matrix_observed(
+                        matrix_identity, ma, &packet_binding);
             }
             if (billboard_binding_found) {
                 if (dkr_replay_object_alpha_numerator != 0u) {
@@ -4347,6 +4835,8 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             int n = ((p >> 3) & 0x1f) + 1;
             bool append = (p & 1) != 0;
             const Vertex *v = (const Vertex *)dkr_resolve(cmd->words.w1);
+            const void *vertex_identity =
+                gfx_retained_task_original_address(v);
             const Vertex *vertex_source = v;
             int retained_n = n;
             bool retained_packet_vertex = false;
@@ -4370,7 +4860,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             }
             memset(&packet_binding, 0, sizeof(packet_binding));
             retained_packet_vertex = dkr_replay_pass
-                ? gfx_presentation_packet_has_frozen_vertex(v)
+                ? gfx_presentation_packet_has_frozen_vertex(vertex_identity)
                 : gfx_presentation_packet_has_live_vertex(v);
             if (!dkr_replay_pass && retained_packet_vertex && v != NULL &&
                 retained_n > 0) {
@@ -4380,12 +4870,34 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             if (v != NULL) {
                 if (dkr_replay_pass && dkr_replay_object_alpha_valid) {
                     packet_binding_found =
-                        gfx_presentation_packet_lookup_vertex(
-                            v, &packet_binding);
+                        gfx_presentation_packet_lookup_vertex_observed(
+                            vertex_identity, v, &packet_binding);
                 } else if (!dkr_replay_pass) {
                     packet_binding_found =
                         gfx_presentation_packet_lookup_live_vertex(
                             v, &packet_binding);
+                }
+            }
+            if (!dkr_replay_pass && v != NULL && retained_n > 0) {
+                (void)gfx_retained_task_capture_dependency(
+                    v, v, (size_t)retained_n * sizeof(*v));
+                /* Remastered per-pixel lighting consumes a parallel compact
+                 * normal stream selected by the preceding MOVEWORD. It is a
+                 * render dependency just like the vertex batch and may live
+                 * outside the reusable arena, so retain the exact span the
+                 * real walk is about to consume. */
+                if (rsp.smooth_normals != NULL) {
+                    const size_t normal_bytes =
+                        (size_t)retained_n * sizeof(*rsp.smooth_normals);
+                    const size_t normal_room =
+                        dkr_arena_room(rsp.smooth_normals);
+                    if ((normal_room == (size_t)-1 &&
+                         dkr_ptr_plausible(rsp.smooth_normals)) ||
+                        normal_room >= normal_bytes) {
+                        (void)gfx_retained_task_capture_dependency(
+                            rsp.smooth_normals, rsp.smooth_normals,
+                            normal_bytes);
+                    }
                 }
             }
             if (dkr_replay_pass && packet_binding_found &&
@@ -4453,6 +4965,66 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                     }
                     if (retained_replay ==
                             DKR_RETAINED_VERTEX_INTERPOLATED &&
+                        dkr_replay_vertex_color_interpolation_enabled()) {
+                        color_override = color_overrides;
+                    }
+                }
+            }
+            if (packet_binding_found &&
+                retained_n > 0 &&
+                packet_binding.owner.matrix_class ==
+                    GFX_PRESENTATION_MATRIX_PROJECTED_SHADOW_VERTICES) {
+                /* This batch is a direct world-space recipe rather than an
+                 * ordinary matrix-owned mesh. It still owns subsequent
+                 * primitive-alpha commands: without rebinding here, a fading
+                 * racer/Taj carpet decal could inherit a prior object's
+                 * opacity during a retained replay. */
+                if (dkr_replay_pass && dkr_replay_object_alpha_valid) {
+                    dkr_replay_bind_opacity_owner(&packet_binding.owner);
+                }
+                const size_t byte_size =
+                    (size_t)retained_n * sizeof(*v);
+                bool rigid_translation = false;
+                if (!dkr_replay_pass) {
+                    if (dkr_test_projected_shadow_vertex_lerp_enabled()) {
+                        (void)gfx_presentation_packet_capture_deformation(
+                            &packet_binding.owner, packet_binding.viewport,
+                            packet_binding.ordinal, v, byte_size,
+                            (uint32_t)retained_n, (uint32_t)sizeof(*v));
+                    }
+                } else {
+                    rigid_translation =
+                        dkr_replay_object_alpha_valid &&
+                        dkr_replay_object_alpha_numerator != 0u &&
+                        dkr_replay_deformation_interpolation_enabled() &&
+                        dkr_replay_projected_shadow_interpolation_enabled() &&
+                        !dkr_test_projected_shadow_vertex_lerp_enabled();
+                    if (rigid_translation) {
+                        retained_replay =
+                            dkr_replay_projected_shadow_rigid(
+                                &packet_binding.owner, v, retained_n,
+                                retained_vertices, position_overrides);
+                    } else if (dkr_test_projected_shadow_vertex_lerp_enabled()) {
+                        retained_replay = dkr_replay_deformation_vertices(
+                            &packet_binding.owner, packet_binding.viewport,
+                            packet_binding.ordinal, retained_n, false,
+                            dkr_replay_object_alpha_valid &&
+                                dkr_replay_deformation_interpolation_enabled() &&
+                                dkr_replay_projected_shadow_interpolation_enabled(),
+                            retained_vertices, position_overrides,
+                            color_overrides);
+                    }
+                    if (retained_replay !=
+                            DKR_RETAINED_VERTEX_UNAVAILABLE) {
+                        vertex_source = retained_vertices;
+                    }
+                    if (retained_replay ==
+                            DKR_RETAINED_VERTEX_INTERPOLATED) {
+                        position_override = position_overrides;
+                    }
+                    if (retained_replay ==
+                            DKR_RETAINED_VERTEX_INTERPOLATED &&
+                        !rigid_translation &&
                         dkr_replay_vertex_color_interpolation_enabled()) {
                         color_override = color_overrides;
                     }
@@ -4528,6 +5100,10 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             const Triangle *t = (const Triangle *)dkr_resolve(cmd->words.w1);
             DTRACE("G_TRIN ntris=%d tex=%d addr=%08x->%p", num_tris, tex, cmd->words.w1, (const void *)t);
             if (t) {
+                if (!dkr_replay_pass) {
+                    (void)gfx_retained_task_capture_dependency(
+                        t, t, (size_t)num_tris * sizeof(*t));
+                }
                 dkr_begin_primitive(
                     rsp.draw_space != G_MTX_DKR_SPACE_WORLD);
                 dkr_sp_polygon(t, num_tris, tex);
@@ -4543,6 +5119,10 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             uint8_t idx = (uint8_t)C0(cmd, 16, 8);
             const void *data = dkr_resolve(cmd->words.w1);
             if (idx == G_MV_VIEWPORT && data) {
+                if (!dkr_replay_pass) {
+                    (void)gfx_retained_task_capture_dependency(
+                        data, data, sizeof(Vp_t));
+                }
                 const Vp_t *vp = (const Vp_t *)data;
                 dkr_calc_viewport(vp);
                 DTRACE("G_MOVEMEM VIEWPORT scale=[%d %d %d] trans=[%d %d %d] -> vp{x=%d y=%d w=%d h=%d}",
@@ -4875,6 +5455,7 @@ void gfx_shutdown(void) {
     tex_mip_buf = NULL;
     tex_mip_cap = 0;
     gfx_presentation_packet_shutdown();
+    gfx_retained_task_shutdown();
     gfx_shadow_frame_shutdown();
     gfx_reset_renderer_caches();
     /* Every field is READ back from the variable that owns it, so a clean
@@ -5062,6 +5643,8 @@ bool gfx_start_frame(uint64_t authored_tick) {
     gfx_dkr_reset_interpreter_state();
     dkr_last_walked_authored_tick = authored_tick;
     if (present_sched_replay_armed()) {
+        (void)gfx_retained_task_capture_begin(
+            authored_tick, g_dkrArenaBase, g_dkrArenaSize);
         /* Billboard ownership was registered while game code built the list.
          * Deformed model vertices only become visible when HLE resolves G_VTX,
          * so begin their independent tick-stamped capture at the real walk. */
@@ -5184,6 +5767,8 @@ void gfx_end_frame(void) {
      */
     if (present_sched_replay_armed()) {
         const uint64_t perf_freeze = present_perf_now();
+        (void)gfx_retained_task_capture_commit(
+            dkr_last_walked_dl, dkr_walk_entry_segments);
         gfx_presentation_packet_freeze();
         gfx_shadow_replay_freeze();
         present_perf_add(PRESENT_PERF_FREEZE, perf_freeze);
@@ -5239,9 +5824,19 @@ static bool gfx_dkr_replay_walk_impl(
     const GfxShadowReplayViewProjection *overrides, size_t override_count,
     bool object_alpha_valid, uint64_t numerator, uint64_t denominator) {
     bool completed = false;
+    bool retained_entered = false;
+    bool live_arena_poisoned = false;
+    void *live_arena = NULL;
+    uint32_t live_arena_size = 0u;
+    uint8_t *live_arena_backup = NULL;
+    GfxRetainedTaskView retained_task;
 
     if (gfx_rapi == NULL || dkr_last_walked_dl == NULL || dkr_replay_pass ||
         !dkr_walk_entry_valid || !gfx_presentation_packet_frozen()) {
+        return false;
+    }
+    if (!gfx_retained_task_acquire(
+            dkr_last_walked_authored_tick, &retained_task)) {
         return false;
     }
     dkr_replay_force_recompose = present_sched_test_force_recompose();
@@ -5259,6 +5854,25 @@ static bool gfx_dkr_replay_walk_impl(
      * tick's frame; a second capture would republish it mid-present. */
     gfx_shadow_capture_suppress(true);
 
+    /* From this point through the HLE walk, every arena token and direct
+     * command traversal belongs to the retained authored task. The live arena
+     * is restored before releasing the shadow registry, and no game code runs
+     * while the private image is installed. */
+    live_arena = g_dkrArenaBase;
+    live_arena_size = g_dkrArenaSize;
+    if (dkr_test_live_arena_poison_enabled()) {
+        live_arena_backup = (uint8_t *)malloc(live_arena_size);
+        if (live_arena_backup == NULL) {
+            goto replay_cleanup;
+        }
+        memcpy(live_arena_backup, live_arena, live_arena_size);
+        memset(live_arena, 0xa5, live_arena_size);
+        live_arena_poisoned = true;
+    }
+    g_dkrArenaBase = (void *)retained_task.retained_arena;
+    g_dkrArenaSize = (uint32_t)retained_task.arena_size;
+    retained_entered = true;
+
     if (gfx_rapi->start_frame == NULL || !gfx_rapi->start_frame()) {
         goto replay_cleanup;
     }
@@ -5267,10 +5881,10 @@ static bool gfx_dkr_replay_walk_impl(
      * the real walk left behind (see dkr_walk_entry_rdp). */
     memcpy(&rdp, dkr_walk_entry_rdp, sizeof(rdp));
     memcpy(&rsp, dkr_walk_entry_rsp, sizeof(rsp));
-    memcpy(gfx_segment_table, dkr_walk_entry_segments,
-           sizeof(dkr_walk_entry_segments));
+    memcpy(gfx_segment_table, retained_task.segments,
+           sizeof(retained_task.segments));
     dkr_in_texrect = dkr_walk_entry_texrect;
-    gfx_run(dkr_last_walked_dl);
+    gfx_run((Gfx *)retained_task.display_list);
     gfx_flush();
     if (gfx_rapi->end_frame) {
         gfx_rapi->end_frame();
@@ -5281,6 +5895,17 @@ static bool gfx_dkr_replay_walk_impl(
     completed = !dkr_replay_dependency_failed;
 
 replay_cleanup:
+    if (retained_entered) {
+        g_dkrArenaBase = live_arena;
+        g_dkrArenaSize = live_arena_size;
+    }
+    if (live_arena_poisoned) {
+        memcpy(live_arena, live_arena_backup, live_arena_size);
+        if (completed) {
+            gfx_retained_task_note_live_arena_poison();
+        }
+    }
+    free(live_arena_backup);
     gfx_shadow_capture_suppress(false);
     /* Put back whatever the game had registered when the replay displaced it:
      * by the time a presentation replay runs, the NEXT tick's display list has
@@ -5312,8 +5937,10 @@ bool gfx_dkr_replay_walk_interpolated(
 void gfx_dkr_replay_invalidate(void) {
     dkr_last_walked_dl = NULL;
     dkr_last_walked_authored_tick = 0u;
+    dkr_future_last_published_tick = UINT64_MAX;
     dkr_walk_entry_valid = false;
     gfx_presentation_packet_invalidate();
+    gfx_retained_task_invalidate();
 }
 
 uint64_t gfx_dkr_real_walk_count(void) {

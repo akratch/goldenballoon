@@ -1,0 +1,107 @@
+# Real retail setup for the P2-led Adventure identity regression.
+#
+# JOINTVENTURE is entered through the on-screen Magic Codes keyboard, then two
+# players start Adventure. The harness supplies only the persisted Taj unlock;
+# P2 selects Taj through the visible character-select slot. Its native handoff
+# witness replays retail's post-race lead transaction in the hub, before the
+# next race is built, so racer binding remains production code.
+# Keyboard rows: ABCDEFG / HIJKLMN / OPQRSTU / VWXYZ + DEL + OK.
+
+1250 START 4
+1310 DOWN 4
+1380 START 4
+1520 DOWN 4
+1580 DOWN 4
+1640 DOWN 4
+1700 DOWN 4
+1760 DOWN 4
+1840 A 4
+1900 A 4
+
+# JOINTVENTURE
+1940 DOWN 4
+1970 RIGHT 4
+2000 RIGHT 4
+2030 A 4
+2060 DOWN 4
+2090 LEFT 4
+2120 LEFT 4
+2150 A 4
+2180 UP 4
+2210 RIGHT 4
+2240 A 4
+2270 RIGHT 4
+2300 RIGHT 4
+2330 RIGHT 4
+2360 RIGHT 4
+2390 RIGHT 4
+2420 A 4
+2450 DOWN 4
+2480 LEFT 4
+2510 A 4
+2540 DOWN 4
+2570 LEFT 4
+2600 LEFT 4
+2630 LEFT 4
+2660 LEFT 4
+2690 LEFT 4
+2720 A 4
+2750 UP 4
+2780 UP 4
+2810 UP 4
+2840 RIGHT 4
+2870 RIGHT 4
+2900 RIGHT 4
+2930 RIGHT 4
+2960 A 4
+2990 DOWN 4
+3020 RIGHT 4
+3050 RIGHT 4
+3080 A 4
+3110 DOWN 4
+3140 LEFT 4
+3170 A 4
+3200 RIGHT 4
+3230 A 4
+3260 LEFT 4
+3290 LEFT 4
+3320 LEFT 4
+3350 A 4
+3380 UP 4
+3410 UP 4
+3440 RIGHT 4
+3470 A 4
+3500 DOWN 4
+3530 DOWN 4
+3560 DOWN 4
+3590 RIGHT 4
+3620 RIGHT 4
+3650 START 4
+
+# Dismiss success, return to title, and enter the real character-select flow.
+3730 A 4
+3800 B 4
+3940 B 4
+4140 START 4
+
+# P1 keeps Diddy; P2 joins as Krunch, moves through the real lower secret row
+# (Krunch -> Conker -> Tiptup -> Taj), and confirms Taj. JOINTVENTURE routes
+# the two-player selection through Game Select -> Adventure rather than Tracks.
+4220 A 4 P2
+4300 A 4 P1
+4380 DOWN 4 P2
+4460 RIGHT 4 P2
+4540 RIGHT 4 P2
+4620 A 4 P2
+4700 A 4 P1
+
+# Game Select defaults to Adventure. Select the first empty file and accept the
+# default three-letter name; the native closed-loop drive hook handles the hub
+# and door traversal afterwards.
+4920 A 4 P1
+5140 A 4 P1
+5290 A 4 P1
+5340 A 4 P1
+5390 A 4 P1
+5440 A 4 P1
+5490 A 4 P1

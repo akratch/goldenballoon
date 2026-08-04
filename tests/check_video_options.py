@@ -7,8 +7,8 @@ The three arms run in private working/save directories:
   result traces, the atomic INI, and a fresh-process reload;
 * precedence: proves an environment-owned aspect is visibly locked and is not
   baked into the user's file while unrelated menu settings still work;
-* storage fault: makes the atomic temporary path unwritable and proves every
-  video mutation fails closed while the accessibility toggle remains usable.
+* storage fault: blocks the transaction lock and proves every video mutation
+  fails closed while the accessibility toggle remains usable.
 * malformed launcher: proves an invalid internal seed exits 2 without changing
   an existing config even though persistence was requested before main parsing.
 
@@ -270,7 +270,11 @@ def run_precedence(binary: Path, rom: Path, script: Path, renderer: str) -> None
 def run_storage_fault(binary: Path, rom: Path, script: Path, renderer: str) -> None:
     with tempfile.TemporaryDirectory(prefix="mdkr-video-options-fault-") as raw:
         root = Path(raw)
-        (root / "mdkr64.ini.tmp").mkdir()
+        # Persistence now uses exclusive PID/serial staging names, so a fixed
+        # .tmp directory no longer intersects the production transaction. A
+        # directory at the exact lock path deterministically rejects the
+        # transaction before any staging file can be published.
+        (root / "mdkr64.ini.lock").mkdir()
         output = run_route(
             binary, rom, script, root, renderer_env(renderer)
         )

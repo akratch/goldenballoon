@@ -21,8 +21,12 @@ void DiagPanel_draw(LauncherState &s, LauncherAction &out) {
     (void)s;
     (void)out;
 
-    ui::SectionHeader("Diagnostics",
-                      "Engine output from this session. Attach this to a bug report.");
+    ui::SectionHeader(
+        "Diagnostics",
+        DiagLog_includesPreviousFailure()
+            ? "Output from this launcher and the previous failed engine attempt. "
+              "Attach it to a bug report."
+            : "Engine output from this session. Attach this to a bug report.");
 
     // Environment summary: the handful of facts that explain most reports.
     SDL_version linked;
@@ -33,7 +37,8 @@ void DiagPanel_draw(LauncherState &s, LauncherAction &out) {
                    SDL_GetPlatform());
     const char *logPath = DiagLog_path();
     if (logPath && logPath[0]) {
-        ui::TextSubtle("Log file: %s", logPath);
+        ui::TextSubtle("Log file:");
+        ui::TextSubtleUnformattedWrapped(logPath);
     } else {
         ui::TextSubtle("Log file: (not installed on this platform)");
     }
@@ -45,8 +50,16 @@ void DiagPanel_draw(LauncherState &s, LauncherAction &out) {
     static std::vector<char> buf(64 * 1024);
     int n = DiagLog_snapshot(buf.data(), (int)buf.size());
 
+    static bool copied = false;
     if (ImGui::Button("Copy Log to Clipboard", ui::kBtnWide())) {
         ImGui::SetClipboardText(n > 0 ? buf.data() : "(log is empty)");
+        copied = true;
+    }
+    if (copied) {
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::good());
+        ImGui::TextUnformatted("Copied");
+        ImGui::PopStyleColor();
     }
 
     ui::Gap(ui::kGapS);
@@ -61,5 +74,6 @@ void DiagPanel_draw(LauncherState &s, LauncherAction &out) {
     } else {
         ui::TextSubtle("Nothing logged yet this session.");
     }
+    ui::TouchScrollCurrentWindow();
     ImGui::EndChild();
 }

@@ -128,7 +128,16 @@ void copy_framebuffer_size_to_coords(s32 *x1, s32 *y1, s32 *x2, s32 *y2);
 void set_ortho_matrix_height(f32 value);
 void mtx_ortho(Gfx **dList, Mtx **mtx);
 #ifdef NATIVE_PORT
+typedef enum ViewportWorldRegion {
+    VIEWPORT_WORLD_REGION_PRESENTATION,
+    VIEWPORT_WORLD_REGION_SAFE_APERTURE
+} ViewportWorldRegion;
+
+void viewport_world_region_set(s32 viewPortIndex, ViewportWorldRegion region);
+s32 viewport_world_region_uses_safe_aperture(s32 viewPortIndex);
 void mtx_ortho_fullscreen(Gfx **dList, Mtx **mtx);
+void mtx_ortho_wide_background(Gfx **dList, Mtx **mtx,
+                               f32 authoredTileOffset);
 f32 cam_get_effective_horizontal_fov(void);
 f32 cam_get_effective_vertical_fov(void);
 f32 cam_get_effective_aspect(void);

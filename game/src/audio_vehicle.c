@@ -1,6 +1,9 @@
 #include "audio_vehicle.h"
 
 #include "asset_loading.h"
+#ifdef NATIVE_PORT
+#include "asset_swap.h"
+#endif
 #include "audio_spatial.h"
 #include "audiosfx.h"
 #include "game_ui.h"
@@ -13,6 +16,11 @@
 #include "racer.h"
 #include "runtime_contracts.h"
 #include "types.h"
+
+#ifdef NATIVE_PORT
+#include <stdio.h>
+#include <stdlib.h>
+#endif
 
 #ifdef NATIVE_PORT
 #define VEHICLE_LOG dkr_vehicle_logf
@@ -34,6 +42,37 @@ VehicleSoundData *gRacerSound;
 Object_Racer *gSoundRacerObj;
 
 /******************************/
+
+#ifdef NATIVE_PORT
+/* Focused end-to-end witness for tests/check_vehicle_audio.py. Sampling keeps
+ * the opt-in trace compact while still exposing idle, acceleration and cruise. */
+static s32 vehicle_audio_trace_enabled(void) {
+    static s32 enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("MDKR_VEHICLE_AUDIO_TRACE");
+        enabled = value != NULL && value[0] != '\0' && value[0] != '0';
+    }
+    return enabled;
+}
+
+static void vehicle_audio_trace(Object_Racer *racer, VehicleSoundData *soundData) {
+    static u32 sampleCounter;
+
+    if (!vehicle_audio_trace_enabled() || racer->playerIndex != PLAYER_ONE ||
+        (++sampleCounter & 15u) != 0) {
+        return;
+    }
+    fprintf(stderr,
+            "[VEHAUDIO] character=%d vehicle=%d sound=%u speed=%.6f "
+            "intensity=%u basePitch=%.6f enginePitch=%.6f main=%d idle=%d\n",
+            racer->characterId, racer->vehicleIDPrev,
+            (unsigned) soundData->soundId[0], (double) racer->velocity,
+            (unsigned) soundData->engine_intensity,
+            (double) soundData->basePitch[0], (double) soundData->enginePitch,
+            soundData->soundHandle[0] != NULL,
+            soundData->engineIdleSoundHandle != NULL);
+}
+#endif
 
 static f32 *racer_sound_prev_distance_slot(VehicleSoundData *soundData, s32 playerIndex) {
     if (playerIndex < 0) {
@@ -97,7 +136,21 @@ VehicleSoundData *racer_sound_init(s32 characterId, s32 vehicleId) {
     }
     assetOffset = table[ASSET_AUDIO_7] + assetRow * sizeof(VehicleSoundAsset);
     asset = (VehicleSoundAsset *) mempool_alloc_safe(sizeof(VehicleSoundAsset), COLOUR_TAG_CYAN);
-    asset_load(ASSET_AUDIO, (uintptr_t)asset, assetOffset, sizeof(VehicleSoundAsset));
+    if (asset_load(ASSET_AUDIO, (uintptr_t)asset, assetOffset, sizeof(VehicleSoundAsset)) !=
+        (s32) sizeof(VehicleSoundAsset)) {
+        stubbed_printf("racer_sound_init: failed to load vehicle sound row %d\n", assetRow);
+        mempool_free(table);
+        mempool_free(asset);
+        return NULL;
+    }
+#ifdef NATIVE_PORT
+    if (!asset_swap_vehicle_sound(asset, sizeof(VehicleSoundAsset))) {
+        stubbed_printf("racer_sound_init: failed to normalize vehicle sound row %d\n", assetRow);
+        mempool_free(table);
+        mempool_free(asset);
+        return NULL;
+    }
+#endif
 
     soundData = (VehicleSoundData *) mempool_alloc_safe(sizeof(VehicleSoundData), COLOUR_TAG_CYAN);
 
@@ -190,16 +243,15 @@ void racer_sound_update(Object *obj, u32 buttonsPressed, u32 buttonsHeld, s32 ti
                 gRacerSound->racerPos.x = obj->trans.x_position;
                 gRacerSound->racerPos.y = obj->trans.y_position;
                 gRacerSound->racerPos.z = obj->trans.z_position;
-                switch (gSoundRacerObj->vehicleIDPrev) {
+                switch (mdkr_vehicle_sound_model(gSoundRacerObj->vehicleIDPrev)) {
+                    case VEHICLE_CAR:
+                        racer_sound_car(obj, buttonsPressed, buttonsHeld, ticksDelta);
+                        break;
                     case VEHICLE_HOVERCRAFT:
                         racer_sound_hovercraft(obj, buttonsPressed, buttonsHeld, ticksDelta);
                         break;
                     case VEHICLE_PLANE:
-                    case VEHICLE_FLYING_CAR:
                         racer_sound_plane(obj, buttonsPressed, buttonsHeld, ticksDelta);
-                        break;
-                    case VEHICLE_LOOPDELOOP:
-                        racer_sound_car(obj, buttonsPressed, buttonsHeld, ticksDelta);
                         break;
                     default:
                         break;
@@ -962,6 +1014,9 @@ void racer_sound_update_all(Object **racerObjs, s32 numRacers, Camera *cameras, 
                     }
                 }
             }
+#ifdef NATIVE_PORT
+            vehicle_audio_trace(racer, gRacerSound);
+#endif
         }
     }
 

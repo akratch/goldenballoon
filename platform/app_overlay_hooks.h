@@ -18,7 +18,8 @@ extern "C" {
 
 // Called by the engine each frame. No-ops when no hooks are registered
 // (the automation path never registers them, so it stays byte-identical).
-void platformOverlayProcessEvent(const void *sdl_event);
+int  platformOverlayProcessEvent(const void *sdl_event);
+void platformOverlayService(void);
 int  platformOverlayWantsInput(void);
 int  platformOverlayWantsRender(void);
 int  platformOverlayRender(void);

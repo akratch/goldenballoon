@@ -21,6 +21,10 @@ void DiagLog_shutdown();
 // Copy the most-recent ring text (NUL-terminated) into buf; returns byte count.
 int DiagLog_snapshot(char *buf, int cap);
 
+// True when a clean recovery relaunch imported the failed engine attempt into
+// this session's ring, so Diagnostics can describe its contents accurately.
+bool DiagLog_includesPreviousFailure();
+
 // Absolute path to mdkr64.log (empty before install / on unsupported platforms).
 const char *DiagLog_path();
 

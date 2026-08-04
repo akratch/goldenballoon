@@ -290,9 +290,18 @@ def run_check(args: argparse.Namespace) -> None:
                       .getAttribute("aria-live"),
                     dialogLabel: document.getElementById("save-dialog")
                       .getAttribute("aria-labelledby"),
-                    dropRole: document.getElementById("save-drop")
-                      .getAttribute("role"),
-                    dropTabIndex: document.getElementById("save-drop").tabIndex
+                    romDropElement: document.getElementById("drop").tagName,
+                    romDropType: document.getElementById("drop").type,
+                    dropElement: document.getElementById("save-drop").tagName,
+                    dropType: document.getElementById("save-drop").type,
+                    dropTabIndex: document.getElementById("save-drop").tabIndex,
+                    skipTarget: document.querySelector(".skip-link")
+                      .getAttribute("href"),
+                    themeColor: document.querySelector('meta[name="theme-color"]')
+                      .content,
+                    dialogOverscroll: getComputedStyle(
+                      document.getElementById("save-dialog"))
+                      .overscrollBehavior
                   },
                   presentation: {
                     value: document.getElementById("mode").value,
@@ -317,8 +326,14 @@ def run_check(args: argparse.Namespace) -> None:
                     "statusRole": "status",
                     "statusLive": "polite",
                     "dialogLabel": "save-dialog-title",
-                    "dropRole": "button",
+                    "romDropElement": "BUTTON",
+                    "romDropType": "button",
+                    "dropElement": "BUTTON",
+                    "dropType": "button",
                     "dropTabIndex": 0,
+                    "skipTarget": "#gate",
+                    "themeColor": "#0a2447",
+                    "dialogOverscroll": "contain",
                 },
                 f"save accessibility semantics changed: {gate}",
             )
@@ -342,16 +357,12 @@ def run_check(args: argparse.Namespace) -> None:
                   const drop = document.getElementById("save-drop");
                   let activations = 0;
                   input.click = () => { activations++; };
-                  for (const key of ["Enter", " "]) {
-                    drop.dispatchEvent(new KeyboardEvent("keydown", {
-                      key, bubbles: true, cancelable: true
-                    }));
-                  }
+                  drop.click();
                   return {activations, focused: (drop.focus(), document.activeElement.id)};
                 })()"""
             )
             require(
-                keyboard == {"activations": 2, "focused": "save-drop"},
+                keyboard == {"activations": 1, "focused": "save-drop"},
                 f"keyboard import target is not operable: {keyboard}",
             )
 

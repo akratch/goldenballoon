@@ -25,21 +25,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include "platform_os.h"
+#include "fs_utf8.h"
 #include "rom_id.h"
+#include "rom_validation.h"
 #include "address_domains.h"
-#include "sha256.h"
 
 uint8_t *g_romData = NULL;
 uint32_t g_romSize = 0;
 static int s_sourceTvType = 1;
-
-/* DKR (US v1.1 / v80) is a 12 MB cartridge, like every DKR region. */
-#define DKR_ROM_SIZE_BYTES 0x00C00000
-
-static uint32_t read_be32(const uint8_t *bytes) {
-    return ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) |
-           ((uint32_t)bytes[2] << 8) | (uint32_t)bytes[3];
-}
+static int s_sourceIsEuropean = 0;
 
 int platform_source_tv_type(void) {
     return s_sourceTvType;
@@ -49,46 +43,14 @@ int platform_source_field_hz(void) {
     return s_sourceTvType == 0 ? 50 : 60;
 }
 
-static const char *reference_sha256(const char *build) {
-    if (build != NULL && strcmp(build, "us.v80") == 0) {
-        return "7de1a8fb2a9558cfc3d9ad4497df698c1e89cf7095ac1531557df2af40ba8bcf";
-    }
-    if (build != NULL && strcmp(build, "pal.v80") == 0) {
-        return "584d59412b3a8c675f5569516a0406128028929e31544490a4dbc3ab16a038b9";
-    }
-    return NULL;
-}
-
-static int validate_asset_lut(const DkrRomId *id) {
-    uint32_t count;
-    uint32_t previous;
-    uint32_t relativeLimit;
-    uint32_t i;
-    uint64_t tableBytes;
-
-    if (id->assetLutStart >= id->assetLutEnd || id->assetLutEnd > g_romSize) {
-        return -1;
-    }
-    count = read_be32(g_romData + id->assetLutStart);
-    tableBytes = ((uint64_t)count + 2u) * sizeof(uint32_t);
-    if (count == 0 || tableBytes > (uint64_t)id->assetLutEnd - id->assetLutStart) {
-        return -1;
-    }
-    relativeLimit = g_romSize - id->assetLutEnd;
-    previous = 0;
-    for (i = 0; i <= count; i++) {
-        uint32_t offset = read_be32(g_romData + id->assetLutStart + (i + 1u) * 4u);
-        if (offset < previous || offset > relativeLimit) {
-            return -1;
-        }
-        previous = offset;
-    }
-    return 0;
+int platform_source_is_european(void) {
+    return s_sourceIsEuropean;
 }
 
 int platformInitRom(const char *path) {
     s_sourceTvType = 1;
-    FILE *f = fopen(path, "rb");
+    s_sourceIsEuropean = 0;
+    FILE *f = mdkr_fopen_utf8(path, "rb");
     if (!f) {
         fprintf(stderr, "[ROM] Failed to open: %s\n", path);
         return -1;
@@ -106,7 +68,7 @@ int platformInitRom(const char *path) {
         fprintf(stderr,
                 "[ROM] %s is %ld bytes; a Diddy Kong Racing ROM must be exactly "
                 "%d bytes (12 MB). Wrong game, headered dump, or truncated file.\n",
-                path, size, DKR_ROM_SIZE_BYTES);
+                path, size, (int)DKR_ROM_SIZE_BYTES);
         fclose(f);
         return -1;
     }
@@ -126,27 +88,14 @@ int platformInitRom(const char *path) {
     }
     g_romSize = (uint32_t)size;
 
-    /* --- 2. Byte order: convert .v64/.n64 in place to big-endian .z64. ------ */
+    /* --- 2-5. Authoritative image validation. -------------------------------
+     * This same pure validator runs in the launcher before a candidate is
+     * persisted. It runs again here because the selected file can be replaced
+     * on disk between the user's validation and Play. */
     {
-        const char *order = dkr_rom_normalize_byte_order(g_romData, g_romSize);
-        if (order == NULL) {
-            fprintf(stderr,
-                    "[ROM] %s is not an N64 ROM - its first four bytes are %02x %02x %02x %02x, "
-                    "which is none of .z64 (80 37 12 40), .v64 (37 80 40 12) or .n64 "
-                    "(40 12 37 80).\n",
-                    path, g_romData[0], g_romData[1], g_romData[2], g_romData[3]);
-            free(g_romData); g_romData = NULL; g_romSize = 0;
-            return -1;
-        }
-        if (strcmp(order, "z64") != 0) {
-            printf("[ROM] %s is a .%s image - converted to big-endian .z64 order on load.\n",
-                   path, order);
-        }
-    }
-
-    /* --- 3. Revision: WHICH Diddy Kong Racing is this? ---------------------- */
-    {
-        DkrRomId id;
+        DkrRomValidation validation;
+        DkrRomValidationOptions options = dkr_rom_validation_options_from_env();
+        DkrRomId *id;
         char msg[512];
         /* MDKR_ROM_ANY_REVISION=1 downgrades the refusal to a warning. This is an
          * INVESTIGATION hook, not a compatibility switch: it is how the
@@ -155,25 +104,23 @@ int platformInitRom(const char *path) {
          * ROM is undefined — the asset lookup table is read from the wrong offset
          * (see segment_consts.c). Do not suggest it to a user as a way to play
          * another region. */
-        const char *anyRev = getenv("MDKR_ROM_ANY_REVISION");
-        int forceAny = (anyRev != NULL && anyRev[0] == '1');
-        const char *allowModifiedValue = getenv("MDKR_ROM_ALLOW_MODIFIED");
-        int allowModified = allowModifiedValue != NULL && allowModifiedValue[0] == '1';
-        char actualSha256[MDKR_SHA256_HEX_SIZE];
-        const char *expectedSha256;
-
-        dkr_rom_identify(g_romData, &id);
-        dkr_rom_describe(&id, path, msg, sizeof(msg));
-        if (id.verdict != DKR_ROM_SUPPORTED && !forceAny) {
-            fprintf(stderr, "[ROM] %s\n", msg);
+        if (!dkr_rom_validate_image(g_romData, g_romSize, path, &options,
+                                    &validation)) {
+            fprintf(stderr, "[ROM] %s\n", validation.message);
             free(g_romData); g_romData = NULL; g_romSize = 0;
             return -1;
         }
-        if (id.verdict != DKR_ROM_SUPPORTED) {
+        id = &validation.id;
+        dkr_rom_describe(id, path, msg, sizeof(msg));
+        if (strcmp(validation.byteOrder, "z64") != 0) {
+            printf("[ROM] %s is a .%s image - converted to big-endian .z64 order on load.\n",
+                   path, validation.byteOrder);
+        }
+        if (id->verdict != DKR_ROM_SUPPORTED) {
             fprintf(stderr, "[ROM] %s\n", msg);
             fprintf(stderr, "[ROM] MDKR_ROM_ANY_REVISION=1 - loading it anyway. This revision is "
                             "UNVALIDATED; see docs/ROM_REVISIONS.md.\n");
-        } else if (!id.matchedByCrc) {
+        } else if (!id->matchedByCrc) {
             fprintf(stderr, "[ROM] WARNING: %s\n", msg);
         } else {
             /* Print the SAME sentence dkr_rom_describe() produces on every path,
@@ -182,26 +129,16 @@ int platformInitRom(const char *path) {
              * own bespoke wording would be the one case that drifts unnoticed. */
             printf("[ROM] %s\n", msg);
         }
-
-        expectedSha256 = reference_sha256(id.decompBuild);
-        mdkr_sha256_hex(g_romData, g_romSize, actualSha256);
-        if (id.verdict == DKR_ROM_SUPPORTED && expectedSha256 != NULL &&
-            strcmp(actualSha256, expectedSha256) != 0) {
-            if (!allowModified) {
-                fprintf(stderr,
-                        "[ROM] SHA-256 mismatch for %s: got %s, expected %s. "
-                        "The image is modified or damaged. Set "
-                        "MDKR_ROM_ALLOW_MODIFIED=1 only for explicit mod development.\n",
-                        id.decompBuild, actualSha256, expectedSha256);
-                free(g_romData); g_romData = NULL; g_romSize = 0;
-                return -1;
-            }
+        if (options.allowModified &&
+            dkr_rom_reference_sha256(id->decompBuild) != NULL &&
+            strcmp(validation.sha256,
+                   dkr_rom_reference_sha256(id->decompBuild)) != 0) {
             fprintf(stderr,
                     "[ROM] WARNING: modified %s image accepted because "
                     "MDKR_ROM_ALLOW_MODIFIED=1 (SHA-256 %s).\n",
-                    id.decompBuild, actualSha256);
-        } else if (expectedSha256 != NULL) {
-            printf("[ROM] SHA-256 %s (verified)\n", actualSha256);
+                    id->decompBuild, validation.sha256);
+        } else if (dkr_rom_reference_sha256(id->decompBuild) != NULL) {
+            printf("[ROM] SHA-256 %s (verified)\n", validation.sha256);
         }
 
         /* Point the asset loader at THIS revision's lookup table. These are
@@ -209,23 +146,17 @@ int platformInitRom(const char *path) {
          * else, and reading them from the wrong offset is what used to SIGSEGV
          * four of the five carts before the first frame. Defaults in
          * asset_loading.c are us.v80's; this is the only writer. */
-        if (id.assetLutStart != 0u && id.romEnd > id.assetLutEnd && id.romEnd <= g_romSize) {
+        if (id->assetLutStart != 0u) {
             extern MdkrRomOffset gDkrAssetsLutStart, gDkrAssetsLutEnd;
             extern MdkrRomOffset gDkrRomEnd;
-            gDkrAssetsLutStart = id.assetLutStart;
-            gDkrAssetsLutEnd = id.assetLutEnd;
-            gDkrRomEnd = id.romEnd;
+            gDkrAssetsLutStart = id->assetLutStart;
+            gDkrAssetsLutEnd = id->assetLutEnd;
+            gDkrRomEnd = id->romEnd;
             printf("[ROM] asset LUT 0x%06X..0x%06X, ROM end 0x%06X (%s)\n",
-                   id.assetLutStart, id.assetLutEnd, id.romEnd, id.decompBuild);
+                   id->assetLutStart, id->assetLutEnd, id->romEnd, id->decompBuild);
         } else {
             fprintf(stderr, "[ROM] Invalid revision bounds for %s.\n",
-                    id.decompBuild != NULL ? id.decompBuild : "unknown revision");
-            free(g_romData); g_romData = NULL; g_romSize = 0;
-            return -1;
-        }
-        if (validate_asset_lut(&id) != 0) {
-            fprintf(stderr, "[ROM] Invalid asset lookup table for %s.\n",
-                    id.decompBuild != NULL ? id.decompBuild : "unknown revision");
+                    id->decompBuild != NULL ? id->decompBuild : "unknown revision");
             free(g_romData); g_romData = NULL; g_romSize = 0;
             return -1;
         }
@@ -236,15 +167,22 @@ int platformInitRom(const char *path) {
          * remains the fallback for a supported modified build.
          */
         s_sourceTvType =
-            (id.decompBuild != NULL &&
-             strncmp(id.decompBuild, "pal.", 4) == 0) ||
-                    id.gameCode[3] == 'P'
+            (id->decompBuild != NULL &&
+             strncmp(id->decompBuild, "pal.", 4) == 0) ||
+                    id->gameCode[3] == 'P'
                 ? 0
                 : 1;
+        /* The launcher/engine validation above has accepted this exact known
+         * revision (including its full-image validation policy).  Language
+         * choice must follow that identity, rather than generic PAL timing or
+         * a country byte which a modified image can carry independently. */
+        s_sourceIsEuropean = id->verdict == DKR_ROM_SUPPORTED &&
+                             id->decompBuild != NULL &&
+                             strcmp(id->decompBuild, "pal.v80") == 0;
         printf("[ROM] source video: %s (%d Hz fields)\n",
                s_sourceTvType == 0 ? "PAL" : "NTSC",
                platform_source_field_hz());
-        printf("[ROM] CRC1 %08X CRC2 %08X\n", id.crc1, id.crc2);
+        printf("[ROM] CRC1 %08X CRC2 %08X\n", id->crc1, id->crc2);
     }
 
     printf("[ROM] Loaded %u bytes (%.1f MB) from %s\n",
@@ -279,4 +217,5 @@ void platform_rom_shutdown(void) {
     g_romData = NULL;
     g_romSize = 0;
     s_sourceTvType = 1;
+    s_sourceIsEuropean = 0;
 }

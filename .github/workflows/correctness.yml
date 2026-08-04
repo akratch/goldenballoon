@@ -79,6 +79,7 @@ jobs:
       - name: CI and WebGPU source contracts
         run: |
           python3 tests/check_ci_contract.py
+          python3 tests/check_release_ready_web_provenance.py
           python3 tests/check_address_domains.py
           python3 tests/check_webgpu_fault_matrix.py
           python3 tests/test_public_surface.py

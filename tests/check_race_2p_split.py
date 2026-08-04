@@ -54,15 +54,22 @@ Reference (deterministic, Ancient Lake, car, MDKR_AUTOPILOT=1, 9600 frames;
 both backends pass and an unset renderer follows the build's native default):
 
 * shipping ``original`` cadence: 2180 racing frames with both players traced,
-  final cp P1=53 / P2=38 (both lap 2), max single-frame step 30.4 / 31.3,
-  slowest racing 240-frame mean speed 25.45 / 11.32;
-* fixed-one-field ``enhanced`` cadence: 4719 racing frames with both players
-  traced, final pace cp P1=53 / P2=39 (both lap 2), max single-frame step
-  23.3 / 44.7, max step-to-step change 1.6 / 4.0, and slowest racing 240-frame
-  mean speed 10.70 / 1.82. At the production finish transition P1 crosses at
-  lap 3 / position 1; DKR's N-1-finished rule then classifies the still-racing
-  P2 last at lap 2 / position 2. Results loads at frame 7632 and returns to
-  track select at 7931.
+  final cp P1=53 / P2=39 (both lap 2), max single-frame step 30.1 / 48.1,
+  slowest racing 240-frame mean speed 25.39 / 14.59;
+* fixed-one-field ``enhanced`` cadence: 4852 racing frames with both players
+  traced, final pace cp P1=53 / P2=40 (both lap 2), max single-frame step
+  14.7 / 25.2, max step-to-step change 5.3 / 5.5, and slowest racing 240-frame
+  mean speed 10.78 / 1.52. At the production finish transition P1 crosses in
+  position 1; DKR's N-1-finished rule then classifies the still-racing P2 last
+  at lap 2 / position 2.
+
+These references include the retail vehicle-audio RNG calls restored by
+``c6fbd94`` and proved against the real-ROM trace.  The earlier 4719-row /
+1.82-unit Enhanced reference came from the port's missing car-audio RNG calls;
+keeping it would preserve a known-inaccurate random stream.  The refreshed
+contract gains checkpoint and trace-length coverage while retaining measured
+headroom on the chaotic P2 AI speed window; it does not treat that one metric
+as evidence of human control response.
 
 The Enhanced P2 path is a chaotic AI/test-hook lane whose authored last-place
 classification is useful end-to-end coverage, not human-input evidence. Exact
@@ -131,11 +138,12 @@ CADENCE_CONTRACTS = {
     "enhanced": {
         "synth_fields": "1",
         "visual_last": 7400,
-        "min_both_frames": 4650,       # observed 4719
-        "min_final_cp": {"player 1": 52, "player 2": 38},  # 53 / 39
+        "min_both_frames": 4750,       # observed 4852 with retail audio RNG
+        "min_final_cp": {"player 1": 52, "player 2": 39},  # 53 / 40
         "min_final_lap": 2,
-        # This is an AI/end-to-end smoke lane. Human response has its own gate.
-        "min_mean_speed": {"player 1": 10.5, "player 2": 1.75},
+        # This is an AI/end-to-end smoke lane. The retail audio RNG stream
+        # measures P2 at 1.52; human response has its own direct binding gate.
+        "min_mean_speed": {"player 1": 10.5, "player 2": 1.4},
     },
 }
 

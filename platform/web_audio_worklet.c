@@ -57,6 +57,13 @@ EM_JS(int, webAudioOutputInit, (int srcRate, int channels), {
         var A = {
             ctx: ctx, node: null, ready: false, failed: false, pending: [],
             posted: 0, statRing: 0, statTime: 0, postedAtStat: 0, under: 0,
+            /* droppedFrames only accounts for worklet-ring eviction. Pending
+             * module-load drops are reported synchronously to C by Push(),
+             * because replaying their cumulative worklet status would count
+             * them twice. */
+            droppedFrames: 0, droppedTotal: 0, droppedSeen: 0, pendingDrops: 0,
+            pendingDroppedFrames: 0, recoveries: 0, recoveryFrames: 0,
+            recoverySamples: 0, completedRecoveries: 0,
             srcRate: srcRate, chans: channels, closed: false,
             shutdownComplete: false
         };
@@ -70,29 +77,36 @@ EM_JS(int, webAudioOutputInit, (int srcRate, int channels), {
                    latency in every failure mode (suspension backlogs, main
                    thread stalls). 1 s was needlessly generous and let a bad
                    state feel like a huge delay. */
-                "this.cap=(((p.srcRate||22050)*2)/5)|0;" +
+                "this.cap=Math.max(8192,(((p.srcRate||22050)*2)/5)|0);" +
                 "this.ratio=(p.srcRate||22050)/sampleRate;" +    /* src frames per out frame */
                 "this.L=new Float32Array(this.cap);this.R=new Float32Array(this.cap);" +
                 "this.r=0;this.w=0;this.count=0;this.frac=0;this.under=0;this.q=0;" +
+                "this.drop=0;this.fade=0;this.recoveries=0;this.recoverySamples=0;this.completedRecoveries=0;this.fromL=0;this.fromR=0;this.lastL=0;this.lastR=0;" +
                 "this.port.onmessage=(e)=>{var d=e.data;if(d&&d.cmd==='pcm'){" +
                   "var s=new Int16Array(d.buf);var n=s.length>>1;" +
                   "for(var i=0;i<n;i++){" +
                     /* overflow: drop the OLDEST samples (advance read), keeping
                        the freshest audio — realtime-correct after a stall */
-                    "if(this.count>=this.cap){this.r=(this.r+1)%this.cap;this.count--;this.frac=0;}" +
+                    "if(this.count>=this.cap){this.r=(this.r+1)%this.cap;this.count--;this.frac=0;this.drop++;if(this.fade===0){this.fromL=this.lastL;this.fromR=this.lastR;this.fade=128;this.recoveries++;}}" +
                     "this.L[this.w]=s[2*i]/32768;this.R[this.w]=s[2*i+1]/32768;" +
-                    "this.w=(this.w+1)%this.cap;this.count++;}}};}" +
+                    "this.w=(this.w+1)%this.cap;this.count++;}}" +
+                  /* A pre-ready loss was already returned as a non-success
+                   * from Push(), so this message only establishes the same
+                   * continuity envelope. Do not add it to this.drop or C
+                   * would observe the one loss twice. */
+                  "else if(d&&d.cmd==='gap'){this.fromL=this.lastL;this.fromR=this.lastR;this.fade=128;this.recoveries++;}};}" +
               "process(inputs,outputs){var o=outputs[0];if(!o||!o[0])return true;" +
                 "var L=o[0];var R=o[1]||o[0];var n=L.length;" +
                 "for(var i=0;i<n;i++){" +
                   "if(this.count<2){L[i]=0;R[i]=0;this.under++;continue;}" +
                   "var i1=(this.r+1)%this.cap;var f=this.frac;" +
-                  "L[i]=this.L[this.r]*(1-f)+this.L[i1]*f;" +
-                  "R[i]=this.R[this.r]*(1-f)+this.R[i1]*f;" +
+                  "var l=this.L[this.r]*(1-f)+this.L[i1]*f;var r=this.R[this.r]*(1-f)+this.R[i1]*f;" +
+                  "if(this.fade>0){var t=(129-this.fade)/128;l=this.fromL*(1-t)+l*t;r=this.fromR*(1-t)+r*t;this.fade--;this.recoverySamples++;if(this.fade===0)this.completedRecoveries++;}" +
+                  "L[i]=l;R[i]=r;this.lastL=l;this.lastR=r;" +
                   "this.frac+=this.ratio;" +
                   "while(this.frac>=1){this.frac-=1;this.r=(this.r+1)%this.cap;this.count--;}}" +
                 /* stamp the ring depth with the AUDIO-thread context time at send */
-                "if(++this.q>=3){this.q=0;this.port.postMessage({ring:this.count,under:this.under,t:currentTime});}" +
+                "if(++this.q>=3){this.q=0;this.port.postMessage({ring:this.count,under:this.under,dropped:this.drop,recoveries:this.recoveries,fade:this.fade,recoverySamples:this.recoverySamples,completedRecoveries:this.completedRecoveries,t:currentTime});}" +
                 "return true;}}" +
             "registerProcessor('mdkr-ring',MDKRRing);";
 
@@ -111,10 +125,29 @@ EM_JS(int, webAudioOutputInit, (int srcRate, int channels), {
                 A.statTime = e.data.t;
                 A.postedAtStat = A.posted;
                 A.under = e.data.under;
+                /* Worklet counters are cumulative. Keep a separate last-seen
+                 * value so ConsumeDroppedFrames() may reset only the pending
+                 * C-side delta without causing old losses to be reported on
+                 * every later status packet. */
+                var reportedDrops = Number(e.data.dropped) || 0;
+                if (reportedDrops > A.droppedSeen) {
+                    var newlyDropped = reportedDrops - A.droppedSeen;
+                    A.droppedFrames += newlyDropped;
+                    A.droppedTotal += newlyDropped;
+                }
+                A.droppedSeen = reportedDrops;
+                A.recoveries = Number(e.data.recoveries) || 0;
+                A.recoveryFrames = Number(e.data.fade) || 0;
+                A.recoverySamples = Number(e.data.recoverySamples) || 0;
+                A.completedRecoveries = Number(e.data.completedRecoveries) || 0;
             };
             node.connect(ctx.destination);
             A.node = node;
             A.ready = true;
+            if (A.pendingDrops > 0) {
+                node.port.postMessage({ cmd: 'gap', frames: A.pendingDrops });
+                A.pendingDrops = 0;
+            }
             for (var i = 0; i < A.pending.length; i++) {
                 node.port.postMessage({ cmd: 'pcm', buf: A.pending[i] }, [A.pending[i]]);
             }
@@ -152,8 +185,7 @@ EM_JS(int, webAudioOutputActive, (void), {
 EM_JS(int, webAudioOutputPush, (const void *buf, unsigned size), {
     var A = Module.mdkrAudio;
     if (!A) return -1;
-    if (A.closed) return 0;
-    if (A.failed) return 0;                       /* committed-but-silent: discard */
+    if (A.closed || A.failed) return -1;
     var frames = size >> 2;                       /* stereo s16 -> 4 bytes/frame */
     /* Copy out of the (growable) wasm heap into an owned, transferable buffer. */
     var view = HEAP16.subarray(buf >> 1, (buf >> 1) + (size >> 1));
@@ -163,10 +195,20 @@ EM_JS(int, webAudioOutputPush, (const void *buf, unsigned size), {
     } else if (A.pending.length < 64) {           /* buffer briefly until module loads */
         A.pending.push(copy.buffer);
     } else {
-        return 0;                                 /* pending full: dropped */
+        A.pendingDrops += frames;
+        A.pendingDroppedFrames += frames;
+        return 1;                                 /* observable, crossfaded gap */
     }
     A.posted += frames;
     return 0;
+});
+
+EM_JS(unsigned, webAudioOutputConsumeDroppedFrames, (void), {
+    var A = Module.mdkrAudio;
+    if (!A || !A.droppedFrames) return 0;
+    var dropped = A.droppedFrames >>> 0;
+    A.droppedFrames = 0;
+    return dropped;
 });
 
 EM_JS(unsigned, webAudioOutputQueuedBytes, (void), {
@@ -178,7 +220,7 @@ EM_JS(unsigned, webAudioOutputQueuedBytes, (void), {
      * backlog the player later hears as delay. On resume the near-empty
      * ring refills to the ~2-field target within a pump. */
     if (A.ctx && A.ctx.state !== 'running') {
-        return ((((A.srcRate * 2) / 5) | 0)) * 4;
+        return Math.max(8192, (((A.srcRate * 2) / 5) | 0)) * 4;
     }
     var occ;
     if (A.statTime > 0) {

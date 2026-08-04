@@ -37,7 +37,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import completed_tick_conservation, resolve_binary
 
 
 DEFAULT_SCRIPT = Path("tests/input_scripts/nav_to_time_trial_race.txt")
@@ -679,6 +679,12 @@ def check_authored_rate_sequence(
     if original_sched is None or rate60_sched is None:
         failures.append(f"{label}: missing scheduler summary")
     else:
+        for run_label, sched in (("Original", original_sched),
+                                 ("=60", rate60_sched)):
+            conservation_error = completed_tick_conservation(
+                sched, original_frames, f"{label}: {run_label}")
+            if conservation_error:
+                failures.append(conservation_error)
         for key, expected in (
             ("ticks", original_frames),
             ("simticks", original_frames),
@@ -699,7 +705,7 @@ def check_authored_rate_sequence(
                     f"{label}: =60 {key}={rate60_sched.get(key)}, "
                     f"expected {expected}"
                 )
-        for key in ("blocked", "multidue", "lead", "lag", "catchup",
+        for key in ("blocked", "multidue", "lag", "catchup",
                     "skips", "rebases", "updatebad"):
             if original_sched.get(key, 0) != 0 or \
                     rate60_sched.get(key, 0) != 0:

@@ -1,7 +1,13 @@
 #include "menu.h"
 #ifdef NATIVE_PORT
 #include "mdkr_trace.h"
+#include "platform_os.h"
 #include "mdkr_adventure.h"
+#include "taj_mod.h"
+#include "taj_physics.h"
+#include "taj_select_layout.h"
+#include "taj_visual.h"
+#include "taj_mod_state_file.h"
 #include "video_config.h"
 extern int g_frameCounter;
 #endif
@@ -41,7 +47,13 @@ extern int g_frameCounter;
 #include "types.h"
 #include "video.h"
 #ifdef NATIVE_PORT
+#include <stdio.h>
 #include <string.h>
+
+#define CHARSELECT_RUNTIME_CAPACITY 11
+#define CHARSELECT_DATA(index) gCurrCharacterSelectData[(index)]
+#else
+#define CHARSELECT_DATA(index) (*gCurrCharacterSelectData)[(index)]
 #endif
 
 /**
@@ -180,7 +192,11 @@ unk801263C0 gMenuCurrentCharacter;
 //              bits 24/25 being high.
 u64 sEepromSettings;
 f32 sBootScreenTimer;
+#ifdef NATIVE_PORT
+CharacterSelectData *gCurrCharacterSelectData;
+#else
 CharacterSelectData (*gCurrCharacterSelectData)[10];
+#endif
 s8 gActivePlayersArray[MAXCONTROLLERS]; // Boolean value for each controller if it's active with a player.
 s8 gCharselectStatus[MAXCONTROLLERS];
 s8 gPlayersCharacterArray[8]; // -1 = Non active player, or character id if >= 0
@@ -374,7 +390,11 @@ unk801263C0 gMenuCurrentCharacter;
 
 s32 gIgnorePlayerInputTime;  // A set amount of time to ignore player input.
 UNUSED s32 sUnused_801263C8; // Set to 0 in menu_init, and never again.
+#ifdef NATIVE_PORT
+CharacterSelectData *gCurrCharacterSelectData;
+#else
 CharacterSelectData (*gCurrCharacterSelectData)[10];
+#endif
 s32 gTrackmenuLoadedLevel;              // Compared for equality to gTrackIdForPreview
 s8 gActivePlayersArray[MAXCONTROLLERS]; // Boolean value for each controller if it's active with a player.
 s32 gOpacityDecayTimer;
@@ -1029,6 +1049,170 @@ CharacterSelectData gCharacterSelectBytesComplete[] = {
     //!@bug T.T's down input selects Tiptup. It should be set to NONE.
 };
 
+#ifdef NATIVE_PORT
+static CharacterSelectData sTajCharacterSelectData[CHARSELECT_RUNTIME_CAPACITY];
+static TajSelectLayout sTajSelectLayout;
+static s32 sCharacterSelectBaseCount;
+static s32 sTajCharacterSelectIndex = -1;
+static s32 sTajUnlockBannerTimer;
+static s32 sTajPersistenceWarningTimer;
+static s32 sTajPersistenceWarningShown;
+static s8 sTajTraceCharacter[MAXCONTROLLERS];
+static s8 sTajTraceVisualStatus[MAXCONTROLLERS];
+static s8 sTajTraceSignVisible[MAXCONTROLLERS];
+
+enum TajCharacterSelectSound {
+    TAJ_CHARSELECT_HIGHLIGHT,
+    TAJ_CHARSELECT_DESELECT,
+    TAJ_CHARSELECT_CONFIRMED,
+};
+
+static s32 charselect_index_is_taj(s32 index) {
+    return taj_mod_is_enabled() && sTajCharacterSelectIndex >= 0 &&
+           index == sTajCharacterSelectIndex;
+}
+
+/* The virtual row keeps Diddy only as a safe retail-table donor. Taj has no
+ * retail character-music channel, so hovering him preserves the neutral
+ * Choose Your Racer arrangement instead of audibly turning into Diddy. */
+static s32 charselect_music_channel_for_index(s32 index) {
+    return charselect_index_is_taj(index) ? -1 : CHARSELECT_DATA(index).voiceID;
+}
+
+static s32 charselect_taj_is_selectable(void) {
+    return taj_visual_select_status() == TAJ_SELECT_VISUAL_READY;
+}
+
+/* Selection-table indexes are not retail Character values. Keep the trace in
+ * human-readable identities so a virtual Taj slot can never silently replace
+ * an ordinary cursor because a table index was mistaken for a racer ID. */
+static const char *charselect_trace_label(s32 index) {
+    static const char *const names[NUMBER_OF_CHARACTERS] = {
+        "KRUNCH", "BUMPER", "TIPTUP", "CONKER", "TIMBER",
+        "BANJO", "DRUMSTICK", "PIPSY", "T.T.", "DIDDY"
+    };
+    s32 character;
+
+    if (charselect_index_is_taj(index)) {
+        return "TAJ";
+    }
+    if (index < 0 || index >= sCharacterSelectBaseCount) {
+        return "INACTIVE";
+    }
+    character = CHARSELECT_DATA(index).voiceID;
+    return character >= 0 && character < NUMBER_OF_CHARACTERS
+        ? names[character] : "INVALID";
+}
+
+static void charselect_build_taj_table(CharacterSelectData *base, s32 baseCount,
+                                       s32 drumstickUnlocked, s32 ttUnlocked) {
+    CharacterSelectData *taj;
+    s32 i;
+
+    if (base == NULL || baseCount < 8 || baseCount >= CHARSELECT_RUNTIME_CAPACITY ||
+        !taj_select_layout_build(&sTajSelectLayout, baseCount,
+                                 drumstickUnlocked, ttUnlocked)) {
+        gCurrCharacterSelectData = base;
+        sCharacterSelectBaseCount = baseCount;
+        sTajCharacterSelectIndex = -1;
+        taj_visual_select_end();
+        return;
+    }
+    sTajCharacterSelectIndex = sTajSelectLayout.tajIndex;
+    memcpy(sTajCharacterSelectData, base, (size_t)baseCount * sizeof(*base));
+    taj = &sTajCharacterSelectData[sTajCharacterSelectIndex];
+    memset(taj, NONE, sizeof(*taj));
+    /* Diddy is retained only as the bounded retail character-data donor.
+     * Picker music and voice identity are resolved separately. */
+    taj->voiceID = CHARACTER_DIDDY;
+    for (i = 0; i < sTajSelectLayout.characterCount; i++) {
+        /* Decomp field names are reversed: rightInput is used for a physical
+         * left move and leftInput for a physical right move. */
+        taj_select_layout_navigation(
+            &sTajSelectLayout, i,
+            sTajCharacterSelectData[i].upInput,
+            sTajCharacterSelectData[i].downInput,
+            sTajCharacterSelectData[i].rightInput,
+            sTajCharacterSelectData[i].leftInput);
+    }
+
+    gCurrCharacterSelectData = sTajCharacterSelectData;
+    sCharacterSelectBaseCount = baseCount;
+    taj_visual_select_begin(&sTajSelectLayout);
+}
+
+static void charselect_update_taj_visual_state(void) {
+    u32 hoverMask = 0;
+    u32 confirmedMask = 0;
+    TajSelectVisualStatus visualStatus = taj_visual_select_status();
+    s32 signVisible = taj_visual_select_sign_visible();
+    s32 i;
+    for (i = 0; i < MAXCONTROLLERS; i++) {
+        u32 playerBit = taj_mod_player_bit(i);
+        if (gActivePlayersArray[i] &&
+            charselect_index_is_taj(gPlayersCharacterArray[i])) {
+            hoverMask |= playerBit;
+            if (gCharselectStatus[i] != CHARSELECT_STATUS_UNCONFIRMED) {
+                confirmedMask |= playerBit;
+            }
+        }
+    }
+    taj_visual_select_set_state(hoverMask, confirmedMask);
+    /* The trace ties every cursor position to the presentation state. It is a
+     * durable oracle for the historical bug where a TAJ label followed every
+     * ordinary hover even though no Taj actor existed. */
+    visualStatus = taj_visual_select_status();
+    signVisible = taj_visual_select_sign_visible();
+    for (i = 0; i < MAXCONTROLLERS; i++) {
+        s32 character = gActivePlayersArray[i]
+            ? gPlayersCharacterArray[i] : -1;
+        if (sTajTraceCharacter[i] != character ||
+            sTajTraceVisualStatus[i] != (s8)visualStatus ||
+            sTajTraceSignVisible[i] != (s8)signVisible) {
+            MDKR_TRACE("taj_hover: controller=%d index=%d taj=%d visual=%d sign=%d label=%s",
+                       i, character, charselect_index_is_taj(character),
+                       visualStatus, signVisible,
+                       charselect_trace_label(character));
+            sTajTraceCharacter[i] = (s8)character;
+            sTajTraceVisualStatus[i] = (s8)visualStatus;
+            sTajTraceSignVisible[i] = (s8)signVisible;
+        }
+    }
+}
+
+static u16 charselect_taj_sound(s32 playerIndex, u16 fallback, s32 event) {
+    u16 sound;
+    if (playerIndex < 0 || playerIndex >= MAXCONTROLLERS ||
+        !charselect_index_is_taj(gPlayersCharacterArray[playerIndex])) {
+        return fallback;
+    }
+    if (event == TAJ_CHARSELECT_CONFIRMED) {
+        sound = SOUND_VOICE_TAJ_ABRAKADABRA;
+    } else if (event == TAJ_CHARSELECT_DESELECT) {
+        sound = SOUND_VOICE_TAJ_HOHO;
+    } else {
+        sound = SOUND_VOICE_TAJ_WAHEY;
+    }
+    MDKR_TRACE("taj_select_sound: player=%d event=%d sound=%u",
+               playerIndex, event, sound);
+    return sound;
+}
+#else
+enum TajCharacterSelectSound {
+    TAJ_CHARSELECT_HIGHLIGHT,
+    TAJ_CHARSELECT_DESELECT,
+    TAJ_CHARSELECT_CONFIRMED,
+};
+
+static s32 charselect_music_channel_for_index(s32 index) {
+    return CHARSELECT_DATA(index).voiceID;
+}
+
+static u16 charselect_taj_sound(UNUSED s32 playerIndex, u16 fallback, UNUSED s32 event) {
+    return fallback;
+}
+#endif
+
 UNUSED s32 unused_800DFFCC = 0;
 
 // Set from charselect_prev()
@@ -1399,11 +1583,266 @@ DrawTexture gMenuPortraitTiptup[2] = { { NULL, 0, 0 }, { NULL, 0, 0 } };
 DrawTexture gMenuPortraitTT[2] = { { NULL, 0, 0 }, { NULL, 0, 0 } };
 DrawTexture gMenuPortraitPipsy[2] = { { NULL, 0, 0 }, { NULL, 0, 0 } };
 DrawTexture gMenuPortraitTimber[2] = { { NULL, 0, 0 }, { NULL, 0, 0 } };
+#ifdef NATIVE_PORT
+enum {
+    TAJ_PORTRAIT_ART_SIZE = 32,
+    TAJ_PORTRAIT_SIZE = 40,
+    TAJ_PORTRAIT_COMMANDS = 12,
+};
+
+typedef struct TajPortraitTexture {
+    TextureHeader header;
+    u8 texels[TAJ_PORTRAIT_SIZE * TAJ_PORTRAIT_SIZE * 4];
+} TajPortraitTexture;
+
+static TajPortraitTexture sTajPortraitTexture;
+static u8 sTajPortraitArt[TAJ_PORTRAIT_ART_SIZE *
+                          TAJ_PORTRAIT_ART_SIZE * 4];
+static Gfx *sTajPortraitCommands;
+static s32 sTajPortraitInitialized;
+
+/* Taj has no retail results portrait. This small native RGBA card is original
+ * port artwork assembled from geometric pixel primitives: it stays inside the
+ * retail 40x40 portrait contract without bundling extracted ROM art or showing
+ * the Diddy donor underneath. */
+DrawTexture gMenuPortraitTaj[2] = { { NULL, 0, 0 }, { NULL, 0, 0 } };
+
+static void taj_portrait_pixel(s32 x, s32 y, u32 colour) {
+    u8 *pixel;
+
+    if (x < 0 || x >= TAJ_PORTRAIT_ART_SIZE ||
+        y < 0 || y >= TAJ_PORTRAIT_ART_SIZE) {
+        return;
+    }
+    pixel = &sTajPortraitArt[
+        (y * TAJ_PORTRAIT_ART_SIZE + x) * 4];
+    pixel[0] = (u8)(colour >> 24);
+    pixel[1] = (u8)(colour >> 16);
+    pixel[2] = (u8)(colour >> 8);
+    pixel[3] = (u8)colour;
+}
+
+static void taj_portrait_resample(void) {
+    s32 x;
+    s32 y;
+
+    /* Retail result portraits are 40x40. Author at a deliberately chunky
+     * 32x32 grid, then use fixed-point bilinear expansion so Taj occupies the
+     * exact same menu footprint without looking harsher than the ROM art. */
+    for (y = 0; y < TAJ_PORTRAIT_SIZE; y++) {
+        u32 sy = (u32)y * (TAJ_PORTRAIT_ART_SIZE - 1) * 256u /
+                 (TAJ_PORTRAIT_SIZE - 1);
+        u32 y0 = sy >> 8;
+        u32 y1 = MIN(y0 + 1, TAJ_PORTRAIT_ART_SIZE - 1);
+        u32 fy = sy & 255u;
+        for (x = 0; x < TAJ_PORTRAIT_SIZE; x++) {
+            u32 sx = (u32)x * (TAJ_PORTRAIT_ART_SIZE - 1) * 256u /
+                     (TAJ_PORTRAIT_SIZE - 1);
+            u32 x0 = sx >> 8;
+            u32 x1 = MIN(x0 + 1, TAJ_PORTRAIT_ART_SIZE - 1);
+            u32 fx = sx & 255u;
+            u8 *out = &sTajPortraitTexture.texels[
+                (y * TAJ_PORTRAIT_SIZE + x) * 4];
+            s32 channel;
+
+            for (channel = 0; channel < 4; channel++) {
+                u32 topLeft = sTajPortraitArt[
+                    (y0 * TAJ_PORTRAIT_ART_SIZE + x0) * 4 + channel];
+                u32 topRight = sTajPortraitArt[
+                    (y0 * TAJ_PORTRAIT_ART_SIZE + x1) * 4 + channel];
+                u32 bottomLeft = sTajPortraitArt[
+                    (y1 * TAJ_PORTRAIT_ART_SIZE + x0) * 4 + channel];
+                u32 bottomRight = sTajPortraitArt[
+                    (y1 * TAJ_PORTRAIT_ART_SIZE + x1) * 4 + channel];
+                u32 top = topLeft * (256u - fx) + topRight * fx;
+                u32 bottom = bottomLeft * (256u - fx) + bottomRight * fx;
+
+                out[channel] = (u8)((top * (256u - fy) + bottom * fy +
+                                     32768u) >> 16);
+            }
+        }
+    }
+}
+
+static void taj_portrait_rect(s32 x0, s32 y0, s32 x1, s32 y1,
+                              u32 colour) {
+    s32 x;
+    s32 y;
+
+    for (y = y0; y <= y1; y++) {
+        for (x = x0; x <= x1; x++) {
+            taj_portrait_pixel(x, y, colour);
+        }
+    }
+}
+
+static void taj_portrait_ellipse(s32 cx, s32 cy, s32 rx, s32 ry,
+                                 u32 colour) {
+    s32 x;
+    s32 y;
+    s32 rx2 = rx * rx;
+    s32 ry2 = ry * ry;
+    s32 limit = rx2 * ry2;
+
+    for (y = -ry; y <= ry; y++) {
+        for (x = -rx; x <= rx; x++) {
+            if (x * x * ry2 + y * y * rx2 <= limit) {
+                taj_portrait_pixel(cx + x, cy + y, colour);
+            }
+        }
+    }
+}
+
+static TextureHeader *taj_portrait_texture(void) {
+    s32 x;
+    s32 y;
+
+    if (sTajPortraitInitialized) {
+        /* Renderer stage teardown ages non-arena host-pointer registrations.
+         * Refresh the immutable static texel mapping on every results load so
+         * the card remains valid across repeated races and menu transitions. */
+        dkr_dl_register_host_ptr(sTajPortraitTexture.texels);
+        return &sTajPortraitTexture.header;
+    }
+    /* TextureHeader::cmd is a 32-bit arena token in the native port. Keep the
+     * generated display list in the game pool so DKR_PTR can reconstruct it;
+     * a process-global Gfx array would lose its host high bits and execute an
+     * unrelated arena address. The card pixels themselves are referenced by a
+     * registered SETTIMG pointer and may safely remain process-owned. */
+    if (sTajPortraitCommands == NULL) {
+        sTajPortraitCommands = mempool_alloc_safe(
+            TAJ_PORTRAIT_COMMANDS * sizeof(*sTajPortraitCommands),
+            COLOUR_TAG_MAGENTA);
+    }
+    memset(&sTajPortraitTexture, 0, sizeof(sTajPortraitTexture));
+    memset(sTajPortraitArt, 0, sizeof(sTajPortraitArt));
+
+    /* Bevel and blue field match the visual weight of the ten retail cards. */
+    taj_portrait_rect(0, 0, 31, 31, COLOUR_RGBA32(54, 54, 70, 255));
+    taj_portrait_rect(1, 1, 30, 30, COLOUR_RGBA32(224, 232, 240, 255));
+    taj_portrait_rect(2, 2, 29, 29, COLOUR_RGBA32(32, 40, 72, 255));
+    for (y = 3; y <= 28; y++) {
+        u32 blue = (u32)(150 + (28 - y) * 2);
+        taj_portrait_rect(3, y, 28, y,
+                          COLOUR_RGBA32(34, 72, blue, 255));
+    }
+    for (x = 3; x <= 28; x += 4) {
+        taj_portrait_pixel(x, 4 + ((x * 3) & 7),
+                           COLOUR_RGBA32(72, 128, 224, 255));
+    }
+
+    /* Robe and shoulders sit behind the head. */
+    taj_portrait_ellipse(16, 29, 12, 7,
+                         COLOUR_RGBA32(44, 18, 70, 255));
+    taj_portrait_ellipse(16, 29, 10, 6,
+                         COLOUR_RGBA32(110, 42, 154, 255));
+    taj_portrait_rect(13, 24, 19, 31,
+                      COLOUR_RGBA32(82, 28, 122, 255));
+    taj_portrait_rect(14, 25, 18, 31,
+                      COLOUR_RGBA32(142, 62, 184, 255));
+
+    /* Ears, head, and cheek shading. */
+    taj_portrait_ellipse(8, 17, 4, 5,
+                         COLOUR_RGBA32(92, 52, 38, 255));
+    taj_portrait_ellipse(24, 17, 4, 5,
+                         COLOUR_RGBA32(92, 52, 38, 255));
+    taj_portrait_ellipse(8, 17, 3, 4,
+                         COLOUR_RGBA32(204, 136, 92, 255));
+    taj_portrait_ellipse(24, 17, 3, 4,
+                         COLOUR_RGBA32(204, 136, 92, 255));
+    taj_portrait_ellipse(16, 17, 9, 10,
+                         COLOUR_RGBA32(86, 45, 33, 255));
+    taj_portrait_ellipse(16, 17, 8, 9,
+                         COLOUR_RGBA32(222, 158, 103, 255));
+    taj_portrait_ellipse(18, 18, 5, 7,
+                         COLOUR_RGBA32(236, 178, 119, 255));
+
+    /* Purple turban, gold band, and jewel. */
+    taj_portrait_ellipse(16, 9, 10, 6,
+                         COLOUR_RGBA32(47, 18, 70, 255));
+    taj_portrait_ellipse(16, 9, 9, 5,
+                         COLOUR_RGBA32(112, 45, 156, 255));
+    taj_portrait_ellipse(12, 8, 4, 4,
+                         COLOUR_RGBA32(151, 74, 190, 255));
+    taj_portrait_rect(8, 11, 24, 13,
+                      COLOUR_RGBA32(63, 25, 92, 255));
+    taj_portrait_rect(9, 11, 23, 11,
+                      COLOUR_RGBA32(240, 190, 48, 255));
+    taj_portrait_ellipse(16, 5, 2, 2,
+                         COLOUR_RGBA32(92, 48, 8, 255));
+    taj_portrait_pixel(16, 4, COLOUR_RGBA32(255, 232, 96, 255));
+    taj_portrait_pixel(15, 5, COLOUR_RGBA32(255, 196, 32, 255));
+    taj_portrait_pixel(16, 5, COLOUR_RGBA32(255, 224, 64, 255));
+    taj_portrait_pixel(17, 5, COLOUR_RGBA32(255, 196, 32, 255));
+    taj_portrait_pixel(16, 6, COLOUR_RGBA32(214, 124, 16, 255));
+
+    /* Eyes and brows remain readable at the original 320x240 output. */
+    taj_portrait_rect(10, 14, 14, 17,
+                      COLOUR_RGBA32(248, 244, 224, 255));
+    taj_portrait_rect(18, 14, 22, 17,
+                      COLOUR_RGBA32(248, 244, 224, 255));
+    taj_portrait_rect(12, 15, 14, 17,
+                      COLOUR_RGBA32(32, 24, 24, 255));
+    taj_portrait_rect(18, 15, 20, 17,
+                      COLOUR_RGBA32(32, 24, 24, 255));
+    taj_portrait_pixel(13, 15, COLOUR_RGBA32(255, 255, 255, 255));
+    taj_portrait_pixel(19, 15, COLOUR_RGBA32(255, 255, 255, 255));
+    taj_portrait_rect(10, 13, 14, 13,
+                      COLOUR_RGBA32(60, 31, 26, 255));
+    taj_portrait_rect(18, 13, 22, 13,
+                      COLOUR_RGBA32(60, 31, 26, 255));
+
+    /* Trunk and unmistakable ivory tusks finish the silhouette. */
+    taj_portrait_ellipse(16, 20, 4, 4,
+                         COLOUR_RGBA32(188, 119, 76, 255));
+    taj_portrait_rect(14, 19, 18, 25,
+                      COLOUR_RGBA32(218, 151, 96, 255));
+    taj_portrait_rect(15, 21, 18, 26,
+                      COLOUR_RGBA32(232, 170, 110, 255));
+    taj_portrait_pixel(18, 26, COLOUR_RGBA32(192, 122, 78, 255));
+    for (y = 0; y < 5; y++) {
+        taj_portrait_pixel(11 - (y >> 1), 20 + y,
+                           COLOUR_RGBA32(250, 244, 205, 255));
+        taj_portrait_pixel(21 + (y >> 1), 20 + y,
+                           COLOUR_RGBA32(250, 244, 205, 255));
+        if (y < 3) {
+            taj_portrait_pixel(12 - (y >> 1), 20 + y,
+                               COLOUR_RGBA32(255, 255, 235, 255));
+            taj_portrait_pixel(20 + (y >> 1), 20 + y,
+                               COLOUR_RGBA32(255, 255, 235, 255));
+        }
+    }
+    taj_portrait_resample();
+
+    sTajPortraitTexture.header.width = TAJ_PORTRAIT_SIZE;
+    sTajPortraitTexture.header.height = TAJ_PORTRAIT_SIZE;
+    sTajPortraitTexture.header.format = (OPAQUE << 4) | TEX_FORMAT_RGBA32;
+    sTajPortraitTexture.header.numberOfInstances = 1;
+    sTajPortraitTexture.header.flags = RENDER_CLAMP_X | RENDER_CLAMP_Y;
+    sTajPortraitTexture.header.numOfTextures = 1;
+    sTajPortraitTexture.header.textureSize =
+        sizeof(TextureHeader) + sizeof(sTajPortraitTexture.texels);
+    material_init(&sTajPortraitTexture.header,
+                  sTajPortraitCommands);
+    dkr_dl_register_host_ptr(sTajPortraitTexture.texels);
+    sTajPortraitInitialized = TRUE;
+    return &sTajPortraitTexture.header;
+}
+#endif
 
 DrawTexture *gRacerPortraits[10] = { gMenuPortraitKrunch, gMenuPortraitDiddy, gMenuPortraitDrumstick,
                                      gMenuPortraitBumper, gMenuPortraitBanjo, gMenuPortraitConker,
                                      gMenuPortraitTiptup, gMenuPortraitTT,    gMenuPortraitPipsy,
                                      gMenuPortraitTimber };
+
+#ifdef NATIVE_PORT
+DrawTexture *menu_taj_portrait(void) {
+    if (gMenuPortraitTaj[0].texture == NULL) {
+        gMenuPortraitTaj[0].texture = taj_portrait_texture();
+    }
+    return gMenuPortraitTaj;
+}
+#endif
 
 s16 unused_800E0B18[74] = { 0x0140, 0x017C, 0x01B8, 0x01F4, 0x0230, 0x026C, 0x02A8, 0x02E4, 0x01E0, 0x0000, 0x0018,
                             0x0039, 0x005A, 0x007B, 0x009C, 0x00BD, 0x00DE, 0x00FF, 0x00A0, 0x0000, 0x0140, 0x01B8,
@@ -2997,6 +3436,34 @@ void postrace_offsets(MenuElement *elements, f32 in, f32 mid, f32 out, s32 textO
     }
 }
 
+#ifdef NATIVE_PORT
+static s32 menu_any_taj_player_selected(void) {
+    s32 i;
+
+    for (i = 0; i < TAJ_MOD_MAX_PLAYERS; i++) {
+        if (taj_mod_player_selected(i)) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+static void menu_render_taj_postrace_identity(void) {
+    char *label;
+
+    if (!menu_any_taj_player_selected()) {
+        return;
+    }
+    label = is_in_time_trial() ? "TAJ MAGIC - NO RECORD" : "TAJ MAGIC CARPET";
+    set_text_font(ASSET_FONTS_FUNFONT);
+    set_text_background_colour(0, 0, 0, 0);
+    set_text_colour(0, 0, 0, 255, 180);
+    draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF + 1, 19, label, ALIGN_MIDDLE_CENTER);
+    set_text_colour(255, 224, 96, 0, 235);
+    draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 18, label, ALIGN_MIDDLE_CENTER);
+}
+#endif
+
 /**
  * Render the onscreen elements for the post race screen.
  * This function also applies transformation offsets, set by the main function.
@@ -3069,6 +3536,9 @@ s32 postrace_render(s32 updateRate) {
 
         if (gPostraceState != POSTRACE_SLIDE_END) {
             draw_menu_elements(gPostraceState, gTrophyRankingsMenuElements, scale);
+#ifdef NATIVE_PORT
+            menu_render_taj_postrace_identity();
+#endif
             ret = MENU_RESULT_CONTINUE;
         }
     }
@@ -3287,6 +3757,9 @@ void menu_logos_screen_init(void) {
     gMenuDelay = 0;
     sBootScreenTimer = 16.0f;
     bgdraw_fillcolour(0, 0, 0);
+#ifdef NATIVE_PORT
+    viewport_world_region_set(0, VIEWPORT_WORLD_REGION_PRESENTATION);
+#endif
     if (osTvType == OS_TV_TYPE_PAL) {
         viewport_menu_set(0, 0, 38, SCREEN_WIDTH, SCREEN_HEIGHT - 16);
         set_viewport_properties(0, VIEWPORT_AUTO, VIEWPORT_AUTO, SCREEN_WIDTH, SCREEN_HEIGHT_PAL);
@@ -3363,6 +3836,15 @@ s32 menu_logo_screen_loop(s32 updateRate) {
  * Sets some things needed after the title screen from the save buffer.
  */
 void init_title_screen_variables(void) {
+#ifdef NATIVE_PORT
+    taj_mod_boot(taj_mod_state_file_storage());
+    taj_mod_on_title_return();
+    /* Reconcile pre-mod/imported Adventure challenge completion before the
+     * first character-select visit, not after the player has already chosen. */
+    mark_read_all_save_files();
+    taj_physics_set_racer_predicate(taj_mod_racer_is_taj);
+    taj_visual_set_racer_predicate(taj_mod_racer_is_taj);
+#endif
     if (sEepromSettings & 2) {
         set_magic_code_flags(CHEAT_CONTROL_DRUMSTICK);
     }
@@ -3850,6 +4332,20 @@ void optionscreen_render(UNUSED s32 updateRate) {
 /**
  * Draw the text list and accept input for going to specific option menus.
  */
+/* A retail PAL build compiles the three-language branch directly.  The native
+ * executable has one US-layout binary which may then boot a validated PAL v80
+ * image, so preserve the retail behaviour and make the native capability
+ * runtime-owned without adding a platform dependency to non-native builds. */
+static s32 menu_language_has_german(void) {
+#if REGION == REGION_PAL
+    return TRUE;
+#elif defined(NATIVE_PORT)
+    return platform_source_is_european();
+#else
+    return FALSE;
+#endif
+}
+
 s32 menu_options_loop(s32 updateRate) {
     s32 buttonsPressed;
     s32 i;
@@ -3903,34 +4399,39 @@ s32 menu_options_loop(s32 updateRate) {
 #if REGION != REGION_JP
     } else if (gMenuCurIndex == 0 && analogueX != 0) {
         s32 langVal = get_language();
-#if REGION == REGION_PAL
-        if (analogueX < 0) {
-            if ((u64) langVal == LANGUAGE_ENGLISH) {
-                set_language(LANGUAGE_GERMAN);
-            } else if ((u64) langVal == LANGUAGE_FRENCH) {
-                set_language(LANGUAGE_ENGLISH);
+        /* This executable is compiled against the US code layout, but the
+         * validated PAL v80 cartridge has the same asset payload and offers
+         * its original English/German/French selector.  Keep the capability at
+         * the ROM boundary: a PAL display rate is not itself proof that the
+         * selected cartridge carries German text. */
+        if (menu_language_has_german()) {
+            if (analogueX < 0) {
+                if ((u64) langVal == LANGUAGE_ENGLISH) {
+                    set_language(LANGUAGE_GERMAN);
+                } else if ((u64) langVal == LANGUAGE_FRENCH) {
+                    set_language(LANGUAGE_ENGLISH);
+                } else {
+                    set_language(LANGUAGE_FRENCH);
+                }
             } else {
-                set_language(LANGUAGE_FRENCH);
+                if ((u64) langVal == LANGUAGE_ENGLISH) {
+                    set_language(LANGUAGE_FRENCH);
+                } else if ((u64) langVal == LANGUAGE_FRENCH) {
+                    set_language(LANGUAGE_GERMAN);
+                } else {
+                    set_language(LANGUAGE_ENGLISH);
+                }
             }
         } else {
-            if ((u64) langVal == LANGUAGE_ENGLISH) {
-                set_language(LANGUAGE_FRENCH);
-            } else if ((u64) langVal == LANGUAGE_FRENCH) {
-                set_language(LANGUAGE_GERMAN);
-            } else {
-                set_language(LANGUAGE_ENGLISH);
+            switch ((u64) langVal) {
+                case LANGUAGE_ENGLISH:
+                    set_language(LANGUAGE_FRENCH);
+                    break;
+                default:
+                    set_language(LANGUAGE_ENGLISH);
+                    break;
             }
         }
-#else
-        switch ((u64) langVal) {
-            case LANGUAGE_ENGLISH:
-                set_language(LANGUAGE_FRENCH);
-                break;
-            default:
-                set_language(LANGUAGE_ENGLISH);
-                break;
-        }
-#endif
         sound_play(SOUND_MENU_PICK2, NULL);
 #endif
     } else if (gMenuCurIndex == 1 && analogueX != 0) {
@@ -4042,6 +4543,9 @@ enum {
 static s32 sVideoOptionIndex;
 static s32 sVideoFeedbackTimer;
 static char sVideoFeedback[64];
+static MdkrVideoRuntimeResult sAudioPersistenceResult = MDKR_VIDEO_RUNTIME_LIVE;
+static s32 sAudioPersistenceResolved;
+static s32 sAudioPersistencePromptReported;
 
 static const char *const sVideoOptionLabels[VIDEO_OPTION_COUNT] = {
     "PRESENTATION", "SUPERSAMPLING", "ASPECT RATIO", "GAMEPLAY FOV",
@@ -4347,6 +4851,11 @@ static void video_option_feedback(MdkrVideoRuntimeResult result) {
                 "SAVE FAILED - SETTING UNCHANGED", "SPEICHERN FEHLER - UNVERAENDERT",
                 "ECHEC SAUVEGARDE - INCHANGE");
             break;
+        case MDKR_VIDEO_RUNTIME_SAVE_UNCONFIRMED:
+            message = video_option_word(
+                "APPLIED - SAVE NOT CONFIRMED", "ANGEWENDET - SPEICHERN UNSICHER",
+                "APPLIQUE - SAUVEGARDE INCERTAINE");
+            break;
         default:
             message = video_option_word(
                 "SETTING REJECTED", "EINSTELLUNG ABGELEHNT", "REGLAGE REFUSE");
@@ -4570,8 +5079,7 @@ s32 menu_video_options_loop(s32 updateRate) {
             MdkrVideoRuntimeResult result = video_option_change(
                 sVideoOptionIndex, xAxis < 0 ? -1 : 1);
             video_option_feedback(result);
-            if (result == MDKR_VIDEO_RUNTIME_LIVE ||
-                result == MDKR_VIDEO_RUNTIME_RESTART) {
+            if (mdkr_video_runtime_result_applied(result)) {
                 sound_play(SOUND_MENU_PICK2, NULL);
             } else {
                 sound_play(SOUND_MENU_BACK3, NULL);
@@ -4593,6 +5101,52 @@ void video_options_free(void) {
     unload_font(ASSET_FONTS_BIGFONT);
 #endif
 }
+
+static MdkrVideoRuntimeResult audio_options_try_persist(const char *action) {
+    sAudioPersistenceResult = mdkr_audio_config_runtime_set_game_levels(
+        (unsigned)gMusicVolumeSliderValue,
+        (unsigned)gSfxVolumeSliderValue);
+    sAudioPersistenceResolved =
+        sAudioPersistenceResult == MDKR_VIDEO_RUNTIME_LIVE;
+    sAudioPersistencePromptReported = FALSE;
+    if (mdkr_trace_enabled()) {
+        mdkr_trace(
+            "audio_options: persist action=%s result=%d music=%d effects=%d",
+            action, (int)sAudioPersistenceResult,
+            (int)gMusicVolumeSliderValue, (int)gSfxVolumeSliderValue);
+    }
+    return sAudioPersistenceResult;
+}
+
+static const char *audio_options_persistence_message(void) {
+    switch (sAudioPersistenceResult) {
+        case MDKR_VIDEO_RUNTIME_SAVE_FAILED:
+            return video_option_word(
+                "SETTINGS NOT SAVED", "EINSTELLUNGEN NICHT GESPEICHERT",
+                "REGLAGES NON ENREGISTRES");
+        case MDKR_VIDEO_RUNTIME_SAVE_UNCONFIRMED:
+            return video_option_word(
+                "SAVE NOT CONFIRMED", "SPEICHERN NICHT BESTAETIGT",
+                "SAUVEGARDE NON CONFIRMEE");
+        case MDKR_VIDEO_RUNTIME_LOCKED:
+            return video_option_word(
+                "STARTUP OVERRIDE - SESSION ONLY",
+                "STARTOPTION - NUR DIESE SITZUNG",
+                "OPTION DE DEPART - CETTE SESSION");
+        default:
+            return video_option_word(
+                "SETTINGS COULD NOT BE SAVED",
+                "EINSTELLUNGEN NICHT SPEICHERBAR",
+                "REGLAGES IMPOSSIBLES A SAUVER");
+    }
+}
+
+static const char *audio_options_persistence_actions(void) {
+    return video_option_word(
+        "A: RETRY   B: USE THIS SESSION",
+        "A: NOCHMAL   B: NUR DIESE SITZUNG",
+        "A: REESSAYER   B: CETTE SESSION");
+}
 #endif
 
 /**
@@ -4613,6 +5167,11 @@ void menu_audio_options_init(void) {
     func_8007FFEC(2);
     gMusicVolumeSliderValue = music_volume_config();
     gSfxVolumeSliderValue = sndp_get_global_volume();
+#ifdef NATIVE_PORT
+    sAudioPersistenceResult = MDKR_VIDEO_RUNTIME_LIVE;
+    sAudioPersistenceResolved = FALSE;
+    sAudioPersistencePromptReported = FALSE;
+#endif
     if (gActiveMagicCodes & CHEAT_MUSIC_MENU) { // Check if "JUKEBOX" cheat is active
         gAudioMenuStrings[6].text = gMusicTestString;
         gAudioMenuStrings[3].y = 212;
@@ -4699,6 +5258,13 @@ void func_80084854(UNUSED s32 updateRate) {
 
     // Must be a for loop?
     for (; gAudioMenuStrings[j].text != NULL; j++) {
+#ifdef NATIVE_PORT
+        if (!sAudioPersistenceResolved &&
+            sAudioPersistenceResult != MDKR_VIDEO_RUNTIME_LIVE &&
+            (j == 3 || j == 6)) {
+            continue;
+        }
+#endif
         set_text_font(gAudioMenuStrings[j].font);
         if (j == i) {
             set_text_colour(255, 255, 255, temp, 255);
@@ -4709,6 +5275,25 @@ void func_80084854(UNUSED s32 updateRate) {
         draw_text(&sMenuCurrDisplayList, gAudioMenuStrings[j].x, gAudioMenuStrings[j].y, gAudioMenuStrings[j].text,
                   gAudioMenuStrings[j].alignmentFlags);
     }
+#ifdef NATIVE_PORT
+    if (!sAudioPersistenceResolved &&
+        sAudioPersistenceResult != MDKR_VIDEO_RUNTIME_LIVE) {
+        set_text_font(ASSET_FONTS_FUNFONT);
+        set_text_colour(255, 192, 96, 0, 255);
+        draw_text(&sMenuCurrDisplayList, POS_CENTRED, 194,
+                  (char *)audio_options_persistence_message(),
+                  ALIGN_MIDDLE_CENTER);
+        set_text_colour(255, 255, 255, 0, 255);
+        draw_text(&sMenuCurrDisplayList, POS_CENTRED, 216,
+                  (char *)audio_options_persistence_actions(),
+                  ALIGN_MIDDLE_CENTER);
+        if (!sAudioPersistencePromptReported && mdkr_trace_enabled()) {
+            mdkr_trace("audio_options: persistence prompt visible result=%d",
+                       (int)sAudioPersistenceResult);
+            sAudioPersistencePromptReported = TRUE;
+        }
+    }
+#endif
 }
 
 /**
@@ -4759,6 +5344,50 @@ s32 menu_audio_options_loop(s32 updateRate) {
                 }
             }
             contXAxis >>= 2;
+#ifdef NATIVE_PORT
+            if (!sAudioPersistenceResolved &&
+                sAudioPersistenceResult != MDKR_VIDEO_RUNTIME_LIVE) {
+                if (buttonsPressed & (A_BUTTON | START_BUTTON)) {
+                    if (audio_options_try_persist("retry") ==
+                        MDKR_VIDEO_RUNTIME_LIVE) {
+                        gMenuDelay = -1;
+                        transition_begin(&sMenuTransitionFadeIn);
+                        if (gOpacityDecayTimer >= 0) {
+                            music_fade(-128);
+                        }
+                    }
+                    playSound = 3;
+                } else if (buttonsPressed & B_BUTTON) {
+                    sAudioPersistenceResolved = TRUE;
+                    if (mdkr_trace_enabled()) {
+                        mdkr_trace(
+                            "audio_options: persist action=session result=%d "
+                            "music=%d effects=%d",
+                            (int)sAudioPersistenceResult,
+                            (int)gMusicVolumeSliderValue,
+                            (int)gSfxVolumeSliderValue);
+                    }
+                    gMenuDelay = -1;
+                    transition_begin(&sMenuTransitionFadeIn);
+                    if (gOpacityDecayTimer >= 0) {
+                        music_fade(-128);
+                    }
+                    playSound = 3;
+                }
+            } else if ((buttonsPressed & (A_BUTTON | START_BUTTON) &&
+                        gMenuStage == gOptionsMenuItemIndex + 1) ||
+                       buttonsPressed & B_BUTTON) {
+                if (audio_options_try_persist("exit") ==
+                    MDKR_VIDEO_RUNTIME_LIVE) {
+                    gMenuDelay = -1;
+                    transition_begin(&sMenuTransitionFadeIn);
+                    if (gOpacityDecayTimer >= 0) {
+                        music_fade(-128);
+                    }
+                }
+                playSound = 3;
+            } else
+#else
             if ((buttonsPressed & (A_BUTTON | START_BUTTON) && gMenuStage == gOptionsMenuItemIndex + 1) ||
                 buttonsPressed & B_BUTTON) {
                 gMenuDelay = -1;
@@ -4767,7 +5396,9 @@ s32 menu_audio_options_loop(s32 updateRate) {
                     music_fade(-128);
                 }
                 playSound = 3;
-            } else if (contY < 0 && gOptionsMenuItemIndex < gMenuStage - 1) {
+            } else
+#endif
+            if (contY < 0 && gOptionsMenuItemIndex < gMenuStage - 1) {
                 gOptionsMenuItemIndex++;
                 playSound = 1;
             } else if (contY > 0 && gOptionsMenuItemIndex > 0) {
@@ -4862,6 +5493,18 @@ s32 menu_audio_options_loop(s32 updateRate) {
  * Frees all assets associated with the audio options menu.
  */
 void soundoptions_free(void) {
+#ifdef NATIVE_PORT
+    if (!sAudioPersistenceResolved) {
+        MdkrVideoRuntimeResult audioSaveResult =
+            audio_options_try_persist("unexpected-free");
+        if (audioSaveResult != MDKR_VIDEO_RUNTIME_LIVE) {
+            fprintf(stderr,
+                    "[audio] Audio Options closed outside its normal UI "
+                    "transaction; levels remain session-only (result=%d)\n",
+                    (int)audioSaveResult);
+        }
+    }
+#endif
     if (gSoundOptionMask != NULL) {
         sndp_stop(gSoundOptionMask);
     }
@@ -5258,6 +5901,21 @@ void savemenu_render(UNUSED s32 updateRate) {
     if (drawDialogueBox) {
         render_dialogue_box(&sMenuCurrDisplayList, NULL, NULL, 7);
     }
+#ifdef NATIVE_PORT
+    if (taj_mod_persistence_issue() == TAJ_MOD_PERSISTENCE_ERASE) {
+        /* Erase is transactional and Taj remains unlocked on failure. Keep an
+         * actionable warning on the screen where the player can retry. */
+        set_text_font(ASSET_FONTS_FUNFONT);
+        set_text_colour(0, 0, 0, 255, 192);
+        draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF + 1,
+                  osTvType == OS_TV_TYPE_PAL ? 232 : 216,
+                  "TAJ BONUS ERASE NOT SAVED", ALIGN_MIDDLE_CENTER);
+        set_text_colour(255, 96, 64, 0, 255);
+        draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF,
+                  osTvType == OS_TV_TYPE_PAL ? 231 : 215,
+                  "TAJ BONUS ERASE NOT SAVED", ALIGN_MIDDLE_CENTER);
+    }
+#endif
     menu_geometry_end();
 }
 
@@ -5551,6 +6209,9 @@ SIDeviceStatus savemenu_write(void) {
                 case SAVE_FILE_TYPE_ERASE:
                     mark_save_file_to_erase(gSaveMenuFilesSource[gSaveMenuOptionSource].controllerIndex);
                     gSavefileData[gSaveMenuFilesSource[gSaveMenuOptionSource].controllerIndex]->newGame = TRUE;
+#ifdef NATIVE_PORT
+                    taj_mod_on_adventure_file_deleted();
+#endif
                     break;
             }
             break;
@@ -5669,6 +6330,9 @@ SIDeviceStatus savemenu_write(void) {
                     0xFFFFF3); // Reset most eeprom save data including Adventure Two unlock and Drumstick unlock.
                 gActiveMagicCodes &= ~(CHEAT_CONTROL_TT | CHEAT_CONTROL_DRUMSTICK);
                 gUnlockedMagicCodes &= ~(CHEAT_CONTROL_TT | CHEAT_CONTROL_DRUMSTICK);
+#ifdef NATIVE_PORT
+                (void)taj_mod_erase_all_bonuses();
+#endif
             }
             break;
         default:
@@ -6885,6 +7549,17 @@ void cheatmenu_render(UNUSED s32 updateRate) {
         if (gNewCheatID == -1) {
             draw_text(&sMenuCurrDisplayList, POS_CENTRED, 144, gMenuText[ASSET_MENU_TEXT_BADCODE],
                       ALIGN_MIDDLE_CENTER); //"Sorry, the code was incorrect"
+#ifdef NATIVE_PORT
+        } else if (gNewCheatID == -2) {
+            /* This synthetic success must never index the 29-row asset. */
+            draw_text(&sMenuCurrDisplayList, POS_CENTRED, 144, "TAJ HAS JOINED THE RACE!",
+                      ALIGN_MIDDLE_CENTER);
+            if (taj_mod_persistence_failed()) {
+                set_text_colour(255, 96, 64, 0, 255);
+                draw_text(&sMenuCurrDisplayList, POS_CENTRED, 160,
+                          "TAJ UNLOCK NOT SAVED", ALIGN_MIDDLE_CENTER);
+            }
+#endif
         } else {
             // Draw cheat code name.
             cheatData = (*gCheatsAssetData) + 1;
@@ -7068,6 +7743,13 @@ s32 menu_magic_codes_loop(s32 updateRate) {
             if (gCheatInputStringLength == 0) {
                 gOptionsMenuItemIndex = 0;
             } else {
+#ifdef NATIVE_PORT
+                if (taj_mod_submit_magic_code(gCheatInput)) {
+                    /* Synthetic success: do not enter the retail magic table. */
+                    foundCheat = TRUE;
+                    gNewCheatID = -2;
+                } else {
+#endif
                 cheatDataEntries = &(*gCheatsAssetData)[1];
                 gNewCheatID = 0; // Index into the gCheatsAssetData cheatsTable
 #if VERSION >= VERSION_79
@@ -7104,6 +7786,9 @@ s32 menu_magic_codes_loop(s32 updateRate) {
 #endif
                 }
 #ifdef NATIVE_PORT
+                }
+#endif
+#ifdef NATIVE_PORT
                 /* Keep the user-visible result observable to end-to-end menu
                  * fixtures. This is the semantic cheat index; a successful
                  * entry is converted to a string-table index just below. */
@@ -7112,6 +7797,10 @@ s32 menu_magic_codes_loop(s32 updateRate) {
 #endif
                 if (foundCheat == FALSE) {
                     gNewCheatID = -1;
+#ifdef NATIVE_PORT
+                } else if (gNewCheatID == -2) {
+                    /* Taj owns state, not a retail magic-code bit. */
+#endif
                 } else {
 #if VERSION >= VERSION_79
                     gUnlockedMagicCodes |= 1 << gNewCheatID;
@@ -7134,6 +7823,9 @@ s32 menu_magic_codes_loop(s32 updateRate) {
         if (buttonsPressed & (A_BUTTON | START_BUTTON)) {
             if (gMenuStage == CHEATMENU_KEYBOARD) {
                 gActiveMagicCodes = 0;
+#ifdef NATIVE_PORT
+                taj_mod_clear_session_codes();
+#endif
                 gOptionsMenuItemIndex = 6;
                 playSelectSound = TRUE;
                 gUnlockedMagicCodes &= CHEAT_CONTROL_TT | CHEAT_CONTROL_DRUMSTICK;
@@ -7267,8 +7959,14 @@ void cheatlist_render(UNUSED s32 updateRate) {
     s32 alpha;
     s32 yPos;
     s32 numOfUnlockedCheats;
+#ifdef NATIVE_PORT
+    s32 numOfRetailUnlockedCheats;
+#endif
     s32 code;
     u16 *cheatData;
+#ifdef NATIVE_PORT
+    s32 retailCheatCount;
+#endif
 
     set_text_background_colour(0, 0, 0, 0);
     set_text_font(ASSET_FONTS_BIGFONT);
@@ -7279,12 +7977,27 @@ void cheatlist_render(UNUSED s32 updateRate) {
     draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 32, gMenuText[ASSET_MENU_TEXT_MAGICCODESLIST],
               ALIGN_MIDDLE_CENTER); // MAGIC CODES LIST
 
+#ifdef NATIVE_PORT
+    /* ASSET_MISC_MAGIC_CODES has exactly 29 retail rows. Taj is not row 29. */
+    retailCheatCount = gNumberOfCheats;
+    if (retailCheatCount < 0 || retailCheatCount > 29) {
+        retailCheatCount = 29;
+    }
+    for (i = 0, code = 1, numOfUnlockedCheats = 0; i < retailCheatCount; i++, code <<= 1) {
+#else
     for (i = 0, code = 1, numOfUnlockedCheats = 0; i < 32; i++, code <<= 1) {
+#endif
         if (code & gUnlockedMagicCodes) {
             gUnlockedCheatIDs[numOfUnlockedCheats] = i;
             numOfUnlockedCheats += 1;
         }
     }
+#ifdef NATIVE_PORT
+    numOfRetailUnlockedCheats = numOfUnlockedCheats;
+    if (taj_mod_is_unlocked()) {
+        numOfUnlockedCheats++;
+    }
+#endif
     yPos = 54;
     alpha = gOptionBlinkTimer * 8;
     if (alpha >= 256) {
@@ -7297,6 +8010,19 @@ void cheatlist_render(UNUSED s32 updateRate) {
         if (i == gOptionsMenuItemIndex) {
             set_text_colour(255, 255, 255, alpha, 255);
         }
+#ifdef NATIVE_PORT
+        if (i == numOfRetailUnlockedCheats) {
+            draw_text(&sMenuCurrDisplayList, 48, yPos, "CONTROL TAJ", ALIGN_TOP_LEFT);
+            draw_text(&sMenuCurrDisplayList, 256, yPos,
+                      taj_mod_is_enabled() ? gMenuText[ASSET_MENU_TEXT_ON] :
+                                             gMenuText[ASSET_MENU_TEXT_OFF],
+                      ALIGN_TOP_LEFT);
+            if (i == gOptionsMenuItemIndex) {
+                set_text_colour(255, 255, 255, 0, 255);
+            }
+            continue;
+        }
+#endif
         draw_text(&sMenuCurrDisplayList, 48, yPos,
 #if VERSION == VERSION_79
                   (char *) (*gCheatsAssetData) + cheatData[(gUnlockedCheatIDs[i] * 3) + 2], ALIGN_TOP_LEFT);
@@ -7349,7 +8075,13 @@ s32 menu_magic_codes_list_loop(s32 updateRate) {
     s32 buttonsPressed;
     s32 i;
     s32 numUnlockedCodes;
+#ifdef NATIVE_PORT
+    s32 numRetailUnlockedCodes;
+#endif
     s32 code;
+#ifdef NATIVE_PORT
+    s32 retailCheatCount;
+#endif
 
     delay = 0;
     if (gMenuDelay != 0) {
@@ -7375,16 +8107,35 @@ s32 menu_magic_codes_list_loop(s32 updateRate) {
         }
     }
 
+#ifdef NATIVE_PORT
+    retailCheatCount = gNumberOfCheats;
+    if (retailCheatCount < 0 || retailCheatCount > 29) {
+        retailCheatCount = 29;
+    }
+    for (i = 0, code = 1, numUnlockedCodes = 0; i < retailCheatCount; i++) {
+#else
     for (i = 0, code = 1, numUnlockedCodes = 0; i < MAX_CHEATS; i++) {
+#endif
         if (code & gUnlockedMagicCodes) {
             gUnlockedCheatIDs[numUnlockedCodes] = i;
             numUnlockedCodes++;
         }
         code <<= 1;
     }
+#ifdef NATIVE_PORT
+    numRetailUnlockedCodes = numUnlockedCodes;
+    if (taj_mod_is_unlocked()) {
+        numUnlockedCodes++;
+    }
+#endif
 
     if ((xAxis < 0 || xAxis > 0) && numUnlockedCodes != gOptionsMenuItemIndex) {
         sound_play(SOUND_SELECT2, NULL);
+#ifdef NATIVE_PORT
+        if (gOptionsMenuItemIndex == numRetailUnlockedCodes) {
+            taj_mod_set_enabled(!taj_mod_is_enabled());
+        } else {
+#endif
         code = 1 << gUnlockedCheatIDs[gOptionsMenuItemIndex];
         gActiveMagicCodes ^= code;                                               // Toggle active cheats?
         cheatlist_exclusive(code, CHEAT_BIG_CHARACTERS, CHEAT_SMALL_CHARACTERS); // cheatlist_exclusive() = Clear flags?
@@ -7416,6 +8167,9 @@ s32 menu_magic_codes_list_loop(s32 updateRate) {
         cheatlist_exclusive(code, CHEAT_ALL_BALLOONS_ARE_RAINBOW,
                             CHEAT_ALL_BALLOONS_ARE_RED | CHEAT_ALL_BALLOONS_ARE_GREEN | CHEAT_ALL_BALLOONS_ARE_BLUE |
                                 CHEAT_ALL_BALLOONS_ARE_YELLOW);
+#ifdef NATIVE_PORT
+        }
+#endif
     }
 
     previousMenuItemIndex = gOptionsMenuItemIndex;
@@ -7593,9 +8347,58 @@ void menu_character_select_init(void) {
     s32 breakTheLoop;
     s32 i;
     u8 *channelVolumes;
+#ifdef NATIVE_PORT
+    CharacterSelectData *baseCharacterSelectData;
+    s32 baseCharacterCount;
+    s32 ttUnlocked;
+#endif
 
     breakTheLoop = FALSE;
     input_assign_players();
+#ifdef NATIVE_PORT
+    ttUnlocked = is_tt_unlocked();
+    if (is_drumstick_unlocked()) {
+        if (ttUnlocked) {
+            baseCharacterSelectData = gCharacterSelectBytesComplete;
+            baseCharacterCount = ARRAY_COUNT(gCharacterSelectBytesComplete);
+        } else {
+            baseCharacterSelectData = gCharacterSelectBytesDrumStick;
+            baseCharacterCount = ARRAY_COUNT(gCharacterSelectBytesDrumStick);
+        }
+    } else if (ttUnlocked) {
+        baseCharacterSelectData = gCharacterSelectBytesTT;
+        baseCharacterCount = ARRAY_COUNT(gCharacterSelectBytesTT);
+    } else {
+        baseCharacterSelectData = gCharacterSelectBytesDefault;
+        baseCharacterCount = ARRAY_COUNT(gCharacterSelectBytesDefault);
+    }
+    if (taj_mod_is_enabled()) {
+        charselect_build_taj_table(baseCharacterSelectData, baseCharacterCount,
+                                   is_drumstick_unlocked(), ttUnlocked);
+    } else {
+        gCurrCharacterSelectData = baseCharacterSelectData;
+        sCharacterSelectBaseCount = baseCharacterCount;
+        sTajCharacterSelectIndex = -1;
+        taj_visual_select_end();
+    }
+    MDKR_TRACE("taj_roster: base=%d taj=%d enabled=%d drumstick=%d tt=%d",
+               baseCharacterCount, sTajCharacterSelectIndex,
+               taj_mod_is_enabled(), is_drumstick_unlocked() != 0,
+               ttUnlocked != 0);
+    for (i = 0; i < ARRAY_COUNT(gActivePlayersArray); i++) {
+        if (gPlayersCharacterArray[i] < 0 ||
+            (!taj_mod_is_enabled() && gPlayersCharacterArray[i] >= sCharacterSelectBaseCount) ||
+            gPlayersCharacterArray[i] >= CHARSELECT_RUNTIME_CAPACITY) {
+            gPlayersCharacterArray[i] = gActivePlayersArray[i] ? DIDDY : -1;
+        }
+    }
+    sTajUnlockBannerTimer = taj_mod_consume_unlock_announcement() ? 300 : 0;
+    sTajPersistenceWarningTimer = taj_mod_persistence_failed() ? 600 : 0;
+    sTajPersistenceWarningShown = sTajPersistenceWarningTimer > 0;
+    memset(sTajTraceCharacter, -2, sizeof(sTajTraceCharacter));
+    memset(sTajTraceVisualStatus, -2, sizeof(sTajTraceVisualStatus));
+    memset(sTajTraceSignVisible, -2, sizeof(sTajTraceSignVisible));
+#else
     if (is_drumstick_unlocked()) {
         if (is_tt_unlocked()) {
             gCurrCharacterSelectData = (CharacterSelectData(*)[10]) & gCharacterSelectBytesComplete;
@@ -7607,6 +8410,7 @@ void menu_character_select_init(void) {
     } else {
         gCurrCharacterSelectData = (CharacterSelectData(*)[10]) & gCharacterSelectBytesDefault;
     }
+#endif
     for (i = 0; i < ARRAY_COUNT(gCharselectStatus); i++) {
         gCharselectStatus[i] = CHARSELECT_STATUS_UNCONFIRMED;
     }
@@ -7617,7 +8421,8 @@ void menu_character_select_init(void) {
     for (i = 0; i < ARRAY_COUNT(gActivePlayersArray) && !breakTheLoop; i++) {
         if (gActivePlayersArray[i] != 0) {
             breakTheLoop = TRUE;
-            gMenuCurrentCharacter.channelIndex = (*gCurrCharacterSelectData)[gPlayersCharacterArray[i]].voiceID;
+            gMenuCurrentCharacter.channelIndex =
+                charselect_music_channel_for_index(gPlayersCharacterArray[i]);
             gMenuCurrentCharacter.unk2 = 0x7F;
             gMenuCurrentCharacter.unk1 = 1;
         }
@@ -7662,6 +8467,57 @@ void charselect_render_text(UNUSED s32 updateRate) {
         // Draw "Player Select" text
         draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 32, gMenuText[ASSET_MENU_TEXT_PLAYERSELECT],
                   ALIGN_MIDDLE_CENTER);
+#ifdef NATIVE_PORT
+        if (!sTajPersistenceWarningShown && taj_mod_persistence_failed()) {
+            sTajPersistenceWarningTimer = 600;
+            sTajPersistenceWarningShown = TRUE;
+        }
+        if (sTajUnlockBannerTimer > 0) {
+            sTajUnlockBannerTimer -= updateRate;
+            if (sTajUnlockBannerTimer < 0) {
+                sTajUnlockBannerTimer = 0;
+            }
+            set_text_colour(0, 0, 0, 255, 160);
+            draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF + 1, 54, "TAJ UNLOCKED!", ALIGN_MIDDLE_CENTER);
+            set_text_colour(255, 224, 96, 0, 255);
+            draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 52, "TAJ UNLOCKED!", ALIGN_MIDDLE_CENTER);
+        }
+        if (sTajPersistenceWarningTimer > 0 &&
+            taj_mod_persistence_failed()) {
+            char *persistenceText = "TAJ UNLOCK NOT SAVED";
+            if (taj_mod_persistence_issue() == TAJ_MOD_PERSISTENCE_LOAD) {
+                persistenceText = "TAJ STATE COULD NOT LOAD";
+            } else if (taj_mod_persistence_issue() ==
+                       TAJ_MOD_PERSISTENCE_ERASE) {
+                persistenceText = "TAJ BONUS ERASE NOT SAVED";
+            }
+            sTajPersistenceWarningTimer -= updateRate;
+            if (sTajPersistenceWarningTimer < 0) {
+                sTajPersistenceWarningTimer = 0;
+            }
+            set_text_font(ASSET_FONTS_FUNFONT);
+            set_text_colour(0, 0, 0, 255, 192);
+            draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF + 1, 70,
+                      persistenceText, ALIGN_MIDDLE_CENTER);
+            set_text_colour(255, 96, 64, 0, 255);
+            draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 69,
+                      persistenceText, ALIGN_MIDDLE_CENTER);
+            if (taj_mod_persistence_issue() != TAJ_MOD_PERSISTENCE_LOAD) {
+                set_text_colour(255, 224, 96, 0, 255);
+                draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 81,
+                          "Z: RETRY SAVE", ALIGN_MIDDLE_CENTER);
+            }
+        }
+        if (taj_visual_select_status() == TAJ_SELECT_VISUAL_UNAVAILABLE) {
+            set_text_font(ASSET_FONTS_FUNFONT);
+            set_text_colour(0, 0, 0, 255, 192);
+            draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF + 1, 86,
+                      "TAJ PRESENTATION UNAVAILABLE", ALIGN_MIDDLE_CENTER);
+            set_text_colour(255, 96, 64, 0, 255);
+            draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 85,
+                      "TAJ PRESENTATION UNAVAILABLE", ALIGN_MIDDLE_CENTER);
+        }
+#endif
         if (gNumberOfReadyPlayers == gNumberOfActivePlayers && gNumberOfActivePlayers > 0) {
             yPos = 208;
             if (osTvType == OS_TV_TYPE_PAL) {
@@ -7705,7 +8561,8 @@ void charselect_new_player(void) {
                 gPlayersCharacterArray[i] = var_a2;
                 gActivePlayersArray[i] = TRUE;
                 gNumberOfActivePlayers++;
-                gMenuCurrentCharacter.channelIndex = (*gCurrCharacterSelectData)[gPlayersCharacterArray[i]].voiceID;
+                gMenuCurrentCharacter.channelIndex =
+                    charselect_music_channel_for_index(gPlayersCharacterArray[i]);
                 gMenuCurrentCharacter.unk2 = 0;
                 gMenuCurrentCharacter.unk1 = 20;
                 sound_play(SOUND_SELECT2, NULL);
@@ -7745,8 +8602,11 @@ void charselect_pick(void) {
         if (gMenuSoundMasks[characterSelected] != 0) {
             sndp_stop(gMenuSoundMasks[characterSelected]);
         }
-        sound_play((*gCurrCharacterSelectData)[gPlayersCharacterArray[characterSelected]].voiceID +
-                       SOUND_VOICE_CHARACTER_SELECTED,
+        sound_play(charselect_taj_sound(
+                       characterSelected,
+                       CHARSELECT_DATA(gPlayersCharacterArray[characterSelected]).voiceID +
+                           SOUND_VOICE_CHARACTER_SELECTED,
+                       TAJ_CHARSELECT_CONFIRMED),
                    &gMenuSoundMasks[characterSelected]);
         if (gNumberOfActivePlayers > 2 ||
             (gNumberOfActivePlayers > 1 && !(gActiveMagicCodes & CHEAT_TWO_PLAYER_ADVENTURE)) ||
@@ -7763,8 +8623,11 @@ void charselect_pick(void) {
                     if (gMenuSoundMasks[i] != 0) {
                         sndp_stop(gMenuSoundMasks[i]);
                     }
-                    sound_play(((*gCurrCharacterSelectData)[gPlayersCharacterArray[i]].voiceID +
-                                SOUND_VOICE_CHARACTER_DESELECTED),
+                    sound_play(charselect_taj_sound(
+                                   i,
+                                   CHARSELECT_DATA(gPlayersCharacterArray[i]).voiceID +
+                                       SOUND_VOICE_CHARACTER_DESELECTED,
+                                   TAJ_CHARSELECT_DESELECT),
                                &gMenuSoundMasks[i]);
                 }
             }
@@ -7782,6 +8645,23 @@ void charselect_input(s8 *activePlayers) {
     s32 found;
     s32 i;
     s32 j;
+#ifdef NATIVE_PORT
+    s32 previousMusicChannel;
+
+    if (taj_mod_persistence_failed() &&
+        taj_mod_persistence_issue() != TAJ_MOD_PERSISTENCE_LOAD) {
+        for (i = 0; i < MAXCONTROLLERS; i++) {
+            if (activePlayers[i] && (gMenuButtons[i] & Z_TRIG)) {
+                if (taj_mod_retry_persistence()) {
+                    sTajPersistenceWarningTimer = 600;
+                    sTajPersistenceWarningShown = FALSE;
+                    sound_play(SOUND_SELECT2, NULL);
+                }
+                break;
+            }
+        }
+    }
+#endif
 
     for (i = 0; i < MAXCONTROLLERS; i++) {
         if (activePlayers[i] != 0) {
@@ -7792,8 +8672,11 @@ void charselect_input(s8 *activePlayers) {
                     if (gMenuSoundMasks[i] != 0) {
                         sndp_stop(gMenuSoundMasks[i]);
                     }
-                    sound_play(((*gCurrCharacterSelectData)[gPlayersCharacterArray[i]].voiceID +
-                                SOUND_VOICE_CHARACTER_DESELECTED),
+                    sound_play(charselect_taj_sound(
+                                   i,
+                                   CHARSELECT_DATA(gPlayersCharacterArray[i]).voiceID +
+                                       SOUND_VOICE_CHARACTER_DESELECTED,
+                                   TAJ_CHARSELECT_DESELECT),
                                &gMenuSoundMasks[i]);
                 }
             } else {
@@ -7802,13 +8685,15 @@ void charselect_input(s8 *activePlayers) {
                     gActivePlayersArray[i] = 0;
                     if (gNumberOfActivePlayers > 0) {
                         if (gMenuSelectedCharacter.channelIndex ==
-                            (*gCurrCharacterSelectData)[gPlayersCharacterArray[i]].voiceID) {
+                            charselect_music_channel_for_index(
+                                gPlayersCharacterArray[i])) {
                             if (gMenuCurrentCharacter.unk1 <= 0) {
                                 for (found = FALSE, j = 0; j < ARRAY_COUNT(gActivePlayersArray) && !found; j++) {
                                     if (gActivePlayersArray[j]) {
                                         found = TRUE;
                                         gMenuCurrentCharacter.channelIndex =
-                                            (*gCurrCharacterSelectData)[gPlayersCharacterArray[j]].voiceID;
+                                            charselect_music_channel_for_index(
+                                                gPlayersCharacterArray[j]);
                                         gMenuCurrentCharacter.unk2 = 0;
                                         gMenuCurrentCharacter.unk1 = 20;
                                     }
@@ -7822,16 +8707,30 @@ void charselect_input(s8 *activePlayers) {
                         transition_begin(&sMenuTransitionFadeIn);
                     }
                 } else if (gMenuButtons[i] & (A_BUTTON | START_BUTTON)) {
+#ifdef NATIVE_PORT
+                    if (charselect_index_is_taj(gPlayersCharacterArray[i]) &&
+                        !charselect_taj_is_selectable()) {
+                        sound_play(SOUND_HORN_DRUMSTICK, NULL);
+                        continue;
+                    }
+#endif
                     gCharselectStatus[i] = CHARSELECT_STATUS_CONFIRMED;
                     gNumberOfReadyPlayers++;
                     if (gMenuSoundMasks[i] != 0) {
                         sndp_stop(gMenuSoundMasks[i]);
                     }
-                    sound_play(
-                        ((*gCurrCharacterSelectData)[gPlayersCharacterArray[i]].voiceID + SOUND_VOICE_CHARACTER_SELECT),
-                        &gMenuSoundMasks[i]);
+                    sound_play(charselect_taj_sound(
+                                   i,
+                                   CHARSELECT_DATA(gPlayersCharacterArray[i]).voiceID + SOUND_VOICE_CHARACTER_SELECT,
+                                   TAJ_CHARSELECT_HIGHLIGHT),
+                               &gMenuSoundMasks[i]);
                 } else {
-                    charSelectData = (*gCurrCharacterSelectData) + gPlayersCharacterArray[i];
+                    charSelectData = &CHARSELECT_DATA(gPlayersCharacterArray[i]);
+#ifdef NATIVE_PORT
+                    previousMusicChannel =
+                        charselect_music_channel_for_index(
+                            gPlayersCharacterArray[i]);
+#endif
                     if (gMenuStickY[i] > 0) {
                         charselect_move(i, charSelectData->upInput, ARRAY_COUNT(charSelectData->upInput),
                                         SOUND_MENU_PICK3, SOUND_HORN_DRUMSTICK);
@@ -7845,12 +8744,29 @@ void charselect_input(s8 *activePlayers) {
                         charselect_move(i, charSelectData->leftInput, ARRAY_COUNT(charSelectData->leftInput),
                                         SOUND_MENU_PICK3, SOUND_HORN_DRUMSTICK);
                     }
-                    if (charSelectData->voiceID != (*gCurrCharacterSelectData)[gPlayersCharacterArray[i]].voiceID) {
+#ifdef NATIVE_PORT
+                    if (previousMusicChannel !=
+                        charselect_music_channel_for_index(
+                            gPlayersCharacterArray[i])) {
                         gMenuCurrentCharacter.channelIndex =
-                            (*gCurrCharacterSelectData)[gPlayersCharacterArray[i]].voiceID;
+                            charselect_music_channel_for_index(
+                                gPlayersCharacterArray[i]);
+                        if (charselect_index_is_taj(
+                                gPlayersCharacterArray[i])) {
+                            MDKR_TRACE(
+                                "taj_music_channel: player=%d channel=-1 policy=neutral",
+                                i);
+                        }
                         gMenuCurrentCharacter.unk2 = 0;
                         gMenuCurrentCharacter.unk1 = 20;
                     }
+#else
+                    if (charSelectData->voiceID != CHARSELECT_DATA(gPlayersCharacterArray[i]).voiceID) {
+                        gMenuCurrentCharacter.channelIndex = CHARSELECT_DATA(gPlayersCharacterArray[i]).voiceID;
+                        gMenuCurrentCharacter.unk2 = 0;
+                        gMenuCurrentCharacter.unk1 = 20;
+                    }
+#endif
                 }
             }
         }
@@ -7898,7 +8814,7 @@ void charselect_assign_ai(s32 charSlot) {
         attempts = 0;
 #endif
         do {
-            gCharacterIdSlots[i] = (*gCurrCharacterSelectData)[rand_range(0, numCharacters)].voiceID;
+            gCharacterIdSlots[i] = CHARSELECT_DATA(rand_range(0, numCharacters)).voiceID;
             for (j = 0, foundIt = FALSE; j < i; j++) {
                 if (gCharacterIdSlots[j] == gCharacterIdSlots[i]) {
                     foundIt = TRUE;
@@ -7920,8 +8836,7 @@ void charselect_assign_ai(s32 charSlot) {
             attempts++;
             if (foundIt && attempts >= 64) {
                 for (candidate = 0; candidate <= numCharacters; candidate++) {
-                    s32 voiceId =
-                        (*gCurrCharacterSelectData)[candidate].voiceID;
+                    s32 voiceId = CHARSELECT_DATA(candidate).voiceID;
                     candidateUsed = FALSE;
                     for (j = 0; j < i; j++) {
                         if (gCharacterIdSlots[j] == voiceId) {
@@ -7956,6 +8871,9 @@ s32 menu_character_select_loop(s32 updateRate) {
     s8 activePlayers[4];
     s32 j;
 
+#ifdef NATIVE_PORT
+    charselect_update_taj_visual_state();
+#endif
     charselect_render_text(updateRate);
     charselect_music_channels(updateRate);
     menu_input();
@@ -7994,9 +8912,22 @@ s32 menu_character_select_loop(s32 updateRate) {
             charselect_free();
 
             charSlot = 0;
+#ifdef NATIVE_PORT
+            taj_mod_reset_player_selections();
+#endif
             for (j = 0; j < ARRAY_COUNT(gActivePlayersArray); j++) {
                 if (gActivePlayersArray[j]) {
-                    gCharacterIdSlots[charSlot] = (*gCurrCharacterSelectData)[gPlayersCharacterArray[j]].voiceID;
+#ifdef NATIVE_PORT
+                    s32 selectedIndex = gPlayersCharacterArray[j];
+                    s32 selectedTaj = charselect_index_is_taj(selectedIndex);
+                    taj_mod_set_player_selected(charSlot, selectedTaj);
+                    gCharacterIdSlots[charSlot] = (s8)taj_mod_resolve_race_character(
+                        charSlot, CHARSELECT_DATA(selectedIndex).voiceID);
+                    MDKR_TRACE("taj_select: player=%d controller=%d selected=%d donor=%d",
+                               charSlot, j, selectedTaj, gCharacterIdSlots[charSlot]);
+#else
+                    gCharacterIdSlots[charSlot] = CHARSELECT_DATA(gPlayersCharacterArray[j]).voiceID;
+#endif
                     charSlot++;
                 }
             }
@@ -8046,16 +8977,23 @@ void charselect_move(s32 playerID, s8 *direction, s32 bounds, u16 menuPickSoundI
     sameCharSelected = TRUE;
     while (sameCharSelected && j < bounds && direction[j] != -1) {
         sameCharSelected = FALSE;
+#ifdef NATIVE_PORT
+        if (charselect_index_is_taj(direction[j]) &&
+            !charselect_taj_is_selectable()) {
+            sameCharSelected = TRUE;
+        }
+#endif
         // Run this block if the DOUBLEVISION cheat isn't active.
-        if (!(get_filtered_cheats() & CHEAT_SELECT_SAME_PLAYER)) {
+        if (!sameCharSelected &&
+            !(get_filtered_cheats() & CHEAT_SELECT_SAME_PLAYER)) {
             for (i = 0; i < MAXCONTROLLERS && !sameCharSelected; i++) {
                 if (i != playerID && gPlayersCharacterArray[i] == direction[j]) {
                     sameCharSelected = TRUE;
                 }
             }
-            if (sameCharSelected) {
-                j++;
-            }
+        }
+        if (sameCharSelected) {
+            j++;
         }
     }
     if (!sameCharSelected) {
@@ -8072,6 +9010,9 @@ void charselect_move(s32 playerID, s8 *direction, s32 bounds, u16 menuPickSoundI
  * Free all assets associated with the character select menu.
  */
 void charselect_free(void) {
+#ifdef NATIVE_PORT
+    taj_visual_select_end();
+#endif
     menu_assetgroup_free(gCharSelectObjectIndices);
     mempool_free_timer(0);
 #if REGION != REGION_JP
@@ -8873,6 +9814,9 @@ void fileselect_input_erase(UNUSED s32 updateRate) {
         if (buttonsPressed & (A_BUTTON | START_BUTTON)) {
             sound_play(SOUND_SELECT2, NULL);
             mark_save_file_to_erase(gSaveFileIndex3);
+#ifdef NATIVE_PORT
+            taj_mod_on_adventure_file_deleted();
+#endif
             gSavefileInfo[gSaveFileIndex3].isAdventure2 = 0;
             gSavefileInfo[gSaveFileIndex3].isStarted = 0;
             gSavefileInfo[gSaveFileIndex3].balloonCount = 0;
@@ -9209,6 +10153,9 @@ void menu_track_select_init(void) {
     }
     gTrackSelectVertsFlip = 0;
     bgdraw_set_func(func_8008F618);
+#ifdef NATIVE_PORT
+    viewport_world_region_set(0, VIEWPORT_WORLD_REGION_SAFE_APERTURE);
+#endif
     viewport_menu_set(0, 80, gTrackSelectViewPortHalfY - (gTrackSelectViewPortHalfY >> 1), SCREEN_HEIGHT,
                       (gTrackSelectViewPortHalfY >> 1) + gTrackSelectViewPortHalfY);
     copy_viewports_to_stack();
@@ -9377,6 +10324,17 @@ s32 menu_track_select_loop(s32 updateRate) {
     }
     menu_input();
 
+#ifdef NATIVE_PORT
+    /* The course browser presents the live view through a wooden aperture.
+     * Once that aperture has finished expanding, the setup page is an
+     * unframed presentation and may use the wider region. Switching back to
+     * the safe aperture as soon as a return begins prevents the world from
+     * showing through the reappearing frame. */
+    viewport_world_region_set(
+        0, (gTrackmenuType == TRACKMENU_TYPE_FREE && gMenuDelay >= 0) ? VIEWPORT_WORLD_REGION_PRESENTATION
+                                                                     : VIEWPORT_WORLD_REGION_SAFE_APERTURE);
+#endif
+
     // Make sure adventure 2 view doesn't cause problems later on.
     gSPClearGeometryMode(sMenuCurrDisplayList++, G_CULL_FRONT);
 
@@ -9476,7 +10434,7 @@ void menu_track_select_unload(void) {
 #endif
 }
 
-s32 func_8008F618(Gfx **dList, Mtx **mtx) {
+static s32 trackmenu_render_background_pass(Gfx **dList) {
     s32 sp7C;
     s32 yPos;
     s32 texU;
@@ -9497,9 +10455,6 @@ s32 func_8008F618(Gfx **dList, Mtx **mtx) {
     s32 curIndex;
 
     numVertices = 0;
-    camDisableUserView(0, TRUE);
-    camera_init_tracks_menu(dList, mtx);
-    mtx_ortho(dList, mtx);
     rendermode_reset(dList);
     gDPPipeSync((*dList)++);
     sp7C = gTrackSelectX;
@@ -9587,8 +10542,34 @@ s32 func_8008F618(Gfx **dList, Mtx **mtx) {
         numVertices += 4;
     }
 
-    camEnableUserView(0, TRUE);
     return 0;
+}
+
+s32 func_8008F618(Gfx **dList, Mtx **mtx) {
+    s32 result;
+
+    camDisableUserView(0, TRUE);
+    camera_init_tracks_menu(dList, mtx);
+#ifdef NATIVE_PORT
+    /* Tile the decorative mosaic at the safe area's original scale. Three
+     * adjacent copies cover every supported presentation aspect (up to 4:1),
+     * and the centre tile maps identically to the authored safe-area draw. */
+    result = 0;
+    for (s32 tile = -1; tile <= 1 && result == 0; tile++) {
+        mtx_ortho_wide_background(
+            dList, mtx, tile * SCREEN_WIDTH_FLOAT);
+        result = trackmenu_render_background_pass(dList);
+    }
+    /* bgdraw_render() emits the live-view backing rectangle immediately after
+     * this callback. Restore safe 2D mapping before that fill; the matrix is
+     * also the one the fixed menu overlay expects next. */
+    mtx_ortho(dList, mtx);
+#else
+    mtx_ortho(dList, mtx);
+    result = trackmenu_render_background_pass(dList);
+#endif
+    camEnableUserView(0, TRUE);
+    return result;
 }
 
 /**
@@ -9612,6 +10593,10 @@ void trackmenu_render_2D(s32 x, s32 y, char *hubName, char *trackName, s32 rectO
     s16 *offsets;
     s32 temp;
     char *snowflakeMountainName;
+#ifdef NATIVE_PORT
+    s32 overlayFullyInsideAuthoredCanvas;
+    s32 hubNameInsideAuthoredCanvas;
+#endif
 
     sp6C = 0;
     xTemp = x + 160;
@@ -9619,6 +10604,24 @@ void trackmenu_render_2D(s32 x, s32 y, char *hubName, char *trackName, s32 rectO
     if (osTvType == OS_TV_TYPE_PAL) {
         sp6C = 12;
     }
+#ifdef NATIVE_PORT
+    /* The carousel deliberately builds the surrounding eight cards so their
+     * frames can slide into view. On the console, labels and arrow texrects
+     * are clipped at the 320x240 edge. A widescreen host would reveal those
+     * fragments in the decorative gutters. Keep the moving card/frame, but
+     * publish its overlay only while the complete authored envelope fits:
+     * the frame half-width plus controls is 96 pixels, and the top/bottom text
+     * extends 104 pixels from centre (plus the PAL text offset). */
+    overlayFullyInsideAuthoredCanvas =
+        xTemp >= 96 && xTemp <= SCREEN_WIDTH - 96 &&
+        yTemp >= 104 + sp6C &&
+        yTemp <= gTrackSelectViewportY - (104 + sp6C);
+    /* Hub names are always drawn at the screen centre, independent of this
+     * card's horizontal position, so a horizontal slide must not blank them. */
+    hubNameInsideAuthoredCanvas =
+        yTemp >= 104 + sp6C &&
+        yTemp <= gTrackSelectViewportY - (104 + sp6C);
+#endif
     set_text_font(ASSET_FONTS_BIGFONT);
     set_text_background_colour(0, 0, 0, 0);
     if (gMenuDelay > 0) {
@@ -9629,7 +10632,11 @@ void trackmenu_render_2D(s32 x, s32 y, char *hubName, char *trackName, s32 rectO
     } else {
         opacity = 255;
     }
+#ifdef NATIVE_PORT
+    if (hubNameInsideAuthoredCanvas && hubName != gTrackMenuHubName) {
+#else
     if (hubName != gTrackMenuHubName) {
+#endif
         snowflakeMountainName =
             level_name(level_world_id(WORLD_SNOWFLAKE_MOUNTAIN));
         if (hubName == snowflakeMountainName) {
@@ -9643,11 +10650,23 @@ void trackmenu_render_2D(s32 x, s32 y, char *hubName, char *trackName, s32 rectO
         set_kerning(FALSE);
     }
 #if REGION == REGION_JP
+#ifdef NATIVE_PORT
+    if (overlayFullyInsideAuthoredCanvas) {
+#endif
     set_text_colour(0, 0, 0, 255, opacity / 2);
     draw_text(&sMenuCurrDisplayList, xTemp + 1, sp6C + yTemp + 91, trackName, ALIGN_MIDDLE_CENTER);
+#ifdef NATIVE_PORT
+    }
+#endif
+#endif
+#ifdef NATIVE_PORT
+    if (overlayFullyInsideAuthoredCanvas) {
 #endif
     set_text_colour(255, 255, 255, 0, opacity);
     draw_text(&sMenuCurrDisplayList, xTemp, sp6C + yTemp + 88, trackName, ALIGN_MIDDLE_CENTER);
+#ifdef NATIVE_PORT
+    }
+#endif
     if (rectOpacity > 0) {
         if (((yTemp - (gTrackSelectViewportY >> 2)) < gTrackSelectViewportY) &&
             (((gTrackSelectViewportY >> 2) + yTemp) > 0)) {
@@ -9688,6 +10707,11 @@ void trackmenu_render_2D(s32 x, s32 y, char *hubName, char *trackName, s32 rectO
     menu_element_render(imageId);
     gTrackSelectWoodFrameHeightScale = 1.0f;
     for (i = 0; i < 4; i++) {
+#ifdef NATIVE_PORT
+        if (!overlayFullyInsideAuthoredCanvas) {
+            break;
+        }
+#endif
         if ((1 << i) & arg8) {
             texrect_draw(&sMenuCurrDisplayList, gMenuSelectionArrows[i], offsets[(i << 1)] + xTemp + 1,
                          offsets[(i << 1) + 1] + yTemp + 1, 0, 0, 0, 128);
@@ -11341,7 +12365,46 @@ void menu_racer_portraits(void) {
     gMenuPortraitTT[0].texture = gMenuAssets[TEXTURE_ICON_PORTRAIT_TT];
     gMenuPortraitPipsy[0].texture = gMenuAssets[TEXTURE_ICON_PORTRAIT_PIPSY];
     gMenuPortraitTimber[0].texture = gMenuAssets[TEXTURE_ICON_PORTRAIT_TIMBER];
+#ifdef NATIVE_PORT
+    if (gMenuPortraitTaj[0].texture == NULL) {
+        (void)menu_taj_portrait();
+        if (gMenuPortraitTaj[0].texture != NULL) {
+            MDKR_TRACE("taj_portrait: source=native-taj-card size=%dx%d retail=%dx%d",
+                       gMenuPortraitTaj[0].texture->width,
+                       gMenuPortraitTaj[0].texture->height,
+                       gMenuPortraitDiddy[0].texture->width,
+                       gMenuPortraitDiddy[0].texture->height);
+        }
+    }
+#endif
 }
+
+#ifdef NATIVE_PORT
+static DrawTexture *menu_racer_portrait_for_player(s32 playerIndex,
+                                                   s32 character) {
+    static u32 tracedTajPlayers;
+    u32 playerBit = taj_mod_player_bit(playerIndex);
+    if (playerIndex >= 0 && playerIndex < TAJ_MOD_MAX_PLAYERS &&
+        taj_mod_player_selected(playerIndex) &&
+        gMenuPortraitTaj[0].texture != NULL) {
+        if (!(tracedTajPlayers & playerBit)) {
+            tracedTajPlayers |= playerBit;
+            MDKR_TRACE("taj_results_portrait: player=%d identity=taj source=native-taj-card",
+                       playerIndex);
+        }
+        return gMenuPortraitTaj;
+    }
+    if (character < 0 || character >= ARRAY_COUNT(gRacerPortraits)) {
+        character = CHARACTER_DIDDY;
+    }
+    return gRacerPortraits[character];
+}
+#else
+static DrawTexture *menu_racer_portrait_for_player(UNUSED s32 playerIndex,
+                                                   s32 character) {
+    return gRacerPortraits[character];
+}
+#endif
 
 /**
  * Initialises the post race variables.
@@ -11353,6 +12416,9 @@ void postrace_start(s32 finishState, s32 worldID) {
     LevelHeader *header;
 
     rumble_init(FALSE);
+#ifdef NATIVE_PORT
+    viewport_world_region_set(0, VIEWPORT_WORLD_REGION_PRESENTATION);
+#endif
     header = level_header();
     gPostraceFinishState = finishState;
     if (is_in_two_player_adventure()) {
@@ -11461,12 +12527,16 @@ void postrace_load(void) {
             menu_imagegroup_load(gRaceResultsImageIndices);
             menu_racer_portraits();
             settings = get_settings();
-            gRaceResultsMenuElements->t.element = gRacerPortraits[settings->racers[settings->timeTrialRacer].character];
+            gRaceResultsMenuElements->t.element = menu_racer_portrait_for_player(
+                settings->timeTrialRacer,
+                settings->racers[settings->timeTrialRacer].character);
             if (is_time_trial_enabled() == FALSE) {
                 for (i = 0; i < 8; i++) {
                     for (j = 0; j < 8; j++) {
                         if (i == settings->racers[j].starting_position) {
-                            gRaceOrderMenuElements[7 - i].t.element = gRacerPortraits[settings->racers[j].character];
+                            gRaceOrderMenuElements[7 - i].t.element =
+                                menu_racer_portrait_for_player(
+                                    j, settings->racers[j].character);
                         }
                     }
                 }
@@ -11533,6 +12603,12 @@ void postrace_viewport(UNUSED s32 updateRate) {
     s32 var_v0;
 
     settings = get_settings();
+#ifdef NATIVE_PORT
+    viewport_world_region_set(
+        0, gMenuStage == POSTRACE_STAGE_BEGIN
+               ? VIEWPORT_WORLD_REGION_PRESENTATION
+               : VIEWPORT_WORLD_REGION_SAFE_APERTURE);
+#endif
     if (gNumberOfActivePlayers == 1) {
         mtx_ortho(&sMenuCurrDisplayList, &sMenuCurrHudMat);
     }
@@ -12200,7 +13276,9 @@ void results_render(UNUSED s32 updateRate, f32 opacity) {
         } else {
             spA0 = 255;
         }
-        texrect_draw(&sMenuCurrDisplayList, gRacerPortraits[settings->racers[i].character], x2 - 20,
+        texrect_draw(&sMenuCurrDisplayList,
+                     menu_racer_portrait_for_player(
+                         i, settings->racers[i].character), x2 - 20,
                      54 - (s32) (240 * opacity), spA0, spA0, spA0, 255);
 #if VERSION >= VERSION_79
         x2 += offsetX2;
@@ -13054,11 +14132,15 @@ void func_80098774(s32 isRankings) {
             gTrophyRankingsTitle[menuElemIndex + 2].filterGreen = greenAmount;
             if (isRankings) {
                 gTrophyRankingsTitle[menuElemIndex].t.drawTexture =
-                    gRacerPortraits[settings->racers[gRankingsPlayerIDs[racerIndex]].character];
+                    menu_racer_portrait_for_player(
+                        gRankingsPlayerIDs[racerIndex],
+                        settings->racers[gRankingsPlayerIDs[racerIndex]].character);
                 gTrophyRankingsTitle[menuElemIndex + 2].t.element = &settings->racers[gRankingsPlayerIDs[racerIndex]];
             } else {
                 gTrophyRankingsTitle[menuElemIndex].t.drawTexture =
-                    gRacerPortraits[settings->racers[gResultsPlayerIDs[racerIndex]].character];
+                    menu_racer_portrait_for_player(
+                        gResultsPlayerIDs[racerIndex],
+                        settings->racers[gResultsPlayerIDs[racerIndex]].character);
                 gTrophyRankingsTitle[menuElemIndex + 2].t.number = &gTrophyRacePointsArray[racerIndex];
             }
             menuElemIndex += 3;
@@ -14025,6 +15107,9 @@ void menu_credits_init(void) {
     D_80126BD8 = 0;
     D_80126BE0 = 0;
     bgdraw_fillcolour(0, 0, 0);
+#ifdef NATIVE_PORT
+    viewport_world_region_set(0, VIEWPORT_WORLD_REGION_PRESENTATION);
+#endif
     if (osTvType == OS_TV_TYPE_PAL) {
         viewport_menu_set(0, 0, 38, SCREEN_WIDTH, 224);
         set_viewport_properties(0, VIEWPORT_AUTO, VIEWPORT_AUTO, SCREEN_WIDTH, SCREEN_HEIGHT_PAL);
@@ -14796,6 +15881,13 @@ void menu_asset_free(s32 assetID) {
         gParticlePtrList_flush();
     }
     if (gMenuObjectsCount == 0) {
+#ifdef NATIVE_PORT
+        if (gMenuPortraitTaj[0].texture != NULL) {
+            /* Process-owned native card; retail menu textures keep their own
+             * cache/refcount lifecycle. */
+            gMenuPortraitTaj[0].texture = NULL;
+        }
+#endif
         if (gMenuImages != NULL) {
             mempool_free(gMenuImages);
             gMenuImages = NULL;
@@ -15905,6 +16997,10 @@ void set_language(s32 language) {
 
     load_menu_text(language);
     mark_write_eeprom_settings();
+#ifdef NATIVE_PORT
+    MDKR_TRACE("menu_language: selected=%d european_rom=%d", (int)language,
+               menu_language_has_german());
+#endif
 #endif
 }
 

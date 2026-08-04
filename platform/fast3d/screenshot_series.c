@@ -10,6 +10,7 @@
  * stderr diagnostic line are this module's contract.
  */
 #include "screenshot_series.h"
+#include "fs_utf8.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -191,7 +192,7 @@ bool screenshot_series_capture_if_due(screenshot_series_state *st,
             return false;
         }
 
-        sf = fopen(path, "wb");
+        sf = mdkr_fopen_utf8(path, "wb");
         if (sf == NULL) {
             fprintf(stderr,
                     "[SCREENSHOT-SERIES] frame=%d failed=fopen path=\"%s\"\n",

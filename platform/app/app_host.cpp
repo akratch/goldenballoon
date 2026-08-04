@@ -1,8 +1,10 @@
 // app_host.cpp — see app_host.h.
 #include "app_host.h"
+#include "fs_utf8.h"
 #include "app_activation.h"
 #include "app_theme.h"
 #include "app_ui_policy.h"
+#include "app_window.h"
 #include "engine_entry.h"
 
 #include "imgui.h"
@@ -138,7 +140,8 @@ bool AppHost::initGL(const char *title, int width, int height) {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
 
     Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE |
-                   SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_SHOWN;
+                   SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_SHOWN |
+                   AppWindow_creationFlags();
     window_ = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                width, height, flags);
     if (!window_) {
@@ -210,7 +213,8 @@ bool AppHost::initGL(const char *title, int width, int height) {
 
 #ifdef MDKR_WEBGPU_BACKEND
 bool AppHost::initWebGpu(const char *title, int width, int height) {
-    Uint32 flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_SHOWN;
+    Uint32 flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
+                   SDL_WINDOW_SHOWN | AppWindow_creationFlags();
 #if defined(__APPLE__)
     flags |= SDL_WINDOW_METAL;   // wgpu-native wraps the CAMetalLayer as its surface
 #endif
@@ -592,7 +596,7 @@ static bool writeBackbufferBmp(const char *path, int w, int h) {
     const size_t imgSize = (size_t)(rowBytes + pad) * (size_t)h;  // size_t: no int overflow on 8K+
     const size_t fileSize = 54 + imgSize;
 
-    FILE *f = std::fopen(path, "wb");
+    FILE *f = mdkr_fopen_utf8(path, "wb");
     if (!f) { std::fprintf(stderr, "[app] could not open %s\n", path); return false; }
     uint8_t hdr[54] = {0};
     hdr[0] = 'B'; hdr[1] = 'M';
@@ -625,7 +629,7 @@ static bool writeBackbufferBmp(const char *path, int w, int h) {
         std::fprintf(stderr, "[app] wrote %s (%dx%d)\n", path, w, h);
     } else {
         std::fprintf(stderr, "[app] FAILED to write %s (short write/IO error); removing\n", path);
-        std::remove(path);
+        mdkr_remove_utf8(path);
     }
     return ok;
 }
@@ -739,7 +743,7 @@ bool writeWgpuBmp(WGPUBuffer buf, uint32_t bpr, int w, int h, const char *path,
         return false;
     }
     const uint8_t *px = (const uint8_t *)wgpuBufferGetConstMappedRange(buf, 0, size);
-    FILE *f = px ? std::fopen(path, "wb") : nullptr;
+    FILE *f = px ? mdkr_fopen_utf8(path, "wb") : nullptr;
     bool ok = false;
     if (f != nullptr) {
         const int rowBytes = w * 3;
@@ -774,7 +778,7 @@ bool writeWgpuBmp(WGPUBuffer buf, uint32_t bpr, int w, int h, const char *path,
             std::fprintf(stderr, "[app] wrote %s (%dx%d)\n", path, w, h);
         } else {
             std::fprintf(stderr, "[app] FAILED to write %s (short write/IO error); removing\n", path);
-            std::remove(path);
+            mdkr_remove_utf8(path);
         }
     } else {
         std::fprintf(stderr, "[app] could not open %s\n", path);
@@ -1050,6 +1054,9 @@ float AppHost::framebufferScale() const {
 }
 
 bool AppHost::processEvent(SDL_Event &e) {
+    if (AppWindow_handleEvent(window_, e)) {
+        return false;
+    }
     ImGui_ImplSDL2_ProcessEvent(&e);
     if (e.type == SDL_QUIT) {
         return true;
@@ -1083,12 +1090,36 @@ bool AppHost::queueGamepadPressForSmoke(SDL_GameControllerButton button) {
 }
 
 void AppHost::queueMouseClickForSmoke(int x, int y) {
-    if (AppUi_smokeInputMode() != AppUiSmokeInputMode::Keyboard) return;
+    const char *navigationTarget = std::getenv("MDKR_APP_SMOKE_NAV_TARGET");
+    const char *navigationToken = std::getenv("MDKR_APP_SMOKE_NAV_TOKEN");
+    const bool navigationSmoke = navigationTarget && navigationTarget[0] &&
+        navigationToken &&
+        std::strcmp(navigationToken, "mdkr64-app-nav-v1") == 0;
+    if (AppUi_smokeInputMode() != AppUiSmokeInputMode::Keyboard &&
+        !navigationSmoke) {
+        return;
+    }
     pendingSmokeClicks_.push_back({x, y});
+}
+
+bool AppHost::queueMouseDragStepForSmoke(int x, int y, bool held) {
+    if (std::getenv("MDKR_APP_SMOKE_UI_SCALE_DRAG") == nullptr) return false;
+    pendingSmokeDragSteps_.push_back({x, y, held, false});
+    return true;
+}
+
+bool AppHost::queueTouchDragStepForSmoke(int x, int y, bool held) {
+    if (std::getenv("MDKR_APP_SMOKE_TOUCH_SCROLL") == nullptr) return false;
+    pendingSmokeDragSteps_.push_back({x, y, held, true});
+    return true;
 }
 
 bool AppHost::pumpAndShouldQuit() {
     bool quit = false;
+
+    /* Settings drawn by the previous frame may have queued a fullscreen
+     * transition. Apply it before ImGui/WebGPU begins another frame. */
+    AppWindow_servicePending();
 
     // SDL_DROPFILE is a platform-reserved event. In particular, sdl2-compat
     // cannot round-trip an application-built SDL2 DropEvent through SDL3: the
@@ -1166,6 +1197,34 @@ bool AppHost::pumpAndShouldQuit() {
         event.button.y = smokeHeldClick_.y;
         quit = processEvent(event) || quit;
         smokeClickHeld_ = true;
+    }
+
+    if (!pendingSmokeDragSteps_.empty()) {
+        const SmokeDragStep step = pendingSmokeDragSteps_.front();
+        pendingSmokeDragSteps_.erase(pendingSmokeDragSteps_.begin());
+        SDL_Event event = {};
+        event.type = SDL_MOUSEMOTION;
+        event.motion.timestamp = SDL_GetTicks();
+        event.motion.windowID = SDL_GetWindowID(window_);
+        event.motion.which = step.touch ? SDL_TOUCH_MOUSEID : 0;
+        event.motion.x = step.x;
+        event.motion.y = step.y;
+        quit = processEvent(event) || quit;
+
+        if (step.held != smokeDragHeld_) {
+            event = {};
+            event.type = step.held ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP;
+            event.button.timestamp = SDL_GetTicks();
+            event.button.windowID = SDL_GetWindowID(window_);
+            event.button.which = step.touch ? SDL_TOUCH_MOUSEID : 0;
+            event.button.button = SDL_BUTTON_LEFT;
+            event.button.state = step.held ? SDL_PRESSED : SDL_RELEASED;
+            event.button.clicks = 1;
+            event.button.x = step.x;
+            event.button.y = step.y;
+            quit = processEvent(event) || quit;
+            smokeDragHeld_ = step.held;
+        }
     }
 
 

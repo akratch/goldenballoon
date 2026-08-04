@@ -11,6 +11,9 @@
 #include <windows.h>
 #include <commdlg.h>
 
+#include <SDL.h>
+#include <SDL_syswm.h>
+
 #include <string>
 #include <vector>
 
@@ -46,7 +49,14 @@ bool openRom(std::string &out) {
     OPENFILENAMEW ofn;
     ZeroMemory(&ofn, sizeof(ofn));
     ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner   = nullptr;   // app-modal; the launcher has one window
+    SDL_Window *window = SDL_GetKeyboardFocus();
+    if (window == nullptr) window = SDL_GetMouseFocus();
+    SDL_SysWMinfo windowInfo;
+    SDL_VERSION(&windowInfo.version);
+    if (window != nullptr && SDL_GetWindowWMInfo(window, &windowInfo) == SDL_TRUE &&
+        windowInfo.subsystem == SDL_SYSWM_WINDOWS) {
+        ofn.hwndOwner = windowInfo.info.win.window;
+    }
     ofn.lpstrFilter = kFilter;
     ofn.nFilterIndex = 1;
     ofn.lpstrFile   = file.data();

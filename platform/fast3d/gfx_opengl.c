@@ -13,6 +13,7 @@
 #include <string.h>
 #include <math.h>
 #include <platform_stdio.h>
+#include "fs_utf8.h"
 
 #ifndef _LANGUAGE_C
 #define _LANGUAGE_C
@@ -4353,7 +4354,7 @@ static void gfx_opengl_dump_shadow_pgm(void) {
     glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)previous_fbo);
     float mn = 1e9f, mx = -1e9f;
     for (int i = 0; i < res * res; i++) { if (depth[i] < mn) mn = depth[i]; if (depth[i] > mx) mx = depth[i]; }
-    FILE *f = fopen("shadow_map.pgm", "wb");
+    FILE *f = mdkr_fopen_utf8("shadow_map.pgm", "wb");
     if (f) {
         fprintf(f, "P5\n%d %d\n255\n", res, res);
         /* FIXED normalization (raw depth -> gray) so the GL and Metal dumps are

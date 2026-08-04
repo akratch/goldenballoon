@@ -579,6 +579,52 @@ static void test_resolved_fields(void) {
     expect(!presentation_snapshot_resolve_camera(3, 1, 2, &camera),
            "camera: an unpublished viewport does not resolve");
 
+    /* Region ownership is a discrete presentation-layout boundary. Blending
+     * across it can put a safe-aperture camera into a wide draw region (or vice
+     * versa) for one intermediate present. */
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 44.0f, 0.0f, 0.0f);
+    camera_sample.aspect = 21.0f / 9.0f;
+    camera_sample.world_region = 1;
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &camera) &&
+               camera.interpolated == 0 &&
+               bits_equal(camera.aspect, 21.0f / 9.0f),
+           "camera: world-region boundary holds the current projection exactly");
+
+    /* Once the discrete policy is stable, both camera motion and an authored
+     * viewport resize must immediately resume midpoint interpolation. */
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 48.0f, 0.0f, 0.0f);
+    camera_sample.aspect = 21.0f / 9.0f;
+    camera_sample.world_region = 1;
+    camera_sample.viewport[0] = 20.0f;
+    camera_sample.viewport[2] = 280.0f;
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &camera) &&
+               camera.interpolated == 1 &&
+               bits_equal(camera.position[0], 46.0f) &&
+               bits_equal(camera.viewport[0], 10.0f) &&
+               bits_equal(camera.viewport[2], 300.0f),
+           "camera: stable region resumes motion and viewport midpoints");
+
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 52.0f, 0.0f, 0.0f);
+    camera_sample.aspect = 21.0f / 9.0f;
+    camera_sample.world_region = 1;
+    camera_sample.viewport[0] = 80.0f;
+    camera_sample.viewport[2] = 160.0f;
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &camera) &&
+               camera.interpolated == 1 &&
+               bits_equal(camera.position[0], 50.0f) &&
+               bits_equal(camera.viewport[0], 50.0f) &&
+               bits_equal(camera.viewport[2], 220.0f),
+           "camera: animated viewport keeps interpolating inside one region");
+
     /* A viewport that switches which gCameras[] entry it draws is a cut. */
     presentation_snapshot_capture_begin();
     camera_sample = make_camera(4, 900.0f, 0.0f, 0.0f); /* cutscene bank */
@@ -593,42 +639,57 @@ static void test_resolved_fields(void) {
 }
 
 static void test_authored_camera_latch(void) {
-    int32_t ids[4] = { -1, -1, -1, -1 };
+    PresentationCameraEntry cameras[4];
+    PresentationCameraEntry camera0 = make_camera(4, 10.0f, 20.0f, 30.0f);
+    PresentationCameraEntry camera1 = make_camera(5, 40.0f, 50.0f, 60.0f);
+    PresentationCameraEntry conflicting;
     size_t count;
+
+    memset(cameras, 0, sizeof(cameras));
+    camera0.viewport_index = 0;
+    camera1.viewport_index = 1;
+    camera0.authored_view_projection[3][0] = 123.0f;
 
     begin();
     presentation_snapshot_authored_cameras_begin(41u);
-    expect(presentation_snapshot_authored_camera_record(0, 4) &&
-               presentation_snapshot_authored_camera_record(1, 5),
-           "camera latch: cutscene-bank IDs record at viewport authoring");
-    count = presentation_snapshot_authored_cameras_copy(41u, ids, 4u);
-    expect(count == 2u && ids[0] == 4 && ids[1] == 5,
-           "camera latch: exact authored bank survives later flag teardown");
-    expect(presentation_snapshot_authored_cameras_copy(42u, ids, 4u) == 0u,
+    expect(presentation_snapshot_authored_camera_record(&camera0) &&
+               presentation_snapshot_authored_camera_record(&camera1),
+           "camera latch: complete authored recipes record beside the VP");
+    count = presentation_snapshot_authored_cameras_copy(41u, cameras, 4u);
+    expect(count == 2u && cameras[0].camera_id == 4 &&
+               cameras[1].camera_id == 5 &&
+               bits_equal(cameras[0].position[0], 10.0f) &&
+               bits_equal(cameras[0].authored_view_projection[3][0], 123.0f),
+           "camera latch: exact authored recipes survive later flag teardown");
+    expect(presentation_snapshot_authored_cameras_copy(
+               42u, cameras, 4u) == 0u,
            "camera latch: a different live tick cannot claim an older list");
 
     /* Pausing changes whether lifecycle code clears the cutscene flag, not
      * which camera the already-authored viewport used. Re-recording the same
      * paused viewport is idempotent and stays bank 4. */
     presentation_snapshot_authored_cameras_begin(42u);
-    expect(presentation_snapshot_authored_camera_record(0, 4) &&
-               presentation_snapshot_authored_camera_record(0, 4) &&
+    expect(presentation_snapshot_authored_camera_record(&camera0) &&
+               presentation_snapshot_authored_camera_record(&camera0) &&
                presentation_snapshot_authored_cameras_copy(
-                   42u, ids, 4u) == 1u && ids[0] == 4,
+                   42u, cameras, 4u) == 1u && cameras[0].camera_id == 4,
            "camera latch: paused cutscene retains its exact authored camera");
 
     presentation_snapshot_authored_cameras_begin(43u);
-    expect(presentation_snapshot_authored_camera_record(1, 5) &&
+    expect(presentation_snapshot_authored_camera_record(&camera1) &&
                presentation_snapshot_authored_cameras_copy(
-                   43u, ids, 4u) == 0u,
+                   43u, cameras, 4u) == 0u,
            "camera latch: sparse viewport ownership fails closed");
 
     presentation_snapshot_authored_cameras_begin(44u);
-    expect(presentation_snapshot_authored_camera_record(0, 0) &&
-               !presentation_snapshot_authored_camera_record(0, 4) &&
+    camera0.camera_id = 0;
+    conflicting = camera0;
+    conflicting.position[0] += 1.0f;
+    expect(presentation_snapshot_authored_camera_record(&camera0) &&
+               !presentation_snapshot_authored_camera_record(&conflicting) &&
                presentation_snapshot_authored_cameras_copy(
-                   44u, ids, 4u) == 0u,
-           "camera latch: conflicting ownership fails closed");
+                   44u, cameras, 4u) == 0u,
+           "camera latch: conflicting recipes fail closed");
 }
 
 static void test_authored_tick_pair(void) {

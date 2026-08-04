@@ -9,6 +9,7 @@
 
 s32 mdkr_audio_group_valid(s32 groupId);
 s32 mdkr_sound_id_valid(u32 soundId, u32 soundCount);
+s32 mdkr_vehicle_sound_model(s32 vehicleId);
 s32 mdkr_vehicle_sound_row(s32 characterId, s32 vehicleId, s32 *assetRow, s32 *soundVehicleId);
 s32 mdkr_asset_rows_fit(s32 startOffset, s32 endOffset, s32 rowCount, s32 rowSize);
 s32 mdkr_normalize_xz(f32 x, f32 z, f32 *normalizedX, f32 *normalizedZ);

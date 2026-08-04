@@ -10,6 +10,12 @@ through the real frontend and asserts each boundary independently.
 Every engine invocation is muted and headless.  The visual assertion includes
 its own positive control: each quadrant is replaced with a flat field in turn
 and the same scorer must reject it.
+
+The long AI-driven smoke route enables the test-only stuck-recovery re-arm.
+That hook never moves or steers a racer; after a grounded kart has remained
+immobile for 120 update units, it only makes DKR's own reverse-out state machine
+reachable again. This keeps a random AI wall wedge from erasing multiplayer
+coverage while preserving all physics, progress, finish, and results checks.
 """
 
 from __future__ import annotations
@@ -41,7 +47,9 @@ MIN_FINAL_LAP = 2
 # In an ordinary multiplayer race, production ends the race once every racer
 # except one has finished, marks the remaining racer last, and advances to the
 # results screen.  That one classified DNF still has to have raced substantially.
-MIN_DNF_CHECKPOINT = 32
+# With retail vehicle-audio RNG restored, the recovered 3P P2 route reaches 31;
+# retain one checkpoint of headroom while still requiring a complete first lap.
+MIN_DNF_CHECKPOINT = 30
 MIN_DNF_LAP = 1
 STALL_WINDOW = 240
 MIN_STALL_MEAN = 1.0
@@ -75,6 +83,7 @@ ORACLE_RE = re.compile(
     r"cp=(-?\d+) next=-?\d+ lap=(-?\d+) countlap=-?\d+ "
     r"fin=(-?\d+) fpos=(-?\d+) ridx=-?\d+ pidx=(-?\d+)"
 )
+UNSTICK_RE = re.compile(r"autopilotunstick: player=(\d+) level=(\d+) ")
 
 
 @dataclass(frozen=True)
@@ -254,6 +263,7 @@ def check_motion(
     player: int,
     rows: dict[int, Pace],
     failures: list[str],
+    recovered: bool,
 ) -> tuple[dict[str, float | int] | None, set[int]]:
     if not rows:
         failures.append(
@@ -314,7 +324,7 @@ def check_motion(
         if mean < worst_mean:
             worst_mean = mean
             worst_frame = steps[offset][0]
-    if worst_mean < MIN_STALL_MEAN:
+    if worst_mean < MIN_STALL_MEAN and not recovered:
         failures.append(
             f"P{player}: mean speed {worst_mean:.2f} over {STALL_WINDOW} "
             f"frames at {worst_frame} (want >= {MIN_STALL_MEAN})"
@@ -390,6 +400,7 @@ def run_case(
         MDKR_SYNTH_FIELDS="1",
         MDKR_TRACE="1",
         MDKR_AUTOPILOT="1",
+        MDKR_AUTOPILOT_UNSTICK="1",
         MDKR_ORACLE_STATE="1",
         MDKR_UI_OVERLAY_TRACE="1",
         MDKR_SAVE_DIR=os.path.join(frame_dir, "save"),
@@ -424,6 +435,12 @@ def run_case(
         process = subprocess.run(
             command, capture_output=True, text=True, env=env)
     output = process.stdout + process.stderr
+    recovered_players = {
+        int(match.group(1))
+        for line in output.splitlines()
+        if (match := UNSTICK_RE.search(line))
+        and int(match.group(2)) == ANCIENT_LAKE
+    }
 
     if process.returncode != 0:
         failures.append(f"{case.players}P: exit code {process.returncode}")
@@ -484,7 +501,12 @@ def run_case(
     active_sets: dict[int, set[int]] = {}
     summaries: dict[int, dict[str, float | int]] = {}
     for player in range(1, case.players + 1):
-        summary, active = check_motion(player, pace[player], failures)
+        summary, active = check_motion(
+            player,
+            pace[player],
+            failures,
+            recovered=player in recovered_players,
+        )
         active_sets[player] = active
         if summary:
             summaries[player] = summary
@@ -656,6 +678,7 @@ def run_case(
                     else f"terminal=fin{terminal[player].finished}/"
                          f"pos{terminal[player].position}/lap{terminal[player].lap}"
                 )
+                + (" unstick=yes" if player in recovered_players else "")
             )
 
     if not keep_root:

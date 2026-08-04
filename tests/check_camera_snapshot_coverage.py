@@ -5,8 +5,7 @@ The snapshot unit test proves the immutable authored-camera latch and its
 fail-closed controls. This gate proves game wiring that a synthetic unit cannot:
 a real 2P race captures camera 1, a real 3P race captures the fourth TT spectator
 camera, and a real WebGPU cinematic captures cutscene bank 4. Late, tightly
-bounded PPM windows exercise the quarantined replay mechanism. Production 1.0.1
-never enables delayed replay; the presentation matrix covers that invariant.
+bounded PPM windows exercise the production immutable replay mechanism.
 
 The 3P arm is especially important: gNumCameras is three even when the TT
 spectator is drawn into the fourth quadrant.  A sequential ``0..gNumCameras``
@@ -188,9 +187,7 @@ def run_arm(binary: Path, rom: Path, root: Path, arm: Arm,
         MDKR_AUTOPILOT="1",
         MDKR_RENDERER="gl",
         MDKR_PRESENT_RATE="60",
-        MDKR_INTERNAL_TEST_TOKEN="mdkr64-presentation-replay-v1",
         MDKR_PRESENT_SMOOTHING="interpolate",
-        MDKR_TEST_PRESENTATION_REPLAY="1",
         MDKR_PRESENT_SCHED_TRACE="1",
         MDKR_PRESENT_SNAPSHOT="1",
         MDKR_TEST_CAMERA_VP_ENDPOINTS="1",
@@ -351,9 +348,7 @@ def run_cutscene_arm(binary: Path, rom: Path, root: Path, timeout: int,
         MDKR_TRACE="1",
         MDKR_RENDERER="webgpu",
         MDKR_PRESENT_RATE="60",
-        MDKR_INTERNAL_TEST_TOKEN="mdkr64-presentation-replay-v1",
         MDKR_PRESENT_SMOOTHING="interpolate",
-        MDKR_TEST_PRESENTATION_REPLAY="1",
         MDKR_PRESENT_SCHED_TRACE="1",
         MDKR_PRESENT_SNAPSHOT="1",
         MDKR_TEST_CAMERA_VP_ENDPOINTS="1",

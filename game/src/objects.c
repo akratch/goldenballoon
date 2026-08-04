@@ -8,7 +8,9 @@
 #include "asset_swap.h"
 #include "mdkr_challenge.h"
 #include "mdkr_taj.h"
+#include "taj_mod.h"
 #include "mdkr_trace.h"
+#include "taj_visual.h"
 #include "presentation_snapshot.h"
 #include "gameplay_event_trace.h"
 #include "fast3d/gfx_level_lighting.h"
@@ -44,6 +46,9 @@
 #include "PRinternal/viint.h"
 #include "printf.h"
 #include "racer.h"
+#ifdef NATIVE_PORT
+#include "taj_physics.h"
+#endif
 #include "runtime_contracts.h"
 #include "save_data.h"
 #include "structs.h"
@@ -1377,6 +1382,10 @@ void clear_object_pointers(void) {
  */
 void free_all_objects(void) {
     s32 i, len;
+#ifdef NATIVE_PORT
+    /* Queue native Taj companions before this direct destruction walk. */
+    taj_visual_reset();
+#endif
     timetrial_free_staff_ghost();
     gIsP2LeadPlayer = FALSE;
     if (gRollingDemo) {
@@ -2249,6 +2258,11 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
     Vehicle requestedVehicle = vehicle;
 #endif
 
+#ifdef NATIVE_PORT
+    /* Racer slots and their backing addresses are reused between levels. */
+    taj_physics_reset();
+    taj_mod_begin_racer_bindings();
+#endif
     D_8011AD20 = FALSE;
     gEventCountdown = 0;
     gFirstTimeFinish = FALSE;
@@ -2891,6 +2905,9 @@ s8 check_if_silver_coin_race(void) {
  * Store some things about the racer object then remove it.
  */
 void despawn_player_racer(Object *obj, s32 vehicleID) {
+#ifdef NATIVE_PORT
+    taj_physics_reset();
+#endif
     gTransformObject = obj;
     gTransformTimer = 4;
     gOverworldVehicle = vehicleID;
@@ -4227,6 +4244,7 @@ Object *obj_spawn_attachment(s32 objID) {
  */
 void free_object(Object *object) {
 #ifdef NATIVE_PORT
+    taj_visual_on_object_free(object);
     /* Particle allocation and recycling are presentation-owned and may change
      * when a scene draw is elided. Keep the gameplay-event stream restricted
      * to authoritative object lifecycle changes; snapshot identity still
@@ -4310,6 +4328,7 @@ void obj_destroy(Object *obj, s32 arg1) {
     s32 modelType;
 
 #ifdef NATIVE_PORT
+    taj_visual_on_object_destroy(obj);
     /*
      * The retire half of the snapshot identity.
      * obj_destroy is the ONE place an Object's memory actually returns to
@@ -4627,6 +4646,10 @@ void obj_update(s32 updateRate) {
     for (i = 0; i < gNumRacers; i++) {
         update_player_racer((*gRacers)[i], updateRate);
     }
+#ifdef NATIVE_PORT
+    /* Physics has completed; companions now inherit the authoritative pose. */
+    taj_visual_tick(updateRate);
+#endif
     if (level_type() == RACETYPE_DEFAULT) {
         for (i = 0; i < gNumRacers; i++) {
             racer = gRacersByPosition[i]->racer;
@@ -5391,6 +5414,7 @@ void obj_animate_tick(void) {
         }
         obj->curVertData = modInst->vertices[modInst->animationTaskNum];
     }
+    taj_visual_animation_witness_tick();
 }
 #endif
 
@@ -5716,6 +5740,15 @@ void func_80012CE8(Gfx **dList) {
  */
 void render_object(Gfx **dList, Mtx **mtx, Vertex **verts, Object *obj) {
     f32 scale;
+#ifdef NATIVE_PORT
+    if (taj_visual_suppress_donor_draw(obj)) {
+        return;
+    }
+    if (taj_visual_select_sign_object(obj) &&
+        taj_visual_select_sign_player(obj) < 0) {
+        return;
+    }
+#endif
     if (obj->trans.flags & (OBJ_FLAGS_INVISIBLE | OBJ_FLAGS_SHADOW_ONLY)) {
         return;
     }
@@ -6337,6 +6370,7 @@ void render_bubble_trap(ObjectTransform *trans, Sprite *gfxData, Object *obj, s3
  * Afterwards, render the graphics with opacity scaling with the fadetimer.
  */
 void render_racer_shield(Gfx **dList, Mtx **mtx, Vertex **vtxList, Object *obj) {
+    Object *effectAnchor = obj;
     Object_Racer *racer;
     ModelInstance *modInst;
     ObjectModel *mdl;
@@ -6349,6 +6383,9 @@ void render_racer_shield(Gfx **dList, Mtx **mtx, Vertex **vtxList, Object *obj) 
 
     racer = obj->racer;
     if (racer->shieldTimer > 0 && gShieldEffectObject != NULL) {
+#ifdef NATIVE_PORT
+        effectAnchor = taj_visual_effect_anchor(obj);
+#endif
         gObjectCurrDisplayList = *dList;
         gObjectCurrMatrix = *mtx;
         gObjectCurrVertexList = *vtxList;
@@ -6392,7 +6429,8 @@ void render_racer_shield(Gfx **dList, Mtx **mtx, Vertex **vtxList, Object *obj) 
         } else {
             gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, 255, 255, 255, 255);
         }
-        mtx_shear_push(&gObjectCurrDisplayList, &gObjectCurrMatrix, gShieldEffectObject, obj, shear);
+        mtx_shear_push(&gObjectCurrDisplayList, &gObjectCurrMatrix,
+                       gShieldEffectObject, effectAnchor, shear);
         render_mesh(mdl, gShieldEffectObject, 0, RENDER_SEMI_TRANSPARENT, 0);
         gSPSelectMatrixDKR(gObjectCurrDisplayList++, G_MTX_DKR_INDEX_0);
         if (racer->shieldTimer < 64) {
@@ -6409,6 +6447,7 @@ void render_racer_shield(Gfx **dList, Mtx **mtx, Vertex **vtxList, Object *obj) 
  * Afterwards, render the graphics with opacity set by the properties.
  */
 void render_racer_magnet(Gfx **dList, Mtx **mtx, Vertex **vtxList, Object *obj) {
+    Object *effectAnchor = obj;
     Object_Racer *racer;
     ModelInstance *modInst;
     ObjectModel *mdl;
@@ -6423,6 +6462,9 @@ void render_racer_magnet(Gfx **dList, Mtx **mtx, Vertex **vtxList, Object *obj) 
     racerIndex = racer->racerIndex;
     if (gRacerFXData[racerIndex].unk3 != 0) {
         if (gMagnetEffectObject != NULL) {
+#ifdef NATIVE_PORT
+            effectAnchor = taj_visual_effect_anchor(obj);
+#endif
             gObjectCurrDisplayList = *dList;
             gObjectCurrMatrix = *mtx;
             gObjectCurrVertexList = *vtxList;
@@ -6453,7 +6495,8 @@ void render_racer_magnet(Gfx **dList, Mtx **mtx, Vertex **vtxList, Object *obj) 
             opacity = ((gRacerFXData[racerIndex].unk1 * 8) & 0x7F) + 0x80;
             gfx_init_basic_xlu(&gObjectCurrDisplayList, DRAW_BASIC_2CYCLE, COLOUR_RGBA32(255, 255, 255, opacity),
                                gMagnetColours[racer->magnetModelID]);
-            mtx_shear_push(&gObjectCurrDisplayList, &gObjectCurrMatrix, gMagnetEffectObject, obj, shear);
+            mtx_shear_push(&gObjectCurrDisplayList, &gObjectCurrMatrix,
+                           gMagnetEffectObject, effectAnchor, shear);
             gObjectTexAnim = TRUE;
             render_mesh(mdl, gMagnetEffectObject, 0, RENDER_SEMI_TRANSPARENT, 0);
             gObjectTexAnim = FALSE;
@@ -6626,6 +6669,15 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
     i = startIndex;
     endLoop = FALSE;
     while (i < objModel->numberOfBatches && !endLoop) {
+#ifdef NATIVE_PORT
+        /* Taj's select actor borrows only the authored numbered placard from
+         * the Diddy select model. Character geometry never reaches the draw. */
+        if (taj_visual_select_sign_object(obj) &&
+            !taj_visual_select_sign_batch(obj, i)) {
+            i++;
+            continue;
+        }
+#endif
         if (!(DKR_PTR(TriangleBatchInfo, objModel->batches)[i].flags & RENDER_SEMI_TRANSPARENT) || flags & RENDER_SEMI_TRANSPARENT) {
             // Hidden/Invisible geometry
             textureIndex = DKR_PTR(TriangleBatchInfo, objModel->batches)[i].flags & RENDER_HIDDEN;
@@ -6639,6 +6691,11 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
                 tris = &DKR_PTR(Triangle, objModel->triangles)[triOffset];
                 vtx = &obj->curVertData[vertOffset];
                 textureIndex = DKR_PTR(TriangleBatchInfo, objModel->batches)[i].textureIndex;
+#ifdef NATIVE_PORT
+                if (taj_visual_select_sign_object(obj)) {
+                    textureIndex = taj_visual_select_sign_player(obj);
+                }
+#endif
                 // textureIndex of 0xFF is no texture
                 if (textureIndex == 0xFF) {
                     texOffset = 0;
@@ -9617,6 +9674,9 @@ void race_finish_time_trial(void) {
     Object_Racer *bestRacer;
     Settings *settings;
     LevelHeader *levelHeader;
+#ifdef NATIVE_PORT
+    s32 tajTimeTrial = FALSE;
+#endif
 
     levelHeader = level_header();
     settings = get_settings();
@@ -9626,6 +9686,14 @@ void race_finish_time_trial(void) {
     bestCourseTime = 36001;
     bestRacerTime = 36001;
     bestRacer = gRacersByPosition[0]->racer;
+#ifdef NATIVE_PORT
+    for (i = 0; i < gNumRacers; i++) {
+        if (gRacersByPosition[i] != NULL && gRacersByPosition[i]->racer != NULL &&
+            !taj_physics_canonical_records_allowed(gRacersByPosition[i]->racer)) {
+            tajTimeTrial = TRUE;
+        }
+    }
+#endif
     for (i = 0; i < gNumRacers; i++) {
         curRacer = gRacersByPosition[i]->racer;
         if (curRacer->racerIndex >= 0) {
@@ -9661,14 +9729,22 @@ void race_finish_time_trial(void) {
             vehicleID = VEHICLE_CAR;
         }
         settings->display_times = TRUE;
+#ifdef NATIVE_PORT
+        if (!tajTimeTrial && settings->unk115[0] == 0) {
+#else
         if (settings->unk115[0] == 0) {
+#endif
             if ((settings->flapTimesPtr[vehicleID][settings->courseId] == 0) ||
                 (bestRacerTime < settings->flapTimesPtr[vehicleID][settings->courseId])) {
                 settings->flapTimesPtr[vehicleID][settings->courseId] = bestRacerTime;
                 settings->racers[settings->unk115[0]].best_times |= 1 << settings->unk115[1];
             }
         }
+#ifdef NATIVE_PORT
+        if (!tajTimeTrial && settings->timeTrialRacer == 0) {
+#else
         if (settings->timeTrialRacer == 0) {
+#endif
             if ((settings->courseTimesPtr[vehicleID][settings->courseId] == 0) ||
                 (bestCourseTime < settings->courseTimesPtr[vehicleID][settings->courseId])) {
                 settings->courseTimesPtr[vehicleID][settings->courseId] = bestCourseTime;
@@ -9676,7 +9752,11 @@ void race_finish_time_trial(void) {
             }
         }
         if (((!vehicleID) && (!vehicleID)) && (!vehicleID)) {} // Fakematch
+#ifdef NATIVE_PORT
+        if (!tajTimeTrial && settings->timeTrialRacer == 0) {
+#else
         if (settings->timeTrialRacer == 0) {
+#endif
             if (bestCourseTime < 10800 && (vehicleID != gTimeTrialVehicle || timetrial_map_id() != level_id() ||
                                            bestCourseTime < gTimeTrialTime)) {
                 gTimeTrialTime = bestCourseTime;
@@ -9698,6 +9778,12 @@ void race_finish_time_trial(void) {
                 hud_time_trial_message(&bestRacer->playerIndex);
             }
         }
+#ifdef NATIVE_PORT
+        if (tajTimeTrial) {
+            gHasGhostToSave = FALSE;
+            taj_physics_trace_record_suppressed(bestRacer);
+        }
+#endif
     }
 }
 
@@ -9878,6 +9964,12 @@ s32 timetrial_init_player_ghost(s32 playerID) {
  * Returns the controller pak status. 0 is good.
  */
 SIDeviceStatus timetrial_save_player_ghost(s32 controllerIndex) {
+#ifdef NATIVE_PORT
+    if (taj_physics_run_is_noncanonical()) {
+        taj_physics_trace_record_suppressed(NULL);
+        return CONTROLLER_PAK_BAD_DATA;
+    }
+#endif
     return timetrial_write_player_ghost(controllerIndex, timetrial_map_id(), gTimeTrialVehicle, gTimeTrialCharacter,
                                         gTimeTrialTime);
 }
@@ -13409,6 +13501,14 @@ void mode_end_taj_race(s32 reason) {
                     settings->tajFlags |= flags;
                     safe_mark_write_save_file(get_save_file_index());
                 }
+#ifdef NATIVE_PORT
+                /* Also recover a global sidecar lost after an imported 0x38 save. */
+                if (taj_mod_unlock_from_taj_flags(settings->tajFlags)) {
+                    MDKR_TRACE("taj_mod_unlock: route=taj_challenges flags=0x%x",
+                               settings->tajFlags);
+                    sound_play(SOUND_VOICE_TAJ_WAHEY, NULL);
+                }
+#endif
             }
         } else {
             menu = 4;
@@ -13775,6 +13875,11 @@ s32 get_object_property_size(Object *obj, void *obj64) {
  */
 void run_object_init_func(Object *obj, void *entry, s32 param) {
     obj->behaviorId = obj->header->behaviorId;
+#ifdef NATIVE_PORT
+    if (taj_visual_claim_spawned_object(obj)) {
+        return;
+    }
+#endif
     switch (obj->behaviorId) {
         case BHV_RACER:
             obj_init_racer(obj, (LevelObjectEntry_Racer *) entry);

@@ -124,6 +124,7 @@ def run_arm(
         MDKR_TRACE="1",
         MDKR_RENDERER=backend,
         MDKR_LOAD_TRACK="5",
+        MDKR_TEST_RENDER_FULL_ADMISSION="1",
         MDKR_DUMP_FROM=str(CAPTURE_FRAME),
         MDKR_DUMP_EVERY="999",
         MDKR64_HIDDEN="1",

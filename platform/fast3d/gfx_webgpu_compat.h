@@ -41,7 +41,7 @@
           if (instance) wgpuInstanceProcessEvents((instance));  \
       } while (0)
   /* PERF-005: drain outstanding async render-pipeline creations so their
-   * AllowSpontaneous callbacks actually dispatch. Called once per frame in
+   * AllowProcessEvents callbacks dispatch at the renderer-owned boundary. Called once per frame in
    * wgpu_end_frame, and ONLY when a create is in flight (s_pending_pipelines>0)
    * — a no-op otherwise, so a steady state never touches unrelated futures.
    * Unlike WGPU_COMPAT_PUMP this does not yield to the event loop (no

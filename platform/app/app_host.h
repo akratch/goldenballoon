@@ -63,6 +63,14 @@ public:
     void queueKeyPressForSmoke(SDL_Keycode key);
     bool queueGamepadPressForSmoke(SDL_GameControllerButton button);
     void queueMouseClickForSmoke(int x, int y);
+    // Queue one step of a held left-button drag. `held=true` begins/continues
+    // the drag; `held=false` releases it. Enabled only by the dedicated scale
+    // smoke environment and routed through the production SDL event adapter.
+    bool queueMouseDragStepForSmoke(int x, int y, bool held);
+    // As above, but mark the SDL mouse event as touch-generated. This exercises
+    // ImGui's production touchscreen source path and is gated by its own smoke
+    // contract so interactive input can never synthesize a gesture.
+    bool queueTouchDragStepForSmoke(int x, int y, bool held);
 
     // Path of a file dragged onto the window since the last call, or "" — the
     // ROM panel's drag-and-drop entry point. Returns and clears.
@@ -122,6 +130,9 @@ private:
     SmokeClick smokeHeldClick_ = {0, 0};
     bool smokeClickHeld_ = false;
     bool smokeClickReleasePending_ = false;
+    struct SmokeDragStep { int x; int y; bool held; bool touch; };
+    std::vector<SmokeDragStep> pendingSmokeDragSteps_;
+    bool smokeDragHeld_ = false;
     std::vector<SDL_GameControllerButton> pendingSmokeGamepadButtons_;
     SDL_GameController *smokeGamepad_ = nullptr;
     int smokeGamepadDeviceIndex_ = -1;

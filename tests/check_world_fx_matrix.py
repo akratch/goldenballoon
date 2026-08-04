@@ -102,6 +102,7 @@ def run_scene(
         MDKR_RENDERER=backend,
         MDKR_WORLD_SHADOW="0",
         MDKR_WORLD_FX_TRACE="1",
+        MDKR_TEST_RENDER_FULL_ADMISSION="1",
         MDKR64_HIDDEN="1",
         MDKR_SAVE_DIR=str(save_dir),
         LC_ALL="C",

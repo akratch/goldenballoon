@@ -33,6 +33,8 @@ KEEP_ALL_NATIVE=0
 SKIP_NATIVE=0
 SKIP_ARES=0
 NATIVE_ARM=""
+VEHICLE_RNG_TRACE=""
+AUDIO_DUMP=""
 
 usage() {
     cat <<'USAGE'
@@ -47,6 +49,11 @@ Options:
   --keep-all-native  keep every native PPM (default: prune to marks+cadence)
   --skip-native      reuse existing native frames
   --skip-ares        reuse existing ares frames
+  --vehicle-rng-trace PATH
+                      run the US 1.1 retail car-audio RNG authority witness;
+                      validate the local-only trace and skip unrelated state scoring
+  --audio-dump PATH   capture the ROM's own AI DMA stream as raw LE s16 stereo;
+                      validates the local-only capture and skips state scoring
   -h, --help         show this help
 
 Captures are ROM-derived and local-only. Do not commit them.
@@ -63,6 +70,8 @@ while [[ $# -gt 0 ]]; do
         --keep-all-native) KEEP_ALL_NATIVE=1; shift ;;
         --skip-native) SKIP_NATIVE=1; shift ;;
         --skip-ares) SKIP_ARES=1; shift ;;
+        --vehicle-rng-trace) VEHICLE_RNG_TRACE="$2"; shift 2 ;;
+        --audio-dump) AUDIO_DUMP="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         -*) echo "Unknown arg: $1" >&2; usage >&2; exit 2 ;;
         *) if [[ -z "$ROUTE" ]]; then ROUTE="$1"; else echo "Unexpected: $1" >&2; exit 2; fi; shift ;;
@@ -71,6 +80,18 @@ done
 
 [[ -n "$ROUTE" ]] || { echo "FAIL: route required" >&2; usage >&2; exit 2; }
 [[ -f "$ROM" ]] || { echo "FAIL: ROM not found: $ROM" >&2; exit 1; }
+if [[ -n "$VEHICLE_RNG_TRACE" ]]; then
+    [[ "$ROUTE" == "race_state_oracle" ]] || {
+        echo "FAIL: --vehicle-rng-trace requires race_state_oracle" >&2; exit 2; }
+    [[ "$SKIP_ARES" -eq 0 ]] || {
+        echo "FAIL: --vehicle-rng-trace cannot reuse an old ares run" >&2; exit 2; }
+fi
+if [[ -n "$AUDIO_DUMP" ]]; then
+    [[ "$SKIP_ARES" -eq 0 ]] || {
+        echo "FAIL: --audio-dump cannot reuse an old ares run" >&2; exit 2; }
+    [[ ! -d "$AUDIO_DUMP" && ! -d "$AUDIO_DUMP.rate" ]] || {
+        echo "FAIL: --audio-dump path resolves to a directory" >&2; exit 2; }
+fi
 
 ROUTE_PY="python3 tools/dkr_oracle_route.py"
 $ROUTE_PY validate "$ROUTE" >/dev/null
@@ -301,7 +322,8 @@ if [[ "$SKIP_ARES" -eq 0 ]]; then
     if [[ "$COMPARE_FRAMES" -eq 1 ]]; then
         rm -rf "$ARES_DIR"; mkdir -p "$ARES_DIR"
     fi
-    if [[ "$STATE_TRACE" -eq 1 ]]; then
+    if [[ "$STATE_TRACE" -eq 1 && -z "$VEHICLE_RNG_TRACE" &&
+          -z "$AUDIO_DUMP" ]]; then
         rm -f "$ARES_STATE"
     fi
     ARES_MARKS_CSV="$($ROUTE_PY ares-marks "$ROUTE")"
@@ -331,8 +353,17 @@ if [[ "$SKIP_ARES" -eq 0 ]]; then
             MDKR64_ARES_DUMP_MARKS="$ARES_MARKS_CSV"
         )
     fi
-    if [[ "$STATE_TRACE" -eq 1 ]]; then
+    if [[ "$STATE_TRACE" -eq 1 && -z "$VEHICLE_RNG_TRACE" &&
+          -z "$AUDIO_DUMP" ]]; then
         ARES_ENV+=(MDKR64_ARES_STATE_TRACE="$ARES_STATE")
+    fi
+    if [[ -n "$VEHICLE_RNG_TRACE" ]]; then
+        rm -f "$VEHICLE_RNG_TRACE"
+        ARES_ENV+=(MDKR64_ARES_VEHICLE_RNG_TRACE="$VEHICLE_RNG_TRACE")
+    fi
+    if [[ -n "$AUDIO_DUMP" ]]; then
+        rm -f "$AUDIO_DUMP" "$AUDIO_DUMP.rate"
+        ARES_ENV+=(MDKR64_ARES_AUDIO_DUMP="$AUDIO_DUMP")
     fi
     if [[ "$FORCED_TRACK" -ge 0 ]]; then
         ARES_ENV+=(MDKR64_ARES_FORCE_TRACK="$FORCED_TRACK_SOURCE:$FORCED_TRACK")
@@ -380,7 +411,8 @@ if [[ "$COMPARE_FRAMES" -eq 1 ]]; then
         --mark-pairs "$MARK_PAIRS" \
         --out-dir "$CMP_DIR"
 fi
-if [[ "$STATE_TRACE" -eq 1 ]]; then
+if [[ "$STATE_TRACE" -eq 1 && -z "$VEHICLE_RNG_TRACE" &&
+      -z "$AUDIO_DUMP" ]]; then
     STATE_ROUTE_LABEL="$ROUTE"
     if [[ -n "$NATIVE_ARM" ]]; then
         STATE_ROUTE_LABEL="$ROUTE/$NATIVE_ARM"
@@ -402,4 +434,37 @@ if [[ "$STATE_TRACE" -eq 1 ]]; then
     fi
     python3 tools/compare_oracle_state.py \
         "${STATE_COMPARE_ARGS[@]}"
+fi
+if [[ -n "$VEHICLE_RNG_TRACE" ]]; then
+    python3 tools/validate_ares_vehicle_rng.py "$VEHICLE_RNG_TRACE"
+fi
+if [[ -n "$AUDIO_DUMP" ]]; then
+    python3 - "$AUDIO_DUMP" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+audio = Path(sys.argv[1])
+rate_path = Path(str(audio) + ".rate")
+if not audio.is_file() or audio.stat().st_size < 4:
+    raise SystemExit(f"FAIL: ares produced no audio capture at {audio}")
+size = audio.stat().st_size
+if size % 4:
+    raise SystemExit(
+        f"FAIL: ares audio capture is not whole s16 stereo frames: {size} bytes")
+try:
+    rate = int(rate_path.read_text(encoding="ascii").strip())
+except (OSError, ValueError) as error:
+    raise SystemExit(f"FAIL: invalid ares audio rate sidecar {rate_path}: {error}")
+if not 8000 <= rate <= 96000:
+    raise SystemExit(f"FAIL: implausible ares audio rate {rate}")
+frames = size // 4
+if frames < rate:
+    raise SystemExit(
+        f"FAIL: ares audio capture is shorter than one second: {frames} frames")
+digest = hashlib.sha256(audio.read_bytes()).hexdigest()
+print(
+    f"ares audio capture: PASS -- {frames} frames at {rate} Hz "
+    f"({frames / rate:.2f}s), sha256={digest}")
+PY
 fi

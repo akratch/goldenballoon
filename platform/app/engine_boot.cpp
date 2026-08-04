@@ -51,6 +51,10 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             owned.push_back("--headless-ticks");
             owned.push_back(std::to_string(cfg->automation_ticks));
         }
+        if (cfg->input_script != nullptr && cfg->input_script[0] != '\0') {
+            owned.push_back("--input-script");
+            owned.push_back(cfg->input_script);
+        }
         // Staged RESTART-scope settings ride in as --video-set, which sits at
         // MDKR_VIDEO_SOURCE_CLI — above the ini the panel also wrote them to.
         // Same value from both layers, so precedence is a no-op here; passing

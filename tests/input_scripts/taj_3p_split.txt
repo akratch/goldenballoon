@@ -1,0 +1,22 @@
+# Persisted Taj unlock -> three-player race with P3 as Taj.
+1250 START 4 P1
+1330 START 4 P1
+
+# P1 Diddy, P2 Krunch, P3 starts on Bumper and moves through Pipsy to Taj.
+1450 A 4 P2
+1490 A 4 P3
+1550 DOWN 4 P3
+1610 LEFT 4 P3
+
+1700 A 4 P1
+1740 A 4 P2
+1780 A 4 P3
+1860 A 4 P1
+
+# Track, all vehicle confirmations, CPU count, GO.
+2040 A 4 P1
+2200 A 4 P1
+2200 A 4 P2
+2200 A 4 P3
+2350 A 4 P1
+2500 A 4 P1

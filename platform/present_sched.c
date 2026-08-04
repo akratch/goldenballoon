@@ -13,6 +13,7 @@
 #include "platform_os.h"
 #include "presentation_snapshot.h"
 #include "fast3d/gfx_presentation_packet.h"
+#include "fast3d/gfx_retained_task.h"
 #include "fast3d/gfx_shadow_frame.h"
 
 int g_simTickCounter = 0;
@@ -219,16 +220,16 @@ static bool test_presentation_replay_enabled(void) {
 bool present_sched_smoothing_enabled(void) {
     if (s_smoothing < 0) {
         const char *value = getenv("MDKR_PRESENT_SMOOTHING");
-        s_smoothing =
-            value == NULL
-                ? (test_presentation_replay_enabled() ? 1 : 0)
-                : !((strcmp(value, "off") == 0) ||
-                    (strcmp(value, "0") == 0));
+        /* The versioned internal arm may omit the public setting for its
+         * endpoint-only negative control. Production is deliberately strict:
+         * an unknown value or typo fails closed instead of silently enabling
+         * delayed display-list replay. */
+        s_smoothing = value == NULL
+            ? (test_presentation_replay_enabled() ? 1 : 0)
+            : (strcmp(value, "interpolate") == 0 ||
+               strcmp(value, "1") == 0 || strcmp(value, "on") == 0);
     }
-    /* 1.0.1 fail-closed policy: delayed display-list replay still has mutable
-     * dependencies after the next CPU list build. Keep the implementation
-     * available to its adversarial gates, but never arm it from user config. */
-    return s_smoothing != 0 && test_presentation_replay_enabled();
+    return s_smoothing != 0;
 }
 
 void mdkr_present_set_frame_limit(const char *value) {
@@ -251,7 +252,7 @@ void mdkr_present_set_frame_limit(const char *value) {
 }
 
 void mdkr_present_set_motion_smoothing(const char *value) {
-    s_smoothing = (value != NULL && strcmp(value, "off") == 0) ? 0 : 1;
+    s_smoothing = value != NULL && strcmp(value, "interpolate") == 0 ? 1 : 0;
 }
 
 bool present_sched_replay_armed(void) {
@@ -263,11 +264,6 @@ bool present_sched_replay_armed(void) {
     if (!present_sched_present_subloop()) {
         return false;
     }
-    /*
-     * Only explicit internal replay seams can make smoothing true in 1.0.1.
-     * Those diagnostics need a camera pair; a production rate request alone
-     * never reaches this point and never freezes the retained list registry.
-     */
     if (!present_sched_smoothing_enabled()) {
         /* A no-image host opportunity needs no replay, snapshot, or swap. */
         return false;
@@ -437,15 +433,15 @@ void present_sched_note_stale(void) {
 }
 
 void present_sched_alpha(uint64_t *numerator, uint64_t *denominator) {
-    unsigned long long num = 0;
-    unsigned long long den = 1;
+    uint64_t num = 0;
+    uint64_t den = 1;
     present_sched_lazy_init();
     host_frame_driver_alpha(&s_driver, &num, &den);
     if (numerator != NULL) {
-        *numerator = (uint64_t)num;
+        *numerator = num;
     }
     if (denominator != NULL) {
-        *denominator = (uint64_t)den;
+        *denominator = den;
     }
 }
 
@@ -639,10 +635,12 @@ void present_sched_trace_summary(void) {
         uint64_t billboard_vertex_hits = 0, billboard_vertex_holds = 0;
         GfxPresentationOwnerStats owner_stats;
         GfxPresentationPacketStats packet_stats;
+        GfxRetainedTaskStats retained_stats;
         GfxShadowCameraEndpointStats camera_endpoint_stats;
         bool reject_least_valid = false;
         memset(&owner_stats, 0, sizeof(owner_stats));
         memset(&packet_stats, 0, sizeof(packet_stats));
+        memset(&retained_stats, 0, sizeof(retained_stats));
         memset(&camera_endpoint_stats, 0, sizeof(camera_endpoint_stats));
         gfx_dkr_replay_get_stats(&walks, &hits, &misses, &rejects,
                                  &real_walks);
@@ -654,6 +652,7 @@ void present_sched_trace_summary(void) {
             &billboard_vertex_hits, &billboard_vertex_holds);
         gfx_shadow_presentation_owner_get_stats(&owner_stats);
         gfx_presentation_packet_get_stats(&packet_stats);
+        gfx_retained_task_get_stats(&retained_stats);
         gfx_shadow_replay_get_stats(&freezes, &restores, &failures,
                                     &restore_failures);
         gfx_shadow_camera_endpoint_get_stats(&camera_endpoint_stats);
@@ -691,6 +690,31 @@ void present_sched_trace_summary(void) {
                 (unsigned long long)object_hits,
                 (unsigned long long)object_holds);
         fprintf(stderr,
+                "[RETAINED-TASK] begins=%llu captures=%llu failures=%llu "
+                "acquires=%llu rejects=%llu arenaBytes=%llu arenaBudget=%zu "
+                "arenaPeak=%zu budgetRejects=%llu resident=%zu "
+                "residentPeak=%zu external=%llu externalBytes=%llu "
+                "externalPeak=%zu arenaResolve=%llu externalResolve=%llu "
+                "livePoison=%llu\n",
+                (unsigned long long)retained_stats.capture_begins,
+                (unsigned long long)retained_stats.captures,
+                (unsigned long long)retained_stats.capture_failures,
+                (unsigned long long)retained_stats.acquisitions,
+                (unsigned long long)retained_stats.acquisition_rejects,
+                (unsigned long long)retained_stats.arena_bytes,
+                retained_stats.arena_copy_budget,
+                retained_stats.arena_peak,
+                (unsigned long long)retained_stats.arena_budget_rejections,
+                retained_stats.resident_bytes,
+                retained_stats.resident_peak,
+                (unsigned long long)retained_stats.external_dependencies,
+                (unsigned long long)retained_stats.external_bytes,
+                retained_stats.external_peak,
+                (unsigned long long)retained_stats.arena_resolutions,
+                (unsigned long long)retained_stats.external_resolutions,
+                (unsigned long long)
+                    retained_stats.live_arena_poison_replays);
+        fprintf(stderr,
                 "[PRESENT-OWNERS] registrations=%llu roots=%llu children=%llu "
                 "effects=%llu unowned=%llu\n",
                 (unsigned long long)owner_stats.registrations,
@@ -700,7 +724,8 @@ void present_sched_trace_summary(void) {
                 (unsigned long long)owner_stats.unowned);
         fprintf(stderr,
                 "[PRESENT-PACKET] matrixreg=%llu vertexreg=%llu "
-                "particlevertexreg=%llu freezes=%llu "
+                "particlevertexreg=%llu projectedshadowvertexreg=%llu "
+                "freezes=%llu "
                 "freezefail=%llu matrixhit=%llu matrixmiss=%llu "
                 "vertexhit=%llu vertexmiss=%llu stale=%llu "
                 "stalematrixhold=%llu stalevertexhold=%llu "
@@ -717,12 +742,17 @@ void present_sched_trace_summary(void) {
                 "deformincompatible=%llu deformcollision=%llu "
                 "colorhit=%llu coloroverride=%llu "
                 "particledeformhit=%llu particledeformoverride=%llu "
+                "projectedshadowdeformhit=%llu "
+                "projectedshadowdeformoverride=%llu "
                 "particlecolorhit=%llu particlecoloroverride=%llu "
                 "primalphahit=%llu primalphaoverride=%llu "
+                "projectedshadowprimalphahit=%llu "
+                "projectedshadowprimalphaoverride=%llu "
                 "particleprimalphahit=%llu "
                 "particleprimalphaoverride=%llu "
                 "effectreg=%llu effecthit=%llu effectoverride=%llu "
                 "effectphasehold=%llu effectmiss=%llu effectcollision=%llu "
+                "futurecaptures=%llu futurefailures=%llu "
                 "endpointchecks=%llu endpointmismatch=%llu "
                 "endpointexpected=%llu endpointactual=%llu "
                 "deformpeak=%zu\n",
@@ -730,6 +760,8 @@ void present_sched_trace_summary(void) {
                 (unsigned long long)packet_stats.vertex_registrations,
                 (unsigned long long)
                     packet_stats.particle_vertex_registrations,
+                (unsigned long long)
+                    packet_stats.projected_shadow_vertex_registrations,
                 (unsigned long long)packet_stats.freezes,
                 (unsigned long long)packet_stats.freeze_failures,
                 (unsigned long long)packet_stats.matrix_hits,
@@ -769,10 +801,18 @@ void present_sched_trace_summary(void) {
                     packet_stats.particle_deformation_hits,
                 (unsigned long long)
                     packet_stats.particle_deformation_overrides,
+                (unsigned long long)
+                    packet_stats.projected_shadow_deformation_hits,
+                (unsigned long long)
+                    packet_stats.projected_shadow_deformation_overrides,
                 (unsigned long long)packet_stats.particle_color_hits,
                 (unsigned long long)packet_stats.particle_color_overrides,
                 (unsigned long long)packet_stats.primitive_alpha_hits,
                 (unsigned long long)packet_stats.primitive_alpha_overrides,
+                (unsigned long long)
+                    packet_stats.projected_shadow_primitive_alpha_hits,
+                (unsigned long long)
+                    packet_stats.projected_shadow_primitive_alpha_overrides,
                 (unsigned long long)
                     packet_stats.particle_primitive_alpha_hits,
                 (unsigned long long)
@@ -783,6 +823,8 @@ void present_sched_trace_summary(void) {
                 (unsigned long long)packet_stats.effect_phase_holds,
                 (unsigned long long)packet_stats.effect_misses,
                 (unsigned long long)packet_stats.effect_collisions,
+                (unsigned long long)packet_stats.future_captures,
+                (unsigned long long)packet_stats.future_failures,
                 (unsigned long long)packet_stats.endpoint_vertex_checks,
                 (unsigned long long)packet_stats.endpoint_vertex_mismatches,
                 (unsigned long long)packet_stats.endpoint_expected_hash,

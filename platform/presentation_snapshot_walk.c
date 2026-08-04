@@ -104,7 +104,7 @@ static void capture_object(const Object *object) {
 }
 
 static void capture_cameras(uint64_t authored_tick) {
-    s32 cameraIds[PRESENTATION_SNAPSHOT_MAX_VIEWPORTS];
+    PresentationCameraEntry cameras[PRESENTATION_SNAPSHOT_MAX_VIEWPORTS];
     s32 cameraCount;
     s32 gameMode;
     const LevelHeader *levelHeader;
@@ -129,60 +129,13 @@ static void capture_cameras(uint64_t authored_tick) {
     }
 
     cameraCount = (s32)presentation_snapshot_authored_cameras_copy(
-        authored_tick, cameraIds, ARRAY_COUNT(cameraIds));
+        authored_tick, cameras, ARRAY_COUNT(cameras));
 
     for (viewport = 0; viewport < cameraCount; viewport++) {
-        /* IDs were latched by viewport_main while P2 promotion, cutscene-bank
-         * selection and the TT viewport's local mask were authoritative. */
-        const s32 cameraId = cameraIds[viewport];
-        const Camera *camera = &gCameras[cameraId];
-        const ScreenViewport *screen = &gScreenViewports[viewport];
-        PresentationCameraEntry sample;
-
-        memset(&sample, 0, sizeof(sample));
-        sample.camera_id = cameraId;
-        sample.viewport_index = viewport;
-        /*
-         * The TRUE inputs to cam_build_view_basis(), not the matrices it
-         * derives: position, the three fixed rotations, the separately
-         * stored pitch it folds into x_rotation, and the shake offset it
-         * applies to y when gNoCamShake is set. Interpolating these and
-         * rebuilding the basis afterwards is spec §7's "camera: interpolate
-         * before deriving the view matrix".
-         */
-        sample.position[0] = camera->trans.x_position;
-        sample.position[1] = camera->trans.y_position;
-        sample.position[2] = camera->trans.z_position;
-        sample.rotation_x = camera->trans.rotation.x_rotation;
-        sample.rotation_y = camera->trans.rotation.y_rotation;
-        sample.rotation_z = camera->trans.rotation.z_rotation;
-        sample.pitch = camera->pitch;
-        sample.shake_magnitude = camera->shakeMagnitude;
-        sample.apply_shake = gNoCamShake;
-        /*
-         * Projection inputs. gCurCamFOV is the authored level FOV;
-         * cam_rebuild_native_projection() turns it into the fovy/aspect pair
-         * actually handed to guPerspectiveF, together with the fixed
-         * CAMERA_NEAR/CAMERA_FAR.
-         *
-         * Wave A limitation, recorded rather than hidden: those effective
-         * values live in single globals that viewport_main rewrites per
-         * viewport, so at the tick boundary they hold the LAST viewport's
-         * projection. For 1P (and for every split-screen layout that shares
-         * one projection) that is exact. Per-viewport projection divergence
-         * is a Wave B item, and the per-viewport viewport rect below is
-         * already captured correctly.
-         */
-        sample.fov = gCurCamFOV;
-        sample.vertical_fov = cam_get_effective_vertical_fov();
-        sample.aspect = cam_get_effective_aspect();
-        sample.near_plane = CAMERA_NEAR;
-        sample.far_plane = CAMERA_FAR;
-        sample.viewport[0] = (f32)screen->posX;
-        sample.viewport[1] = (f32)screen->posY;
-        sample.viewport[2] = (f32)screen->width;
-        sample.viewport[3] = (f32)screen->height;
-        presentation_snapshot_capture_camera(&sample);
+        /* This is the complete recipe captured beside the exact matrix it
+         * authored. Never reconstruct it from mutable camera globals here:
+         * cinematic logic can update bank 4 after viewport rendering. */
+        presentation_snapshot_capture_camera(&cameras[viewport]);
     }
 }
 

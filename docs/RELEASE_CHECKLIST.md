@@ -30,7 +30,10 @@ ln -s /path/to/your/baserom.us.v80.z64 baserom.us.v80.z64
 
 > **Audio safety — hard rule.** Every gameplay-capable engine invocation below
 > passes `--headless-frames N`, which returns before the audio device is ever
-> opened, and sets `MDKR_AUDIO=0`. The only permitted exceptions are the proven
+> opened, and sets `MDKR_AUDIO=0`. The controlled native `audio_sink_evidence` gate
+> is the sink exception: it explicitly uses `MDKR_TEST_HEADLESS_AUDIO=1` with
+> SDL's dummy driver, proving queue acceptance rather than physical output. The only
+> other permitted exceptions are the proven
 > early-exit process surfaces `--help`, `--version`, and `--video-list`; all three
 > return before ROM, window, and audio initialization. Do not generalize that
 > exception to another option. Note that `MDKR_AUDIO=off` is a **no-op** — the
@@ -125,8 +128,11 @@ design**. The runner verifies that its dedicated binary has an optimized
 `CMAKE_BUILD_TYPE`; it also verifies that the filename-entry sanitizer binary
 actually imports ASan. The ROM-free CTest task includes the display/runtime/
 layout/scheduler units, the deterministic audio queue controller, and SDL's
-silent queue-mode sink contract; the RAW16 gate repeats against primary,
-Release, and ASan artifacts. The specialized native-layout gate verifies linked
+silent queue-mode sink contract. When the selected build contains native
+launcher GPU tests, the runner includes them under their shared CTest resource
+lock; the complete local matrix never silently excludes them. The RAW16 gate
+repeats against primary, Release, and ASan artifacts. The specialized
+native-layout gate verifies linked
 ASan/alignment handlers and exact legacy controls, then runs the complete
 menu/track/vehicle/Adventure/boss/2P/widescreen matrix under halt-on-error
 alignment UBSan. The primary suite's seven-arm `check_widescreen_proportions.py`
@@ -151,6 +157,9 @@ blank, common-glyph, and repeated-sampler controls must all fail the pixel gate.
 control, atomic fresh-process reload, override locking/no-bake behavior,
 unwritable-storage rollback, and malformed-launcher no-rewrite behavior. The
 real-browser gate repeats the menu mutation and IDBFS reload in wasm.
+`check_audio_options_persistence.py` separately requires the original Audio
+Options sliders to commit before exit, then injects an unwritable destination
+and proves the visible retry/session-only decision path.
 `--skip-wasm` is used here only because the web artifact is built and both
 structurally and dynamically checked in section 4.
 
@@ -231,13 +240,13 @@ Per-fixture frame budgets and expected assertion lines are tabulated in
 tools/web/build_web.sh          # builds, stages dist/web, runs the guard itself
 tools/check_no_rom.sh dist/web
 python3 tools/run_checks.py \
-  --only wave_visible_table,browser_save_ui,browser_resource_plateau,touch_controls,browser_runtime,browser_presentation_rates \
+  --only wave_visible_table,browser_save_ui,browser_resource_plateau,touch_controls,browser_runtime,browser_presentation_rates,browser_taj_character_select,browser_taj_persistence \
   --wasm build-web/mdkr64_web.wasm \
   --rom baserom.us.v80.z64
 ```
 
 Expected: `check_no_rom: PASS — N artifact(s) scanned, no ROM data present.` and
-all six runner tasks PASS.
+all eight runner tasks PASS.
 
 `check_wave_visible_table.py` is the one check that can only be run on the **web**
 artifact: it catches a linker layout split that the native target is immune to by
@@ -256,8 +265,7 @@ the post-release check below remains a human packaging/hosting check.
 It also requires exactly one authored NTSC realtime pace initialization, no
 update or wall-field count below two, a 24–36 FPS median complete-loop cadence,
 and post-startup cadence no worse than 40.0 ms p95 / 45.0 ms p99. These are
-temporary containment budgets while authoritative update and presentation
-remain inseparable. It also fails if an async pipeline takes more than two
+the default Original/authored-motion baseline. It also fails if an async pipeline takes more than two
 authored render frames. An incomplete pipeline must skip the host opportunity
 until a new authored image is ready; the release path may not replay or swap the
 last image as a duplicate. The raw maximum and its frame number remain visible
@@ -266,8 +274,10 @@ in the PASS line.
 `check_browser_presentation_rates.py` independently exercises display, numeric
 caps, irregular display schedules, and the browser's documented uncapped
 fallback. It must preserve the same fixed-authority state, gameplay-event,
-consumed-input, and PCM hashes across those host schedules, retain the authored
-image count, and report zero retained-replay walks and duplicate swaps.
+consumed-input, and PCM hashes across those host schedules. Interpolated arms
+must perform real immutable replay, publish true forward task data, resolve
+private-arena and copied-external dependencies, and account for every submitted
+or nonblocking-held surface opportunity without a runtime GPU wait.
 
 `check_browser_resource_plateau.py` separately performs four real wasm race
 loads through production pause-menu restarts. It must prove stable warmed
@@ -297,11 +307,11 @@ git.
 ## 5. Desktop packaging and publication
 
 Desktop workflow version inputs are filename components, so public releases use
-bare semantic versions such as `1.0.3`, never `v1.0.3`. The `v` prefix belongs
-only to the Git tag. For version 1.0.3, the portable workflow must produce:
+bare semantic versions such as `1.0.4`, never `v1.0.4`. The `v` prefix belongs
+only to the Git tag. For version 1.0.4, the portable workflow must produce:
 
-- `Golden-Balloon-1.0.3-linux-x86_64.AppImage`
-- `Golden-Balloon-1.0.3-linux-x86_64.tar.gz`
+- `Golden-Balloon-1.0.4-linux-x86_64.AppImage`
+- `Golden-Balloon-1.0.4-linux-x86_64.tar.gz`
 
 Automatic Windows publication is intentionally disabled for this patch because
 `windows-latest` does not guarantee a qualifying D3D12/Vulkan adapter or GL 3.3
@@ -310,7 +320,7 @@ rendered launcher or gameplay gate. The workflow still builds, unit-tests,
 import-checks, packages, extracts, and launches `GoldenBalloon.exe` from an
 unrelated CWD.
 
-The exact-manifest `Golden-Balloon-1.0.3-windows-x64.zip` may be attached only
+The exact-manifest `Golden-Balloon-1.0.4-windows-x64.zip` may be attached only
 after manual acceptance on Windows hardware proves the extracted package can:
 
 1. open the real launcher through default WebGPU;
@@ -329,9 +339,9 @@ automated GPU-qualification claim.
 Dispatch it with:
 
 ```bash
-gh workflow run release.yml --ref v1.0.3 \
-  -f version=1.0.3 \
-  -f release_tag=v1.0.3
+gh workflow run release.yml --ref v1.0.4 \
+  -f version=1.0.4 \
+  -f release_tag=v1.0.4
 ```
 
 Use `version=dev` only for disposable test artifacts, never for a public
@@ -357,9 +367,9 @@ pass in the same job before the Linux artifacts are uploaded. If any part of
 that job fails or is unavailable, publish no Linux artifact and do not attach a
 locally produced replacement under the canonical release filenames.
 
-### macOS 1.0.3 — unsigned/ad-hoc patch artifact
+### macOS 1.0.4 — unsigned/ad-hoc patch artifact
 
-The public 1.0.3 macOS artifact intentionally skips Developer ID signing and
+The public 1.0.4 macOS artifact intentionally skips Developer ID signing and
 notarization. “Unsigned” in its filename means there is no trusted signing
 identity: the app must still have a valid inside-out ad-hoc integrity seal. The
 only expected first-launch interruption is macOS's unidentified-developer
@@ -367,22 +377,22 @@ warning; a “damaged” warning is always a release failure.
 
 The exact public files are:
 
-- `Golden-Balloon-1.0.3-macos-arm64-unsigned.dmg`
-- `Golden-Balloon-1.0.3-macos-arm64-unsigned.dmg.sha256`
-- `Golden-Balloon-1.0.3-macos-arm64-unsigned.dmg.provenance.json`
+- `Golden-Balloon-1.0.4-macos-arm64-unsigned.dmg`
+- `Golden-Balloon-1.0.4-macos-arm64-unsigned.dmg.sha256`
+- `Golden-Balloon-1.0.4-macos-arm64-unsigned.dmg.provenance.json`
 
 The provenance sidecar must name that exact DMG, the exact 40-character source
-commit, version `1.0.3`, platform `macos`, the DMG SHA-256, and
+commit, version `1.0.4`, platform `macos`, the DMG SHA-256, and
 `macos_signing: ad-hoc-unsigned`.
 
 Before producing the candidate:
 
 - [ ] The source tree and index are clean.
 - [ ] `CMakeLists.txt`, `macos/Resources/Info.plist`, the app's `--version`
-      output, and the release notes all agree on `1.0.3`.
-- [ ] The release commit is the intended `v1.0.3` tag commit. A test artifact
+      output, and the release notes all agree on `1.0.4`.
+- [ ] The release commit is the intended `v1.0.4` tag commit. A test artifact
       may omit `release_tag`; an artifact may be published only with
-      `release_tag=v1.0.3` resolving to the workflow's exact source commit.
+      `release_tag=v1.0.4` resolving to the workflow's exact source commit.
 - [ ] The pinned standalone SDL2 build is used for arm64/macOS 13. Homebrew
       `sdl2-compat`, SDL3, Homebrew load paths, mixed architectures, and a
       deployment target newer than 13.0 are release blockers.
@@ -391,7 +401,7 @@ Build and validate a non-publishing candidate through the protected workflow:
 
 ```bash
 gh workflow run macos-release.yml \
-  -f version=1.0.3 \
+  -f version=1.0.4 \
   -f trusted_signing=false
 ```
 
@@ -400,7 +410,7 @@ accepted:
 
 - [ ] Build SHA-pinned standalone SDL2 2.32.10 for arm64/macOS 13.
 - [ ] Build `mdkr64.app` with `--strict-deployment-target`, embed version
-      `1.0.3` and the exact source commit, bundle SDL2, then seal nested code
+      `1.0.4` and the exact source commit, bundle SDL2, then seal nested code
       before the outer app.
 - [ ] Run `verify_asset_free.sh`, `verify_gatekeeper_bundle.sh`, and
       `verify_unsigned_release.sh`. The last check must prove the ad-hoc seal,
@@ -420,30 +430,30 @@ For a local reconstruction of those same build and verification steps, use the
 commands in [`../macos/README.md`](../macos/README.md). Do not replace its
 pinned SDL2 prefix with a machine-local Homebrew package.
 
-After the test artifact passes and `v1.0.3` exists on the exact candidate
+After the test artifact passes and `v1.0.4` exists on the exact candidate
 commit, publish by dispatching the same source commit with the binding enabled:
 
 ```bash
-gh workflow run macos-release.yml --ref v1.0.3 \
-  -f version=1.0.3 \
+gh workflow run macos-release.yml --ref v1.0.4 \
+  -f version=1.0.4 \
   -f trusted_signing=false \
-  -f release_tag=v1.0.3
+  -f release_tag=v1.0.4
 ```
 
 The publish job must independently re-check the tag/commit binding, checksum,
 exact artifact name, provenance fields, and provenance digest before uploading
-to the existing `v1.0.3` GitHub Release.
+to the existing `v1.0.4` GitHub Release.
 
 ### Optional trusted macOS artifact
 
-The credentialed path is not part of the unsigned 1.0.3 release. If it is used
+The credentialed path is not part of the unsigned 1.0.4 release. If it is used
 later, its exact artifact name is
-`Golden-Balloon-1.0.3-macos-arm64-signed-notarized.dmg`, with matching
+`Golden-Balloon-1.0.4-macos-arm64-signed-notarized.dmg`, with matching
 `.sha256` and `.provenance.json` sidecars and
 `macos_signing: developer-id-notarized`. Dispatch with
 `trusted_signing=true`; the workflow must Developer ID-sign with Hardened
 Runtime, notarize and staple the app, sign and notarize the DMG, require
-Gatekeeper acceptance, and still enforce `release_tag=v1.0.3` against the exact
+Gatekeeper acceptance, and still enforce `release_tag=v1.0.4` against the exact
 workflow commit before publication. There is no release-approved skip-notary
 path.
 
@@ -472,11 +482,10 @@ Before dispatching:
 ## 7. Post-release spot checks
 
 For the concise human route, use
-[`RELEASE_CANDIDATE_TEST_GUIDE.md`](RELEASE_CANDIDATE_TEST_GUIDE.md). After the
-1.0.3 artifacts exist, update that guide on `main` with their exact source
-commit and hashes; do not move the release tag to include that post-release
-documentation commit. The steps below remain the policy-level detail behind
-that guide.
+[`RELEASE_CANDIDATE_TEST_GUIDE.md`](RELEASE_CANDIDATE_TEST_GUIDE.md). Record the
+candidate's exact source commit and hashes in the acceptance result; the
+artifact sidecars remain the source of truth. The steps below are the
+policy-level detail behind that guide.
 
 Load the published page in a WebGPU browser, select a ROM, and confirm it boots and
 renders. Confirm in devtools that no request carries ROM bytes — the ROM is read

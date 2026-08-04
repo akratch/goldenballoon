@@ -48,6 +48,60 @@ int main() {
                "controller B matches Escape at every stack level");
     }
 
+    const AppUiButtonPairLayout roomy =
+        AppUi_fitButtonPair(1000.0f, 16.0f, 420.0f, 380.0f, 280.0f);
+    expect(roomy.sameLine && roomy.firstWidth == 420.0f &&
+               roomy.secondWidth == 380.0f,
+           "roomy overlay keeps authored action widths");
+    const AppUiButtonPairLayout compact =
+        AppUi_fitButtonPair(592.0f, 16.0f, 420.0f, 420.0f, 280.0f);
+    expect(compact.sameLine && compact.firstWidth == 288.0f &&
+               compact.secondWidth == 288.0f,
+           "640px 2x overlay shrinks paired actions inside its content width");
+    const AppUiButtonPairLayout narrow =
+        AppUi_fitButtonPair(540.0f, 16.0f, 420.0f, 420.0f, 280.0f);
+    expect(!narrow.sameLine && narrow.firstWidth == 540.0f &&
+               narrow.secondWidth == 540.0f,
+           "narrow overlay stacks both actions at full content width");
+
+    const AppUiRomPanelVisibility firstRun =
+        AppUi_romPanelVisibility(false, false, false, false);
+    expect(!firstRun.showVerdict && firstRun.showAcquisition,
+           "first run leads with ROM acquisition and no verdict");
+    const AppUiRomPanelVisibility rememberedCheck =
+        AppUi_romPanelVisibility(true, false, true, false);
+    expect(!rememberedCheck.showVerdict && !rememberedCheck.showAcquisition,
+           "remembered ROM check flashes neither rejection nor replacement UI");
+    const AppUiRomPanelVisibility readyRom =
+        AppUi_romPanelVisibility(true, true, false, false);
+    expect(readyRom.showVerdict && !readyRom.showAcquisition,
+           "verified ROM shows its verdict without acquisition clutter");
+    const AppUiRomPanelVisibility replacement =
+        AppUi_romPanelVisibility(true, true, true, true);
+    expect(replacement.showVerdict && replacement.showAcquisition,
+           "replacement check retains the proven verdict and change controls");
+    const AppUiRomPanelVisibility refused =
+        AppUi_romPanelVisibility(true, false, false, false);
+    expect(refused.showVerdict && refused.showAcquisition,
+           "completed refusal shows its verdict and recovery controls");
+    expect(AppUi_romCandidateFeedbackVisible(true, false),
+           "settled candidate feedback remains visible");
+    expect(!AppUi_romCandidateFeedbackVisible(true, true),
+           "a new check hides stale candidate feedback");
+
+    expect(AppUi_romPlayRequest(false, false, false) ==
+               AppUiRomPlayRequest::Ignore,
+           "Play ignores a launcher with no proven active ROM");
+    expect(AppUi_romPlayRequest(true, false, false) ==
+               AppUiRomPlayRequest::StartFinalCheck,
+           "Play starts the final check for an idle proven ROM");
+    expect(AppUi_romPlayRequest(true, true, false) ==
+               AppUiRomPlayRequest::SupersedeReplacementCheck,
+           "Play supersedes an unresolved replacement with the active ROM");
+    expect(AppUi_romPlayRequest(true, true, true) ==
+               AppUiRomPlayRequest::Ignore,
+           "Play cannot duplicate an in-flight final check");
+
     bool dirty = false;
     int durableTransactions = 0;
     for (int update = 0; update < 100; ++update) {
@@ -71,11 +125,21 @@ int main() {
     expect(!AppUi_parseScale("2.01", &rejected), "scale above range rejected");
     expect(!AppUi_parseScale("1.5junk", &rejected), "malformed scale rejected");
 
-    expect(!AppUi_videoSettingVisible(MDKR_VIDEO_TEXTURE_PACK),
+    expect(!AppUi_videoSettingVisible(MDKR_VIDEO_TEXTURE_PACK, true),
            "unimplemented texture-pack setting is hidden");
+    expect(!AppUi_videoSettingVisible(MDKR_VIDEO_WIDESCREEN, true),
+           "internal widescreen compatibility switch is hidden");
+    expect(AppUi_videoSettingVisible(MDKR_VIDEO_MOTION_SMOOTHING, true) &&
+           AppUi_videoSettingVisible(MDKR_VIDEO_MOTION_SMOOTHING, false),
+           "production motion smoothing is visible on every renderer");
+    expect(!AppUi_videoSettingVisible(MDKR_VIDEO_MSAA, true),
+           "inert MSAA setting is hidden on WebGPU");
+    expect(AppUi_videoSettingVisible(MDKR_VIDEO_MSAA, false),
+           "implemented MSAA setting remains available to non-WebGPU renderers");
     for (int key = 0; key < MDKR_VIDEO_KEY_COUNT; ++key) {
-        if (key == MDKR_VIDEO_TEXTURE_PACK) continue;
-        expect(AppUi_videoSettingVisible(static_cast<MdkrVideoKey>(key)),
+        if (key == MDKR_VIDEO_TEXTURE_PACK || key == MDKR_VIDEO_WIDESCREEN ||
+            key == MDKR_VIDEO_MSAA) continue;
+        expect(AppUi_videoSettingVisible(static_cast<MdkrVideoKey>(key), true),
                "implemented video setting remains visible");
     }
 

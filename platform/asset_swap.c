@@ -100,6 +100,21 @@ static inline int in_bounds(uint32_t off, uint32_t len, uint32_t size) {
     return (off <= size) && (len <= size - off);
 }
 
+/* VehicleSoundAsset on-disk layout: 0x4C bytes. ASSET_AUDIO is heterogeneous,
+ * so this typed sub-record is normalized at its only raw-load call site. */
+#define VEHICLE_SOUND_RECORD_SIZE 0x4Cu
+
+int asset_swap_vehicle_sound(void *data, uint32_t size) {
+    if (data == NULL || size < VEHICLE_SOUND_RECORD_SIZE) {
+        return 0;
+    }
+
+    sw16_arr(data, 0x00, 2);  /* soundId[2] */
+    sw16_arr(data, 0x18, 10); /* pitchLevels[2][5] */
+    sw16_arr(data, 0x3C, 7);  /* pitch scale/velocity s16 fields */
+    return 1;
+}
+
 /* ==========================================================================
  *  Shared geometry element swappers (used by both object and level models)
  * ======================================================================== */
@@ -1293,7 +1308,7 @@ void asset_swap_normalize(int assetType, void *data, uint32_t size) {
             break;
 
         /* ---- punted (see docs/asset_swap_notes.md) ---- */
-        case ASSET_AUDIO:              /* ALBankFile/ALSeqFile (libultra-owned) */
+        case ASSET_AUDIO:              /* heterogeneous; typed consumers own it */
         case ASSET_MISC:               /* heterogeneous sub-assets              */
         case ASSET_JAPANESE_FONTS:     /* not used by us_v80 (REGION != JP)     */
         case ASSET_JAPANESE_FONTS_TABLE:

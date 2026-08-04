@@ -52,8 +52,40 @@ typedef enum MdkrVideoKey {
      * pacing keys another lane owns. New keys go here.
      */
     MDKR_VIDEO_WORLD_SHADOWS,
+    /* Audio is stored in the same durable player-settings registry, but is
+     * deliberately independent of presentation presets and custom-mode state. */
+    MDKR_AUDIO_MASTER_VOLUME,
+    MDKR_AUDIO_MUSIC_VOLUME,
+    MDKR_AUDIO_EFFECTS_VOLUME,
+    /* Native shell and normalized-controller comfort settings. Like Audio,
+     * these are independent of Pure/Restored/Remastered presentation presets. */
+    MDKR_WINDOW_MODE,
+    MDKR_INPUT_RUMBLE_ENABLED,
+    MDKR_INPUT_RUMBLE_PROFILE,
+    MDKR_INPUT_CONTROLLER_A,
+    MDKR_INPUT_CONTROLLER_B,
+    MDKR_INPUT_CONTROLLER_X,
+    MDKR_INPUT_CONTROLLER_Y,
+    MDKR_INPUT_CONTROLLER_START,
+    MDKR_INPUT_CONTROLLER_LEFT_STICK,
+    MDKR_INPUT_CONTROLLER_RIGHT_STICK,
+    MDKR_INPUT_CONTROLLER_LEFT_SHOULDER,
+    MDKR_INPUT_CONTROLLER_RIGHT_SHOULDER,
+    MDKR_INPUT_CONTROLLER_DPAD_UP,
+    MDKR_INPUT_CONTROLLER_DPAD_DOWN,
+    MDKR_INPUT_CONTROLLER_DPAD_LEFT,
+    MDKR_INPUT_CONTROLLER_DPAD_RIGHT,
+    MDKR_INPUT_CONTROLLER_LEFT_TRIGGER,
+    MDKR_INPUT_CONTROLLER_RIGHT_TRIGGER,
+    MDKR_INPUT_CONTROLLER_RIGHT_STICK_UP,
+    MDKR_INPUT_CONTROLLER_RIGHT_STICK_DOWN,
+    MDKR_INPUT_CONTROLLER_RIGHT_STICK_LEFT,
+    MDKR_INPUT_CONTROLLER_RIGHT_STICK_RIGHT,
     MDKR_VIDEO_KEY_COUNT
 } MdkrVideoKey;
+
+#define MDKR_INPUT_FIRST_KEY MDKR_INPUT_RUMBLE_ENABLED
+#define MDKR_INPUT_LAST_KEY  MDKR_INPUT_CONTROLLER_RIGHT_STICK_RIGHT
 
 typedef enum MdkrVideoType {
     MDKR_VIDEO_TYPE_INT = 0,
@@ -102,6 +134,9 @@ typedef enum MdkrVideoCategory {
     MDKR_VIDEO_CAT_PRESENTATION = 0,  /* mode, framing, FOV                    */
     MDKR_VIDEO_CAT_FIDELITY,          /* resolution, filtering, texture detail */
     MDKR_VIDEO_CAT_PACING,            /* simulation cadence, frame limit       */
+    MDKR_VIDEO_CAT_AUDIO,             /* master, music, and effects volume      */
+    MDKR_VIDEO_CAT_INTERFACE,         /* native window and shell behavior       */
+    MDKR_VIDEO_CAT_INPUT,             /* controller mapping and haptics          */
     MDKR_VIDEO_CAT_COUNT
 } MdkrVideoCategory;
 
@@ -134,6 +169,14 @@ typedef struct MdkrVideoConfig {
 /* --- Pure API (no globals, no environment, no I/O) --- */
 
 const MdkrVideoSchema *mdkr_video_schema(MdkrVideoKey key);
+int mdkr_video_key_is_audio(MdkrVideoKey key);
+int mdkr_video_key_is_input(MdkrVideoKey key);
+int mdkr_video_key_is_player_comfort(MdkrVideoKey key);
+
+/* Canonical string domains used by both validation and generated controls. */
+const char *mdkr_window_mode_canonical(const char *value);
+const char *mdkr_rumble_profile_canonical(const char *value);
+const char *mdkr_controller_action_canonical(const char *value);
 
 /* Returns MDKR_VIDEO_KEY_COUNT when `name` matches nothing. Case-insensitive. */
 MdkrVideoKey mdkr_video_key_from_name(const char *name);
@@ -188,8 +231,10 @@ void mdkr_video_config_resolve(MdkrVideoConfig *config,
                                char *const *argv);
 
 /*
- * A Pure session never rewrites the ini, so debugging against the oracle
- * reference cannot destroy a user's Remastered setup.
+ * A Pure session never rewrites presentation/gameplay values, so debugging
+ * against the oracle reference cannot destroy a user's Remastered setup.
+ * Runtime audio, window, controller, and haptic controls are explicit
+ * comfort-only exceptions.
  */
 int mdkr_video_config_readonly_for(const MdkrVideoConfig *config);
 
@@ -217,8 +262,37 @@ typedef enum MdkrVideoRuntimeResult {
     MDKR_VIDEO_RUNTIME_LIVE,
     MDKR_VIDEO_RUNTIME_RESTART,
     MDKR_VIDEO_RUNTIME_LOCKED,
-    MDKR_VIDEO_RUNTIME_SAVE_FAILED
+    MDKR_VIDEO_RUNTIME_SAVE_FAILED,
+    /* The replacement is visible in this process, but the parent-directory
+     * durability barrier failed. Callers must not claim it will survive power
+     * loss/restart without another successful save. */
+    MDKR_VIDEO_RUNTIME_SAVE_UNCONFIRMED,
+    /* App-shell extensions: a safe-boundary window request, a rejected OS
+     * transition, and the rare case where persistence failed and the OS also
+     * rejected the attempted rollback. The core setter never returns these. */
+    MDKR_VIDEO_RUNTIME_PENDING,
+    MDKR_VIDEO_RUNTIME_APPLY_FAILED,
+    MDKR_VIDEO_RUNTIME_ROLLBACK_FAILED
 } MdkrVideoRuntimeResult;
+
+/* A setting may be applied and visibly replaced while its directory durability
+ * remains unconfirmed. Keep success classification centralized so UI, original
+ * menus, and window rollback code cannot silently drift when a new outcome is
+ * added. */
+static inline int mdkr_video_runtime_result_applied(
+    MdkrVideoRuntimeResult result) {
+    return result == MDKR_VIDEO_RUNTIME_LIVE ||
+           result == MDKR_VIDEO_RUNTIME_RESTART ||
+           result == MDKR_VIDEO_RUNTIME_SAVE_UNCONFIRMED;
+}
+
+#ifdef MDKR_VIDEO_RUNTIME_TESTING
+/* Test-build-only deterministic seams. They are absent from production
+ * objects, and let the ROM-free runtime contract exercise post-replace and
+ * stale-snapshot failures without environment-variable backdoors. */
+void mdkr_video_test_force_directory_sync_failure(int enabled);
+void mdkr_video_test_set_launcher_persist_hook(void (*hook)(void));
+#endif
 
 typedef struct MdkrVideoRuntimeChange {
     MdkrVideoKey key;
@@ -235,13 +309,21 @@ MdkrVideoRuntimeResult mdkr_video_config_runtime_set(MdkrVideoKey key,
 MdkrVideoRuntimeResult mdkr_video_config_runtime_set_many(
     const MdkrVideoRuntimeChange *changes,
     int change_count);
+
+/* Persist DKR's original 0..256 music/effects sliders into the shared 0..100
+ * shell settings when the player leaves the original Audio Options screen. */
+MdkrVideoRuntimeResult mdkr_audio_config_runtime_set_game_levels(
+    unsigned music_level, unsigned effects_level);
+/* Audible slider preview without a filesystem transaction. The settings UI
+ * saves once on release and cancels the preview if navigation interrupts it. */
+int mdkr_audio_config_runtime_preview(MdkrVideoKey key, int percent);
+void mdkr_audio_config_runtime_cancel_preview(void);
 int mdkr_video_config_restart_pending(void);
 int mdkr_video_config_runtime_locked(MdkrVideoKey key);
 
 /*
- * Writes the resolved values into the g_pc* globals the fast3d backends read
- * and into display_config's widescreen/aspect state. Safe to call repeatedly;
- * LIVE-scope settings take effect on the next frame.
+ * Writes the resolved values into renderer/display state and publishes player
+ * audio levels. Safe to call repeatedly; LIVE settings take effect next frame.
  */
 void mdkr_video_config_publish(void);
 

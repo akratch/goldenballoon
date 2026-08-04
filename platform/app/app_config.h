@@ -10,17 +10,40 @@
 
 namespace AppConfig {
 
+// A replace can be visible to this process even when the filesystem cannot
+// confirm that the containing directory metadata reached durable storage.
+// Keep that state separate from a write failure so callers never claim that
+// an applied preference was discarded.
+enum class PersistResult {
+    Failed,
+    Durable,
+    DurabilityUnconfirmed,
+};
+
+inline bool persistResultApplied(PersistResult result) {
+    return result == PersistResult::Durable ||
+           result == PersistResult::DurabilityUnconfirmed;
+}
+
 void load();
-// Persist prefs atomically. Returns false (old file left intact) if there is no
-// writable pref path or the write/replace fails [AUDIT-0039]. Callers may ignore
-// the result, but it is available to surface a save failure.
-bool save();
+#ifdef MDKR_APP_CONFIG_TESTING
+// Test-only direct path seam for failures that SDL_GetPrefPath cannot
+// deterministically produce on every host.
+bool loadPathForTest(const std::string &path);
+// Forces the post-replace directory durability barrier to fail. The atomic
+// replacement remains visible, matching filesystems that reject directory
+// fsync after a successful rename.
+void forceDirectorySyncFailureForTest(bool enabled);
+#endif
+// Persist prefs atomically. Failed means the previous preference file remains
+// authoritative; DurabilityUnconfirmed means the replacement is visible now
+// but must be saved again before promising it survives a restart.
+PersistResult save();
 std::string get(const std::string &key, const std::string &fallback = "");
 void set(const std::string &key, const std::string &value);
 
-// Change one preference and persist it as a single transaction. On failure the
-// in-memory map is restored and the atomically replaced on-disk file is intact.
-bool setAndSave(const std::string &key, const std::string &value);
+// Change one preference and persist it as a single transaction. See save().
+PersistResult setAndSave(const std::string &key, const std::string &value);
 
 // Escape a value to a single injection-safe ini line: backslash-escapes '\',
 // '\n' and '\r' so a value can never introduce a new line (and thus never inject

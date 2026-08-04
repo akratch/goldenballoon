@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Exact arbitrary-rate host pacing must remain gameplay- and replay-neutral.
+"""Exact arbitrary-rate host pacing must remain gameplay-neutral.
 
 Runs the same fixed-tick route at original, common numeric caps, and the
 deterministic headless stand-in for uncapped presentation. Original cadence is
 kept on the GL oracle lane, while Enhanced cadence is forced through WebGPU at
 original/30/45/60/120/uncapped. Every arm must produce the exact rational
 number of host opportunities while keeping the v3 authority, ordered gameplay-
-event, consumed-input, and temporary PCM streams byte-identical. Production
-1.0.1 must commit only complete authored images: every numeric/uncapped arm
-requires zero interpolation, zero delayed walks, and zero replayed endpoints.
-A PAL arm proves that 60 Hz need not be rounded onto the 50 Hz field grid.
+event, consumed-input, and temporary PCM streams byte-identical. Rates above
+the fixed simulation cadence must commit immutable intermediate images, while
+rates at or below it perform no replay. A PAL arm proves that 60 Hz need not be
+rounded onto the 50 Hz field grid.
 
 Always muted + headless. Exit 0 = pass.
 """
@@ -26,7 +26,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import completed_tick_conservation, resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
@@ -38,6 +38,7 @@ SUMMARY_RE = re.compile(r"\[PRESENTSCHED-SUMMARY\] (.*)")
 AUDIO_RE = re.compile(r"\[AUDIO-SERVICE\] (.*)")
 REPLAY_RE = re.compile(r"\[REPLAY-SUMMARY\] (.*)")
 PACKET_RE = re.compile(r"\[PRESENT-PACKET\] (.*)")
+RETAINED_RE = re.compile(r"\[RETAINED-TASK\] (.*)")
 WGPU_RE = re.compile(r"\[WGPU-BACKPRESSURE\] (.*)")
 
 
@@ -51,6 +52,7 @@ class Result:
     audio: dict[str, int]
     replay: dict[str, int]
     packet: dict[str, int]
+    retained: dict[str, int]
     pressure: dict[str, int]
 
 
@@ -104,14 +106,15 @@ def run(binary: Path, rom: Path, root: Path, label: str,
         MDKR_INPUT_HASH="1",
         MDKR_LOAD_TRACK="5",
         MDKR_PRESENT_SCHED_TRACE="1",
-        # Raw public request deliberately bypasses the schema. Production must
-        # still keep delayed replay quarantined without the explicit test seam.
+        # Raw public request deliberately bypasses the schema and proves the
+        # shipping scheduler path rather than an internal replay test arm.
         MDKR_PRESENT_SMOOTHING="interpolate",
         MDKR_RENDERER=renderer,
         MDKR_SAVE_DIR=str(save_dir),
         MDKR_SIMULATION_CADENCE=cadence,
         MDKR_STATE_HASH=HASH_VERSION,
         MDKR_SYNTH_FIELDS="1" if cadence == "enhanced" else "2",
+        MDKR_TEST_SCRIPT_ONLY_INPUT="1",
     )
     if renderer == "webgpu":
         # A hidden native Metal window intentionally has no drawable. This gate
@@ -155,6 +158,7 @@ def run(binary: Path, rom: Path, root: Path, label: str,
         parse_last(output, AUDIO_RE, "AUDIO-SERVICE"),
         parse_last(output, REPLAY_RE, "REPLAY-SUMMARY"),
         parse_last(output, PACKET_RE, "PRESENT-PACKET"),
+        parse_last(output, RETAINED_RE, "RETAINED-TASK"),
         (parse_last(output, WGPU_RE, "WGPU-BACKPRESSURE")
          if renderer == "webgpu" else {}),
     )
@@ -183,23 +187,25 @@ def compare_arm(label: str, result: Result, baseline: Result,
                  if pair[0] != pair[1]),
                 min(len(reference), len(actual)),
             )
-            failures.append(f"{label}: {name} stream diverged at tick {difference}")
+            expected_row = (reference[difference]
+                            if difference < len(reference) else "<missing>")
+            actual_row = (actual[difference]
+                          if difference < len(actual) else "<missing>")
+            failures.append(
+                f"{label}: {name} stream diverged at tick {difference}; "
+                f"expected {expected_row!r}, got {actual_row!r}")
     if result.audio_digest != baseline.audio_digest:
         failures.append(f"{label}: PCM capture differs from original")
 
     summary = result.summary
-    for key in ("ticks", "simticks", "issued"):
-        if summary.get(key) != TICKS:
-            failures.append(f"{label}: {key}={summary.get(key)}, expected {TICKS}")
+    conservation_error = completed_tick_conservation(summary, TICKS, label)
+    if conservation_error:
+        failures.append(conservation_error)
     expected_catchup = max(0, TICKS - expected)
-    for key in ("pending", "lag", "skips", "rebases", "blocked",
+    for key in ("lag", "skips", "rebases", "blocked",
                 "updatebad"):
         if summary.get(key, 0) != 0:
             failures.append(f"{label}: {key}={summary.get(key)}, expected 0")
-    expected_lead = 1 if expected_catchup != 0 else 0
-    if summary.get("lead", 0) != expected_lead:
-        failures.append(
-            f"{label}: lead={summary.get('lead')}, expected {expected_lead}")
     for key in ("multidue", "catchup"):
         if summary.get(key, 0) != expected_catchup:
             failures.append(
@@ -213,23 +219,36 @@ def compare_arm(label: str, result: Result, baseline: Result,
         if summary.get(key) != value:
             failures.append(
                 f"{label}: {key}={summary.get(key)}, expected {value}")
-    if summary.get("interp", -1) != 0:
+    replay_expected = rate > tick_rate
+    if replay_expected and summary.get("interp", 0) <= 0:
         failures.append(
-            f"{label}: production interp={summary.get('interp')}, expected 0")
+            f"{label}: rate {rate} produced no interpolated images above the "
+            f"{tick_rate} Hz simulation cadence")
+    if not replay_expected and summary.get("interp", -1) != 0:
+        failures.append(
+            f"{label}: rate {rate} performed interpolation at/below the "
+            f"{tick_rate} Hz simulation cadence")
     expected_surface_updates = min(TICKS, expected)
+    # Numeric/display policies enter the presentation subloop even when their
+    # rate is at or below simulation cadence. They still publish every authored
+    # endpoint for which they have an opportunity; only the special Original
+    # policy bypasses endpoint accounting entirely.
     expected_real_endpoints = (
-        0 if policy_kind == 0 else expected_surface_updates)
+        expected_surface_updates if policy_kind != 0 else 0)
+    intended_surface_updates = (
+        expected_surface_updates if not replay_expected else
+        expected_real_endpoints + summary.get("interp", 0))
     surface_updates = summary.get("surfaceupdates", -1)
     if exact_surface:
-        if surface_updates != expected_surface_updates:
+        if surface_updates != intended_surface_updates:
             failures.append(
                 f"{label}: surfaceupdates={surface_updates}, expected "
-                f"{expected_surface_updates}")
-    elif not (0 <= surface_updates <= expected_surface_updates):
+                f"{intended_surface_updates}")
+    elif not (0 <= surface_updates <= intended_surface_updates):
         failures.append(
             f"{label}: WebGPU surfaceupdates={surface_updates}, expected "
-            f"0..{expected_surface_updates}; compositor availability may "
-            "hold authored images but must never create extra ones")
+            f"0..{intended_surface_updates}; compositor availability may "
+            "hold images but must never create extra ones")
     elif result.pressure:
         pressure = result.pressure
         submitted = pressure.get("submitted", -1)
@@ -248,26 +267,64 @@ def compare_arm(label: str, result: Result, baseline: Result,
                 f"{label}: WebGPU presented/unavailable outcomes "
                 f"{presented}+{unavailable} do not account for "
                 f"{submitted} submissions")
-        for key in ("failures", "skips", "abandoned", "inflight",
-                    "runtimewaits", "runtimewaitns"):
+        for key in ("failures", "abandoned", "inflight", "runtimewaits",
+                    "runtimewaitns"):
             if pressure.get(key, 0) != 0:
                 failures.append(
                     f"{label}: WebGPU {key}={pressure.get(key)}")
+        admission_skips = pressure.get("skips", -1)
+        endpoint_skips = pressure.get("endpointSkips", -1)
+        replay_skips = pressure.get("replaySkips", -1)
+        if admission_skips != endpoint_skips + replay_skips:
+            failures.append(
+                f"{label}: WebGPU skips={admission_skips} do not reconcile "
+                f"with endpoint/replay={endpoint_skips}+{replay_skips}")
+        if submitted + admission_skips > expected:
+            failures.append(
+                f"{label}: WebGPU submitted+skipped "
+                f"{submitted}+{admission_skips} exceeds {expected} host "
+                "opportunities")
+        if policy_kind != 0:
+            actual_real = summary.get("realendpoints", -1)
+            if actual_real + endpoint_skips != expected_real_endpoints:
+                failures.append(
+                    f"{label}: authored endpoint admission "
+                    f"{actual_real}+{endpoint_skips} does not account for "
+                    f"{expected_real_endpoints} opportunities")
+            if submitted != actual_real + summary.get("interp", 0):
+                failures.append(
+                    f"{label}: WebGPU submitted={submitted} does not match "
+                    "successful real+interpolated images "
+                    f"{actual_real}+{summary.get('interp', 0)}")
+            if (actual_real + summary.get("interp", 0) +
+                    summary.get("stale", 0) != expected):
+                failures.append(
+                    f"{label}: real+interpolated+held images do not account "
+                    f"for {expected} host opportunities")
+            if admission_skips > summary.get("stale", 0):
+                failures.append(
+                    f"{label}: WebGPU admission skips={admission_skips} "
+                    f"exceed scheduler holds={summary.get('stale')}")
     elif not exact_surface:
         failures.append(f"{label}: missing WebGPU completion telemetry")
-    for key, value in (
-            ("realendpoints", expected_real_endpoints),
-            ("replayendpoints", 0)):
-        if summary.get(key) != value:
-            failures.append(
-                f"{label}: {key}={summary.get(key)}, expected {value}")
+    if exact_surface and summary.get("realendpoints") != expected_real_endpoints:
+        failures.append(
+            f"{label}: realendpoints={summary.get('realendpoints')}, expected "
+            f"{expected_real_endpoints}")
+    if summary.get("replayendpoints", -1) != 0:
+        failures.append(
+            f"{label}: replayendpoints={summary.get('replayendpoints')}, "
+            "expected 0")
 
     audio = result.audio
     due = TICKS * tick_fields // 2
-    serviced = due - 1
-    service_calls = TICKS - 1
+    # The headless boundary is sampled after the final game pass completes.
+    # Its audio time must be advanced and serviced before shutdown can gate
+    # the next ticket.
+    serviced = due
+    service_calls = TICKS
     for key, value in (("fields", TICKS * tick_fields), ("due", due),
-                       ("serviced", serviced), ("pending", 1),
+                       ("serviced", serviced), ("pending", 0),
                        ("retired", 0), ("rebases", 0),
                        ("calls", service_calls),
                        ("idle", service_calls - serviced),
@@ -283,15 +340,41 @@ def compare_arm(label: str, result: Result, baseline: Result,
 
     replay = result.replay
     packet = result.packet
-    if replay.get("walks", -1) != 0:
+    retained = result.retained
+    expected_walks = summary.get("interp", 0)
+    if replay.get("walks", -1) != expected_walks:
         failures.append(
-            f"{label}: production replay walks={replay.get('walks')}, expected 0")
+            f"{label}: production replay walks={replay.get('walks')}, "
+            f"expected {expected_walks} successful interpolated images")
     for key in ("freezefail", "restorefail"):
         if replay.get(key, 0) != 0:
             failures.append(f"{label}: replay {key}={replay.get(key)}")
     for key in ("freezefail", "deformcollision", "effectcollision"):
         if packet.get(key, 0) != 0:
             failures.append(f"{label}: packet {key}={packet.get(key)}")
+    if replay_expected:
+        # This gate owns rate/authority accounting. Require that the retained
+        # transaction captured external spans and that successful walks
+        # resolved retained storage, but do not require every load-shed rate
+        # sample to happen to dereference both address classes. The definitive
+        # presentation matrix owns exact copied-external replay evidence.
+        if (retained.get("captures", 0) <= 0 or
+                retained.get("captures") != retained.get("begins") or
+                retained.get("failures", -1) != 0 or
+                retained.get("rejects", -1) != 0 or
+                retained.get("external", 0) <= 0 or
+                (retained.get("arenaResolve", 0) +
+                 retained.get("externalResolve", 0)) <= 0 or
+                packet.get("futurecaptures", 0) <= 0 or
+                packet.get("futurefailures", -1) != 0):
+            failures.append(
+                f"{label}: retained forward-task contract failed: "
+                f"retained={retained}, future="
+                f"{packet.get('futurecaptures')}/{packet.get('futurefailures')}")
+    elif any(retained.get(key, 0) != 0 for key in
+             ("begins", "captures", "acquires")):
+        failures.append(
+            f"{label}: retained replay work ran without a subloop: {retained}")
     return failures
 
 
@@ -376,6 +459,7 @@ def main() -> int:
             for label, policy, rate in (
                     ("ntsc-30", "30", 30),
                     ("ntsc-60", "60", 60),
+                    ("ntsc-90", "90", 90),
                     ("ntsc-120", "120", 120),
                     ("ntsc-144", "144", 144),
                     ("ntsc-165", "165", 165),

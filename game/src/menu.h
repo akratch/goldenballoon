@@ -583,6 +583,10 @@ void adventuretrack_free(void);
 void menu_dialogue_end(void);
 void menu_close_dialogue(void);
 void menu_racer_portraits(void);
+#ifdef NATIVE_PORT
+/* Project-owned Taj portrait shared by Rankings and portrait-bearing HUDs. */
+DrawTexture *menu_taj_portrait(void);
+#endif
 void postrace_music_fade(s32 updateRate);
 void postrace_free(void);
 void menu_results_init(void);

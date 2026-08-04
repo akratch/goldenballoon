@@ -97,12 +97,17 @@ typedef struct VehicleSoundAsset {
     /* 0x3C */ s16 pitchLateralSpeedScale;      // 10000 = 1.0
     /* 0x3E */ s16 thrustPitchVel;              // 10000 = 1.0
     /* 0x40 */ s16 thrustPitchDecay;            // 10000 = 1.0
-    /* 0x32 */ s16 rollAnglePitchScale;         // 10000 = 1.0
+    /* 0x42 */ s16 rollAnglePitchScale;         // 10000 = 1.0
     /* 0x44 */ s16 pitchAnglePitchScale;        // 10000 = 1.0
     /* 0x46 */ s16 thrustPitchMax;              // 10000 = 1.0
     /* 0x48 */ s16 thrustPitchSpeedScale;       // 10000 = 1.0
     /* 0x4A */ u8 planeHovercraftBasePitch;
 } VehicleSoundAsset;
+
+#ifdef NATIVE_PORT
+_Static_assert(sizeof(VehicleSoundAsset) == 0x4C,
+               "VehicleSoundAsset must retain its serialized record stride");
+#endif
 
 void racer_sound_update(Object *obj, u32 buttonsPressed, u32 buttonsHeld, s32 ticksDelta);
 void racer_sound_free(Object *obj);

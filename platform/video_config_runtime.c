@@ -8,6 +8,8 @@
  * two files back together would quietly break that seam.
  */
 #include "video_config.h"
+#include "fs_utf8.h"
+#include "audio_volume.h"
 
 #include "display_config.h"
 #include "fast3d/gfx_mipgen.h"
@@ -24,7 +26,7 @@
 #ifndef __EMSCRIPTEN__
 #ifdef _WIN32
 #include <io.h>
-#include <windows.h>
+#include <process.h>
 #else
 #include <fcntl.h>
 #include <unistd.h>
@@ -45,11 +47,32 @@ static MdkrVideoConfig s_video;
 static MdkrVideoConfig s_desired_video;
 static ConfigIniEntry s_file_entries[MDKR_VIDEO_INI_MAX];
 static int s_file_entry_count;
+static int s_config_read_ok = 1;
 static int s_video_initialized;
 static int s_engine_handoff_completed;
 static char s_video_ini_path[MDKR_VIDEO_PATH_MAX];
-static char s_video_ini_tmp[MDKR_VIDEO_PATH_MAX];
-static int mdkr_video_write_config(const MdkrVideoConfig *config);
+static unsigned long s_video_tmp_serial;
+typedef enum MdkrVideoWriteResult {
+    MDKR_VIDEO_WRITE_FAILED = 0,
+    MDKR_VIDEO_WRITE_DURABLE,
+    MDKR_VIDEO_WRITE_UNCONFIRMED
+} MdkrVideoWriteResult;
+static MdkrVideoWriteResult mdkr_video_write_config(const MdkrVideoConfig *config);
+static MdkrVideoWriteResult mdkr_video_write_config_unlocked(
+    const MdkrVideoConfig *config);
+
+#ifdef MDKR_VIDEO_RUNTIME_TESTING
+static int s_test_force_directory_sync_failure;
+static void (*s_test_launcher_persist_hook)(void);
+
+void mdkr_video_test_force_directory_sync_failure(int enabled) {
+    s_test_force_directory_sync_failure = enabled != 0;
+}
+
+void mdkr_video_test_set_launcher_persist_hook(void (*hook)(void)) {
+    s_test_launcher_persist_hook = hook;
+}
+#endif
 
 #ifdef __EMSCRIPTEN__
 EM_JS(void, mdkr_video_schedule_persist, (), {
@@ -71,43 +94,81 @@ static const char *mdkr_video_getenv(const char *name) {
     return getenv(name);
 }
 
+static const char *mdkr_video_noenv(const char *name) {
+    (void)name;
+    return NULL;
+}
+
+static int mdkr_video_parent_directory_sync(const char *path) {
+#ifdef MDKR_VIDEO_RUNTIME_TESTING
+    if (s_test_force_directory_sync_failure) {
+        errno = EIO;
+        return -1;
+    }
+#endif
+    return mdkr_parent_directory_sync_utf8(path);
+}
+
 static int mdkr_video_resolve_paths(void) {
-    int written;
     if (!mdkr_user_video_config_path(
             s_video_ini_path, sizeof(s_video_ini_path))) {
         fprintf(stderr, "[video] config path is unavailable or too long\n");
         return 0;
     }
-    written = snprintf(s_video_ini_tmp, sizeof(s_video_ini_tmp), "%s.tmp",
-                       s_video_ini_path);
-    if (written < 0 || (size_t)written >= sizeof(s_video_ini_tmp)) {
-        fprintf(stderr, "[video] temporary config path is too long\n");
-        return 0;
-    }
     return 1;
 }
 
-static int mdkr_video_parent_directory(char *output, size_t output_size) {
-    const char *slash = strrchr(s_video_ini_path, '/');
-    const char *backslash = strrchr(s_video_ini_path, '\\');
-    const char *last = slash;
-    size_t length;
-    if (backslash != NULL && (last == NULL || backslash > last)) {
-        last = backslash;
+static long mdkr_video_process_id(void) {
+#if defined(__EMSCRIPTEN__)
+    /* The browser runtime has one process; the monotonically increasing
+     * staging serial supplies uniqueness without importing POSIX getpid(). */
+    return 1;
+#elif defined(_WIN32)
+    return (long)_getpid();
+#else
+    return (long)getpid();
+#endif
+}
+
+static int mdkr_video_open_unique_temp(char output[MDKR_VIDEO_PATH_MAX],
+                                       FILE **file) {
+    for (unsigned attempt = 0; attempt < 64u; ++attempt) {
+        int written = snprintf(output, MDKR_VIDEO_PATH_MAX, "%s.tmp.%ld.%lu",
+                               s_video_ini_path, mdkr_video_process_id(),
+                               ++s_video_tmp_serial);
+        if (written < 0 || (size_t)written >= MDKR_VIDEO_PATH_MAX) {
+            fprintf(stderr, "[video] temporary config path is too long\n");
+            return 0;
+        }
+        *file = mdkr_fopen_utf8(output, "wbx");
+        if (*file != NULL) return 1;
+        if (errno != EEXIST) break;
     }
-    if (last == NULL) {
-        return snprintf(output, output_size, ".") == 1;
-    }
-    length = (size_t)(last - s_video_ini_path);
-    if (length == 0u) {
-        length = 1u;
-    }
-    if (length >= output_size) {
+    fprintf(stderr, "[video] could not create an exclusive staging file beside %s: %s\n",
+            s_video_ini_path, strerror(errno));
+    return 0;
+}
+
+static int mdkr_video_lock_acquire(MdkrFileLock *lock) {
+#ifdef __EMSCRIPTEN__
+    /* A page has one JS event loop and IDBFS transactions are serialized by the
+     * shell. Native instances need an OS lock; the browser has no peer process
+     * sharing this in-memory filesystem view. */
+    lock->handle = -1;
+    return mdkr_video_resolve_paths();
+#else
+    char lock_path[MDKR_VIDEO_PATH_MAX];
+    int written;
+    if (!mdkr_video_resolve_paths()) return 0;
+    written = snprintf(lock_path, sizeof(lock_path), "%s.lock", s_video_ini_path);
+    if (written < 0 || (size_t)written >= sizeof(lock_path) ||
+        mdkr_file_lock_acquire_utf8(lock_path, lock) != 0) {
+        fprintf(stderr, "[video] could not lock %s: %s\n",
+                s_video_ini_path, strerror(errno));
         return 0;
     }
-    memcpy(output, s_video_ini_path, length);
-    output[length] = '\0';
     return 1;
+#endif
 }
 
 /*
@@ -163,27 +224,52 @@ static int mdkr_video_launcher_args_valid(int argc, char *const *argv) {
     return 1;
 }
 
-static int mdkr_video_read_config(ConfigIniEntry *entries) {
+static int mdkr_video_read_config(ConfigIniEntry *entries, int *out_count) {
     char text[MDKR_VIDEO_INI_TEXT_MAX];
     int count = 0;
     FILE *f;
 
-    if (!mdkr_video_resolve_paths()) {
+    if (entries == NULL || out_count == NULL || !mdkr_video_resolve_paths()) {
         return 0;
     }
-    f = fopen(s_video_ini_path, "rb");
-
-    if (f != NULL) {
-        size_t n = fread(text, 1, sizeof(text) - 1, f);
-        text[n] = '\0';
-        fclose(f);
-        if (!config_ini_parse(text, entries, MDKR_VIDEO_INI_MAX, &count)) {
-            fprintf(stderr,
-                    "[video] %s has more than %d entries; extra keys ignored\n",
-                    s_video_ini_path, MDKR_VIDEO_INI_MAX);
-        }
+    *out_count = 0;
+    f = mdkr_fopen_utf8(s_video_ini_path, "rb");
+    if (f == NULL) {
+        if (errno == ENOENT) return 1;
+        fprintf(stderr, "[video] could not open %s: %s\n",
+                s_video_ini_path, strerror(errno));
+        return 0;
     }
-    return count;
+    {
+        size_t n = fread(text, 1, sizeof(text) - 1, f);
+        int extra = n == sizeof(text) - 1 ? fgetc(f) : EOF;
+        int read_failed = ferror(f);
+        if (fclose(f) != 0) read_failed = 1;
+        if (read_failed || extra != EOF) {
+            fprintf(stderr,
+                    "[video] %s is unreadable or exceeds %u bytes; it was left unchanged\n",
+                    s_video_ini_path, (unsigned)(sizeof(text) - 1u));
+            return 0;
+        }
+        /* config_ini_parse is deliberately a C-string parser. Treat binary
+         * data as damaged instead of parsing a valid prefix and later
+         * overwriting an unseen suffix during a settings transaction. */
+        if (memchr(text, '\0', n) != NULL) {
+            fprintf(stderr,
+                    "[video] %s contains a NUL byte; it was left unchanged\n",
+                    s_video_ini_path);
+            return 0;
+        }
+        text[n] = '\0';
+    }
+    if (!config_ini_parse(text, entries, MDKR_VIDEO_INI_MAX, &count)) {
+        fprintf(stderr,
+                "[video] %s has invalid or excessive configuration entries; it was left unchanged\n",
+                s_video_ini_path);
+        return 0;
+    }
+    *out_count = count;
+    return 1;
 }
 
 void mdkr_video_config_init(int argc, char *const *argv) {
@@ -195,7 +281,7 @@ void mdkr_video_config_init(int argc, char *const *argv) {
     s_video_initialized = 1;
     mdkr_video_config_defaults(&s_video);
 
-    s_file_entry_count = mdkr_video_read_config(s_file_entries);
+    s_config_read_ok = mdkr_video_read_config(s_file_entries, &s_file_entry_count);
 
     mdkr_video_config_resolve(&s_video, s_file_entries, s_file_entry_count,
                               mdkr_video_getenv, argc, argv);
@@ -207,24 +293,55 @@ void mdkr_video_config_init(int argc, char *const *argv) {
         }
     }
     if (launcher_persist) {
+        if (!s_config_read_ok) {
+            fprintf(stderr,
+                    "[video] launcher settings were not persisted because the existing config could not be read safely\n");
+            return;
+        }
         if (!mdkr_video_launcher_args_valid(argc, argv)) {
             fprintf(stderr,
                     "[video] invalid launcher settings; existing config left unchanged\n");
-        } else if (!mdkr_video_write_config(&s_desired_video)) {
-            fprintf(stderr,
-                    "[video] launcher settings are active but could not be persisted\n");
+        } else {
+#ifdef MDKR_VIDEO_RUNTIME_TESTING
+            if (s_test_launcher_persist_hook != NULL) {
+                s_test_launcher_persist_hook();
+            }
+#endif
+            const MdkrVideoWriteResult write =
+                mdkr_video_write_config(&s_desired_video);
+            if (write == MDKR_VIDEO_WRITE_FAILED) {
+                fprintf(stderr,
+                        "[video] launcher settings are active but could not be persisted\n");
+            } else if (write == MDKR_VIDEO_WRITE_UNCONFIRMED) {
+                fprintf(stderr,
+                        "[video] launcher settings are active and visible, but directory durability was not confirmed\n");
+            }
         }
     }
 }
 
 int mdkr_video_config_handoff_to_engine(int argc, char *const *argv) {
     MdkrVideoConfig resolved;
+    ConfigIniEntry fresh_entries[MDKR_VIDEO_INI_MAX];
+    int fresh_entry_count = 0;
 
     if (!s_video_initialized || s_engine_handoff_completed) {
         return 0;
     }
 
-    s_file_entry_count = mdkr_video_read_config(s_file_entries);
+    if (mdkr_video_read_config(fresh_entries, &fresh_entry_count)) {
+        memcpy(s_file_entries, fresh_entries,
+               (size_t)fresh_entry_count * sizeof(s_file_entries[0]));
+        s_file_entry_count = fresh_entry_count;
+    } else {
+        /* A damaged preference file must never become a playability failure.
+         * Keep the last known-safe startup snapshot (or defaults when startup
+         * also failed), layer the engine arguments normally, and leave every
+         * future mutation fail-closed until the file is repaired. */
+        fprintf(stderr,
+                "[video] config reread failed; continuing with safe settings and leaving the file unchanged\n");
+        s_config_read_ok = 0;
+    }
     /* mdkr_video_config_resolve() layers values by source rank; it deliberately
      * does not manufacture its caller's base object.  The launcher and engine
      * share a process, so this second resolution must begin from the same fully
@@ -291,6 +408,11 @@ void mdkr_video_config_publish(void) {
     const char *world_finish_off =
         mdkr_video_getenv("MDKR_TEST_WORLD_FINISH_OFF");
     int world_finish;
+
+    (void)mdkr_audio_volume_publish(
+        (int)c->values[MDKR_AUDIO_MASTER_VOLUME].number,
+        (int)c->values[MDKR_AUDIO_MUSIC_VOLUME].number,
+        (int)c->values[MDKR_AUDIO_EFFECTS_VOLUME].number);
 
     g_pcRemasterFX        = (int) c->values[MDKR_VIDEO_REMASTER_FX].number;
     world_finish =
@@ -433,10 +555,12 @@ static int mdkr_video_build_persisted_entries(
     ConfigIniEntry entries[MDKR_VIDEO_INI_MAX],
     int *out_count) {
     int count = 0;
+    int preserve_pure_presentation;
 
     if (config == NULL || entries == NULL || out_count == NULL) {
         return 0;
     }
+    preserve_pure_presentation = mdkr_video_config_readonly_for(config);
 
     /* Unknown settings are owned by their producer and round-trip unchanged.
      * Known settings are emitted once below, eliminating ambiguous duplicates. */
@@ -464,7 +588,18 @@ static int mdkr_video_build_persisted_entries(
             if ((pass == 0) != (i == MDKR_VIDEO_MODE)) {
                 continue;
             }
-            if (value->source > MDKR_VIDEO_SOURCE_RUNTIME) {
+            if (preserve_pure_presentation &&
+                !mdkr_video_key_is_player_comfort((MdkrVideoKey)i)) {
+                /* `--pure` is a temporary reference session. Audio, window,
+                 * controller, and haptic choices are persistent comfort
+                 * exceptions; keep every presentation/gameplay value exactly
+                 * as it existed instead of baking Pure into the normal setup. */
+                prior = mdkr_video_last_file_entry((MdkrVideoKey)i);
+                if (prior == NULL) {
+                    continue;
+                }
+                serialized = prior->value;
+            } else if (value->source > MDKR_VIDEO_SOURCE_RUNTIME) {
                 /* Never bake a temporary environment/CLI override into disk. */
                 prior = mdkr_video_last_file_entry((MdkrVideoKey) i);
                 if (prior == NULL) {
@@ -490,98 +625,108 @@ static int mdkr_video_build_persisted_entries(
     return 1;
 }
 
-static int mdkr_video_write_config(const MdkrVideoConfig *config) {
+static MdkrVideoWriteResult mdkr_video_write_config_unlocked(
+    const MdkrVideoConfig *config) {
     ConfigIniEntry entries[MDKR_VIDEO_INI_MAX];
     char text[MDKR_VIDEO_INI_TEXT_MAX];
+    char temporary[MDKR_VIDEO_PATH_MAX];
     int count = 0;
     FILE *f;
 
-    if (!mdkr_video_resolve_paths() ||
-        !mdkr_video_build_persisted_entries(config, entries, &count) ||
+    if (!mdkr_video_build_persisted_entries(config, entries, &count) ||
         !config_ini_serialize(entries, count, text, sizeof(text))) {
         fprintf(stderr, "[video] config is too large to save safely\n");
-        return 0;
+        return MDKR_VIDEO_WRITE_FAILED;
     }
 #ifdef __EMSCRIPTEN__
     if (mkdir("/save", 0700) != 0 && errno != EEXIST) {
         fprintf(stderr, "[video] could not create /save: %s\n", strerror(errno));
-        return 0;
+        return MDKR_VIDEO_WRITE_FAILED;
     }
 #endif
-    f = fopen(s_video_ini_tmp, "wb");
-    if (f == NULL) {
-        fprintf(stderr, "[video] could not open %s: %s\n",
-                s_video_ini_tmp, strerror(errno));
-        return 0;
+    if (!mdkr_video_open_unique_temp(temporary, &f)) {
+        return MDKR_VIDEO_WRITE_FAILED;
     }
     if (fwrite(text, 1, strlen(text), f) != strlen(text) ||
-        fflush(f) != 0) {
+        mdkr_file_sync(f) != 0) {
         fprintf(stderr, "[video] could not write %s: %s\n",
-                s_video_ini_tmp, strerror(errno));
+                temporary, strerror(errno));
         fclose(f);
-        remove(s_video_ini_tmp);
-        return 0;
+        mdkr_remove_utf8(temporary);
+        return MDKR_VIDEO_WRITE_FAILED;
     }
-#ifndef __EMSCRIPTEN__
-#ifdef _WIN32
-    if (_commit(_fileno(f)) != 0) {
-#else
-    if (fsync(fileno(f)) != 0) {
-#endif
-        fprintf(stderr, "[video] could not synchronize %s: %s\n",
-                s_video_ini_tmp, strerror(errno));
-        fclose(f);
-        remove(s_video_ini_tmp);
-        return 0;
-    }
-#endif
     if (fclose(f) != 0) {
         fprintf(stderr, "[video] could not close %s: %s\n",
-                s_video_ini_tmp, strerror(errno));
-        remove(s_video_ini_tmp);
-        return 0;
+                temporary, strerror(errno));
+        mdkr_remove_utf8(temporary);
+        return MDKR_VIDEO_WRITE_FAILED;
     }
-#ifdef _WIN32
-    if (!MoveFileExA(s_video_ini_tmp, s_video_ini_path,
-                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        fprintf(stderr, "[video] could not replace %s (Windows error %lu)\n",
-                s_video_ini_path, (unsigned long) GetLastError());
-        remove(s_video_ini_tmp);
-        return 0;
-    }
-#else
-    if (rename(s_video_ini_tmp, s_video_ini_path) != 0) {
+    if (mdkr_move_utf8(temporary, s_video_ini_path, 1, 1) != 0) {
         fprintf(stderr, "[video] could not replace %s: %s\n",
                 s_video_ini_path, strerror(errno));
-        remove(s_video_ini_tmp);
-        return 0;
+        mdkr_remove_utf8(temporary);
+        return MDKR_VIDEO_WRITE_FAILED;
     }
-#endif
-#if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
-    {
-        char parent[MDKR_VIDEO_PATH_MAX];
-        int directory = mdkr_video_parent_directory(parent, sizeof(parent))
-            ? open(parent, O_RDONLY | O_DIRECTORY) : -1;
-        if (directory >= 0) {
-            if (fsync(directory) != 0) {
-                fprintf(stderr,
-                        "[video] warning: could not synchronize config directory: %s\n",
-                        strerror(errno));
-            }
-            close(directory);
-        }
+    if (mdkr_video_parent_directory_sync(s_video_ini_path) != 0) {
+        fprintf(stderr,
+                "[video] warning: config replacement is visible, but directory durability was not confirmed: %s\n",
+                strerror(errno));
+        memcpy(s_file_entries, entries, (size_t) count * sizeof(entries[0]));
+        s_file_entry_count = count;
+        return MDKR_VIDEO_WRITE_UNCONFIRMED;
     }
-#elif defined(__EMSCRIPTEN__)
+#ifdef __EMSCRIPTEN__
     mdkr_video_schedule_persist();
 #endif
 
     memcpy(s_file_entries, entries, (size_t) count * sizeof(entries[0]));
     s_file_entry_count = count;
-    return 1;
+    return MDKR_VIDEO_WRITE_DURABLE;
+}
+
+static MdkrVideoWriteResult mdkr_video_write_config(
+    const MdkrVideoConfig *config) {
+    MdkrFileLock lock = {(intptr_t)-1};
+    ConfigIniEntry fresh_entries[MDKR_VIDEO_INI_MAX];
+    MdkrVideoConfig merged;
+    int fresh_entry_count = 0;
+    MdkrVideoWriteResult written;
+    if (config == NULL || !mdkr_video_lock_acquire(&lock)) {
+        return MDKR_VIDEO_WRITE_FAILED;
+    }
+    /* A launcher process can sit at its first-run screen while another
+     * instance changes settings. Start from the file committed immediately
+     * before this lock, then apply only launcher-owned values; env/CLI values
+     * remain invocation-local and never get serialized by this path. */
+    if (!mdkr_video_read_config(fresh_entries, &fresh_entry_count)) {
+        mdkr_file_lock_release(&lock);
+        return MDKR_VIDEO_WRITE_FAILED;
+    }
+    memcpy(s_file_entries, fresh_entries,
+           (size_t)fresh_entry_count * sizeof(s_file_entries[0]));
+    s_file_entry_count = fresh_entry_count;
+    mdkr_video_config_defaults(&merged);
+    mdkr_video_config_resolve(&merged, s_file_entries, s_file_entry_count,
+                              mdkr_video_noenv, 0, NULL);
+    for (int key = 0; key < MDKR_VIDEO_KEY_COUNT; ++key) {
+        if (config->values[key].source == MDKR_VIDEO_SOURCE_LAUNCHER) {
+            merged.values[key] = config->values[key];
+        }
+    }
+    if (config->values[MDKR_VIDEO_MODE].source ==
+        MDKR_VIDEO_SOURCE_LAUNCHER) {
+        merged.mode = config->mode;
+    }
+    written = mdkr_video_write_config_unlocked(&merged);
+    mdkr_file_lock_release(&lock);
+    return written;
 }
 
 static int mdkr_video_mode_locked(void) {
     for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; i++) {
+        if (mdkr_video_key_is_player_comfort((MdkrVideoKey)i)) {
+            continue;
+        }
         if (s_desired_video.values[i].source > MDKR_VIDEO_SOURCE_RUNTIME) {
             return 1;
         }
@@ -590,8 +735,15 @@ static int mdkr_video_mode_locked(void) {
 }
 
 int mdkr_video_config_runtime_locked(MdkrVideoKey key) {
-    if ((int) key < 0 || key >= MDKR_VIDEO_KEY_COUNT ||
-        mdkr_video_config_is_readonly()) {
+    if ((int) key < 0 || key >= MDKR_VIDEO_KEY_COUNT) {
+        return 1;
+    }
+    /* Explicit --pure makes the resolved session read-only. Timing-rate keys
+     * are orthogonal to the art-direction preset and may therefore retain a
+     * preselected non-original value; the UI states that distinction. Player
+     * comfort settings remain available. */
+    if (mdkr_video_config_is_readonly() &&
+        !mdkr_video_key_is_player_comfort(key)) {
         return 1;
     }
     if (key == MDKR_VIDEO_MODE) {
@@ -604,7 +756,11 @@ MdkrVideoRuntimeResult mdkr_video_config_runtime_set_many(
     const MdkrVideoRuntimeChange *changes,
     int change_count) {
     MdkrVideoConfig candidate;
+    ConfigIniEntry fresh_entries[MDKR_VIDEO_INI_MAX];
+    MdkrFileLock lock = {(intptr_t)-1};
+    MdkrVideoWriteResult write;
     int includes_mode = 0;
+    int includes_presentation_setting = 0;
     int requires_restart = 0;
 
     if (!s_video_initialized || changes == NULL ||
@@ -620,23 +776,55 @@ MdkrVideoRuntimeResult mdkr_video_config_runtime_set_many(
             return MDKR_VIDEO_RUNTIME_LOCKED;
         }
         includes_mode |= changes[i].key == MDKR_VIDEO_MODE;
+        includes_presentation_setting |=
+            !mdkr_video_key_is_player_comfort(changes[i].key) &&
+            changes[i].key != MDKR_VIDEO_MODE;
         requires_restart |= schema->scope == MDKR_VIDEO_SCOPE_RESTART;
     }
 
-    candidate = s_desired_video;
+    /* Re-read while holding the cross-process sidecar lock.  The candidate is
+     * therefore based on the last committed file, not this process's possibly
+     * stale startup snapshot, so independent settings edits merge instead of
+     * silently erasing one another. */
+    if (!mdkr_video_lock_acquire(&lock)) {
+        return MDKR_VIDEO_RUNTIME_SAVE_FAILED;
+    }
+    if (!mdkr_video_read_config(fresh_entries, &s_file_entry_count)) {
+        mdkr_file_lock_release(&lock);
+        return MDKR_VIDEO_RUNTIME_SAVE_FAILED;
+    }
+    memcpy(s_file_entries, fresh_entries,
+           (size_t)s_file_entry_count * sizeof(s_file_entries[0]));
+    mdkr_video_config_defaults(&candidate);
+    mdkr_video_config_resolve(&candidate, s_file_entries, s_file_entry_count,
+                              mdkr_video_getenv, 0, NULL);
+    /* Runtime rewrites begin from the newest file, but environment and CLI
+     * ownership belongs to this launched process. Keep those higher-ranked
+     * values when refreshing the file snapshot so an unrelated volume edit
+     * cannot accidentally unlock or serialize an invocation-only override. */
+    for (int key = 0; key < MDKR_VIDEO_KEY_COUNT; ++key) {
+        if (s_desired_video.values[key].source > MDKR_VIDEO_SOURCE_RUNTIME) {
+            candidate.values[key] = s_desired_video.values[key];
+            if (key == MDKR_VIDEO_MODE) candidate.mode = s_desired_video.mode;
+        }
+    }
     for (int i = 0; i < change_count; i++) {
         if (!mdkr_video_config_set(&candidate, changes[i].key, changes[i].value,
                                    MDKR_VIDEO_SOURCE_RUNTIME)) {
+            mdkr_file_lock_release(&lock);
             return MDKR_VIDEO_RUNTIME_INVALID;
         }
     }
-    if (!includes_mode) {
+    if (!includes_mode && includes_presentation_setting) {
         (void) mdkr_video_config_set(&candidate, MDKR_VIDEO_MODE, "custom",
                                      MDKR_VIDEO_SOURCE_RUNTIME);
     }
-    if (!mdkr_video_write_config(&candidate)) {
+    write = mdkr_video_write_config_unlocked(&candidate);
+    if (write == MDKR_VIDEO_WRITE_FAILED) {
+        mdkr_file_lock_release(&lock);
         return MDKR_VIDEO_RUNTIME_SAVE_FAILED;
     }
+    mdkr_file_lock_release(&lock);
 
     s_desired_video = candidate;
     if (!includes_mode) {
@@ -648,9 +836,14 @@ MdkrVideoRuntimeResult mdkr_video_config_runtime_set_many(
                                              MDKR_VIDEO_SOURCE_RUNTIME);
             }
         }
-        (void) mdkr_video_config_set(&s_video, MDKR_VIDEO_MODE, "custom",
-                                     MDKR_VIDEO_SOURCE_RUNTIME);
+        if (includes_presentation_setting) {
+            (void) mdkr_video_config_set(&s_video, MDKR_VIDEO_MODE, "custom",
+                                         MDKR_VIDEO_SOURCE_RUNTIME);
+        }
         mdkr_video_config_publish();
+    }
+    if (write == MDKR_VIDEO_WRITE_UNCONFIRMED) {
+        return MDKR_VIDEO_RUNTIME_SAVE_UNCONFIRMED;
     }
     return requires_restart ? MDKR_VIDEO_RUNTIME_RESTART
                             : MDKR_VIDEO_RUNTIME_LIVE;
@@ -660,6 +853,53 @@ MdkrVideoRuntimeResult mdkr_video_config_runtime_set(MdkrVideoKey key,
                                                      const char *value) {
     const MdkrVideoRuntimeChange change = { key, value };
     return mdkr_video_config_runtime_set_many(&change, 1);
+}
+
+MdkrVideoRuntimeResult mdkr_audio_config_runtime_set_game_levels(
+    unsigned music_level, unsigned effects_level) {
+    char music[16];
+    char effects[16];
+    MdkrVideoRuntimeChange changes[2];
+
+    if (music_level > 256u || effects_level > 256u) {
+        return MDKR_VIDEO_RUNTIME_INVALID;
+    }
+    snprintf(music, sizeof(music), "%u", (music_level * 100u + 128u) / 256u);
+    snprintf(effects, sizeof(effects), "%u",
+             (effects_level * 100u + 128u) / 256u);
+    changes[0].key = MDKR_AUDIO_MUSIC_VOLUME;
+    changes[0].value = music;
+    changes[1].key = MDKR_AUDIO_EFFECTS_VOLUME;
+    changes[1].value = effects;
+    return mdkr_video_config_runtime_set_many(changes, 2);
+}
+
+int mdkr_audio_config_runtime_preview(MdkrVideoKey key, int percent) {
+    int master;
+    int music;
+    int effects;
+    if (!s_video_initialized || !mdkr_video_key_is_audio(key) ||
+        percent < 0 || percent > 100 ||
+        mdkr_video_config_runtime_locked(key)) {
+        return 0;
+    }
+    master = (int)s_video.values[MDKR_AUDIO_MASTER_VOLUME].number;
+    music = (int)s_video.values[MDKR_AUDIO_MUSIC_VOLUME].number;
+    effects = (int)s_video.values[MDKR_AUDIO_EFFECTS_VOLUME].number;
+    if (key == MDKR_AUDIO_MASTER_VOLUME) master = percent;
+    if (key == MDKR_AUDIO_MUSIC_VOLUME) music = percent;
+    if (key == MDKR_AUDIO_EFFECTS_VOLUME) effects = percent;
+    return mdkr_audio_volume_publish(master, music, effects);
+}
+
+void mdkr_audio_config_runtime_cancel_preview(void) {
+    if (!s_video_initialized) {
+        return;
+    }
+    (void)mdkr_audio_volume_publish(
+        (int)s_video.values[MDKR_AUDIO_MASTER_VOLUME].number,
+        (int)s_video.values[MDKR_AUDIO_MUSIC_VOLUME].number,
+        (int)s_video.values[MDKR_AUDIO_EFFECTS_VOLUME].number);
 }
 
 int mdkr_video_config_restart_pending(void) {
@@ -698,7 +938,8 @@ void mdkr_video_config_report(void) {
     float effective_aspect;
 
     printf("[video] mode=%s%s\n", mode_name[c->mode],
-           mdkr_video_config_is_readonly() ? " (config read-only)" : "");
+           mdkr_video_config_is_readonly()
+               ? " (presentation read-only)" : "");
     for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; i++) {
         const MdkrVideoSchema *s = mdkr_video_schema((MdkrVideoKey) i);
         if (s->type == MDKR_VIDEO_TYPE_STRING) {

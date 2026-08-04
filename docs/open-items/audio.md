@@ -359,7 +359,7 @@ synthesis. Wiring:
   audio. Whether the title-screen attract loop should self-start music without
   input is unverified (needs a reference); menu SFX + race audio are confirmed.
 
-## MEASURED: absolute output level vs the real ROM — port is −0.49 dB
+## MEASURED: absolute output level vs the real ROM — port/console is +0.016 dB
 
 **The gap this closes.** Every audio gate in this tree was scale-blind.
 `check_audio_output.py` asserts a *floor* on RMS and a *ceiling* on saturation, so
@@ -388,38 +388,36 @@ Both runners were driven down the **same** oracle route, `race_state_oracle` (ti
 menus → Ancient Lake, one player), the port on that route's own native arm
 (`original` cadence, 2 synth fields, 4800 frames), ares for 9505 presented frames.
 
-| | sample-frames | duration | whole RMS | peak | rails |
-|---|---:|---:|---:|---:|---:|
-| **console (ares AI DMA)** | 3 501 190 @ 22047 | 158.81 s | 8317.0 = **−11.910 dBFS** | 32768 | 0.01312 % |
-| **port (same route)** | 3 532 064 @ 22050 | 160.19 s | 7979.9 = **−12.271 dBFS** | 32768 | — |
+The refreshed local-only console capture contains **3 501 171** stereo frames at
+22047 Hz (158.80 s), SHA-256
+`2da39cc3a93e2038e09a88ab874f8d2844a971a7cd196a2182a5c2cdfe125b0e`.
+The raw capture itself remains uncommitted.
 
-Envelope-aligned (lag −5.60 s, correlation **+0.7633**) over a **153.21 s** overlap:
+Envelope-aligned (lag −5.65 s, correlation **+0.7816**) over a **153.16 s** overlap:
 
 ```
-RMS console 8302.8 (−11.924 dBFS)   port 7848.9 (−12.413 dBFS)
-port / console = −0.488 dB
+RMS console 8303.7 (−11.924 dBFS)   port 8318.6 (−11.908 dBFS)
+port / console = +0.016 dB
 ```
 
 Per band, port minus console:
 
 | band | console | port | delta |
 |---|---:|---:|---:|
-| 0–100 Hz | −15.850 | −15.881 | **−0.031** |
-| 100–200 Hz | −17.736 | −19.901 | **−2.165** |
-| 200–400 Hz | −21.029 | −22.119 | −1.090 |
-| 400–800 Hz | −21.154 | −22.238 | −1.084 |
-| 800–1600 Hz | −22.605 | −22.804 | −0.198 |
-| 1600–3200 Hz | −26.665 | −26.410 | +0.254 |
-| 3200–6400 Hz | −29.124 | −28.062 | +1.062 |
-| 6400–11025 Hz | −36.797 | −32.974 | **+3.823** |
+| 0–100 Hz | −15.686 | −15.703 | −0.017 |
+| 100–200 Hz | −17.984 | −18.094 | −0.110 |
+| 200–400 Hz | −21.174 | −21.485 | −0.311 |
+| 400–800 Hz | −21.565 | −21.452 | +0.112 |
+| 800–1600 Hz | −22.542 | −23.079 | −0.537 |
+| 1600–3200 Hz | −27.033 | −26.615 | +0.417 |
+| 3200–6400 Hz | −29.582 | −28.573 | +1.010 |
+| 6400–11025 Hz | −36.488 | −33.063 | **+3.425** |
 
-**Verdict: there is no systematic loudness bias.** Broadband level agrees to half a
-decibel. What the band table does show is a mild **spectral tilt** — the port is
-~1–2 dB shy through the low-mids and progressively brighter above 1.6 kHz, reaching
-+3.8 dB in the top band (which sits at −33 dBFS and contributes ~0.02 dB to total
-RMS). That is a resampler/interpolation character difference between our software
-`aResample` and ares' RSP microcode, not a gain stage; it is recorded here as an open
-observation and is **not** claimed to be resolved.
+**Verdict: there is no systematic loudness bias.** Broadband level agrees within
+0.016 dB after the restored vehicle path. The residual per-band differences are
+small except for a +3.425 dB top-band tilt at roughly −33 dBFS. Because the route
+is envelope-aligned rather than sample-locked, that remains an observation rather
+than evidence for a gain-stage defect.
 
 ### Gain-staging audit — every stage checked against the SGI reference, zero discrepancies
 
@@ -447,9 +445,10 @@ does not also have.** The only non-unity factor found is `aMix`'s `0x7fff/0x8000
 the destination — **−0.000265 dB** per pass, applied twice on the master bus, i.e.
 −0.00053 dB total. It is faithful: the RSP does the same thing.
 
-So the −0.49 dB is not a gain-stage error. It is what two different implementations of
-the same synthesiser produce over 153 s of not-quite-identically-timed program
-material.
+The earlier −0.49 dB result was superseded when the retail vehicle-audio path was
+restored. The refreshed +0.016 dB result, together with the stage audit, leaves no
+evidence of a gain-stage error; the remaining differences are consistent with two
+implementations observing nearby rather than sample-locked program material.
 
 ### The gate: `tests/check_audio_level_reference.py`
 
@@ -457,10 +456,10 @@ Registered in `tools/run_checks.py` as `audio_level_reference`; full assertion t
 [`tests/README.md`](../../tests/README.md). Frozen port-side baseline on the
 `race_drive_time_trial.txt` 4300-frame route (3 164 064 sample-frames, 143.49 s):
 
-- whole RMS 7222.6 = **−13.135 dBFS**; L −13.120, R −13.150
-- sample peak 32768 (0.000 dBFS), **crest 13.135 dB**, rails 0.06504 %
-- engine `mainbus clip` 4109/6328128 = 0.06493 %, worst pre-clamp 35784 = **+0.76 dBFS**
-- true peak (4x oversampled) **L +1.002 / R +2.045 dBFS**
+- whole RMS 7457.9 = **−12.857 dBFS**; L −12.857, R −12.856
+- sample peak 32768 (0.000 dBFS), **crest 12.857 dB**, rails 0.07248 %
+- engine `mainbus clip` 4578/6329600 = 0.07233 %, worst pre-clamp 35951 = **+0.81 dBFS**
+- true peak (4x oversampled) **L +1.002 / R +1.478 dBFS**
 - 8 absolute band RMS values and 15 ten-second slice RMS values, all recorded
 
 Crest factor is deliberately part of the frozen set: the program already touches full
@@ -476,9 +475,9 @@ byte-identical to a build compiled without the seam (verified by `cmp`).
 
 | arm | whole RMS | crest | rails | port/console | result |
 |---|---|---|---|---|---|
-| reference | −13.135 dBFS | 13.135 dB | 0.06504 % | −0.488 dB | PASS |
-| `--control gain+3` | −10.329 (+2.806) | 10.329 dB | 1.09181 % | **+2.309 dB** | FAIL ×28, exit 1 |
-| `--control gain-3` | −16.135 (−3.000) | 13.135 dB | 0.00000 % | **−3.488 dB** | FAIL ×28, exit 1 |
+| reference | −12.857 dBFS | 12.857 dB | 0.07248 % | +0.016 dB | PASS |
+| `+3 dB` engine control | −10.058 dBFS | 10.058 dB | 1.21170 % | — | FAIL ×28 |
+| `−3 dB` engine control | −15.857 dBFS | 12.857 dB | 0.00000 % | — | FAIL ×28 |
 
 Four signal-level controls (±3.0 and ±1.5 dB applied in memory) also run on every
 invocation and the check fails if any of them passes. The ±1.5 pair is there so the
@@ -495,7 +494,7 @@ band cannot quietly become a rubber ruler.
   same *program* but not the same *instants*, correlation +0.76. That is why the
   console tolerance is ±1.5 dB broadband / ±6 dB per band rather than something tight,
   and why the per-band deltas above should be read as a tilt, not as calibrated
-  numbers.
+  numbers. The refreshed correlation is +0.7816.
 - **The console capture is ROM-derived and cannot be committed**, so the `--reference`
   lane is opt-in and the registered gate runs the frozen-baseline half only. A CI run
   proves the port has not *drifted*; it does not re-prove absolute correctness.

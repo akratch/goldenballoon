@@ -7,9 +7,12 @@
 #include <math.h>
 
 #include "asset_swap.h"
+#include "fast3d/gfx_presentation_packet.h"
 #include "gfx_shadow_frame.h"
 #include "mdkr_bounds.h"
 #include "present_sched.h"
+#include "presentation_snapshot.h"
+#include "taj_visual.h"
 #include "viewport_route_cache.h"
 #endif
 #include "camera.h"
@@ -56,6 +59,45 @@ _Static_assert(SHADOW_HEAP_TRI_CAPACITY <= 32767 &&
 #endif
 
 #define FLAGS_8002E904 (RENDER_HIDDEN | RENDER_DECAL | RENDER_WATER | RENDER_NO_SHADOW)
+
+#ifdef NATIVE_PORT
+/* A composed Taj uses the donor only for simulation. Its vehicle model,
+ * shadow, and wake must disappear as one presentation transaction. */
+#define TAJ_DONOR_PRESENTATION_VISIBLE(obj) (!taj_visual_suppress_donor_draw(obj))
+
+static uint64_t shadow_topology_hash_bytes(
+    uint64_t hash, const void *bytes, size_t size) {
+    const uint8_t *cursor = (const uint8_t *)bytes;
+
+    for (size_t index = 0; index < size; index++) {
+        hash ^= cursor[index];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+static uint64_t shadow_batch_topology_signature(
+    const TextureHeader *texture, s32 numVerts, s32 numTris,
+    const Triangle *triangles) {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    uintptr_t textureIdentity = (uintptr_t)texture;
+
+    hash = shadow_topology_hash_bytes(
+        hash, &textureIdentity, sizeof(textureIdentity));
+    hash = shadow_topology_hash_bytes(hash, &numVerts, sizeof(numVerts));
+    hash = shadow_topology_hash_bytes(hash, &numTris, sizeof(numTris));
+    if (triangles != NULL && numTris > 0) {
+        for (s32 index = 0; index < numTris; index++) {
+            /* UVs legitimately slide as the shadow moves across a receiver;
+             * they are held discrete by replay and are not topology. */
+            hash = shadow_topology_hash_bytes(
+                hash, triangles[index].verticesArray,
+                sizeof(triangles[index].verticesArray));
+        }
+    }
+    return hash;
+}
+#endif
 
 /************ .data ************/
 
@@ -2845,11 +2887,20 @@ void render_level_geometry_and_objects(void) {
                 scene_render_opacity_end(obj);
 #endif
                 continue;
+#ifdef NATIVE_PORT
+            } else if (obj->shadow != NULL && TAJ_DONOR_PRESENTATION_VISIBLE(obj)) {
+#else
             } else if (obj->shadow != NULL) {
+#endif
                 shadow_render(obj, obj->shadow);
             }
             render_object(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, obj);
+#ifdef NATIVE_PORT
+            if (obj->waterEffect != NULL && obj->header->flags & HEADER_FLAGS_WATER_EFFECT &&
+                TAJ_DONOR_PRESENTATION_VISIBLE(obj)) {
+#else
             if (obj->waterEffect != NULL && obj->header->flags & HEADER_FLAGS_WATER_EFFECT) {
+#endif
                 watereffect_render(obj, obj->waterEffect);
             }
 #ifdef NATIVE_PORT
@@ -2897,11 +2948,20 @@ void render_level_geometry_and_objects(void) {
                 scene_render_opacity_end(obj);
 #endif
                 continue;
+#ifdef NATIVE_PORT
+            } else if (obj->shadow != NULL && TAJ_DONOR_PRESENTATION_VISIBLE(obj)) {
+#else
             } else if (obj->shadow != NULL) {
+#endif
                 shadow_render(obj, obj->shadow);
             }
             render_object(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, obj);
+#ifdef NATIVE_PORT
+            if (obj->waterEffect != NULL && obj->header->flags & HEADER_FLAGS_WATER_EFFECT &&
+                TAJ_DONOR_PRESENTATION_VISIBLE(obj)) {
+#else
             if (obj->waterEffect != NULL && obj->header->flags & HEADER_FLAGS_WATER_EFFECT) {
+#endif
                 watereffect_render(obj, obj->waterEffect);
             }
 #ifdef NATIVE_PORT
@@ -2968,11 +3028,20 @@ void render_level_geometry_and_objects(void) {
                 if (obj->trans.flags & OBJ_FLAGS_PARTICLE) {
                     render_object(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, obj);
                     goto skip;
+#ifdef NATIVE_PORT
+                } else if (obj->shadow != NULL && TAJ_DONOR_PRESENTATION_VISIBLE(obj)) {
+#else
                 } else if (obj->shadow != NULL) {
+#endif
                     shadow_render(obj, obj->shadow);
                 }
                 render_object(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, obj);
+#ifdef NATIVE_PORT
+                if ((obj->waterEffect != 0) && (obj->header->flags & HEADER_FLAGS_WATER_EFFECT) &&
+                    TAJ_DONOR_PRESENTATION_VISIBLE(obj)) {
+#else
                 if ((obj->waterEffect != 0) && (obj->header->flags & HEADER_FLAGS_WATER_EFFECT)) {
+#endif
                     watereffect_render(obj, obj->waterEffect);
                 }
             }
@@ -4939,6 +5008,7 @@ void shadow_render(Object *obj, ShadowData *shadow) {
     s32 alpha;
 #ifdef NATIVE_PORT
     s32 objectOpacity = scene_object_render_opacity(obj);
+    uint32_t presentationBatch = 0u;
 #else
     s32 objectOpacity = obj->opacity;
 #endif
@@ -5017,6 +5087,30 @@ void shadow_render(Object *obj, ShadowData *shadow) {
                 tri = &gCurrShadowTris[triCount];
                 vtx = &gCurrShadowVerts[vtx2];
 #ifdef NATIVE_PORT
+                {
+                    GfxPresentationMatrixOwner owner = {0};
+                    uint64_t generation = 0u;
+
+                    if (presentation_snapshot_identity_generation(
+                            obj, &generation)) {
+                        owner.address = obj;
+                        owner.generation = generation;
+                        owner.matrix_class =
+                            GFX_PRESENTATION_MATRIX_PROJECTED_SHADOW_VERTICES;
+                        owner.geometry_signature =
+                            shadow_batch_topology_signature(
+                                gCurrShadowHeapData[i].texture, numVerts,
+                                numTris, tri);
+                        owner.valid = true;
+                        /* The mesh is authored once in world space and reused
+                         * unchanged by every viewport. Keep one shared stream,
+                         * just like direct world-space particle vertices. */
+                        (void)gfx_presentation_packet_register_projected_shadow_vertex(
+                            vtx, 0, presentationBatch,
+                            &owner);
+                    }
+                    presentationBatch++;
+                }
                 /*
                  * Mark the exact source batch rather than deciding here
                  * whether to omit it. The backend creates this frame's real
@@ -5161,6 +5255,14 @@ void shadow_update(s32 group, s32 waterGroup, s32 updateRate) {
         if (obj->trans.flags & OBJ_FLAGS_INVISIBLE) {
             shadow = NULL;
         }
+#ifdef NATIVE_PORT
+        /* Taj is a visible carpet/rider composition. Both objects occupy the
+         * same grounding footprint, so retaining the rider's actor shadow
+         * would double-darken the single-player decal. */
+        if (shadow != NULL && taj_visual_suppress_companion_shadow(obj)) {
+            shadow = NULL;
+        }
+#endif
         if ((shadow != NULL && objHeader->shadowGroup == SHADOW_ACTORS) ||
             (waterEffect != NULL && objHeader->waterEffectGroup == SHADOW_ACTORS)) {
             dist = get_distance_to_active_camera(obj->trans.x_position, obj->trans.y_position, obj->trans.z_position);
@@ -5180,7 +5282,8 @@ void shadow_update(s32 group, s32 waterGroup, s32 updateRate) {
                         shadow_generate(obj, FALSE);
                         skipShading = TRUE;
                     }
-                } else if (obj->behaviorId == BHV_WEAPON) {
+                } else if (obj->behaviorId == BHV_WEAPON ||
+                           taj_visual_multiplayer_shadow_object(obj)) {
                     shadow_generate(obj, FALSE);
                     skipShading = TRUE;
                 }

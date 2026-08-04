@@ -34,6 +34,14 @@ the passing boss lane.
 | `tools/compare_oracle_state.py` | join native and original racer state on the race clock |
 | `tools/oracle_screens.py`      | list the stable "screen segments" in a capture — the calibration measurement |
 
+Route JSON event numbers name the intended authored native present/tick phase.
+The native fixed-ticket boundary publishes a script entry at N to the simulation
+sample traced at N+1, so `dkr_oracle_route.py native-script` emits every positive
+event one ticket early. The ares script remains at the authored event number.
+This explicit conversion keeps previously calibrated native/ares routes aligned;
+removing it changes the exact `race_state_oracle` stream from 27,840 to 27,832
+rows and is rejected rather than rebaselined.
+
 ---
 
 ## Three things that made this harness lie (read before trusting a score)
@@ -95,6 +103,7 @@ The ares hooks read these env vars (set for you by `run_oracle.sh`):
 | `MDKR64_ARES_EXIT_AFTER_FRAMES` | self-exit (`_Exit(0)`) after N presented frames |
 | `MDKR64_ARES_STATE_TRACE` | write the local-only US 1.1 numeric state CSV |
 | `MDKR64_ARES_AUDIO_DUMP` | write the ROM's own audio-interface PCM (raw LE s16 stereo) |
+| `MDKR64_ARES_VEHICLE_RNG_TRACE` | write the local-only US 1.1 retail car-audio RNG call witness |
 
 ### The audio lane
 
@@ -114,9 +123,44 @@ the lane exists for. The rate is whatever the ROM programmed into `AI_DACRATE`
 
 Consumed by `tests/check_audio_level_reference.py --reference`, which re-runs the
 port on the same oracle route and reports the port/console RMS ratio whole and
-per band. Measured on `race_state_oracle`: **-0.488 dB** over a 153.21 s aligned
+per band. Refreshed after the vehicle-audio correction on
+`race_state_oracle`: **+0.016 dB** over a 153.16 s aligned
 overlap. Like every other oracle output the capture is ROM-derived and
 **local-only** — never commit it.
+
+The repeatable capture command is:
+
+```bash
+tools/run_oracle.sh race_state_oracle --skip-native \
+  --audio-dump /tmp/mdkr64-console.raw
+```
+
+The runner keeps the host silent, validates the raw stereo frame boundary and
+rate sidecar, and prints the capture's duration and SHA-256 before it can be
+used as the `--reference` input.
+
+### The vehicle-audio RNG authority lane
+
+`MDKR64_ARES_VEHICLE_RNG_TRACE` is a CPU-level US 1.1 witness. It records only
+entries to the retail `rand_range` address whose return address lies inside
+`racer_sound_car`, then reads the shared seed and current racer through the
+emulated CPU's debug/cache path. This distinguishes an authored shared-RNG call
+from a port-side cosmetic choice without trusting downstream particles,
+triangles, or race outcomes.
+
+`tools/run_oracle.sh race_state_oracle --vehicle-rng-trace PATH` runs this lane
+and validates the local CSV with `tools/validate_ares_vehicle_rng.py`. The
+validator pins the route's exact call-site census and SHA-256 and includes a
+direct RNG-transition control. The trace contains runtime-derived data and stays
+local; only its schema and digest belong in the repository.
+
+Restoring those retail calls also advances the shared seed before downstream
+weather work. The weather-enabled Original-cadence oracle was therefore
+deliberately refreshed to 813 trace rows and SHA-256
+`fe180923803148e9ea3e5be6f913e9daa6831c4f5d9f12fe345f7d0bf3fea5a9`.
+That refresh is accepted only with byte-identical state/weather streams under
+skipped rendering and 30/60 Hz presentation, plus the existing wrong-order and
+one-byte negative controls; it is not a relaxed threshold.
 
 Button masks are the standard N64 SI layout (A=0x8000 … C-Right=0x0001),
 identical to the native port's masks, so an injected value lands verbatim.

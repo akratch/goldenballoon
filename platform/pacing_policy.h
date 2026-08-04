@@ -45,6 +45,13 @@ typedef struct MdkrPacingClock {
     int initialized;
 } MdkrPacingClock;
 
+/* Preserve the N64 COUNTER's strictly-increasing read contract without
+ * rejecting a valid first sample whose high bit happens to be set. */
+typedef struct MdkrCounterGuard {
+    uint32_t last;
+    int initialized;
+} MdkrCounterGuard;
+
 int mdkr_pacing_cadence_valid(const char *value);
 int mdkr_pacing_min_fields(const char *value);
 int mdkr_pacing_field_hz(int source_field_hz, const char *diagnostic_override);
@@ -53,6 +60,7 @@ int mdkr_pacing_synthetic_fields(int requested_fields, int min_fields,
 int mdkr_pacing_queue_refill(int pending_fields, int measured_fields,
                              int capacity);
 int mdkr_pacing_interval_requires_rebase(uint64_t elapsed_ns);
+uint32_t mdkr_counter_guard_commit(MdkrCounterGuard *guard, uint32_t sample);
 
 int mdkr_present_policy_parse(const char *value, MdkrPresentPolicy *out);
 int mdkr_present_policy_equal(const MdkrPresentPolicy *left,
@@ -60,6 +68,8 @@ int mdkr_present_policy_equal(const MdkrPresentPolicy *left,
 int mdkr_present_policy_uses_vsync(const MdkrPresentPolicy *policy);
 int mdkr_present_policy_needs_subloop(const MdkrPresentPolicy *policy,
                                       unsigned tick_rate);
+int mdkr_present_policy_needs_held_frame_deadline(
+    const MdkrPresentPolicy *policy, int smoothing_enabled);
 
 int mdkr_present_deadline_init(MdkrPresentDeadlineClock *clock,
                                unsigned rate);

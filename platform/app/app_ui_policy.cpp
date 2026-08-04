@@ -16,6 +16,45 @@ OverlayBackState AppUi_overlayBackTransition(
     return current;
 }
 
+AppUiButtonPairLayout AppUi_fitButtonPair(
+    float availableWidth, float spacing, float firstWidth, float secondWidth,
+    float minimumWidth) {
+    if (availableWidth < 1.0f) availableWidth = 1.0f;
+    if (spacing < 0.0f) spacing = 0.0f;
+    if (firstWidth + spacing + secondWidth <= availableWidth) {
+        return {firstWidth, secondWidth, true};
+    }
+    const float pairedWidth = (availableWidth - spacing) * 0.5f;
+    if (pairedWidth >= minimumWidth) {
+        return {pairedWidth, pairedWidth, true};
+    }
+    return {availableWidth, availableWidth, false};
+}
+
+AppUiRomPanelVisibility AppUi_romPanelVisibility(
+    bool haveRom, bool ready, bool validationPending, bool changing) {
+    const bool awaitingInitialVerdict = validationPending && !ready;
+    return {
+        haveRom && !awaitingInitialVerdict,
+        changing || (!ready && !awaitingInitialVerdict),
+    };
+}
+
+bool AppUi_romCandidateFeedbackVisible(
+    bool candidateVisible, bool validationPending) {
+    return candidateVisible && !validationPending;
+}
+
+AppUiRomPlayRequest AppUi_romPlayRequest(
+    bool ready, bool validationPending, bool playValidationPending) {
+    if (!ready || playValidationPending) {
+        return AppUiRomPlayRequest::Ignore;
+    }
+    return validationPending
+        ? AppUiRomPlayRequest::SupersedeReplacementCheck
+        : AppUiRomPlayRequest::StartFinalCheck;
+}
+
 bool AppUi_deferredCommit(bool previewChanged, bool deactivated, bool *dirty) {
     if (!dirty) return false;
     if (previewChanged) *dirty = true;
@@ -84,11 +123,23 @@ AppUiSmokeInputMode AppUi_smokeInputMode() {
         std::getenv("MDKR_APP_SMOKE_INPUT_TOKEN"));
 }
 
-bool AppUi_videoSettingVisible(MdkrVideoKey key) {
+bool AppUi_videoSettingVisible(MdkrVideoKey key, bool webGpuRenderer) {
     switch (key) {
         // Keep the reserved config key parseable, but hide it until a
         // texture-pack loader actually consumes it.
         case MDKR_VIDEO_TEXTURE_PACK: return false;
+        // This compatibility bit is implied by the presentation preset and
+        // aspect control. Exposing it separately can create a stretched image
+        // and contradict the selected mode, so it remains CLI/config-only.
+        case MDKR_VIDEO_WIDESCREEN: return false;
+        // Immutable interpolation is supported by both production backends.
+        // Keep it visible beside Frame Limit so presentation rate and the
+        // choice of authored holds versus unique midpoints stay independent.
+        case MDKR_VIDEO_MOTION_SMOOTHING: return true;
+        // WebGPU is the qualified default and has no multisampled scene path.
+        // Keep the config key for GL/Metal and diagnostics, but never offer a
+        // restart-required control that the active renderer ignores.
+        case MDKR_VIDEO_MSAA: return !webGpuRenderer;
         default: return true;
     }
 }

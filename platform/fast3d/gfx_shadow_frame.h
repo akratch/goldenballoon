@@ -47,6 +47,7 @@ typedef enum GfxPresentationMatrixClass {
     GFX_PRESENTATION_MATRIX_EFFECT = 3,
     GFX_PRESENTATION_MATRIX_BILLBOARD = 4,
     GFX_PRESENTATION_MATRIX_PARTICLE_VERTICES = 5,
+    GFX_PRESENTATION_MATRIX_PROJECTED_SHADOW_VERTICES = 6,
 } GfxPresentationMatrixClass;
 
 typedef struct GfxPresentationMatrixOwner {
@@ -57,6 +58,9 @@ typedef struct GfxPresentationMatrixOwner {
     const void *secondary_address; /* identity token only */
     uint64_t secondary_generation;
     GfxPresentationMatrixClass matrix_class;
+    /* Direct vertex recipes use this to reject a same-sized batch whose
+     * connectivity/material identity changed between authored ticks. */
+    uint64_t geometry_signature;
     float source_position[3];
     float source_scale;
     int16_t source_rotation[3]; /* y, x, z in DKR fixed-angle order */

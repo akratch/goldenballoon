@@ -50,13 +50,22 @@ not close and reopen.
 At engine shutdown, an adopted window is released but never destroyed: the shell
 is still running and owns it.
 
+The window is created in the durable `Window.Mode`. Fullscreen uses SDL desktop
+fullscreen plus an explicit borderless flag, which covers the current display
+without leaving Windows decorations or switching the display mode. Settings
+queues a mode change until the next pre-frame event-pump boundary so WebGPU
+never changes the drawable after acquisition. F11 and Alt+Enter take the same
+transactional path; a platform or save failure leaves/restores the old mode.
+
 ---
 
 ## Renderer handoff verdict
 
-**WebGPU is the native default; both launcher handoffs and overlays are
-exercised on macOS.** GL remains explicitly selectable for diagnostics while
-its scene-parity work continues:
+**WebGPU with Restored presentation is the qualified native visual path; both
+launcher handoffs and overlays are exercised on macOS.** GL remains explicitly
+selectable for diagnostics while its scene-parity work continues. Remastered is
+opt-in work in progress, not a qualified visual path until its visual gates
+close:
 
 | Surface | WebGPU (native default) | GL diagnostic (`MDKR_RENDERER=gl`) |
 | --- | --- | --- |
@@ -110,10 +119,13 @@ Four permission-free ways in, in the order a first-time player meets them:
 Only a ROM that actually validates is remembered, so a refused revision can
 never wedge the launcher into reproducing the same refusal every launch.
 
-The identified revision (`US 1.1 (NTSC-U, Rev 1)`) is the largest text on the
-ROM card, above the build tag, byte order and CRC pair — a wrong pick has to be
-visible *before* Play, not discovered afterwards. A ready ROM gets an explicit
-**Change ROM...** button; the acquisition controls stay hidden until then.
+The ROM card leads with an unambiguous **Ready to Play** or **This ROM Cannot
+Be Used** verdict, followed by the identified revision and byte order. Ready
+means the normalized full 12 MiB image matches the supported SHA-256 and its
+revision-specific asset LUT is structurally safe — header identity alone is
+never enough. A wrong pick has to be visible *before* Play, not discovered
+afterwards. A ready ROM gets an explicit **Change ROM…** button; the
+acquisition controls stay hidden until then.
 
 ## Bundle resources and writable user data
 
@@ -148,6 +160,21 @@ destination always wins. If SDL cannot provide a writable preference root, the
 package stops with a visible data-directory error instead of falling back into
 the signed bundle.
 
+Each save-migration stage carries destination-bound ownership metadata. If a
+process is interrupted and a later process reuses that PID-derived stage name,
+the launch validates the marker, removes only the known staged save set, and
+restarts the copy from the untouched legacy source. Unrelated abandoned stage
+names do not block an ordinary launch and remain untouched.
+An older or foreign stage without valid metadata is preserved and produces a
+message naming the exact folder to move aside; it is never guessed at or
+silently deleted.
+
+ROM selection and the final pre-Play recheck read and hash the complete image on
+one generation-keyed worker. The launcher keeps rendering a byte progress bar;
+a replacement or Cancel invalidates the active generation at the next 64 KiB
+boundary, and only the newest path may publish a verdict. The engine still
+performs its own boot-time validation as the final trust boundary.
+
 ---
 
 ## Settings are generated, not hand-written
@@ -157,23 +184,38 @@ There is no second copy of the key list, so a new key cannot appear in the confi
 layer and be missing from the UI.
 
 To make grouping a schema property rather than a UI opinion, `MdkrVideoSchema`
-gained a `category` field (`Presentation` / `Fidelity` / `Pacing`). A new key
-therefore cannot be added without deciding where a player would look for it.
-The launcher presents Pacing first as **Frame rate & timing**, with the safe
-**Original (Recommended / Proven)** choice visible on entry. Match Display,
-numeric caps, and Uncapped are individually marked
-**Experimental — Under Construction**. In 1.0.1+ those choices only affect host
-pacing and input/event-pump opportunities, not unique visual FPS. They never
-change gameplay timing or present duplicate images; the primary US 1.1 build
-remains at its authored roughly 30 unique visual FPS. Their benefit may be
-negligible, while higher settings can use more CPU. The panel directs players
-to Original for the proven release behavior.
+gained a `category` field (`Interface` / `Audio` / `Controller` /
+`Presentation` / `Fidelity` / `Pacing`). A
+new key therefore cannot be added without deciding where a player would look
+for it.
 
-`Video.MotionSmoothing` remains a restart-scoped configuration seam, but the
-production 1.0.1+ renderer resolves it to off. Delayed display-list replay is not
-safe after the next task starts rewriting mutable viewport, matrix, vertex,
-texture, and nested display-list storage, so the launcher must not imply that
-this patch can produce interpolated visual frames.
+The launcher opens **Interface** with persistent window mode and UI scale.
+**Presentation** leads the graphics choices and marks Restored as the
+recommended default, followed by **Frame Rate & Motion**. **Audio** provides
+master, music, and effects volume without starting the game. **Controller**
+exposes rumble enablement and
+Light/Balanced/Strong profiles plus source-oriented remapping from SDL's
+normalized buttons, D-pad, triggers, clicks, and right-stick directions to N64
+actions or None. The left stick remains analog steering and a single atomic
+action restores all controller defaults. **Original (recommended)** is the
+frame-limit default. Match Display, numeric caps, and
+native Uncapped create additional presentation opportunities without changing
+the gameplay cadence. The adjacent **Motion smoothing** control says exactly
+what fills those opportunities: Off holds the latest authored image;
+Interpolated draws unique presentation-only in-between images. The browser
+explains that its ceiling is the display's `requestAnimationFrame` cadence.
+The native launcher keeps both presentation controls directly visible. The
+browser uses a compact disclosure to keep its launch card manageable on mobile.
+In both interfaces, **Gameplay cadence** is visually separated because that
+choice changes gameplay and must never look like an ordinary FPS control.
+
+Both settings remain restart-scoped because the host pacer and immutable replay
+resources latch at engine startup. Interpolated replay retains the complete
+authored graphics arena plus external dependencies observed by the renderer,
+and fails closed to an authored hold when adjacent ownership is unavailable.
+The launcher therefore separates frame delivery from **Gameplay cadence**;
+Enhanced remains a clearly gameplay-changing compatibility mode, not an FPS
+switch.
 
 Scope is presented honestly:
 
@@ -189,22 +231,50 @@ Scope is presented honestly:
 - Keys pinned by an environment variable or the command line are disabled and
   name the layer that owns them, because `mdkr_video_config_runtime_set()` would
   return `LOCKED` for them anyway.
-- A Pure session is read-only (it never rewrites the ini), so the panel says so
-  rather than offering controls that would silently do nothing.
+- A Pure session never rewrites presentation or gameplay settings, so the panel
+  says those controls are locked. Audio, window, controller, and rumble comfort
+  controls remain available and persistent without changing the faithful
+  presentation contract.
 
 Every committed edit routes through `mdkr_video_config_runtime_set()`, which
 validates, persists and then publishes only the LIVE half. Text fields retain
 their local value through validation/storage failure and commit on Enter or
 blur. Enum and checkbox controls likewise retain the attempted value when a
 write fails. The visible Retry control resubmits that same staged value after
-write access is restored, without restarting the process. Sliders preview
-locally while dragged and perform one durable transaction on release, so
-dragging cannot fsync the configuration once per rendered frame.
+write access is restored, without restarting the process. Audio sliders preview
+audibly with click-free ramps while dragged, restore the committed mix when the
+player cancels or navigates away, and perform one durable transaction on
+release. Other sliders also save only on release, so dragging cannot fsync the
+configuration once per rendered frame. UI scale also waits for release before
+changing theme metrics; applying it during a held drag would move the slider
+under the pointer and create a whole-interface layout feedback loop.
 
 ROM replacement follows the same last-known-good rule: a candidate is validated
 and its preference is atomically saved before it replaces the active ROM. An
 invalid or unsaved candidate is shown alongside the still-playable active ROM,
 and Cancel always restores the prior view.
+
+## Launcher journey contract
+
+The launcher is organized around player states, not implementation panels:
+
+| Player state | Required behavior |
+| --- | --- |
+| First launch | Say what Golden Balloon is, ask for a ROM, and make the persistent **Choose ROM** action open the native picker or lead to drag-and-drop/typed-path alternatives. |
+| Returning with a valid ROM | Show the verified revision and keep **Play** available from every launcher section. |
+| Replacing a valid ROM | Keep the proven ROM playable until the replacement validates and its path is saved. Cancel returns to the proven state. |
+| Validation in progress | Keep rendering progress, permit cancellation, and prevent duplicate final-Play checks without freezing the UI. |
+| Invalid ROM or persistence failure | Name the problem beside the affected ROM and offer a specific Retry, Change, or Forget action. Never replace the last known-good choice silently. |
+| Editing settings | Separate live changes from restart-required changes, keep gameplay cadence distinct from presentation rate, and rename the persistent action **Play with Changes** while staged values exist. |
+| Engine boot failure | Return to the launcher with the ROM and settings intact, an inline explanation, and **View Diagnostics** available. |
+| Small window, large scale, gamepad, or touchscreen use | Preserve the same task order through the sidebar, top navigation, or dense dropdown, with visible focus, touch-sized actions, and scrolling instead of clipping. |
+
+The native header deliberately mirrors the public website without importing its
+large raster hero: the embedded font carries a gold/blue wordmark, the website's
+checkered gantry becomes a quiet structural rule, solid gold is reserved for the
+next primary action, and high-contrast cobalt marks the one active destination.
+This keeps branding recognizable while leaving ROM status, errors, and controls
+as the highest-contrast content.
 
 ---
 
@@ -213,7 +283,8 @@ and Cancel always restores the prior view.
 The supported native accessibility target for this release is keyboard and
 gamepad operation, visible focus, scalable high-contrast UI, and restrained
 motion. It does **not** claim a native VoiceOver, UI Automation, or other screen-
-reader semantic tree: Dear ImGui does not expose one by itself. Full assistive-
+reader semantic tree: Dear ImGui does not expose one by itself. The desktop app
+is therefore not advertised as screen-reader compatible. Full assistive-
 technology semantics would require a native accessibility bridge and separate
 platform qualification.
 
@@ -223,14 +294,23 @@ The supported behavior is explicit:
 - the in-game F1 overlay uses Escape and controller B symmetrically: close an
   ImGui popup first, dismiss confirmation, leave Settings, then close overlay;
 - UI scale is persisted from 0.75x through 2.00x and scales fonts, controls,
-  spacing, and navigation from an unscaled baseline (never cumulatively);
+  spacing, and navigation from an unscaled baseline (never cumulatively). A
+  held slider edits only its displayed value; release applies the new layout
+  once at the next frame boundary;
+- framed controls provide at least a 44 px baseline row plus touch padding,
+  while scrollbars and slider grabs use a 20 px baseline. On a 7-inch Windows
+  handheld, 1.25x or larger is the recommended scale;
+- a touchscreen drag that begins on non-interactive panel content scrolls it
+  directly with the finger and stops on release. Drags that begin on a button,
+  slider, combo, or the enlarged scrollbar remain owned by that control;
 - moving between displays rebuilds fonts before the next ImGui frame while the
   renderer's dynamic-texture lifecycle safely retires the old atlas;
 - the minimum supported logical window is 640x480. Below the wide breakpoint,
   the navigation rail becomes top tabs, controls clamp to available width, and
   actions stack instead of clipping;
-- Steel Blue focus/action state, Amber Gold navigation focus, light foreground
-  text, and dark surfaces are checked by the capture-content gate; and
+- high-contrast cobalt selection, Amber Gold primary/focus state, light
+  foreground text, and dark surfaces are checked by the capture-content gate;
+  and
 - the shell adds no decorative animation, auto-scrolling, or flashing content.
 
 The release embeds one reviewed, redistributable Roboto Medium asset. Titles,
@@ -242,20 +322,24 @@ which would make release rendering and licensing non-reproducible.
 
 ## Known limitations
 
-**The overlay does not pause the simulation.** mgb64's does: its engine zeroes
-`g_ClockTimer` when `platformOverlayWantsInput()` is set. That is a
-GoldenEye-specific hook in *game* code. There is no equivalent seam here, and
-adding one would mean editing `game/src`, which this work deliberately avoids.
-So the overlay swallows input — the kart gets a neutral pad and coasts rather
-than steering itself into a wall — and the footer says the race is still
-running. Claiming "Paused" over a still-running race would be the dishonest
-option. This is the one genuine parity gap.
+**The overlay is a true pause boundary.** While it owns input, the game receives
+no simulation updates and `is_game_paused()` reports paused. Renderer/event
+pumping continues so the launcher remains responsive. Game-timed audio work
+(delayed cues, music fades, and new simulation cues) receives the same zero
+update rate; already-playing music, effects, and reverb tails continue through
+the independently serviced host audio sink. The live
+`check_overlay_pause.py` route enters an ordinary Time Trial through the app's
+WebGPU handoff, opens F1 mid-race, and requires the complete deterministic state
+hash plus kart position, race clock, checkpoint, and lap to remain exact for
+200 host ticks before resuming.
 
 **Return to Launcher performs an orderly process relaunch.** The overlay only
 requests the transition. The engine then unwinds renderer/audio state, host
 objects are released, the diagnostic tee restores stdout/stderr and joins its
-reader, and only then does the platform replace the process. A failed relaunch
-is shown visibly and returns non-zero instead of hanging on an orphaned pipe.
+reader, and only then does the platform replace the process. Windows uses the
+wide-character runtime here, including non-ASCII and extended-length executable
+paths. A failed relaunch is shown visibly and returns non-zero instead of
+hanging on an orphaned pipe.
 
 **No native file dialog on Linux.** macOS uses NSOpenPanel and Windows uses
 GetOpenFileNameW (see "Getting a ROM in" above). There is no permission-free
@@ -283,6 +367,15 @@ ctest -R app_
 - `app_settings_capture_content` and `app_settings_minimum_scale2_content` —
   decode the BMP, require dimensions, contrast, palette and content coverage,
   and prove blank/offscreen/invisible-foreground mutation controls fail.
+- `app_top_tabs_smoke` / `app_top_tabs_scale075_smoke` and their dependent
+  content checks — click a real intermediate-width destination, require the
+  requested panel to become active, and prove the final capture contains both
+  wordmark colors, the alternating brand rule, one cobalt selection with its
+  Amber Gold indicator, and a solid-gold primary action at 1.00x and 0.75x.
+- `app_touch_handheld_smoke` and its content check — render Settings at
+  1280x720 and 1.25x, feed a real `SDL_TOUCH_MOUSEID` drag through the
+  production SDL-to-ImGui adapter, require the scroll owner to move, and verify
+  the effective target, scrollbar, grab, contrast, and visible-content bounds.
 - `app_ui_input_persistence` — uses SDL mouse + keyboard and an SDL virtual
   gamepad to select 240 through the real combo; reloads it in a second process;
   then proves a visible storage failure leaves Original unchanged and a retry

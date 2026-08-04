@@ -35,6 +35,7 @@ typedef struct {
     int   window_width;        // <= 0 => engine default
     int   window_height;
     int   automation_ticks;    // <= 0 => interactive; launcher regression seam
+    const char *input_script;  // automation-only deterministic controller fixture
     // Staged RESTART-scope settings, as "Video.Key=Value" strings. The settings
     // panel writes these when the player changes a restart-scope key before
     // pressing Play, so the choice takes effect on THIS boot rather than
@@ -65,12 +66,22 @@ extern int g_diagLogFileFd;
 // The app registers these before boot; the engine's event pump and frame-end
 // call them. Keeps the C engine free of any ImGui/C++ dependency.
 typedef struct {
-    void (*process_event)(const void *sdl_event);
+    /* Nonzero means the host shortcut consumed this event before game input. */
+    int  (*process_event)(const void *sdl_event);
+    /* Called at the event-pump boundary before a new frame begins. */
+    void (*service)(void);
     int  (*wants_input)(void);
     int  (*wants_render)(void);
     int  (*render)(void);  // zero reports a fatal overlay-render failure
 } AppOverlayHooks;
 void platformSetOverlayHooks(const AppOverlayHooks *hooks);
+
+// Apply the game's authored pause mix while the app-owned F1 overlay is open.
+// The overlay layer composes with the game's latest authored volume mode; menu
+// work may update that underlying mode while paused without removing the duck.
+// Audio synthesis continues, so sequencing and the host sink remain continuous.
+void mdkr64_engine_overlay_audio_pause(void);
+void mdkr64_engine_overlay_audio_resume(void);
 
 #ifdef __cplusplus
 }

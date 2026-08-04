@@ -168,7 +168,7 @@ Options:
   --output PATH          Output .app path (default: <build-dir>/mdkr64.app)
   --arch ARCH            Build one architecture: native, arm64, or x86_64
                          (default: native)
-  --version VER          CFBundleShortVersionString / MDKR_VERSION (default: 1.0.3)
+  --version VER          CFBundleShortVersionString / MDKR_VERSION (default: 1.0.4)
   --build-stamp SHA      Source commit shown in the About panel (default: empty)
   --deployment-target V  Minimum macOS version (default: 13.0)
   --strict-deployment-target
@@ -191,7 +191,7 @@ BUILD_TYPE="Release"
 BUILD_DIR=""
 OUTPUT_APP=""
 ARCH="native"
-APP_VERSION="1.0.3"
+APP_VERSION="1.0.4"
 BUILD_STAMP=""
 DEPLOYMENT_TARGET="13.0"
 STRICT_DEPLOYMENT_TARGET=false
@@ -255,7 +255,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ "${APP_VERSION}" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] ||
-    die "--version must look like 1.0 or 1.0.3 (no v prefix)"
+    die "--version must look like 1.0 or 1.0.4 (no v prefix)"
 if [[ -n "${BUILD_STAMP}" && ! "${BUILD_STAMP}" =~ ^[0-9a-fA-F]{40}$ ]]; then
     die "--build-stamp must be a full 40-character hexadecimal commit SHA"
 fi

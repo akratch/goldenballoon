@@ -21,6 +21,19 @@
 
 const DKR_ROM_SIZE = 12 * 1024 * 1024; // 0xC00000 — every DKR revision
 
+// Complete canonical .z64 image identities for the two supported revisions.
+// CRC1/CRC2 identifies the cartridge revision; SHA-256 is the acceptance gate
+// that also catches stale, modified, or damaged bytes anywhere in the body.
+// MIRRORS dkr_rom_reference_sha256() in platform/rom_validation.c.
+const DKR_REFERENCE_SHA256 = Object.freeze({
+  "us.v80": "7de1a8fb2a9558cfc3d9ad4497df698c1e89cf7095ac1531557df2af40ba8bcf",
+  "pal.v80": "584d59412b3a8c675f5569516a0406128028929e31544490a4dbc3ab16a038b9",
+});
+
+function dkrReferenceSha256(build) {
+  return build ? (DKR_REFERENCE_SHA256[build] || null) : null;
+}
+
 // The five released revisions.
 //   name/country/revision/crc  <- the decomp's own src/hasm/header.s, which emits
 //                                 them per VERSION_*. Verified against all five
@@ -164,7 +177,7 @@ function dkrDescribeRom(id, name) {
       return `${p} has a ${id.revisionName} header (${id.decompBuild}) but its CRC1/CRC2 ` +
              `(0x${hex8(id.crc1)} / 0x${hex8(id.crc2)}) do not match that revision's reference ` +
              `pair (0x${hex8(id.refCrc1)} / 0x${hex8(id.refCrc2)}) - a modified or imperfect ` +
-             `dump. Continuing anyway.`;
+             `dump. Use a clean reference image, or enable the explicit modified-ROM developer override.`;
     case "other-revision":
       return `${p} is the ${id.revisionName} release of Diddy Kong Racing (decomp build ` +
              `${id.decompBuild}), which this build does not support: it is compiled for ` +
@@ -180,8 +193,9 @@ function dkrDescribeRom(id, name) {
   }
 }
 
-// The whole gate, in the same order as platform/rom_io.c platformInitRom():
-// size -> byte order (converted in place) -> revision.
+// The synchronous identity gate: size -> byte order (converted in place) ->
+// revision. mdkr64-shell.js immediately follows a successful result with the
+// complete Web Crypto SHA-256 gate above the persistence/Play boundary.
 //
 // Returns { error, warning, order, id }. `error` non-null means refuse; the
 // caller must not boot. `warning` non-null means accept and say so.
@@ -209,14 +223,17 @@ function dkrValidateRom(bytes, name) {
   if (id.verdict !== "supported") {
     return { error: msg, warning: null, order, id };
   }
-  return { error: null, warning: id.matchedByCrc ? null : msg, order, id };
+  return id.matchedByCrc
+    ? { error: null, warning: null, order, id }
+    : { error: msg, warning: null, order, id };
 }
 
 // Exported for tests/check_rom_revision.py, which runs this file under node and
 // compares its verdicts against the native binary's. Harmless in a browser.
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
-    DKR_REVISIONS, DKR_ROM_SIZE, dkrSupportedList,
+    DKR_REVISIONS, DKR_ROM_SIZE, DKR_REFERENCE_SHA256, dkrReferenceSha256,
+    dkrSupportedList,
     dkrNormalizeByteOrder, dkrIdentifyRom, dkrDescribeRom, dkrValidateRom,
   };
 }

@@ -1,0 +1,16 @@
+# Same route as audio_options_persist_success, but the gate gives the process
+# an unwritable config destination. First B exposes the blocking warning, A
+# retries, and the final B explicitly accepts session-only levels.
+1250 START 4
+1310 DOWN 4
+1380 START 4
+1520 DOWN 4
+1580 DOWN 4
+1660 A 4
+1780 DOWN 4
+1840 LEFT 4
+1900 DOWN 4
+1960 LEFT 4
+2040 B 4
+2140 A 4
+2240 B 4

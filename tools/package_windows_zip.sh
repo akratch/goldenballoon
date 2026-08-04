@@ -30,7 +30,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 if [[ "$version" != "dev" && ! "$version" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
-  echo "ERROR: version must be dev or bare semver (for example 1.0.3)" >&2
+  echo "ERROR: version must be dev or bare semver (for example 1.0.4)" >&2
   exit 1
 fi
 
@@ -109,9 +109,14 @@ Golden Balloon (Windows portable build)
    legally dumped Diddy Kong Racing ROM (.z64, .v64, or .n64).
 3. For command-line use: GoldenBalloon.exe --rom PATH\TO\your.z64
 
-Known 1.0.3 limitation: keep the extracted app and ROM in reasonably short,
-ASCII-only paths. If the launcher cannot save an otherwise valid ROM choice,
-run: GoldenBalloon.exe --rom C:\ASCII\game.z64
+Windows 10 or 11 x64 and a current graphics driver are recommended. Unicode
+and extended-length ROM, config, diagnostic, and save paths are supported.
+Do not launch the executable from inside the zip: extract the whole folder so
+settings and the controller database remain available.
+
+WebGPU is the default. If startup fails, copy the launcher's Diagnostics details
+before closing it. `set MDKR_RENDERER=gl` selects the diagnostic OpenGL backend
+for that Command Prompt session. Press F1 in-game for the pause overlay.
 
 This app ships no game data. See README.md for controls and support details.
 EOF

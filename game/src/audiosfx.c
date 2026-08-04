@@ -22,7 +22,37 @@ s32 gSoundGlobalVolume = 256;
 s16 gNumActiveSounds = 0;
 s16 *gSoundGroupVolume;
 static u16 gSoundGroupCount;
+/* `gSoundPlayerPtr` is a static address, so pointer non-NULL is not enough to
+ * establish that its event queue exists. Settings may publish their selected
+ * SFX scalar before audio_init() has completed; retain that scalar, but do not
+ * walk/post into a partially constructed player. */
+static s32 gSoundPlayerReady;
+#ifdef NATIVE_PORT
+/* App-overlay ducking is an output layer, not an authored group-volume mode.
+ * Keeping it separate means a paused menu may update its desired group state
+ * without making live race effects audible through the overlay. */
+static u8 sSoundOverlayPaused;
 
+static u16 sndp_effective_group_volume(u8 groupId, u16 authoredVolume) {
+    if (sSoundOverlayPaused && groupId != 1) {
+        return 0;
+    }
+    return authoredVolume;
+}
+
+static u16 sndp_group_volume_for_key(ALKeyMap *keyMap) {
+    s32 groupId = SOUND_PARAM_GROUP(keyMap);
+    if (gSoundGroupVolume == NULL || gSoundGroupCount == 0) {
+        return sndp_effective_group_volume(
+            (u8) groupId, AL_SNDP_GROUP_VOLUME_MAX);
+    }
+    if (mdkr_audio_group_valid(groupId) && groupId < gSoundGroupCount) {
+        return sndp_effective_group_volume(
+            (u8) groupId, gSoundGroupVolume[groupId]);
+    }
+    return sndp_effective_group_volume(0, gSoundGroupVolume[0]);
+}
+#else
 static u16 sndp_group_volume_for_key(ALKeyMap *keyMap) {
     s32 groupId = SOUND_PARAM_GROUP(keyMap);
     if (gSoundGroupVolume == NULL || gSoundGroupCount == 0) {
@@ -33,6 +63,7 @@ static u16 sndp_group_volume_for_key(ALKeyMap *keyMap) {
     }
     return gSoundGroupVolume[0];
 }
+#endif
 
 /**** Debug strings ****/
 const char D_800E4AB0[] = "Bad soundState: voices =%d, states free =%d, states busy =%d, type %d data %x\n";
@@ -49,12 +80,81 @@ void func_80065A80(ALSynth *arg0, struct PVoice_s *arg1, s16 arg2);
  * Sets the global volume level for all sounds.
  */
 void sndp_set_global_volume(u32 volume) {
+    OSIntMask mask;
+    ALSoundState *state;
+    ALSndpEvent evt;
+
     if (volume > 256) {
         volume = 256;
     }
+    if ((s32)volume == gSoundGlobalVolume) {
+        return;
+    }
 
+    mask = osSetIntMask(OS_IM_NONE);
     gSoundGlobalVolume = volume;
+
+    /* A pre-init update is intentionally remembered for voices created later.
+     * There cannot yet be a live voice whose cached gain needs refreshing. */
+    if (!gSoundPlayerReady) {
+        osSetIntMask(mask);
+        return;
+    }
+
+    /* Existing voices cache their computed gain. The original setter only
+     * changed the scalar, so loops (most visibly vehicle engines) could ignore
+     * a live settings change until some unrelated volume event arrived. A
+     * dedicated coalesced event recomputes gain without overwriting the
+     * per-sound volume or borrowing the authored group fade duration. */
+    state = gSoundStateLists.allocHead;
+    while (state != NULL) {
+        sndp_remove_events(
+            &gSoundPlayerPtr->evtq, state, AL_SNDP_GLOBAL_VOL_EVT);
+        evt.common.type = AL_SNDP_GLOBAL_VOL_EVT;
+        evt.common.state = state;
+        alEvtqPostEvent(&gSoundPlayerPtr->evtq, (ALEvent *)&evt, 0);
+        state = state->next;
+    }
+    osSetIntMask(mask);
 }
+
+#ifdef NATIVE_PORT
+void sndp_set_overlay_pause(s32 paused) {
+    OSIntMask mask;
+    ALSoundState *state;
+    ALSndpEvent evt;
+    u8 next = paused ? TRUE : FALSE;
+
+    if (sSoundOverlayPaused == next) {
+        return;
+    }
+    mask = osSetIntMask(OS_IM_NONE);
+    sSoundOverlayPaused = next;
+    if (!gSoundPlayerReady) {
+        osSetIntMask(mask);
+        return;
+    }
+    state = gSoundStateLists.allocHead;
+    while (state != NULL) {
+        sndp_remove_events(
+            &gSoundPlayerPtr->evtq, state, AL_SNDP_GLOBAL_VOL_EVT);
+        evt.common.type = AL_SNDP_GLOBAL_VOL_EVT;
+        evt.common.state = state;
+        alEvtqPostEvent(&gSoundPlayerPtr->evtq, (ALEvent *)&evt, 0);
+        state = state->next;
+    }
+    osSetIntMask(mask);
+}
+
+s32 sndp_overlay_pause_active(void) {
+    return sSoundOverlayPaused != FALSE;
+}
+
+u16 sndp_get_effective_group_volume(u8 groupId) {
+    return sndp_effective_group_volume(
+        groupId, sndp_get_group_volume(groupId));
+}
+#endif
 
 /**
  * Returns the global volume level applied to all sounds.
@@ -85,6 +185,10 @@ void sndp_init_player(audioMgrConfig *c) {
     ALSoundState *sounds;
     ALEvent evt;
     ALEventListItem *items;
+
+    /* Do not let a settings publish observe a half-constructed event queue if
+     * initialization is ever made re-entrant. */
+    gSoundPlayerReady = FALSE;
 
     /*
      * Init member variables
@@ -135,6 +239,7 @@ void sndp_init_player(audioMgrConfig *c) {
     evt.type = AL_SNDP_API_EVT;
     alEvtqPostEvent(&gSoundPlayerPtr->evtq, (ALEvent *) &evt, gSoundPlayerPtr->frameTime);
     gSoundPlayerPtr->nextDelta = alEvtqNextEvent(&gSoundPlayerPtr->evtq, &gSoundPlayerPtr->nextEvent);
+    gSoundPlayerReady = TRUE;
 }
 
 /**
@@ -423,6 +528,20 @@ void sndp_handle_event(SoundPlayer *sndp, ALSndpEvent *event) {
                                1);
                     volume = (u32) (volume * gSoundGlobalVolume) >> 8;
                     alSynSetVol(sndp->drvr, &soundState->voice, volume, delta);
+                }
+                break;
+            case AL_SNDP_GLOBAL_VOL_EVT:
+                if (soundState->state == SOUND_STATE_PLAYING) {
+                    volume = MAX(
+                        0, sndp_group_volume_for_key(keyMap) *
+                                   (sound->envelope->decayVolume *
+                                    soundState->volume * sound->sampleVolume /
+                                    16129) /
+                                   AL_SNDP_GROUP_VOLUME_MAX -
+                               1);
+                    volume = (u32)(volume * gSoundGlobalVolume) >> 8;
+                    alSynSetVol(
+                        sndp->drvr, &soundState->voice, volume, 1000);
                 }
                 break;
             case AL_SNDP_DECAY_EVT:

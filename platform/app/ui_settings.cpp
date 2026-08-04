@@ -3,9 +3,12 @@
 #include "app_config.h"
 #include "app_theme.h"
 #include "app_ui_policy.h"
+#include "app_window.h"
 #include "ui_common.h"
 
+#include "controller_mapping.h"
 #include "video_config.h"
+#include "platform_os.h"
 
 #include "imgui.h"
 
@@ -40,14 +43,41 @@ std::string g_uiScaleError;
 bool g_frameLimitRectValid = false;
 ImVec2 g_frameLimitRectMin;
 ImVec2 g_frameLimitRectMax;
+bool g_frameLimitPopupOpen = false;
+int g_frameLimitFocusedIndex = -1;
 bool g_frameLimitRetryRectValid = false;
 ImVec2 g_frameLimitRetryRectMin;
 ImVec2 g_frameLimitRetryRectMax;
+bool g_uiScaleRectValid = false;
+ImVec2 g_uiScaleRectMin;
+ImVec2 g_uiScaleRectMax;
 bool g_smokeGamepadFocusUsed = false;
 
 void setStatus(const char *text, const ImVec4 &color) {
     g_status = text ? text : "";
     g_statusColor = color;
+}
+
+bool drawSettingsSectionHeader(const char *label,
+                               ImGuiTreeNodeFlags flags) {
+    // These rows are independent expandable sections, not mutually exclusive
+    // tabs. Keep resting and hover surfaces neutral; the chevron and a gold
+    // leading rule communicate the open state without making every open
+    // section look like another selected destination.
+    ImGui::PushStyleColor(ImGuiCol_Header, AppTheme::hex(0x29292C));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, AppTheme::hex(0x38383C));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, AppTheme::hex(0x424247));
+    const bool open = ImGui::CollapsingHeader(label, flags);
+    ImGui::PopStyleColor(3);
+    if (open) {
+        const ImVec2 min = ImGui::GetItemRectMin();
+        const ImVec2 max = ImGui::GetItemRectMax();
+        ImGui::GetWindowDrawList()->AddRectFilled(
+            min, ImVec2(min.x + 3.0f * AppTheme::uiScale(), max.y),
+            ImGui::GetColorU32(AppTheme::accent()),
+            2.0f * AppTheme::uiScale());
+    }
+    return open;
 }
 
 void reportResult(MdkrVideoRuntimeResult r, const MdkrVideoSchema *s) {
@@ -79,6 +109,35 @@ void reportResult(MdkrVideoRuntimeResult r, const MdkrVideoSchema *s) {
                              "[app-ui-test] visible settings error: %s\n", buf);
             }
             break;
+        case MDKR_VIDEO_RUNTIME_SAVE_UNCONFIRMED:
+            std::snprintf(buf, sizeof(buf),
+                          "%s applied, but the operating system could not confirm durable "
+                          "storage. It may need to be selected again after an unexpected "
+                          "shutdown.",
+                          s->label);
+            setStatus(buf, AppTheme::accent());
+            break;
+        case MDKR_VIDEO_RUNTIME_PENDING:
+            std::snprintf(buf, sizeof(buf),
+                          "%s will apply at the next safe frame boundary.",
+                          s->label);
+            setStatus(buf, AppTheme::accent());
+            break;
+        case MDKR_VIDEO_RUNTIME_APPLY_FAILED:
+            std::snprintf(buf, sizeof(buf),
+                          "%s could not be applied by the operating system. "
+                          "The previous setting was kept.", s->label);
+            setStatus(buf, AppTheme::bad());
+            break;
+        case MDKR_VIDEO_RUNTIME_ROLLBACK_FAILED:
+            std::snprintf(
+                buf, sizeof(buf),
+                "%s could not be saved, and the operating system did not "
+                "restore the previous window state. The saved preference is "
+                "unchanged; use F11 or Alt+Enter, or restart the app.",
+                s->label);
+            setStatus(buf, AppTheme::bad());
+            break;
         case MDKR_VIDEO_RUNTIME_INVALID:
         default:
             std::snprintf(buf, sizeof(buf), "That value is not valid for %s.", s->label);
@@ -88,22 +147,34 @@ void reportResult(MdkrVideoRuntimeResult r, const MdkrVideoSchema *s) {
 }
 
 bool resultSucceeded(MdkrVideoRuntimeResult result) {
-    return result == MDKR_VIDEO_RUNTIME_LIVE ||
-           result == MDKR_VIDEO_RUNTIME_RESTART;
+    return mdkr_video_runtime_result_applied(result) != 0;
 }
 
-bool commitEdit(MdkrVideoKey key, const MdkrVideoSchema *schema,
+bool commitEdit(SDL_Window *window, MdkrVideoKey key,
+                const MdkrVideoSchema *schema,
                 EditState &edit, const char *value) {
-    const MdkrVideoRuntimeResult result =
-        mdkr_video_config_runtime_set(key, value);
+    const MdkrVideoRuntimeResult result = key == MDKR_WINDOW_MODE
+        ? AppWindow_requestMode(window, value)
+        : mdkr_video_config_runtime_set(key, value);
     reportResult(result, schema);
+    if (result == MDKR_VIDEO_RUNTIME_PENDING) {
+        edit.error.clear();
+        return false;
+    }
     if (resultSucceeded(result)) {
         edit.dirty = false;
         edit.initialized = false;  // resync from the authoritative desired value
         edit.error.clear();
+        if (key == MDKR_INPUT_RUMBLE_ENABLED ||
+            key == MDKR_INPUT_RUMBLE_PROFILE) {
+            platform_pad_rumble_preferences_changed();
+        }
         return true;
     }
     edit.error = g_status;
+    if (mdkr_video_key_is_audio(key)) {
+        mdkr_audio_config_runtime_cancel_preview();
+    }
     return false;
 }
 
@@ -128,11 +199,18 @@ bool differsFromLive(MdkrVideoKey k, const MdkrVideoSchema *s) {
     return d->number != l->number;
 }
 
-void formatValue(const MdkrVideoSchema *s, const MdkrVideoValue *v, char *out, size_t cap) {
+void formatValue(MdkrVideoKey key, const MdkrVideoSchema *s,
+                 const MdkrVideoValue *v, char *out, size_t cap) {
     if (!v) { std::snprintf(out, cap, "?"); return; }
     switch (s->type) {
         case MDKR_VIDEO_TYPE_STRING: std::snprintf(out, cap, "%s", v->text); break;
-        case MDKR_VIDEO_TYPE_INT:    std::snprintf(out, cap, "%d", (int)v->number); break;
+        case MDKR_VIDEO_TYPE_INT:
+            if (mdkr_video_key_is_audio(key)) {
+                std::snprintf(out, cap, "%d%%", (int)v->number);
+            } else {
+                std::snprintf(out, cap, "%d", (int)v->number);
+            }
+            break;
         default:                     std::snprintf(out, cap, "%.2f", (double)v->number); break;
     }
 }
@@ -160,39 +238,42 @@ const char *sourceName(MdkrVideoSource src) {
 struct Option { const char *value; const char *label; };
 struct Options { const Option *items; int count; };
 
-constexpr const char *kRecommendedFrameLimitLabel =
-    "Original (Recommended / Proven)";
-constexpr const char *kExperimentalFrameLimitGroup =
-    "Experimental \xE2\x80\x94 Under Construction";
-constexpr const char *kExperimentalFrameLimitCaveat =
-    "Non-Original choices only alter host pacing and input/event-pump "
-    "opportunities. In 1.0.1+ they do not increase unique visual FPS; the "
-    "supported US 1.1 game remains at its authored ~30 FPS. Any benefit may "
-    "be negligible, while higher settings can use more CPU. Original is "
-    "Recommended / Proven.";
+constexpr const char *kOriginalFrameLimitLabel =
+    "Original (recommended)";
+constexpr const char *kModernFrameLimitGroup =
+    "Higher refresh rates";
+constexpr const char *kFrameLimitHelp =
+    "Original presents each authored image once. Higher rates repeat authored "
+    "images when smoothing is Off, or create in-between images when it is "
+    "Interpolated. Gameplay speed does not change. Higher rates can use more "
+    "CPU and GPU time. Uncapped removes the native limit only when new "
+    "interpolated images are available; held frames stay display-paced. A "
+    "browser always maps Uncapped to Match Display.";
 
 const Option kCadence[] = {
     {"original", "Original (recommended)"},
-    {"enhanced", "Enhanced (changes gameplay)"},
+    {"enhanced", "Enhanced (compatibility; changes gameplay)"},
 };
 const Option kFrameLimit[] = {
-    {"original", kRecommendedFrameLimitLabel},
-    {"display",  "Match Display (Experimental \xE2\x80\x94 Under Construction)"},
-    {"60",       "60 Hz (Experimental \xE2\x80\x94 Under Construction)"},
-    {"120",      "120 Hz (Experimental \xE2\x80\x94 Under Construction)"},
-    {"144",      "144 Hz (Experimental \xE2\x80\x94 Under Construction)"},
-    {"165",      "165 Hz (Experimental \xE2\x80\x94 Under Construction)"},
-    {"240",      "240 Hz (Experimental \xE2\x80\x94 Under Construction)"},
-    {"uncapped", "Uncapped (Experimental \xE2\x80\x94 Under Construction)"},
+    {"original", kOriginalFrameLimitLabel},
+    {"display",  "Match Display"},
+    {"30",       "30 Hz"},
+    {"60",       "60 Hz"},
+    {"90",       "90 Hz"},
+    {"120",      "120 Hz"},
+    {"144",      "144 Hz"},
+    {"165",      "165 Hz"},
+    {"240",      "240 Hz"},
+    {"uncapped", "Uncapped (native)"},
 };
-const Option kSmoothing[] = {
-    {"off", "Unavailable in 1.0.1+ (authored images only)"},
+const Option kMotionSmoothing[] = {
+    {"interpolate", "Interpolated (preview)"},
+    {"off",         "Off (original motion)"},
 };
 const Option kMode[] = {
-    {"pure",       "Pure"},
-    {"restored",   "Restored"},
-    {"remastered", "Remastered (Work in Progress)"},
-    {"custom",     "Custom"},
+    {"pure",       "Pure (reference presentation)"},
+    {"restored",   "Restored (recommended)"},
+    {"remastered", "Remastered (work in progress)"},
 };
 // The canonical spellings only. mdkr_video_world_shadows_canonical() also takes
 // "0"/"1"/"on"/"" so the MDKR_WORLD_SHADOW diagnostic seam keeps working, but a
@@ -200,19 +281,58 @@ const Option kMode[] = {
 const Option kShadows[] = {
     {"full", "Full"}, {"soft", "Soft"}, {"off", "Off"},
 };
+const Option kWindowMode[] = {
+    {"windowed", "Windowed"},
+    {"fullscreen", "Fullscreen (borderless)"},
+};
+const Option kRumbleProfile[] = {
+    {"light", "Light (35%)"},
+    {"balanced", "Balanced (65%)"},
+    {"strong", "Strong (100%)"},
+};
+const Option kControllerAction[] = {
+    {"none", "None"},
+    {"a", "N64 A"},
+    {"b", "N64 B"},
+    {"z", "N64 Z trigger"},
+    {"start", "N64 Start"},
+    {"l", "N64 L"},
+    {"r", "N64 R"},
+    {"dpad_up", "N64 D-pad up"},
+    {"dpad_down", "N64 D-pad down"},
+    {"dpad_left", "N64 D-pad left"},
+    {"dpad_right", "N64 D-pad right"},
+    {"c_up", "N64 C-up"},
+    {"c_down", "N64 C-down"},
+    {"c_left", "N64 C-left"},
+    {"c_right", "N64 C-right"},
+};
 
 bool optionsFor(MdkrVideoKey k, Options &out) {
+    if (k >= MDKR_INPUT_CONTROLLER_A &&
+        k <= MDKR_INPUT_CONTROLLER_RIGHT_STICK_RIGHT) {
+        out = {kControllerAction,
+               static_cast<int>(sizeof(kControllerAction) /
+                                sizeof(kControllerAction[0]))};
+        return true;
+    }
     switch (k) {
         case MDKR_VIDEO_SIMULATION_CADENCE: out = {kCadence, 2}; return true;
-        case MDKR_VIDEO_FRAME_LIMIT:        out = {kFrameLimit, 8}; return true;
-        case MDKR_VIDEO_MOTION_SMOOTHING:   out = {kSmoothing, 1}; return true;
-        case MDKR_VIDEO_MODE:               out = {kMode, 4}; return true;
+        case MDKR_VIDEO_FRAME_LIMIT:        out = {kFrameLimit, 10}; return true;
+        case MDKR_VIDEO_MOTION_SMOOTHING:
+            out = {kMotionSmoothing, 2}; return true;
+        case MDKR_VIDEO_MODE:               out = {kMode, 3}; return true;
         case MDKR_VIDEO_WORLD_SHADOWS:      out = {kShadows, 3}; return true;
+        case MDKR_WINDOW_MODE:              out = {kWindowMode, 2}; return true;
+        case MDKR_INPUT_RUMBLE_PROFILE:     out = {kRumbleProfile, 3}; return true;
         default: return false;
     }
 }
 
 const char *optionLabel(MdkrVideoKey key, const char *value) {
+    if (key == MDKR_VIDEO_MODE && std::strcmp(value, "custom") == 0) {
+        return "Custom (Individual Settings)";
+    }
     Options options;
     if (!optionsFor(key, options)) return value;
     for (int i = 0; i < options.count; ++i) {
@@ -226,31 +346,43 @@ const char *optionLabel(MdkrVideoKey key, const char *value) {
 const char *helpFor(MdkrVideoKey key, const MdkrVideoSchema *schema) {
     switch (key) {
         case MDKR_VIDEO_SIMULATION_CADENCE:
-            return "Original preserves the game's physics timing. Enhanced "
-                   "changes gameplay and is intended for compatibility use.";
+            return "Original preserves retail physics, AI, timers, and input "
+                   "timing. Enhanced is a compatibility mode for older port "
+                   "configurations and changes gameplay speed. It is not an "
+                   "FPS setting.";
         case MDKR_VIDEO_FRAME_LIMIT:
-            return kExperimentalFrameLimitCaveat;
+            return kFrameLimitHelp;
         case MDKR_VIDEO_MOTION_SMOOTHING:
-            return "Motion interpolation is disabled for 1.0.1+ while retained "
-                   "render dependencies are completed. The surface updates "
-                   "only when a complete authored game image is ready.";
+            return "Interpolated blends adjacent authored presentation states "
+                   "at the display's exact fractional time. Simulation, input, "
+                   "audio, timers, and saves still advance only on Original "
+                   "gameplay ticks. Off shows authored images only.";
+        case MDKR_VIDEO_MODE:
+            // The section introduction directly above this control explains the
+            // three modes; repeating the schema paragraph creates a text wall.
+            return nullptr;
         default:
             return schema->help;
     }
 }
 
 // --- One row ---------------------------------------------------------------
-bool drawKey(MdkrVideoKey k, bool compact) {
+bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
     const MdkrVideoSchema *s = mdkr_video_schema(k);
     const MdkrVideoValue  *d = desired(k);
     if (!s || !d) return false;
 
     const bool locked = mdkr_video_config_runtime_locked(k) != 0;
+    const MdkrVideoValue *rumbleEnabled =
+        desired(MDKR_INPUT_RUMBLE_ENABLED);
+    const bool rumbleProfileUnavailable =
+        k == MDKR_INPUT_RUMBLE_PROFILE && rumbleEnabled != nullptr &&
+        rumbleEnabled->number == 0.0f;
     bool changed = false;
     EditState &editState = g_edits[static_cast<size_t>(k)];
 
     ImGui::PushID((int)k);
-    if (locked) ImGui::BeginDisabled();
+    if (locked || rumbleProfileUnavailable) ImGui::BeginDisabled();
 
     ImGui::TextUnformatted(s->label);
     if (s->scope == MDKR_VIDEO_SCOPE_RESTART) {
@@ -261,7 +393,7 @@ bool drawKey(MdkrVideoKey k, bool compact) {
     ImGui::SetNextItemWidth(ui::kControlWidth());
 
     char valueBuf[MDKR_VIDEO_STRING_MAX];
-    formatValue(s, d, valueBuf, sizeof(valueBuf));
+    formatValue(k, s, d, valueBuf, sizeof(valueBuf));
 
     Options opts;
     if (optionsFor(k, opts)) {
@@ -291,6 +423,7 @@ bool drawKey(MdkrVideoKey k, bool compact) {
         const bool comboOpen = ImGui::BeginCombo("##v", preview);
         editState.active = comboOpen;
         if (k == MDKR_VIDEO_FRAME_LIMIT) {
+            g_frameLimitPopupOpen = comboOpen;
             g_frameLimitRectMin = ImGui::GetItemRectMin();
             g_frameLimitRectMax = ImGui::GetItemRectMax();
             g_frameLimitRectValid = true;
@@ -313,14 +446,33 @@ bool drawKey(MdkrVideoKey k, bool compact) {
         if (comboOpen) {
             for (int i = 0; i < opts.count; ++i) {
                 if (k == MDKR_VIDEO_FRAME_LIMIT && i == 1) {
-                    ImGui::SeparatorText(kExperimentalFrameLimitGroup);
+                    ImGui::SeparatorText(kModernFrameLimitGroup);
                 }
                 const bool selected = i == cur;
-                if (ImGui::Selectable(opts.items[i].label, selected)) {
+                if (ImGui::Selectable(
+                        opts.items[i].label, selected, 0,
+                        ImVec2(0.0f, ui::kTouchRowHeight()))) {
+                    if (k == MDKR_VIDEO_FRAME_LIMIT &&
+                        std::getenv("MDKR_APP_UI_INPUT_TRACE") != nullptr) {
+                        std::fprintf(stderr,
+                                     "[app-ui-test] frame-limit activated "
+                                     "index=%d value=%s\n",
+                                     i, opts.items[i].value);
+                    }
                     std::snprintf(editState.text, sizeof(editState.text), "%s",
                                   opts.items[i].value);
                     editState.dirty = true;
-                    changed = commitEdit(k, s, editState, editState.text);
+                    changed = commitEdit(
+                        window, k, s, editState, editState.text);
+                }
+                if (k == MDKR_VIDEO_FRAME_LIMIT && ImGui::IsItemFocused()) {
+                    g_frameLimitFocusedIndex = i;
+                    if (std::getenv("MDKR_APP_UI_INPUT_TRACE") != nullptr) {
+                        std::fprintf(stderr,
+                                     "[app-ui-test] frame-limit focused "
+                                     "index=%d value=%s\n",
+                                     i, opts.items[i].value);
+                    }
                 }
                 if (selected) ImGui::SetItemDefaultFocus();
             }
@@ -344,7 +496,7 @@ bool drawKey(MdkrVideoKey k, bool compact) {
         const bool commit = entered || ImGui::IsItemDeactivatedAfterEdit();
         editState.active = ImGui::IsItemActive();
         if (commit && editState.dirty) {
-            changed = commitEdit(k, s, editState, editState.text);
+            changed = commitEdit(window, k, s, editState, editState.text);
         }
     } else if (s->type == MDKR_VIDEO_TYPE_INT && s->min == 0.0f && s->max == 1.0f) {
         if (!editState.initialized || (!editState.active && !editState.dirty)) {
@@ -355,7 +507,7 @@ bool drawKey(MdkrVideoKey k, bool compact) {
         if (ImGui::Checkbox("##v", &on)) {
             editState.number = on ? 1.0f : 0.0f;
             editState.dirty = true;
-            changed = commitEdit(k, s, editState, on ? "1" : "0");
+            changed = commitEdit(window, k, s, editState, on ? "1" : "0");
         }
     } else if (s->type == MDKR_VIDEO_TYPE_INT) {
         if (!editState.initialized || (!editState.active && !editState.dirty)) {
@@ -363,10 +515,14 @@ bool drawKey(MdkrVideoKey k, bool compact) {
             editState.initialized = true;
         }
         int v = static_cast<int>(editState.number);
-        const bool previewChanged =
-            ImGui::SliderInt("##v", &v, (int)s->min, (int)s->max);
+        const bool previewChanged = ImGui::SliderInt(
+            "##v", &v, (int)s->min, (int)s->max,
+            mdkr_video_key_is_audio(k) ? "%d%%" : "%d");
         if (previewChanged) {
             editState.number = static_cast<float>(v);
+            if (mdkr_video_key_is_audio(k)) {
+                (void)mdkr_audio_config_runtime_preview(k, v);
+            }
         }
         const bool commit = AppUi_deferredCommit(
             previewChanged, ImGui::IsItemDeactivatedAfterEdit(), &editState.dirty);
@@ -374,7 +530,7 @@ bool drawKey(MdkrVideoKey k, bool compact) {
         if (commit && editState.dirty) {
             char buf[32];
             std::snprintf(buf, sizeof(buf), "%d", v);
-            changed = commitEdit(k, s, editState, buf);
+            changed = commitEdit(window, k, s, editState, buf);
         }
     } else {
         if (!editState.initialized || (!editState.active && !editState.dirty)) {
@@ -390,7 +546,7 @@ bool drawKey(MdkrVideoKey k, bool compact) {
             char buf[32];
             std::snprintf(buf, sizeof(buf), "%.2f",
                           static_cast<double>(editState.number));
-            changed = commitEdit(k, s, editState, buf);
+            changed = commitEdit(window, k, s, editState, buf);
         }
     }
 
@@ -398,8 +554,8 @@ bool drawKey(MdkrVideoKey k, bool compact) {
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
         ImGui::TextWrapped("%s", editState.error.c_str());
         ImGui::PopStyleColor();
-        const bool retryPressed =
-            editState.dirty && ImGui::SmallButton("Retry save");
+        const bool retryPressed = editState.dirty && ImGui::Button(
+            "Retry Save", ImVec2(0.0f, ui::kBtnSecondary().y));
         if (editState.dirty && k == MDKR_VIDEO_FRAME_LIMIT) {
             g_frameLimitRetryRectMin = ImGui::GetItemRectMin();
             g_frameLimitRetryRectMax = ImGui::GetItemRectMax();
@@ -420,19 +576,29 @@ bool drawKey(MdkrVideoKey k, bool compact) {
                 std::snprintf(retry, sizeof(retry), "%.2f",
                               static_cast<double>(editState.number));
             }
-            changed = commitEdit(k, s, editState, retry);
+            changed = commitEdit(window, k, s, editState, retry);
         }
     }
 
-    if (locked) {
+    if (locked || rumbleProfileUnavailable) {
         ImGui::EndDisabled();
-        ui::TextSubtle("Fixed by the %s (%s=%s). Unset it to edit here.",
-                       sourceName(d->source), s->env, valueBuf);
+        if (rumbleProfileUnavailable && !locked) {
+            ui::TextSubtle("Enable rumble to choose a strength.");
+        } else if (mdkr_video_config_is_readonly()) {
+            ui::TextSubtle("Locked for this Pure session.");
+        } else if (d->source == MDKR_VIDEO_SOURCE_CLI) {
+            ui::TextSubtle("Fixed by a command-line option for this session.");
+        } else if (d->source == MDKR_VIDEO_SOURCE_ENV) {
+            ui::TextSubtle("Fixed by %s for this session.", s->env);
+        } else {
+            ui::TextSubtle("Fixed by the %s for this session.",
+                           sourceName(d->source));
+        }
     } else if (s->scope == MDKR_VIDEO_SCOPE_RESTART && differsFromLive(k, s)) {
         // The honest RESTART presentation: say what is running NOW and what will
         // be running next launch. Never imply the change already took effect.
         char liveBuf[MDKR_VIDEO_STRING_MAX];
-        formatValue(s, live(k), liveBuf, sizeof(liveBuf));
+        formatValue(k, s, live(k), liveBuf, sizeof(liveBuf));
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
         ImGui::Text("Saved for next Play: %s (current: %s)",
                     optionLabel(k, valueBuf), optionLabel(k, liveBuf));
@@ -440,7 +606,10 @@ bool drawKey(MdkrVideoKey k, bool compact) {
     }
 
     const char *help = helpFor(k, s);
-    if (!compact && help) {
+    const bool controllerBinding =
+        k >= MDKR_INPUT_CONTROLLER_A &&
+        k <= MDKR_INPUT_CONTROLLER_RIGHT_STICK_RIGHT;
+    if (!compact && help && !controllerBinding) {
         ImGui::PushTextWrapPos(0.0f);
         ui::TextSubtle("%s", help);
         ImGui::PopTextWrapPos();
@@ -457,8 +626,8 @@ bool drawKey(MdkrVideoKey k, bool compact) {
                 stderr,
                 "[app-ui] frame-limit-contract recommended=\"%s\" "
                 "group=\"%s\" caveat=\"%s\"\n",
-                kRecommendedFrameLimitLabel, kExperimentalFrameLimitGroup,
-                kExperimentalFrameLimitCaveat);
+                kOriginalFrameLimitLabel, kModernFrameLimitGroup,
+                kFrameLimitHelp);
             tracedFrameLimit = true;
         }
     }
@@ -468,7 +637,61 @@ bool drawKey(MdkrVideoKey k, bool compact) {
     return changed;
 }
 
+bool restoreControllerDefaults() {
+    constexpr size_t kInputCount =
+        static_cast<size_t>(MDKR_INPUT_LAST_KEY - MDKR_INPUT_FIRST_KEY + 1);
+    MdkrVideoConfig defaults;
+    std::array<std::string, kInputCount> values;
+    std::array<MdkrVideoRuntimeChange, kInputCount> changes;
+
+    mdkr_video_config_defaults(&defaults);
+    for (size_t i = 0; i < kInputCount; ++i) {
+        const MdkrVideoKey key = static_cast<MdkrVideoKey>(
+            static_cast<int>(MDKR_INPUT_FIRST_KEY) + static_cast<int>(i));
+        const MdkrVideoSchema *schema = mdkr_video_schema(key);
+        if (schema == nullptr) return false;
+        if (schema->type == MDKR_VIDEO_TYPE_STRING) {
+            values[i] = defaults.values[key].text;
+        } else {
+            values[i] = std::to_string(
+                static_cast<int>(defaults.values[key].number));
+        }
+        changes[i] = {key, values[i].c_str()};
+    }
+
+    const MdkrVideoRuntimeResult result = mdkr_video_config_runtime_set_many(
+        changes.data(), static_cast<int>(changes.size()));
+    if (!resultSucceeded(result)) {
+        reportResult(result, mdkr_video_schema(MDKR_INPUT_RUMBLE_ENABLED));
+        return false;
+    }
+    for (int key = MDKR_INPUT_FIRST_KEY; key <= MDKR_INPUT_LAST_KEY; ++key) {
+        EditState &edit = g_edits[static_cast<size_t>(key)];
+        edit.initialized = false;
+        edit.active = false;
+        edit.dirty = false;
+        edit.error.clear();
+    }
+    platform_pad_rumble_preferences_changed();
+    setStatus("Controller mappings and rumble defaults restored.",
+              AppTheme::good());
+    return true;
+}
+
 }  // namespace
+
+void Settings_cancelAudioPreview() {
+    mdkr_audio_config_runtime_cancel_preview();
+    for (MdkrVideoKey key : {MDKR_AUDIO_MASTER_VOLUME,
+                             MDKR_AUDIO_MUSIC_VOLUME,
+                             MDKR_AUDIO_EFFECTS_VOLUME}) {
+        EditState &edit = g_edits[static_cast<size_t>(key)];
+        edit.initialized = false;
+        edit.active = false;
+        edit.dirty = false;
+        edit.error.clear();
+    }
+}
 
 void Settings_loadUiScalePreference() {
     const std::string stored = AppConfig::get("ui_scale", "1.0");
@@ -493,6 +716,23 @@ bool Settings_smokeFrameLimitCenter(int *x, int *y) {
     return true;
 }
 
+bool Settings_smokeFrameLimitPopup(int *focusedIndex) {
+    if (!focusedIndex || !g_frameLimitPopupOpen) return false;
+    *focusedIndex = g_frameLimitFocusedIndex;
+    return true;
+}
+
+int Settings_smokeFrameLimitDownSteps(const char *from, const char *to) {
+    if (!from || !to) return -1;
+    int fromIndex = -1;
+    int toIndex = -1;
+    for (int i = 0; i < static_cast<int>(std::size(kFrameLimit)); ++i) {
+        if (std::strcmp(kFrameLimit[i].value, from) == 0) fromIndex = i;
+        if (std::strcmp(kFrameLimit[i].value, to) == 0) toIndex = i;
+    }
+    return fromIndex >= 0 && toIndex >= fromIndex ? toIndex - fromIndex : -1;
+}
+
 bool Settings_smokeFrameLimitRetryCenter(int *x, int *y) {
     if (!x || !y || !g_frameLimitRetryRectValid) return false;
     *x = static_cast<int>(
@@ -502,23 +742,29 @@ bool Settings_smokeFrameLimitRetryCenter(int *x, int *y) {
     return true;
 }
 
+bool Settings_smokeUiScaleRect(int *minX, int *minY, int *maxX, int *maxY) {
+    if (!minX || !minY || !maxX || !maxY || !g_uiScaleRectValid) return false;
+    *minX = static_cast<int>(g_uiScaleRectMin.x);
+    *minY = static_cast<int>(g_uiScaleRectMin.y);
+    *maxX = static_cast<int>(g_uiScaleRectMax.x);
+    *maxY = static_cast<int>(g_uiScaleRectMax.y);
+    return true;
+}
+
 void Settings_dumpSchemaContract() {
     std::printf(
         "[app] frame-limit UI contract: recommended=\"%s\" group=\"%s\" "
         "caveat=\"%s\"\n",
-        kRecommendedFrameLimitLabel, kExperimentalFrameLimitGroup,
-        kExperimentalFrameLimitCaveat);
+        kOriginalFrameLimitLabel, kModernFrameLimitGroup,
+        kFrameLimitHelp);
 }
 
 bool Settings_restartPending() {
-    for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
-        const MdkrVideoSchema *s = mdkr_video_schema((MdkrVideoKey)i);
-        if (s && s->scope == MDKR_VIDEO_SCOPE_RESTART &&
-            differsFromLive((MdkrVideoKey)i, s)) {
-            return true;
-        }
-    }
-    return false;
+    /* Keep the launcher, overlay, and original in-game settings on one
+     * predicate. In particular, Video.Mode is a preset label rather than a
+     * staged engine override; the runtime helper correctly evaluates the
+     * individual values expanded by that preset. */
+    return mdkr_video_config_restart_pending() != 0;
 }
 
 int Settings_collectStagedOverrides(const char **out, int cap) {
@@ -532,12 +778,12 @@ int Settings_collectStagedOverrides(const char **out, int cap) {
         const MdkrVideoSchema *s = mdkr_video_schema(k);
         if (!s || s->scope != MDKR_VIDEO_SCOPE_RESTART) continue;
         if (!differsFromLive(k, s)) continue;
-        // Video.Mode is a preset, not a single value: passing it as --video-set
-        // would re-expand the preset over the individual keys the player just
-        // staged. The launcher passes the mode as its own flag instead.
+        // Video.Mode is a preset label, not a single engine override. Passing it
+        // here would re-expand the preset over the individual keys the player
+        // just staged; the engine reads the already-persisted resolved config.
         if (k == MDKR_VIDEO_MODE) continue;
         char v[MDKR_VIDEO_STRING_MAX];
-        formatValue(s, desired(k), v, sizeof(v));
+        formatValue(k, s, desired(k), v, sizeof(v));
         std::snprintf(s_buf[n], sizeof(s_buf[n]), "%s=%s", s->name, v);
         out[n] = s_buf[n];
         ++n;
@@ -545,58 +791,103 @@ int Settings_collectStagedOverrides(const char **out, int cap) {
     return n;
 }
 
-bool Settings_draw(bool compact) {
+bool Settings_draw(SDL_Window *window, bool compact) {
     bool changed = false;
+    g_frameLimitPopupOpen = false;
+    g_frameLimitFocusedIndex = -1;
     g_frameLimitRetryRectValid = false;
+    MdkrVideoRuntimeResult windowResult = MDKR_VIDEO_RUNTIME_INVALID;
+    if (AppWindow_consumeCompleted(&windowResult)) {
+        const MdkrVideoSchema *schema = mdkr_video_schema(MDKR_WINDOW_MODE);
+        EditState &edit = g_edits[static_cast<size_t>(MDKR_WINDOW_MODE)];
+        reportResult(windowResult, schema);
+        if (resultSucceeded(windowResult)) {
+            edit.dirty = false;
+            edit.initialized = false;
+            edit.error.clear();
+            changed = true;
+        } else {
+            edit.error = g_status;
+        }
+    }
     static const MdkrVideoCategory categoryOrder[] = {
-        MDKR_VIDEO_CAT_PACING,
         MDKR_VIDEO_CAT_PRESENTATION,
+        MDKR_VIDEO_CAT_PACING,
+        MDKR_VIDEO_CAT_AUDIO,
+        MDKR_VIDEO_CAT_INPUT,
         MDKR_VIDEO_CAT_FIDELITY,
     };
+    const bool controllerSettingsSmoke =
+        std::getenv("MDKR_APP_SMOKE_CONTROLLER_SETTINGS") != nullptr;
+    const bool smokeControllerRestore =
+        std::getenv("MDKR_APP_SMOKE_CONTROLLER_RESTORE") != nullptr;
+    const bool selectingFrameLimit =
+        std::getenv("MDKR_APP_SMOKE_SELECT_FRAME_LIMIT") != nullptr;
+    int controllerMappingWidgets = 0;
+    int controllerRumbleWidgets = 0;
+    bool controllerRestoreAvailable = false;
+    bool controllerRestoreSucceeded = false;
 
     if (mdkr_video_config_is_readonly()) {
-        // A Pure session never rewrites the ini (video_config.h), so editing
-        // here would silently do nothing. Say so instead of offering dead
-        // controls.
+        // Explicit --pure locks this session's resolved values. Timing and
+        // smoothing are intentionally independent of art-direction presets,
+        // so never describe a retained enhanced choice as "original".
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
         ImGui::TextWrapped(
-            "Pure mode is read-only: it presents the original game exactly as "
-            "authored and never rewrites your settings file. Switch to Restored "
-            "or Remastered to change these.");
+            "Pure locks this session's resolved rendering settings. Frame Limit, "
+            "Motion smoothing, and Simulation cadence keep the values selected "
+            "before launch; review them below for timing comparisons. Audio, "
+            "window, controller, and rumble preferences remain adjustable for "
+            "comfort.");
         ImGui::PopStyleColor();
         ui::Gap(ui::kGapM);
     }
 
-    if (ImGui::CollapsingHeader("Interface", ImGuiTreeNodeFlags_DefaultOpen)) {
+    const ImGuiTreeNodeFlags interfaceFlags =
+        (controllerSettingsSmoke || selectingFrameLimit)
+        ? ImGuiTreeNodeFlags_None : ImGuiTreeNodeFlags_DefaultOpen;
+    if (drawSettingsSectionHeader("Interface", interfaceFlags)) {
         if (!g_uiScaleInitialized) {
             g_uiScaleEdit = AppTheme::uiScale();
             g_uiScaleInitialized = true;
         }
         ui::Gap(ui::kGapS);
+        changed |= drawKey(window, MDKR_WINDOW_MODE, compact);
         ImGui::TextUnformatted("UI scale");
         ImGui::SetNextItemWidth(ui::kControlWidth());
         const bool scalePreviewChanged = ImGui::SliderFloat(
             "##ui-scale", &g_uiScaleEdit, 0.75f, 2.0f, "%.2fx",
             ImGuiSliderFlags_AlwaysClamp);
-        if (scalePreviewChanged) {
-            // Apply at the next pre-NewFrame safe point, never midway through
-            // the current widget tree.
-            AppTheme::requestUiScale(g_uiScaleEdit);
-        }
+        g_uiScaleRectMin = ImGui::GetItemRectMin();
+        g_uiScaleRectMax = ImGui::GetItemRectMax();
+        g_uiScaleRectValid = true;
         if (AppUi_deferredCommit(scalePreviewChanged,
                                  ImGui::IsItemDeactivatedAfterEdit(),
                                  &g_uiScaleDirty)) {
+            // Applying while held changes every widget's geometry underneath
+            // the pointer. That feedback loop made the slider oscillate and
+            // the whole launcher flash. Commit once, on release, and let the
+            // host apply the new metrics at the next safe frame boundary.
+            AppTheme::requestUiScale(g_uiScaleEdit);
             char value[32];
             std::snprintf(value, sizeof(value), "%.2f",
                           static_cast<double>(g_uiScaleEdit));
-            if (AppConfig::setAndSave("ui_scale", value)) {
+            const AppConfig::PersistResult persist =
+                AppConfig::setAndSave("ui_scale", value);
+            if (AppConfig::persistResultApplied(persist)) {
                 g_uiScaleDirty = false;
                 g_uiScaleError.clear();
-                setStatus("UI scale saved.", AppTheme::good());
+                setStatus(
+                    persist == AppConfig::PersistResult::DurabilityUnconfirmed
+                        ? "UI scale applied, but durable storage was not confirmed. "
+                          "It may need to be selected again after an unexpected shutdown."
+                        : "UI scale saved.",
+                    persist == AppConfig::PersistResult::DurabilityUnconfirmed
+                        ? AppTheme::accent() : AppTheme::good());
                 changed = true;
             } else {
                 g_uiScaleError =
-                    "UI scale could not be saved. The preview remains available; "
+                    "UI scale could not be saved. It remains active for this session; "
                     "retry after restoring write access.";
                 setStatus(g_uiScaleError.c_str(), AppTheme::bad());
             }
@@ -605,29 +896,44 @@ bool Settings_draw(bool compact) {
             ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
             ImGui::TextWrapped("%s", g_uiScaleError.c_str());
             ImGui::PopStyleColor();
-            if (ImGui::SmallButton("Retry UI scale save")) {
+            if (ImGui::Button(
+                    "Retry UI Scale Save",
+                    ImVec2(0.0f, ui::kBtnSecondary().y))) {
                 char value[32];
                 std::snprintf(value, sizeof(value), "%.2f",
                               static_cast<double>(g_uiScaleEdit));
-                if (AppConfig::setAndSave("ui_scale", value)) {
+                const AppConfig::PersistResult persist =
+                    AppConfig::setAndSave("ui_scale", value);
+                if (AppConfig::persistResultApplied(persist)) {
                     g_uiScaleDirty = false;
                     g_uiScaleError.clear();
-                    setStatus("UI scale saved.", AppTheme::good());
+                    setStatus(
+                        persist == AppConfig::PersistResult::DurabilityUnconfirmed
+                            ? "UI scale applied, but durable storage was not confirmed. "
+                              "It may need to be selected again after an unexpected shutdown."
+                            : "UI scale saved.",
+                        persist == AppConfig::PersistResult::DurabilityUnconfirmed
+                            ? AppTheme::accent() : AppTheme::good());
                     changed = true;
                 }
             }
         }
         if (!compact) {
             ui::TextSubtleWrapped(
-                "Scales text and controls together. Supported range: 0.75x to 2.00x.");
+                "Scales text and controls together after you release the slider. "
+                "Supported range: 0.75x to 2.00x. For touch, use 1.25x or larger.");
         }
         ui::Gap(ui::kGapS);
     }
 
+    const bool webGpuRenderer =
+        mdkr_render_backend() == MDKR_BACKEND_WEBGPU;
     for (MdkrVideoCategory category : categoryOrder) {
         const int c = static_cast<int>(category);
         const char *catName = category == MDKR_VIDEO_CAT_PACING
-            ? "Frame rate & timing"
+            ? "Frame Rate & Motion"
+            : category == MDKR_VIDEO_CAT_FIDELITY
+            ? "Advanced Graphics"
             : mdkr_video_category_name(category);
         if (!catName) continue;
 
@@ -635,34 +941,143 @@ bool Settings_draw(bool compact) {
         int inCat = 0;
         for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
             const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
-            if (!AppUi_videoSettingVisible(key)) continue;
+            if (!AppUi_videoSettingVisible(key, webGpuRenderer)) continue;
             const MdkrVideoSchema *s = mdkr_video_schema(key);
             if (s && (int)s->category == c) ++inCat;
         }
         if (inCat == 0) continue;
 
-        const ImGuiTreeNodeFlags flags = category == MDKR_VIDEO_CAT_PACING
+        /* Lead with everyday comfort controls while keeping the proven pacing
+         * choice discoverable. The scripted Frame Limit gate collapses Audio
+         * so it still exercises the real widget at small window sizes. */
+        const ImGuiTreeNodeFlags flags =
+            (category == MDKR_VIDEO_CAT_INPUT && controllerSettingsSmoke) ||
+            (!controllerSettingsSmoke &&
+             ((category == MDKR_VIDEO_CAT_PRESENTATION && !selectingFrameLimit) ||
+              category == MDKR_VIDEO_CAT_PACING))
             ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_None;
-        if (ImGui::CollapsingHeader(catName, flags)) {
+        if (drawSettingsSectionHeader(catName, flags)) {
+            if (category == MDKR_VIDEO_CAT_PRESENTATION) {
+                ui::Gap(ui::kGapS);
+                ui::TextSubtleWrapped(
+                    "Restored is the recommended default: widescreen and sharper "
+                    "output while preserving the original art direction. Pure uses "
+                    "the original 4:3 framing. Remastered previews additional "
+                    "lighting, shadows, and finishing effects.");
+                ui::Gap(ui::kGapS);
+                changed |= drawKey(window, MDKR_VIDEO_MODE, compact);
+                if (webGpuRenderer) {
+                    ui::TextSubtle("Graphics backend: WebGPU (recommended)");
+                } else if (!compact) {
+                    if (ui::CardBegin("##renderer-warning", AppTheme::accent(), 0.0f)) {
+                        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+                        ImGui::TextUnformatted("OpenGL diagnostic renderer active");
+                        ImGui::PopStyleColor();
+                        ui::TextSubtleWrapped(
+                            "For the qualified visual path, use WebGPU with Restored.");
+                    }
+                    ui::CardEnd();
+                }
+            }
+            if (category == MDKR_VIDEO_CAT_AUDIO && !compact) {
+                ui::Gap(ui::kGapS);
+                ui::TextSubtleWrapped(
+                    "Master controls everything. Music and Sound effects preserve "
+                    "DKR's original mix buses. Changes apply immediately and are "
+                    "remembered for next time.");
+            }
+            if (category == MDKR_VIDEO_CAT_INPUT) {
+                ui::Gap(ui::kGapS);
+                if (!compact) {
+                    ui::TextSubtleWrapped(
+                        "SDL first normalizes each physical gamepad. Map those "
+                        "named controls to DKR's N64 buttons here; the left stick "
+                        "always remains analog steering, and View/Back remains the "
+                        "in-game overlay shortcut.");
+                }
+                const bool restorePressed = ImGui::Button(
+                    "Restore Controller Defaults", ui::kBtnWide());
+                controllerRestoreAvailable = true;
+                static bool smokeRestoreAttempted = false;
+                const bool runSmokeRestore = controllerSettingsSmoke &&
+                    smokeControllerRestore && !smokeRestoreAttempted;
+                if (restorePressed || runSmokeRestore) {
+                    if (runSmokeRestore) smokeRestoreAttempted = true;
+                    const bool restored = restoreControllerDefaults();
+                    controllerRestoreSucceeded |= restored;
+                    changed |= restored;
+                }
+            }
             if (category == MDKR_VIDEO_CAT_PACING && !compact) {
                 ui::Gap(ui::kGapS);
-                ImGui::PushTextWrapPos(0.0f);
-                ui::TextSubtle(
-                    "Original is Recommended / Proven. Every other frame-limit "
-                    "choice is Experimental \xE2\x80\x94 Under Construction and does not "
-                    "increase unique visual FPS in 1.0.1+.");
-                ImGui::PopTextWrapPos();
+                ui::TextSubtleWrapped(
+                    "Frame Limit controls how often the app presents an image. "
+                    "Motion smoothing can create unique in-between images. Neither "
+                    "setting makes gameplay run faster.");
             }
             ui::Gap(ui::kGapS);
             ImGui::Indent(ui::kGapM);
             for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
                 const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
-                if (!AppUi_videoSettingVisible(key)) continue;
+                if (!AppUi_videoSettingVisible(key, webGpuRenderer)) continue;
                 const MdkrVideoSchema *s = mdkr_video_schema(key);
                 if (!s || (int)s->category != c) continue;
-                changed |= drawKey(key, compact);
+                if (key == MDKR_VIDEO_MODE) continue;
+                if (category == MDKR_VIDEO_CAT_PACING) {
+                    continue;
+                }
+                changed |= drawKey(window, key, compact);
+                if (category == MDKR_VIDEO_CAT_INPUT) {
+                    if (key >= MDKR_INPUT_CONTROLLER_A &&
+                        key <= MDKR_INPUT_CONTROLLER_RIGHT_STICK_RIGHT) {
+                        controllerMappingWidgets++;
+                    } else if (key == MDKR_INPUT_RUMBLE_ENABLED ||
+                               key == MDKR_INPUT_RUMBLE_PROFILE) {
+                        controllerRumbleWidgets++;
+                    }
+                }
+            }
+            if (category == MDKR_VIDEO_CAT_PACING) {
+                if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+                    static bool tracedFrameRateControls = false;
+                    if (!tracedFrameRateControls) {
+                        std::fprintf(
+                            stderr,
+                            "[app-ui] frame-rate-controls visible=1 "
+                            "gameplay-accuracy-separated=1\n");
+                        tracedFrameRateControls = true;
+                    }
+                }
+                if (AppUi_videoSettingVisible(
+                        MDKR_VIDEO_FRAME_LIMIT, webGpuRenderer)) {
+                    changed |= drawKey(
+                        window, MDKR_VIDEO_FRAME_LIMIT, compact);
+                }
+                if (AppUi_videoSettingVisible(
+                        MDKR_VIDEO_MOTION_SMOOTHING, webGpuRenderer)) {
+                    changed |= drawKey(
+                        window, MDKR_VIDEO_MOTION_SMOOTHING, compact);
+                }
+                ui::Gap(ui::kGapS);
+                ImGui::SeparatorText("Gameplay Accuracy");
+                changed |= drawKey(
+                    window, MDKR_VIDEO_SIMULATION_CADENCE, compact);
             }
             ImGui::Unindent(ui::kGapM);
+        }
+    }
+
+    if (controllerSettingsSmoke) {
+        static bool tracedControllerSettings = false;
+        if (!tracedControllerSettings) {
+            std::fprintf(
+                stderr,
+                "[app-ui] controller settings rendered mappings=%d rumble=%d "
+                "restoreAvailable=%d restoreSucceeded=%d\n",
+                controllerMappingWidgets, controllerRumbleWidgets,
+                controllerRestoreAvailable ? 1 : 0,
+                controllerRestoreSucceeded ? 1 : 0);
+            tracedControllerSettings = true;
         }
     }
 
@@ -671,8 +1086,9 @@ bool Settings_draw(bool compact) {
         ImGui::Separator();
         ui::Gap(ui::kGapS);
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
-        ImGui::TextWrapped(
-            "Changes are saved. Restart the game to apply them.");
+        ImGui::TextWrapped(compact
+            ? "Changes are saved. Use Restart & Apply below to activate them now."
+            : "Changes are saved. They will activate when you next press Play.");
         ImGui::PopStyleColor();
     }
 

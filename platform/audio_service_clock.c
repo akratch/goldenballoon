@@ -19,7 +19,8 @@ unsigned mdkr_audio_service_clock_advance(
     MdkrAudioServiceClock *clock, unsigned fields, bool rebase) {
     uint64_t units;
 
-    if ((uint64_t)fields > UINT64_MAX / AUDIO_FIELD_UNITS) {
+    if (fields != 0u &&
+        AUDIO_FIELD_UNITS > UINT64_MAX / (uint64_t)fields) {
         units = UINT64_MAX;
     } else {
         units = (uint64_t)fields * AUDIO_FIELD_UNITS;

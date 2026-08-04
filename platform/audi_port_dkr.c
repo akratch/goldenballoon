@@ -20,6 +20,8 @@
  * the SDL device is not opened, but synthesis still runs (so CI exercises the
  * whole DSP path); set MDKR_AUDIO_DUMP=out.wav to capture the PCM for RMS/peak
  * validation, or MDKR_AUDIO_RMS=1 to print running RMS/peak to stderr.
+ * MDKR_AUDIO_SINK_DUMP=accepted.wav is a separate native diagnostic that
+ * records only post-recovery PCM accepted by SDL's application queue.
  *
  * MDKR_AUDIO_RMS=1 additionally emits one
  *
@@ -55,7 +57,10 @@
 #include "platform_os.h"
 #include "audio_service_clock.h"
 #include "audio_queue_controller.h"
+#include "audio_sink_evidence.h"
+#include "audio_volume.h"
 #include "audi_port_dkr.h"
+#include "fs_utf8.h"
 #include "mdkr_trace.h"
 
 /* Match the game's ultratypes without pulling the whole PR header chain (which
@@ -98,15 +103,24 @@ extern s32   alCSPGetTempo(void *seqp);
  * "declare, don't include" rule as the accessors above. Only called when
  * MDKR_RESOURCE_STATS is on. */
 extern void  mdkr_audio_voice_peaks_sample(void);
+extern void  music_volume_config_set(u32 slider_val);
+extern void  sndp_set_global_volume(u32 volume);
+extern void  music_jingle_volume_set(u8 volume);
+extern u8    sfxRelativeVolume;
 
 #define DKR_OUTPUT_RATE   22050
 #define DKR_AUDIO_CHANNELS 2
 /* osGetCount() ticks at 46.875 MHz (stubs_dkr.c). Used to measure the real
  * per-pump drain so the controller is pump-rate agnostic. */
 #define DKR_COUNTER_RATE  46875000u
-/* Drop queued buffers only once the backlog grows well past the target — a
- * safety net against runaway growth, not the normal path. */
-#define DKR_QUEUE_LIMIT_FRAMES 5u
+/* Two seconds is an emergency ceiling, not an alternate latency controller.
+ * The queue controller targets roughly one synth block and its ROM-free/live
+ * contracts keep ordinary operation below three. The previous five-block cap
+ * was close enough to a transient stall to discard valid PCM and splice
+ * nonadjacent timelines, which is directly audible as a pop. */
+#define DKR_QUEUE_LIMIT_FRAMES 60u
+#define DKR_AUDIO_BYTES_PER_FRAME (DKR_AUDIO_CHANNELS * sizeof(s16))
+#define DKR_AUDIO_RECONNECT_FRAMES 128u
 
 /* ---- SDL device state ---------------------------------------------------- */
 static SDL_AudioDeviceID s_dev;
@@ -114,6 +128,11 @@ static int   s_devOpen;
 static int   s_disabled;          /* MDKR_AUDIO=0 or headless: no SDL device   */
 static int   s_shutdownComplete;
 static u32   s_droppedBuffers;
+static u32   s_queueFailures;
+static u64   s_webDroppedFrames;
+static u32   s_webTerminalFailures;
+static MdkrAudioReconnect s_reconnect;
+static MdkrAudioSinkEvidence s_sinkEvidence;
 #ifdef __EMSCRIPTEN__
 static int   s_webAudio;          /* AudioWorklet backend committed (web only)  */
 #endif
@@ -130,7 +149,14 @@ static int audio_have_sink(void) {
 /* Host-side queued audio in bytes (the service's latency feedback signal). */
 static u32 audio_queued_bytes(void) {
 #ifdef __EMSCRIPTEN__
-    if (s_webAudio) return webAudioOutputQueuedBytes();
+    if (s_webAudio) {
+        const u32 dropped = webAudioOutputConsumeDroppedFrames();
+        if (dropped != 0u) {
+            s_droppedBuffers++;
+            s_webDroppedFrames += dropped;
+        }
+        return webAudioOutputQueuedBytes();
+    }
 #endif
     if (!s_devOpen) return 0;
     return SDL_GetQueuedAudioSize(s_dev);
@@ -138,6 +164,9 @@ static u32 audio_queued_bytes(void) {
 
 /* ---- pump rate controller ------------------------------------------------ */
 static MdkrAudioQueueController s_queueController;
+static MdkrAudioGainRamp s_masterGain;
+static u32 s_appliedVolumeGeneration;
+static int s_masterGainInitialized;
 
 /* ---- independent audio-time service clock ------------------------------ */
 #define DKR_AUDIO_FIELDS_PER_QUANTUM 2u
@@ -185,6 +214,10 @@ static u64   s_dumpFrames;
 static u64   s_raw16FirstBlockSample = UINT64_MAX;
 static u32   s_raw16PreviousCalls;
 
+unsigned long long dkr_audio_output_frame_count(void) {
+    return (unsigned long long)(s_rmsCount / DKR_AUDIO_CHANNELS);
+}
+
 static void wav_write_header(FILE *f, u32 dataBytes) {
     u32 byteRate = DKR_OUTPUT_RATE * DKR_AUDIO_CHANNELS * 2;
     u16 blockAlign = DKR_AUDIO_CHANNELS * 2;
@@ -207,13 +240,40 @@ static void audio_dump_open(void) {
         s_rmsEnabled = (getenv("MDKR_AUDIO_RMS") != NULL) ? 1 : 0;
     }
     if (path && *path && s_wav == NULL) {
-        s_wav = fopen(path, "wb");
+        s_wav = mdkr_fopen_utf8(path, "wb");
         if (s_wav) {
             wav_write_header(s_wav, 0); /* placeholder; patched at close */
             printf("[AUDIO] dumping synthesized PCM to %s (%d Hz stereo s16)\n",
                    path, DKR_OUTPUT_RATE);
         }
     }
+}
+
+/* This is intentionally separate from MDKR_AUDIO_DUMP. The established dump
+ * records deterministic synthesizer output before any host-only recovery, which
+ * is what the level and console-reference oracles compare. This opt-in capture
+ * records only native blocks SDL accepted, after a possible reconnect splice. */
+static void audio_sink_evidence_open(void) {
+#ifndef __EMSCRIPTEN__
+    const char *path = getenv("MDKR_AUDIO_SINK_DUMP");
+    if (path != NULL && path[0] != '\0') {
+        FILE *capture = mdkr_fopen_utf8(path, "wb");
+        if (capture == NULL || !mdkr_audio_sink_evidence_begin(
+                                   &s_sinkEvidence, capture,
+                                   DKR_OUTPUT_RATE, DKR_AUDIO_CHANNELS)) {
+            fprintf(stderr,
+                    "[AUDIO-SINK-EVIDENCE] could not open accepted-SDL PCM "
+                    "capture at %s\n", path);
+            if (capture != NULL) {
+                fclose(capture);
+            }
+            mdkr_audio_sink_evidence_init(&s_sinkEvidence);
+            return;
+        }
+        printf("[AUDIO-SINK-EVIDENCE] dumping accepted SDL PCM to %s "
+               "(%d Hz stereo s16)\n", path, DKR_OUTPUT_RATE);
+    }
+#endif
 }
 
 /* Tap the synthesized signal: accumulate RMS/peak and (optionally) append WAV. */
@@ -261,6 +321,14 @@ void dkr_audio_out_init(void) {
     mdkr_audio_service_clock_init(
         &s_serviceClock, DKR_AUDIO_FIELDS_PER_QUANTUM);
     mdkr_audio_queue_controller_init(&s_queueController);
+    s_droppedBuffers = 0u;
+    s_queueFailures = 0u;
+    s_webDroppedFrames = 0u;
+    s_webTerminalFailures = 0u;
+    mdkr_audio_reconnect_init(&s_reconnect);
+    mdkr_audio_sink_evidence_init(&s_sinkEvidence);
+    s_appliedVolumeGeneration = 0u;
+    s_masterGainInitialized = 0;
     audio_dump_open();
     /* Emergency fallback for a fatal libc/process exit. Normal finite and
      * window-close paths now unwind through main() and call the idempotent
@@ -273,18 +341,17 @@ void dkr_audio_out_init(void) {
         return;
     }
     if (g_headlessFrames >= 0) {
-#ifdef __EMSCRIPTEN__
         /*
-         * The committed real-browser gate runs Chrome with --mute-audio and
-         * explicitly opts in so it can exercise the AudioWorklet lifecycle
-         * during a finite run. No native/ordinary headless invocation may open
-         * an output device merely because this test hook exists.
+         * A finite test normally has no output device. MDKR_TEST_HEADLESS_AUDIO
+         * is an explicit test-only opt-in for a controlled sink witness: native
+         * gates pair it with SDL_AUDIODRIVER=dummy; the browser gate uses mute.
+         * No ordinary headless invocation opens output merely because the hook
+         * exists.
          */
         const char *testHeadlessAudio = getenv("MDKR_TEST_HEADLESS_AUDIO");
         if (testHeadlessAudio && testHeadlessAudio[0] == '1') {
-            /* Continue into the normal browser AudioWorklet path below. */
+            /* Continue into the normal host-sink path below. */
         } else
-#endif
         {
             /* Headless: no device (synthesis still runs; use MDKR_AUDIO_DUMP to
              * capture). Opening a device in CI is undesirable and often fails. */
@@ -327,6 +394,7 @@ void dkr_audio_out_init(void) {
     }
     SDL_PauseAudioDevice(s_dev, 0);
     s_devOpen = 1;
+    audio_sink_evidence_open();
     printf("[AUDIO] SDL device open: %d Hz, %d ch, %d buf\n",
            have.freq, have.channels, have.samples);
 }
@@ -351,10 +419,49 @@ void dkr_audio_out_shutdown(void) {
         SDL_CloseAudioDevice(s_dev);
         s_devOpen = 0;
     }
+    if (s_droppedBuffers != 0u) {
+        fprintf(stderr,
+                "[AUDIO-SINK] warning: deliberate emergency drops=%u; "
+                "audio continuity repair was requested with a short crossfade "
+                "(web dropped frames=%llu)\n",
+                (unsigned)s_droppedBuffers,
+                (unsigned long long)s_webDroppedFrames);
+    }
+    if (s_queueFailures > s_webTerminalFailures) {
+        fprintf(stderr,
+                "[AUDIO-SINK] warning: native enqueue failures=%u; "
+                "the next accepted block was armed for continuity repair\n",
+                (unsigned)(s_queueFailures - s_webTerminalFailures));
+    }
+    if (s_webTerminalFailures != 0u) {
+        fprintf(stderr,
+                "[AUDIO-SINK] error: Web Audio backend failed after it was "
+                "committed; %u PCM block(s) were terminally silent "
+                "(no recovery sink exists)\n",
+                (unsigned)s_webTerminalFailures);
+    }
     if (s_wav) {
         wav_write_header(s_wav, s_wavDataBytes); /* patch RIFF/data sizes */
         fclose(s_wav);
         s_wav = NULL;
+    }
+    if (s_sinkEvidence.capture != NULL) {
+        mdkr_audio_sink_evidence_finish(&s_sinkEvidence);
+        if (fclose(s_sinkEvidence.capture) != 0) {
+            s_sinkEvidence.capture_failed = 1;
+        }
+        s_sinkEvidence.capture = NULL;
+        printf("[AUDIO-SINK-EVIDENCE] accepted_blocks=%llu "
+               "accepted_bytes=%llu repaired_blocks=%llu "
+               "rejected_blocks=%llu dropped_blocks=%llu capture_bytes=%u "
+               "capture_failed=%d\n",
+               (unsigned long long)s_sinkEvidence.accepted_blocks,
+               (unsigned long long)s_sinkEvidence.accepted_bytes,
+               (unsigned long long)s_sinkEvidence.repaired_blocks,
+               (unsigned long long)s_sinkEvidence.rejected_blocks,
+               (unsigned long long)s_sinkEvidence.dropped_blocks,
+               (unsigned)s_sinkEvidence.capture_bytes,
+               s_sinkEvidence.capture_failed);
     }
     if ((s_rmsEnabled == 1 || s_wavDataBytes) && s_rmsCount > 0) {
         double rms = sqrt(s_rmsSumSq / (double)s_rmsCount);
@@ -431,26 +538,60 @@ s32 osAiSetNextBuffer(void *buf, u32 size) {
 
 #ifdef __EMSCRIPTEN__
     if (s_webAudio && buf && size > 0) {
-        /* The worklet ring drops OLDEST on overflow (realtime-correct after a
-         * stall), so push unconditionally — no host-side backlog cap needed. */
-        webAudioOutputPush(buf, size);
+        const int pushed = webAudioOutputPush(buf, size);
+        if (pushed > 0) {
+            s_droppedBuffers++;
+            s_webDroppedFrames += size / DKR_AUDIO_BYTES_PER_FRAME;
+        } else if (pushed < 0) {
+            s_queueFailures++;
+            /* The browser backend was already committed, so no SDL device is
+             * available to receive a recovery block. Keep this state terminal
+             * and explicit rather than claiming the loss was crossfaded. */
+            s_webTerminalFailures++;
+        }
         return 0;
     }
 #endif
 
     if (s_devOpen && buf && size > 0) {
-        u32 frameBytes = amAudioGetFrameSize() * 4;
-        u32 limit;
+        u32 blockBytes = amAudioGetFrameSize() * DKR_AUDIO_BYTES_PER_FRAME;
         u32 queued;
-        if (frameBytes == 0) {
-            frameBytes = DKR_OUTPUT_RATE / 15; /* ~2 fields, fallback */
+        s16 *samples = (s16 *)buf;
+        if (blockBytes == 0) {
+            blockBytes = (DKR_OUTPUT_RATE / 15u) * DKR_AUDIO_BYTES_PER_FRAME;
         }
-        limit = frameBytes * DKR_QUEUE_LIMIT_FRAMES;
         queued = SDL_GetQueuedAudioSize(s_dev);
-        if (queued <= limit && size <= (limit - queued)) {
-            SDL_QueueAudio(s_dev, buf, size);
+        if (mdkr_audio_sink_queue_fits(
+                queued, size, blockBytes, DKR_QUEUE_LIMIT_FRAMES)) {
+            const u32 frameCount = size / DKR_AUDIO_BYTES_PER_FRAME;
+            const int repairPending = frameCount != 0u &&
+                                      s_reconnect.pending &&
+                                      s_reconnect.have_previous;
+            mdkr_audio_reconnect_prepare_stereo(
+                &s_reconnect, samples, frameCount,
+                DKR_AUDIO_RECONNECT_FRAMES);
+            if (SDL_QueueAudio(s_dev, buf, size) == 0) {
+                mdkr_audio_reconnect_note_accepted_stereo(
+                    &s_reconnect, samples, frameCount);
+                /* SDL queue mode copies on success. Capture the exact repaired
+                 * PCM only after that acceptance, never a rejected candidate. */
+                if (s_sinkEvidence.capture != NULL) {
+                    mdkr_audio_sink_evidence_accepted(
+                        &s_sinkEvidence, samples, size, repairPending);
+                }
+            } else {
+                s_queueFailures++;
+                mdkr_audio_reconnect_note_gap(&s_reconnect);
+                if (s_sinkEvidence.capture != NULL) {
+                    mdkr_audio_sink_evidence_rejected(&s_sinkEvidence);
+                }
+            }
         } else {
             s_droppedBuffers++;
+            mdkr_audio_reconnect_note_gap(&s_reconnect);
+            if (s_sinkEvidence.capture != NULL) {
+                mdkr_audio_sink_evidence_dropped(&s_sinkEvidence);
+            }
         }
     }
     return 0;
@@ -608,6 +749,30 @@ static void audio_apply_test_gain(s16 *buf, s32 frameSamples) {
     }
 }
 
+static void audio_sync_player_volume(void) {
+    MdkrAudioVolumeState volume;
+    mdkr_audio_volume_snapshot(&volume);
+    if (!s_masterGainInitialized) {
+        mdkr_audio_gain_ramp_init(&s_masterGain, volume.master);
+        s_masterGainInitialized = 1;
+    }
+    if (volume.generation == s_appliedVolumeGeneration) {
+        return;
+    }
+
+    music_volume_config_set((u32)((volume.music * 256 + 50) / 100));
+    sndp_set_global_volume((u32)((volume.effects * 256 + 50) / 100));
+    /* Jingles are deliberately on the effects bus. Refresh the currently
+     * authored jingle-relative gain after changing the global SFX scalar. */
+    music_jingle_volume_set(sfxRelativeVolume);
+    mdkr_audio_gain_ramp_target(&s_masterGain, volume.master);
+    s_appliedVolumeGeneration = volume.generation;
+    if (audio_service_trace_enabled()) {
+        fprintf(stderr, "[AUDIO-VOLUME] master=%d%% music=%d%% effects=%d%%\n",
+                volume.master, volume.music, volume.effects);
+    }
+}
+
 void dkr_audio_advance_fields(unsigned fields, bool rebase) {
     (void)mdkr_audio_service_clock_advance(
         &s_serviceClock, fields, rebase);
@@ -629,6 +794,7 @@ void dkr_audio_service_tick(void) {
         s_serviceNotReady++;
         return;
     }
+    audio_sync_player_volume();
     frameSamples = dkr_choose_frame_samples();
     if (audio_service_perturb_quantum() > 0 &&
         s_serviceClock.stats.serviced_quanta ==
@@ -640,6 +806,8 @@ void dkr_audio_service_tick(void) {
     }
     buf = amAudioSynthFrame(frameSamples);
     audio_apply_test_gain(buf, frameSamples);
+    mdkr_audio_gain_ramp_apply_s16(
+        &s_masterGain, buf, (u32)frameSamples, DKR_AUDIO_CHANNELS);
     s_serviceSamples += (u64)frameSamples;
     queued = audio_queued_bytes() >> 2;
     if (queued > s_serviceMaxQueued) {

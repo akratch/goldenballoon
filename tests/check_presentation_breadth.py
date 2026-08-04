@@ -12,11 +12,9 @@ what sufficient looks like: every boss, representative car/hovercraft/plane
 races, standard AI races, battle and all challenge types, 1P through 4P, hub and
 progression transitions, cutscenes, NTSC and PAL, and a long-running soak.
 
-This gate is that breadth, mechanised for the explicitly test-only replay
-implementation. Production 1.0.1 keeps delayed replay disabled; its fail-closed
-surface behavior is pinned separately by the matrix and arbitrary-rate gates.
-This suite re-uses the matrix gate's authority comparison --
-comparison -- the per-tick ``[SIMHASH]`` stream with ``MDKR_PRESENT_RATE``
+This gate is that breadth, mechanised against production immutable replay. It
+re-uses the matrix gate's authority comparison -- the per-tick ``[SIMHASH]``
+stream with ``MDKR_PRESENT_RATE``
 unset versus engaged must be BYTE-IDENTICAL -- and runs it over a content set
 instead of a single route, via the ``MDKR_LOAD_TRACK=<level>[:<vehicle>]`` hook
 that retargets the fixture route's race load.
@@ -40,10 +38,9 @@ hash comparison at all:
     previous pair in place;
   * retained-packet FREEZE FAILURES and ambiguous deformation keys, which
     safely hold animation but expose a capacity or stable-recipe gap;
-  * retained point/line particle batches and phase-correct exact endpoint
-    holds. The battle-challenge arm is the positive capture witness; until a
-    task-to-next endpoint packet exists, any changed XYZ/RGBA blend is a lagged
-    gameplay regression and must remain zero;
+  * retained point/line particle batches and phase-correct forward pairs. The
+    battle-challenge arm is the positive capture witness; changed XYZ/RGBA must
+    come from adjacent authored task tokens;
   * INTERPOLATION CONTINUITY -- how many presents found nothing to draw
     (``stale``) and how many actually substituted a camera.
 
@@ -80,7 +77,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import completed_tick_conservation, resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
@@ -181,6 +178,7 @@ SUMMARY_RE = re.compile(r"\[PRESENTSCHED-SUMMARY\] (.*)")
 REPLAY_RE = re.compile(r"\[REPLAY-SUMMARY\] (.*)")
 SNAPSHOT_RE = re.compile(r"\[SNAPSHOT\] (.*)")
 PACKET_RE = re.compile(r"\[PRESENT-PACKET\] (.*)")
+RETAINED_RE = re.compile(r"\[RETAINED-TASK\] (.*)")
 LOAD_RE = re.compile(r"level_load: levelId=(\d+) numPlayers=(-?\d+)")
 
 
@@ -363,10 +361,7 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
                timeout, verbose)
     high = run(binary, rom, f"{arm.name}-rate", root, arm,
                {"MDKR_PRESENT_RATE": str(arm.rate),
-                "MDKR_INTERNAL_TEST_TOKEN":
-                    "mdkr64-presentation-replay-v1",
                 "MDKR_PRESENT_SMOOTHING": "interpolate",
-                "MDKR_TEST_PRESENTATION_REPLAY": "1",
                 "MDKR_PRESENT_SCHED_TRACE": "1",
                 "MDKR_TEST_ENDPOINT_VERTEX_BYTES": "1"},
                ticks * PRESENTS_PER_TICK, timeout, verbose)
@@ -411,7 +406,8 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
     replay = parse_row(high, REPLAY_RE)
     snapshot = parse_row(high, SNAPSHOT_RE)
     packet = parse_row(high, PACKET_RE)
-    if not sched or not replay or not packet:
+    retained = parse_row(high, RETAINED_RE)
+    if not sched or not replay or not packet or not retained:
         failures.append(f"{prefix}: no presentation telemetry was emitted")
         return failures, []
 
@@ -424,7 +420,10 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
         failures.append(
             f"{prefix}: advanced {sched.get('simticks')} authoritative ticks, "
             f"expected {ticks}")
-    for key in ("multidue", "lead", "catchup", "skips", "rebases"):
+    conservation_error = completed_tick_conservation(sched, ticks, prefix)
+    if conservation_error:
+        failures.append(conservation_error)
+    for key in ("multidue", "catchup", "skips", "rebases"):
         if sched.get(key, 0) != 0:
             failures.append(
                 f"{prefix}: {key}={sched.get(key)} -- the accumulator left the "
@@ -442,11 +441,8 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
             f"{prefix}: {stale} of {ticks} interpolated presents drew nothing "
             f"({stale / ticks:.2%}, bound {MAX_STALE_RATIO:.0%}) -- "
             "interpolation is dropping out on this content")
-    # Production 1.0.1+ quarantines delayed endpoint replay: after a real task
-    # has been submitted the game may already be rewriting its display-list
-    # dependencies for the next task. The test-only subloop may exercise only
-    # the intermediate walk it owns; an extra retained endpoint walk would
-    # restore the unsafe release path this gate must keep disabled.
+    # Ordinary production uses the real authored walk for alpha zero and the
+    # immutable retained task only for intermediate images.
     replay_walks = replay.get("walks", 0)
     interp_walks = sched.get("interp", 0)
     endpoint_walks = replay_walks - interp_walks
@@ -454,7 +450,7 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
         failures.append(
             f"{prefix}: {replay_walks} replay walks against {interp_walks} "
             f"interpolated presents imply {endpoint_walks} retained endpoint "
-            "walks, expected 0 while delayed endpoint replay is quarantined")
+            "walks, expected 0 because endpoints use the real authored walk")
     if replay.get("restores") != replay.get("walks"):
         failures.append(
             f"{prefix}: {replay.get('restores')} registry restores for "
@@ -499,27 +495,34 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
             f"{prefix}: deformation packet never captured model vertices "
             f"(registrations={packet.get('deformreg')}, "
             f"peak={packet.get('deformpeak')})")
-    if packet.get("deformhold", 0) <= 0:
-        failures.append(
-            f"{prefix}: retained vertex fallback held no exact authored "
-            "bytes; replay may be reading a reused arena pointer")
     if packet.get("deformphasehold", 0) <= 0:
         failures.append(
             f"{prefix}: retained vertices recorded no task-to-next phase gap; "
             "the gate cannot prove lagged pairs are refused")
     for key in ("deformhit", "deformoverride", "colorhit",
                 "coloroverride"):
-        if packet.get(key, -1) != 0:
+        if packet.get(key, 0) <= 0:
             failures.append(
-                f"{prefix}: retained model {key}={packet.get(key)}, expected "
-                "zero; replay used a phase-shifted endpoint pair")
+                f"{prefix}: retained model {key}={packet.get(key)}; true "
+                "forward deformation interpolation is not live")
+    if (packet.get("futurecaptures", 0) <= 0 or
+            packet.get("futurefailures", -1) != 0 or
+            retained.get("captures", 0) <= 0 or
+            retained.get("failures", -1) != 0 or
+            retained.get("rejects", -1) != 0 or
+            retained.get("arenaResolve", 0) <= 0 or
+            retained.get("externalResolve", 0) <= 0):
+        failures.append(
+            f"{prefix}: immutable retained/future task publication failed "
+            f"(retained={retained}, future="
+            f"{packet.get('futurecaptures')}/{packet.get('futurefailures')})")
     if (packet.get("endpointchecks", -1) != 0 or
             packet.get("endpointmismatch", -1) != 0 or
             packet.get("endpointexpected", -1) != 0 or
             packet.get("endpointactual", -1) != 0):
         failures.append(
-            f"{prefix}: delayed alpha-zero endpoint replay ran despite the "
-            "production quarantine")
+            f"{prefix}: ordinary production unexpectedly replayed alpha-zero "
+            "instead of presenting the real authored walk")
     if arm.name == "challenge-battle-1":
         if packet.get("particlevertexreg", 0) <= 0:
             failures.append(
@@ -527,11 +530,11 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
                 "particle batches")
         for key in ("particledeformhit", "particledeformoverride",
                     "particlecolorhit", "particlecoloroverride"):
-            if packet.get(key, -1) != 0:
+            if packet.get(key, 0) <= 0:
                 failures.append(
                     f"{prefix}: battle point-trail witness {key}="
-                    f"{packet.get(key)}, expected zero while its true next "
-                    "endpoint is unavailable")
+                    f"{packet.get(key)}; adjacent particle interpolation is "
+                    "not live")
 
     hits = replay.get("mtxhit", 0)
     rejects = replay.get("mtxreject", 0)
@@ -651,16 +654,16 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
             f"{snapshot.get('overflows', 0)} overflows, "
             f"{snapshot.get('resets', 0)} resets; "
             f"deformation: {packet.get('deformreg', 0)} captures, "
-            f"{packet.get('deformhold', 0)} exact holds, "
+            f"{packet.get('deformoverride', 0)} forward overrides, "
             f"{packet.get('deformphasehold', 0)} phase gaps, "
-            f"{packet.get('endpointchecks', 0)} quarantined alpha-zero checks, "
+            f"{packet.get('endpointchecks', 0)} diagnostic alpha-zero checks, "
             f"{packet.get('deformcollision', 0)} collisions, "
             f"peak {packet.get('deformpeak', 0)}; "
             f"rewritten dependencies: {packet.get('stale', 0)} observed, "
             f"{packet.get('stalematrixhold', 0)} matrix and "
             f"{packet.get('stalevertexhold', 0)} anchor holds, "
             f"particles: {packet.get('particlevertexreg', 0)} batches, "
-            f"{packet.get('particledeformhit', 0)} lagged blends")
+            f"{packet.get('particledeformhit', 0)} forward blends")
     return failures, [note]
 
 
@@ -701,18 +704,12 @@ def check_tenancy_control(binary: Path, rom: Path, root: Path, timeout: int,
 
     guarded = run(binary, rom, "tenancy-on", root, arm,
                   {"MDKR_PRESENT_RATE": str(arm.rate),
-                   "MDKR_INTERNAL_TEST_TOKEN":
-                       "mdkr64-presentation-replay-v1",
                    "MDKR_PRESENT_SMOOTHING": "interpolate",
-                   "MDKR_TEST_PRESENTATION_REPLAY": "1",
                    "MDKR_PRESENT_SCHED_TRACE": "1"},
                   frames, timeout, verbose)
     control_out = run(binary, rom, "tenancy-off", root, arm,
                       {"MDKR_PRESENT_RATE": str(arm.rate),
-                       "MDKR_INTERNAL_TEST_TOKEN":
-                           "mdkr64-presentation-replay-v1",
                        "MDKR_PRESENT_SMOOTHING": "interpolate",
-                       "MDKR_TEST_PRESENTATION_REPLAY": "1",
                        "MDKR_PRESENT_SCHED_TRACE": "1",
                        "MDKR_SHADOW_TENANCY": "0",
                        "MDKR_TEST_RECOMPOSE_REJECT": "1"},

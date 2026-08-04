@@ -13,6 +13,7 @@ identity is kept in each file's title — it is how the commit log, `docs/STATUS
 | [audio.md](audio.md) | `M5_AUDIO_SPEC.md` | The clean-room audio engine driving a software `aspMain` mixer: ADPCM decode, envelope mixing, resampling, reverb, host output |
 | [race.md](race.md) | `M6_RACE_SPEC.md` | Getting into a controllable race: the deterministic menu route to gameplay, and the verified `MENU_ID` → trace-id mapping |
 | [web.md](web.md) | `M8_WEB_SPEC.md` | The browser (wasm) build: why the architecture was already web-ready, the wasm32-specific defects found and fixed, ROM + saves in the browser |
+| [taj-playable-mod.md](taj-playable-mod.md) | proposed mod architecture | A virtual playable Taj: easter-egg unlocks, carpet presentation, OP handling, persistence, compatibility boundaries, and execution gates |
 
 ## Reading order
 

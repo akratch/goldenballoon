@@ -1,10 +1,9 @@
 // Golden Balloon (mdkr64) Windows executable resources.
 //
-// The .ico is a single-entry, PNG-compressed (Vista+) icon wrapping
-// dist/web/assets/favicon.png — the project's own 256x256 app icon, the same
-// image the web build serves — byte-for-byte. Regenerate with:
-//     tools/wrap_png_as_ico.sh dist/web/assets/favicon.png windows/mdkr64.ico
-IDI_ICON1 ICON "mdkr64.ico"
+// CMake writes this template beside the generated manifest. The icon path is
+// absolute only in the generated build input; neither a source-tree file nor
+// a tracked asset is rewritten by configuration.
+IDI_ICON1 ICON "@MDKR_ICON_RC_PATH@"
 
 // ---------------------------------------------------------------------------
 // VERSIONINFO — what Explorer's Properties>Details dialog and Windows game
@@ -15,10 +14,15 @@ IDI_ICON1 ICON "mdkr64.ico"
 // The numeric FILEVERSION/PRODUCTVERSION and the human FileVersion/
 // ProductVersion strings are overridable at build time via -DMDKR_VER_CSV and
 // -DMDKR_VER_STR, which CMake derives from the MDKR_VERSION cache variable
-// (currently 1.0.3). The 0.0.0-dev #ifndef defaults keep a bare `windres
+// (currently 1.0.4). The 0.0.0-dev #ifndef defaults keep a bare `windres
 // mdkr64.rc` invocation (no -D) working standalone without impersonating a
 // release build.
 #include <windows.h>
+
+// The configured manifest is generated in this RC file's directory, so the
+// resource compiler resolves a plain relative filename without fragile command
+// line quoting on Windows, macOS cross-builds, or Linux CI.
+1 RT_MANIFEST "GoldenBalloon.manifest"
 
 #ifndef MDKR_VER_CSV
 #define MDKR_VER_CSV 0, 0, 0, 0
@@ -55,6 +59,6 @@ BEGIN
     END
     BLOCK "VarFileInfo"
     BEGIN
-        VALUE "Translation", 0x409, 1200  // 0x409 = U.S. English, 1200 = Unicode
+        VALUE "Translation", 0x409, 1200  // U.S. English, 1200 = Unicode
     END
 END

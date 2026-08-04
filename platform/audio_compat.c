@@ -32,6 +32,7 @@ extern void free(void *ptr);
 extern void *memcpy(void *dest, const void *src, size_t count);
 extern void *memset(void *dest, int value, size_t count);
 #else
+#include "fs_utf8.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -3392,7 +3393,7 @@ static FILE *native_csp_trace_fp(void)
     s_native_csp_trace_init = 1;
     path = getenv("MDKR_MUSIC_MIDI_TRACE_JSONL");
     if (path != NULL && *path != '\0') {
-        s_native_csp_trace_fp = fopen(path, "w");
+        s_native_csp_trace_fp = mdkr_fopen_utf8(path, "w");
     }
 
     return s_native_csp_trace_fp;
@@ -4333,7 +4334,7 @@ static FILE *native_audio_filter_trace_fp(void)
     s_native_audio_filter_trace_init = 1;
     path = getenv("MDKR_AUDIO_FILTER_TRACE_JSONL");
     if (path != NULL && *path != '\0') {
-        s_native_audio_filter_trace_fp = fopen(path, "w");
+        s_native_audio_filter_trace_fp = mdkr_fopen_utf8(path, "w");
     }
 
     wave_base = getenv("MDKR_AUDIO_FILTER_TRACE_WAVE_BASE");
@@ -4588,7 +4589,7 @@ Acmd *alAdpcmPull(void *filter, s16 *outp, s32 out_count,
                 ~0x1f;
             loop_boundary_output += requested_samples << 1;
 
-            if (load->loop.count != -1 && load->loop.count != 0) {
+            if (load->loop.count != (u32)-1 && load->loop.count != 0) {
                 load->loop.count--;
             }
 
@@ -4720,7 +4721,7 @@ Acmd *alRaw16Pull(void *filter, s16 *outp, s32 out_count,
             output_pos += sample_count << 1;
             out_count -= sample_count;
 
-            if (load->loop.count != -1 && load->loop.count != 0) {
+            if (load->loop.count != (u32)-1 && load->loop.count != 0) {
                 load->loop.count--;
             }
 
@@ -5601,7 +5602,9 @@ void alCSPSetTempo(ALCSPlayer *seqp, s32 tempo)
     memset(&evt, 0, sizeof(evt));
     evt.type = AL_SEQP_META_EVT;
     evt.msg.tempo.ticks = 0;
+    evt.msg.tempo.status = AL_MIDI_Meta;
     evt.msg.tempo.type = AL_MIDI_META_TEMPO;
+    evt.msg.tempo.len = 3;
     evt.msg.tempo.byte1 = (u8)((tempo >> 16) & 0xFF);
     evt.msg.tempo.byte2 = (u8)((tempo >> 8) & 0xFF);
     evt.msg.tempo.byte3 = (u8)(tempo & 0xFF);

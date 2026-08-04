@@ -83,6 +83,10 @@ void platform_headless_tick_complete(int tick_count);
 /* Source-release timing selected by ROM identification before game boot. */
 int platform_source_tv_type(void);   /* 0 PAL, 1 NTSC, 2 MPAL */
 int platform_source_field_hz(void);  /* 50 PAL, 60 NTSC/MPAL */
+/* True only for an accepted European ROM revision.  This is deliberately
+ * narrower than PAL timing: menu language capability belongs to the validated
+ * cartridge identity, not to a mutable header field or display standard. */
+int platform_source_is_european(void);
 
 /* ===== VI retrace / logic-update-rate pacing (the frame-pacing fix) ======= *
  * DKR normalises game speed against framerate via fb_update() (game/src/video.c),
@@ -213,6 +217,14 @@ enum MdkrWebGpuWindowSystem platformWebGpuWindowInfo(
  * When g_dumpFramesDir is non-NULL the last completed backend frame is written
  * as DIR/frame_%04d.ppm (P6 binary). */
 extern const char *g_dumpFramesDir;
+/* True only when the current host-frame ordinal matches the active dump filter.
+ * WebGPU uses this to make that explicit diagnostic capture exact even when
+ * ordinary runtime admission is intentionally nonblocking. */
+int platform_frame_dump_due(void);
+/* WebGPU evidence captures admit a short sequence immediately before a due
+ * frame so renderer-only temporal state cannot depend on how many earlier
+ * nonblocking opportunities each A/B arm happened to obtain. */
+int platform_frame_dump_prepare_due(void);
 
 /* ===== Input (platform_sdl_min.c) ======================================= *
  * Host events are captured on presentation opportunities, but DKR-visible pad
@@ -227,6 +239,7 @@ int  platform_input_load_script(const char *path);
 int          platform_pad_present(int port);
 int          platform_pad_rumble_supported(int port);
 int          platform_pad_rumble(int port, int enabled);
+void         platform_pad_rumble_preferences_changed(void);
 unsigned int platform_pad_buttons(int port);
 void         platform_pad_stick(int port, int *sx, int *sy);
 

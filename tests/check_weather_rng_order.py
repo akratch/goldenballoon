@@ -28,11 +28,23 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
 TICKS = 4200
 EXPECTED_STATE_ROWS = TICKS
-EXPECTED_WEATHER_ROWS = 812
+EXPECTED_WEATHER_ROWS = 813
 # SHA-256 over every [SIMHASH] row followed by every [WEATHER-RNG] row, each
-# newline terminated. Filled from the reviewed object -> weather -> HUD route.
+# newline terminated. This is the reviewed object -> weather -> HUD route after
+# restoring retail racer_sound_car() and its ares-proven shared-RNG draws. The
+# earlier oracle came from the port build that incorrectly skipped car audio.
 EXPECTED_ORIGINAL_SHA256 = (
-    "8994e5b32138dfdd09b24f64bd43ce7a4e8dca2c7c297128d2c3d8953963fc64"
+    "fe180923803148e9ea3e5be6f913e9daa6831c4f5d9f12fe345f7d0bf3fea5a9"
+)
+# Positive control for the scheduler/fixture boundary.  Delaying every positive
+# input edge by one ticket used to be easy to do accidentally when the host
+# began publishing input after accounting the completed simulation pass.  It
+# changes the race-entry window and removes one weather row.  Freeze that exact
+# broken direction so restoring the accepted oracle cannot be faked by updating
+# the expected digest to whichever route happened to run.
+EXPECTED_LATE_PHASE_WEATHER_ROWS = 812
+EXPECTED_LATE_PHASE_SHA256 = (
+    "7e85f0928581c3034db1c1a919dbcc130afb2a67f629fb9e087abf5a4916d51c"
 )
 
 
@@ -46,9 +58,10 @@ class Result:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def run_arm(binary: Path, rom: Path, root: Path, label: str,
+def run_arm(binary: Path, rom: Path, root: Path, label: str, script: Path,
             cadence: str, rate: str | None, extra_env: dict[str, str],
-            timeout: int, verbose: bool) -> Result:
+            timeout: int, verbose: bool,
+            artifacts_dir: Path | None = None) -> Result:
     run_dir = root / label
     save_dir = run_dir / "save"
     save_dir.mkdir(parents=True)
@@ -71,7 +84,7 @@ def run_arm(binary: Path, rom: Path, root: Path, label: str,
     env.update(extra_env)
     command = [
         str(binary), "--headless-ticks", str(TICKS),
-        "--input-script", str(SCRIPT), "--rom", str(rom),
+        "--input-script", str(script), "--rom", str(rom),
         "--window-size", "320x240",
     ]
     if verbose:
@@ -82,6 +95,10 @@ def run_arm(binary: Path, rom: Path, root: Path, label: str,
         timeout=timeout, check=False,
     )
     output = process.stdout or ""
+    if artifacts_dir is not None:
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        (artifacts_dir / f"{label}.log").write_text(
+            output, encoding="utf-8")
     if process.returncode != 0:
         raise RuntimeError(
             f"{label}: exit {process.returncode}\n{output[-3000:]}")
@@ -93,11 +110,29 @@ def run_arm(binary: Path, rom: Path, root: Path, label: str,
                   if line.startswith("[SIMHASH]"))
     weather = tuple(line for line in output.splitlines()
                     if line.startswith("[WEATHER-RNG]"))
+    if artifacts_dir is not None:
+        (artifacts_dir / f"{label}.state.txt").write_text(
+            "\n".join(state) + "\n", encoding="utf-8")
+        (artifacts_dir / f"{label}.weather.txt").write_text(
+            "\n".join(weather) + "\n", encoding="utf-8")
     if len(state) != EXPECTED_STATE_ROWS:
         raise RuntimeError(
             f"{label}: expected {EXPECTED_STATE_ROWS} state rows, "
             f"got {len(state)}")
     return Result(state, weather)
+
+
+def write_late_phase_control(source: Path, target: Path) -> None:
+    """Write the historical one-ticket-late version of an authored fixture."""
+
+    output: list[str] = []
+    for line in source.read_text(encoding="utf-8").splitlines():
+        fields = line.split()
+        if fields and fields[0].isdigit():
+            fields[0] = str(int(fields[0]) + 1)
+            line = " ".join(fields)
+        output.append(line)
+    target.write_text("\n".join(output) + "\n", encoding="utf-8")
 
 
 def first_difference(left: Result, right: Result) -> str:
@@ -117,6 +152,9 @@ def main() -> int:
     parser.add_argument("--build", default="build-rel")
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=600)
+    parser.add_argument(
+        "--artifacts-dir", type=Path,
+        help="retain complete logs plus parsed state/weather streams")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -130,23 +168,36 @@ def main() -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="mdkr-weather-rng-") as tmp:
             root = Path(tmp)
-            original = run_arm(binary, rom, root, "original", "original",
-                               None, {}, args.timeout, args.verbose)
+            late_script = root / "one-ticket-late.txt"
+            write_late_phase_control(SCRIPT, late_script)
+            original = run_arm(binary, rom, root, "original", SCRIPT,
+                               "original", None, {}, args.timeout,
+                               args.verbose, args.artifacts_dir)
             skipped = run_arm(
-                binary, rom, root, "skip-render", "original", None,
-                {"MDKR_TEST_SKIP_RENDER": "odd"}, args.timeout, args.verbose)
-            rate30 = run_arm(binary, rom, root, "original-30", "original",
-                             "30", {}, args.timeout, args.verbose)
-            rate60 = run_arm(binary, rom, root, "original-60", "original",
-                             "60", {}, args.timeout, args.verbose)
+                binary, rom, root, "skip-render", SCRIPT, "original", None,
+                {"MDKR_TEST_SKIP_RENDER": "odd"}, args.timeout, args.verbose,
+                args.artifacts_dir)
+            rate30 = run_arm(binary, rom, root, "original-30", SCRIPT,
+                             "original", "30", {}, args.timeout,
+                             args.verbose, args.artifacts_dir)
+            rate60 = run_arm(binary, rom, root, "original-60", SCRIPT,
+                             "original", "60", {}, args.timeout,
+                             args.verbose, args.artifacts_dir)
             wrong_order = run_arm(
-                binary, rom, root, "weather-early-control", "original", None,
+                binary, rom, root, "weather-early-control", SCRIPT,
+                "original", None,
                 {"MDKR_TEST_WEATHER_RNG_EARLY": "1"},
-                args.timeout, args.verbose)
-            enhanced30 = run_arm(binary, rom, root, "enhanced-30", "enhanced",
-                                 "30", {}, args.timeout, args.verbose)
-            enhanced60 = run_arm(binary, rom, root, "enhanced-60", "enhanced",
-                                 "60", {}, args.timeout, args.verbose)
+                args.timeout, args.verbose, args.artifacts_dir)
+            phase_late = run_arm(
+                binary, rom, root, "one-ticket-late-control", late_script,
+                "original", None, {}, args.timeout, args.verbose,
+                args.artifacts_dir)
+            enhanced30 = run_arm(binary, rom, root, "enhanced-30", SCRIPT,
+                                 "enhanced", "30", {}, args.timeout,
+                                 args.verbose, args.artifacts_dir)
+            enhanced60 = run_arm(binary, rom, root, "enhanced-60", SCRIPT,
+                                 "enhanced", "60", {}, args.timeout,
+                                 args.verbose, args.artifacts_dir)
     except (RuntimeError, subprocess.TimeoutExpired) as error:
         print(f"check_weather_rng_order: FAIL\n  - {error}")
         return 1
@@ -183,6 +234,14 @@ def main() -> int:
         failures.append(
             "wrong-order positive control matched Original; oracle cannot "
             "detect weather-before-object RNG drift")
+    phase_late_digest = phase_late.digest()
+    if (phase_late == original or
+            len(phase_late.weather) != EXPECTED_LATE_PHASE_WEATHER_ROWS or
+            phase_late_digest != EXPECTED_LATE_PHASE_SHA256):
+        failures.append(
+            "one-ticket-late input control did not reproduce the frozen "
+            "broken direction: "
+            f"rows={len(phase_late.weather)} digest={phase_late_digest}")
 
     original_digest = original.digest()
     if original_digest != EXPECTED_ORIGINAL_SHA256:
@@ -206,7 +265,8 @@ def main() -> int:
         f"oracle {original_digest} ({len(splash_rows)} splash rolls, "
         f"{len(lightning_rows)} lightning resets); byte-identical under "
         "skip-render and 30/60 presentation; enhanced cadence is 30/60 "
-        "presentation-invariant; wrong-order and one-byte controls diverge")
+        "presentation-invariant; weather-order, one-ticket-late, and one-byte "
+        "controls diverge")
     return 0
 
 

@@ -39,9 +39,10 @@ BASE_SCRIPT = ROOT / "tests/input_scripts/race_2p_human_binding.txt"
 TICKS = 3700
 DRIVE_START = 2600
 DRIVE_END = 3600
-# The fixed-ticket input queue commits commands authored for script tick N at
-# the next simulation input sample.  Keep this boundary explicit so the gate
-# checks the production queue contract instead of silently shifting pulses.
+# Scripted controls authored for tick N are merged into the next simulation
+# input sample and therefore visible to racer physics and its trace at N+1.
+# Keep the offset explicit so scheduler accounting cannot silently retime the
+# fixtures again; live input has a separate fixed-ticket queue contract.
 TRACE_TICK_OFFSET = 1
 LEFT_WINDOWS = ((2660, 2710), (2900, 2950),
                 (3140, 3190), (3380, 3430))
@@ -226,6 +227,7 @@ def run_arm(binary: Path, rom: Path, root: Path, script: Path,
         MDKR_PRESENT_RATE=str(config.rate),
         MDKR_RENDERER=config.renderer,
         MDKR_SAVE_DIR=str(save_dir),
+        MDKR_TEST_SCRIPT_ONLY_INPUT="1",
     )
     command = [
         str(binary), "--headless-frames", str(config.presents),

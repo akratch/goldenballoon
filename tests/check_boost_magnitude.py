@@ -36,37 +36,35 @@ with a deterministic trigger substituted for a chaotic one.
 THE BROKEN DIRECTION (a check that cannot fail is not a check).  The `<ticks>`
 field is the perturbed boost constant.  Two control arms run every time:
 
-  * `:120` — holds the boost 2.7x as long.  It does NOT change the peak speed
-    (the boost saturates, see below), so only the *trace* can see it: the speed
-    is still ~1.8x cruise long after the authored boost has decayed.  This is the
-    arm that proves the per-frame trace assertion is load-bearing rather than
-    decorative.
-  * `:15`  — a third of the authored constant.  Caught by the peak (the boost
-    never reaches terminal speed) and by the ramp profile.
+  * `:120` — holds the boost 2.7x as long. It reaches essentially the same peak,
+    but the exact timer trace and post-45-tick tail reject it.
+  * `:15`  — a third of the authored constant. The exact timer trace rejects it
+    even if a favourable piece of road happens to preserve a similar peak.
 
 Both must FAIL the baseline assertions.  If either one passes, this check fails
 with POSITIVE CONTROL BROKEN, because that means the assertions below no longer
 constrain the boost constant at all.
 
-MEASURED (2026-07-31, arming frame 4000, cadence enhanced / 1 field, Ancient Lake,
+MEASURED (2026-08-03, arming frame 4000, cadence enhanced / 1 field, Ancient Lake,
 default car, `MDKR_AUTOPILOT`; every number reproduced run to run):
 
   arm                       cruise   boost frames   peak |velocity|   peak/cruise
-  8-racer Tracks            12.319        45           22.357            1.97x
-  solo Time Trial           12.767        45           22.336            1.96x
-  control :15               12.336        15           20.880            1.69x
-  control :120              12.267       120           22.358            2.03x
+  8-racer Tracks            12.542        45           22.241            1.97x
+  solo Time Trial           12.769        45           22.323            1.95x
+  control :15               12.571        15           21.667            1.90x
+  control :120              12.494       120           22.361            1.98x
 
-The eight-racer and the solo Time Trial peaks differ by 0.021 velocity units —
-0.09% — with the boost armed identically.  There is no racer-count coupling in
+The eight-racer and the solo Time Trial peaks differ by 0.082 velocity units —
+0.37% — with the boost armed identically.  There is no racer-count coupling in
 the mechanism, and `normalise_time()` (objects.c:1341) has no framerate term
 either: it is a PAL 5/6 rescale of the constant and nothing else.
 
-The `:120` row is the physically interesting one and is why PEAK_VEL alone is not
-enough: a 2.7x longer boost reaches the same 22.358.  The boost saturates —
-`traction = 2.0f` per update against the drag term reaches terminal velocity well
-inside 45 ticks — so its magnitude is bounded by the authored physics, not by the
-timer.  A zip pad cannot produce an unbounded speed however long it is held.
+The `:120` row is the physically interesting one and is why peak velocity alone
+is not enough: a 2.7x longer boost reaches nearly the same peak. The authoritative
+evidence for the constant is the consecutive 45..1 timer sequence followed by
+zero, with BOOST_LARGE retained throughout. Velocity still proves the magnitude
+and racer-count independence, but it is not required to be monotonic: steering,
+road gradient, walls, and AI braking remain live downstream of the boost.
 
 VERDICT RECORDED: authored, not a port defect.  The historical 44.9-vs-23.2 pair
 was never a controlled comparison — two different racing lines, at two different
@@ -118,25 +116,6 @@ CRUISE_MIN, CRUISE_MAX = 10.0, 16.0
 # longer, which is the saturation result the docstring describes.
 PEAK_VEL_MIN, PEAK_VEL_MAX = 21.5, 23.0
 #
-# PLATEAU -- samples 8..11 (frames +25 .. +34), inside the 45-tick boost and past
-# the ramp.  This is the mechanism-determined heart of the trace: measured
-# 22.147..22.324 on the race fixture and 22.266..22.336 solo, i.e. a spread of
-# 0.19 across two completely different racing lines.  The :15 control sits at
-# 12.978..14.566 here.
-#
-# It stops at sample 11 and not at the end of the boost deliberately.  The solo
-# Time Trial line reaches a corner around frame +37 and the racer sheds speed
-# there while the timer is still running (measured 19.34, then 15.75) -- a boost
-# guarantees the throttle, not the road.  Frames +25..+34 are the widest window
-# in which both fixtures are still on the boost's own terminal speed, so that is
-# what gets the tight envelope; everything after it is covered by TAIL below.
-PLATEAU_FROM, PLATEAU_TO = 8, 12
-PLATEAU_MIN, PLATEAU_MAX = 21.8, 22.7
-# RAMP -- samples 0..8 (frames +1 .. +25).  Asserted as SHAPE, not values: the
-# entry speed and the gradient differ between fixtures, but a boost accelerates,
-# monotonically, until it saturates.  The :15 control turns over at sample 5.
-RAMP_TO = 8
-RAMP_SLACK = 0.05          # velocity units of numerical noise per sample
 # TAIL -- samples 18..29 (frames +55 .. +88), well after a 45-tick boost has
 # decayed, as a fraction of the run's own plateau.  Measured 0.556 on the race
 # fixture and 0.337 solo (the AI is braking into a corner there); the :120
@@ -172,6 +151,8 @@ class Arm:
         self.boost_frames = 0
         self.entry_vel = 0.0
         self.vel: list[float] = []       # |velocity| sampled every STRIDE frames
+        self.timer_trace: list[int] = []
+        self.type_trace: list[int] = []
         self.profile: list[float] = []   # position step / cruise, same sampling
 
 
@@ -226,6 +207,7 @@ def run_arm(binary: str, rom: str, arm: Arm, verbose: bool) -> Arm:
         b = BOOST_RE.search(line)
         if b:
             rows.append(dict(f=int(b.group(1)), t=int(b.group(2)),
+                             type=int(b.group(3)),
                              vel=float(b.group(4)), x=float(b.group(5)),
                              y=float(b.group(6)), z=float(b.group(7)),
                              start=int(b.group(10))))
@@ -258,6 +240,19 @@ def run_arm(binary: str, rom: str, arm: Arm, verbose: bool) -> Arm:
     arm.peak_vel = max(abs(r["vel"]) for r in window)
     arm.peak_step, arm.peak_frame = max(
         ((step.get(r["f"], 0.0), r["f"]) for r in window), default=(0.0, 0))
+    timer_window = {
+        r["f"]: (r["t"], r["type"])
+        for r in rows
+        if ARM_FRAME <= r["f"] <= ARM_FRAME + BOOST_TICKS
+    }
+    arm.timer_trace = [
+        timer_window.get(frame, (-1, -1))[0]
+        for frame in range(ARM_FRAME, ARM_FRAME + BOOST_TICKS + 1)
+    ]
+    arm.type_trace = [
+        timer_window.get(frame, (-1, -1))[1]
+        for frame in range(ARM_FRAME, ARM_FRAME + BOOST_TICKS + 1)
+    ]
     samples = range(ARM_FRAME + 1, ARM_FRAME + SPAN + 1, STRIDE)
     arm.vel = [by_frame.get(f, 0.0) for f in samples]
     arm.profile = [step.get(f, 0.0) / arm.cruise for f in samples]
@@ -269,10 +264,27 @@ def assess(arm: Arm) -> list[str]:
     bad = list(arm.errors)
     if bad:
         return bad
-    # 1. the boost lasts the authored number of ticks
+    # 1. the boost lasts the authored number of ticks, with no skipped,
+    # duplicated, or presentation-rate-dependent timer state.
     if arm.boost_frames != BOOST_TICKS:
         bad.append(f"boost lasted {arm.boost_frames} frames, want exactly "
                    f"{BOOST_TICKS} (normalise_time(45) at updateRate 1)")
+    expected_timer = list(range(BOOST_TICKS, -1, -1))
+    if arm.timer_trace != expected_timer:
+        mismatch = next(
+            (index for index, (actual, expected) in enumerate(
+                zip(arm.timer_trace, expected_timer)) if actual != expected),
+            min(len(arm.timer_trace), len(expected_timer)),
+        )
+        actual = arm.timer_trace[mismatch] if mismatch < len(arm.timer_trace) else None
+        expected = expected_timer[mismatch] if mismatch < len(expected_timer) else None
+        bad.append(
+            f"boost timer sequence diverged at frame +{mismatch}: "
+            f"got {actual}, expected {expected} in the exact 45..0 countdown"
+        )
+    active_types = arm.type_trace[:BOOST_TICKS]
+    if active_types != [2] * BOOST_TICKS:
+        bad.append("boost type did not remain BOOST_LARGE for all 45 active ticks")
 
     # 2. the run was cruising when the boost was armed
     if not CRUISE_MIN <= arm.cruise <= CRUISE_MAX:
@@ -289,23 +301,8 @@ def assess(arm: Arm) -> list[str]:
         bad.append(f"peak |velocity| {arm.peak_vel:.3f} outside "
                    f"[{PEAK_VEL_MIN}, {PEAK_VEL_MAX}]")
 
-    # 4. the per-frame trace: ramp shape, then plateau values
-    ramp = arm.vel[:RAMP_TO + 1]
-    for i in range(1, len(ramp)):
-        if ramp[i] < ramp[i - 1] - RAMP_SLACK:
-            bad.append(f"boost ramp is not monotone: |velocity| fell from "
-                       f"{ramp[i - 1]:.3f} to {ramp[i]:.3f} between frames "
-                       f"+{1 + (i - 1) * STRIDE} and +{1 + i * STRIDE}, inside "
-                       f"the boost — a boost accelerates until it saturates")
-            break
-    plateau = arm.vel[PLATEAU_FROM:PLATEAU_TO]
-    for i, v in enumerate(plateau):
-        if not PLATEAU_MIN <= v <= PLATEAU_MAX:
-            bad.append(f"boost plateau sample {PLATEAU_FROM + i} (frame "
-                       f"+{1 + (PLATEAU_FROM + i) * STRIDE}) is |velocity| "
-                       f"{v:.3f}, outside the recorded envelope "
-                       f"[{PLATEAU_MIN}, {PLATEAU_MAX}]")
-            break
+    # 4. Post-boost decay catches an overlong constant without pretending the
+    # live road/steering path must produce a monotonic velocity curve.
     tail = arm.vel[TAIL_FROM:TAIL_TO]
     if tail and arm.peak_vel:
         frac = (sum(tail) / len(tail)) / arm.peak_vel
@@ -329,8 +326,8 @@ def describe(arm: Arm, verbose: bool) -> None:
           f"peakStep={arm.peak_step:.3f} (={arm.peak_step / arm.cruise:.2f}x cruise) "
           f"at frame {arm.peak_frame}")
     if arm.vel:
-        print("    |velocity| ramp+plateau: "
-              + " ".join(f"{v:.2f}" for v in arm.vel[:PLATEAU_TO]))
+        print("    |velocity| early:        "
+              + " ".join(f"{v:.2f}" for v in arm.vel[:12]))
         print("    |velocity| tail:         "
               + " ".join(f"{v:.2f}" for v in arm.vel[TAIL_FROM:TAIL_TO]))
 

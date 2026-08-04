@@ -230,7 +230,7 @@ if [[ ! -f "$BINARY" ]]; then
     exit 1
 fi
 
-for tool in nm size file python3; do
+for tool in file python3; do
     command -v "${tool}" >/dev/null 2>&1 || {
         echo "ERROR: required inspection tool not found: ${tool}" >&2
         exit 1
@@ -247,6 +247,31 @@ case "${BINARY_DESCRIPTION}" in
     *Mach-O*|*ELF*|*PE32*) ;;
     *) echo "ERROR: unsupported or unrecognized binary format: ${BINARY_DESCRIPTION}" >&2; exit 1 ;;
 esac
+
+# Native `nm`/`size` understand the host object format. A macOS release-prep
+# machine cross-compiling Windows otherwise feeds PE32+ to Apple's Mach-O-only
+# tools and reports a false contamination failure. Prefer the matching MinGW
+# inspectors for PE when they are installed; Windows/MSYS and native ELF/Mach-O
+# lanes continue using their ordinary tools. Explicit overrides are useful for
+# other cross toolchain prefixes and remain opt-in.
+MDKR_ASSET_NM_TOOL="${MDKR_ASSET_NM_TOOL:-nm}"
+MDKR_ASSET_SIZE_TOOL="${MDKR_ASSET_SIZE_TOOL:-size}"
+if [[ "${BINARY_DESCRIPTION}" == *PE32* ]]; then
+    if [[ "${MDKR_ASSET_NM_TOOL}" == nm ]] &&
+        command -v x86_64-w64-mingw32-nm >/dev/null 2>&1; then
+        MDKR_ASSET_NM_TOOL=x86_64-w64-mingw32-nm
+    fi
+    if [[ "${MDKR_ASSET_SIZE_TOOL}" == size ]] &&
+        command -v x86_64-w64-mingw32-size >/dev/null 2>&1; then
+        MDKR_ASSET_SIZE_TOOL=x86_64-w64-mingw32-size
+    fi
+fi
+for tool in "${MDKR_ASSET_NM_TOOL}" "${MDKR_ASSET_SIZE_TOOL}"; do
+    command -v "${tool}" >/dev/null 2>&1 || {
+        echo "ERROR: required inspection tool not found: ${tool}" >&2
+        exit 1
+    }
+done
 
 echo "============================================================"
 echo "  Asset-Free Verification"
@@ -270,7 +295,7 @@ echo ""
 
 echo "--- Check 1: Compiled-in DKR asset-table symbols ---"
 
-ASSET_SYMBOLS="$(asset_symbols_for_file "$BINARY" 2>&1)" && SYMBOL_STATUS=0 || SYMBOL_STATUS=$?
+ASSET_SYMBOLS="$(asset_symbols_for_file "$BINARY" "${MDKR_ASSET_NM_TOOL}" 2>&1)" && SYMBOL_STATUS=0 || SYMBOL_STATUS=$?
 case "${SYMBOL_STATUS}" in
     0)
         fail "Compiled-in asset-table symbol(s) found -- this architecture must load all game data from the ROM at runtime, never compile it in:"
@@ -338,7 +363,7 @@ echo "--- Check 3: Data segment size ---"
 #   __TEXT  __DATA  __OBJC  others  hex     decimal
 # Column 2 is __DATA.
 
-SIZE_OUTPUT="$(size "$BINARY" 2>&1)" && SIZE_STATUS=0 || SIZE_STATUS=$?
+SIZE_OUTPUT="$("${MDKR_ASSET_SIZE_TOOL}" "$BINARY" 2>&1)" && SIZE_STATUS=0 || SIZE_STATUS=$?
 if (( SIZE_STATUS != 0 )); then
     printf '%s\n' "${SIZE_OUTPUT}" >&2
     DATA_SIZE=""

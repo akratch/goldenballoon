@@ -17,18 +17,45 @@
 # public/main remote-tracking ref. In a normal public clone it audits HEAD. The
 # exact candidate tree is audited separately in either checkout.
 #
-# Usage: tools/ci/check_release_ready.sh [-h|--help]
+# Usage: tools/ci/check_release_ready.sh [--candidate [--web-dir DIR]] [-h|--help]
+#
+# Ordinary source-hygiene runs deliberately do not require a generated browser
+# build. Candidate mode is the release/publish boundary: it requires the staged
+# browser build to identify this exact commit and to have been built cleanly.
 #
 set -euo pipefail
 
-for arg in "$@"; do
-  case "$arg" in
+candidate=0
+web_dir="dist/web"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --candidate)
+      candidate=1
+      shift
+      ;;
+    --web-dir)
+      [ "$#" -ge 2 ] || {
+        echo "--web-dir requires a directory" >&2
+        exit 2
+      }
+      web_dir="$2"
+      shift 2
+      ;;
     -h|--help)
-      sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
       ;;
   esac
 done
+
+if [ "$candidate" -eq 0 ] && [ "$web_dir" != "dist/web" ]; then
+  echo "--web-dir is only valid with --candidate" >&2
+  exit 2
+fi
 
 if root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
   cd "$root"
@@ -37,6 +64,24 @@ else
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   cd "${script_dir}/../.."
   HAVE_GIT=0
+fi
+
+if [ "$candidate" -eq 1 ]; then
+  echo
+  echo "== Candidate web build provenance =="
+  if [ "$HAVE_GIT" -ne 1 ]; then
+    echo "candidate readiness requires a git checkout to resolve HEAD" >&2
+    exit 1
+  fi
+  candidate_version="$(sed -nE 's/^[[:space:]]*set\(MDKR_VERSION "([^"]+)" CACHE STRING.*$/\1/p' CMakeLists.txt)"
+  if [ "$(printf '%s\n' "$candidate_version" | awk 'NF' | wc -l | tr -d ' ')" -ne 1 ]; then
+    echo "candidate readiness could not resolve one MDKR_VERSION from CMakeLists.txt" >&2
+    exit 1
+  fi
+  python3 tools/ci/check_web_build_provenance.py \
+    --web-dir "$web_dir" \
+    --commit "$(git rev-parse HEAD)" \
+    --version "$candidate_version"
 fi
 
 fail=0
@@ -135,6 +180,8 @@ if [ "$HAVE_GIT" -eq 1 ]; then
     platform/app/app_relaunch.h \
     platform/app/app_ui_policy.cpp \
     platform/app/app_ui_policy.h \
+    platform/audio_sink_evidence.c \
+    platform/audio_sink_evidence.h \
     platform/fast3d/gfx_webgpu_async_request.c \
     platform/fast3d/gfx_webgpu_async_request.h \
     platform/fast3d/gfx_webgpu_callback_latch.c \
@@ -149,23 +196,34 @@ if [ "$HAVE_GIT" -eq 1 ]; then
     tests/check_app_adopted_pacing.py \
     tests/check_app_capture.py \
     tests/check_app_ui_input.py \
+    tests/check_audio_sink_evidence.py \
+    tests/check_audio_options_persistence.py \
     tests/check_authored_rng_compat.py \
     tests/check_camera_snapshot_coverage.py \
     tests/check_cli_version.cmake \
     tests/check_hud_render_authority.py \
+    tests/check_release_ready_web_provenance.py \
+    tests/check_restart_apply.py \
     tests/check_viewport_route_isolation.py \
     tests/check_weather_rng_order.py \
+    tests/input_scripts/audio_options_persist_failure.txt \
+    tests/input_scripts/audio_options_persist_success.txt \
     tests/input_scripts/magic_codes_accept_reject.txt \
     tests/input_scripts/race_2p_human_binding.txt \
     tests/input_scripts/race_3p_tt_camera.txt \
     tests/test_app_lifecycle.cpp \
     tests/test_app_ui_policy.cpp \
+    tests/test_async_rom_validation.py \
+    tests/test_audio_sink_evidence.c \
+    tests/test_audio_sink_evidence_contract.py \
+    tests/test_product_claim_boundaries.py \
     tests/test_user_paths.c \
     tests/test_viewport_route_cache.c \
     tests/test_webgpu_async_request.c \
     tests/test_webgpu_callback_latch.c \
     tests/test_webgpu_surface_policy.c \
-    tools/check_windows_imports.sh; do
+    tools/check_windows_imports.sh \
+    tools/ci/check_web_build_provenance.py; do
     if ! git ls-files --error-unmatch -- "$required_path" >/dev/null 2>&1; then
       note "release dependency is not tracked: $required_path"
     fi

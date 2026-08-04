@@ -100,20 +100,16 @@ bool present_sched_backend_vsync_enabled(void);
 const char *present_sched_present_policy_name(void);
 const char *present_sched_present_requested_policy_name(void);
 
-/*
- * True only when an explicit internal test seam wants the captured display
- * list re-walked. Production 1.0.1 never arms delayed replay from a frame-rate
- * or smoothing setting. The renderer checks this before paying for snapshot
- * and registry retention, so ordinary play pays only cached policy checks.
- */
+/* True when a presentation subloop and Interpolated motion smoothing need an
+ * immutable authored task. Internal endpoint controls also use this seam. The
+ * renderer checks it before paying for snapshot/task retention, so Original or
+ * smoothing-off play pays only cached policy checks. */
 bool present_sched_replay_armed(void);
 
-/*
- * Production 1.0.1 always returns false. The public smoothing setting is
- * fail-closed because a delayed list walk cannot yet retain every mutable
- * dependency. Explicit internal replay seams can enable this for adversarial
- * diagnostics; host opportunities without a new image never swap or submit.
- */
+/* True only for the exact public values interpolate/1/on or the versioned
+ * internal negative-control arm. Unknown values fail closed. A host opportunity
+ * for which immutable replay cannot produce a complete image holds without a
+ * swap or submission. */
 bool present_sched_smoothing_enabled(void);
 
 /* All replay test flags are inert unless this exact versioned capability is
@@ -145,8 +141,8 @@ bool present_sched_test_force_recompose(void);
  * agreement is machine-checkable (tests/check_presentation_matrix.py) and the
  * replay's matrix/freeze counters beside them (tests/check_render_purity.py).
  */
-/* One internal-test interpolated image was submitted, carrying `viewports`
- * substituted camera view-projections. Production 1.0.1 never calls this. */
+/* One production or internal-control interpolated image was submitted,
+ * carrying `viewports` substituted camera view-projections. */
 void present_sched_note_interpolated(unsigned viewports);
 /* A tick-boundary image was exposed. `replayed` is reserved for the delayed
  * replay negative control; production exposes the completed real walk. */
@@ -172,16 +168,16 @@ void present_sched_trace_summary(void);
  * as "no sample", so the sections cannot accumulate garbage from a build that
  * armed the flag mid-run (it cannot: the flag is cached at first use).
  *
- * WHAT THE SECTIONS ARE. They partition host pacing and the quarantined replay
- * mechanism. Replay-specific sections remain zero in production 1.0.1:
+ * WHAT THE SECTIONS ARE. They partition host pacing and immutable replay.
+ * Replay-specific sections remain zero unless Interpolated smoothing is armed:
  *   SNAPSHOT  the per-TICK authoritative publish walk (presentation_snapshot_
  *             capture) — paid once per tick whether or not the subloop runs.
  *   FREEZE    the per-real-walk matrix-registry freeze (gfx_end_frame).
  *   INTERP    building the interpolated view-projections for one present.
  *   REPLAY    re-walking the held display list for one present.
  *   PRESENT   platform_frame_sync for the TICK's own present.
- *   IPRESENT  frame boundary for an extra host opportunity (a no-swap hold in
- *             production; a submitted midpoint only under the test seam).
+ *   IPRESENT  frame boundary for an extra host opportunity (a no-swap hold or
+ *             a submitted production/control midpoint).
  * TICKWALL is the whole retrace-branch entry, so PRESENT + the subloop's
  * per-present sections are bounded by it and the residue is the pacer's sleep.
  */

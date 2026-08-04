@@ -161,6 +161,7 @@
 #define G_MTX_DKR_SPACE_WORLD     1
 #define G_MTX_DKR_SPACE_SAFE_2D   2
 #define G_MTX_DKR_SPACE_FULLBLEED 3
+#define G_MTX_DKR_SPACE_WIDE_BG   4
 #define G_MW_BILLBOARD 0x02 //0x01 = billboarding enabled, 0x00 = disabled
 #define G_MW_MVPMATRIX 0x0A  //Specifies the index of the mvp matrix. 
 /*
@@ -172,6 +173,7 @@
  */
 #define G_MW_DKR_REMASTER_TARGET 0x0C
 #define G_MW_DKR_SMOOTH_NORMALS 0x0E
+#define G_MW_DKR_WORLD_REGION 0x10
 #define G_VTX_APPEND 1
 
 #define gDkrEnableBillboard(pkt)            \
@@ -187,7 +189,7 @@
     gSPMatrix(pkt, m, (i) << 6)
 #ifdef NATIVE_PORT
 #define gSPMatrixDKRTagged(pkt, m, i, space) \
-    gSPMatrix(pkt, m, ((i) << 6) | ((space) & 3))
+    gSPMatrix(pkt, m, ((i) << 6) | ((space) & 7))
 #else
 #define gSPMatrixDKRTagged(pkt, m, i, space) \
     gSPMatrixDKR(pkt, m, i)
@@ -196,6 +198,8 @@
 	gMoveWd(pkt, G_MW_MVPMATRIX, 0, (num) << 6)
 
 #ifdef NATIVE_PORT
+#define gDkrSetWorldRegion(pkt, safeRegion) \
+    gMoveWd(pkt, G_MW_DKR_WORLD_REGION, 0, ((safeRegion) != 0))
 #define gDkrSetRemasterTarget(pkt, packedDirectionAndClass) \
     gMoveWd(pkt, G_MW_DKR_REMASTER_TARGET, 0, (packedDirectionAndClass))
 #define gDkrSetSmoothNormals(pkt, normals) \

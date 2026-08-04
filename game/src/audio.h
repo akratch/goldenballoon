@@ -73,6 +73,11 @@ void mdkr_audio_voice_peaks_take(u32 *physicalPeak, u32 *musicPeak);
 #endif
 void sound_volume_reset(u8 skipReset);
 void sound_volume_change(s32 behaviour);
+#ifdef NATIVE_PORT
+s32 sound_volume_behaviour(void);
+void sound_overlay_pause_set(s32 paused);
+s32 sound_overlay_pause_active(void);
+#endif
 void music_change_off(void);
 void music_change_on(void);
 void music_play(u8 seqID);

@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""Validate the launcher's intermediate-width top navigation.
+
+The wide sidebar and narrow dropdown have separate coverage. This gate owns the
+800x600 layout between them: exactly one destination may use the brand-cobalt
+selection fill, and that destination must carry the gold active indicator.
+"""
+
+from __future__ import annotations
+
+import argparse
+from collections import deque
+from pathlib import Path
+
+from check_app_capture import CaptureError, load_bmp, validate
+
+
+def near(color: tuple[int, int, int], target: tuple[int, int, int],
+         tolerance: int = 8) -> bool:
+    return all(abs(actual - expected) <= tolerance
+               for actual, expected in zip(color, target))
+
+
+def selected_components(path: Path) -> tuple[int, int, int, int, int, int]:
+    bitmap = load_bmp(path)
+    general_failures = validate(bitmap)
+    if general_failures:
+        raise CaptureError("; ".join(general_failures))
+
+    width, height = bitmap.width, bitmap.height
+    # Prove each wordmark half independently inside the header. The global
+    # gold population cannot stand in for “Golden” because the primary CTA is
+    # deliberately gold too.
+    wordmark_x1 = int(width * 0.30)
+    wordmark_y1 = int(height * 0.075)
+    wordmark = [
+        bitmap.pixels[y * width + x]
+        for y in range(wordmark_y1)
+        for x in range(wordmark_x1)
+    ]
+    wordmark_gold_pixels = sum(
+        near(color, (212, 168, 67)) for color in wordmark)
+    wordmark_sky_pixels = sum(
+        near(color, (113, 190, 249)) for color in wordmark)
+    gold_pixels = sum(
+        near(color, (212, 168, 67)) for color in bitmap.pixels)
+    wordmark_minimum = max(100, len(wordmark) // 100)
+    if wordmark_gold_pixels < wordmark_minimum:
+        raise CaptureError("gold ‘Golden’ wordmark half is missing")
+    if wordmark_sky_pixels < wordmark_minimum:
+        raise CaptureError("sky-blue ‘Balloon’ wordmark half is missing")
+    if gold_pixels < len(bitmap.pixels) // 80:
+        raise CaptureError(
+            "solid-gold primary action is missing or too small")
+
+    # BrandRule is alpha-blended over the header surface. Find a row containing
+    # both blended colors across most of the window, then require many direct
+    # color transitions so two solid half-lines cannot impersonate the quiet
+    # checkered gantry motif.
+    rule_found = False
+    for y in range(int(height * 0.07), int(height * 0.15)):
+        classified: list[int] = []
+        for x in range(width):
+            color = bitmap.pixels[y * width + x]
+            if near(color, (161, 129, 57)):
+                classified.append(1)
+            elif near(color, (43, 74, 118)):
+                classified.append(2)
+            else:
+                classified.append(0)
+        colored = sum(value != 0 for value in classified)
+        transitions = sum(
+            classified[x] != 0 and classified[x - 1] != 0 and
+            classified[x] != classified[x - 1]
+            for x in range(1, width)
+        )
+        if colored >= int(width * 0.70) and transitions >= 50:
+            rule_found = True
+            break
+    if not rule_found:
+        raise CaptureError("alternating gold/cobalt brand rule is missing")
+
+    # Ratios make the gate independent of Retina capture scale. The crop owns
+    # only the four navigation destinations: it excludes the brand, Quit,
+    # status, Play action, and panel content.
+    x0, x1 = int(width * 0.025), int(width * 0.66)
+    # Touch-sized tabs extend slightly farther down at 1.00x. Keep their gold
+    # baseline inside the crop while still ending above the status/CTA row.
+    y0, y1 = int(height * 0.09), int(height * 0.27)
+    crop_width, crop_height = x1 - x0, y1 - y0
+    blue = bytearray(crop_width * crop_height)
+    gold = bytearray(crop_width * crop_height)
+    for y in range(y0, y1):
+        source = y * width
+        target = (y - y0) * crop_width
+        for x in range(x0, x1):
+            color = bitmap.pixels[source + x]
+            blue[target + x - x0] = near(color, (49, 92, 152))
+            gold[target + x - x0] = near(color, (212, 168, 67))
+
+    seen = bytearray(len(blue))
+    components: list[tuple[int, int, int, int, int]] = []
+    for start, present in enumerate(blue):
+        if not present or seen[start]:
+            continue
+        queue = deque([start])
+        seen[start] = 1
+        area = 0
+        min_x = min_y = 1 << 30
+        max_x = max_y = -1
+        while queue:
+            index = queue.popleft()
+            y, x = divmod(index, crop_width)
+            area += 1
+            min_x, max_x = min(min_x, x), max(max_x, x)
+            min_y, max_y = min(min_y, y), max(max_y, y)
+            for neighbor in (index - 1, index + 1,
+                             index - crop_width, index + crop_width):
+                if neighbor < 0 or neighbor >= len(blue) or seen[neighbor]:
+                    continue
+                ny, nx = divmod(neighbor, crop_width)
+                if abs(nx - x) + abs(ny - y) != 1 or not blue[neighbor]:
+                    continue
+                seen[neighbor] = 1
+                queue.append(neighbor)
+        # Ignore isolated antialiasing pixels; a selected destination is a
+        # solid control surface occupying thousands of capture pixels.
+        if area >= max(200, (width * height) // 4000):
+            components.append((area, min_x, min_y, max_x, max_y))
+
+    if len(components) != 1:
+        raise CaptureError(
+            "top navigation must contain exactly one cobalt selected surface; "
+            f"found {len(components)}")
+
+    area, min_x, min_y, max_x, max_y = components[0]
+    if max_x - min_x < width * 0.06 or max_y - min_y < height * 0.025:
+        raise CaptureError("selected tab surface is clipped or too small")
+
+    indicator = 0
+    indicator_y0 = max(0, max_y - int(height * 0.012))
+    indicator_y1 = min(crop_height, max_y + int(height * 0.008) + 1)
+    for y in range(indicator_y0, indicator_y1):
+        row = y * crop_width
+        for x in range(min_x, max_x + 1):
+            indicator += bool(gold[row + x])
+    if indicator < max(20, width // 20):
+        raise CaptureError("selected tab is missing its gold active indicator")
+
+    return (area, indicator, len(components), wordmark_gold_pixels,
+            wordmark_sky_pixels, gold_pixels)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("bmp", type=Path)
+    args = parser.parse_args()
+    try:
+        (area, indicator, components, wordmark_gold_pixels,
+         wordmark_sky_pixels, gold_pixels) = selected_components(args.bmp)
+    except (OSError, CaptureError) as error:
+        print(f"launcher top-tab validation failed: {error}")
+        return 1
+    print("launcher top tabs valid: "
+          f"selected_components={components} selected_pixels={area} "
+          f"indicator_pixels={indicator} "
+          f"wordmark_gold_pixels={wordmark_gold_pixels} "
+          f"wordmark_sky_pixels={wordmark_sky_pixels} "
+          f"gold_action_pixels={gold_pixels}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

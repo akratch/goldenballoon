@@ -68,6 +68,11 @@ void rsp_init(Gfx **dList);
  * by the next submitted graphics task. Sub-display-list state resets must not
  * start a new authoring lifetime. */
 void presentation_task_authoring_begin(Gfx *cursor);
+/* Read-only view of the complete alternate-buffer task waiting for the next
+ * submission. Presentation may census its immutable dependencies, but never
+ * executes the game render tree or consumes the authoring lifetime. */
+s32 presentation_task_peek_authored(const Gfx **begin, const Gfx **end,
+                                    u64 *authoredTick);
 #endif
 void gfxtask_init(OSSched *sc);
 void bgdraw_texture_init(TextureHeader *tex1, TextureHeader *tex2, u32 shiftX);

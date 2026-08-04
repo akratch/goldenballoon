@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0a2447">
 <title>Golden Balloon — play in your browser</title>
 <meta name="description" content="A native source port of the 1997 N64 kart racer, compiled to WebGPU and running entirely in your browser. Bring your own ROM.">
 
@@ -26,9 +27,10 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<a class="skip-link" href="#gate">Skip to launcher</a>
 
 <!-- ================= LAUNCHER ================= -->
-<main id="gate">
+<main id="gate" tabindex="-1">
 
   <!-- Start/finish gantry across the top edge, then the banner artwork at its own
        aspect (never cropped) on the sky gradient sampled from the art itself. -->
@@ -64,42 +66,46 @@
     <div class="wrap">
 
       <!-- Capability gate, boot progress and errors all land here. -->
-      <p id="gate-msg" class="status-line" role="status" aria-live="polite">Checking your browser…</p>
+      <p id="gate-msg" class="status-line" role="status" aria-live="polite"
+         tabindex="-1">Checking your browser…</p>
       <noscript>
         <p class="status-line err">This page needs JavaScript to download and run the WebGPU engine.</p>
       </noscript>
 
       <!-- Revealed once the WebGPU capability gate passes. -->
-      <div id="rom-ui" hidden>
+      <div id="rom-ui" tabindex="-1" hidden>
 
         <section class="sect" aria-labelledby="picker-title">
           <div class="pos" aria-hidden="true">01</div>
           <div class="panel">
             <h2 id="picker-title">Bring your own ROM</h2>
 
-            <div id="drop" class="drop" tabindex="0" role="button"
-                 aria-describedby="drop-help">
+            <button id="drop" class="drop" type="button"
+                    aria-describedby="drop-help">
               <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M12 16V4m0 0L8 8m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
                       fill="none" stroke="currentColor" stroke-width="2"
                       stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
-              <p class="drop-title">Drop your ROM here, or <span class="link">browse</span></p>
-              <p id="drop-help" class="drop-sub">
+              <span class="drop-title">Drop your ROM here, or <span class="link">browse</span></span>
+              <span id="drop-help" class="drop-sub">
                 <code>.z64</code> · <code>.v64</code> · <code>.n64</code> — 12&nbsp;MB, <strong>US 1.1 or EU 1.1</strong>
-              </p>
-              <input type="file" id="rom-input" accept=".z64,.n64,.v64,.rom" hidden>
-            </div>
+              </span>
+            </button>
+            <input type="file" id="rom-input" accept=".z64,.n64,.v64,.rom" hidden>
 
-            <p id="rom-status" role="status" aria-live="polite"></p>
+            <p id="rom-status" role="status" aria-live="polite" tabindex="-1"></p>
 
             <div class="quality">
               <label class="quality-label" for="mode">Presentation</label>
               <select id="mode" class="quality-select">
-                <option value="restored" selected>Restored &mdash; original look, modern fidelity</option>
+                <option value="restored" selected>Restored &mdash; recommended, original look with modern fidelity</option>
                 <option value="remastered">Remastered &mdash; art-directed effects (work in progress)</option>
                 <option value="pure">Pure &mdash; original 4:3, no enhancements</option>
               </select>
+              <p class="quality-note"><strong>Qualified browser path:</strong>
+                WebGPU with Restored presentation. Remastered is opt-in work in
+                progress and is not visually qualified until its remaining gates close.</p>
               <label class="quality-label" for="scale">Supersampling</label>
               <select id="scale" class="quality-select">
                 <option value="">Mode default (2&times;)</option>
@@ -108,24 +114,34 @@
                 <option value="3">3&times;</option>
                 <option value="4">4&times; &mdash; sharpest, heaviest</option>
               </select>
-              <label class="quality-label" for="rate">Frame rate</label>
-              <select id="rate" class="quality-select">
-                <option value="original" selected>Original &mdash; Recommended / Proven</option>
-                <option value="display">Display &mdash; Experimental &mdash; Under Construction</option>
-                <option value="30">30 Hz &mdash; Experimental &mdash; Under Construction</option>
-                <option value="60">60 Hz &mdash; Experimental &mdash; Under Construction</option>
-                <option value="90">90 Hz &mdash; Experimental &mdash; Under Construction</option>
-                <option value="120">120 Hz &mdash; Experimental &mdash; Under Construction</option>
-                <option value="144">144 Hz &mdash; Experimental &mdash; Under Construction</option>
-              </select>
-              <p id="frame-rate-status" class="quality-note"><strong>Every frame-rate choice except Original is
-                Experimental &mdash; Under Construction.</strong> In 1.0.1+ these choices only
-                alter host pacing and input/event-pump opportunities; they do not increase
-                unique visual FPS above the supported US 1.1 game's authored ~30 FPS. Any
-                benefit may be negligible, while higher settings can use more CPU. Browser
-                scheduling remains capped by the display and
-                <code>requestAnimationFrame</code>; this build does not offer an unbounded
-                presentation mode.</p>
+              <details id="experimental-presentation" class="quality-advanced">
+                <summary>Advanced / experimental motion</summary>
+                <div class="quality-advanced-grid">
+                  <label class="quality-label" for="rate">Frame rate</label>
+                  <select id="rate" class="quality-select">
+                    <option value="original" selected>Original &mdash; authored motion</option>
+                    <option value="display">Match display</option>
+                    <option value="30">30 Hz</option>
+                    <option value="60">60 Hz</option>
+                    <option value="90">90 Hz</option>
+                    <option value="120">120 Hz</option>
+                    <option value="144">144 Hz</option>
+                  </select>
+                  <label class="quality-label" for="smoothing">Motion smoothing</label>
+                  <select id="smoothing" class="quality-select">
+                    <option value="off" selected>Off &mdash; authored images only</option>
+                    <option value="interpolate">Interpolated &mdash; smooth modern motion</option>
+                  </select>
+                  <p id="frame-rate-status" class="quality-note">A frame rate above
+                    Original creates additional presentation opportunities. <strong>Interpolated</strong>
+                    motion smoothing fills them with unique images blended from adjacent authored
+                    game states; Off holds the latest authored image. Motion smoothing never
+                    changes physics, AI, input, timers, audio, or saves; fresh configurations
+                    use the original fixed gameplay cadence.
+                    Browser presentation cannot exceed the display's
+                    <code>requestAnimationFrame</code> cadence.</p>
+                </div>
+              </details>
               <p class="quality-note">Supersampling renders above your window size and
                 filters back down, which is what removes the stair-stepping on edges.
                 Restored and Remastered use 2&times;. <strong>Set it to Off and back to
@@ -135,10 +151,10 @@
             </div>
 
             <div class="actions">
-              <button id="play" class="btn btn-primary" disabled>
+              <button id="play" class="btn btn-primary" type="button" disabled>
                 <span>▶ Play</span>
               </button>
-              <button id="forget" class="btn btn-ghost" hidden>Forget stored ROM</button>
+              <button id="forget" class="btn btn-ghost" type="button" hidden>Forget stored ROM</button>
             </div>
 
             <p class="fine">
@@ -199,9 +215,10 @@
                   <li><strong>Saves persist</strong> in your browser, so lap records
                     survive a reload. <em>Stored data</em> (step&nbsp;04) erases
                     them if you want a clean slate.</li>
-                  <li>Needs <strong>WebGPU</strong> — Chrome or Edge 113+. There is no
-                    WebGL fallback, so this page says so up front rather than
-                    running black.</li>
+                  <li>Needs <strong>WebGPU</strong>. Current Chrome or Edge is the
+                    qualified path. Other browsers are capability-detected and
+                    receive an explicit failure instead of a black screen; there
+                    is no WebGL fallback.</li>
                   <li><strong>Adventure, Tracks, Time Trial, bosses, trophy series,
                     and challenge modes</strong> are playable.</li>
                   <li>Two-, three-, and four-player split-screen work with
@@ -217,7 +234,7 @@
         <section class="sect" aria-labelledby="known-title">
           <div class="pos" aria-hidden="true">03</div>
           <div class="panel">
-            <h3 id="known-title">Known issues</h3>
+            <h2 id="known-title">Known issues</h2>
             <ul class="notes">
               <li><strong>Controller Pak backup uses mdkr64's versioned
                 <code>.mdkr-paks</code> bundle.</strong> Import of raw emulator
@@ -243,7 +260,7 @@
         <section class="sect" aria-labelledby="data-title">
           <div class="pos" aria-hidden="true">04</div>
           <div class="panel">
-            <h3 id="data-title">Stored data</h3>
+            <h2 id="data-title">Stored data</h2>
             <p class="fine">
               Browser storage can be cleared by browser settings, private mode,
               storage eviction, or a site reset. Download a backup if the
@@ -251,27 +268,27 @@
               and are never uploaded.
             </p>
             <div class="actions">
-              <button id="download-save" class="btn btn-primary">
+              <button id="download-save" class="btn btn-primary" type="button">
                 <span>Download backup</span>
               </button>
-              <button id="download-save-raw" class="btn btn-ghost">Download raw EEPROM</button>
-              <button id="download-paks" class="btn btn-ghost">Download ghost Paks</button>
-              <button id="import-paks-button" class="btn btn-ghost">Import ghost Paks</button>
+              <button id="download-save-raw" class="btn btn-ghost" type="button">Download raw EEPROM</button>
+              <button id="download-paks" class="btn btn-ghost" type="button">Download ghost Paks</button>
+              <button id="import-paks-button" class="btn btn-ghost" type="button">Import ghost Paks</button>
               <input id="import-paks-input" type="file"
                      accept=".mdkr-paks,application/json"
                      hidden>
-              <button id="import-save-button" class="btn btn-ghost">Import backup</button>
+              <button id="import-save-button" class="btn btn-ghost" type="button">Import backup</button>
               <input id="import-save-input" type="file"
                      accept=".mdkr-save,.eep,.bin,.sav,application/json"
                      hidden>
-              <button id="edit-save" class="btn btn-ghost">Edit saved progress</button>
-              <button id="restore-save-snapshot" class="btn btn-ghost">Recovery points</button>
-              <button id="clear-save" class="btn btn-danger">Erase saved progress</button>
+              <button id="edit-save" class="btn btn-ghost" type="button">Edit saved progress</button>
+              <button id="restore-save-snapshot" class="btn btn-ghost" type="button">Recovery points</button>
+              <button id="clear-save" class="btn btn-danger" type="button">Erase saved progress</button>
             </div>
-            <div id="save-drop" class="save-drop" tabindex="0" role="button"
-                 aria-label="Drop a save backup here">
+            <button id="save-drop" class="save-drop" type="button"
+                    aria-label="Choose or drop a save backup">
               Drop a <code>.mdkr-save</code> backup or exact 512-byte EEPROM here
-            </div>
+            </button>
             <p id="save-status" role="status" aria-live="polite"></p>
             <p class="fine">
               Adventure progress and Controller Pak ghosts are stored
@@ -305,9 +322,9 @@
             <a href="https://github.com/akratch/golden-balloon">Source of this page</a>
           </p>
           <p class="fine" id="ios-fullscreen-hint" hidden>
-            iPhone tip: Safari cannot full-screen web games. For a chromeless,
-            full-screen experience use <strong>Share&nbsp;→&nbsp;Add to Home
-            Screen</strong> and launch from the icon.
+            Fullscreen is unavailable in this browser. For a chromeless
+            experience, use <strong>Share&nbsp;→&nbsp;Add to Home Screen</strong>
+            and launch from the icon.
           </p>
           <p class="fine" id="build-tag" hidden></p>
         </footer>
@@ -327,6 +344,17 @@
   <div id="save-dialog-actions" class="actions"></div>
 </dialog>
 
+<dialog id="forget-rom-dialog" class="confirm-dialog"
+        aria-labelledby="forget-rom-title">
+  <h2 id="forget-rom-title">Forget stored ROM?</h2>
+  <p>This removes only this browser's private stored copy. Your original ROM
+     file and saved progress will not be changed.</p>
+  <div class="actions">
+    <button id="forget-rom-cancel" class="btn btn-ghost" type="button">Cancel</button>
+    <button id="forget-rom-confirm" class="btn btn-danger" type="button">Forget ROM</button>
+  </div>
+</dialog>
+
 <!-- ================= GAME ================= -->
 <!-- The canvas id MUST stay "#canvas" — it is the WebGPU surface selector in
      gfx_webgpu_compat.h and the SDL2 canvas the shell binds to. Its backing
@@ -334,6 +362,7 @@
      engine samples it each frame and transactionally resizes its targets. -->
 <div id="stage" hidden>
   <canvas id="canvas" width="640" height="480" tabindex="-1"></canvas>
+  <p id="stage-status" role="status" aria-live="assertive" hidden></p>
   <div id="fps" class="fps" hidden aria-hidden="true"></div>
   <button id="touch-toggle" class="touch-toggle" type="button" hidden
           aria-label="Hide touch controls" aria-pressed="true">
@@ -381,8 +410,16 @@
           aria-label="Enter fullscreen" aria-pressed="false">⛶</button>
 </div>
 
-<div id="save-banner" role="status" aria-live="polite" hidden>
-  Couldn't save to browser storage — progress may not persist.
+<div id="durability-banners" role="group" aria-label="Storage notices">
+  <div id="save-banner" role="status" aria-live="polite" hidden>
+    Couldn't save to browser storage — progress may not persist.
+  </div>
+  <div id="rom-session-banner" role="group" aria-label="ROM storage" hidden>
+    <span id="rom-session-message" role="status" aria-live="assertive"></span>
+    <button id="rom-storage-retry" class="btn banner-action" type="button" hidden>
+      Retry browser storage
+    </button>
+  </div>
 </div>
 
 <!-- rom-id.js MUST come first: the shell calls dkrValidateRom() from it. It is the

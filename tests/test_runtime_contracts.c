@@ -20,6 +20,14 @@ static int test_audio_domains(void) {
     s32 row;
     s32 mappedVehicle;
 
+    REQUIRE(mdkr_vehicle_sound_model(VEHICLE_CAR) == VEHICLE_CAR);
+    REQUIRE(mdkr_vehicle_sound_model(VEHICLE_HOVERCRAFT) == VEHICLE_HOVERCRAFT);
+    REQUIRE(mdkr_vehicle_sound_model(VEHICLE_PLANE) == VEHICLE_PLANE);
+    REQUIRE(mdkr_vehicle_sound_model(VEHICLE_FLYING_CAR) == VEHICLE_PLANE);
+    REQUIRE(mdkr_vehicle_sound_model(VEHICLE_LOOPDELOOP) == VEHICLE_CAR);
+    REQUIRE(mdkr_vehicle_sound_model(VEHICLE_BOSSES) == -1);
+    REQUIRE(mdkr_vehicle_sound_model(-1) == -1);
+
     for (vehicle = VEHICLE_CAR; vehicle < NUMBER_OF_PLAYER_VEHICLES; vehicle++) {
         for (character = 0; character < NUMBER_OF_CHARACTERS; character++) {
             REQUIRE(mdkr_vehicle_sound_row(character, vehicle, &row, &mappedVehicle));

@@ -1757,12 +1757,9 @@ globalThis.MDKRSaveUI = (() => {
 
     const drop = byId("save-drop");
     if (drop) {
-      drop.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          byId("import-save-input").click();
-        }
-      });
+      // A real button supplies Enter/Space activation, focus semantics, and a
+      // correct accessibility role without reproducing browser behavior in JS.
+      drop.addEventListener("click", () => byId("import-save-input").click());
       ["dragenter", "dragover"].forEach((name) =>
         drop.addEventListener(name, (event) => {
           event.preventDefault();

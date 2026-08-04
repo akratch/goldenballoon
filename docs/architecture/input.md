@@ -1,4 +1,4 @@
-# Input, menu interactivity and windowed play
+# Input, menu interactivity and native window modes
 
 > **This work has landed.** The document was written ahead of the M4 wave and
 > is kept because it is still the clearest description of the input path and
@@ -12,14 +12,22 @@ SDL game controller, start a race, and reach in-race rendering. `--headless-fram
 keeps working for CI-style checks; interactive mode is the default when no
 `--headless-frames` flag is given.
 
-## Input path (game side — do not restructure)
-- `game/src/joypad.c` wraps libultra SI: `osContInit` (boot), then per-frame
-  `osContStartReadData`/`osContGetReadData` filling `OSContPad {s16 stick_x, stick_y;
-  u16 button; u8 errno}` for 4 controllers.
-- The shim (`platform/stubs_dkr.c`) currently returns neutral pads. Replace with a
-  platform input state owned by `platform/platform_sdl_min.c`, updated in the SDL
-  event pump each frame BEFORE the retrace message is synthesized (ordering matters:
-  game reads pads after retrace wake).
+## Input path
+
+- `game/src/joypad.c` keeps the original libultra SI flow: `osContInit`, then
+  per-frame `osContStartReadData`/`osContGetReadData` filling four `OSContPad`
+  records.
+- `platform/platform_sdl_min.c` owns host input state and updates it in the SDL
+  event pump before the retrace message is synthesized. The game therefore sees
+  a stable pad snapshot after its retrace wake.
+- SDL's GameController database first converts device-specific layouts into
+  normalized A/B/X/Y, shoulders, clicks, D-pad, trigger axes, and stick axes.
+  `platform/controller_mapping.c` then maps each normalized digital source
+  through the durable `Input.Controller*` settings to an N64 button. Multiple
+  sources may intentionally map to one action. `None` leaves a source unbound.
+- Left-stick X/Y stays analog steering and is not converted to a digital
+  binding. Right-stick directions are thresholded digital sources and default
+  to the four C-buttons.
 
 ## Default bindings (mirror mgb64 conventions, see mgb64 src/platform input files)
 Keyboard (P1):
@@ -29,9 +37,28 @@ Keyboard (P1):
 - A/D = L/R shoulder, Q/E/W/S + IJKL = C-buttons (IJKL primary)
 - Esc = quit (host-level, not mapped to the game)
 SDL_GameController (any connected, P1 first): left stick = stick, A=A, B/X=B,
-LT/RT... follow mgb64's mapping table; load lib/sdl_gamecontrollerdb.
+Y=C-up, LT/RT=Z, shoulders=L/R, D-pad=N64 D-pad, right stick=C-buttons. Settings
+can remap every digital source, including stick clicks, to any N64 digital
+action or None. **Restore controller defaults** reinstates this table atomically.
 - N64 button bit constants: use the game's own defs (game/include — grep
   A_BUTTON/B_BUTTON/Z_TRIG/START_BUTTON etc.), NOT SDL scancodes in game code.
+
+## Rumble
+
+The game-facing Rumble Pak capability continues to reflect the connected
+device. `Input.RumbleEnabled=0` only mutes host output, so disabling vibration
+does not change game behavior or make the Pak disappear. Light, Balanced, and
+Strong resolve to 35%, 65%, and 100% SDL motor amplitude. Changing the setting
+stops or refreshes a live request immediately; disconnect and shutdown still
+cancel feedback.
+
+## Window mode
+
+`Window.Mode=fullscreen` uses SDL desktop fullscreen with the borderless flag
+made explicit. It covers the current display without changing the monitor's
+video mode and avoids Windows overlapped-window borders. The setting is applied
+at window creation on startup, and Settings, F11, and Alt+Enter all use the same
+durable transition. An SDL or persistence failure keeps/restores the prior mode.
 
 ## Save data
 - EEPROM file backing already exists (save/eeprom.bin). Verify init_save_data's
@@ -53,4 +80,3 @@ LT/RT... follow mgb64's mapping table; load lib/sdl_gamecontrollerdb.
 3. `--headless-frames 600 --dump-frames` still exits 0; spot-check dumps show the
    menu progressing (input can be scripted via a simple `--input-script file` of
    frame:button pairs if useful for automation — optional, only if cheap).
-

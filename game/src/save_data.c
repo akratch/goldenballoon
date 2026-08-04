@@ -19,6 +19,7 @@
 #ifdef NATIVE_PORT
 #include "save_codec.h"
 #include "gameplay_event_trace.h"
+#include "taj_mod.h"
 #endif
 
 #ifdef NATIVE_PORT
@@ -859,6 +860,14 @@ s32 read_game_data_from_controller_pak(s32 controllerIndex, char *fileExt, Setti
                     populate_settings_from_save_data(settings, (u8 *) (alloc + 1));
                     if (settings->newGame) {
                         ret = CONTROLLER_PAK_CHANGED;
+#ifdef NATIVE_PORT
+                    } else {
+                        /* Controller Pak Adventure imports bypass
+                         * read_save_file(), so reconcile valid completed
+                         * pre-mod saves before the cart slot is written. */
+                        taj_mod_reconcile_imported_taj_flags(
+                            settings->tajFlags);
+#endif
                     }
                 } else {
                     ret = CONTROLLER_PAK_BAD_DATA;
@@ -1000,6 +1009,14 @@ s32 read_save_file(s32 saveFileNum, Settings *settings) {
     populate_settings_from_save_data(settings, (u8 *) saveData);
     mempool_free(saveData);
     ret = settings->newGame;
+#ifdef NATIVE_PORT
+    if (!settings->newGame) {
+        /* Reconcile imported/pre-mod saves as soon as any valid Adventure slot
+         * is decoded; character select is global and cannot wait for the player
+         * to replay an already-complete challenge. */
+        taj_mod_reconcile_imported_taj_flags(settings->tajFlags);
+    }
+#endif
     if (settings->newGame) {
         erase_save_file(saveFileNum, settings);
         ret = settings->newGame;

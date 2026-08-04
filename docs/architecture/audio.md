@@ -44,7 +44,9 @@ audio thread.
    each ordered game tick consumes at most one, so extra presentation frames
    cannot manufacture PCM and catch-up retains cue order. Native output is an
    SDL2 queue-mode device at 22050 Hz stereo s16, gated off under
-   `--headless-frames`. `platform/audio_queue_controller.c` replaces the
+   `--headless-frames` unless the test-only `MDKR_TEST_HEADLESS_AUDIO=1` is
+   explicitly paired with a controlled sink such as `SDL_AUDIODRIVER=dummy`.
+   `platform/audio_queue_controller.c` replaces the
    measured sink drain and corrects the application queue toward a bounded
    target; the same pure controller drives deterministic cadence tests and a
    ROM-free SDL sink probe. The browser build swaps the sink for
@@ -72,6 +74,30 @@ The 2026-08-01 CoreAudio witness passed for 5 seconds: 476 controller calls,
 expose the hidden hardware buffer and silence cannot prove speaker output, so
 this is not represented as DAC underrun, audible-output, or cross-platform
 hardware qualification. Those remain part of the physical release matrix.
+
+## Player volume and sink continuity
+
+Native Settings exposes persistent master, music, and effects volume. Music and
+effects are synchronized into the game's original mix buses, including sounds
+that are already playing; redundant pending global-volume events are coalesced
+so a held slider cannot exhaust the event queue. Master volume is applied after
+synthesis with a perceptual square-law curve, a 256-frame ramp, and an exact
+unity fast path. It can only attenuate, so the control cannot introduce clipping
+above the game mixer's output.
+
+Dragging an audio slider publishes a non-persistent audible preview. Releasing
+it performs one atomic configuration save; canceling or leaving Settings
+restores the committed mix. The SDL sink admits at most two seconds of queued
+PCM, checks queue failures, and crossfades from the last accepted sample after a
+drop or failed queue operation. Diagnostic WAV/RMS capture intentionally occurs
+before that sink-only recovery crossfade, so audio-oracle files continue to
+describe deterministic synthesizer output rather than host-device history. For
+a native sink investigation, `MDKR_AUDIO_SINK_DUMP=/path/accepted.wav` creates
+a separate WAV containing only PCM blocks for which `SDL_QueueAudio` returned
+success, after any recovery crossfade. Its shutdown line records accepted,
+repaired, rejected, and emergency-dropped block counts. It is evidence of bytes
+SDL accepted into its application queue, not later device mixing, DAC output,
+speakers, or hotplug behaviour; those still require the physical release matrix.
 
 ## Provenance: what the engine replaced
 

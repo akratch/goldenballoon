@@ -37,6 +37,7 @@ s32 gGlobalMusicVolume = 256; // This is never not 256...
 u8 gBlockVoiceLimitChange = FALSE;
 #ifdef NATIVE_PORT
 u8 gDkrReverbEnabled = TRUE;    /* M5: native reverb ON (MDKR_AUDIO_REVERB=0 disables) */
+static u8 sOverlayPauseMix;
 #define MDKR_PHYSICAL_VOICE_CAPACITY 40u
 #define MDKR_MUSIC_VOICE_CAPACITY 24u
 #define MDKR_JINGLE_VOICE_CAPACITY 16u
@@ -552,14 +553,24 @@ void sound_volume_reset(u8 skipReset) {
  * Official Name: amSetMuteMode
  */
 void sound_volume_change(s32 behaviour) {
+#ifdef NATIVE_PORT
+    /* This is always the game's latest authored mode. Native overlay ducking
+     * is a separate output layer and must never replace this state. */
+    gAudioVolumeSetting = behaviour;
+#endif
     switch (behaviour) {
         case VOLUME_LOWER: // Mute most sound effects and half the volume of music.
             sndp_set_group_volume(0, 0);
             sndp_set_group_volume(1, AL_SNDP_GROUP_VOLUME_MAX);
             sndp_set_group_volume(2, 0);
             sndp_set_group_volume(4, 0);
+#ifdef NATIVE_PORT
+            music_volume_set(gMusicBaseVolume);
+            music_jingle_volume_set(sfxRelativeVolume);
+#else
             alCSPSetVol(gMusicPlayer, (s16) (gMusicBaseVolume * gMusicSliderVolume >> 2));
             alCSPSetVol(gJinglePlayer, 0);
+#endif
             break;
         case VOLUME_LOWER_AMBIENT: // Mute the ambient channel, making course elements stop making noise.
             sndp_set_group_volume(0, 0);
@@ -578,12 +589,43 @@ void sound_volume_change(s32 behaviour) {
             sndp_set_group_volume(1, AL_SNDP_GROUP_VOLUME_MAX);
             sndp_set_group_volume(2, AL_SNDP_GROUP_VOLUME_MAX);
             sndp_set_group_volume(4, AL_SNDP_GROUP_VOLUME_MAX);
+#ifdef NATIVE_PORT
+            music_volume_set(gMusicBaseVolume);
+            music_jingle_volume_set(sfxRelativeVolume);
+#else
             alCSPSetVol(gMusicPlayer, (s16) (gMusicBaseVolume * gMusicSliderVolume));
             alCSPSetVol(gJinglePlayer, (s16) (sndp_get_global_volume() * sfxRelativeVolume));
+#endif
             break;
     }
+#ifndef NATIVE_PORT
     gAudioVolumeSetting = behaviour;
+#endif
 }
+
+#ifdef NATIVE_PORT
+s32 sound_volume_behaviour(void) {
+    return gAudioVolumeSetting;
+}
+
+s32 sound_overlay_pause_active(void) {
+    return sOverlayPauseMix != FALSE;
+}
+
+void sound_overlay_pause_set(s32 paused) {
+    u8 next = paused ? TRUE : FALSE;
+
+    if (sOverlayPauseMix == next) {
+        return;
+    }
+    sOverlayPauseMix = next;
+    sndp_set_overlay_pause(next);
+    /* Recompute sequence-player gains from their authored state. The helpers
+     * compose the independent overlay layer and retain user slider/fade state. */
+    music_volume_set(gMusicBaseVolume);
+    music_jingle_volume_set(sfxRelativeVolume);
+}
+#endif
 
 /**
  * Prevents changing of background music.
@@ -1091,10 +1133,21 @@ u8 music_jingle_current(void) {
  */
 void music_volume_set(u8 volume) {
     f32 normalized_vol;
+#ifdef NATIVE_PORT
+    s32 output_volume;
+#endif
 
     gMusicBaseVolume = volume;
     normalized_vol = gMusicSliderVolume * gMusicBaseVolume * sMusicFadeVolume;
+#ifdef NATIVE_PORT
+    output_volume = (s32) (gGlobalMusicVolume * normalized_vol) >> 8;
+    if (gAudioVolumeSetting == VOLUME_LOWER || sOverlayPauseMix) {
+        output_volume >>= 2;
+    }
+    alCSPSetVol(gMusicPlayer, (s16) output_volume);
+#else
     alCSPSetVol(gMusicPlayer, (s16) ((s32) (gGlobalMusicVolume * normalized_vol) >> 8));
+#endif
 }
 
 /**
@@ -1104,11 +1157,22 @@ void music_volume_set(u8 volume) {
  */
 void music_volume_config_set(u32 slider_val) {
     f32 normalized_vol;
+#ifdef NATIVE_PORT
+    s32 volume;
+#endif
 
     slider_val = (slider_val <= 256) ? slider_val : 256;
     gMusicSliderVolume = slider_val;
     normalized_vol = gMusicSliderVolume * gMusicBaseVolume * sMusicFadeVolume;
+#ifdef NATIVE_PORT
+    volume = (s32) (gGlobalMusicVolume * normalized_vol) >> 8;
+    if (gAudioVolumeSetting == VOLUME_LOWER || sOverlayPauseMix) {
+        volume >>= 2;
+    }
+    alCSPSetVol(gMusicPlayer, (s16) volume);
+#else
     alCSPSetVol(gMusicPlayer, (s16) ((s32) (gGlobalMusicVolume * normalized_vol) >> 8));
+#endif
 }
 
 /**
@@ -1133,7 +1197,15 @@ s32 music_volume_config(void) {
  */
 void music_jingle_volume_set(u8 arg0) {
     sfxRelativeVolume = arg0;
+#ifdef NATIVE_PORT
+    alCSPSetVol(
+        gJinglePlayer,
+        (gAudioVolumeSetting == VOLUME_LOWER || sOverlayPauseMix)
+            ? 0
+            : (s16) (sndp_get_global_volume() * sfxRelativeVolume));
+#else
     alCSPSetVol(gJinglePlayer, (s16) (sndp_get_global_volume() * sfxRelativeVolume));
+#endif
 }
 
 /**

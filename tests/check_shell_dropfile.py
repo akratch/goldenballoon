@@ -36,6 +36,10 @@ This check drives that hook in both directions:
 * **rejected (the broken direction)** — a garbage, non-ROM file is dropped;
   the process must still survive (exit 0, no crash/sanitizer marker),
   `valid=0`, a non-empty explanatory message, and nothing persisted to prefs.
+* **final Play recheck** — after a valid asynchronous drop settles, the smoke
+  requests the production Play recheck and proves it keeps rendering until one
+  Play action carries that exact ROM path. A one-byte mutation between those
+  two checks must instead produce no Play action.
 
 Prefs isolation
 ----------------
@@ -77,7 +81,16 @@ MESSAGE_PREFIX = "[app] smoke: drop message="
 RENDERED_RE = re.compile(r"^\[app\] smoke: rendered (\d+) frames")
 TRANSACTION_RE = re.compile(
     r"^\[app\] smoke: drop transaction active=(.*) activeValid=(\d+) "
-    r"candidateVisible=(\d+) cancelAvailable=(\d+)$")
+    r"candidateVisible=(\d+) cancelAvailable=(\d+) persistenceWarning=(\d+)$")
+FINAL_PLAY_RE = re.compile(
+    r"^\[app\] smoke: final Play recheck requested=(\d+) initialPath=(.*) "
+    r"initialValid=(\d+) mutationApplied=(\d+) serviceFrames=(\d+) actions=(\d+) "
+    r"actionRom=(.*) finalValid=(\d+) settled=(\d+)$")
+REPLACEMENT_PLAY_RE = re.compile(
+    r"^\[app\] smoke: replacement Play candidate=(.*) initialReady=(\d+) "
+    r"replacementPending=(\d+) superseded=(\d+) serviceFrames=(\d+) "
+    r"actions=(\d+) actionRom=(.*) settled=(\d+) active=(.*) "
+    r"candidateVisible=(\d+)$")
 BAD_RE = re.compile(
     r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
     r"runtime error:|Assertion failed"
@@ -102,6 +115,26 @@ class DropResult:
         self.active_valid: Optional[int] = None
         self.candidate_visible: Optional[int] = None
         self.cancel_available: Optional[int] = None
+        self.persistence_warning: Optional[int] = None
+        self.play_requested: Optional[int] = None
+        self.play_initial_path: Optional[str] = None
+        self.play_initial_valid: Optional[int] = None
+        self.play_mutation_applied: Optional[int] = None
+        self.play_service_frames: Optional[int] = None
+        self.play_actions: Optional[int] = None
+        self.play_action_rom: Optional[str] = None
+        self.play_final_valid: Optional[int] = None
+        self.play_settled: Optional[int] = None
+        self.replacement_play_candidate: Optional[str] = None
+        self.replacement_play_initial_ready: Optional[int] = None
+        self.replacement_play_pending: Optional[int] = None
+        self.replacement_play_superseded: Optional[int] = None
+        self.replacement_play_service_frames: Optional[int] = None
+        self.replacement_play_actions: Optional[int] = None
+        self.replacement_play_action_rom: Optional[str] = None
+        self.replacement_play_settled: Optional[int] = None
+        self.replacement_play_active: Optional[str] = None
+        self.replacement_play_candidate_visible: Optional[int] = None
         for line in output.splitlines():
             m = DROP_RE.match(line)
             if m:
@@ -121,11 +154,42 @@ class DropResult:
                 self.active_valid = int(m3.group(2))
                 self.candidate_visible = int(m3.group(3))
                 self.cancel_available = int(m3.group(4))
+                self.persistence_warning = int(m3.group(5))
+                continue
+            m4 = FINAL_PLAY_RE.match(line)
+            if m4:
+                (requested, self.play_initial_path, initial_valid, mutation_applied,
+                 service_frames, actions, self.play_action_rom, final_valid,
+                 settled) = m4.groups()
+                self.play_requested = int(requested)
+                self.play_initial_valid = int(initial_valid)
+                self.play_mutation_applied = int(mutation_applied)
+                self.play_service_frames = int(service_frames)
+                self.play_actions = int(actions)
+                self.play_final_valid = int(final_valid)
+                self.play_settled = int(settled)
+                continue
+            m5 = REPLACEMENT_PLAY_RE.match(line)
+            if m5:
+                (self.replacement_play_candidate, initial_ready, pending,
+                 superseded, service_frames, actions,
+                 self.replacement_play_action_rom, settled,
+                 self.replacement_play_active, candidate_visible) = m5.groups()
+                self.replacement_play_initial_ready = int(initial_ready)
+                self.replacement_play_pending = int(pending)
+                self.replacement_play_superseded = int(superseded)
+                self.replacement_play_service_frames = int(service_frames)
+                self.replacement_play_actions = int(actions)
+                self.replacement_play_settled = int(settled)
+                self.replacement_play_candidate_visible = int(candidate_visible)
 
 
 def run_drop(binary: Path, drop_path: Path, prefs_dir: Path, timeout: int,
-             verbose: bool) -> DropResult:
-    prefs_dir.mkdir(parents=True, exist_ok=True)
+             verbose: bool, create_prefs: bool = True,
+             final_play: bool = False, mutate_before_play: bool = False,
+             replacement_play: Optional[Path] = None) -> DropResult:
+    if create_prefs:
+        prefs_dir.mkdir(parents=True, exist_ok=True)
     # Clear every inherited MDKR*/GE007_ hook (tests/README.md contract) so no
     # ambient environment variable changes what this smoke does, then set
     # exactly what this check needs.
@@ -142,6 +206,12 @@ def run_drop(binary: Path, drop_path: Path, prefs_dir: Path, timeout: int,
         MDKR_APP_SMOKE_DROP=str(drop_path),
         MDKR_APP_PREFS_DIR=str(prefs_dir),
     )
+    if final_play:
+        env["MDKR_APP_SMOKE_DROP_PLAY"] = "1"
+    if mutate_before_play:
+        env["MDKR_APP_SMOKE_DROP_PLAY_MUTATE"] = "1"
+    if replacement_play is not None:
+        env["MDKR_APP_SMOKE_REPLACEMENT_PLAY"] = str(replacement_play)
     command = [str(binary)]
     if verbose:
         print(f"$ MDKR_APP_SMOKE_DROP={drop_path} {' '.join(command)}", flush=True)
@@ -174,6 +244,19 @@ def main() -> int:
         root = Path(tmp)
         garbage = root / "garbage_drop.z64"
         garbage.write_bytes(GARBAGE_BYTES)
+        source_bytes = rom.read_bytes()
+        truncated = root / "supported_header_but_truncated.z64"
+        truncated.write_bytes(source_bytes[:0x40])
+        corrupted = root / "supported_header_but_corrupted.z64"
+        corrupted_bytes = bytearray(source_bytes)
+        corrupted_bytes[len(corrupted_bytes) // 2] ^= 0x01
+        corrupted.write_bytes(corrupted_bytes)
+        final_play_rom = root / "final_play_candidate.z64"
+        final_play_rom.write_bytes(source_bytes)
+        final_play_mutated_rom = root / "final_play_mutated_candidate.z64"
+        final_play_mutated_rom.write_bytes(source_bytes)
+        replacement_play_rom = root / "replacement_play_candidate.z64"
+        replacement_play_rom.write_bytes(source_bytes)
 
         accept_prefs = root / "prefs-accept"
         reject_prefs = root / "prefs-reject"
@@ -181,6 +264,23 @@ def main() -> int:
         accept = run_drop(binary, rom, accept_prefs, args.timeout, args.verbose)
         reject = run_drop(binary, garbage, reject_prefs, args.timeout, args.verbose)
         replacement = run_drop(binary, garbage, accept_prefs, args.timeout, args.verbose)
+        truncated_replacement = run_drop(
+            binary, truncated, accept_prefs, args.timeout, args.verbose)
+        corrupted_replacement = run_drop(
+            binary, corrupted, accept_prefs, args.timeout, args.verbose)
+        unremembered_prefs = root / "missing-parent" / "prefs"
+        unremembered = run_drop(
+            binary, rom, unremembered_prefs, args.timeout, args.verbose,
+            create_prefs=False)
+        final_play = run_drop(
+            binary, final_play_rom, root / "prefs-final-play", args.timeout,
+            args.verbose, final_play=True)
+        final_play_mutated = run_drop(
+            binary, final_play_mutated_rom, root / "prefs-final-play-mutated",
+            args.timeout, args.verbose, final_play=True, mutate_before_play=True)
+        replacement_play = run_drop(
+            binary, rom, root / "prefs-replacement-play", args.timeout,
+            args.verbose, replacement_play=replacement_play_rom)
 
         # Read back inside the `with` block — TemporaryDirectory deletes the
         # whole tree, prefs included, on exit.
@@ -189,6 +289,7 @@ def main() -> int:
         accept_ini_text = accept_ini.read_text() if accept_ini_exists else ""
         reject_ini_exists = (reject_prefs / "mdkr64_app.ini").exists()
         replacement_ini_text = accept_ini.read_text() if accept_ini.exists() else ""
+        unremembered_prefs_exists = unremembered_prefs.exists()
 
     # --- direction 1: a real ROM dropped must be accepted ------------------
     if accept.returncode != 0:
@@ -236,6 +337,96 @@ def main() -> int:
             failures.append(
                 f"accepted-ROM arm: prefs do not contain the dropped ROM's "
                 f"path\n{accept_ini_text}")
+
+    # No existing playable selection can be harmed on a first-run preference
+    # failure. Keep the verified ROM available for this process and make the
+    # fact that its path was not remembered explicit.
+    if unremembered.returncode != 0:
+        failures.append(
+            f"session-only ROM arm exited {unremembered.returncode}\n"
+            f"{unremembered.output[-2000:]}")
+    if (unremembered.active != str(rom) or unremembered.active_valid != 1 or
+            unremembered.candidate_visible != 0 or
+            unremembered.persistence_warning != 1):
+        failures.append(
+            "valid first ROM was not retained session-locally after preference "
+            "failure: "
+            f"active={unremembered.active!r} valid={unremembered.active_valid} "
+            f"candidate={unremembered.candidate_visible} "
+            f"warning={unremembered.persistence_warning}")
+    if unremembered_prefs_exists:
+        failures.append("session-only ROM arm unexpectedly created preference data")
+
+    # --- final Play recheck: a settled valid selection must be checked again
+    # asynchronously, render through the check, and emit exactly one action --
+    for label, result, expected_actions, expected_final_valid, mutation in (
+        ("final Play", final_play, 1, 1, 0),
+        ("mutated final Play", final_play_mutated, 0, 0, 1),
+    ):
+        if result.returncode != 0:
+            failures.append(f"{label} arm exited {result.returncode}\n"
+                            f"{result.output[-2000:]}")
+        bad = BAD_RE.search(result.output)
+        if bad:
+            failures.append(f"{label} arm printed a fatal marker: {bad.group(0)!r}")
+        if (result.play_requested != 1 or result.play_initial_valid != 1 or
+                result.play_settled != 1 or result.play_service_frames is None or
+                result.play_service_frames < 1):
+            failures.append(
+                f"{label} arm did not complete the asynchronous production Play "
+                "recheck while rendering: "
+                f"requested={result.play_requested} initialValid={result.play_initial_valid} "
+                f"serviceFrames={result.play_service_frames} settled={result.play_settled}")
+        if result.play_initial_path != str(
+                final_play_rom if label == "final Play" else final_play_mutated_rom):
+            failures.append(f"{label} arm selected the wrong ROM path: "
+                            f"{result.play_initial_path!r}")
+        if result.play_mutation_applied != mutation:
+            failures.append(f"{label} arm mutation hook mismatch: "
+                            f"got={result.play_mutation_applied} want={mutation}")
+        if result.play_actions != expected_actions:
+            failures.append(f"{label} arm emitted {result.play_actions} Play actions, "
+                            f"want {expected_actions}")
+        if result.play_final_valid != expected_final_valid:
+            failures.append(f"{label} arm final validity={result.play_final_valid}, "
+                            f"want {expected_final_valid}")
+        if expected_actions == 1 and result.play_action_rom != str(final_play_rom):
+            failures.append("final Play action did not carry the exact ROM that "
+                            f"the launcher rechecked: {result.play_action_rom!r}")
+        if expected_actions == 0 and result.play_action_rom != "(none)":
+            failures.append("mutated final Play arm leaked a bootable ROM action: "
+                            f"{result.play_action_rom!r}")
+
+    # A replacement check cannot turn the persistent Play action into a dead
+    # button. Play abandons the unresolved candidate and final-checks the
+    # already-proven active ROM without publishing or retaining the candidate.
+    if replacement_play.returncode != 0:
+        failures.append(
+            "replacement-Play arm exited "
+            f"{replacement_play.returncode}\n{replacement_play.output[-2000:]}")
+    if (replacement_play.replacement_play_candidate != str(replacement_play_rom) or
+            replacement_play.replacement_play_initial_ready != 1 or
+            replacement_play.replacement_play_pending != 1 or
+            replacement_play.replacement_play_superseded != 1 or
+            replacement_play.replacement_play_settled != 1 or
+            replacement_play.replacement_play_service_frames is None or
+            replacement_play.replacement_play_service_frames < 1 or
+            replacement_play.replacement_play_actions != 1 or
+            replacement_play.replacement_play_action_rom != str(rom) or
+            replacement_play.replacement_play_active != str(rom) or
+            replacement_play.replacement_play_candidate_visible != 0):
+        failures.append(
+            "Play did not supersede the unresolved replacement with one exact "
+            "final-check action for the active ROM: "
+            f"candidate={replacement_play.replacement_play_candidate!r} "
+            f"ready={replacement_play.replacement_play_initial_ready} "
+            f"pending={replacement_play.replacement_play_pending} "
+            f"superseded={replacement_play.replacement_play_superseded} "
+            f"frames={replacement_play.replacement_play_service_frames} "
+            f"actions={replacement_play.replacement_play_actions} "
+            f"actionRom={replacement_play.replacement_play_action_rom!r} "
+            f"active={replacement_play.replacement_play_active!r} "
+            f"candidateVisible={replacement_play.replacement_play_candidate_visible}")
 
     # --- direction 2 (broken direction): garbage dropped must be REJECTED,
     # gracefully — no crash, an explanatory error, nothing persisted --------
@@ -288,6 +479,33 @@ def main() -> int:
             "invalid replacement changed the last-known-good ROM preference\n"
             f"{replacement_ini_text}")
 
+    # Header-only validation used to accept both of these: the first has the
+    # complete supported header but not the cartridge body; the second keeps the
+    # exact supported header while changing a body byte. Both must be rejected by
+    # the launcher before Play, while the last-known-good preference survives.
+    for label, result, expected_text in (
+        ("supported-header truncated", truncated_replacement, "exactly 12 MB"),
+        ("supported-header body-corrupt", corrupted_replacement, "SHA-256"),
+    ):
+        if result.returncode != 0:
+            failures.append(
+                f"{label} arm exited {result.returncode}\n{result.output[-2000:]}")
+        if result.valid != 0:
+            failures.append(
+                f"{label} arm was marked Ready despite full-image validation: "
+                f"valid={result.valid} message={result.message!r}")
+        if result.active != str(rom) or result.active_valid != 1:
+            failures.append(
+                f"{label} arm displaced the last-known-good ROM: "
+                f"active={result.active!r} valid={result.active_valid}")
+        if result.candidate_visible != 1 or result.cancel_available != 1:
+            failures.append(
+                f"{label} arm did not preserve an actionable candidate + Cancel state")
+        if not result.message or expected_text not in result.message:
+            failures.append(
+                f"{label} arm lacks the expected actionable {expected_text!r} verdict: "
+                f"{result.message!r}")
+
     if failures:
         print("check_shell_dropfile: FAIL")
         for failure in failures:
@@ -298,7 +516,12 @@ def main() -> int:
         "check_shell_dropfile: PASS — SDL_DROPFILE handler accepted "
         f"{rom.name} (valid=1, persisted) and refused {garbage.name} "
         "(valid=0, no crash, nothing persisted); invalid replacement preserved "
-        "the active ROM with candidate error and Cancel")
+        "the active ROM with candidate error and Cancel; a supported header with "
+        "either a truncated or corrupted body was refused before Play; a first "
+        "verified ROM remained playable when its path could not be remembered; "
+        "Play superseded an unresolved replacement and final-checked the active ROM; "
+        "the final asynchronous Play recheck emitted one exact-path action and "
+        "refused a post-selection body mutation")
     return 0
 
 

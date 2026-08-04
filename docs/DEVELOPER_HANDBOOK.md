@@ -35,8 +35,8 @@ running on WebGPU in Chrome, rendering title/menus/race correctly.
 
 | Area | State | Demonstrated by |
 |---|---|---|
-| Native build | macOS arm64. WebGPU is the qualified fail-closed default; GL is available only through explicit diagnostic selection (`MDKR_RENDERER=gl`) pending visual-parity work. Production submits only new authored images; WebGPU completion polling never blocks the gameplay/audio frame path, and minimized windows elide GPU walks | `check_renderer_backends.py`: route/pixel parity, dense default-WebGPU intro identity, and forced startup-failure rejection; `check_gpu_backpressure.py`: zero WebGPU runtime waits plus the live GL fence ceiling; `check_surface_suspension.py`: GL/WebGPU minimized control with state/event/input/PCM invariance |
-| Browser build | wasm32 + WebGPU + Asyncify rAF loop + AudioWorklet + ROM picker + IDBFS saves | `check_browser_runtime`: actual Chromium, 3,600 authored-cadence frames into a race with no sub-two-field update, five changing scenes, live fullscreen/CSS/DPR resize, AudioWorklet PCM including nonzero fixed-mode RAW16 loads, exact ROM/EEPROM reload, erase recovery, and zero-upload network audit; `check_browser_presentation_rates`: display/capped/irregular rAF host-policy parity, authored image counts, no duplicate swaps, and honest uncapped fallback |
+| Native build | macOS arm64. WebGPU is the qualified fail-closed default; GL is available only through explicit diagnostic selection (`MDKR_RENDERER=gl`) pending visual-parity work. Production can replay immutable adjacent tasks for presentation-only interpolation; WebGPU admission never blocks the gameplay/audio frame path and reserves endpoint capacity, while minimized windows elide GPU walks | `check_presentation_matrix.py`: authority, immutable endpoint, and unique-midpoint proof; `check_renderer_backends.py`: route/pixel parity, dense default-WebGPU intro identity, and forced startup-failure rejection; `check_gpu_backpressure.py`: zero WebGPU runtime waits plus the live GL fence ceiling; `check_surface_suspension.py`: GL/WebGPU minimized control with state/event/input/PCM invariance |
+| Browser build | wasm32 + WebGPU + Asyncify rAF loop + AudioWorklet + ROM picker + IDBFS saves | `check_browser_runtime`: actual Chromium, 3,600 authored-cadence frames into a race with no sub-two-field update, five changing scenes, live fullscreen/CSS/DPR resize, AudioWorklet PCM including nonzero fixed-mode RAW16 loads, exact ROM/EEPROM reload, erase recovery, and zero-upload network audit; `check_browser_presentation_rates`: display/capped/irregular rAF authority parity, production interpolation, queue holds, and honest uncapped fallback |
 | Presentation modes | Pure 4:3 reference; Restored/Remastered widescreen with CPU mip chains, configured anisotropy, and working 2× supersampling by default on GL/WebGPU; the localized in-game screen controls mode, 1×–4× SSAA, aspect/FOV, filtering, effects, and subtitles with truthful live/restart behavior and atomic native/browser persistence; Remastered reconstructs the shared ROM font atlas at 4× without changing metrics | `video_config` + `video_config_runtime` + `mip_chain` + `font_sdf` CTests; `check_video_options` on GL/WebGPU; `check_video_presets`, `check_renderer_backends`, `check_widescreen_proportions`, and real-Chromium `check_browser_runtime` config mutation/reload |
 | Restoration correctness | Every sprite reader shares one checked, asset-bounded serialized-layout decoder; shade and fog use the RDP's screen-linear interpolation while texture coordinates remain perspective-correct; moving textures receive complete mip chains | `sprite_layout`, `rdp_interpolation`, and `font_registry` CTests; `check_sprite_layout`, `check_rdp_interpolation`, `check_texture_lineswap`, and `check_mip_motion` |
 | Remastered text | Only runtime-registered font glyph regions receive 4× signed-distance reconstruction; region isolation, point/clamp sampling, fixed logical metrics, and registry-aware cache invalidation prevent atlas bleed or stale reuse; Pure and Restored remain exact | `font_sdf` + `font_registry` CTests; `check_font_sdf` on GL/WebGPU; `check_browser_runtime` requires nonzero text-only SDF uploads |
@@ -53,12 +53,13 @@ running on WebGPU in Chrome, rendering title/menus/race correctly.
 | ROM revisions | US 1.1 + EU 1.1 byte-identical payloads supported with authored NTSC/60 and PAL/50 source clocks; the other three named and refused; `.v64`/`.n64` normalised | `check_rom_revision` + `check_simulation_cadence` |
 | Oracle | Patched ares runs the real ROM for pixel parity and US 1.1 racer-state comparison (silent by construction) | `race_state_oracle`: Bubbler's authored two-field route passes and the historical one-field arm fails as a positive control; broader strict standard-race parity remains reported separately |
 
-**91 check scripts / 100 full-run tasks, each validated in both directions.**
+**92 check scripts / 101 full-run tasks, each validated in both directions.**
 (2026-07-29 additions: `check_shadow_stage_reset.py` and
 `check_touch_controls.py`. 2026-07-31 post-1.0 additions:
 `check_charselect_motion.py`, `check_shell_dropfile.py`,
 `check_boost_magnitude.py`, `check_audio_level_reference.py`,
-`check_collision_headroom.py`, and `check_shadow_plausibility.py`.)
+`check_collision_headroom.py`, and `check_shadow_plausibility.py`. The 2026-08-02
+launcher reliability pass adds `check_overlay_pause.py`.)
 The manifest also runs the ROM-free display/endian/object-layout CTests;
 filename entry, locked-door collision, RAW16 audio, native-layout safety, and
 widescreen/shadow safety repeat in their specialized configurations. A check
@@ -93,8 +94,8 @@ The defined waves are **23/23 complete**:
 | Wave 2 lighting | RL-2, RL-5, CO-1 | 3/3 integrated |
 | Wave 3 gameplay envelope | multiplayer, Adventure Two, challenge/battle, first boss, Taj challenges, trophy series | 6/6 integrated |
 
-The default WebGPU+app native build exposes 59 ROM-free CTests: 50 non-GPU and
-9 GPU. This wave accounting is not a claim that the entire foundation or
+The default WebGPU+app native build exposes 67 ROM-free CTests: 56 non-GPU and
+11 GPU. This wave accounting is not a claim that the entire foundation or
 remaster backlog is complete.
 
 ### Wave 3 multiplayer checkpoint
@@ -285,7 +286,10 @@ policy; add any new shape you find to the table above.
 
 **Audio safety is a hard rule.** Always pass `--headless-frames N` for game or
 test runs — it returns before the SDL audio device is ever opened
-(`platform/audi_port_dkr.c:188`). Recognized `--help`/`-h` now returns before
+(`platform/audi_port_dkr.c:188`). The controlled native sink exception is
+`check_audio_sink_evidence.py`: it explicitly sets `MDKR_TEST_HEADLESS_AUDIO=1`
+with `SDL_AUDIODRIVER=dummy` to prove SDL queue acceptance, never physical output.
+Recognized `--help`/`-h` now returns before
 ROM/window/audio initialization; an unrecognized flag still starts the ordinary
 interactive path. `MDKR_AUDIO=0` is belt-and-braces — note `MDKR_AUDIO=off` is a
 **no-op**, the code tests for `"0"`. The ares oracle is silent by construction —
@@ -634,8 +638,8 @@ shared resolver. `tools/run_checks.py` owns the special Release, ASan, UBSan, an
 wasm/browser shapes plus the ROM-free CTests, runs save-mutating checks sequentially,
 and rejects any unregistered `tests/check_*.py`. The manifest covered 31 scripts
 and 38 tasks at the cited checkpoint, then 32 scripts and 39 tasks after the
-runtime-boundary gate. The current manifest contains **91 scripts and
-100 tasks**. `RELEASE_CHECKLIST.md` has one command per native configuration
+runtime-boundary gate. The current manifest contains **92 scripts and
+101 tasks**. `RELEASE_CHECKLIST.md` has one command per native configuration
 and routes the wasm artifact through the same runner.
 
 ### Smaller, and each has its evidence in `docs/OPEN_ITEMS.md`

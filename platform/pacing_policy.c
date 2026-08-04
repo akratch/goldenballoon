@@ -87,6 +87,16 @@ int mdkr_present_policy_needs_subloop(const MdkrPresentPolicy *policy,
     return 1;
 }
 
+int mdkr_present_policy_needs_held_frame_deadline(
+    const MdkrPresentPolicy *policy, int smoothing_enabled) {
+    if (policy == NULL || policy->kind == MDKR_PRESENT_ORIGINAL ||
+        smoothing_enabled) {
+        return 0;
+    }
+    return policy->kind == MDKR_PRESENT_DISPLAY ||
+           policy->kind == MDKR_PRESENT_UNCAPPED;
+}
+
 static uint64_t present_grid_time_ns(const MdkrPresentDeadlineClock *clock,
                                      uint64_t index) {
     uint64_t whole_seconds = index / (uint64_t)clock->rate;
@@ -215,6 +225,19 @@ int mdkr_pacing_queue_refill(int pending_fields, int measured_fields,
 
 int mdkr_pacing_interval_requires_rebase(uint64_t elapsed_ns) {
     return elapsed_ns >= MDKR_PACING_STALL_REBASE_NS;
+}
+
+uint32_t mdkr_counter_guard_commit(MdkrCounterGuard *guard, uint32_t sample) {
+    if (guard == NULL) {
+        return sample;
+    }
+    if (!guard->initialized) {
+        guard->initialized = 1;
+    } else if ((int32_t)(sample - guard->last) <= 0) {
+        sample = guard->last + 1u;
+    }
+    guard->last = sample;
+    return sample;
 }
 
 static uint64_t grid_time_ns(const MdkrPacingClock *clock,

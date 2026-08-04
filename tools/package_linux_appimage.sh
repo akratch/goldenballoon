@@ -62,6 +62,7 @@ verify_linux_tarball() {
       Golden-Balloon.AppDir/AppRun \
       Golden-Balloon.AppDir/LICENSE \
       Golden-Balloon.AppDir/README.md \
+      Golden-Balloon.AppDir/RUN_ME.txt \
       Golden-Balloon.AppDir/mdkr64.desktop \
       Golden-Balloon.AppDir/mdkr64.png \
       Golden-Balloon.AppDir/usr/bin/gamecontrollerdb.txt \
@@ -88,7 +89,7 @@ if [[ "$self_test" == true ]]; then
   trap 'rm -rf "$test_root"' EXIT
   test_appdir="$test_root/Golden-Balloon.AppDir"
   mkdir -p "$test_appdir/usr/bin" "$test_appdir/usr/lib"
-  for path in AppRun LICENSE README.md mdkr64.desktop mdkr64.png; do
+  for path in AppRun LICENSE README.md RUN_ME.txt mdkr64.desktop mdkr64.png; do
     : >"$test_appdir/$path"
   done
   : >"$test_appdir/usr/bin/gamecontrollerdb.txt"
@@ -115,6 +116,12 @@ fi
 APPIMAGETOOL_VERSION="1.9.1"
 APPIMAGETOOL_SHA256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
 APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
+# appimagetool otherwise fetches the mutable `continuous` runtime internally
+# without verifying it. Fetch it ourselves and fail closed on any upstream
+# change so one reviewed source commit cannot silently produce different
+# executable bytes.
+APPIMAGE_RUNTIME_SHA256="1cc49bcf1e2ccd593c379adb17c9f85a36d619088296504de95b1d06215aebbf"
+APPIMAGE_RUNTIME_URL="https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64"
 
 sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}';
@@ -199,6 +206,30 @@ if ! cp LICENSE README.md "$appdir/"; then
   fi
 fi
 
+cat > "$appdir/RUN_ME.txt" <<'EOF'
+Golden Balloon (Linux x86-64 portable build)
+
+AppImage:
+1. Copy the AppImage to a writable folder and make it executable:
+     chmod +x Golden-Balloon-*-linux-x86_64.AppImage
+2. Run it by double-clicking it or from a terminal.
+
+Tarball fallback:
+1. Extract the entire archive to a writable folder you own.
+2. Run Golden-Balloon.AppDir/AppRun. Do not move AppRun away from its folder.
+
+The Linux launcher intentionally does not search your disk or open a native
+file picker. Drag your legally dumped ROM onto the launcher, or paste its
+absolute path. US 1.1 and European 1.1 .z64, .v64, and .n64 dumps are supported.
+
+WebGPU is the default and requires a current host graphics driver. If startup
+fails, copy the Diagnostics details first. `MDKR_RENDERER=gl` selects the
+diagnostic OpenGL backend; it is useful for narrowing down a driver problem,
+not the recommended presentation path. Press F1 in-game for the pause overlay.
+
+This app ships no game data. See README.md for controls and support details.
+EOF
+
 # Scan the exact tree consumed by both tar and appimagetool, including every
 # file the packager added after the standalone binary was checked.
 ./tools/check_no_rom.sh "$appdir"
@@ -238,10 +269,43 @@ else
   echo "WARN: pinned appimagetool download unavailable; producing .tar.gz only." >&2
   tool=""
 fi
+
+runtime=""
+if [[ -n "$tool" ]]; then
+  runtime="$work/runtime-x86_64"
+  runtime_fetched=""
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL -o "$runtime" "$APPIMAGE_RUNTIME_URL" && runtime_fetched=1 || runtime_fetched=""
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O "$runtime" "$APPIMAGE_RUNTIME_URL" && runtime_fetched=1 || runtime_fetched=""
+  fi
+  if [[ -n "$runtime_fetched" && -f "$runtime" ]]; then
+    runtime_got="$(sha256_of "$runtime")"
+    if [[ -z "$runtime_got" ]]; then
+      echo "ERROR: no sha256 tool available to verify the AppImage runtime." >&2
+      exit 1
+    elif [[ "$runtime_got" != "$APPIMAGE_RUNTIME_SHA256" ]]; then
+      echo "ERROR: AppImage runtime digest mismatch:" >&2
+      echo "       got      ${runtime_got}" >&2
+      echo "       expected ${APPIMAGE_RUNTIME_SHA256}" >&2
+      exit 1
+    fi
+    echo "AppImage runtime verified (sha256 ${APPIMAGE_RUNTIME_SHA256:0:12}...)"
+  elif [[ "$dev" == true ]]; then
+    echo "WARN: pinned AppImage runtime download unavailable; producing .tar.gz only." >&2
+    tool=""
+    runtime=""
+  else
+    echo "ERROR: pinned AppImage runtime download unavailable; refusing release package." >&2
+    exit 1
+  fi
+fi
+
 appimage_made=false
 if [[ -n "$tool" ]]; then
   appimage="$dist/$artifact_prefix.AppImage"
-  if ARCH=x86_64 "$tool" --appimage-extract-and-run "$appdir" "$appimage"; then
+  if ARCH=x86_64 "$tool" --appimage-extract-and-run \
+      --runtime-file "$runtime" "$appdir" "$appimage"; then
     echo "wrote $appimage"
     appimage_made=true
   else

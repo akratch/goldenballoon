@@ -17,7 +17,9 @@ retain their CWD-relative `save/` default, and the browser remains `/save` on
 IDBFS. A first packaged launch copy-migrates a complete known legacy save set
 only when the destination directory is absent: it stages every file in a
 sibling directory, atomically installs the whole directory, and never mutates
-the legacy source.
+the legacy source. Interrupted stages created by this version are recognized by
+destination-bound metadata and safely retried. Unrecognized legacy stages are
+left intact and the app names the exact folder that needs manual recovery.
 
 ## Browser workflow
 

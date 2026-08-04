@@ -471,6 +471,68 @@ int main(void) {
         gfx_shadow_matrix_registry_reset();
     }
 
+    /* Only matrices proven reachable by the completed real walk may receive a
+     * presentation-camera substitution. Build-time scratch allocations can
+     * remain in the registry even though no G_MTX in the retained task names
+     * them; treating one as an endpoint caused false cinematic mismatches and
+     * needlessly enlarged the replay mutation surface. */
+    {
+        GfxShadowReplayViewProjection override;
+        float unwalked_vp[4][4];
+        float midpoint_vp[4][4];
+        int32_t walked_bytes[16];
+        int walked_key;
+        int unwalked_key;
+
+        identity(unwalked_vp);
+        identity(midpoint_vp);
+        unwalked_vp[3][0] = 11.0f;
+        midpoint_vp[3][0] = 22.0f;
+        memset(walked_bytes, 0x5a, sizeof(walked_bytes));
+        memset(&override, 0, sizeof(override));
+        override.valid = true;
+        override.camera_id = 4;
+        override.authored_tick = 90u;
+        override.numerator = 1u;
+        override.denominator = 2u;
+        memcpy(override.view_projection, midpoint_vp,
+               sizeof(override.view_projection));
+
+        gfx_shadow_matrix_registry_reset();
+        gfx_shadow_matrix_set_context(0, true);
+        expect(gfx_shadow_matrix_register(
+                   &unwalked_key, world, unwalked_vp,
+                   GFX_SHADOW_MOBILITY_DYNAMIC),
+               "replay reachability: build-only matrix registers");
+        gfx_shadow_matrix_set_context(0, true);
+        expect(gfx_shadow_matrix_register(
+                   &walked_key, world, view_projection,
+                   GFX_SHADOW_MOBILITY_DYNAMIC) &&
+                   gfx_shadow_matrix_note_walked_key(
+                       &walked_key, walked_bytes, sizeof(walked_bytes)),
+               "replay reachability: real-walk matrix is marked consumed");
+        gfx_shadow_replay_freeze();
+        gfx_shadow_matrix_registry_reset();
+        expect(gfx_shadow_replay_restore(&override, 1u),
+               "replay reachability: frozen registry restores");
+
+        memset(&binding, 0, sizeof(binding));
+        expect(gfx_shadow_matrix_lookup(&unwalked_key, &binding) &&
+                   !binding.vp_overridden &&
+                   memcmp(binding.view_projection, unwalked_vp,
+                          sizeof(unwalked_vp)) == 0,
+               "replay reachability: unwalked build scratch keeps authored VP");
+        memset(&binding, 0, sizeof(binding));
+        expect(gfx_shadow_matrix_lookup(&walked_key, &binding) &&
+                   binding.vp_overridden &&
+                   memcmp(binding.view_projection, midpoint_vp,
+                          sizeof(midpoint_vp)) == 0,
+               "replay reachability: walked task matrix receives midpoint VP");
+        expect(gfx_shadow_replay_release(),
+               "replay reachability: restored registry releases cleanly");
+        gfx_shadow_matrix_registry_reset();
+    }
+
     gfx_shadow_frame_shutdown();
     gfx_world_fx_get_stats(&stats);
     expect(

@@ -427,7 +427,11 @@ def world_balloon_component(image: Image) -> Component | None:
         centre_x = (component.x0 + component.x1) * 0.5 / image.width
         centre_y = (component.y0 + component.y1) * 0.5 / image.height
         if (
-            0.46 <= centre_x <= 0.52
+            # The restored retail vehicle-audio RNG path moves the approach
+            # camera slightly; the intended motif now centres at x=0.524 in
+            # the 4:3 and legacy arms. Keep a tight route-local window without
+            # clipping that deterministic camera variation.
+            0.45 <= centre_x <= 0.55
             and 0.23 <= centre_y <= 0.42
             and component.aspect >= 2.0
         ):

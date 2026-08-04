@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Browser rAF host schedules preserve fixed authority and authored images.
+"""Browser rAF host schedules preserve fixed authority and smooth images.
 
 The real wasm/WebGPU build runs in Chromium. A shell-owned rAF seam injects
 bounded timestamps while still yielding to the browser event loop, allowing
 display-144, capped-60-on-144, irregular display, and a shared native
 ``uncapped`` config to be checked independently of the CI monitor. Browser
 uncapped must resolve explicitly to display/rAF rather than claiming an
-unbounded native swapchain. Every arm also sends the raw public interpolation
-request and proves production still performs no delayed replay.
+unbounded native swapchain. Every non-Original arm sends the raw public
+interpolation request and proves production emits immutable intermediate images.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from check_browser_runtime import (
     wait_launcher,
     wait_value,
 )
+from harness_utils import completed_tick_conservation
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
@@ -44,6 +45,8 @@ TICKS = 60
 SUMMARY_RE = re.compile(r"\[PRESENTSCHED-SUMMARY\] (.*)")
 AUDIO_RE = re.compile(r"\[AUDIO-SERVICE\] (.*)")
 REPLAY_RE = re.compile(r"\[REPLAY-SUMMARY\] (.*)")
+PACKET_RE = re.compile(r"\[PRESENT-PACKET\] (.*)")
+RETAINED_RE = re.compile(r"\[RETAINED-TASK\] (.*)")
 WGPU_BACKPRESSURE_RE = re.compile(r"\[WGPU-BACKPRESSURE\] (.*)")
 FATAL_MARKERS = (
     "[CRASH]", "[FATAL]", "memory access out of bounds", "RuntimeError:",
@@ -73,6 +76,8 @@ class Result:
     summary: dict[str, int]
     audio: dict[str, int]
     replay: dict[str, int]
+    packet: dict[str, int]
+    retained: dict[str, int]
     backpressure: dict[str, int]
     console: list[str]
 
@@ -154,6 +159,22 @@ def run_arm(server: OverlayServer, chrome_path: Path, rom: Path,
             cdp.call("Page.navigate", {"url": server.origin + "/?rate=display"})
             wait_launcher(cdp, timeout)
 
+            disclosure = cdp.evaluate(
+                "(() => { const d = document.getElementById("
+                "'experimental-presentation'); return d ? {tag: d.tagName, "
+                "open: d.open, ownsRate: d.contains(document.getElementById("
+                "'rate')), ownsSmoothing: d.contains(document.getElementById("
+                "'smoothing'))} : null; })()")
+            require(
+                isinstance(disclosure, dict)
+                and disclosure.get("tag") == "DETAILS"
+                and disclosure.get("open") is True
+                and disclosure.get("ownsRate") is True
+                and disclosure.get("ownsSmoothing") is True,
+                "a configured modern rate did not reveal its experimental "
+                f"controls: {disclosure}",
+            )
+
             browser_choices = cdp.evaluate(
                 "[...document.querySelectorAll('#rate option')].map(o => o.value)")
             require(
@@ -167,26 +188,35 @@ def run_arm(server: OverlayServer, chrome_path: Path, rom: Path,
             require(
                 isinstance(browser_labels, list)
                 and len(browser_labels) == len(browser_choices)
-                and "Recommended / Proven" in browser_labels[0]
-                and all(
-                    "Experimental — Under Construction" in label
-                    for label in browser_labels[1:]
-                ),
-                f"browser frame-rate construction status drifted: {browser_labels}",
+                and "authored motion" in browser_labels[0]
+                and "Match display" in browser_labels[1],
+                f"browser frame-rate labels drifted: {browser_labels}",
+            )
+            smoothing_choices = cdp.evaluate(
+                "[...document.querySelectorAll('#smoothing option')]"
+                ".map(o => o.value)")
+            require(
+                smoothing_choices == ["off", "interpolate"],
+                f"browser motion-smoothing choices are dishonest: "
+                f"{smoothing_choices}",
             )
             note = cdp.evaluate(
                 "document.querySelector('#frame-rate-status').textContent")
             normalized_note = (
                 " ".join(note.split()) if isinstance(note, str) else note
             )
+            normalized_note_lower = (
+                normalized_note.lower()
+                if isinstance(normalized_note, str) else normalized_note
+            )
             require(
                 isinstance(normalized_note, str)
-                and "do not increase unique visual FPS" in normalized_note
-                and "benefit may be negligible" in normalized_note
-                and "use more CPU" in normalized_note
+                and "unique images" in normalized_note_lower
+                and "physics, ai, input, timers, audio, or saves" in
+                    normalized_note_lower
                 and "requestAnimationFrame" in normalized_note
-                and "does not offer an unbounded" in normalized_note,
-                "browser launcher does not disclose experimental frame-rate "
+                and "cannot exceed" in normalized_note_lower,
+                "browser launcher does not disclose frame-rate "
                 f"limits: {note!r}",
             )
 
@@ -224,6 +254,8 @@ def run_arm(server: OverlayServer, chrome_path: Path, rom: Path,
                 parse_last(console, SUMMARY_RE, "PRESENTSCHED-SUMMARY"),
                 parse_last(console, AUDIO_RE, "AUDIO-SERVICE"),
                 parse_last(console, REPLAY_RE, "REPLAY-SUMMARY"),
+                parse_last(console, PACKET_RE, "PRESENT-PACKET"),
+                parse_last(console, RETAINED_RE, "RETAINED-TASK"),
                 parse_last(
                     console, WGPU_BACKPRESSURE_RE, "WGPU-BACKPRESSURE"),
                 console,
@@ -256,11 +288,10 @@ def compare(arm: Arm, result: Result, baseline: Result) -> list[str]:
             f"{baseline.audio_size} (>44)")
 
     summary = result.summary
-    for key in ("ticks", "simticks", "issued"):
-        if summary.get(key) != TICKS:
-            failures.append(
-                f"{arm.name}: {key}={summary.get(key)}, expected {TICKS}")
-    for key in ("pending", "multidue", "lead", "lag", "catchup", "skips",
+    conservation_error = completed_tick_conservation(summary, TICKS, arm.name)
+    if conservation_error:
+        failures.append(conservation_error)
+    for key in ("multidue", "lag", "catchup", "skips",
                 "rebases", "blocked", "updatebad"):
         if summary.get(key, 0) != 0:
             failures.append(
@@ -286,9 +317,9 @@ def compare(arm: Arm, result: Result, baseline: Result) -> list[str]:
 
     for key, expected in (
             ("fields", TICKS * 2), ("due", TICKS),
-            ("serviced", TICKS - 1), ("pending", 1),
+            ("serviced", TICKS), ("pending", 0),
             ("retired", 0), ("rebases", 0),
-            ("calls", TICKS - 1), ("idle", 0),
+            ("calls", TICKS), ("idle", 0),
             ("notready", 0), ("dropped", 0),
             ("quantumfields", 2)):
         if result.audio.get(key) != expected:
@@ -299,36 +330,99 @@ def compare(arm: Arm, result: Result, baseline: Result) -> list[str]:
         failures.append(
             f"{arm.name}: audio samples={result.audio.get('samples')}, "
             f"expected {baseline.audio.get('samples')}")
-    if result.summary.get("interp", -1) != 0:
+    replay_expected = arm.effective_kind != 0
+    if replay_expected and result.summary.get("interp", 0) <= 0:
+        failures.append(f"{arm.name}: production emitted no interpolated image")
+    if not replay_expected and result.summary.get("interp", -1) != 0:
         failures.append(
-            f"{arm.name}: production interp={result.summary.get('interp')}, "
-            "expected 0")
-    for key, expected in (
-            # Chromium needs two startup ticks before its WebGPU canvas surface
-            # becomes presentable; backend telemetry below must account for both.
-            ("surfaceupdates", TICKS - 2),
-            ("realendpoints", 0 if arm.effective_kind == 0 else TICKS),
-            ("replayendpoints", 0)):
-        if result.summary.get(key) != expected:
-            failures.append(
-                f"{arm.name}: {key}={result.summary.get(key)}, "
-                f"expected {expected}")
-    if result.replay.get("walks", -1) != 0:
+            f"{arm.name}: Original mode performed unexpected interpolation")
+    real_endpoints = result.summary.get("realendpoints", -1)
+    if arm.effective_kind == 0 and real_endpoints != 0:
+        failures.append(
+            f"{arm.name}: Original realendpoints={real_endpoints}, expected 0")
+    if result.summary.get("replayendpoints", -1) != 0:
+        failures.append(
+            f"{arm.name}: replayendpoints="
+            f"{result.summary.get('replayendpoints')}, expected 0")
+    if result.replay.get("walks", -1) != result.summary.get("interp", 0):
         failures.append(
             f"{arm.name}: production replay walks="
-            f"{result.replay.get('walks')}, expected 0")
+            f"{result.replay.get('walks')}, expected successful interpolation "
+            f"count {result.summary.get('interp', 0)}")
+    if replay_expected and (
+            result.retained.get("captures", 0) <= 0 or
+            result.retained.get("failures", -1) != 0 or
+            result.retained.get("rejects", -1) != 0 or
+            result.retained.get("arenaResolve", 0) <= 0 or
+            result.retained.get("externalResolve", 0) <= 0 or
+            result.packet.get("futurecaptures", 0) <= 0 or
+            result.packet.get("futurefailures", -1) != 0):
+        failures.append(
+            f"{arm.name}: retained/future publication failed: "
+            f"{result.retained}")
+    pressure = result.backpressure
+    admission_skips = pressure.get("skips", -1)
+    endpoint_skips = pressure.get("endpointSkips", -1)
+    replay_skips = pressure.get("replaySkips", -1)
+    if admission_skips != endpoint_skips + replay_skips:
+        failures.append(
+            f"{arm.name}: WebGPU skips={admission_skips} do not reconcile "
+            f"with endpoint/replay={endpoint_skips}+{replay_skips}")
+    if arm.effective_kind == 0:
+        if pressure.get("submitted", -1) + endpoint_skips != TICKS:
+            failures.append(
+                f"{arm.name}: Original submitted+endpoint-skipped "
+                f"{pressure.get('submitted')}+{endpoint_skips} does not "
+                f"account for {TICKS} authored tasks")
+    else:
+        if real_endpoints + endpoint_skips != TICKS:
+            failures.append(
+                f"{arm.name}: authored endpoint admission "
+                f"{real_endpoints}+{endpoint_skips} does not account for "
+                f"{TICKS} tasks")
+        if pressure.get("submitted") != (
+                real_endpoints + result.summary.get("interp", 0)):
+            failures.append(
+                f"{arm.name}: submitted={pressure.get('submitted')} does not "
+                "match successful real+interpolated images "
+                f"{real_endpoints}+{result.summary.get('interp', 0)}")
+        if (real_endpoints + result.summary.get("interp", 0) +
+                result.summary.get("stale", 0) !=
+                result.summary.get("presents", -1)):
+            failures.append(
+                f"{arm.name}: real+interpolated+held images do not account "
+                "for every browser presentation opportunity")
+        if admission_skips > result.summary.get("stale", 0):
+            failures.append(
+                f"{arm.name}: admission skips={admission_skips} exceed "
+                f"scheduler holds={result.summary.get('stale')}")
+    for key in ("failures", "inflight", "runtimewaits", "runtimewaitns"):
+        if pressure.get(key, 0) != 0:
+            failures.append(
+                f"{arm.name}: WebGPU {key}={pressure.get(key)}")
+    abandoned = pressure.get("abandoned", -1)
+    completed = pressure.get("completed", -1)
+    submitted = pressure.get("submitted", -1)
+    if not (0 <= abandoned <= pressure.get("cap", 0) and
+            completed + abandoned == submitted):
+        failures.append(
+            f"{arm.name}: WebGPU completion/teardown accounting is invalid: "
+            f"submitted={submitted} completed={completed} "
+            f"abandoned={abandoned} cap={pressure.get('cap')}")
+
     surface_updates = result.summary.get("surfaceupdates", -1)
-    surface_deficit = TICKS - surface_updates
-    accounted_holds = (result.backpressure.get("held", 0) +
-                       result.backpressure.get("unavailable", 0))
-    if result.backpressure.get("presented") != surface_updates:
+    intended_updates = pressure.get("submitted", -1)
+    surface_deficit = intended_updates - surface_updates
+    accounted_holds = (pressure.get("held", 0) +
+                       pressure.get("unavailable", 0))
+    if pressure.get("presented") != surface_updates:
         failures.append(
             f"{arm.name}: canvas-update counter differs from WebGPU presented "
             "telemetry")
-    if (surface_deficit != 2 or surface_deficit > accounted_holds or
-            result.backpressure.get("failures", -1) != 0):
+    if (surface_deficit < 0 or surface_deficit > accounted_holds or
+            pressure.get("failures", -1) != 0):
         failures.append(
-            f"{arm.name}: two-tick canvas bootstrap deficit is not accounted "
+            f"{arm.name}: canvas image deficit {surface_deficit} is not accounted "
             f"by held+unavailable={accounted_holds}, or WebGPU reported a "
             "completion failure")
     for key in ("freezefail", "restorefail"):
@@ -434,7 +528,7 @@ def main() -> int:
             notes.append(
                 f"{arm.name}: {result.summary.get('presents')} rAF-gated "
                 f"opportunities / {result.summary.get('surfaceupdates')} "
-                f"authored surface updates / {result.summary.get('ticks')} "
+                f"visual surface updates / {result.summary.get('ticks')} "
                 "fixed ticks")
     except CheckFailure as error:
         failures.append(str(error))

@@ -26,6 +26,14 @@ SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
 FRAMES = 3500
 CAPTURE_FRAME = FRAMES - 1
 BACKENDS = ("gl", "webgpu")
+EXPECTED_CASTER_CENSUS = {
+    "views": 1,
+    "triangles": 959,
+    "ranges": 107,
+    "static": 541,
+    "dynamic": 418,
+    "matrices": 10,
+}
 FATAL_RE = re.compile(
     r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
     r"runtime error:|Assertion|\[FX BUG\]"
@@ -89,6 +97,7 @@ def run_arm(
         MDKR_TRACE="1",
         MDKR_RENDERER=backend,
         MDKR_WORLD_SHADOW="0",
+        MDKR_TEST_RENDER_FULL_ADMISSION="1",
         MDKR_LOAD_TRACK="5",
         MDKR_DUMP_FROM=str(CAPTURE_FRAME),
         MDKR_DUMP_EVERY="999",
@@ -186,9 +195,22 @@ def verify_live(result: Result) -> None:
         frames > 3000 and committed == frames and failed == 0,
         f"{result.label}: incomplete frame ownership {result.telemetry}",
     )
+    # This route is deterministic. Do not weaken a changed world/RNG stream
+    # into another lower threshold: the exact census was re-established after
+    # the pinned ares oracle proved ordinary retail car audio consumes the
+    # shared authored RNG stream.
+    census = {
+        "views": views,
+        "triangles": triangles,
+        "ranges": ranges,
+        "static": static,
+        "dynamic": dynamic,
+        "matrices": matrices,
+    }
     require(
-        views == 1 and triangles > 1000 and ranges > 100,
-        f"{result.label}: real race caster set not reached {result.telemetry}",
+        census == EXPECTED_CASTER_CENSUS and triangles == static + dynamic,
+        f"{result.label}: caster census {census}, expected "
+        f"{EXPECTED_CASTER_CENSUS}",
     )
     require(
         static > 100 and dynamic > 0 and
@@ -201,7 +223,7 @@ def verify_live(result: Result) -> None:
         f"{result.label}: material classes not both exercised {result.telemetry}",
     )
     require(
-        matrices > 10 and matrix_peak >= matrices and
+        matrices >= 10 and matrix_peak >= matrices and
         hits > 10_000 and misses > 0,
         f"{result.label}: matrix lifecycle not exercised {result.telemetry}",
     )

@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -53,6 +54,10 @@ RENDERER_RE = re.compile(
 REGISTRY_RE = re.compile(
     r"registry_state: level=(-?\d+) players=(-?\d+) cutscene=(-?\d+) "
     r"live=(\d+) high=(\d+) ambiguous=(\d+) fullFails=(\d+) maxProbe=(\d+)"
+)
+GL_PRESENT_MODE_RE = re.compile(
+    r"\[PRESENT-MODE\] backend=gl .*requestedSwap=(-?\d+) "
+    r"effectiveSwap=(-?\d+) supported=(\d+)"
 )
 FATAL_MARKERS = (
     "[CRASH]",
@@ -205,12 +210,43 @@ def registry_plateau_error(rows: list[tuple[int, ...]]) -> str | None:
     return None
 
 
+def diagnostic_tail(output: str) -> str:
+    markers = (
+        "[PRESENT-MODE]", "[RESOURCE-HEARTBEAT]", "resource_state:",
+        "renderer_generation:", "registry_state:", "[GL-BACKPRESSURE]",
+        "[WGPU-LIMITS]", "[PTRREG]", "[FATAL]", "[CRASH]",
+    )
+    evidence = [
+        line for line in output.splitlines()
+        if any(marker in line for marker in markers)
+    ]
+    if not evidence:
+        evidence = output.splitlines()
+    return "\n".join(evidence[-30:])
+
+
 def run_backend(
     binary: Path, rom: Path, renderer: str, frames: int,
-    timeout: float, verbose: bool,
+    timeout: float, verbose: bool, artifacts_dir: Path | None,
 ) -> str | None:
-    with tempfile.TemporaryDirectory(prefix=f"mdkr_plateau_{renderer}_") as root:
-        run_root = Path(root)
+    cleanup_on_success = artifacts_dir is None
+    if artifacts_dir is None:
+        run_root = Path(tempfile.mkdtemp(prefix=f"mdkr_plateau_{renderer}_"))
+    else:
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        # Every retained run owns a fresh save/config root. Reusing
+        # <artifacts>/<renderer>/save would let a prior EEPROM change the next
+        # route and make diagnostic evidence depend on invocation history.
+        run_root = Path(tempfile.mkdtemp(
+            prefix=f"{renderer}-", dir=artifacts_dir))
+    log_path = run_root / "run.log"
+
+    def failure(message: str, output: str = "") -> str:
+        tail = diagnostic_tail(output)
+        detail = f"{renderer}: {message}; artifacts retained at {run_root}"
+        return detail if not tail else f"{detail}\n{tail}"
+
+    try:
         script = run_root / "resource_plateau.txt"
         script.write_text(extended_route(), encoding="utf-8")
         env = {
@@ -220,7 +256,7 @@ def run_backend(
         env.update({
             "MDKR_AUDIO": "0",
             "MDKR_AUTOPILOT": "1",
-            "MDKR_TRACE": "1",
+            "MDKR_RESOURCE_STATS": "1",
             "MDKR_RENDERER": renderer,
             "MDKR_SAVE_DIR": str(run_root / "save"),
         })
@@ -233,66 +269,80 @@ def run_backend(
         if verbose:
             print("$ " + " ".join(command))
         try:
-            process = subprocess.run(
-                command,
-                cwd=run_root,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
+            with log_path.open("w", encoding="utf-8") as log:
+                process = subprocess.run(
+                    command,
+                    cwd=run_root,
+                    env=env,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=timeout,
+                    check=False,
+                )
         except subprocess.TimeoutExpired:
-            return f"{renderer}: timed out after {timeout:.0f}s"
-        output = process.stdout
+            output = log_path.read_text(encoding="utf-8", errors="replace")
+            return failure(f"timed out after {timeout:.0f}s", output)
+        output = log_path.read_text(encoding="utf-8", errors="replace")
         if process.returncode != 0:
-            return f"{renderer}: exit code {process.returncode}\n{output[-4000:]}"
+            return failure(f"exit code {process.returncode}", output)
         for marker in FATAL_MARKERS:
             if marker in output:
                 line = next(
                     (item for item in output.splitlines() if marker in item),
                     marker,
                 )
-                return f"{renderer}: fatal diagnostic: {line}"
+                return failure(f"fatal diagnostic: {line}", output)
         expected_backend = (
             "renderer backend: gl"
             if renderer == "gl"
             else "renderer backend: webgpu"
         )
         if expected_backend not in output:
-            return f"{renderer}: requested backend was not active"
+            return failure("requested backend was not active", output)
+        if renderer == "gl":
+            present = GL_PRESENT_MODE_RE.search(output)
+            if present is None:
+                return failure("no explicit GL present-mode result", output)
+            requested, effective, supported = map(int, present.groups())
+            if (requested, effective, supported) != (0, 0, 1):
+                return failure(
+                    "headless GL did not obtain the required unlocked swap "
+                    f"contract (requested={requested}, effective={effective}, "
+                    f"supported={supported})",
+                    output,
+                )
         if renderer == "webgpu" and "[WGPU-LIMITS]" not in output:
-            return "webgpu: no terminal GPU resource census was emitted"
+            return failure("no terminal GPU resource census was emitted", output)
         if "[PTRREG]" not in output:
-            return f"{renderer}: no terminal pointer-registry census was emitted"
+            return failure("no terminal pointer-registry census was emitted", output)
         rows = [tuple(map(int, match.groups())) for match in RESOURCE_RE.finditer(output)]
         error = plateau_error(rows)
         if error is not None:
-            return f"{renderer}: {error}\n" + "\n".join(
+            return failure(error + "\n" + "\n".join(
                 line for line in output.splitlines()
                 if "resource_state:" in line or "renderer_generation:" in line
-            )
+            ), output)
         renderer_rows = [
             tuple(map(int, match.groups()))
             for match in RENDERER_RE.finditer(output)
         ]
         error = renderer_plateau_error(renderer_rows)
         if error is not None:
-            return f"{renderer}: {error}\n" + "\n".join(
+            return failure(error + "\n" + "\n".join(
                 line for line in output.splitlines()
                 if "renderer_generation:" in line
-            )
+            ), output)
         registry_rows = [
             tuple(map(int, match.groups()))
             for match in REGISTRY_RE.finditer(output)
         ]
         error = registry_plateau_error(registry_rows)
         if error is not None:
-            return f"{renderer}: {error}\n" + "\n".join(
+            return failure(error + "\n" + "\n".join(
                 line for line in output.splitlines()
                 if "registry_state:" in line
-            )
+            ), output)
         race_rows = [
             row for row in rows
             if row[0] == 5 and row[1] == 0 and row[2] == 100
@@ -323,7 +373,14 @@ def run_backend(
             f"registry={registry_warmed[3]}/{registry_warmed[4]} "
             "live/high"
         )
-    return None
+        if cleanup_on_success:
+            shutil.rmtree(run_root)
+        return None
+    except (OSError, ValueError) as error:
+        output = ""
+        if log_path.exists():
+            output = log_path.read_text(encoding="utf-8", errors="replace")
+        return failure(f"evidence handling failed: {error}", output)
 
 
 def main() -> int:
@@ -334,6 +391,9 @@ def main() -> int:
         "--renderer", choices=("gl", "webgpu", "both"), default="both")
     parser.add_argument("--frames", type=int, default=DEFAULT_FRAMES)
     parser.add_argument("--timeout", type=float, default=240.0)
+    parser.add_argument(
+        "--artifacts-dir", type=Path,
+        help="retain each backend route and complete child log here")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -403,7 +463,8 @@ def main() -> int:
         error
         for renderer in renderers
         if (error := run_backend(
-            binary, rom, renderer, args.frames, args.timeout, args.verbose))
+            binary, rom, renderer, args.frames, args.timeout, args.verbose,
+            args.artifacts_dir))
     ]
     if failures:
         print("check_resource_plateau: FAIL", file=sys.stderr)

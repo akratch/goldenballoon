@@ -6,7 +6,7 @@ Before cutting the next release, a four-lane deep review (adversarial review
 of the new commits, residual renderer mining, mobile touch layer, and a
 release-claims audit) plus one complete Release-led manifest run
 (**66/66 tasks in 96m54s** as the manifest stood at that checkpoint —
-it is 100 tasks today — including the 47m22s alignment-UBSan
+it is 101 tasks today — including the 47m22s alignment-UBSan
 native-layout matrix) mined the remaining issues. Findings and dispositions
 are recorded in the renderer's wave "shadowdeep" entries in
 `docs/OPEN_ITEMS.md`. Headlines:
@@ -114,9 +114,9 @@ The defined Waves 1–3 are **23/23 complete** and integrated:
 | Wave 2 lighting | RL-2, RL-5, CO-1 | 3/3 |
 | Wave 3 gameplay | 3P/4P, Adventure Two, challenge/battle, first boss, Taj, trophy series | 6/6 |
 
-The manifest contains **91 check scripts / 100 full-run tasks**. That v0.4
+The manifest contains **92 check scripts / 101 full-run tasks**. That v0.4
 snapshot exposed **28 CTests**; the current default native configuration
-exposes **59**: 50 non-GPU and 9 GPU. Linux X11/Mesa now has a
+exposes **67**: 56 non-GPU and 11 GPU. Linux X11/Mesa now has a
 clean Ubuntu/GCC build and real GL plus WebGPU/Vulkan render/present runs.
 Wayland, physical Linux GPUs, WGPU-11's offline/external corpus remainder, the full Adventure graph, physical
 peripheral breadth, broader ROM support, and broader independent-oracle contracts remain
@@ -816,7 +816,8 @@ difference for Ancient Lake/Fire Mountain.
   offsets and builds fresh arena-resident host structs (the mgb64 audio_compat.c
   model — the overlay-and-patch alBnkfNew can't work on LP64 where the embedded
   4-byte on-disk pointer slots are 8 bytes); real sequence table + ALCMidiHdr
-  header swap (music_sequence_init); SoundData u16 swap; sndp_play / sound_count
+  header swap (music_sequence_init); SoundData u16 and VehicleSoundAsset
+  mixed-field swap; sndp_play / sound_count
   un-stubbed. THE core problem was addressing: the stock synth's whole address ABI
   is 32-bit (osVirtualToPhysical→u32, ALDMAproc return→s32, ALSave.dramout→s32,
   K0_TO_PHYS→29-bit mask), so every address reaches the mixer truncated on LP64 —

@@ -1,10 +1,13 @@
 // diag_log.cpp — see diag_log.h.
 #include "diag_log.h"
 #include "engine_entry.h"   // crash-write mirror descriptors
+#include "fs_utf8.h"
 
 #include <SDL.h>
 
+#include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -29,6 +32,7 @@ std::thread g_reader;
 int         g_realOut = -1;
 int         g_realErr = -1;
 bool        g_installed = false;
+bool        g_includesPreviousFailure = false;
 
 void appendRing(const char *data, size_t n) {
     std::lock_guard<std::mutex> lock(g_ringMutex);
@@ -58,6 +62,21 @@ int replaceFd(int source, int target) { return _dup2(source, target); }
 void closeFd(int fd) { if (fd >= 0) _close(fd); }
 int fileFd(std::FILE *file) { return file ? _fileno(file) : -1; }
 
+void writeAll(int fd, const char *data, size_t size) {
+    size_t offset = 0;
+    while (offset < size) {
+        const int written =
+            _write(fd, data + offset, static_cast<unsigned>(size - offset));
+        if (written > 0) {
+            offset += static_cast<size_t>(written);
+        } else if (written < 0 && errno == EINTR) {
+            continue;
+        } else {
+            break;
+        }
+    }
+}
+
 void readerLoop(int readFd) {
     char buffer[4096];
     int count = 0;
@@ -68,7 +87,7 @@ void readerLoop(int readFd) {
             std::fflush(g_logFile);
         }
         if (g_realErr >= 0) {
-            (void)_write(g_realErr, buffer, static_cast<unsigned>(count));
+            writeAll(g_realErr, buffer, static_cast<size_t>(count));
         }
     }
     closeFd(readFd);
@@ -89,6 +108,20 @@ int replaceFd(int source, int target) { return dup2(source, target); }
 void closeFd(int fd) { if (fd >= 0) close(fd); }
 int fileFd(std::FILE *file) { return file ? fileno(file) : -1; }
 
+void writeAll(int fd, const char *data, size_t size) {
+    size_t offset = 0;
+    while (offset < size) {
+        const ssize_t written = write(fd, data + offset, size - offset);
+        if (written > 0) {
+            offset += static_cast<size_t>(written);
+        } else if (written < 0 && errno == EINTR) {
+            continue;
+        } else {
+            break;
+        }
+    }
+}
+
 void readerLoop(int readFd) {
     char buffer[4096];
     ssize_t count = 0;
@@ -99,7 +132,7 @@ void readerLoop(int readFd) {
             std::fflush(g_logFile);
         }
         if (g_realErr >= 0) {
-            (void)write(g_realErr, buffer, static_cast<size_t>(count));
+            writeAll(g_realErr, buffer, static_cast<size_t>(count));
         }
     }
     closeFd(readFd);
@@ -128,21 +161,46 @@ void closeLogFile() {
     g_logFile = nullptr;
 }
 
+void importPreviousFailure(const std::string &path) {
+    const char *recovery = std::getenv("MDKR_APP_BOOT_RECOVERY");
+    if (recovery == nullptr || recovery[0] == '\0') return;
+    std::FILE *file = mdkr_fopen_utf8(path.c_str(), "rb");
+    if (!file) return;
+    static const char heading[] =
+        "\n--- previous engine attempt (recovered safely) ---\n";
+    appendRing(heading, sizeof(heading) - 1u);
+    char bytes[4096];
+    size_t count;
+    while ((count = std::fread(bytes, 1, sizeof(bytes), file)) != 0u) {
+        appendRing(bytes, count);
+    }
+    std::fclose(file);
+    g_includesPreviousFailure = true;
+}
+
 }  // namespace
 
 bool DiagLog_install() {
     if (g_installed) return true;
 
+    {
+        std::lock_guard<std::mutex> lock(g_ringMutex);
+        g_ring.clear();
+    }
+    g_includesPreviousFailure = false;
+
     const std::string directory = prefsDir();
     g_logPath = directory.empty() ? "" : directory + "mdkr64.log";
     if (!g_logPath.empty()) {
         const std::string previous = directory + "mdkr64.prev.log";
-#if defined(_WIN32)
-        // Windows rename() does not replace an existing destination.
-        std::remove(previous.c_str());
-#endif
-        (void)std::rename(g_logPath.c_str(), previous.c_str());
-        g_logFile = std::fopen(g_logPath.c_str(), "w");
+        // Replacement is a single operation in the UTF-8 filesystem layer.
+        // Do not unlink the prior log first: if rotation itself fails, the
+        // current failed-engine log is still the best recovery evidence and
+        // must remain available for Diagnostics to import.
+        const int rotated =
+            mdkr_move_utf8(g_logPath.c_str(), previous.c_str(), 1, 0);
+        importPreviousFailure(rotated == 0 ? previous : g_logPath);
+        g_logFile = mdkr_fopen_utf8(g_logPath.c_str(), "w");
     }
 
     g_realOut = duplicateFd(1);
@@ -225,6 +283,10 @@ int DiagLog_snapshot(char *buffer, int capacity) {
     std::memcpy(buffer, source, static_cast<size_t>(count));
     buffer[count] = '\0';
     return count;
+}
+
+bool DiagLog_includesPreviousFailure() {
+    return g_includesPreviousFailure;
 }
 
 const char *DiagLog_path() { return g_logPath.c_str(); }

@@ -98,16 +98,16 @@
  * when no CRC pair matches do the header fields decide, and then the caller is
  * told the CRC did not match (a modified dump or a ROM hack).
  *
- * Two deliberate leniencies:
+ * One deliberate identification leniency:
  *
  *   - Only the LOW NIBBLE of 0x3F is compared. header.s writes
  *     `revision | (savetype << 4)` and its NON_MATCHING build sets savetype 1, so
  *     a ROM built from the decomp reads 0x11 rather than 0x01. Retail carts have
  *     savetype 0 (confirmed on all five dumps).
- *   - A CRC mismatch on an otherwise-supported header WARNS and continues rather
- *     than refusing. Refusing would reject every ROM hack and every self-built
- *     decomp ROM, which are legitimate things to point this port at. The warning
- *     exists so a bad dump is not later mistaken for a port bug.
+ * A supported-looking header with a CRC mismatch is still IDENTIFIED so the
+ * error can name the likely revision. Acceptance is a separate decision in
+ * rom_validation.c: its complete-image SHA-256 must match unless the explicit
+ * MDKR_ROM_ALLOW_MODIFIED=1 developer override is present.
  *
  * ===========================================================================
  *  Note for anyone editing the constants
@@ -314,12 +314,14 @@ void dkr_rom_describe(const DkrRomId *id, const char *path, char *buf, size_t bu
             snprintf(buf, bufLen, "%s is %s (%s) - a revision this build supports.", p,
                      id->revisionName, id->decompBuild);
         } else {
-            /* Accepted, but said out loud: the header claims a supported revision
-             * and the body does not match that revision's reference dump. */
+            /* Identification is intentionally richer than acceptance. The full
+             * image validator decides whether an explicit developer override is
+             * allowed; this sentence must never promise that boot will continue. */
             snprintf(buf, bufLen,
                      "%s has a %s header (%s) but its CRC1/CRC2 (0x%08X / 0x%08X) do not match "
                      "that revision's reference pair (0x%08X / 0x%08X) - a modified or "
-                     "imperfect dump. Continuing anyway.",
+                     "imperfect dump. Use a clean reference image, or enable the explicit "
+                     "modified-ROM developer override.",
                      p, id->revisionName, id->decompBuild, id->crc1, id->crc2, id->refCrc1,
                      id->refCrc2);
         }

@@ -1,0 +1,55 @@
+# Persistent Taj unlock -> a real two-player split-screen race with P1 as Taj
+# and P2 as ordinary Diddy. Their retail race identity is intentionally the same
+# donor value; selection ownership and rendering remain distinct sidecars.
+
+# Title -> Character Select.
+1250 START 4 P1
+1330 START 4 P1
+
+# Move P1 Diddy -> Tiptup -> Taj. P2 joins on Krunch, then moves right
+# to the now-free Diddy display identity. Confirm both and accept the ready
+# screen; both retail race rows resolve to Diddy without conflating the players.
+1450 DOWN 4 P1
+1510 RIGHT 4 P1
+1660 A 4 P2
+1700 RIGHT 4 P2
+1760 A 4 P1
+1840 A 4 P2
+1930 A 4 P1
+
+# Multiplayer goes directly to Track Select: world, both vehicles, CPU count,
+# then GO. Autopilot is supplied by the behavioural check.
+2110 A 4 P1
+2270 A 4 P1
+2270 A 4 P2
+2420 A 4 P1
+2570 A 4 P1
+
+# Multiplayer post-race consumes a fresh A edge before loading MENU_RESULTS.
+# The ordinary 2P fixture finishes near frame 7600; Taj can finish earlier, but
+# P2's authored pace still determines the terminal transition. These spaced
+# retries are inert during the race and keep the fixture usable for a complete
+# results-portrait pass as well as the shorter gameplay smoke.
+7000 A 4 P1
+7300 A 4 P1
+7600 A 4 P1
+7900 A 4 P1
+7900 A 4 P2
+8200 A 4 P1
+8500 A 4 P1
+8800 A 4 P1
+9100 A 4 P1
+9400 A 4 P1
+
+# The first Rankings selection returns to Track Select. The 7600-8500 inputs
+# above deliberately start the same race again, exercising a full menu/stage
+# teardown before Taj's generated portrait is needed a second time. Fresh
+# post-race edges advance the repeat run into Rankings for the lifetime gate.
+12600 A 4 P1
+12900 A 4 P1
+13200 A 4 P1
+13500 A 4 P1
+13800 A 4 P1
+14100 A 4 P1
+14400 A 4 P1
+14700 A 4 P1

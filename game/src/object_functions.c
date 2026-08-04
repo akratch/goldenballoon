@@ -27,6 +27,14 @@
 #include "printf.h"
 #include "racer.h"
 #include "runtime_contracts.h"
+#ifdef NATIVE_PORT
+#include "taj_physics.h"
+#include "taj_visual.h"
+#define TAJ_ABSORBS_ATTACK(racer, attack) \
+    taj_physics_absorb_attack((racer), (attack))
+#else
+#define TAJ_ABSORBS_ATTACK(racer, attack) FALSE
+#endif
 #include "structs.h"
 #include "textures_sprites.h"
 #include "thread3_main.h"
@@ -271,16 +279,26 @@ void obj_loop_fireball_octoweapon(Object *obj, s32 updateRate) {
                 racer = someObj->racer;
                 if (racer->playerIndex != PLAYER_COMPUTER) {
                     if (obj->behaviorId == BHV_FIREBALL_OCTOWEAPON) {
-                        racer->attackType = ATTACK_EXPLOSION;
+                        if (!TAJ_ABSORBS_ATTACK(racer, ATTACK_EXPLOSION)) {
+                            racer->attackType = ATTACK_EXPLOSION;
+                        }
                         obj->properties.fireball.timer = 20;
                         obj_spawn_effect(obj->trans.x_position, obj->trans.y_position, obj->trans.z_position,
                                          ASSET_OBJECT_ID_BOMBEXPLOSION, SOUND_EXPLOSION, 1.0f, 1);
                         free_object(obj);
                     } else if (obj->properties.fireball.timer > 0) {
-                        racer->bubbleTrapTimer = 60;
-                        obj->properties.fireball.timer = -60;
-                        obj->properties.fireball.obj = someObj;
-                        sound_play(SOUND_BUBBLE_RISE, (SoundHandle *) &weapon->soundMask);
+                        if (TAJ_ABSORBS_ATTACK(racer, ATTACK_BUBBLE)) {
+#ifdef NATIVE_PORT
+                            /* Consume the hit without attaching a bubble to
+                             * Taj. The ordinary timer-zero path pops/frees it. */
+                            obj->properties.fireball.timer = 0;
+#endif
+                        } else {
+                            racer->bubbleTrapTimer = 60;
+                            obj->properties.fireball.timer = -60;
+                            obj->properties.fireball.obj = someObj;
+                            sound_play(SOUND_BUBBLE_RISE, (SoundHandle *) &weapon->soundMask);
+                        }
                     }
                 }
             }
@@ -482,7 +500,9 @@ void obj_loop_laserbolt(Object *obj, s32 updateRate) {
             racer = racerObj->racer;
             delete = TRUE;
             if (racer->playerIndex != PLAYER_COMPUTER) {
-                racer->attackType = ATTACK_EXPLOSION;
+                if (!TAJ_ABSORBS_ATTACK(racer, ATTACK_EXPLOSION)) {
+                    racer->attackType = ATTACK_EXPLOSION;
+                }
             }
             laserGun = obj->properties.laserbolt.obj;
             if (laserGun != NULL) {
@@ -2141,6 +2161,33 @@ void obj_loop_char_select(Object *charSelectObj, s32 updateRate) {
         modInst = charSelectObj->modelInstances[charSelectObj->modelIndex];
         if (modInst != NULL) {
             objMdl = modInst->objModel;
+#ifdef NATIVE_PORT
+            if (getenv("MDKR_TAJ_SELECT_TRACE") != NULL) {
+                static u32 tracedActors;
+                const u32 actorBit = charSelect->actorIndex >= 0 &&
+                                             charSelect->actorIndex < 32
+                                         ? 1u << (u32)charSelect->actorIndex
+                                         : 0u;
+                if (actorBit != 0 && !(tracedActors & actorBit)) {
+                    tracedActors |= actorBit;
+                    fprintf(stderr,
+                            "[TAJSELECT] authored actor=%d object=%d model=%d "
+                            "pos=%.2f,%.2f,%.2f rot=%d,%d,%d scale=%.3f "
+                            "animations=%d\n",
+                            charSelect->actorIndex, charSelectObj->objectID,
+                            DKR_PTR(s32, charSelectObj->header->modelIds)[
+                                charSelectObj->modelIndex],
+                            (double)charSelectObj->trans.x_position,
+                            (double)charSelectObj->trans.y_position,
+                            (double)charSelectObj->trans.z_position,
+                            charSelectObj->trans.rotation.x_rotation,
+                            charSelectObj->trans.rotation.y_rotation,
+                            charSelectObj->trans.rotation.z_rotation,
+                            (double)charSelectObj->trans.scale,
+                            objMdl->numberOfAnimations);
+                }
+            }
+#endif
             if (is_drumstick_unlocked()) {
                 if (is_tt_unlocked()) {
                     actorIDs = gCharacterSelectAllActorIDs;
@@ -2164,6 +2211,9 @@ void obj_loop_char_select(Object *charSelectObj, s32 updateRate) {
             }
             i--;
             if (playerIndex) {
+#ifdef NATIVE_PORT
+                taj_visual_select_apply_authored_actor(charSelectObj, i);
+#endif
                 charSelectObj->animationID = 1;
                 for (playerIndex = 0, numCursors = 0; playerIndex < MAXCONTROLLERS; playerIndex++) {
                     if (get_player_character(playerIndex) == i) {
@@ -5088,13 +5138,16 @@ void weapon_projectile(Object *obj, s32 updateRate) {
         if (obj->interactObj->distance < size) {
             if (interactObj->header->behaviorId == BHV_RACER) {
                 racer = interactObj->racer;
-                racer->attackType = ATTACK_EXPLOSION;
-                weaponOwner = weapon->owner->racer;
-                if (racer->playerIndex != PLAYER_COMPUTER || weaponOwner->playerIndex != PLAYER_COMPUTER) {
-                    weaponOwner->boost_sound |= BOOST_SOUND_UNK2;
-                }
-                if (racer->raceFinished == FALSE) {
-                    rumble_set(racer->playerIndex, RUMBLE_TYPE_9);
+                if (!TAJ_ABSORBS_ATTACK(racer, ATTACK_EXPLOSION)) {
+                    racer->attackType = ATTACK_EXPLOSION;
+                    weaponOwner = weapon->owner->racer;
+                    if (racer->playerIndex != PLAYER_COMPUTER ||
+                        weaponOwner->playerIndex != PLAYER_COMPUTER) {
+                        weaponOwner->boost_sound |= BOOST_SOUND_UNK2;
+                    }
+                    if (racer->raceFinished == FALSE) {
+                        rumble_set(racer->playerIndex, RUMBLE_TYPE_9);
+                    }
                 }
             }
             obj_spawn_effect(obj->trans.x_position, obj->trans.y_position, obj->trans.z_position,
@@ -5314,6 +5367,8 @@ void weapon_trap(Object *weaponObj, s32 updateRate) {
     f32 updateRateF;
     s32 hasCollision;
     s32 hitDist;
+    s32 attackAbsorbed;
+    s32 incomingAttack;
     s8 surface;
     Object_Weapon *weapon;
     ObjPropertyWeapon *weaponProperties;
@@ -5447,7 +5502,19 @@ void weapon_trap(Object *weaponObj, s32 updateRate) {
                     weaponInteractObj = weaponObj->interactObj->obj;
                     if (weaponInteractObj->header->behaviorId == BHV_RACER) {
                         weaponHit = weaponInteractObj->racer;
-                        weaponHit->attackType = ATTACK_EXPLOSION;
+                        incomingAttack = ATTACK_EXPLOSION;
+                        if (weapon->weaponID == WEAPON_BUBBLE_TRAP &&
+                            !(weaponHit->shieldTimer > 0 &&
+                              weaponHit->shieldType >= SHIELD_LEVEL3)) {
+                            incomingAttack = ATTACK_BUBBLE;
+                        } else if (weapon->weaponID == WEAPON_OIL_SLICK) {
+                            incomingAttack = ATTACK_SPIN;
+                        }
+                        attackAbsorbed =
+                            TAJ_ABSORBS_ATTACK(weaponHit, incomingAttack);
+                        if (!attackAbsorbed) {
+                            weaponHit->attackType = ATTACK_EXPLOSION;
+                        }
                         if (weapon->weaponID == WEAPON_TRIPMINE) {
                             obj_spawn_effect(weaponObj->trans.x_position, weaponObj->trans.y_position,
                                              weaponObj->trans.z_position, ASSET_OBJECT_ID_BOMBEXPLOSION,
@@ -5460,26 +5527,47 @@ void weapon_trap(Object *weaponObj, s32 updateRate) {
                                                                weaponObj->trans.y_position, weaponObj->trans.z_position,
                                                                AUDIO_POINT_FLAG_ONE_TIME_TRIGGER, NULL);
                             } else {
-                                weapon->target = weaponInteractObj;
+                                if (attackAbsorbed) {
+#ifdef NATIVE_PORT
+                                    weaponProperties->status = WEAPON_DESTROY;
+                                    audspat_play_sound_at_position(
+                                        SOUND_POP,
+                                        weaponObj->trans.x_position,
+                                        weaponObj->trans.y_position,
+                                        weaponObj->trans.z_position,
+                                        AUDIO_POINT_FLAG_ONE_TIME_TRIGGER,
+                                        NULL);
+#endif
+                                } else {
+                                    weapon->target = weaponInteractObj;
 
-                                audspat_play_sound_at_position(SOUND_BUBBLE, weaponInteractObj->trans.x_position,
-                                                               weaponInteractObj->trans.y_position,
-                                                               weaponInteractObj->trans.z_position,
-                                                               AUDIO_POINT_FLAG_ONE_TIME_TRIGGER, &weapon->soundMask);
-                                weaponHit->attackType = ATTACK_BUBBLE;
-                                weaponProperties->status = WEAPON_TRIGGERED;
-                                weaponProperties->submerged = 0;
+                                    audspat_play_sound_at_position(
+                                        SOUND_BUBBLE,
+                                        weaponInteractObj->trans.x_position,
+                                        weaponInteractObj->trans.y_position,
+                                        weaponInteractObj->trans.z_position,
+                                        AUDIO_POINT_FLAG_ONE_TIME_TRIGGER,
+                                        &weapon->soundMask);
+                                    weaponHit->attackType = ATTACK_BUBBLE;
+                                    weaponProperties->status = WEAPON_TRIGGERED;
+                                    weaponProperties->submerged = 0;
+                                }
                             }
                         } else if (weapon->weaponID == WEAPON_OIL_SLICK) {
-                            weaponHit->attackType = ATTACK_SPIN;
+                            if (!attackAbsorbed) {
+                                weaponHit->attackType = ATTACK_SPIN;
+                            }
                             weaponProperties->status = WEAPON_TRIGGERED;
                         }
-                        if (!weaponHit->raceFinished) {
-                            rumble_set(weaponHit->playerIndex, RUMBLE_TYPE_13);
-                        }
-                        weaponOwner = weapon->owner->racer;
-                        if (weaponHit->playerIndex != PLAYER_COMPUTER || weaponOwner->playerIndex != PLAYER_COMPUTER) {
-                            weaponOwner->boost_sound |= BOOST_SOUND_UNK2;
+                        if (!attackAbsorbed) {
+                            if (!weaponHit->raceFinished) {
+                                rumble_set(weaponHit->playerIndex, RUMBLE_TYPE_13);
+                            }
+                            weaponOwner = weapon->owner->racer;
+                            if (weaponHit->playerIndex != PLAYER_COMPUTER ||
+                                weaponOwner->playerIndex != PLAYER_COMPUTER) {
+                                weaponOwner->boost_sound |= BOOST_SOUND_UNK2;
+                            }
                         }
                         if (weapon->weaponID != WEAPON_OIL_SLICK && weapon->weaponID != WEAPON_BUBBLE_TRAP) {
                             free_object(weaponObj);

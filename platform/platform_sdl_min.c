@@ -55,7 +55,22 @@ EM_ASYNC_JS(void, platformWaitAnimationFrame, (void), {
             document.addEventListener('visibilitychange', visible);
         });
     }
-    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const timestamp = await new Promise(
+        (resolve) => requestAnimationFrame(resolve));
+    /* The browser regression shell exposes this bounded array only under its
+     * inert CDP test bridge. Capture the actual compositor opportunities here,
+     * at the production rAF boundary, so cadence failures can distinguish a
+     * slow/occluded host from scheduler or renderer work. */
+    if (Array.isArray(globalThis.__mdkrActualRafDeltas)) {
+        const prior = Number(globalThis.__mdkrActualRafTimestamp);
+        if (Number.isFinite(prior)) {
+            globalThis.__mdkrActualRafDeltas.push(timestamp - prior);
+            if (globalThis.__mdkrActualRafDeltas.length > 12000) {
+                globalThis.__mdkrActualRafDeltas.shift();
+            }
+        }
+        globalThis.__mdkrActualRafTimestamp = timestamp;
+    }
 });
 EM_ASYNC_JS(double, platformWaitSyntheticAnimationFrame, (void), {
     return await globalThis.__mdkrWaitAnimationFrame();
@@ -101,6 +116,7 @@ static uint64_t browser_wait_animation_frame(void) {
 #endif
 #include <SDL.h>
 #include "platform_os.h"
+#include "fs_utf8.h"
 #include "app/app_brand.h"
 #include "user_paths.h"
 #include "pacing_policy.h"
@@ -108,6 +124,7 @@ static uint64_t browser_wait_animation_frame(void) {
 #include "gameplay_event_trace.h"
 #include "input_tick_queue.h"
 #include "input_consumption_trace.h"
+#include "controller_mapping.h"
 #include "video_config.h"
 #include "mdkr_bounds.h"
 #include "gfx_ptr.h"
@@ -214,7 +231,7 @@ static int           s_surfaceResumeRebasePending;
 static int           s_testMinimizeStart = -2;
 static int           s_testMinimizeEnd = -2;
 static int           s_testForcedMinimized;
-#ifdef MDKR_WEBGPU_BACKEND
+#if defined(MDKR_WEBGPU_BACKEND) && defined(__APPLE__)
 static SDL_MetalView s_metalView = NULL;   /* CAMetalLayer host for the WGPUSurface */
 #endif
 #ifdef MDKR_APP
@@ -294,20 +311,20 @@ const char *mdkr_render_backend_name(void) {
  *
  *  N64 controller button bits — MUST match game/include/PR/os_cont.h CONT_*.
  * ======================================================================== */
-#define N64_A       0x8000u
-#define N64_B       0x4000u
-#define N64_Z       0x2000u   /* Z-trigger (CONT_G) */
-#define N64_START   0x1000u
-#define N64_DU      0x0800u   /* D-pad up   (CONT_UP)    */
-#define N64_DD      0x0400u   /* D-pad down (CONT_DOWN)  */
-#define N64_DL      0x0200u   /* D-pad left (CONT_LEFT)  */
-#define N64_DR      0x0100u   /* D-pad right(CONT_RIGHT) */
-#define N64_L       0x0020u   /* L shoulder (CONT_L) */
-#define N64_R       0x0010u   /* R shoulder (CONT_R) */
-#define N64_CU      0x0008u   /* C-up    (CONT_E) */
-#define N64_CD      0x0004u   /* C-down  (CONT_D) */
-#define N64_CL      0x0002u   /* C-left  (CONT_C) */
-#define N64_CR      0x0001u   /* C-right (CONT_F) */
+#define N64_A       MDKR_N64_A
+#define N64_B       MDKR_N64_B
+#define N64_Z       MDKR_N64_Z       /* Z-trigger (CONT_G) */
+#define N64_START   MDKR_N64_START
+#define N64_DU      MDKR_N64_DU      /* D-pad up   (CONT_UP)    */
+#define N64_DD      MDKR_N64_DD      /* D-pad down (CONT_DOWN)  */
+#define N64_DL      MDKR_N64_DL      /* D-pad left  (CONT_LEFT) */
+#define N64_DR      MDKR_N64_DR      /* D-pad right (CONT_RIGHT)*/
+#define N64_L       MDKR_N64_L       /* L shoulder (CONT_L) */
+#define N64_R       MDKR_N64_R       /* R shoulder (CONT_R) */
+#define N64_CU      MDKR_N64_CU      /* C-up    (CONT_E) */
+#define N64_CD      MDKR_N64_CD      /* C-down  (CONT_D) */
+#define N64_CL      MDKR_N64_CL      /* C-left  (CONT_C) */
+#define N64_CR      MDKR_N64_CR      /* C-right (CONT_F) */
 
 #define DKR_MAXPADS 4
 #define STICK_FULL  80        /* menu deflection (spec: full ±80) */
@@ -328,6 +345,7 @@ struct controller_source_state {
 static struct controller_source_state s_controllerSource[DKR_MAXPADS];
 static Uint8 s_keyboardDown[SDL_NUM_SCANCODES];
 static int s_gameInputSuppressed;
+static int s_testScriptOnlyInput = -1;
 #ifdef __EMSCRIPTEN__
 static struct pad_state s_browserTouchSource;
 #endif
@@ -335,6 +353,14 @@ static struct pad_state s_browserTouchSource;
 static void input_capture_live(uint64_t target_tick);
 
 static SDL_GameController *s_gc[DKR_MAXPADS] = { NULL, NULL, NULL, NULL };
+/* DKR's current motor request per port. Kept separate from the user mute/profile
+ * so a live preference change can stop or refresh an already-running effect. */
+static Uint8 s_rumbleRequested[DKR_MAXPADS] = { 0, 0, 0, 0 };
+/* -1 means unprobed.  Capability discovery is cached for the lifetime of the
+ * opened controller because SDL's compatibility probe is itself a zero-power
+ * rumble command on older releases. Reissuing that command from osPfsIsPlug()
+ * can stop an effect which DKR still considers active. */
+static int8_t s_rumbleSupported[DKR_MAXPADS] = { -1, -1, -1, -1 };
 static int s_quitRequested = 0;
 
 #ifdef __EMSCRIPTEN__
@@ -351,7 +377,7 @@ EM_JS(int, browser_gamepad_rumble_supported, (int instanceId), {
     return !!(pad && (pad.vibrationActuator ||
         (pad.hapticActuators && pad.hapticActuators.length)));
 });
-EM_JS(int, browser_gamepad_rumble, (int instanceId, int enabled), {
+EM_JS(int, browser_gamepad_rumble, (int instanceId, int strength), {
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
     const pad = pads && pads[instanceId];
     if (!pad) return 0;
@@ -359,7 +385,7 @@ EM_JS(int, browser_gamepad_rumble, (int instanceId, int enabled), {
         (pad.hapticActuators && pad.hapticActuators[0]);
     if (!actuator) return 0;
     try {
-        if (!enabled) {
+        if (strength <= 0) {
             if (typeof actuator.reset === "function") actuator.reset();
             else if (typeof actuator.playEffect === "function") {
                 actuator.playEffect(actuator.type || "dual-rumble", {
@@ -369,15 +395,16 @@ EM_JS(int, browser_gamepad_rumble, (int instanceId, int enabled), {
             }
             return 1;
         }
+        const magnitude = Math.max(0, Math.min(1, strength / 65535));
         if (typeof actuator.playEffect === "function") {
             actuator.playEffect(actuator.type || "dual-rumble", {
                 duration: 60000, startDelay: 0,
-                strongMagnitude: 1, weakMagnitude: 1
+                strongMagnitude: magnitude, weakMagnitude: magnitude
             }).catch(() => {});
             return 1;
         }
         if (typeof actuator.pulse === "function") {
-            actuator.pulse(1, 60000).catch(() => {});
+            actuator.pulse(magnitude, 60000).catch(() => {});
             return 1;
         }
     } catch (_) {
@@ -461,7 +488,7 @@ static unsigned int script_token_to_bit(const char *tok, int *sx, int *sy) {
 }
 
 int platform_input_load_script(const char *path) {
-    FILE *f = fopen(path, "r");
+    FILE *f = mdkr_fopen_utf8(path, "r");
     if (!f) { fprintf(stderr, "[input-script] cannot open %s\n", path); return -1; }
     char line[256];
     s_scriptCount = 0;
@@ -796,6 +823,16 @@ static int sdl_should_hide_window(void) {
     return g_headlessFrames >= 0 || getenv("MDKR64_HIDDEN") != NULL;
 }
 
+static int sdl_should_start_fullscreen(void) {
+#ifdef __EMSCRIPTEN__
+    return 0;
+#else
+    const MdkrVideoConfig *config = mdkr_video_config_current();
+    return !sdl_should_hide_window() && config != NULL &&
+        strcmp(config->values[MDKR_WINDOW_MODE].text, "fullscreen") == 0;
+#endif
+}
+
 int platform_sdl_surface_presentable(void) {
 #ifdef __EMSCRIPTEN__
     return 1;
@@ -883,6 +920,11 @@ int platform_sdl_init(void) {
     Uint32 base_flags = SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE;
     if (sdl_should_hide_window()) {
         base_flags |= SDL_WINDOW_HIDDEN;
+    } else if (sdl_should_start_fullscreen()) {
+        /* Desktop fullscreen preserves the monitor's current mode while
+         * covering it exactly. BORDERLESS is explicit so Windows cannot leave
+         * ordinary overlapped-window decorations around the adopted surface. */
+        base_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_BORDERLESS;
     }
 
 #ifdef __EMSCRIPTEN__
@@ -1109,10 +1151,50 @@ void platform_sdl_sync_drawable_size(void) {
 /* Capture the last completed frame to DIR/frame_%04d.ppm as binary P6.
  * Backend readback returns rows bottom-up; PPM is top-down, so rows are flipped
  * on write. No external deps. */
-static void platform_dump_frame(void) {
-    if (!g_dumpFramesDir) {
-        return;
+static int s_dumpFrom = -2;
+static int s_dumpEvery = 1;
+
+static void platform_frame_dump_filter_init(void) {
+    if (s_dumpFrom != -2) return;
+    const char *e = getenv("MDKR_DUMP_FROM");
+    const char *n = getenv("MDKR_DUMP_EVERY");
+    s_dumpFrom = (e && e[0]) ? atoi(e) : -1;
+    if (n && n[0]) s_dumpEvery = atoi(n);
+    if (s_dumpEvery < 1) s_dumpEvery = 1;
+}
+
+int platform_frame_dump_due(void) {
+    if (!g_dumpFramesDir) return 0;
+    platform_frame_dump_filter_init();
+    if (s_dumpFrom >= 0 && g_frameCounter < s_dumpFrom) return 0;
+    if (s_dumpEvery > 1) {
+        const int base = s_dumpFrom > 0 ? s_dumpFrom : 0;
+        if (((g_frameCounter - base) % s_dumpEvery) != 0) return 0;
     }
+    return 1;
+}
+
+int platform_frame_dump_prepare_due(void) {
+    enum { DUMP_ADMISSION_PREROLL = 8 };
+    int distance;
+
+    if (!g_dumpFramesDir) return 0;
+    platform_frame_dump_filter_init();
+    if (s_dumpFrom >= 0 && g_frameCounter < s_dumpFrom) {
+        distance = s_dumpFrom - g_frameCounter;
+        return distance <= DUMP_ADMISSION_PREROLL;
+    }
+    if (s_dumpEvery <= 1) return 1;
+    {
+        const int base = s_dumpFrom > 0 ? s_dumpFrom : 0;
+        const int phase = (g_frameCounter - base) % s_dumpEvery;
+        distance = phase == 0 ? 0 : s_dumpEvery - phase;
+    }
+    return distance <= DUMP_ADMISSION_PREROLL;
+}
+
+static void platform_dump_frame(void) {
+    if (!platform_frame_dump_due()) return;
 #ifdef MDKR_WEBGPU_BACKEND
     /* WebGPU renders the scene offscreen and reads it back through the rendering
      * API (works even for a hidden window — no drawable needed). GL copies its
@@ -1124,36 +1206,6 @@ static void platform_dump_frame(void) {
 #endif
     if (!s_glReady && !is_webgpu) {
         return;
-    }
-    /* Optional: only dump frames >= MDKR_DUMP_FROM (keeps late-scene captures
-     * tractable without writing thousands of early PPMs), and only every
-     * MDKR_DUMP_EVERY-th frame after that. The stride is what makes a "does the
-     * scene still render at the END of a long drive?" check affordable in a
-     * single pass — sampling ~10 frames over 6000 instead of writing 6000 PPMs
-     * (see tests/check_race_drive.sh). */
-    {
-        static int dumpFrom = -2;
-        static int dumpEvery = 1;
-        if (dumpFrom == -2) {
-            const char *e = getenv("MDKR_DUMP_FROM");
-            const char *n = getenv("MDKR_DUMP_EVERY");
-            dumpFrom = (e && e[0]) ? atoi(e) : -1;
-            if (n && n[0]) {
-                dumpEvery = atoi(n);
-            }
-            if (dumpEvery < 1) {
-                dumpEvery = 1;
-            }
-        }
-        if (dumpFrom >= 0 && g_frameCounter < dumpFrom) {
-            return;
-        }
-        if (dumpEvery > 1) {
-            int base = dumpFrom > 0 ? dumpFrom : 0;
-            if (((g_frameCounter - base) % dumpEvery) != 0) {
-                return;
-            }
-        }
     }
     /*
      * Capture the extent of the frame that was actually rendered, not a fresh
@@ -1208,7 +1260,7 @@ static void platform_dump_frame(void) {
 
     char path[1024];
     snprintf(path, sizeof(path), "%s/frame_%04d.ppm", g_dumpFramesDir, g_frameCounter);
-    FILE *f = fopen(path, "wb");
+    FILE *f = mdkr_fopen_utf8(path, "wb");
     if (f) {
         fprintf(f, "P6\n%d %d\n255\n", w, h);
         for (int y = h - 1; y >= 0; y--) {
@@ -1226,6 +1278,8 @@ static void gc_try_open(int deviceIndex) {
         if (!s_gc[i]) {
             s_gc[i] = SDL_GameControllerOpen(deviceIndex);
             if (s_gc[i]) {
+                s_rumbleSupported[i] = -1;
+                s_rumbleRequested[i] = 0;
                 memset(&s_controllerSource[i], 0,
                        sizeof(s_controllerSource[i]));
                 printf("[SDL] gamepad P%d: %s\n", i + 1,
@@ -1246,6 +1300,8 @@ static void gc_close_instance(SDL_JoystickID which) {
                 (void)platform_pad_rumble(i, 0);
                 SDL_GameControllerClose(s_gc[i]);
                 s_gc[i] = NULL;
+                s_rumbleSupported[i] = -1;
+                s_rumbleRequested[i] = 0;
                 memset(&s_controllerSource[i], 0,
                        sizeof(s_controllerSource[i]));
                 printf("[SDL] gamepad P%d disconnected\n", i + 1);
@@ -1335,39 +1391,59 @@ static int gc_port_for_instance(SDL_JoystickID which) {
 /* Translate one maintained SDL controller source into an N64 pad sample. */
 static void gc_read(
     const struct controller_source_state *source, struct pad_state *p) {
-    struct { SDL_GameControllerButton b; unsigned int bit; } map[] = {
-        { SDL_CONTROLLER_BUTTON_A,             N64_A },
-        { SDL_CONTROLLER_BUTTON_B,             N64_B },
-        { SDL_CONTROLLER_BUTTON_X,             N64_B },   /* X = B alt */
-        { SDL_CONTROLLER_BUTTON_Y,             N64_CU },
-        { SDL_CONTROLLER_BUTTON_START,         N64_START },
-        { SDL_CONTROLLER_BUTTON_LEFTSHOULDER,  N64_L },
-        { SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, N64_R },
-        { SDL_CONTROLLER_BUTTON_DPAD_UP,       N64_DU },
-        { SDL_CONTROLLER_BUTTON_DPAD_DOWN,     N64_DD },
-        { SDL_CONTROLLER_BUTTON_DPAD_LEFT,     N64_DL },
-        { SDL_CONTROLLER_BUTTON_DPAD_RIGHT,    N64_DR },
+    MdkrControllerDigitalState normalized = {{0}};
+    struct {
+        SDL_GameControllerButton button;
+        MdkrControllerSource normalized_source;
+    } map[] = {
+        { SDL_CONTROLLER_BUTTON_A, MDKR_CONTROLLER_SOURCE_A },
+        { SDL_CONTROLLER_BUTTON_B, MDKR_CONTROLLER_SOURCE_B },
+        { SDL_CONTROLLER_BUTTON_X, MDKR_CONTROLLER_SOURCE_X },
+        { SDL_CONTROLLER_BUTTON_Y, MDKR_CONTROLLER_SOURCE_Y },
+        { SDL_CONTROLLER_BUTTON_START, MDKR_CONTROLLER_SOURCE_START },
+        { SDL_CONTROLLER_BUTTON_LEFTSTICK,
+          MDKR_CONTROLLER_SOURCE_LEFT_STICK },
+        { SDL_CONTROLLER_BUTTON_RIGHTSTICK,
+          MDKR_CONTROLLER_SOURCE_RIGHT_STICK },
+        { SDL_CONTROLLER_BUTTON_LEFTSHOULDER,
+          MDKR_CONTROLLER_SOURCE_LEFT_SHOULDER },
+        { SDL_CONTROLLER_BUTTON_RIGHTSHOULDER,
+          MDKR_CONTROLLER_SOURCE_RIGHT_SHOULDER },
+        { SDL_CONTROLLER_BUTTON_DPAD_UP, MDKR_CONTROLLER_SOURCE_DPAD_UP },
+        { SDL_CONTROLLER_BUTTON_DPAD_DOWN, MDKR_CONTROLLER_SOURCE_DPAD_DOWN },
+        { SDL_CONTROLLER_BUTTON_DPAD_LEFT, MDKR_CONTROLLER_SOURCE_DPAD_LEFT },
+        { SDL_CONTROLLER_BUTTON_DPAD_RIGHT, MDKR_CONTROLLER_SOURCE_DPAD_RIGHT },
     };
     for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
-        if (source->buttons[map[i].b]) p->buttons |= map[i].bit;
+        normalized.active[map[i].normalized_source] =
+            source->buttons[map[i].button] != 0;
     }
-    /* Triggers: LT = Z (brake/reverse convention shared with menus), RT = Z too. */
-    if (source->axes[SDL_CONTROLLER_AXIS_TRIGGERLEFT]  > 8000) p->buttons |= N64_Z;
-    if (source->axes[SDL_CONTROLLER_AXIS_TRIGGERRIGHT] > 8000) p->buttons |= N64_Z;
-    /* Right stick -> C-buttons (menus/camera). */
+    normalized.active[MDKR_CONTROLLER_SOURCE_LEFT_TRIGGER] =
+        source->axes[SDL_CONTROLLER_AXIS_TRIGGERLEFT] > 8000;
+    normalized.active[MDKR_CONTROLLER_SOURCE_RIGHT_TRIGGER] =
+        source->axes[SDL_CONTROLLER_AXIS_TRIGGERRIGHT] > 8000;
+
+    /* Right-stick directions are normalized digital sources too, so they can
+     * retain the default C-button camera mapping or be reassigned like a face
+     * button. The left stick remains the fixed analog steering source. */
     int rx = source->axes[SDL_CONTROLLER_AXIS_RIGHTX];
     int ry = source->axes[SDL_CONTROLLER_AXIS_RIGHTY];
-    if (rx < -12000) p->buttons |= N64_CL;
-    if (rx >  12000) p->buttons |= N64_CR;
-    if (ry < -12000) p->buttons |= N64_CU;
-    if (ry >  12000) p->buttons |= N64_CD;
+    normalized.active[MDKR_CONTROLLER_SOURCE_RIGHT_STICK_LEFT] = rx < -12000;
+    normalized.active[MDKR_CONTROLLER_SOURCE_RIGHT_STICK_RIGHT] = rx > 12000;
+    normalized.active[MDKR_CONTROLLER_SOURCE_RIGHT_STICK_UP] = ry < -12000;
+    normalized.active[MDKR_CONTROLLER_SOURCE_RIGHT_STICK_DOWN] = ry > 12000;
+    p->buttons |= mdkr_controller_mapped_buttons(
+        mdkr_video_config_current(), &normalized);
+
     /* Left stick -> analog (N64 range ±80; SDL axis is ±32767, +Y is down). */
     int lx = source->axes[SDL_CONTROLLER_AXIS_LEFTX];
     int ly = source->axes[SDL_CONTROLLER_AXIS_LEFTY];
     int sx = (lx * STICK_FULL) / 32767;
     int sy = (-ly * STICK_FULL) / 32767;
-    if (sx < -STICK_FULL) sx = -STICK_FULL; if (sx > STICK_FULL) sx = STICK_FULL;
-    if (sy < -STICK_FULL) sy = -STICK_FULL; if (sy > STICK_FULL) sy = STICK_FULL;
+    if (sx < -STICK_FULL) sx = -STICK_FULL;
+    if (sx > STICK_FULL) sx = STICK_FULL;
+    if (sy < -STICK_FULL) sy = -STICK_FULL;
+    if (sy > STICK_FULL) sy = STICK_FULL;
     if (sx < -8 || sx > 8) p->stick_x = sx;   /* small deadzone */
     if (sy < -8 || sy > 8) p->stick_y = sy;
 }
@@ -1504,9 +1580,22 @@ static void input_clear_game_sources(void) {
     memset(s_controllerSource, 0, sizeof(s_controllerSource));
 }
 
+static int test_script_only_input(void) {
+    if (s_testScriptOnlyInput < 0) {
+        const char *value = getenv("MDKR_TEST_SCRIPT_ONLY_INPUT");
+        s_testScriptOnlyInput = value != NULL && value[0] == '1';
+    }
+    return s_testScriptOnlyInput;
+}
+
 static void input_capture_live(uint64_t target_tick) {
     int port;
-    if (!s_inputQueueReady) {
+    /* Exact scripted-input gates must not inherit a transient host key,
+     * controller connection, or focus event. The explicit test seam leaves
+     * SDL/window event processing intact but keeps the fixed-tick queue on its
+     * deterministic neutral initial sample; script_apply() still merges the
+     * authored P1-P4 route at each authoritative ticket. */
+    if (!s_inputQueueReady || test_script_only_input()) {
         return;
     }
     for (port = 0; port < DKR_MAXPADS; port++) {
@@ -1596,6 +1685,11 @@ static void platform_surface_visibility_update(void) {
  * ticks; it never directly replaces the DKR-visible s_pads snapshot. */
 void platform_input_pump(void) {
     const uint64_t target_tick = present_sched_input_target_tick();
+#ifdef MDKR_APP
+    /* Applies deferred shell/window work after the previous present and before
+     * any new frame acquires a drawable. No-op without registered app hooks. */
+    platformOverlayService();
+#endif
     if (s_sdlReady) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -1614,7 +1708,7 @@ void platform_input_pump(void) {
              * registers any, so its event handling is unchanged.
              */
             int overlayActive = platformOverlayWantsInput();
-            platformOverlayProcessEvent(&e);
+            int overlayConsumed = platformOverlayProcessEvent(&e);
             {
                 const int overlayNow = platformOverlayWantsInput();
                 if (overlayActive != overlayNow) {
@@ -1625,6 +1719,9 @@ void platform_input_pump(void) {
                     input_clear_game_sources();
                     input_capture_live(target_tick);
                 }
+            }
+            if (overlayConsumed) {
+                continue;
             }
             if (overlayActive || platformOverlayWantsInput()) {
                 switch (e.type) {
@@ -1658,8 +1755,10 @@ void platform_input_pump(void) {
                         s_keyboardDown[e.key.keysym.scancode] = 1;
                         input_changed = 1;
                     }
+#ifndef MDKR_APP
                     if (e.key.keysym.sym == SDLK_ESCAPE && g_headlessFrames < 0)
-                        s_quitRequested = 1;   /* Esc = host quit (interactive) */
+                        s_quitRequested = 1;   /* legacy non-shell host quit */
+#endif
                     break;
                 case SDL_KEYUP:
                     if (e.key.keysym.scancode >= 0 &&
@@ -1673,7 +1772,11 @@ void platform_input_pump(void) {
                      * platform_frame_sync; consuming the event here keeps SDL's
                      * state current without reconfiguring a surface mid-frame. */
                     if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
-                        memset(s_keyboardDown, 0, sizeof(s_keyboardDown));
+                        /* Releases delivered while another app owns focus are
+                         * not guaranteed to reach this window. Retire every
+                         * latched host source now so returning cannot resume a
+                         * stale throttle, button, or steering axis. */
+                        input_clear_game_sources();
                         input_changed = 1;
                     }
                     break;
@@ -1746,9 +1849,13 @@ void platform_input_commit_tick(uint64_t ticket) {
         s_pads[port].present = published[port].present ||
             (s_scriptPresentMask & (1u << port)) != 0u;
     }
-    /* Scripts are already authored in authoritative-tick space. Merge them
-     * only here, once per ticket, so presentation count cannot move an edge. */
-    script_apply(s_pads, g_simTickCounter);
+    /* Scripts are authored against the pass that just completed. osRecvMesg
+     * now accounts that pass before publishing the next input ticket, so the
+     * global counter is one step ahead of the long-standing script phase here.
+     * Preserve that phase explicitly: an entry at N is consumed by the next
+     * simulation sample and is traced at N+1. Presentation count still cannot
+     * move an edge. */
+    script_apply(s_pads, g_simTickCounter > 0 ? g_simTickCounter - 1 : 0);
 }
 
 void platform_input_queue_summary(void) {
@@ -1781,6 +1888,28 @@ void platform_input_queue_summary(void) {
     fflush(stderr);
 }
 
+/* Low-rate progress evidence for long resource-lifecycle qualification.  This
+ * is deliberately separate from MDKR_TRACE: the plateau gate needs to locate
+ * a blocked swap or teardown without enabling and flushing several per-frame
+ * trace streams for 25,000 frames. */
+static void sdl_gl_resource_heartbeat(const char *phase, int force) {
+    unsigned inflight = 0u;
+    if (!mdkr_resource_trace_enabled() || phase == NULL ||
+        (!force && (g_frameCounter % 1000) != 0)) {
+        return;
+    }
+#ifndef __EMSCRIPTEN__
+    inflight = s_glFencesInFlight;
+#endif
+    fprintf(stderr,
+            "[RESOURCE-HEARTBEAT] backend=gl phase=%s frame=%d surface=%llu "
+            "inflight=%u\n",
+            phase, g_frameCounter,
+            (unsigned long long)g_surfaceFrameCounter,
+            inflight);
+    fflush(stderr);
+}
+
 void platform_sdl_present(void) {
     if (s_glReady) {
         /* The F3DDKR backend clears + renders into the default framebuffer each
@@ -1793,11 +1922,13 @@ void platform_sdl_present(void) {
          * No-op when no overlay hooks are registered. */
         (void)platformOverlayRender();
 #endif
+        sdl_gl_resource_heartbeat("before-swap", 0);
         SDL_GL_SwapWindow(s_window);
         g_surfaceFrameCounter++;
 #ifndef __EMSCRIPTEN__
         sdl_gl_backpressure_after_swap();
 #endif
+        sdl_gl_resource_heartbeat("after-swap", 0);
     }
     /* WebGPU has no swap here: wgpu_end_frame already presented the surface
      * (WGPU_COMPAT_PRESENT) inside gfx_end_frame. Nothing to do. */
@@ -1814,7 +1945,9 @@ void platform_sdl_shutdown(void) {
     if (s_windowAdopted) {
 #ifndef __EMSCRIPTEN__
         if (s_glReady && s_glctx != NULL) {
+            sdl_gl_resource_heartbeat("before-teardown", 1);
             sdl_gl_backpressure_shutdown();
+            sdl_gl_resource_heartbeat("after-teardown", 1);
         }
 #endif
         for (int i = 0; i < DKR_MAXPADS; i++) {
@@ -1822,6 +1955,8 @@ void platform_sdl_shutdown(void) {
                 (void)platform_pad_rumble(i, 0);
                 SDL_GameControllerClose(s_gc[i]);
                 s_gc[i] = NULL;
+                s_rumbleSupported[i] = -1;
+                s_rumbleRequested[i] = 0;
             }
         }
         s_window = NULL;
@@ -1837,7 +1972,9 @@ void platform_sdl_shutdown(void) {
     if (s_glctx)  {
 #ifndef __EMSCRIPTEN__
         if (s_glReady) {
+            sdl_gl_resource_heartbeat("before-teardown", 1);
             sdl_gl_backpressure_shutdown();
+            sdl_gl_resource_heartbeat("after-teardown", 1);
         }
 #endif
         SDL_GL_DeleteContext(s_glctx);
@@ -1851,6 +1988,8 @@ void platform_sdl_shutdown(void) {
             (void)platform_pad_rumble(i, 0);
             SDL_GameControllerClose(s_gc[i]);
             s_gc[i] = NULL;
+            s_rumbleSupported[i] = -1;
+            s_rumbleRequested[i] = 0;
         }
     }
     if (s_window) { SDL_DestroyWindow(s_window);  s_window = NULL; }
@@ -1968,7 +2107,7 @@ static void oracle_field_schedule_init(void) {
     if (path == NULL || path[0] == '\0') {
         return;
     }
-    file = fopen(path, "r");
+    file = mdkr_fopen_utf8(path, "r");
     if (file == NULL) {
         oracle_field_schedule_fatal(path, 0u, "cannot open file");
     }
@@ -2372,6 +2511,8 @@ static unsigned present_display_rate(void) {
 }
 
 static void present_pace_lazy_init(void) {
+    MdkrPresentPolicy effectivePolicy;
+    bool heldFrameDeadline;
     if (s_presentActive >= 0) {
         return;
     }
@@ -2384,16 +2525,29 @@ static void present_pace_lazy_init(void) {
     if (!s_presentActive) {
         return;
     }
+    effectivePolicy.kind = s_presentKind;
+    effectivePolicy.rate = present_sched_present_rate();
+    heldFrameDeadline = mdkr_present_policy_needs_held_frame_deadline(
+        &effectivePolicy, present_sched_smoothing_enabled() ? 1 : 0) != 0;
     if (s_presentKind == MDKR_PRESENT_CAPPED) {
         s_presentEffectiveRate = present_sched_present_rate();
         s_presentSoftwareDeadline = true;
     } else if (s_presentKind == MDKR_PRESENT_DISPLAY) {
         s_presentEffectiveRate = present_display_rate();
+        s_presentSoftwareDeadline = heldFrameDeadline;
     } else if (s_presentKind == MDKR_PRESENT_UNCAPPED &&
                s_paceMode == PACE_SYNTH) {
         /* Deterministic headless stand-in: 1 ms opportunities. Live uncapped
          * has no limiter and measures the actual loop duration below. */
         s_presentEffectiveRate = 1000u;
+    } else if (s_presentKind == MDKR_PRESENT_UNCAPPED &&
+               heldFrameDeadline) {
+        /* With no new image between authored ticks, an unlimited no-swap loop
+         * can only burn a core and starve the audio sink; it cannot improve
+         * visible motion. Service held frames at the display cadence while
+         * leaving the requested policy and authored output unchanged. */
+        s_presentEffectiveRate = present_display_rate();
+        s_presentSoftwareDeadline = true;
     }
     if (s_presentSoftwareDeadline && s_presentEffectiveRate != 0u &&
         !mdkr_present_deadline_init(
@@ -2402,9 +2556,10 @@ static void present_pace_lazy_init(void) {
         return;
     }
     s_presentLastNs = pace_host_ns();
-    MDKR_TRACE("present pace: policy=%s rate=%u tickFields=%d fieldHz=%d",
+    MDKR_TRACE("present pace: policy=%s rate=%u tickFields=%d fieldHz=%d "
+               "heldDeadline=%d",
                present_sched_present_policy_name(), s_presentEffectiveRate,
-               s_minFields, s_fieldHz);
+               s_minFields, s_fieldHz, heldFrameDeadline ? 1 : 0);
 }
 
 int platform_present_subloop_fields(void) {
@@ -3024,11 +3179,11 @@ void platform_frame_sync(void) {
  * A frame boundary that does everything platform_frame_sync does EXCEPT the
  * buffer swap, for the presentation subloop.
  *
- * Production 1.0.1's extra host opportunities are no-draw paths: motion
- * smoothing is fail-closed, and a pass may also submit no graphics task. The
- * prior authored image remains on the front/surface; there is no duplicate
- * swap or synthetic presentation. Both paths used to call
- * platform_frame_sync(), which swaps.
+ * An extra host opportunity can still be a no-draw path: motion smoothing may
+ * be off, an immutable replay may fail closed, or GPU admission may shed the
+ * optional image. The prior complete image remains on the front/surface; there
+ * is no duplicate swap. These paths used to call platform_frame_sync(), which
+ * swaps.
  *
  * On a double-buffered GL context (platform_sdl_present -> SDL_GL_SwapWindow)
  * the contents of the back buffer AFTER a swap are undefined. So a present with
@@ -3042,9 +3197,8 @@ void platform_frame_sync(void) {
  *
  * NOT swapping is the correct hold: the front buffer already contains the
  * authored image and keeps being scanned out. FrameLimit=60 therefore updates the
- * screen at TICK rate, not at 60. That is the honest consequence of asking for
- * a rate with nothing new to show at it, and it is recorded in
- * Video.FrameLimit's schema description (platform/video_config.c).
+ * screen at TICK rate when smoothing is off, not at 60. That is the honest
+ * consequence of asking for a rate with nothing new to show at it.
  *
  * Everything else platform_frame_sync does still happens, deliberately: the
  * input pump, the renderer-failure check, the frame counter, the frame dump and
@@ -3089,34 +3243,67 @@ int platform_pad_present(int port) {
 }
 int platform_pad_rumble_supported(int port) {
     if (port < 0 || port >= DKR_MAXPADS || s_gc[port] == NULL) return 0;
+    if (s_rumbleSupported[port] >= 0) return s_rumbleSupported[port];
 #ifdef __EMSCRIPTEN__
     SDL_Joystick *joystick = SDL_GameControllerGetJoystick(s_gc[port]);
     if (!joystick) return 0;
-    return browser_gamepad_rumble_supported(SDL_JoystickInstanceID(joystick));
+    s_rumbleSupported[port] = (int8_t)browser_gamepad_rumble_supported(
+        SDL_JoystickInstanceID(joystick));
+#elif SDL_VERSION_ATLEAST(2, 0, 18)
+    s_rumbleSupported[port] =
+        SDL_GameControllerHasRumble(s_gc[port]) == SDL_TRUE;
 #elif SDL_VERSION_ATLEAST(2, 0, 9)
-    /* A zero-duration, zero-strength request is SDL's capability probe. */
-    return SDL_GameControllerRumble(s_gc[port], 0, 0, 0) == 0;
+    /* Older SDL has no read-only capability query. Perform its zero-duration,
+     * zero-strength compatibility probe exactly once per opened controller. */
+    s_rumbleSupported[port] =
+        SDL_GameControllerRumble(s_gc[port], 0, 0, 0) == 0;
 #else
-    return 0;
+    s_rumbleSupported[port] = 0;
 #endif
+    return s_rumbleSupported[port];
 }
-int platform_pad_rumble(int port, int enabled) {
+static int platform_pad_rumble_send(int port, int enabled) {
+    uint16_t strength;
     if (port < 0 || port >= DKR_MAXPADS || s_gc[port] == NULL) return 0;
+    strength = mdkr_controller_rumble_output_strength(
+        mdkr_video_config_current(), enabled);
 #ifdef __EMSCRIPTEN__
     SDL_Joystick *joystick = SDL_GameControllerGetJoystick(s_gc[port]);
     if (!joystick) return 0;
     return browser_gamepad_rumble(
-        SDL_JoystickInstanceID(joystick), enabled != 0);
+        SDL_JoystickInstanceID(joystick), (int)strength);
 #elif SDL_VERSION_ATLEAST(2, 0, 9)
     return SDL_GameControllerRumble(
-               s_gc[port],
-               enabled ? UINT16_MAX : 0,
-               enabled ? UINT16_MAX : 0,
+               s_gc[port], strength, strength,
                enabled ? 60000u : 0u) == 0;
 #else
     (void)enabled;
     return 0;
 #endif
+}
+
+int platform_pad_rumble(int port, int enabled) {
+    int audible;
+    if (port < 0 || port >= DKR_MAXPADS || s_gc[port] == NULL) return 0;
+    s_rumbleRequested[port] = enabled != 0;
+    audible = enabled &&
+        mdkr_controller_rumble_enabled(mdkr_video_config_current());
+    /* A muted start is still a successful Rumble Pak motor operation: the
+     * physical capability remains truthful while the host-output layer emits
+     * silence. Stops always reach SDL so a previously active motor cannot run
+     * out its 60-second safety duration after the preference changes. */
+    return platform_pad_rumble_send(port, audible);
+}
+
+void platform_pad_rumble_preferences_changed(void) {
+    const int allowed =
+        mdkr_controller_rumble_enabled(mdkr_video_config_current());
+    for (int port = 0; port < DKR_MAXPADS; port++) {
+        if (s_gc[port] != NULL) {
+            (void)platform_pad_rumble_send(
+                port, allowed && s_rumbleRequested[port]);
+        }
+    }
 }
 unsigned int platform_pad_buttons(int port) {
     if (port < 0 || port >= DKR_MAXPADS) return 0;

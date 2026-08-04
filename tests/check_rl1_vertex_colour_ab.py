@@ -78,6 +78,7 @@ def environment(backend: str, track_id: int, arm: str) -> dict[str, str]:
         MDKR_RENDERER=backend,
         MDKR_LOAD_TRACK=str(track_id),
         MDKR_RL1_ARM=arm,
+        MDKR_TEST_RENDER_FULL_ADMISSION="1",
         MDKR_DUMP_FROM=str(CAPTURE_FRAME),
         MDKR_DUMP_EVERY="999",
         MDKR64_HIDDEN="1",

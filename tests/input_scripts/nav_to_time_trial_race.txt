@@ -8,6 +8,14 @@
 # TWO taps (reveal menu, then select). Frames are approximate (input-ignore
 # windows + fade transitions), spaced generously so each edge lands.
 #
+# Native input publication commits a script row authored for simulation ticket
+# N immediately before the N sample.  The host counter has already advanced at
+# that boundary, so literal script rows carry the same one-ticket lead as
+# tools/dkr_oracle_route.py: an authored edge at N is written here at N-1.
+# Durations remain authored durations.  This keeps the long-standing route
+# phase exact while allowing platform_input_commit_tick() to publish completed
+# tickets without a hidden one-frame input delay.
+#
 # Assert with: MDKR_TRACE=1 ... | grep -E 'menu_init|level_load'
 #   -> menu_init 3, 28, 19, 15 then "level_load: levelId=5 numPlayers=0" (in-race).
 #
@@ -21,19 +29,19 @@
 #     closed loop".
 
 # Title: reveal Start/Options, then select Character Select
-1250 START 4
-1330 START 4
+1249 START 4
+1329 START 4
 # Character select: confirm default character (A), then finalize (A)
-1450 A 4
-1540 A 4
+1449 A 4
+1539 A 4
 # Caution screen: dismiss (A) -> Game Select
-1750 A 4
+1749 A 4
 # Game Select: DOWN to the Tracks option, then select (A) -> Track Select
-1900 DOWN 4
-2000 A 4
+1899 DOWN 4
+1999 A 4
 # Track Select world map: pick the world at cursor (0,0)
-2150 A 4
+2149 A 4
 # Race setup: confirm vehicle (A), confirm Time-Trial=off (A), then GO (A)
-2320 A 4
-2460 A 4
-2600 A 4
+2319 A 4
+2459 A 4
+2599 A 4

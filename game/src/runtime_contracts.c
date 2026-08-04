@@ -19,6 +19,21 @@ s32 mdkr_sound_id_valid(u32 soundId, u32 soundCount) {
     return soundId < soundCount;
 }
 
+s32 mdkr_vehicle_sound_model(s32 vehicleId) {
+    switch (vehicleId) {
+        case VEHICLE_CAR:
+        case VEHICLE_LOOPDELOOP:
+            return VEHICLE_CAR;
+        case VEHICLE_HOVERCRAFT:
+            return VEHICLE_HOVERCRAFT;
+        case VEHICLE_PLANE:
+        case VEHICLE_FLYING_CAR:
+            return VEHICLE_PLANE;
+        default:
+            return -1;
+    }
+}
+
 s32 mdkr_vehicle_sound_row(s32 characterId, s32 vehicleId, s32 *assetRow, s32 *soundVehicleId) {
     s32 mappedVehicle;
 
@@ -27,22 +42,9 @@ s32 mdkr_vehicle_sound_row(s32 characterId, s32 vehicleId, s32 *assetRow, s32 *s
         return FALSE;
     }
 
-    switch (vehicleId) {
-        case VEHICLE_CAR:
-        case VEHICLE_HOVERCRAFT:
-        case VEHICLE_PLANE:
-            mappedVehicle = vehicleId;
-            break;
-        case VEHICLE_FLYING_CAR:
-            /* The flying-car/carpet path uses the plane update and sound model. */
-            mappedVehicle = VEHICLE_PLANE;
-            break;
-        case VEHICLE_LOOPDELOOP:
-            /* The loop challenge uses the car update and sound model. */
-            mappedVehicle = VEHICLE_CAR;
-            break;
-        default:
-            return FALSE;
+    mappedVehicle = mdkr_vehicle_sound_model(vehicleId);
+    if (mappedVehicle < 0) {
+        return FALSE;
     }
 
     *soundVehicleId = mappedVehicle;

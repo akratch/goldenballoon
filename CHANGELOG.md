@@ -1,14 +1,142 @@
 # Changelog
 
-Notable changes to Golden Balloon. Claims here are limited to what the headless
-regression suite actually demonstrates — see [tests/README.md](tests/README.md) for
-the checks and [docs/open-items/](docs/open-items/README.md) for what is still broken.
+Release history for Golden Balloon. The detailed test inventory is in
+[tests/README.md](tests/README.md); deferred work and known gaps are tracked in
+[docs/open-items/](docs/open-items/README.md).
 
 From 1.0.0 onward this project follows semantic versioning for the platform
 layer's public seams (config keys, environment variables, command-line flags and
 save formats). Everything below 1.0.0 predates that commitment.
 
-## [Unreleased]
+## [1.0.4] — 2026-08-04
+
+No ROM or other game data is included.
+
+### Recommended settings
+
+- **Renderer:** WebGPU
+- **Presentation:** Restored
+- **Frame limit:** Original
+- **Motion smoothing:** Off
+- **Gameplay cadence:** Original
+
+This is the qualified path and the default for a fresh configuration. It keeps
+the original game speed and art direction while adding widescreen output,
+supersampling, mipmaps, and modern filtering. Existing preferences are
+preserved when upgrading.
+
+For smoother experimental motion, use **Match Display** with **Motion
+smoothing: Interpolated**. Interpolation creates presentation-only images
+between game ticks; it does not run physics, AI, timers, input, audio, or saves
+more often. **Enhanced** cadence is not an FPS option: it changes gameplay and
+runs the measured Bluey 2 route about 14% faster. Remastered remains a visual
+preview, and OpenGL remains a diagnostic backend.
+
+### Added
+
+- Added Taj as an unlockable playable racer. Enter `ABRACADABRA` or complete
+  all three Taj challenges to unlock him. He has a normal character-select
+  slot, portrait, voice, horn, HUD and results identity, custom handling, and a
+  scaled animated magic carpet across all three vehicle classes. His unlock
+  persists through relaunches and imported saves, works in multiplayer, and
+  keeps modded Time Trial records and ghosts separate from the original roster.
+- Added safe presentation-only interpolation for cameras, racers, supported
+  objects and deformations, particles, fades, and projected shadows. The new
+  **Motion smoothing** control chooses between authored-frame holds and
+  interpolated in-between images.
+- Added persistent master, music, and sound-effects controls to native
+  Settings, synchronized with the original in-game Audio Options menu.
+- Added Windows borderless fullscreen with **F11** and **Alt+Enter**, complete
+  controller remapping, and Off/Light/Balanced/Strong rumble choices.
+
+### Changed
+
+- Reorganized native Settings around the choices players use most. Restored is
+  clearly marked as the recommended presentation, frame-rate and motion
+  controls are visible together, and the gameplay-changing cadence setting is
+  kept separate. The launcher remains usable at compact sizes and high UI
+  scales. Larger controls and direct touch scrolling improve use on handheld
+  PCs and touchscreens.
+- Kept Original as the default gameplay cadence. Enhanced is now labelled as a
+  compatibility mode that changes game speed.
+- Made WebGPU presentation nonblocking. If optional interpolated work cannot be
+  admitted, the renderer holds a complete image instead of delaying gameplay
+  or audio.
+- Moved complete-ROM validation to a cancellable launcher worker so selecting a
+  ROM no longer freezes the interface.
+- Made app preference writes transactional and durable. Windows paths now use
+  UTF-16 and extended-length handling for ROMs, saves, configuration,
+  diagnostics, captures, and relaunches. The Windows manifest enables both
+  long paths and the UTF-8 active code page.
+- Pinned and hash-verified both Linux AppImage build inputs.
+
+### Fixed
+
+#### Gameplay and audio
+
+- Restored speed- and throttle-responsive engine audio for cars, hovercraft,
+  and planes without consuming the gameplay RNG stream.
+- Fixed final-lap music on native builds: the live sequencer now applies the
+  faster tempo instead of changing only the reported BPM.
+- Fixed a Windows startup timing fault that could leave audio behind the video
+  until character select. Held-frame presentation at higher refresh rates is
+  now bounded so it cannot busy-spin and starve audio service.
+- Bounded the native PCM backlog, checked sink failures, and crossfaded recovery
+  after a rejected or dropped buffer. Volume changes are ramped to avoid clicks,
+  active loops respond immediately, and persistence failures remain visible
+  with a retry path.
+- Made F1 a real pause boundary. Simulation and the race clock stop, race
+  effects are suppressed, and the quieter authored music mix continues until
+  play resumes.
+
+#### Presentation
+
+- Fixed projected kart and character shadows flickering or snapping between
+  interpolated frames.
+- Fixed widescreen framed-world views. Track-select previews and framed results
+  footage stay inside their wooden apertures; the surrounding decorative art
+  reaches the display edges without exposing off-canvas carousel cards or
+  controls.
+- Restored full Hor+ presentation where there is no physical frame: opening
+  logos, animated credits, Track Select setup, and initial post-race footage.
+- Treated transitions between contained and full-width camera policies as cuts,
+  preventing a one-frame interpolation blend between incompatible projections.
+- Removed the large character-picker shadow behind Taj and corrected the scale
+  and animation of his magic carpet.
+
+#### Launcher, input, and recovery
+
+- Added **Restart & Apply** for settings that require a relaunch. A staging or
+  engine-start failure now returns to a usable launcher with diagnostics instead
+  of closing the app.
+- Routed Escape through the overlay's back and quit-confirmation flow instead
+  of immediately exiting during play.
+- Fixed whole-interface flicker while dragging the native UI-scale slider by
+  applying the new scale after the interaction ends.
+- Cleared controller buttons and axes when the native window loses focus, fixed
+  compact high-scale overlay layout, and added retry when a verified replacement
+  ROM is playable but its preference cannot be saved.
+
+#### Compatibility and browser
+
+- Restored German in the European 1.1 language selector. US 1.1 remains
+  English/French, matching that revision's menu.
+- Improved browser ROM and save replacement, storage-failure recovery, focus,
+  skip navigation, and heading structure. A retained ROM can be persisted with
+  **Retry browser storage**, and blocked fullscreen requests now show a visible
+  result.
+
+### Known limitations
+
+- Interpolated motion remains a preview. UV-scrolled level surfaces such as
+  waterfalls, water, and lava still advance on authored game ticks and may
+  shimmer or step during camera motion. Motion smoothing Off is unaffected.
+- WebGPU with Restored presentation is the qualified visual path. OpenGL and
+  Remastered have not been promoted for 1.0.4.
+- Linux still uses drag and drop or a typed ROM path instead of a native file
+  picker. Native screen-reader semantics are also outside this release.
+- The macOS artifact is ad-hoc integrity sealed but not Developer ID signed or
+  notarized, so first launch may require **Open Anyway** in Privacy & Security.
 
 ## [1.0.3] — 2026-08-02
 

@@ -16,6 +16,21 @@
 
 static int g_failures = 0;
 
+struct ValidationProgressProbe {
+    unsigned calls = 0;
+    unsigned last = 0;
+    unsigned total = 0;
+};
+
+static int cancel_after_first_chunk(unsigned completed, unsigned total,
+                                    void *opaque) {
+    auto *probe = static_cast<ValidationProgressProbe *>(opaque);
+    probe->calls++;
+    probe->last = completed;
+    probe->total = total;
+    return completed < 64u * 1024u;
+}
+
 static void expect(bool cond, const char *what) {
     if (!cond) {
         std::printf("FAIL: %s\n", what);
@@ -106,20 +121,33 @@ static void test_rom_validate() {
         std::fclose(f);
         RomInfo tiny = mdkr_validate_rom(shortPath);
         expect(tiny.valid == 0, "truncated file is not valid");
-        expect(std::strstr(tiny.message, "too small") != nullptr,
-               "truncated file says it is too small");
+        expect(std::strstr(tiny.message, "truncated") != nullptr,
+               "truncated file explains that it is truncated");
         std::remove(shortPath);
     }
 
-    // 64 bytes of non-N64 data: right size, wrong magic.
+    // A full cartridge-sized file with the wrong magic reaches the byte-order
+    // gate rather than being rejected only because it is short.
     const char *junkPath = "test_app_shell_junk.bin";
     if (std::FILE *f = std::fopen(junkPath, "wb")) {
-        unsigned char junk[0x40];
+        unsigned char junk[64 * 1024];
         std::memset(junk, 0xAB, sizeof(junk));
-        std::fwrite(junk, 1, sizeof(junk), f);
+        for (unsigned i = 0; i < DKR_ROM_SIZE_BYTES / sizeof(junk); ++i) {
+            std::fwrite(junk, 1, sizeof(junk), f);
+        }
         std::fclose(f);
+        ValidationProgressProbe probe;
+        RomInfo cancelled = mdkr_validate_rom_progress(
+            junkPath, cancel_after_first_chunk, &probe);
+        expect(cancelled.cancelled == 1 && cancelled.valid == 0,
+               "chunked ROM validation honors cancellation");
+        expect(probe.calls == 2 && probe.last == 64u * 1024u &&
+                   probe.total == DKR_ROM_SIZE_BYTES,
+               "ROM validation reports bounded read progress");
         RomInfo j = mdkr_validate_rom(junkPath);
         expect(j.valid == 0, "non-N64 header is not valid");
+        expect(j.validation_code == DKR_ROM_VALIDATION_WRONG_BYTE_ORDER,
+               "full-size non-N64 reaches the byte-order verdict");
         expect(std::strstr(j.message, "not an N64 ROM") != nullptr,
                "non-N64 header says so");
         std::remove(junkPath);
@@ -132,6 +160,15 @@ static void test_rom_validate() {
     expect(list != nullptr && list[0] != '\0', "supported list is non-empty");
     expect(std::strstr(list, "us.v80") != nullptr, "supported list names us.v80");
     expect(std::strstr(list, "pal.v80") != nullptr, "supported list names pal.v80");
+
+    const char *usSha = dkr_rom_reference_sha256("us.v80");
+    const char *palSha = dkr_rom_reference_sha256("pal.v80");
+    expect(usSha != nullptr && std::strlen(usSha) == 64,
+           "us.v80 has a complete SHA-256 identity");
+    expect(palSha != nullptr && std::strlen(palSha) == 64,
+           "pal.v80 has a complete SHA-256 identity");
+    expect(dkr_rom_reference_sha256("us.v77") == nullptr,
+           "unsupported revisions have no accidental acceptance identity");
 }
 
 int main(void) {

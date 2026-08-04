@@ -44,6 +44,15 @@ echo ">> emcc: $(emcc --version | head -1)"
 emcmake cmake -S . -B build-web
 cmake --build build-web -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 
+# CMake owns the release version. Read back the configured cache value rather
+# than copying a version literal into this shell script, then carry it through
+# the staged artifact and visible browser identity.
+MDKR_VERSION="$(sed -n 's/^MDKR_VERSION:STRING=//p' build-web/CMakeCache.txt | head -n 1)"
+if [[ ! "$MDKR_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+    echo "build_web: FAIL -- configured MDKR_VERSION is not a release version: ${MDKR_VERSION:-<missing>}" >&2
+    exit 1
+fi
+
 mkdir -p dist/web
 cp build-web/mdkr64_web.js build-web/mdkr64_web.wasm dist/web/
 cp build-web/mdkr-save-tools.js build-web/mdkr-save-tools.wasm dist/web/
@@ -72,6 +81,7 @@ BUILD_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 cat > dist/web/build-info.json <<JSON
 {
   "project": "Golden Balloon",
+  "version": "$MDKR_VERSION",
   "source_commit": "$SRC_SHA",
   "source_commit_short": "$SRC_SHORT",
   "source_dirty": $SRC_DIRTY,
@@ -80,7 +90,7 @@ cat > dist/web/build-info.json <<JSON
   "wasm_bytes": $(wc -c < dist/web/mdkr64_web.wasm | tr -d ' ')
 }
 JSON
-echo ">> provenance: source $SRC_SHORT (dirty=$SRC_DIRTY) at $BUILD_UTC"
+echo ">> provenance: $MDKR_VERSION, source $SRC_SHORT (dirty=$SRC_DIRTY) at $BUILD_UTC"
 
 wasm_bytes=$(wc -c < dist/web/mdkr64_web.wasm | tr -d ' ')
 save_tools_bytes=$(wc -c < dist/web/mdkr-save-tools.wasm | tr -d ' ')

@@ -23,6 +23,7 @@ int main(void) {
     MdkrPresentPolicy present;
     MdkrPresentPolicy same;
     MdkrPresentDeadlineClock present_clock;
+    MdkrCounterGuard counter = {0};
 
     expect("original is valid", mdkr_pacing_cadence_valid("original"));
     expect("enhanced is valid", mdkr_pacing_cadence_valid("enhanced"));
@@ -79,6 +80,25 @@ int main(void) {
     expect("250 ms interval rebases",
            mdkr_pacing_interval_requires_rebase(UINT64_C(250000000)));
 
+    /* Host uptime selects an arbitrary low 32-bit COUNTER phase. A first
+     * sample in the upper half is valid, not an apparent backwards step from
+     * an invented zero predecessor. */
+    expect("counter accepts a high-bit first sample",
+           mdkr_counter_guard_commit(&counter, UINT32_C(0xf0000000)) ==
+               UINT32_C(0xf0000000));
+    expect("counter preserves a genuine forward sample",
+           mdkr_counter_guard_commit(&counter, UINT32_C(0xf0000100)) ==
+               UINT32_C(0xf0000100));
+    expect("counter nudges equal samples by one hardware tick",
+           mdkr_counter_guard_commit(&counter, UINT32_C(0xf0000100)) ==
+               UINT32_C(0xf0000101));
+    expect("counter accepts a genuine 32-bit wrap",
+           mdkr_counter_guard_commit(&counter, UINT32_C(0x00000100)) ==
+               UINT32_C(0x00000100));
+    expect("null counter guard is a transparent fallback",
+           mdkr_counter_guard_commit(NULL, UINT32_C(0xdeadbeef)) ==
+               UINT32_C(0xdeadbeef));
+
     expect("initialize below-boundary stall clock",
            mdkr_pacing_clock_init(&stall_below, 60, 2, 6));
     (void)mdkr_pacing_clock_target(
@@ -120,10 +140,23 @@ int main(void) {
                present.kind == MDKR_PRESENT_DISPLAY &&
                mdkr_present_policy_uses_vsync(&present) &&
                mdkr_present_policy_needs_subloop(&present, 30u));
+    expect("held display frames receive a software deadline",
+           mdkr_present_policy_needs_held_frame_deadline(&present, 0));
+    expect("interpolated display frames retain backend vsync pacing",
+           !mdkr_present_policy_needs_held_frame_deadline(&present, 1));
     expect("uncapped policy parses without backend sync",
            mdkr_present_policy_parse("uncapped", &present) &&
                present.kind == MDKR_PRESENT_UNCAPPED &&
                !mdkr_present_policy_uses_vsync(&present));
+    expect("held uncapped frames cannot busy-spin",
+           mdkr_present_policy_needs_held_frame_deadline(&present, 0));
+    expect("interpolated uncapped frames remain uncapped",
+           !mdkr_present_policy_needs_held_frame_deadline(&present, 1));
+    expect("numeric caps already own their deadline",
+           mdkr_present_policy_parse("240", &present) &&
+               !mdkr_present_policy_needs_held_frame_deadline(&present, 0));
+    expect("null held-frame policy fails closed",
+           !mdkr_present_policy_needs_held_frame_deadline(NULL, 0));
     expect("legacy keyword spelling remains case-insensitive",
            mdkr_present_policy_parse("DISPLAY", &present) &&
                present.kind == MDKR_PRESENT_DISPLAY);

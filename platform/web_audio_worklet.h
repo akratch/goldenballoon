@@ -34,9 +34,14 @@ int webAudioOutputInit(int srcRate, int channels);
  * loading). 0 if init was never called or the browser refused it. */
 int webAudioOutputActive(void);
 
-/* Push final stereo s16 PCM (size bytes, 4 bytes/frame) to the ring. Returns 0
- * on success to mirror SDL_QueueAudio's contract. */
+/* Push final stereo s16 PCM (size bytes, 4 bytes/frame). Returns 0 when
+ * accepted, 1 when this block was deliberately dropped before the worklet was
+ * ready, and -1 for a failed/closed backend. A drop is never ordinary success. */
 int webAudioOutputPush(const void *buf, unsigned size);
+
+/* Consume asynchronously observed worklet-ring drops. The worklet already
+ * applies a short continuity fade around each bounded oldest-sample discard. */
+unsigned webAudioOutputConsumeDroppedFrames(void);
 
 /* Estimated ring occupancy in bytes, for the pump's occupancy controller.
  * Derived on the main thread from the worklet's last reported ring count plus

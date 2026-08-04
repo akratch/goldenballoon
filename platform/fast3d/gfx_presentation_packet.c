@@ -1,5 +1,7 @@
 #include "gfx_presentation_packet.h"
+#include "gfx_deformation_shape.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -23,6 +25,8 @@ typedef struct DeformationEntry {
     uint64_t owner_generation;
     const void *secondary_address;
     uint64_t secondary_generation;
+    GfxPresentationMatrixClass matrix_class;
+    uint64_t geometry_signature;
     int viewport;
     uint32_t ordinal;
     uint32_t count;
@@ -225,6 +229,30 @@ bool gfx_presentation_packet_register_vertex_identity(
     return true;
 }
 
+bool gfx_presentation_packet_register_projected_shadow_vertex(
+    const void *key, int viewport, uint32_t ordinal,
+    const GfxPresentationMatrixOwner *owner) {
+    if (owner == NULL ||
+        owner->matrix_class !=
+            GFX_PRESENTATION_MATRIX_PROJECTED_SHADOW_VERTICES ||
+        !list_register(&s_live_vertices, key, 0u, true, viewport, owner)) {
+        return false;
+    }
+    for (size_t index = s_live_vertices.count; index > 0u; index--) {
+        PacketEntry *entry = &s_live_vertices.entries[index - 1u];
+        if (entry->key == key) {
+            entry->binding.ordinal = ordinal;
+            break;
+        }
+    }
+    s_stats.vertex_registrations++;
+    s_stats.projected_shadow_vertex_registrations++;
+    if (s_live_vertices.count > s_stats.vertex_peak) {
+        s_stats.vertex_peak = s_live_vertices.count;
+    }
+    return true;
+}
+
 static bool list_note_walked(
     PacketList *list, const void *key, const void *bytes, size_t size) {
     if (list == NULL || key == NULL || bytes == NULL || size == 0u ||
@@ -292,6 +320,13 @@ void gfx_presentation_packet_capture_begin(uint64_t tick) {
     s_deform_capture_failed = false;
 }
 
+void gfx_presentation_packet_capture_abort(void) {
+    s_deform_live.count = 0u;
+    s_deform_live_tick = 0u;
+    s_deform_capture_active = false;
+    s_deform_capture_failed = false;
+}
+
 bool gfx_presentation_packet_capture_deformation(
     const GfxPresentationMatrixOwner *owner, int viewport, uint32_t ordinal,
     const void *bytes, size_t byte_size, uint32_t count, uint32_t stride) {
@@ -300,8 +335,8 @@ bool gfx_presentation_packet_capture_deformation(
     if (!s_deform_capture_active || s_deform_capture_failed || owner == NULL ||
         !owner->valid || owner->address == NULL || owner->generation == 0u ||
         bytes == NULL || byte_size == 0u ||
-        byte_size > GFX_PRESENTATION_DEFORM_MAX_BYTES || count == 0u ||
-        stride == 0u || (size_t)count * (size_t)stride != byte_size ||
+        byte_size > GFX_PRESENTATION_DEFORM_MAX_BYTES ||
+        !gfx_deformation_shape_matches(count, stride, byte_size, SIZE_MAX) ||
         (owner->matrix_class == GFX_PRESENTATION_MATRIX_EFFECT &&
          (owner->secondary_address == NULL ||
           owner->secondary_generation == 0u))) {
@@ -313,14 +348,18 @@ bool gfx_presentation_packet_capture_deformation(
             candidate->owner_generation == owner->generation &&
             candidate->secondary_address == owner->secondary_address &&
             candidate->secondary_generation == owner->secondary_generation &&
+            candidate->matrix_class == owner->matrix_class &&
+            candidate->geometry_signature == owner->geometry_signature &&
             candidate->viewport == viewport &&
             candidate->ordinal == ordinal) {
             /* Direct world-space particle meshes are submitted unchanged to
              * every viewport. Collapse that repeated observation into the one
              * shared retained stream. A byte or shape disagreement is still a
              * collision and is poisoned below. */
-            if (owner->matrix_class ==
-                    GFX_PRESENTATION_MATRIX_PARTICLE_VERTICES &&
+            if ((owner->matrix_class ==
+                     GFX_PRESENTATION_MATRIX_PARTICLE_VERTICES ||
+                 owner->matrix_class ==
+                     GFX_PRESENTATION_MATRIX_PROJECTED_SHADOW_VERTICES) &&
                 !candidate->ambiguous &&
                 candidate->count == count && candidate->stride == stride &&
                 candidate->byte_size == byte_size &&
@@ -352,6 +391,8 @@ bool gfx_presentation_packet_capture_deformation(
     entry->owner_generation = owner->generation;
     entry->secondary_address = owner->secondary_address;
     entry->secondary_generation = owner->secondary_generation;
+    entry->matrix_class = owner->matrix_class;
+    entry->geometry_signature = owner->geometry_signature;
     entry->viewport = viewport;
     entry->ordinal = ordinal;
     entry->count = count;
@@ -382,6 +423,36 @@ static bool list_freeze(PacketList *frozen, const PacketList *live) {
     return true;
 }
 
+bool gfx_presentation_packet_publish_deformation(void) {
+    DeformationList recycled;
+
+    if (!s_deform_capture_active) {
+        return false;
+    }
+    if (s_deform_capture_failed) {
+        s_deform_live.count = 0u;
+        s_deform_capture_active = false;
+        return false;
+    }
+    recycled = s_deform_previous;
+    s_deform_previous = s_deform_current;
+    s_deform_previous_tick = s_deform_current_tick;
+    s_deform_current = s_deform_live;
+    s_deform_current_tick = s_deform_live_tick;
+    s_deform_live = recycled;
+    s_deform_live.count = 0u;
+    s_deform_capture_active = false;
+    return true;
+}
+
+void gfx_presentation_packet_note_future_capture(bool success) {
+    if (success) {
+        s_stats.future_captures++;
+    } else {
+        s_stats.future_failures++;
+    }
+}
+
 void gfx_presentation_packet_freeze(void) {
     bool ok = list_freeze(&s_frozen_matrices, &s_live_matrices) &&
               list_freeze(&s_frozen_vertices, &s_live_vertices);
@@ -403,15 +474,18 @@ void gfx_presentation_packet_freeze(void) {
         s_deform_capture_active = false;
         return;
     }
-    if (s_deform_capture_active) {
-        DeformationList recycled = s_deform_previous;
-        s_deform_previous = s_deform_current;
-        s_deform_previous_tick = s_deform_current_tick;
-        s_deform_current = s_deform_live;
-        s_deform_current_tick = s_deform_live_tick;
-        s_deform_live = recycled;
-        s_deform_live.count = 0u;
-        s_deform_capture_active = false;
+    if (s_deform_capture_active &&
+        !gfx_presentation_packet_publish_deformation()) {
+        ok = false;
+    }
+    if (!ok) {
+        s_frozen_matrices.count = 0u;
+        s_frozen_vertices.count = 0u;
+        s_frozen_valid = false;
+        s_stats.freeze_failures++;
+        s_stats.frozen_matrices = 0u;
+        s_stats.frozen_vertices = 0u;
+        return;
     }
     s_frozen_valid = true;
     s_stats.freezes++;
@@ -424,9 +498,11 @@ bool gfx_presentation_packet_frozen(void) {
 }
 
 static bool list_lookup(const PacketList *list, const void *key,
+                        const void *observed,
                         GfxPresentationPacketBinding *out,
                         uint64_t *hits, uint64_t *misses, bool matrix) {
-    if (!s_frozen_valid || list == NULL || key == NULL || out == NULL) {
+    if (!s_frozen_valid || list == NULL || key == NULL || observed == NULL ||
+        out == NULL) {
         (*misses)++;
         return false;
     }
@@ -437,7 +513,7 @@ static bool list_lookup(const PacketList *list, const void *key,
         }
         if (entry->binding.key_size != 0u &&
             (force_dependency_rewrite(matrix) ||
-             memcmp(entry->binding.key_bytes, key,
+             memcmp(entry->binding.key_bytes, observed,
                     entry->binding.key_size) != 0)) {
             s_stats.stale_keys++;
             *out = entry->binding;
@@ -456,14 +532,28 @@ static bool list_lookup(const PacketList *list, const void *key,
 
 bool gfx_presentation_packet_lookup_matrix(
     const void *key, GfxPresentationPacketBinding *out) {
-    return list_lookup(&s_frozen_matrices, key, out, &s_stats.matrix_hits,
+    return list_lookup(&s_frozen_matrices, key, key, out, &s_stats.matrix_hits,
                        &s_stats.matrix_misses, true);
 }
 
 bool gfx_presentation_packet_lookup_vertex(
     const void *key, GfxPresentationPacketBinding *out) {
-    return list_lookup(&s_frozen_vertices, key, out, &s_stats.vertex_hits,
+    return list_lookup(&s_frozen_vertices, key, key, out, &s_stats.vertex_hits,
                        &s_stats.vertex_misses, false);
+}
+
+bool gfx_presentation_packet_lookup_matrix_observed(
+    const void *key, const void *observed,
+    GfxPresentationPacketBinding *out) {
+    return list_lookup(&s_frozen_matrices, key, observed, out,
+                       &s_stats.matrix_hits, &s_stats.matrix_misses, true);
+}
+
+bool gfx_presentation_packet_lookup_vertex_observed(
+    const void *key, const void *observed,
+    GfxPresentationPacketBinding *out) {
+    return list_lookup(&s_frozen_vertices, key, observed, out,
+                       &s_stats.vertex_hits, &s_stats.vertex_misses, false);
 }
 
 bool gfx_presentation_packet_lookup_live_vertex(
@@ -519,6 +609,8 @@ static const DeformationEntry *deformation_find(
             entry->owner_generation == owner->generation &&
             entry->secondary_address == owner->secondary_address &&
             entry->secondary_generation == owner->secondary_generation &&
+            entry->matrix_class == owner->matrix_class &&
+            entry->geometry_signature == owner->geometry_signature &&
             entry->viewport == viewport && entry->ordinal == ordinal) {
             return entry;
         }
@@ -591,7 +683,8 @@ bool gfx_presentation_packet_lookup_deformation_hold(
         &s_deform_current, owner, viewport, ordinal);
     if (current == NULL || current->ambiguous || current->count != count ||
         current->stride != stride ||
-        current->byte_size != (size_t)count * (size_t)stride) {
+        !gfx_deformation_shape_matches(
+            count, stride, current->byte_size, SIZE_MAX)) {
         return false;
     }
     memset(out, 0, sizeof(*out));
@@ -630,6 +723,14 @@ void gfx_presentation_packet_note_particle_deformation(bool overridden) {
     }
 }
 
+void gfx_presentation_packet_note_projected_shadow_deformation(
+    bool overridden) {
+    s_stats.projected_shadow_deformation_hits++;
+    if (overridden) {
+        s_stats.projected_shadow_deformation_overrides++;
+    }
+}
+
 void gfx_presentation_packet_note_deformation_color(bool particle,
                                                     bool overridden) {
     s_stats.deformation_color_hits++;
@@ -655,6 +756,14 @@ void gfx_presentation_packet_note_primitive_alpha(bool particle,
         if (overridden) {
             s_stats.particle_primitive_alpha_overrides++;
         }
+    }
+}
+
+void gfx_presentation_packet_note_projected_shadow_primitive_alpha(
+    bool overridden) {
+    s_stats.projected_shadow_primitive_alpha_hits++;
+    if (overridden) {
+        s_stats.projected_shadow_primitive_alpha_overrides++;
     }
 }
 

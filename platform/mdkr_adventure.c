@@ -203,6 +203,7 @@
 #include "menu.h"
 #include "objects.h"
 #include "racer.h"
+#include "taj_mod.h"
 #include "thread3_main.h"
 #include "mdkr_trace.h"
 #include "mdkr_adventure.h"
@@ -220,6 +221,99 @@ extern u32 gCurrentButtonsPressed;
 extern u32 gCurrentButtonsReleased;
 extern s32 gCurrentStickX;
 extern s32 gCurrentStickY;
+extern s8 gLeadPlayerIndex;
+
+/*
+ * The campaign normally calls swap_lead_player() after P2 wins a race.  The
+ * headless P2 AI lane is intentionally not a score oracle, so this bounded
+ * test seam replays that already-finished handoff while the one-player hub is
+ * still safe to transition.  The next, real race load is entirely retail:
+ * racer creation performs the P2 lead remap and Taj binds from the swapped
+ * settings row to the live P2 port.  It is not an unlock, selection, scoring,
+ * or physics override.
+ */
+static void mdkr_taj_p2_lead_prepare(const Object_Racer *racer) {
+    static s32 initialized;
+    static s32 enabled;
+    static s32 handedOff;
+    const char *value;
+
+    if (!initialized) {
+        initialized = TRUE;
+        value = getenv("MDKR_TAJ_P2_LEAD_HANDOFF");
+        enabled = value != NULL && value[0] != '\0' && value[0] != '0';
+    }
+    if (!enabled || handedOff || racer == NULL ||
+        !is_in_two_player_adventure() ||
+        gLeadPlayerIndex != PLAYER_ONE || racer->playerIndex != PLAYER_ONE ||
+        !taj_mod_player_selected(PLAYER_TWO) ||
+        taj_mod_player_selected(PLAYER_ONE)) {
+        return;
+    }
+    handedOff = TRUE;
+    swap_lead_player();
+    MDKR_TRACE("taj_adv_handoff: source=retail_swap lead=%d "
+               "settings_taj0=%d settings_taj1=%d",
+               (int) gLeadPlayerIndex,
+               taj_mod_player_selected(PLAYER_ONE),
+               taj_mod_player_selected(PLAYER_TWO));
+}
+
+/*
+ * P2-led Adventure is the one place DKR intentionally decouples the stable
+ * settings rows from the live controller ports.  This witness is test-only:
+ * it runs after obj_init_racer() has bound both masks, observes the exact
+ * post-swap tuple once, and changes no gameplay state.  The required tuple
+ * for a P2-selected Taj after the retail lead handoff is:
+ *
+ *   lead=1 settings=[Taj, ordinary] live=[ordinary, Taj]
+ *
+ * Keeping the ids in the row makes a virtual character-id leak falsifiable as
+ * well: every retail consumer must continue to see 0..9 (Taj uses donor 9).
+ */
+static void mdkr_taj_p2_lead_trace(const Object_Racer *racer) {
+    static s32 initialized;
+    static s32 enabled;
+    static s32 reported;
+    Settings *settings;
+    s32 idsRetail;
+    const char *value;
+
+    if (!initialized) {
+        initialized = TRUE;
+        value = getenv("MDKR_TAJ_P2_LEAD_TRACE");
+        enabled = value != NULL && value[0] != '\0' && value[0] != '0';
+    }
+    if (!enabled || reported || racer == NULL || !is_in_two_player_adventure() ||
+        gLeadPlayerIndex != PLAYER_TWO || racer->racerIndex != PLAYER_ONE ||
+        racer->playerIndex != PLAYER_TWO ||
+        !taj_mod_racer_is_taj(PLAYER_TWO)) {
+        return;
+    }
+    settings = get_settings();
+    if (settings == NULL) {
+        return;
+    }
+    idsRetail = settings->racers[PLAYER_ONE].character >= CHARACTER_KRUNCH &&
+                settings->racers[PLAYER_ONE].character <= CHARACTER_DIDDY &&
+                settings->racers[PLAYER_TWO].character >= CHARACTER_KRUNCH &&
+                settings->racers[PLAYER_TWO].character <= CHARACTER_DIDDY &&
+                racer->characterId >= CHARACTER_KRUNCH &&
+                racer->characterId <= CHARACTER_DIDDY;
+    reported = TRUE;
+    MDKR_TRACE("taj_adv_identity: lead=%d settings_taj0=%d settings_taj1=%d "
+               "live_taj0=%d live_taj1=%d racer_slot=%d racer_port=%d "
+               "ids=%d,%d,%d retail_ids=%d",
+               (int)gLeadPlayerIndex,
+               taj_mod_player_selected(PLAYER_ONE),
+               taj_mod_player_selected(PLAYER_TWO),
+               taj_mod_racer_is_taj(PLAYER_ONE),
+               taj_mod_racer_is_taj(PLAYER_TWO),
+               (int)racer->racerIndex, (int)racer->playerIndex,
+               (int)settings->racers[PLAYER_ONE].character,
+               (int)settings->racers[PLAYER_TWO].character,
+               (int)racer->characterId, idsRetail);
+}
 
 /**
  * Test-only finishing-verdict control used by check_adventure_race_loop.py.
@@ -654,6 +748,8 @@ void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate) {
     s32 slot;
     f32 tx, tz, dx, dz, dist;
 
+    mdkr_taj_p2_lead_prepare(racer);
+    mdkr_taj_p2_lead_trace(racer);
     mdkr_adv_init();
     if (sAdvLevelCount == 0 && !sAdvObjdump && !sAdvBossRoute) {
         return;
@@ -827,6 +923,14 @@ void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate) {
  * units in that window. */
 #define MDKR_UNSTICK_EPSILON 1.0f
 #define MDKR_UNSTICK_FRAMES 120
+#define MDKR_UNSTICK_PLAYERS 4
+
+typedef struct MdkrAutopilotUnstickState {
+    f32 anchorX;
+    f32 anchorZ;
+    s32 immobile;
+    s32 initialized;
+} MdkrAutopilotUnstickState;
 
 /**
  * Re-arm racer_AI_pathing_inputs()'s own stuck-recovery for the autopilot racer.
@@ -847,11 +951,11 @@ void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate) {
  */
 void mdkr_autopilot_unstick(Object *obj, Object_Racer *racer, s32 updateRate) {
     static s32 sUnstickOn = -1;
-    static f32 sAnchorX;
-    static f32 sAnchorZ;
-    static s32 sImmobile;
+    static MdkrAutopilotUnstickState sState[MDKR_UNSTICK_PLAYERS];
+    MdkrAutopilotUnstickState *state;
     Settings *settings;
     s32 levelId;
+    s32 playerIndex;
     f32 dx;
     f32 dz;
 
@@ -861,6 +965,22 @@ void mdkr_autopilot_unstick(Object *obj, Object_Racer *racer, s32 updateRate) {
     }
     if (!sUnstickOn) {
         return;
+    }
+
+    /* update_player_racer restores the human identity before calling this
+     * hook. Keep independent anchors for every local player: a shared anchor
+     * is overwritten by the next racer's distant position each tick and can
+     * therefore never detect one wedged kart in split-screen automation. */
+    playerIndex = racer->playerIndex;
+    if (playerIndex < 0 || playerIndex >= MDKR_UNSTICK_PLAYERS) {
+        return;
+    }
+    state = &sState[playerIndex];
+    if (!state->initialized) {
+        state->anchorX = obj->trans.x_position;
+        state->anchorZ = obj->trans.z_position;
+        state->immobile = 0;
+        state->initialized = TRUE;
     }
 
     settings = get_settings();
@@ -879,9 +999,9 @@ void mdkr_autopilot_unstick(Object *obj, Object_Racer *racer, s32 updateRate) {
      *    leaves a genuine wedge on the grid to fail the fixture loudly rather
      *    than be rescued quietly. */
     if (mdkr_adv_slot_for(levelId) >= 0 || racer->courseCheckpoint <= 0) {
-        sAnchorX = obj->trans.x_position;
-        sAnchorZ = obj->trans.z_position;
-        sImmobile = 0;
+        state->anchorX = obj->trans.x_position;
+        state->anchorZ = obj->trans.z_position;
+        state->immobile = 0;
         return;
     }
 
@@ -894,31 +1014,32 @@ void mdkr_autopilot_unstick(Object *obj, Object_Racer *racer, s32 updateRate) {
      * post-race results screen. */
     if (gRaceStartTimer != 0 || racer->raceFinished || !racer->groundedWheels ||
         gRacerInputBlocked) {
-        sAnchorX = obj->trans.x_position;
-        sAnchorZ = obj->trans.z_position;
-        sImmobile = 0;
+        state->anchorX = obj->trans.x_position;
+        state->anchorZ = obj->trans.z_position;
+        state->immobile = 0;
         return;
     }
 
-    dx = obj->trans.x_position - sAnchorX;
-    dz = obj->trans.z_position - sAnchorZ;
+    dx = obj->trans.x_position - state->anchorX;
+    dz = obj->trans.z_position - state->anchorZ;
     if (((dx * dx) + (dz * dz)) >= (MDKR_UNSTICK_EPSILON * MDKR_UNSTICK_EPSILON)) {
-        sAnchorX = obj->trans.x_position;
-        sAnchorZ = obj->trans.z_position;
-        sImmobile = 0;
+        state->anchorX = obj->trans.x_position;
+        state->anchorZ = obj->trans.z_position;
+        state->immobile = 0;
         return;
     }
 
-    sImmobile += updateRate;
-    if (sImmobile < MDKR_UNSTICK_FRAMES) {
+    state->immobile += updateRate;
+    if (state->immobile < MDKR_UNSTICK_FRAMES) {
         return;
     }
-    sImmobile = 0;
+    state->immobile = 0;
     if (racer->unk215 != 0) {
         if (mdkr_trace_enabled()) {
-            mdkr_trace("autopilotunstick: level=%d wedged at (%.1f, %.1f, %.1f) checkpoint=%d "
+            mdkr_trace("autopilotunstick: player=%d level=%d wedged at (%.1f, %.1f, %.1f) checkpoint=%d "
                        "cooldown=%d -> 0 @frame~%d",
-                       (int) levelId, obj->trans.x_position, obj->trans.y_position,
+                       (int) playerIndex + 1, (int) levelId,
+                       obj->trans.x_position, obj->trans.y_position,
                        obj->trans.z_position, (int) racer->courseCheckpoint,
                        (int) racer->unk215, g_frameCounter);
         }

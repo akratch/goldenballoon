@@ -265,6 +265,7 @@ static uint64_t s_stage_generation;
 typedef struct SnapCameraHistory {
     int32_t camera_id;
     float last_position[3];
+    uint8_t last_world_region;
     uint64_t last_capture;
 } SnapCameraHistory;
 
@@ -274,7 +275,7 @@ typedef struct AuthoredCameraSet {
     uint64_t tick;
     uint8_t valid_mask;
     uint8_t conflict_mask;
-    int32_t ids[PRESENTATION_SNAPSHOT_MAX_VIEWPORTS];
+    PresentationCameraEntry samples[PRESENTATION_SNAPSHOT_MAX_VIEWPORTS];
     bool active;
 } AuthoredCameraSet;
 
@@ -291,30 +292,37 @@ void presentation_snapshot_authored_cameras_begin(uint64_t authored_tick) {
     s_authored_cameras.active = true;
 }
 
-bool presentation_snapshot_authored_camera_record(int viewport_index,
-                                                  int camera_id) {
+bool presentation_snapshot_authored_camera_record(
+    const PresentationCameraEntry *sample) {
     uint8_t viewport_mask;
+    int viewport_index;
 
-    if (!s_authored_cameras.active || viewport_index < 0 ||
+    if (!s_authored_cameras.active || sample == NULL) {
+        return false;
+    }
+    viewport_index = sample->viewport_index;
+    if (viewport_index < 0 ||
         viewport_index >= PRESENTATION_SNAPSHOT_MAX_VIEWPORTS ||
-        camera_id < 0 || camera_id >= PRESENTATION_SNAPSHOT_MAX_CAMERAS) {
+        sample->camera_id < 0 ||
+        sample->camera_id >= PRESENTATION_SNAPSHOT_MAX_CAMERAS) {
         return false;
     }
     viewport_mask = (uint8_t)(1u << viewport_index);
     if ((s_authored_cameras.valid_mask & viewport_mask) != 0u &&
-        s_authored_cameras.ids[viewport_index] != camera_id) {
-        /* One replayed viewport cannot safely substitute two authored cameras.
-         * Preserve the first identity and make the whole set fail closed. */
+        memcmp(&s_authored_cameras.samples[viewport_index], sample,
+               sizeof(*sample)) != 0) {
+        /* One replayed viewport cannot safely substitute two camera recipes.
+         * Preserve the first recipe and make the whole set fail closed. */
         s_authored_cameras.conflict_mask |= viewport_mask;
         return false;
     }
-    s_authored_cameras.ids[viewport_index] = camera_id;
+    s_authored_cameras.samples[viewport_index] = *sample;
     s_authored_cameras.valid_mask |= viewport_mask;
     return true;
 }
 
 size_t presentation_snapshot_authored_cameras_copy(
-    uint64_t authored_tick, int32_t *out, size_t capacity) {
+    uint64_t authored_tick, PresentationCameraEntry *out, size_t capacity) {
     size_t count = 0u;
 
     if (!s_authored_cameras.active || s_authored_cameras.tick != authored_tick ||
@@ -327,7 +335,7 @@ size_t presentation_snapshot_authored_cameras_copy(
         if (count >= capacity) {
             return 0u;
         }
-        out[count] = s_authored_cameras.ids[count];
+        out[count] = s_authored_cameras.samples[count];
         count++;
     }
     /* Sparse ownership is not a camera list. Fail closed instead of shifting
@@ -502,10 +510,13 @@ bool presentation_snapshot_capture_camera(
     history = &s_camera_history[viewport];
 
     /* A viewport that changes which gCameras[] entry it draws (cutscene
-     * camera on/off, layout change) is a scene cut, not motion. */
+     * camera on/off) or crosses between the safe aperture and presentation
+     * region is a scene cut, not motion. Numeric viewport coordinates are not
+     * a cut: Track Select and post-race deliberately animate those bounds. */
     discontinuous = history->last_capture == 0 ||
                     history->last_capture + 1u != s_capture_serial ||
-                    history->camera_id != sample->camera_id;
+                    history->camera_id != sample->camera_id ||
+                    history->last_world_region != sample->world_region;
     if (!discontinuous) {
         const float moved =
             distance_squared(history->last_position, sample->position);
@@ -572,6 +583,7 @@ void presentation_snapshot_capture_commit(void) {
         history->last_position[0] = entry->position[0];
         history->last_position[1] = entry->position[1];
         history->last_position[2] = entry->position[2];
+        history->last_world_region = entry->world_region;
         history->last_capture = s_capture_serial;
         if (entry->discontinuity) {
             s_stats.discontinuities++;

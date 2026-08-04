@@ -37,6 +37,7 @@
 #include "gfx_rendering_api.h"
 #include "gfx_shadow_cascade.h"
 #include "gfx_shadow_frame.h"
+#include "fs_utf8.h"
 #include "present_sched.h"
 
 /* platform/fast3d/gfx_pc_dkr.c — declared rather than included: gfx_pc_dkr.h
@@ -89,6 +90,7 @@ static bool              s_ready    = false;   /* device + surface both live */
  */
 static enum GfxRenderingStatus s_runtime_status =
     GFX_RENDERING_UNINITIALIZED;
+#define WGPU_SURFACE_RECOVERY_LIMIT 120u
 static unsigned s_surface_recovery_attempts = 0;
 static bool s_native_recovery_attempted = false;
 static bool s_callback_recovery_pending = false;
@@ -100,14 +102,13 @@ static uintptr_t s_next_device_generation = 0;
 static uintptr_t s_active_work_generation = 0;
 static WGPUDevice s_callback_device = NULL;
 
-/* PAC-005: bound WebGPU work only where the host can produce real images faster
- * than the authored cadence. Browser rendering and explicit internal replay
- * stress admit at most two submitted frames, then skip/hold until completion.
- *
- * Native production 1.0.1 submits only newly authored tick images. It tracks
- * and nonblocking-polls every completion, but deliberately retains 1.0.0's
- * no-runtime-drain contract so D3D12 cannot starve the cooperative game/audio
- * thread. Orderly shutdown may still drain after gameplay service has stopped. */
+/* PAC-005: bound WebGPU work wherever the host can produce images faster than
+ * the GPU retires them. Runtime admission only polls: it never drains or waits
+ * on the cooperative game/audio thread. A full queue therefore holds the last
+ * complete image while simulation continues. Orderly shutdown may still drain
+ * after gameplay service has stopped. Presentation replay uses the stricter
+ * one-frame admission limit so the second slot remains reserved for the next
+ * authored endpoint. */
 #define WGPU_FRAME_IN_FLIGHT_MAX 2u
 static unsigned s_gpu_frames_in_flight;
 static unsigned s_gpu_frames_in_flight_high_water;
@@ -119,6 +120,8 @@ static uint64_t s_gpu_surface_unavailable;
 static uint64_t s_gpu_backpressure_waits;
 static uint64_t s_gpu_backpressure_polls;
 static uint64_t s_gpu_backpressure_skips;
+static uint64_t s_gpu_endpoint_admission_skips;
+static uint64_t s_gpu_replay_admission_skips;
 static uint64_t s_gpu_completion_failures;
 static uint64_t s_gpu_abandoned_completions;
 static uint64_t s_gpu_backpressure_wait_ns;
@@ -418,7 +421,6 @@ static bool s_unclipped_depth_supported = false;
  * ever increments it — the async kick is #ifdef __EMSCRIPTEN__), so the end-frame
  * drain check is a permanently-dead branch there and native behavior is unchanged. */
 static int s_pending_pipelines = 0;
-static uint64_t s_perf_frame_serial = 0;
 static uint64_t s_async_pipeline_creates = 0;
 static uint64_t s_async_pipeline_ready = 0;
 static uint64_t s_async_pipeline_failed = 0;
@@ -428,6 +430,81 @@ static uint32_t s_async_pipeline_frames_max = 0;
 static uint32_t s_present_hold_streak = 0;
 static uint32_t s_present_hold_streak_max = 0;
 #define WGPU_PRESENT_HOLD_MAX 30
+
+#ifdef __EMSCRIPTEN__
+/* Render-pipeline completions mutate the program cache.  AllowProcessEvents
+ * makes their execution point explicit: only renderer-owned event drains may
+ * enter the callback.  The guard is both a runtime proof and a fail-closed
+ * fence against a browser binding unexpectedly dispatching it spontaneously. */
+static bool s_pipeline_callback_owner_drain;
+static uint64_t s_pipeline_callback_owner_event_pumps;
+static uint64_t s_pipeline_callback_shutdown_late_safe;
+static uint64_t s_pipeline_callback_shutdown_guarded;
+
+static void wgpu_pipeline_callback_owner_poll(void) {
+    const bool previous = s_pipeline_callback_owner_drain;
+    s_pipeline_callback_owner_drain = true;
+    WGPU_COMPAT_QUEUE_POLL(s_instance, s_device);
+    s_pipeline_callback_owner_drain = previous;
+    s_pipeline_callback_owner_event_pumps++;
+}
+
+static void wgpu_pipeline_callback_owner_drain(void) {
+    const bool previous = s_pipeline_callback_owner_drain;
+    s_pipeline_callback_owner_drain = true;
+    WGPU_COMPAT_DRAIN(s_instance);
+    s_pipeline_callback_owner_drain = previous;
+    s_pipeline_callback_owner_event_pumps++;
+}
+
+static void wgpu_pipeline_callback_owner_block(void) {
+    const bool previous = s_pipeline_callback_owner_drain;
+    s_pipeline_callback_owner_drain = true;
+    WGPU_COMPAT_QUEUE_BLOCK(s_instance, s_device);
+    s_pipeline_callback_owner_drain = previous;
+    s_pipeline_callback_owner_event_pumps++;
+}
+
+static void wgpu_pipeline_callback_owner_pump(WGPUInstance instance,
+                                              WGPUDevice device) {
+    const bool previous = s_pipeline_callback_owner_drain;
+    s_pipeline_callback_owner_drain = true;
+    WGPU_COMPAT_PUMP(instance, device);
+    s_pipeline_callback_owner_drain = previous;
+    s_pipeline_callback_owner_event_pumps++;
+}
+#else
+static void wgpu_pipeline_callback_owner_poll(void) {
+    WGPU_COMPAT_QUEUE_POLL(s_instance, s_device);
+}
+
+static void wgpu_pipeline_callback_owner_drain(void) {
+    WGPU_COMPAT_DRAIN(s_instance);
+}
+
+static void wgpu_pipeline_callback_owner_block(void) {
+    WGPU_COMPAT_QUEUE_BLOCK(s_instance, s_device);
+}
+
+static void wgpu_pipeline_callback_owner_pump(WGPUInstance instance,
+                                              WGPUDevice device) {
+    WGPU_COMPAT_PUMP(instance, device);
+}
+#endif
+
+/* Every ProcessEvents call in this translation unit must pass through an owner
+ * wrapper. Bring-up and readback need a yielding pump, so do not use the raw
+ * compatibility wait macro there: it would dispatch pipeline completion
+ * outside the program-cache ownership boundary. */
+#define WGPU_PIPELINE_CALLBACK_OWNER_WAIT(condition, instance, device,      \
+                                          max_iters)                         \
+    do {                                                                     \
+        for (unsigned _owner_wait = 0u;                                     \
+             !(condition) && _owner_wait < (unsigned)(max_iters);          \
+             ++_owner_wait) {                                               \
+            wgpu_pipeline_callback_owner_pump((instance), (device));       \
+        }                                                                    \
+    } while (0)
 
 /* PERF-005b: count of draw batches dropped THIS FRAME because their render
  * pipeline is still PENDING (async create in flight). A frame with any such
@@ -559,7 +636,7 @@ static bool wgpu_request_adapter_attempt(
     } else {
         wgpuInstanceRequestAdapter(instance, options, callback);
     }
-    WGPU_COMPAT_WAIT(
+    WGPU_PIPELINE_CALLBACK_OWNER_WAIT(
         gfx_webgpu_async_request_completed(request), instance, NULL,
         WGPU_COMPAT_BRINGUP_WAIT_ITERS);
 
@@ -614,7 +691,7 @@ static bool wgpu_request_device_attempt(
     } else {
         wgpuAdapterRequestDevice(adapter, descriptor, callback);
     }
-    WGPU_COMPAT_WAIT(
+    WGPU_PIPELINE_CALLBACK_OWNER_WAIT(
         gfx_webgpu_async_request_completed(request), instance, NULL,
         WGPU_COMPAT_BRINGUP_WAIT_ITERS);
 
@@ -687,6 +764,8 @@ static void wgpu_reset_backpressure_stats(void) {
     s_gpu_backpressure_waits = 0u;
     s_gpu_backpressure_polls = 0u;
     s_gpu_backpressure_skips = 0u;
+    s_gpu_endpoint_admission_skips = 0u;
+    s_gpu_replay_admission_skips = 0u;
     s_gpu_completion_failures = 0u;
     s_gpu_abandoned_completions = 0u;
     s_gpu_backpressure_wait_ns = 0u;
@@ -721,12 +800,12 @@ WGPU_COMPAT_QUEUE_DONE_CALLBACK(wgpu_on_frame_work_done) {
 
 static bool wgpu_backpressure_check_below(
     unsigned limit, bool enforce, bool runtime) {
-    WGPU_COMPAT_QUEUE_POLL(s_instance, s_device);
+    wgpu_pipeline_callback_owner_poll();
     s_gpu_backpressure_polls++;
     if (s_gpu_frames_in_flight < limit || !enforce) {
         return true;
     }
-    if (!WGPU_COMPAT_QUEUE_CAN_BLOCK) {
+    if (runtime || !WGPU_COMPAT_QUEUE_CAN_BLOCK) {
         s_gpu_backpressure_skips++;
         return false;
     }
@@ -736,8 +815,8 @@ static bool wgpu_backpressure_check_below(
     s_gpu_backpressure_waits++;
     while (s_gpu_frames_in_flight >= limit && stalled < 8u) {
         const unsigned before = s_gpu_frames_in_flight;
-        WGPU_COMPAT_QUEUE_BLOCK(s_instance, s_device);
-        WGPU_COMPAT_QUEUE_POLL(s_instance, s_device);
+        wgpu_pipeline_callback_owner_block();
+        wgpu_pipeline_callback_owner_poll();
         s_gpu_backpressure_polls++;
         stalled = s_gpu_frames_in_flight < before ? 0u : stalled + 1u;
     }
@@ -760,15 +839,10 @@ static bool wgpu_backpressure_check_below(
     return true;
 }
 
-static bool wgpu_backpressure_required_before_frame(void) {
-    /* The browser needs the nonblocking queue bound for every rAF policy.
-     * Native production 1.0.1 submits only authored tick images—even when an
-     * experimental high-rate policy creates extra host opportunities—so it
-     * retains 1.0.0's nonblocking submission contract. Internal replay stress
-     * can genuinely generate faster than the authored cadence and keeps the
-     * native bound. Every path still polls once per attempted frame so queue
-     * completions and device callbacks retire promptly. */
-    return !WGPU_COMPAT_QUEUE_CAN_BLOCK || present_sched_replay_armed();
+static unsigned wgpu_backpressure_limit_before_frame(void) {
+    return gfx_dkr_replay_pass_active()
+        ? WGPU_FRAME_IN_FLIGHT_MAX - 1u
+        : WGPU_FRAME_IN_FLIGHT_MAX;
 }
 
 static void wgpu_track_frame_submission(void) {
@@ -788,8 +862,8 @@ static void wgpu_track_frame_submission(void) {
 
     /* Never wait after submission. The fixed-tick adapter services audio only
      * after end_frame returns, so a synchronous device drain here can starve
-     * the SDL queue on a slow D3D12 completion. Browser/internal replay bounds
-     * are checked before a later frame, after the completed tick refills audio. */
+     * the SDL queue on a slow D3D12 completion. Admission is checked before a
+     * later frame, after the completed tick refills audio. */
 }
 
 static void wgpu_abandon_in_flight(void) {
@@ -811,6 +885,7 @@ static void wgpu_report_backpressure(void) {
             "[WGPU-BACKPRESSURE] cap=%u submitted=%llu completed=%llu "
             "presented=%llu held=%llu unavailable=%llu "
             "inflight=%u highwater=%u waits=%llu polls=%llu skips=%llu "
+            "endpointSkips=%llu replaySkips=%llu "
             "failures=%llu abandoned=%llu waitns=%llu runtimewaits=%llu "
             "runtimewaitns=%llu rateMilliHz=%llu\n",
             WGPU_FRAME_IN_FLIGHT_MAX,
@@ -823,6 +898,8 @@ static void wgpu_report_backpressure(void) {
             (unsigned long long)s_gpu_backpressure_waits,
             (unsigned long long)s_gpu_backpressure_polls,
             (unsigned long long)s_gpu_backpressure_skips,
+            (unsigned long long)s_gpu_endpoint_admission_skips,
+            (unsigned long long)s_gpu_replay_admission_skips,
             (unsigned long long)s_gpu_completion_failures,
             (unsigned long long)s_gpu_abandoned_completions,
             (unsigned long long)s_gpu_backpressure_wait_ns,
@@ -1628,8 +1705,8 @@ static void wgpu_update_light_ubo(void) {
 }
 
 static bool wgpu_start_frame(void) {
+    const bool replay = gfx_dkr_replay_pass_active();
     (void)wgpu_consume_callback_failure();
-    s_perf_frame_serial++;
     s_frame_open = false;
     s_output_overlay_active = false;
     g_pc_shadow_map_ready = 0;
@@ -1655,12 +1732,40 @@ static bool wgpu_start_frame(void) {
         (void)wgpu_consume_callback_failure();
         return false;
     }
+    /* Ordinary gameplay must never wait for the GPU. An explicitly requested
+     * diagnostic dump is different: it promises the image named by this exact
+     * frame. Allow the existing bounded non-runtime drain during its short
+     * evidence-only pre-roll so A/B arms cannot inherit differently aged held
+     * endpoints, while leaving every ordinary runtime opportunity nonblocking. */
+    const bool dump_due = platform_frame_dump_due() != 0;
+    const bool dump_prepare_due = platform_frame_dump_prepare_due() != 0;
+    /* Coverage/equality instruments that count every frontend walk can opt
+     * into deterministic full admission. This is deliberately a TEST seam:
+     * production runtime and its backpressure gates never set it and therefore
+     * retain the strict nonblocking contract. */
+    const bool test_full_admission =
+        getenv("MDKR_TEST_RENDER_FULL_ADMISSION") != NULL;
+    const bool runtime_admission =
+        !(dump_prepare_due || test_full_admission);
+    if (dump_due && getenv("MDKR_FRAME_DUMP_TRACE") != NULL) {
+        fprintf(stderr,
+                "[FRAME-DUMP] WebGPU admission frame=%d inFlight=%u "
+                "submitted=%llu completed=%llu\n",
+                g_frameCounter, s_gpu_frames_in_flight,
+                (unsigned long long)s_gpu_frame_submissions,
+                (unsigned long long)s_gpu_frame_completions);
+    }
     if (!wgpu_backpressure_check_below(
-            WGPU_FRAME_IN_FLIGHT_MAX,
-            wgpu_backpressure_required_before_frame(), true)) {
-        /* Browser/internal replay: both bounded queue slots remain occupied.
-         * Return without opening an encoder so the scheduler stays responsive;
-         * ordinary native production never enforces this admission ceiling. */
+            wgpu_backpressure_limit_before_frame(), true,
+            runtime_admission)) {
+        /* Return without opening an encoder so the scheduler stays responsive.
+         * Replays reserve one slot for the next authored endpoint; authored
+         * frames may use both slots but never block for either one. */
+        if (replay) {
+            s_gpu_replay_admission_skips++;
+        } else {
+            s_gpu_endpoint_admission_skips++;
+        }
         return false;
     }
 
@@ -2076,14 +2181,15 @@ static void wgpu_write_ppm(WGPUBuffer buf, uint32_t bpr, uint32_t w, uint32_t h,
      * ProcessEvents, so a NULL instance froze the tab for minutes on web. On
      * native the WAIT macro prefers the (non-NULL) device and calls
      * wgpuDevicePoll exactly as before — byte-identical. */
-    WGPU_COMPAT_WAIT(mr.done, s_instance, s_device, 100000);
+    WGPU_PIPELINE_CALLBACK_OWNER_WAIT(
+        mr.done, s_instance, s_device, 100000);
     if (!mr.done || mr.status != WGPUMapAsyncStatus_Success) {
         fprintf(stderr, "[webgpu] frame dump map failed (status=%d)\n", (int)mr.status);
         return;
     }
     const uint8_t *px = (const uint8_t *)wgpuBufferGetConstMappedRange(buf, 0, size);
     const bool bgra = wgpu_format_is_bgra(s_surface_format);
-    FILE *f = px ? fopen(path, "wb") : NULL;
+    FILE *f = px ? mdkr_fopen_utf8(path, "wb") : NULL;
     if (f != NULL) {
         fprintf(f, "P6\n%u %u\n255\n", w, h);
         for (uint32_t y = 0; y < h; y++) {
@@ -2954,10 +3060,12 @@ static void wgpu_end_frame(void) {
                 break;
         }
     }
-    if (surface_retry_failed && ++s_surface_recovery_attempts > 120) {
+    if (surface_retry_failed &&
+        ++s_surface_recovery_attempts >= WGPU_SURFACE_RECOVERY_LIMIT) {
         fprintf(stderr,
-                "[webgpu] surface recovery failed for 120 consecutive frames "
+                "[webgpu] surface recovery failed for %u consecutive frames "
                 "(status=%d)\n",
+                WGPU_SURFACE_RECOVERY_LIMIT,
                 (int)st.status);
         wgpu_runtime_fatal(
             "The graphics surface could not be recovered. Reload the page to "
@@ -3409,16 +3517,11 @@ static void wgpu_end_frame(void) {
         wgpuTextureRelease(st.texture);
     }
 
-    /* PERF-005: drain async pipeline completions. emdawnwebgpu fires the
-     * AllowSpontaneous callbacks on its own event loop, but pumping
-     * ProcessEvents once per frame while creates are outstanding guarantees a
-     * landed pipeline becomes serve-able promptly (bounded pop-in). Guarded on
-     * s_pending_pipelines > 0 so the steady state (nothing in flight) is a pure
-     * no-op that never dispatches unrelated futures — and so native, where the
-     * counter is permanently 0 and WGPU_COMPAT_DRAIN expands to a no-op, is
-     * wholly untouched. */
+    /* PERF-005: only this renderer-owned drain may dispatch asynchronous
+     * pipeline completion. It is skipped in steady state, so no unrelated
+     * futures are processed merely to draw an otherwise-ready frame. */
     if (s_pending_pipelines > 0) {
-        WGPU_COMPAT_DRAIN(s_instance);
+        wgpu_pipeline_callback_owner_drain();
     }
 
     s_frame_open = false;
@@ -4957,7 +5060,7 @@ static void wgpu_prewarm_flush(void) {
     }
     char path[1024];
     snprintf(path, sizeof(path), "%s", savedirPath(WGPU_PREWARM_FILE));
-    FILE *f = fopen(path, "w");
+    FILE *f = mdkr_fopen_utf8(path, "w");
     if (f == NULL) {
         s_prewarm_dirty = false;   /* give up silently; no prewarm is acceptable */
         return;
@@ -4988,7 +5091,7 @@ static void wgpu_prewarm_ensure_loaded(void) {
     atexit(wgpu_prewarm_flush);
     char path[1024];
     snprintf(path, sizeof(path), "%s", savedirPath(WGPU_PREWARM_FILE));
-    FILE *f = fopen(path, "r");
+    FILE *f = mdkr_fopen_utf8(path, "r");
     if (f == NULL) {
         return;   /* no manifest yet (first ever run) — nothing to prewarm */
     }
@@ -5019,14 +5122,14 @@ static void wgpu_prewarm_record(uint64_t id0, uint32_t id1, uint32_t key) {
  * note at wgpuCompatCreateSurface for why this block is #ifdef'd rather than in
  * the compat header — it touches file-static cache state). Recovers prg=u1 and
  * key=u2, locates the PENDING slot the kick reserved, and installs the pipeline
- * (READY) or marks the slot FAILED. Fires during the wgpu_end_frame ProcessEvents
- * drain. The whole apparatus is compiled OUT on native, where the synchronous
+ * (READY) or marks the slot FAILED. Fires only during one of the renderer-owned
+ * ProcessEvents drains. The whole apparatus is compiled OUT on native, where the synchronous
  * path makes a pipeline ready the instant it is created. */
 struct WgpuPipelineCallbackCtx {
     struct ShaderProgram *prg;
     uint32_t key;
     uintptr_t generation;
-    uint64_t kick_frame;
+    uint64_t kick_host_frame;
     bool optional_shadow;
 };
 
@@ -5045,18 +5148,32 @@ static void on_pipeline_ready(WGPUCreatePipelineAsyncStatus status,
         }
         return;
     }
-    prg = ctx->prg;
-    key = ctx->key;
+    if (!s_pipeline_callback_owner_drain) {
+        /* `AllowProcessEvents` promises this cannot happen. Continuing here
+         * would require touching non-atomic renderer/cache state from the
+         * wrong callback turn, recreating the race this contract prevents.
+         * Terminate instead of pretending the branch is a thread-safe fence. */
+        fprintf(stderr,
+                "[webgpu] pipeline callback arrived outside renderer event "
+                "drain; terminating by ownership contract\n");
+        abort();
+    }
     if (ctx->generation == 0 ||
         ctx->generation != s_active_work_generation) {
         /* Final shutdown or device replacement invalidated the raw program
-         * pointer carried by this completion. Never dereference it. */
+         * pointer carried by this completion. `ctx` remains heap-owned until
+         * this callback frees it, while its program is deliberately never
+         * dereferenced here; a late browser completion is therefore safe even
+         * after the old program cache and device session were destroyed. */
         if (pipeline != NULL) {
             wgpuRenderPipelineRelease(pipeline);
         }
+        s_pipeline_callback_shutdown_late_safe++;
         free(ctx);
         return;
     }
+    prg = ctx->prg;
+    key = ctx->key;
     if (s_pending_pipelines > 0) {
         s_pending_pipelines--;
     }
@@ -5065,15 +5182,41 @@ static void on_pipeline_ready(WGPUCreatePipelineAsyncStatus status,
         s_shadow_receiver_prewarm_pending--;
     }
     if (!ctx->optional_shadow) {
+        /* A smoothed host opportunity can run both an authored endpoint and an
+         * internal replay before yielding to the browser. Count that pair once:
+         * the public pipeline budget is expressed in observable host/display
+         * opportunities, not renderer passes that cannot dispatch a promise
+         * between them.
+         *
+         * Count opportunities that were actually incomplete, not both endpoints
+         * of the interval. A create kicked while host frame 570 is being drawn
+         * and dispatched before frame 572's draw withheld frames 570 and 571;
+         * frame 572 was complete. The old inclusive `+ 1` called that three
+         * frames and could contradict maxHoldStreak for the same work. A callback
+         * dispatched at the end of its kick frame still withheld that frame, so
+         * the minimum remains one. */
+        const uint64_t host_frame = (uint64_t)g_frameCounter;
         uint64_t pending_frames =
-            s_perf_frame_serial >= ctx->kick_frame
-                ? s_perf_frame_serial - ctx->kick_frame + 1
+            host_frame > ctx->kick_host_frame
+                ? host_frame - ctx->kick_host_frame
                 : 1;
         if (pending_frames > UINT32_MAX) {
             pending_frames = UINT32_MAX;
         }
         if ((uint32_t)pending_frames > s_async_pipeline_frames_max) {
             s_async_pipeline_frames_max = (uint32_t)pending_frames;
+            if (getenv("MDKR_WEBGPU_PIPELINE_TRACE") != NULL) {
+                fprintf(
+                    stderr,
+                    "[WGPU-PIPELINE] shader=%016llx/%08x key=0x%03x "
+                    "kick=%llu ready=%llu incomplete=%u\n",
+                    (unsigned long long)prg->shader_id0,
+                    (unsigned)prg->shader_id1,
+                    (unsigned)key,
+                    (unsigned long long)ctx->kick_host_frame,
+                    (unsigned long long)host_frame,
+                    (unsigned)s_async_pipeline_frames_max);
+            }
         }
     }
     /* Find the PENDING slot this create was kicked for. At most one PENDING entry
@@ -5172,7 +5315,7 @@ static bool wgpu_kick_async_pipeline(
     ctx->prg = prg;
     ctx->key = key;
     ctx->generation = s_active_work_generation;
-    ctx->kick_frame = s_perf_frame_serial;
+    ctx->kick_host_frame = (uint64_t)g_frameCounter;
     ctx->optional_shadow = optional_shadow;
     s_pending_pipelines++;
     if (optional_shadow) {
@@ -5183,16 +5326,19 @@ static bool wgpu_kick_async_pipeline(
         s_async_pending_high_water = (uint32_t)s_pending_pipelines;
     }
     WGPUCreateRenderPipelineAsyncCallbackInfo cb = {0};
-    cb.mode = WGPUCallbackMode_AllowSpontaneous;
+    cb.mode = WGPUCallbackMode_AllowProcessEvents;
     cb.callback = on_pipeline_ready;
     cb.userdata1 = ctx;
     cb.userdata2 = NULL;
     if (!optional_shadow &&
         gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_PIPELINE_ASYNC)) {
+        const bool previous = s_pipeline_callback_owner_drain;
+        s_pipeline_callback_owner_drain = true;
         on_pipeline_ready(
             WGPUCreatePipelineAsyncStatus_ValidationError, NULL,
             wgpu_sv("deterministic MDKR_WEBGPU_FAULT injection"),
             ctx, NULL);
+        s_pipeline_callback_owner_drain = previous;
     } else {
         wgpuDeviceCreateRenderPipelineAsync(s_device, pd, cb);
     }
@@ -7308,6 +7454,16 @@ static bool wgpu_read_framebuffer_rgb(int x, int y, int width, int height, uint8
     WGPUTexture rb_tex = live_scene
         ? (live_output_overlay ? s_resolve_tex : s_scene_tex)
         : (s_present_target_tex ? s_present_target_tex : s_scene_tex);
+    if (platform_frame_dump_due() &&
+        getenv("MDKR_FRAME_DUMP_TRACE") != NULL) {
+        fprintf(stderr,
+                "[FRAME-DUMP] WebGPU readback frame=%d live=%d overlay=%d "
+                "submitted=%llu completed=%llu\n",
+                g_frameCounter, live_scene ? 1 : 0,
+                live_output_overlay ? 1 : 0,
+                (unsigned long long)s_gpu_frame_submissions,
+                (unsigned long long)s_gpu_frame_completions);
+    }
     uint32_t rb_w = live_output_overlay ? s_resolve_w : s_scene_w;
     uint32_t rb_h = live_output_overlay ? s_resolve_h : s_scene_h;
 
@@ -7421,7 +7577,8 @@ static bool wgpu_read_framebuffer_rgb(int x, int y, int width, int height, uint8
      * ProcessEvents, so a NULL instance froze the tab for minutes on web. On
      * native the WAIT macro prefers the (non-NULL) device and calls
      * wgpuDevicePoll exactly as before — byte-identical. */
-    WGPU_COMPAT_WAIT(mr.done, s_instance, s_device, 100000);
+    WGPU_PIPELINE_CALLBACK_OWNER_WAIT(
+        mr.done, s_instance, s_device, 100000);
     if (!mr.done || mr.status != WGPUMapAsyncStatus_Success) {
         wgpuBufferRelease(buf);
         return false;
@@ -8162,11 +8319,27 @@ static void wgpu_shutdown(void) {
     const bool shadow_resource_latched =
         s_shadow_resource_perma_fail;
 
-    if (s_gpu_frames_in_flight > 0u) {
+    if (s_gpu_frames_in_flight > 0u && WGPU_COMPAT_QUEUE_CAN_BLOCK) {
+        /* Native has a blocking queue pump, so its orderly teardown must
+         * observe every submitted completion before releasing device roots. */
         (void)wgpu_backpressure_check_below(1u, true, false);
     }
+    if (s_gpu_frames_in_flight > 0u) {
+        /* A browser completion callback needs a future event-loop turn, but
+         * shutdown can be reached from a non-yielding host callback.  Poll
+         * once at the renderer-owned boundary, then account for any residual
+         * submitted work as orderly teardown—not as a rejected visual frame.
+         * Sleeping here can strand Asyncify during page/process teardown. */
+        wgpu_pipeline_callback_owner_poll();
+        if (s_gpu_frames_in_flight > 0u) {
+            fprintf(stderr,
+                    "[webgpu] shutdown retiring %u submitted frame(s) "
+                    "without a completion callback\n",
+                    s_gpu_frames_in_flight);
+            wgpu_abandon_in_flight();
+        }
+    }
     wgpu_report_backpressure();
-    wgpu_abandon_in_flight();
     s_ready = false;
     s_runtime_status = GFX_RENDERING_UNINITIALIZED;
     /* Invalidate browser async callback contexts before any ShaderProgram is
@@ -8174,7 +8347,20 @@ static void wgpu_shutdown(void) {
     s_active_work_generation = 0;
     wgpu_prewarm_flush();
     if (s_pending_pipelines > 0) {
-        WGPU_COMPAT_DRAIN(s_instance);
+        wgpu_pipeline_callback_owner_drain();
+    }
+    /* A browser promise may still be pending after a non-yielding shutdown
+     * drain. Its heap context is intentionally retained for that completion;
+     * s_active_work_generation is already zero, so the callback can only
+     * release its returned pipeline and free the context (never its old prg). */
+    if (s_pending_pipelines > 0) {
+#ifdef __EMSCRIPTEN__
+        s_pipeline_callback_shutdown_guarded +=
+            (uint64_t)s_pending_pipelines;
+#endif
+        fprintf(stderr,
+                "[webgpu] shutdown guarded %d late pipeline completion(s) "
+                "by generation\n", s_pending_pipelines);
     }
 
     wgpu_release_device_objects();
@@ -8246,13 +8432,21 @@ static void wgpu_shutdown(void) {
     fprintf(stderr,
             "[WGPU-PERF] asyncCreates=%llu asyncReady=%llu asyncFailed=%llu "
             "holdFrames=%llu maxHoldStreak=%u maxPipelineFrames=%u "
-            "maxPending=%u\n",
+            "maxPending=%u ownerEventPumps=%llu lateSafe=%llu "
+            "shutdownGuarded=%llu\n",
             (unsigned long long)s_async_pipeline_creates,
             (unsigned long long)s_async_pipeline_ready,
             (unsigned long long)s_async_pipeline_failed,
             (unsigned long long)s_async_present_hold_frames,
             s_present_hold_streak_max, s_async_pipeline_frames_max,
-            s_async_pending_high_water);
+            s_async_pending_high_water,
+#ifdef __EMSCRIPTEN__
+            (unsigned long long)s_pipeline_callback_owner_event_pumps,
+            (unsigned long long)s_pipeline_callback_shutdown_late_safe,
+            (unsigned long long)s_pipeline_callback_shutdown_guarded);
+#else
+            0ull, 0ull, 0ull);
+#endif
 }
 
 bool gfx_webgpu_recover_device(void) {
