@@ -196,14 +196,81 @@ def read_ppm(path: Path) -> tuple[int, int, bytes]:
     return width, height, pixels
 
 
-def roster_counts(path: Path) -> tuple[int, int, int]:
+def centered_fit(outer_width: float, outer_height: float,
+                 aspect: float) -> tuple[float, float, float, float]:
+    """Letterbox/pillarbox an aspect inside a box, centred.
+
+    The independent Python statement of mdkr_centered_fit() in
+    platform/display_config.c.
+    """
+    if outer_width / outer_height > aspect:
+        width = outer_height * aspect
+        return (outer_width - width) * 0.5, 0.0, width, outer_height
+    height = outer_width / aspect
+    return 0.0, (outer_height - height) * 0.5, outer_width, height
+
+
+@dataclass(frozen=True)
+class FrameGeometry:
+    """Where the authored 320x240 envelope actually lands in a capture.
+
+    At the default aspect the renderer stretches the authored envelope over
+    the whole drawable, so a ROM-logical rectangle is just (logical * scale).
+    Under a forced presentation aspect it does not: mdkr_display_calculate_
+    layout() centre-fits the presentation inside the drawable and then centre-
+    fits the authored 4:3 envelope inside that presentation, so the scene is
+    inset and smaller than the frame (21:9 in a 1280x960 capture puts it at
+    731x549+274+206). Sampling a ROM-logical rectangle at raw pixel
+    coordinates there reads the letterbox bar rather than the scene, which is
+    an oracle bug and not a rendering defect -- the lower-centre placard
+    rectangle lands entirely below the presentation at 21:9. Every sampling
+    box in this check is expressed in ROM-logical pixels and mapped through
+    this.
+    """
+
+    origin_x: float
+    origin_y: float
+    scale_x: float
+    scale_y: float
+
+    @classmethod
+    def for_frame(cls, path: Path, aspect: str | None) -> "FrameGeometry":
+        width, height, _ = read_ppm(path)
+        if width % ROM_WIDTH or height % ROM_HEIGHT:
+            raise ValueError(f"{path}: unexpected dimensions {width}x{height}")
+        if aspect is None:
+            return cls(0.0, 0.0, width // ROM_WIDTH, height // ROM_HEIGHT)
+        numerator, denominator = aspect.split(":")
+        presentation_aspect = float(numerator) / float(denominator)
+        present_x, present_y, present_w, present_h = centered_fit(
+            float(width), float(height), presentation_aspect)
+        safe_x, safe_y, safe_w, safe_h = centered_fit(
+            present_w, present_h, ROM_WIDTH / ROM_HEIGHT)
+        return cls(present_x + safe_x, present_y + safe_y,
+                   safe_w / ROM_WIDTH, safe_h / ROM_HEIGHT)
+
+    def x(self, logical: int) -> int:
+        return round(self.origin_x + logical * self.scale_x)
+
+    def y(self, logical: int) -> int:
+        return round(self.origin_y + logical * self.scale_y)
+
+    @property
+    def pixel_scale(self) -> float:
+        """Captured pixels per ROM-logical pixel of area."""
+        return self.scale_x * self.scale_y
+
+    def area(self, logical_area: int) -> int:
+        """Sampled pixels for a logical-pixel area, at this frame's scale."""
+        return round(logical_area * self.pixel_scale)
+
+
+def roster_counts(path: Path, geometry: FrameGeometry) -> tuple[int, int, int]:
     width, height, pixels = read_ppm(path)
-    if width % ROM_WIDTH or height % ROM_HEIGHT:
-        raise ValueError(f"{path}: unexpected dimensions {width}x{height}")
-    scale_x = width // ROM_WIDTH
-    scale_y = height // ROM_HEIGHT
-    x0, x1 = 135 * scale_x, 198 * scale_x
-    y0, y1 = 135 * scale_y, 218 * scale_y
+    x0, x1 = geometry.x(135), geometry.x(198)
+    y0, y1 = geometry.y(135), geometry.y(218)
+    placard_x0, placard_x1 = geometry.x(158), geometry.x(192)
+    placard_y0, placard_y1 = geometry.y(172), geometry.y(208)
     purple = red_count = gold = 0
     for y in range(y0, y1):
         for x in range(x0, x1):
@@ -212,8 +279,8 @@ def roster_counts(path: Path) -> tuple[int, int, int]:
             if (red > 35 and green < 115 and blue > 100 and
                     blue > red * 1.25 and blue > green * 1.15):
                 purple += 1
-            if (x >= 158 * scale_x and x < 192 * scale_x and
-                    y >= 172 * scale_y and y < 208 * scale_y and
+            if (x >= placard_x0 and x < placard_x1 and
+                    y >= placard_y0 and y < placard_y1 and
                     red > 140 and red > green * 1.5 and red > blue * 1.5):
                 red_count += 1
             if red > 150 and green > 120 and blue < 100:
@@ -221,15 +288,13 @@ def roster_counts(path: Path) -> tuple[int, int, int]:
     return purple, red_count, gold
 
 
-def row_side_counts(path: Path) -> tuple[int, int, int]:
+def row_side_counts(path: Path, geometry: FrameGeometry) -> tuple[int, int, int]:
     width, height, pixels = read_ppm(path)
-    scale_x = width // ROM_WIDTH
-    scale_y = height // ROM_HEIGHT
     counts: list[int] = []
-    for x0, x1 in ((5, 130), (195, 310)):
+    for left, right in ((5, 130), (195, 310)):
         count = 0
-        for y in range(148 * scale_y, 210 * scale_y):
-            for x in range(x0 * scale_x, x1 * scale_x):
+        for y in range(geometry.y(148), geometry.y(210)):
+            for x in range(geometry.x(left), geometry.x(right)):
                 offset = (y * width + x) * 3
                 red, green, blue = pixels[offset:offset + 3]
                 if (max(red, green, blue) > 80 and
@@ -237,19 +302,17 @@ def row_side_counts(path: Path) -> tuple[int, int, int]:
                          (red > 160 and green > 160 and blue > 160))):
                     count += 1
         counts.append(count)
-    return counts[0], counts[1], scale_x * scale_y
+    return counts[0], counts[1], geometry.pixel_scale
 
 
-def roster_motion(first: Path, second: Path) -> int:
+def roster_motion(first: Path, second: Path, geometry: FrameGeometry) -> int:
     width, height, first_pixels = read_ppm(first)
     second_width, second_height, second_pixels = read_ppm(second)
     if (width, height) != (second_width, second_height):
         raise ValueError("motion frames have different dimensions")
-    scale_x = width // ROM_WIDTH
-    scale_y = height // ROM_HEIGHT
     changed = 0
-    for y in range(135 * scale_y, 218 * scale_y):
-        for x in range(135 * scale_x, 192 * scale_x):
+    for y in range(geometry.y(135), geometry.y(218)):
+        for x in range(geometry.x(135), geometry.x(192)):
             offset = (y * width + x) * 3
             if any(abs(first_pixels[offset + channel] -
                        second_pixels[offset + channel]) > 20
@@ -258,7 +321,8 @@ def roster_motion(first: Path, second: Path) -> int:
     return changed
 
 
-def oversized_shadow_delta(scaled: Path, unscaled: Path) -> tuple[int, int, int]:
+def oversized_shadow_delta(scaled: Path, unscaled: Path,
+                           geometry: FrameGeometry) -> tuple[int, int, int]:
     """Measure the exact full-size Park Warden shadow regression.
 
     The control differs only by retaining the actor header's unscaled shadow.
@@ -270,11 +334,9 @@ def oversized_shadow_delta(scaled: Path, unscaled: Path) -> tuple[int, int, int]
     control_width, control_height, control_pixels = read_ppm(unscaled)
     if (width, height) != (control_width, control_height):
         raise ValueError("shadow-control frames have different dimensions")
-    scale_x = width // ROM_WIDTH
-    scale_y = height // ROM_HEIGHT
     darker = changed = 0
-    x0, x1 = 110 * scale_x, 215 * scale_x
-    y0, y1 = 202 * scale_y, 232 * scale_y
+    x0, x1 = geometry.x(110), geometry.x(215)
+    y0, y1 = geometry.y(202), geometry.y(232)
     for y in range(y0, y1):
         for x in range(x0, x1):
             offset = (y * width + x) * 3
@@ -298,13 +360,12 @@ PLACARD_LOGICAL_AREA = 34 * 36
 PLACARD_MIN_COVERAGE = 0.15
 
 
-def placard_colour_count(path: Path, player: int) -> tuple[int, int]:
+def placard_colour_count(path: Path, player: int,
+                         geometry: FrameGeometry) -> tuple[int, int]:
     width, height, pixels = read_ppm(path)
-    scale_x = width // ROM_WIDTH
-    scale_y = height // ROM_HEIGHT
     count = 0
-    for y in range(172 * scale_y, 208 * scale_y):
-        for x in range(158 * scale_x, 192 * scale_x):
+    for y in range(geometry.y(172), geometry.y(208)):
+        for x in range(geometry.x(158), geometry.x(192)):
             offset = (y * width + x) * 3
             red, green, blue = pixels[offset:offset + 3]
             if player == 2:
@@ -317,10 +378,11 @@ def placard_colour_count(path: Path, player: int) -> tuple[int, int]:
                 matched = (red > 130 and blue > 130 and green < 110 and
                            red > green * 1.5 and blue > green * 1.5)
             count += matched
-    return count, 34 * 36 * scale_x * scale_y
+    return count, geometry.area(PLACARD_LOGICAL_AREA)
 
 
-def placard_changed_pixels(before: Path, after: Path) -> tuple[int, int]:
+def placard_changed_pixels(before: Path, after: Path,
+                           geometry: FrameGeometry) -> tuple[int, int]:
     """Return meaningful changes in Taj's own numbered-placard rectangle.
 
     A colour-only P3 check is unsound: the lower centre of this screen contains
@@ -332,17 +394,15 @@ def placard_changed_pixels(before: Path, after: Path) -> tuple[int, int]:
     after_width, after_height, after_pixels = read_ppm(after)
     if (width, height) != (after_width, after_height):
         raise ValueError("placard frames have different dimensions")
-    scale_x = width // ROM_WIDTH
-    scale_y = height // ROM_HEIGHT
     changed = 0
-    for y in range(172 * scale_y, 208 * scale_y):
-        for x in range(158 * scale_x, 192 * scale_x):
+    for y in range(geometry.y(172), geometry.y(208)):
+        for x in range(geometry.x(158), geometry.x(192)):
             offset = (y * width + x) * 3
             if any(abs(before_pixels[offset + channel] -
                        after_pixels[offset + channel]) > 20
                    for channel in range(3)):
                 changed += 1
-    return changed, 34 * 36 * scale_x * scale_y
+    return changed, geometry.area(PLACARD_LOGICAL_AREA)
 
 
 def main() -> int:
@@ -525,30 +585,33 @@ def main() -> int:
             selected_motion = (
                 frames_dir / f"frame_{SELECTED_MOTION_FRAME:04d}.ppm")
             try:
-                unselected_counts = roster_counts(unselected)
-                selected_counts = roster_counts(selected)
-                left_row, right_row, row_scale = row_side_counts(unselected)
-                motion = roster_motion(selected, selected_motion)
+                # The authored envelope is inset and smaller than the frame
+                # under a forced aspect; every logical sampling box below is
+                # mapped through the geometry rather than assuming the scene
+                # fills the capture.
+                geometry = FrameGeometry.for_frame(unselected, args.aspect)
+                unselected_counts = roster_counts(unselected, geometry)
+                selected_counts = roster_counts(selected, geometry)
+                left_row, right_row, row_scale = row_side_counts(
+                    unselected, geometry)
+                motion = roster_motion(selected, selected_motion, geometry)
             except (OSError, ValueError) as error:
                 failures.append(f"{layout.name}: rendered actor evidence failed: {error}")
                 continue
             purple, ordinary_red, _ = unselected_counts
             _, selected_red, _ = selected_counts
-            frame_width, frame_height, _ = read_ppm(unselected)
-            pixel_scale = ((frame_width // ROM_WIDTH) *
-                           (frame_height // ROM_HEIGHT))
-            aspect_scale = 1.0
-            if args.aspect:
-                width_text, height_text = args.aspect.split(":")
-                requested_aspect = float(width_text) / float(height_text)
-                aspect_scale = min(1.0, (4.0 / 3.0) / requested_aspect) ** 2
-            if purple < 500 * pixel_scale * aspect_scale:
+            # Thresholds are stated per ROM-logical pixel, so they follow the
+            # authored envelope's real size in the capture: a 21:9
+            # presentation letterboxes 320x240 into fewer pixels than a 4:3
+            # one, and demands proportionally fewer of them.
+            pixel_scale = geometry.pixel_scale
+            if purple < 500 * pixel_scale:
                 failures.append(
                     f"{layout.name}: Taj model is not visibly present "
                     f"({purple=})"
                 )
-            if (left_row < 1500 * row_scale * aspect_scale or
-                    right_row < 1500 * row_scale * aspect_scale):
+            if (left_row < 1500 * row_scale or
+                    right_row < 1500 * row_scale):
                 failures.append(
                     f"{layout.name}: authored lower-row actors collapsed or "
                     f"left the safe area ({left_row=}, {right_row=})")
@@ -559,16 +622,15 @@ def main() -> int:
             # Use the same max(relative, absolute-floor) shape as the browser
             # sibling (check_browser_taj_character_select.py), measured over the
             # identical 34x36 logical placard rectangle roster_counts() samples.
-            placard_region = PLACARD_LOGICAL_AREA * pixel_scale
-            placard_floor = int(placard_region * PLACARD_MIN_COVERAGE *
-                                aspect_scale)
+            placard_region = geometry.area(PLACARD_LOGICAL_AREA)
+            placard_floor = int(placard_region * PLACARD_MIN_COVERAGE)
             if selected_red < max(ordinary_red * 4, placard_floor):
                 failures.append(
                     f"{layout.name}: Taj did not raise the P1 placard "
                     f"({ordinary_red=}, {selected_red=}, "
                     f"floor={placard_floor}, region={placard_region})"
                 )
-            if motion < 300 * pixel_scale * aspect_scale:
+            if motion < 300 * pixel_scale:
                 failures.append(
                     f"{layout.name}: Taj/placard hover pose did not animate "
                     f"({motion=})")
@@ -618,7 +680,8 @@ def main() -> int:
                 try:
                     darker, changed, shadow_region = oversized_shadow_delta(
                         unselected,
-                        control_frames / f"frame_{UNSELECTED_FRAME:04d}.ppm")
+                        control_frames / f"frame_{UNSELECTED_FRAME:04d}.ppm",
+                        geometry)
                     if (darker < shadow_region * 0.08 or
                             changed < shadow_region * 0.10):
                         failures.append(
@@ -675,6 +738,12 @@ def main() -> int:
                     MDKR_DUMP_FROM="1440", MDKR_DUMP_EVERY="20",
                     MDKR64_HIDDEN="1",
                 )
+                # A focused aspect run has to reach the per-controller
+                # placards too; without this the P2..P4 routes silently
+                # re-ran the 4:3 arm's own measurements.
+                if args.aspect:
+                    player_env["MDKR_ASPECT"] = args.aspect
+                    player_env["MDKR_WIDESCREEN"] = "1"
                 player_process = subprocess.run(
                     [str(binary), "--headless-frames", "1840",
                      "--input-script", str(player_script), "--dump-frames",
@@ -705,14 +774,14 @@ def main() -> int:
                     before_tick = ((actions[-1][0] // 20) - 1) * 20
                     before_frame = player_frames / (
                         f"frame_{before_tick:04d}.ppm")
-                    purple, _, _ = roster_counts(player_frame)
-                    width, height, _ = read_ppm(player_frame)
-                    pixel_scale = ((width // ROM_WIDTH) *
-                                   (height // ROM_HEIGHT))
+                    player_geometry = FrameGeometry.for_frame(
+                        player_frame, args.aspect)
+                    purple, _, _ = roster_counts(player_frame, player_geometry)
+                    pixel_scale = player_geometry.pixel_scale
                     placard_pixels, placard_region = placard_colour_count(
-                        player_frame, player)
+                        player_frame, player, player_geometry)
                     placard_motion, motion_region = placard_changed_pixels(
-                        before_frame, player_frame)
+                        before_frame, player_frame, player_geometry)
                     if purple < 500 * pixel_scale:
                         failures.append(
                             f"P{player}: Taj actor was not visible beside the "

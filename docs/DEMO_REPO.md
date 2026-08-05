@@ -44,6 +44,13 @@ With no source in the demo repo, that stamp is the only link from the live site 
 to code, so the publisher repeats it in the demo repo's commit message too. "What
 code is live?" always has an exact answer.
 
+Staging clears the previous link's output before copying this one in, so clearing and
+stamping are one indivisible step: every gate that can refuse the build is decided
+before `dist/web` is touched, and an I/O failure inside the staging block removes the
+whole staged set rather than leaving artifacts with no provenance to describe them. A
+refused build therefore leaves either the previous complete build or the tracked
+sources alone — never a half-built `dist/web` that later tools would read as real.
+
 **3. Fail closed.** `tools/web/publish_demo.sh` aborts rather than shipping something
 questionable. In order:
 
