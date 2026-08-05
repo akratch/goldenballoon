@@ -772,16 +772,22 @@ void func_8000B38C(Vertex *vertices, Triangle *triangles, ObjectTransform *trans
     width = (tex->width - 1) << 4;
     height = (tex->height - 1) << 4;
 
+    /* Stock builds each rim corner as one N64 word with U in the high half and
+     * V in the low half. Keep the two halves separate and let DKR_TEXCOORDS lay
+     * them out in the host's byte order -- the packed word aliases TexCoords'
+     * {s16 u, v} and would swap U with V on a little-endian host (see
+     * DKR_TRIANGLE in structs.h). */
     for (i = 0; i < 8; i++) {
-        sp80[i] = width + ((sins_s16(arg5) * width) >> 16);
-        sp80[i] |= ((height << 16) + height * coss_s16(arg5)) & 0xFFFF0000;
+        s32 rimV = (width + ((sins_s16(arg5) * width) >> 16)) & 0xFFFF;
+        s32 rimU = (((height << 16) + height * coss_s16(arg5)) >> 16) & 0xFFFF;
+        sp80[i] = (s32) DKR_TEXCOORDS(rimU, rimV);
         arg5 += 0x2000;
     }
 
     tri = (s32 *) triangles;
     for (i = 0; i < 8; i++) {
         *tri++ = DKR_TRIANGLE(BACKFACE_CULL, 0, i + 1, ((i + 1) & 7) + 1);
-        *tri++ = ((width & 0xFFFF) << 16) | (height & 0xFFFF);
+        *tri++ = (s32) DKR_TEXCOORDS(width, height);
         *tri++ = sp80[i];
         *tri++ = sp80[(i + 1) & 7];
     }
@@ -5214,6 +5220,32 @@ void render_misc_model(Object *obj, Vertex *verts, u32 numVertices, Triangle *tr
     mtx_pop(&gObjectCurrDisplayList);
 }
 
+#ifdef NATIVE_PORT
+/**
+ * Test-only suppression of the giant character portrait draw
+ * (BHV_CHARACTER_FLAG, the collection arenas).
+ *
+ * The portraits are small textured quads in a large lit arena, so every scene
+ * colour/flatness metric stays green with all four of them missing -- which is
+ * how they stayed invisible for a whole release. tests/check_challenge_modes.py
+ * pairs a normal run with a suppressed run and requires the two framebuffers to
+ * DIFFER by a floor of pixels, which is the only assertion in this suite that
+ * can witness the draw actually painting. Suppression is presentation-only: the
+ * gate also requires the two runs' gameplay traces to stay identical.
+ */
+static s32 character_portrait_draw_suppressed(void) {
+    static s32 suppressed = -1;
+    if (suppressed < 0) {
+        const char *value = getenv("MDKR_SUPPRESS_PORTRAITS");
+        suppressed = (value != NULL && value[0] != '\0' &&
+                      strcmp(value, "0") != 0) ? 1 : 0;
+    }
+    return suppressed;
+}
+#else
+#define character_portrait_draw_suppressed() 0
+#endif
+
 /**
  * A few objects use unconventional means to render. They are handled here.
  */
@@ -5225,7 +5257,8 @@ void render_3d_misc(Object *obj) {
 
     switch (obj->behaviorId) {
         case BHV_CHARACTER_FLAG:
-            if (obj->properties.characterFlag.characterID >= 0) {
+            if (obj->properties.characterFlag.characterID >= 0 &&
+                !character_portrait_draw_suppressed()) {
                 characterFlagModel = obj->characterFlagModel;
                 render_misc_model(obj, characterFlagModel->vertices, 4, characterFlagModel->triangles, 2,
                                   characterFlagModel->texture,

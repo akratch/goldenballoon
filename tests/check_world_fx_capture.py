@@ -26,13 +26,36 @@ SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
 FRAMES = 3500
 CAPTURE_FRAME = FRAMES - 1
 BACKENDS = ("gl", "webgpu")
+# Exact, not a floor. Re-baselined once since it was first pinned, at commit
+# 670c984 -- and NOT by anything in the renderer.
+#
+# func_80042D20() picks an AI racer's racing line with D_800DCDA0[racePosition].
+# racePosition is 1..8 while that table has eight entries, so 8th place reads one
+# past the end. The port used to clamp the read to D_800DCDA0[7] == 2; hardware
+# reads D_800DCDA8[0] == 1, because the two tables are adjacent (ROM us.v80
+# 0x0DDF10: 00 00 00 01 01 02 02 02 | 01 01 01 02 03 02 03 02, and
+# symbol_addrs.us.v80 puts D_800DCDA8 exactly eight bytes after D_800DCDA0 in
+# every revision). 670c984 replaced the invented 2 with the hardware 1, which
+# fires on 383 of 3175 calls on this route and changes CPU steering, so the whole
+# race diverges: a second racer is inside the light's view at the captured frame.
+#
+# That is the entire delta, measured caster-by-caster on two builds differing
+# only in that value: +224 body triangles and +8 wheel triangles for the second
+# racer, plus one 8-triangle dynamic batch that becomes visible with it
+# (+240 dynamic, +240 triangles, 6 -> 12 dynamic owning transforms, +23 merged
+# ranges, +8 registered matrices). static is unchanged at 541 because the static
+# stage cache is level-scoped and both arms load the same track. The capture
+# path itself is untouched: e14f6ee's append-contract/bind-guard work and
+# 5c0b0b9's clip-ratio emulation both measure ZERO census delta on this route
+# (verified across e14f6ee^, e14f6ee and HEAD, with identical [SHADOW-PLAN]),
+# and the dynamic stream contains no duplicate world positions.
 EXPECTED_CASTER_CENSUS = {
     "views": 1,
-    "triangles": 959,
-    "ranges": 107,
+    "triangles": 1199,
+    "ranges": 130,
     "static": 541,
-    "dynamic": 418,
-    "matrices": 10,
+    "dynamic": 658,
+    "matrices": 18,
 }
 FATAL_RE = re.compile(
     r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"

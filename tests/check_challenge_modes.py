@@ -32,6 +32,13 @@ Production has no tie or timeout verdict for these modes. Tied unfinished scores
 are deterministically ordered by racer index in race_check_finish(); a challenge
 ends only at the mode predicate. The normal arms exercise that tie-break for all
 remaining racers rather than inventing unsupported outcomes.
+
+Fire Mountain and Smokey Castle additionally carry a portrait pixel witness on
+both backends: the arena is run twice, identically except for
+MDKR_SUPPRESS_PORTRAITS, and the framebuffers must move apart while the gameplay
+traces stay identical. Nothing else here can see a portrait that binds a racer,
+builds geometry, submits a draw and paints nothing -- which is exactly what the
+giant character portraits did for a whole release.
 """
 
 from __future__ import annotations
@@ -90,6 +97,31 @@ EXPECTED_PORTRAITS = 4
 # there and is pinned rather than skipped: it is the thing that would have to
 # change for this gate's scoping to become wrong.
 PORTRAIT_COURSES = {11, 25}
+
+# Paired pixel witness for the same portraits. Binding traces prove the model
+# was built and bound; they cannot see whether the draw painted anything, and
+# for a whole release it did not -- the run-time-built quad's triangle indices
+# and UVs were packed as N64 words into host-order union fields, so every
+# portrait submitted a backface-culled triangle over a vertex slot its batch
+# never loaded and emitted ZERO pixels while every trace and every scene metric
+# stayed green. The gate therefore runs the arena twice, identically except for
+# MDKR_SUPPRESS_PORTRAITS, and requires the two framebuffers to DIFFER: only a
+# portrait that actually paints can move them apart. The same pairing requires
+# the gameplay traces to stay identical, which proves the difference is the
+# portrait draw and not a run that diverged.
+PORTRAIT_WITNESS_FRAMES = 2300
+PORTRAIT_DUMP_FROM = 2100
+PORTRAIT_DUMP_EVERY = 100
+# Measured floors: the smallest per-frame portrait footprint over both arenas
+# at these two frames is 4139 px (course 25 @2100) and the largest is 20112 px
+# (course 11 @2200); a portrait-shaped quad is never smaller than a few
+# thousand pixels at this resolution. The floors sit well under the measured
+# minimum and infinitely above the zero a silent portrait produces.
+PORTRAIT_MIN_PIXELS_PER_FRAME = 1500
+PORTRAIT_MIN_PIXELS_TOTAL = 5000
+# Both production backends, because the defect that hid the portraits lived in
+# the geometry the display list carried, which every backend consumes.
+PORTRAIT_BACKENDS = ("gl", "webgpu")
 
 STATE_RE = re.compile(
     r"\[CHALLENGE\] phase=(\w+) course=(\d+) type=(\d+) tracks=(\d+) "
@@ -386,6 +418,169 @@ def validate_portraits(output: str, course: int,
             failures.append(
                 f"course {course}: portrait for player {player} resolved no "
                 "texture")
+
+
+def raster(path: Path) -> tuple[int, int, bytes]:
+    """Decode a binary P6 PPM into (width, height, pixels)."""
+    data = path.read_bytes()
+    fields: list[bytes] = []
+    index = 0
+    while len(fields) < 4:
+        while data[index:index + 1].isspace():
+            index += 1
+        if data[index:index + 1] == b"#":
+            index = data.index(b"\n", index) + 1
+            continue
+        end = index
+        while not data[end:end + 1].isspace():
+            end += 1
+        fields.append(data[index:end])
+        index = end
+    index += 1
+    width, height = int(fields[1]), int(fields[2])
+    return width, height, data[index:index + width * height * 3]
+
+
+def raster_difference(left: Path, right: Path) -> int:
+    """Count pixels whose RGB triples differ between two same-size rasters."""
+    lw, lh, lp = raster(left)
+    rw, rh, rp = raster(right)
+    if (lw, lh) != (rw, rh) or len(lp) != len(rp):
+        raise ValueError(
+            f"raster geometry {lw}x{lh} vs {rw}x{rh} does not match"
+        )
+    return sum(
+        1 for offset in range(0, len(lp), 3)
+        if lp[offset:offset + 3] != rp[offset:offset + 3]
+    )
+
+
+def portrait_witness_arm(
+    binary: Path, rom: Path, course: int, work: Path, backend: str,
+    suppress: bool,
+) -> tuple[str, Path]:
+    """One short arena run, optionally with the portrait draw suppressed."""
+    run_dir = work / backend / ("suppressed" if suppress else "drawn")
+    (run_dir / "save").mkdir(parents=True)
+    (run_dir / "save/eeprom.bin").write_bytes(eeprom_image(False))
+    script = run_dir / "challenge.txt"
+    make_script(script)
+    captures = run_dir / "frames"
+    captures.mkdir()
+    env = {
+        key: value for key, value in os.environ.items()
+        if not key.startswith("MDKR_")
+    }
+    env.update(
+        MDKR_AUDIO="0",
+        MDKR_TRACE="1",
+        MDKR_AUTOPILOT="1",
+        MDKR_LOAD_TRACK=str(course),
+        MDKR_CHALLENGE_OUTCOME="win",
+        MDKR_RENDER_SCALE="1",
+        MDKR_RENDERER=backend,
+        MDKR_DUMP_FROM=str(PORTRAIT_DUMP_FROM),
+        MDKR_DUMP_EVERY=str(PORTRAIT_DUMP_EVERY),
+    )
+    if suppress:
+        env["MDKR_SUPPRESS_PORTRAITS"] = "1"
+    proc = subprocess.run(
+        [
+            str(binary),
+            "--headless-frames", str(PORTRAIT_WITNESS_FRAMES),
+            "--input-script", str(script),
+            "--dump-frames", str(captures),
+            "--rom", str(rom),
+        ],
+        cwd=run_dir,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=300,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"portrait witness {backend} arm exited {proc.returncode}"
+        )
+    return proc.stdout, captures
+
+
+def validate_portrait_pixels(
+    binary: Path, rom: Path, course: int, failures: list[str],
+) -> None:
+    """The portraits actually paint.
+
+    Everything else in this gate is satisfied by a portrait that binds a racer,
+    builds geometry and submits a draw that emits nothing. This pairs a normal
+    arena run with one whose portrait draw is suppressed and requires the two
+    framebuffers to move apart at every sampled frame.
+    """
+    with tempfile.TemporaryDirectory(prefix="mdkr_portrait_") as temp:
+        work = Path(temp)
+        for backend in PORTRAIT_BACKENDS:
+            try:
+                drawn_out, drawn = portrait_witness_arm(
+                    binary, rom, course, work, backend, False)
+                hidden_out, hidden = portrait_witness_arm(
+                    binary, rom, course, work, backend, True)
+            except (RuntimeError, subprocess.TimeoutExpired) as error:
+                failures.append(f"course {course}: portrait witness {error}")
+                continue
+            for output, label in (
+                (drawn_out, "drawn"), (hidden_out, "hidden"),
+            ):
+                bad = BAD_RE.search(output)
+                if bad:
+                    failures.append(
+                        f"course {course} {backend}: portrait witness {label} "
+                        f"arm hit {bad.group(0)!r}")
+                    return
+            # Suppression must be presentation-only. If the two arms diverged
+            # in gameplay, a framebuffer difference would prove nothing about
+            # the portrait draw.
+            drawn_rows = parse_states(drawn_out, course)
+            hidden_rows = parse_states(hidden_out, course)
+            if not drawn_rows or drawn_rows != hidden_rows:
+                failures.append(
+                    f"course {course} {backend}: suppressing the portrait "
+                    f"draw changed the gameplay trace ({len(drawn_rows)} vs "
+                    f"{len(hidden_rows)} states); the pixel witness is not "
+                    "isolated to presentation")
+                continue
+            frames = sorted(path.name for path in drawn.glob("frame_*.ppm"))
+            if not frames:
+                failures.append(
+                    f"course {course} {backend}: portrait witness produced "
+                    "no frames")
+                continue
+            total = 0
+            for name in frames:
+                hidden_frame = hidden / name
+                if not hidden_frame.exists():
+                    failures.append(
+                        f"course {course} {backend}: portrait witness "
+                        f"suppressed arm is missing {name}")
+                    break
+                try:
+                    changed = raster_difference(drawn / name, hidden_frame)
+                except ValueError as error:
+                    failures.append(f"course {course} {backend}: {error}")
+                    break
+                total += changed
+                if changed < PORTRAIT_MIN_PIXELS_PER_FRAME:
+                    failures.append(
+                        f"course {course} {backend}: {name} changed only "
+                        f"{changed} pixels when the portrait draw was "
+                        f"suppressed, want >= {PORTRAIT_MIN_PIXELS_PER_FRAME}"
+                        " -- the portraits are submitting a draw that paints "
+                        "nothing")
+            if total < PORTRAIT_MIN_PIXELS_TOTAL:
+                failures.append(
+                    f"course {course} {backend}: portraits painted {total} "
+                    f"pixels across {len(frames)} frames, want >= "
+                    f"{PORTRAIT_MIN_PIXELS_TOTAL}")
 
 
 def human(row: dict[str, object]) -> dict[str, int | float] | None:
@@ -703,6 +898,11 @@ def main() -> int:
             if args.verbose and result["metrics"]:
                 print(f"    render {result['metrics']}")
 
+    for course in [c for c in courses if c in PORTRAIT_COURSES]:
+        if args.verbose:
+            print(f"  portrait pixel witness (course {course})")
+        validate_portrait_pixels(binary, rom, course, failures)
+
     controls = CONTROLS[:1] if args.quick else CONTROLS
     for course, gate in controls:
         if args.verbose:
@@ -723,9 +923,11 @@ def main() -> int:
             print(f"  - {failure}")
         return 1
     arm_count = len(courses) * 2
+    witnesses = len([c for c in courses if c in PORTRAIT_COURSES])
     print(
         f"check_challenge_modes: PASS "
-        f"({arm_count} win/loss arms, {len(controls)} positive controls)"
+        f"({arm_count} win/loss arms, {len(controls)} positive controls, "
+        f"{witnesses} portrait pixel witnesses)"
     )
     return 0
 

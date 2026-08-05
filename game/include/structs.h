@@ -652,9 +652,38 @@ typedef struct TexCoords {
 #define BACKFACE_DRAW 0x40
 #define TRI_FLAG_80 0x80
 
+/*
+ * Triangle.vertices and TexCoords.texCoords are UNION ALIASES over the
+ * {flags, vi0, vi1, vi2} byte struct and the {u, v} s16 pair. A word built for
+ * the N64's big-endian memory therefore lands in the wrong fields on a
+ * little-endian host: DKR_TRIANGLE(0x40, 0, 1, 3) = 0x40000103 is stored as the
+ * bytes 03 01 00 40, i.e. flags=0x03 (BACKFACE_DRAW lost) and indices 1, 0, 64
+ * -- an out-of-batch, backface-culled, degenerate triangle that emits nothing.
+ * That is exactly why the giant character portraits in the collection arenas
+ * (BHV_CHARACTER_FLAG, Fire Mountain / Smokey Castle) drew zero pixels.
+ *
+ * The port's canonical in-memory layout is host-natural: the ROM asset swapper
+ * (platform/asset_swap.c swap_triangles) leaves the four index/flag bytes
+ * untouched and byte-swaps each s16 texture coordinate in place, so every
+ * ROM-sourced Triangle already reads correctly through the named fields. These
+ * packers must produce the same layout for run-time-built geometry, so the
+ * word's byte order is the HOST's, not the ROM's. A big-endian host keeps the
+ * original packing and is bit-identical to stock.
+ */
+#if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && \
+    __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#define DKR_TRIANGLE(flags, ind0, ind1, ind2) \
+    (((u32) (flags) & 0xFFu) | (((u32) (ind0) & 0xFFu) << 8) | \
+     (((u32) (ind1) & 0xFFu) << 16) | (((u32) (ind2) & 0xFFu) << 24))
+#define DKR_TEXCOORDS(u, v) \
+    (((u32) (u) & 0xFFFFu) | (((u32) (v) & 0xFFFFu) << 16))
+#else
 #define DKR_TRIANGLE(flags, ind0, ind1, ind2) \
     ((((u32) (flags) & 0xFFu) << 24) | (((u32) (ind0) & 0xFFu) << 16) | \
      (((u32) (ind1) & 0xFFu) << 8) | ((u32) (ind2) & 0xFFu))
+#define DKR_TEXCOORDS(u, v) \
+    ((((u32) (u) & 0xFFFFu) << 16) | ((u32) (v) & 0xFFFFu))
+#endif
 
 /* Size: 0x10 bytes */
 typedef struct Triangle {

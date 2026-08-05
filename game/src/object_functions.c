@@ -1213,17 +1213,23 @@ void obj_loop_characterflag(Object *obj, UNUSED s32 updateRate) {
                        (s32) obj->properties.characterFlag.characterID,
                        flagModel->texture != NULL ? "ok" : "missing");
 #endif
-            temp_t4 = (flagModel->texture->width - 1) << 21;
-            temp_t5 = (flagModel->texture->height - 1) << 5;
+            /* S10.5 texture coordinates. Stock packs them as N64 words --
+             * (width-1) << 21 is ((width-1) << 5) in the U half, (height-1) << 5
+             * is the same value in the V half -- which only lands in the named
+             * fields on a big-endian host (see DKR_TRIANGLE in structs.h). The
+             * halves are written by name so the built quad is identical on
+             * either endianness. */
+            temp_t4 = (flagModel->texture->width - 1) << 5;   /* max U */
+            temp_t5 = (flagModel->texture->height - 1) << 5;  /* max V */
             // 0x40 = Draw backface
             flagModel->triangles[0].vertices = DKR_TRIANGLE(BACKFACE_DRAW, 0, 1, 3);
-            flagModel->triangles[0].uv0.texCoords = 0;
-            flagModel->triangles[0].uv1.texCoords = temp_t4;
-            flagModel->triangles[0].uv2.texCoords = temp_t5;
+            flagModel->triangles[0].uv0.texCoords = DKR_TEXCOORDS(0, 0);
+            flagModel->triangles[0].uv1.texCoords = DKR_TEXCOORDS(temp_t4, 0);
+            flagModel->triangles[0].uv2.texCoords = DKR_TEXCOORDS(0, temp_t5);
             flagModel->triangles[1].vertices = DKR_TRIANGLE(BACKFACE_DRAW, 1, 2, 3);
-            flagModel->triangles[1].uv0.texCoords = temp_t4;
-            flagModel->triangles[1].uv1.texCoords = (temp_t4 | temp_t5);
-            flagModel->triangles[1].uv2.texCoords = temp_t5;
+            flagModel->triangles[1].uv0.texCoords = DKR_TEXCOORDS(temp_t4, 0);
+            flagModel->triangles[1].uv1.texCoords = DKR_TEXCOORDS(temp_t4, temp_t5);
+            flagModel->triangles[1].uv2.texCoords = DKR_TEXCOORDS(0, temp_t5);
         }
     }
 }
