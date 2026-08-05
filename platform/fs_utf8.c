@@ -4,6 +4,70 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Platform-independent so the rule stays testable everywhere the suite runs;
+ * only the Windows exec arm below consumes it. See fs_utf8.h. */
+int mdkr_windows_quote_argument_utf8(const char *argument, char *output,
+                                     size_t capacity) {
+    size_t written = 0u;
+    size_t index;
+    size_t backslashes;
+
+    if (argument == NULL || output == NULL || capacity == 0u) {
+        errno = EINVAL;
+        return -1;
+    }
+#define MDKR_QUOTE_EMIT(character)                 \
+    do {                                           \
+        if (written + 1u >= capacity) {            \
+            output[0] = '\0';                      \
+            errno = ENAMETOOLONG;                  \
+            return -1;                             \
+        }                                          \
+        output[written++] = (character);           \
+    } while (0)
+
+    MDKR_QUOTE_EMIT('"');
+    for (index = 0u; argument[index] != '\0'; ++index) {
+        if (argument[index] == '\\') continue;
+        /* Count the backslash run that ends here, then decide what it means. */
+        for (backslashes = 0u;
+             backslashes < index && argument[index - backslashes - 1u] == '\\';
+             ++backslashes) {
+        }
+        if (argument[index] == '"') {
+            /* A backslash run immediately before a quote is halved by the
+             * parser, so emit it twice, then escape the quote itself. */
+            size_t repeat;
+            for (repeat = 0u; repeat < backslashes * 2u; ++repeat) {
+                MDKR_QUOTE_EMIT('\\');
+            }
+            MDKR_QUOTE_EMIT('\\');
+            MDKR_QUOTE_EMIT('"');
+        } else {
+            size_t repeat;
+            for (repeat = 0u; repeat < backslashes; ++repeat) {
+                MDKR_QUOTE_EMIT('\\');
+            }
+            MDKR_QUOTE_EMIT(argument[index]);
+        }
+    }
+    /* Trailing backslashes precede the closing quote, so they double too. */
+    for (backslashes = 0u;
+         backslashes < index && argument[index - backslashes - 1u] == '\\';
+         ++backslashes) {
+    }
+    {
+        size_t repeat;
+        for (repeat = 0u; repeat < backslashes * 2u; ++repeat) {
+            MDKR_QUOTE_EMIT('\\');
+        }
+    }
+    MDKR_QUOTE_EMIT('"');
+#undef MDKR_QUOTE_EMIT
+    output[written] = '\0';
+    return (int)written;
+}
+
 #if defined(_WIN32) && !defined(__EMSCRIPTEN__)
 #include <direct.h>
 #include <io.h>
@@ -223,16 +287,101 @@ int mdkr_path_is_link_or_reparse_utf8(const char *path) {
     return (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ? 1 : 0;
 }
 
-int mdkr_exec_replace_utf8(const char *path) {
-    wchar_t *wide = utf8_to_extended_path(path);
-    const wchar_t *arguments[2];
+/* Convert one UTF-8 argument into the quoted wide form the Windows parser
+ * recovers verbatim. Returns NULL and leaves errno set on failure. */
+static wchar_t *quoted_wide_argument(const char *argument) {
+    char *quoted;
+    wchar_t *wide;
+    int quoted_length;
+    int wide_size;
+    size_t capacity;
+
+    if (argument == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+    /* Worst case is every byte being a backslash that ends up doubled, plus
+     * the surrounding quotes and the terminator. */
+    capacity = strlen(argument) * 2u + 3u;
+    quoted = (char *)calloc(capacity, sizeof(*quoted));
+    if (quoted == NULL) return NULL;
+    quoted_length =
+        mdkr_windows_quote_argument_utf8(argument, quoted, capacity);
+    if (quoted_length < 0) {
+        const int saved = errno;
+        free(quoted);
+        errno = saved ? saved : EINVAL;
+        return NULL;
+    }
+    wide_size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                    quoted, -1, NULL, 0);
+    if (wide_size <= 0) {
+        free(quoted);
+        errno = EINVAL;
+        return NULL;
+    }
+    wide = (wchar_t *)calloc((size_t)wide_size, sizeof(*wide));
+    if (wide == NULL) {
+        free(quoted);
+        return NULL;
+    }
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, quoted, -1,
+                            wide, wide_size) <= 0) {
+        free(quoted);
+        free(wide);
+        errno = EINVAL;
+        return NULL;
+    }
+    free(quoted);
+    return wide;
+}
+
+int mdkr_exec_replace_utf8(const char *path, const char *const *arguments) {
+    /* The image itself is addressed through the extended-length form so a
+     * package extracted into a deep or non-ASCII directory still starts. The
+     * ARGUMENT vector is separate: the CRT joins it into the replacement's
+     * command line with single spaces and no quoting whatsoever, so every
+     * element -- argv[0] included -- has to arrive already quoted or an
+     * install path containing a space reaches the replacement as several
+     * arguments, which arg_triage then reads as "the caller already told the
+     * engine what to do". That is a windowless start, not a launcher. */
+    wchar_t *image = utf8_to_extended_path(path);
+    wchar_t **vector = NULL;
+    size_t count = 0u;
+    size_t index;
     int saved;
-    if (wide == NULL) return errno ? errno : EINVAL;
-    arguments[0] = wide;
-    arguments[1] = NULL;
-    _wexecv(wide, arguments);
+
+    if (image == NULL) return errno ? errno : EINVAL;
+    if (arguments != NULL) {
+        while (arguments[count] != NULL) ++count;
+    }
+    vector = (wchar_t **)calloc(count + 2u, sizeof(*vector));
+    if (vector == NULL) {
+        saved = errno ? errno : ENOMEM;
+        free(image);
+        return saved;
+    }
+    /* argv[0] is the launch spelling the replacement reports, not the image
+     * lookup: keep it the plain path so nothing downstream inherits a \\?\
+     * prefix it cannot interpret. */
+    vector[0] = quoted_wide_argument(path);
+    for (index = 0u; index < count && vector[index] != NULL; ++index) {
+        vector[index + 1u] = quoted_wide_argument(arguments[index]);
+    }
+    if (vector[count] == NULL) {
+        size_t discard;
+        saved = errno ? errno : EINVAL;
+        for (discard = 0u; discard <= count; ++discard) free(vector[discard]);
+        free(vector);
+        free(image);
+        return saved;
+    }
+
+    _wexecv(image, (const wchar_t *const *)vector);
     saved = errno ? errno : EIO;
-    free(wide);
+    for (index = 0u; index <= count; ++index) free(vector[index]);
+    free(vector);
+    free(image);
     return saved;
 }
 
@@ -383,11 +532,29 @@ int mdkr_path_is_link_or_reparse_utf8(const char *path) {
     if (path == NULL || lstat(path, &status) != 0) return -1;
     return S_ISLNK(status.st_mode) ? 1 : 0;
 }
-int mdkr_exec_replace_utf8(const char *path) {
-    char *arguments[] = {(char *)path, NULL};
+int mdkr_exec_replace_utf8(const char *path, const char *const *arguments) {
+    /* POSIX carries the argument vector across exec verbatim, so there is no
+     * command line to quote; the vector is still built explicitly so both arms
+     * hand the replacement exactly the same argv. */
+    char **vector;
+    size_t count = 0u;
+    size_t index;
+    int saved;
+
     if (path == NULL || path[0] == '\0') return EINVAL;
-    execvp(path, arguments);
-    return errno ? errno : EIO;
+    if (arguments != NULL) {
+        while (arguments[count] != NULL) ++count;
+    }
+    vector = (char **)calloc(count + 2u, sizeof(*vector));
+    if (vector == NULL) return errno ? errno : ENOMEM;
+    vector[0] = (char *)path;
+    for (index = 0u; index < count; ++index) {
+        vector[index + 1u] = (char *)arguments[index];
+    }
+    execvp(path, vector);
+    saved = errno ? errno : EIO;
+    free(vector);
+    return saved;
 }
 int mdkr_file_sync(FILE *file) {
     if (file == NULL || fflush(file) != 0) return -1;

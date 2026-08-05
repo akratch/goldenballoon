@@ -1,6 +1,7 @@
 #include "app_relaunch.h"
 #include "app_restart.h"
 #include "diag_log.h"
+#include "fs_utf8.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -8,10 +9,64 @@
 #include <iterator>
 #include <string>
 
+#if defined(_WIN32)
+#include <io.h>
+static int dupFd(int fd) { return _dup(fd); }
+static int replaceFd(int source, int target) { return _dup2(source, target); }
+static void closeFd(int fd) { if (fd >= 0) _close(fd); }
+#else
+#include <unistd.h>
+static int dupFd(int fd) { return dup(fd); }
+static int replaceFd(int source, int target) { return dup2(source, target); }
+static void closeFd(int fd) { if (fd >= 0) close(fd); }
+#endif
+
 // Normally supplied by platform/main_pc.c. This focused executable links only
 // the app lifecycle seam, so it owns the crash-mirror storage.
 int g_diagLogRealErrFd = -1;
 int g_diagLogFileFd = -1;
+
+// The Windows CRT's _exec/_spawn family joins argv into one command line and
+// quotes nothing, so every element the relaunch passes has to arrive already
+// quoted. These are the cases that decide whether a replacement started from
+// an ordinary install path is one argument or several.
+static int checkWindowsQuoting() {
+    static const struct {
+        const char *argument;
+        const char *expected;
+    } cases[] = {
+        {"--ui", "\"--ui\""},
+        {"C:\\Golden Balloon\\GoldenBalloon.exe",
+         "\"C:\\Golden Balloon\\GoldenBalloon.exe\""},
+        {"C:\\Program Files\\Golden Balloon\\GoldenBalloon.exe",
+         "\"C:\\Program Files\\Golden Balloon\\GoldenBalloon.exe\""},
+        // A trailing backslash precedes the closing quote, so it must double
+        // or the parser eats the quote and swallows the next argument.
+        {"C:\\dir\\", "\"C:\\dir\\\\\""},
+        {"a\"b", "\"a\\\"b\""},
+        {"a\\\\\"b", "\"a\\\\\\\\\\\"b\""},
+        {"", "\"\""},
+    };
+    for (const auto &item : cases) {
+        char quoted[512];
+        const int written = mdkr_windows_quote_argument_utf8(
+            item.argument, quoted, sizeof(quoted));
+        if (written < 0 || std::string(quoted) != item.expected) {
+            std::fprintf(stderr,
+                         "FAIL: quoting %s produced %s, expected %s\n",
+                         item.argument, written < 0 ? "(error)" : quoted,
+                         item.expected);
+            return 1;
+        }
+    }
+    char tight[4];
+    if (mdkr_windows_quote_argument_utf8("abc", tight, sizeof(tight)) >= 0 ||
+        mdkr_windows_quote_argument_utf8(nullptr, tight, sizeof(tight)) >= 0) {
+        std::fprintf(stderr, "FAIL: quoting accepted an impossible request\n");
+        return 1;
+    }
+    return 0;
+}
 
 int main() {
     const char *prefs = std::getenv("MDKR_APP_PREFS_DIR");
@@ -143,6 +198,54 @@ int main() {
     }
     std::fputs("TEE-SECOND-LIFECYCLE\n", stderr);
     DiagLog_shutdown();
-    std::puts("app lifecycle passed: tee drained/restored twice; relaunch failure returned");
+
+    if (checkWindowsQuoting() != 0) return 1;
+
+    // The shipped Windows executable links the GUI subsystem (-mwindows), and
+    // such a process started from Explorer has NO standard handles: fd 1 and 2
+    // are not open. The tee used to abort in exactly that state, but only
+    // AFTER rotating and truncating mdkr64.log -- so every shipped Windows
+    // launch produced an empty log and destroyed the previous one, while CI,
+    // which always supplies real pipes, saw a healthy log.
+    //
+    // Closing fd 1 and 2 reproduces that condition portably: dup() of a closed
+    // descriptor fails identically on Windows and POSIX, so this arm guards
+    // the defect on the Windows ctest lane and here.
+    {
+        const int savedOut = dupFd(1);
+        const int savedErr = dupFd(2);
+        if (savedOut < 0 || savedErr < 0) {
+            std::fprintf(stderr, "FAIL: could not save the standard streams\n");
+            return 1;
+        }
+        closeFd(1);
+        closeFd(2);
+        const bool installed = DiagLog_install();
+        if (installed) std::fputs("HEADLESS-TEE-MARKER\n", stderr);
+        DiagLog_shutdown();
+        (void)replaceFd(savedOut, 1);
+        (void)replaceFd(savedErr, 2);
+        closeFd(savedOut);
+        closeFd(savedErr);
+        if (!installed) {
+            std::fprintf(stderr,
+                         "FAIL: tee refused to install without standard streams\n");
+            return 1;
+        }
+        std::ifstream headless(logPath, std::ios::binary);
+        const std::string headlessLog(
+            (std::istreambuf_iterator<char>(headless)),
+            std::istreambuf_iterator<char>());
+        if (headlessLog.find("HEADLESS-TEE-MARKER") == std::string::npos) {
+            std::fprintf(stderr,
+                         "FAIL: log was empty for a process with no standard "
+                         "streams (%zu bytes)\n", headlessLog.size());
+            return 1;
+        }
+    }
+
+    std::puts("app lifecycle passed: tee drained/restored twice, survived a "
+              "process with no standard streams, quoted relaunch arguments; "
+              "relaunch failure returned");
     return 0;
 }

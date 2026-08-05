@@ -1153,6 +1153,16 @@ int runAutoplay(AppHost &host, Launcher &launcher,
      * AppRelaunch_replace(), executable-path, and one-shot handoff code without
      * creating a fake relaunch implementation or exposing a player-facing UI.
      */
+    if (restartProbe != nullptr && !restartHandoff && result == 0 &&
+        transition != nullptr &&
+        std::strcmp(restartProbe, "return-to-launcher") == 0) {
+        /* The overlay's other exit: Return to Launcher stages no ROM handoff
+         * at all, it only asks main() to exec-replace this process with a
+         * launcher. That path had no gate, so nothing proved the replacement
+         * came back as a launcher rather than as a windowless engine run. */
+        transition->request = OverlayExitRequest::ReturnToLauncher;
+        std::fprintf(stderr, "[app-restart-test] requesting Return to Launcher\n");
+    }
     if (restartProbe != nullptr &&
         (std::strcmp(restartProbe, "1") == 0 ||
          std::strcmp(restartProbe, "boot-failure") == 0 ||
@@ -1305,6 +1315,17 @@ int main(int argc, char **argv) {
             return 0;
         }
         return mdkr64_headless_main(argc, argv);
+    }
+
+    /* Test-only, and deliberately ahead of the automation dispatch below: the
+     * invocation shape a relaunched process actually receives is the property
+     * that decides whether Return to Launcher opens a launcher or starts a
+     * windowless engine run. It has to be observable even when it is wrong. */
+    if (std::getenv("MDKR_APP_TEST_RESTART_RECOVERY_FRAMES") != nullptr) {
+        std::fprintf(stderr,
+                     "[app-restart-test] invoked argc=%d ui=%d automation=%d\n",
+                     argc, mdkr_argv_requests_ui(argc, argv),
+                     mdkr_is_automation_invocation(argc, argv));
     }
 
     /* Resource/user-path initialization may still use the caller's launch
@@ -1465,6 +1486,10 @@ int main(int argc, char **argv) {
                  * handoff. Clear it explicitly or Return to Launcher would
                  * exec straight back into another autoplay session. */
                 AppRestart_clear();
+                /* Ignored unless the return-to-launcher gate armed it, and it
+                 * is what lets that gate observe the real replacement drawing
+                 * real launcher frames instead of waiting on a player. */
+                prepareRestartRecoverySmokeForTest();
             }
             DiagLog_shutdown();
             return relaunchApplication(relaunchExecutable);

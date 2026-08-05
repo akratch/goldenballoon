@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
-"""Exercise real Restart & Apply replacement and recovery from deep Unicode paths.
+"""Exercise real process replacement and recovery from deep Unicode paths.
 
 The test copies the native executable and a legally supplied ROM to a private
-extracted-layout fixture. The first autoplay session asks the production app to
-perform its normal restart transition. It covers successful replacement plus
-post-replacement boot and handoff-staging failures: each failure must clear the
-one-shot controls, return to the visible launcher recovery, and preserve the
-copied ROM and settings. No test seam replaces the executable or bypasses
-main_app.cpp.
+extracted-layout fixture whose package directory contains a space, exactly as a
+player's install does. The first autoplay session asks the production app to
+perform one of its two real post-engine transitions:
+
+* Restart & Apply, covering successful replacement plus post-replacement boot
+  and handoff-staging failures. Each failure must clear the one-shot controls,
+  return to the visible launcher recovery, and preserve the copied ROM and
+  settings.
+* Return to Launcher, which stages no ROM handoff and only asks main() to
+  exec-replace the process with a launcher. The replacement must arrive as a
+  launcher invocation -- not as an argument-bearing automation invocation,
+  which arg_triage sends straight to the windowless engine -- and must still
+  find the player's durable ROM selection.
+
+No test seam replaces the executable or bypasses main_app.cpp.
 """
 
 from __future__ import annotations
@@ -116,6 +125,25 @@ def run_case(binary: Path, rom: Path, root: Path, name: str,
     return process.returncode, process.stdout or "", config, copied_rom
 
 
+def require_invocation_shapes(output: str, shapes: tuple[str, ...]) -> str | None:
+    """The exact invocation each process in the exec chain received.
+
+    A relaunch that reaches the replacement as several arguments (the Windows
+    CRT joins argv into a command line without quoting, so any space in the
+    install path splits it) is classified as automation and runs headless: to
+    the player the whole application closed. This is the shape assertion that
+    makes that classification visible on every platform.
+    """
+    observed = tuple(
+        line.split("invoked ", 1)[1].strip()
+        for line in output.splitlines()
+        if "[app-restart-test] invoked " in line
+    )
+    if observed != shapes:
+        return f"invocation shapes were {observed!r}, expected {shapes!r}"
+    return None
+
+
 def require_preserved_config(config: Path, output: str) -> str | None:
     if "Video.FrameLimit=240" not in config.read_text(encoding="utf-8"):
         return "restart did not preserve the settings file"
@@ -156,6 +184,11 @@ def main() -> int:
             return fail("replacement did not retain the Unicode ROM/config state", output)
         if output.count("[SDL] headless: reached 12 simulation ticks, exiting cleanly.") != 2:
             return fail("did not observe one completed engine run on each side of exec", output)
+        # The launched process is bare; its replacement must arrive as an
+        # explicit launcher invocation, never as an automation invocation.
+        if problem := require_invocation_shapes(
+                output, ("argc=1 ui=0 automation=0", "argc=2 ui=1 automation=0")):
+            return fail(problem, output)
         if problem := require_preserved_config(config, output):
             return fail(problem, output)
 
@@ -177,6 +210,10 @@ def main() -> int:
         if (f"[app-restart-test] recovery launcher rom={copied_rom} "
                 "bootRecovery=1") not in output:
             return fail("post-restart recovery lost the durable ROM selection", output)
+        if problem := require_invocation_shapes(
+                output, ("argc=1 ui=0 automation=0", "argc=2 ui=1 automation=0",
+                         "argc=2 ui=1 automation=0")):
+            return fail(problem, output)
         if problem := require_preserved_config(config, output):
             return fail(problem, output)
 
@@ -197,11 +234,46 @@ def main() -> int:
         if (f"[app-restart-test] recovery launcher rom={copied_rom} "
                 "bootRecovery=1") not in output:
             return fail("staging recovery lost the durable ROM selection", output)
+        if problem := require_invocation_shapes(
+                output, ("argc=1 ui=0 automation=0", "argc=2 ui=1 automation=0")):
+            return fail(problem, output)
         if problem := require_preserved_config(config, output):
             return fail(problem, output)
 
-    print("check_restart_apply: PASS -- successful replacement plus post-restart "
-          "boot/staging recovery preserved Unicode/deep-path ROM and settings")
+        # Return to Launcher: the overlay's other exit. It stages no ROM
+        # handoff, so the entire behaviour is "exec-replace me with a
+        # launcher" -- the exact transition a player reported as closing the
+        # whole application instead of returning.
+        code, output, config, copied_rom = run_case(
+            binary, rom, root, "return to launcher", "return-to-launcher",
+            verbose=args.verbose, timeout=args.timeout)
+        if code != 0:
+            return fail(f"return-to-launcher replacement exited {code}", output)
+        if "[app-restart-test] requesting Return to Launcher" not in output:
+            return fail("initial process did not request the production return "
+                        "transition", output)
+        if problem := require_invocation_shapes(
+                output, ("argc=1 ui=0 automation=0", "argc=2 ui=1 automation=0")):
+            return fail(problem, output)
+        # The replacement drew real launcher frames. A headless automation
+        # invocation cannot produce this marker at all, which is what makes
+        # "the whole app closed" a failure here rather than a silent pass.
+        if (f"[app-restart-test] recovery launcher rom={copied_rom} "
+                "bootRecovery=0") not in output:
+            return fail("return to launcher did not reopen a launcher holding "
+                        "the durable ROM selection", output)
+        if "[app] Restart & Apply handoff accepted" in output:
+            return fail("return to launcher staged a restart handoff", output)
+        # One engine run only: the replacement is a launcher, not another race.
+        if output.count(
+                "[SDL] headless: reached 12 simulation ticks, exiting cleanly.") != 1:
+            return fail("return to launcher re-entered the engine", output)
+        if problem := require_preserved_config(config, output):
+            return fail(problem, output)
+
+    print("check_restart_apply: PASS -- successful replacement, post-restart "
+          "boot/staging recovery, and Return to Launcher each reopened a real "
+          "launcher and preserved Unicode/deep-path ROM and settings")
     return 0
 
 

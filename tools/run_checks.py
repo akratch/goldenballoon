@@ -93,8 +93,9 @@ CHECKS = (
           "production WebGPU app overlay holds exact race state, clock, kart, "
           "checkpoint, and lap before resuming"),
     Check("restart_apply", "check_restart_apply.py", "native",
-          "package-like Unicode/deep-path Restart & Apply process replacement, "
-          "ROM/settings persistence, and boot/staging failure recovery"),
+          "package-like Unicode/deep-path Restart & Apply and Return to "
+          "Launcher process replacement, launcher-shaped replacement "
+          "invocation, ROM/settings persistence, and boot/staging recovery"),
     Check("app_capture", "check_app_capture.py", "native",
           "launcher screenshot dimensions, contrast, palette, draw bounds, "
           "and broken-direction mutations",

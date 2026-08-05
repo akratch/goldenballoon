@@ -142,12 +142,20 @@ jobs:
       - name: Verify asset-free
         run: ./macos/Scripts/verify_asset_free.sh build/mdkr64.exe
 
+      # The extraction directory deliberately contains a space. A player's does
+      # (C:\Program Files\..., C:\Users\First Last\...), and the Windows CRT
+      # joins an argument vector into a command line without quoting it, so a
+      # space is the difference between a process replacement that reopens the
+      # launcher and one that starts headless and looks like a crash. The
+      # relaunch itself needs a GPU launcher and stays out of this lane; the
+      # quoting rule it depends on is asserted by the app_lifecycle CTest
+      # above, which runs on this real Windows kernel.
       - name: Package and verify extracted startup (not published)
         run: |
           set -euo pipefail
           ./tools/package_windows_zip.sh --binary build/mdkr64.exe --version dev
           expected_version="$(./build/mdkr64.exe --version | tr -d '\r')"
-          package_root="$RUNNER_TEMP/windows-package"
+          package_root="$RUNNER_TEMP/windows package with spaces"
           unrelated="$RUNNER_TEMP/unrelated-launch-cwd"
           mkdir -p "$package_root" "$unrelated"
           unzip -q dist/Golden-Balloon-dev-windows-x64.zip -d "$package_root"

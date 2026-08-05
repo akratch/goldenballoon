@@ -37,9 +37,29 @@ int mdkr_path_query_utf8(const char *path, int *exists,
  * point, 0 for an ordinary entry, and -1 when it cannot be queried. */
 int mdkr_path_is_link_or_reparse_utf8(const char *path);
 
-/** Replace this process with `path` and no extra arguments. Returns errno only
- * when replacement fails. */
-int mdkr_exec_replace_utf8(const char *path);
+/** Replace this process with `path`, passing the NULL-terminated UTF-8
+ * `arguments` after argv[0] (pass NULL for none). Returns errno only when
+ * replacement fails.
+ *
+ * The replacement receives exactly the arguments given here on every platform.
+ * That is not free on Windows: the CRT's _exec/_spawn family joins argv with
+ * single spaces and performs NO quoting of its own, so an install path
+ * containing a space (C:\Program Files\..., C:\Users\First Last\...) used to
+ * arrive at the replacement split across several arguments. This wrapper
+ * applies the Windows quoting rule below before handing argv to the CRT. */
+int mdkr_exec_replace_utf8(const char *path, const char *const *arguments);
+
+/** Quote one argument so that the Windows command-line parser
+ * (CommandLineToArgvW and the CRT's own argv construction) recovers it
+ * verbatim: the whole argument is wrapped in quotes, embedded quotes are
+ * escaped, and each backslash run that precedes a quote is doubled.
+ *
+ * Compiled on every platform even though only the Windows arm consumes it, so
+ * the rule itself stays under test wherever the suite runs. Writes a NUL
+ * terminator and returns the length excluding it, or -1 when `argument` is
+ * NULL or `capacity` cannot hold the result. */
+int mdkr_windows_quote_argument_utf8(const char *argument, char *output,
+                                     size_t capacity);
 
 /* Flush file contents and, on POSIX, the directory entry containing `path`.
  * Call both sides of a replace transaction before reporting durable success. */

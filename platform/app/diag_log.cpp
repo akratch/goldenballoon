@@ -61,6 +61,9 @@ int duplicateFd(int fd) { return _dup(fd); }
 int replaceFd(int source, int target) { return _dup2(source, target); }
 void closeFd(int fd) { if (fd >= 0) _close(fd); }
 int fileFd(std::FILE *file) { return file ? _fileno(file) : -1; }
+/* Deliberately inheritable: these stand in for the process's own standard
+ * streams, including across the Return-to-Launcher process replacement. */
+int openNullDevice() { return _wopen(L"NUL", _O_RDWR | _O_BINARY); }
 
 void writeAll(int fd, const char *data, size_t size) {
     size_t offset = 0;
@@ -107,6 +110,8 @@ int duplicateFd(int fd) {
 int replaceFd(int source, int target) { return dup2(source, target); }
 void closeFd(int fd) { if (fd >= 0) close(fd); }
 int fileFd(std::FILE *file) { return file ? fileno(file) : -1; }
+/* Deliberately not FD_CLOEXEC: see the Windows note above. */
+int openNullDevice() { return open("/dev/null", O_RDWR); }
 
 void writeAll(int fd, const char *data, size_t size) {
     size_t offset = 0;
@@ -146,6 +151,35 @@ bool createPipe(int pipeFds[2]) {
 }
 
 #endif
+
+/* The shipped Windows executable links the GUI subsystem (-mwindows), and a
+ * GUI-subsystem process started from Explorer has NO standard handles at all:
+ * descriptors 0, 1 and 2 are simply not open. Every step of the tee then fails
+ * -- duplicateFd(1) returns -1 and the install aborts -- which is why a
+ * shipped Windows mdkr64.log was created, truncated, and then left empty on
+ * every single launch while the log looked healthy under CI, where the runner
+ * always supplies real pipes.
+ *
+ * Plugging the holes with the null device up front is what makes the rest of
+ * this file correct rather than lucky: the saved "real" descriptors become
+ * restorable, so shutdown can hand fd 1/2 back, the pipe's last write
+ * reference closes, and the reader thread reaches EOF instead of blocking
+ * forever in join(). Descriptors are filled lowest-first so nothing here can
+ * land on 0/1/2 by accident and be clobbered by the redirect below. */
+void ensureStandardDescriptors() {
+    for (int fd = 0; fd <= 2; ++fd) {
+        const int probe = duplicateFd(fd);
+        if (probe >= 0) {
+            closeFd(probe);
+            continue;
+        }
+        const int opened = openNullDevice();
+        if (opened < 0) continue;
+        if (opened == fd) continue;
+        (void)replaceFd(opened, fd);
+        closeFd(opened);
+    }
+}
 
 void closeSavedDescriptors() {
     closeFd(g_realOut);
@@ -189,8 +223,43 @@ bool DiagLog_install() {
     }
     g_includesPreviousFailure = false;
 
+    // Naming the log has no side effects, so Diagnostics and the boot-failure
+    // dialog can point at it even if the tee below never installs. Creating it
+    // does, which is why that is deferred until the tee is certain to run.
     const std::string directory = prefsDir();
     g_logPath = directory.empty() ? "" : directory + "mdkr64.log";
+
+    ensureStandardDescriptors();
+    g_realOut = duplicateFd(1);
+    g_realErr = duplicateFd(2);
+    int pipeFds[2] = {-1, -1};
+    if (g_realOut < 0 || g_realErr < 0 || !createPipe(pipeFds)) {
+        closeSavedDescriptors();
+        closeFd(pipeFds[0]);
+        closeFd(pipeFds[1]);
+        return false;
+    }
+
+    std::fflush(stdout);
+    std::fflush(stderr);
+    if (replaceFd(pipeFds[1], 1) < 0 || replaceFd(pipeFds[1], 2) < 0) {
+        // Restore both descriptors even when only the first dup succeeded.
+        (void)replaceFd(g_realOut, 1);
+        (void)replaceFd(g_realErr, 2);
+        closeFd(pipeFds[0]);
+        closeFd(pipeFds[1]);
+        closeSavedDescriptors();
+        return false;
+    }
+    closeFd(pipeFds[1]);
+
+    // A pipe is block-buffered by default. Prompt flushing is important both
+    // for the in-app diagnostics view and for orderly relaunch.
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
+
+    // Only now: the previous run's evidence is consumed, and mdkr64.log is
+    // truncated, exactly once a live tee is going to write into it.
     if (!g_logPath.empty()) {
         const std::string previous = directory + "mdkr64.prev.log";
         // Replacement is a single operation in the UTF-8 filesystem layer.
@@ -206,36 +275,6 @@ bool DiagLog_install() {
         g_logFile = mdkr_fopen_utf8(g_logPath.c_str(), "wb");
     }
 
-    g_realOut = duplicateFd(1);
-    g_realErr = duplicateFd(2);
-    int pipeFds[2] = {-1, -1};
-    if (g_realOut < 0 || g_realErr < 0 || !createPipe(pipeFds)) {
-        closeSavedDescriptors();
-        closeFd(pipeFds[0]);
-        closeFd(pipeFds[1]);
-        closeLogFile();
-        return false;
-    }
-
-    std::fflush(stdout);
-    std::fflush(stderr);
-    if (replaceFd(pipeFds[1], 1) < 0 || replaceFd(pipeFds[1], 2) < 0) {
-        // Restore both descriptors even when only the first dup succeeded.
-        (void)replaceFd(g_realOut, 1);
-        (void)replaceFd(g_realErr, 2);
-        closeFd(pipeFds[0]);
-        closeFd(pipeFds[1]);
-        closeSavedDescriptors();
-        closeLogFile();
-        return false;
-    }
-    closeFd(pipeFds[1]);
-
-    // A pipe is block-buffered by default. Prompt flushing is important both
-    // for the in-app diagnostics view and for orderly relaunch.
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    setvbuf(stderr, nullptr, _IONBF, 0);
-
     try {
         g_reader = std::thread(readerLoop, pipeFds[0]);
     } catch (...) {
@@ -243,7 +282,10 @@ bool DiagLog_install() {
         (void)replaceFd(g_realErr, 2);
         closeFd(pipeFds[0]);
         closeSavedDescriptors();
+        // Nothing was ever teed into it: an empty file would misrepresent the
+        // run as "the app said nothing" instead of "the log never installed".
         closeLogFile();
+        if (!g_logPath.empty()) (void)mdkr_unlink_utf8(g_logPath.c_str());
         return false;
     }
 
