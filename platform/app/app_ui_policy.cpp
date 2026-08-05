@@ -123,15 +123,27 @@ AppUiSmokeInputMode AppUi_smokeInputMode() {
         std::getenv("MDKR_APP_SMOKE_INPUT_TOKEN"));
 }
 
-bool AppUi_videoSettingVisible(MdkrVideoKey key, bool webGpuRenderer) {
+bool AppUi_videoSettingVisible(MdkrVideoKey key, bool webGpuRenderer,
+                               bool legacyStretchActive) {
     switch (key) {
         // Keep the reserved config key parseable, but hide it until a
         // texture-pack loader actually consumes it.
         case MDKR_VIDEO_TEXTURE_PACK: return false;
-        // This compatibility bit is implied by the presentation preset and
-        // aspect control. Exposing it separately can create a stretched image
-        // and contradict the selected mode, so it remains CLI/config-only.
-        case MDKR_VIDEO_WIDESCREEN: return false;
+        // NOT "implied by the preset": every preset pins this to 1, Pure
+        // included, so no mode a player can pick ever selects the 0 branch.
+        // 0 is the pre-widescreen compatibility path, which STRETCHES 4:3
+        // content to fill the window (display_config.c's legacy_stretch
+        // layout) -- a distorted image, not an alternative framing, and
+        // Video.Aspect is what actually produces 4:3. Offering it as a normal
+        // choice would be offering a wrong picture, so it stays CLI/config-only
+        // (--legacy-stretch, hand-edited ini).
+        //
+        // It becomes visible for exactly one reason: a config that ALREADY
+        // resolves to 0 leaves the player looking at a stretched image with no
+        // control to undo it, and Video.Mode=custom means no preset will
+        // re-pin it either. Surfacing the setting only in that state is the
+        // escape hatch, and it disappears again the moment they leave it.
+        case MDKR_VIDEO_WIDESCREEN: return legacyStretchActive;
         // Immutable interpolation is supported by both production backends.
         // Keep it visible beside Frame Limit so presentation rate and the
         // choice of authored holds versus unique midpoints stay independent.

@@ -92,6 +92,11 @@ AppUiSmokeInputMode AppUi_smokeInputMode();
 
 // Reserved config keys remain parseable for forward compatibility, but the
 // launcher must not advertise settings that the running product cannot apply.
-bool AppUi_videoSettingVisible(MdkrVideoKey key, bool webGpuRenderer);
+// `legacyStretchActive` is whether the resolved config currently sits on the
+// pre-widescreen stretch path; a setting that is otherwise hidden because no
+// preset ever chooses it still has to be reachable when a saved config already
+// did. Defaulted so tests can assert the ordinary, not-stretched product.
+bool AppUi_videoSettingVisible(MdkrVideoKey key, bool webGpuRenderer,
+                               bool legacyStretchActive = false);
 
 #endif  // MDKR64_APP_UI_POLICY_H

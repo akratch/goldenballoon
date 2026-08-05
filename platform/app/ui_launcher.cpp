@@ -108,7 +108,7 @@ void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size) {
         // action. Open the native picker where one exists, then show the ROM
         // panel for its validation result or its typed-path/drop alternatives.
         RomPanel_chooseRom(state);
-        state.requestTab = 0;
+        Launcher_requestTab(state, 0, kLauncherTabPlayer);
     }
 }
 
@@ -200,19 +200,53 @@ void drawTopPanelTabs(int activePanel, LauncherState &state) {
     }
     ImGui::PopStyleVar();
     ImGui::PopID();
-    if (requestedPanel != selectedPanel) state.requestTab = requestedPanel;
+    if (requestedPanel != selectedPanel) {
+        Launcher_requestTab(state, requestedPanel, kLauncherTabPlayer);
+    }
     ImGui::Separator();
+}
+
+/*
+ * Height a just-drawn child region actually needed, in its own coordinates.
+ *
+ * ImGui advances the layout cursor at full size even where a child clips, so
+ * the last item's rectangle measures the requirement whether or not the region
+ * was given enough room. `regionTop` is the child's window origin and
+ * `contentTop` its first cursor position, which together give the top padding
+ * (children without a border have none); the bottom padding mirrors it.
+ *
+ * Call this immediately after the region's last item and before EndChild().
+ */
+float measuredRegionHeight(float regionTop, float contentTop) {
+    const float padding = contentTop - regionTop;
+    return ImGui::GetItemRectMax().y - regionTop + padding;
 }
 
 void drawNavigation(int &activePanel, LauncherState &state,
                     LauncherAction &action) {
+    /*
+     * The footer reservation splits the rail, so overstating it steals rows
+     * from the destination list rather than from anything the footer owns. It
+     * reserved five BODY-font lines for a footer whose text is at most a
+     * status line plus a three-line wrapped hint in the SMALL font, which at
+     * 1.00x cut the fourth destination ("About") in half for every window
+     * height in [620, 672). The seed below is the real composition; from the
+     * second frame the value the footer measured for itself replaces it, so an
+     * unusually long ROM build string widens the footer instead of being
+     * clipped by a constant that could not know about it.
+     */
+    static float measuredFooterHeight = 0.0f;
     ImGui::BeginChild("##nav", ImVec2(ui::kNavWidth(), 0), true,
                       ImGuiWindowFlags_NoScrollbar |
                           ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PushFont(AppTheme::fonts().small);
+    const float footerTextHeight = ImGui::GetTextLineHeightWithSpacing() * 4.0f;
+    ImGui::PopFont();
+    const float footerSeed =
+        footerTextHeight + ui::kGapS + ImGui::GetStyle().ItemSpacing.y * 3.0f +
+        ui::kBtnPrimary().y + ui::kBtnSecondary().y;
     const float footerHeight =
-        ui::kBtnPrimary().y + ui::kBtnSecondary().y +
-        ImGui::GetTextLineHeightWithSpacing() * 5.0f +
-        ImGui::GetStyle().ItemSpacing.y * 3.0f;
+        measuredFooterHeight > 0.0f ? measuredFooterHeight : footerSeed;
     const float bodyHeight =
         (std::max)(1.0f, ImGui::GetContentRegionAvail().y - footerHeight);
     ImGui::BeginChild("##nav-body", ImVec2(0, bodyHeight), false,
@@ -231,7 +265,7 @@ void drawNavigation(int &activePanel, LauncherState &state,
     const int selectedPanel = activePanel;
     for (int i = 0; i < kPanelCount; ++i) {
         if (drawRailPanelItem(kPanels[i].label, selectedPanel == i)) {
-            state.requestTab = i;
+            Launcher_requestTab(state, i, kLauncherTabPlayer);
         }
     }
 
@@ -242,6 +276,8 @@ void drawNavigation(int &activePanel, LauncherState &state,
     ImGui::BeginChild("##nav-footer", ImVec2(0, 0), false,
                       ImGuiWindowFlags_NoScrollbar |
                           ImGuiWindowFlags_NoScrollWithMouse);
+    const float footerTop = ImGui::GetWindowPos().y;
+    const float footerContentTop = ImGui::GetCursorScreenPos().y;
 
     const bool ready = !state.romPath.empty() && state.romInfo.valid;
     const bool checking = !ready && state.romValidationPending;
@@ -282,6 +318,7 @@ void drawNavigation(int &activePanel, LauncherState &state,
     if (ImGui::Button("Quit", ImVec2(-1, ui::kBtnSecondary().y))) {
         action.type = LauncherActionType::Quit;
     }
+    measuredFooterHeight = measuredRegionHeight(footerTop, footerContentTop);
     ImGui::EndChild();
     ImGui::EndChild();
 }
@@ -297,16 +334,43 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
                               denseFirstRowHeight +
                               ImGui::GetStyle().ItemSpacing.y +
                               ui::kBtnPrimary().y;
+    /*
+     * The non-dense header owns the wordmark, brand rule, 44 px tabs, a
+     * separator, status, and the 48 px primary action. Deriving that from live
+     * metrics is the same discipline the dense branch above already uses. The
+     * constant it replaces (196 * scale) sat below both the content, which ends
+     * at 201 at 1.00x, and the 217 that content plus the bordered child's own
+     * padding needs: the gold primary action lost its lower edge and its bottom
+     * corner radius at exactly the 800x600 layout check_launcher_tabs asserts
+     * against. As in the nav rail, the header's own measurement takes over from
+     * the second frame, so a font or style change moves the height with it
+     * instead of re-opening the same clipping bug.
+     */
+    static float measuredWideHeight = 0.0f;
+    ImGui::PushFont(AppTheme::fonts().title);
+    const float wordmarkHeight = ImGui::GetTextLineHeight();
+    ImGui::PopFont();
+    // Five rows and the four gaps between them. The wordmark shares its row
+    // with Quit, so that row is the taller of the two exactly as the dense
+    // branch's denseFirstRowHeight is; a horizontal Separator adds
+    // style.SeparatorSize plus the ordinary spacing on each side.
+    const float wideFirstRowHeight =
+        (std::max)(wordmarkHeight, ui::kBtnSecondary().y);
+    const float wideSeed =
+        ImGui::GetStyle().WindowPadding.y * 2.0f + wideFirstRowHeight +
+        ui::kBrandRuleHeight() + ui::kTouchRowHeight() +
+        (std::max)(ImGui::GetStyle().SeparatorSize, 1.0f) +
+        ui::kBtnPrimary().y + ImGui::GetStyle().ItemSpacing.y * 4.0f;
+    const float wideHeight =
+        measuredWideHeight > 0.0f ? measuredWideHeight : wideSeed;
     ImGui::SetNextWindowScroll(ImVec2(0.0f, 0.0f));
     ImGui::BeginChild("##topnav",
-                      // The non-dense header owns the wordmark, brand rule,
-                      // 44 px tabs, status, and 48 px primary action. Its fixed
-                      // height keeps every rounded edge inside the child at
-                      // high DPI while leaving the content panel independent.
-                      ImVec2(0, dense ? denseHeight : 196.0f * scale),
+                      ImVec2(0, dense ? denseHeight : wideHeight),
                       ImGuiChildFlags_Borders,
                       ImGuiWindowFlags_NoScrollbar |
                           ImGuiWindowFlags_NoScrollWithMouse);
+    const float navTop = ImGui::GetWindowPos().y;
+    const float navContentTop = ImGui::GetCursorScreenPos().y;
     ImVec2 sectionMin, sectionMax, quitMin, quitMax;
     ImVec2 statusMin, statusMax, playMin, playMax;
     const float quitWidth = dense ? 96.0f * scale : 92.0f * scale;
@@ -314,14 +378,19 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
         ImGui::SetNextItemWidth(
             (std::max)(1.0f, ImGui::GetContentRegionAvail().x - quitWidth -
                                  ImGui::GetStyle().ItemSpacing.x));
-        if (ImGui::BeginCombo("##compact-section",
-                              kPanels[activePanel].label)) {
+        // drawActivePanel range-checks the same index before dispatching; this
+        // preview label is the only other place it is dereferenced, so it
+        // carries the identical guard rather than trusting the caller.
+        const char *activeLabel =
+            (activePanel >= 0 && activePanel < kPanelCount)
+                ? kPanels[activePanel].label : "";
+        if (ImGui::BeginCombo("##compact-section", activeLabel)) {
             for (int i = 0; i < kPanelCount; ++i) {
                 const bool selected = activePanel == i;
                 if (ImGui::Selectable(
                         kPanels[i].label, selected, 0,
                         ImVec2(0.0f, ui::kTouchRowHeight()))) {
-                    state.requestTab = i;
+                    Launcher_requestTab(state, i, kLauncherTabPlayer);
                 }
                 if (selected) ImGui::SetItemDefaultFocus();
             }
@@ -388,8 +457,26 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
         state, ImVec2(playWidth, ui::kBtnPrimary().y));
     playMin = ImGui::GetItemRectMin();
     playMax = ImGui::GetItemRectMax();
-    const bool traceDenseLayout =
-        dense && std::getenv("MDKR_APP_UI_TRACE") != nullptr;
+    // The primary action is the header's last and lowest item in both branches,
+    // so this is the whole region's requirement.
+    if (!dense) {
+        measuredWideHeight = measuredRegionHeight(navTop, navContentTop);
+    }
+    const bool traceLayout = std::getenv("MDKR_APP_UI_TRACE") != nullptr;
+    if (traceLayout) {
+        static bool tracedHeaderHeight = false;
+        if (!tracedHeaderHeight) {
+            std::fprintf(stderr,
+                         "[app-ui] header dense=%d height=%.1f seed=%.1f "
+                         "measured=%.1f playBottom=%.1f navBottom=%.1f\n",
+                         dense ? 1 : 0, (double)(dense ? denseHeight : wideHeight),
+                         (double)wideSeed, (double)measuredWideHeight,
+                         (double)(playMax.y - navTop),
+                         (double)ImGui::GetWindowSize().y);
+            tracedHeaderHeight = true;
+        }
+    }
+    const bool traceDenseLayout = dense && traceLayout;
     bool denseOverlap = false;
     bool denseControlsContained = false;
     if (traceDenseLayout) {
@@ -455,7 +542,7 @@ void drawActivePanel(int activePanel, LauncherState &state, LauncherAction &acti
             const ImVec2 first(actions.firstWidth, ui::kBtnSecondary().y);
             const ImVec2 second(actions.secondWidth, ui::kBtnSecondary().y);
             if (ImGui::Button("View Diagnostics", first)) {
-                state.requestTab = 2;
+                Launcher_requestTab(state, 2, kLauncherTabPlayer);
             }
             if (actions.sameLine) ImGui::SameLine();
             if (ImGui::Button("Dismiss", second)) {
@@ -473,6 +560,16 @@ void drawActivePanel(int activePanel, LauncherState &state, LauncherAction &acti
 }
 
 }  // namespace
+
+void Launcher_requestTab(LauncherState &s, int panel, int priority) {
+    if (panel < 0 || panel >= kPanelCount) return;
+    // Equal priority keeps last-writer-wins, which is what makes a second click
+    // in the same frame supersede the first. A lower priority may not displace
+    // a request already staged: that is the whole point of the ordering.
+    if (s.requestTab >= 0 && priority < s.requestTabPriority) return;
+    s.requestTab = panel;
+    s.requestTabPriority = priority;
+}
 
 bool Launcher_smokeTopTabCenter(int panel, int *x, int *y) {
     if (!x || !y || panel < 0 || panel >= kPanelCount ||
@@ -580,6 +677,11 @@ LauncherAction Launcher::draw(AppHost &host) {
     LauncherAction action;
     const int panelAtFrameStart = active_;
     for (int i = 0; i < kPanelCount; ++i) g_smokeTopTabValid[i] = false;
+    // Same one-frame lifetime as the tab rectangles above: the settings scroll
+    // viewport is only real while the Settings panel is drawing. Leaving the
+    // last value latched let Launcher_smokeSettingsScrollRect hand a touch or
+    // capture gate a rectangle belonging to a panel that is no longer on screen.
+    g_smokeSettingsScrollValid = false;
 
     // Design-review / CI hook: MDKR_APP_PANEL=<index|name> opens a specific panel
     // on the first frame so a screenshot gate can capture it without input.
@@ -633,6 +735,7 @@ LauncherAction Launcher::draw(AppHost &host) {
         active_ = state_.requestTab;
     }
     state_.requestTab = -1;
+    state_.requestTabPriority = 0;
 
     if (panelAtFrameStart == 1 && active_ != 1) {
         Settings_cancelAudioPreview();

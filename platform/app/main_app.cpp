@@ -850,6 +850,11 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         const bool initialReady = !selected.romValidationPending &&
                                   selected.romInfo.valid &&
                                   selected.romPath == smokeDrop;
+        // `selected` is a live reference, so reading romPath after the recheck
+        // loop would print whatever the path IS, under a label promising what
+        // it WAS. Copy the value the verdict was formed from; the sibling block
+        // above prints the live path under the honest label "active=".
+        const std::string initialPath = selected.romPath;
         bool mutationApplied = false;
         bool recheckRequested = false;
         int playServiceFrames = 0;
@@ -882,7 +887,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
             "initialValid=%d mutationApplied=%d serviceFrames=%d actions=%d "
             "actionRom=%s finalValid=%d settled=%d\n",
             recheckRequested ? 1 : 0,
-            selected.romPath.empty() ? "(none)" : selected.romPath.c_str(),
+            initialPath.empty() ? "(none)" : initialPath.c_str(),
             initialReady ? 1 : 0, mutationApplied ? 1 : 0,
             playServiceFrames, smokePlayActions,
             smokePlayActionRom.empty() ? "(none)" : smokePlayActionRom.c_str(),

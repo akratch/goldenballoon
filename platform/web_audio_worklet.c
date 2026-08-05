@@ -95,16 +95,30 @@ EM_JS(int, webAudioOutputInit, (int srcRate, int channels), {
                    * continuity envelope. Do not add it to this.drop or C
                    * would observe the one loss twice. */
                   "else if(d&&d.cmd==='gap'){this.fromL=this.lastL;this.fromR=this.lastR;this.fade=128;this.recoveries++;}};}" +
+              /* An underrun emits silence but is otherwise an ORDINARY sample:
+                 it runs the same crossfade envelope and updates lastL/lastR.
+                 Two invariants depend on that ordering. lastL/lastR mean "the
+                 last sample the speaker actually received", so a later
+                 overflow anchors its crossfade on the silence that was really
+                 heard instead of on a pre-gap sample that stopped playing
+                 several quanta ago (an audible click). And this.fade must keep
+                 draining while the ring is empty, or a mid-fade underrun
+                 freezes the ramp at a partial mix forever: completedRecoveries
+                 never advances and the fade===0 re-arm below never fires
+                 again. Only the read pointer stands still, because there is
+                 nothing to read. */
               "process(inputs,outputs){var o=outputs[0];if(!o||!o[0])return true;" +
                 "var L=o[0];var R=o[1]||o[0];var n=L.length;" +
                 "for(var i=0;i<n;i++){" +
-                  "if(this.count<2){L[i]=0;R[i]=0;this.under++;continue;}" +
-                  "var i1=(this.r+1)%this.cap;var f=this.frac;" +
-                  "var l=this.L[this.r]*(1-f)+this.L[i1]*f;var r=this.R[this.r]*(1-f)+this.R[i1]*f;" +
+                  "var have=this.count>=2;var l=0;var r=0;" +
+                  "if(have){" +
+                    "var i1=(this.r+1)%this.cap;var f=this.frac;" +
+                    "l=this.L[this.r]*(1-f)+this.L[i1]*f;r=this.R[this.r]*(1-f)+this.R[i1]*f;" +
+                  "}else{this.under++;}" +
                   "if(this.fade>0){var t=(129-this.fade)/128;l=this.fromL*(1-t)+l*t;r=this.fromR*(1-t)+r*t;this.fade--;this.recoverySamples++;if(this.fade===0)this.completedRecoveries++;}" +
                   "L[i]=l;R[i]=r;this.lastL=l;this.lastR=r;" +
-                  "this.frac+=this.ratio;" +
-                  "while(this.frac>=1){this.frac-=1;this.r=(this.r+1)%this.cap;this.count--;}}" +
+                  "if(have){this.frac+=this.ratio;" +
+                    "while(this.frac>=1){this.frac-=1;this.r=(this.r+1)%this.cap;this.count--;}}}" +
                 /* stamp the ring depth with the AUDIO-thread context time at send */
                 "if(++this.q>=3){this.q=0;this.port.postMessage({ring:this.count,under:this.under,dropped:this.drop,recoveries:this.recoveries,fade:this.fade,recoverySamples:this.recoverySamples,completedRecoveries:this.completedRecoveries,t:currentTime});}" +
                 "return true;}}" +

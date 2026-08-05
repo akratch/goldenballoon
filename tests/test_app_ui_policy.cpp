@@ -136,6 +136,14 @@ int main() {
            "unimplemented texture-pack setting is hidden");
     expect(!AppUi_videoSettingVisible(MDKR_VIDEO_WIDESCREEN, true),
            "internal widescreen compatibility switch is hidden");
+    // No preset selects the legacy-stretch branch, so the only way a player
+    // reaches it is a saved or command-line 0 -- and then they need the control
+    // that is otherwise hidden, or the stretched image is inescapable from the
+    // settings screen.
+    expect(AppUi_videoSettingVisible(MDKR_VIDEO_WIDESCREEN, true, true),
+           "widescreen switch appears while the config is on legacy stretch");
+    expect(!AppUi_videoSettingVisible(MDKR_VIDEO_WIDESCREEN, false, false),
+           "widescreen switch disappears again once widescreen is engaged");
     expect(AppUi_videoSettingVisible(MDKR_VIDEO_MOTION_SMOOTHING, true) &&
            AppUi_videoSettingVisible(MDKR_VIDEO_MOTION_SMOOTHING, false),
            "production motion smoothing is visible on every renderer");

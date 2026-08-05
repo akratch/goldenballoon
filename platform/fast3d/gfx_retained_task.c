@@ -1,6 +1,7 @@
 #include "gfx_retained_task.h"
 #include "gfx_retained_budget_policy.h"
 #include "address_domains.h"
+#include "platform_os.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -50,6 +51,16 @@ static uint8_t *s_spare_arena;
 static size_t s_spare_arena_size;
 static size_t s_arena_copy_budget;
 static bool s_arena_copy_budget_ready;
+
+/*
+ * The production budget must ADMIT a complete arena, and capture_begin sheds
+ * only when arena_size is strictly greater than it. Equality is therefore the
+ * shipping case, which makes this an exact requirement rather than a margin:
+ * one byte less and every ordinary frame would be shed as "over budget", with
+ * no capture failure recorded to say so.
+ */
+_Static_assert(GFX_RETAINED_ARENA_COPY_BUDGET_DEFAULT >= DKR_ARENA_SIZE,
+               "the default retained budget must admit a complete DKR arena");
 
 static size_t retained_arena_copy_budget(void) {
     const char *value;

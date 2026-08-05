@@ -59,7 +59,30 @@ typedef enum MdkrVideoWriteResult {
 } MdkrVideoWriteResult;
 static MdkrVideoWriteResult mdkr_video_write_config(const MdkrVideoConfig *config);
 static MdkrVideoWriteResult mdkr_video_write_config_unlocked(
-    const MdkrVideoConfig *config);
+    const MdkrVideoConfig *config, int persist_launcher);
+
+/*
+ * Sources this process owns for the lifetime of ONE invocation: the
+ * --pure/--restored/--remastered preset flags, the browser launcher's seeds,
+ * the environment, and --video-set. Two properties follow from that and both
+ * are load-bearing:
+ *
+ *   - re-resolving the saved file cannot reconstruct them (the rebuilt
+ *     candidate in the runtime setter resolves with argc == 0), so they must be
+ *     carried across a settings transaction explicitly, and
+ *   - none of them is a player's durable choice, so none may be serialized.
+ *
+ * FILE and RUNTIME are deliberately excluded: both already live in the file the
+ * candidate was rebuilt from. The launcher-persist transaction is the single
+ * exception -- it exists precisely to promote LAUNCHER values to disk -- and
+ * says so with its own flag rather than by widening this predicate.
+ */
+static int mdkr_video_source_is_invocation(MdkrVideoSource source) {
+    return source == MDKR_VIDEO_SOURCE_PRESET ||
+           source == MDKR_VIDEO_SOURCE_LAUNCHER ||
+           source == MDKR_VIDEO_SOURCE_ENV ||
+           source == MDKR_VIDEO_SOURCE_CLI;
+}
 
 #ifdef MDKR_VIDEO_RUNTIME_TESTING
 static int s_test_force_directory_sync_failure;
@@ -552,6 +575,7 @@ static int mdkr_video_append_entry(ConfigIniEntry *entries, int *count,
 
 static int mdkr_video_build_persisted_entries(
     const MdkrVideoConfig *config,
+    int persist_launcher,
     ConfigIniEntry entries[MDKR_VIDEO_INI_MAX],
     int *out_count) {
     int count = 0;
@@ -560,6 +584,12 @@ static int mdkr_video_build_persisted_entries(
     if (config == NULL || entries == NULL || out_count == NULL) {
         return 0;
     }
+    /* Reachable exactly when the caller's config still carries the --pure
+     * preset rank, which is what the runtime setter now preserves across a
+     * settings transaction. The per-key invocation rule below already refuses
+     * every individual Pure value; this states the same invariant once for the
+     * whole session, so a future key that no preset pins cannot quietly become
+     * the one thing a Pure session writes back. */
     preserve_pure_presentation = mdkr_video_config_readonly_for(config);
 
     /* Unknown settings are owned by their producer and round-trip unchanged.
@@ -599,8 +629,13 @@ static int mdkr_video_build_persisted_entries(
                     continue;
                 }
                 serialized = prior->value;
-            } else if (value->source > MDKR_VIDEO_SOURCE_RUNTIME) {
-                /* Never bake a temporary environment/CLI override into disk. */
+            } else if (mdkr_video_source_is_invocation(value->source) &&
+                       !(persist_launcher &&
+                         value->source == MDKR_VIDEO_SOURCE_LAUNCHER)) {
+                /* Never bake an invocation-only override into disk: a preset
+                 * flag, a launcher seed this transaction was not asked to
+                 * promote, an environment value, or --video-set. Whatever the
+                 * file already said about the key is what stays there. */
                 prior = mdkr_video_last_file_entry((MdkrVideoKey) i);
                 if (prior == NULL) {
                     continue;
@@ -626,14 +661,15 @@ static int mdkr_video_build_persisted_entries(
 }
 
 static MdkrVideoWriteResult mdkr_video_write_config_unlocked(
-    const MdkrVideoConfig *config) {
+    const MdkrVideoConfig *config, int persist_launcher) {
     ConfigIniEntry entries[MDKR_VIDEO_INI_MAX];
     char text[MDKR_VIDEO_INI_TEXT_MAX];
     char temporary[MDKR_VIDEO_PATH_MAX];
     int count = 0;
     FILE *f;
 
-    if (!mdkr_video_build_persisted_entries(config, entries, &count) ||
+    if (!mdkr_video_build_persisted_entries(config, persist_launcher,
+                                            entries, &count) ||
         !config_ini_serialize(entries, count, text, sizeof(text))) {
         fprintf(stderr, "[video] config is too large to save safely\n");
         return MDKR_VIDEO_WRITE_FAILED;
@@ -717,7 +753,9 @@ static MdkrVideoWriteResult mdkr_video_write_config(
         MDKR_VIDEO_SOURCE_LAUNCHER) {
         merged.mode = config->mode;
     }
-    written = mdkr_video_write_config_unlocked(&merged);
+    /* This is the one transaction whose whole purpose is to promote launcher
+     * choices to disk, so it is the one that passes persist_launcher. */
+    written = mdkr_video_write_config_unlocked(&merged, 1);
     mdkr_file_lock_release(&lock);
     return written;
 }
@@ -798,12 +836,19 @@ MdkrVideoRuntimeResult mdkr_video_config_runtime_set_many(
     mdkr_video_config_defaults(&candidate);
     mdkr_video_config_resolve(&candidate, s_file_entries, s_file_entry_count,
                               mdkr_video_getenv, 0, NULL);
-    /* Runtime rewrites begin from the newest file, but environment and CLI
-     * ownership belongs to this launched process. Keep those higher-ranked
-     * values when refreshing the file snapshot so an unrelated volume edit
-     * cannot accidentally unlock or serialize an invocation-only override. */
+    /* Runtime rewrites begin from the newest file, but every invocation-owned
+     * layer belongs to this launched process and the argc == 0 resolve above
+     * cannot reproduce any of it. Carry all four ranks across -- preset flags
+     * and launcher seeds as much as environment and CLI -- so an unrelated
+     * volume edit cannot silently demote them to whatever the file happens to
+     * say. Restoring only ENV/CLI left a --pure session resolving back to its
+     * file mode, which unlocked presentation, made the report disagree with the
+     * running image, and raised a phantom restart-required. Nothing here
+     * reaches disk: mdkr_video_build_persisted_entries() refuses every one of
+     * these ranks. */
     for (int key = 0; key < MDKR_VIDEO_KEY_COUNT; ++key) {
-        if (s_desired_video.values[key].source > MDKR_VIDEO_SOURCE_RUNTIME) {
+        if (mdkr_video_source_is_invocation(
+                s_desired_video.values[key].source)) {
             candidate.values[key] = s_desired_video.values[key];
             if (key == MDKR_VIDEO_MODE) candidate.mode = s_desired_video.mode;
         }
@@ -819,7 +864,7 @@ MdkrVideoRuntimeResult mdkr_video_config_runtime_set_many(
         (void) mdkr_video_config_set(&candidate, MDKR_VIDEO_MODE, "custom",
                                      MDKR_VIDEO_SOURCE_RUNTIME);
     }
-    write = mdkr_video_write_config_unlocked(&candidate);
+    write = mdkr_video_write_config_unlocked(&candidate, 0);
     if (write == MDKR_VIDEO_WRITE_FAILED) {
         mdkr_file_lock_release(&lock);
         return MDKR_VIDEO_RUNTIME_SAVE_FAILED;

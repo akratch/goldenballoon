@@ -17,7 +17,20 @@ static void expect(const char *name, int condition) {
 
 static void test_arena_budget_parse_policy(void) {
     expect("valid low budget parses exactly",
-           gfx_retained_arena_copy_budget_parse("1024") == 1024u);
+           gfx_retained_arena_copy_budget_parse("1024") ==
+               GFX_RETAINED_ARENA_COPY_BUDGET_MIN);
+    /* A budget under the floor cannot admit any capture, so it is a disguised
+     * "never replay" rather than a load-shedding choice -- and it would read as
+     * a perfectly healthy run, because budget rejection is deliberately not a
+     * capture failure. Fail closed like every other refused input. */
+    expect("a zero budget is a disguised disable and fails closed",
+           gfx_retained_arena_copy_budget_parse("0") ==
+               GFX_RETAINED_ARENA_COPY_BUDGET_DEFAULT);
+    expect("a below-floor budget fails closed",
+           gfx_retained_arena_copy_budget_parse("1") ==
+               GFX_RETAINED_ARENA_COPY_BUDGET_DEFAULT &&
+               gfx_retained_arena_copy_budget_parse("1023") ==
+                   GFX_RETAINED_ARENA_COPY_BUDGET_DEFAULT);
     expect("empty and absent budgets use the production default",
            gfx_retained_arena_copy_budget_parse("") ==
                GFX_RETAINED_ARENA_COPY_BUDGET_DEFAULT &&

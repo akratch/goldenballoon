@@ -129,7 +129,12 @@ static int   s_disabled;          /* MDKR_AUDIO=0 or headless: no SDL device   *
 static int   s_shutdownComplete;
 static u32   s_droppedBuffers;
 static u32   s_queueFailures;
-static u64   s_webDroppedFrames;
+/* Two independent quantities, one meaning each. s_droppedBuffers counts whole
+ * sink BLOCKS this port refused at osAiSetNextBuffer; s_droppedFrames counts
+ * the frames lost, including the worklet ring evictions that lose frames
+ * without ever refusing a block. Both are maintained on the native and web
+ * paths so a reader can compare them. */
+static u64   s_droppedFrames;
 static u32   s_webTerminalFailures;
 static MdkrAudioReconnect s_reconnect;
 static MdkrAudioSinkEvidence s_sinkEvidence;
@@ -150,11 +155,15 @@ static int audio_have_sink(void) {
 static u32 audio_queued_bytes(void) {
 #ifdef __EMSCRIPTEN__
     if (s_webAudio) {
-        const u32 dropped = webAudioOutputConsumeDroppedFrames();
-        if (dropped != 0u) {
-            s_droppedBuffers++;
-            s_webDroppedFrames += dropped;
-        }
+        /* Drain the worklet's cumulative eviction delta. This poll is the only
+         * periodic web-side call, so it owns the drain; the loss it reports is
+         * measured in FRAMES the worklet's ring evicted asynchronously, and it
+         * is accumulated as frames only. s_droppedBuffers counts whole sink
+         * BLOCKS this port refused at osAiSetNextBuffer -- one increment per
+         * refused buffer, on both the native and web paths. Adding one per poll
+         * that happened to observe a delta counted neither quantity: it counted
+         * polls, at a rate set by how often the pump asks for occupancy. */
+        s_droppedFrames += webAudioOutputConsumeDroppedFrames();
         return webAudioOutputQueuedBytes();
     }
 #endif
@@ -323,7 +332,7 @@ void dkr_audio_out_init(void) {
     mdkr_audio_queue_controller_init(&s_queueController);
     s_droppedBuffers = 0u;
     s_queueFailures = 0u;
-    s_webDroppedFrames = 0u;
+    s_droppedFrames = 0u;
     s_webTerminalFailures = 0u;
     mdkr_audio_reconnect_init(&s_reconnect);
     mdkr_audio_sink_evidence_init(&s_sinkEvidence);
@@ -349,15 +358,38 @@ void dkr_audio_out_init(void) {
          * exists.
          */
         const char *testHeadlessAudio = getenv("MDKR_TEST_HEADLESS_AUDIO");
-        if (testHeadlessAudio && testHeadlessAudio[0] == '1') {
-            /* Continue into the normal host-sink path below. */
-        } else
-        {
+        int headlessSinkAllowed = testHeadlessAudio != NULL &&
+                                  testHeadlessAudio[0] == '1';
+#ifndef __EMSCRIPTEN__
+        /*
+         * On native the "controlled sink witness" is only controlled because
+         * the driver is SDL's dummy: it drains on a fixed schedule with no
+         * hardware clock, so block counts are reproducible and the sink-evidence
+         * injector at osAiSetNextBuffer stays meaningful. Opening a REAL device
+         * under --headless-frames would make both nondeterministic while looking
+         * identical in the log. The opt-in therefore requires the driver it has
+         * always been paired with; anything else declines and says so, rather
+         * than quietly going live. The browser has one audio backend and its
+         * gate mutes the page instead, so this constraint is native-only.
+         */
+        if (headlessSinkAllowed) {
+            const char *driver = SDL_GetHint(SDL_HINT_AUDIODRIVER);
+            if (driver == NULL || strcmp(driver, "dummy") != 0) {
+                headlessSinkAllowed = 0;
+                fprintf(stderr,
+                        "[AUDIO] MDKR_TEST_HEADLESS_AUDIO IGNORED: headless "
+                        "output needs SDL_AUDIODRIVER=dummy (found %s)\n",
+                        driver != NULL && driver[0] != '\0' ? driver : "unset");
+            }
+        }
+#endif
+        if (!headlessSinkAllowed) {
             /* Headless: no device (synthesis still runs; use MDKR_AUDIO_DUMP to
              * capture). Opening a device in CI is undesirable and often fails. */
             s_disabled = 1;
             return;
         }
+        /* Otherwise continue into the normal host-sink path below. */
     }
 
 #ifdef __EMSCRIPTEN__
@@ -419,13 +451,16 @@ void dkr_audio_out_shutdown(void) {
         SDL_CloseAudioDevice(s_dev);
         s_devOpen = 0;
     }
-    if (s_droppedBuffers != 0u) {
+    /* Ring eviction inside the worklet loses frames without ever refusing a
+     * block, so the block counter alone would report a clean shutdown after an
+     * audible web loss. Report when either quantity is non-zero. */
+    if (s_droppedBuffers != 0u || s_droppedFrames != 0u) {
         fprintf(stderr,
-                "[AUDIO-SINK] warning: deliberate emergency drops=%u; "
-                "audio continuity repair was requested with a short crossfade "
-                "(web dropped frames=%llu)\n",
+                "[AUDIO-SINK] warning: deliberate emergency drops: "
+                "blocks=%u frames=%llu; audio continuity repair was requested "
+                "with a short crossfade\n",
                 (unsigned)s_droppedBuffers,
-                (unsigned long long)s_webDroppedFrames);
+                (unsigned long long)s_droppedFrames);
     }
     if (s_queueFailures > s_webTerminalFailures) {
         fprintf(stderr,
@@ -541,7 +576,7 @@ s32 osAiSetNextBuffer(void *buf, u32 size) {
         const int pushed = webAudioOutputPush(buf, size);
         if (pushed > 0) {
             s_droppedBuffers++;
-            s_webDroppedFrames += size / DKR_AUDIO_BYTES_PER_FRAME;
+            s_droppedFrames += size / DKR_AUDIO_BYTES_PER_FRAME;
         } else if (pushed < 0) {
             s_queueFailures++;
             /* The browser backend was already committed, so no SDL device is
@@ -588,6 +623,7 @@ s32 osAiSetNextBuffer(void *buf, u32 size) {
             }
         } else {
             s_droppedBuffers++;
+            s_droppedFrames += size / DKR_AUDIO_BYTES_PER_FRAME;
             mdkr_audio_reconnect_note_gap(&s_reconnect);
             if (s_sinkEvidence.capture != NULL) {
                 mdkr_audio_sink_evidence_dropped(&s_sinkEvidence);

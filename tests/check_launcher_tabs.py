@@ -21,7 +21,51 @@ def near(color: tuple[int, int, int], target: tuple[int, int, int],
                for actual, expected in zip(color, target))
 
 
-def selected_components(path: Path) -> tuple[int, int, int, int, int, int]:
+def primary_action_taper(bitmap) -> tuple[int, int, int]:
+    """Prove the gold primary action owns its own bottom edge.
+
+    A population count cannot see a clipped button: losing the bottom five
+    points of a 48-point control costs about a tenth of its pixels, well inside
+    the headroom any single ratio threshold needs to cover both capture scales
+    this gate runs at. The SHAPE is decisive instead. The action is drawn with a
+    corner radius, so its last row is markedly narrower than its widest one; a
+    control cut off by its container's edge ends on a full-width row.
+    """
+    width, height = bitmap.width, bitmap.height
+    gold = [near(color, (212, 168, 67)) for color in bitmap.pixels]
+    seen = bytearray(len(gold))
+    best: list[int] = []
+    for start, present in enumerate(gold):
+        if not present or seen[start]:
+            continue
+        queue = deque([start])
+        seen[start] = 1
+        component = []
+        while queue:
+            index = queue.popleft()
+            component.append(index)
+            y, x = divmod(index, width)
+            for neighbor, ny, nx in (
+                (index - 1, y, x - 1), (index + 1, y, x + 1),
+                (index - width, y - 1, x), (index + width, y + 1, x),
+            ):
+                if (0 <= nx < width and 0 <= ny < height and
+                        not seen[neighbor] and gold[neighbor]):
+                    seen[neighbor] = 1
+                    queue.append(neighbor)
+        if len(component) > len(best):
+            best = component
+    if not best:
+        raise CaptureError("no gold primary action was found")
+    rows: dict[int, int] = {}
+    for index in best:
+        rows[index // width] = rows.get(index // width, 0) + 1
+    widest = max(rows.values())
+    last = rows[max(rows)]
+    return len(best), widest, last
+
+
+def selected_components(path: Path) -> tuple[int, int, int, int, int, int, int]:
     bitmap = load_bmp(path)
     general_failures = validate(bitmap)
     if general_failures:
@@ -52,6 +96,15 @@ def selected_components(path: Path) -> tuple[int, int, int, int, int, int]:
     if gold_pixels < len(bitmap.pixels) // 80:
         raise CaptureError(
             "solid-gold primary action is missing or too small")
+    action_pixels, action_widest, action_last = primary_action_taper(bitmap)
+    # The corner radius removes roughly two radii from the final row (18 points
+    # at 1.00x/2x capture, 10 at 0.75x). A clipped control ends on exactly its
+    # widest row, so any real taper separates the two cases.
+    if action_widest - action_last < 4:
+        raise CaptureError(
+            "gold primary action ends on a full-width row: its rounded bottom "
+            f"edge is clipped by the header ({action_last} of {action_widest} "
+            "points on the last row)")
 
     # BrandRule is alpha-blended over the header surface. Find a row containing
     # both blended colors across most of the window, then require many direct
@@ -148,7 +201,7 @@ def selected_components(path: Path) -> tuple[int, int, int, int, int, int]:
         raise CaptureError("selected tab is missing its gold active indicator")
 
     return (area, indicator, len(components), wordmark_gold_pixels,
-            wordmark_sky_pixels, gold_pixels)
+            wordmark_sky_pixels, gold_pixels, action_widest - action_last)
 
 
 def main() -> int:
@@ -157,7 +210,8 @@ def main() -> int:
     args = parser.parse_args()
     try:
         (area, indicator, components, wordmark_gold_pixels,
-         wordmark_sky_pixels, gold_pixels) = selected_components(args.bmp)
+         wordmark_sky_pixels, gold_pixels,
+         action_taper) = selected_components(args.bmp)
     except (OSError, CaptureError) as error:
         print(f"launcher top-tab validation failed: {error}")
         return 1
@@ -166,7 +220,8 @@ def main() -> int:
           f"indicator_pixels={indicator} "
           f"wordmark_gold_pixels={wordmark_gold_pixels} "
           f"wordmark_sky_pixels={wordmark_sky_pixels} "
-          f"gold_action_pixels={gold_pixels}")
+          f"gold_action_pixels={gold_pixels} "
+          f"gold_action_bottom_taper={action_taper}")
     return 0
 
 

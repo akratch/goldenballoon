@@ -119,9 +119,12 @@ bool gfx_presentation_packet_register_vertex(
 bool gfx_presentation_packet_register_vertex_identity(
     const void *key, int viewport,
     const GfxPresentationMatrixOwner *owner);
-/* Terrain-projected shadow meshes are direct world-space vertex batches. Their
- * heap addresses can alternate between authored ticks, so the object lifetime
- * plus a stable per-object batch ordinal is the replay identity. */
+/* Terrain-projected shadow meshes are direct world-space vertex batches whose
+ * heap addresses can alternate between authored ticks. `key` is still the live
+ * address, because that is what the walk has in hand and it is unambiguous
+ * WITHIN a tick; `ordinal` is stamped onto the registered entry so the
+ * deformation binding below can be keyed by (owner, viewport, ordinal), which
+ * is the part that survives the address changing. */
 bool gfx_presentation_packet_register_projected_shadow_vertex(
     const void *key, int viewport, uint32_t ordinal,
     const GfxPresentationMatrixOwner *owner);

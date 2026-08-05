@@ -22,6 +22,9 @@ ImVec2 kBtnWide();       // 210 x 44
 float  kTouchRowHeight(); // 44 px baseline for rows, tabs, and menu choices
 float  kControlWidth(float multiplier = 1.0f);  // clamped to available width
 float  kNavWidth();      // nav rail width (244)
+// Layout height BrandRule() consumes. Published by its owner so a header that
+// must reserve room for the rule cannot drift from what the rule draws.
+float  kBrandRuleHeight();
 // Vertical rhythm scale (fixed logical px; ItemSpacing already scales via style).
 constexpr float kGapXS = 4.0f;
 constexpr float kGapS  = 8.0f;

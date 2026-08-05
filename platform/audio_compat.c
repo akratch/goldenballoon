@@ -5599,6 +5599,20 @@ void alCSPSetTempo(ALCSPlayer *seqp, s32 tempo)
         return;
     }
 
+    /*
+     * The value travels as a three-byte MIDI Set Tempo payload, so the bytes
+     * below silently truncate anything outside 24 bits -- 0x1000001 would
+     * arrive as 1 microsecond per quarter note, i.e. an enormous speed-up from
+     * a value the caller meant as a slow-down, and a negative tempo would
+     * arrive as whatever its two's-complement low bytes happened to spell.
+     * Refuse instead of transmitting a different number than we were given.
+     * Zero is refused for the same reason the meta handler cannot use it: the
+     * player divides by microseconds-per-tick.
+     */
+    if (tempo <= 0 || tempo > 0xFFFFFF) {
+        return;
+    }
+
     memset(&evt, 0, sizeof(evt));
     evt.type = AL_SEQP_META_EVT;
     evt.msg.tempo.ticks = 0;

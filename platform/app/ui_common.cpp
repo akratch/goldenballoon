@@ -20,6 +20,8 @@ float  kControlWidth(float multiplier) {
     return std::max(1.0f, std::min(requested, available));
 }
 float  kNavWidth()     { return 244.0f * AppTheme::uiScale(); }
+// Two checker rows of one tile each; BrandRule() below reserves exactly this.
+float  kBrandRuleHeight() { return 8.0f * AppTheme::uiScale(); }
 
 void Gap(float y) { ImGui::Dummy(ImVec2(0.0f, y)); }
 
@@ -77,7 +79,7 @@ void BrandRule() {
     const float tile = 4.0f * scale;
     const float width = ImGui::GetContentRegionAvail().x;
     const ImVec2 min = ImGui::GetCursorScreenPos();
-    ImGui::Dummy(ImVec2(width, tile * 2.0f));
+    ImGui::Dummy(ImVec2(width, kBrandRuleHeight()));
     ImDrawList *draw = ImGui::GetWindowDrawList();
     ImVec4 gold = AppTheme::accent();
     ImVec4 blue = AppTheme::primary();

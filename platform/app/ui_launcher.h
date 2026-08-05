@@ -70,6 +70,15 @@ struct LauncherState {
     // A panel or responsive navigation control can request a destination.
     // -1 = no request; the shell consumes it after drawing.
     int     requestTab = -1;
+    // Two independent writers stage navigation within one frame, and the ROM
+    // validation service is one of them -- it runs twice per frame (once from
+    // Launcher::draw, once from RomPanel_draw), so its second pass lands AFTER
+    // the navigation controls have already recorded the player's click. Plain
+    // last-writer-wins therefore let an in-flight Play verdict silently discard
+    // that click. Requests carry a priority instead: a service request never
+    // replaces the player's, while a later player request still supersedes an
+    // earlier one (the responsive tab strip depends on that).
+    int     requestTabPriority = 0;
 
     // A failed engine attempt is carried across the deliberate clean-process
     // relaunch and shown inline. The user's ROM/settings remain intact and the
@@ -77,6 +86,15 @@ struct LauncherState {
     char    bootError[768] = {0};
     bool    bootErrorVisible = false;
 };
+
+// Deferred navigation. `priority` orders the frame's competing writers; use
+// kLauncherTabPlayer for anything a person just pressed and
+// kLauncherTabService for a background verdict redirecting the view.
+enum {
+    kLauncherTabService = 1,
+    kLauncherTabPlayer  = 2
+};
+void Launcher_requestTab(LauncherState &s, int panel, int priority);
 
 // Panels.
 void RomPanel_ensureInit(LauncherState &s);                  // load the remembered ROM

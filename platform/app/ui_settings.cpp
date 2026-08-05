@@ -123,6 +123,20 @@ void reportResult(MdkrVideoRuntimeResult r, const MdkrVideoSchema *s) {
                           s->label);
             setStatus(buf, AppTheme::accent());
             break;
+        case MDKR_VIDEO_RUNTIME_SUPERSEDED:
+            std::snprintf(buf, sizeof(buf),
+                          "%s will apply at the next safe frame boundary — this "
+                          "replaces the choice that was still waiting.",
+                          s->label);
+            setStatus(buf, AppTheme::accent());
+            break;
+        case MDKR_VIDEO_RUNTIME_UNAVAILABLE:
+            std::snprintf(buf, sizeof(buf),
+                          "%s could not be changed right now: there is no game "
+                          "window to apply it to. Try again once the game is "
+                          "showing.", s->label);
+            setStatus(buf, AppTheme::bad());
+            break;
         case MDKR_VIDEO_RUNTIME_APPLY_FAILED:
             std::snprintf(buf, sizeof(buf),
                           "%s could not be applied by the operating system. "
@@ -157,7 +171,10 @@ bool commitEdit(SDL_Window *window, MdkrVideoKey key,
         ? AppWindow_requestMode(window, value)
         : mdkr_video_config_runtime_set(key, value);
     reportResult(result, schema);
-    if (result == MDKR_VIDEO_RUNTIME_PENDING) {
+    /* Both spellings of "queued for the next safe frame boundary" leave the
+     * widget dirty and error-free; the completion resynchronizes it later. */
+    if (result == MDKR_VIDEO_RUNTIME_PENDING ||
+        result == MDKR_VIDEO_RUNTIME_SUPERSEDED) {
         edit.error.clear();
         return false;
     }
@@ -931,6 +948,13 @@ bool Settings_draw(SDL_Window *window, bool compact) {
 
     const bool webGpuRenderer =
         mdkr_render_backend() == MDKR_BACKEND_WEBGPU;
+    /* Video.Widescreen is normally hidden because no preset ever selects its
+     * 0 branch (see AppUi_videoSettingVisible). A config that already resolved
+     * to 0 is the exception: the player is looking at the pre-widescreen
+     * stretch and needs a control to leave it. */
+    const bool legacyStretchActive =
+        mdkr_video_config_current()
+            ->values[MDKR_VIDEO_WIDESCREEN].number == 0.0f;
     for (MdkrVideoCategory category : categoryOrder) {
         const int c = static_cast<int>(category);
         const char *catName = category == MDKR_VIDEO_CAT_PACING
@@ -944,7 +968,8 @@ bool Settings_draw(SDL_Window *window, bool compact) {
         int inCat = 0;
         for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
             const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
-            if (!AppUi_videoSettingVisible(key, webGpuRenderer)) continue;
+            if (!AppUi_videoSettingVisible(key, webGpuRenderer,
+                                          legacyStretchActive)) continue;
             const MdkrVideoSchema *s = mdkr_video_schema(key);
             if (s && (int)s->category == c) ++inCat;
         }
@@ -1022,7 +1047,8 @@ bool Settings_draw(SDL_Window *window, bool compact) {
             ImGui::Indent(ui::kGapM);
             for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
                 const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
-                if (!AppUi_videoSettingVisible(key, webGpuRenderer)) continue;
+                if (!AppUi_videoSettingVisible(key, webGpuRenderer,
+                                              legacyStretchActive)) continue;
                 const MdkrVideoSchema *s = mdkr_video_schema(key);
                 if (!s || (int)s->category != c) continue;
                 if (key == MDKR_VIDEO_MODE) continue;
@@ -1052,12 +1078,14 @@ bool Settings_draw(SDL_Window *window, bool compact) {
                     }
                 }
                 if (AppUi_videoSettingVisible(
-                        MDKR_VIDEO_FRAME_LIMIT, webGpuRenderer)) {
+                        MDKR_VIDEO_FRAME_LIMIT, webGpuRenderer,
+                        legacyStretchActive)) {
                     changed |= drawKey(
                         window, MDKR_VIDEO_FRAME_LIMIT, compact);
                 }
                 if (AppUi_videoSettingVisible(
-                        MDKR_VIDEO_MOTION_SMOOTHING, webGpuRenderer)) {
+                        MDKR_VIDEO_MOTION_SMOOTHING, webGpuRenderer,
+                        legacyStretchActive)) {
                     changed |= drawKey(
                         window, MDKR_VIDEO_MOTION_SMOOTHING, compact);
                 }

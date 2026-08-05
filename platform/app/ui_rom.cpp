@@ -497,7 +497,11 @@ void RomPanel_serviceValidation(LauncherState &s) {
                 "reconnect the drive or choose another file.",
                 result.info.message);
             s.bootErrorVisible = true;
-            s.requestTab = 0;
+            /* Service priority: this pass can run after the navigation controls
+             * have already drawn, so a plain assignment here would erase a tab
+             * the player pressed during the in-flight Play check. The recovery
+             * card stays visible on whichever panel they chose. */
+            Launcher_requestTab(s, 0, kLauncherTabService);
         }
         return;
     }
