@@ -154,6 +154,13 @@ def main() -> int:
         failures.append("legacy positive control did not reproduce a lens overlap")
     if results["center-ray"]["penetrated"] == 0:
         failures.append("center-ray positive control did not expose a near-plane overlap")
+    # target_hidden is the focus-occlusion outcome every other gate asserts is
+    # zero, which leaves nothing requiring it to be producible at all. The
+    # uncorrected legacy arm drives the focus behind real geometry on this
+    # route, so it is the positive control: without it, publishing the focus as
+    # permanently visible would satisfy the whole suite.
+    if results["legacy"]["target_hidden"] == 0:
+        failures.append("legacy positive control never hid the camera focus")
     if results["modern"]["corrected"] == 0:
         failures.append("modern path never applied a correction")
     if results["modern"]["exact_invoked"] == 0:

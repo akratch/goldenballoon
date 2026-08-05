@@ -170,10 +170,18 @@ void mtx_ortho_wide_background(Gfx **dList, Mtx **mtx,
  * Native projection handshake.  The query is available to the fixed-tick
  * camera resolver before rendering; the latch is the record render consumes
  * for the selected viewport/camera bank in that authored image.
+ *
+ * Render and the obstruction resolver ask different questions of the same
+ * viewport: render draws the framed image, the resolver guards the widest lens
+ * that image's viewport can present.  The two channels are therefore separate
+ * records, and only the latch is authoritative for rendering.
  */
 bool cam_effective_projection_for_viewport(
     s32 viewport, s32 cameraID, MdkrCameraProjection *out);
 bool cam_effective_projection_for_viewport_context(
+    s32 viewport, s32 cameraID, bool gameplayCamera,
+    MdkrCameraProjection *out);
+bool cam_resolver_projection_for_viewport_context(
     s32 viewport, s32 cameraID, bool gameplayCamera,
     MdkrCameraProjection *out);
 bool cam_latch_effective_projection_for_viewport(

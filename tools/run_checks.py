@@ -10,7 +10,8 @@ The suite has five invocation shapes:
 * browser gates serve wasm modules to an isolated real Chromium profile.
 
 This runner owns those differences and fails if a new ``tests/check_*.py`` is
-not registered below. It runs sequentially because several checks intentionally
+not registered below, or if a ``tests/test_*.py`` has no CMake ``add_test()``
+to carry it into the ctest task. It runs sequentially because several checks intentionally
 create and remove ``save/eeprom.bin``. The default is the complete suite; use
 ``--only`` only for iteration.
 """
@@ -20,6 +21,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -403,6 +405,19 @@ CTEST_COMPANION_SCRIPTS = {
 }
 
 
+def cmake_registered_test_scripts() -> set[str]:
+    """Script basenames a CMake ``add_test()`` command actually runs."""
+    # Comment stripping is load-bearing: a commented-out registration reads
+    # exactly like a live one to a plain substring scan.
+    text = "\n".join(
+        line.split("#", 1)[0]
+        for line in (ROOT / "CMakeLists.txt").read_text(encoding="utf-8").splitlines())
+    registered: set[str] = set()
+    for block in re.finditer(r"add_test\((.*?)\)", text, re.DOTALL):
+        registered.update(re.findall(r"tests/([A-Za-z0-9_]+\.py)", block.group(1)))
+    return registered
+
+
 def validate_manifest() -> None:
     discovered = {path.name for path in TESTS.glob("check_*.py")}
     registered = ({check.script for check in CHECKS if check.script} |
@@ -413,6 +428,15 @@ def validate_manifest() -> None:
         name for name in {check.name for check in CHECKS}
         if sum(check.name == name for check in CHECKS) != 1
     )
+    # tests/test_*.py reach the suite only through the ctest task, so this
+    # manifest cannot see them; the registration they depend on is CMake's.
+    # Cross-check it here, because dropping an add_test() line otherwise
+    # removes a gate from every lane without failing anything.
+    unit_scripts = {path.name for path in TESTS.glob("test_*.py")}
+    cmake_scripts = cmake_registered_test_scripts()
+    unregistered_units = sorted(unit_scripts - cmake_scripts)
+    stale_units = sorted(name for name in cmake_scripts - unit_scripts
+                         if name.startswith("test_"))
     problems: list[str] = []
     if missing:
         problems.append("unregistered check scripts: " + ", ".join(missing))
@@ -420,6 +444,12 @@ def validate_manifest() -> None:
         problems.append("manifest entries point at missing scripts: " + ", ".join(stale))
     if duplicate_names:
         problems.append("duplicate task names: " + ", ".join(duplicate_names))
+    if unregistered_units:
+        problems.append("tests/test_*.py missing a CMake add_test(): " +
+                        ", ".join(unregistered_units))
+    if stale_units:
+        problems.append("add_test() names missing unit scripts: " +
+                        ", ".join(stale_units))
     if problems:
         raise RuntimeError("; ".join(problems))
 

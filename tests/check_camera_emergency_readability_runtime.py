@@ -42,8 +42,17 @@ def main() -> int:
     if any(field(row, "corrected") != 1 for row in faded):
         failures.append("racer opacity changed without a corrected camera pose")
     opacities = [field(row, "racer_opacity") for row in faded]
-    if opacities and (min(opacities) < 96 or max(opacities) >= 255):
+    if opacities and min(opacities) < 96:
         failures.append(f"opacity escaped the 96..254 envelope: {min(opacities)}..{max(opacities)}")
+    # The upper end of the envelope has to be read from the unfiltered trace:
+    # `faded` is defined as opacity < 255, so its own maximum can never witness
+    # a violation. What the trace must show is that the fade has a full-opacity
+    # resting state to return to, and that nothing ever exceeds it.
+    sampled = [field(row, "racer_opacity") for row in details]
+    if max(sampled, default=0) > 255:
+        failures.append(f"opacity exceeded full opacity: {max(sampled)}")
+    if 255 not in sampled:
+        failures.append("no full-opacity sample: the fade never rests at 255")
     if (result["penetrated"] or result["degraded"] or result["invalid"] or
             result["target_hidden"]):
         failures.append(f"readability stress compromised geometric safety: {result}")

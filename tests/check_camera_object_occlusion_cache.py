@@ -59,15 +59,31 @@ def main() -> int:
         print("object visual cache must not use gameplay interaction collision", file=sys.stderr)
         failures += 1
 
-    loaded = model.index("mdkr_camera_object_occlusion_model_loaded(objMdl);")
-    finalized = model.rindex("model_init_normals(objMdl)", 0, loaded)
-    if loaded <= finalized:
+    # Both offsets of an ordering claim are anchored independently inside the
+    # same function region. A search bounded by the other offset can only
+    # reproduce the ordering it is supposed to prove, and a moved call must
+    # report a gate failure rather than raise out of the harness.
+    load = model.find("ModelInstance *object_model_init(s32 modelID, s32 flags)")
+    load_end = model.find("\nModelInstance *model_instance_init(", load + 1)
+    finalized = model.rfind("model_init_normals(objMdl)", load, load_end)
+    loaded = model.find(
+        "mdkr_camera_object_occlusion_model_loaded(objMdl);", load, load_end)
+    if min(load, load_end, finalized, loaded) < 0:
+        print("object model load ordering anchors are missing", file=sys.stderr)
+        failures += 1
+    elif loaded <= finalized:
         print("cache must build after object model finalization", file=sys.stderr)
         failures += 1
 
-    pre_free = model.index("mdkr_camera_object_occlusion_model_pre_free(mdl);")
-    heap_free = model.index("mempool_free(mdl);", pre_free)
-    if pre_free >= heap_free:
+    free_model = model.find("void free_model_data(ObjectModel *mdl)")
+    free_model_end = model.find("\nvoid model_init_collision(", free_model + 1)
+    pre_free = model.find(
+        "mdkr_camera_object_occlusion_model_pre_free(mdl);", free_model, free_model_end)
+    heap_free = model.find("mempool_free(mdl);", free_model, free_model_end)
+    if min(free_model, free_model_end, pre_free, heap_free) < 0:
+        print("object model free ordering anchors are missing", file=sys.stderr)
+        failures += 1
+    elif pre_free >= heap_free:
         print("cache must be removed before ObjectModel heap free", file=sys.stderr)
         failures += 1
 

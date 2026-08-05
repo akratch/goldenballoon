@@ -136,6 +136,8 @@ int main(void) {
     MdkrCameraObjectOcclusionNode saved_root;
     MdkrCameraObjectOcclusionChunk saved_chunk;
     MdkrCameraObjectTransform transform;
+    MdkrCameraObjectTransform pinned_transform;
+    MdkrCameraSweepInput pinned_input;
     MdkrCameraSweepInput sphere_input;
     MdkrCameraRoundedLensSweepInput exact_input;
     MdkrCameraSweepHit linear_hit;
@@ -428,6 +430,51 @@ int main(void) {
     }
     expect_true("rotated differential sweep exercises real culling",
                 culled_iterations > 0U);
+
+    /*
+     * Every differential arm above compares the index against
+     * mdkr_camera_sweep_object_local, so a fault in that shared oracle agrees
+     * with itself and passes. This arm is pinned to values computed by hand
+     * from the fixture instead: a quarter turn about Y written out literally,
+     * and a world sweep that must reach the far chunk's single triangle first.
+     *
+     * Object +X maps to world -Z, so the model's x = 10 chunk lies on the world
+     * z = -10 plane and its x = 0 chunk on z = 0. A 0.25 sphere travelling +Z
+     * from z = -20 contacts the far triangle after 9.75 of the 25-unit path.
+     */
+    pinned_transform = (MdkrCameraObjectTransform) {
+        { 4.0f, 0.0f, 0.0f },
+        { 0.0f, 0.0f, -1.0f },
+        { 0.0f, 1.0f, 0.0f },
+        { 1.0f, 0.0f, 0.0f },
+    };
+    pinned_input = (MdkrCameraSweepInput) {
+        { MDKR_CAMERA_LENS_GUARD_SPHERE, 0.25f },
+        { 4.0f, 0.0f, -20.0f },
+        { 4.0f, 0.0f, 5.0f },
+        MDKR_CAMERA_OBJECT_OCCLUSION_HARD_MASK,
+        0U,
+    };
+    linear_status = mdkr_camera_sweep_object_local(
+        &cache.world, &pinned_transform, &pinned_input, &linear_hit);
+    indexed_status = indexed_sphere(
+        &model, 7U, &pinned_transform, &pinned_input, &indexed_hit, limits, &work);
+    expect_true("pinned rotated oracle hits the far triangle",
+                linear_status == MDKR_CAMERA_SWEEP_HIT &&
+                linear_hit.stable_id == 108U &&
+                linear_hit.started_overlapping == 0U &&
+                fabsf(linear_hit.fraction - 0.39f) < 1.0e-3f &&
+                fabsf(linear_hit.point.x - 4.0f) < 1.0e-3f &&
+                fabsf(linear_hit.point.y) < 1.0e-3f &&
+                fabsf(linear_hit.point.z + 10.0f) < 1.0e-3f);
+    expect_true("pinned rotated index hits the far triangle",
+                indexed_status == MDKR_CAMERA_SWEEP_HIT &&
+                indexed_hit.stable_id == 108U &&
+                indexed_hit.started_overlapping == 0U &&
+                fabsf(indexed_hit.fraction - 0.39f) < 1.0e-3f &&
+                fabsf(indexed_hit.point.x - 4.0f) < 1.0e-3f &&
+                fabsf(indexed_hit.point.y) < 1.0e-3f &&
+                fabsf(indexed_hit.point.z + 10.0f) < 1.0e-3f);
 
     sCameraObjectOcclusionCaches = NULL;
     if (failures != 0) {

@@ -216,6 +216,60 @@ def main() -> int:
         "camera_obstruction_projection_matches_render" in runtime,
         "render projection must match the fixed-tick validated generation",
     )
+    # Freshness is the entire content of the intent record: an intent captured
+    # on the previous tick is fresh for this one, and the first tick after a
+    # reset has no predecessor. Naming the predicate is not enough -- a stub
+    # that always answers "fresh" satisfies every name pin in this file -- so
+    # scope the claim to the body and forbid a constant answer.
+    freshness = strip_comments(
+        function_body(runtime, "camera_obstruction_intent_is_current_tick"))
+    failures += require(
+        "capture_tick + 1U == tick" in freshness and "tick == 1U" in freshness,
+        "intent freshness must compare the capture tick against this tick",
+    )
+    failures += require(
+        re.search(r"return\s+[01]U?\s*;", freshness) is None,
+        "intent freshness must not answer with a constant",
+    )
+    # No ROM route produces target_hidden, so the publication rule itself is the
+    # control: outside the no-focus branch the flag is the visibility query's
+    # answer, never a constant. tests/test_camera_target_visibility.c carries
+    # the matching positive control that an occluded focus reports hidden.
+    validate = strip_comments(
+        function_body(runtime, "camera_obstruction_validate_resolved"))
+    visibility_assignments = [
+        " ".join(value.split()) for value in
+        re.findall(r"observe->resolved_target_visible\s*=\s*([^;]+);", validate)
+    ]
+    failures += require(
+        len(visibility_assignments) == 2 and
+        visibility_assignments.count("TRUE") == 1 and
+        any("MDKR_CAMERA_TARGET_VISIBILITY_VISIBLE" in value
+            for value in visibility_assignments),
+        "resolved target visibility must come from the visibility query, with a "
+        f"constant only on the no-focus branch: {visibility_assignments}",
+    )
+    # Reachability, not presence: both resolver seams still satisfy every name
+    # pin here when wrapped in a guard that can never be taken. Assert which
+    # body each call lives in, and that the fixed-tick file carries no
+    # constant-false guard at all.
+    resolve_slot_body = strip_comments(
+        function_body(runtime, "camera_obstruction_resolve_slot"))
+    observe_slot_body = strip_comments(
+        function_body(runtime, "camera_obstruction_observe_slot"))
+    failures += require(
+        "mdkr_camera_obstruction_resolve(" in resolve_slot_body,
+        "the resolver kernel must be invoked from camera_obstruction_resolve_slot",
+    )
+    failures += require(
+        "camera_obstruction_resolve_slot(" in observe_slot_body,
+        "each observed slot must invoke the resolver",
+    )
+    failures += require(
+        re.search(r"\b(?:if|while)\s*\(\s*(?:0|0U|FALSE)\s*\)",
+                  strip_comments(runtime)) is None,
+        "the fixed-tick runtime must not gate work behind a constant-false guard",
+    )
     failures += require(
         "cam_restore_latched_effective_projection_for_viewport" in camera and
         "cam_restore_latched_effective_projection_for_viewport" in runtime,

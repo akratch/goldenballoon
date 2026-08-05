@@ -87,7 +87,6 @@ int cam_lens_pose_from_camera_snapshot(
         world_from_camera.z_position);
     /* mtxf_from_transform() stores world images of local axes in rows. */
     pose.right = camera_lens_pose_vec3(matrix[0][0], matrix[0][1], matrix[0][2]);
-    pose.up = camera_lens_pose_vec3(matrix[1][0], matrix[1][1], matrix[1][2]);
     pose.forward = camera_lens_pose_vec3(-matrix[2][0], -matrix[2][1], -matrix[2][2]);
 
     /* The native sine table is fixed-point, so normalize the intended

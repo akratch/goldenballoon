@@ -100,7 +100,35 @@ def main() -> int:
         })
         dynamic_blocked = len(dynamic_rows)
         dynamic_corrected = sum(field(row, "corrected") == 1 for row in dynamic_rows)
+        # A dynamic source hit is reported for every query the resolver runs in
+        # a tick, including the alternate-shot and transition probes it then
+        # rejects. These are the ticks where a dynamic occluder was retained by
+        # a query but did not end up moving the published camera; they are
+        # expected, and they are bounded below by nothing -- only the corrected
+        # count carries the safety claim.
         dynamic_uncorrected = dynamic_blocked - dynamic_corrected
+        # DYNAMIC_STABLE_ID_BASE is the identity namespace split: track source
+        # ids are counted from 1 and bounded by the s16 segment asset contract,
+        # dynamic instance ids are minted from the high bit up. This hub route
+        # queries dynamic sources and lets them coincide with correction, but
+        # the retraction it publishes is always driven by static track geometry,
+        # so dynamic_ids is legitimately empty here; routes that do publish a
+        # dynamic blocker are covered by the summary's own dynamic_corrected.
+        # What this route can prove is the split itself.
+        stray_dynamic = [
+            stable_id for row, (_, stable_id) in zip(details, blockers)
+            if stable_id >= DYNAMIC_STABLE_ID_BASE and
+            field(row, "sphere_hit") == 0 and field(row, "exact_hit") == 0
+        ]
+        # The summary counts dynamic_corrected as "corrected with a high-bit
+        # blocker" over the same tick's slots, so the two trace channels must
+        # agree on every tick. That keeps the high-bit contract asserted whether
+        # or not this particular route ever produces one.
+        summary_dynamic = sum(field(row, "dynamic_corrected") for row in summaries)
+        detail_dynamic = sum(
+            field(row, "corrected") == 1 and stable_id >= DYNAMIC_STABLE_ID_BASE
+            for row, (_, stable_id) in zip(details, blockers)
+        )
         max_published = max((field(row, "published") for row in summaries), default=0)
         max_doors = max((field(row, "observed_doors") for row in summaries), default=0)
         for row in summaries:
@@ -122,6 +150,8 @@ def main() -> int:
         dynamic_blocked = dynamic_corrected = dynamic_uncorrected = 0
         max_published = max_doors = 0
         dynamic_ids = []
+        stray_dynamic = []
+        summary_dynamic = detail_dynamic = 0
 
     if corrected == 0:
         failures.append("route never exercised camera correction")
@@ -141,6 +171,16 @@ def main() -> int:
             f"blocked={dynamic_blocked} corrected={dynamic_corrected} "
             f"uncorrected={dynamic_uncorrected}"
         )
+    if stray_dynamic:
+        failures.append(
+            "a high-bit blocker id was published on a tick with no dynamic "
+            f"source hit: {sorted(set(stray_dynamic))[:4]}"
+        )
+    if summary_dynamic != detail_dynamic:
+        failures.append(
+            "summary and detail disagree on high-bit blocker attribution: "
+            f"summary={summary_dynamic} detail={detail_dynamic}"
+        )
 
     metrics = {
         "details": len(details),
@@ -152,6 +192,7 @@ def main() -> int:
         "dynamic_corrected": dynamic_corrected,
         "dynamic_uncorrected": dynamic_uncorrected,
         "dynamic_ids": dynamic_ids,
+        "summary_dynamic_corrected": summary_dynamic,
         "max_published": max_published,
         "max_observed_doors": max_doors,
     }

@@ -57,6 +57,17 @@ static MdkrCameraSweepStatus slab_sweep(
     return MDKR_CAMERA_SWEEP_HIT;
 }
 
+/*
+ * The runtime publishes target_hidden as "neither visible nor embedded" and
+ * every ROM route asserts that counter is zero, so nothing anywhere requires it
+ * to be reachable at all. Reproduce the runtime's own classification here and
+ * make one occluded focus prove it fires.
+ */
+static int runtime_target_hidden(MdkrCameraTargetVisibilityStatus status) {
+    return status != MDKR_CAMERA_TARGET_VISIBILITY_VISIBLE &&
+           status != MDKR_CAMERA_TARGET_VISIBILITY_EMBEDDED;
+}
+
 static MdkrCameraObstructionCombinedQuery query_for(SlabSource *slab) {
     static MdkrCameraObstructionQuerySource source;
     MdkrCameraObstructionCombinedQuery query = { 0 };
@@ -98,6 +109,25 @@ int main(void) {
                 status == MDKR_CAMERA_TARGET_VISIBILITY_HIDDEN);
     expect_true("hidden witness is non-overlap",
                 !hit.started_overlapping && hit.stable_id == 77U);
+    expect_true("remote wall raises the runtime's target_hidden classification",
+                runtime_target_hidden(status));
+
+    /* Both other reachable outcomes must clear it, so the control above cannot
+     * be satisfied by a classifier that reports hidden unconditionally. */
+    slab = (SlabSource) { -32.0f, 32.0f, 0 };
+    query = query_for(&slab);
+    expect_true("embedded focus is not target_hidden",
+                !runtime_target_hidden(mdkr_camera_target_visibility_query(
+                    &query, target, eye, 1U, &hit)));
+    slab = (SlabSource) { -0.1f, 0.1f, 0 };
+    query = query_for(&slab);
+    expect_true("visible focus is not target_hidden",
+                !runtime_target_hidden(mdkr_camera_target_visibility_query(
+                    &query, target, eye, 1U, &hit)));
+
+    slab = (SlabSource) { 30.0f, 40.0f, 0 };
+    query = query_for(&slab);
+    status = mdkr_camera_target_visibility_query(&query, target, eye, 1U, &hit);
 
     slab.invalid = 1;
     status = mdkr_camera_target_visibility_query(&query, target, eye, 1U, &hit);

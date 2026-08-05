@@ -149,6 +149,16 @@ def main() -> int:
                          ("exact dynamic", exact_dynamic)):
         if metric.get("p99_ns", 100_001) > 100_000:
             failures.append(f"{name} p99 {metric.get('p99_ns')}ns exceeds 100000ns")
+    # A section that was never entered reports p99 = 0 and passes the ceiling
+    # above, so without a floor an all-zero clock is the best possible result.
+    # The 4P Modern route enters each of these every fixed tick.
+    for name, metric in (("slot", modern.metrics["slot"]),
+                         ("static query", static), ("dynamic query", dynamic),
+                         ("dynamic publication", publication)):
+        if metric.get("hits", 0) <= 0:
+            failures.append(f"{name} section was never measured")
+    if sum(metric.get("total_ns", 0) for metric in modern.metrics.values()) <= 0:
+        failures.append("camera performance clock measured no elapsed time")
     if static.get("hits", 0) > finalizer.get("hits", 0) * 64:
         failures.append("static query fan exceeded 64 calls per fixed tick")
     if exact_static.get("hits", 0) == 0 or exact_dynamic.get("hits", 0) == 0:

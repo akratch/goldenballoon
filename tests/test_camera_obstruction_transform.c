@@ -564,7 +564,55 @@ static void test_invalid_transforms_fail_closed(void) {
         &world, &transform, &input, &hit) == MDKR_CAMERA_SWEEP_INVALID);
 }
 
+/*
+ * Every rotated expectation elsewhere in this file is produced by the same
+ * production transform it is checking, so a composition-order error is
+ * self-consistent and invisible. These two quarter turns are written out by
+ * hand from the documented Ry * Rx * Rz order, and are the only arms here that
+ * would survive that builder being replaced.
+ */
+static void test_absolute_quarter_turn_axes(void) {
+    const float quarter = 1.57079632679489661923f;
+    const float scale = 3.0f;
+    MdkrCameraObjectTransform transform;
+    MdkrCameraVec3 probe;
+
+    /* Yaw +90 degrees about world Y: object +X points along world -Z, object
+     * +Z points along world +X, object +Y is unchanged. */
+    expect_true("construct quarter yaw", mdkr_camera_object_transform_from_yaw_pitch_roll(
+        (MdkrCameraVec3){ 10.0f, -2.0f, 4.0f }, quarter, 0.0f, 0.0f, scale, &transform));
+    expect_vec_near("quarter yaw x axis", transform.local_x_axis,
+                    (MdkrCameraVec3){ 0.0f, 0.0f, -scale }, TEST_EPSILON);
+    expect_vec_near("quarter yaw y axis", transform.local_y_axis,
+                    (MdkrCameraVec3){ 0.0f, scale, 0.0f }, TEST_EPSILON);
+    expect_vec_near("quarter yaw z axis", transform.local_z_axis,
+                    (MdkrCameraVec3){ scale, 0.0f, 0.0f }, TEST_EPSILON);
+    /* t + 1*X + 2*Y + 3*Z for local (1, 2, 3):
+     * (10, -2, 4) + (0, 0, -3) + (0, 6, 0) + (9, 0, 0). */
+    expect_true("quarter yaw maps probe", mdkr_camera_object_transform_point_to_world(
+        &transform, (MdkrCameraVec3){ 1.0f, 2.0f, 3.0f }, &probe));
+    expect_vec_near("quarter yaw probe", probe,
+                    (MdkrCameraVec3){ 19.0f, 4.0f, 1.0f }, TEST_EPSILON);
+
+    /* Pitch +90 degrees about the local X axis: object +Y points along world
+     * +Z, object +Z points along world -Y, object +X is unchanged. */
+    expect_true("construct quarter pitch", mdkr_camera_object_transform_from_yaw_pitch_roll(
+        (MdkrCameraVec3){ -5.0f, 6.0f, 7.0f }, 0.0f, quarter, 0.0f, scale, &transform));
+    expect_vec_near("quarter pitch x axis", transform.local_x_axis,
+                    (MdkrCameraVec3){ scale, 0.0f, 0.0f }, TEST_EPSILON);
+    expect_vec_near("quarter pitch y axis", transform.local_y_axis,
+                    (MdkrCameraVec3){ 0.0f, 0.0f, scale }, TEST_EPSILON);
+    expect_vec_near("quarter pitch z axis", transform.local_z_axis,
+                    (MdkrCameraVec3){ 0.0f, -scale, 0.0f }, TEST_EPSILON);
+    /* (-5, 6, 7) + (3, 0, 0) + (0, 0, 6) + (0, -9, 0). */
+    expect_true("quarter pitch maps probe", mdkr_camera_object_transform_point_to_world(
+        &transform, (MdkrCameraVec3){ 1.0f, 2.0f, 3.0f }, &probe));
+    expect_vec_near("quarter pitch probe", probe,
+                    (MdkrCameraVec3){ -2.0f, -3.0f, 13.0f }, TEST_EPSILON);
+}
+
 int main(void) {
+    test_absolute_quarter_turn_axes();
     test_rounded_lens_local_continuous_sweep();
     test_rounded_lens_local_continuous_invalid();
     test_rounded_lens_local_contract();

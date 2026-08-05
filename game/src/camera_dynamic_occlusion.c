@@ -60,6 +60,130 @@ static uint32_t sNextStableInstanceId = UINT32_C(0x80000000);
 static MdkrCameraDynamicPublicationState sPublicationState;
 static MdkrCameraDynamicOcclusionTelemetry sTelemetry;
 
+/*
+ * Slot indices, not addresses: the census runs a lookup per candidate per tick
+ * and particles churn identity slots on every spawn, so neither may be a scan
+ * over the whole capacity. Each table is a chained index into the fixed slot
+ * array it describes, so it holds no ownership and answers exactly what the
+ * scan it replaces answered. Identity slot choice stays "lowest vacant" through
+ * a free bitmap because the arrays are addressed by slot elsewhere.
+ */
+#define MDKR_CAMERA_DYNAMIC_INDEX_NONE (-1)
+#define MDKR_CAMERA_DYNAMIC_INDEX_WORD_BITS 64U
+
+static int32_t *sIdentityBuckets;
+static int32_t *sIdentityNext;
+static int32_t *sIdentityPrev;
+static uint64_t *sIdentityVacant;
+static size_t sIdentityVacantWords;
+static int32_t *sModelBoundsBuckets;
+static int32_t *sModelBoundsNext;
+static int32_t *sModelBoundsPrev;
+static int32_t *sPreviousInstanceBuckets;
+static int32_t *sPreviousInstanceNext;
+static size_t sIndexBucketCount;
+
+static uint64_t mdkr_camera_dynamic_index_mix(uint64_t value) {
+    value ^= value >> 33;
+    value *= UINT64_C(0xff51afd7ed558ccd);
+    value ^= value >> 29;
+    value *= UINT64_C(0xc4ceb9fe1a85ec53);
+    value ^= value >> 32;
+    return value;
+}
+
+static size_t mdkr_camera_dynamic_index_bucket(uint64_t key) {
+    return (size_t)(mdkr_camera_dynamic_index_mix(key) & (uint64_t)(sIndexBucketCount - 1U));
+}
+
+static size_t mdkr_camera_dynamic_pointer_bucket(const void *key) {
+    return mdkr_camera_dynamic_index_bucket((uint64_t)(uintptr_t)key);
+}
+
+static void mdkr_camera_dynamic_index_clear(int32_t *buckets) {
+    size_t index;
+    for (index = 0U; index < sIndexBucketCount; index++) {
+        buckets[index] = MDKR_CAMERA_DYNAMIC_INDEX_NONE;
+    }
+}
+
+static void mdkr_camera_dynamic_index_link(
+    int32_t *buckets, int32_t *next, int32_t *previous, size_t bucket, size_t slot) {
+    const int32_t head = buckets[bucket];
+    next[slot] = head;
+    previous[slot] = MDKR_CAMERA_DYNAMIC_INDEX_NONE;
+    if (head != MDKR_CAMERA_DYNAMIC_INDEX_NONE) {
+        previous[head] = (int32_t)slot;
+    }
+    buckets[bucket] = (int32_t)slot;
+}
+
+static void mdkr_camera_dynamic_index_unlink(
+    int32_t *buckets, int32_t *next, int32_t *previous, size_t bucket, size_t slot) {
+    if (previous[slot] != MDKR_CAMERA_DYNAMIC_INDEX_NONE) {
+        next[previous[slot]] = next[slot];
+    } else if (buckets[bucket] == (int32_t)slot) {
+        buckets[bucket] = next[slot];
+    }
+    if (next[slot] != MDKR_CAMERA_DYNAMIC_INDEX_NONE) {
+        previous[next[slot]] = previous[slot];
+    }
+    next[slot] = MDKR_CAMERA_DYNAMIC_INDEX_NONE;
+    previous[slot] = MDKR_CAMERA_DYNAMIC_INDEX_NONE;
+}
+
+static void mdkr_camera_dynamic_identity_mark_vacant(size_t slot, int vacant) {
+    const size_t word = slot / MDKR_CAMERA_DYNAMIC_INDEX_WORD_BITS;
+    const uint64_t bit = UINT64_C(1) << (slot % MDKR_CAMERA_DYNAMIC_INDEX_WORD_BITS);
+    if (vacant) {
+        sIdentityVacant[word] |= bit;
+    } else {
+        sIdentityVacant[word] &= ~bit;
+    }
+}
+
+/* Equivalent to scanning sIdentities for the first NULL slot. */
+static size_t mdkr_camera_dynamic_first_vacant_identity(void) {
+    size_t word;
+    for (word = 0U; word < sIdentityVacantWords; word++) {
+        uint64_t bits = sIdentityVacant[word];
+        size_t bit = 0U;
+        if (bits == 0U) {
+            continue;
+        }
+        while ((bits & UINT64_C(1)) == 0U) {
+            bits >>= 1;
+            bit++;
+        }
+        return word * MDKR_CAMERA_DYNAMIC_INDEX_WORD_BITS + bit;
+    }
+    return sCapacity;
+}
+
+static void mdkr_camera_dynamic_index_reset(void) {
+    size_t index;
+
+    if (sIndexBucketCount == 0U) {
+        return;
+    }
+    mdkr_camera_dynamic_index_clear(sIdentityBuckets);
+    mdkr_camera_dynamic_index_clear(sModelBoundsBuckets);
+    mdkr_camera_dynamic_index_clear(sPreviousInstanceBuckets);
+    for (index = 0U; index < sCapacity; index++) {
+        sIdentityNext[index] = MDKR_CAMERA_DYNAMIC_INDEX_NONE;
+        sIdentityPrev[index] = MDKR_CAMERA_DYNAMIC_INDEX_NONE;
+        sModelBoundsNext[index] = MDKR_CAMERA_DYNAMIC_INDEX_NONE;
+        sModelBoundsPrev[index] = MDKR_CAMERA_DYNAMIC_INDEX_NONE;
+        sPreviousInstanceNext[index] = MDKR_CAMERA_DYNAMIC_INDEX_NONE;
+    }
+    for (index = 0U; index < sIdentityVacantWords; index++) {
+        sIdentityVacant[index] = 0U;
+    }
+    for (index = 0U; index < sCapacity; index++) {
+        mdkr_camera_dynamic_identity_mark_vacant(index, 1);
+    }
+}
+
 static int mdkr_camera_dynamic_finite_vec3(MdkrCameraVec3 value) {
     return isfinite(value.x) && isfinite(value.y) && isfinite(value.z);
 }
@@ -112,18 +236,39 @@ static int mdkr_camera_dynamic_transform_equal(
         left->local_z_axis.z == right->local_z_axis.z;
 }
 
-static const MdkrCameraDynamicInstance *mdkr_camera_dynamic_find_previous_instance(
-    uint64_t object_spawn_generation) {
+/* Rebuilt from the retained copy each tick. Linking downward keeps every chain
+ * in ascending slot order, so a lookup still returns the first match. */
+static void mdkr_camera_dynamic_previous_index_rebuild(void) {
     size_t index;
 
+    if (sIndexBucketCount == 0U) {
+        return;
+    }
+    mdkr_camera_dynamic_index_clear(sPreviousInstanceBuckets);
+    for (index = sPreviousInstanceCount; index-- > 0U;) {
+        const size_t bucket = mdkr_camera_dynamic_index_bucket(
+            sPreviousInstances[index].object_spawn_generation);
+        sPreviousInstanceNext[index] = sPreviousInstanceBuckets[bucket];
+        sPreviousInstanceBuckets[bucket] = (int32_t)index;
+    }
+}
+
+static const MdkrCameraDynamicInstance *mdkr_camera_dynamic_find_previous_instance(
+    uint64_t object_spawn_generation) {
+    int32_t slot;
+
     if (!mdkr_camera_dynamic_publication_previous_valid(&sPublicationState) ||
-        object_spawn_generation == 0U) {
+        object_spawn_generation == 0U || sIndexBucketCount == 0U) {
         return NULL;
     }
-    for (index = 0U; index < sPreviousInstanceCount; index++) {
-        if (sPreviousInstances[index].object_spawn_generation ==
-            object_spawn_generation) {
-            return &sPreviousInstances[index];
+    for (slot = sPreviousInstanceBuckets[
+             mdkr_camera_dynamic_index_bucket(object_spawn_generation)];
+         slot != MDKR_CAMERA_DYNAMIC_INDEX_NONE;
+         slot = sPreviousInstanceNext[slot]) {
+        if ((size_t)slot < sPreviousInstanceCount &&
+            sPreviousInstances[slot].object_spawn_generation ==
+                object_spawn_generation) {
+            return &sPreviousInstances[slot];
         }
     }
     return NULL;
@@ -246,10 +391,17 @@ static MdkrCameraSweepStatus mdkr_camera_dynamic_sphere_aabb_sweep(
 }
 
 static MdkrCameraDynamicIdentity *mdkr_camera_dynamic_find_identity(const Object *object) {
-    size_t index;
-    for (index = 0U; index < sCapacity; index++) {
-        if (sIdentities[index].object == object) {
-            return &sIdentities[index];
+    int32_t slot;
+
+    /* A vacant slot's object is NULL, so a NULL key would match the first hole
+     * rather than miss; identity only exists for a live object. */
+    if (object == NULL || sIndexBucketCount == 0U) {
+        return NULL;
+    }
+    for (slot = sIdentityBuckets[mdkr_camera_dynamic_pointer_bucket(object)];
+         slot != MDKR_CAMERA_DYNAMIC_INDEX_NONE; slot = sIdentityNext[slot]) {
+        if (sIdentities[slot].object == object) {
+            return &sIdentities[slot];
         }
     }
     return NULL;
@@ -258,11 +410,16 @@ static MdkrCameraDynamicIdentity *mdkr_camera_dynamic_find_identity(const Object
 static MdkrCameraDynamicModelBounds *mdkr_camera_dynamic_find_model_bounds(
     const ObjectModel *model,
     uint32_t model_generation) {
-    size_t index;
-    for (index = 0U; index < sCapacity; index++) {
-        if (sModelBounds[index].model == model &&
-            sModelBounds[index].model_generation == model_generation) {
-            return &sModelBounds[index];
+    int32_t slot;
+
+    if (model == NULL || sIndexBucketCount == 0U) {
+        return NULL;
+    }
+    for (slot = sModelBoundsBuckets[mdkr_camera_dynamic_pointer_bucket(model)];
+         slot != MDKR_CAMERA_DYNAMIC_INDEX_NONE; slot = sModelBoundsNext[slot]) {
+        if (sModelBounds[slot].model == model &&
+            sModelBounds[slot].model_generation == model_generation) {
+            return &sModelBounds[slot];
         }
     }
     return NULL;
@@ -300,8 +457,17 @@ static MdkrCameraDynamicModelBounds *mdkr_camera_dynamic_get_model_bounds(
         return NULL;
     }
     entry = vacant;
+    index = (size_t)(entry - sModelBounds);
+    if (entry->model != NULL) {
+        mdkr_camera_dynamic_index_unlink(
+            sModelBoundsBuckets, sModelBoundsNext, sModelBoundsPrev,
+            mdkr_camera_dynamic_pointer_bucket(entry->model), index);
+    }
     entry->model = model;
     entry->model_generation = model_generation;
+    mdkr_camera_dynamic_index_link(
+        sModelBoundsBuckets, sModelBoundsNext, sModelBoundsPrev,
+        mdkr_camera_dynamic_pointer_bucket(model), index);
     if (sModelBoundsCount < sCapacity) sModelBoundsCount++;
     sTelemetry.model_bounds_count = sModelBoundsCount;
     return entry;
@@ -348,6 +514,13 @@ int mdkr_camera_dynamic_occlusion_prepare(size_t object_capacity) {
     MdkrCameraDynamicModelBounds *model_bounds;
     MdkrCameraDynamicInstance *instances;
     MdkrCameraDynamicInstance *previous_instances;
+    int32_t *link_arrays[5] = { NULL, NULL, NULL, NULL, NULL };
+    int32_t *buckets[3] = { NULL, NULL, NULL };
+    uint64_t *vacant = NULL;
+    size_t bucket_count = 1U;
+    size_t vacant_words;
+    size_t index;
+    size_t index_bytes;
 
     const size_t bytes_per_slot = sizeof(*identities) + sizeof(*model_bounds) +
         sizeof(*instances) + sizeof(*previous_instances);
@@ -358,25 +531,61 @@ int mdkr_camera_dynamic_occlusion_prepare(size_t object_capacity) {
     if (object_capacity > SIZE_MAX / bytes_per_slot) {
         return 0;
     }
+    while (bucket_count < object_capacity) {
+        if (bucket_count > SIZE_MAX / 2U) {
+            return 0;
+        }
+        bucket_count *= 2U;
+    }
+    vacant_words = (object_capacity + MDKR_CAMERA_DYNAMIC_INDEX_WORD_BITS - 1U) /
+        MDKR_CAMERA_DYNAMIC_INDEX_WORD_BITS;
     identities = calloc(object_capacity, sizeof(*identities));
     model_bounds = calloc(object_capacity, sizeof(*model_bounds));
     instances = calloc(object_capacity, sizeof(*instances));
     previous_instances = calloc(object_capacity, sizeof(*previous_instances));
+    for (index = 0U; index < 5U; index++) {
+        link_arrays[index] = calloc(object_capacity, sizeof(**link_arrays));
+    }
+    for (index = 0U; index < 3U; index++) {
+        buckets[index] = calloc(bucket_count, sizeof(**buckets));
+    }
+    vacant = calloc(vacant_words, sizeof(*vacant));
     if (identities == NULL || model_bounds == NULL || instances == NULL ||
-        previous_instances == NULL) {
+        previous_instances == NULL || vacant == NULL ||
+        link_arrays[0] == NULL || link_arrays[1] == NULL ||
+        link_arrays[2] == NULL || link_arrays[3] == NULL ||
+        link_arrays[4] == NULL ||
+        buckets[0] == NULL || buckets[1] == NULL || buckets[2] == NULL) {
         free(identities);
         free(model_bounds);
         free(instances);
         free(previous_instances);
+        free(vacant);
+        for (index = 0U; index < 5U; index++) free(link_arrays[index]);
+        for (index = 0U; index < 3U; index++) free(buckets[index]);
         return 0;
     }
     sIdentities = identities;
     sModelBounds = model_bounds;
     sInstances = instances;
     sPreviousInstances = previous_instances;
+    sIdentityNext = link_arrays[0];
+    sIdentityPrev = link_arrays[1];
+    sModelBoundsNext = link_arrays[2];
+    sModelBoundsPrev = link_arrays[3];
+    sPreviousInstanceNext = link_arrays[4];
+    sIdentityBuckets = buckets[0];
+    sModelBoundsBuckets = buckets[1];
+    sPreviousInstanceBuckets = buckets[2];
+    sIdentityVacant = vacant;
+    sIdentityVacantWords = vacant_words;
+    sIndexBucketCount = bucket_count;
     sCapacity = object_capacity;
+    mdkr_camera_dynamic_index_reset();
+    index_bytes = 5U * object_capacity * sizeof(**link_arrays) +
+        3U * bucket_count * sizeof(**buckets) + vacant_words * sizeof(*vacant);
     sTelemetry.capacity = object_capacity;
-    sTelemetry.allocation_bytes = object_capacity * bytes_per_slot;
+    sTelemetry.allocation_bytes = object_capacity * bytes_per_slot + index_bytes;
     return 1;
 }
 
@@ -392,6 +601,7 @@ void mdkr_camera_dynamic_occlusion_reset(void) {
     if (sPreviousInstances != NULL) {
         memset(sPreviousInstances, 0, sCapacity * sizeof(*sPreviousInstances));
     }
+    mdkr_camera_dynamic_index_reset();
     sTelemetry.published_instance_count = 0U;
     sTelemetry.temporal_moved_instance_count = 0U;
     sTelemetry.identity_count = 0U;
@@ -403,10 +613,30 @@ void mdkr_camera_dynamic_occlusion_shutdown(void) {
     free(sModelBounds);
     free(sInstances);
     free(sPreviousInstances);
+    free(sIdentityBuckets);
+    free(sIdentityNext);
+    free(sIdentityPrev);
+    free(sIdentityVacant);
+    free(sModelBoundsBuckets);
+    free(sModelBoundsNext);
+    free(sModelBoundsPrev);
+    free(sPreviousInstanceBuckets);
+    free(sPreviousInstanceNext);
     sIdentities = NULL;
     sModelBounds = NULL;
     sInstances = NULL;
     sPreviousInstances = NULL;
+    sIdentityBuckets = NULL;
+    sIdentityNext = NULL;
+    sIdentityPrev = NULL;
+    sIdentityVacant = NULL;
+    sModelBoundsBuckets = NULL;
+    sModelBoundsNext = NULL;
+    sModelBoundsPrev = NULL;
+    sPreviousInstanceBuckets = NULL;
+    sPreviousInstanceNext = NULL;
+    sIdentityVacantWords = 0U;
+    sIndexBucketCount = 0U;
     sCapacity = 0U;
     mdkr_camera_dynamic_occlusion_reset();
     sTelemetry.capacity = 0U;
@@ -423,8 +653,8 @@ void mdkr_camera_dynamic_occlusion_note_spawn(const Object *object) {
     if (identity != NULL) {
         return;
     }
-    for (index = 0U; index < sCapacity && sIdentities[index].object != NULL; index++) {}
-    if (index == sCapacity || sNextSpawnGeneration == 0U ||
+    index = mdkr_camera_dynamic_first_vacant_identity();
+    if (index >= sCapacity || sNextSpawnGeneration == 0U ||
         sNextSpawnGeneration == UINT64_MAX || sNextStableInstanceId == 0U) {
         sTelemetry.capacity_failure_count++;
         return;
@@ -435,16 +665,31 @@ void mdkr_camera_dynamic_occlusion_note_spawn(const Object *object) {
     identity->stable_instance_id = sNextStableInstanceId;
     sNextStableInstanceId = sNextStableInstanceId == UINT32_MAX
         ? 0U : sNextStableInstanceId + 1U;
+    mdkr_camera_dynamic_identity_mark_vacant(index, 0);
+    mdkr_camera_dynamic_index_link(
+        sIdentityBuckets, sIdentityNext, sIdentityPrev,
+        mdkr_camera_dynamic_pointer_bucket(object), index);
     sIdentityCount++;
     sTelemetry.identity_count = sIdentityCount;
 }
 
 void mdkr_camera_dynamic_occlusion_note_free(const Object *object) {
-    MdkrCameraDynamicIdentity *identity = mdkr_camera_dynamic_find_identity(object);
+    MdkrCameraDynamicIdentity *identity;
+    size_t index;
+
+    if (object == NULL || sCapacity == 0U) {
+        return;
+    }
+    identity = mdkr_camera_dynamic_find_identity(object);
     if (identity != NULL) {
+        index = (size_t)(identity - sIdentities);
+        mdkr_camera_dynamic_index_unlink(
+            sIdentityBuckets, sIdentityNext, sIdentityPrev,
+            mdkr_camera_dynamic_pointer_bucket(identity->object), index);
         identity->object = NULL;
         identity->spawn_generation = 0U;
         identity->stable_instance_id = 0U;
+        mdkr_camera_dynamic_identity_mark_vacant(index, 1);
         if (sIdentityCount > 0U) sIdentityCount--;
         sTelemetry.identity_count = sIdentityCount;
     }
@@ -467,6 +712,7 @@ void mdkr_camera_dynamic_occlusion_tick(void) {
         memcpy(sPreviousInstances, sInstances,
                sInstanceCount * sizeof(*sPreviousInstances));
     }
+    mdkr_camera_dynamic_previous_index_rebuild();
     sInstanceCount = 0U;
     objects = objGetObjList(&first, &count);
     if (objects == NULL || first < 0 || count < first || (size_t)count > sCapacity) {

@@ -170,8 +170,15 @@ typedef struct MdkrCameraObstructionObserveSlot {
     MdkrCameraVec3 desired_eye;
     MdkrCameraVec3 effective_eye;
     MdkrCameraVec3 previous_desired_eye;
+    /* Two lens channels for one viewport: `projection` is the presentation lens
+     * every guard, resolver input, and continuity comparison is built from,
+     * while `render_projection` is the latched record render draws. They differ
+     * only where a framed view narrows the image, and only the render channel
+     * participates in the authored-image generation handshake. */
     MdkrCameraProjection projection;
+    MdkrCameraProjection render_projection;
     MdkrCameraProjection last_validated_projection;
+    MdkrCameraProjection last_validated_render_projection;
     MdkrCameraLensGuard guard;
     MdkrCameraRoundedLensGuard exact_guard;
     MdkrCameraRoundedLensGuard published_exact_guard;
@@ -179,6 +186,7 @@ typedef struct MdkrCameraObstructionObserveSlot {
     MdkrCameraLensGuard last_validated_guard;
     float last_validated_authored_fov;
     s32 last_validated_viewport_layout;
+    uint8_t last_validated_world_region;
     MdkrCameraSweepHit stationary_hit;
     MdkrCameraSweepHit corridor_hit;
     MdkrCameraSweepHit target_visibility_hit;
@@ -255,6 +263,11 @@ typedef struct MdkrCameraObstructionRuntime {
     uint64_t tick_serial;
     uint32_t duplicate_solve_violations;
     uint32_t projection_mismatch_violations;
+    uint32_t presentation_depth_violations;
+    /* Pushes refused past the depth ceiling. The matching pops consume these
+     * first, so a refused scope cannot pull the depth below the scope that
+     * still owns it. */
+    uint32_t presentation_refused_depth;
     s16 last_physical_slot_by_viewport[4];
     uint8_t viewport_slot_valid[4];
     uint8_t presentation_depth;
@@ -2123,6 +2136,7 @@ static void camera_obstruction_observe_slot(
     sCameraObstructionRuntime.last_physical_slot_by_viewport[viewport] = (s16)physical_slot;
     sCameraObstructionRuntime.viewport_slot_valid[viewport] = TRUE;
     memset(&observe->projection, 0, sizeof(observe->projection));
+    memset(&observe->render_projection, 0, sizeof(observe->render_projection));
     memset(&observe->guard, 0, sizeof(observe->guard));
     memset(&observe->exact_guard, 0, sizeof(observe->exact_guard));
     memset(&observe->stationary_hit, 0, sizeof(observe->stationary_hit));
@@ -2131,6 +2145,9 @@ static void camera_obstruction_observe_slot(
     projection_ready = !camera_obstruction_test_projection_failure(
             sCameraObstructionRuntime.tick_serial) &&
         cam_latch_effective_projection_for_viewport_context(
+            viewport, physical_slot, gameplay_projection,
+            &observe->render_projection) &&
+        cam_resolver_projection_for_viewport_context(
             viewport, physical_slot, gameplay_projection,
             &observe->projection) &&
         mdkr_camera_lens_guard_from_projection(
@@ -2205,13 +2222,20 @@ static void camera_obstruction_observe_slot(
             observe->last_validated_viewport_layout == cam_get_viewport_layout() &&
             observe->last_validated_authored_fov == cam_get_fov() &&
             observe->last_validated_gameplay_projection == (uint8_t)gameplay_projection &&
+            /* The world region is a render-lens input the record cannot carry,
+             * so a held image may only be reissued into the same region it was
+             * validated for. */
+            observe->last_validated_world_region ==
+                (uint8_t)viewport_world_region_uses_safe_aperture(viewport) &&
             fallback_status == MDKR_CAMERA_SWEEP_CLEAR &&
             !observe->query_source_degraded &&
             cam_restore_latched_effective_projection_for_viewport(
-                viewport, physical_slot, &observe->last_validated_projection)) {
+                viewport, physical_slot,
+                &observe->last_validated_render_projection)) {
             sCameraObstructionRuntime.resolved_cameras[physical_slot] =
                 observe->last_validated_camera;
             observe->projection = observe->last_validated_projection;
+            observe->render_projection = observe->last_validated_render_projection;
             observe->guard = observe->last_validated_guard;
             observe->exact_guard = observe->last_validated_exact_guard;
             observe->exact_guard_valid = observe->last_validated_exact_guard_valid;
@@ -2283,6 +2307,8 @@ static void camera_obstruction_observe_slot(
                 observe->last_validated_camera =
                     sCameraObstructionRuntime.resolved_cameras[physical_slot];
                 observe->last_validated_projection = observe->projection;
+                observe->last_validated_render_projection =
+                    observe->render_projection;
                 observe->last_validated_guard = observe->guard;
                 if (runtime_policy == MDKR_CAMERA_RUNTIME_MODERN) {
                     observe->last_validated_exact_guard = validated_exact_guard;
@@ -2296,6 +2322,8 @@ static void camera_obstruction_observe_slot(
                 observe->last_validated_retargeted = observe->orientation_retargeted;
                 observe->last_validated_authored_fov = cam_get_fov();
                 observe->last_validated_viewport_layout = cam_get_viewport_layout();
+                observe->last_validated_world_region =
+                    (uint8_t)viewport_world_region_uses_safe_aperture(viewport);
                 observe->last_validated_gameplay_projection =
                     (uint8_t)gameplay_projection;
                 observe->last_validated_camera_valid = TRUE;
@@ -2322,16 +2350,46 @@ static void camera_obstruction_observe_slot(
     }
 }
 
-void camera_obstruction_presentation_begin(void) {
-    if (sCameraObstructionRuntime.presentation_depth < UINT8_MAX) {
-        sCameraObstructionRuntime.presentation_depth++;
+/*
+ * Presentation scopes are strictly balanced: depth is the authority that lets
+ * render read resolved cameras, so a saturating push against a clamping pop
+ * would eventually leave the scope open or close it early. Render nests these
+ * only as deep as its own recursion, so a deeper push is a caller defect and is
+ * refused and reported rather than absorbed.
+ */
+#define MDKR_CAMERA_OBSTRUCTION_PRESENTATION_DEPTH_MAX 8U
+
+static void camera_obstruction_presentation_violation(const char *reason) {
+    if (sCameraObstructionRuntime.presentation_depth_violations == 0U) {
+        fprintf(stderr, "[CAMERA-PRESENTATION] unbalanced scope: %s\n", reason);
+    }
+    if (sCameraObstructionRuntime.presentation_depth_violations != UINT32_MAX) {
+        sCameraObstructionRuntime.presentation_depth_violations++;
     }
 }
 
-void camera_obstruction_presentation_end(void) {
-    if (sCameraObstructionRuntime.presentation_depth > 0U) {
-        sCameraObstructionRuntime.presentation_depth--;
+void camera_obstruction_presentation_begin(void) {
+    if (sCameraObstructionRuntime.presentation_depth >=
+        MDKR_CAMERA_OBSTRUCTION_PRESENTATION_DEPTH_MAX) {
+        camera_obstruction_presentation_violation("push past depth ceiling");
+        if (sCameraObstructionRuntime.presentation_refused_depth != UINT32_MAX) {
+            sCameraObstructionRuntime.presentation_refused_depth++;
+        }
+        return;
     }
+    sCameraObstructionRuntime.presentation_depth++;
+}
+
+void camera_obstruction_presentation_end(void) {
+    if (sCameraObstructionRuntime.presentation_refused_depth != 0U) {
+        sCameraObstructionRuntime.presentation_refused_depth--;
+        return;
+    }
+    if (sCameraObstructionRuntime.presentation_depth == 0U) {
+        camera_obstruction_presentation_violation("pop without a matching push");
+        return;
+    }
+    sCameraObstructionRuntime.presentation_depth--;
 }
 
 /*
@@ -2392,8 +2450,8 @@ int camera_obstruction_projection_matches_render(
     }
     observe = &sCameraObstructionRuntime.slots[physical_slot];
     if (!observe->selected || observe->viewport != viewport ||
-        observe->projection.generation != generation ||
-        observe->projection.camera_id != physical_slot) {
+        observe->render_projection.generation != generation ||
+        observe->render_projection.camera_id != physical_slot) {
         sCameraObstructionRuntime.projection_mismatch_violations++;
         return FALSE;
     }

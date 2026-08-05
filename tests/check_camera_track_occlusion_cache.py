@@ -79,10 +79,17 @@ def main() -> int:
         print("rounded track source must fail closed on an invalid retained chunk", file=sys.stderr)
         failures += 1
 
-    generate = source.index("void generate_track(s32 modelId)")
-    build = source.index("mdkr_track_occlusion_cache_build();", generate)
-    finalized_vertices = source.rindex(".flags |= 0x08000000;", generate, build)
-    if build <= finalized_vertices:
+    # Both offsets of an ordering claim are anchored independently inside the
+    # same function region; bounding one search by the other offset can only
+    # reproduce the ordering it is supposed to prove.
+    generate = source.find("void generate_track(s32 modelId)")
+    generate_end = source.find("\nvoid free_track(void)", generate + 1)
+    build = source.find("mdkr_track_occlusion_cache_build();", generate, generate_end)
+    finalized_vertices = source.rfind(".flags |= 0x08000000;", generate, generate_end)
+    if min(generate, generate_end, build, finalized_vertices) < 0:
+        print("track generation ordering anchors are missing", file=sys.stderr)
+        failures += 1
+    elif build <= finalized_vertices:
         print("cache build must follow vertex/batch finalization", file=sys.stderr)
         failures += 1
 

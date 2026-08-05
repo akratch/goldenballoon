@@ -632,17 +632,16 @@ extern s32 D_B0000578; // Used as a symbol for anti-piracy checks in the game.
  *
  * DKR clips two-player views with scissors while retaining a full-height RSP
  * viewport, so the logical dimensions belong to the RSP viewport, not the
- * scissor rectangle; display_config owns that mapping.  A framed menu view opts
- * into the safe 4:3 region instead of the wider gameplay presentation region,
- * and a safe-region view is never a gameplay lens.
+ * scissor rectangle; display_config owns that mapping.  The safe 4:3 region is
+ * the caller's channel selection, not a property read here, because render and
+ * the resolver ask for different regions of the same viewport; a safe-region
+ * view is never a gameplay lens.
  */
-bool cam_effective_projection_for_viewport_context(
-    s32 viewport, s32 cameraID, bool gameplayCamera,
+static bool cam_projection_for_viewport_region(
+    s32 viewport, s32 cameraID, bool gameplayCamera, s32 safeWorldRegion,
     MdkrCameraProjection *out) {
     MdkrDisplayLayout layout;
     MdkrCameraProjectionRequest request;
-    const s32 safeWorldRegion =
-        viewport_world_region_uses_safe_aperture(viewport);
 
     layout = mdkr_display_layout();
     memset(&request, 0, sizeof(request));
@@ -663,6 +662,31 @@ bool cam_effective_projection_for_viewport_context(
      * between camera selection and this query. */
     request.gameplay_camera = gameplayCamera && !safeWorldRegion;
     return mdkr_display_calculate_camera_projection(&request, out);
+}
+
+bool cam_effective_projection_for_viewport_context(
+    s32 viewport, s32 cameraID, bool gameplayCamera,
+    MdkrCameraProjection *out) {
+    return cam_projection_for_viewport_region(
+        viewport, cameraID, gameplayCamera,
+        viewport_world_region_uses_safe_aperture(viewport), out);
+}
+
+/**
+ * The obstruction resolver's lens channel.
+ *
+ * A framed view narrows the drawn image, not the viewport it is drawn into: the
+ * frame retracts inside one authored image and the safe aperture is a
+ * presentation property the resolver never observes. Guarding the presentation
+ * lens keeps the resolver's guard a superset of every image the same viewport
+ * can publish, so a shot validated behind the frame is still valid without it.
+ * Render must keep using the latched safe-aperture record instead.
+ */
+bool cam_resolver_projection_for_viewport_context(
+    s32 viewport, s32 cameraID, bool gameplayCamera,
+    MdkrCameraProjection *out) {
+    return cam_projection_for_viewport_region(
+        viewport, cameraID, gameplayCamera, FALSE, out);
 }
 
 bool cam_effective_projection_for_viewport(
