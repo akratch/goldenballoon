@@ -395,17 +395,25 @@ void func_80042D20(Object *obj, Object_Racer *racer, s32 updateRate) {
     if (D_8011D544 != 0.0f) {
 #ifdef NATIVE_PORT
         /* AVOID_UB: racePosition is 1-indexed (1..8) but D_800DCDA0 has 8 entries
-         * (indices 0..7), so 8th place reads one past the end. On N64 that grabbed
-         * the adjacent global harmlessly; ASan flags a global-buffer-overflow and
-         * the optimized build can read into unrelated data. Clamp to the last slot
-         * — every trailing entry is 2, so 8th place gets the intended value. */
+         * (indices 0..7), so 8th place reads one past the end. ASan flags a
+         * global-buffer-overflow and the optimized build can read into unrelated
+         * data.
+         *
+         * The value that read produces on hardware is not indeterminate:
+         * D_800DCDA8 begins at 0x800DCDA8, immediately after D_800DCDA0's eight
+         * bytes at 0x800DCDA0, so index 8 IS D_800DCDA8[0], which is 1. Name it
+         * rather than clamp to D_800DCDA0[7] (2), which is a different value. */
         s32 rpIdx = racer->racePosition;
-        if (rpIdx < 0) {
-            rpIdx = 0;
-        } else if (rpIdx > 7) {
-            rpIdx = 7;
+        if (rpIdx == (s32) ARRAY_COUNT(D_800DCDA0)) {
+            racer->unk1CA = D_800DCDA8[0];
+        } else {
+            if (rpIdx < 0) {
+                rpIdx = 0;
+            } else if (rpIdx > (s32) ARRAY_COUNT(D_800DCDA0) - 1) {
+                rpIdx = (s32) ARRAY_COUNT(D_800DCDA0) - 1;
+            }
+            racer->unk1CA = D_800DCDA0[rpIdx];
         }
-        racer->unk1CA = D_800DCDA0[rpIdx];
 #else
         racer->unk1CA = D_800DCDA0[racer->racePosition];
 #endif
@@ -2660,6 +2668,7 @@ void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
     s32 racerTrickType;
     f32 segmentXVelocity;
 #ifdef NATIVE_PORT
+    s32 approachedTarget;
     /*
      * LP64 / stack protector: this local is written as a FULL 4x4 matrix — see
      * mtxf_from_transform() / mtxf_from_inverse_transform() below, both of which
@@ -3361,6 +3370,9 @@ void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
         obj->x_velocity = gRacerMagnetVelX;
         obj->z_velocity = gRacerMagnetVelZ;
     }
+#ifdef NATIVE_PORT
+    approachedTarget = racer->approachTarget != NULL;
+#endif
     if (racer->approachTarget == NULL) {
         var_f20 = obj->x_velocity;
         spEC = obj->z_velocity;
@@ -3408,13 +3420,26 @@ void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
         }
     }
     if (racer->unk1D2 != 0) {
+#ifdef NATIVE_PORT
         /*
-         * While the external-impulse holdoff is active, preserve the velocity
-         * produced by movement/approach physics. The old path copied
-         * indeterminate stack values into the plane on these frames.
+         * var_f20/spEC are the horizontal velocity this frame publishes. Only
+         * the racer_approach_object() path leaves them unassigned -- the branch
+         * above writes both before it calls move_object() -- so only that path
+         * needs a defined value here, and it takes the one approach physics
+         * left in the object.
+         *
+         * The move_object() path must NOT be re-read: its var_f20/spEC already
+         * carry this frame's accumulated impulses (racer->unk11C/unk120 wall
+         * recoil at half weight, racer->unk84/unk88 drift, or the input-blocked
+         * decay), none of which are written back into obj->x_velocity before
+         * this point. Re-reading the object there discards them, which is the
+         * whole content of the holdoff branch for a car or hovercraft.
          */
-        var_f20 = obj->x_velocity;
-        spEC = obj->z_velocity;
+        if (approachedTarget) {
+            var_f20 = obj->x_velocity;
+            spEC = obj->z_velocity;
+        }
+#endif
         racer->unk1D2 -= updateRate;
         if (racer->unk1D2 < 0) {
             racer->unk1D2 = 0;
@@ -5000,26 +5025,30 @@ void update_player_racer(Object *obj, s32 updateRate) {
         if (tempRacer->countLap < tempRacer->lap) {
             tempRacer->countLap = tempRacer->lap;
         }
-#ifdef NATIVE_PORT
-        /* Fidelity Phase 2b, census migration item 8: the held-object (Fire Mountain
-         * egg) convergence lerp used to live in render_3d_model (objects.c:4942-4944),
-         * `trans += (attachPoint - trans) * 0.25` executed once per DRAW and never
-         * restored. So how fast the egg settled into the carrier's hand depended on
-         * how many viewports were open (four lerps per tick in a 4P split, one in 1P)
-         * and, under the coming high-rate presentation loop, on the frame rate; and a
-         * carrier that was culled froze its egg mid-flight. The position it writes is
-         * authoritative -- handle_racer_items (racer.c:7223-7245) turns it into a
-         * world position on release, and it is in the state hash.
-         *
-         * Once per tick, per racer, here. obj->curVertData is the buffer
-         * obj_animate_tick published on the previous tick (the tick runs after
-         * obj_update), which is the only ordering available to the simulation and is
-         * a full tick fresher than the "whenever it was last drawn" the render path
-         * offered. Guarded on curVertData the way handle_racer_items already guards
-         * its own read of the same attach point. */
-        racer_held_object_lerp(obj, tempRacer);
-#endif
     }
+#ifdef NATIVE_PORT
+    /* Fidelity Phase 2b, census migration item 8: the held-object (Fire Mountain
+     * egg) convergence lerp used to live in render_3d_model (objects.c:4942-4944),
+     * `trans += (attachPoint - trans) * 0.25` executed once per DRAW and never
+     * restored. So how fast the egg settled into the carrier's hand depended on
+     * how many viewports were open (four lerps per tick in a 4P split, one in 1P)
+     * and, under the coming high-rate presentation loop, on the frame rate; and a
+     * carrier that was culled froze its egg mid-flight. The position it writes is
+     * authoritative -- handle_racer_items (racer.c:7223-7245) turns it into a
+     * world position on release, and it is in the state hash.
+     *
+     * Once per tick, per racer, here -- OUTSIDE the human/CPU split, because the
+     * render path it replaces drew every carrier. A CPU racer can hold an egg
+     * (Fire Mountain runs CPU opponents), so a lerp reachable only from the human
+     * branch leaves their egg pinned wherever it spawned.
+     *
+     * obj->curVertData is the buffer obj_animate_tick published on the previous
+     * tick (the tick runs after obj_update), which is the only ordering available
+     * to the simulation and is a full tick fresher than the "whenever it was last
+     * drawn" the render path offered. Guarded on curVertData the way
+     * handle_racer_items already guards its own read of the same attach point. */
+    racer_held_object_lerp(obj, tempRacer);
+#endif
 }
 
 #ifdef NATIVE_PORT
@@ -6248,10 +6277,10 @@ void racer_spinout_car(Object *obj, Object_Racer *racer, s32 updateRate, f32 upd
             obj->particleEmittersEnabled |= 0x4FC00;
         } else {
             if (racer->wheel_surfaces[2] < SURFACE_NONE) {
-                obj->particleEmittersEnabled |= 1 << (racer->wheel_surfaces[2] * 2);
+                obj->particleEmittersEnabled |= DKR_SHL32(1u, racer->wheel_surfaces[2] * 2);
             }
             if (racer->wheel_surfaces[3] < SURFACE_NONE) {
-                obj->particleEmittersEnabled |= 2 << (racer->wheel_surfaces[3] * 2);
+                obj->particleEmittersEnabled |= DKR_SHL32(2u, racer->wheel_surfaces[3] * 2);
             }
         }
     }
@@ -6937,10 +6966,10 @@ void update_car_velocity_ground(Object *obj, Object_Racer *racer, s32 updateRate
     }
     if (cam_get_viewport_layout() < 2 && sp38 && racer->velocity < -2.0) {
         if (racer->wheel_surfaces[2] < SURFACE_NONE) {
-            obj->particleEmittersEnabled |= 1 << (racer->wheel_surfaces[2] * 2);
+            obj->particleEmittersEnabled |= DKR_SHL32(1u, racer->wheel_surfaces[2] * 2);
         }
         if (racer->wheel_surfaces[3] < SURFACE_NONE) {
-            obj->particleEmittersEnabled |= 2 << (racer->wheel_surfaces[3] * 2);
+            obj->particleEmittersEnabled |= DKR_SHL32(2u, racer->wheel_surfaces[3] * 2);
         }
     }
     vel = racer->velocity;

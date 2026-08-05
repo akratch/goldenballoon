@@ -344,6 +344,13 @@ void free_3d_model(ModelInstance *modInst) {
         gModelCache[ASSETCACHE_ID(modelIndex)] = -1;
         gModelCache[ASSETCACHE_PTR(modelIndex)] = -1;
         mempool_free(modInst);
+    } else {
+        /* The last reference is gone either way. A model absent from the cache
+         * is one whose slot was already reclaimed, not one that is still owned
+         * by something else, so its data and its instance belong to nobody now.
+         * free_model_data() releases the ObjectModel itself. */
+        free_model_data(model);
+        mempool_free(modInst);
     }
 }
 

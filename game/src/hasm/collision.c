@@ -284,13 +284,9 @@ void generate_collision_candidates(s32 numPoints, Vec3f *origins, Vec3f *targets
                 }
 
 #ifdef NATIVE_PORT
-                gCollisionCandidates[j] = DKR_COLL_ENCODE_FACET(facet);
-#else
-                gCollisionCandidates[j] = (s32) facet;
-#endif
-#ifdef NATIVE_PORT
                 /* NATIVE_PORT: the same pre-check as at the segment insert above,
-                 * for the same reason. The ROM's post-increment equality test
+                 * for the same reason, and in the same place: BEFORE the store
+                 * that consumes slot j. The ROM's post-increment equality test
                  * below is left exactly as it transcribes -- with this guard in
                  * place j can never exceed the cap, so `==` and `>=` are the same
                  * test, and keeping the ROM's form keeps the diff to an addition.
@@ -299,6 +295,11 @@ void generate_collision_candidates(s32 numPoints, Vec3f *origins, Vec3f *targets
                 if (j >= mdkr_coll_cap(MAX_COLLISION_CANDIDATES)) {
                     goto out;
                 }
+#endif
+#ifdef NATIVE_PORT
+                gCollisionCandidates[j] = DKR_COLL_ENCODE_FACET(facet);
+#else
+                gCollisionCandidates[j] = (s32) facet;
 #endif
                 gCollisionSurfaces[j] = surface;
                 j++;

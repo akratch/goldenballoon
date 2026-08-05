@@ -324,11 +324,24 @@ void render_epc_lock_up_display(void) {
         case EPC_PAGE_STACK_MIDDLE: /* fall through */
         case EPC_PAGE_STACK_BOTTOM:
             offset = (sLockupPage - 1) * 48;
+#ifdef NATIVE_PORT
+            /* The dump walks the saved stack in 32-bit words: `u16 **` is a
+             * four-byte element on the N64, and the three columns are the
+             * word at `offset` and the words 16 and 32 words further on. On
+             * LP64 the same expression strides eight bytes and reads 640 bytes
+             * into a 512-byte array. */
+            for (i = 0; i < 16; i++) {
+                render_printf("   %08x %08x %08x\n", ((u32 *) &gEpcInfoStack1)[offset],
+                              ((u32 *) &gEpcInfoStack1)[offset + 16], ((u32 *) &gEpcInfoStack1)[offset + 32]);
+                offset++;
+            }
+#else
             for (i = 0; i < 16; i++) {
                 render_printf("   %08x %08x %08x\n", ((u16 **) &gEpcInfoStack1)[offset],
                               ((u16 **) &gEpcInfoStack1)[offset + 16], ((u16 **) &gEpcInfoStack1)[offset + 32]);
                 offset++;
             }
+#endif
             break;
         case EPC_PAGE_UNK04:
             offset = (sLockupPage - 4) * 128;

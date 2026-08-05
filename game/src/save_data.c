@@ -444,7 +444,7 @@ void populate_settings_from_save_data(Settings *settings, u8 *saveData) {
         settings->ttAmulet = func_80072C54(3);
         settings->wizpigAmulet = func_80072C54(3);
         for (i = 0; i < worldCount; i++) {
-            settings->courseFlagsPtr[level_world_id(i)] |= func_80072C54(16) << 16;
+            settings->courseFlagsPtr[level_world_id(i)] |= DKR_SHL32(func_80072C54(16), 16);
         }
         settings->keys = func_80072C54(8);
         settings->cutsceneFlags = func_80072C54(32);
@@ -820,6 +820,12 @@ SIDeviceStatus get_file_extension(s32 controllerIndex, s32 fileType, char *fileE
                 if (!(occupiedExtensions & 1U)) {
                     break;
                 }
+            }
+            if (fileExtChar > 'Z') {
+                /* All 26 extensions are taken, so there is no name left to
+                 * hand back. Falling out of the search leaves '[' -- one past
+                 * 'Z' -- which the caller would then write to the Pak. */
+                return CONTROLLER_PAK_FULL;
             }
         } else {
             fileExtChar++;
@@ -2344,9 +2350,20 @@ s32 delete_file(s32 controllerIndex, s32 fileNum) {
 /* Official Name: packCopyFile */
 s32 copy_controller_pak_data(s32 controllerIndex, s32 fileNumber, s32 secondControllerIndex) {
     UNUSED s32 pad;
+#ifdef NATIVE_PORT
+    /* font_codes_to_string() emits a NUL-terminated C string: it pads out to
+     * stringLength and then writes a terminator at outString[stringLength], so
+     * a destination must hold the field width PLUS one. The other caller,
+     * get_controller_pak_file_list(), already carves 0x12 bytes for the name and
+     * 6 for the extension out of its list block for exactly that reason. */
+    char fileName[PFS_FILE_NAME_LEN + 1];
+    UNUSED s32 pad2;
+    char fileExt[PFS_FILE_EXT_LEN + 1];
+#else
     char fileName[PFS_FILE_NAME_LEN];
     UNUSED s32 pad2;
     char fileExt[PFS_FILE_EXT_LEN];
+#endif
     OSPfsState state;
     s32 status;
     u8 *alloc;

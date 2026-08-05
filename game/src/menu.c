@@ -5091,6 +5091,10 @@ s32 menu_video_options_loop(s32 updateRate) {
         video_options_free();
         gMenuCurIndex = 3;
         menu_init(MENU_OPTIONS);
+        /* menu_init() arms the incoming menu's input lockout; falling through
+         * to the clear below would cancel it. Every other transition returns
+         * here. */
+        return MENU_RESULT_CONTINUE;
     }
     gIgnorePlayerInputTime = 0;
     return MENU_RESULT_CONTINUE;
@@ -7962,7 +7966,9 @@ void cheatlist_render(UNUSED s32 updateRate) {
 #ifdef NATIVE_PORT
     s32 numOfRetailUnlockedCheats;
 #endif
-    s32 code;
+    /* Unsigned: the walk below shifts this across all 32 cheat bits, and a
+     * signed 1 << 31 is undefined. */
+    u32 code;
     u16 *cheatData;
 #ifdef NATIVE_PORT
     s32 retailCheatCount;
@@ -8031,7 +8037,7 @@ void cheatlist_render(UNUSED s32 updateRate) {
 #else
                   (char *) (*gCheatsAssetData) + cheatData[(gUnlockedCheatIDs[i] * 2) + 1], ALIGN_TOP_LEFT);
 #endif
-        if ((1 << gUnlockedCheatIDs[i]) & gActiveMagicCodes) {
+        if ((1U << gUnlockedCheatIDs[i]) & (u32) gActiveMagicCodes) {
             draw_text(&sMenuCurrDisplayList, 256, yPos, gMenuText[ASSET_MENU_TEXT_ON], ALIGN_TOP_LEFT); // ON
         } else {
             draw_text(&sMenuCurrDisplayList, 256, yPos, gMenuText[ASSET_MENU_TEXT_OFF], ALIGN_TOP_LEFT); // OFF
@@ -8078,7 +8084,9 @@ s32 menu_magic_codes_list_loop(s32 updateRate) {
 #ifdef NATIVE_PORT
     s32 numRetailUnlockedCodes;
 #endif
-    s32 code;
+    /* Unsigned: the walk below shifts this across all 32 cheat bits, and a
+     * signed 1 << 31 is undefined. */
+    u32 code;
 #ifdef NATIVE_PORT
     s32 retailCheatCount;
 #endif
@@ -8136,7 +8144,7 @@ s32 menu_magic_codes_list_loop(s32 updateRate) {
             taj_mod_set_enabled(!taj_mod_is_enabled());
         } else {
 #endif
-        code = 1 << gUnlockedCheatIDs[gOptionsMenuItemIndex];
+        code = 1U << gUnlockedCheatIDs[gOptionsMenuItemIndex];
         gActiveMagicCodes ^= code;                                               // Toggle active cheats?
         cheatlist_exclusive(code, CHEAT_BIG_CHARACTERS, CHEAT_SMALL_CHARACTERS); // cheatlist_exclusive() = Clear flags?
         cheatlist_exclusive(code, CHEAT_SMALL_CHARACTERS, CHEAT_BIG_CHARACTERS);
@@ -9898,10 +9906,13 @@ s32 menu_file_select_loop(s32 updateRate) {
             if (buttonsPressed & B_BUTTON && gNameEntryLength == 0) {
                 menu_unload_bigfont();
                 gFileNew = FALSE;
-                gSavefileInfo[i].name[0] = 'D';
-                gSavefileInfo[i].name[1] = 'K';
-                gSavefileInfo[i].name[2] = 'R';
-                gSavefileInfo[i].name[3] = '\0';
+                /* The slot being named is gSaveFileIndex -- the same slot the
+                 * commit path below writes. `i` is the file-refresh loop
+                 * counter and is 0 whenever that loop has not run this frame. */
+                gSavefileInfo[gSaveFileIndex].name[0] = 'D';
+                gSavefileInfo[gSaveFileIndex].name[1] = 'K';
+                gSavefileInfo[gSaveFileIndex].name[2] = 'R';
+                gSavefileInfo[gSaveFileIndex].name[3] = '\0';
             } else if (filename_enter(updateRate)) {
                 menu_unload_bigfont();
                 gFileNew = FALSE;
@@ -14221,9 +14232,11 @@ void menu_trophy_race_rankings_init(void) {
 #ifdef NATIVE_PORT
     /* The authored sources yield 3/4 active players, 2/4/6 multiplayer racers,
      * or eight CPU racers. Clamp a corrupted source before it indexes every
-     * parallel eight-entry ranking array below. */
-    if (gRankingPlayerCount < 0) {
-        gRankingPlayerCount = 0;
+     * parallel eight-entry ranking array below. The low bound is 1, not 0:
+     * rankings_render() forms its position index as (gRankingPlayerCount - 1)
+     * << 1, so a zero count indexes the layout tables at -2. */
+    if (gRankingPlayerCount < 1) {
+        gRankingPlayerCount = 1;
     } else if (gRankingPlayerCount > ARRAY_COUNT(gRankingsPlayerIDs)) {
         gRankingPlayerCount = ARRAY_COUNT(gRankingsPlayerIDs);
     }
@@ -14583,7 +14596,11 @@ void ghostmenu_generate(void) {
     u8 *mainTrackIds;
     s32 i;
     s32 j;
-    u16 validIDs[4];
+    /* One entry per controller-pak ghost slot: the fill loop below walks
+     * gGhostLevelIDsPak[6], so gGhostMenuTotal reaches 6, and the sort reads
+     * validIDs[j + 1] up to gGhostMenuTotal - 1. gGhostWorldIDs is the parallel
+     * array and carries the same six live entries. */
+    u16 validIDs[6];
     u16 swap;
     u16 swapByte;
     UNUSED s32 pad;

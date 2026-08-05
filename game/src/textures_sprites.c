@@ -1331,6 +1331,27 @@ s32 tex_asset_size(s32 id) {
     textureRomOffset = gTextureAssetTable[textureTableType][id];
     new_var3 = textureRomOffset;
     size = gTextureAssetTable[textureTableType][id + 1] - new_var3;
+#ifdef NATIVE_PORT
+    /* Two reads have to come from THIS id's header, and both are the same
+     * corrections load_texture() carries:
+     *   - isCompressed decides whether `size` is the ROM span or the recorded
+     *     uncompressed size, so the header has to be staged before it is read.
+     *     Reading gTempTextureHeader first answers with whatever texture was
+     *     staged last.
+     *   - asset_load() is the raw-memcpy path (only asset_table_load byteswaps),
+     *     so numOfTextures is still big-endian; the frame count the game wants is
+     *     the BE u16's high byte, which is the first byte in memory. */
+    if (asset_load(textureTable, (uintptr_t) gTempTextureHeader, textureRomOffset, sizeof(TempTexHeader)) !=
+        sizeof(TempTexHeader)) {
+        return 0;
+    }
+    new_var2 = gTempTextureHeader;
+    if (new_var2->header.isCompressed) {
+        size = byteswap32((u8 *) (&new_var2->uncompressedSize));
+    }
+    numOfTextures = ((const u8 *) &new_var2->header.numOfTextures)[0];
+    return (numOfTextures * 0x60) + size;
+#else
     new_var2 = gTempTextureHeader;
     if (new_var2->header.isCompressed) {
         asset_load(textureTable, (uintptr_t)new_var2, textureRomOffset, sizeof(TempTexHeader));
@@ -1340,6 +1361,7 @@ s32 tex_asset_size(s32 id) {
     new_var2 = gTempTextureHeader;
     numOfTextures = new_var2->header.numOfTextures;
     return (((numOfTextures >> 8) & 0xFFFF) * 0x60) + size;
+#endif
 }
 
 UNUSED u8 func_8007C660(s32 texID) {

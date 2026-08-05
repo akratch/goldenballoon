@@ -248,9 +248,12 @@ void waves_alloc(void) {
 
     waves_free();
     gWaveHeightTable = (f32 *) mempool_alloc_safe(gWaveController.seedSize * sizeof(f32), COLOUR_TAG_CYAN);
+    /* tileCount^2 Vec2s and (subdivisions + 1)^2 TexCoords. Both are four-byte
+     * elements; the pointer-sized sizeof they were written with is only the same
+     * number where pointers are four bytes. */
     gWaveHeightIndices = (Vec2s *) mempool_alloc_safe(
-        (gWaveController.tileCount * sizeof(Vec2s *)) * gWaveController.tileCount, COLOUR_TAG_CYAN);
-    gWaveUVTable = (TexCoords *) mempool_alloc_safe(((gWaveController.subdivisions + 1) * sizeof(TexCoords *)) *
+        (gWaveController.tileCount * sizeof(Vec2s)) * gWaveController.tileCount, COLOUR_TAG_CYAN);
+    gWaveUVTable = (TexCoords *) mempool_alloc_safe(((gWaveController.subdivisions + 1) * sizeof(TexCoords)) *
                                                         (gWaveController.subdivisions + 1),
                                                     COLOUR_TAG_CYAN);
     allocSize = ((gWaveController.subdivisions + 1) << 2) * (gWaveController.subdivisions + 1);
@@ -342,6 +345,13 @@ void waves_init(LevelModel *model, LevelHeader *header, s32 playerCount) {
     waves_init_header(header);
     waves_alloc();
     func_800BBDDC(model, header);
+    if (gWaveBatch == NULL) {
+        /* No water batch in the level model, so there is no wave texture to
+         * derive UV steps from and nothing for the tile grid to cover. The
+         * caller's gWaveBlockCount test is the same condition reached another
+         * way; this keeps the two in step when they disagree. */
+        return;
+    }
     gWaveBoundingBoxW = gWaveBoundingBoxDiffX;
     gWaveBoundingBoxH = gWaveBoundingBoxDiffZ;
     gWaveVtxStepX = gWaveBoundingBoxW / gWaveController.subdivisions;
@@ -578,7 +588,7 @@ void waves_visibility(s32 xPosition, s32 yPosition, s32 zPosition, s32 currentVi
                     if (
                         (tempXPosRatio >= 0) &&
                         (tempXPosRatio < gWaveTileCountX) &&
-                        (D_8012A0E8[zPosRatio] & (1 << tempXPosRatio))
+                        (D_8012A0E8[zPosRatio] & DKR_SHL32(1u, tempXPosRatio))
                     ) {
                         // clang-format on
                         D_800E30D4[var_t2] |= D_800E30E0[blockDist * gWaveController.waveViewDist + var_s5]
@@ -636,7 +646,7 @@ void waves_visibility(s32 xPosition, s32 yPosition, s32 zPosition, s32 currentVi
                     if (
                         (tempXPosRatio >= 0) &&
                         (tempXPosRatio < gWaveTileCountX) &&
-                        (D_8012A0E8[zPosRatio] & (1 << tempXPosRatio))
+                        (D_8012A0E8[zPosRatio] & DKR_SHL32(1u, tempXPosRatio))
                     ) {
                         // clang-format on
                         D_800E30D4[var_t2] = D_800E30E0[blockDist * gWaveController.waveViewDist + var_s5];
@@ -1590,6 +1600,13 @@ void func_800BBE08(LevelModel *level, LevelHeader *header) {
     gWaveBoundingBoxX1 = bb->x1;
     gWaveBoundingBoxZ1 = bb->z1;
     gWaveBatch = curBatch;
+    if (curBatch == 0) {
+        /* No water batch in the level: there is no texture and no colour to
+         * select, and gWaveBatch stays NULL for the render path to test. */
+        gWaveTexture = NULL;
+        D_800E3180 = NULL;
+        return;
+    }
     gWaveTexture = DKR_PTR(TextureHeader, DKR_PTR(TextureInfo, level->textures)[curBatch->textureIndex].texture);
     // Change these batch flags to 0, 1, 2 and 4
     colourID = (curBatch->flags & (RENDER_UNK_40000000 | RENDER_UNK_20000000 | RENDER_UNK_10000000)) >> 28;
@@ -1655,7 +1672,8 @@ void func_800BBF78(LevelModel *model) {
     if (D_800E30D4 != NULL) {
         mempool_free(D_800E30D4);
     }
-    D_800E30D4 = mempool_alloc_safe(gWaveTileCountX * gWaveTileCountZ * sizeof(uintptr_t), COLOUR_TAG_CYAN);
+    /* One s32 per tile, not one pointer. */
+    D_800E30D4 = mempool_alloc_safe(gWaveTileCountX * gWaveTileCountZ * sizeof(*D_800E30D4), COLOUR_TAG_CYAN);
 
     if (gWaveModel != NULL) {
         mempool_free(gWaveModel);
@@ -1783,7 +1801,7 @@ void func_800BBF78(LevelModel *model) {
                 var_v0 -= gWaveController.tileCount;
             }
             otherModel->unk10 = var_v0;
-            D_8012A0E8[otherModel->unkB] |= (1 << otherModel->unkA);
+            D_8012A0E8[otherModel->unkB] |= DKR_SHL32(1u, otherModel->unkA);
         }
 
         for (j = 0; j < 4; j++) {
@@ -1934,7 +1952,7 @@ void func_800BCC70(LevelModel *model) {
     stepX = gWaveBoundingBoxW / subdivisions;
     stepZ = gWaveBoundingBoxH / subdivisions;
     for (i = 0, var_s5 = 0; i < model->numberOfSegments; i++) {
-        if (D_8012A0E8[gWaveModel[i].unkB] & (1 << gWaveModel[i].unkA)) {
+        if (D_8012A0E8[gWaveModel[i].unkB] & DKR_SHL32(1u, gWaveModel[i].unkA)) {
             spA4[(gWaveModel[i].unkB * gWaveTileCountX) + gWaveModel[i].unkA].i[0] = i;
             spA4[(gWaveModel[i].unkB * gWaveTileCountX) + gWaveModel[i].unkA].i[1] = var_s5;
             y = gWaveModel[i].originY;
@@ -2770,7 +2788,11 @@ void wavegen_destroy(Object *obj) {
         }
     }
 
-    gWaveGenObjs[j] = NULL;
+    /* `i` is the generator slot this call resolved above; `j` is the tile-grid
+     * counter left over from the reference-removal loop and indexes nothing in
+     * gWaveGenObjs. The slot released here has to be the one the count drop
+     * accounts for, or wavegen_register() hands out a slot that is still live. */
+    gWaveGenObjs[i] = NULL;
     gWaveGenCount--;
 }
 

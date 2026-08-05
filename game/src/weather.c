@@ -523,9 +523,13 @@ void snow_vertices(void) {
             verts[3].x = pos[0] - gSnowGfx.vertOffsetW;
             verts[3].y = pos[1] - gSnowGfx.vertOffsetH;
             verts[3].z = pos[2];
+            /* One index per flake: gSnowTriIndices holds gSnowDensity entries,
+             * and gSnowVertCount counts four vertices per flake, so the slot for
+             * this flake is the pre-increment quotient. Advancing first puts the
+             * last flake's index one past the end. */
+            gSnowTriIndices[gSnowVertCount >> 2] = i;
             verts += 4;
             gSnowVertCount += 4;
-            gSnowTriIndices[gSnowVertCount >> 2] = i;
         }
     }
 }

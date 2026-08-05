@@ -6672,7 +6672,10 @@ void obj_loop_frog(Object *obj, s32 updateRate) {
     f32 diffY;
     f32 diffZ;
     f32 updateRateF;
-    Object *racerObj;
+    /* obj_dist_racer() fills one entry per racer inside the radius, up to the
+     * eight its own distance array holds -- the size every other caller
+     * declares. */
+    Object *racerObjs[8];
 
     updateRateF = updateRate;
     if (osTvType == OS_TV_TYPE_PAL) {
@@ -6687,10 +6690,10 @@ void obj_loop_frog(Object *obj, s32 updateRate) {
                 frog->squishCooldown -= updateRate;
             }
             if (obj_dist_racer(obj->trans.x_position, obj->trans.y_position, obj->trans.z_position, 96.0f, 1,
-                               &racerObj) > 0) {
-                diffX = obj->trans.x_position - racerObj->trans.x_position;
-                diffY = obj->trans.y_position - racerObj->trans.y_position;
-                diffZ = obj->trans.z_position - racerObj->trans.z_position;
+                               racerObjs) > 0) {
+                diffX = obj->trans.x_position - racerObjs[0]->trans.x_position;
+                diffY = obj->trans.y_position - racerObjs[0]->trans.y_position;
+                diffZ = obj->trans.z_position - racerObjs[0]->trans.z_position;
                 if (frog->squishCooldown <= 0 && (diffX * diffX) + (diffY * diffY) + (diffZ * diffZ) < 40.0f * 40.0f) {
                     if (frog->drumstick) {
                         audspat_play_sound_at_position(SOUND_VOICE_DRUMSTICK_POSITIVE2, obj->trans.x_position,
@@ -6785,7 +6788,7 @@ void obj_loop_frog(Object *obj, s32 updateRate) {
             }
             if (frog->squishCooldown <= 0 && (frog->hopFrame < 6 || frog->hopFrame >= 27)) {
                 if (obj_dist_racer(obj->trans.x_position, obj->trans.y_position, obj->trans.z_position, 40.0f, 0,
-                                   &racerObj)) {
+                                   racerObjs)) {
                     if (frog->drumstick) {
                         audspat_play_sound_at_position(SOUND_VOICE_DRUMSTICK_POSITIVE2, obj->trans.x_position,
                                                        obj->trans.y_position, obj->trans.z_position,

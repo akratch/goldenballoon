@@ -4077,7 +4077,13 @@ s32 get_level_segment_waves(s32 levelSegmentIndex, f32 xIn, f32 zIn, WaterProper
                             D_8011D128[yOutCount].rot.y = B;
                             D_8011D128[yOutCount].rot.z = C;
                             yOutCount++;
-                            if (yOutCount >= 20) {
+                            /* One slot stays reserved for the level segment's
+                             * own water entry, which is appended after these
+                             * loops without a further bound test. Saturating at
+                             * ARRAY_COUNT here would let that append write
+                             * D_8011D128[20] / gTrackWaves[20] and publish a
+                             * count of 21. */
+                            if (yOutCount >= (s32) ARRAY_COUNT(D_8011D128) - 1) {
                                 batchNum = currentSegment->numberOfBatches;
                                 faceNum = nextFaceOffset;
                                 i = segmentCount;

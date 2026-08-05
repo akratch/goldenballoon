@@ -207,11 +207,33 @@ UNUSED int sprintf(char *s, const char *format, ...) {
     return done;
 }
 
+#ifdef NATIVE_PORT
+/*
+ * Destination bound for the DKR_VSPRINTF() call in progress: one past the last
+ * writable byte, or NULL for an unbounded caller. Every character the formatter
+ * emits goes through outchar(), and the only other write is the terminator at
+ * the end of the function, so these two places are the whole write surface.
+ *
+ * `done` keeps counting past the bound, so a bounded caller learns the length
+ * the format WOULD have produced, like C99 vsnprintf. The state is per-call and
+ * not reentrant, the same way gSprintfSpacingCode already is.
+ */
+static char *sPrintfLimit = NULL;
+
+#define outchar(x)                                     \
+    do {                                               \
+        done++;                                        \
+        if (sPrintfLimit == NULL || s < sPrintfLimit) { \
+            (*s++) = x;                                \
+        }                                              \
+    } while (0)
+#else
 #define outchar(x)  \
     do {            \
         done++;     \
         (*s++) = x; \
     } while (0)
+#endif
 
 #define PAD(x)            \
     while (width-- > 0) { \
@@ -900,6 +922,27 @@ int DKR_VSPRINTF(char *s, const char *fmt, va_list args) {
     return done;
 }
 
+#ifdef NATIVE_PORT
+/**
+ * DKR_VSPRINTF() with a destination bound.
+ *
+ * Writes at most `size - 1` characters plus a terminator -- the reserved byte is
+ * why the terminator above needs no test of its own -- and returns the length the
+ * format would have produced.
+ */
+int dkr_vsnprintf(char *s, size_t size, const char *fmt, va_list args) {
+    int done;
+
+    if (size == 0) {
+        return 0;
+    }
+    sPrintfLimit = s + (size - 1);
+    done = DKR_VSPRINTF(s, fmt, args);
+    sPrintfLimit = NULL;
+    return done;
+}
+#endif
+
 /**
  * Load the font textures for the debug text, then set the buffer to the beginning.
  * Official Name: diPrintfInit
@@ -919,17 +962,35 @@ void debug_text_init(void) {
 s32 render_printf(const char *format, ...) {
     va_list args;
     s32 written;
+#ifdef NATIVE_PORT
+    size_t remaining;
+#endif
     va_start(args, format);
     if ((gDebugPrintBufferEnd - gDebugPrintBufferStart) > 0x800) {
         stubbed_printf("*** diPrintf Error *** ---> Out of string space. (Print less text!)\n");
+        va_end(args);
         return -1;
     }
     sprintfSetSpacingCodes(TRUE);
+#ifdef NATIVE_PORT
+    /* The test above only refuses a cursor past 0x800, which says nothing about
+     * how long THIS line is: the buffer is 0x900, so the reserve is 0x100 bytes
+     * and one longer print runs off the end of gDebugPrintBufferStart. Format
+     * against the space that actually remains, and advance the cursor by what was
+     * stored rather than by the length the format wanted. */
+    remaining = (size_t) (&gDebugPrintBufferStart[ARRAY_COUNT(gDebugPrintBufferStart)] - gDebugPrintBufferEnd);
+    written = dkr_vsnprintf(gDebugPrintBufferEnd, remaining, format, args);
+    if (written > 0 && (size_t) written >= remaining) {
+        written = (s32) remaining - 1;
+    }
+#else
     written = DKR_VSPRINTF(gDebugPrintBufferEnd, format, args);
+#endif
     sprintfSetSpacingCodes(FALSE);
     if (written > 0) {
         gDebugPrintBufferEnd = &gDebugPrintBufferEnd[written] + 1;
     }
+    va_end(args);
     return 0;
 }
 
@@ -1016,7 +1077,11 @@ UNUSED s32 debug_text_width(const char *format, ...) {
 
     stringLength = 0;
     sprintfSetSpacingCodes(TRUE);
+#ifdef NATIVE_PORT
+    dkr_vsnprintf(s, sizeof(s), format, args);
+#else
     DKR_VSPRINTF(s, format, args);
+#endif
     sprintfSetSpacingCodes(FALSE);
     for (ch = (u8 *) &s[0]; *ch != '\0'; ch++) {
         pad = *ch;

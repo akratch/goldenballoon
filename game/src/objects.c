@@ -278,6 +278,11 @@ static Vec3s *mdkr_object_batch_normals(ObjectModel *model,
 #define OBJECT_SLOT_COUNT 512
 #define OBJECT_COLLISION_COUNT 20
 #define AINODE_COUNT 128
+/* Slots in gParticlePtrList, the deferred-free queue drained by
+ * gParticlePtrList_flush(). */
+#define FREE_QUEUE_COUNT 200
+/* Slots in D_8011AE74, the BHV_ANIMATION collection sorted by actor index. */
+#define ANIMATION_OBJECT_COUNT 128
 #define CAMCONTROL_COUNT 20
 #define BOOST_VERT_COUNT 9
 #define BOOST_TRI_COUNT 8
@@ -1170,9 +1175,9 @@ void allocate_object_pools(void) {
 
     set_world_shading(0.67f, 0.33f, 0, -0x2000, 0);
     gObjectMemoryPool = (Object *) mempool_new_sub(OBJECT_POOL_SIZE, OBJECT_SLOT_COUNT);
-    gParticlePtrList = mempool_alloc_safe(sizeof(uintptr_t) * 200, COLOUR_TAG_BLUE);
+    gParticlePtrList = mempool_alloc_safe(sizeof(uintptr_t) * FREE_QUEUE_COUNT, COLOUR_TAG_BLUE);
     gCollisionObjects = mempool_alloc_safe(sizeof(uintptr_t) * OBJECT_COLLISION_COUNT, COLOUR_TAG_BLUE);
-    D_8011AE74 = mempool_alloc_safe(sizeof(uintptr_t) * 128, COLOUR_TAG_BLUE);
+    D_8011AE74 = mempool_alloc_safe(sizeof(uintptr_t) * ANIMATION_OBJECT_COUNT, COLOUR_TAG_BLUE);
     gTrackCheckpoints = mempool_alloc_safe(sizeof(CheckpointNode) * MAX_CHECKPOINTS, COLOUR_TAG_BLUE);
     gCameraObjList = mempool_alloc_safe(sizeof(uintptr_t *) * CAMCONTROL_COUNT, COLOUR_TAG_BLUE);
     gRacers = mempool_alloc_safe(sizeof(uintptr_t) * 10, COLOUR_TAG_BLUE);
@@ -3551,13 +3556,16 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
             }
             curObj->modelIndex = i;
             break;
-        case BHV_ROCKET_SIGNPOST_2:
-            objType = settings->trophies;
+        case BHV_ROCKET_SIGNPOST_2: {
+            /* objType carries the header's modelType from here to the asset
+             * dispatch below and to objFreeAssets(); the trophy tally needs its
+             * own storage. */
+            u32 trophyBits = settings->trophies;
             for (assetCount = 0; assetCount < 4; assetCount++) {
-                if ((objType & 3) == 3) {
+                if ((trophyBits & 3) == 3) {
                     i++;
                 }
-                objType >>= 2;
+                trophyBits >>= 2;
             }
             if (!mdkr_model_load_selection(i, modelSlotCount, &i,
                                            &assetCount)) {
@@ -3566,6 +3574,7 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
             }
             curObj->modelIndex = i;
             break;
+        }
         case BHV_GOLDEN_BALLOON:
             assetCount = 1;
             if (is_in_adventure_two()) {
@@ -4013,8 +4022,11 @@ s32 init_object_shading(Object *obj, ShadeProperties *shadeData) {
     obj->shading = shadeData;
     returnSize = 0;
     if (obj->header->modelType == OBJECT_MODEL_TYPE_3D_MODEL) {
-        for (i = 0; obj->modelInstances[i] == NULL; i++) {}
-        if (obj->modelInstances[i] != NULL && obj->modelInstances[i]->objModel->normals != 0) {
+        /* The scan has no sentinel of its own: a header with every slot empty
+         * (or none at all) walks off the end of modelInstances. */
+        for (i = 0; i < obj->header->numberOfModelIds && obj->modelInstances[i] == NULL; i++) {}
+        if (i < obj->header->numberOfModelIds && obj->modelInstances[i] != NULL &&
+            obj->modelInstances[i]->objModel->normals != 0) {
             set_shading_properties(obj->shading, obj->header->shadeAmbient, obj->header->shadeDiffuse, 0,
                                    obj->header->shadeAngleY, obj->header->shadeAngleZ);
             if (obj->header->shadeIntensityy != 0) {
@@ -4256,8 +4268,14 @@ void free_object(Object *object) {
     }
 #endif
     func_800245B4(object->objectID | OBJ_FLAGS_PARTICLE);
-    gParticlePtrList[gFreeListCount] = object;
-    gFreeListCount++;
+    /* gParticlePtrList holds FREE_QUEUE_COUNT entries and is drained once per
+     * update by gParticlePtrList_flush(). Dropping the queue entry leaks the
+     * object slot until the level teardown; writing past the queue corrupts the
+     * memory pool it was carved from. */
+    if (gFreeListCount < FREE_QUEUE_COUNT) {
+        gParticlePtrList[gFreeListCount] = object;
+        gFreeListCount++;
+    }
 }
 
 /**
@@ -4808,6 +4826,12 @@ void obj_authoritative_texture_tick(Object *obj, s32 updateRate, f32 viewDistanc
         modelIndex = racer_model_index_for_view(
             obj, obj->racer, viewDistance, &unusedScale);
     }
+    /* modelInstances holds header->numberOfModelIds slots; obj->modelIndex is
+     * behaviour-owned and racer_model_index_for_view() picks an LOD from the
+     * same table, so neither is a checked index on its own. */
+    if (modelIndex < 0 || modelIndex >= obj->header->numberOfModelIds) {
+        return;
+    }
     modInst = obj->modelInstances[modelIndex];
     if (modInst == NULL || modInst->objModel == NULL) {
         return;
@@ -5322,10 +5346,14 @@ void obj_visibility_tick(void) {
         scene_visibility_prepare_viewport(pass, numViewports, pass >= numViewports);
         for (i = gObjectListStart; i < gObjectCount; i++) {
             obj = gObjPtrList[i];
-            if (obj == NULL || obj->header == NULL || obj->racer == NULL) {
+            /* The particle test comes first: obj->racer overlays the particle
+             * payload in the object tail, so it is only a racer pointer once the
+             * object is known not to be a particle. Same order as the sibling
+             * ticks. */
+            if (obj == NULL || (obj->trans.flags & OBJ_FLAGS_PARTICLE)) {
                 continue;
             }
-            if (obj->trans.flags & OBJ_FLAGS_PARTICLE) {
+            if (obj->header == NULL || obj->racer == NULL) {
                 continue;
             }
             /* set_temp_model_transforms keys on the HEADER behaviour, so time-trial
@@ -5400,7 +5428,8 @@ void obj_animate_tick(void) {
         if (obj->trans.flags & OBJ_FLAGS_PARTICLE) {
             continue;
         }
-        if (obj->header->modelType != OBJECT_MODEL_TYPE_3D_MODEL || obj->modelInstances == NULL) {
+        if (obj->header->modelType != OBJECT_MODEL_TYPE_3D_MODEL || obj->modelInstances == NULL ||
+            obj->modelIndex < 0 || obj->modelIndex >= obj->header->numberOfModelIds) {
             continue;
         }
         modInst = obj->modelInstances[obj->modelIndex];
@@ -6390,7 +6419,7 @@ void render_racer_shield(Gfx **dList, Mtx **mtx, Vertex **vtxList, Object *obj) 
         gObjectCurrMatrix = *mtx;
         gObjectCurrVertexList = *vtxList;
         racerIndex = racer->racerIndex;
-        if (racerIndex > NUMBER_OF_CHARACTERS) {
+        if (racerIndex >= NUMBER_OF_CHARACTERS) {
             racerIndex = 0;
         }
         vehicleID = racer->vehicleID;
@@ -7131,6 +7160,9 @@ void process_object_interactions(void) {
         if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE)) {
             objInteract = obj->interactObj;
             if (objInteract != NULL) {
+                if (objsWithInteractives >= (s32) ARRAY_COUNT(objList)) {
+                    break;
+                }
                 objList[objsWithInteractives] = obj;
                 objsWithInteractives++;
                 if (objInteract->unk11 != 2) {
@@ -11932,8 +11964,9 @@ void func_8001E93C(void) {
             if (!(gObjPtrList[i]->trans.flags & OBJ_FLAGS_PARTICLE)) {
                 if (gObjPtrList[i]->behaviorId == BHV_OVERRIDE_POS) {
                     overridePos = &gObjPtrList[i]->level_entry->overridePos;
-                    if (overridePos->cutsceneId == gCutsceneID ||
-                        overridePos->cutsceneId == (CUTSCENE_SHERBET_ISLAND_BOSS | CUTSCENE_ADVENTURE_TWO)) {
+                    if ((overridePos->cutsceneId == gCutsceneID ||
+                         overridePos->cutsceneId == (CUTSCENE_SHERBET_ISLAND_BOSS | CUTSCENE_ADVENTURE_TWO)) &&
+                        numOfObjs < (s32) ARRAY_COUNT(D_8011ADD8)) {
                         D_8011ADD8[numOfObjs] = gObjPtrList[i];
                         numOfObjs++;
                     }
@@ -11949,7 +11982,8 @@ void func_8001E93C(void) {
     for (i = gObjectListStart; i < gObjectCount; i++) {
         if (gObjPtrList[i] != NULL) {
             if (!(gObjPtrList[i]->trans.flags & OBJ_FLAGS_PARTICLE)) {
-                if (gObjPtrList[i]->behaviorId == BHV_ANIMATION) {
+                if (gObjPtrList[i]->behaviorId == BHV_ANIMATION &&
+                    numOfObjs < ANIMATION_OBJECT_COUNT) {
                     D_8011AE74[numOfObjs] = gObjPtrList[i];
                     numOfObjs++;
                 }

@@ -64,5 +64,10 @@ s32 debug_text_parse(Gfx**, char*);
 #define DKR_VSPRINTF vsprintf
 #endif
 int DKR_VSPRINTF(char *s, const char *fmt, va_list args);
+#ifdef NATIVE_PORT
+/* Bounded DKR_VSPRINTF: at most `size - 1` characters plus a terminator, and the
+ * return value is the length the format would have produced. */
+int dkr_vsnprintf(char *s, size_t size, const char *fmt, va_list args);
+#endif
 
 #endif

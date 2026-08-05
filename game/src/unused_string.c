@@ -1,6 +1,15 @@
 #include "macros.h"
 #include "types.h"
 
+/*
+ * These are the ROM's own libc replacements and they carry libc's external
+ * names, so on a hosted build every one of them interposes the platform's
+ * implementation for the whole program. None of them is called from the game;
+ * the guard keeps them out of any build that links a real libc, exactly as it
+ * already did for memset below.
+ */
+#ifndef NON_MATCHING
+
 /**
  * Copy a string to a given location.
  * Return the address of the destrination.
@@ -107,7 +116,6 @@ UNUSED int strncasecmp(const char *s1, const char *s2, size_t n) {
  * c: char to fill with
  * n: size of area to clear
  */
-#ifndef NON_MATCHING
 UNUSED void *memset(void *s, int c, size_t n) {
     unsigned char *ret = s;
 
@@ -116,4 +124,5 @@ UNUSED void *memset(void *s, int c, size_t n) {
     }
     return s;
 }
+
 #endif
