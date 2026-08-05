@@ -208,9 +208,11 @@ The main automated coverage is summarized below. See
 | Boss/challenge/trophy coverage (not campaign completion) | All ten boss levels; the full first-boss progression with persistence; every authored challenge course; all four trophy championships | `check_first_boss_progression.py`, `check_challenge_modes.py`, `check_taj_challenges.py`, `check_trophy_series.py` |
 | ROM support | US 1.1 and European 1.1 (byte-identical racing). Selection and every engine boot require exact size, byte-order normalization, revision identity, complete-image SHA-256, and valid asset-table bounds. Other revisions are refused by name | `test_app_shell`, `check_shell_dropfile.py`, `check_rom_revision.py`, [docs/ROM_REVISIONS.md](docs/ROM_REVISIONS.md) |
 
-Hosted CI covers Linux GL/WebGPU, macOS, sanitizers, wasm, and clean-room
-guards. Platform claims above still distinguish automated coverage from manual
-physical-hardware acceptance. See [ROADMAP.md](ROADMAP.md).
+Hosted CI workflows exist for Linux GL/WebGPU, macOS, sanitizers, wasm, and
+clean-room guards, but no hosted run has gone green yet, so every claim above
+rests on local runs until one does. Platform claims above still distinguish
+automated coverage from manual physical-hardware acceptance. See
+[ROADMAP.md](ROADMAP.md).
 
 ## Current limitations
 

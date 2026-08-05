@@ -3,11 +3,16 @@
  * that the vendored OpenGL backend (platform/fast3d/gfx_opengl.c) reads.
  *
  * In mgb64 these live in config_pc.c / gfx_pc.c, resolved from the GE settings
- * UI + GE007_* env overrides. mdkr64 does not (yet) have that config plumbing,
- * so this shim defines them once with neutral / post-FX-OFF defaults. That
- * keeps the backend on its plain-N64 raster path for M2 (no bloom/SSAO/shadow/
- * tonemap/retro-filter), which is exactly what "render correctness not required,
- * just don't crash" wants. Wire real config in a later milestone (M3+).
+ * UI + GE007_* env overrides. mdkr64 has no equivalent settings surface for
+ * most of them, so this file defines them once as storage with neutral /
+ * post-FX-OFF defaults. The presentation-mode set is overwritten at startup by
+ * mdkr_video_config_publish() (platform/video_config_runtime.c) out of the
+ * preset table in platform/video_config.c: g_pcRemasterFX and what it gates
+ * (g_pcGradePresets, g_pcTonemap, g_pcPerPixelLight and the g_pcSunShadow*
+ * group), plus g_pcRenderScale, g_pcMsaaSamples, g_pcTextureAnisotropy and
+ * g_pcMipmaps — see the NOTE below. The rest (bloom, SSAO, FXAA, retro filter,
+ * vignette, dither, and the gamma/saturation/contrast/brightness controls) stay
+ * at their neutral defaults; nothing in this port currently drives them.
  *
  * Types mirror platform/fast3d/gfx_uniforms.h (included for compiler checking).
  */
@@ -19,9 +24,11 @@
 /* Output / color pipeline — neutral.
  *
  * NOTE (videoconf wave): g_pcRenderScale, g_pcMsaaSamples, g_pcTextureAnisotropy
- * and g_pcRemasterFX are DEFINED here — the backends link against them — but
- * their VALUES are owned by platform/video_config.c, which publishes the
- * resolved presentation mode over these initializers during startup. What is
+ * and g_pcMipmaps — and, through g_pcRemasterFX, the grade/tonemap, per-pixel
+ * lighting and sun-shadow globals further down — are DEFINED here (the backends
+ * link against them) but their VALUES are owned by platform/video_config.c,
+ * whose resolved presentation mode is published over these initializers during
+ * startup. What is
  * written below is only what the program holds between load and
  * mdkr_video_config_publish(). Change the preset table in video_config.c, not
  * these lines. */

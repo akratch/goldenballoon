@@ -113,9 +113,9 @@ itself.
 `tools/check_native_sdk_surface.py` (run in CI) checks for legend text under
 `game/` with two patterns — the classic SGI boilerplate, and a wider
 Nintendo-copyright/bare-RCS-tag pattern that catches headers using a different
-notice style. **The guard is green: assertion 3 reports zero hits, and the
-known-failure allowlist (`tools/known_native_sdk_surface_exceptions.txt`) is
-empty.** The headers that carried the second notice style were either deleted
+notice style. **The guard is green: assertion 3 reports zero hits, and there
+is no allowlist — any hit is a real regression.** The headers that carried
+the second notice style were either deleted
 outright (`game/include/PR/{gs2dex,os_flash,os_gbpak,os_voice,rdb}.h`,
 `game/include/sys/{asm,regdef}.h`, `game/include/ultrahost.h`) or rewritten
 clean-room (`game/include/PR/os_motor.h` and `os_version.h`, which

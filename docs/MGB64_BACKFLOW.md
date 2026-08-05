@@ -5,6 +5,9 @@ Running log of things discovered while building mdkr64 that would improve mgb64
 and why mgb64 would want it. Nothing here has been applied to mgb64 — it is a
 read-only reference for this project; apply these there separately.
 
+Links into `../../mgb64/` only resolve in a workspace where `mgb64` is checked
+out as a sibling directory to this repository; they are not part of this repo.
+
 ## 2026-07-26 — runtime domains must be established before lookup or branch joins
 
 **Disposition: transferable boundary and test pattern; no claim that the named

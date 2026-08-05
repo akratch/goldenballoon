@@ -120,7 +120,8 @@ listed in [ROADMAP.md](ROADMAP.md).
 
 # Golden Balloon 1.0.3
 
-*Released 2026-08-02.*
+*Released 2026-08-02.* 1.0.2 released the same day and is superseded by this
+release; see [CHANGELOG.md](CHANGELOG.md) for its notes.
 
 - Fixed texture-cache identity and stale WebGPU binding state that could show
   old textures or filtering after menus and levels changed.

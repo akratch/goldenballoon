@@ -208,7 +208,7 @@ instance.
 
 Separately, **Waves 1–3** (numbered, not codenamed) were the three defined
 milestone batches: safety and WebGPU, lighting contracts, and gameplay gates.
-Those are the ones counted in the 23-of-23 completion figure in the README.
+Those are the ones counted in the 23/23 completion figure in [docs/STATUS.md](docs/STATUS.md).
 
 You do not need to adopt this scheme to contribute. It is described here only
 so the existing write-ups read clearly.

@@ -384,7 +384,9 @@ ctest -R app_
 - `app_gl_swap_interval_fallback` — injects swap-interval rejection and requires
   the diagnostic GL launcher to continue under its bounded software pacer.
 
-Set `MDKR_SKIP_GPU_TESTS=1` to skip GPU-dependent gates on a machine with no GPU.
+`MDKR_SKIP_GPU_TESTS` is a CMake cache variable, not an environment variable:
+configure with `-DMDKR_SKIP_GPU_TESTS=1` to skip GPU-dependent gates on a
+machine with no GPU.
 
 `MDKR_APP_SMOKE_DROP=<path>` extends the same headless smoke loop: it
 synthesizes one `SDL_DROPFILE` inside `AppHost::pumpAndShouldQuit()` partway
