@@ -1192,13 +1192,13 @@ static MdkrCameraSweepInput mdkr_camera_dynamic_rounded_lens_proxy_input(
  * Did the exact model kernel stop on one of the work fences this sweep handed
  * it, rather than on a corrupt immutable index?
  *
- * The sphere kernel answers that question directly through
- * MdkrCameraObjectOcclusionExactWork::exhausted. The rounded-lens kernel does
- * not yet set that flag on any of its fence exits, so the published limits are
- * compared against the work it reported back: it returns the moment the node,
- * chunk, or stationary-test budget is reached, or the moment the next
- * eight-triangle chunk no longer fits the triangle budget. The authoritative
- * flag is still honoured first so this stays correct once the producer sets it.
+ * Both kernels answer that question directly through
+ * MdkrCameraObjectOcclusionExactWork::exhausted, which every fence exit now
+ * sets. The derived comparison below is retained as a subordinate fallback:
+ * the published limits are compared against the work reported back, covering
+ * a producer that predates the flag. It cannot recognise the node-stack
+ * fence (stack depth is frame-local and never reported), which is exactly
+ * why the authoritative flag is honoured first.
  *
  * Reaching a fence is healthy bounded operation. Corruption is not, and must
  * keep failing closed, so the comparison is deliberately made against the

@@ -144,6 +144,9 @@ int main(void) {
     MdkrCameraSweepHit indexed_hit;
     MdkrCameraObjectOcclusionExactWork work;
     MdkrCameraObjectOcclusionExactLimits limits = { 64U, 16U, 128U, 128U };
+    /* Fence-class arms below shrink these locally; the struct is caller-owned. */
+    MdkrCameraObjectOcclusionExactLimits stationary_limits;
+    uint64_t first_chunk_stationary_tests = 0U;
     MdkrCameraSweepStatus linear_status;
     MdkrCameraSweepStatus indexed_status;
     /* The sphere arm's own result. Reusing one variable for both arms silently
@@ -254,15 +257,15 @@ int main(void) {
     expect_true("sphere node cap fails closed",
                 indexed_sphere(&model, 7U, &transform, &sphere_input, &indexed_hit,
                     (MdkrCameraObjectOcclusionExactLimits) { 1U, 16U, 128U, 1U },
-                    &work) == MDKR_CAMERA_SWEEP_INVALID);
+                    &work) == MDKR_CAMERA_SWEEP_INVALID && work.exhausted == 1U);
     expect_true("sphere chunk cap fails closed",
                 indexed_sphere(&model, 7U, &transform, &sphere_input, &indexed_hit,
                     (MdkrCameraObjectOcclusionExactLimits) { 64U, 1U, 128U, 1U },
-                    &work) == MDKR_CAMERA_SWEEP_INVALID);
+                    &work) == MDKR_CAMERA_SWEEP_INVALID && work.exhausted == 1U);
     expect_true("sphere triangle cap fails closed",
                 indexed_sphere(&model, 7U, &transform, &sphere_input, &indexed_hit,
                     (MdkrCameraObjectOcclusionExactLimits) { 64U, 16U, 8U, 1U },
-                    &work) == MDKR_CAMERA_SWEEP_INVALID);
+                    &work) == MDKR_CAMERA_SWEEP_INVALID && work.exhausted == 1U);
     expect_true("exact stationary cap fails closed",
                 indexed_exact(&model, 7U, &transform, &exact_input, &indexed_hit,
                     (MdkrCameraObjectOcclusionExactLimits) { 64U, 16U, 128U, 1U },
@@ -280,6 +283,67 @@ int main(void) {
                 indexed_exact(&model, 7U, &transform, &exact_input, &indexed_hit,
                     (MdkrCameraObjectOcclusionExactLimits) { 64U, 16U, 8U, 128U },
                     &work) == MDKR_CAMERA_SWEEP_INVALID);
+
+    /*
+     * Failing closed is only half the contract. The consumer classifies a
+     * fenced query apart from a corrupt one on
+     * MdkrCameraObjectOcclusionExactWork::exhausted, honouring the flag before
+     * any counter-derived guess, so every fence in the exact lens sweep has to
+     * raise it. The limits struct is caller-supplied, so each class below is
+     * reached by shrinking one fence to the value that trips it, with the work
+     * census pinning which fence was hit -- otherwise a single early exit
+     * could satisfy every arm.
+     *
+     * The node stack is the reason these are asserted individually: its fence
+     * leaves no trace in the reported counters (stack depth is frame-local and
+     * nodes_visited stops well short of its own fence), so a consumer that
+     * derives the answer instead of reading the flag reads healthy bounded
+     * work as index corruption.
+     */
+    expect_true("exact node-visit fence flags exhausted",
+                indexed_exact(&model, 7U, &transform, &exact_input, &indexed_hit,
+                    (MdkrCameraObjectOcclusionExactLimits) { 2U, 16U, 128U, 128U },
+                    &work) == MDKR_CAMERA_SWEEP_INVALID &&
+                    work.exhausted == 1U && work.nodes_visited == 2U);
+    expect_true("exact node-stack fence flags exhausted",
+                indexed_exact(&model, 7U, &transform, &exact_input, &indexed_hit,
+                    (MdkrCameraObjectOcclusionExactLimits) { 1U, 16U, 128U, 128U },
+                    &work) == MDKR_CAMERA_SWEEP_INVALID &&
+                    work.exhausted == 1U && work.nodes_visited == 1U &&
+                    work.chunks_retained == 0U);
+    expect_true("exact chunk fence flags exhausted",
+                indexed_exact(&model, 7U, &transform, &exact_input, &indexed_hit,
+                    (MdkrCameraObjectOcclusionExactLimits) { 64U, 1U, 128U, 128U },
+                    &work) == MDKR_CAMERA_SWEEP_INVALID &&
+                    work.exhausted == 1U && work.chunks_retained == 1U);
+    first_chunk_stationary_tests = work.kernel.stationary_tests;
+    expect_true("exact triangle fence flags exhausted",
+                indexed_exact(&model, 7U, &transform, &exact_input, &indexed_hit,
+                    (MdkrCameraObjectOcclusionExactLimits) { 64U, 16U, 8U, 128U },
+                    &work) == MDKR_CAMERA_SWEEP_INVALID &&
+                    work.exhausted == 1U && work.chunks_retained == 1U &&
+                    work.triangles_retained <= 8U);
+    /* Two distinct stationary-test exits share one fence. The kernel returns
+     * INVALID mid-chunk when the budget it was handed runs out; the sweep's own
+     * pre-call check fires on the next leaf when the budget is already spent.
+     * Handing the query exactly the first chunk's measured demand reaches the
+     * second, so both are covered. */
+    expect_true("first chunk spends stationary tests",
+                first_chunk_stationary_tests > 0U);
+    expect_true("exact in-kernel stationary fence flags exhausted",
+                indexed_exact(&model, 7U, &transform, &exact_input, &indexed_hit,
+                    (MdkrCameraObjectOcclusionExactLimits) { 64U, 16U, 128U, 1U },
+                    &work) == MDKR_CAMERA_SWEEP_INVALID &&
+                    work.exhausted == 1U && work.kernel.stationary_tests == 1U &&
+                    work.chunks_retained == 1U);
+    stationary_limits = (MdkrCameraObjectOcclusionExactLimits) {
+        64U, 16U, 128U, first_chunk_stationary_tests,
+    };
+    expect_true("exact pre-call stationary fence flags exhausted",
+                indexed_exact(&model, 7U, &transform, &exact_input, &indexed_hit,
+                    stationary_limits, &work) == MDKR_CAMERA_SWEEP_INVALID &&
+                    work.exhausted == 1U && work.chunks_retained == 2U &&
+                    work.kernel.stationary_tests == first_chunk_stationary_tests);
     expect_true("generation mismatch fails closed",
                 indexed_sphere(&model, 6U, &transform, &sphere_input, &indexed_hit,
                     limits, &work) == MDKR_CAMERA_SWEEP_INVALID);

@@ -1073,8 +1073,16 @@ MdkrCameraSweepStatus mdkr_camera_object_occlusion_rounded_lens_sweep_model_prof
         MdkrCameraSweepStatus status;
         int overlap;
 
-        if (node_index >= cache->node_count ||
-            out_work->nodes_visited >= limits->nodes) {
+        /* A corrupt child index and a reached work fence both fail closed, but
+         * they are not the same event: only the fence is healthy bounded
+         * operation, so only the fence sets the flag the consumer classifies
+         * on. Kept split for that reason, as in the sphere sibling above. */
+        if (node_index >= cache->node_count) {
+            sCameraObjectOcclusionTelemetry.invalid_query_count++;
+            return MDKR_CAMERA_SWEEP_INVALID;
+        }
+        if (out_work->nodes_visited >= limits->nodes) {
+            out_work->exhausted = 1U;
             sCameraObjectOcclusionTelemetry.invalid_query_count++;
             return MDKR_CAMERA_SWEEP_INVALID;
         }
@@ -1104,8 +1112,17 @@ MdkrCameraSweepStatus mdkr_camera_object_occlusion_rounded_lens_sweep_model_prof
         if (node->leaf == 0) {
             if (node->left >= cache->node_count || node->right >= cache->node_count ||
                 node->left == node->right || node->left == node_index ||
-                node->right == node_index ||
-                stack_count + 2U > limits->nodes) {
+                node->right == node_index) {
+                sCameraObjectOcclusionTelemetry.invalid_query_count++;
+                return MDKR_CAMERA_SWEEP_INVALID;
+            }
+            /* The node stack is the one fence the consumer cannot recover from
+             * the reported work counters: stack depth is local to this frame
+             * and nodes_visited can sit arbitrarily far below its own fence
+             * when the stack fills. Without this flag a healthy bounded
+             * traversal is indistinguishable from index corruption. */
+            if (stack_count + 2U > limits->nodes) {
+                out_work->exhausted = 1U;
                 sCameraObjectOcclusionTelemetry.invalid_query_count++;
                 return MDKR_CAMERA_SWEEP_INVALID;
             }
@@ -1114,9 +1131,12 @@ MdkrCameraSweepStatus mdkr_camera_object_occlusion_rounded_lens_sweep_model_prof
             node_stack[stack_count++] = node->left;
             continue;
         }
-        if (node->chunk_index >= cache->chunk_count ||
-            out_work->chunks_retained >=
-                limits->chunks) {
+        if (node->chunk_index >= cache->chunk_count) {
+            sCameraObjectOcclusionTelemetry.invalid_query_count++;
+            return MDKR_CAMERA_SWEEP_INVALID;
+        }
+        if (out_work->chunks_retained >= limits->chunks) {
+            out_work->exhausted = 1U;
             sCameraObjectOcclusionTelemetry.invalid_query_count++;
             return MDKR_CAMERA_SWEEP_INVALID;
         }
@@ -1139,6 +1159,7 @@ MdkrCameraSweepStatus mdkr_camera_object_occlusion_rounded_lens_sweep_model_prof
         }
         if (chunk->triangle_count > limits->triangles -
                 out_work->triangles_retained) {
+            out_work->exhausted = 1U;
             sCameraObjectOcclusionTelemetry.invalid_query_count++;
             memset(out_world_hit, 0, sizeof(*out_world_hit));
             return MDKR_CAMERA_SWEEP_INVALID;
@@ -1150,6 +1171,7 @@ MdkrCameraSweepStatus mdkr_camera_object_occlusion_rounded_lens_sweep_model_prof
         chunk_world.triangles += chunk->triangle_offset;
         chunk_world.triangle_count = chunk->triangle_count;
         if (out_work->kernel.stationary_tests >= limits->stationary_tests) {
+            out_work->exhausted = 1U;
             sCameraObjectOcclusionTelemetry.invalid_query_count++;
             return MDKR_CAMERA_SWEEP_INVALID;
         }
@@ -1158,6 +1180,16 @@ MdkrCameraSweepStatus mdkr_camera_object_occlusion_rounded_lens_sweep_model_prof
             limits->stationary_tests - out_work->kernel.stationary_tests);
         if (!mdkr_camera_object_occlusion_accumulate_kernel_work(
                 &out_work->kernel, &part) || status == MDKR_CAMERA_SWEEP_INVALID) {
+            /* The kernel spends the remaining stationary-test budget handed to
+             * it above and returns INVALID the moment it needs one more, so
+             * this exit carries the same fence as the pre-call check, reached
+             * one triangle later instead of one chunk earlier. The accumulated
+             * count separates that from a genuinely invalid chunk, and it is
+             * exactly the condition the consumer already derives, so flagging
+             * it here only moves the answer to its authoritative source. */
+            if (out_work->kernel.stationary_tests >= limits->stationary_tests) {
+                out_work->exhausted = 1U;
+            }
             sCameraObjectOcclusionTelemetry.invalid_query_count++;
             memset(out_world_hit, 0, sizeof(*out_world_hit));
             return MDKR_CAMERA_SWEEP_INVALID;
