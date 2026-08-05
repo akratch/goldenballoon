@@ -19,6 +19,7 @@
 #include "mdkr_trace.h"
 #include "taj_mod.h"
 #include "taj_physics.h"
+#include "taj_visual.h"
 #include <stdlib.h>
 #endif
 #include "PRinternal/viint.h"
@@ -34,6 +35,7 @@
 #ifdef NATIVE_PORT
 #define hud_rand_range cadence_compat_rand_range
 static s32 sTajMinimapIdentityTraced;
+static u32 sTajMinimapTracedEpoch;
 #else
 #define hud_rand_range rand_range
 #endif
@@ -796,9 +798,14 @@ static void hud_render_taj_identity(const Object_Racer *racer) {
 static void hud_render_identity_portrait(HudElement *portrait, s32 character,
                                          s32 isTaj, s32 playerIndex) {
     static u32 tracedPlayers;
+    static u32 tracedEpoch;
     u32 playerBit;
     DrawTexture *tajPortrait;
 
+    if (tracedEpoch != taj_visual_trace_epoch()) {
+        tracedEpoch = taj_visual_trace_epoch();
+        tracedPlayers = 0;
+    }
     if (!isTaj) {
         portrait->spriteID = character + HUD_SPRITE_PORTRAIT;
         hud_element_render(&gHudDL, &gHudMtx, &gHudVtx, portrait);
@@ -4634,7 +4641,9 @@ void hud_render_general(Gfx **dList, Mtx **mtx, Vertex **vtx, s32 updateRate) {
                 gDPSetPrimColor(gHudDL++, 0, 0, 255, 0, 255, opacity);
 #ifdef NATIVE_PORT
                 if (taj_physics_is_taj(someRacer) &&
-                    !sTajMinimapIdentityTraced) {
+                    (sTajMinimapTracedEpoch != taj_visual_trace_epoch() ||
+                     !sTajMinimapIdentityTraced)) {
+                    sTajMinimapTracedEpoch = taj_visual_trace_epoch();
                     MDKR_TRACE("taj_minimap: identity=taj rgb=255,0,255 player=%d",
                                someRacer->playerIndex);
                     sTajMinimapIdentityTraced = TRUE;

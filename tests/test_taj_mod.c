@@ -290,7 +290,17 @@ static void test_challenge_mask_and_identity(void) {
     CHECK(taj_mod_racer_is_taj(0) && taj_mod_racer_is_taj(3));
     CHECK(taj_mod_resolve_race_character(0, 4) == TAJ_MOD_DONOR_CHARACTER);
     CHECK(taj_mod_resolve_race_character(1, 4) == 4);
-    CHECK(taj_mod_resolve_race_character(1, 99) == TAJ_MOD_DONOR_CHARACTER);
+    /* An out-of-range requested character is a corrupt/uninitialised settings
+     * slot, not a Taj selection. It used to fall back to the DONOR, which made
+     * garbage indistinguishable from a genuine pick and handed Taj's donor
+     * character to a player who never chose it. It now falls back to the
+     * neutral default, and player 1 -- who is NOT selected here -- must not
+     * come out of the resolver as Taj under any input. */
+    CHECK(taj_mod_resolve_race_character(1, 99) == TAJ_MOD_NEUTRAL_CHARACTER);
+    CHECK(taj_mod_resolve_race_character(1, -1) == TAJ_MOD_NEUTRAL_CHARACTER);
+    CHECK(taj_mod_resolve_race_character(1, 99) != TAJ_MOD_DONOR_CHARACTER);
+    /* A player who IS selected still resolves to the donor regardless. */
+    CHECK(taj_mod_resolve_race_character(0, 99) == TAJ_MOD_DONOR_CHARACTER);
     taj_mod_swap_player_selections(0, 1);
     CHECK(!taj_mod_player_selected(0));
     CHECK(taj_mod_player_selected(1));

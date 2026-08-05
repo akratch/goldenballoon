@@ -50,11 +50,16 @@ void DiagPanel_draw(LauncherState &s, LauncherAction &out) {
     static std::vector<char> buf(64 * 1024);
     int n = DiagLog_snapshot(buf.data(), (int)buf.size());
 
-    static bool copied = false;
+    // Transient confirmation, not a state: a latched "Copied" still sitting
+    // beside the button minutes later reads as a claim about the CURRENT log,
+    // which by then it is not. Three seconds is long enough to be seen and
+    // short enough that it can only describe the press that produced it.
+    static double copiedAt = -1.0;
     if (ImGui::Button("Copy Log to Clipboard", ui::kBtnWide())) {
         ImGui::SetClipboardText(n > 0 ? buf.data() : "(log is empty)");
-        copied = true;
+        copiedAt = ImGui::GetTime();
     }
+    const bool copied = copiedAt >= 0.0 && ImGui::GetTime() - copiedAt < 3.0;
     if (copied) {
         ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::good());

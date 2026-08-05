@@ -6,6 +6,9 @@
 enum {
     TAJ_MOD_MAX_PLAYERS = 4,
     TAJ_MOD_DONOR_CHARACTER = 9,
+    /* Where an unusable requested character falls back to. Deliberately NOT
+     * the donor: a corrupt slot must never read as a Taj selection. */
+    TAJ_MOD_NEUTRAL_CHARACTER = 0,
     TAJ_MOD_COMPLETED_CHALLENGES = 0x38
 };
 
@@ -43,6 +46,9 @@ void taj_mod_reset_player_selections(void);
 /* Checked four-player mask conversion shared by gameplay and presentation.
  * Invalid indices return zero; callers never perform a variable-width shift. */
 unsigned int taj_mod_player_bit(int player_index);
+/* The same bound taj_mod_bind_racer_player() applies, exposed so callers can
+ * report a rejected binding instead of losing it silently. */
+int taj_mod_valid_live_player(int player_index);
 void taj_mod_set_player_selected(int player_index, int selected);
 /* DKR swaps the complete P1/P2 settings rows when Adventure leadership moves.
  * Keep the settings-slot sidecar aligned without disturbing live racers from

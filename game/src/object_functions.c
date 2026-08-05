@@ -1154,6 +1154,19 @@ void obj_loop_timetrialghost(Object *obj, s32 updateRate) {
 void obj_init_characterflag(Object *obj, LevelObjectEntry_CharacterFlag *entry) {
     f32 radius;
     obj->properties.characterFlag.playerID = entry->playerIndex;
+#ifdef NATIVE_PORT
+    /* One row per authored portrait, at spawn. It carries BOTH the level
+     * entry's own player index and the value actually stored, because the
+     * stored value is the only thing the loop func can later be checked
+     * against and a base/normalisation error on this line is invisible
+     * downstream: get_racer_object(playerID) succeeds for any 0..3, so a
+     * shifted binding still produces four healthy-looking portraits that show
+     * the wrong four racers. The authored value is the external ground truth,
+     * so it has to be witnessed here. */
+    MDKR_TRACE("charflag_init: authored=%d playerID=%d",
+               (s32) entry->playerIndex,
+               (s32) obj->properties.characterFlag.playerID);
+#endif
     obj->properties.characterFlag.characterID = -1; // Set to -1 so the loop func builds the gfx data.
     obj->trans.rotation.y_rotation = U8_ANGLE_TO_U16(entry->angleY);
     radius = entry->radius & 0xFF;
@@ -1188,6 +1201,18 @@ void obj_loop_characterflag(Object *obj, UNUSED s32 updateRate) {
             }
             flagModel->vertices = gCharacterFlagVertices;
             flagModel->texture = obj->textures[obj->properties.characterFlag.characterID];
+#ifdef NATIVE_PORT
+            /* One bounded row per portrait, at the single moment the lazy
+             * geometry build binds a racer.  characterID is latched >= 0 here
+             * and the branch never re-enters, so this cannot spam.  It is the
+             * positive witness tests/check_challenge_modes.py asserts on:
+             * colour-flatness metrics alone stay green with every portrait
+             * unbound. */
+            MDKR_TRACE("charflag_bound: playerID=%d characterID=%d texture=%s",
+                       (s32) obj->properties.characterFlag.playerID,
+                       (s32) obj->properties.characterFlag.characterID,
+                       flagModel->texture != NULL ? "ok" : "missing");
+#endif
             temp_t4 = (flagModel->texture->width - 1) << 21;
             temp_t5 = (flagModel->texture->height - 1) << 5;
             // 0x40 = Draw backface
@@ -2143,6 +2168,19 @@ UNUSED void obj_init_char_select(UNUSED s32 arg0, UNUSED s32 arg1) {
  * original spelling for the ROM build; both must pick the same row of
  * gSignHolding* for a given actor.
  */
+#ifdef NATIVE_PORT
+/* getenv() on a per-actor, per-frame draw path is a syscall-shaped cost for a
+ * value that cannot change; resolve it once like every other trace gate. */
+static s32 taj_select_actor_trace_enabled(void) {
+    static s32 enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("MDKR_TAJ_SELECT_TRACE");
+        enabled = value != NULL && value[0] != '\0' && value[0] != '0';
+    }
+    return enabled;
+}
+#endif
+
 static s32 char_select_character_index(s32 actorIndex) {
     u8 *actorIDs;
     s32 charCount;
@@ -2265,12 +2303,17 @@ void obj_loop_char_select(Object *charSelectObj, s32 updateRate) {
         if (modInst != NULL) {
             objMdl = modInst->objModel;
 #ifdef NATIVE_PORT
-            if (getenv("MDKR_TAJ_SELECT_TRACE") != NULL) {
+            if (taj_select_actor_trace_enabled()) {
                 static u32 tracedActors;
+                static u32 tracedEpoch;
                 const u32 actorBit = charSelect->actorIndex >= 0 &&
                                              charSelect->actorIndex < 32
                                          ? 1u << (u32)charSelect->actorIndex
                                          : 0u;
+                if (tracedEpoch != taj_visual_trace_epoch()) {
+                    tracedEpoch = taj_visual_trace_epoch();
+                    tracedActors = 0;
+                }
                 if (actorBit != 0 && !(tracedActors & actorBit)) {
                     tracedActors |= actorBit;
                     fprintf(stderr,

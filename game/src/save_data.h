@@ -159,6 +159,7 @@ void func_80072E28(s32 arg0, u32 arg1);
 s32 func_80072C54(s32 arg0);
 void populate_settings_from_save_data(Settings *settings, u8 *saveData);
 s32 read_save_file(s32 saveFileNum, Settings *settings);
+
 void erase_save_file(s32 saveFileNum, Settings *settings);
 SIDeviceStatus func_800756D4(
     s32 controllerIndex, u8 *levelIDs, u8 *vehicleIDs, u8 *characterIDs,

@@ -49,6 +49,7 @@ extern int g_frameCounter;
 #ifdef NATIVE_PORT
 #include <stdio.h>
 #include <string.h>
+#include "display_config.h" /* mdkr_display_widescreen_enabled */
 
 #define CHARSELECT_RUNTIME_CAPACITY 11
 #define CHARSELECT_DATA(index) gCurrCharacterSelectData[(index)]
@@ -4336,7 +4337,9 @@ void optionscreen_render(UNUSED s32 updateRate) {
  * executable has one US-layout binary which may then boot a validated PAL v80
  * image, so preserve the retail behaviour and make the native capability
  * runtime-owned without adding a platform dependency to non-native builds. */
-static s32 menu_language_has_german(void) {
+/* Both call sites are inside `#if REGION != REGION_JP` blocks (the language
+ * selector does not exist on the Japanese layout), so this is dead there. */
+static UNUSED s32 menu_language_has_german(void) {
 #if REGION == REGION_PAL
     return TRUE;
 #elif defined(NATIVE_PORT)
@@ -10607,6 +10610,7 @@ void trackmenu_render_2D(s32 x, s32 y, char *hubName, char *trackName, s32 rectO
 #ifdef NATIVE_PORT
     s32 overlayFullyInsideAuthoredCanvas;
     s32 hubNameInsideAuthoredCanvas;
+    s32 hasDecorativeGutters;
 #endif
 
     sp6C = 0;
@@ -10623,15 +10627,32 @@ void trackmenu_render_2D(s32 x, s32 y, char *hubName, char *trackName, s32 rectO
      * publish its overlay only while the complete authored envelope fits:
      * the frame half-width plus controls is 96 pixels, and the top/bottom text
      * extends 104 pixels from centre (plus the PAL text offset). */
-    overlayFullyInsideAuthoredCanvas =
-        xTemp >= 96 && xTemp <= SCREEN_WIDTH - 96 &&
-        yTemp >= 104 + sp6C &&
-        yTemp <= gTrackSelectViewportY - (104 + sp6C);
-    /* Hub names are always drawn at the screen centre, independent of this
-     * card's horizontal position, so a horizontal slide must not blank them. */
-    hubNameInsideAuthoredCanvas =
-        yTemp >= 104 + sp6C &&
-        yTemp <= gTrackSelectViewportY - (104 + sp6C);
+    /* Only a host with decorative gutters has anywhere for an off-canvas
+     * fragment to appear. With widescreen off -- and equally with widescreen on
+     * at a 4:3 presentation, where the safe area IS the presentation -- the
+     * console's own 320x240 edge does the clipping exactly as it always did, so
+     * suppressing these elements would blank text and arrows retail draws. */
+    {
+        MdkrDisplayLayout displayLayout = mdkr_display_layout();
+        hasDecorativeGutters =
+            mdkr_display_widescreen_enabled() &&
+            displayLayout.presentation.width > displayLayout.safe.width + 0.5f;
+    }
+    if (!hasDecorativeGutters) {
+        overlayFullyInsideAuthoredCanvas = TRUE;
+        hubNameInsideAuthoredCanvas = TRUE;
+    } else {
+        overlayFullyInsideAuthoredCanvas =
+            xTemp >= 96 && xTemp <= SCREEN_WIDTH - 96 &&
+            yTemp >= 104 + sp6C &&
+            yTemp <= gTrackSelectViewportY - (104 + sp6C);
+        /* Hub names are always drawn at the screen centre, independent of this
+         * card's horizontal position, so a horizontal slide must not blank
+         * them. */
+        hubNameInsideAuthoredCanvas =
+            yTemp >= 104 + sp6C &&
+            yTemp <= gTrackSelectViewportY - (104 + sp6C);
+    }
 #endif
     set_text_font(ASSET_FONTS_BIGFONT);
     set_text_background_colour(0, 0, 0, 0);
@@ -12394,7 +12415,12 @@ void menu_racer_portraits(void) {
 static DrawTexture *menu_racer_portrait_for_player(s32 playerIndex,
                                                    s32 character) {
     static u32 tracedTajPlayers;
+    static u32 tracedEpoch;
     u32 playerBit = taj_mod_player_bit(playerIndex);
+    if (tracedEpoch != taj_visual_trace_epoch()) {
+        tracedEpoch = taj_visual_trace_epoch();
+        tracedTajPlayers = 0;
+    }
     if (playerIndex >= 0 && playerIndex < TAJ_MOD_MAX_PLAYERS &&
         taj_mod_player_selected(playerIndex) &&
         gMenuPortraitTaj[0].texture != NULL) {

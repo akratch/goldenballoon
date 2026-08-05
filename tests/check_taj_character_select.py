@@ -290,6 +290,14 @@ def oversized_shadow_delta(scaled: Path, unscaled: Path) -> tuple[int, int, int]
     return darker, changed, (x1 - x0) * (y1 - y0)
 
 
+# The numbered placard rectangle shared by roster_counts(),
+# placard_colour_count() and placard_changed_pixels(), in ROM logical pixels.
+PLACARD_LOGICAL_AREA = 34 * 36
+# Absolute floor for "the placard is really on screen", as a fraction of that
+# rectangle. Same value the browser sibling pins for the same rectangle.
+PLACARD_MIN_COVERAGE = 0.15
+
+
 def placard_colour_count(path: Path, player: int) -> tuple[int, int]:
     width, height, pixels = read_ppm(path)
     scale_x = width // ROM_WIDTH
@@ -544,10 +552,21 @@ def main() -> int:
                 failures.append(
                     f"{layout.name}: authored lower-row actors collapsed or "
                     f"left the safe area ({left_row=}, {right_row=})")
-            if selected_red < ordinary_red * 4:
+            # A purely relative "4x the unselected red" test is vacuous at the
+            # baseline it actually has: with Taj's placard hidden the rectangle
+            # contains no red at all, so ordinary_red is 0, the bound is 0, and
+            # ANY selected_red -- including 0, i.e. no placard drawn -- passes.
+            # Use the same max(relative, absolute-floor) shape as the browser
+            # sibling (check_browser_taj_character_select.py), measured over the
+            # identical 34x36 logical placard rectangle roster_counts() samples.
+            placard_region = PLACARD_LOGICAL_AREA * pixel_scale
+            placard_floor = int(placard_region * PLACARD_MIN_COVERAGE *
+                                aspect_scale)
+            if selected_red < max(ordinary_red * 4, placard_floor):
                 failures.append(
                     f"{layout.name}: Taj did not raise the P1 placard "
-                    f"({ordinary_red=}, {selected_red=})"
+                    f"({ordinary_red=}, {selected_red=}, "
+                    f"floor={placard_floor}, region={placard_region})"
                 )
             if motion < 300 * pixel_scale * aspect_scale:
                 failures.append(

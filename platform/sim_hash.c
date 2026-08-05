@@ -161,6 +161,42 @@
  * brake/headlight texture state machine; its NIGHT bit samples render-computed
  * shading and no physics, AI, progression or input path consumes it.
  *
+ * ---------------------------------------------------------------------
+ * Playable-Taj sidecar state — a deliberate v3 exclusion
+ * ---------------------------------------------------------------------
+ * game/src/taj_physics.c keeps a per-racer sidecar (dashTicks, cooldownTicks,
+ * entrySpeed, wasDrifting, selected) and game/src/taj_mod.c keeps the identity
+ * masks (player_mask, racer_mask). None of it is hashed. It is not hashed
+ * because it is not independently observable: every one of these values reaches
+ * the hash through racer velocity ON THE SAME TICK it is read.
+ *
+ *   player_mask / racer_mask   taj_physics_is_taj() gates
+ *                              taj_physics_pre/post_vehicle_update, so a
+ *                              divergent mask means a racer is or is not
+ *                              speed-clamped, attack-immune and dash-capable
+ *                              in that same update_player_racer() call.
+ *   entrySpeed / wasDrifting   read and consumed inside the same
+ *                              taj_physics_post_vehicle_update().
+ *   dashTicks                  taj_physics_advance_dash() runs before the
+ *                              speed solve in the same call, and a nonzero
+ *                              dashTicks both adds TAJ_PHYSICS_DASH_ACCELERATION
+ *                              and raises maxSpeed, so it lands in
+ *                              racer->velocity and Object::x/z_velocity —
+ *                              all hashed — on the tick it changes.
+ *
+ * The one value with real detection latency is cooldownTicks. While it counts
+ * down it changes nothing observable; a divergence in it is invisible until the
+ * next drift release, which it then allows or refuses — and THAT shows up as a
+ * dashTicks/velocity difference on the tick it happens. So the gap is bounded
+ * by "until the next drift release", not unbounded, and the divergence is still
+ * caught by the same [SIMHASH] stream when it becomes real.
+ *
+ * They are excluded rather than added because adding them would rewrite the
+ * published byte stream for EVERY run — including the ordinary non-Taj runs the
+ * determinism and render-purity gates compare — to cover a value that is
+ * already covered one hop downstream. The presentation-object exclusion below
+ * is a correction to what the stream means; this would only be a re-baseline.
+ *
  * `tests/check_state_hash.py` independently perturbs every v3 family for one
  * sample and proves exact restoration. `tests/check_render_purity.py` compares
  * raw schedules and uses an explicit injected leak as its positive control.
@@ -210,6 +246,78 @@ static uint64_t fnv1a64(uint64_t hash, const void *data, size_t size) {
 #define SIM_HASH_FIELD(h, obj, member) \
     ((h) = fnv1a64((h), &(obj)->member, sizeof((obj)->member)))
 
+/* ---------------------------------------------------------------------------
+ * PRESENTATION-OBJECT EXCLUSION
+ * ---------------------------------------------------------------------------
+ * gObjPtrList is not purely authoritative. A port feature may compose an
+ * object that exists ONLY to be drawn: it owns no racer, AI, collision,
+ * progression or input state, nothing in the simulation reads it back, and it
+ * is free to be transformed from presentational sources. The playable-Taj
+ * magic-carpet/rider companions (game/src/taj_visual.c) are the first such
+ * objects: their trans.scale, trans.rotation.z_rotation and animFrame are
+ * rewritten every tick from a bob phase and a dash pulse, three of those
+ * inputs sit behind MDKR_TAJ_VISUAL_* environment flags, and whether they
+ * exist at all depends on allocation success.
+ *
+ * Hashing them would assert that presentation IS authoritative state, which is
+ * false, and it would make the anchor instrument a function of an environment
+ * variable and of the allocator. That is the same argument that keeps
+ * Particle::colour, ::brightness and Object_Racer::lightFlags out of v3 -- the
+ * difference is only that here the whole object, not one field, is
+ * presentational, so the exclusion is applied once at the walk instead of
+ * field by field.
+ *
+ * ONE MECHANISM, FILTER SIDE. Every object walk in this file -- v1, v2, v3, the
+ * family digests, both diagnostic dumps and the perturbation control -- passes
+ * each entry through sim_hash_object_is_presentation() and skips it whole: no
+ * index byte, no presence byte, no fields. The producing module does not get to
+ * decide what the hash sees; it only answers "is this object mine". A future
+ * presentation-only object joins by extending this one predicate.
+ *
+ * WHAT THIS DOES NOT CHANGE. A skipped entry does not renumber its neighbours:
+ * the surviving objects keep their gObjPtrList index, so a run that composes no
+ * presentation objects produces a byte-identical stream to the one it produced
+ * before this filter existed. The published count is likewise the authoritative
+ * count, so a companion that fails to allocate no longer moves `objs=`.
+ *
+ * RESIDUAL, STATED PLAINLY. Companions still occupy list slots, so in a run
+ * that composes them a LATER ordinary object can receive a different
+ * gObjPtrList index than it would in a companion-free run, and the stream
+ * differs on that ground. That is not a presentation leak: slot assignment is a
+ * deterministic function of authoritative state (which players selected Taj,
+ * which racers are live) and of the level, never of the render schedule, the
+ * presentation cadence or the MDKR_TAJ_VISUAL_* flags -- which is exactly the
+ * invariance tests/check_state_hash.py mutation-proves.
+ */
+extern s32 taj_visual_is_presentation_object(const Object *object);
+
+static int sim_hash_object_is_presentation(const Object *object) {
+    if (object == NULL) {
+        return 0;
+    }
+    /* A particle can never be a presentation companion and reinterpreting one
+     * as an Object to ask would read the wrong members. */
+    if (object->trans.flags & OBJ_FLAGS_PARTICLE) {
+        return 0;
+    }
+    return taj_visual_is_presentation_object(object) != 0;
+}
+
+/* The authoritative population: what `objs=` reports and what the per-object
+ * walks will actually visit. */
+static s32 sim_hash_authoritative_count(Object **objects, s32 count) {
+    s32 authoritative = 0;
+    if (objects == NULL) {
+        return count;
+    }
+    for (s32 index = 0; index < count; index++) {
+        if (!sim_hash_object_is_presentation(objects[index])) {
+            authoritative++;
+        }
+    }
+    return authoritative;
+}
+
 /* 0 = off, otherwise SIM_HASH_VERSION_*. Parsed once. */
 static uint32_t sim_hash_version(void) {
     static uint32_t version = 0xffffffffu;
@@ -246,6 +354,9 @@ static uint64_t sim_hash_compute_v1(uint64_t hash, Object **objects,
         if (object == NULL) {
             continue;
         }
+        if (sim_hash_object_is_presentation(object)) {
+            continue;
+        }
         SIM_HASH_FIELD(hash, object, behaviorId);
         SIM_HASH_FIELD(hash, object, trans.x_position);
         SIM_HASH_FIELD(hash, object, trans.y_position);
@@ -261,6 +372,9 @@ static uint64_t sim_hash_compute_v2(uint64_t hash, Object **objects,
     for (s32 index = 0; index < count; index++) {
         const Object *object = objects[index];
         if (object == NULL) {
+            continue;
+        }
+        if (sim_hash_object_is_presentation(object)) {
             continue;
         }
         /* Shared prefix. Object and Particle are both pointer-free through
@@ -843,7 +957,11 @@ static uint64_t sim_hash_compute_v3(uint64_t hash, Object **objects,
     hash = sim_hash_globals_v3(hash);
     for (s32 index = 0; index < count; index++) {
         const Object *object = objects[index];
-        uint8_t present = object != NULL;
+        uint8_t present;
+        if (sim_hash_object_is_presentation(object)) {
+            continue;
+        }
+        present = object != NULL;
         hash = fnv1a64(hash, &index, sizeof(index));
         hash = fnv1a64(hash, &present, sizeof(present));
         if (object == NULL) {
@@ -914,7 +1032,7 @@ static SimHashV3Parts sim_hash_v3_parts(void) {
     parts.globals = sim_hash_globals_v3(parts.globals);
     for (s32 index = 0; objects != NULL && index < count; index++) {
         const Object *object = objects[index];
-        if (object == NULL) {
+        if (object == NULL || sim_hash_object_is_presentation(object)) {
             continue;
         }
         parts.core = sim_hash_compute_v2(
@@ -969,6 +1087,7 @@ static uint64_t sim_hash_compute(s32 *out_count) {
     uint32_t version = sim_hash_version();
     s32 first = 0;
     s32 count = 0;
+    s32 authoritative;
     s32 rng;
     Object **objects;
 
@@ -976,7 +1095,10 @@ static uint64_t sim_hash_compute(s32 *out_count) {
     rng = get_rng_seed();
     hash = fnv1a64(hash, &rng, sizeof(rng));
     objects = objGetObjList(&first, &count);
-    hash = fnv1a64(hash, &count, sizeof(count));
+    /* The published population is the authoritative one: a presentation
+     * companion that succeeds or fails to allocate must not move it. */
+    authoritative = sim_hash_authoritative_count(objects, count);
+    hash = fnv1a64(hash, &authoritative, sizeof(authoritative));
     if (objects != NULL) {
         if (version == SIM_HASH_VERSION_V1) {
             hash = sim_hash_compute_v1(hash, objects, count);
@@ -989,7 +1111,7 @@ static uint64_t sim_hash_compute(s32 *out_count) {
         }
     }
     if (out_count != NULL) {
-        *out_count = count;
+        *out_count = authoritative;
     }
     return hash;
 }
@@ -1056,7 +1178,7 @@ static void sim_hash_dump_object_ids(unsigned long long tick) {
     for (s32 index = 0; index < count; index++) {
         const Object *object = objects[index];
         const Object_Racer *racer;
-        if (object == NULL) {
+        if (object == NULL || sim_hash_object_is_presentation(object)) {
             continue;
         }
         /* A Particle overlays an Object and shares only ObjectTransform, so the
@@ -1101,7 +1223,7 @@ static void sim_hash_dump_objects(unsigned long long tick) {
     for (s32 index = 0; index < count; index++) {
         const Object *object = objects[index];
         unsigned px, py, pz, sc;
-        if (object == NULL) continue;
+        if (object == NULL || sim_hash_object_is_presentation(object)) continue;
         memcpy(&px, &object->trans.x_position, 4);
         memcpy(&py, &object->trans.y_position, 4);
         memcpy(&pz, &object->trans.z_position, 4);
@@ -1183,7 +1305,7 @@ static void sim_hash_dump_objects(unsigned long long tick) {
             uint64_t interaction = basis;
             uint64_t racer = basis;
             uint64_t model = basis;
-            if (object == NULL) {
+            if (object == NULL || sim_hash_object_is_presentation(object)) {
                 continue;
             }
             core = sim_hash_compute_v2(core, &objects[index], 1, 0);
@@ -1391,7 +1513,9 @@ static uint64_t sim_hash_compute_perturbed(HashPerturbClass class_id,
     } else {
         for (s32 index = 0; objects != NULL && index < count; index++) {
             Object *object = objects[index];
-            if (object == NULL) {
+            /* Never aim a positive control at an object the hash does not
+             * read: it would report applied=1 and prove nothing. */
+            if (object == NULL || sim_hash_object_is_presentation(object)) {
                 continue;
             }
             if (class_id == HASH_PERTURB_PARTICLE) {

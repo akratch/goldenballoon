@@ -53,6 +53,24 @@ DASH_PULSE_RE = re.compile(
     r"observed_ratio=([0-9.]+) dash_active=1"
 )
 SUPPORTED_CARPET_RIDER_RATIO = 7.0 / 15.0
+# The two ROM-authored header scales the ratio above is made of. Pinning them
+# ABSOLUTELY is what makes the ratio assertions mean something: comparing
+# carpet_base_scale/rider_base_scale against the authored_ratio printed on the
+# same row only ever compared one quantity with itself, so it could not fail
+# for any reason except a corrupted printf.
+SUPPORTED_CARPET_BASE_SCALE = 0.28
+SUPPORTED_RIDER_BASE_SCALE = 0.60
+# Every scale on the witness row is printed with "%.6f", so a value
+# reconstructed from two printed operands carries up to half an ulp of print
+# error from each. Compare reconstructions at the precision the trace actually
+# has, not at a tolerance tighter than its own output format.
+PRINTED_SCALE_EPSILON = 5e-7
+def reconstruction_tolerance(numerator: float, denominator: float) -> float:
+    """Worst-case error of numerator/denominator given 6-decimal operands."""
+    if denominator <= 0.0:
+        return 0.0
+    quotient = numerator / denominator
+    return (PRINTED_SCALE_EPSILON * (1.0 + abs(quotient)) / denominator) * 2.0
 
 
 def carpet_witness_failures(output: str) -> list[str]:
@@ -95,8 +113,23 @@ def carpet_witness_failures(output: str) -> list[str]:
                 f"({authored:.6f} vs "
                 f"{SUPPORTED_CARPET_RIDER_RATIO:.6f})")
             break
-        if abs(carpet_base_scale / rider_base_scale - authored) > 0.00001:
-            failures.append("ROM base scales disagree with authored ratio")
+        if (abs(carpet_base_scale - SUPPORTED_CARPET_BASE_SCALE) >
+                PRINTED_SCALE_EPSILON or
+                abs(rider_base_scale - SUPPORTED_RIDER_BASE_SCALE) >
+                PRINTED_SCALE_EPSILON):
+            failures.append(
+                "ROM-authored base scales are not the supported pair "
+                f"({carpet_base_scale:.6f}/{rider_base_scale:.6f}, want "
+                f"{SUPPORTED_CARPET_BASE_SCALE:.6f}/"
+                f"{SUPPORTED_RIDER_BASE_SCALE:.6f})")
+            break
+        if (abs(carpet_base_scale / rider_base_scale - authored) >
+                reconstruction_tolerance(carpet_base_scale,
+                                         rider_base_scale)):
+            failures.append(
+                "authored ratio does not follow from the base scales it was "
+                f"derived from ({carpet_base_scale:.6f}/"
+                f"{rider_base_scale:.6f} vs {authored:.6f})")
             break
         if dash_active:
             failures.append("regular carpet-animation witness overlapped the dash")
@@ -108,8 +141,27 @@ def carpet_witness_failures(output: str) -> list[str]:
             break
         else:
             saw_settled_scale = True
-        if rider_scale <= 0.0 or abs(carpet_scale / rider_scale - observed) > 0.00001:
-            failures.append("reported carpet/rider scales disagree with ratio")
+        # The live pair is not a fixed constant (the dash pulses the carpet),
+        # so pin it against the authored ratio -- an independently sourced
+        # value -- and reconcile the row's own operands only at the precision
+        # the trace prints them with.
+        if rider_scale <= 0.0:
+            failures.append(
+                f"live rider scale is not positive ({rider_scale:.6f})")
+            break
+        if abs(carpet_scale / rider_scale - SUPPORTED_CARPET_RIDER_RATIO) > 1e-5:
+            failures.append(
+                "live carpet/rider scales left the supported ROM ratio "
+                f"({carpet_scale:.6f}/{rider_scale:.6f} = "
+                f"{carpet_scale / rider_scale:.6f} vs "
+                f"{SUPPORTED_CARPET_RIDER_RATIO:.6f})")
+            break
+        if (abs(carpet_scale / rider_scale - observed) >
+                reconstruction_tolerance(carpet_scale, rider_scale)):
+            failures.append(
+                "observed ratio does not follow from the live scales it was "
+                f"derived from ({carpet_scale:.6f}/{rider_scale:.6f} vs "
+                f"{observed:.6f})")
             break
     if not failures and not saw_settled_scale:
         failures.append("magic-carpet scale never returned to its authored ratio")

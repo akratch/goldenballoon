@@ -173,6 +173,47 @@ static void test_invalid_racer_index_does_not_alias_p1(void) {
     CHECK(taj_physics_dash_ticks_remaining(&valid) == TAJ_PHYSICS_DASH_TICKS);
 }
 
+/* M15 #4: Taj's sustained cruise cap used to be applied unconditionally, so
+ * every stock boost was clipped back to it and Taj was the one character for
+ * whom zip pads did nothing. The shipped speed-profile gate cannot witness
+ * this -- it filters boosting frames out by construction, and its Ancient Lake
+ * route takes no pad at all (measured: 2578 [BOOST] rows, every one timer=0) --
+ * so the exemption is pinned here instead.
+ *
+ * Sign convention matches the module: forward velocity is NEGATIVE, caps are
+ * positive magnitudes. */
+static void test_boost_survives_the_sustained_cap(void) {
+    const f32 car_cap = 13.5f * TAJ_PHYSICS_SUSTAINED_SPEED_MULTIPLIER; /* 18.225 */
+    const f32 stock_boost_peak = -22.357f; /* check_boost_magnitude.py:114 */
+
+    /* No boost: the cap is untouched, whatever stock is doing. */
+    CHECK(taj_physics_speed_cap(car_cap, -10.0f, FALSE) == car_cap);
+    CHECK(taj_physics_speed_cap(car_cap, stock_boost_peak, FALSE) == car_cap);
+
+    /* Boosting past the cap: the cap rises to exactly the stock magnitude, so
+     * the clamp can no longer eat the pad. This is the assertion that fails
+     * against the pre-fix unconditional clamp. */
+    CHECK(taj_physics_speed_cap(car_cap, stock_boost_peak, TRUE) >
+          car_cap);
+    CHECK(taj_physics_speed_cap(car_cap, stock_boost_peak, TRUE) ==
+          -stock_boost_peak);
+
+    /* ...and no further: the exemption is a floor, not a bypass, so Taj's own
+     * multipliers may not stack on top of a stock boost. */
+    CHECK(taj_physics_speed_cap(car_cap, stock_boost_peak, TRUE) <
+          -stock_boost_peak * 1.0001f + 0.0001f);
+
+    /* Boosting but still BELOW the cruise cap (a boost taken from a standstill,
+     * or a weak pad): the cap must not be lowered to the current speed, or the
+     * boost would cap Taj at whatever he happened to be doing. */
+    CHECK(taj_physics_speed_cap(car_cap, -5.0f, TRUE) == car_cap);
+    CHECK(taj_physics_speed_cap(car_cap, -car_cap, TRUE) == car_cap);
+
+    /* Degenerate inputs stay bounded. */
+    CHECK(taj_physics_speed_cap(car_cap, 0.0f, TRUE) == car_cap);
+    CHECK(taj_physics_speed_cap(car_cap, 3.0f, TRUE) == car_cap);
+}
+
 int main(void) {
     TajPhysicsDashState dash = { 0, 0 };
 
@@ -218,6 +259,7 @@ int main(void) {
     test_car_turn_and_dash();
     test_identity_handoff_and_negative_control();
     test_invalid_racer_index_does_not_alias_p1();
+    test_boost_survives_the_sustained_cap();
 
     if (failures != 0) {
         fprintf(stderr, "taj-physics tests: %d failure(s)\n", failures);

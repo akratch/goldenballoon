@@ -49,6 +49,10 @@ static int taj_mod_valid_player(int player_index) {
     return player_index >= 0 && player_index < TAJ_MOD_MAX_PLAYERS;
 }
 
+int taj_mod_valid_live_player(int player_index) {
+    return taj_mod_valid_player(player_index);
+}
+
 unsigned int taj_mod_player_bit(int player_index) {
     static const unsigned int bits[TAJ_MOD_MAX_PLAYERS] = {
         0x1u, 0x2u, 0x4u, 0x8u
@@ -85,13 +89,31 @@ static void taj_mod_queue_retry(const TajModPersistentState *candidate,
 }
 
 #ifdef NATIVE_PORT
-static void taj_mod_apply_test_player_from_environment(void) {
-    const char *text = getenv("MDKR_TAJ_TEST_PLAYER");
+/* MDKR_TAJ_TEST_PLAYER is an opt-in native bootstrap that makes one port play
+ * as Taj without driving the menus. It is a SHADOW: it is resolved once, it is
+ * never written into `persisted` and never into `player_mask`, and every read
+ * site ORs it in through the accessors below.
+ *
+ * It used to assign persisted.taj_unlocked / .adventure_migration_complete and
+ * player_mask directly. Both were real defects. Writing the persisted struct
+ * made a later genuine ABRACADABRA compute persistence_changed == 0, so the
+ * unlock was never stored and the player never saw the banner -- the test hook
+ * silently disabled the shipping unlock path. Writing player_mask re-applied it
+ * on EVERY taj_mod_begin_racer_bindings(), so it also clobbered whatever the
+ * player had actually chosen at every race init. */
+static int taj_mod_test_player(void) {
+    static int cached = -2; /* -2 unparsed, -1 absent/invalid */
+    const char *text;
     char *end = NULL;
     long player;
 
+    if (cached != -2) {
+        return cached;
+    }
+    cached = -1;
+    text = getenv("MDKR_TAJ_TEST_PLAYER");
     if (text == NULL) {
-        return;
+        return cached;
     }
     errno = 0;
     player = strtol(text, &end, 10);
@@ -100,18 +122,32 @@ static void taj_mod_apply_test_player_from_environment(void) {
         fprintf(stderr,
                 "[TAJ] ignoring invalid MDKR_TAJ_TEST_PLAYER value: %s\n",
                 text);
-        return;
+        return cached;
     }
-    /* This is an opt-in native test bootstrap, not an unlock route: it never
-     * writes the sidecar and cannot activate without the exact bounded value. */
-    s_taj.persisted.version = TAJ_MOD_STATE_VERSION;
-    s_taj.persisted.taj_unlocked = 1;
-    s_taj.persisted.adventure_migration_complete = 1;
-    s_taj.enabled = 1;
-    s_taj.player_mask = taj_mod_player_bit((int)player);
-    MDKR_TRACE("taj_test_player: player=%d enabled=1", (int)player);
+    cached = (int)player;
+    MDKR_TRACE("taj_test_player: player=%d enabled=1", cached);
+    return cached;
 }
+
+static unsigned int taj_mod_test_player_bit(void) {
+    int player = taj_mod_test_player();
+    return player < 0 ? 0u : taj_mod_player_bit(player);
+}
+#else
+#define taj_mod_test_player_bit() 0u
 #endif
+
+/* Every read of the selection mask goes through here so the test shadow is
+ * applied in exactly one place and can never leak into stored state. */
+static unsigned int taj_mod_effective_player_mask(void) {
+    return s_taj.player_mask | taj_mod_test_player_bit();
+}
+
+/* The hook must also make Taj reachable, but only for reads: an unlock it
+ * implies is a session fact, never a persisted one. */
+static int taj_mod_test_player_active(void) {
+    return taj_mod_test_player_bit() != 0u;
+}
 
 static int taj_mod_store_candidate(const TajModPersistentState *candidate,
                                    TajModPersistenceIssue issue) {
@@ -126,8 +162,15 @@ static int taj_mod_store_candidate(const TajModPersistentState *candidate,
          * flight so its rollback snapshot cannot be replaced by a later menu
          * action. A second action is refused; it must be explicitly retried. */
         if (s_taj.pending_store) {
-            s_taj.persistence_failed = 1;
-            s_taj.persistence_issue = issue;
+            /* REFUSED, not failed. The in-flight transaction is still going to
+             * succeed or fail on its own and report through the keepalive
+             * callbacks; latching persistence_failed here raised a banner for a
+             * write that had not been attempted yet, and it overwrote the issue
+             * belonging to the transaction actually in flight. Queue the
+             * candidate so taj_mod_retry_persistence() can pick it up once the
+             * commit settles, and leave the reported state to the owner of the
+             * transaction. */
+            taj_mod_queue_retry(candidate, issue);
             fprintf(stderr,
                     "[TAJ] persistence is still busy; retry this action shortly\n");
             return 0;
@@ -167,17 +210,29 @@ static void taj_mod_unlock(void) {
     int newly_unlocked = !s_taj.persisted.taj_unlocked;
     int persistence_changed = newly_unlocked ||
         !s_taj.persisted.adventure_migration_complete;
+    int stored = 1;
 
     candidate.taj_unlocked = 1;
     candidate.adventure_migration_complete = 1;
     if (persistence_changed ||
         (s_taj.retry_pending &&
          s_taj.retry_issue == TAJ_MOD_PERSISTENCE_UNLOCK)) {
-        (void)taj_mod_store_candidate(&candidate,
-                                      TAJ_MOD_PERSISTENCE_UNLOCK);
+        stored = taj_mod_store_candidate(&candidate,
+                                         TAJ_MOD_PERSISTENCE_UNLOCK);
     }
     /* An unlock remains useful for this session even if storage failed. */
-    s_taj.persisted = candidate;
+    s_taj.persisted.taj_unlocked = 1;
+    s_taj.persisted.version = candidate.version;
+    /* adventure_migration_complete is NOT a session fact: it is the record that
+     * the one-time import reconcile has been written down. Committing it in RAM
+     * after a refused or failed store made taj_mod_reconcile_imported_taj_flags()
+     * early-out for the rest of the session, so the retry that was supposed to
+     * write the unlock never had a reason to run again. Only advance it when
+     * the bytes really went out. */
+    if (stored) {
+        s_taj.persisted.adventure_migration_complete =
+            candidate.adventure_migration_complete;
+    }
     if (newly_unlocked) {
         s_taj.unlock_announcement = 1;
     }
@@ -234,8 +289,13 @@ int taj_mod_retry_persistence(void) {
     }
     return 1;
 }
-int taj_mod_is_unlocked(void) { return s_taj.persisted.taj_unlocked != 0; }
-int taj_mod_is_enabled(void) { return taj_mod_is_unlocked() && s_taj.enabled; }
+int taj_mod_is_unlocked(void) {
+    return s_taj.persisted.taj_unlocked != 0 || taj_mod_test_player_active();
+}
+int taj_mod_is_enabled(void) {
+    return taj_mod_is_unlocked() &&
+           (s_taj.enabled || taj_mod_test_player_active());
+}
 void taj_mod_set_enabled(int enabled) {
     s_taj.enabled = taj_mod_is_unlocked() && enabled != 0;
     if (!s_taj.enabled) {
@@ -346,9 +406,6 @@ void taj_mod_swap_player_selections(int first_player, int second_player) {
 void taj_mod_begin_racer_bindings(void) {
     s_taj.racer_mask = 0;
     s_taj.racer_bindings_active = 1;
-#ifdef NATIVE_PORT
-    taj_mod_apply_test_player_from_environment();
-#endif
 }
 
 void taj_mod_bind_racer_player(int selected_player_index,
@@ -362,7 +419,7 @@ void taj_mod_bind_racer_player(int selected_player_index,
     }
     selected_bit = taj_mod_player_bit(selected_player_index);
     live_bit = taj_mod_player_bit(live_player_index);
-    if (s_taj.player_mask & selected_bit) {
+    if (taj_mod_effective_player_mask() & selected_bit) {
         s_taj.racer_mask |= live_bit;
     } else {
         s_taj.racer_mask &= ~live_bit;
@@ -371,13 +428,15 @@ void taj_mod_bind_racer_player(int selected_player_index,
 
 int taj_mod_player_selected(int player_index) {
     return taj_mod_valid_player(player_index) &&
-           (s_taj.player_mask & taj_mod_player_bit(player_index)) != 0;
+           (taj_mod_effective_player_mask() &
+            taj_mod_player_bit(player_index)) != 0;
 }
 
 int taj_mod_racer_is_taj(int player_index) {
     unsigned int mask;
 
-    mask = s_taj.racer_bindings_active ? s_taj.racer_mask : s_taj.player_mask;
+    mask = s_taj.racer_bindings_active ? s_taj.racer_mask
+                                      : taj_mod_effective_player_mask();
     return taj_mod_is_enabled() && taj_mod_valid_player(player_index) &&
            (mask & taj_mod_player_bit(player_index)) != 0;
 }
@@ -385,11 +444,17 @@ int taj_mod_racer_is_taj(int player_index) {
 int taj_mod_resolve_race_character(int player_index, int requested_character) {
     /* This resolver is called before live racer bindings exist. */
     if (taj_mod_is_enabled() && taj_mod_valid_player(player_index) &&
-        (s_taj.player_mask & taj_mod_player_bit(player_index))) {
+        (taj_mod_effective_player_mask() &
+         taj_mod_player_bit(player_index))) {
         return TAJ_MOD_DONOR_CHARACTER;
     }
     if (requested_character < 0 || requested_character > TAJ_MOD_DONOR_CHARACTER) {
-        return TAJ_MOD_DONOR_CHARACTER;
+        /* Out of range means the caller has a corrupt or uninitialised slot,
+         * not that this player picked Taj. Returning the DONOR here handed the
+         * donor character to a player who never selected it and made a garbage
+         * value indistinguishable from a genuine Taj pick. Fail to the neutral
+         * default the rest of the menu uses instead. */
+        return TAJ_MOD_NEUTRAL_CHARACTER;
     }
     return requested_character;
 }

@@ -3551,7 +3551,31 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
     i = 0; // a2
     switch (curObj->header->behaviorId) {
         case BHV_PARK_WARDEN:
+#ifdef NATIVE_PORT
+            /* model_anim_offset() narrows the animation set baked into the
+             * PER-LEVEL SHARED ObjectModel cache entry for this model id, and
+             * whichever object loads the model first decides that width for
+             * everyone. Retail is safe because BHV_PARK_WARDEN is the only
+             * consumer of ASSET_OBJECTMODEL_PARKWARDEN in the levels where it
+             * spawns. Playable Taj breaks that: its presentation rider is a
+             * BHV_PARK_WARDEN object living inside a RACE level, where the
+             * balloon-award ceremony actor (ASSET_OBJECT_ID_ANIMGENIE, a
+             * BHV_ANIMATED_OBJECT) later needs the model's full 14-animation
+             * set for its animation ids 9 and 11. With the rider loading the
+             * model first the cache entry held 7 animations, func_8001F460's
+             * `animationID < objModel->numberOfAnimations` guard failed, the
+             * animation clock was never advanced and the ceremony Taj sat
+             * frozen at animFrame 0 for the whole cutscene -- but only when
+             * the player was Taj. A presentation companion must never be the
+             * object that decides how wide a shared cache entry is, so leave
+             * the full set loaded here; the rider only ever plays animation
+             * TAJ_VISUAL_RIDER_ANIMATION (6), which the wider set contains. */
+            if (!taj_visual_spawn_lease_active()) {
+                model_anim_offset(7);
+            }
+#else
             model_anim_offset(7);
+#endif
             break;
         case BHV_ANIMATED_OBJECT_4:
             if (!mdkr_model_load_selection(
@@ -3954,10 +3978,27 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
 
     if (spawnFlags & OBJECT_SPAWN_UNK01) {
         if (curObj && curObj) {} // Fakematch
+#ifdef NATIVE_PORT
+        /* Retail stores first and complains afterwards, so the diagnostic only
+         * ever printed AFTER the out-of-bounds write had happened. Playable Taj
+         * adds up to eight live presentation objects to the same list, which
+         * makes the ceiling reachable in ordinary four-player play rather than
+         * only in a pathological level. Refuse the spawn instead of scribbling
+         * past the array. */
+        if (gObjectCount >= OBJECT_SLOT_COUNT) {
+            stubbed_printf("ObjList Overflow %d!!!\n", gObjectCount);
+            objFreeAssets(curObj, assetCount, objType);
+            try_free_object_header(headerType);
+            mempool_free(curObj);
+            return NULL;
+        }
+        gObjPtrList[gObjectCount++] = curObj;
+#else
         gObjPtrList[gObjectCount++] = curObj;
         if (gObjectCount > OBJECT_SLOT_COUNT) {
             stubbed_printf("ObjList Overflow %d!!!\n", gObjectCount);
         }
+#endif
     }
     run_object_init_func(curObj, entry, 0);
     if (curObj->interactObj != NULL) {
@@ -6755,7 +6796,19 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
                 textureIndex = DKR_PTR(TriangleBatchInfo, objModel->batches)[i].textureIndex;
 #ifdef NATIVE_PORT
                 if (taj_visual_select_sign_object(obj)) {
-                    textureIndex = taj_visual_select_sign_player(obj);
+                    /* taj_visual proved the P1..P4 placard indices against the
+                     * ASSET-ID model it composed (taj_visual_sign_schema_is_ready
+                     * requires numberOfTextures == 20). This draw consumes them
+                     * on whichever LOD model modelIndex selected, which is a
+                     * different ObjectModel and is not covered by that proof.
+                     * Bound it here like obj_authoritative_texture_tick() bounds
+                     * modelIndex, and fall back to the authored texture rather
+                     * than indexing past the array. */
+                    s32 signTexIndex = taj_visual_select_sign_player(obj);
+                    if (signTexIndex >= 0 &&
+                        signTexIndex < objModel->numberOfTextures) {
+                        textureIndex = signTexIndex;
+                    }
                 } else if (obj_char_select_batch_texture_index(
                                objModel, obj, i, &charSelectTexIndex)) {
                     /* B25: the character-select placard numeral, resolved
@@ -9822,10 +9875,15 @@ void race_finish_time_trial(void) {
             }
         }
         if (((!vehicleID) && (!vehicleID)) && (!vehicleID)) {} // Fakematch
-#ifdef NATIVE_PORT
-        if (!tajTimeTrial && settings->timeTrialRacer == 0) {
-#else
         if (settings->timeTrialRacer == 0) {
+#ifdef NATIVE_PORT
+            /* A modded (Taj) run is non-canonical, so nothing PERSISTENT may
+             * come out of it: no player ghost, no staff-ghost retirement. It is
+             * still a time trial the player just finished, though, and the
+             * end-of-run announcement is pure HUD/audio with no record side
+             * effect, so keep the guard on the writes only. Wrapping the whole
+             * block left Taj time trials silent. */
+            if (!tajTimeTrial) {
 #endif
             if (bestCourseTime < 10800 && (vehicleID != gTimeTrialVehicle || timetrial_map_id() != level_id() ||
                                            bestCourseTime < gTimeTrialTime)) {
@@ -9835,11 +9893,22 @@ void race_finish_time_trial(void) {
                 timetrial_swap_player_ghost(level_id());
                 gHasGhostToSave = TRUE;
             }
+#ifdef NATIVE_PORT
+            }
+#endif
             if (osTvType == OS_TV_TYPE_PAL) {
                 bestCourseTime = (bestCourseTime * 6) / 5;
             }
             if (bestCourseTime < gTTGhostTimeToBeat) {
+#ifdef NATIVE_PORT
+                /* tt_ghost_beaten() frees and RETIRES the staff ghost and sets
+                 * gBeatStaffGhost, which is progression. A Taj run announces
+                 * with the ordinary message instead and leaves the staff ghost
+                 * standing for a canonical attempt. */
+                if (gTimeTrialStaffGhost && !tajTimeTrial) {
+#else
                 if (gTimeTrialStaffGhost) {
+#endif
                     tt_ghost_beaten(level_id(), &bestRacer->playerIndex);
                 } else {
                     hud_time_trial_message(&bestRacer->playerIndex);

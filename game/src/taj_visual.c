@@ -109,6 +109,13 @@ typedef struct TajSelectVisual {
 } TajSelectVisual;
 
 static TajVisualSlot sSlots[TAJ_VISUAL_MAX_RACERS];
+/* Bumped by every teardown (free_all_objects -> taj_visual_reset). The
+ * "log this once" latches scattered across the menu/HUD/select code are
+ * per-scene facts, not per-process ones; without a boundary to compare against
+ * they fired once for the lifetime of the executable, so a second race or a
+ * second visit to the results screen logged nothing and the traces the Taj
+ * gates assert on were only ever present on the first pass. */
+static u32 sTraceEpoch = 1;
 static TajVisualRacerPredicate sRacerPredicate;
 static TajVisualSpawnLease sSpawnLease;
 static TajSelectVisual sSelect;
@@ -164,6 +171,15 @@ static const char *taj_visual_fault_name(TajVisualFaultTarget target) {
     }
 }
 
+static s32 taj_visual_traced_model_id(const Object *obj) {
+    if (obj == NULL || obj->header == NULL ||
+        obj->header->numberOfModelIds <= 0 || obj->modelIndex < 0 ||
+        obj->modelIndex >= obj->header->numberOfModelIds) {
+        return -1;
+    }
+    return DKR_PTR(s32, obj->header->modelIds)[obj->modelIndex];
+}
+
 static void taj_select_trace(const char *event) {
     s32 model = -1;
     s32 signModel = -1;
@@ -174,14 +190,10 @@ static void taj_select_trace(const char *event) {
     if (!taj_select_trace_enabled()) {
         return;
     }
-    if (sSelect.rider != NULL && sSelect.rider->header != NULL) {
-        model = DKR_PTR(
-            s32, sSelect.rider->header->modelIds)[sSelect.rider->modelIndex];
-    }
-    if (sSelect.sign != NULL && sSelect.sign->header != NULL) {
-        signModel = DKR_PTR(
-            s32, sSelect.sign->header->modelIds)[sSelect.sign->modelIndex];
-    }
+    /* modelIndex is behaviour/LOD-owned and is not a checked subscript on its
+     * own; a trace must never be the thing that reads past modelIds[]. */
+    model = taj_visual_traced_model_id(sSelect.rider);
+    signModel = taj_visual_traced_model_id(sSelect.sign);
     if (sSelect.hoverMask != 0) {
         s32 selected = 0;
         s32 player;
@@ -291,6 +303,18 @@ static u64 taj_visual_vertex_hash(const Object *obj) {
     }
     model = taj_visual_model_find(obj, ASSET_OBJECTMODEL_MAGICCARPET);
     if (model == NULL || model->numberOfVertices <= 0) {
+        return 0;
+    }
+    /* taj_visual_model_find() locates the carpet model by ASSET ID, but
+     * curVertData is the buffer published for whichever LOD modelIndex
+     * currently selects. Those are only the same model when the active
+     * instance IS the carpet, so require that rather than walking one model's
+     * vertex count across another model's buffer. */
+    if (obj->modelInstances == NULL || obj->modelIndex < 0 ||
+        obj->header == NULL ||
+        obj->modelIndex >= obj->header->numberOfModelIds ||
+        obj->modelInstances[obj->modelIndex] == NULL ||
+        obj->modelInstances[obj->modelIndex]->objModel != model) {
         return 0;
     }
     vertices = obj->curVertData;
@@ -484,6 +508,10 @@ static void taj_visual_clear_slot(TajVisualSlot *slot, s32 freeCompanions) {
     slot->carpetBaseScale = 0.0f;
     slot->riderBaseScale = 0.0f;
     slot->multiplayerShadowTraced = FALSE;
+    /* taj_visual_on_object_destroy() already resets this one; clear_slot and
+     * race_pair_lost did not, so after a recompose the rider's shadow
+     * suppression was never re-traced and the lifecycle log lost an event. */
+    slot->riderShadowSuppressionTraced = FALSE;
     slot->donorSuppressionTraced = FALSE;
     slot->effectAnchorTraced = FALSE;
     slot->dashActive = FALSE;
@@ -519,6 +547,7 @@ static void taj_visual_race_pair_lost(TajVisualSlot *slot, Object *lost,
     slot->carpetBaseScale = 0.0f;
     slot->riderBaseScale = 0.0f;
     slot->multiplayerShadowTraced = FALSE;
+    slot->riderShadowSuppressionTraced = FALSE;
     slot->donorSuppressionTraced = FALSE;
     slot->effectAnchorTraced = FALSE;
     slot->dashActive = FALSE;
@@ -531,7 +560,11 @@ static void taj_visual_race_pair_lost(TajVisualSlot *slot, Object *lost,
         taj_visual_trace("orphan_cleanup", slot);
         taj_visual_queue_free(survivor);
     }
-    if (slot->recoveryAttempts > TAJ_VISUAL_RECOVERY_RETRY_LIMIT) {
+    /* One budget rule for every recovery path: `>=` means the limit is the
+     * number of attempts allowed, matching taj_visual_race_retry_or_fallback()
+     * and the two TAJ_SELECT_RETRY_LIMIT sites. `>` here quietly bought this
+     * path one extra compose that the others did not get. */
+    if (slot->recoveryAttempts >= TAJ_VISUAL_RECOVERY_RETRY_LIMIT) {
         slot->state = TAJ_VISUAL_FALLBACK;
         taj_visual_trace("fallback_recovery_limit", slot);
     }
@@ -780,7 +813,7 @@ static void taj_visual_select_pair_lost(Object *lost,
         taj_select_trace("orphan_cleanup");
         taj_visual_queue_free(survivor);
     }
-    if (sSelect.pairRecoveryAttempts > TAJ_VISUAL_RECOVERY_RETRY_LIMIT) {
+    if (sSelect.pairRecoveryAttempts >= TAJ_VISUAL_RECOVERY_RETRY_LIMIT) {
         sSelect.unavailable = TRUE;
         taj_select_trace("presentation_unavailable");
     }
@@ -830,6 +863,35 @@ s32 taj_visual_select_sign_batch(const Object *obj, s32 batchIndex) {
     /* Schema validation at composition proves batch zero is only the numbered
      * placard. Never infer presentation ownership from a mutable texture ID. */
     return taj_visual_select_sign_object(obj) && batchIndex == 0;
+}
+
+s32 taj_visual_spawn_lease_active(void) {
+    return sSpawnLease != TAJ_VISUAL_SPAWN_NONE;
+}
+
+/* Every object this module composes is presentation-only: it owns no racer,
+ * AI, collision, progression or input state, the simulation never reads it
+ * back, and its transform/animation clock are written each tick from a bob
+ * phase, a dash pulse and a menu hover state -- some of them behind
+ * MDKR_TAJ_VISUAL_* / MDKR_TAJ_SELECT_* environment flags.  The authoritative
+ * state hash asks this so it can skip them whole; see the PRESENTATION-OBJECT
+ * EXCLUSION note in platform/sim_hash.c.  Ownership is answered from the live
+ * slot pointers, so an object stops being ours the instant we release it. */
+s32 taj_visual_is_presentation_object(const Object *obj) {
+    s32 i;
+
+    if (obj == NULL) {
+        return FALSE;
+    }
+    if (obj == sSelect.rider || obj == sSelect.sign) {
+        return TRUE;
+    }
+    for (i = 0; i < TAJ_VISUAL_MAX_RACERS; i++) {
+        if (sSlots[i].carpet == obj || sSlots[i].rider == obj) {
+            return TRUE;
+        }
+    }
+    return FALSE;
 }
 
 s32 taj_visual_claim_spawned_object(Object *obj) {
@@ -888,6 +950,29 @@ static s32 taj_visual_owner_is_eligible(const Object *obj) {
         return sRacerPredicate(obj->racer->playerIndex) != FALSE;
     }
     return taj_visual_probe_predicate(obj->racer->playerIndex);
+}
+
+/* Drop the composed picker actor without re-arming composition.
+ *
+ * Ownership is cleared BEFORE free_object() on purpose: the free hook routes
+ * through taj_visual_select_pair_lost(), which treats a loss as a recoverable
+ * fault and clears `unavailable` so the next tick recomposes. That is right for
+ * a spontaneous loss and wrong here, where the teardown IS the consequence of
+ * going unavailable. With the pointers already released the hook's identity
+ * check no longer matches and the latch stands. */
+static void taj_visual_select_release_actor(void) {
+    Object *rider = sSelect.rider;
+    Object *sign = sSelect.sign;
+
+    if (rider == NULL && sign == NULL) {
+        return;
+    }
+    sSelect.rider = NULL;
+    sSelect.sign = NULL;
+    sSelect.confirmTimer = 0;
+    taj_select_trace("unavailable_teardown");
+    taj_visual_queue_free(rider);
+    taj_visual_queue_free(sign);
 }
 
 static void taj_visual_select_tick(s32 updateRate) {
@@ -963,10 +1048,18 @@ static void taj_visual_select_tick(s32 updateRate) {
             if (sSelect.signAttempts >= TAJ_SELECT_RETRY_LIMIT) {
                 sSelect.unavailable = TRUE;
                 taj_select_trace("presentation_unavailable");
-            } else {
-                sSelect.signRetryTimer = TAJ_SELECT_RETRY_TICKS;
-                taj_select_trace("sign_retry");
+                /* UNAVAILABLE is what makes Taj unselectable, so the composed
+                 * actor must go with it. The rider survived this fault (only
+                 * the placard failed), and the update_actor tail below
+                 * unconditionally clears OBJ_FLAGS_INVISIBLE -- so falling
+                 * through here left a fully lit, correctly posed Taj standing
+                 * in the line-up that the player cannot choose. Tear the pair
+                 * down instead and let the status say what the scene shows. */
+                taj_visual_select_release_actor();
+                return;
             }
+            sSelect.signRetryTimer = TAJ_SELECT_RETRY_TICKS;
+            taj_select_trace("sign_retry");
             goto update_actor;
         }
         sSelect.sign = sign;
@@ -1387,8 +1480,13 @@ void taj_visual_on_object_destroy(Object *obj) {
     }
 }
 
+u32 taj_visual_trace_epoch(void) {
+    return sTraceEpoch;
+}
+
 void taj_visual_reset(void) {
     s32 i;
+    sTraceEpoch++;
     taj_visual_select_end();
     for (i = 0; i < TAJ_VISUAL_MAX_RACERS; i++) {
         if (sSlots[i].donor != NULL) {

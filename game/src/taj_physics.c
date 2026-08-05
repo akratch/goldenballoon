@@ -105,7 +105,7 @@ static TajPhysicsRacerState *taj_state(const Object_Racer *racer) {
      * or tearing-down racer share P1's dash and finished-state identity. */
     if (index < 0 || index >= TAJ_PHYSICS_MAX_RACERS) {
         if (taj_trace_enabled()) {
-            fprintf(stderr, "[TAJPHYS] invalid-racer-index=%d player=%d\\n",
+            fprintf(stderr, "[TAJPHYS] invalid-racer-index=%d player=%d\n",
                     index, racer->playerIndex);
         }
         return NULL;
@@ -146,6 +146,34 @@ f32 taj_physics_retained_turn_speed(f32 entrySpeed, f32 ordinarySpeed, s32 hardT
         return -minimum;
     }
     return ordinarySpeed;
+}
+
+/* docs/architecture/taj-playable-mod.md:159 -- Taj "retains zippers".  The
+ * sustained cap is a CRUISING cap: it describes how fast Taj holds a line under
+ * his own power. It must not eat a zip pad, a boost balloon or a slipstream,
+ * all of which are stock effects stock physics has already written into
+ * racer->velocity this tick. Unconditionally clamping at the 18.225 car cap
+ * clipped the stock 22.357 boosted peak, so Taj was the one character for whom
+ * zippers did nothing -- and no gate could see it, because the sustained
+ * profile test filters boosting frames out by construction and its Ancient Lake
+ * route never takes a pad at all.
+ *
+ * The exemption is a FLOOR, not a bypass. While a boost is live the cap rises
+ * to exactly what stock produced, so the clamp cannot pull Taj below a boosted
+ * stock racer -- and cannot let him exceed one either, which is what keeps his
+ * sustained multipliers from stacking on top of the boost.
+ *
+ * `stockSpeed` is the racer's authored forward velocity, negative-is-forward as
+ * everywhere else in this module; `cap` and the result are positive magnitudes.
+ */
+f32 taj_physics_speed_cap(f32 cap, f32 stockSpeed, s32 boostActive) {
+    if (!boostActive) {
+        return cap;
+    }
+    if (stockSpeed >= -cap) {
+        return cap;
+    }
+    return taj_abs(stockSpeed);
 }
 
 f32 taj_physics_sustained_speed(f32 stockSpeed) {
@@ -329,6 +357,8 @@ void taj_physics_post_vehicle_update(Object *obj, Object_Racer *racer, s32 updat
     if (racer->vehicleID == VEHICLE_CAR && state->dash.dashTicks > 0) {
         maxSpeed = TAJ_PHYSICS_DASH_SPEED;
     }
+    maxSpeed = taj_physics_speed_cap(maxSpeed, racer->velocity,
+                                     racer->boostTimer != 0);
     if (speed < -maxSpeed) {
         speed = -maxSpeed;
     }

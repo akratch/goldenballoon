@@ -1019,7 +1019,20 @@ s32 read_save_file(s32 saveFileNum, Settings *settings) {
     if (!settings->newGame) {
         /* Reconcile imported/pre-mod saves as soon as any valid Adventure slot
          * is decoded; character select is global and cannot wait for the player
-         * to replay an already-complete challenge. */
+         * to replay an already-complete challenge.
+         *
+         * This deliberately still runs from the file-select listing pass, which
+         * decodes every slot: importing a completed pre-mod Adventure is
+         * expected to write the sidecar at boot, and check_taj_playable pins
+         * exactly that. What used to make the listing pass dangerous was the
+         * store behaviour underneath it, not the reconcile: on the async
+         * (IDBFS) arm a store refused because another was in flight latched
+         * persistence_failed -- a banner for a write never attempted -- while
+         * taj_mod_unlock() committed adventure_migration_complete in RAM
+         * anyway, so the reconcile early-outed for the rest of the session and
+         * the unlock was never written. Both are fixed in taj_mod.c: a refused
+         * store queues a retry and reports nothing, and the migration flag only
+         * advances when the bytes really went out. */
         taj_mod_reconcile_imported_taj_flags(settings->tajFlags);
     }
 #endif

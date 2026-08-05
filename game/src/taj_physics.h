@@ -31,6 +31,9 @@ typedef struct TajPhysicsDashState {
 f32 taj_physics_accelerated_speed(f32 entrySpeed, f32 ordinarySpeed, s32 accelerating);
 f32 taj_physics_retained_turn_speed(f32 entrySpeed, f32 ordinarySpeed, s32 hardTurn);
 f32 taj_physics_sustained_speed(f32 stockSpeed);
+/* Raise the sustained cruise cap to the stock magnitude for the duration of a
+ * stock boost, so a zip pad survives Taj's clamp. See taj_physics.c. */
+f32 taj_physics_speed_cap(f32 cap, f32 stockSpeed, s32 boostActive);
 f32 taj_physics_horizontal_speed_component(f32 current, f32 forwardAxis, f32 speedDelta);
 void taj_physics_advance_dash(TajPhysicsDashState *state, s32 driftReleased, s32 updateRate);
 

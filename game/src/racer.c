@@ -4270,6 +4270,18 @@ void obj_init_racer(Object *obj, LevelObjectEntry_Racer *racer) {
         }
         tempRacer->playerIndex = player;
 #ifdef NATIVE_PORT
+        /* The retail `1 - player` remap only makes sense for the two Adventure
+         * ports; for P3/P4 it produces a negative live index, which
+         * taj_mod_bind_racer_player() then rejects. The rejection is correct --
+         * a negative index must never index a mask -- but it silently dropped
+         * that player's Taj selection with nothing in the log to explain why
+         * they spawned as the donor character. Name it. */
+        if (!taj_mod_valid_live_player(player) &&
+            taj_mod_player_selected(selectedPlayer)) {
+            MDKR_TRACE("taj_bind_dropped: selected=%d live=%d reason=%s",
+                       (int)selectedPlayer, (int)player,
+                       "two-player adventure remap out of range");
+        }
         taj_mod_bind_racer_player(selectedPlayer, player);
 #endif
     } else {

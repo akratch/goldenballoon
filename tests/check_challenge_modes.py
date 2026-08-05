@@ -74,6 +74,23 @@ ROM_LAYOUTS = {
     (0x596E145B, 0xF7D9879F): (0x000ED170, 0x000ED240),
 }
 
+# One row per giant character portrait (BHV_CHARACTER_FLAG), emitted exactly
+# once by obj_loop_characterflag() at the moment its lazy geometry build binds
+# a racer. Fire Mountain and Smokey Castle both author one per player.
+PORTRAIT_RE = re.compile(
+    r"charflag_bound: playerID=(-?\d+) characterID=(-?\d+) texture=(\w+)"
+)
+PORTRAIT_INIT_RE = re.compile(
+    r"charflag_init: authored=(-?\d+) playerID=(-?\d+)"
+)
+EXPECTED_PORTRAITS = 4
+# Only the eggs and treasure arenas author the giant portraits -- and those are
+# exactly the two courses the player report named (Fire Mountain and Smokey
+# Castle). The battle arenas author none, so ZERO is the correct expectation
+# there and is pinned rather than skipped: it is the thing that would have to
+# change for this gate's scoping to become wrong.
+PORTRAIT_COURSES = {11, 25}
+
 STATE_RE = re.compile(
     r"\[CHALLENGE\] phase=(\w+) course=(\d+) type=(\d+) tracks=(\d+) "
     r"racers=(\d+) flags=0x([0-9a-fA-F]+) tt=(\d+) tick=(\d+) (.*)"
@@ -303,6 +320,74 @@ def run_arm(
         }
 
 
+def validate_portraits(output: str, course: int,
+                       failures: list[str]) -> None:
+    """The giant character portraits are really bound to real racers.
+
+    These are the only assertions in this gate that can see them. The scene
+    colour/flatness metrics stay comfortably green with every portrait absent,
+    because the portraits are small quads against a large lit arena -- which is
+    exactly how a silent portrait regression survives a full pass.
+
+    The binding is lazy and one-shot: obj_loop_characterflag() runs
+    get_racer_object(playerID) every tick until it returns non-NULL, latches
+    characterID >= 0, and never re-enters. So a portrait that never binds emits
+    NO row at all, and a portrait bound to the wrong racer emits a row with the
+    wrong playerID. Requiring one row per player, each with a distinct
+    0-based playerID, an in-range characterID and a resolved texture, is a
+    positive witness for both failure modes.
+    """
+    spawns = PORTRAIT_INIT_RE.findall(output)
+    if course not in PORTRAIT_COURSES:
+        if spawns:
+            failures.append(
+                f"course {course}: {len(spawns)} character portraits spawned "
+                "on a battle arena that authors none")
+        return
+    if not spawns or len(spawns) % EXPECTED_PORTRAITS != 0:
+        failures.append(
+            f"course {course}: {len(spawns)} character portraits spawned, "
+            f"expected a nonzero multiple of {EXPECTED_PORTRAITS}")
+        return
+    for authored, stored in spawns:
+        if int(stored) != int(authored):
+            failures.append(
+                f"course {course}: portrait entry playerIndex {authored} was "
+                f"stored as playerID {stored}; the portrait will show a "
+                "different racer than the level authored")
+            break
+    authored_set = sorted(int(a) for a, _ in spawns[:EXPECTED_PORTRAITS])
+    if authored_set != list(range(EXPECTED_PORTRAITS)):
+        failures.append(
+            f"course {course}: authored portrait player indices {authored_set} "
+            f"are not the 0-based 0..{EXPECTED_PORTRAITS - 1} set the loop "
+            "func indexes gRacers with")
+    rows = PORTRAIT_RE.findall(output)
+    # A retried arm loads the course more than once and re-binds a fresh set,
+    # so assert whole sets rather than one fixed total.
+    if not rows or len(rows) % EXPECTED_PORTRAITS != 0:
+        failures.append(
+            f"course {course}: {len(rows)} character portraits bound, "
+            f"expected a nonzero multiple of {EXPECTED_PORTRAITS}")
+        return
+    for start in range(0, len(rows), EXPECTED_PORTRAITS):
+        group = rows[start:start + EXPECTED_PORTRAITS]
+        players = sorted(int(player) for player, _, _ in group)
+        if players != list(range(EXPECTED_PORTRAITS)):
+            failures.append(
+                f"course {course}: portrait set {start // EXPECTED_PORTRAITS} "
+                f"did not bind one distinct racer each (playerIDs {players})")
+    for player, character, texture in rows:
+        if not 0 <= int(character) < 20:
+            failures.append(
+                f"course {course}: portrait for player {player} bound an "
+                f"out-of-range characterID {character}")
+        if texture != "ok":
+            failures.append(
+                f"course {course}: portrait for player {player} resolved no "
+                "texture")
+
+
 def human(row: dict[str, object]) -> dict[str, int | float] | None:
     return next(
         (r for r in row["racers"] if r["player"] == 0),  # type: ignore[index]
@@ -336,6 +421,7 @@ def validate_common(
         )
     if load["tracks"] != 0:
         failures.append("fixture did not run in Adventure mode")
+    validate_portraits(output, course, failures)
     if load["count"] != 4 or len(load["racers"]) != 4:
         failures.append(
             f"spawned/probed {load['count']}/{len(load['racers'])} racers, want 4"

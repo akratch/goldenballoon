@@ -41,12 +41,24 @@ s32  taj_visual_select_sign_batch(const Object *obj, s32 batchIndex);
 
 /* Object lifecycle seams owned by objects.c. */
 s32  taj_visual_claim_spawned_object(Object *obj);
+/* TRUE between taj_visual's spawn_object() call and the claim inside
+ * run_object_init_func. spawn_object consults this before applying a
+ * behaviour-scoped animation-set narrowing to a SHARED cached ObjectModel:
+ * a presentation companion must never decide how wide that cache entry is
+ * for the other consumers of the same model id. */
+s32  taj_visual_spawn_lease_active(void);
+/* TRUE for every object this module composes. The authoritative state hash
+ * uses it to skip presentation-only objects whole (platform/sim_hash.c). */
+s32  taj_visual_is_presentation_object(const Object *obj);
 void taj_visual_tick(s32 updateRate);
 /* Called after obj_animate_tick publishes each animated vertex buffer. */
 void taj_visual_animation_witness_tick(void);
 void taj_visual_on_object_free(Object *obj);
 void taj_visual_on_object_destroy(Object *obj);
 void taj_visual_reset(void);
+/* Monotonic scene counter for "log this once per scene" trace latches; see
+ * the note on sTraceEpoch in taj_visual.c. */
+u32  taj_visual_trace_epoch(void);
 
 /* Draw seam: suppress only a successfully composed donor racer. A companion
  * loss atomically revokes this before deferred destruction, so callers never

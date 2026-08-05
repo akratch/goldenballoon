@@ -57,6 +57,11 @@ def colour_count(samples: list[tuple[int, int, int]], name: str) -> int:
     return count
 
 
+# Diddy's authored result card is predominantly his red cap/shirt. Floor is a
+# fraction of the same 40x40 logical card footprint the samples cover.
+DIDDY_RED_MIN_COVERAGE = 0.05
+
+
 def validate_capture(capture: Path) -> list[str]:
     failures: list[str] = []
     width, height, pixels = read_ppm(capture)
@@ -81,8 +86,16 @@ def validate_capture(capture: Path) -> list[str]:
         failures.append("Taj card lacks the gold turban detail")
     if taj_counts["purple"] < diddy_counts["purple"] * 3:
         failures.append("Taj result is not visually distinct from Diddy")
-    if diddy_counts["red"] < taj_counts["red"] * 1.5:
-        failures.append("ordinary P2 no longer renders Diddy's portrait")
+    # Relative-only again: Taj's card has no red, so taj_counts["red"] is 0 and
+    # `diddy_red < 0` can never be true -- the assertion passed with Diddy's
+    # card entirely blank. Pin an absolute floor as well, so this fails when
+    # P2's portrait stops being drawn at all.
+    diddy_red_floor = int(total * DIDDY_RED_MIN_COVERAGE)
+    if diddy_counts["red"] < max(taj_counts["red"] * 1.5, diddy_red_floor):
+        failures.append(
+            "ordinary P2 no longer renders Diddy's portrait: "
+            f"diddy_red={diddy_counts['red']}, taj_red={taj_counts['red']}, "
+            f"floor={diddy_red_floor}, region={total}")
     mean_difference = sum(
         abs(left[channel] - right[channel])
         for left, right in zip(taj, diddy)

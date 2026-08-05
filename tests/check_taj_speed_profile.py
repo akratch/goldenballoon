@@ -90,6 +90,11 @@ def run_arm(binary: str, rom: str, vehicle: int, taj: bool,
         raise RuntimeError(f"{VEHICLES[vehicle]} stock control activated Taj")
 
     velocities: list[float] = []
+    # NOTE: this fixture takes no zip pad. Measured on the shipped route, all
+    # 2578 [BOOST] rows of a full car run report timer=0, so the boosted-peak
+    # behaviour Taj's clamp used to eat CANNOT be witnessed here; it is covered
+    # at the unit level by tests/test_taj_physics.c instead
+    # (taj_physics_speed_cap).
     for match in BOOST_RE.finditer(output):
         frame = int(match.group(1))
         boost_timer = int(match.group(2))
