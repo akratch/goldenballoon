@@ -36,7 +36,8 @@ Checks GitHub-side public repository state that local CI cannot prove:
   - gh authentication
   - repository metadata, topics, and contributor workflow settings
   - repository visibility and collaboration features
-  - GitHub Actions disabled for the local-CI public repo policy
+  - GitHub Actions enabled with a minimal default token, SHA-pinned actions,
+    short artifact retention, and no untracked hosted workflow
   - local reachable git history does not expose public-blocking provenance paths
   - GitHub branch and tag refs do not expose commits outside public git history
   - GitHub pull request refs do not expose commits outside public git history
@@ -44,7 +45,8 @@ Checks GitHub-side public repository state that local CI cannot prove:
   - public repository metadata/label/milestone/release/issue/comment/discussion text has no high-risk leaks
   - public repository metadata/label/milestone/release/issue/comment/discussion text has no stale commit references
   - contributor-facing GitHub labels needed for triage are present
-  - GitHub release assets do not expose ROM, media, archive, or binary payloads
+  - GitHub release assets expose no ROM/media/save payload, and every
+    Golden-Balloon-<version>-<platform> artifact carries its provenance sidecars
   - GitHub Actions artifacts do not expose ROM, media, archive, app, or binary payloads
   - branch protection is readable and does not depend on hosted status checks
   - vulnerability-alert/private-reporting endpoints are available
@@ -110,65 +112,65 @@ scan_github_public_text_surface() {
   echo
   echo "== Public GitHub text surface =="
 
-  if scan_output="$(GE007_PUBLIC_SURFACE_PATTERN="$pattern" gh api \
+  if scan_output="$(MDKR_PUBLIC_SURFACE_PATTERN="$pattern" gh api \
     "repos/${repo_name}" \
-    --jq 'select(((.full_name // "") + "\n" + (.description // "") + "\n" + (.homepage // "")) | test(env.GE007_PUBLIC_SURFACE_PATTERN; "i")) | "repository\t\(.html_url)\t\(.full_name)"' 2>/dev/null)"; then
+    --jq 'select(((.full_name // "") + "\n" + (.description // "") + "\n" + (.homepage // "")) | test(env.MDKR_PUBLIC_SURFACE_PATTERN; "i")) | "repository\t\(.html_url)\t\(.full_name)"' 2>/dev/null)"; then
     findings="$(append_findings "$findings" "$scan_output")"
   else
     note "could not scan GitHub repository metadata"
   fi
 
-  if scan_output="$(GE007_PUBLIC_SURFACE_PATTERN="$pattern" gh api \
+  if scan_output="$(MDKR_PUBLIC_SURFACE_PATTERN="$pattern" gh api \
     --paginate "repos/${repo_name}/labels?per_page=100" \
-    --jq '.[] | select(((.name // "") + "\n" + (.description // "")) | test(env.GE007_PUBLIC_SURFACE_PATTERN; "i")) | "label\t\(.url)\t\(.name)"' 2>/dev/null)"; then
+    --jq '.[] | select(((.name // "") + "\n" + (.description // "")) | test(env.MDKR_PUBLIC_SURFACE_PATTERN; "i")) | "label\t\(.url)\t\(.name)"' 2>/dev/null)"; then
     findings="$(append_findings "$findings" "$scan_output")"
   else
     note "could not scan GitHub label names and descriptions"
   fi
 
-  if scan_output="$(GE007_PUBLIC_SURFACE_PATTERN="$pattern" gh api \
+  if scan_output="$(MDKR_PUBLIC_SURFACE_PATTERN="$pattern" gh api \
     --paginate "repos/${repo_name}/milestones?state=all&per_page=100" \
-    --jq '.[] | select(((.title // "") + "\n" + (.description // "")) | test(env.GE007_PUBLIC_SURFACE_PATTERN; "i")) | "milestone\t\(.html_url)\t\(.title)"' 2>/dev/null)"; then
+    --jq '.[] | select(((.title // "") + "\n" + (.description // "")) | test(env.MDKR_PUBLIC_SURFACE_PATTERN; "i")) | "milestone\t\(.html_url)\t\(.title)"' 2>/dev/null)"; then
     findings="$(append_findings "$findings" "$scan_output")"
   else
     note "could not scan GitHub milestone titles and descriptions"
   fi
 
-  if scan_output="$(GE007_PUBLIC_SURFACE_PATTERN="$pattern" gh api \
+  if scan_output="$(MDKR_PUBLIC_SURFACE_PATTERN="$pattern" gh api \
     --paginate "repos/${repo_name}/releases?per_page=100" \
-    --jq '.[] | select(((.tag_name // "") + "\n" + (.name // "") + "\n" + (.body // "") + "\n" + ([(.assets // [])[] | (.name // "")] | join("\n"))) | test(env.GE007_PUBLIC_SURFACE_PATTERN; "i")) | "release\t\(.html_url)\t\(.tag_name)"' 2>/dev/null)"; then
+    --jq '.[] | select(((.tag_name // "") + "\n" + (.name // "") + "\n" + (.body // "") + "\n" + ([(.assets // [])[] | (.name // "")] | join("\n"))) | test(env.MDKR_PUBLIC_SURFACE_PATTERN; "i")) | "release\t\(.html_url)\t\(.tag_name)"' 2>/dev/null)"; then
     findings="$(append_findings "$findings" "$scan_output")"
   else
     note "could not scan GitHub release notes and asset names"
   fi
 
-  if scan_output="$(GE007_PUBLIC_SURFACE_PATTERN="$pattern" gh api \
+  if scan_output="$(MDKR_PUBLIC_SURFACE_PATTERN="$pattern" gh api \
     --paginate "repos/${repo_name}/issues?state=all&per_page=100" \
-    --jq '.[] | select(((.title // "") + "\n" + (.body // "")) | test(env.GE007_PUBLIC_SURFACE_PATTERN; "i")) | "issue-or-pr\t\(.html_url)\t\(.title)"' 2>/dev/null)"; then
+    --jq '.[] | select(((.title // "") + "\n" + (.body // "")) | test(env.MDKR_PUBLIC_SURFACE_PATTERN; "i")) | "issue-or-pr\t\(.html_url)\t\(.title)"' 2>/dev/null)"; then
     findings="$(append_findings "$findings" "$scan_output")"
   else
     note "could not scan GitHub issue/PR titles and bodies"
   fi
 
-  if scan_output="$(GE007_PUBLIC_SURFACE_PATTERN="$pattern" gh api \
+  if scan_output="$(MDKR_PUBLIC_SURFACE_PATTERN="$pattern" gh api \
     --paginate "repos/${repo_name}/issues/comments?per_page=100" \
-    --jq '.[] | select((.body // "") | test(env.GE007_PUBLIC_SURFACE_PATTERN; "i")) | "issue-comment\t\(.html_url)\t\(.user.login)"' 2>/dev/null)"; then
+    --jq '.[] | select((.body // "") | test(env.MDKR_PUBLIC_SURFACE_PATTERN; "i")) | "issue-comment\t\(.html_url)\t\(.user.login)"' 2>/dev/null)"; then
     findings="$(append_findings "$findings" "$scan_output")"
   else
     note "could not scan GitHub issue/PR comments"
   fi
 
-  if scan_output="$(GE007_PUBLIC_SURFACE_PATTERN="$pattern" gh api \
+  if scan_output="$(MDKR_PUBLIC_SURFACE_PATTERN="$pattern" gh api \
     --paginate "repos/${repo_name}/comments?per_page=100" \
-    --jq '.[] | select((.body // "") | test(env.GE007_PUBLIC_SURFACE_PATTERN; "i")) | "commit-comment\t\(.html_url)\t\(.user.login)"' 2>/dev/null)"; then
+    --jq '.[] | select((.body // "") | test(env.MDKR_PUBLIC_SURFACE_PATTERN; "i")) | "commit-comment\t\(.html_url)\t\(.user.login)"' 2>/dev/null)"; then
     findings="$(append_findings "$findings" "$scan_output")"
   else
     note "could not scan GitHub commit comments"
   fi
 
-  if scan_output="$(GE007_PUBLIC_SURFACE_PATTERN="$pattern" gh api \
+  if scan_output="$(MDKR_PUBLIC_SURFACE_PATTERN="$pattern" gh api \
     --paginate "repos/${repo_name}/pulls/comments?per_page=100" \
-    --jq '.[] | select((.body // "") | test(env.GE007_PUBLIC_SURFACE_PATTERN; "i")) | "pr-review-comment\t\(.html_url)\t\(.user.login)"' 2>/dev/null)"; then
+    --jq '.[] | select((.body // "") | test(env.MDKR_PUBLIC_SURFACE_PATTERN; "i")) | "pr-review-comment\t\(.html_url)\t\(.user.login)"' 2>/dev/null)"; then
     findings="$(append_findings "$findings" "$scan_output")"
   else
     note "could not scan GitHub PR review comments"
@@ -180,9 +182,9 @@ scan_github_public_text_surface() {
     --jq '.[].number' 2>/dev/null)"; then
     while IFS= read -r pr_number; do
       [ -n "$pr_number" ] || continue
-      if scan_output="$(GE007_PUBLIC_SURFACE_PATTERN="$pattern" gh api \
+      if scan_output="$(MDKR_PUBLIC_SURFACE_PATTERN="$pattern" gh api \
         --paginate "repos/${repo_name}/pulls/${pr_number}/reviews?per_page=100" \
-        --jq '.[] | select((.body // "") | test(env.GE007_PUBLIC_SURFACE_PATTERN; "i")) | "pr-review\t\(.html_url // .pull_request_url)\t\(.user.login)"' 2>/dev/null)"; then
+        --jq '.[] | select((.body // "") | test(env.MDKR_PUBLIC_SURFACE_PATTERN; "i")) | "pr-review\t\(.html_url // .pull_request_url)\t\(.user.login)"' 2>/dev/null)"; then
         findings="$(append_findings "$findings" "$scan_output")"
       else
         note "could not scan GitHub PR review summaries for pull request #${pr_number}"
@@ -194,7 +196,7 @@ scan_github_public_text_surface() {
 
   owner="${repo_name%%/*}"
   name="${repo_name#*/}"
-  if scan_output="$(GE007_PUBLIC_SURFACE_PATTERN="$pattern" gh api graphql --paginate \
+  if scan_output="$(MDKR_PUBLIC_SURFACE_PATTERN="$pattern" gh api graphql --paginate \
     -F owner="$owner" \
     -F name="$name" \
     -f query='
@@ -222,13 +224,13 @@ scan_github_public_text_surface() {
     --jq '
       .data.repository.discussions.nodes[]? as $discussion
       | (
-          if ((($discussion.title // "") + "\n" + ($discussion.body // "")) | test(env.GE007_PUBLIC_SURFACE_PATTERN; "i")) then
+          if ((($discussion.title // "") + "\n" + ($discussion.body // "")) | test(env.MDKR_PUBLIC_SURFACE_PATTERN; "i")) then
             "discussion\t\($discussion.url)\t\($discussion.title)"
           else empty end
         ),
         (
           $discussion.comments.nodes[]?
-          | select((.body // "") | test(env.GE007_PUBLIC_SURFACE_PATTERN; "i"))
+          | select((.body // "") | test(env.MDKR_PUBLIC_SURFACE_PATTERN; "i"))
           | "discussion-comment\t\(.url)\t\(.author.login // "unknown")"
         ),
         (
@@ -252,9 +254,15 @@ scan_github_public_text_surface() {
 scan_github_release_assets() {
   local repo_name="$1"
   local release_asset_lines
+  local asset_index=""
   local blocked_assets=""
+  local expected_assets=""
+  local missing_sidecars=""
   local review_assets=""
   local forbidden_asset_pattern
+  local release_artifact_pattern
+  local sidecar_pattern
+  local suffix
   local tag
   local url
   local asset_name
@@ -275,26 +283,59 @@ scan_github_release_assets() {
     return
   fi
 
-  forbidden_asset_pattern='(^|/)(base)?rom([._-]|$)|\.(z64|n64|v64|rom|cdata|eeprom|rz|ctl|tbl|sbk|seq|aifc|aiff|seg|raw|bmp|png|jpg|jpeg|gif|webp|wav|mp3|ogg|flac|m4a|aac|mp4|mov|m4v|mkv|avi|webm|jsonl|dmg|pkg|app|zip|7z|tar|tgz|gz|bz2|xz|exe|msi|dll|so|dylib)$'
+  # A release ships packaged binaries: flagging .dmg/.zip/.tar.gz/.AppImage as
+  # such would flag exactly what this project publishes. What must never appear
+  # is a ROM or a ROM-derived media/save payload, whatever the container is
+  # named. Payload shape is the assertion; the project's own artifact family is
+  # recognised by its exact release naming and then held to the provenance
+  # contract tools/release/verify_provenance.sh writes (a .sha256 and a
+  # .provenance.json beside every artifact).
+  forbidden_asset_pattern='(^|[-_.])(base)?rom([-_.]|$)|(^|[-_.])(cdata|eeprom|save|saves|screenshot|screenshots|capture|captures|sfx|soundtrack)([-_.]|$)|\.(z64|n64|v64|rom|cdata|eeprom|rz|ctl|tbl|sbk|seq|aifc|aiff|seg|raw|bmp|png|jpg|jpeg|gif|webp|wav|mp3|ogg|flac|m4a|aac|mp4|mov|m4v|mkv|avi|webm|jsonl)$'
+  release_artifact_pattern='^Golden-Balloon-([0-9]+(\.[0-9]+){1,2}|dev)-(macos-arm64-(unsigned|signed-notarized)\.dmg|windows-x64\.zip|linux-x86_64\.AppImage|linux-x86_64\.tar\.gz)$'
+  sidecar_pattern='^Golden-Balloon-.*(\.sha256|\.provenance\.json)$'
+
+  while IFS=$'\t' read -r tag url asset_name asset_size; do
+    [ -n "$asset_name" ] || continue
+    asset_index="$(append_findings "$asset_index" "${tag}"$'\t'"${asset_name}")"
+  done <<< "$release_asset_lines"
 
   while IFS=$'\t' read -r tag url asset_name asset_size; do
     [ -n "$asset_name" ] || continue
     if printf '%s\n' "$asset_name" | grep -Eiq "$forbidden_asset_pattern"; then
-      blocked_assets="$(append_findings "$blocked_assets" "${tag}\t${asset_name}\t${asset_size} bytes\t${url}")"
+      blocked_assets="$(append_findings "$blocked_assets" "${tag}"$'\t'"${asset_name}"$'\t'"${asset_size} bytes"$'\t'"${url}")"
+    elif printf '%s\n' "$asset_name" | grep -Eq "$release_artifact_pattern"; then
+      expected_assets="$(append_findings "$expected_assets" "${tag}"$'\t'"${asset_name}"$'\t'"${asset_size} bytes")"
+      for suffix in .sha256 .provenance.json; do
+        if ! printf '%s\n' "$asset_index" | grep -Fqx "${tag}"$'\t'"${asset_name}${suffix}"; then
+          missing_sidecars="$(append_findings "$missing_sidecars" "${tag}"$'\t'"${asset_name}"$'\t'"no ${suffix} sidecar"$'\t'"${url}")"
+        fi
+      done
+    elif printf '%s\n' "$asset_name" | grep -Eq "$sidecar_pattern"; then
+      :
     else
-      review_assets="$(append_findings "$review_assets" "${tag}\t${asset_name}\t${asset_size} bytes\t${url}")"
+      review_assets="$(append_findings "$review_assets" "${tag}"$'\t'"${asset_name}"$'\t'"${asset_size} bytes"$'\t'"${url}")"
     fi
   done <<< "$release_asset_lines"
 
   if [ -n "$blocked_assets" ]; then
-    note "GitHub release assets include ROM/media/archive/binary-shaped payloads"
+    note "GitHub release assets include ROM/media/save-shaped payloads"
     printf '%s\n' "$blocked_assets" | sed 's/^/  - /'
   fi
 
+  if [ -n "$missing_sidecars" ]; then
+    note "published release artifacts are not bound to a source commit by a provenance sidecar"
+    printf '%s\n' "$missing_sidecars" | sed 's/^/  - /'
+  fi
+
   if [ -n "$review_assets" ]; then
-    warn "GitHub release assets are published; manually verify they contain no generated, ROM-derived, or platform-binary payloads"
+    warn "GitHub release assets outside the Golden-Balloon-<version>-<platform> family are published; manually verify they contain no generated or ROM-derived payload"
     printf '%s\n' "$review_assets" | sed 's/^/  - /'
-  elif [ -z "$blocked_assets" ]; then
+  fi
+
+  if [ -n "$expected_assets" ] && [ -z "$missing_sidecars" ]; then
+    ok "published release artifacts match the project's release naming and each carries its checksum and provenance sidecars"
+    printf '%s\n' "$expected_assets" | sed 's/^/  - /'
+  elif [ -z "$blocked_assets" ] && [ -z "$review_assets" ] && [ -z "$missing_sidecars" ]; then
     ok "GitHub release assets do not need review"
   fi
 }
@@ -723,29 +764,65 @@ if [ -n "$repo" ]; then
   workflow_default_permissions="$(gh api "repos/${repo}/actions/permissions/workflow" --jq '.default_workflow_permissions // "unknown"' 2>/dev/null || echo unknown)"
   workflow_can_approve_prs="$(gh api "repos/${repo}/actions/permissions/workflow" --jq 'if has("can_approve_pull_request_reviews") then (.can_approve_pull_request_reviews | tostring) else "unknown" end' 2>/dev/null || echo unknown)"
   actions_retention_days="$(gh api "repos/${repo}/actions/permissions/artifact-and-log-retention" --jq '.days // "unknown"' 2>/dev/null || echo unknown)"
-  if [ "$actions_enabled" = "false" ]; then
-    ok "GitHub Actions are disabled for local-CI public repo policy"
+  # Actions must be ENABLED: correctness.yml is the hosted push/pull_request
+  # ROM-free source gate, and release.yml / windows-validate.yml /
+  # macos-release.yml are workflow_dispatch lanes a maintainer runs. What
+  # matters is not whether the feature is on, but that the token it hands those
+  # lanes is minimal, that third-party actions are SHA-pinned, that artifacts
+  # expire quickly, and that no workflow exists on GitHub that this repository
+  # does not track.
+  case "$actions_enabled" in
+    true)
+      ok "GitHub Actions are enabled, as the hosted correctness lane and the dispatch release lanes require"
+      ;;
+    false)
+      note "GitHub Actions are disabled; correctness.yml's push/pull_request gate and the dispatch release lanes cannot run"
+      ;;
+    *)
+      note "could not determine whether GitHub Actions are enabled"
+      ;;
+  esac
+  case "$actions_allowed" in
+    all|selected) ok "GitHub Actions allowed-actions policy is ${actions_allowed}" ;;
+    *) warn "could not confirm GitHub Actions allowed-actions policy" ;;
+  esac
+  [ "$actions_sha_pinning" = "true" ] && ok "GitHub Actions require full-SHA action pins" || note "GitHub Actions do not require full-SHA action pins"
+  [ "$workflow_default_permissions" = "read" ] && ok "default GitHub Actions token permissions are read-only" || note "default GitHub Actions token permissions are '${workflow_default_permissions}', expected read"
+  [ "$workflow_can_approve_prs" = "false" ] && ok "GitHub Actions cannot approve pull requests by default" || note "GitHub Actions can approve pull requests by default"
+  case "$actions_retention_days" in
+    ''|*[!0-9]*)
+      note "could not determine GitHub Actions artifact/log retention"
+      ;;
+    *)
+      if [ "$actions_retention_days" -le "$max_actions_retention_days" ]; then
+        ok "GitHub Actions artifact/log retention is ${actions_retention_days} day(s)"
+      else
+        note "GitHub Actions artifact/log retention is ${actions_retention_days} day(s), expected ${max_actions_retention_days} or less"
+      fi
+      ;;
+  esac
+
+  # A workflow GitHub knows about that the tracked tree does not define is an
+  # unreviewed automation surface on a public repository.
+  tracked_workflows="$(
+    find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null \
+      | sed 's#^.*/##' | sort -u
+  )"
+  if remote_workflows="$(gh api --paginate "repos/${repo}/actions/workflows" \
+    --jq '.workflows[]? | select(.state != "deleted") | .path' 2>/dev/null)"; then
+    unexpected_workflows="$(
+      printf '%s\n' "$remote_workflows" \
+        | sed 's#^.*/##' | sort -u \
+        | grep -Fxv -f <(printf '%s\n' "$tracked_workflows") || true
+    )"
+    if [ -n "$unexpected_workflows" ]; then
+      note "GitHub hosts workflow(s) this repository does not track"
+      printf '%s\n' "$unexpected_workflows" | sed 's/^/  - /'
+    else
+      ok "every workflow GitHub hosts is tracked in .github/workflows"
+    fi
   else
-    note "GitHub Actions are enabled; public repo policy is local-CI only"
-    case "$actions_allowed" in
-      all|selected) ok "GitHub Actions allowed-actions policy is ${actions_allowed}" ;;
-      *) warn "could not confirm GitHub Actions allowed-actions policy" ;;
-    esac
-    [ "$actions_sha_pinning" = "true" ] && ok "GitHub Actions require full-SHA action pins" || note "GitHub Actions do not require full-SHA action pins"
-    [ "$workflow_default_permissions" = "read" ] && ok "default GitHub Actions token permissions are read-only" || note "default GitHub Actions token permissions are '${workflow_default_permissions}', expected read"
-    [ "$workflow_can_approve_prs" = "false" ] && ok "GitHub Actions cannot approve pull requests by default" || note "GitHub Actions can approve pull requests by default"
-    case "$actions_retention_days" in
-      ''|*[!0-9]*)
-        note "could not determine GitHub Actions artifact/log retention"
-        ;;
-      *)
-        if [ "$actions_retention_days" -le "$max_actions_retention_days" ]; then
-          ok "GitHub Actions artifact/log retention is ${actions_retention_days} day(s)"
-        else
-          note "GitHub Actions artifact/log retention is ${actions_retention_days} day(s), expected ${max_actions_retention_days} or less"
-        fi
-        ;;
-    esac
+    note "could not enumerate GitHub-hosted workflows"
   fi
 
   echo

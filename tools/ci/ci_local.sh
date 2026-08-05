@@ -10,7 +10,8 @@
 #
 # COVERED HERE: release/provenance hygiene, ignored-artifact hygiene, public
 # shell tool syntax, documentation links, a Release configure+build of the
-# native port, and the ROM-free CTest suite.
+# native port, the ROM-free CTest suite, and -- on a machine with a display --
+# the gpu-labelled CTest lane no hosted runner can execute.
 #
 # DELIBERATELY NOT COVERED: the full ROM-gated regression battery
 # (tools/run_checks.py, ~76 tasks across several dedicated build directories --
@@ -22,7 +23,8 @@
 # docs/RELEASE_CHECKLIST.md; pass --with-rom-suite to also run it from here.
 #
 # Usage:
-#   tools/ci/ci_local.sh [--build-dir DIR] [--no-build] [--jobs N] [--with-rom-suite [--rom PATH]]
+#   tools/ci/ci_local.sh [--build-dir DIR] [--no-build] [--jobs N]
+#                        [--skip-gpu-tests] [--with-rom-suite [--rom PATH]]
 #
 # -e is safe here because every gate runs through step(), which invokes it as an
 # `if` condition; a failing gate is scored, not fatal. -e only catches faults in
@@ -37,18 +39,24 @@ DO_BUILD=1
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 WITH_ROM_SUITE=0
 ROM_PATH="baserom.us.v80.z64"
+SKIP_GPU_TESTS="${MDKR_CI_SKIP_GPU_TESTS:-0}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --build-dir)      BUILD_DIR="$2"; shift 2 ;;
     --no-build)       DO_BUILD=0; shift ;;
     --jobs)           JOBS="$2"; shift 2 ;;
+    --skip-gpu-tests) SKIP_GPU_TESTS=1; shift ;;
     --with-rom-suite) WITH_ROM_SUITE=1; shift ;;
     --rom)            ROM_PATH="$2"; shift 2 ;;
-    -h|--help)         sed -n '2,26p' "$0"; exit 0 ;;
+    -h|--help)         sed -n '2,27p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+case "$SKIP_GPU_TESTS" in
+  0|1) ;;
+  *) echo "MDKR_CI_SKIP_GPU_TESTS must be 0 or 1 (got '$SKIP_GPU_TESTS')" >&2; exit 2 ;;
+esac
 
 pass=0; fail=0; failed_steps=""
 
@@ -87,6 +95,19 @@ fi
 if [ -f "$BUILD_DIR/CMakeCache.txt" ]; then
   step "ROM-free CTest suite" \
     ctest --test-dir "$BUILD_DIR" --output-on-failure -LE gpu
+
+  # The gpu-labelled tests open a real window/context, so they cannot run on a
+  # headless runner and correctness.yml excludes them everywhere. Without a
+  # scripted runner here nothing drives them at all, so they run by default on
+  # a machine that has a display and are skipped only on an explicit opt-out --
+  # never silently.
+  if [ "$SKIP_GPU_TESTS" -eq 1 ]; then
+    echo "  SKIPPED: gpu-labelled CTest lane (--skip-gpu-tests / MDKR_CI_SKIP_GPU_TESTS=1)."
+    echo "  These tests were NOT run; a pass below does not cover them."
+  else
+    step "GPU-labelled CTest lane (needs a real display; --skip-gpu-tests to opt out)" \
+      ctest --test-dir "$BUILD_DIR" --output-on-failure -L gpu
+  fi
 else
   echo "  (skipping ctest - no configured build at $BUILD_DIR; run without --no-build)"
 fi

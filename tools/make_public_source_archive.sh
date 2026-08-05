@@ -89,10 +89,22 @@ tar -tzf "$tmparchive" > "$listfile"
 
 echo
 echo "== Validating archive listing =="
-# brand/appicon-source.png is hand-authored project branding (not ROM-derived)
-# — the same tracked exception as .gitignore / tools/check_clean_room.sh.
-forbidden="$(grep -E '\.(z64|n64|v64|rom|bin|bmp|png|jpe?g|gif|webp|ico|icns|ppm|raw|wav|mp3|ogg|flac|ctl|tbl|aifc|aiff|sbk|seq|cdata|dmg|zip|7z|tar|tgz|gz)$|(^|/)baserom|(^|/)[^/]+\.app(/|$)|(^|/)screenshot_[^/]*\.(bmp|png|jpe?g|gif|webp|ppm|raw|jsonl|mp4|mov|m4v|webm)$' "$listfile" \
-  | grep -v -E '/brand/appicon-source\.png$' || true)"
+# Media is rejected unless its exact repository path is in one of the reviewed
+# first-party allowlists — the same path-only exemption, from the same two
+# files, that tools/ci/check_release_ready.sh applies to git history. Listing
+# entries carry the archive prefix, so strip it before comparing.
+archive_allowlist="$tmpdir/allowlist.txt"
+sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' \
+  tools/public_tracked_asset_allowlist.txt \
+  tools/public_historical_asset_allowlist.txt > "$archive_allowlist"
+if [ ! -s "$archive_allowlist" ]; then
+  echo "Public asset allowlists define no entries; refusing to validate vacuously." >&2
+  exit 1
+fi
+
+forbidden="$(sed "s#^${prefix}/##" "$listfile" \
+  | grep -E '\.(z64|n64|v64|rom|bin|bmp|png|jpe?g|gif|webp|ico|icns|ppm|raw|wav|mp3|ogg|flac|ctl|tbl|aifc|aiff|sbk|seq|cdata|dmg|zip|7z|tar|tgz|gz)$|(^|/)baserom|(^|/)[^/]+\.app(/|$)|(^|/)screenshot_[^/]*\.(bmp|png|jpe?g|gif|webp|ppm|raw|jsonl|mp4|mov|m4v|webm)$' \
+  | grep -Fvx -f "$archive_allowlist" || true)"
 if [ -n "$forbidden" ]; then
   echo "Archive contains forbidden ROM/media/build-artifact path(s):" >&2
   printf '%s\n' "$forbidden" >&2

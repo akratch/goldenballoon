@@ -68,13 +68,18 @@ endif()
 # selected tuple's SHA before extraction. Do not reuse arbitrary extracted
 # sibling directories: their architecture/version/ABI cannot be authenticated.
 set(_wgpu_url "${_wgpu_base}/${_wgpu_asset}")
-foreach(_zipcand
-        "$ENV{MDKR_WGPU_LOCAL_CACHE}/${_wgpu_asset}")
-    if(EXISTS "${_zipcand}")
-        set(_wgpu_url "file://${_zipcand}")
-        break()
-    endif()
-endforeach()
+# With MDKR_WGPU_LOCAL_CACHE unset the candidate collapses to "/<asset>.zip",
+# an absolute filesystem-root path that could exist for reasons unrelated to
+# this build. Only consider a cache directory that was actually named.
+if(NOT "$ENV{MDKR_WGPU_LOCAL_CACHE}" STREQUAL "")
+    foreach(_zipcand
+            "$ENV{MDKR_WGPU_LOCAL_CACHE}/${_wgpu_asset}")
+        if(EXISTS "${_zipcand}")
+            set(_wgpu_url "file://${_zipcand}")
+            break()
+        endif()
+    endforeach()
+endif()
 include(FetchContent)
 # DOWNLOAD_EXTRACT_TIMESTAMP is a CMake 3.24 keyword. On older CMake
 # (Ubuntu 22.04's apt ships 3.22 — the release lane's own distro) an unknown

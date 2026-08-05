@@ -11,7 +11,7 @@ set -euo pipefail
 archive=""
 keep=0
 build_type="Release"
-jobs="${GE007_BUILD_JOBS:-4}"
+jobs="${MDKR_BUILD_JOBS:-4}"
 max_warnings=""
 
 usage() {
@@ -21,7 +21,7 @@ Usage: tools/smoke_public_source_archive.sh ARCHIVE [options]
 Options:
   --keep              Keep the extracted temporary tree for inspection.
   --build-type TYPE   CMake build type (default: Release).
-  --jobs N            Parallel build jobs (default: GE007_BUILD_JOBS or 4).
+  --jobs N            Parallel build jobs (default: MDKR_BUILD_JOBS or 4).
   --max-warnings N    Fail if the archive build emits more than N warnings.
   -h, --help          Show this help.
 

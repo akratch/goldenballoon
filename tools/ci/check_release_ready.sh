@@ -84,9 +84,17 @@ if [ "$candidate" -eq 1 ]; then
     --version "$candidate_version"
 fi
 
+# `fail` counts violations rather than latching, so a section can report on its
+# own findings alone. A section that tests the global counter directly starts
+# lying as soon as any earlier section failed; sections bracket themselves with
+# section_begin/section_clean instead.
 fail=0
-note() { printf '  \033[31m[VIOLATION]\033[0m %s\n' "$1"; fail=1; }
+note() { printf '  \033[31m[VIOLATION]\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 warn() { printf '  \033[33m[WARN]\033[0m %s\n' "$1"; }
+
+section_fail=0
+section_begin() { section_fail="$fail"; }
+section_clean() { [ "$fail" -eq "$section_fail" ]; }
 
 public_file_list() {
   if [ "$HAVE_GIT" -eq 1 ]; then
@@ -107,13 +115,37 @@ allowlist_values() {
 
 echo "== mdkr64 release readiness guard =="
 
-chmod +x tools/check_no_rom.sh
-tools/check_no_rom.sh
+# The mode bit is part of the tracked release surface, so assert it instead of
+# repairing it: a guard that silently chmods its own dependencies cannot report
+# that the checkout shipped them non-executable.
+for guard_script in tools/check_no_rom.sh tools/check_clean_room.sh; do
+  if [ ! -x "$guard_script" ]; then
+    note "guard script is not executable: ${guard_script} (restore the mode bit: chmod +x ${guard_script})"
+  fi
+done
+
+# The ROM guard scans dist/web (always tracked) plus any desktop package a
+# release run has already produced in dist/. Packaged artifacts are the exact
+# bytes a player downloads, so they must be scanned when they exist rather than
+# only at package time.
+rom_scan_targets=(dist/web)
+while IFS= read -r desktop_artifact; do
+  [ -n "$desktop_artifact" ] || continue
+  rom_scan_targets+=("$desktop_artifact")
+done < <(
+  find dist -maxdepth 1 -type f \
+    \( -name '*.dmg' -o -name '*.zip' -o -name '*.tar.gz' -o -name '*.tgz' -o -name '*.AppImage' \) \
+    2>/dev/null | sort
+)
+echo "  scanning for ROM content: ${rom_scan_targets[*]}"
+if [ "${#rom_scan_targets[@]}" -eq 1 ]; then
+  echo "  note -- no built desktop package present in dist/; only dist/web was scanned."
+fi
+bash tools/check_no_rom.sh "${rom_scan_targets[@]}"
 
 echo
 echo "== Clean-room repository check =="
-chmod +x tools/check_clean_room.sh
-if tools/check_clean_room.sh; then
+if bash tools/check_clean_room.sh; then
   :
 else
   note "clean-room repository guard failed"
@@ -283,6 +315,7 @@ fi
 
 echo
 echo "== Required public-release docs =="
+section_begin
 # The list below is exactly the docs this repo tracks at its root. Build
 # instructions live in docs/DEVELOPER_HANDBOOK.md rather than a BUILDING.md.
 # There is no standalone coding-style, instrumentation, or provenance-audit
@@ -307,12 +340,13 @@ for f in \
     note "missing or empty release doc: $f"
   fi
 done
-if [ "$fail" -eq 0 ]; then
+if section_clean; then
   echo "  OK -- required docs are present."
 fi
 
 echo
 echo "== Repository metadata =="
+section_begin
 # CMake is the only build system here, so no top-level Makefile is asserted,
 # and there is no Docker build context (.dockerignore/Dockerfile) to require.
 for f in \
@@ -327,12 +361,13 @@ for f in \
     note "missing or empty repository metadata file: $f"
   fi
 done
-if [ "$fail" -eq 0 ]; then
+if section_clean; then
   echo "  OK -- required repository metadata is present."
 fi
 
 echo
 echo "== Third-party provenance files =="
+section_begin
 # mdkr64 vendors exactly two build-time dependencies that carry their own
 # tracked license files; .gitattributes' linguist-vendored comment is the
 # source of truth for that set. THIRD_PARTY.md is the per-path provenance
@@ -352,12 +387,13 @@ if python3 tools/check_third_party_notices.py --repo-root .; then
 else
   note "third-party notice guard failed"
 fi
-if [ "$fail" -eq 0 ]; then
+if section_clean; then
   echo "  OK -- required third-party provenance files are present."
 fi
 
 echo
 echo "== GitHub contributor scaffolding =="
+section_begin
 for f in \
   .github/CODEOWNERS \
   .github/dependabot.yml \
@@ -372,12 +408,13 @@ for f in \
   .github/workflows/correctness.yml \
   .github/workflows/release.yml \
   .github/workflows/windows-validate.yml \
-  .github/workflows/macos-release.yml; do
+  .github/workflows/macos-release.yml \
+  .github/workflows/web-demo.yml; do
   if [ ! -s "$f" ]; then
     note "missing or empty GitHub contributor scaffold: $f"
   fi
 done
-if [ "$fail" -eq 0 ]; then
+if section_clean; then
   echo "  OK -- required GitHub contributor scaffolding is present."
 fi
 
@@ -444,9 +481,53 @@ else
   echo "  OK -- every workflow but correctness.yml is a manual-only (workflow_dispatch) lane."
 fi
 
-if [ ! -s .github/workflows/correctness.yml ] || ! grep -Fq $'\n  push:' .github/workflows/correctness.yml; then
+# The inverse of the assertion above: correctness.yml must KEEP its automatic
+# lane. Read the trigger names out of its own `on:` block rather than pattern
+# matching raw text -- an embedded-newline -F pattern splits into two patterns,
+# one of them empty, and an empty fixed pattern matches every file.
+correctness_triggers="$(
+  python3 - <<'PY'
+from pathlib import Path
+import re
+
+workflow = Path(".github/workflows/correctness.yml")
+if not workflow.is_file():
+    raise SystemExit
+
+in_on = False
+on_indent = 0
+for line in workflow.read_text(encoding="utf-8").splitlines():
+    clean = line.split("#", 1)[0].rstrip()
+    if not clean.strip():
+        continue
+    indent = len(clean) - len(clean.lstrip(" "))
+    text = clean.strip()
+
+    if in_on and indent <= on_indent:
+        in_on = False
+
+    if not in_on:
+        if text.startswith("on:"):
+            rest = text[3:].strip()
+            if rest:
+                for token in re.findall(r"[A-Za-z_]+", rest):
+                    print(token)
+            else:
+                in_on = True
+                on_indent = indent
+        continue
+
+    if text.startswith("-"):
+        print(text[1:].strip().strip("'\""))
+    else:
+        print(text.split(":", 1)[0].strip().strip("'\""))
+PY
+)"
+if [ ! -s .github/workflows/correctness.yml ]; then
+  note "correctness.yml is missing or empty"
+elif ! printf '%s\n' "$correctness_triggers" | grep -Fqx 'push'; then
   note "correctness.yml no longer has its expected automatic push trigger"
-elif ! grep -Fq $'\n  pull_request:' .github/workflows/correctness.yml; then
+elif ! printf '%s\n' "$correctness_triggers" | grep -Fqx 'pull_request'; then
   note "correctness.yml no longer has its expected automatic pull_request trigger"
 else
   echo "  OK -- correctness.yml still runs automatically on push/pull_request, as documented in its header."
@@ -502,6 +583,7 @@ fi
 
 echo
 echo "== Release helper scripts =="
+section_begin
 for f in \
   tools/install_git_hooks.sh \
   tools/ci/check_high_risk_ignored_artifacts.sh \
@@ -532,7 +614,7 @@ for f in \
     note "missing or non-executable release helper script: $f"
   fi
 done
-if [ "$fail" -eq 0 ]; then
+if section_clean; then
   echo "  OK -- release helper scripts are present and executable."
 fi
 

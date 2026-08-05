@@ -75,6 +75,10 @@ if [[ -f "${SDL2_MANIFEST}" ]]; then
         die "SDL2 provenance requires exactly one bundled SDL2 dylib"
     SDL2_SIGNED_SHA256="$(shasum -a 256 "${SDL2_DYLIBS[0]}" | awk '{print $1}')"
     SDL2_MANIFEST_TMP="${SDL2_MANIFEST}.tmp.$$"
+    # The temp file lives inside the bundle that is about to be sealed. An
+    # interrupt between here and the rename would leave it there and break the
+    # resource seal, so remove it on any exit path.
+    trap 'rm -f "${SDL2_MANIFEST_TMP}"' EXIT INT TERM
     awk -F= -v hash="${SDL2_SIGNED_SHA256}" '
         BEGIN { found = 0 }
         $1 == "bundled_dylib_sha256" {
@@ -89,6 +93,7 @@ if [[ -f "${SDL2_MANIFEST}" ]]; then
         die "SDL2 provenance manifest has no unique bundled hash row"
     }
     mv "${SDL2_MANIFEST_TMP}" "${SDL2_MANIFEST}"
+    trap - EXIT INT TERM
 fi
 
 # Do not use --deep for signing. It can hide missed or incorrectly ordered

@@ -4,9 +4,10 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    # Public launch uses local preflight evidence and starts with no hosted
-    # automation branches. Vulnerability alerts are enabled in repo settings.
-    open-pull-requests-limit: 0
+    # A limit of 0 disables the ecosystem entirely, which made every setting
+    # above inert. Actions are grouped into a single PR, so a small cap is
+    # enough to keep the update surface reviewable.
+    open-pull-requests-limit: 5
     groups:
       github-actions:
         patterns:

@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Shared, source-only helpers for cleaning up an exact temporary DMG mount.
 #
+# This file is sourced, never executed: it defines functions and runs no
+# top-level command. It deliberately sets no shell options -- the sourcing
+# script owns `set -euo pipefail`, and setting them here would silently change
+# the caller's shell.
+#
 # Callers must pass a dedicated mktemp directory. Mount state is derived from
 # the filesystem device at cleanup time, not from a boolean set after attach;
 # that closes the signal/partial-attach window between hdiutil returning and a

@@ -473,7 +473,7 @@ info "Generating app icon..."
 python3 "${PROJECT_ROOT}/macos/Scripts/generate_app_icon.py" \
     --iconset "${ICONSET_DIR}" \
     --icns "${APP_ICON}" \
-    "${ICON_SOURCE_ARGS[@]}" \
+    ${ICON_SOURCE_ARGS[@]+"${ICON_SOURCE_ARGS[@]}"} \
     || die "App icon generation failed."
 [[ -s "${APP_ICON}" ]] || die "Generated app icon is missing: ${APP_ICON}"
 
@@ -534,7 +534,9 @@ done < <(
         in_rpath && $1 == "path" { print $2; in_rpath = 0 }
     '
 )
-for rpath in "${ABSOLUTE_RPATHS[@]}"; do
+# Bash 3.2 (the macOS system shell) treats "${arr[@]}" on an empty array as an
+# unbound reference under set -u, so an empty expansion must be spelled out.
+for rpath in ${ABSOLUTE_RPATHS[@]+"${ABSOLUTE_RPATHS[@]}"}; do
     install_name_tool -delete_rpath "${rpath}" "${ENGINE_PATH}" \
         || die "Failed to remove absolute build rpath: ${rpath}"
 done

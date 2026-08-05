@@ -1008,6 +1008,14 @@ target_compile_definitions(${MDKR_TARGET} PRIVATE
 # (not folded into the block above) so it stays a one-line, low-conflict diff.
 set(MDKR_VERSION "1.0.4" CACHE STRING "mdkr64 release version (semver)")
 target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_VERSION_STRING="${MDKR_VERSION}")
+# The save CLI stamps app_version into every container it writes, so it must
+# carry the same release value the engine and app shell do. Its target is
+# declared above this statement, hence the guarded definition here rather than
+# beside add_executable(mdkr-save).
+if(TARGET mdkr-save)
+    target_compile_definitions(mdkr-save PRIVATE
+        MDKR_APP_VERSION_STR="${MDKR_VERSION}")
+endif()
 
 # --- Flags ----------------------------------------------------------------
 if(CMAKE_C_COMPILER_ID MATCHES "Clang" OR EMSCRIPTEN)

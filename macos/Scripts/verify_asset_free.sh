@@ -96,15 +96,27 @@ sys.exit(1)
 PY
 }
 
+# Exit codes: 0 asset symbol found, 1 no asset symbol, 2 could not inspect,
+# 3 image carries no symbol table at all (check not applicable).
 asset_symbols_for_file() {
-    local target="$1" nm_tool="${2:-nm}" nm_output
-    if ! nm_output="$("${nm_tool}" -P "${target}" 2>&1)"; then
+    local target="$1" nm_tool="${2:-nm}" nm_output nm_status=0
+    nm_output="$("${nm_tool}" -P "${target}" 2>&1)" || nm_status=$?
+    # A fully stripped release image has no symbol table. Some nm builds report
+    # that as a plain "no symbols" diagnostic and a nonzero exit; that is the
+    # absence this module's header describes, not a read/format failure, and it
+    # leaves checks 2-4 (byte signatures, data-segment size, container pinning)
+    # as the operative evidence. Real inspection failures still return 2.
+    if printf '%s\n' "${nm_output}" | grep -Eqi '(^|: )(warning: )?no symbols?$'; then
+        return 3
+    fi
+    if [[ "${nm_status}" -ne 0 ]]; then
         printf '%s\n' "${nm_output}" >&2
         return 2
     fi
-    # A valid stripped release image may contain zero symbol rows. `nm` success
-    # is still useful evidence: command/read/format failures are nonzero and are
-    # rejected above; the caller separately pins the binary container with file.
+    # A valid stripped release image may also succeed with zero symbol rows.
+    # `nm` success is still useful evidence: command/read/format failures are
+    # nonzero and are rejected above; the caller separately pins the binary
+    # container with file.
     printf '%s\n' "${nm_output}" |
         grep -E '^_?(ANIM_DATA_|imgRAre_|ASSET_DATA_|dkrAssetPayload|ROM_ASSET_)'
 }
@@ -171,11 +183,22 @@ run_self_test() (
     [[ ${status} -eq 2 ]] || return 1
     asset_symbols_for_file "${clean}" false >/dev/null 2>&1 && status=0 || status=$?
     [[ ${status} -eq 2 ]] || return 1
-    # Invoked indirectly by asset_symbols_for_file as a command-shaped fixture.
+    # Invoked indirectly by asset_symbols_for_file as command-shaped fixtures.
+    # A stripped image reports "no symbols" and may exit either 0 or nonzero
+    # depending on the nm build; both are check-not-applicable (3), never a
+    # hard failure. A genuine read/format failure stays inspection-failed (2).
     # shellcheck disable=SC2329
     stripped_nm() { printf '%s: no symbols\n' "$2" >&2; return 0; }
     asset_symbols_for_file "${clean}" stripped_nm >/dev/null 2>&1 && status=0 || status=$?
-    [[ ${status} -eq 1 ]] || return 1
+    [[ ${status} -eq 3 ]] || return 1
+    # shellcheck disable=SC2329
+    stripped_failing_nm() { printf 'nm: %s: no symbols\n' "$2" >&2; return 1; }
+    asset_symbols_for_file "${clean}" stripped_failing_nm >/dev/null 2>&1 && status=0 || status=$?
+    [[ ${status} -eq 3 ]] || return 1
+    # shellcheck disable=SC2329
+    unreadable_nm() { printf 'nm: %s: bad file format\n' "$2" >&2; return 1; }
+    asset_symbols_for_file "${clean}" unreadable_nm >/dev/null 2>&1 && status=0 || status=$?
+    [[ ${status} -eq 2 ]] || return 1
     printf 'verify_asset_free: self-test PASS\n'
 )
 
@@ -303,6 +326,9 @@ case "${SYMBOL_STATUS}" in
         ;;
     1)
         pass "No compiled-in asset-table symbol found (ANIM_DATA_*, imgRAre_*, ASSET_DATA_*, dkrAssetPayload*, ROM_ASSET_*)."
+        ;;
+    3)
+        warn "Binary carries no symbol table (stripped image); this check is not applicable. Checks 2-4 remain authoritative."
         ;;
     *)
         printf '%s\n' "$ASSET_SYMBOLS" | sed 's/^/    /' >&2
@@ -582,6 +608,9 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
                     FRAMEWORK_FAIL=1
                     ;;
                 1) ;;
+                3)
+                    warn "Stripped framework/library carries no symbol table; symbol check not applicable: ${REL}"
+                    ;;
                 *)
                     printf '%s\n' "${ASSET_FRAMEWORK_SYMBOLS}" >&2
                     fail "Could not inspect app framework/library symbols: ${REL}"

@@ -15,6 +15,13 @@
 #include "save_container.h"
 #include "save_tools_core.h"
 
+/* CMake threads the shared MDKR_VERSION release value in. A build that omits
+   it is an unversioned developer build, and says so rather than claiming a
+   release version it does not have. */
+#ifndef MDKR_APP_VERSION_STR
+#define MDKR_APP_VERSION_STR "development"
+#endif
+
 #ifndef O_DIRECTORY
 #define O_DIRECTORY 0
 #endif
@@ -398,7 +405,8 @@ static int command_export(const char *input_path, const char *output_path,
         char *container;
         memset(&metadata, 0, sizeof(metadata));
         current_timestamp(metadata.created_at);
-        strcpy(metadata.app_version, "development");
+        snprintf(metadata.app_version, sizeof(metadata.app_version), "%s",
+                 MDKR_APP_VERSION_STR);
         strcpy(metadata.source, "native");
         if (mdkr_save_container_encode(payload, &metadata, NULL, 0, &size,
                                        &required) != MDKR_SAVE_CONTAINER_OK) {

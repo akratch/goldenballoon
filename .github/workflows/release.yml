@@ -54,9 +54,9 @@ permissions:
 
 jobs:
   validate:
-    name: Validate release inputs
+    name: Validate release inputs and source policy
     runs-on: ubuntu-22.04
-    timeout-minutes: 2
+    timeout-minutes: 15
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -93,6 +93,18 @@ jobs:
             }
           fi
           echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+      # A dispatch can name any ref. Run the same clean-room / public-surface
+      # policy gates correctness.yml runs, before anything is built or
+      # published, so an unvetted ref cannot ship.
+      - name: Clean-room history
+        run: tools/check_clean_room.sh
+      - name: Public tracked-tree boundary
+        run: python3 tools/check_public_surface.py --tree "$GITHUB_SHA"
+      - name: Native SDK surface, third-party notices, and image metadata
+        run: |
+          python3 tools/check_native_sdk_surface.py
+          python3 tools/check_third_party_notices.py
+          python3 tools/check_image_metadata.py
 
   linux:
     name: Linux app (AppImage + tar.gz)
@@ -232,6 +244,21 @@ jobs:
             case "$f" in *.provenance.json) continue ;; esac
             ./tools/release/stamp_provenance.sh "$f" "${{ needs.validate.outputs.version }}"
           done
+      # Fail closed between stamping and upload: every artifact about to leave
+      # this job must carry a sidecar binding it to this exact commit, and no
+      # unrecognised or cross-version artifact may be sitting in dist/.
+      - name: Verify provenance of every artifact before upload
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          ./tools/release/verify_provenance.sh \
+            --dist dist \
+            --version "$RELEASE_VERSION" \
+            --commit "$GITHUB_SHA" \
+            --require platform=linux \
+            --out-checksums "$RUNNER_TEMP/linux-SHA256SUMS.txt" \
+            --out-manifest "$RUNNER_TEMP/linux-manifest.json"
+          cat "$RUNNER_TEMP/linux-SHA256SUMS.txt"
       - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
         with:
           name: Golden-Balloon-${{ needs.validate.outputs.version }}-linux-x86_64

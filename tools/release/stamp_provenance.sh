@@ -26,7 +26,7 @@ asset="${1:?usage: stamp_provenance.sh <asset-path> <version>}"
 version="${2:?usage: stamp_provenance.sh <asset-path> <version>}"
 [[ -f "$asset" ]] || { echo "ERROR: asset not found: $asset" >&2; exit 1; }
 if [[ "$version" != "dev" && ! "$version" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
-  echo "ERROR: version must be dev or bare semver (for example 1.0.1)." >&2
+  echo "ERROR: version must be dev or bare semver (for example the current release version)." >&2
   exit 1
 fi
 

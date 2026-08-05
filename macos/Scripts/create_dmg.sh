@@ -209,22 +209,30 @@ fi
 # the plist has none -- the script stays app-bundle-agnostic either way.
 BRAND_NAME="${APP_NAME}"
 
-# Try to extract version from Info.plist
-VERSION="unknown"
-if [[ -f "${INFO_PLIST}" ]] && command -v /usr/libexec/PlistBuddy &>/dev/null; then
-    VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "${INFO_PLIST}" 2>/dev/null || echo "")"
-    if [[ -z "${VERSION}" ]]; then
-        VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "${INFO_PLIST}" 2>/dev/null || echo "unknown")"
-    fi
-    info "Detected version: ${VERSION}"
-    PLIST_BRAND="$(/usr/libexec/PlistBuddy -c "Print :CFBundleName" "${INFO_PLIST}" 2>/dev/null || echo "")"
-    if [[ -n "${PLIST_BRAND}" ]]; then
-        BRAND_NAME="${PLIST_BRAND}"
-    fi
-    info "Detected brand  : ${BRAND_NAME}"
-else
-    warn "Could not read version from Info.plist. Using 'unknown'."
+# The version becomes part of the DMG filename, and every downstream
+# verifier -- verify_unsigned_dmg.sh, stamp_provenance.sh, the release
+# workflows -- matches that filename against an exact
+# Golden-Balloon-<version>-<platform> shape. A "-unknown.dmg" therefore fails
+# later, far from the cause, so refuse to build one.
+VERSION=""
+if [[ ! -f "${INFO_PLIST}" ]]; then
+    die "cannot derive the release version: ${INFO_PLIST} is missing"
 fi
+if ! command -v /usr/libexec/PlistBuddy &>/dev/null; then
+    die "cannot derive the release version: /usr/libexec/PlistBuddy is unavailable"
+fi
+VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "${INFO_PLIST}" 2>/dev/null || echo "")"
+if [[ -z "${VERSION}" ]]; then
+    VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "${INFO_PLIST}" 2>/dev/null || echo "")"
+fi
+[[ -n "${VERSION}" ]] ||
+    die "cannot derive the release version: ${INFO_PLIST} declares neither CFBundleShortVersionString nor CFBundleVersion"
+info "Detected version: ${VERSION}"
+PLIST_BRAND="$(/usr/libexec/PlistBuddy -c "Print :CFBundleName" "${INFO_PLIST}" 2>/dev/null || echo "")"
+if [[ -n "${PLIST_BRAND}" ]]; then
+    BRAND_NAME="${PLIST_BRAND}"
+fi
+info "Detected brand  : ${BRAND_NAME}"
 
 # Determine output path. The DMG filename is the canonical, case-preserving
 # brand stem ("Golden Balloon" -> "Golden-Balloon-1.2.3.dmg"), not the

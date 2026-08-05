@@ -56,8 +56,16 @@ be_magic=$'\x80\x37\x12\x40'
 
 bad=0
 for f in "${files[@]}"; do
-    # (1) offset-0 header, any of the three byte orders
-    magic=$(head -c4 "$f" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+    # (1) offset-0 header, any of the three byte orders. An unreadable artifact
+    # must be named, not swallowed: under `set -e -o pipefail` a failing read
+    # here would abort the whole scan with no diagnostic at all.
+    read_status=0
+    magic=$(head -c4 "$f" 2>/dev/null | od -An -tx1 | tr -d ' \n') || read_status=$?
+    if [[ "$read_status" -ne 0 ]]; then
+        echo "check_no_rom: FAIL — could not read artifact header: $f" >&2
+        bad=1
+        continue
+    fi
     case "$magic" in
         80371240|37804012|40123780)
             echo "check_no_rom: FAIL — N64 ROM header at offset 0: $f" >&2
@@ -65,12 +73,25 @@ for f in "${files[@]}"; do
             continue
             ;;
     esac
-    # (2) big-endian magic anywhere (binary-safe fixed-string search)
-    if LC_ALL=C grep -qF "$be_magic" "$f" 2>/dev/null; then
-        echo "check_no_rom: FAIL — N64 ROM magic sequence embedded in: $f" >&2
-        bad=1
-        continue
-    fi
+    # (2) big-endian magic anywhere (binary-safe fixed-string search).
+    # grep exits 0 on a match, 1 on no match, and >=2 on an error (unreadable
+    # file, I/O failure). Only status 1 is evidence of absence; anything else
+    # means the artifact was not actually cleared and must fail closed.
+    scan_status=0
+    LC_ALL=C grep -qF "$be_magic" "$f" 2>/dev/null || scan_status=$?
+    case "$scan_status" in
+        0)
+            echo "check_no_rom: FAIL — N64 ROM magic sequence embedded in: $f" >&2
+            bad=1
+            continue
+            ;;
+        1) ;;
+        *)
+            echo "check_no_rom: FAIL — could not scan for ROM magic (grep exit ${scan_status}): $f" >&2
+            bad=1
+            continue
+            ;;
+    esac
     # Runtime-derived font atlases must never be packaged as sidecar content.
     # The engine builds them from the user's ROM in memory on their machine.
     case "$(basename "$f" | tr '[:upper:]' '[:lower:]')" in

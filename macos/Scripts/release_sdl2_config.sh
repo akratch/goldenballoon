@@ -2,6 +2,11 @@
 # Single source of truth for the standalone SDL2 used by macOS releases.
 # Consumers must continue to verify both the source archive and installed
 # license bytes; these constants identify the authenticated inputs.
+#
+# This file is sourced, never executed: it declares readonly constants and runs
+# no command. It deliberately sets no shell options -- the sourcing script owns
+# `set -euo pipefail`, and setting them here would silently change the caller's
+# shell.
 
 # Values are intentionally consumed only by scripts that source this file.
 # shellcheck disable=SC2034

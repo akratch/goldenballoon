@@ -58,7 +58,7 @@ done
     die "invalid expected minimum macOS version: ${EXPECTED_MINOS}"
 [[ -d "${APP_PATH}" ]] || die "app bundle not found: ${APP_PATH}"
 
-for tool in codesign otool plutil xattr lipo /usr/libexec/PlistBuddy; do
+for tool in codesign otool plutil xattr lipo file /usr/libexec/PlistBuddy; do
     command -v "${tool}" >/dev/null 2>&1 || die "required tool not found: ${tool}"
 done
 
@@ -172,31 +172,48 @@ verify_mach_o_contract() {
     done < <(otool -L "${code_path}" | tail -n +2 | awk '{print $1}')
 }
 
-if [[ -d "${FRAMEWORKS_DIR}" ]]; then
-    while IFS= read -r dylib; do
-        [[ -n "${dylib}" ]] || continue
-        HAS_BUNDLED_CODE=true
-        codesign --verify --strict --verbose=2 "${dylib}" >/dev/null 2>&1 ||
-            die "invalid nested dylib signature: ${dylib}"
-        if grep -aFq 'sdl2-compat:' "${dylib}"; then
-            die "bundled SDL2 is the SDL3-loading sdl2-compat shim: ${dylib}"
-        fi
-        if [[ "${DISTRIBUTION}" == true ]]; then
-            NESTED_DETAILS="$(codesign -dvvv "${dylib}" 2>&1)"
-            NESTED_TEAM="$(printf '%s\n' "${NESTED_DETAILS}" | sed -n 's/^TeamIdentifier=//p' | head -n 1)"
-            [[ -n "${OUTER_TEAM}" && "${NESTED_TEAM}" == "${OUTER_TEAM}" ]] ||
-                die "nested dylib TeamIdentifier does not match the app: ${dylib}"
-        fi
-    done < <(find "${FRAMEWORKS_DIR}" -type f -name '*.dylib' -print)
-fi
+# The verified set must cover everything macos/Scripts/sign_and_notarize.sh
+# signs -- nested dylibs AND .framework bundles -- plus any other nested Mach-O
+# image the bundle layout carries (helper tools under Contents/MacOS,
+# Contents/PlugIns, resource-embedded binaries). Selecting on the .dylib suffix
+# alone leaves signed-but-unverified code in the shipped bundle.
+nested_framework_bundles() {
+    [[ -d "${FRAMEWORKS_DIR}" ]] || return 0
+    find "${FRAMEWORKS_DIR}" -type d -name '*.framework' -print
+}
+
+nested_mach_o_files() {
+    [[ -d "${APP_PATH}/Contents" ]] || return 0
+    find "${APP_PATH}/Contents" -type f -print0 |
+        while IFS= read -r -d '' candidate; do
+            [[ "${candidate}" == "${EXECUTABLE}" ]] && continue
+            case "$(file -b "${candidate}" 2>/dev/null)" in
+                *Mach-O*) printf '%s\n' "${candidate}" ;;
+            esac
+        done
+}
+
+while IFS= read -r nested; do
+    [[ -n "${nested}" ]] || continue
+    HAS_BUNDLED_CODE=true
+    codesign --verify --strict --verbose=2 "${nested}" >/dev/null 2>&1 ||
+        die "invalid nested code signature: ${nested}"
+    if [[ -f "${nested}" ]] && grep -aFq 'sdl2-compat:' "${nested}"; then
+        die "bundled SDL2 is the SDL3-loading sdl2-compat shim: ${nested}"
+    fi
+    if [[ "${DISTRIBUTION}" == true ]]; then
+        NESTED_DETAILS="$(codesign -dvvv "${nested}" 2>&1)"
+        NESTED_TEAM="$(printf '%s\n' "${NESTED_DETAILS}" | sed -n 's/^TeamIdentifier=//p' | head -n 1)"
+        [[ -n "${OUTER_TEAM}" && "${NESTED_TEAM}" == "${OUTER_TEAM}" ]] ||
+            die "nested code TeamIdentifier does not match the app: ${nested}"
+    fi
+done < <(nested_framework_bundles; nested_mach_o_files)
 
 verify_mach_o_contract "${EXECUTABLE}" "main executable"
-if [[ -d "${FRAMEWORKS_DIR}" ]]; then
-    while IFS= read -r dylib; do
-        [[ -n "${dylib}" ]] || continue
-        verify_mach_o_contract "${dylib}" "nested dylib $(basename "${dylib}")"
-    done < <(find "${FRAMEWORKS_DIR}" -type f -name '*.dylib' -print)
-fi
+while IFS= read -r nested; do
+    [[ -n "${nested}" ]] || continue
+    verify_mach_o_contract "${nested}" "nested code $(basename "${nested}")"
+done < <(nested_mach_o_files)
 
 ENTITLEMENTS="$(codesign -d --entitlements :- "${APP_PATH}" 2>/dev/null || true)"
 if printf '%s\n' "${ENTITLEMENTS}" | grep -Eq \

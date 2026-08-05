@@ -10,29 +10,39 @@
 #
 # Usage:
 #   tools/release/verify_provenance.sh --dist DIR --version VER --commit SHA \
-#       [--out-checksums FILE] [--out-manifest FILE]
+#       [--require KEY=VALUE]... [--out-checksums FILE] [--out-manifest FILE]
 #
-# For each release asset (dist/Golden-Balloon-<version>-*, excluding generated
-# SHA256SUMS/manifest and the .provenance.json sidecars) requires a sidecar
+# For every Golden-Balloon-* entry in DIR (excluding generated SHA256SUMS/
+# manifest and the .provenance.json sidecars) requires a sidecar
 # "<asset>.provenance.json" whose recorded sha256 == the file on disk, version ==
-# VER, and commit == SHA. Rejects (nonzero) any missing sidecar, extra/renamed
-# asset with no sidecar, orphan sidecar naming an absent asset, or any digest /
-# version / commit mismatch. On success emits SHA256SUMS + a consolidated
-# manifest.json for publication.
+# VER, and commit == SHA. Enumeration is deliberately NOT version-scoped: a
+# stray artifact from another version sitting in the same directory is a
+# publication hazard, not something to glob past. Rejects (nonzero) any missing
+# sidecar, extra/renamed asset with no sidecar, orphan sidecar naming an absent
+# asset, cross-version artifact, or any digest / version / commit mismatch.
+# --require adds further exact sidecar field assertions (for example
+# --require platform=macos --require macos_signing=ad-hoc-unsigned) so a
+# platform lane asserts its own fields through this one implementation instead
+# of an inline copy. On success emits SHA256SUMS + a consolidated manifest.json
+# for publication.
 #
 # Runs where python3 is available (maintainer macOS + the ctest host); the
 # producer (stamp_provenance.sh) is python-free so it can run in the msys2 CI job.
 set -euo pipefail
 
 dist=""; version=""; commit=""; out_checksums=""; out_manifest=""
+required_fields=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dist) dist="$2"; shift 2 ;;
     --version) version="$2"; shift 2 ;;
     --commit) commit="$2"; shift 2 ;;
+    --require)
+      [[ "$2" == *=* ]] || { echo "ERROR: --require expects KEY=VALUE (got '$2')." >&2; exit 2; }
+      required_fields+=("$2"); shift 2 ;;
     --out-checksums) out_checksums="$2"; shift 2 ;;
     --out-manifest) out_manifest="$2"; shift 2 ;;
-    -h|--help) echo "Usage: $0 --dist DIR --version VER --commit SHA [--out-checksums FILE] [--out-manifest FILE]"; exit 0 ;;
+    -h|--help) echo "Usage: $0 --dist DIR --version VER --commit SHA [--require KEY=VALUE]... [--out-checksums FILE] [--out-manifest FILE]"; exit 0 ;;
     *) echo "ERROR: unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -58,7 +68,7 @@ macos_trusted="Golden-Balloon-${version}-macos-arm64-signed-notarized.dmg"
 windows_zip="Golden-Balloon-${version}-windows-x64.zip"
 linux_appimage="Golden-Balloon-${version}-linux-x86_64.AppImage"
 linux_tarball="Golden-Balloon-${version}-linux-x86_64.tar.gz"
-for f in "$dist"/Golden-Balloon-"$version"-*; do
+for f in "$dist"/Golden-Balloon-*; do
   base="$(basename "$f")"
   case "$base" in
     *.provenance.json) continue ;;
@@ -70,13 +80,30 @@ for f in "$dist"/Golden-Balloon-"$version"-*; do
     "$macos_unsigned"|"$macos_trusted"|"$windows_zip"|"$linux_appimage"|"$linux_tarball")
       assets+=("$f")
       ;;
-    *) err "unsupported release artifact filename: $base" ;;
+    *)
+      # Version-scoped globbing would step straight past a leftover artifact
+      # from an earlier cut sitting in the same publish directory. Name it.
+      if [[ "$base" =~ ^Golden-Balloon-([0-9]+(\.[0-9]+){1,2}|dev)-(macos-arm64-(unsigned|signed-notarized)\.dmg|windows-x64\.zip|linux-x86_64\.AppImage|linux-x86_64\.tar\.gz)$ ]]; then
+        err "release artifact from another version is present: $base (verifying $version)"
+      else
+        err "unsupported release artifact filename: $base"
+      fi
+      ;;
   esac
 done
-orphans=("$dist"/Golden-Balloon-"$version"-*.provenance.json)
+orphans=("$dist"/Golden-Balloon-*.provenance.json)
 shopt -u nullglob
 
-[[ ${#assets[@]} -gt 0 ]] || { echo "ERROR: no release assets in $dist for version $version." >&2; exit 1; }
+if [[ ${#assets[@]} -eq 0 ]]; then
+  # Report what was actually found first: a directory holding only stale or
+  # unrecognised artifacts must not be described as empty.
+  if [[ "$fail" -ne 0 ]]; then
+    echo "verify_provenance: ${fail} provenance failure(s); refusing to release." >&2
+    exit 1
+  fi
+  echo "ERROR: no release assets in $dist for version $version." >&2
+  exit 1
+fi
 
 # Every sidecar must name an existing asset (catch orphan/stale sidecars).
 if [[ ${#orphans[@]} -gt 0 ]]; then
@@ -97,7 +124,7 @@ for a in "${assets[@]}"; do
   actual="$(sha256_of "$a")"
   [[ -n "$actual" ]] || { echo "ERROR: no sha256 tool (sha256sum/shasum) available." >&2; exit 2; }
   if ASSET="$base" ACTUAL="$actual" WANT_VERSION="$version" WANT_COMMIT="$commit" \
-     python3 - "$sidecar" <<'PY'
+     python3 - "$sidecar" ${required_fields[@]+"${required_fields[@]}"} <<'PY'
 import json, os, sys
 try:
     rec = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -108,6 +135,10 @@ for key, want in (("artifact", os.environ["ASSET"]),
                   ("sha256",   os.environ["ACTUAL"]),
                   ("version",  os.environ["WANT_VERSION"]),
                   ("commit",   os.environ["WANT_COMMIT"])):
+    if rec.get(key) != want:
+        errs.append(f"{key}={rec.get(key)!r} != {want!r}")
+for requirement in sys.argv[2:]:
+    key, _, want = requirement.partition("=")
     if rec.get(key) != want:
         errs.append(f"{key}={rec.get(key)!r} != {want!r}")
 if rec.get("source_dirty") is not False:

@@ -35,6 +35,9 @@ NUL_ALLOWED_BINARY_SUFFIXES = frozenset(
     }
 )
 
+# Minimum run length for treating bytes in a binary blob as readable text.
+PRINTABLE_RUN_RE = re.compile(rb"[\t\x20-\x7e]{4,}")
+
 # The initial public commit contains detector and migration-tool blobs which
 # necessarily quote the vocabulary they remove. Grandfather only these reviewed
 # byte sequences. Never exempt an entire path: a changed version must be scanned
@@ -174,18 +177,37 @@ def email_is_public(email: str) -> bool:
     return ALLOWED_EMAIL_RE.fullmatch(email.strip()) is not None
 
 
+def printable_runs(data: bytes) -> list[str]:
+    """Extract the printable ASCII runs of a binary blob, `strings`-style."""
+    return [
+        run.decode("ascii")
+        for run in PRINTABLE_RUN_RE.findall(data)
+    ]
+
+
 def blob_hits(
     path: str,
     data: bytes,
     patterns: Iterable[re.Pattern[str]],
 ) -> list[str]:
+    hits: list[str] = []
     if b"\0" in data:
         suffix = PurePosixPath(path).suffix.lower()
-        if suffix in NUL_ALLOWED_BINARY_SUFFIXES:
-            return []
-        return [f"{path}: NUL byte in text/source-like public blob"]
+        if suffix not in NUL_ALLOWED_BINARY_SUFFIXES:
+            return [f"{path}: NUL byte in text/source-like public blob"]
+        # The suffix exempts the blob from the NUL-in-text rule only. Its bytes
+        # are still read: a file named .png that actually carries text or a
+        # credential must not reach the public tree unscanned. Match the
+        # denylist against the blob's printable runs, which is what a reader
+        # (or a leak scanner) would recover from it either way.
+        for run in printable_runs(data):
+            if any(pattern.search(run) for pattern in patterns):
+                excerpt = run.strip()
+                if len(excerpt) > 180:
+                    excerpt = excerpt[:177] + "..."
+                hits.append(f"{path}: high-risk text in binary blob: {excerpt}")
+        return hits
     text = data.decode("utf-8", errors="replace")
-    hits: list[str] = []
     for number, line in enumerate(text.splitlines(), 1):
         if any(pattern.search(line) for pattern in patterns):
             excerpt = line.strip()

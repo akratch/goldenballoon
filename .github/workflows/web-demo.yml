@@ -11,11 +11,18 @@ permissions:
   pages: write        # scoped to the Pages deployment only
   id-token: write     # required by deploy-pages OIDC; grants nothing else
 
-concurrency: { group: pages, cancel-in-progress: true }
+# Cancelling is safe for the BUILD (a superseded build produces nothing anyone
+# is waiting on) and is not safe for the Pages DEPLOYMENT: cancelling one
+# mid-flight can leave the site on a partially replaced payload. Per GitHub's
+# own Pages guidance the deployment queues instead of cancelling, so the two jobs
+# carry separate concurrency policies rather than one workflow-level rule.
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    concurrency:
+      group: web-demo-build-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       # Actions pinned to commit SHAs, not tags: a tag can be moved, a SHA cannot.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -44,6 +51,15 @@ jobs:
           test "$sz" -lt 41943040   # 40 MiB; Pages per-file limit is 100 MiB
           test "$save_sz" -lt 524288
 
+      - name: ROM revision table parity (browser mirrors the engine)
+        # The shell refuses unsupported cartridges from its own copy of the
+        # revision table. Publishing a drifted copy would let the browser accept
+        # a revision the engine cannot run, or refuse one it can. The runtime
+        # half of this (tests/check_rom_revision.py) needs a native build and a
+        # ROM; neither may exist here, so the table half runs from the same
+        # parser instead.
+        run: python3 tools/web/check_rom_id_mirror.py
+
       - name: ROM-absence guard (fail-closed)
         # THE legal gate. Golden Balloon is bring-your-own-ROM: the player supplies
         # a copy they own and it is read client-side, never uploaded. Nothing
@@ -70,12 +86,23 @@ jobs:
           fi
           echo "no ROM tracked in git"
 
+      # Same stamping the demo-repo publisher applies, from the same script.
+      # An unstamped Pages deploy is a page a sticky cache can pin against a
+      # freshly deployed engine -- exactly the mixed-build failure the ?v=
+      # stamp exists to make impossible.
+      - name: Stamp published shell (cache-bust + build version)
+        run: tools/web/stamp_publish.sh --dir dist/web --stamp "${GITHUB_SHA::7}"
+
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with: { path: dist/web }
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    # A queued deployment must replace the site completely or not at all.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     environment: { name: github-pages, url: "${{ steps.deployment.outputs.page_url }}" }
     steps:
       - id: deployment

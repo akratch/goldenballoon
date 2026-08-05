@@ -18,10 +18,9 @@
 #      Windows executables. correctness.yml already proves this same ctest
 #      suite is ROM-free and headless-safe on Linux/macOS runners (no Xvfb,
 #      no ROM); this step proves the same for Windows. mdkr64's CMakeLists.txt
-#      does not tag tests with ctest LABELS, and this repo has active work on
-#      platform/audio*/ that may add or rename audio-adjacent tests, so this
-#      excludes by name pattern (audio/mixer) rather than hardcoding an
-#      include-list of exact test names that could silently go stale.
+#      labels the display-dependent tests `gpu`, so this lane selects by that
+#      label (-LE gpu) and runs everything else, audio unit tests included:
+#      they use the SDL dummy audio driver and need no device.
 #   4. Exact portable packaging plus extracted startup from an unrelated CWD.
 #
 # This is deliberately not a publication lane. GitHub's windows-latest VM does
@@ -127,14 +126,15 @@ jobs:
       # macOS runners with no Xvfb and no ROM, so it is proven ROM-free and
       # headless-safe by construction; this proves the same on Windows.
       # GPU-labelled tests need a real display and are exercised by packaged
-      # release lanes. The audio name exclusion remains broad because new
-      # audio-adjacent tests may arrive under platform/audio*/.
+      # release lanes. Nothing else is excluded: the audio and mixer tests are
+      # the ones most likely to expose a Windows CRT/toolchain difference, so
+      # skipping them by name was removing this lane's best signal.
       - name: ROM-free CTest suite
         env:
           SDL_VIDEODRIVER: dummy
           SDL_AUDIODRIVER: dummy
         run: |
-          ctest --test-dir build --output-on-failure -LE gpu -E 'audio|mixer'
+          ctest --test-dir build --output-on-failure -LE gpu
 
       # Asset-free verify (mirror the release job's post-build check): the binary
       # must contain no ROM-derived copyrighted data. MSYS2 `nm` reads the PE and

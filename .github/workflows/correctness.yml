@@ -53,8 +53,8 @@ jobs:
           if [ "$REF_TYPE" = "tag" ]; then
             tag_oid="$(git rev-parse "refs/tags/$REF_NAME")"
             tag_commit="$(git rev-parse "${tag_oid}^{commit}")"
-            git merge-base --is-ancestor "$tag_commit" origin/main || {
-              echo "FAIL: release tags must point into public main history" >&2
+            git merge-base --is-ancestor "$tag_commit" "origin/$DEFAULT_BRANCH" || {
+              echo "FAIL: release tags must point into public $DEFAULT_BRANCH history" >&2
               exit 1
             }
             if [ "$(git cat-file -t "$tag_oid")" = "tag" ]; then

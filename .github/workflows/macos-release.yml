@@ -203,6 +203,21 @@ jobs:
           )
           echo "::notice::This artifact is ad-hoc integrity sealed but intentionally not Developer ID signed or notarized. Users should expect macOS's unidentified-developer warning, never a damaged-app error."
 
+      # Fail closed between stamping and upload, through the same verifier the
+      # publish job re-runs on the downloaded artifact.
+      - name: Verify provenance of the packaged DMG before upload
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          EXPECTED_SIGNING: ${{ inputs.trusted_signing && 'developer-id-notarized' || 'ad-hoc-unsigned' }}
+        run: |
+          set -euo pipefail
+          ./tools/release/verify_provenance.sh \
+            --dist dist \
+            --version "$RELEASE_VERSION" \
+            --commit "$GITHUB_SHA" \
+            --require platform=macos \
+            --require "macos_signing=$EXPECTED_SIGNING"
+
       - name: Upload macOS workflow artifact
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
         with:
@@ -223,9 +238,17 @@ jobs:
     needs: package
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # The publish job is the step that writes to a public release, so it is the
+    # one that must carry the protected environment's reviewers and rules. The
+    # build job keeps it as well: the trusted-signing path reads Developer ID
+    # and notarization credentials scoped to that environment.
+    environment: macos-release
     permissions:
       contents: write
     steps:
+      - name: Checkout provenance tooling
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
       - name: Download macOS workflow artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -257,37 +280,21 @@ jobs:
             exit 1
           }
           DMG_PATH="dist/Golden-Balloon-${RELEASE_VERSION}-macos-arm64-unsigned.dmg"
-          EXPECTED_SIGNING="ad-hoc-unsigned"
-          export EXPECTED_SIGNING
           DMG_DIR="$(dirname "$DMG_PATH")"
           DMG_NAME="$(basename "$DMG_PATH")"
           (
             cd "$DMG_DIR"
             shasum -a 256 -c "$DMG_NAME.sha256"
           )
-          python3 - "${DMG_PATH}.provenance.json" "$DMG_PATH" <<'PY'
-          import hashlib
-          import json
-          import os
-          import pathlib
-          import sys
-
-          sidecar = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-          artifact = pathlib.Path(sys.argv[2])
-          expected = {
-              "artifact": artifact.name,
-              "commit": os.environ["SOURCE_COMMIT"],
-              "macos_signing": os.environ["EXPECTED_SIGNING"],
-              "platform": "macos",
-              "version": os.environ["RELEASE_VERSION"],
-          }
-          for key, value in expected.items():
-              if sidecar.get(key) != value:
-                  raise SystemExit(f"provenance {key} mismatch")
-          digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
-          if sidecar.get("sha256") != digest:
-              raise SystemExit("provenance sha256 mismatch")
-          PY
+          # One provenance implementation for every lane: the shared verifier
+          # asserts artifact/digest/version/commit and a clean source tree, and
+          # --require adds this lane's macOS-specific sidecar fields.
+          ./tools/release/verify_provenance.sh \
+            --dist "$DMG_DIR" \
+            --version "$RELEASE_VERSION" \
+            --commit "$SOURCE_COMMIT" \
+            --require platform=macos \
+            --require macos_signing=ad-hoc-unsigned
           gh release view "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" >/dev/null
           gh release upload "$RELEASE_TAG" \
