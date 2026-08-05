@@ -205,6 +205,12 @@ def main() -> int:
     args = parse_args()
     root = Path(args.repo_root).resolve() if args.repo_root else git_root()
     files = tracked_markdown_files(root)
+    if not files:
+        print(
+            "FAIL: no tracked Markdown files found to check (unexpected)",
+            file=sys.stderr,
+        )
+        return 1
     file_anchors = {path: anchors_for(path) for path in files}
     problems: list[str] = []
 

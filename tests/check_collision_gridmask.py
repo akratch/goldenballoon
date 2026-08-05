@@ -106,7 +106,7 @@ import re
 import subprocess
 import sys
 
-from harness_utils import resolve_binary
+from harness_utils import preserved_eeprom, resolve_binary, save_env, test_save_dir
 
 # Boss level 46 = Tricky 2, the Fire Mountain spiral. Decoded from the ROM's
 # ASSET_MISC_BOSS_TRACKS_IDS with tools/dump_misc_asset.py (sub-asset 30):
@@ -121,7 +121,8 @@ BOSS_TRACK = 46
 CONTROL_TRACK = 5
 
 SCRIPT = "tests/input_scripts/race_full_3lap_tt.txt"
-SAVE = os.path.join("save", "eeprom.bin")
+SAVE_DIR = test_save_dir()
+SAVE = os.path.join(SAVE_DIR, "eeprom.bin")
 # The fixed arm finishes at ~8600 and then loads the LOSE cutscene at 8965
 # (autopilot races like the CPU field, so it finishes 2nd). The
 # budget has to clear that load, or the "the lose cutscene never precedes the
@@ -198,6 +199,7 @@ WIN_FRAMES = 13000
 def run(binary, rom, script, track, frames, legacy, verbose, boss_win=False):
     env = dict(os.environ)
     env["MDKR_AUDIO"] = "0"          # belt-and-braces; --headless-frames is the guarantee
+    save_env(env, SAVE_DIR)
     env["MDKR_PRESENT_RATE"] = "original"
     env["MDKR_SIMULATION_CADENCE"] = "original"
     env["MDKR_SYNTH_FIELDS"] = "2"   # one authored gameplay ticket per opportunity
@@ -284,6 +286,15 @@ def parse(out, track):
 
 
 def main() -> int:
+    # This check deletes and rewrites EEPROM images to assert a known starting
+    # state. Under tools/run_checks.py SAVE_DIR is a run-scoped temporary
+    # directory; a standalone run defaults to the repository's playable save/,
+    # whose prior contents must survive however this exits.
+    with preserved_eeprom(SAVE_DIR):
+        return run_check()
+
+
+def run_check() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", default="build")
     ap.add_argument("--rom", default="baserom.us.v80.z64")

@@ -75,6 +75,12 @@ def main() -> int:
     args = parse_args()
     root = Path(args.repo_root).resolve() if args.repo_root else git_root()
     scripts = tracked_shell_scripts(root)
+    if not scripts:
+        print(
+            "FAIL: no tracked shell scripts found to check (unexpected)",
+            file=sys.stderr,
+        )
+        return 1
     failures: list[str] = []
 
     for script in scripts:

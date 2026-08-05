@@ -35,6 +35,14 @@ FATAL_RE = re.compile(
     r"runtime error:|Assertion|\[FX BUG\]"
 )
 
+# Pure/Restored pass on pixel EQUALITY, which a frame that drew nothing also
+# satisfies. The fixture is one dim copyright screen rather than a lit race, so
+# the floor is set on distinct RGB triples and luma spread instead of
+# check_renderer_backends' scene thresholds: every arm measured here carries at
+# least 207 sampled colours and sigma 7.7.
+MIN_FRAME_COLOURS = 64
+MIN_FRAME_SIGMA = 3.0
+
 
 @dataclass(frozen=True)
 class Image:
@@ -165,6 +173,26 @@ def run_arm(
     )
 
 
+def frame_metrics(image: Image) -> tuple[int, float]:
+    """Return distinct sampled colour count and luma sigma for a capture."""
+    colours: set[bytes] = set()
+    count = total = total_sq = 0
+    for y in range(0, image.height, 3):
+        row = y * image.width * 3
+        for x in range(0, image.width, 3):
+            offset = row + x * 3
+            pixel = image.pixels[offset:offset + 3]
+            colours.add(pixel)
+            luma = (pixel[0] * 299 + pixel[1] * 587 + pixel[2] * 114) // 1000
+            count += 1
+            total += luma
+            total_sq += luma * luma
+    if count == 0:
+        return 0, 0.0
+    mean = total / count
+    return len(colours), max(0.0, total_sq / count - mean * mean) ** 0.5
+
+
 def changed_pixels(left: Image, right: Image) -> list[tuple[int, int]]:
     if (left.width, left.height) != (right.width, right.height):
         raise ValueError("A/B dimensions differ")
@@ -226,6 +254,12 @@ def main() -> int:
             )
         if arm.pace != pace_baseline:
             failures.append(f"{label}: [PACE] diverged")
+        colours, sigma = frame_metrics(arm.image)
+        if colours < MIN_FRAME_COLOURS or sigma < MIN_FRAME_SIGMA:
+            failures.append(
+                f"{label}: capture is blank or near-uniform "
+                f"(colours={colours}, luma sigma={sigma:.1f})"
+            )
 
     for backend in backends:
         for mode in ("pure", "restored"):

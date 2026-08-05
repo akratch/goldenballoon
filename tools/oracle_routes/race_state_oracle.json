@@ -4,6 +4,18 @@
   "description": "State-only US 1.1 reference route. It enters Ancient Lake through the same one-player Tracks path in both runners, holds throttle, and applies the established short-left-pulse line through a real lap. The native arm uses Original two-field gameplay cadence and proportionally scaled input frames; Enhanced one-field simulation remains a separate product-policy arm and is not scored here. The comparison joins native and real-ROM racer state on the in-game lap clock, not presentation frames. No PPMs are captured.",
   "compare_frames": false,
   "state_trace": true,
+  "state_max_position_p95": 5.0,
+  "state_max_position_error": 5.0,
+  "state_min_progress_agreement": 0.98,
+  "state_min_rng_agreement": 0.0,
+  "state_max_velocity_ratio_deviation": 0.02,
+  "threshold_basis": {
+    "state_max_position_p95": "The strict independent-runner contract this lane exists to hold open. docs/ORACLE.md records the arms as expected-red: the reference replay moves the first five-unit separation from race clock 18 to 767 and still drifts, and that stays visible rather than tolerated.",
+    "state_max_position_error": "Held at the same five world units as the p95 for the same reason: this lane reports the divergence, it does not absorb it.",
+    "state_min_progress_agreement": "The strict contract; the reference replay already matches the ROM's checkpoint clocks exactly through checkpoints 0-3 (3, 349, 463, 707).",
+    "state_min_rng_agreement": "UNMEASURED: no recorded rng agreement exists for this lane. The comparison still fails closed when either trace carries no non-zero seed, which is the way this measurement can go vacuous.",
+    "state_max_velocity_ratio_deviation": "Carried over from the Bluey 2 lane, whose passing arm measured a 0.065% mean-object-speed deviation (docs/BLUEY2_PARITY.md); the same 2% band rejects a one-field cadence, which measured 13.98%."
+  },
   "native_cadence": "original",
   "native_synth_fields": 2,
   "native_event_divisor": 2,

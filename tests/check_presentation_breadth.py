@@ -407,7 +407,11 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
     snapshot = parse_row(high, SNAPSHOT_RE)
     packet = parse_row(high, PACKET_RE)
     retained = parse_row(high, RETAINED_RE)
-    if not sched or not replay or not packet or not retained:
+    # Every row this arm asserts on has to be present before any of it is
+    # evaluated: a missing report is a gate that silently stops measuring, not
+    # an arm with nothing to say.
+    if (not sched or not replay or not snapshot or not packet or
+            not retained):
         failures.append(f"{prefix}: no presentation telemetry was emitted")
         return failures, []
 
@@ -465,7 +469,7 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
         failures.append(
             f"{prefix}: {snapshot.get('overflows')} snapshot captures failed "
             "whole; the published pair went stale for those ticks")
-    if snapshot and snapshot.get("captures", 0) != ticks:
+    if snapshot.get("captures", 0) != ticks:
         failures.append(
             f"{prefix}: {snapshot.get('captures')} snapshot captures for "
             f"{ticks} ticks -- capture is not running once per tick")
@@ -822,6 +826,17 @@ def main() -> int:
     if args.only:
         wanted = {name.strip() for name in args.only.split(",")}
         arms = [arm for arm in arms if arm.name in wanted]
+        # A selection that resolves to nothing must not report a pass over
+        # content it never ran: an unmatched name is a mis-spelled --only, not
+        # a clean sweep.
+        unknown = sorted(wanted - {arm.name for arm in arms} -
+                         {"tenancy-control"})
+        if unknown or not (arms or "tenancy-control" in wanted):
+            print(f"check_presentation_breadth: FAIL\n  - --only {args.only!r} "
+                  f"selected no runnable work (unmatched: "
+                  f"{', '.join(unknown) or 'none'}); this gate does not pass "
+                  "on an empty selection.")
+            return 1
 
     failures: list[str] = []
     notes: list[str] = []

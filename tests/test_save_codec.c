@@ -297,22 +297,132 @@ static uint32_t test_random(void) {
     return value;
 }
 
+/* Block starts inside the 512-byte image. Slots occupy [0, 120). */
+#define TEST_CONFIG_OFFSET 120u
+#define TEST_FAST_LAPS_OFFSET 128u
+#define TEST_COURSE_TIMES_OFFSET 320u
+
+static void store_be16(uint8_t *bytes, uint16_t value) {
+    bytes[0] = (uint8_t) (value >> 8);
+    bytes[1] = (uint8_t) value;
+}
+
+/* Random bytes are corrupt in every block, so half the corpus gets its stored
+ * checksums recomputed: those images reach slot, config and record decoding
+ * instead of stopping at the first checksum comparison. */
+static void repair_block_checksums(uint8_t bytes[MDKR_SAVE_IMAGE_SIZE]) {
+    unsigned i;
+    uint64_t config;
+    for (i = 0; i < MDKR_SAVE_SLOT_COUNT; i++) {
+        uint8_t *slot = bytes + i * MDKR_SAVE_SLOT_SIZE;
+        store_be16(slot, mdkr_save_sum_checksum(slot, MDKR_SAVE_SLOT_SIZE));
+    }
+    config = mdkr_save_config_decode_value(bytes + TEST_CONFIG_OFFSET) &
+             UINT64_C(0x00FFFFFFFFFFFFFF);
+    config |= (uint64_t) mdkr_save_config_checksum(config) << 56;
+    mdkr_save_config_encode_value(config, bytes + TEST_CONFIG_OFFSET);
+    store_be16(bytes + TEST_FAST_LAPS_OFFSET,
+               mdkr_save_sum_checksum(bytes + TEST_FAST_LAPS_OFFSET,
+                                      MDKR_SAVE_RECORD_BLOCK_SIZE));
+    store_be16(bytes + TEST_COURSE_TIMES_OFFSET,
+               mdkr_save_sum_checksum(bytes + TEST_COURSE_TIMES_OFFSET,
+                                      MDKR_SAVE_RECORD_BLOCK_SIZE));
+}
+
 static void test_arbitrary_image_noop_property(void) {
     uint8_t bytes[MDKR_SAVE_IMAGE_SIZE];
     uint8_t encoded[MDKR_SAVE_IMAGE_SIZE];
     MdkrSaveDocument document;
+    MdkrSaveDocument changed;
+    MdkrSaveReport report;
+    MdkrSavePatch patch;
     unsigned iteration;
+    unsigned valid_slots = 0;
+    unsigned noncanonical_slots = 0;
+    unsigned corrupt_slots = 0;
+    unsigned valid_config = 0;
+    unsigned valid_records = 0;
+    unsigned patched = 0;
     for (iteration = 0; iteration < 10000; iteration++) {
+        unsigned corrupt = 0;
+        unsigned noncanonical = 0;
         size_t i;
         for (i = 0; i < sizeof(bytes); i++) {
             bytes[i] = (uint8_t) test_random();
         }
+        if ((iteration & 1u) == 0u) {
+            repair_block_checksums(bytes);
+        }
+
+        /* Only the exact image size is decodable, whatever the content. */
+        if ((iteration % 64u) == 0u) {
+            memset(&changed, 0xD7, sizeof(changed));
+            document = changed;
+            CHECK(mdkr_save_decode(bytes, sizeof(bytes) - 1u, &document) ==
+                  MDKR_SAVE_ERR_SIZE);
+            CHECK(memcmp(&document, &changed, sizeof(document)) == 0);
+        }
+
         CHECK(mdkr_save_decode(bytes, sizeof(bytes), &document) ==
               MDKR_SAVE_OK);
         CHECK(mdkr_save_encode(&document, encoded, sizeof(encoded)) ==
               MDKR_SAVE_OK);
         CHECK(memcmp(bytes, encoded, sizeof(bytes)) == 0);
+
+        CHECK(mdkr_save_validate(&document, &report) == MDKR_SAVE_OK);
+        for (i = 0; i < MDKR_SAVE_BLOCK_COUNT; i++) {
+            CHECK(report.block_status[i] == document.block_status[i]);
+            if (document.block_status[i] == MDKR_SAVE_BLOCK_CORRUPT) {
+                corrupt++;
+            } else if (document.block_status[i] ==
+                       MDKR_SAVE_BLOCK_NONCANONICAL) {
+                noncanonical++;
+            }
+        }
+        CHECK(report.corrupt_block_count == corrupt);
+        CHECK(report.noncanonical_block_count == noncanonical);
+
+        for (i = 0; i < MDKR_SAVE_SLOT_COUNT; i++) {
+            if (document.block_status[i] == MDKR_SAVE_BLOCK_VALID) {
+                valid_slots++;
+            } else if (document.block_status[i] ==
+                       MDKR_SAVE_BLOCK_NONCANONICAL) {
+                noncanonical_slots++;
+            } else if (document.block_status[i] == MDKR_SAVE_BLOCK_CORRUPT) {
+                corrupt_slots++;
+            }
+        }
+        if (document.block_status[MDKR_SAVE_BLOCK_CONFIG] ==
+            MDKR_SAVE_BLOCK_VALID) {
+            valid_config++;
+        }
+        if (document.block_status[MDKR_SAVE_BLOCK_FAST_LAPS] ==
+                MDKR_SAVE_BLOCK_VALID &&
+            document.block_status[MDKR_SAVE_BLOCK_COURSE_TIMES] ==
+                MDKR_SAVE_BLOCK_VALID) {
+            valid_records++;
+        }
+
+        if (document.block_status[0] == MDKR_SAVE_BLOCK_CORRUPT) {
+            continue;
+        }
+        memset(&patch, 0, sizeof(patch));
+        patch.slot_mask = 1;
+        patch.slots[0].fields = MDKR_SLOT_PATCH_KEYS;
+        patch.slots[0].values.keys = (uint8_t) (test_random() & 0x1Fu);
+        CHECK(mdkr_save_apply(&document, &patch, &changed) == MDKR_SAVE_OK);
+        CHECK(changed.slots[0].keys == patch.slots[0].values.keys);
+        CHECK(memcmp(changed.bytes + MDKR_SAVE_SLOT_SIZE,
+                     document.bytes + MDKR_SAVE_SLOT_SIZE,
+                     MDKR_SAVE_IMAGE_SIZE - MDKR_SAVE_SLOT_SIZE) == 0);
+        patched++;
     }
+    CHECK(valid_slots > 0);
+    CHECK(noncanonical_slots > 0);
+    CHECK(corrupt_slots > 0);
+    CHECK(valid_config > 0);
+    CHECK(valid_records > 0);
+    CHECK(patched > 0);
 }
 
 int main(void) {

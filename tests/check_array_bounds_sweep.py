@@ -111,6 +111,8 @@ import subprocess
 import sys
 import tempfile
 
+from harness_utils import exclusive_build_dir
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILD_DIR = "build-ubsan"
 
@@ -221,11 +223,6 @@ SHAPE_TRIAGE = {
     ("bare-pointer", "game/src/audio.c", "music_get_fx_mix_all_channels:channelFXMix"):
         "UNREACHABLE: marked UNUSED and has zero callers in the tree. Genuinely "
         "unbounded (one u8 per gMusicPlayer->maxChannels) if it ever gains one.",
-    ("bare-pointer", "game/src/unused_string.c", "strcpy:src"):
-        "UNREACHABLE: unused_string.c is exactly what its name says -- no caller. "
-        "Unbounded by the C string contract, like every strcpy.",
-    ("bare-pointer", "game/src/unused_string.c", "strcat:dest"):
-        "UNREACHABLE: same file, no caller.",
     # -- the C-string contract: bounded by the input's NUL. -----------------
     ("bare-pointer", "game/src/font.c", "parse_string_with_number:output"):
         "STRING CONTRACT: copies until the input's NUL, so the output buffer must "
@@ -607,6 +604,18 @@ def collect(binary, rom, logdir, verbose):
 def shape_sweep(verbose):
     """PHASE 2: every TRIAGE finding is triaged; the INFO population has not grown."""
     tool = os.path.join(ROOT, "tools", "sweep_bug_shapes.py")
+    # The enumerator's own SELFTEST pins the known instances of each shape. Run
+    # it first: a parser regression that stopped finding them would otherwise
+    # read here as "nothing new was added".
+    self_proc = subprocess.run([sys.executable, tool, "--selftest"],
+                               cwd=ROOT, capture_output=True, text=True)
+    if self_proc.returncode != 0:
+        print("  FAIL: tools/sweep_bug_shapes.py --selftest exited %d"
+              % self_proc.returncode)
+        for line in (self_proc.stdout + self_proc.stderr).strip().split("\n"):
+            if line:
+                print("    %s" % line)
+        return False
     proc = subprocess.run([sys.executable, tool], cwd=ROOT, capture_output=True, text=True)
     if proc.returncode != 0:
         print("  FAIL: tools/sweep_bug_shapes.py exited %d" % proc.returncode)
@@ -858,6 +867,18 @@ def controls(binary, rom, logdir, verbose):
 
 
 def main():
+    # build-ubsan is shared state this check reconfigures and rebuilds. Two
+    # concurrent runs would interleave a reconfigure with a compile and fail for
+    # reasons unrelated to the code under test.
+    try:
+        with exclusive_build_dir(os.path.join(ROOT, BUILD_DIR)):
+            return run_check()
+    except RuntimeError as exc:
+        print("check_array_bounds_sweep: %s" % exc)
+        return 2
+
+
+def run_check():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--rom", default="baserom.us.v80.z64")

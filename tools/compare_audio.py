@@ -19,6 +19,12 @@ import sys
 import wave
 
 
+# This is a build-to-build guard over one deterministic route, so the two dumps
+# describe the same program: a length divergence past this band means one of the
+# captures was truncated or extended, not that the audio changed.
+LENGTH_TOLERANCE = 0.10
+
+
 def load_pcm(path):
     """Interleaved s16 samples from either a WAV container or a raw s16le dump."""
     with open(path, "rb") as f:
@@ -61,17 +67,14 @@ def main():
     base = load_pcm(sys.argv[1])
     test = load_pcm(sys.argv[2])
 
-    if len(base) == 0 and len(test) == 0:
-        print("Samples: both empty")
-        print("PASS")
-        sys.exit(0)
+    # Two empty dumps agree on nothing; a capture that produced no samples is a
+    # broken run, and every metric below is undefined for it.
     if len(base) == 0 or len(test) == 0:
-        print("FAIL: one file empty (%d vs %d samples)" % (len(base), len(test)))
+        print("FAIL: empty capture (%d vs %d samples)" % (len(base), len(test)))
         sys.exit(1)
 
     min_len = min(len(base), len(test))
-    if abs(len(base) - len(test)) > max(len(base), 1) * 0.1:
-        print("WARNING: size mismatch: %d vs %d samples" % (len(base), len(test)))
+    length_ratio = abs(len(base) - len(test)) / float(len(base))
 
     rms_base = rms(base[:min_len])
     rms_test = rms(test[:min_len])
@@ -92,6 +95,12 @@ def main():
     print("ZCR:        baseline=%.4f  test=%.4f" % (zcr_base, zcr_test))
 
     fail = False
+    # The metrics below only cover the overlap, so a truncated capture would
+    # otherwise pass on the part that survived.
+    if length_ratio > LENGTH_TOLERANCE:
+        print("FAIL: size mismatch %.1f%% > %.1f%%: %d vs %d samples"
+              % (length_ratio * 100, LENGTH_TOLERANCE * 100, len(base), len(test)))
+        fail = True
     if rms_diff > 500:
         print("FAIL: RMS difference %.1f > 500 (significant audio change)" % rms_diff)
         fail = True

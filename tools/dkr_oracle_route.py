@@ -67,6 +67,27 @@ DEFAULT_HOLD = 4
 NATIVE_SCRIPT_TICK_LEAD = 1
 ARM_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
+# A misspelled key would otherwise read as "threshold not declared" and silently
+# resolve to a default, so the accepted set is closed.
+ROUTE_KEYS = frozenset({
+    "schema", "name", "description",
+    "compare_frames", "state_trace", "state_require_finish",
+    "state_allow_legacy_pace_probe", "native_allow_nonzero_exit",
+    "forced_track", "forced_track_source",
+    "state_racer_index", "state_min_common_clocks",
+    "state_min_lap", "state_min_checkpoint",
+    "state_max_position_p95", "state_max_position_error",
+    "state_min_progress_agreement", "state_min_rng_agreement",
+    "state_max_velocity_ratio_deviation", "threshold_basis",
+    "native_cadence", "native_synth_fields", "native_event_divisor",
+    "native_arms", "sync", "ares_phase_offsets",
+    "native", "ares", "marks", "events",
+})
+ARM_KEYS = frozenset({
+    "name", "cadence", "frames", "synth_fields", "event_divisor",
+    "reference_replay",
+})
+
 
 def is_integer(value: Any) -> bool:
     """JSON integer, excluding bool (which subclasses int in Python)."""
@@ -271,7 +292,18 @@ def route_field(route: dict[str, Any], field: str) -> Any:
         "state_min_lap": int(route.get("state_min_lap", 1)),
         "state_min_checkpoint": int(route.get("state_min_checkpoint", 20)),
         "state_max_position_p95": float(route.get("state_max_position_p95", 5.0)),
+        "state_max_position_error": float(route.get("state_max_position_error", 5.0)),
         "state_min_progress_agreement": float(route.get("state_min_progress_agreement", 0.98)),
+        "state_min_rng_agreement": float(route.get("state_min_rng_agreement", 0.0)),
+        "state_max_velocity_ratio_deviation": float(
+            route.get("state_max_velocity_ratio_deviation", 0.0)
+        ),
+        "state_allow_legacy_pace_probe": int(
+            bool(route.get("state_allow_legacy_pace_probe", False))
+        ),
+        "native_allow_nonzero_exit": int(
+            bool(route.get("native_allow_nonzero_exit", False))
+        ),
         "native_cadence": route.get("native_cadence", ""),
         "native_synth_fields": int(route.get("native_synth_fields", 1)),
         "native_event_divisor": int(route.get("native_event_divisor", 1)),
@@ -318,12 +350,17 @@ def validate_route(route: dict[str, Any]) -> None:
     errors: list[str] = []
     if not route.get("name"):
         errors.append("route must set name")
+    for key in sorted(set(route) - ROUTE_KEYS - {"_path"}):
+        errors.append(f"unknown route key {key!r}")
     for runner in ("native", "ares"):
         block = runner_block(route, runner)
         frames = block.get("frames")
         if not is_integer(frames) or frames < 1:
             errors.append(f"{runner}.frames must be a positive integer")
-    for field in ("compare_frames", "state_trace", "state_require_finish"):
+    for field in (
+        "compare_frames", "state_trace", "state_require_finish",
+        "state_allow_legacy_pace_probe", "native_allow_nonzero_exit",
+    ):
         if field in route and not isinstance(route[field], bool):
             errors.append(f"{field} must be a boolean")
     if (
@@ -364,29 +401,92 @@ def validate_route(route: dict[str, Any]) -> None:
         or (is_integer(min_checkpoint) and min_checkpoint < 0)
     ):
         errors.append("state_min_lap and state_min_checkpoint must be non-negative")
-    for field in ("state_max_position_p95", "state_min_progress_agreement"):
+    numeric_thresholds = (
+        "state_max_position_p95", "state_max_position_error",
+        "state_min_progress_agreement", "state_min_rng_agreement",
+        "state_max_velocity_ratio_deviation",
+    )
+    for field in numeric_thresholds:
         if field in route and (
             isinstance(route[field], bool)
             or not isinstance(route[field], (int, float))
             or not math.isfinite(float(route[field]))
         ):
             errors.append(f"{field} must be numeric")
-    max_position = route.get("state_max_position_p95", 5.0)
-    min_agreement = route.get("state_min_progress_agreement", 0.98)
-    if (
-        isinstance(max_position, (int, float))
-        and not isinstance(max_position, bool)
-        and math.isfinite(float(max_position))
-        and max_position < 0
+
+    def declared_number(field: str, default: float) -> float | None:
+        value = route.get(field, default)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            return None
+        return float(value)
+
+    max_position = declared_number("state_max_position_p95", 5.0)
+    max_position_error = declared_number("state_max_position_error", 5.0)
+    min_agreement = declared_number("state_min_progress_agreement", 0.98)
+    min_rng_agreement = declared_number("state_min_rng_agreement", 0.0)
+    max_velocity_deviation = declared_number(
+        "state_max_velocity_ratio_deviation", 0.0
+    )
+    for field, value in (
+        ("state_max_position_p95", max_position),
+        ("state_max_position_error", max_position_error),
+        ("state_max_velocity_ratio_deviation", max_velocity_deviation),
     ):
-        errors.append("state_max_position_p95 must be non-negative")
-    if (
-        isinstance(min_agreement, (int, float))
-        and not isinstance(min_agreement, bool)
-        and math.isfinite(float(min_agreement))
-        and not 0.0 <= min_agreement <= 1.0
+        if value is not None and value < 0:
+            errors.append(f"{field} must be non-negative")
+    for field, value in (
+        ("state_min_progress_agreement", min_agreement),
+        ("state_min_rng_agreement", min_rng_agreement),
     ):
-        errors.append("state_min_progress_agreement must be in 0..1")
+        if value is not None and not 0.0 <= value <= 1.0:
+            errors.append(f"{field} must be in 0..1")
+    if (
+        max_position is not None
+        and max_position_error is not None
+        and max_position_error < max_position
+    ):
+        errors.append(
+            "state_max_position_error must not be below state_max_position_p95"
+        )
+    # Every state route states the bound it is actually held to; an omitted
+    # threshold would otherwise inherit a value nobody reviewed.
+    legacy_probe = bool(route.get("state_allow_legacy_pace_probe", False))
+    if route.get("state_trace", False):
+        for field in (
+            "state_max_position_p95", "state_max_position_error",
+            "state_min_progress_agreement",
+        ):
+            if field not in route:
+                errors.append(f"state-trace routes must declare {field}")
+        for field in (
+            "state_min_rng_agreement", "state_max_velocity_ratio_deviation",
+        ):
+            if legacy_probe and field in route:
+                errors.append(
+                    f"{field} is not measurable under the legacy [PACE] probe"
+                )
+            elif not legacy_probe and field not in route:
+                errors.append(f"state-trace routes must declare {field}")
+    elif legacy_probe:
+        errors.append("state_allow_legacy_pace_probe requires state_trace")
+    # Each declared threshold names the measurement it came from, so a number
+    # cannot be relaxed without the relaxation being reviewable.
+    basis = route.get("threshold_basis", {})
+    if not isinstance(basis, dict):
+        errors.append("threshold_basis must be an object")
+        basis = {}
+    for key in sorted(set(basis) - set(numeric_thresholds)):
+        errors.append(f"threshold_basis[{key!r}] names no threshold")
+    for field in numeric_thresholds:
+        if field not in route:
+            continue
+        text = basis.get(field)
+        if not isinstance(text, str) or not text.strip():
+            errors.append(f"threshold_basis must explain {field}")
     if is_integer(route.get("native_synth_fields")) and not (
         1 <= route["native_synth_fields"] <= 6
     ):
@@ -406,6 +506,8 @@ def validate_route(route: dict[str, Any]) -> None:
         if not isinstance(arm, dict):
             errors.append(f"native_arms[{index}] must be an object")
             continue
+        for key in sorted(set(arm) - ARM_KEYS):
+            errors.append(f"unknown native_arms[{index}] key {key!r}")
         name = arm.get("name")
         if not isinstance(name, str) or ARM_NAME_RE.fullmatch(name) is None:
             errors.append(

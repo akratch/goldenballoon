@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Compare a native racer trace with the real US 1.1 ROM running in ares.
 
-The preferred native trace is the end-of-present, all-racer ``[ORACLE]`` probe.
-The historical player-one ``[PACE]`` probe remains a backwards-compatible
-fallback. The ares trace is compact CSV read directly from the original game's
+The native trace is the end-of-present, all-racer ``[ORACLE]`` probe. The
+historical player-one ``[PACE]`` probe carries no velocity, rng, or finish
+state, so it can only be reached by an explicit route opt-in and is mutually
+exclusive with the gates that read those fields. The ares trace is compact CSV
+read directly from the original game's
 RDRAM by the local-only, instrumented emulator. Rows are joined by the race's
 own lap-time clock rather than host/present frame: menu loads and VI
 presentation have different costs, while the in-game clock is the state
@@ -82,7 +84,9 @@ def finite_state(row: State) -> bool:
     return all(math.isfinite(value) for value in (row.x, row.y, row.z))
 
 
-def load_native(path: Path, racer_index: int) -> tuple[list[State], str]:
+def load_native(
+    path: Path, racer_index: int, allow_legacy_pace: bool
+) -> tuple[list[State], str]:
     oracle: list[State] = []
     sampled: list[State] = []
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -131,7 +135,9 @@ def load_native(path: Path, racer_index: int) -> tuple[list[State], str]:
         )
     if oracle:
         return oracle, "oracle"
-    if racer_index != 0:
+    # An absent [ORACLE] probe is a broken capture, not a reason to score a
+    # weaker one. Only a route that declares the legacy probe may reach it.
+    if not allow_legacy_pace or racer_index != 0 or not sampled:
         return [], "missing"
     # The native probe lives immediately before the vehicle-specific movement
     # dispatch in racer.c. Its clock is incremented for the current update, but
@@ -154,11 +160,16 @@ def load_native(path: Path, racer_index: int) -> tuple[list[State], str]:
     return rows, "pace"
 
 
-def load_ares(path: Path, racer_index: int) -> tuple[list[State], int]:
+def load_ares(path: Path, racer_index: int) -> tuple[list[State], int, bool]:
     rows: list[State] = []
     invalid = 0
+    # A trace whose rng column was dropped would otherwise be compared against a
+    # substituted zero, so carry the column's presence out with the rows.
+    rng_column = False
     with path.open("r", encoding="utf-8", newline="") as handle:
-        for raw in csv.DictReader(handle):
+        reader = csv.DictReader(handle)
+        rng_column = "rng_seed" in (reader.fieldnames or [])
+        for raw in reader:
             if raw.get("valid") != "1":
                 invalid += 1
                 continue
@@ -188,7 +199,7 @@ def load_ares(path: Path, racer_index: int) -> tuple[list[State], int]:
                     framebuffer_serial=int(raw["framebuffer_serial"]),
                 )
             )
-    return rows, invalid
+    return rows, invalid, rng_column
 
 
 def normalize_timebase(rows: list[State]) -> tuple[list[State], str]:
@@ -335,7 +346,13 @@ def main() -> int:
     parser.add_argument("--min-lap", type=int, default=1)
     parser.add_argument("--min-checkpoint", type=int, default=20)
     parser.add_argument("--max-position-p95", type=float, default=5.0)
+    parser.add_argument("--max-position-error", type=float, required=True)
     parser.add_argument("--min-progress-agreement", type=float, default=0.98)
+    # The three ORACLE-only gates below read fields the legacy probe never
+    # records, so they are required exactly when that probe is not in play.
+    parser.add_argument("--min-rng-agreement", type=float)
+    parser.add_argument("--max-velocity-ratio-deviation", type=float)
+    parser.add_argument("--allow-legacy-pace-probe", action="store_true")
     args = parser.parse_args()
 
     failures: list[str] = []
@@ -345,10 +362,40 @@ def main() -> int:
         parser.error("--racer-index must be non-negative")
     if args.min_lap < 0 or args.min_checkpoint < 0:
         parser.error("--min-lap and --min-checkpoint must be non-negative")
-    if not math.isfinite(args.max_position_p95) or args.max_position_p95 < 0:
-        parser.error("--max-position-p95 must be finite and non-negative")
+    for name, value in (
+        ("--max-position-p95", args.max_position_p95),
+        ("--max-position-error", args.max_position_error),
+    ):
+        if not math.isfinite(value) or value < 0:
+            parser.error(f"{name} must be finite and non-negative")
+    if args.max_position_error < args.max_position_p95:
+        parser.error("--max-position-error must not be below --max-position-p95")
     if not 0.0 <= args.min_progress_agreement <= 1.0:
         parser.error("--min-progress-agreement must be in 0..1")
+    if args.allow_legacy_pace_probe:
+        if args.min_rng_agreement is not None:
+            parser.error(
+                "--min-rng-agreement cannot be measured by the legacy probe"
+            )
+        if args.max_velocity_ratio_deviation is not None:
+            parser.error(
+                "--max-velocity-ratio-deviation cannot be measured by the "
+                "legacy probe"
+            )
+    else:
+        if args.min_rng_agreement is None:
+            parser.error("--min-rng-agreement is required")
+        if args.max_velocity_ratio_deviation is None:
+            parser.error("--max-velocity-ratio-deviation is required")
+        if not 0.0 <= args.min_rng_agreement <= 1.0:
+            parser.error("--min-rng-agreement must be in 0..1")
+        if (
+            not math.isfinite(args.max_velocity_ratio_deviation)
+            or args.max_velocity_ratio_deviation < 0
+        ):
+            parser.error(
+                "--max-velocity-ratio-deviation must be finite and non-negative"
+            )
     for path in (args.native_log, args.ares_trace):
         if not path.is_file():
             failures.append(f"missing trace: {path}")
@@ -357,11 +404,20 @@ def main() -> int:
             print(f"FAIL: {failure}", file=sys.stderr)
         return 1
 
-    native_rows, native_probe = load_native(args.native_log, args.racer_index)
-    ares_rows, ares_invalid = load_ares(args.ares_trace, args.racer_index)
+    native_rows, native_probe = load_native(
+        args.native_log, args.racer_index, args.allow_legacy_pace_probe
+    )
+    ares_rows, ares_invalid, ares_rng_column = load_ares(
+        args.ares_trace, args.racer_index
+    )
     native_rows, native_clock_basis = normalize_timebase(native_rows)
     ares_rows, ares_clock_basis = normalize_timebase(ares_rows)
-    if not native_rows:
+    if native_probe == "missing":
+        failures.append(
+            f"native log has no [ORACLE] racer-index {args.racer_index} probe "
+            "(the legacy [PACE] probe is reachable only by route opt-in)"
+        )
+    elif not native_rows:
         failures.append(
             f"native log contains no racer-index {args.racer_index} state"
         )
@@ -468,6 +524,44 @@ def main() -> int:
             f"checkpoint/lap agreement is {progress_agreement:.3%} "
             f"(need {args.min_progress_agreement:.3%})"
         )
+    position_max = max(errors) if errors else math.inf
+    if position_max > args.max_position_error:
+        failures.append(
+            f"worst position error is {position_max:.3f} world units "
+            f"(limit {args.max_position_error:.3f})"
+        )
+
+    rng_agreement = rng_exact / len(clocks) if clocks else 0.0
+    object_speed_ratio = (
+        native_mean_object_speed / ares_mean_object_speed
+        if native_mean_object_speed is not None
+        and ares_mean_object_speed not in (None, 0.0)
+        else None
+    )
+    if not args.allow_legacy_pace_probe:
+        # A trace whose seeds are all zero would agree with another all-zero
+        # trace perfectly, so the seeds must exist before the ratio means
+        # anything.
+        if not ares_rng_column:
+            failures.append("ares trace has no rng_seed column")
+        elif not any(row.rng_seed for row in ares_rows):
+            failures.append("ares trace carries no non-zero rng seed")
+        if not any(row.rng_seed for row in native_rows):
+            failures.append("native trace carries no non-zero rng seed")
+        if rng_agreement < args.min_rng_agreement:
+            failures.append(
+                f"rng agreement is {rng_agreement:.3%} "
+                f"(need {args.min_rng_agreement:.3%})"
+            )
+        if object_speed_ratio is None:
+            failures.append(
+                "no common unfinished clocks carry comparable object velocity"
+            )
+        elif abs(object_speed_ratio - 1.0) > args.max_velocity_ratio_deviation:
+            failures.append(
+                f"object-speed ratio is {object_speed_ratio:.6f} "
+                f"(limit 1 +/- {args.max_velocity_ratio_deviation:.6f})"
+            )
 
     max_native_lap = max((row.lap for row in native_rows), default=-1)
     max_ares_lap = max((row.lap for row in ares_rows), default=-1)
@@ -517,7 +611,8 @@ def main() -> int:
         },
         "rng_agreement": {
             "exact_rows": rng_exact,
-            "agreement": round(rng_exact / len(clocks), 8) if clocks else 0.0,
+            "agreement": round(rng_agreement, 8),
+            "ares_column_present": ares_rng_column,
         },
         "race_outcome": {
             "native_finish_clock": native_finish_clock,
@@ -560,9 +655,8 @@ def main() -> int:
                 if ares_mean_object_speed is not None else None
             ),
             "native_over_ares": (
-                round(native_mean_object_speed / ares_mean_object_speed, 8)
-                if native_mean_object_speed is not None
-                and ares_mean_object_speed not in (None, 0.0) else None
+                round(object_speed_ratio, 8)
+                if object_speed_ratio is not None else None
             ),
         },
         "first_progress_divergence": first_progress_divergence(
@@ -587,9 +681,13 @@ def main() -> int:
             "min_lap": args.min_lap,
             "min_checkpoint": args.min_checkpoint,
             "max_position_p95": args.max_position_p95,
+            "max_position_error": args.max_position_error,
             "min_progress_agreement": args.min_progress_agreement,
+            "min_rng_agreement": args.min_rng_agreement,
+            "max_velocity_ratio_deviation": args.max_velocity_ratio_deviation,
             "racer_index": args.racer_index,
             "require_finish": args.require_finish,
+            "allow_legacy_pace_probe": args.allow_legacy_pace_probe,
         },
         "result": "FAIL" if failures else "PASS",
         "failures": failures,

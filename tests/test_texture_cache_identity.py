@@ -18,7 +18,10 @@ ROOT = Path(__file__).resolve().parent.parent
 GFX_PC = ROOT / "platform" / "fast3d" / "gfx_pc_dkr.c"
 KEY_HEADER = ROOT / "platform" / "fast3d" / "gfx_texture_cache_key.h"
 
-KEY_FIELDS = (
+# Upload inputs that must never leave the identity. The complete field set is
+# derived from the struct itself, so a newly declared member fails the equality
+# and bind assertions until it is acknowledged there too.
+REQUIRED_FIELDS = (
     "addr",
     "source_line_bytes",
     "source_size_bytes",
@@ -33,6 +36,35 @@ KEY_FIELDS = (
     "mipmaps",
     "cutout",
 )
+
+
+def struct_field_names(source: str, name: str) -> tuple[str, ...]:
+    """Return the declared field identifiers of a plain C struct, in order."""
+
+    match = re.search(
+        rf"struct\s+{re.escape(name)}\s*\{{(?P<body>.*?)\}}\s*;", source, re.S
+    )
+    if match is None:
+        raise AssertionError(f"missing struct {name}")
+    body = re.sub(r"/\*.*?\*/", " ", match.group("body"), flags=re.S)
+    body = re.sub(r"//[^\n]*", " ", body)
+    if "{" in body:
+        raise AssertionError(f"struct {name} is no longer a flat declaration")
+    fields: list[str] = []
+    for declaration in body.split(";"):
+        if not declaration.strip():
+            continue
+        declarators = declaration.split(",")
+        head = re.findall(r"[A-Za-z_]\w*", declarators[0])
+        if len(head) < 2:
+            raise AssertionError(f"unparsed declaration in {name}: {declaration}")
+        fields.append(head[-1])
+        for extra in declarators[1:]:
+            names = re.findall(r"[A-Za-z_]\w*", extra)
+            if len(names) != 1:
+                raise AssertionError(f"unparsed declarator in {name}: {extra}")
+            fields.append(names[0])
+    return tuple(fields)
 
 
 def function_body(source: str, name: str) -> str:
@@ -90,21 +122,15 @@ class TextureCacheIdentityTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.source = GFX_PC.read_text(encoding="utf-8")
         cls.key_header = KEY_HEADER.read_text(encoding="utf-8")
+        cls.key_fields = struct_field_names(cls.key_header, "DkrTexCacheKey")
 
     def test_key_declares_every_upload_input(self) -> None:
-        match = re.search(
-            r"struct\s+DkrTexCacheKey\s*\{(?P<body>.*?)\};",
-            self.key_header,
-            re.S,
-        )
-        self.assertIsNotNone(match)
-        body = match.group("body")
-        for field in KEY_FIELDS:
-            self.assertRegex(body, rf"\b{field}\b", field)
+        for field in REQUIRED_FIELDS:
+            self.assertIn(field, self.key_fields, field)
 
     def test_key_equality_compares_every_field(self) -> None:
         body = function_body(self.key_header, "dkr_texcache_key_equal")
-        for field in KEY_FIELDS:
+        for field in self.key_fields:
             self.assertRegex(
                 body,
                 rf"left->{field}\s*==\s*right->{field}",
@@ -113,7 +139,7 @@ class TextureCacheIdentityTests(unittest.TestCase):
 
     def test_bind_builds_and_uses_the_complete_key(self) -> None:
         body = function_body(self.source, "dkr_bind_tile")
-        for field in KEY_FIELDS:
+        for field in self.key_fields:
             self.assertRegex(body, rf"\.{field}\s*=", field)
         self.assertRegex(
             body,

@@ -111,8 +111,15 @@ int main() {
     expect(durableTransactions == 1,
            "100 slider previews coalesce to one durable transaction");
     expect(dirty, "failed durable transaction remains retryable");
-    dirty = false;  // production clears only after a successful persistence result
-    expect(!dirty, "successful durable transaction clears staged state");
+    // Staged state outlives the commit request: only a successful persistence
+    // result clears it, and that result is owned by the caller, not the policy.
+    dirty = false;
+    expect(!AppUi_deferredCommit(false, true, &dirty),
+           "cleared staged state requests no second durable transaction");
+    expect(!dirty, "a commit request never stages state on its own");
+    bool sameFrame = false;
+    expect(AppUi_deferredCommit(true, true, &sameFrame) && sameFrame,
+           "a preview and its deactivation in one frame commit exactly once");
 
     for (const char *text : {"0.75", "1.00", "1.50", "2.00"}) {
         float scale = 0.0f;

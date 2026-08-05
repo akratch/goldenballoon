@@ -61,7 +61,7 @@ import re
 import subprocess
 import sys
 
-from harness_utils import resolve_binary
+from harness_utils import preserved_eeprom, resolve_binary, save_env, test_save_dir
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -82,7 +82,8 @@ NORMAL_TRACK = 5
 NORMAL_FRAMES = 6500
 
 SCRIPT = os.path.join("tests", "input_scripts", "race_full_3lap_tt.txt")
-SAVE = os.path.join("save", "eeprom.bin")
+SAVE_DIR = test_save_dir()
+SAVE = os.path.join(SAVE_DIR, "eeprom.bin")
 
 CAP = 500  # MAX_COLLISION_CANDIDATES, game/src/collision.h
 
@@ -162,6 +163,7 @@ def run(binary, rom, track, frames, forced_cap=None, verbose=False):
     env = dict(os.environ)
     env["MDKR_AUDIO"] = "0"
     env["MDKR_AUTOPILOT"] = "1"
+    save_env(env, SAVE_DIR)
     env["MDKR_TRACE"] = "1"
     env["MDKR_LOAD_TRACK"] = str(track)
     if forced_cap is not None:
@@ -215,6 +217,15 @@ def evaluate_normal_play(track, rc, coll) -> list:
 
 
 def main() -> int:
+    # This check deletes and rewrites EEPROM images to assert a known starting
+    # state. Under tools/run_checks.py SAVE_DIR is a run-scoped temporary
+    # directory; a standalone run defaults to the repository's playable save/,
+    # whose prior contents must survive however this exits.
+    with preserved_eeprom(SAVE_DIR):
+        return run_check()
+
+
+def run_check() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--build", default="build")

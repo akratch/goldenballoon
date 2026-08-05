@@ -41,7 +41,9 @@ Usage:
     tools/sweep_bug_shapes.py --selftest            # prove the parser still sees
                                                     # the known instances
 Output is one `class|file|line|key|text` record per finding, sorted, for
-tests/check_array_bounds_sweep.py to diff against its triage list.
+tests/check_array_bounds_sweep.py to diff against its triage list. That check
+runs `--selftest` first; either mode exits non-zero when a file was parsed
+incompletely, so a shortfall can never read as "0 findings, all clear".
 """
 import argparse
 import os
@@ -478,7 +480,7 @@ def main():
             print("SELFTEST MISSING: %s" % m)
         print("sweep_bug_shapes selftest: %s (%d finding(s))"
               % ("FAIL" if missing else "PASS", len(hits)))
-        return 1 if missing else 0
+        return 1 if missing or PARSE_ERRORS else 0
 
     for cls, rel, ln, key, sev, txt in hits:
         print("%s|%s|%d|%s|%s|%s" % (cls, rel, ln, key, sev, txt))
@@ -488,6 +490,14 @@ def main():
             t = sum(1 for h in hits if h[0] == cls and h[4] == "TRIAGE")
             print("# %-14s %d finding(s), %d to triage, %d informational"
                   % (cls, n, t, n - t), file=sys.stderr)
+    # The PARSE SHORTFALL lines above already told the consumer on stderr that a
+    # file's coverage is incomplete. The exit status has to say the same thing,
+    # so a caller that only reads it cannot mistake a partial sweep for a clean
+    # one.
+    if PARSE_ERRORS:
+        print("PARSE ERRORS: %d file(s) incompletely parsed; findings are not a "
+              "complete enumeration" % PARSE_ERRORS, file=sys.stderr)
+        return 1
     return 0
 
 

@@ -68,12 +68,13 @@ import re
 import subprocess
 import sys
 
-from harness_utils import resolve_binary
+from harness_utils import preserved_eeprom, resolve_binary, save_env, test_save_dir
 
 TRACK = 5              # Ancient Lake -- fast to reach, plenty of terrain
 FRAMES = 3400
 SCRIPT = "tests/input_scripts/race_full_3lap_tt.txt"
-SAVE = os.path.join("save", "eeprom.bin")
+SAVE_DIR = test_save_dir()
+SAVE = os.path.join(SAVE_DIR, "eeprom.bin")
 
 # Forced+legacy measured 1 candidate and y=-380; forced+fixed measured 26 and y=128.
 MIN_FORCED_FIXED_CANDIDATES = 10
@@ -89,6 +90,7 @@ BAD_RE = re.compile(r"\[FATAL\]|\[CRASH\]|AddressSanitizer|Assertion")
 def run(binary, rom, frames, legacy, force, verbose):
     env = dict(os.environ)
     env["MDKR_AUDIO"] = "0"       # belt-and-braces; --headless-frames is the guarantee
+    save_env(env, SAVE_DIR)
     env["MDKR_TRACE"] = "1"
     env["MDKR_AUTOPILOT"] = "1"
     env["MDKR_LOAD_TRACK"] = str(TRACK)
@@ -123,6 +125,15 @@ def run(binary, rom, frames, legacy, force, verbose):
 
 
 def main() -> int:
+    # This check deletes and rewrites EEPROM images to assert a known starting
+    # state. Under tools/run_checks.py SAVE_DIR is a run-scoped temporary
+    # directory; a standalone run defaults to the repository's playable save/,
+    # whose prior contents must survive however this exits.
+    with preserved_eeprom(SAVE_DIR):
+        return run_check()
+
+
+def run_check() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", default="build")
     ap.add_argument("--rom", default="baserom.us.v80.z64")

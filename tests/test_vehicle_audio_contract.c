@@ -5,7 +5,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* VehicleSoundAsset stride. platform/asset_swap.h exposes no symbolic size, so
+ * the value is pinned behaviourally below: the swapper accepts exactly this
+ * size and refuses one byte less. */
 #define RECORD_SIZE 0x4Cu
+
+/* Position-distinct filler: every offset holds a different byte from its
+ * neighbour, so a swap of the wrong pair is observable rather than idempotent. */
+#define FILL_BYTE(offset) ((uint8_t) ((offset) ^ 0xA5u))
 
 #define REQUIRE(condition)                                                          \
     do {                                                                            \
@@ -36,7 +43,9 @@ int main(void) {
     uint8_t before[RECORD_SIZE];
     uint32_t i;
 
-    memset(record, 0xA5, sizeof(record));
+    for (i = 0; i < RECORD_SIZE; i++) {
+        record[i] = FILL_BYTE(i);
+    }
     record[0x00] = 0x00; record[0x01] = 0x73;
     record[0x02] = 0x01; record[0x03] = 0x23;
     for (i = 0; i < 10; i++) {
@@ -59,14 +68,25 @@ int main(void) {
     for (i = 0; i < 7; i++) {
         REQUIRE(load_s16(record, 0x3C + i * 2) == scales[i]);
     }
-    REQUIRE(record[0x04] == 0xA5); /* byte-sized intensity table */
-    REQUIRE(record[0x36] == 0xA5); /* byte-sized idle sound ID */
-    REQUIRE(record[0x4A] == 0xA5); /* byte-sized plane/hover base pitch */
+    /* Everything outside the three serialized multi-byte runs is byte-sized
+     * control data (intensity table, idle sound ID, plane/hover base pitch) and
+     * must keep both its value and its offset. */
+    for (i = 0; i < RECORD_SIZE; i++) {
+        if ((i < 0x04u) || (i >= 0x18u && i < 0x2Cu) ||
+            (i >= 0x3Cu && i < 0x4Au)) {
+            continue;
+        }
+        REQUIRE(record[i] == FILL_BYTE(i));
+    }
 
-    memset(record, 0x5A, sizeof(record));
+    for (i = 0; i < RECORD_SIZE; i++) {
+        record[i] = (uint8_t) (i ^ 0x5Au);
+    }
     memcpy(before, record, sizeof(record));
     REQUIRE(!asset_swap_vehicle_sound(record, RECORD_SIZE - 1));
     REQUIRE(memcmp(record, before, sizeof(record)) == 0);
+    /* Acceptance threshold pins RECORD_SIZE to the production stride. */
+    REQUIRE(asset_swap_vehicle_sound(record, RECORD_SIZE));
     REQUIRE(!asset_swap_vehicle_sound(NULL, RECORD_SIZE));
 
     puts("vehicle audio contract tests passed");

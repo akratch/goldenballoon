@@ -368,7 +368,12 @@ def main() -> int:
                 failures.append(f"{scene.name}: timed out after "
                                 f"{args.timeout}s")
                 continue
-            scene_failures = provenance_failures(on, scene)
+            # The caster census and cascade plan are produced by the capture
+            # path, not by the shadow draw, so both arms owe the same
+            # provenance. A tenancy defect that only shows with the effect
+            # disabled is still a caster that is not where its object is.
+            scene_failures = provenance_failures(off, scene)
+            scene_failures += provenance_failures(on, scene)
             attribution_failures, note = attribution(on, off)
             scene_failures += attribution_failures
             failures += scene_failures
@@ -389,25 +394,25 @@ def main() -> int:
             control = run_arm(binary, rom, control_scene, "bogus", True, root,
                               args.frames, args.dump_at, args.renderer,
                               BOGUS_OFFSET, args.timeout, args.verbose)
-            control_failures = provenance_failures(control, control_scene)
         except subprocess.TimeoutExpired:
-            control_failures = []
-            failures.append("positive control timed out")
-        stale = int(control.world_fx.get("staleCasters", "0")) if \
-            control.world_fx else 0
-        if not control_failures or stale <= 0:
-            failures.append(
-                "positive control failed: with "
-                f"MDKR_TEST_SHADOW_BOGUS_CASTER={BOGUS_OFFSET} the caster feed "
-                f"reported staleCasters={stale} and raised "
-                f"{len(control_failures)} findings — this check cannot detect "
-                "the defect it exists for")
+            failures.append(f"positive control timed out after {args.timeout}s")
         else:
-            notes.append(
-                f"positive control: bogus caster injected at +{BOGUS_OFFSET} "
-                f"units reported staleCasters={stale} "
-                f"(worst {control.world_fx.get('staleWorst')}) and failed with "
-                f"{len(control_failures)} findings, as required")
+            control_failures = provenance_failures(control, control_scene)
+            stale = int(control.world_fx.get("staleCasters", "0")) if \
+                control.world_fx else 0
+            if not control_failures or stale <= 0:
+                failures.append(
+                    "positive control failed: with "
+                    f"MDKR_TEST_SHADOW_BOGUS_CASTER={BOGUS_OFFSET} the caster "
+                    f"feed reported staleCasters={stale} and raised "
+                    f"{len(control_failures)} findings — this check cannot "
+                    "detect the defect it exists for")
+            else:
+                notes.append(
+                    f"positive control: bogus caster injected at "
+                    f"+{BOGUS_OFFSET} units reported staleCasters={stale} "
+                    f"(worst {control.world_fx.get('staleWorst')}) and failed "
+                    f"with {len(control_failures)} findings, as required")
 
     if failures:
         print("check_shadow_plausibility: FAIL")

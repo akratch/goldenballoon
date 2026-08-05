@@ -32,7 +32,9 @@ What this asserts
   2. **A plausible time.**  The race clock freezes at the finish, and its final
      value (== the course time, the sum of the lap times) lands in a sane band
      for three autopilot laps.
-  3. **The time reaches EEPROM.**  `save/eeprom.bin` must change, and the exact
+  3. **The time reaches EEPROM.**  The run starts from a deleted `eeprom.bin`,
+     so the file must be created, be a full 512 bytes, not be the all-zero image
+     the game writes when it saves nothing, and the exact
      frozen clock value must appear in it as a 16-bit big-endian record.  Tying
      the assertion to the *measured* clock rather than a hardcoded offset means a
      byteswap or layout regression in the record serialiser fails the check.
@@ -60,11 +62,13 @@ import shutil
 import subprocess
 import sys
 
-from harness_utils import resolve_binary
+from harness_utils import (EEPROM_ARTIFACTS, preserved_eeprom, resolve_binary,
+                          save_env, test_save_dir)
 
 SCRIPT = "tests/input_scripts/race_full_3lap_tt.txt"
 FRAMES = 13000
-EEPROM = os.path.join("save", "eeprom.bin")
+SAVE_DIR = test_save_dir()
+EEPROM = os.path.join(SAVE_DIR, "eeprom.bin")
 
 # --- thresholds (measured on Ancient Lake under MDKR_AUTOPILOT=1) ------------
 EXPECT_LAPS = 3          # Ancient Lake's LevelHeader.laps
@@ -88,6 +92,7 @@ def run(binary: str, rom: str, verbose: bool, extra_env: dict | None = None) -> 
     """Run once; [PACE] samples as (frame, clock, cp, lap, rlap, fin, ghost, gbank)."""
     env = dict(os.environ)
     env["MDKR_AUDIO"] = "0"          # belt-and-braces; --headless-frames already
+    save_env(env, SAVE_DIR)
     env["MDKR_SIMULATION_CADENCE"] = "enhanced"
     env["MDKR_SYNTH_FIELDS"] = "1"
     env["MDKR_AUTOPILOT"] = "1"      # drive with DKR's own AI
@@ -119,6 +124,15 @@ def run(binary: str, rom: str, verbose: bool, extra_env: dict | None = None) -> 
 
 
 def main() -> int:
+    # This check deletes and rewrites EEPROM images to assert a known starting
+    # state. Under tools/run_checks.py SAVE_DIR is a run-scoped temporary
+    # directory; a standalone run defaults to the repository's playable save/,
+    # whose prior contents must survive however this exits.
+    with preserved_eeprom(SAVE_DIR):
+        return run_check()
+
+
+def run_check() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", default="build")
     ap.add_argument("--rom", default="baserom.us.v80.z64")
@@ -132,10 +146,19 @@ def main() -> int:
 
     failures: list[str] = []
 
-    # Start from no record at all, so a successful finish must write one.
+    # Start from no record at all, so a successful finish must write one. The
+    # pre-state is absence, not a digest: an md5 of a deleted file is None and
+    # can never equal the digest of whatever the run produces, which would make
+    # the "did it change" assertion below unfailable. State the starting
+    # condition instead, and compare the run's output against the empty image
+    # the game writes when it saves nothing.
+    for name in EEPROM_ARTIFACTS:
+        candidate = os.path.join(SAVE_DIR, name)
+        if os.path.exists(candidate):
+            os.remove(candidate)
     if os.path.exists(EEPROM):
-        os.remove(EEPROM)
-    before = md5(EEPROM)
+        failures.append(f"{EEPROM} still exists after being removed")
+    empty_digest = hashlib.md5(b"\x00" * EEPROM_SIZE).hexdigest()
 
     print("run 1: fresh EEPROM, drive a 3-lap Time Trial to the finish")
     samples = run(binary, args.rom, args.verbose)
@@ -191,11 +214,15 @@ def main() -> int:
     if after is None:
         failures.append(f"{EEPROM} was never created — no time was saved")
     else:
-        if after == before:
-            failures.append(f"{EEPROM} did not change (md5 {after})")
         blob = open(EEPROM, "rb").read()
         if len(blob) != EEPROM_SIZE:
             failures.append(f"{EEPROM} is {len(blob)} bytes, expected {EEPROM_SIZE}")
+        if after == empty_digest:
+            failures.append(
+                f"{EEPROM} is an all-zero {EEPROM_SIZE}-byte image (md5 {after}): "
+                "the file was created but no record was written")
+        if not any(blob):
+            failures.append(f"{EEPROM} contains no set bits — nothing was saved")
         # The recorded course time is what race_finish_time_trial() sums at the
         # instant it runs; the traced clock is what the [PACE] probe last saw from
         # inside update_player_racer, which stops for a finished racer. Those two

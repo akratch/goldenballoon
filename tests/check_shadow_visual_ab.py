@@ -56,6 +56,14 @@ DEPTH_RE = re.compile(
     r"\[DEPTH\] decalTriangles=(\d+) comparedTriangles=(\d+)"
 )
 
+# Every pixel verdict here is a comparison between the two arms, and two frames
+# that drew nothing agree perfectly. These are check_renderer_backends' scene
+# floors; the weakest frame in the sampled 3300..3898 window carries 453
+# colours and sigma 24.8, so the floor is a blank-frame guard and not a
+# content threshold.
+MIN_SCENE_COLOURS = 200
+MIN_SCENE_SIGMA = 10.0
+
 
 @dataclass
 class RunResult:
@@ -194,6 +202,26 @@ def read_ppm(path: Path) -> tuple[int, int, bytes]:
             f"{path}: RGB raster is {len(parts[3])} bytes, expected {expected}"
         )
     return width, height, parts[3]
+
+
+def scene_metrics(width: int, height: int, rgb: bytes) -> tuple[int, float]:
+    """Return quantized colour count and luma sigma over the scene centre."""
+    colours: set[tuple[int, int, int]] = set()
+    count = total = total_sq = 0
+    for y in range(int(height * 0.20), int(height * 0.95), 3):
+        row = y * width * 3
+        for x in range(int(width * 0.15), int(width * 0.85), 3):
+            offset = row + x * 3
+            red, green, blue = rgb[offset : offset + 3]
+            colours.add((red >> 3, green >> 3, blue >> 3))
+            luma = (red * 299 + green * 587 + blue * 114) // 1000
+            count += 1
+            total += luma
+            total_sq += luma * luma
+    if count == 0:
+        return 0, 0.0
+    mean = total / count
+    return len(colours), max(0.0, total_sq / count - mean * mean) ** 0.5
 
 
 def frame_number(path: Path) -> int:
@@ -354,6 +382,8 @@ def main() -> int:
     brighter_components = 0
     total_pixels = 0
     largest = ("", 0)
+    weakest_colours = ("", 1 << 30)
+    weakest_sigma = ("", float("inf"))
     try:
         for name in sorted(set(on_paths) & set(off_paths)):
             on_width, on_height, on_rgb = read_ppm(on_paths[name])
@@ -365,6 +395,11 @@ def main() -> int:
                 )
                 continue
             total_pixels += on_width * on_height
+            colours, sigma = scene_metrics(on_width, on_height, on_rgb)
+            if colours < weakest_colours[1]:
+                weakest_colours = (name, colours)
+            if sigma < weakest_sigma[1]:
+                weakest_sigma = (name, sigma)
             frame_changed = 0
             for offset in range(0, len(on_rgb), 3):
                 production = on_rgb[offset : offset + 3]
@@ -384,6 +419,17 @@ def main() -> int:
     except (OSError, ValueError) as exc:
         failures.append(str(exc))
 
+    if weakest_colours[1] < MIN_SCENE_COLOURS:
+        failures.append(
+            f"{weakest_colours[0]}: production capture is blank or "
+            f"near-uniform ({weakest_colours[1]} colours); the A/B compared "
+            "frames with no scene in them"
+        )
+    if weakest_sigma[1] < MIN_SCENE_SIGMA:
+        failures.append(
+            f"{weakest_sigma[0]}: production capture has no tonal spread "
+            f"(luma sigma {weakest_sigma[1]:.1f})"
+        )
     if not changed_frames:
         failures.append("visual positive control changed no frames")
     elif len(changed_frames) == len(on_paths):

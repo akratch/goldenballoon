@@ -217,8 +217,13 @@ def main() -> int:
         return fail("authoritative hash stream has a gap while paused", output)
     if len(set(held_hashes)) != 1:
         return fail("authoritative state changed while the overlay was open", output)
-    if all(hashes.get(tick) == held_hashes[0]
-           for tick in range(resume_tick, min(TICKS, resume_tick + 20))):
+    # Resumption is only readable from ticks that were actually published: a
+    # stream that stops at the overlay must fail here rather than satisfy the
+    # comparison with absent digests.
+    resumed_ticks = range(resume_tick, min(TICKS, resume_tick + 20))
+    if not resumed_ticks or any(tick not in hashes for tick in resumed_ticks):
+        return fail("authoritative hash stream has a gap after resuming", output)
+    if all(hashes[tick] == held_hashes[0] for tick in resumed_ticks):
         return fail("authoritative state did not resume after closing the overlay", output)
 
     pace = {

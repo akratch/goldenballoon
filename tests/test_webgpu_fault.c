@@ -16,6 +16,11 @@
 static void test_registry(void) {
     size_t count = gfx_webgpu_fault_point_count();
     CHECK(count == GFX_WEBGPU_FAULT_COUNT);
+    /* Truncation floor. GFX_WEBGPU_FAULT_POINT_LIST is a backslash-continued
+     * X-macro: a lost continuation silently shortens the vocabulary while the
+     * enum and the table stay consistent, so the equality above cannot see it.
+     * The registry held 102 points when the fault boundaries were gated; 80
+     * leaves room for deliberate consolidation but not for a dropped tail. */
     CHECK(count > 80);
     for (size_t i = 0; i < count; i++) {
         const char *name = gfx_webgpu_fault_point_name(i);

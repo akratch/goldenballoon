@@ -1,6 +1,7 @@
 #include "user_paths.h"
 #include "test_platform_compat.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -95,6 +96,37 @@ static int write_migration_owner_fixture(const char *stage,
 static int missing(const char *path) {
     struct stat status;
     return stat(path, &status) != 0 && errno == ENOENT;
+}
+
+/* Depth-first removal of the fixture tree. Write and search bits are restored
+ * first: the fixture drops them to model a signed bundle, and a directory
+ * without them cannot have its entries unlinked. */
+static void remove_tree(const char *path) {
+    DIR *directory;
+    struct dirent *entry;
+    (void) chmod(path, 0700);
+    directory = opendir(path);
+    if (directory != NULL) {
+        while ((entry = readdir(directory)) != NULL) {
+            char child[4096];
+            struct stat status;
+            if (strcmp(entry->d_name, ".") == 0 ||
+                strcmp(entry->d_name, "..") == 0) {
+                continue;
+            }
+            if (!join(child, sizeof(child), path, entry->d_name)) {
+                continue;
+            }
+            if (stat(child, &status) == 0 && S_ISDIR(status.st_mode)) {
+                remove_tree(child);
+            } else {
+                (void) chmod(child, 0600);
+                (void) remove(child);
+            }
+        }
+        (void) closedir(directory);
+    }
+    (void) rmdir(path);
 }
 
 static int run_pref_failure(void) {
@@ -205,7 +237,9 @@ int main(int argc, char **argv) {
     expect("wrote conflicting cwd EEPROM",
            write_bytes(path, cwd_eeprom, sizeof(cwd_eeprom)));
 
-    /* Model the signed seal: migration must need read access only. */
+    /* Model the signed seal: migration must need read access only. uid 0
+     * bypasses these modes, so under root the read-only expectations that
+     * depend on them hold vacuously rather than proving anything. */
     expect("resource controller made immutable",
            join(path, sizeof(path), resources, "gamecontrollerdb.txt") &&
            chmod(path, 0400) == 0);
@@ -394,6 +428,8 @@ int main(int argc, char **argv) {
            read_equals(other, new_eeprom, sizeof(new_eeprom)));
 
     expect("returned to original cwd", chdir(original) == 0);
+    remove_tree(temporary);
+    expect("fixture tree removed", missing(temporary));
     if (s_failures != 0) {
         fprintf(stderr, "%d user-path test(s) failed\n", s_failures);
         return 1;

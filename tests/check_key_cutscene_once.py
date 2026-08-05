@@ -113,11 +113,11 @@ import re
 import subprocess
 import sys
 
-from harness_utils import resolve_binary
+from harness_utils import preserved_eeprom, resolve_binary, save_env, test_save_dir
 
 SCRIPT = "tests/input_scripts/adventure_race_loop.txt"
 FRAMES = 17000
-SAVE_DIR = "save"
+SAVE_DIR = test_save_dir()
 EEPROM = os.path.join(SAVE_DIR, "eeprom.bin")
 EEPROM_BAD = os.path.join(SAVE_DIR, "eeprom.bin.bad")
 EEPROM_TMP = os.path.join(SAVE_DIR, "eeprom.bin.tmp")
@@ -258,6 +258,15 @@ def is_finite(v: float) -> bool:
 
 
 def main() -> int:
+    # This check deletes and rewrites EEPROM images to assert a known starting
+    # state. Under tools/run_checks.py SAVE_DIR is a run-scoped temporary
+    # directory; a standalone run defaults to the repository's playable save/,
+    # whose prior contents must survive however this exits.
+    with preserved_eeprom(SAVE_DIR):
+        return run_check()
+
+
+def run_check() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", default="build-rel",
                     help="build dir; MUST be an optimised build -- see the module "
@@ -288,11 +297,12 @@ def main() -> int:
     with open(EEPROM, "wb") as fh:
         fh.write(image(slot(keys=KEY_BIT, balloons=(1, 0, 0, 0, 0, 0))))
 
-    env = dict(os.environ,
-               MDKR_AUDIO="0",          # belt and braces; --headless-frames is the guarantee
-               MDKR_TRACE="1",
-               MDKR_AUTOPILOT="1",      # DKR's own AI drives the race
-               MDKR_DRIVE_ROUTE=DRIVE_ROUTE)
+    env = save_env(dict(os.environ,
+                        MDKR_AUDIO="0",     # belt and braces; --headless-frames is the guarantee
+                        MDKR_TRACE="1",
+                        MDKR_AUTOPILOT="1",  # DKR's own AI drives the race
+                        MDKR_DRIVE_ROUTE=DRIVE_ROUTE),
+                   SAVE_DIR)
     cmd = [binary, "--headless-frames", str(FRAMES),
            "--input-script", SCRIPT, "--rom", args.rom]
     if args.verbose:

@@ -155,9 +155,19 @@ def run_mutation_controls(bitmap: Bitmap) -> None:
                    (background,) * (bitmap.width * bitmap.height))
     require_invalid("cleared framebuffer", blank)
 
-    # Translate every drawn pixel outside the viewport: the visible result is
-    # background, but this control names the distinct regression it represents.
-    require_invalid("panel moved offscreen", blank)
+    # Translate the whole panel toward the right edge so only a sliver of it
+    # survives inside the viewport. The palette is still present, so this
+    # control is answered by the region/bounds guards rather than by the
+    # blank-frame guards above.
+    offset = bitmap.width - bitmap.width // 8
+    shifted = tuple(
+        bitmap.pixels[y * bitmap.width + x - offset] if x >= offset
+        else background
+        for y in range(bitmap.height)
+        for x in range(bitmap.width)
+    )
+    require_invalid("panel moved offscreen", Bitmap(
+        bitmap.width, bitmap.height, shifted))
 
     invisible = tuple(
         background if ((77 * r + 150 * g + 29 * b) / 256.0 >= 105 or

@@ -40,6 +40,16 @@ LABEL_H = 18
 
 FRAME_RE = re.compile(r"frame_(\d+)\.ppm$")
 
+# Gate defaults, from the recorded per-screen scoreboard in
+# docs/open-items/renderer.md: the weakest scored mark in the tree is MAGIC_CODES
+# at 79.3% aligned, then FILE_SELECT 83.7% and the title menu 87.1%; the
+# pixel-aligned boot logo is 99.8%. MIN_MARK sits 9.3 points under the weakest
+# recorded mark, and MIN_OVERALL 8.2 points under the weakest recorded route mean
+# (title_menu + MAGIC_CODES, 83.2%). Both are far above the ~50% two-different-
+# screens and ~12% no-match cases these gates exist to reject.
+MIN_MARK = 0.70
+MIN_OVERALL = 0.75
+
 
 def index_frames(dir_path: str) -> dict[int, str]:
     out: dict[int, str] = {}
@@ -100,8 +110,9 @@ def make_diff_thumb(a: np.ndarray, b: np.ndarray) -> Image.Image:
     return im.convert("RGB")
 
 
-def parse_mark_pairs(path: str) -> list[tuple[str, int, int]]:
+def parse_mark_pairs(path: str) -> tuple[list[tuple[str, int, int]], list[str]]:
     pairs = []
+    malformed = []
     with open(path, "r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
@@ -109,9 +120,12 @@ def parse_mark_pairs(path: str) -> list[tuple[str, int, int]]:
                 continue
             parts = line.split()
             if len(parts) < 3:
+                # A mark the route asked for that this file cannot express is a
+                # mark that goes unscored, so carry it out rather than drop it.
+                malformed.append(line)
                 continue
             pairs.append((parts[0], int(parts[1]), int(parts[2])))
-    return pairs
+    return pairs, malformed
 
 
 def main() -> int:
@@ -128,14 +142,24 @@ def main() -> int:
                     help="search +/- this many ares frames for the best-matching frame at each "
                          "mark (0 disables). Reports BOTH the exact-frame score and the aligned "
                          "score plus the offset used -- see the note in the module docstring.")
+    ap.add_argument("--min-overall", type=float, default=MIN_OVERALL,
+                    help="fail if the mean aligned similarity over scored marks is below this")
+    ap.add_argument("--min-mark", type=float, default=MIN_MARK,
+                    help="fail if any scored mark's aligned similarity is below this")
     args = ap.parse_args()
+
+    for name, value in (("--min-overall", args.min_overall),
+                        ("--min-mark", args.min_mark)):
+        if not 0.0 < value <= 1.0:
+            ap.error("%s must be in (0,1]" % name)
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     native_frames = index_frames(args.native_dir)
     ares_frames = index_frames(args.ares_dir)
-    marks = parse_mark_pairs(args.mark_pairs)
+    marks, malformed_marks = parse_mark_pairs(args.mark_pairs)
+    unmatched = ["%s (unparsable mark-pair line)" % line for line in malformed_marks]
 
     if not native_frames:
         print(f"FAIL: no native frames in {args.native_dir}", file=sys.stderr)
@@ -150,6 +174,9 @@ def main() -> int:
         n_hit = nearest(native_frames, nf)
         a_hit = nearest(ares_frames, af)
         if not n_hit or not a_hit:
+            missing = "native" if not n_hit else "ares"
+            unmatched.append("%s (no %s frame for target %d)"
+                             % (name, missing, nf if not n_hit else af))
             continue
         n_idx, n_path = n_hit
         a_idx, a_path = a_hit
@@ -246,6 +273,34 @@ def main() -> int:
     overall = round(float(np.mean([r["similarity"] for r in scored])), 4) if scored else 0.0
     overall_aligned = (round(float(np.mean([r["aligned_similarity"] for r in scored])), 4)
                        if scored else 0.0)
+
+    # Gate on the ALIGNED score: it is the fidelity judgement the docs direct a
+    # reader to, and the exact score legitimately collapses on transition-length
+    # drift. A route with nothing left to score is a failed measurement, not a
+    # clean sheet.
+    failures = ["unmatched mark: %s" % item for item in unmatched]
+    if not scored:
+        failures.append("no mark produced a scoreable frame pair")
+    # nearest() always returns something as long as the runner dumped anything at
+    # all, so a mark can otherwise be "matched" to a frame from a different scene
+    # entirely and scored as though it were the one the route asked for.
+    for r in results:
+        if (abs(r["native_drift"]) > args.max_frame_drift
+                or abs(r["ares_drift"]) > args.max_frame_drift):
+            failures.append(
+                "mark %s has no frame within %d of its target "
+                "(nat%+d ares%+d)"
+                % (r["mark"], args.max_frame_drift,
+                   r["native_drift"], r["ares_drift"]))
+    for r in scored:
+        if r["aligned_similarity"] < args.min_mark:
+            failures.append("mark %s aligned %.1f%% < %.1f%%"
+                            % (r["mark"], r["aligned_similarity"] * 100,
+                               args.min_mark * 100))
+    if scored and overall_aligned < args.min_overall:
+        failures.append("overall aligned %.1f%% < %.1f%%"
+                        % (overall_aligned * 100, args.min_overall * 100))
+
     report = {
         "route": args.route,
         "native_dir": args.native_dir,
@@ -253,11 +308,15 @@ def main() -> int:
         "native_frames_available": len(native_frames),
         "ares_frames_available": len(ares_frames),
         "marks_compared": len(results),
+        "marks_unmatched": unmatched,
         "align_window": args.align_window,
         "overall_similarity": overall,
         "overall_aligned_similarity": overall_aligned,
+        "thresholds": {"min_overall": args.min_overall, "min_mark": args.min_mark},
         "montage": str(montage_path) if rows else None,
         "marks": results,
+        "result": "FAIL" if failures else "PASS",
+        "failures": failures,
     }
     report_path = out_dir / f"report_{args.route}.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
@@ -286,6 +345,12 @@ def main() -> int:
           "  the ALIGNED score, and treat a big offset as its own finding." % args.align_window)
     print(f"montage: {montage_path if rows else '(none)'}")
     print(f"report:  {report_path}")
+    if failures:
+        print("compare_frames: FAIL")
+        for failure in failures:
+            print(f"  - {failure}")
+        return 1
+    print("compare_frames: PASS")
     return 0
 
 

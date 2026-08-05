@@ -55,12 +55,15 @@ What is asserted, and why each number is not redundant
  3. PER-CHANNEL RMS, L and R separately, within +-1.2 dB. A gain error confined to
     one side of the pan law, or to one bus, moves one of these and not the other.
 
- 4. CREST FACTOR (sample peak minus RMS), within +-1.0 dB of 12.857 dB. This is an
-    INDEPENDENT detector of a positive bias and it is the one that survives
-    tolerance drift: the program already touches full scale, so a build that got
-    louder cannot raise its peak — it can only raise its RMS, which closes the
-    crest. Under the +3 dB engine control the crest falls to 10.058 dB, 2.8 dB out,
-    even though the peak is bit-identical at 32768.
+ 4. SAMPLE PEAK AT FULL SCALE, within 0.01 dB of 0.0 dBFS, reported alongside the
+    crest factor (sample peak minus RMS, baseline 12.857 dB). Bounding the crest
+    itself would restate assertion 2 — crest is peak minus RMS and both carried a
+    +-1.0 dB tolerance against the same baseline — so the peak is asserted
+    directly. That is the fact the crest reasoning rests on: the program already
+    touches full scale, so a build that got louder cannot raise its peak, it can
+    only raise its RMS, which closes the crest. Under the +3 dB engine control the
+    crest falls to 10.058 dB even though the peak is bit-identical at 32768, and
+    assertion 2 is what fails on it.
 
  5. SATURATION. Railed-sample fraction 0.07248 % against a ceiling, and the
     engine's own `[AUDIO] mainbus clip` accounting (4578/6329600 = 0.07233 %, worst
@@ -134,9 +137,11 @@ so it can never make sound; and with the variable unset the capture is bit-ident
 to a build compiled without it (verified).
 
     --control gain+3   -> whole RMS -10.058 dBFS (+2.799 dB), crest 10.058 dB,
-                          rails 1.21170 % — assertions 2, 3, 4, 5, 7 and 8 fail
+                          rails 1.21170 % — assertions 2, 3, 5, 7 and 8 fail
+                          (the peak stays pinned at the rail, so 4 cannot see it —
+                          that pinning is exactly what assertion 4 exists to hold)
     --control gain-3   -> whole RMS -15.857 dBFS (-3.000 dB), peak 23198 —
-                          assertions 2, 3, 6, 7 and 8 fail
+                          assertions 2, 3, 4, 6, 7 and 8 fail
 
 What this does NOT cover
 ------------------------
@@ -195,7 +200,9 @@ RMS_TOL_DB = 1.0
 RMS_CHANNEL_TOL_DB = 1.2
 
 BASE_CREST_DB = 12.857      # sample peak (32768, 0.0 dBFS) - whole RMS
-CREST_TOL_DB = 1.0
+# The capture rails, so its sample peak is 32768 == 0.0 dBFS exactly. One
+# quantisation step at s16 is 0.00027 dB; this only tolerates measurement noise.
+PEAK_FULL_SCALE_TOL_DB = 0.01
 
 # ---- assertion 5: saturation ----------------------------------------------
 BASE_RAIL_FRAC = 0.0007248  # 4588 / 6329600
@@ -577,14 +584,20 @@ def assert_level(m, fail, note):
 
 
 def assert_crest(m, fail, note):
+    # crest = dbfs(peak) - dbfs(rms), and assert_level already pins dbfs(rms)
+    # to +-RMS_TOL_DB of the same baseline this crest baseline was derived from.
+    # With both tolerances at 1.0 dB the crest inequality restates assert_level
+    # and can only fail when the peak moves, so assert the peak directly. That
+    # is the independent fact: the program touches full scale, which is why a
+    # louder build closes the crest instead of raising the peak.
     note("sample peak %d = %+.3f dBFS, crest %.3f dB (baseline %.3f)"
          % (m["peak"], dbfs(m["peak"]), m["crest_db"], BASE_CREST_DB))
-    if abs(m["crest_db"] - BASE_CREST_DB) > CREST_TOL_DB:
-        fail("crest factor %.3f dB is %+.3f dB off the baseline %.3f dB "
-             "(tolerance +-%.1f dB). The program already touches full scale, so a "
-             "louder build cannot raise its peak — it closes the crest instead."
-             % (m["crest_db"], m["crest_db"] - BASE_CREST_DB, BASE_CREST_DB,
-                CREST_TOL_DB))
+    peak_dbfs = dbfs(m["peak"])
+    if peak_dbfs < -PEAK_FULL_SCALE_TOL_DB:
+        fail("sample peak %d = %+.3f dBFS is more than %.2f dB below full "
+             "scale: the capture no longer reaches the rail the RMS baseline "
+             "and every crest figure in this check are referenced against"
+             % (m["peak"], peak_dbfs, PEAK_FULL_SCALE_TOL_DB))
 
 
 def assert_saturation(m, info, fail, note):

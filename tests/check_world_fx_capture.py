@@ -49,6 +49,14 @@ SHADOW_PLAN_RE = re.compile(
     r"\[SHADOW-PLAN\] valid=(\d+) views=(\d+) maps=(\d+) res=(\d+) "
     r"bytes=(\d+) nearTexel=([0-9.]+) farTexel=([0-9.]+)"
 )
+PPM_RE = re.compile(br"P6\s+(\d+)\s+(\d+)\s+255\s")
+
+# The arms only compare their frames to each other, so a frame that drew
+# nothing is byte-identical to every other frame that drew nothing. These are
+# check_renderer_backends' scene floors, which the sampled race capture clears
+# by more than a factor of four.
+MIN_SCENE_COLOURS = 200
+MIN_SCENE_SIGMA = 10.0
 
 
 @dataclass(frozen=True)
@@ -62,6 +70,36 @@ class Result:
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise RuntimeError(message)
+
+
+def scene_metrics(raster: bytes) -> tuple[int, float]:
+    """Return quantized colour count and luma sigma over the scene centre."""
+    match = PPM_RE.match(raster)
+    require(match is not None, "capture is not a P6 PPM")
+    assert match is not None
+    width, height = int(match.group(1)), int(match.group(2))
+    pixels = raster[match.end():]
+    require(
+        len(pixels) == width * height * 3,
+        f"capture raster is {len(pixels)} bytes, expected "
+        f"{width * height * 3}",
+    )
+    colours: set[tuple[int, int, int]] = set()
+    count = total = total_sq = 0
+    for y in range(int(height * 0.20), int(height * 0.95), 3):
+        row = y * width * 3
+        for x in range(int(width * 0.15), int(width * 0.85), 3):
+            offset = row + x * 3
+            red, green, blue = pixels[offset:offset + 3]
+            colours.add((red >> 3, green >> 3, blue >> 3))
+            luma = (red * 299 + green * 587 + blue * 114) // 1000
+            count += 1
+            total += luma
+            total_sq += luma * luma
+    if count == 0:
+        return 0, 0.0
+    mean = total / count
+    return len(colours), max(0.0, total_sq / count - mean * mean) ** 0.5
 
 
 def normalized_pace(output: str) -> tuple[str, ...]:
@@ -175,10 +213,18 @@ def run_arm(
                 float(plan.group(7)) >= float(plan.group(6)),
                 f"{backend}-{arm}: invalid plan {plan.groups()}",
             )
+    raster = frame_files[0].read_bytes()
+    colours, sigma = scene_metrics(raster)
+    require(
+        colours >= MIN_SCENE_COLOURS and sigma >= MIN_SCENE_SIGMA,
+        f"{backend}-{arm}: capture is blank or near-uniform "
+        f"(colours={colours}, luma sigma={sigma:.1f}); frame equality across "
+        "the arms would be measuring an empty scene",
+    )
     return Result(
         label=f"{backend}-{arm}",
         pace=pace,
-        frame=frame_files[0].read_bytes(),
+        frame=raster,
         telemetry=telemetry,
     )
 

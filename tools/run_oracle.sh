@@ -112,7 +112,12 @@ STATE_MIN_COMMON_CLOCKS="$(field state_min_common_clocks)"
 STATE_MIN_LAP="$(field state_min_lap)"
 STATE_MIN_CHECKPOINT="$(field state_min_checkpoint)"
 STATE_MAX_POSITION_P95="$(field state_max_position_p95)"
+STATE_MAX_POSITION_ERROR="$(field state_max_position_error)"
 STATE_MIN_PROGRESS_AGREEMENT="$(field state_min_progress_agreement)"
+STATE_MIN_RNG_AGREEMENT="$(field state_min_rng_agreement)"
+STATE_MAX_VELOCITY_RATIO_DEVIATION="$(field state_max_velocity_ratio_deviation)"
+STATE_ALLOW_LEGACY_PACE_PROBE="$(field state_allow_legacy_pace_probe)"
+NATIVE_ALLOW_NONZERO_EXIT="$(field native_allow_nonzero_exit)"
 NATIVE_SYNTH_FIELDS="$(field native_synth_fields)"
 NATIVE_CADENCE="$(field native_cadence)"
 ARM_SUFFIX=""
@@ -277,9 +282,22 @@ if [[ "$SKIP_NATIVE" -eq 0 ]]; then
     if [[ "$FORCED_TRACK" -ge 0 ]]; then
         NATIVE_ENV+=(MDKR_LOAD_TRACK="$FORCED_TRACK")
     fi
+    # A native run that died part way through still leaves a log and a partial
+    # frame set, and every downstream comparison would score that truncated
+    # capture as though it were the whole route. Only a route that declares the
+    # non-zero exit may continue.
+    NATIVE_STATUS=0
     env "${NATIVE_ENV[@]}" "$NATIVE_BIN" "${NATIVE_ARGS[@]}" \
-        >"$NATIVE_LOG" 2>&1 || {
-            echo "WARN: native exited non-zero; see $NATIVE_LOG" >&2; }
+        >"$NATIVE_LOG" 2>&1 || NATIVE_STATUS=$?
+    if [[ "$NATIVE_STATUS" -ne 0 ]]; then
+        if [[ "$NATIVE_ALLOW_NONZERO_EXIT" -eq 1 ]]; then
+            echo "note: native exited $NATIVE_STATUS (declared by route $ROUTE)" >&2
+        else
+            echo "FAIL: native exited $NATIVE_STATUS; see $NATIVE_LOG" >&2
+            tail -8 "$NATIVE_LOG" | sed 's/^/  /' >&2
+            exit 1
+        fi
+    fi
     if [[ "$COMPARE_FRAMES" -eq 1 ]]; then
         echo "   native dumped $(find "$NATIVE_DIR" -maxdepth 1 -type f -name 'frame_*.ppm' | wc -l | tr -d ' ') frame(s)"
     fi
@@ -427,8 +445,17 @@ if [[ "$STATE_TRACE" -eq 1 && -z "$VEHICLE_RNG_TRACE" &&
         --min-lap "$STATE_MIN_LAP"
         --min-checkpoint "$STATE_MIN_CHECKPOINT"
         --max-position-p95 "$STATE_MAX_POSITION_P95"
+        --max-position-error "$STATE_MAX_POSITION_ERROR"
         --min-progress-agreement "$STATE_MIN_PROGRESS_AGREEMENT"
     )
+    if [[ "$STATE_ALLOW_LEGACY_PACE_PROBE" -eq 1 ]]; then
+        STATE_COMPARE_ARGS+=(--allow-legacy-pace-probe)
+    else
+        STATE_COMPARE_ARGS+=(
+            --min-rng-agreement "$STATE_MIN_RNG_AGREEMENT"
+            --max-velocity-ratio-deviation "$STATE_MAX_VELOCITY_RATIO_DEVIATION"
+        )
+    fi
     if [[ "$STATE_REQUIRE_FINISH" -eq 1 ]]; then
         STATE_COMPARE_ARGS+=(--require-finish)
     fi

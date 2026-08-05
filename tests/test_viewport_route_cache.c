@@ -60,24 +60,29 @@ static void test_split(unsigned viewports) {
     }
 
     /* Exact broken-direction control: substituting the final viewport's shared
-     * result for viewport zero changes opaque/pass/blend state. */
-    expect("last-viewport contamination control is observable",
-           mdkr_viewport_route_cache_load(
-               &cache, &object_a, viewports - 1u,
-               MDKR_VIEWPORT_ROUTE_BLEND, &route) &&
-           route.opacity == 64 &&
-           !mdkr_viewport_route_cache_load(
-               &cache, &object_a, 0u,
-               MDKR_VIEWPORT_ROUTE_BLEND, &route));
+     * result for viewport zero changes opaque/pass/blend state. A single
+     * viewport has no distinct zero to contaminate. */
+    if (viewports > 1u) {
+        expect("last-viewport contamination control is observable",
+               mdkr_viewport_route_cache_load(
+                   &cache, &object_a, viewports - 1u,
+                   MDKR_VIEWPORT_ROUTE_BLEND, &route) &&
+               route.opacity == 64 &&
+               !mdkr_viewport_route_cache_load(
+                   &cache, &object_a, 0u,
+                   MDKR_VIEWPORT_ROUTE_BLEND, &route));
+    }
 }
 
 int main(void) {
+    test_split(1u);
     test_split(2u);
+    test_split(3u);
     test_split(4u);
     if (s_failures != 0) {
         fprintf(stderr, "%d viewport route cache failure(s)\n", s_failures);
         return 1;
     }
-    puts("viewport route cache: PASS (2P/4P + contamination control)");
+    puts("viewport route cache: PASS (1P-4P + contamination control)");
     return 0;
 }

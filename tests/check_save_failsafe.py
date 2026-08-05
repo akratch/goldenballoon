@@ -124,9 +124,9 @@ import re
 import subprocess
 import sys
 
-from harness_utils import resolve_binary
+from harness_utils import preserved_eeprom, resolve_binary, save_env, test_save_dir
 
-SAVE_DIR = os.environ.get("MDKR_TEST_SAVE_DIR", "save")
+SAVE_DIR = test_save_dir()
 EEPROM = os.path.join(SAVE_DIR, "eeprom.bin")
 EEPROM_BAD = os.path.join(SAVE_DIR, "eeprom.bin.bad")
 EEPROM_TMP = os.path.join(SAVE_DIR, "eeprom.bin.tmp")
@@ -156,6 +156,7 @@ BOOT_LEVELS = {39: "OPTIONSBACKGROUND (behind MENU_BOOT)",
 # reloads at ~2844 (the Wizpig-amulet cutscene bounce an out-of-range amulet
 # triggers) and the SIGSEGV lands shortly after. 5000 leaves margin.
 POISON_FRAMES = 5000
+MENU_CHARACTER_SELECT = 3
 MENU_FILE_SELECT = 6
 
 # --- case 5: the Taj-challenge trap ----------------------------------------- #
@@ -341,7 +342,7 @@ def run(binary: str, rom: str, frames: int, script: str | None,
     env = dict(os.environ)
     env["MDKR_AUDIO"] = "0"      # belt-and-braces; --headless-frames already
     env["MDKR_TRACE"] = "1"      # emit menu_init / level_load
-    env["MDKR_SAVE_DIR"] = os.path.abspath(SAVE_DIR)
+    save_env(env, SAVE_DIR)
     # This is a save oracle, so a developer's CWD mdkr64.ini must not change
     # its authored-tick frame budget (for example by selecting Uncapped).
     # /dev/null or NUL is an explicit, read-only empty config on each host.
@@ -426,6 +427,15 @@ def check_clean_boot(label: str, rc: int, events: list[tuple[str, int, int]],
 
 
 def main() -> int:
+    # This check deletes and rewrites EEPROM images to assert a known starting
+    # state. Under tools/run_checks.py SAVE_DIR is a run-scoped temporary
+    # directory; a standalone run defaults to the repository's playable save/,
+    # whose prior contents must survive however this exits.
+    with preserved_eeprom(SAVE_DIR):
+        return run_check()
+
+
+def run_check() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", default="build")
     ap.add_argument("--rom", default="baserom.us.v80.z64")
@@ -556,11 +566,35 @@ def main() -> int:
         failures.append(f"poison: run exited {rc} "
                         f"(negative = killed by signal {-rc}) — the corrupt slot is "
                         "still being accepted as a real save")
-    if "charselect_assign_ai: bounded RNG fallback" not in out:
+    # charselect_assign_ai() completes either through the original retry loop or
+    # through the bounded completion path, depending on where the ROM-faithful
+    # generator's stream happens to be. Which one ran is not the contract; the
+    # contract is that assignment terminates. Pinning the fallback's own trace
+    # line makes an unrelated RNG-consumption change look like a regression, and
+    # says nothing when the loop hangs before ever emitting it. Assert instead
+    # that character select was entered and left.
+    charselect_frames = [f for kind, i, f in events
+                         if kind == "menu" and i == MENU_CHARACTER_SELECT]
+    if not charselect_frames:
         failures.append(
-            "poison: the production RNG positive control did not reach the "
-            "bounded character-assignment fallback"
+            f"poison: character select (menuId {MENU_CHARACTER_SELECT}) was never "
+            "entered, so charselect_assign_ai() never ran and the RNG "
+            "termination control covered nothing"
         )
+    else:
+        left = [f for kind, i, f in events
+                if kind != "menu" or i != MENU_CHARACTER_SELECT]
+        if not any(f > charselect_frames[0] for f in left):
+            failures.append(
+                f"poison: nothing follows character select at frame "
+                f"{charselect_frames[0]} — charselect_assign_ai() never returned"
+            )
+        elif args.verbose:
+            taken = ("bounded fallback"
+                     if "charselect_assign_ai: bounded RNG fallback" in out
+                     else "original retry loop")
+            print(f"  poison: character select @{charselect_frames[0]} "
+                  f"completed via the {taken}")
     fsel = next((f for kind, i, f in events
                  if kind == "menu" and i == MENU_FILE_SELECT), None)
     if fsel is None:

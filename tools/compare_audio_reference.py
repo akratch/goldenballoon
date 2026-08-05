@@ -19,6 +19,25 @@ import wave
 BANDS_HZ = (20, 80, 160, 320, 640, 1280, 2560, 5120, 10000)
 EPS = 1.0e-12
 
+# Tolerance defaults, from the port-versus-console measurement recorded in
+# tests/check_audio_level_reference.py and docs/ORACLE.md: on race_state_oracle
+# the port ran -0.488 dB broadband against the ares audio-interface capture over
+# a 153.21 s aligned overlap, with per-band deltas of 1-2 dB through the low-mids
+# rising to +3.823 dB in the 6.4-11 kHz band. Twice the broadband delta is
+# 0.98 dB, raised to the 1.5 dB the sibling gate already proved sensitive there
+# (it reads a deliberate +3 dB engine change as +2.309 dB). The band figures are
+# bounded above by the worst measured band rather than measured directly, so
+# they take that 3.823 dB as the floor to sit above. The compared-window default
+# is one fifth of the shortest deliberately short window on record (27.45 s in
+# docs/BLUEY2_PARITY.md), because a comparison that collapses to a few seconds
+# has stopped measuring the route. The stereo bound is the level at which this
+# tool's own diagnosis already calls a balance difference worth investigating.
+MAX_RMS_DELTA_DB = 1.5
+MAX_BAND_MAE_DB = 5.0
+MAX_HIGH_BAND_MAE_DB = 6.0
+MAX_STEREO_BALANCE_DELTA_DB = 3.0
+MIN_COMPARED_SECONDS = 5.0
+
 
 def dbfs_from_rms(value):
     if value <= 0:
@@ -822,12 +841,15 @@ def parse_args(argv):
     parser.add_argument("--no-align", action="store_true")
     parser.add_argument("--min-envelope-corr", type=float, default=0.55)
     parser.add_argument("--min-spectral-cosine", type=float, default=0.90)
-    parser.add_argument("--max-band-mae-db", type=float, default=8.0)
-    parser.add_argument("--max-high-band-mae-db", type=float, default=10.0)
-    parser.add_argument("--max-rms-delta-db", type=float, default=8.0)
-    parser.add_argument("--min-compared-seconds", type=float, default=0.0,
+    parser.add_argument("--max-band-mae-db", type=float, default=MAX_BAND_MAE_DB)
+    parser.add_argument("--max-high-band-mae-db", type=float,
+                        default=MAX_HIGH_BAND_MAE_DB)
+    parser.add_argument("--max-rms-delta-db", type=float, default=MAX_RMS_DELTA_DB)
+    parser.add_argument("--min-compared-seconds", type=float,
+                        default=MIN_COMPARED_SECONDS,
                         help="fail if the aligned comparison window is shorter")
-    parser.add_argument("--max-stereo-balance-delta-db", type=float, default=8.0)
+    parser.add_argument("--max-stereo-balance-delta-db", type=float,
+                        default=MAX_STEREO_BALANCE_DELTA_DB)
     parser.add_argument("--allow-channel-swap", action="store_true",
                         help="report but do not fail when stereo channels look swapped")
     parser.add_argument("--print-bands", action="store_true")
@@ -838,7 +860,10 @@ def parse_args(argv):
     parser.add_argument("--print-segments", action="store_true",
                         help="print worst segment metrics when --segment-seconds is set")
     parser.add_argument("--json-out", help="write full metrics to a JSON file")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.min_compared_seconds <= 0.0:
+        parser.error("--min-compared-seconds must be positive")
+    return args
 
 
 def main(argv):

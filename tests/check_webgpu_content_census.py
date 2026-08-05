@@ -33,6 +33,8 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "tests" / "input_scripts"
 RACE_SCRIPT = SCRIPTS / "race_full_3lap_tt.txt"
 
+TEXCACHE_RE = re.compile(r"\[TEXCACHE\] staleHits=(\d+)")
+
 MENU_ROUTES = (
     ("nav_to_options", 1700, "menuId=12"),
     ("nav_to_audio_options", 1900, "menuId=13"),
@@ -311,6 +313,11 @@ def run_case(
                 "MDKR_DL_STRICT": "1",
                 "MDKR_DL_CENSUS": "1",
                 "MDKR_WGPU_CENSUS": "1",
+                # The texture-cache content audit (gfx_pc_dkr.c) has to run on
+                # the routes that reach the menus, which is where the historical
+                # key-aliasing bug rendered a stale texture. nav_to_track_select
+                # is one of them.
+                "MDKR_TEXCACHE_VERIFY": "1",
                 "MDKR_SAVE_DIR": str(save_dir),
             }
         )
@@ -346,6 +353,14 @@ def run_case(
         return None, "requested WebGPU backend was not active"
     if expected not in output:
         return None, f"route did not emit expected marker {expected!r}"
+    # An absent report is a failure, not a skip: it means the audit did not run
+    # and the assertion below would otherwise cover nothing.
+    stale = TEXCACHE_RE.search(output)
+    if stale is None:
+        return None, "MDKR_TEXCACHE_VERIFY=1 produced no [TEXCACHE] report"
+    if int(stale.group(1)) != 0:
+        return None, (f"{stale.group(1)} texture-cache hit(s) served content that "
+                      "had changed since upload")
     try:
         return parse_report(output), None
     except ValueError as exc:

@@ -95,7 +95,7 @@ import re
 import subprocess
 import sys
 
-from harness_utils import resolve_binary
+from harness_utils import preserved_eeprom, resolve_binary, save_env, test_save_dir
 
 # Boss level 46 = Tricky 2 (Fire Mountain), world 1. Same provenance as
 # tests/check_collision_gridmask.py -- from ASSET_MISC_BOSS_TRACKS_IDS. The
@@ -109,7 +109,8 @@ CUTSCENE_WIN = 4         # channel 4 of level 57; 3 = challenge, 5 = lose, 6 = a
 RACE_CLEARED = 2         # menu.h RACE_CLEARED (bit 1 of a courseFlags entry)
 
 SCRIPT = "tests/input_scripts/race_full_3lap_tt.txt"
-SAVE = os.path.join("save", "eeprom.bin")
+SAVE_DIR = test_save_dir()
+SAVE = os.path.join(SAVE_DIR, "eeprom.bin")
 # Measured on us.v80: the win branch runs at frame 8685 and the win cutscene
 # loads at 9043 -- level_transition_begin(4) takes ~360 frames -- so the budget
 # has to clear 9043 or the "the win cutscene loads"
@@ -133,6 +134,7 @@ BAD_RE = re.compile(r"\[FATAL\]|\[CRASH\]|AddressSanitizer|Assertion")
 def run(binary, rom, track, frames, precleared, verbose):
     env = dict(os.environ)
     env["MDKR_AUDIO"] = "0"          # belt-and-braces; --headless-frames is the guarantee
+    save_env(env, SAVE_DIR)
     env["MDKR_TRACE"] = "1"
     env["MDKR_AUTOPILOT"] = "1"
     # Award the human first place by writing racer->finishPosition at the finish
@@ -188,6 +190,15 @@ def parse(out):
 
 
 def main() -> int:
+    # This check deletes and rewrites EEPROM images to assert a known starting
+    # state. Under tools/run_checks.py SAVE_DIR is a run-scoped temporary
+    # directory; a standalone run defaults to the repository's playable save/,
+    # whose prior contents must survive however this exits.
+    with preserved_eeprom(SAVE_DIR):
+        return run_check()
+
+
+def run_check() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", default="build")
     ap.add_argument("--rom", default="baserom.us.v80.z64")

@@ -2950,3 +2950,198 @@ the resume returns, so `get_track_id_to_load()` always yields levelId 0, and
 reach MENU_TITLE at frame 1134. If you see a race load early in an *idle* boot, it
 is the ordinary title attract demo (`levelId=18` @~5132, `levelId=28` @~6632,
 `numPlayers=0 cutscene=100`), which exits on START.
+
+## Checks whose detail lives with their source
+
+The gates below are registered in `tools/run_checks.py` and run by the complete
+suite. Their own module docstrings carry the full assertion list; what follows is
+the invocation and what each one owns, so the manifest and this file agree.
+`check_ci_contract.py` asserts that agreement: every registered `tests/check_*.py`
+must be named here.
+
+### Source-region simulation cadence — `tests/check_simulation_cadence.py`
+
+```bash
+python3 tests/check_simulation_cadence.py --build build \
+  --rom baserom.us.v80.z64 --roms build/roms
+```
+
+Containment gate for NTSC and PAL source clocks, the original/enhanced pacing
+mechanism, and the explicit oracle policy. Needs the ROM-revision directory
+because the region clause covers both releases, and the PAL release is not the
+default `--rom`.
+
+### Field-level byte-swap audit — `tests/check_asset_swap_invariants.py`
+
+```bash
+python3 tests/check_asset_swap_invariants.py --rom baserom.us.v80.z64
+```
+
+Closes the byte-swap misread class rather than chasing instances: spec-derived
+ROM field invariants with byte-reversed positive controls, plus raw
+`asset_load()` swap coverage. The defining property of the class is that
+deterministically wrong input data keeps every self-consistency oracle green —
+BHV_WAVE_GENERATOR's `u16` fields were misread from bring-up until v0.8.
+
+### Retail model corpus — `tests/check_rom_model_corpus.py`
+
+```bash
+python3 tests/check_rom_model_corpus.py --rom baserom.us.v80.z64
+```
+
+Walks every object and level model asset, its batches, sentinels, and render
+states without relying on a reachable game route. Complements the live WebGPU
+census: that one answers "what did our routes emit", this one answers "what did
+those routes leave unvisited".
+
+### Strict display-list and material census — `tests/check_webgpu_content_census.py`
+
+```bash
+python3 tests/check_webgpu_content_census.py --build build \
+  --rom baserom.us.v80.z64
+```
+
+Runs all nine authored menu routes, every main race, every boss, all four
+challenges, the Adventure intro/hub, and the 3P/4P layouts through the real
+WebGPU backend under `MDKR_DL_STRICT=1`. Each process must report zero
+display-list faults, every material identity and dynamic pipeline key, no shader
+guard or pipeline failure, and at least 4x shader-index and 2x per-material
+pipeline/bind-group headroom. It also runs the texture-cache content audit
+(`MDKR_TEXCACHE_VERIFY=1`) and requires zero stale cache hits, which is the route
+class where the historical key-aliasing bug lived.
+
+### Repeated stage/ownership plateau — `tests/check_resource_plateau.py`
+
+```bash
+python3 tests/check_resource_plateau.py --build build \
+  --rom baserom.us.v80.z64
+```
+
+Loads the same race four times in one process through the original Try Again
+path and requires CPU pool, audio, GPU, and pointer-registry generations to reach
+a plateau. The first generations may warm persistent caches; the later ones may
+not grow.
+
+### Rolling attract demo — `tests/check_attract_demo.py`
+
+```bash
+python3 tests/check_attract_demo.py --build build --rom baserom.us.v80.z64
+```
+
+Title-demo vehicle and path selection, long-soak stability, and input teardown.
+GAME-08 was the source-labelled retail defect this owns: `load_level_for_menu()`
+forced `VEHICLE_PLANE` for every menu level, so the demo's AI racers consumed the
+plane-node family while individual frames still looked plausible.
+
+### Launcher screenshot contract — `tests/check_app_capture.py`
+
+```bash
+python3 tests/check_app_capture.py --build build --self-test
+```
+
+Launcher screenshot dimensions, contrast, palette, and draw bounds. `--self-test`
+additionally requires the broken-direction mutation controls to fail; the runner
+always passes it, so the controls are release evidence rather than an optional
+extra.
+
+### Real launcher widget input — `tests/check_app_ui_input.py`
+
+```bash
+python3 tests/check_app_ui_input.py --build build --rom baserom.us.v80.z64
+```
+
+Drives the real ImGui widgets through SDL keyboard and gamepad input in a process
+with private app preferences, video config, and save roots. Proves first-run
+selection, cross-process reload, gamepad parity, visible save failure with
+unchanged desired state, and recovery once the configuration path becomes
+writable.
+
+### Per-viewport route isolation — `tests/check_viewport_route_isolation.py`
+
+```bash
+python3 tests/check_viewport_route_isolation.py --build build-rel \
+  --rom baserom.us.v80.z64
+```
+
+2P/4P object-route isolation with a last-viewport fade control. The fixture
+leaves player one's racer opaque in every early viewport and faded only in the
+final one; the production arm must consume the retained object x viewport route,
+and the broken-direction arm substitutes the final viewport's route everywhere,
+reproducing MP-001 exactly.
+
+### Weather RNG order — `tests/check_weather_rng_order.py`
+
+```bash
+python3 tests/check_weather_rng_order.py --build build-rel \
+  --rom baserom.us.v80.z64
+```
+
+Wizpig 1 (level 37) is the only normal level route that exercises rain. The gate
+records the raw authoritative state hash plus the seed immediately around every
+splash placement roll and lightning timer reset, and requires presentation
+invariance. Only digests and row counts are stored; no ROM-derived state ships.
+
+### Address-domain narrowing — `tests/check_address_domains.py`
+
+```bash
+python3 tests/check_address_domains.py
+```
+
+Source gate keeping native pointer-to-32-bit crossings inside named domain
+boundary helpers. The compiler rejects direct pointer/integer casts; this owns
+the two-cast spelling such as `(u32)(uintptr_t)pointer`, which suppresses the
+diagnostic while still discarding the high half. Matching-only `!NATIVE_PORT`
+branches are excluded.
+
+### CI contract — `tests/check_ci_contract.py`
+
+```bash
+python3 tests/check_ci_contract.py
+```
+
+Fails closed when the workflows lose required coverage: push/PR/manual policy,
+the native matrix, the sanitizer lane, linked wasm and save custody, ROM guards,
+release provenance, and the immutable action pins. It carries its own negative
+fixtures — every guard is re-run against a deliberately mutated copy of the
+source it inspects and must reject it. It also derives the release version from
+`CMakeLists.txt`'s `MDKR_VERSION` and requires this file's task list to match
+`tools/run_checks.py`'s manifest.
+
+### Optimized full-UBSan route gate — `tests/check_full_ubsan.py`
+
+```bash
+python3 tests/check_full_ubsan.py --rom baserom.us.v80.z64
+```
+
+Builds its own `-fsanitize=undefined,float-cast-overflow` tree, verifies the
+required handlers actually linked, runs its positive controls, then drives the
+broad content and stateful routes. It holds an exclusive lock on its build
+directory: two concurrent runs would interleave a reconfigure with a compile and
+fail for reasons unrelated to the code under test.
+
+### Restart & Apply process replacement — `tests/check_restart_apply.py`
+
+```bash
+python3 tests/check_restart_apply.py --build build-rel --rom baserom.us.v80.z64
+```
+
+Drives the production app's real restart transition from a private
+extracted-layout fixture on a deep Unicode path — no test seam replaces the
+executable or bypasses `main_app.cpp`. Successful replacement is one arm; the
+post-replacement boot failure and the handoff-staging failure are the other two,
+and each must clear the one-shot controls, return to the visible launcher
+recovery, and leave the copied ROM and settings intact.
+
+### Staged-web provenance fixtures — `tests/check_release_ready_web_provenance.py`
+
+```bash
+python3 tests/check_release_ready_web_provenance.py
+```
+
+Deterministic fixtures for `tools/ci/check_web_build_provenance.py`, the guard
+the release-readiness script runs over a staged `dist/web`. Each case writes a
+synthetic `build-info.json` and pins the exact exit code and message: the clean
+exact candidate must pass, while a dirty tree, a source commit that is not HEAD,
+a missing version, and a wrong version must each be rejected with the reason
+named. A provenance guard that stopped inspecting anything fails here instead of
+accepting every candidate.

@@ -191,6 +191,11 @@ def main():
         sys.exit("no build at %s" % args.build)
     if not os.path.exists(args.rom):
         sys.exit("no ROM at %s" % args.rom)
+    # Determinism is a comparison between runs. One run has nothing to compare
+    # against and every cross-run assertion below degenerates to a pass.
+    if args.runs < 2:
+        sys.exit("--runs %d compares nothing; determinism needs at least 2"
+                 % args.runs)
 
     fixtures = args.fixtures or DEFAULT_FIXTURES
     renderers = args.renderers or ["gl", "webgpu"]

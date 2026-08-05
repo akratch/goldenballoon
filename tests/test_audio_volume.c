@@ -78,7 +78,25 @@ static void test_ramp_and_reconnect(void) {
     mdkr_audio_gain_ramp_apply_s16(
         &ramp, samples, MDKR_AUDIO_GAIN_RAMP_FRAMES, 2);
     expect("ramp begins without a hard mute", samples[0] > 11000);
-    expect("ramp is monotonic", samples[200] < samples[100]);
+    {
+        /* A constant input must decay without a single step back up: any
+         * non-monotonic frame is an audible reversal, not a fade. */
+        int reversals = 0;
+        int steps = 0;
+        for (size_t frame = 1; frame < MDKR_AUDIO_GAIN_RAMP_FRAMES; frame++) {
+            for (size_t channel = 0; channel < 2; channel++) {
+                size_t index = frame * 2 + channel;
+                if (samples[index] > samples[index - 2]) {
+                    reversals++;
+                }
+                if (samples[index] < samples[index - 2]) {
+                    steps++;
+                }
+            }
+        }
+        expect("full ramp never rises", reversals == 0);
+        expect("full ramp actually descends", steps > 0);
+    }
     expect("ramp reaches silence", samples[MDKR_AUDIO_GAIN_RAMP_FRAMES * 2 - 1] == 0);
     expect("ramp converges", ramp.current_q16 == 0 && ramp.remaining_frames == 0);
 

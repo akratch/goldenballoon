@@ -23,6 +23,7 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,32 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = ROOT / "tests"
+
+# The suite scrubs MDKR* out of the child environment so a developer's shell
+# cannot steer a run. These are the variables the suite itself owns and must
+# therefore survive the scrub.
+MDKR_ENV_ALLOWLIST = frozenset({
+    "MDKR_SAVE_DIR",
+    "MDKR_TEST_SAVE_DIR",
+    "MDKR_TEXCACHE_VERIFY",
+})
+
+# A wedged task is a failure, not a hung release run. These are deliberately
+# loose upper bounds on a task that is still making progress, not measured
+# runtimes: a budget tight enough to be interesting would turn a slow host into
+# a false failure, which is the opposite of what this gate is for. Tasks that
+# configure and compile their own instrumented tree before running a matrix get
+# the larger budget. Use --timeout-scale on a host slower than this one.
+DEFAULT_TASK_TIMEOUT = 1800
+BUILDING_TASK_TIMEOUT = 10800
+
+# The roles that constitute the web lane. The release checklist selects them by
+# role so its task list cannot drift from this manifest.
+BROWSER_ROLES = ("wasm", "browser", "browser_save")
+
+# Distinct from any check's own exit status, so a wedged task cannot be
+# mistaken for a task that ran and reported.
+TIMEOUT_EXIT = 124
 
 
 @dataclass(frozen=True)
@@ -39,6 +66,7 @@ class Check:
     role: str
     description: str
     args: tuple[str, ...] = ()
+    timeout: int = DEFAULT_TASK_TIMEOUT
 
 
 # Cheap, broad gates lead; long scenario/matrix checks follow. Keep every
@@ -67,7 +95,8 @@ CHECKS = (
           "ROM/settings persistence, and boot/staging failure recovery"),
     Check("app_capture", "check_app_capture.py", "native",
           "launcher screenshot dimensions, contrast, palette, draw bounds, "
-          "and broken-direction mutations"),
+          "and broken-direction mutations",
+          args=("--self-test",)),
     Check("app_ui_input", "check_app_ui_input.py", "native",
           "real ImGui keyboard/gamepad selection, reload, scale matrix, "
           "save failure, and retry"),
@@ -410,7 +439,64 @@ def has_asan(binary: Path) -> bool:
         )
     except OSError:
         return False
-    return "asan_init" in proc.stdout
+    if "asan_init" in proc.stdout:
+        return True
+    # A statically linked sanitizer runtime imports nothing: the interceptors
+    # are defined in the image instead.
+    try:
+        defined = subprocess.run(
+            ["nm", "--defined-only", str(binary)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            text=True,
+        )
+    except OSError:
+        return False
+    return "__asan_" in defined.stdout
+
+
+def split_values(values: list[str] | None) -> list[str]:
+    return [
+        item.strip()
+        for value in values or []
+        for item in value.split(",")
+        if item.strip()
+    ]
+
+
+def subset_label(args: argparse.Namespace, count: int) -> str:
+    """Name every restriction applied to the manifest, for the verdict line."""
+    restrictions: list[str] = []
+    if args.only:
+        restrictions.append("--only " + ",".join(split_values(args.only)))
+    if args.role:
+        restrictions.append("--role " + ",".join(split_values(args.role)))
+    if args.primary_only:
+        restrictions.append("--primary-only")
+    if args.skip_instrumented:
+        restrictions.append("--skip-instrumented")
+    if args.skip_wasm:
+        restrictions.append("--skip-wasm")
+    if not restrictions:
+        return f"complete suite, {count}/{len(CHECKS)} tasks"
+    return (
+        f"SUBSET {count}/{len(CHECKS)} tasks: " + " ".join(restrictions)
+    )
+
+
+def selected_roles(role_values: list[str] | None, checks: list[Check]) -> list[Check]:
+    roles = split_values(role_values)
+    if not roles:
+        return checks
+    known = {check.role for check in CHECKS}
+    unknown = sorted(set(roles) - known)
+    if unknown:
+        raise RuntimeError(
+            "unknown role(s): " + ", ".join(unknown)
+            + "; known roles: " + ", ".join(sorted(known))
+        )
+    return [check for check in checks if check.role in roles]
 
 
 def selected_checks(pattern_values: list[str] | None) -> list[Check]:
@@ -614,9 +700,22 @@ def main() -> int:
         help="run only matching task/script names (repeatable; iteration only)",
     )
     parser.add_argument(
+        "--role",
+        action="append",
+        metavar="ROLE[,ROLE...]",
+        help="run only tasks with these manifest roles (repeatable); "
+             "the web lane is " + ",".join(BROWSER_ROLES),
+    )
+    parser.add_argument(
         "--primary-only",
         action="store_true",
         help="run only checks assigned to --build (specialized gates must be run separately)",
+    )
+    parser.add_argument(
+        "--timeout-scale",
+        type=float,
+        default=1.0,
+        help="multiply every task's timeout budget (slow hosts only)",
     )
     parser.add_argument(
         "--skip-instrumented",
@@ -639,7 +738,7 @@ def main() -> int:
 
     try:
         validate_manifest()
-        checks = selected_checks(args.only)
+        checks = selected_roles(args.role, selected_checks(args.only))
     except RuntimeError as exc:
         print(f"run_checks: FAIL — {exc}", file=sys.stderr)
         return 2
@@ -687,13 +786,26 @@ def main() -> int:
     environment = {
         key: value
         for key, value in os.environ.items()
-        if not key.startswith("MDKR")
+        if not key.startswith("MDKR") or key in MDKR_ENV_ALLOWLIST
     }
+    # No task may touch the repository's playable save/ directory. The run owns
+    # one directory and hands it to both sides: MDKR_SAVE_DIR is what the engine
+    # writes through, MDKR_TEST_SAVE_DIR is where a check looks for the result.
+    # An explicit MDKR_TEST_SAVE_DIR wins so a single task can still be aimed.
+    save_scratch: tempfile.TemporaryDirectory[str] | None = None
+    save_dir = environment.get("MDKR_TEST_SAVE_DIR", "")
+    if not save_dir:
+        save_scratch = tempfile.TemporaryDirectory(prefix="mdkr64-run-checks-save-")
+        save_dir = save_scratch.name
+    save_dir = os.path.abspath(save_dir)
+    os.makedirs(save_dir, exist_ok=True)
     environment.update({
         "MDKR_AUDIO": "0",
         # Never inherit a developer's playable repository config. Individual
         # configuration/migration checks replace this with a writable fixture.
         "MDKR_VIDEO_CONFIG_PATH": os.devnull,
+        "MDKR_SAVE_DIR": save_dir,
+        "MDKR_TEST_SAVE_DIR": save_dir,
         "PYTHONUNBUFFERED": "1",
     })
 
@@ -721,15 +833,37 @@ def main() -> int:
             flush=True,
         )
         started = time.monotonic()
+        budget = check.timeout
+        if check.role in {"instrumented", "layout"}:
+            # These configure and compile an instrumented tree before the run.
+            budget = max(budget, BUILDING_TASK_TIMEOUT)
+        timeout = max(1, int(round(budget * args.timeout_scale)))
         try:
-            proc = subprocess.run(cmd, cwd=ROOT, env=environment, check=False)
+            proc = subprocess.run(
+                cmd, cwd=ROOT, env=environment, check=False, timeout=timeout
+            )
             returncode = proc.returncode
+        except subprocess.TimeoutExpired:
+            # A wedged task is a failed task. Record it and keep going so the
+            # summary still reports every other task's real verdict.
+            returncode = TIMEOUT_EXIT
+            print(
+                f"[{index}/{len(checks)}] {check.name}: no exit within "
+                f"{format_duration(timeout)} — killed",
+                file=sys.stderr,
+                flush=True,
+            )
         except KeyboardInterrupt:
             print("\nrun_checks: interrupted", file=sys.stderr)
             return 130
         elapsed = time.monotonic() - started
         results.append((check, returncode, elapsed))
-        label = "PASS" if returncode == 0 else f"FAIL (exit {returncode})"
+        if returncode == 0:
+            label = "PASS"
+        elif returncode == TIMEOUT_EXIT:
+            label = f"FAIL (timeout after {format_duration(timeout)})"
+        else:
+            label = f"FAIL (exit {returncode})"
         print(f"[{index}/{len(checks)}] {check.name}: {label} in "
               f"{format_duration(elapsed)}", flush=True)
         if returncode != 0 and args.fail_fast:
@@ -738,25 +872,34 @@ def main() -> int:
     failures = [(check, rc, elapsed) for check, rc, elapsed in results if rc != 0]
     print("\nrun_checks: summary", flush=True)
     for check, returncode, elapsed in results:
-        label = "PASS" if returncode == 0 else f"FAIL exit={returncode}"
+        if returncode == 0:
+            label = "PASS"
+        elif returncode == TIMEOUT_EXIT:
+            label = "FAIL timeout"
+        else:
+            label = f"FAIL exit={returncode}"
         print(f"  {check.name:24s} {label:14s} {format_duration(elapsed):>7s}")
     total = time.monotonic() - suite_start
+    # A subset can never read as a completed suite: the verdict line names the
+    # restriction that produced it and how much of the manifest it covered.
+    scope = subset_label(args, len(checks))
     if failures:
         print(
             f"run_checks: FAIL — {len(failures)}/{len(results)} task(s) failed "
-            f"in {format_duration(total)}",
+            f"in {format_duration(total)} [{scope}]",
             file=sys.stderr,
         )
         return 1
     if len(results) != len(checks):
         print(
-            f"run_checks: FAIL — ran {len(results)}/{len(checks)} selected tasks",
+            f"run_checks: FAIL — ran {len(results)}/{len(checks)} selected tasks "
+            f"[{scope}]",
             file=sys.stderr,
         )
         return 1
     print(
         f"run_checks: PASS — all {len(results)} tasks passed in "
-        f"{format_duration(total)}"
+        f"{format_duration(total)} [{scope}]"
     )
     return 0
 

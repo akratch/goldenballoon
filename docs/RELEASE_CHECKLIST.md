@@ -117,10 +117,24 @@ directory or its `mdkr64` executable. The runner knows which checks require the
 selected, Release, ASan, self-built UBSan, or wasm artifact; it also fails if a new
 `tests/check_*.py` is absent from its manifest.
 
+Build the web artifact first (section 4's `tools/web/build_web.sh`), then run the
+suite **once, with no subsetting flags**. Every `--only`/`--skip-*`/`--role`
+restriction makes the runner label its verdict `SUBSET n/N`; the release run must
+print `complete suite, N/N tasks`, which is the only form that counts as a full
+run.
+
 ```bash
+tools/web/build_web.sh          # builds, stages dist/web, runs the guard itself
 python3 tools/run_checks.py \
   --build build-rel --release-build build-rel --asan-build build-asan \
-  --skip-wasm
+  --wasm build-web/mdkr64_web.wasm
+```
+
+The GPU-labelled CTest lane is not part of that manifest and is the one
+additional command the release run needs:
+
+```bash
+ctest --test-dir build-rel -L gpu --output-on-failure
 ```
 
 `check_key_cutscene_once.py` is the one check that is **build-type-sensitive by
@@ -160,8 +174,6 @@ real-browser gate repeats the menu mutation and IDBFS reload in wasm.
 `check_audio_options_persistence.py` separately requires the original Audio
 Options sliders to commit before exit, then injects an unwritable destination
 and proves the visible retry/session-only decision path.
-`--skip-wasm` is used here only because the web artifact is built and both
-structurally and dynamically checked in section 4.
 
 ## 3. Behavioural regression suite
 
@@ -236,17 +248,25 @@ Per-fixture frame budgets and expected assertion lines are tabulated in
 
 ## 4. Web build and the artifact ROM-absence gate
 
+Section 2b's single full invocation already ran every web task. This section is
+the artifact gate plus, for iteration only, a way to re-run just the web lane
+without naming its members:
+
 ```bash
-tools/web/build_web.sh          # builds, stages dist/web, runs the guard itself
 tools/check_no_rom.sh dist/web
+# iteration only -- the release evidence is section 2b's complete-suite run
 python3 tools/run_checks.py \
-  --only wave_visible_table,browser_save_ui,browser_resource_plateau,touch_controls,browser_runtime,browser_presentation_rates,browser_taj_character_select,browser_taj_persistence \
+  --role wasm,browser,browser_save \
   --wasm build-web/mdkr64_web.wasm \
   --rom baserom.us.v80.z64
 ```
 
 Expected: `check_no_rom: PASS — N artifact(s) scanned, no ROM data present.` and
-all eight runner tasks PASS.
+every selected runner task PASS. `--role` selects the web lane out of
+`tools/run_checks.py`'s own manifest, so this list cannot drift from the tasks
+that actually exist — the Taj character-select and persistence gates joined the
+`browser` role and are picked up without editing this document. The runner
+prints the count it selected and labels the run `SUBSET`.
 
 `check_wave_visible_table.py` is the one check that can only be run on the **web**
 artifact: it catches a linker layout split that the native target is immune to by

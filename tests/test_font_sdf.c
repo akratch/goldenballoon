@@ -108,6 +108,19 @@ static void test_adjacent_glyphs_do_not_bleed(void) {
                     source, W, H, S, regions, 2,
                     output, sizeof(output)));
 
+    {
+        /* Each cell must still carry its own authored coverage: an all-empty
+         * derive would satisfy the bleed bound vacuously. */
+        size_t stem = ((size_t)(2 * S + S / 2) * OW +
+                       (size_t)(1 * S + S / 2)) * 4;
+        size_t block = ((size_t)(2 * S + S / 2) * OW +
+                        (size_t)(4 * S + S / 2)) * 4;
+        expect_true("left glyph keeps its own stem",
+                    output[stem] > 220 && output[stem + 3] > 245);
+        expect_true("right glyph keeps its own block",
+                    output[block + 1] > 220 && output[block + 3] > 245);
+    }
+
     for (int y = 0; y < OH; y++) {
         for (int x = 0; x < 3 * S; x++) {
             size_t pixel = ((size_t)y * OW + (size_t)x) * 4;

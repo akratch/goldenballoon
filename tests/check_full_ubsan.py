@@ -25,6 +25,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from harness_utils import exclusive_build_dir
+
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BUILD = ROOT / "build-ubsan-full"
@@ -196,6 +198,26 @@ def checked_route(
 
 
 def main() -> int:
+    # The instrumented build directory is shared state; hold it for the whole
+    # task rather than racing another run's reconfigure.
+    try:
+        with exclusive_build_dir(_requested_build_dir()):
+            return run_check()
+    except RuntimeError as exc:
+        print(f"check_full_ubsan: {exc}")
+        return 2
+
+
+def _requested_build_dir() -> Path:
+    for index, value in enumerate(sys.argv):
+        if value == "--build-dir" and index + 1 < len(sys.argv):
+            return Path(sys.argv[index + 1]).expanduser().resolve()
+        if value.startswith("--build-dir="):
+            return Path(value.split("=", 1)[1]).expanduser().resolve()
+    return DEFAULT_BUILD.resolve()
+
+
+def run_check() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument(

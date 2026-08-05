@@ -19,6 +19,32 @@ OBJECTS = ROOT / "game" / "src" / "objects.c"
 OBJECTS_HEADER = ROOT / "game" / "src" / "objects.h"
 GFX_PC = ROOT / "platform" / "fast3d" / "gfx_pc_dkr.c"
 
+# The cache-owned batch array is spelled either through a local pointer
+# (`batch[i]`) or inline through the relocation macro
+# (`DKR_PTR(TriangleBatchInfo, objModel->batches)[batchNum]`); both index the
+# same shared allocation, so both spellings are shared-state writes.
+BATCH_ELEMENT = (
+    r"(?:\w+|DKR_PTR\s*\(\s*TriangleBatchInfo\s*,[^)]*\))\s*\[[^\]]+\]"
+)
+ASSIGNMENT = r"(?:\+=|-=|\|=|&=|(?<![=!<>])=(?!=))"
+BATCH_MATERIAL_WRITE = re.compile(
+    rf"{BATCH_ELEMENT}\s*\.\s*(?:texOffset|textureIndex)\s*{ASSIGNMENT}"
+)
+# The only admissible writer of the shared array: the model-global animated
+# texture cadence, which advances one offset for every object that shares the
+# cached model. Per-object (door, racer) choices must stay draw-local.
+BATCH_MATERIAL_WRITERS = ("obj_tex_animate_model",)
+DEFINITION = re.compile(
+    r"^[A-Za-z_][\w \t*]*?\b(?P<name>[A-Za-z_]\w*)\s*\([^;{]*?\)\s*\{",
+    re.M | re.S,
+)
+# Draw-local fallback: the shared batch offset is read and shifted into the
+# display-list material, never written back.
+SHARED_FALLBACK_READ = re.compile(
+    r"DKR_PTR\s*\(\s*TriangleBatchInfo\s*,\s*objModel->batches\s*\)"
+    r"\s*\[[^\]]+\]\s*\.\s*texOffset\s*<<\s*14"
+)
+
 
 def native_port_projection(source: str, enabled: bool) -> str:
     """Project simple NATIVE_PORT conditionals without expanding C macros."""
@@ -72,6 +98,24 @@ def native_port_projection(source: str, enabled: bool) -> str:
     if stack:
         raise AssertionError("unterminated preprocessor conditional")
     return "".join(output)
+
+
+def enclosing_function(source: str, offset: int) -> str | None:
+    """Name of the column-zero function definition preceding `offset`."""
+
+    name: str | None = None
+    for match in DEFINITION.finditer(source):
+        if match.start() > offset:
+            break
+        name = match.group("name")
+    return name
+
+
+def batch_material_writers(source: str) -> set[str | None]:
+    return {
+        enclosing_function(source, match.start())
+        for match in BATCH_MATERIAL_WRITE.finditer(source)
+    }
 
 
 def function_body(source: str, name: str) -> str:
@@ -165,19 +209,21 @@ class ObjectMaterialOwnershipTests(unittest.TestCase):
         render = function_body(self.native_objects, "render_mesh")
         per_door = render.find("obj_door_batch_texture_offset(")
         per_racer = render.find("gObjectRenderRacerTexOffset")
-        shared_fallback = render.find(
-            "DKR_PTR(TriangleBatchInfo, objModel->batches)[i].texOffset << 14"
-        )
+        fallback = SHARED_FALLBACK_READ.search(render)
         self.assertGreaterEqual(per_door, 0)
         self.assertGreater(per_racer, per_door)
-        self.assertGreater(shared_fallback, per_racer)
+        self.assertIsNotNone(fallback)
+        self.assertGreater(fallback.start(), per_racer)
+        self.assertNotRegex(render, BATCH_MATERIAL_WRITE)
 
     def test_native_world_path_has_no_legacy_batch_offset_writes(self) -> None:
-        self.assertNotIn("batch[i].texOffset = offset", self.native_objects)
-        self.assertNotIn(
-            "DKR_PTR(TriangleBatchInfo, objModel->batches)[batchNum].texOffset =",
-            self.native_objects,
-        )
+        native = batch_material_writers(self.native_objects)
+        self.assertTrue(native)
+        self.assertEqual(native - set(BATCH_MATERIAL_WRITERS), set())
+        # Positive control: the same guard still finds the legacy per-object
+        # publishers, so its silence on the native build is a real result.
+        legacy = batch_material_writers(self.legacy_objects)
+        self.assertTrue(legacy - set(BATCH_MATERIAL_WRITERS))
 
     def test_gl_sampler_memo_key_contains_texture_identity(self) -> None:
         bind = function_body(self.gfx_pc, "dkr_bind_tile")

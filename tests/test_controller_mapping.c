@@ -21,13 +21,18 @@ static void press(MdkrControllerDigitalState *state,
 int main(void) {
     MdkrVideoConfig config;
     MdkrControllerDigitalState state;
-    static const uint16_t expected_defaults[MDKR_CONTROLLER_SOURCE_COUNT] = {
+    /* Unsized: a new normalized source must be given its expected default here
+     * rather than silently defaulting to unbound. */
+    static const uint16_t expected_defaults[] = {
         MDKR_N64_A, MDKR_N64_B, MDKR_N64_B, MDKR_N64_CU, MDKR_N64_START,
         0, 0, MDKR_N64_L, MDKR_N64_R,
         MDKR_N64_DU, MDKR_N64_DD, MDKR_N64_DL, MDKR_N64_DR,
         MDKR_N64_Z, MDKR_N64_Z,
         MDKR_N64_CU, MDKR_N64_CD, MDKR_N64_CL, MDKR_N64_CR,
     };
+    _Static_assert(sizeof(expected_defaults) / sizeof(expected_defaults[0]) ==
+                       MDKR_CONTROLLER_SOURCE_COUNT,
+                   "every normalized controller source needs an expected default");
 
     mdkr_video_config_defaults(&config);
 

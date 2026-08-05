@@ -265,23 +265,140 @@ static uint32_t fuzz_random(void) {
     return value;
 }
 
+/* Canonical base64 alphabet, mirroring the container encoder. */
+static const char fuzz_base64[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/* Encoded payload field: 512 bytes -> 684 characters, the last group of which
+ * carries padding bits that no decoded byte observes. */
+#define FUZZ_PAYLOAD_CHARS 684u
+#define FUZZ_PAYLOAD_SIGNIFICANT 680u
+
+static int encode_fuzz_container(const uint8_t payload[MDKR_SAVE_IMAGE_SIZE],
+                                 char *buffer, size_t capacity,
+                                 size_t *size_out) {
+    MdkrSaveContainerMetadata metadata;
+    memset(&metadata, 0, sizeof(metadata));
+    strcpy(metadata.created_at, "2026-07-27T12:34:56.000Z");
+    strcpy(metadata.app_version, "v0.3.2 \"test\"");
+    strcpy(metadata.source, "web\nlocal");
+    return mdkr_save_container_encode(payload, &metadata, buffer, capacity,
+                                      size_out, NULL) ==
+           MDKR_SAVE_CONTAINER_OK;
+}
+
+/*
+ * Random blobs alone never survive the schema, so the generator also walks
+ * valid inputs: exact-size raw images, freshly encoded containers (digest fixed
+ * by construction), and containers whose payload is perturbed inside the base64
+ * alphabet so the digest comparison itself decides. The coverage counters below
+ * fail the test if any of those paths stops being reached.
+ */
 static void test_mutation_property(void) {
+    uint8_t payload[MDKR_SAVE_IMAGE_SIZE];
     uint8_t input[2048];
     uint8_t output[MDKR_SAVE_IMAGE_SIZE];
     uint8_t before[MDKR_SAVE_IMAGE_SIZE];
+    char container[2048];
     unsigned iteration;
+    unsigned raw_accepted = 0;
+    unsigned container_accepted = 0;
+    unsigned digest_rejected = 0;
+    unsigned format_rejected = 0;
+
+    fill_payload(payload);
     for (iteration = 0; iteration < 10000; iteration++) {
-        size_t size = fuzz_random() % sizeof(input);
-        size_t i;
         MdkrSaveContainerResult result;
-        for (i = 0; i < size; i++) input[i] = (uint8_t) fuzz_random();
+        MdkrSaveInputFormat format;
+        size_t container_size = 0;
+        size_t i;
+        unsigned mode = fuzz_random() % 4u;
+
         memset(output, 0x6D, sizeof(output));
         memcpy(before, output, sizeof(before));
-        result = mdkr_save_container_decode(input, size, output, NULL, NULL);
+
+        if (mode == 0u) {
+            /* One raw image in four is exactly sized, so the raw branch is
+             * exercised instead of only the size rejection. */
+            size_t size = (fuzz_random() % 4u == 0u)
+                              ? (size_t) MDKR_SAVE_IMAGE_SIZE
+                              : fuzz_random() % sizeof(input);
+            for (i = 0; i < size; i++) input[i] = (uint8_t) fuzz_random();
+            result = mdkr_save_container_decode(input, size, output, &format,
+                                                NULL);
+            if (size == MDKR_SAVE_IMAGE_SIZE) {
+                CHECK(result == MDKR_SAVE_CONTAINER_OK);
+                CHECK(format == MDKR_SAVE_INPUT_RAW);
+                CHECK(memcmp(output, input, sizeof(output)) == 0);
+                raw_accepted++;
+            }
+            if (result != MDKR_SAVE_CONTAINER_OK) {
+                CHECK(memcmp(output, before, sizeof(output)) == 0);
+                if (result == MDKR_SAVE_CONTAINER_ERR_FORMAT) format_rejected++;
+            }
+            continue;
+        }
+
+        for (i = 0; i < 1u + fuzz_random() % 8u; i++) {
+            payload[fuzz_random() % sizeof(payload)] = (uint8_t) fuzz_random();
+        }
+        CHECK(encode_fuzz_container(payload, container, sizeof(container),
+                                    &container_size));
+
+        if (mode == 1u) {
+            result = mdkr_save_container_decode((const uint8_t *) container,
+                                                container_size, output,
+                                                &format, NULL);
+            CHECK(result == MDKR_SAVE_CONTAINER_OK);
+            CHECK(format == MDKR_SAVE_INPUT_CONTAINER);
+            CHECK(memcmp(output, payload, sizeof(output)) == 0);
+            container_accepted++;
+            continue;
+        }
+
+        if (mode == 2u) {
+            char *field = strstr(container, "\"payload\":\"");
+            CHECK(field != NULL);
+            if (field == NULL) continue;
+            field += strlen("\"payload\":\"");
+            CHECK(field[FUZZ_PAYLOAD_CHARS - 1u] == '=');
+            {
+                /* Stay inside the alphabet and off the padding group so the
+                 * mutation always changes decoded bytes, never the syntax. */
+                size_t at = fuzz_random() % FUZZ_PAYLOAD_SIGNIFICANT;
+                char replacement = field[at];
+                while (replacement == field[at]) {
+                    replacement = fuzz_base64[fuzz_random() % 64u];
+                }
+                field[at] = replacement;
+            }
+            result = mdkr_save_container_decode((const uint8_t *) container,
+                                                container_size, output, NULL,
+                                                NULL);
+            CHECK(result == MDKR_SAVE_CONTAINER_ERR_DIGEST);
+            CHECK(memcmp(output, before, sizeof(output)) == 0);
+            digest_rejected++;
+            continue;
+        }
+
+        for (i = 0; i < 1u + fuzz_random() % 4u; i++) {
+            container[fuzz_random() % container_size] =
+                (char) (fuzz_random() & 0xFFu);
+        }
+        result = mdkr_save_container_decode((const uint8_t *) container,
+                                            container_size, output, NULL,
+                                            NULL);
         if (result != MDKR_SAVE_CONTAINER_OK) {
             CHECK(memcmp(output, before, sizeof(output)) == 0);
+            if (result == MDKR_SAVE_CONTAINER_ERR_FORMAT) format_rejected++;
+            if (result == MDKR_SAVE_CONTAINER_ERR_DIGEST) digest_rejected++;
         }
     }
+
+    CHECK(raw_accepted > 0);
+    CHECK(container_accepted > 0);
+    CHECK(digest_rejected > 0);
+    CHECK(format_rejected > 0);
 }
 
 int main(void) {

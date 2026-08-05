@@ -140,7 +140,6 @@ def crop_bytes(frame: tuple[int, int, bytes],
 def intermediate_verdict(
     frames: dict[int, tuple[int, int, bytes]],
     crop: tuple[float, float, float, float],
-    freeze_intermediates: bool = False,
 ) -> tuple[int, int]:
     """Return (candidates, intermediates distinct from both neighbours)."""
     candidates = moved = 0
@@ -148,13 +147,31 @@ def intermediate_verdict(
         if index % 2 != 1 or index - 1 not in frames or index + 1 not in frames:
             continue
         before = crop_bytes(frames[index - 1], crop)
-        current = (before if freeze_intermediates
-                   else crop_bytes(frames[index], crop))
+        current = crop_bytes(frames[index], crop)
         after = crop_bytes(frames[index + 1], crop)
         candidates += 1
         if current != before and current != after:
             moved += 1
     return candidates, moved
+
+
+def held_intermediates(
+    frames: dict[int, tuple[int, int, bytes]],
+) -> dict[int, tuple[int, int, bytes]]:
+    """Captured frames with every intermediate replaced by a real neighbour.
+
+    The correct verdict on this capture is zero motion, and the same detector
+    has to produce it from the pixels rather than from a flag. The source
+    neighbour alternates so both halves of the distinctness test stay
+    load-bearing: a detector that drops either comparison reports motion here.
+    """
+    held = dict(frames)
+    intermediates = [index for index in sorted(frames) if index % 2 == 1]
+    for position, index in enumerate(intermediates):
+        source = index - 1 if position % 2 == 0 else index + 1
+        if source in frames:
+            held[index] = frames[source]
+    return held
 
 
 def viewport_quality(frame: tuple[int, int, bytes],
@@ -298,7 +315,7 @@ def check_arm(output: str, frame_dir: Path, arm: Arm) -> tuple[list[str], str]:
 
     candidates, moved = intermediate_verdict(frames, arm.crop)
     control_candidates, control_moved = intermediate_verdict(
-        frames, arm.crop, freeze_intermediates=True)
+        held_intermediates(frames), arm.crop)
     if candidates < 30:
         failures.append(
             f"{arm.name}: only {candidates} bounded intermediate-frame pairs")
@@ -324,8 +341,9 @@ def check_arm(output: str, frame_dir: Path, arm: Arm) -> tuple[list[str], str]:
         f"{arm.name}: camera {arm.camera_id} captured {captures} ticks and "
         f"resolved {interpolations} interpolated poses; target crop moved on "
         f"{moved}/{candidates} intermediate presents "
-        f"({colours} colours, luma sigma {sigma:.1f}); frozen control 0/"
-        f"{control_candidates}; {camera_vp.get('alpha0checks', 0)} exact "
+        f"({colours} colours, luma sigma {sigma:.1f}); held control "
+        f"{control_moved}/{control_candidates}; "
+        f"{camera_vp.get('alpha0checks', 0)} exact "
         f"alpha-zero and {camera_vp.get('nextchecks', 0)} chained alpha-one "
         "endpoint checks")
     return failures, note

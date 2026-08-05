@@ -6,6 +6,7 @@ from __future__ import annotations
 import plistlib
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -19,6 +20,32 @@ WINDOWS_VALIDATE_WORKFLOW = (
     ROOT / ".github" / "workflows" / "windows-validate.yml"
 )
 CI_LOCAL = ROOT / "tools" / "ci" / "ci_local.sh"
+
+
+def project_version() -> str:
+    """The release version every lane must agree on, from its one definition."""
+    text = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+    match = re.search(r'set\(MDKR_VERSION "([^"]+)"', text)
+    if match is None:
+        raise AssertionError("CMakeLists.txt does not set MDKR_VERSION")
+    return match.group(1)
+
+
+VERSION = project_version()
+RELEASE_TAG = f"v{VERSION}"
+
+
+def run_checks_manifest():
+    """tools/run_checks.py is the one place task names and roles are defined."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("mdkr_run_checks", RUN_CHECKS)
+    module = importlib.util.module_from_spec(spec)
+    # @dataclass resolves its own module out of sys.modules while the class body
+    # executes, so the module has to be registered before it is run.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 SOURCE_ARCHIVE_SMOKE = ROOT / "tools" / "smoke_public_source_archive.sh"
 RUN_CHECKS = ROOT / "tools" / "run_checks.py"
 WINDOWS_PACKAGER = ROOT / "tools" / "package_windows_zip.sh"
@@ -49,6 +76,8 @@ CMAKE_PROJECT = ROOT / "CMakeLists.txt"
 UI_SETTINGS = ROOT / "platform" / "app" / "ui_settings.cpp"
 APP_SOURCE_DIR = ROOT / "platform" / "app"
 RELEASE_CHECKLIST = ROOT / "docs" / "RELEASE_CHECKLIST.md"
+TESTS = ROOT / "tests"
+TESTS_README = TESTS / "README.md"
 PINNED_ACTION_RE = re.compile(
     r"^\s*(?:-\s+)?uses:\s+([^@\s]+)@([^\s#]+)", re.MULTILINE
 )
@@ -337,7 +366,7 @@ def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
         ),
         "Windows validation GPU exclusion": (
             sources["windows_validate"],
-            "ctest --test-dir build --output-on-failure -LE gpu -E 'audio|mixer'",
+            "ctest --test-dir build --output-on-failure -LE gpu",
         ),
         "Windows release targeted non-GPU sentinel": (
             sources["desktop_release"],
@@ -460,7 +489,7 @@ def validate_macos_release(source: str) -> list[str]:
         "pinned standalone SDL2 build": "build_release_sdl2.sh",
         "standalone SDL2 pkg-config selection": "export PKG_CONFIG_PATH=",
         "compiled source provenance": '--build-stamp "$GITHUB_SHA"',
-        "1.0.4 patch-release default": 'default: "1.0.4"',
+        f"{VERSION} patch-release default": f'default: "{VERSION}"',
         "shared SDL2 release configuration": "release_sdl2_config.sh",
         "exact version release tag": 'EXPECTED_RELEASE_TAG="v${RELEASE_VERSION}"',
         "package tag commit resolution": 'git rev-parse --verify "${RELEASE_TAG}^{commit}"',
@@ -479,8 +508,10 @@ def validate_macos_release(source: str) -> list[str]:
         "unsigned signing provenance": "--signing ad-hoc-unsigned",
         "trusted signing provenance": "--signing developer-id-notarized",
         "explicit workflow-artifact signing identity": "signed-notarized' || 'unsigned",
-        "publish signing provenance validation": '"macos_signing": os.environ["EXPECTED_SIGNING"]',
-        "publish exports expected signing mode": "export EXPECTED_SIGNING",
+        "publish shared provenance verifier": "./tools/release/verify_provenance.sh",
+        "publish signing provenance validation": (
+            "--require macos_signing=ad-hoc-unsigned"
+        ),
         "certificate secret": "MACOS_CERTIFICATE_P12_BASE64",
         "certificate password secret": "MACOS_CERTIFICATE_PASSWORD",
         "Developer ID identity variable": "DEVELOPER_ID_APPLICATION",
@@ -499,7 +530,7 @@ def validate_macos_release(source: str) -> list[str]:
         "isolated publish dependency": "needs: package",
         "macOS artifact download": "actions/download-artifact@",
         "publish-only write permission": "\n    permissions:\n      contents: write",
-        "publish provenance validation": '"provenance sha256 mismatch"',
+        "publish provenance commit binding": '--commit "$SOURCE_COMMIT"',
         "trusted tagged publication rejected":
             "trusted signing artifacts cannot be published until the documented post-sign LaunchServices/WebGPU runtime gate is automated",
         "publish job excludes trusted artifacts":
@@ -606,15 +637,16 @@ def validate_macos_packaging(sources: dict[str, str]) -> list[str]:
     provenance = sources["provenance"]
     sdl_config = sources["sdl_config"]
     info_plist = sources["info_plist"]
-    cmake_project = sources["cmake_project"]
     macos_readme = sources["macos_readme"]
     active_dmg = active_shell_source(dmg)
     active_mount_helper = active_shell_source(mount_helper)
     active_unsigned_dmg_verify = active_shell_source(unsigned_dmg_verify)
     required = {
-        "builder 1.0.4 default": (builder, 'APP_VERSION="1.0.4"'),
-        "CMake 1.0.4 default": (cmake_project, 'set(MDKR_VERSION "1.0.4"'),
-        "Info.plist 1.0.4 default": (info_plist, "<string>1.0.4</string>"),
+        # VERSION is READ from CMakeLists.txt, so pinning that same line here
+        # would assert the value against itself. The other two lanes are the
+        # falsifiable half of the agreement.
+        f"builder {VERSION} default": (builder, f'APP_VERSION="{VERSION}"'),
+        f"Info.plist {VERSION} default": (info_plist, f"<string>{VERSION}</string>"),
         "pinned SDL2 version": (sdl_config, 'MDKR_RELEASE_SDL2_VERSION="2.32.10"'),
         "pinned SDL2 source hash": (
             sdl_config,
@@ -862,7 +894,7 @@ def validate_macos_packaging(sources: dict[str, str]) -> list[str]:
         ),
         "bundle verifier checks nested load paths": (
             bundle_verify,
-            'verify_mach_o_contract "${dylib}"',
+            'verify_mach_o_contract "${nested}"',
         ),
         "bundle verifier enforces declared minimum": (
             bundle_verify,
@@ -1419,7 +1451,7 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
         ),
         "provenance verifier canonical enumeration": (
             provenance_verify,
-            '"$dist"/Golden-Balloon-"$version"-*',
+            'for f in "$dist"/Golden-Balloon-*; do',
         ),
         "provenance verifier exact family gate": (
             provenance_verify,
@@ -1576,7 +1608,7 @@ def validate_windows_nonpublishing(source: str) -> list[str]:
         ),
         "native Windows execution": "./build/mdkr64.exe --help",
         "GPU-free CTest routing": (
-            "ctest --test-dir build --output-on-failure -LE gpu -E 'audio|mixer'"
+            "ctest --test-dir build --output-on-failure -LE gpu"
         ),
         "exact portable packaging": "./tools/package_windows_zip.sh",
         "archive extraction": (
@@ -1991,35 +2023,90 @@ def validate_sdl_path_guard(builder: Path) -> list[str]:
     return failures
 
 
-def validate_release_checklist(source: str) -> list[str]:
-    required_browser_tasks = (
-        "wave_visible_table",
-        "browser_save_ui",
-        "browser_resource_plateau",
-        "touch_controls",
-        "browser_runtime",
-        "browser_presentation_rates",
-        "browser_taj_character_select",
-        "browser_taj_persistence",
+def readme_prose(source: str) -> str:
+    """The README minus its fenced code blocks.
+
+    A check named only inside a copy-pasteable command block is not documented:
+    that is exactly the shape the missing thirteen had. Descriptions live in the
+    prose, so the prose is what the manifest is checked against.
+    """
+    kept: list[str] = []
+    fenced = False
+    for line in source.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if not fenced:
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def validate_tests_readme(source: str) -> list[str]:
+    """Every registered check must be described where the suite is documented."""
+    manifest = run_checks_manifest()
+    prose = readme_prose(source)
+    undocumented = sorted(
+        check.script for check in manifest.CHECKS
+        # Entries name the module with or without its suffix; both are prose.
+        if check.script and check.script[: -len(".py")] not in prose
     )
     failures = [
-        f"release checklist omits browser task: {task}"
-        for task in required_browser_tasks
-        if task not in source
+        f"tests/README.md does not describe registered check: {script}"
+        for script in undocumented
     ]
-    if "all eight runner tasks PASS" not in source:
-        failures.append("release checklist browser task count is stale")
+    documented = re.findall(r"tests/(check_[a-z0-9_]+\.py)", source)
+    registered = {check.script for check in manifest.CHECKS if check.script}
+    for script in sorted(set(documented) - registered):
+        if (TESTS / script).is_file():
+            failures.append(
+                f"tests/README.md documents {script}, which run_checks.py does "
+                "not register"
+            )
+    return failures
+
+
+def validate_release_checklist(source: str) -> list[str]:
+    failures: list[str] = []
+    # The release evidence is one unrestricted run of the whole manifest. A
+    # hand-listed --only recovery pattern is what let a subset masquerade as a
+    # full run, so the checklist must not name individual tasks to select them.
+    manifest = run_checks_manifest()
+    web_roles = set(manifest.BROWSER_ROLES)
+    web_tasks = sorted(
+        check.name for check in manifest.CHECKS if check.role in web_roles
+    )
+    if not web_tasks:
+        failures.append("run_checks manifest declares no web-lane tasks")
+    selector = "--role " + ",".join(manifest.BROWSER_ROLES)
+    if selector not in source:
+        failures.append(
+            f"release checklist must select the web lane by role ({selector!r}), "
+            "not by naming its tasks"
+        )
+    named = sorted(task for task in web_tasks if f"--only {task}" in source
+                   or f",{task}," in source or f"--only {task}," in source)
+    if named:
+        failures.append(
+            "release checklist still hand-lists web tasks in an --only "
+            f"selection: {', '.join(named)}"
+        )
+    if "--skip-wasm" in source.split("## 3. Behavioural regression suite")[0]:
+        failures.append(
+            "release checklist's complete-suite run must not skip the web lane"
+        )
+    if "ctest --test-dir build-rel -L gpu --output-on-failure" not in source:
+        failures.append("release checklist omits the gpu-labelled CTest lane")
     if "After the final Developer ID signatures and stapling" not in source:
         failures.append("release checklist omits signed post-sign runtime gate")
-    if source.count("-f release_tag=v1.0.4") < 2:
+    if source.count(f"-f release_tag={RELEASE_TAG}") < 2:
         failures.append(
             "release checklist must bind both portable and macOS publication "
-            "to v1.0.4"
+            f"to {RELEASE_TAG}"
         )
-    if source.count("--ref v1.0.4") < 2:
+    if source.count(f"--ref {RELEASE_TAG}") < 2:
         failures.append(
             "release checklist must dispatch both portable and macOS publication "
-            "from the exact v1.0.4 ref"
+            f"from the exact {RELEASE_TAG} ref"
         )
     for label, needle in {
         "Windows automatic-publication hold": "Automatic Windows publication is intentionally disabled for this patch",
@@ -2094,6 +2181,8 @@ def main() -> int:
     failures.extend(validate_sdl_path_guard(MACOS_SDL_BUILDER))
     checklist_source = RELEASE_CHECKLIST.read_text(encoding="utf-8")
     failures.extend(validate_release_checklist(checklist_source))
+    readme_source = TESTS_README.read_text(encoding="utf-8")
+    failures.extend(validate_tests_readme(readme_source))
     if failures:
         raise AssertionError("CI contract drift:\n  " + "\n  ".join(failures))
 
@@ -2282,7 +2371,7 @@ def main() -> int:
         "Windows validation GPU exclusion deletion": {
             **gpu_routing_sources,
             "windows_validate": gpu_routing_sources["windows_validate"].replace(
-                " -LE gpu -E 'audio|mixer'", " -E 'audio|mixer'", 1
+                " -LE gpu", "", 1
             ),
         },
         "Windows release targeted sentinel deletion": {
@@ -3026,8 +3115,8 @@ def main() -> int:
         "checksum working directory": macos_source.replace(
             'cd "$DMG_DIR"', "true", 1
         ),
-        "1.0.4 patch-release default": macos_source.replace(
-            'default: "1.0.4"', 'default: "1.0.1"', 1
+        f"{VERSION} patch-release default": macos_source.replace(
+            f'default: "{VERSION}"', 'default: "0.0.0"', 1
         ),
         "publish isolation": macos_source.replace(
             "\n  publish:", "\n  removed-publish:", 1
@@ -3687,17 +3776,18 @@ def main() -> int:
         )
 
     checklist_controls = {
-        "browser presentation rates": checklist_source.replace(
-            "browser_presentation_rates", "removed_browser_rate_gate"
+        "web lane role selection": checklist_source.replace(
+            "--role wasm,browser,browser_save",
+            "--only wave_visible_table,browser_save_ui",
+            1,
         ),
-        "browser task count": checklist_source.replace(
-            "all eight runner tasks PASS", "all runner tasks PASS", 1
+        "complete-suite run skips the web lane": checklist_source.replace(
+            "  --wasm build-web/mdkr64_web.wasm", "  --skip-wasm", 1
         ),
-        "browser Taj picker": checklist_source.replace(
-            "browser_taj_character_select", "removed_browser_taj_picker", 1
-        ),
-        "browser Taj persistence": checklist_source.replace(
-            "browser_taj_persistence", "removed_taj_state_gate", 1
+        "gpu CTest lane": checklist_source.replace(
+            "ctest --test-dir build-rel -L gpu --output-on-failure",
+            "ctest --test-dir build-rel --output-on-failure",
+            1,
         ),
         "signed post-sign runtime": checklist_source.replace(
             "After the final Developer ID signatures and stapling",
@@ -3705,10 +3795,10 @@ def main() -> int:
             1,
         ),
         "portable release tag binding": checklist_source.replace(
-            "-f release_tag=v1.0.4", "-f release_tag=", 1
+            f"-f release_tag={RELEASE_TAG}", "-f release_tag=", 1
         ),
         "release dispatch source ref": checklist_source.replace(
-            "--ref v1.0.4", "--ref main", 1
+            f"--ref {RELEASE_TAG}", "--ref main", 1
         ),
         "Windows automatic-publication hold": checklist_source.replace(
             "Automatic Windows publication is intentionally disabled for this patch",
