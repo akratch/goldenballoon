@@ -63,6 +63,13 @@ class Scene:
     script: Path
     policy: str
     extra_env: tuple[tuple[str, str], ...] = ()
+    # Does this safe-aperture scene's live view reach the decorative gutters
+    # once the deliberate fault releases it from the 4:3 region? A full-frame
+    # view (zoom, post-race) does and must; Track Select's browse carousel
+    # draws through an inset sub-rectangle that rescales well inside the safe
+    # area, so its gutters must stay inert in BOTH arms. Ignored for
+    # presentation scenes, which have no aperture to contain.
+    gutter_bleed: bool = True
 
 
 @dataclass(frozen=True)
@@ -88,7 +95,8 @@ POST_RACE_ENV = (
 
 SCENES = (
     Scene("opening-logos", 701, 700, TRACK_SCRIPT, "presentation"),
-    Scene("track-select", 2300, 2299, TRACK_SCRIPT, "safe-aperture"),
+    Scene("track-select", 2300, 2299, TRACK_SCRIPT, "safe-aperture",
+          gutter_bleed=False),
     Scene("track-select-zoom", 2171, 2170, TRACK_RACE_SCRIPT, "safe-aperture"),
     Scene("track-setup", 2211, 2210, TRACK_RACE_SCRIPT, "presentation"),
     Scene("track-setup-back", 2331, 2330, TRACK_BACK_SCRIPT, "safe-aperture"),
@@ -376,6 +384,135 @@ def run_track_select_scroll(
     return f"{len(frames)} transition frames; both gutters clean"
 
 
+def find_pal_rom(directory: Path) -> Path | None:
+    if not directory.is_dir():
+        return None
+    for path in sorted(directory.iterdir()):
+        name = path.name.lower()
+        if ("europe" in name or "pal" in name) and name.endswith(".z64"):
+            return path
+    return None
+
+
+def menu_ink_rows(image: Image) -> tuple[int, int]:
+    """First and last row carrying Track Select's blue outline ink.
+
+    The world view inside the wooden aperture is sky and terrain; the outlined
+    world/track captions and the carousel arrows are the only strongly blue ink
+    on the page, which makes them a stable probe for where the authored 2D
+    envelope actually landed.
+    """
+    first = -1
+    last = -1
+    for y in range(image.height):
+        row = y * image.width * 3
+        for x in range(image.width):
+            offset = row + x * 3
+            red, green, value = image.pixels[offset:offset + 3]
+            if value > red + 25 and value > green + 20 and value > 75:
+                if first < 0:
+                    first = y
+                last = y
+                break
+    return first, last
+
+
+def run_pal_envelope_arm(
+    binary: Path,
+    pal_rom: Path,
+    size: str,
+    work: Path,
+    timeout: int,
+    verbose: bool,
+) -> str:
+    """The PAL surface is 320x264, and all 264 rows have to reach the screen.
+
+    video.c raises every PAL video mode by PAL_HEIGHT_DIFFERENCE and the menus
+    then lay themselves out across the taller field. A renderer that maps those
+    coordinates through a fixed 240 rows magnifies PAL 2D art by 264/240 and
+    walks everything below the vertical centre off the bottom of the host
+    surface -- the Track Select card sits too low with its caption cut in half.
+    Nothing in the NTSC matrix above can see that, which is how it survived a
+    release. This arm reads the authored envelope straight off the pixels.
+    """
+    scene = Scene("pal-track-select", 2300, 2299, TRACK_SCRIPT, "safe-aperture",
+                  gutter_bleed=False)
+    label = f"pal-track-select-gl-{size}"
+    run_dir = work / label
+    frame_dir = run_dir / "frames"
+    save_dir = run_dir / "save"
+    frame_dir.mkdir(parents=True)
+    save_dir.mkdir()
+    command = [
+        str(binary),
+        "--headless-frames", str(scene.frames),
+        "--window-size", size,
+        "--input-script", str(scene.script),
+        "--dump-frames", str(frame_dir),
+        "--rom", str(pal_rom),
+        "--restored",
+    ]
+    if verbose:
+        print(f"$ ({label}) {shlex.join(command)}", flush=True)
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=run_dir,
+            env=clean_environment("gl", save_dir, False, scene.capture, ()),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = exc.stdout or ""
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", "replace")
+        raise RuntimeError(f"{label}: timed out\n{output[-4000:]}") from exc
+
+    output = proc.stdout
+    (run_dir / "run.log").write_text(output, encoding="utf-8")
+    fatal = FATAL_RE.search(output)
+    frames = sorted(frame_dir.glob("*.ppm"))
+    expected = f"frame_{scene.capture:04d}.ppm"
+    if (proc.returncode != 0 or fatal is not None or len(frames) != 1 or
+            frames[0].name != expected):
+        raise RuntimeError(
+            f"{label}: exit={proc.returncode}, "
+            f"fatal={fatal.group(0) if fatal else 'none'}, "
+            f"frames={[path.name for path in frames]}, expected={expected}\n"
+            f"{output[-5000:]}"
+        )
+    image = read_ppm(frames[0])
+    first, last = menu_ink_rows(image)
+    if first < 0:
+        raise RuntimeError(
+            f"{label}: found no Track Select overlay ink at all"
+        )
+    # A margin of one percent of the surface. The authored envelope has real
+    # padding above and below the captions, so ink in the outermost rows means
+    # the envelope has been scaled or shifted past the edge, not that it fits
+    # snugly.
+    edge = max(1, round(image.height * 0.01))
+    if first < edge or last >= image.height - edge:
+        raise RuntimeError(
+            f"{label}: the PAL 2D envelope is clipped by the host surface "
+            f"(overlay ink rows {first}..{last} of {image.height}; must stay "
+            f"clear of the outer {edge} rows). The PAL framebuffer is 264 rows "
+            f"and every one of them has to be mapped."
+        )
+    centre = (first + last) / 2.0
+    offset = abs(centre - image.height / 2.0) / image.height
+    if offset > 0.06:
+        raise RuntimeError(
+            f"{label}: the PAL 2D envelope is off-centre by {offset:.1%} of "
+            f"the surface (ink rows {first}..{last} of {image.height})"
+        )
+    return (f"{size}: PAL envelope rows {first}..{last} of {image.height}, "
+            f"{offset:.1%} off centre")
+
+
 def changed_fraction(
     fixed: Image, unsafe: Image, box: tuple[float, float, float, float]
 ) -> float:
@@ -493,20 +630,55 @@ def validate_pair(scene: Scene, fixed: Arm, unsafe: Arm) -> str:
             )
         return "4:3 control inert"
 
-    # Each aperture defect occupies the middle-height side bands beside its
-    # wooden frame. The box includes the boundary so it remains valid through
-    # the Track Select carousel's authored horizontal motion.
-    side_difference = changed_fraction(
-        fixed.image, unsafe.image, (0.20, 0.08, 0.82, 0.68)
+    # The defect this control injects is a REGION defect: the live view is
+    # composed against the presentation rectangle instead of the safe 4:3 one.
+    # The bands that decide that policy are the decorative gutters, so measure
+    # the gutters themselves. The box this replaced -- (0.20, 0.08, 0.82, 0.68)
+    # -- lay wholly inside the safe area at every ratio the gate runs (4:3
+    # inside 16:9 spans 0.125..0.875), so it could only ever see the aperture's
+    # own re-projection and would have passed unchanged with a live view
+    # painting straight through the gutters.
+    margin = (1.0 - ((4.0 / 3.0) / ratio)) * 0.5
+    gutter_difference = max(
+        changed_fraction(fixed.image, unsafe.image,
+                         (0.0, 0.08, margin, 0.68)),
+        changed_fraction(fixed.image, unsafe.image,
+                         (1.0 - margin, 0.08, 1.0, 0.68)),
+    )
+
+    if scene.gutter_bleed:
+        # A full-frame live view released from the safe region has to paint the
+        # gutters. If it stops doing so, the region policy is no longer what
+        # keeps them decorative and this gate has stopped testing anything.
+        if gutter_difference < 0.10:
+            raise RuntimeError(
+                f"{fixed.scene}-{fixed.backend}-{fixed.size}: broken control "
+                f"did not reach the decorative gutters (gutter delta "
+                f"{gutter_difference:.3%}, want >= 10%)"
+            )
+        return f"gutter control delta {gutter_difference:.1%}"
+
+    # Track Select's browse aperture is an inset sub-rectangle. Neither arm may
+    # reach a gutter: any reaction there is live world painted outside the safe
+    # region, which is precisely what the wooden frame exists to prevent.
+    if gutter_difference > 0.0:
+        raise RuntimeError(
+            f"{fixed.scene}-{fixed.backend}-{fixed.size}: the inset browse "
+            f"aperture reached the decorative gutters (gutter delta "
+            f"{gutter_difference:.3%}, want 0)"
+        )
+    aperture_difference = changed_fraction(
+        fixed.image, unsafe.image, (margin, 0.08, 1.0 - margin, 0.68)
     )
     minimum = 0.08 if ratio < 2.0 else 0.20
-    if side_difference < minimum:
+    if aperture_difference < minimum:
         raise RuntimeError(
             f"{fixed.scene}-{fixed.backend}-{fixed.size}: broken control did "
-            f"not expose the framed-view defect (side delta "
-            f"{side_difference:.3%}, want >= {minimum:.0%})"
+            f"not expose the framed-view defect (aperture delta "
+            f"{aperture_difference:.3%}, want >= {minimum:.0%})"
         )
-    return f"side-band control delta {side_difference:.1%}"
+    return (f"gutters inert; aperture control delta "
+            f"{aperture_difference:.1%}")
 
 
 def source_contract() -> None:
@@ -517,11 +689,16 @@ def source_contract() -> None:
     snapshot_header = (ROOT / "platform" / "presentation_snapshot.h").read_text()
     snapshot = (ROOT / "platform" / "presentation_snapshot.c").read_text()
     menu = (ROOT / "game" / "src" / "menu.c").read_text()
+    video = (ROOT / "game" / "src" / "video.c").read_text()
     required = (
         ("display-list region metadata", "G_MW_DKR_WORLD_REGION", header),
         ("explicit viewport policy", "ViewportWorldRegion", camera),
-        ("safe-aperture projection", "if (safeAperture)", camera),
-        ("presentation projection", "s32 logicalWidth = videoWidth", camera),
+        # Re-anchored onto cam_projection_for_viewport_region after the lens
+        # latch refactor retired the old inline branch; the property asserted is
+        # unchanged -- a safe-aperture view takes the authored 4:3 lens and
+        # everything else takes the presentation aspect.
+        ("safe-aperture projection", "safeWorldRegion ? CAMERA_ASPECT", camera),
+        ("presentation projection", "layout.presentation_aspect", camera),
         ("ordinary world reset", "gDkrSetWorldRegion((*dlist)++, FALSE)", camera),
         ("full-surface clear reset", "gDkrSetWorldRegion((*dList)++, FALSE)", background),
         ("policy-aware backing", "viewport_world_region_uses_safe_aperture(0)", background),
@@ -535,6 +712,10 @@ def source_contract() -> None:
         ("track-select phase policy", "gTrackmenuType == TRACKMENU_TYPE_FREE && gMenuDelay >= 0", menu),
         ("tiled track-select background", "mtx_ortho_wide_background", menu),
         ("track-select overlay containment", "overlayFullyInsideAuthoredCanvas", menu),
+        ("overlay containment needs real gutters",
+         "if (!hasDecorativeGutters) {", menu),
+        ("authored surface mapping", "region.height / dkr_logical_height", renderer),
+        ("authored surface published", "gfx_dkr_set_logical_surface", video),
         ("post-race viewport", "void postrace_start(s32 finishState", menu),
         ("credits viewport", "void menu_credits_init(void)", menu),
     )
@@ -551,12 +732,17 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--build", default="build")
     parser.add_argument("--rom", default="baserom.us.v80.z64")
+    parser.add_argument(
+        "--roms", default="build/roms",
+        help="directory holding the region releases; the PAL arm is not "
+             "optional and this gate fails rather than skipping it",
+    )
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--interpolated-only", action="store_true")
     parser.add_argument(
         "--scene",
         choices=tuple(scene.name for scene in SCENES) +
-        ("track-select-scroll",),
+        ("track-select-scroll", "pal-track-select"),
         help="run one ordinary scene instead of the complete matrix",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -578,6 +764,28 @@ def main() -> int:
                 ordinary_scenes = tuple(
                     scene for scene in SCENES if scene.name == args.scene
                 )
+            run_pal = (
+                not args.interpolated_only and
+                (not args.scene or args.scene == "pal-track-select")
+            )
+            if run_pal:
+                pal_rom = find_pal_rom(Path(os.path.abspath(args.roms)))
+                if pal_rom is None:
+                    raise RuntimeError(
+                        "the PAL framebuffer is 264 rows and this gate covers "
+                        "how those rows reach the host surface, so it needs a "
+                        "PAL release; none was found below "
+                        f"{args.roms}. This gate does not silently skip its "
+                        "region arm."
+                    )
+                for size in ("720x540", "960x540", "1260x540"):
+                    summaries.append(
+                        "pal-track-select/gl/" + size + ": " +
+                        run_pal_envelope_arm(
+                            binary, pal_rom, size, work, args.timeout,
+                            args.verbose,
+                        )
+                    )
             if args.interpolated_only:
                 ordinary_scenes = ()
             for scene in ordinary_scenes:

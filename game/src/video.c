@@ -4,6 +4,7 @@
 #include "types.h"
 #ifdef NATIVE_PORT
 #include "platform_os.h"
+#include "fast3d/gfx_pc_dkr.h" /* gfx_dkr_set_logical_surface */
 #endif
 
 /************ .data ************/
@@ -92,6 +93,20 @@ void video_init(s32 videoModeIndex, OSSched *sc) {
     fb_alloc(1);
     gVideoCurrFbIndex = 1;
     fb_swap();
+#ifdef NATIVE_PORT
+    /*
+     * Tell the renderer which surface the display list is authored in. On PAL
+     * that is 320x264, not 320x240: the loop above raised every mode by
+     * PAL_HEIGHT_DIFFERENCE and the menus place their art across the taller
+     * field. The presentation mapping has to divide by the same number the game
+     * multiplied by, or PAL 2D content is magnified and runs off the bottom.
+     */
+    {
+        s32 size = fb_size();
+        gfx_dkr_set_logical_surface((u32) GET_VIDEO_WIDTH(size),
+                                    (u32) (GET_VIDEO_HEIGHT(size) & 0xFFFF));
+    }
+#endif
     osCreateMesgQueue((OSMesgQueue *) &gVideoMesgQueue, gVideoMesgBuf, ARRAY_COUNT(gVideoMesgBuf));
     osScAddClient(sc, &gVideoSched, (OSMesgQueue *) &gVideoMesgQueue, OS_SC_ID_VIDEO);
     fb_init_vi();

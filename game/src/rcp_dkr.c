@@ -556,6 +556,15 @@ void bgdraw_render(Gfx **dList, Mtx **mtx, s32 drawBG) {
                 gDPSetCombineMode((*dList)++, G_CC_PRIMITIVE, G_CC_PRIMITIVE);
                 gDPSetRenderMode((*dList)++, G_RM_OPA_SURF, G_RM_OPA_SURF2);
                 gDPFillRectangle((*dList)++, x1, y1, x2, y2);
+#ifdef NATIVE_PORT
+                /* The aperture selected above belongs to this backing fill
+                 * alone. Restore the clear's presentation region rather than
+                 * letting a conditional mid-body set decide the region for
+                 * every draw that follows this function: the world pass states
+                 * its own region (camera.c), so anything reaching a later draw
+                 * from here is a leak, not a policy. */
+                gDkrSetWorldRegion((*dList)++, FALSE);
+#endif
             }
         } else {
             if (gChequerBGEnabled) {

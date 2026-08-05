@@ -601,6 +601,32 @@ static int run_pure_comfort_case(void) {
            strstr(text, "OwnedByNewerBuild=keep-me") != NULL);
     expect("Pure session remains active after comfort edits",
            mdkr_video_config_current()->mode == MDKR_VIDEO_MODE_PURE);
+    /*
+     * The comfort writes above rebuild the staged config from the file while
+     * holding the lock. The preset rank a --pure invocation established has to
+     * survive that rebuild, or the session silently stops being the oracle
+     * reference it was launched as. Every assertion below failed before the
+     * invocation-rank rescue: the desired config resolved back to the file's
+     * `restored`, which unlocked presentation and made the pending-restart
+     * banner offer to "apply" values the player never chose.
+     */
+    expect("Pure staged mode survives an unrelated comfort write",
+           mdkr_video_config_desired()->mode == MDKR_VIDEO_MODE_PURE &&
+               mdkr_video_config_desired()
+                       ->values[MDKR_VIDEO_MODE].source ==
+                   MDKR_VIDEO_SOURCE_PRESET);
+    expect("Pure preset values survive an unrelated comfort write",
+           mdkr_video_config_desired()
+                   ->values[MDKR_VIDEO_MIPMAPS].number == 0.0f &&
+               mdkr_video_config_desired()
+                       ->values[MDKR_VIDEO_MIPMAPS].source ==
+                   MDKR_VIDEO_SOURCE_PRESET);
+    expect("Pure session is still presentation read-only after comfort writes",
+           mdkr_video_config_is_readonly() &&
+               mdkr_video_config_runtime_locked(MDKR_VIDEO_MIPMAPS) &&
+               mdkr_video_config_runtime_locked(MDKR_VIDEO_MODE));
+    expect("Pure comfort writes raise no phantom restart-required",
+           mdkr_video_config_restart_pending() == 0);
 
     expect("pure-comfort returned to original cwd", chdir(original) == 0);
     remove_config_artifacts(temporary);
@@ -832,6 +858,102 @@ static int run_launcher_merge_case(void) {
     return 0;
 }
 
+/*
+ * A browser-launcher session that was NOT asked to persist. Its choices are
+ * invocation-only in exactly the way a preset flag is: authoritative for this
+ * run, never a durable player decision. An unrelated in-game settings write
+ * must therefore keep them staged and keep them out of the file -- the two
+ * halves of the same rule, proven in both directions here.
+ */
+static int run_launcher_session_case(void) {
+    char temporary[2048];
+    char original[2048];
+    char config_path[2300];
+    char text[32768];
+    char *argv[] = {
+        "mdkr-video-runtime-test",
+        "--video-launch-mode", "remastered",
+    };
+
+    s_failures = 0;
+    expect("launcher-session temporary directory created",
+           mdkr_test_make_temp_directory(temporary, sizeof(temporary),
+                                         "mdkr-launcher-session"));
+    if (s_failures != 0) return 1;
+    expect("launcher-session original cwd captured",
+           getcwd(original, sizeof(original)) != NULL);
+    expect("launcher-session entered temporary directory",
+           chdir(temporary) == 0);
+    for (size_t i = 0;
+         i < sizeof(s_config_env_names) / sizeof(s_config_env_names[0]); i++) {
+        (void)mdkr_test_env_unset(s_config_env_names[i]);
+    }
+    snprintf(config_path, sizeof(config_path), "%s/mdkr64.ini", temporary);
+    expect("launcher-session config path override set",
+           mdkr_test_env_set("MDKR_VIDEO_CONFIG_PATH", config_path, 1) == 0);
+    expect("launcher-session initial config written", write_initial_config());
+
+    mdkr_video_config_init(3, argv);
+    mdkr_video_config_publish();
+    expect("launcher mode is active without --video-launch-persist",
+           mdkr_video_config_current()->mode == MDKR_VIDEO_MODE_REMASTERED &&
+               mdkr_video_config_current()
+                       ->values[MDKR_VIDEO_MODE].source ==
+                   MDKR_VIDEO_SOURCE_LAUNCHER);
+    expect("a launcher Pure/Remastered choice is not a read-only session",
+           !mdkr_video_config_is_readonly());
+    expect("unrelated comfort write applies live",
+           mdkr_video_config_runtime_set(MDKR_AUDIO_MASTER_VOLUME, "44") ==
+               MDKR_VIDEO_RUNTIME_LIVE);
+
+    expect("launcher-ranked mode survives an unrelated settings write",
+           mdkr_video_config_desired()->mode == MDKR_VIDEO_MODE_REMASTERED &&
+               mdkr_video_config_desired()
+                       ->values[MDKR_VIDEO_MODE].source ==
+                   MDKR_VIDEO_SOURCE_LAUNCHER);
+    expect("launcher-ranked preset values survive that write",
+           mdkr_video_config_desired()
+                   ->values[MDKR_VIDEO_REMASTER_FX].number == 1.0f &&
+               mdkr_video_config_desired()
+                       ->values[MDKR_VIDEO_REMASTER_FX].source ==
+                   MDKR_VIDEO_SOURCE_LAUNCHER);
+    expect("an unpersisted launcher session raises no phantom restart",
+           mdkr_video_config_restart_pending() == 0);
+
+    expect("launcher-session persistence is readable",
+           read_config(text, sizeof(text)));
+    expect("the comfort value the player changed is written",
+           config_has_entry(text, "Audio.MasterVolume", "44"));
+    expect("an unpersisted launcher mode is never baked to disk",
+           config_has_entry(text, "Video.Mode", "restored") &&
+               !config_has_entry(text, "Video.Mode", "remastered"));
+    expect("an unpersisted launcher preset value is never baked to disk",
+           !config_has_entry(text, "Video.RemasterFX", "1"));
+    expect("launcher-session keeps unknown settings",
+           strstr(text, "OwnedByNewerBuild=keep-me") != NULL);
+
+    /* The same key, chosen deliberately in-game, outranks the launcher seed and
+     * IS durable. Without this the "never bake" rule would be indistinguishable
+     * from "this key can never be saved". */
+    expect("an in-game change to a launcher-seeded key applies",
+           mdkr_video_runtime_result_applied(
+               mdkr_video_config_runtime_set(MDKR_VIDEO_MODE, "restored")));
+    expect("launcher-session persistence re-read",
+           read_config(text, sizeof(text)));
+    expect("a deliberate in-game mode change is written",
+           config_has_entry(text, "Video.Mode", "restored"));
+
+    expect("launcher-session returned to original cwd", chdir(original) == 0);
+    remove_config_artifacts(temporary);
+    expect("launcher-session artifacts cleaned", rmdir(temporary) == 0);
+    if (s_failures != 0) {
+        fprintf(stderr, "%d launcher-session failure(s)\n", s_failures);
+        return 1;
+    }
+    printf("Launcher session invocation-rank tests passed\n");
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--pure-comfort-case")) {
         return run_pure_comfort_case();
@@ -847,6 +969,9 @@ int main(int argc, char **argv) {
     }
     if (argc == 2 && !strcmp(argv[1], "--launcher-merge-case")) {
         return run_launcher_merge_case();
+    }
+    if (argc == 2 && !strcmp(argv[1], "--launcher-session-case")) {
+        return run_launcher_session_case();
     }
     return run_primary_case();
 }

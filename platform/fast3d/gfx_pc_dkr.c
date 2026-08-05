@@ -583,6 +583,22 @@ extern bool gfx_webgpu_unclipped_depth_supported(void);
 extern bool gfx_webgpu_get_output_size(int *width, int *height);
 #endif
 
+/*
+ * The AUTHORED surface: the logical framebuffer every display-list coordinate
+ * (viewport, scissor, texrect, fill rectangle) is expressed in.
+ *
+ * NTSC and MPAL compose against 320x240, but PAL raises the framebuffer to
+ * 320x264 (video.c adds PAL_HEIGHT_DIFFERENCE to every mode) and the game then
+ * lays its menus out over all 264 rows -- gTrackSelectViewportY, the ortho
+ * viewport's vtrans, the PAL text offsets and the full-surface scissor are all
+ * in that taller space. Dividing those coordinates by a fixed 240 magnifies PAL
+ * 2D art by 264/240 and walks everything below the vertical centre off the
+ * bottom of the host surface, so the mapping tracks the live surface instead.
+ * video.c publishes it through gfx_dkr_set_logical_surface().
+ */
+static float dkr_logical_width = (float)DESIRED_SCREEN_WIDTH;
+static float dkr_logical_height = (float)DESIRED_SCREEN_HEIGHT;
+
 struct RGBA { uint8_t r, g, b, a; };
 struct XYWidthHeight { int32_t x, y, width, height; };
 struct FloatXYWidthHeight { float x, y, width, height; };
@@ -638,7 +654,7 @@ static struct {
     struct DkrDeformationCursor
         deformation_cursors[DKR_DEFORMATION_OWNERS];
     size_t deformation_cursor_count;
-    int      vtx_append_pos;   /* next append destination (G_VTX_APPEND)        */
+    int      vtx_append_pos;   /* append base: count of the last flag-0 load    */
     struct LoadedVertex loaded[DKR_VTX_SCRATCH];
 } rsp;
 
@@ -735,6 +751,13 @@ static struct {
     struct FloatXYWidthHeight logical_viewport, logical_scissor;
     bool logical_viewport_valid, logical_scissor_valid;
     bool viewport_flip_x;
+    /* RSP clip-ratio emulation (see dkr_update_clip_expansion): the rectangle
+     * actually handed to the backend, plus the clip-space scale/bias that keeps
+     * the NDC->window map identical to the authored viewport's. Identity
+     * whenever the authored viewport already covers the authored scissor. */
+    struct XYWidthHeight clip_viewport;
+    float clip_scale_x, clip_scale_y, clip_bias_x, clip_bias_y;
+    bool clip_expanded;
     bool viewport_or_scissor_changed;
     const void *z_buf_address;
     const void *color_image_address;
@@ -835,7 +858,11 @@ static bool dkr_walk_entry_valid = false;
 static struct {
     uint8_t depth_mode;
     enum GfxBlendMode blend_mode;
+    /* viewport here is the EFFECTIVE (clip-expanded) rectangle the backend was
+     * given, not rdp.viewport; the clip factors travel with it because the VBO
+     * contents depend on them. */
     struct XYWidthHeight viewport, scissor;
+    float clip_scale_x, clip_scale_y, clip_bias_x, clip_bias_y;
     struct ShaderProgram *shader_program;
     uint32_t bound_texture_id[2];
     bool bound_texture_linear[2];
@@ -2159,7 +2186,116 @@ static void dkr_apply_tile_uv(float *u, float *v, const struct DkrTile *t) {
 
 /* Set up every GPU state required for the current material, and cache the
  * feature/tex info the emitter needs. Flushes on any state change. */
-static void dkr_setup_draw_state(bool poly_tex_enabled) {
+/*
+ * RSP clip-ratio emulation.
+ *
+ * On the N64 the viewport is ONLY the NDC->screen affine map. Triangle clipping
+ * happens against the clip volume scaled by the ratio in gSPClipRatio, and the
+ * RDP scissor is what actually bounds the rasterized image. DKR's RSP init sets
+ * gsSPClipRatio(FRUSTRATIO_2) (rcp_dkr.c dRspInit), so geometry survives out to
+ * twice the viewport extent and the scissor decides where the picture stops.
+ *
+ * A host GPU has no such knob: it clips at NDC +-1, which IS the viewport
+ * rectangle. So wherever an authored scissor reaches past its authored
+ * viewport, world geometry stops at the viewport edge and whatever the frame
+ * clear left behind shows through instead.
+ *
+ * PAL gameplay is exactly that case. camera.c's viewport_scissor_set() shifts
+ * the one-player viewport centre four logical pixels left on PAL
+ * ("if (osTvType == OS_TV_TYPE_PAL) posX -= 4;") while leaving the scissor at
+ * the full 320x264 surface, so logical columns 316..319 sit outside the
+ * viewport. Hardware fills them from the clip-ratio-2 overdraw -- an ares PAL
+ * capture of the Ancient Lake start line shows scene content in every visible
+ * framebuffer column -- but here they rendered as the frame-clear colour, a
+ * flat band that changed hue every frame (24 host pixels wide at 1920).
+ *
+ * The fix widens the rectangle handed to the backend until it covers the
+ * scissor, capped at the ratio-2 box the RSP would really have clipped to, and
+ * folds the difference back into clip space so the world-to-window mapping is
+ * bit-for-bit the same affine transform:
+ *
+ *   window_x = Vx + (ndc + 1)/2 * Vw                          (authored)
+ *            = Ex + (ndc * Vw/Ew + bias_x + 1)/2 * Ew         (expanded)
+ *   bias_x   = (2*(Vx - Ex) + Vw - Ew) / Ew
+ *
+ * Where the viewport already covers the scissor -- every NTSC/MPAL path, and
+ * every screen-space rectangle, which sets viewport == scissor == drawable --
+ * this is the identity and the emitter skips it entirely, so those frames stay
+ * byte-identical.
+ */
+static void dkr_update_clip_expansion(void) {
+    const struct XYWidthHeight vp = rdp.viewport;
+    const struct XYWidthHeight sc = rdp.scissor;
+
+    rdp.clip_viewport = vp;
+    rdp.clip_scale_x = 1.0f;
+    rdp.clip_scale_y = 1.0f;
+    rdp.clip_bias_x = 0.0f;
+    rdp.clip_bias_y = 0.0f;
+    rdp.clip_expanded = false;
+    if (vp.width <= 0 || vp.height <= 0) return;
+
+    int32_t x0 = vp.x, x1 = vp.x + vp.width;
+    int32_t y0 = vp.y, y1 = vp.y + vp.height;
+    if (sc.width > 0) {
+        if (sc.x < x0) x0 = sc.x;
+        if (sc.x + sc.width > x1) x1 = sc.x + sc.width;
+    }
+    if (sc.height > 0) {
+        if (sc.y < y0) y0 = sc.y;
+        if (sc.y + sc.height > y1) y1 = sc.y + sc.height;
+    }
+    /* FRUSTRATIO_2 stops here: the RSP keeps geometry out to twice the viewport
+     * extent about the viewport centre and discards the rest. A scissor wider
+     * than that leaves genuinely unpainted columns on hardware too. */
+    int32_t half_w = vp.width / 2, half_h = vp.height / 2;
+    if (x0 < vp.x - half_w) x0 = vp.x - half_w;
+    if (x1 > vp.x + vp.width + half_w) x1 = vp.x + vp.width + half_w;
+    if (y0 < vp.y - half_h) y0 = vp.y - half_h;
+    if (y1 > vp.y + vp.height + half_h) y1 = vp.y + vp.height + half_h;
+
+    if (x0 == vp.x && x1 == vp.x + vp.width &&
+        y0 == vp.y && y1 == vp.y + vp.height) return;
+
+    float ew = (float)(x1 - x0);
+    float eh = (float)(y1 - y0);
+    if (!(ew > 0.0f) || !(eh > 0.0f)) return;
+
+    rdp.clip_viewport.x = x0;
+    rdp.clip_viewport.y = y0;
+    rdp.clip_viewport.width = x1 - x0;
+    rdp.clip_viewport.height = y1 - y0;
+    rdp.clip_scale_x = (float)vp.width / ew;
+    rdp.clip_scale_y = (float)vp.height / eh;
+    rdp.clip_bias_x = (2.0f * (float)(vp.x - x0) + (float)vp.width - ew) / ew;
+    rdp.clip_bias_y = (2.0f * (float)(vp.y - y0) + (float)vp.height - eh) / eh;
+    rdp.clip_expanded = true;
+#ifdef MDKR_TEMP_CLIP_PROBE
+    if (getenv("MDKR_TEMP_CLIP_PROBE")) {
+        fprintf(stderr, "[clipexp] vp{%d,%d,%d,%d} sc{%d,%d,%d,%d} -> e{%d,%d,%d,%d} "
+                        "sx=%.6f sy=%.6f bx=%.6f by=%.6f\n",
+                vp.x, vp.y, vp.width, vp.height,
+                sc.x, sc.y, sc.width, sc.height,
+                rdp.clip_viewport.x, rdp.clip_viewport.y,
+                rdp.clip_viewport.width, rdp.clip_viewport.height,
+                rdp.clip_scale_x, rdp.clip_scale_y,
+                rdp.clip_bias_x, rdp.clip_bias_y);
+    }
+#endif
+}
+
+/*
+ * Prepare shader, texture, depth, viewport and blend state for the primitives
+ * that follow.
+ *
+ * Returns false when a texture the generated shader SAMPLES could not be bound.
+ * That is not cosmetic: the failed unit keeps whatever the previous draw left
+ * there, and cur.tex_w/tex_h fall back to 1x1, so the primitive would rasterize
+ * with an unrelated image stretched across it. The caller must skip the draw.
+ * Every state change above the texture stage is already committed when this
+ * happens, which is harmless -- the next successful setup re-derives all of it.
+ */
+static bool dkr_setup_draw_state(bool poly_tex_enabled) {
     /*
      * A draw-space matrix is decoded before its first primitive. That gives us
      * one exact boundary at which all queued world triangles can be flushed,
@@ -2274,7 +2410,23 @@ static void dkr_setup_draw_state(bool poly_tex_enabled) {
             if (td >= 8) td = 0;
             uint32_t w = 1, h = 1;
             bind_ok[i] = dkr_bind_tile(i, td, texture_edge, &w, &h);
-            if (bind_ok[i]) { cur.tex_w[i] = w; cur.tex_h[i] = h; }
+            if (bind_ok[i]) {
+                cur.tex_w[i] = w; cur.tex_h[i] = h;
+            } else {
+                /* One line, once per process: a bind failure is a texture the
+                 * backend could not produce (no loaded TMEM image, or a
+                 * refused texture object), which is a state worth knowing about
+                 * without turning a hot path into a log. The DTRACE field above
+                 * keeps the per-draw detail for a traced frame. */
+                static bool traced_bind_failure = false;
+                if (!traced_bind_failure) {
+                    traced_bind_failure = true;
+                    fprintf(stderr,
+                            "[gfx] texture bind failed (unit=%d tile=%u); "
+                            "affected draws are skipped rather than drawn with "
+                            "the previously bound image\n", i, (unsigned)td);
+                }
+            }
         }
     }
     if (dkr_trace_this_frame) {
@@ -2303,11 +2455,30 @@ static void dkr_setup_draw_state(bool poly_tex_enabled) {
 
     /* Viewport / scissor. */
     if (rdp.viewport_or_scissor_changed) {
-        if (memcmp(&rdp.viewport, &rendering_state.viewport, sizeof(rdp.viewport)) != 0) {
+        dkr_update_clip_expansion();
+        /* Buffered triangles carry the clip factors that were live when they
+         * were emitted, so a change in either the effective rectangle or those
+         * factors has to flush first. */
+        bool viewport_changed =
+            memcmp(&rdp.clip_viewport, &rendering_state.viewport,
+                   sizeof(rdp.clip_viewport)) != 0;
+        bool clip_changed =
+            rdp.clip_scale_x != rendering_state.clip_scale_x ||
+            rdp.clip_scale_y != rendering_state.clip_scale_y ||
+            rdp.clip_bias_x != rendering_state.clip_bias_x ||
+            rdp.clip_bias_y != rendering_state.clip_bias_y;
+        if (viewport_changed || clip_changed) {
             gfx_flush();
-            gfx_rapi->set_viewport(rdp.viewport.x, rdp.viewport.y,
-                                   rdp.viewport.width, rdp.viewport.height);
-            rendering_state.viewport = rdp.viewport;
+            if (viewport_changed) {
+                gfx_rapi->set_viewport(rdp.clip_viewport.x, rdp.clip_viewport.y,
+                                       rdp.clip_viewport.width,
+                                       rdp.clip_viewport.height);
+                rendering_state.viewport = rdp.clip_viewport;
+            }
+            rendering_state.clip_scale_x = rdp.clip_scale_x;
+            rendering_state.clip_scale_y = rdp.clip_scale_y;
+            rendering_state.clip_bias_x = rdp.clip_bias_x;
+            rendering_state.clip_bias_y = rdp.clip_bias_y;
         }
         if (memcmp(&rdp.scissor, &rendering_state.scissor, sizeof(rdp.scissor)) != 0) {
             gfx_flush();
@@ -2323,6 +2494,7 @@ static void dkr_setup_draw_state(bool poly_tex_enabled) {
         gfx_rapi->set_blend_mode(blend_mode);
         rendering_state.blend_mode = blend_mode;
     }
+    return bind_ok[0] && bind_ok[1];
 }
 
 /* ------------------------------------------------------------------------- */
@@ -2435,8 +2607,19 @@ static void dkr_emit_tri(const struct LoadedVertex *v0,
          * the same display list later installs a positive viewport for its
          * safe-4:3 HUD.
          */
-        buf_vbo[buf_vbo_len++] = rdp.viewport_flip_x ? -vt->x : vt->x;
-        buf_vbo[buf_vbo_len++] = vt->y;
+        float clip_x = rdp.viewport_flip_x ? -vt->x : vt->x;
+        float clip_y = vt->y;
+        if (rdp.clip_expanded) {
+            /* The backend viewport was widened to the scissor to stand in for
+             * the RSP's clip ratio (dkr_update_clip_expansion). Re-express the
+             * same NDC in the wider rectangle so the picture does not move;
+             * skipped outright when the expansion is the identity, which keeps
+             * every unexpanded frame bit-identical. */
+            clip_x = clip_x * rdp.clip_scale_x + vt->w * rdp.clip_bias_x;
+            clip_y = clip_y * rdp.clip_scale_y + vt->w * rdp.clip_bias_y;
+        }
+        buf_vbo[buf_vbo_len++] = clip_x;
+        buf_vbo[buf_vbo_len++] = clip_y;
         buf_vbo[buf_vbo_len++] = z;
         buf_vbo[buf_vbo_len++] = w;
 
@@ -2783,8 +2966,23 @@ static void dkr_sp_vertex(const Vertex *verts, int n, bool append,
         }
     }
 
-    if (append) rsp.vtx_append_pos = dest + n;
-    else        rsp.vtx_append_pos = n;   /* flag-0 count reserves [0,n)      */
+    /*
+     * G_VTX_APPEND is not a running cursor. The F3DDKR RSP keeps ONE count —
+     * the length of the last flag-0 load (game/include/f3ddkr.h): a flag-0 load
+     * writes at the start of the vertex array and stores its count; every
+     * flag-1 load writes immediately after THAT, so two consecutive appends
+     * land on the same base and the second overwrites the first.
+     *
+     * sprite_init_frame() depends on exactly this. A sprite frame wider than
+     * one RSP batch is emitted in runs of five quads: each run issues its own
+     * appended 20-vertex load and then restarts its triangle indices at vertex
+     * 1. Advancing the base per append instead put run 2 at slot 21 while its
+     * triangles still named slots 1..4, so every sprite with a sixth tile drew
+     * that tile's texture over the FIRST tile's quad and never drew it in its
+     * own place — the intro shrubs gained a duplicate piece stacked on top and
+     * lost their bottom band, which left them hanging above the ground.
+     */
+    if (!append) rsp.vtx_append_pos = n;   /* flag-0 count reserves [0,n)      */
 }
 
 /* ------------------------------------------------------------------------- */
@@ -2792,7 +2990,10 @@ static void dkr_sp_vertex(const Vertex *verts, int n, bool append,
 /* ------------------------------------------------------------------------- */
 
 static void dkr_sp_polygon(const Triangle *tris, int num_tris, bool tex_enabled) {
-    dkr_setup_draw_state(tex_enabled);
+    /* A texture the shader samples could not be bound: the unit still holds the
+     * previous draw's image, so emitting these triangles would paint an
+     * unrelated texture rather than lose one. Drop the batch instead. */
+    if (!dkr_setup_draw_state(tex_enabled)) return;
     int emitted = 0, culled = 0, oob = 0;
 
     /* Never read a triangle batch past the arena (edge/mis-decoded pointer), and
@@ -3159,12 +3360,43 @@ static void dkr_map_logical_rect(const struct FloatXYWidthHeight *logical,
                                  bool clamp_to_drawable,
                                  struct XYWidthHeight *mapped) {
     MdkrDisplayRect region = dkr_draw_region(draw_space);
-    float scale_x = region.width / (float)DESIRED_SCREEN_WIDTH;
-    float scale_y = region.height / (float)DESIRED_SCREEN_HEIGHT;
-    float x0 = region.x + logical->x * scale_x;
-    float y0 = region.y + logical->y * scale_y;
-    float x1 = region.x + (logical->x + logical->width) * scale_x;
-    float y1 = region.y + (logical->y + logical->height) * scale_y;
+    float scale_x = region.width / dkr_logical_width;
+    float scale_y = region.height / dkr_logical_height;
+    float lx0 = logical->x;
+    float ly0 = logical->y;
+    float lx1 = logical->x + logical->width;
+    float ly1 = logical->y + logical->height;
+
+    if (clamp_to_drawable) {
+        /*
+         * Scissors only. DKR states its full-surface clip as
+         * gDPSetScissor(0, 0, 0, w - 1, h - 1) -- rcp_dkr.c flags the "- 1" as
+         * an unnecessary fill-mode habit. On a 320-column framebuffer that
+         * discards one column; scaled to the host it discards
+         * region.width / 320 columns, which at 1920 is a hard-edged six-pixel
+         * band of stale pixels down the right screen edge.
+         *
+         * A rectangle that reaches every surface bound to within one logical
+         * pixel is the game saying "do not clip" -- camera.c's DEFAULT_VIEWPORT
+         * and its width-1/height-1 clamps are written the same way -- so that
+         * rectangle is snapped out to the region bounds. The test deliberately
+         * requires ALL FOUR edges: a split-screen or menu sub-rectangle that
+         * happens to touch one bound keeps its authored inset exactly.
+         */
+        if (lx0 <= 1.0f && ly0 <= 1.0f &&
+            lx1 >= dkr_logical_width - 1.0f &&
+            ly1 >= dkr_logical_height - 1.0f) {
+            lx0 = 0.0f;
+            ly0 = 0.0f;
+            lx1 = dkr_logical_width;
+            ly1 = dkr_logical_height;
+        }
+    }
+
+    float x0 = region.x + lx0 * scale_x;
+    float y0 = region.y + ly0 * scale_y;
+    float x1 = region.x + lx1 * scale_x;
+    float y1 = region.y + ly1 * scale_y;
     int32_t ix0 = (int32_t)lroundf(x0);
     int32_t iy0 = (int32_t)lroundf(y0);
     int32_t ix1 = (int32_t)lroundf(x1);
@@ -3264,7 +3496,7 @@ static void dkr_prepare_draw_target(void) {
 }
 
 static void dkr_calc_viewport(const Vp_t *vp) {
-    float lw = DESIRED_SCREEN_WIDTH, lh = DESIRED_SCREEN_HEIGHT;
+    float lw = dkr_logical_width, lh = dkr_logical_height;
     float width  = 2.0f * vp->vscale[0] / 4.0f;
     float height = 2.0f * vp->vscale[1] / 4.0f;
     float viewport_width = fabsf(width);
@@ -3444,7 +3676,7 @@ static void dkr_dp_set_scissor(uint32_t ulx, uint32_t uly, uint32_t lrx, uint32_
     float width = ((int32_t)lrx - (int32_t)ulx) / 4.0f;
     float height = ((int32_t)lry - (int32_t)uly) / 4.0f;
     rdp.logical_scissor.x = x;
-    rdp.logical_scissor.y = DESIRED_SCREEN_HEIGHT - (y_top + height);
+    rdp.logical_scissor.y = dkr_logical_height - (y_top + height);
     rdp.logical_scissor.width = width;
     rdp.logical_scissor.height = height;
     rdp.logical_scissor_valid = true;
@@ -3469,8 +3701,8 @@ static void dkr_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     float drawable_height = (float)(dkr_output_overlay_active
         ? gfx_output_dimensions.height
         : gfx_current_dimensions.height);
-    float scale_x = region.width / (float)DESIRED_SCREEN_WIDTH;
-    float scale_y = region.height / (float)DESIRED_SCREEN_HEIGHT;
+    float scale_x = region.width / dkr_logical_width;
+    float scale_y = region.height / dkr_logical_height;
     float ulx_pixels = region.x + (ulx / 4.0f) * scale_x;
     float lrx_pixels = region.x + (lrx / 4.0f) * scale_x;
     /* Region coordinates are bottom-left; RDP rectangle Y is top-left. */
@@ -3510,11 +3742,15 @@ static void dkr_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     rsp.geometry_mode = 0;
 
     dkr_in_texrect = textured;   /* absolute texel coords: skip NOPERSP *0.5 */
-    dkr_setup_draw_state(textured && poly_tex);
-    if (!textured) cur.use_texture = false;
-    dkr_emit_tri(ul, ll, ur);
-    dkr_emit_tri(ll, lr, ur);
-    gfx_flush();
+    /* Same rule as dkr_sp_polygon: a rectangle whose texture failed to bind
+     * would show the previous draw's image at full screen-space size. Restore
+     * the saved RSP/RDP state below either way. */
+    if (dkr_setup_draw_state(textured && poly_tex)) {
+        if (!textured) cur.use_texture = false;
+        dkr_emit_tri(ul, ll, ur);
+        dkr_emit_tri(ll, lr, ur);
+        gfx_flush();
+    }
     dkr_in_texrect = false;
 
     rsp.geometry_mode = gm_saved;
@@ -5283,9 +5519,14 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                             C1(cmd, 20, 4), C1(cmd, 18, 2), C1(cmd, 14, 4),
                             C1(cmd, 10, 4), C1(cmd, 8, 2), C1(cmd, 4, 4), C1(cmd, 0, 4));
             if (tl < 8)
-                DTRACE("G_SETTILE tile=%d fmt=%u siz=%u line=%u tmem=%u pal=%u cms=%u cmt=%u",
+                /* masks/maskt are traced beside cms/cmt because the RDP's own
+                 * clamp decision reads both: a zero mask forces clamping on
+                 * that axis whatever the clamp bit says. */
+                DTRACE("G_SETTILE tile=%d fmt=%u siz=%u line=%u tmem=%u pal=%u "
+                       "cms=%u cmt=%u masks=%u maskt=%u",
                        tl, rdp.tile[tl].fmt, rdp.tile[tl].siz, rdp.tile[tl].line_size_bytes,
-                       rdp.tile[tl].tmem, rdp.tile[tl].palette, rdp.tile[tl].cms, rdp.tile[tl].cmt);
+                       rdp.tile[tl].tmem, rdp.tile[tl].palette, rdp.tile[tl].cms, rdp.tile[tl].cmt,
+                       rdp.tile[tl].masks, rdp.tile[tl].maskt);
             break;
         }
         case G_SETTILESIZE: {
@@ -5582,6 +5823,25 @@ bool gfx_rebind_renderer(struct GfxRenderingAPI *rapi) {
         gfx_rapi->on_resize();
     }
     return true;
+}
+
+void gfx_dkr_set_logical_surface(uint32_t width, uint32_t height) {
+    /*
+     * Ignore an implausible surface rather than divide the whole presentation
+     * mapping by it: this arrives from game state and a zero would take every
+     * mapped rectangle with it.
+     */
+    if (width == 0u || height == 0u || width > 4096u || height > 4096u) {
+        return;
+    }
+    if ((float)width == dkr_logical_width &&
+        (float)height == dkr_logical_height) {
+        return;
+    }
+    dkr_logical_width = (float)width;
+    dkr_logical_height = (float)height;
+    /* The retained logical viewport/scissor now mean something different. */
+    dkr_remap_viewport_and_scissor();
 }
 
 void gfx_set_dimensions(uint32_t width, uint32_t height) {

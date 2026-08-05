@@ -71,6 +71,19 @@ bool gfx_rebind_renderer(struct GfxRenderingAPI *rapi);
 void gfx_set_dimensions(uint32_t width, uint32_t height);
 
 /**
+ * Publish the AUTHORED logical framebuffer the display list is composed in.
+ *
+ * This is the game's own surface, not the host window: 320x240 on NTSC/MPAL and
+ * 320x264 on PAL, where video.c raises every mode by PAL_HEIGHT_DIFFERENCE and
+ * the menus lay themselves out over the taller field. Viewport, scissor,
+ * texrect and fill-rectangle coordinates are mapped onto the presentation
+ * region against this size, so a PAL surface that is announced as 240 rows
+ * scales its 2D art by 264/240 and clips the bottom of the screen. Defaults to
+ * 320x240; video_init() publishes the real surface once the framebuffers exist.
+ */
+void gfx_dkr_set_logical_surface(uint32_t width, uint32_t height);
+
+/**
  * Return the exact pixel extent of the completed frame available to capture.
  *
  * This is OUTPUT space, after supersample resolve. It may temporarily differ

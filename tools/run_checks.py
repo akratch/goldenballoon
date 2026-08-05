@@ -260,6 +260,8 @@ CHECKS = (
           "RAW16 bank census, endian oracle, and fixed/legacy PCM A/B"),
     Check("texture_lineswap", "check_texture_lineswap.py", "native",
           "RDP odd-row texture decode"),
+    Check("intro_shrub_sprite", "check_intro_shrub_sprite.py", "native",
+          "multi-batch billboard sprite tiles in the authored intro"),
     Check("race_drive", "check_race_drive.py", "native",
           "closed-loop racing and rendered scene"),
     Check("race_2p_split", "check_race_2p_split.py", "native",
@@ -642,9 +644,12 @@ def command_for(
     # presentation_breadth needs the ROM directory for the same reason
     # simulation_cadence does: spec 12.3's region clause is NTSC *and* PAL, and
     # the PAL release is not the default --rom.
+    # framed_world_views joins them for the region reason as well: PAL composes
+    # against a 264-row framebuffer, so how a widescreen host maps the authored
+    # 2D envelope is a different question there than on NTSC.
     if check.name in {"rom_revision", "simulation_cadence",
                       "arbitrary_presentation_rates", "presentation_breadth",
-                      "taj_character_select_pal"}:
+                      "taj_character_select_pal", "framed_world_views"}:
         cmd += ["--roms", str(roms)]
     cmd += list(check.args)
     return cmd
