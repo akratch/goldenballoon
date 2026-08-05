@@ -117,6 +117,44 @@ int config_ini_parse(const char *text, ConfigIniEntry *out, int max, int *out_co
     return 1;
 }
 
+/* config_ini_parse trims surrounding whitespace, splits on the first '=', and
+ * treats a leading '[', '#' or ';' as structure rather than data. A value the
+ * serializer emits verbatim outside that grammar would come back changed or
+ * as a different entry, so refuse it instead of writing a file that does not
+ * reload as itself. */
+static int config_ini_round_trips(const char *text, int is_key) {
+    size_t length;
+    const char *dot;
+
+    if (text == NULL) {
+        return 0;
+    }
+    length = strlen(text);
+    if (isspace((unsigned char) text[0]) ||
+        (length > 0 && isspace((unsigned char) text[length - 1]))) {
+        return 0;
+    }
+    if (strpbrk(text, "\n\r") != NULL) {
+        return 0;
+    }
+    if (!is_key) {
+        return 1;
+    }
+    if (length == 0 || strchr(text, '=') != NULL ||
+        text[0] == '[' || text[0] == '#' || text[0] == ';') {
+        return 0;
+    }
+    /* "Section.Key": both halves must survive the split the parser performs. */
+    dot = strchr(text, '.');
+    if (dot != NULL &&
+        (dot == text || dot[1] == '\0' ||
+         isspace((unsigned char) dot[-1]) ||
+         isspace((unsigned char) dot[1]))) {
+        return 0;
+    }
+    return 1;
+}
+
 int config_ini_serialize(const ConfigIniEntry *entries, int count,
                          char *out, size_t capacity) {
     char section[CONFIG_INI_KEY_MAX] = "";
@@ -125,6 +163,12 @@ int config_ini_serialize(const ConfigIniEntry *entries, int count,
     if (out == NULL || capacity == 0 || count < 0 ||
         (entries == NULL && count > 0)) {
         return 0;
+    }
+    for (int i = 0; i < count; i++) {
+        if (!config_ini_round_trips(entries[i].key, 1) ||
+            !config_ini_round_trips(entries[i].value, 0)) {
+            return 0;
+        }
     }
     out[0] = '\0';
 

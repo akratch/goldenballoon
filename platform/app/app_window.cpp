@@ -6,14 +6,30 @@
 namespace {
 
 struct PendingWindowMode {
-    SDL_Window            *window    = nullptr;
-    char                   mode[16]  = {0};
-    bool                   pending   = false;
-    bool                   completed = false;
-    MdkrVideoRuntimeResult result    = MDKR_VIDEO_RUNTIME_INVALID;
+    SDL_Window            *window        = nullptr;
+    char                   mode[16]      = {0};
+    bool                   pending       = false;
+    bool                   completed     = false;
+    Uint64                 completedTick = 0;
+    MdkrVideoRuntimeResult result        = MDKR_VIDEO_RUNTIME_INVALID;
 };
 
 PendingWindowMode g_pending;
+
+/* Settings is the only consumer of a completion, and it can stay closed for the
+ * rest of the session. Past this window the result still has to be consumed —
+ * the panel resynchronizes from it — but it is no longer something the player
+ * is waiting on, so it must not be announced as if it just happened. */
+constexpr Uint64 kCompletionFreshnessMs = 4000u;
+
+void publishCompleted(SDL_Window *window, MdkrVideoRuntimeResult result) {
+    g_pending.window        = window;
+    g_pending.pending       = false;
+    g_pending.completed     = true;
+    g_pending.completedTick = SDL_GetTicks64();
+    g_pending.result        = result;
+    g_pending.mode[0]       = '\0';
+}
 
 bool              isFullscreen(SDL_Window *window) {
     return window != nullptr &&
@@ -118,14 +134,16 @@ void AppWindow_servicePending() {
     SDL_Window *window = g_pending.window;
     char        mode[sizeof(g_pending.mode)];
     std::snprintf(mode, sizeof(mode), "%s", g_pending.mode);
-    g_pending.pending   = false;
-    g_pending.result    = AppWindow_applyMode(window, mode);
-    g_pending.completed = true;
+    publishCompleted(window, AppWindow_applyMode(window, mode));
 }
 
-bool AppWindow_consumeCompleted(MdkrVideoRuntimeResult *result) {
+bool AppWindow_consumeCompleted(MdkrVideoRuntimeResult *result, bool *fresh) {
     if (!g_pending.completed || result == nullptr) return false;
-    *result             = g_pending.result;
+    *result = g_pending.result;
+    if (fresh != nullptr) {
+        *fresh = SDL_GetTicks64() - g_pending.completedTick <=
+                 kCompletionFreshnessMs;
+    }
     g_pending.completed = false;
     g_pending.window    = nullptr;
     g_pending.mode[0]   = '\0';
@@ -143,11 +161,7 @@ bool AppWindow_handleEvent(SDL_Window *window, const SDL_Event &event) {
         /* A shortcut is the newest window-mode intent. Publish its result over
          * any older queued completion so Settings resynchronizes to the actual
          * desired value instead of briefly reporting stale success/failure. */
-        g_pending.window    = window;
-        g_pending.pending   = false;
-        g_pending.completed = true;
-        g_pending.result    = result;
-        g_pending.mode[0]   = '\0';
+        publishCompleted(window, result);
         std::fprintf(stderr,
                      "[app] fullscreen shortcut requested %s (result=%d)\n",
                      next,

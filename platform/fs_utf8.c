@@ -338,6 +338,12 @@ int mdkr_running_executable_path_utf8(char **output) {
 #include <fcntl.h>
 #include <unistd.h>
 
+#if defined(__APPLE__)
+#include <limits.h>
+#include <stdint.h>
+#include <mach-o/dyld.h>
+#endif
+
 FILE *mdkr_fopen_utf8(const char *path, const char *mode) {
     return fopen(path, mode);
 }
@@ -451,9 +457,65 @@ void mdkr_file_lock_release(MdkrFileLock *lock) {
     lock->handle = -1;
 }
 int mdkr_running_executable_path_utf8(char **output) {
-    if (output != NULL) *output = NULL;
+    if (output == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    *output = NULL;
+#if defined(__APPLE__)
+    {
+        char stack_path[PATH_MAX];
+        uint32_t size = (uint32_t) sizeof(stack_path);
+        char *path;
+        if (_NSGetExecutablePath(stack_path, &size) == 0) {
+            path = (char *) malloc(strlen(stack_path) + 1u);
+            if (path == NULL) return -1;
+            memcpy(path, stack_path, strlen(stack_path) + 1u);
+            *output = path;
+            return 0;
+        }
+        /* A path longer than PATH_MAX reports the size it needs. */
+        path = (char *) malloc((size_t) size);
+        if (path == NULL) return -1;
+        if (_NSGetExecutablePath(path, &size) != 0) {
+            free(path);
+            errno = ENOENT;
+            return -1;
+        }
+        *output = path;
+        return 0;
+    }
+#elif defined(__linux__)
+    {
+        /* readlink never terminates and never reports the required length, so
+         * a result that exactly fills the buffer is indistinguishable from a
+         * truncated one: grow and retry rather than return a cut path. */
+        size_t capacity;
+        for (capacity = 1024u; capacity <= 262144u; capacity *= 2u) {
+            char *path = (char *) malloc(capacity);
+            ssize_t written;
+            if (path == NULL) return -1;
+            written = readlink("/proc/self/exe", path, capacity - 1u);
+            if (written < 0) {
+                const int saved = errno;
+                free(path);
+                errno = saved;
+                return -1;
+            }
+            if ((size_t) written < capacity - 1u) {
+                path[written] = '\0';
+                *output = path;
+                return 0;
+            }
+            free(path);
+        }
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+#else
     errno = ENOSYS;
     return -1;
+#endif
 }
 
 #endif

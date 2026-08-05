@@ -1774,7 +1774,9 @@ static void eeprom_load(void) {
 static int eeprom_bounds(u8 addr, s32 byte_count, const void *buffer,
                          size_t *offset_out) {
     size_t offset = (size_t) addr * EEPROM_BLOCK_SIZE;
-    if (buffer == NULL || offset > DKR_EEPROM_BYTES || byte_count < 0 ||
+    /* An address exactly at the end addresses no block. Admitting it for a
+     * zero-length transfer would hand the caller s_eeprom + DKR_EEPROM_BYTES. */
+    if (buffer == NULL || offset >= DKR_EEPROM_BYTES || byte_count < 0 ||
         (size_t) byte_count > DKR_EEPROM_BYTES - offset) {
         return 0;
     }

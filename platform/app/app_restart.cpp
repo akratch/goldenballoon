@@ -93,9 +93,26 @@ void clearHandoff() {
     (void)setEnvironment("MDKR_ROM", "");
 }
 
+void clearAutomationControls() {
+    /* Read only by the autoplay harness. A player's restart must not inherit
+     * an automation tick budget, a scripted input file, or a one-shot video
+     * override from whatever environment the app was launched with. */
+    (void)setEnvironment("MDKR_APP_AUTOPLAY_TICKS", "");
+    (void)setEnvironment("MDKR_APP_AUTOPLAY_INPUT_SCRIPT", "");
+    (void)setEnvironment("MDKR_APP_AUTOPLAY_VIDEO_SET", "");
+}
+
 }  // namespace
 
-bool AppRestart_stageGame(const char *romPath) {
+bool AppRestart_setEnv(const char *name, const char *value) {
+    return setEnvironment(name, value);
+}
+
+bool AppRestart_getEnv(const char *name, std::string &value) {
+    return getEnvironment(name, value);
+}
+
+bool AppRestart_stageGame(const char *romPath, bool autoplaySession) {
     if (romPath == nullptr || romPath[0] == '\0') {
         return false;
     }
@@ -106,13 +123,21 @@ bool AppRestart_stageGame(const char *romPath) {
     if (std::getenv("MDKR_APP_TEST_RESTART_STAGE_FAILURE") != nullptr) {
         return false;
     }
+    if (!autoplaySession) {
+        clearAutomationControls();
+    }
     if (!setEnvironment("MDKR_ROM", romPath) ||
-        !setEnvironment("MDKR_APP_AUTOPLAY", "1") ||
+        (autoplaySession && !setEnvironment("MDKR_APP_AUTOPLAY", "1")) ||
         !setEnvironment("MDKR_APP_RESTART_GAME", "1")) {
         clearHandoff();
         return false;
     }
     return true;
+}
+
+bool AppRestart_pendingGame() {
+    std::string marker;
+    return getEnvironment("MDKR_APP_RESTART_GAME", marker) && marker == "1";
 }
 
 bool AppRestart_consumeGame(std::string &romPath) {

@@ -75,6 +75,11 @@ void SDL_RaiseWindow(SDL_Window *) {
 const char *SDL_GetError(void) {
     return "injected fullscreen failure";
 }
+// Completion freshness is measured against this clock. Holding it at zero keeps
+// every completion these cases publish inside the freshness window.
+Uint64 SDL_GetTicks64(void) {
+    return 0u;
+}
 
 const MdkrVideoConfig *mdkr_video_config_current(void) {
     return &config;

@@ -13,8 +13,10 @@
 //     overlay draws itself. Shell-owned, so it needs nothing from the engine.
 //
 //  3. REBINDING. mgb64 stores the toggle keys in its engine config registry.
-//     mdkr64 has none, so they live in the app's own prefs (mdkr64_app.ini)
-//     with the same F1 / F10 / gamepad-Back defaults.
+//     mdkr64 has none, so the toggles are READ from the app's own prefs
+//     (mdkr64_app.ini) with the same F1 / F10 / gamepad-Back defaults. There is
+//     no rebinding widget and nothing here writes those keys back: editing the
+//     file is currently the only way to change them.
 #include "ui_overlay.h"
 #include "app_brand.h"
 #include "app_config.h"
@@ -352,7 +354,12 @@ bool usingWebGpu() {
 #endif
 
 void beginImGuiFrame() {
-    float framebufferScale = 1.0f;
+    /* Zero means "not measurable this frame". A minimized window and an
+     * occluded WebGPU surface both report no drawable, and the 1.0 ratio that
+     * would imply is not the display's: feeding it to the DPI transition
+     * rebuilds the font atlas at the wrong scale from inside the engine's
+     * render callback, and again on restore. */
+    float framebufferScale = 0.0f;
     if (g_overlay.window) {
         int logicalWidth = 0, logicalHeight = 0;
         int drawableWidth = 0, drawableHeight = 0;
@@ -371,7 +378,7 @@ void beginImGuiFrame() {
         }
     }
     AppTheme::applyPendingUiScale();
-    AppTheme::refreshFramebufferScale(framebufferScale);
+    if (framebufferScale > 0.0f) AppTheme::refreshFramebufferScale(framebufferScale);
 #ifdef MDKR_WEBGPU_BACKEND
     if (usingWebGpu()) {
         gfx_webgpu_imgui_new_frame();

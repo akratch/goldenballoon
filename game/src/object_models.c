@@ -3,6 +3,7 @@
 #include "asset_loading.h"
 #ifdef NATIVE_PORT
 #include "asset_swap.h"
+#include "camera_object_occlusion.h"
 #endif
 #include "common.h"
 #include "gzip.h"
@@ -187,6 +188,12 @@ ModelInstance *object_model_init(s32 modelID, s32 flags) {
             }
         }
         if (model_init_normals(objMdl) == 0 && model_anim_init(objMdl, modelID) == 0) {
+#ifdef NATIVE_PORT
+            /* Build the immutable visual cache only after native asset swapping,
+             * texture loading, normal setup, and animation setup have finalized
+             * the model's arrays, but before it is exposed to instances. */
+            mdkr_camera_object_occlusion_model_loaded(objMdl);
+#endif
             instance = model_instance_init(objMdl, flags);
             if (instance != NULL) {
                 gModelCache[ASSETCACHE_ID(cacheIndex)] = modelID;
@@ -364,6 +371,12 @@ void free_model_data(ObjectModel *mdl) {
         stubbed_printf("MOD Error: Tryed to deallocate non-existent model!!\n");
         return;
     }
+
+#ifdef NATIVE_PORT
+    /* The cache owns copies, but its registry key is this allocation; erase it
+     * before the model address can be reused by a later loaded object. */
+    mdkr_camera_object_occlusion_model_pre_free(mdl);
+#endif
 
     numTextures = mdl->numberOfTextures;
     if (numTextures > 0) {

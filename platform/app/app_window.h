@@ -18,7 +18,11 @@ MdkrVideoRuntimeResult AppWindow_applyMode(SDL_Window *window, const char *mode)
 // before a new frame starts. Completion can be consumed by the settings panel.
 MdkrVideoRuntimeResult AppWindow_requestMode(SDL_Window *window, const char *mode);
 void                   AppWindow_servicePending();
-bool                   AppWindow_consumeCompleted(MdkrVideoRuntimeResult *result);
+// Report a completion exactly once. `fresh` is false when the transition
+// finished long before this call, so a panel opened much later resynchronizes
+// without announcing a change the player has already seen happen.
+bool                   AppWindow_consumeCompleted(MdkrVideoRuntimeResult *result,
+                                                  bool *fresh = nullptr);
 
 // F11 and Alt+Enter. Returns true for both press and release so game/ImGui input
 // never sees the host shortcut; a non-repeated press toggles immediately.

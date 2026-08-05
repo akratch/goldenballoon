@@ -237,8 +237,11 @@ void dkr_rom_identify(const uint8_t *hdr, DkrRomId *out) {
     uint8_t revision;
 
     memset(out, 0, sizeof(*out));
+    /* DKR_ROM_SUPPORTED is the zero value, so a cleared struct claims the
+     * strongest verdict. Refusal is the only safe default: every path below
+     * either matches a revision row or leaves this standing. */
+    out->verdict = DKR_ROM_NOT_DKR;
     if (hdr == NULL) {
-        out->verdict = DKR_ROM_NOT_DKR;
         return;
     }
 

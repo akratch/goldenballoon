@@ -22,6 +22,10 @@
 class AppHost {
 public:
     AppHost() = default;
+    // shutdown() is idempotent, so an early return from main() releases the
+    // window, render context, and ImGui state on exactly the same path as an
+    // explicit call.
+    ~AppHost() { shutdown(); }
     AppHost(const AppHost &) = delete;
     AppHost &operator=(const AppHost &) = delete;
     AppHost(AppHost &&) = delete;
@@ -113,8 +117,18 @@ private:
     bool endFrameWebGpu(const char *captureBmpPath);
     bool endFrameGL(const char *captureBmpPath);
     bool processEvent(SDL_Event &event);
+    // Feed one event the smoke script built. Window-server input is filtered
+    // for the duration of a scripted run; this seam is how the script's own
+    // events still reach the production handler.
+    bool injectSmokeEvent(SDL_Event &event);
     void releaseSmokeMouseClick();
+    void reassertSmokePointer();
 
+    /* True from the first line of init() until shutdown() has completed once.
+     * Resource release is individually guarded, but the shutdown telemetry is
+     * not: a second pass would print a second presentation summary for one
+     * session. Callers rely on shutdown() being idempotent in both senses. */
+    bool active_ = false;
     SDL_Window   *window_ = nullptr;
     SDL_GLContext gl_     = nullptr;
     bool imguiContextReady_  = false;
@@ -137,6 +151,17 @@ private:
     SDL_GameController *smokeGamepad_ = nullptr;
     int smokeGamepadDeviceIndex_ = -1;
     int smokeHeldGamepadButton_ = -1;
+    /* A scripted-input run is the sole author of ImGui's pointer, keyboard and
+     * focus state. The foreground activation every launcher process performs
+     * makes real window-server traffic arrive at an unpredictable frame: a
+     * focus change clears ImGui's held keys and buttons mid-script, and
+     * imgui_impl_sdl2 replaces the queued widget coordinate with the operating
+     * system cursor on any frame this window is focused with no button down.
+     * Both are correct for a player and fatal for a deterministic script. */
+    bool smokeScriptOwnsInput_ = false;
+    bool injectingSmokeEvent_ = false;
+    bool smokePointerValid_ = false;
+    SmokeClick smokePointer_ = {0, 0};
 
     bool  useWebGpu_    = false;
     bool  glSoftwarePacing_ = false;

@@ -41,11 +41,6 @@
 #include <sys/stat.h>
 #endif
 
-#if defined(__APPLE__)
-#include <limits.h>
-#include <mach-o/dyld.h>
-#endif
-
 namespace {
 
 class DiagLogScope {
@@ -102,33 +97,27 @@ int relaunchApplication(const std::string &executablePath) {
     return 1;
 }
 
+/* One-shot handoffs all travel the app_restart environment seam: on Windows a
+ * recovery message can name a non-ASCII ROM path, which only the wide
+ * environment can carry losslessly. */
 void setBootRecoveryEnvironment(const std::string &message) {
-#if defined(_WIN32)
-    _putenv_s("MDKR_APP_BOOT_RECOVERY", message.c_str());
-#else
-    setenv("MDKR_APP_BOOT_RECOVERY", message.c_str(), 1);
-#endif
+    (void)AppRestart_setEnv("MDKR_APP_BOOT_RECOVERY", message.c_str());
 }
 
 void clearBootRecoveryEnvironment() {
-#if defined(_WIN32)
-    _putenv_s("MDKR_APP_BOOT_RECOVERY", "");
-#else
-    unsetenv("MDKR_APP_BOOT_RECOVERY");
-#endif
+    (void)AppRestart_setEnv("MDKR_APP_BOOT_RECOVERY", "");
 }
 
 void prepareRestartRecoverySmokeForTest() {
     /* The restart integration gate must observe the normal launcher recovery
      * process and then finish without synthetic input. This opt-in is ignored
      * until a recovery transition has actually been selected. */
-    const char *frames = std::getenv("MDKR_APP_TEST_RESTART_RECOVERY_FRAMES");
-    if (frames == nullptr || frames[0] == '\0') return;
-#if defined(_WIN32)
-    _putenv_s("MDKR_APP_SMOKE_FRAMES", frames);
-#else
-    setenv("MDKR_APP_SMOKE_FRAMES", frames, 1);
-#endif
+    std::string frames;
+    if (!AppRestart_getEnv("MDKR_APP_TEST_RESTART_RECOVERY_FRAMES", frames) ||
+        frames.empty()) {
+        return;
+    }
+    (void)AppRestart_setEnv("MDKR_APP_SMOKE_FRAMES", frames.c_str());
 }
 
 int recoverRestartToLauncher(const std::string &executablePath,
@@ -143,19 +132,6 @@ int recoverRestartToLauncher(const std::string &executablePath,
     DiagLog_shutdown();
     return relaunchApplication(executablePath);
 }
-
-#if defined(__APPLE__)
-std::string applicationExecutablePath(const char *fallback) {
-    char     stackPath[PATH_MAX];
-    uint32_t size = sizeof(stackPath);
-    if (_NSGetExecutablePath(stackPath, &size) == 0) return stackPath;
-
-    std::vector<char> path(size);
-    if (_NSGetExecutablePath(path.data(), &size) == 0) return path.data();
-    return fallback ? fallback : "";
-}
-
-#endif
 
 int runFileDialogSelfTest() {
     if (!filedialog::isAvailable()) {
@@ -438,7 +414,10 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         std::getenv("MDKR_APP_SMOKE_REPLACEMENT_PLAY");
     const int   dropFrame = (frames > 1) ? 1 : 0;
     bool        sawQuit   = false;
-    bool        captureOk = true;
+    /* Starts false whenever an image was requested: only the final frame's
+     * successful write may set it. A break before that frame must not leave
+     * the AUDIT-0046 capture gate reporting an image nobody produced. */
+    bool        captureOk = !(shot && shot[0]);
     bool        renderOk  = true;
     const bool expectSaveFailure =
         std::getenv("MDKR_APP_SMOKE_EXPECT_SAVE_FAILURE") != nullptr;
@@ -1193,6 +1172,79 @@ int runAutoplay(AppHost &host, Launcher &launcher,
     return result;
 }
 
+void showPresentationFailure(AppHost &host) {
+    char message[512];
+    std::snprintf(
+        message,
+        sizeof(message),
+        "The %s presentation path failed. The app stopped%s.\n\n"
+        "See mdkr64.log for details.",
+        host.usingWebGpu() ? "WebGPU" : "OpenGL",
+        host.usingWebGpu()
+            ? " instead of switching to the diagnostic OpenGL backend"
+            : "");
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+                             MDKR_BRAND_NAME " — Graphics Error",
+                             message,
+                             host.window());
+}
+
+void describeBootFailure(AppHost &host, int exitCode,
+                         std::string *bootRecoveryMessage) {
+    if (bootRecoveryMessage == nullptr) return;
+    if (!host.webGpuRecoveryError().empty()) {
+        *bootRecoveryMessage = host.webGpuRecoveryError();
+        return;
+    }
+    char message[768];
+    std::snprintf(
+        message, sizeof(message),
+        "Golden Balloon stopped safely while starting the game "
+        "(error %d). Your ROM, saves, and settings were kept. "
+        "Review Diagnostics for the exact failure, then try again.",
+        exitCode);
+    *bootRecoveryMessage = message;
+}
+
+/* Restart & Apply for a player. This is deliberately NOT runAutoplay: the
+ * replacement of an interactive session must keep the interactive error
+ * surfaces (a visible graphics dialog, a boot-recovery message routed back to
+ * the launcher), must not consult any automation control, and must not turn a
+ * compositor that is slow to schedule its first present into a failed restart.
+ * The launcher frames below are the same warm-up the interactive Play path
+ * gets for free by having drawn itself before the engine adopts the surface. */
+int runRestartSession(AppHost &host, Launcher &launcher,
+                      EngineSessionTransition *transition,
+                      const std::string &romPath,
+                      std::string *bootRecoveryMessage) {
+    MdkrBootConfig config{};
+    config.rom_path   = romPath.c_str();
+    config.video_mode = -1;
+
+    const std::uint64_t initialPresents = host.presentedFrames();
+    const Uint64        warmupDeadline  = SDL_GetTicks64() + 2000u;
+    while (host.presentedFrames() == initialPresents &&
+           SDL_GetTicks64() < warmupDeadline) {
+        if (host.pumpAndShouldQuit()) {
+            host.shutdown();
+            return 0;
+        }
+        host.beginFrame();
+        launcher.draw(host);
+        if (!host.endFrame()) {
+            showPresentationFailure(host);
+            host.shutdown();
+            return 1;
+        }
+        if (host.presentedFrames() == initialPresents) SDL_Delay(1);
+    }
+
+    const int result = runEngineSession(host, config, transition);
+    if (result != 0) describeBootFailure(host, result, bootRecoveryMessage);
+    host.shutdown();
+    return result;
+}
+
 int runInteractiveLauncher(AppHost &host, Launcher &launcher,
                            EngineSessionTransition *transition,
                            std::string *bootRecoveryMessage) {
@@ -1216,21 +1268,7 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
         host.beginFrame();
         const LauncherAction action = launcher.draw(host);
         if (!host.endFrame()) {
-            char message[512];
-            std::snprintf(
-                message,
-                sizeof(message),
-                "The %s presentation path failed. The app stopped%s.\n\n"
-                "See mdkr64.log for details.",
-                host.usingWebGpu() ? "WebGPU" : "OpenGL",
-                host.usingWebGpu()
-                    ? " instead of switching to the diagnostic OpenGL backend"
-                    : "");
-            SDL_ShowSimpleMessageBox(
-                SDL_MESSAGEBOX_ERROR,
-                MDKR_BRAND_NAME " — Graphics Error",
-                message,
-                host.window());
+            showPresentationFailure(host);
             exitCode = 1;
             running  = false;
             continue;
@@ -1240,19 +1278,8 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
         } else if (action.type == LauncherActionType::Play) {
             // Blocks while the game renders into the launcher's host window.
             exitCode = runEngineSession(host, action.boot, transition);
-            if (exitCode != 0 && bootRecoveryMessage != nullptr) {
-                if (!host.webGpuRecoveryError().empty()) {
-                    *bootRecoveryMessage = host.webGpuRecoveryError();
-                } else {
-                    char message[768];
-                    std::snprintf(
-                        message, sizeof(message),
-                        "Golden Balloon stopped safely while starting the game "
-                        "(error %d). Your ROM, saves, and settings were kept. "
-                        "Review Diagnostics for the exact failure, then try again.",
-                        exitCode);
-                    *bootRecoveryMessage = message;
-                }
+            if (exitCode != 0) {
+                describeBootFailure(host, exitCode, bootRecoveryMessage);
             }
             running = false;
         }
@@ -1280,21 +1307,24 @@ int main(int argc, char **argv) {
      * kernel supplies the canonical image path, never as an argv[0] fallback. */
     std::string userPathExecutable = argv[0] ? argv[0] : "";
     std::string relaunchExecutable = userPathExecutable;
-#if defined(_WIN32)
-    char *runningExecutable = nullptr;
-    if (mdkr_running_executable_path_utf8(&runningExecutable) != 0) {
-        std::fprintf(stderr,
-                     "[app] could not resolve the running Windows executable; "
-                     "Restart & Apply will remain unavailable\n");
-        relaunchExecutable.clear();
-    } else {
+    char      *runningExecutable = nullptr;
+    const bool resolvedRunning =
+        mdkr_running_executable_path_utf8(&runningExecutable) == 0 &&
+        runningExecutable != nullptr;
+    if (resolvedRunning) {
+        /* The kernel's own answer, so relaunch never depends on a PATH lookup
+         * or on the directory a relative argv[0] was resolved against. */
         userPathExecutable = runningExecutable;
         relaunchExecutable = runningExecutable;
         std::free(runningExecutable);
     }
-#elif defined(__APPLE__)
-    userPathExecutable = applicationExecutablePath(argv[0]);
-    relaunchExecutable = userPathExecutable;
+#if defined(_WIN32)
+    if (!resolvedRunning) {
+        std::fprintf(stderr,
+                     "[app] could not resolve the running Windows executable; "
+                     "Restart & Apply will remain unavailable\n");
+        relaunchExecutable.clear();
+    }
 #endif
     /* Register a real bundle before any config/save/resource access, including
      * automation launched through Contents/MacOS. This does not change CWD:
@@ -1394,8 +1424,10 @@ int main(int argc, char **argv) {
 
     Launcher launcher;
 
-    if (const char *recovery = std::getenv("MDKR_APP_BOOT_RECOVERY")) {
-        launcher.setBootError(recovery);
+    std::string inheritedRecovery;
+    if (AppRestart_getEnv("MDKR_APP_BOOT_RECOVERY", inheritedRecovery) &&
+        !inheritedRecovery.empty()) {
+        launcher.setBootError(inheritedRecovery.c_str());
         clearBootRecoveryEnvironment();
     }
 
@@ -1415,7 +1447,8 @@ int main(int argc, char **argv) {
             host, launcher, &transition, &restartReplacement);
         if (transition.request != OverlayExitRequest::None) {
             if (transition.request == OverlayExitRequest::RestartGame &&
-                !AppRestart_stageGame(transition.romPath.c_str())) {
+                !AppRestart_stageGame(transition.romPath.c_str(),
+                                      /*autoplaySession=*/true)) {
                 return recoverRestartToLauncher(
                     relaunchExecutable,
                     "Restart & Apply could not preserve the active ROM. "
@@ -1440,9 +1473,27 @@ int main(int argc, char **argv) {
         }
         return autoplayResult;
     }
+
     std::string bootRecoveryMessage;
-    const int exitCode = runInteractiveLauncher(
-        host, launcher, &transition, &bootRecoveryMessage);
+    int         exitCode = 0;
+    std::string restartRom;
+    if (AppRestart_pendingGame() && AppRestart_consumeGame(restartRom)) {
+        std::fprintf(stderr, "[app] Restart & Apply handoff accepted\n");
+        exitCode = runRestartSession(
+            host, launcher, &transition, restartRom, &bootRecoveryMessage);
+    } else {
+        if (AppRestart_pendingGame()) {
+            /* An inherited marker without a usable ROM is stale state, not a
+             * request. The player gets the ordinary launcher rather than an
+             * exit code no window is left to explain. */
+            std::fprintf(stderr,
+                         "[app] ignoring an incomplete Restart & Apply handoff; "
+                         "opening the launcher\n");
+            AppRestart_clear();
+        }
+        exitCode = runInteractiveLauncher(
+            host, launcher, &transition, &bootRecoveryMessage);
+    }
     host.shutdown();
     if (transition.request != OverlayExitRequest::None ||
         !bootRecoveryMessage.empty()) {

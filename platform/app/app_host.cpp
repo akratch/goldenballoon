@@ -58,6 +58,7 @@ static void bindSmokeGamepadToImGui(SDL_GameController *gamepad) {
 }
 
 bool AppHost::init(const char *title, int width, int height) {
+    active_ = true;
     /* Resolve before the availability check so diagnostics still name an
      * explicitly requested WebGPU backend in a GL-only build. */
     useWebGpu_ = (mdkr_render_backend() == MDKR_BACKEND_WEBGPU);
@@ -68,6 +69,12 @@ bool AppHost::init(const char *title, int width, int height) {
         return false;
     }
     const AppUiSmokeInputMode smokeInputMode = AppUi_smokeInputMode();
+    smokeScriptOwnsInput_ =
+        smokeInputMode == AppUiSmokeInputMode::Keyboard ||
+        smokeInputMode == AppUiSmokeInputMode::Gamepad ||
+        std::getenv("MDKR_APP_SMOKE_UI_SCALE_DRAG") != nullptr ||
+        std::getenv("MDKR_APP_SMOKE_TOUCH_SCROLL") != nullptr ||
+        std::getenv("MDKR_APP_SMOKE_NAV_TARGET") != nullptr;
     if (smokeInputMode == AppUiSmokeInputMode::Gamepad) {
         /* Hidden launcher automation has no keyboard focus. SDL otherwise
          * discards joystick press transitions while any window exists but none
@@ -565,6 +572,7 @@ void AppHost::beginFrame() {
             io.DisplaySize = ImVec2((float)lw, (float)lh);
             io.DisplayFramebufferScale = ImVec2((float)dw / (float)lw, (float)dh / (float)lh);
         }
+        reassertSmokePointer();
         releaseSmokeMouseClick();
         ImGui::NewFrame();
         return;
@@ -572,6 +580,7 @@ void AppHost::beginFrame() {
 #endif
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL2_NewFrame();
+    reassertSmokePointer();
     releaseSmokeMouseClick();
     ImGui::NewFrame();
 
@@ -1053,7 +1062,41 @@ float AppHost::framebufferScale() const {
     return (lw > 0) ? (float)dw / (float)lw : 1.0f;
 }
 
+// Pointer, keyboard, text, and window focus/hover traffic. A scripted run owns
+// exactly this set; game-controller events are excluded because the gamepad
+// script drives a virtual joystick whose presses arrive through the real queue.
+static bool isWindowServerInput(const SDL_Event &e) {
+    switch (e.type) {
+        case SDL_MOUSEMOTION:
+        case SDL_MOUSEBUTTONDOWN:
+        case SDL_MOUSEBUTTONUP:
+        case SDL_MOUSEWHEEL:
+        case SDL_KEYDOWN:
+        case SDL_KEYUP:
+        case SDL_TEXTINPUT:
+        case SDL_TEXTEDITING:
+        case SDL_FINGERDOWN:
+        case SDL_FINGERMOTION:
+        case SDL_FINGERUP:
+            return true;
+        case SDL_WINDOWEVENT:
+            return e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED ||
+                   e.window.event == SDL_WINDOWEVENT_FOCUS_LOST ||
+                   e.window.event == SDL_WINDOWEVENT_ENTER ||
+                   e.window.event == SDL_WINDOWEVENT_LEAVE;
+        default:
+            return false;
+    }
+}
+
 bool AppHost::processEvent(SDL_Event &e) {
+    if (smokeScriptOwnsInput_ && !injectingSmokeEvent_ && isWindowServerInput(e)) {
+        /* Dropped before the shortcut handler and the ImGui adapter so a
+         * foreground transition cannot clear a held scripted key or move the
+         * pointer off the widget the script is operating. Quit, close, drop,
+         * and controller events are unaffected. */
+        return false;
+    }
     if (AppWindow_handleEvent(window_, e)) {
         return false;
     }
@@ -1066,9 +1109,46 @@ bool AppHost::processEvent(SDL_Event &e) {
         SDL_free(e.drop.file);
         return false;
     }
+    if (e.type == SDL_DROPTEXT && e.drop.file) {
+        /* SDL allocates the payload for every drop event it delivers. The
+         * launcher has no text-drop action, so release it here rather than
+         * leaking one buffer per dropped selection. */
+        SDL_free(e.drop.file);
+        return false;
+    }
     return e.type == SDL_WINDOWEVENT &&
            e.window.event == SDL_WINDOWEVENT_CLOSE &&
            e.window.windowID == SDL_GetWindowID(window_);
+}
+
+bool AppHost::injectSmokeEvent(SDL_Event &event) {
+    injectingSmokeEvent_ = true;
+    const bool quit = processEvent(event);
+    injectingSmokeEvent_ = false;
+    switch (event.type) {
+        case SDL_MOUSEMOTION:
+            smokePointer_ = {event.motion.x, event.motion.y};
+            smokePointerValid_ = true;
+            break;
+        case SDL_MOUSEBUTTONDOWN:
+        case SDL_MOUSEBUTTONUP:
+            smokePointer_ = {event.button.x, event.button.y};
+            smokePointerValid_ = true;
+            break;
+        default:
+            break;
+    }
+    return quit;
+}
+
+void AppHost::reassertSmokePointer() {
+    if (!smokeScriptOwnsInput_ || !smokePointerValid_) return;
+    /* imgui_impl_sdl2's NewFrame samples the operating system cursor whenever
+     * this window holds keyboard focus and no button is down. Queue the
+     * scripted coordinate after that sample and before ImGui consumes the
+     * frame's input, so the position the script chose is the one it gets. */
+    ImGui::GetIO().AddMousePosEvent(static_cast<float>(smokePointer_.x),
+                                    static_cast<float>(smokePointer_.y));
 }
 
 void AppHost::queueDropFileForSmoke(const char *path) {
@@ -1135,7 +1215,7 @@ bool AppHost::pumpAndShouldQuit() {
         e.drop.file = SDL_strdup(path.c_str());
         e.drop.windowID = SDL_GetWindowID(window_);
         if (e.drop.file) {
-            quit = processEvent(e) || quit;
+            quit = injectSmokeEvent(e) || quit;
         } else {
             std::fprintf(stderr, "[app] smoke: could not allocate drop path\n");
         }
@@ -1152,7 +1232,7 @@ bool AppHost::pumpAndShouldQuit() {
             event.key.state = SDL_RELEASED;
             event.key.keysym.sym = smokeHeldKey_;
             event.key.keysym.scancode = SDL_GetScancodeFromKey(smokeHeldKey_);
-            quit = processEvent(event) || quit;
+            quit = injectSmokeEvent(event) || quit;
             smokeHeldKey_ = SDLK_UNKNOWN;
         }
         if (!pendingSmokeKeys_.empty()) {
@@ -1162,7 +1242,7 @@ bool AppHost::pumpAndShouldQuit() {
             event.key.state = SDL_PRESSED;
             event.key.keysym.sym = smokeHeldKey_;
             event.key.keysym.scancode = SDL_GetScancodeFromKey(smokeHeldKey_);
-            quit = processEvent(event) || quit;
+            quit = injectSmokeEvent(event) || quit;
         }
     }
 
@@ -1184,7 +1264,7 @@ bool AppHost::pumpAndShouldQuit() {
         event.motion.windowID = SDL_GetWindowID(window_);
         event.motion.x = smokeHeldClick_.x;
         event.motion.y = smokeHeldClick_.y;
-        quit = processEvent(event) || quit;
+        quit = injectSmokeEvent(event) || quit;
 
         event = {};
         event.type = SDL_MOUSEBUTTONDOWN;
@@ -1195,7 +1275,7 @@ bool AppHost::pumpAndShouldQuit() {
         event.button.clicks = 1;
         event.button.x = smokeHeldClick_.x;
         event.button.y = smokeHeldClick_.y;
-        quit = processEvent(event) || quit;
+        quit = injectSmokeEvent(event) || quit;
         smokeClickHeld_ = true;
     }
 
@@ -1209,7 +1289,7 @@ bool AppHost::pumpAndShouldQuit() {
         event.motion.which = step.touch ? SDL_TOUCH_MOUSEID : 0;
         event.motion.x = step.x;
         event.motion.y = step.y;
-        quit = processEvent(event) || quit;
+        quit = injectSmokeEvent(event) || quit;
 
         if (step.held != smokeDragHeld_) {
             event = {};
@@ -1222,7 +1302,7 @@ bool AppHost::pumpAndShouldQuit() {
             event.button.clicks = 1;
             event.button.x = step.x;
             event.button.y = step.y;
-            quit = processEvent(event) || quit;
+            quit = injectSmokeEvent(event) || quit;
             smokeDragHeld_ = step.held;
         }
     }
@@ -1267,7 +1347,7 @@ void AppHost::releaseSmokeMouseClick() {
     event.button.clicks = 1;
     event.button.x = smokeHeldClick_.x;
     event.button.y = smokeHeldClick_.y;
-    (void)processEvent(event);
+    (void)injectSmokeEvent(event);
     smokeClickReleasePending_ = false;
 }
 
@@ -1314,6 +1394,8 @@ std::string AppHost::takeDroppedFile() {
 }
 
 void AppHost::shutdown() {
+    if (!active_) return;
+    active_ = false;
     /* Both the launcher and an adopted engine submit through these host roots.
      * The engine has returned before normal shutdown; wait for the remaining UI
      * work before releasing any resource it may reference. */

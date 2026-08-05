@@ -27,7 +27,10 @@ typedef struct ConfigIniEntry {
  * or if more than `max` entries were present. Input is never truncated. */
 int config_ini_parse(const char *text, ConfigIniEntry *out, int max, int *out_count);
 
-/* Returns 1 on success, 0 if `capacity` was insufficient. */
+/* Returns 1 on success, 0 if `capacity` was insufficient or if any key or value
+ * lies outside the grammar config_ini_parse can read back unchanged (leading or
+ * trailing whitespace, an embedded newline, '=' in a key, or a key that would
+ * parse as a section/comment). Everything this writes reloads as itself. */
 int config_ini_serialize(const ConfigIniEntry *entries, int count,
                          char *out, size_t capacity);
 

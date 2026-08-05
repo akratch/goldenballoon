@@ -40,12 +40,22 @@ int main(void) {
 
 #if defined(_WIN32)
     const long process_id = (long)_getpid();
+#else
+    const long process_id = (long)getpid();
+#endif
+#if defined(_WIN32) || defined(__APPLE__) || defined(__linux__)
+    /* Every platform the app ships on can name its own image, and relaunch
+     * depends on that answer rather than on argv[0]. */
     expect(mdkr_running_executable_path_utf8(&running_executable) == 0 &&
                running_executable != NULL && running_executable[0] != '\0',
            "resolve the running executable into dynamically sized UTF-8 storage");
+#if !defined(_WIN32)
+    expect(running_executable != NULL && running_executable[0] == '/',
+           "the resolved executable path is absolute, not a PATH lookup");
+#endif
     free(running_executable);
+    running_executable = NULL;
 #else
-    const long process_id = (long)getpid();
     expect(mdkr_running_executable_path_utf8(&running_executable) != 0 &&
                running_executable == NULL,
            "unsupported executable-path query clears its output safely");

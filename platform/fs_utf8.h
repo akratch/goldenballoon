@@ -55,7 +55,9 @@ int mdkr_file_lock_acquire_utf8(const char *path, MdkrFileLock *lock);
 void mdkr_file_lock_release(MdkrFileLock *lock);
 
 /* Resolve the executable that is actually running, rather than trusting a
- * potentially PATH-relative argv[0]. On success this allocates `*output`,
+ * potentially PATH-relative argv[0]: GetModuleFileNameW on Windows,
+ * _NSGetExecutablePath on macOS, /proc/self/exe on Linux, and ENOSYS where the
+ * operating system offers no such query. On success this allocates `*output`,
  * which the caller must free. There is deliberately no caller-sized buffer:
  * a Windows executable path may need up to 32,767 UTF-16 units and up to four
  * UTF-8 bytes per unit. */

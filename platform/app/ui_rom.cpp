@@ -533,7 +533,9 @@ void RomPanel_ensureInit(LauncherState &s) {
     if (s.romInitialized) return;
     s.romInitialized = true;
 
-    AppConfig::load();
+    /* main() loads preferences before the first launcher frame. Loading again
+     * here would also clear the pending-write set, discarding a preference
+     * another panel staged in the frames before this one first drew. */
     std::string remembered = AppConfig::get("rom_path", "");
     if (remembered.empty()) return;   // first run: the player will hand us one
 

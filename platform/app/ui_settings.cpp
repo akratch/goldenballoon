@@ -797,16 +797,19 @@ bool Settings_draw(SDL_Window *window, bool compact) {
     g_frameLimitFocusedIndex = -1;
     g_frameLimitRetryRectValid = false;
     MdkrVideoRuntimeResult windowResult = MDKR_VIDEO_RUNTIME_INVALID;
-    if (AppWindow_consumeCompleted(&windowResult)) {
+    bool windowResultFresh = false;
+    if (AppWindow_consumeCompleted(&windowResult, &windowResultFresh)) {
         const MdkrVideoSchema *schema = mdkr_video_schema(MDKR_WINDOW_MODE);
         EditState &edit = g_edits[static_cast<size_t>(MDKR_WINDOW_MODE)];
-        reportResult(windowResult, schema);
+        // A stale completion still resynchronizes the widget from the
+        // authoritative desired value; only its status line is suppressed.
+        if (windowResultFresh) reportResult(windowResult, schema);
         if (resultSucceeded(windowResult)) {
             edit.dirty = false;
             edit.initialized = false;
             edit.error.clear();
             changed = true;
-        } else {
+        } else if (windowResultFresh) {
             edit.error = g_status;
         }
     }

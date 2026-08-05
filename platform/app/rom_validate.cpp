@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <string>
 
 namespace {
 
@@ -143,9 +144,14 @@ RomInfo mdkr_validate_rom(const char *path) {
 }
 
 const char *mdkr_supported_rom_list(void) {
-    static char s_list[256];
-    if (s_list[0] == '\0') {
-        dkr_rom_supported_list(s_list, sizeof(s_list));
-    }
-    return s_list;
+    /* Function-local static initialization runs exactly once and is safe when
+     * two threads reach it together, which the launcher's validation worker and
+     * its UI thread can. A "recompute while empty" guard would instead race on
+     * the buffer and repeat the work for a legitimately empty list. */
+    static const std::string list = [] {
+        char buffer[256];
+        dkr_rom_supported_list(buffer, sizeof(buffer));
+        return std::string(buffer);
+    }();
+    return list.c_str();
 }

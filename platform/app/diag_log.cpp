@@ -200,7 +200,10 @@ bool DiagLog_install() {
         const int rotated =
             mdkr_move_utf8(g_logPath.c_str(), previous.c_str(), 1, 0);
         importPreviousFailure(rotated == 0 ? previous : g_logPath);
-        g_logFile = mdkr_fopen_utf8(g_logPath.c_str(), "w");
+        /* Binary: the tee copies pipe bytes through verbatim, and the Windows
+         * text-mode newline translation would make the file disagree with both
+         * the in-app ring and the "rb" import above. */
+        g_logFile = mdkr_fopen_utf8(g_logPath.c_str(), "wb");
     }
 
     g_realOut = duplicateFd(1);
