@@ -21,6 +21,19 @@ u32 byteswap32(u8 *arg0);
 s32 gzip_size_uncompressed(s32 assetIndex, s32 assetOffset);
 u8 *gzip_inflate(u8 *compressedInput, u8 *decompressedOutput);
 #ifdef NATIVE_PORT
+/* Same decode, with the caller's own extent for the compressed buffer.
+ *
+ * A bare `u8 *` carries no length, so the hardened decoder had to recover one
+ * from the pool slot that owns the address (mempool_block_end) and fell back to
+ * the output bound alone whenever the input was not pool-resident. Every caller
+ * in the tree already knows the exact compressed span it just DMA'd, so it
+ * passes it here instead of leaving the input bound to be inferred.
+ *
+ * `compressedSize` is the byte length of the buffer starting at
+ * `compressedInput`, including its 5-byte rzip header. <= 0 means "unknown",
+ * which keeps the mempool_block_end fallback. */
+u8 *gzip_inflate_sized(u8 *compressedInput, u8 *decompressedOutput,
+                       s32 compressedSize);
 /* Points just past the last decompressed byte after gzip_inflate() returns; the
  * NATIVE_PORT asset-swap hooks use it to size the just-inflated buffer. */
 extern u8 *gzip_inflate_output;

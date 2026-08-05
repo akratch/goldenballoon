@@ -101,18 +101,73 @@ globalThis.MDKRSaveUI = (() => {
     status.textContent = message;
   }
 
+  // Controls that WRITE /save. Exactly one tab on this origin owns writes to
+  // that shared IndexedDB database (see the ownership note in mdkr64-shell.js);
+  // automatic engine persistence was already gated on it, but Import, Edit,
+  // Restore and Erase were not, so a spectator tab could overwrite the owner's
+  // progress by hand — the same last-writer-wins loss the lock exists to
+  // prevent, just driven by a button instead of a timer.
+  const MUTATING_CONTROL_IDS = Object.freeze([
+    "import-save-button", "import-paks-button", "edit-save",
+    "restore-save-snapshot", "clear-save", "save-drop",
+  ]);
+  const READONLY_CONTROL_IDS = Object.freeze([
+    "download-save", "download-save-raw", "download-paks",
+  ]);
+  const SPECTATOR_NOTICE =
+    "Another tab owns saved progress for this site, so this tab can export " +
+    "backups but cannot import, edit, restore or erase. Close the other tab " +
+    "and reload to manage saves from here.";
+  // Permissive until the shell tells us otherwise: this module is also loaded
+  // by pages that never run the ownership claim, and refusing writes there
+  // would break save management for a single-tab user.
+  let writeOwnership = "owner";
+
+  function spectator() {
+    return writeOwnership === "spectator";
+  }
+
   // #save-drop belongs in this set: it is a real <button> that opens the same
   // import path as #import-save-button, and a drop landing on it before
   // createRepository() resolves reaches a null module.
   function setControlsDisabled(disabled) {
-    for (const id of [
-      "download-save", "download-save-raw", "import-save-button",
-      "download-paks", "import-paks-button", "edit-save",
-      "restore-save-snapshot", "clear-save", "save-drop",
-    ]) {
+    for (const id of [...READONLY_CONTROL_IDS, ...MUTATING_CONTROL_IDS]) {
       const element = byId(id);
       if (element) element.disabled = disabled;
     }
+    if (!disabled) applyWriteOwnership();
+  }
+
+  // Re-disable the mutating half after any general enable. Called on every
+  // transition rather than only once, because setControlsDisabled(false) runs
+  // at init and at the end of each transaction.
+  function applyWriteOwnership() {
+    if (!spectator()) return;
+    for (const id of MUTATING_CONTROL_IDS) {
+      const element = byId(id);
+      if (element) {
+        element.disabled = true;
+        element.title = SPECTATOR_NOTICE;
+      }
+    }
+  }
+
+  // The visible half of the same verdict, in the shell's notice idiom. A
+  // disabled button still receives drop events and a dialog can be reached by
+  // other means, so every mutating entry point states the precondition itself
+  // instead of trusting the disabled attribute.
+  function saveWritesAllowed() {
+    if (spectator()) {
+      setStatus(SPECTATOR_NOTICE, "err");
+      return false;
+    }
+    return true;
+  }
+
+  function setOwnership(value) {
+    writeOwnership = value === "spectator" ? "spectator" : "owner";
+    applyWriteOwnership();
+    if (spectator()) setStatus(SPECTATOR_NOTICE, "err");
   }
 
   // The drop zone is a drop TARGET as well as a button, and a disabled button
@@ -923,6 +978,7 @@ globalThis.MDKRSaveUI = (() => {
   async function acceptControllerPakBundle(file) {
     if (!file) return;
     if (!saveToolsReady()) return;
+    if (!saveWritesAllowed()) return;
     if (file.size > MAX_PAK_INPUT) {
       setStatus("That Controller Pak bundle exceeds the 256 KiB limit.", "err");
       return;
@@ -1113,6 +1169,7 @@ globalThis.MDKRSaveUI = (() => {
   async function acceptImportFile(file) {
     if (!file) return;
     if (!saveToolsReady()) return;
+    if (!saveWritesAllowed()) return;
     candidateFileName = file.name || "selected file";
     if (file.size > MAX_INPUT) {
       setStatus("That file exceeds the 64 KiB save-import limit.", "err");
@@ -1647,6 +1704,7 @@ globalThis.MDKRSaveUI = (() => {
   }
 
   async function openEditor() {
+    if (!saveWritesAllowed()) return;
     try {
       const bytes = await repository.snapshot();
       if (bytes) codec.load(bytes);
@@ -1665,6 +1723,7 @@ globalThis.MDKRSaveUI = (() => {
   }
 
   async function openAutosaves() {
+    if (!saveWritesAllowed()) return;
     try {
       const automatic = await repository.autosaves();
       const previous = await repository.previous();
@@ -1730,6 +1789,7 @@ globalThis.MDKRSaveUI = (() => {
   }
 
   async function eraseSave() {
+    if (!saveWritesAllowed()) return;
     try {
       if (!await repository.hasAnyData()) {
         setStatus("There is no saved progress or recovery point stored for this site.");
@@ -1827,6 +1887,9 @@ globalThis.MDKRSaveUI = (() => {
             ? "Stored progress contains corrupt blocks; raw export and recovery are available."
             : `Save tools ready — ${summary.sha256.slice(0, 12)}…`, mask ? "err" : "ok");
         }
+        // Whatever else is true, a spectator's most actionable fact is that it
+        // cannot write. Say that last so it is the line left on screen.
+        if (spectator()) setStatus(SPECTATOR_NOTICE, "err");
       } catch (error) {
         setStatus(
           "Save tools could not start. Import/export is unavailable: " +
@@ -1879,6 +1942,10 @@ globalThis.MDKRSaveUI = (() => {
     init,
     release,
     resume,
+    // The shell owns the cross-tab verdict (one Web Lock per document); this
+    // module only consumes it. Safe to call before or after init().
+    setOwnership,
+    ownership: () => writeOwnership,
   };
   if (globalThis.__mdkrTestConfig) {
     // Runtime checks receive these through the same transaction and codec paths

@@ -22,9 +22,11 @@ u8 *gzip_inflate_output = NULL;
  * _end is corrupt rather than large, and a back-reference that reaches before
  * _start has no data to copy.
  *
- * gzip_inflate_input_end is the end of the pool block the compressed bytes live
- * in, or NULL when the input is not pool-resident -- the decoder then relies on
- * the output bound alone. */
+ * gzip_inflate_input_end is the end of the compressed buffer: the caller's own
+ * extent when it passed one (gzip_inflate_sized), otherwise the end of the pool
+ * block the bytes live in. It is NULL only when neither is available -- a
+ * non-pool buffer inflated through the extent-less gzip_inflate() -- and the
+ * decoder then relies on the output bound alone. */
 u8 *gzip_inflate_output_start = NULL;
 u8 *gzip_inflate_output_end = NULL;
 u8 *gzip_inflate_input_end = NULL;
@@ -88,19 +90,39 @@ s32 gzip_size_uncompressed(s32 assetIndex, s32 assetOffset) {
  */
 u8 *gzip_inflate(u8 *compressedInput, u8 *decompressedOutput) {
 #ifdef NATIVE_PORT
+    /* No caller extent: recover one from the pool slot that owns the address. */
+    return gzip_inflate_sized(compressedInput, decompressedOutput, 0);
+#else
+    gzip_inflate_input = compressedInput + 5; // The compression header is 5 bytes.
+    gzip_inflate_output = decompressedOutput;
+    gzip_num_bits = 0;
+    gzip_bit_buffer = 0;
+    while (gzip_inflate_block() != 0) {} // Keep calling gzip_inflate_block() until it returns 0.
+    return decompressedOutput;
+#endif
+}
+
+#ifdef NATIVE_PORT
+u8 *gzip_inflate_sized(u8 *compressedInput, u8 *decompressedOutput, s32 compressedSize) {
     s32 status;
 
     /* Header word 0 is the decompressed length (see gzip_size_uncompressed);
      * every caller sizes decompressedOutput from that same word. */
     gzip_inflate_output_start = decompressedOutput;
     gzip_inflate_output_end = decompressedOutput + byteswap32(compressedInput);
-    gzip_inflate_input_end = mempool_block_end(compressedInput);
-#endif
+    /* The caller's own extent is authoritative when it has one: it is the span
+     * that was actually DMA'd, whereas the pool slot can be larger (a scratch
+     * allocation shared with the destination) or absent entirely (a non-pool
+     * buffer, which used to leave the decoder on the output bound alone). */
+    if (compressedSize > 0) {
+        gzip_inflate_input_end = compressedInput + compressedSize;
+    } else {
+        gzip_inflate_input_end = mempool_block_end(compressedInput);
+    }
     gzip_inflate_input = compressedInput + 5; // The compression header is 5 bytes.
     gzip_inflate_output = decompressedOutput;
     gzip_num_bits = 0;
     gzip_bit_buffer = 0;
-#ifdef NATIVE_PORT
     /* A rejected block ends the stream: past a decode error the bit position is
      * meaningless and continuing only lets a corrupt stream keep writing. */
     while ((status = gzip_inflate_block()) > 0) {}
@@ -109,11 +131,9 @@ u8 *gzip_inflate(u8 *compressedInput, u8 *decompressedOutput) {
                 (void *) compressedInput, (int) status, (long) (gzip_inflate_output - decompressedOutput),
                 (long) (gzip_inflate_output_end - decompressedOutput));
     }
-#else
-    while (gzip_inflate_block() != 0) {} // Keep calling gzip_inflate_block() until it returns 0.
-#endif
     return decompressedOutput;
 }
+#endif
 
 #ifndef NATIVE_PORT
 /* Official name: huft_build */

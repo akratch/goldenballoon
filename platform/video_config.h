@@ -258,6 +258,9 @@ const MdkrVideoConfig *mdkr_video_config_desired(void);
 int mdkr_video_config_is_readonly(void);
 
 typedef enum MdkrVideoRuntimeResult {
+    /* The VALUE was rejected: unparseable, out of the schema's range, or not a
+     * member of the key's canonical domain. Strictly "what you asked for is not
+     * a legal setting" -- never "there was nowhere to apply it". */
     MDKR_VIDEO_RUNTIME_INVALID = 0,
     MDKR_VIDEO_RUNTIME_LIVE,
     MDKR_VIDEO_RUNTIME_RESTART,
@@ -272,7 +275,24 @@ typedef enum MdkrVideoRuntimeResult {
      * rejected the attempted rollback. The core setter never returns these. */
     MDKR_VIDEO_RUNTIME_PENDING,
     MDKR_VIDEO_RUNTIME_APPLY_FAILED,
-    MDKR_VIDEO_RUNTIME_ROLLBACK_FAILED
+    MDKR_VIDEO_RUNTIME_ROLLBACK_FAILED,
+    /*
+     * Appended, not inserted: these are the three causes MDKR_VIDEO_RUNTIME_INVALID
+     * used to carry at once, which made the settings panel tell a player "that
+     * value is not valid" when the value was perfectly good and only the window
+     * was missing, or when their newer selection had simply replaced an older
+     * one. Splitting them is what lets the message match the cause.
+     *
+     * UNAVAILABLE: there is no window / presentation surface to apply this to.
+     *              The value was never examined; retrying later can succeed.
+     * SUPERSEDED:  a window-mode request was already queued for the next safe
+     *              frame boundary and this one replaced it. The NEWEST intent is
+     *              what will be applied -- this is a success-shaped outcome for
+     *              the request that was dropped, not a rejection of this one.
+     * The core setter never returns these; they come from the app shell.
+     */
+    MDKR_VIDEO_RUNTIME_UNAVAILABLE,
+    MDKR_VIDEO_RUNTIME_SUPERSEDED
 } MdkrVideoRuntimeResult;
 
 /* A setting may be applied and visibly replaced while its directory durability

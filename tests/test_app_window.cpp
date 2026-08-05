@@ -174,6 +174,26 @@ int main() {
     expect(fullscreenCalls == 0 && configSetCalls == 0,
            "locked transition is side-effect free");
 
+    // A missing window and a malformed value are different facts about a
+    // request, and the settings panel prints a different sentence for each.
+    // They shared MDKR_VIDEO_RUNTIME_INVALID until this split, which told a
+    // player their perfectly legal choice was "not valid".
+    reset();
+    expect(AppWindow_applyMode(nullptr, "fullscreen") ==
+               MDKR_VIDEO_RUNTIME_UNAVAILABLE,
+           "no window to apply to is reported as unavailable, not invalid");
+    expect(AppWindow_applyMode(fakeWindow(), "diagonal") ==
+               MDKR_VIDEO_RUNTIME_INVALID,
+           "an unknown window mode remains an invalid value");
+    expect(AppWindow_requestMode(nullptr, "fullscreen") ==
+               MDKR_VIDEO_RUNTIME_UNAVAILABLE,
+           "a deferred request with no window is unavailable, not invalid");
+    expect(AppWindow_requestMode(fakeWindow(), "diagonal") ==
+               MDKR_VIDEO_RUNTIME_INVALID,
+           "a deferred request with an unknown mode is an invalid value");
+    expect(fullscreenCalls == 0 && configSetCalls == 0,
+           "neither rejection touches SDL or persistence");
+
     reset();
     expect(AppWindow_requestMode(fakeWindow(), "fullscreen") ==
                MDKR_VIDEO_RUNTIME_PENDING,
@@ -192,8 +212,9 @@ int main() {
     expect(AppWindow_requestMode(fakeWindow(), "fullscreen") ==
                MDKR_VIDEO_RUNTIME_PENDING &&
                AppWindow_requestMode(fakeWindow(), "windowed") ==
-               MDKR_VIDEO_RUNTIME_PENDING,
-           "a newer valid settings request replaces the pending mode");
+               MDKR_VIDEO_RUNTIME_SUPERSEDED,
+           "a newer valid settings request replaces the pending mode, and says "
+           "so distinctly from the first queued request");
     AppWindow_servicePending();
     completed = MDKR_VIDEO_RUNTIME_INVALID;
     expect(AppWindow_consumeCompleted(&completed) &&

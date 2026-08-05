@@ -242,7 +242,14 @@ UNUSED u8 *asset_table_load_zipped(u32 assetIndex, s32 extraMemory) {
         asset_dma_unlock();
         return NULL;
     }
+#ifdef NATIVE_PORT
+    /* `compressed` is the tail of the same allocation `out` starts, so the pool
+     * slot would report the destination's end, not the compressed span. Hand the
+     * decoder the section size that was actually DMA'd. */
+    gzip_inflate_sized(compressed, out, (s32) sectionSize);
+#else
     gzip_inflate(compressed, out);
+#endif
     asset_dma_unlock();
     return out;
 }

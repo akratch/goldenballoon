@@ -17,6 +17,10 @@
  * init_dialogue_text() splits its own 0x780 block into two halves of the same
  * size, so this is the capacity of every set_current_text() destination. */
 #define DKR_GAME_TEXT_BUFFER_BYTES 960
+/* Words of GameTextTableStruct::entries usable as a raw table DMA landing pad:
+ * everything before &entries[32], which load_game_text_table() hands to the two
+ * message buffers (see the static assertions in game_text.h). */
+#define DKR_GAME_TEXT_SCRATCH_WORDS 32
 #endif
 
 /************ .data ************/
@@ -255,6 +259,66 @@ void process_subtitles(s32 updateRate) {
     }
 }
 
+#ifdef NATIVE_PORT
+/* Number of addressable ids in ASSET_GAME_TEXT_TABLE.
+ *
+ * The section is a run of 32-bit "flags<<24 | character offset" words closed by
+ * a 0xFFFFFFFF terminator, then zero-padded out to the asset section's 16-byte
+ * alignment. Every id reads the PAIR [id] and [id + 1], so the last addressable
+ * id is two words below the terminator.
+ *
+ * The ROM's `(asset_table_size() >> 2) - 2` counts padded words, not ids. On the
+ * US v80 ROM the section is 1376 bytes = 344 words with the terminator at word
+ * 341, so it produced 342 and let ids 340 and 341 pass the range test in
+ * set_current_text() -- one spanning TO the terminator and one spanning FROM it,
+ * each subtracting two unrelated 24-bit offsets into a nonsense length. The real
+ * answer is 340 (ids 0..339: 85 per language x 4 languages).
+ *
+ * Scanned for the terminator rather than derived from the section size, so a
+ * revision that pads differently cannot silently reintroduce the same off-by-N.
+ * Runs once, at table load. The A17 span guard in set_current_text() is kept as
+ * defense in depth rather than replaced by this. */
+static s16 game_text_table_entry_count(void) {
+    s32 sectionWords;
+    s32 word;
+    s32 chunk;
+    s32 i;
+    u32 *scratch;
+
+    sectionWords = asset_table_size(ASSET_GAME_TEXT_TABLE) >> 2;
+    if (sectionWords <= 0 || gGameTextTable[0] == NULL) {
+        return 0;
+    }
+    /* Same DMA landing pad set_current_text() uses: entries[0..31] is the table
+     * scratch inside the 0x800 allocation (the message buffers start at
+     * entries[32]). An asset_load() destination must be an arena address --
+     * osPiStartDma resolves it through the 32-bit arena token -- so a host stack
+     * buffer is not a legal target here. */
+    scratch = gGameTextTable[0]->entries;
+    for (word = 0; word < sectionWords; word += DKR_GAME_TEXT_SCRATCH_WORDS) {
+        chunk = sectionWords - word;
+        if (chunk > DKR_GAME_TEXT_SCRATCH_WORDS) {
+            chunk = DKR_GAME_TEXT_SCRATCH_WORDS;
+        }
+        if (asset_load(ASSET_GAME_TEXT_TABLE, (uintptr_t) scratch, word << 2,
+                       chunk << 2) != chunk << 2) {
+            break;
+        }
+        for (i = 0; i < chunk; i++) {
+            /* asset_load() is a raw ROM DMA and does not normalise endianness;
+             * the terminator is byte-symmetric, so compare against the
+             * big-endian word directly rather than swapping the whole run. */
+            if (scratch[i] == 0xFFFFFFFFu) {
+                return (s16) (word + i > 0 ? word + i - 1 : 0);
+            }
+        }
+    }
+    /* No terminator: fall back to the ROM arithmetic rather than reporting a
+     * table with no usable ids. The span guard still bounds every read. */
+    return (s16) (sectionWords - 2);
+}
+#endif
+
 /**
  * Load the text table into RAM.
  * Assign the entries to a pointer table, then calculate the number of entries.
@@ -266,7 +330,11 @@ void load_game_text_table(void) {
     gGameTextTableEntries[1] = &gGameTextTableEntries[0][960];
     D_8012A7A4 = 0;
     init_dialogue_text();
+#ifdef NATIVE_PORT
+    gTextTableEntries = game_text_table_entry_count();
+#else
     gTextTableEntries = (asset_table_size(ASSET_GAME_TEXT_TABLE) >> 2) - 2;
+#endif
     gTextTableExists = TRUE;
 }
 
@@ -366,9 +434,10 @@ void set_current_text(s32 textID) {
 #ifdef NATIVE_PORT
         /* `size` is the difference of two 24-bit offsets read straight out of the
          * ROM text table; nothing in the format orders them or bounds the span.
-         * gTextTableEntries counts two entries past the table's 0xFFFFFFFF
-         * terminator, so the two highest ids that pass the range test above span
-         * from or to that terminator and yield a nonsensical length. Both
+         * gTextTableEntries now stops one pair short of the table's 0xFFFFFFFF
+         * terminator (game_text_table_entry_count), so no id that passes the
+         * range test above can span from or to it; this guard stays as defense
+         * in depth for any other unordered or oversized pair. Both
          * destinations are 960-byte buffers (gGameTextTableEntries[1] ends
          * exactly at the end of the 0x800 table allocation), and the onscreen
          * path also stores a terminator at [size], so a message plus that byte

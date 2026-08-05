@@ -65,14 +65,27 @@ extern int g_diagLogFileFd;
 // --- In-game overlay hooks (platform/app_overlay_hooks.c) ------------------
 // The app registers these before boot; the engine's event pump and frame-end
 // call them. Keeps the C engine free of any ImGui/C++ dependency.
+//
+// The pointer types are named, and named HERE, so that they pick up this
+// header's C language linkage. The struct itself must stay inside the extern "C"
+// block -- platform/app_overlay_hooks.c and tests/test_app_overlay_hooks.c are
+// real C consumers -- and a C-linkage member can only legally be assigned a
+// function that also has C linkage. Every implementation on the C++ side is
+// therefore defined inside an `extern "C" { static ... }` block (internal
+// linkage, C function type); see platform/app/ui_overlay.cpp.
+typedef int  (*AppOverlayProcessEventFn)(const void *sdl_event);
+typedef void (*AppOverlayServiceFn)(void);
+typedef int  (*AppOverlayQueryFn)(void);
+typedef int  (*AppOverlayRenderFn)(void);
+
 typedef struct {
     /* Nonzero means the host shortcut consumed this event before game input. */
-    int  (*process_event)(const void *sdl_event);
+    AppOverlayProcessEventFn process_event;
     /* Called at the event-pump boundary before a new frame begins. */
-    void (*service)(void);
-    int  (*wants_input)(void);
-    int  (*wants_render)(void);
-    int  (*render)(void);  // zero reports a fatal overlay-render failure
+    AppOverlayServiceFn      service;
+    AppOverlayQueryFn        wants_input;
+    AppOverlayQueryFn        wants_render;
+    AppOverlayRenderFn       render;  // zero reports a fatal overlay-render failure
 } AppOverlayHooks;
 void platformSetOverlayHooks(const AppOverlayHooks *hooks);
 

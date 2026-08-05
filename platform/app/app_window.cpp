@@ -70,7 +70,8 @@ MdkrVideoRuntimeResult AppWindow_applyMode(
     SDL_Window *window,
     const char *requestedMode) {
     const char *mode = mdkr_window_mode_canonical(requestedMode);
-    if (window == nullptr || mode == nullptr) return MDKR_VIDEO_RUNTIME_INVALID;
+    if (window == nullptr) return MDKR_VIDEO_RUNTIME_UNAVAILABLE;
+    if (mode == nullptr) return MDKR_VIDEO_RUNTIME_INVALID;
     if (mdkr_video_config_runtime_locked(MDKR_WINDOW_MODE)) {
         return MDKR_VIDEO_RUNTIME_LOCKED;
     }
@@ -112,7 +113,10 @@ MdkrVideoRuntimeResult AppWindow_requestMode(
     SDL_Window *window,
     const char *requestedMode) {
     const char *mode = mdkr_window_mode_canonical(requestedMode);
-    if (window == nullptr || mode == nullptr) {
+    if (window == nullptr) {
+        return MDKR_VIDEO_RUNTIME_UNAVAILABLE;
+    }
+    if (mode == nullptr) {
         return MDKR_VIDEO_RUNTIME_INVALID;
     }
     if (mdkr_video_config_runtime_locked(MDKR_WINDOW_MODE)) {
@@ -121,12 +125,17 @@ MdkrVideoRuntimeResult AppWindow_requestMode(
     /* A settings combobox can receive more than one valid selection before
      * the next safe frame boundary.  Keep the newest intent; rejecting it as
      * INVALID made a real selection look malformed and could apply a stale
-     * intermediate mode. */
+     * intermediate mode. Report the replacement distinctly rather than as a
+     * plain PENDING: the caller can then say that the earlier queued choice was
+     * dropped in favor of this one, which is not the same event as queueing the
+     * first request of the frame. */
+    const bool replaced = g_pending.pending;
     std::snprintf(g_pending.mode, sizeof(g_pending.mode), "%s", mode);
     g_pending.window    = window;
     g_pending.pending   = true;
     g_pending.completed = false;
-    return MDKR_VIDEO_RUNTIME_PENDING;
+    return replaced ? MDKR_VIDEO_RUNTIME_SUPERSEDED
+                    : MDKR_VIDEO_RUNTIME_PENDING;
 }
 
 void AppWindow_servicePending() {

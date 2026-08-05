@@ -547,6 +547,17 @@ static int migration_owner_matches(const char *directory,
            memcmp(actual, expected, expected_size) == 0;
 }
 
+/*
+ * Clear THIS launch's stage path if a dead process left it behind.
+ *
+ * `staged` is always the caller's own PID-derived name, so this is a
+ * name-collision guard, not a garbage collector: it fires when the OS hands
+ * this process a PID whose previous owner was interrupted mid-migration, which
+ * is exactly the case that would otherwise fail mkdir() with no explanation.
+ * Stages left by other PIDs are none of this launch's business and are left
+ * untouched (docs/APP_SHELL.md says so too). Returns 1 when the path is free to
+ * create, 0 when it holds something this process must not touch.
+ */
 static int recover_abandoned_save_stage(const char *staged,
                                         const char *destination) {
     /* Test the directory entry itself before path_exists(): POSIX stat() and
@@ -653,16 +664,41 @@ static int MDKR_PACKAGED_ONLY migrate_save_directory(void) {
     if (!source_save_directory(source, sizeof(source))) {
         return 1;
     }
+    /*
+     * The stage name is PID-derived, so recover_abandoned_save_stage() is not a
+     * sweep: it can only ever meet leftovers from an interrupted run whose PID
+     * this launch reuses. That is deliberate (a concurrent second instance must
+     * not be able to delete this one's stage), and docs/APP_SHELL.md states the
+     * same scope. What it means here is that any stage this call creates and
+     * then abandons is invisible to every later launch, so this function must
+     * clean up after itself precisely rather than probabilistically.
+     */
     written = snprintf(staged, sizeof(staged), "%s.migrate-%ld.tmp",
                        destination, process_id());
     if (written < 0 || (size_t)written >= sizeof(staged) ||
-        !recover_abandoned_save_stage(staged, destination) ||
-        make_private_directory(staged) != 0 ||
-        !write_migration_owner(staged, destination)) {
+        !recover_abandoned_save_stage(staged, destination)) {
         fprintf(stderr, "[paths] could not create staged save migration %s\n",
                 staged);
-        if (staged[0] != '\0' && path_is_owned_stage_directory(staged) &&
-            migration_owner_matches(staged, destination)) {
+        /* Nothing of ours exists yet: either the name did not fit, or the path
+         * is occupied by something this launch has no claim to and must leave
+         * exactly as it found it. */
+        return 0;
+    }
+    if (make_private_directory(staged) != 0) {
+        fprintf(stderr, "[paths] could not create staged save migration %s\n",
+                staged);
+        return 0;
+    }
+    if (!write_migration_owner(staged, destination)) {
+        fprintf(stderr, "[paths] could not create staged save migration %s\n",
+                staged);
+        /* The directory IS ours -- make_private_directory just created it on
+         * this line of control flow. Do not re-derive ownership from the marker
+         * file: write_migration_owner removes its own partial marker when it
+         * fails, so a marker test here reads as "not ours" and leaks the empty
+         * stage directory forever. Verify only that nothing swapped a symlink
+         * in underneath us. */
+        if (path_is_owned_stage_directory(staged)) {
             cleanup_staged_save(staged);
         }
         return 0;

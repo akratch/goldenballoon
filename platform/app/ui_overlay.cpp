@@ -162,7 +162,16 @@ void navigateBack(OverlayBackInput input, bool keyRepeat) {
     }
 }
 
-int onProcessEvent(const void *ev) {
+/* AppOverlayHooks members are declared with C language linkage (engine_entry.h
+ * is shared with real C translation units), so the functions installed in them
+ * must have C-linkage TYPES too -- assigning an ordinary C++ function to a
+ * C-linkage function pointer is ill-formed even where it happens to work.
+ * `static` inside a linkage-specification keeps each one internal to this TU
+ * while giving its type C linkage, which is the whole fix: no exported symbol,
+ * no change to how any of them is called. */
+extern "C" {
+
+static int onProcessEvent(const void *ev) {
     const SDL_Event *e = (const SDL_Event *)ev;
     if (AppWindow_handleEvent(g_overlay.window, *e)) {
         return 1;
@@ -248,8 +257,10 @@ int onProcessEvent(const void *ev) {
 
 // The input-swallowing contract: while the overlay is up, the engine's pump
 // drops input events instead of feeding them to the pad.
-int onWantsInput() { return g_overlay.open ? 1 : 0; }
-int onWantsRender() { return (g_overlay.open || g_overlay.showFps) ? 1 : 0; }
+static int onWantsInput(void) { return g_overlay.open ? 1 : 0; }
+static int onWantsRender(void) { return (g_overlay.open || g_overlay.showFps) ? 1 : 0; }
+
+}  // extern "C"
 
 // Headless proof hook: scripts the overlay open/close at authoritative ticks so
 // a gate can render it without a human at the keyboard. Presentation count is
@@ -620,7 +631,10 @@ void drawOverlay() {
     ImGui::End();
 }
 
-int onRender() {
+/* C linkage, same reason as the input hooks above. */
+extern "C" {
+
+static int onRender(void) {
     overlayTestFrameTick();
 
     // Nothing to draw: skip the whole ImGui frame rather than building and
@@ -632,6 +646,8 @@ int onRender() {
     if (g_overlay.open) drawOverlay();
     return endImGuiFrame() ? 1 : 0;
 }
+
+}  // extern "C"
 
 }  // namespace
 

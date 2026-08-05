@@ -17,7 +17,9 @@ MdkrVideoRuntimeResult AppWindow_applyMode(SDL_Window *window, const char *mode)
 // Settings therefore queue window changes; the next event pump services them
 // before a new frame starts. Completion can be consumed by the settings panel.
 MdkrVideoRuntimeResult AppWindow_requestMode(SDL_Window *window, const char *mode);
-void                   AppWindow_servicePending();
+// C linkage: this is registered directly as AppOverlayHooks::service, whose
+// type carries the C language linkage engine_entry.h declares it with.
+extern "C" void        AppWindow_servicePending();
 // Report a completion exactly once. `fresh` is false when the transition
 // finished long before this call, so a panel opened much later resynchronizes
 // without announcing a change the player has already seen happen.

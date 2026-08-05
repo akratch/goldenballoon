@@ -816,6 +816,21 @@ function claimSaveOwnership() {
   });
 }
 
+// Publish the verdict for anything else on the page that writes /save. The save
+// manager (mdkr-save-ui.js) mutates the SAME IndexedDB database from the
+// launcher, before Play is ever pressed, so it needs the same answer the engine
+// gets -- and it needs it at launcher init, which is why the claim below is now
+// resolved there rather than at boot.
+globalThis.MDKRSaveOwnership = () => saveOwnership;
+
+function publishSaveOwnership(verdict) {
+  if (verdict === "spectator") showSpectatorNotice();
+  if (globalThis.MDKRSaveUI && globalThis.MDKRSaveUI.setOwnership) {
+    globalThis.MDKRSaveUI.setOwnership(verdict);
+  }
+  return verdict;
+}
+
 function showSpectatorNotice() {
   const banner = $("session-banner");
   if (!banner) return;
@@ -1215,7 +1230,9 @@ async function boot() {
   // Decide write ownership BEFORE anything mounts /save, so a spectator tab has
   // already been switched off the persistence path by the time the engine can
   // ask for a flush.
-  if (await claimSaveOwnership() === "spectator") showSpectatorNotice();
+  // Idempotent: launcher init already claimed and published. This keeps boot
+  // correct on any path that reaches it without the launcher having run.
+  publishSaveOwnership(await claimSaveOwnership());
   const canvas = $("canvas");
   const status = $("gate-msg");
   status.className = "status-line";
@@ -2533,6 +2550,15 @@ function registerServiceWorker() {
   // matters on exactly the browsers most likely to lack a touch-era API.
   try { wireTouchControls(); } catch (_) {}
   if (globalThis.MDKRSaveUI) {
+    // Resolve write ownership BEFORE the save manager can be used, not at Play:
+    // Import/Edit/Restore/Erase write the same shared /save database the engine
+    // does, and they are reachable from the launcher without ever booting. The
+    // claim is per-document and idempotent, so taking it here just means the
+    // tab that opened the launcher first is the tab that may write -- which is
+    // the answer the save manager needs to be honest about its own buttons.
+    claimSaveOwnership()
+      .then(publishSaveOwnership)
+      .catch(() => {});
     // Do not gate the rest of the launcher on storage availability. The save
     // panel reports its own actionable error while ROM selection remains usable.
     globalThis.MDKRSaveUI.init().catch(() => {});

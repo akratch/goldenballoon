@@ -2761,8 +2761,19 @@ void wavegen_destroy(Object *obj) {
         return;
     }
 
-    for (i = 0, hasWave = FALSE; i < gWaveGenCount && hasWave == FALSE; i++) {
-        if (obj == gWaveGenObjs[i]) {
+    /* wavegen_register() allocates out of a sparse 32-slot scan, so a live
+     * generator can sit at any slot; gWaveGenCount is the live TALLY, not a
+     * high-water mark. Searching only i < gWaveGenCount here made every
+     * generator above the count unfindable the moment a hole opened below it:
+     * the destroy reported "can not remove a wave swell object which doesn't
+     * exist", left the slot occupied and the count untouched, and the pair of
+     * scans drifted further apart with each removal. Scan all 32 slots so the
+     * two agree. Empty slots are skipped explicitly rather than relying on
+     * `obj` being non-NULL, so a NULL argument still takes the not-found path
+     * it took before. With no holes the live slots are 0..count-1 and this
+     * resolves the same `i` the old loop did. */
+    for (i = 0, hasWave = FALSE; i < 32 && hasWave == FALSE; i++) {
+        if (gWaveGenObjs[i] != NULL && obj == gWaveGenObjs[i]) {
             hasWave = -1;
         }
     }

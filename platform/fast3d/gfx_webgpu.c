@@ -340,12 +340,32 @@ static uint32_t   s_vbuf_cap_high_water = 0;
  * low-memory host still renders—just without the batching win. */
 static uint8_t   *s_vbuf_shadow = NULL;
 
-/* WEB-027: one small uniform (frame counter + render height) shared by every
- * combiner that reads SHADER_NOISE. Bound at group(0) @binding(7) ONLY for those
- * pipelines (info->uses_noise). Written ONCE per frame (wgpu_update_noise_ubo,
- * from start_frame) — never per draw — so N64 static/fizz animates each frame the
- * way the GL backend's frame_count uniform does. */
-static WGPUBuffer s_noise_ubo   = NULL;
+/* WEB-027: a small uniform (frame counter + window height) read by every
+ * combiner that samples SHADER_NOISE. Bound at group(0) @binding(7) ONLY for
+ * those pipelines (info->uses_noise).
+ *
+ * E28: this used to be ONE frame-global buffer holding s_scene_h, written once
+ * from start_frame. GL does not work that way: gfx_opengl_set_uniforms() uploads
+ * `current_height`, which gfx_opengl_set_viewport() sets per VIEWPORT, so a
+ * split-screen frame hashes noise against each player's viewport height and the
+ * full-height HUD pass against its own. Pinning WebGPU to the render-target
+ * height made every viewport hash against the same number, so the dither
+ * pattern differed from GL wherever the viewport was not full height.
+ *
+ * The fix is a per-draw-group ring, deduplicated by value: one buffer per
+ * distinct {frame, height} pair this frame (in practice one per viewport), so
+ * the draw bind-group cache still hits for repeated materials. Slots are GROWN
+ * rather than rewritten because wgpuQueueWriteBuffer executes before the command
+ * buffer — reusing an occupied slot would retroactively rewrite an earlier
+ * draw's height. Same hazard, same shape, as the diag viewport ring above and
+ * the E7 resolve ring. */
+#define WGPU_NOISE_UBO_RING 8
+struct WgpuNoiseUbo { WGPUBuffer buf; float val[4]; };
+static WGPUBuffer s_noise_ubo[WGPU_NOISE_UBO_RING];
+static float      s_noise_ubo_val[WGPU_NOISE_UBO_RING][4];
+static int        s_noise_ubo_used = 0;   /* slots written this frame */
+static struct WgpuNoiseUbo *s_noise_ubo_ext = NULL;
+static int                  s_noise_ubo_ext_cap = 0;
 static uint32_t   s_noise_frame = 0;
 /* RL-5: one level-stable linear sun colour/strength UBO. Object-local direction
  * travels in the VBO, so this buffer never changes between draws. */
@@ -395,6 +415,28 @@ static uint64_t s_shadow_resource_failures = 0;
 #ifdef __EMSCRIPTEN__
 static uint32_t s_shadow_receiver_prewarm_pending = 0;
 static bool s_shadow_receiver_prewarm_failed = false;
+/* E11: memo for wgpu_shadow_prewarm_receivers(). The scan is
+ * O(shaders x pipelines) and ran on EVERY shadow frame even once every receiver
+ * twin was warm and nothing had changed. The key below is the complete set of
+ * inputs that can change the scan's outcome:
+ *   shaders  -- a new combiner can introduce a new receiver candidate;
+ *   pipes    -- a new pipeline key on an existing shader is a new candidate,
+ *               and a twin created by the scan itself lands here too, so work
+ *               in progress always invalidates;
+ *   pending  -- the shadow-prewarm in-flight count, which the return value
+ *               reads directly;
+ *   inflight -- the general async count, because a BASE pipeline flipping
+ *               PENDING -> READY makes it eligible for a twin without changing
+ *               either count above, and that transition is exactly where it is
+ *               decremented.
+ * Anything the memo cannot see (a receiver pipeline turning FAILED, the
+ * permanent-failure latch) is checked before the memo is consulted. */
+static bool     s_shadow_prewarm_memo_valid = false;
+static bool     s_shadow_prewarm_memo_result = false;
+static size_t   s_shadow_prewarm_memo_shaders = 0;
+static size_t   s_shadow_prewarm_memo_pipes = 0;
+static uint32_t s_shadow_prewarm_memo_pending = 0;
+static int      s_shadow_prewarm_memo_inflight = 0;
 #endif
 
 static void wgpu_render_shadow_maps(void);
@@ -1666,20 +1708,25 @@ static void wgpu_on_resize(void) {
      */
 }
 
-/* WEB-027: create (once) + refresh (once per frame) the noise uniform. Carries
- * {frame_count, window_height} for the SHADER_NOISE hash. Written from
- * start_frame so it is updated exactly once per frame, not per draw. */
+/* WEB-027: advance the per-frame noise seed and hold the ring's first slot. The
+ * uniform CONTENTS are claimed per draw group (wgpu_noise_ubo), because their
+ * second component is the viewport height, which GL re-uploads on every
+ * viewport change — but slot 0 is still created eagerly here, exactly as the E7
+ * resolve ring keeps s_resolve_ubuf as its slot 0. That keeps the buffer's
+ * creation on the unconditional frame route: a scene that happens to draw no
+ * noise combiner must still exercise (and fail closed on) this allocation, which
+ * is what the frame.noise-buffer fault point is for. */
 static void wgpu_update_noise_ubo(void) {
     if (!s_ready) {
         return;
     }
-    if (s_noise_ubo == NULL) {
+    if (s_noise_ubo[0] == NULL) {
         WGPUBufferDescriptor bd = {0};
         bd.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
         bd.size = 16;
-        s_noise_ubo = WGPU_FAULT_CREATE(
+        s_noise_ubo[0] = WGPU_FAULT_CREATE(
             NOISE_BUFFER, wgpuDeviceCreateBuffer(s_device, &bd));
-        if (s_noise_ubo == NULL) {
+        if (s_noise_ubo[0] == NULL) {
             fprintf(stderr, "[webgpu] noise-uniform allocation failed\n");
             wgpu_runtime_fatal(
                 "The graphics backend could not allocate its frame uniform. "
@@ -1694,10 +1741,6 @@ static void wgpu_update_noise_ubo(void) {
     if (!gfx_dkr_replay_pass_active()) {
         s_noise_frame++;
     }
-    /* frame counter + render height (GL uploads current_height; here s_scene_h is
-     * the render resolution the fragment coords are computed against). */
-    float params[4] = { (float)s_noise_frame, (float)s_scene_h, 0.0f, 0.0f };
-    wgpuQueueWriteBuffer(s_queue, s_noise_ubo, 0, params, sizeof(params));
 }
 
 static void wgpu_update_light_ubo(void) {
@@ -1738,6 +1781,7 @@ static bool wgpu_start_frame(void) {
     s_vbuf_frame_segments = 0;
     s_sc_set = false; /* scissor is re-established by gfx_pc each frame */
     s_diag_ubo_used = 0; /* reset the per-frame viewport-UBO ring */
+    s_noise_ubo_used = 0; /* E28: reset the per-frame noise-UBO ring */
     s_resolve_ubo_used = 0; /* reset the per-frame resolve-UBO ring */
     s_modern_ubo_used = 0; /* WEB-052: reset the per-frame modern-mesh UBO ring */
     wgpu_reset_pass_dynamic_state(); /* WEB-023-lite: fresh pass = no rect applied yet */
@@ -3715,7 +3759,7 @@ static enum GfxBlendMode      s_cur_blend = GFX_BLEND_DISABLED;
 
 /* Persistent draw bind-group cache (see wgpu_draw_triangles). Keyed on the
  * {bgl, view0, samp0, view1, samp1, snapview, diag_ubo,
- * shadow_view, shadow_sampler, shadow_ubo} pointer tuple. The
+ * shadow_view, shadow_sampler, shadow_ubo, noise_ubo} pointer tuple. The
  * previous single-entry cache thrashed on every material change — a frame that
  * cycles N materials created N bind groups per frame, and the resulting JS-side
  * object churn (Dawn createBindGroup + object-table inserts, visible in browser
@@ -3748,7 +3792,11 @@ static enum GfxBlendMode      s_cur_blend = GFX_BLEND_DISABLED;
  * changing the key, eviction, or invalidation policy. */
 #define WGPU_BG_CACHE 2048           /* total entries; power of two */
 #define WGPU_BG_WAYS  4
-#define WGPU_BG_KEY_COUNT 10
+/* E28 added noise_ubo as the tenth-indexed member: the noise uniform used to be
+ * one global buffer (no discriminating state), and is now a per-viewport ring
+ * slot, so two draws of the same material in two viewports need distinct
+ * entries. */
+#define WGPU_BG_KEY_COUNT 11
 struct WgpuBgEntry {
     const void *key[WGPU_BG_KEY_COUNT];
     WGPUBindGroup bg;
@@ -3879,6 +3927,7 @@ static void wgpu_release_shadow_resources(void) {
 #ifdef __EMSCRIPTEN__
     s_shadow_receiver_prewarm_pending = 0;
     s_shadow_receiver_prewarm_failed = false;
+    s_shadow_prewarm_memo_valid = false;
 #endif
     memset(&s_shadow_plan, 0, sizeof(s_shadow_plan));
     s_shadow_receiver_view = -1;
@@ -5572,6 +5621,20 @@ static bool wgpu_shadow_prewarm_receivers(void) {
     }
 
     const size_t shader_count = s_shader_count;
+    size_t pipe_count = 0;
+    for (size_t index = 0; index < shader_count; index++) {
+        if (s_shaders[index] != NULL) {
+            pipe_count += (size_t)s_shaders[index]->npipes;
+        }
+    }
+    if (s_shadow_prewarm_memo_valid &&
+        s_shadow_prewarm_memo_shaders == shader_count &&
+        s_shadow_prewarm_memo_pipes == pipe_count &&
+        s_shadow_prewarm_memo_pending == s_shadow_receiver_prewarm_pending &&
+        s_shadow_prewarm_memo_inflight == s_pending_pipelines) {
+        return s_shadow_prewarm_memo_result;
+    }
+
     struct ShaderProgram *saved_shader = s_cur_shader;
     bool has_receiver_candidate = false;
     for (size_t index = 0; index < shader_count; index++) {
@@ -5665,9 +5728,28 @@ static bool wgpu_shadow_prewarm_receivers(void) {
         }
     }
     s_cur_shader = saved_shader;
-    return has_receiver_candidate &&
-           s_shadow_receiver_prewarm_pending == 0 &&
-           !s_shadow_receiver_prewarm_failed;
+    {
+        const bool verdict = has_receiver_candidate &&
+                             s_shadow_receiver_prewarm_pending == 0 &&
+                             !s_shadow_receiver_prewarm_failed;
+        /* Stamp the key the scan actually finished against: it may have created
+         * twins, so re-read the counts rather than reusing the ones sampled on
+         * entry. A frame that did work therefore rescans next frame, and only a
+         * completely unchanged program cache short-circuits. */
+        s_shadow_prewarm_memo_shaders = s_shader_count;
+        s_shadow_prewarm_memo_pipes = 0;
+        for (size_t index = 0; index < s_shader_count; index++) {
+            if (s_shaders[index] != NULL) {
+                s_shadow_prewarm_memo_pipes +=
+                    (size_t)s_shaders[index]->npipes;
+            }
+        }
+        s_shadow_prewarm_memo_pending = s_shadow_receiver_prewarm_pending;
+        s_shadow_prewarm_memo_inflight = s_pending_pipelines;
+        s_shadow_prewarm_memo_result = verdict;
+        s_shadow_prewarm_memo_valid = true;
+        return verdict;
+    }
 #endif
 }
 
@@ -6739,6 +6821,83 @@ static WGPUBuffer wgpu_diag_viewport_ubo(void) {
     return *pbuf;
 }
 
+/* E28: fetch (or write) this draw group's 16-byte noise uniform, carrying
+ * {frame seed, window height} exactly as gfx_opengl_set_uniforms() uploads
+ * {frame_count, current_height}. The height is the VIEWPORT height (the value
+ * gfx_opengl_set_viewport stores), not the render-target height, so split-screen
+ * viewports hash the same way on both backends.
+ *
+ * Deduplicated by value and grown on overflow, for the reason the diag viewport
+ * ring above documents: wgpuQueueWriteBuffer runs before the command buffer, so
+ * an occupied slot must never be rewritten. Deduplication also keeps the draw
+ * bind-group cache effective — repeated materials inside one viewport resolve to
+ * the same buffer pointer and therefore the same cache key. */
+static WGPUBuffer wgpu_noise_ubo(void) {
+    float params[4] = { (float)s_noise_frame, (float)s_vp_h, 0.0f, 0.0f };
+    for (int i = 0; i < s_noise_ubo_used; i++) {
+        if (i < WGPU_NOISE_UBO_RING) {
+            if (s_noise_ubo[i] != NULL &&
+                memcmp(s_noise_ubo_val[i], params, sizeof(params)) == 0) {
+                return s_noise_ubo[i];
+            }
+        } else {
+            int j = i - WGPU_NOISE_UBO_RING;
+            if (s_noise_ubo_ext[j].buf != NULL &&
+                memcmp(s_noise_ubo_ext[j].val, params, sizeof(params)) == 0) {
+                return s_noise_ubo_ext[j].buf;
+            }
+        }
+    }
+
+    WGPUBuffer *pbuf;
+    float      *pval;
+    if (s_noise_ubo_used < WGPU_NOISE_UBO_RING) {
+        pbuf = &s_noise_ubo[s_noise_ubo_used];
+        pval = s_noise_ubo_val[s_noise_ubo_used];
+    } else {
+        int j = s_noise_ubo_used - WGPU_NOISE_UBO_RING;
+        if (j >= s_noise_ubo_ext_cap) {
+            int ncap = s_noise_ubo_ext_cap ? s_noise_ubo_ext_cap * 2
+                                           : WGPU_NOISE_UBO_RING;
+            struct WgpuNoiseUbo *n = (struct WgpuNoiseUbo *)realloc(
+                s_noise_ubo_ext, (size_t)ncap * sizeof(*n));
+            if (n == NULL) {
+                fprintf(stderr, "[webgpu] noise uniform index growth failed\n");
+                wgpu_runtime_fatal(
+                    "The graphics backend ran out of memory while indexing "
+                    "draw uniforms. Reload the page to continue from the last "
+                    "persisted save.");
+                return NULL;
+            }
+            memset(n + s_noise_ubo_ext_cap, 0,
+                   (size_t)(ncap - s_noise_ubo_ext_cap) * sizeof(*n));
+            s_noise_ubo_ext = n;
+            s_noise_ubo_ext_cap = ncap;
+        }
+        pbuf = &s_noise_ubo_ext[j].buf;
+        pval = s_noise_ubo_ext[j].val;
+    }
+
+    if (*pbuf == NULL) {
+        WGPUBufferDescriptor bd = {0};
+        bd.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        bd.size = 16;
+        *pbuf = WGPU_FAULT_CREATE(
+            NOISE_BUFFER, wgpuDeviceCreateBuffer(s_device, &bd));
+    }
+    if (*pbuf == NULL) {
+        fprintf(stderr, "[webgpu] noise-uniform allocation failed\n");
+        wgpu_runtime_fatal(
+            "The graphics backend could not allocate its frame uniform. "
+            "Reload the page to continue from the last persisted save.");
+        return NULL;
+    }
+    wgpuQueueWriteBuffer(s_queue, *pbuf, 0, params, sizeof(params));
+    memcpy(pval, params, sizeof(params));
+    s_noise_ubo_used++;
+    return *pbuf;
+}
+
 /* Clip a rect (x,y,w,h) to [0,maxw] x [0,maxh], zeroing degenerate extents.
  * Order matters: shift for a negative origin first, bail to empty if the origin
  * is at/past the far edge, THEN clip the extent to the bound, THEN a final
@@ -6874,6 +7033,16 @@ static void wgpu_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
             }
         }
     }
+    /* E28: claimed before the bind-group key is built — it is part of that key,
+     * because the buffer now varies with the viewport rather than being one
+     * frame-global handle. */
+    WGPUBuffer noise_ubo = NULL;
+    if (s_cur_shader->info.uses_noise) {
+        noise_ubo = wgpu_noise_ubo();
+        if (noise_ubo == NULL) {
+            return;
+        }
+    }
 
     /* Viewport, Y-flipped to WebGPU's top-left origin (GL/gfx_pc emit bottom-left;
      * mirrors mtl_draw_triangles' originY = fb_h - (y + h)), reduced to a rect
@@ -6997,6 +7166,7 @@ static void wgpu_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
             (const void *)shadow_view,
             (const void *)shadow_sampler,
             (const void *)shadow_ubo,
+            (const void *)noise_ubo,
         };
         uint32_t set_base = (wgpu_bg_key_hash(key) & (WGPU_BG_CACHE / WGPU_BG_WAYS - 1)) * WGPU_BG_WAYS;
         for (int w = 0; w < WGPU_BG_WAYS; w++) {
@@ -7026,27 +7196,19 @@ static void wgpu_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
                 WGPUBindGroupEntry ue = {0}; ue.binding = 6;
                 ue.buffer = diag_ubo; ue.size = 16; ents[ne++] = ue;
             }
-            /* WEB-027: the shared per-frame noise uniform (binding 7). The bgl
-             * carries this entry only for noise combiners, so a noise shader with
-             * no textures still has a non-NULL bgl and reaches this build. The UBO
-             * is one global buffer, so it adds no discriminating state to the cache
-             * key (the bgl pointer already distinguishes noise shaders). */
+            /* WEB-027 / E28: this draw group's noise uniform (binding 7). The
+             * bgl carries this entry only for noise combiners, so a noise shader
+             * with no textures still has a non-NULL bgl and reaches this build.
+             * The buffer is a per-viewport ring slot claimed above and is part
+             * of the cache key, so two viewports never share an entry.
+             *
+             * A noise BGL REQUIRES entry 7 — building the group without it
+             * yields an ERROR OBJECT (not NULL) that the cache would retain and
+             * every later draw would trip over. The claim above already dropped
+             * the draw if the 16-byte allocation failed (≈ device lost). */
             if (s_cur_shader->info.uses_noise) {
-                /* A noise BGL REQUIRES entry 7 — building the
-                 * group without it yields an ERROR OBJECT (not NULL) that the
-                 * cache would retain and every later draw would trip over.
-                 * Mirror the diag-UBO pattern: no UBO (16-byte alloc failed ≈
-                 * device lost) → drop the draw instead of poisoning the cache. */
-                if (s_noise_ubo == NULL) {
-                    fprintf(stderr, "[webgpu] required noise uniform is absent\n");
-                    wgpu_runtime_fatal(
-                        "The graphics backend could not allocate a required "
-                        "noise uniform. Reload the page to continue from the "
-                        "last persisted save.");
-                    return;
-                }
                 WGPUBindGroupEntry ue = {0}; ue.binding = 7;
-                ue.buffer = s_noise_ubo; ue.size = 16; ents[ne++] = ue;
+                ue.buffer = noise_ubo; ue.size = 16; ents[ne++] = ue;
             }
             if (s_cur_shader->info.opt_dfdx_light) {
                 if (s_light_ubo == NULL) {
@@ -8279,7 +8441,14 @@ static void wgpu_release_device_objects(void) {
         }
     }
     if (s_vbuf != NULL) wgpuBufferRelease(s_vbuf);
-    if (s_noise_ubo != NULL) wgpuBufferRelease(s_noise_ubo);
+    for (int i = 0; i < WGPU_NOISE_UBO_RING; i++) {
+        if (s_noise_ubo[i] != NULL) wgpuBufferRelease(s_noise_ubo[i]);
+    }
+    for (int i = 0; i < s_noise_ubo_ext_cap; i++) {
+        if (s_noise_ubo_ext[i].buf != NULL) {
+            wgpuBufferRelease(s_noise_ubo_ext[i].buf);
+        }
+    }
     if (s_light_ubo != NULL) wgpuBufferRelease(s_light_ubo);
     if (s_modern_ubo != NULL) wgpuBufferRelease(s_modern_ubo);
 
@@ -8334,7 +8503,13 @@ static void wgpu_release_device_objects(void) {
     s_vbuf_off = 0;
     s_vbuf_frame_bytes = 0;
     s_vbuf_frame_segments = 0;
-    s_noise_ubo = NULL;
+    memset(s_noise_ubo, 0, sizeof(s_noise_ubo));
+    memset(s_noise_ubo_val, 0, sizeof(s_noise_ubo_val));
+    if (s_noise_ubo_ext != NULL) {
+        memset(s_noise_ubo_ext, 0,
+               (size_t)s_noise_ubo_ext_cap * sizeof(*s_noise_ubo_ext));
+    }
+    s_noise_ubo_used = 0;
     s_light_ubo = NULL;
     s_modern_ubo = NULL;
     s_modern_ubo_cap = 0;

@@ -85,6 +85,11 @@ static uint64_t shadow_batch_topology_signature(
     const TextureHeader *texture, s32 numVerts, s32 numTris,
     const Triangle *triangles) {
     uint64_t hash = UINT64_C(1469598103934665603);
+    /* A host address, deliberately: this signature only has to distinguish
+     * batches WITHIN one process's run so replay can pair them. It is therefore
+     * never stable across runs (ASLR, different allocation order) and must
+     * never be persisted, logged as an identity, or compared against a value
+     * from another process. */
     uintptr_t textureIdentity = (uintptr_t)texture;
 
     hash = shadow_topology_hash_bytes(
@@ -5218,7 +5223,13 @@ void generate_track(s32 modelId) {
     }
 #endif
     asset_load(ASSET_LEVEL_MODELS, (uintptr_t)compressedData, modelOffset, temp_s4);
+#ifdef NATIVE_PORT
+    /* temp_s4 is the level model's compressed span, staged inside the decoded
+     * model's own LEVEL_MODEL_MAX_SIZE block (checked just above). */
+    gzip_inflate_sized(compressedData, (u8 *) gCurrentLevelModel, temp_s4);
+#else
     gzip_inflate(compressedData, (u8 *) gCurrentLevelModel);
+#endif
 #ifdef NATIVE_PORT
     if (gzip_inflate_output < (u8 *)gCurrentLevelModel ||
         gzip_inflate_output >

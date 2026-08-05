@@ -221,6 +221,14 @@ void obj_loop_door(Object *doorObj, s32 updateRate);
 void obj_loop_fish(Object *fishObj, s32 updateRate);
 void obj_loop_weaponballoon(Object *weaponBalloonObj, s32 updateRate);
 void obj_loop_char_select(Object *charSelectObj, s32 updateRate);
+#ifdef NATIVE_PORT
+/* Draw-time per-object stand-in for obj_loop_char_select()'s batch write, which
+ * would otherwise publish one actor's player numeral into a shared cached
+ * ObjectModel. Consumed by render_mesh (objects.c). */
+s32 obj_char_select_batch_texture_index(const ObjectModel *model,
+                                        const Object *obj, s32 batchIndex,
+                                        s32 *outTextureIndex);
+#endif
 void weapon_trap(Object *weaponObj, s32 updateRate);
 void obj_init_butterfly(Object *butterflyObj, LevelObjectEntry_Butterfly *butterflyEntry, s32 param);
 void obj_init_animation(Object *obj, LevelObjectEntry_Animation *entry, s32 arg2);

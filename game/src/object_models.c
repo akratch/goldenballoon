@@ -149,7 +149,13 @@ ModelInstance *object_model_init(s32 modelID, s32 flags) {
     }
     compressedData = (u8 *)objMdl + modelSize - sp48;
     asset_load(ASSET_OBJECT_MODELS, (uintptr_t)compressedData, temp_s0, sp48);
+#ifdef NATIVE_PORT
+    /* sp48 is the model's compressed span, DMA'd into the tail of objMdl's own
+     * allocation; the pool slot would report the model buffer's end instead. */
+    gzip_inflate_sized(compressedData, (u8 *)objMdl, sp48);
+#else
     gzip_inflate(compressedData, (u8 *)objMdl);
+#endif
 #ifdef NATIVE_PORT
     /* Decompressed object model is still big-endian; normalize header + nested
      * arrays before the offsets below are read and patched into pointers. */
@@ -975,7 +981,15 @@ s32 model_anim_init(ObjectModel *model, s32 modelID) {
         }
         animAddress = (uintptr_t)(DKR_PTR(ObjectModel_44, model->animations)[i].animData + size) - assetSize;
         asset_load(ASSET_OBJECT_ANIMATIONS, animAddress, assetOffset, assetSize);
+#ifdef NATIVE_PORT
+        /* assetSize is this animation's compressed span, DMA'd into the tail of
+         * the same block the decode writes into. */
+        gzip_inflate_sized((u8 *)animAddress,
+                           (u8 *)DKR_PTR(ObjectModel_44, model->animations)[i].anim,
+                           assetSize);
+#else
         gzip_inflate((u8 *)animAddress, (u8 *)DKR_PTR(ObjectModel_44, model->animations)[i].anim);
+#endif
 #ifdef NATIVE_PORT
         /* The animation blob does not carry the animated-vertex count, so the
          * full-body BE->host swap needs it from the owning model (asset_swap.h). */

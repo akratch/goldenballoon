@@ -2144,7 +2144,13 @@ void track_spawn_objects(s32 mapID, s32 index) {
             ((compressedAsset + gzip_size_uncompressed(ASSET_LEVEL_OBJECT_MAPS, assetOffset)) - (0, assetSize)) + 0x20;
 #endif
         asset_load(ASSET_LEVEL_OBJECT_MAPS, (uintptr_t)compressedAsset, assetOffset, assetSize);
+#ifdef NATIVE_PORT
+        /* assetSize is the map's compressed span, staged inside the same
+         * OBJECT_MAP_SIZE block the decode writes into (bounds checked above). */
+        gzip_inflate_sized(compressedAsset, (u8 *) mem, assetSize);
+#else
         gzip_inflate(compressedAsset, (u8 *) mem);
+#endif
 #ifdef NATIVE_PORT
         if (gzip_inflate_output < (u8 *) mem ||
             gzip_inflate_output > (u8 *) mem + decompressedSize) {
@@ -6717,6 +6723,7 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
     Vec3s *batchNormals;
     s32 doorTexOffset;
     s32 doorDigitPlace;
+    s32 charSelectTexIndex;
     static s32 sDoorTexTrace = -1;
 #endif
 
@@ -6749,6 +6756,11 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
 #ifdef NATIVE_PORT
                 if (taj_visual_select_sign_object(obj)) {
                     textureIndex = taj_visual_select_sign_player(obj);
+                } else if (obj_char_select_batch_texture_index(
+                               objModel, obj, i, &charSelectTexIndex)) {
+                    /* B25: the character-select placard numeral, resolved
+                     * per-object instead of written into the shared model. */
+                    textureIndex = charSelectTexIndex;
                 }
 #endif
                 // textureIndex of 0xFF is no texture

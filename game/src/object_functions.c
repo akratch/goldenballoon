@@ -2135,6 +2135,109 @@ void obj_loop_snowball(Object *obj, s32 updateRate) {
 UNUSED void obj_init_char_select(UNUSED s32 arg0, UNUSED s32 arg1) {
 }
 
+#ifdef NATIVE_PORT
+/**
+ * Roster in force this session, and the character index `actorIndex` occupies in
+ * it. Returns -1 when the actor is not part of the roster. This mirrors the
+ * roster selection obj_loop_char_select() performs below, which is kept in its
+ * original spelling for the ROM build; both must pick the same row of
+ * gSignHolding* for a given actor.
+ */
+static s32 char_select_character_index(s32 actorIndex) {
+    u8 *actorIDs;
+    s32 charCount;
+    s32 i;
+
+    if (is_drumstick_unlocked()) {
+        if (is_tt_unlocked()) {
+            actorIDs = gCharacterSelectAllActorIDs;
+            charCount = 10;
+        } else {
+            actorIDs = gCharacterSelectMainActorIDsPlusDrumstick;
+            charCount = 9;
+        }
+    } else if (is_tt_unlocked()) {
+        actorIDs = gCharacterSelectMainActorIDsPlusTT;
+        charCount = 9;
+    } else {
+        actorIDs = gCharacterSelectMainActorIDs;
+        charCount = 8;
+    }
+    for (i = 0; i < charCount; i++) {
+        if (actorIndex == actorIDs[i]) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/**
+ * Draw-time texture index for one character-select batch, or FALSE when the
+ * batch keeps its authored texture.
+ *
+ * The original loop published the cycling player numeral by writing
+ * `textureIndex` into the ObjectModel's batch array. Native ObjectModels are
+ * cached and shared by every actor that uses the same model id, so that write
+ * left one actor's numeral on every other actor's placard (and outlived the
+ * cursor that produced it). Same remedy as the door numeral
+ * (obj_door_batch_texture_offset, objects.c): the mutator is compiled out and
+ * render_mesh asks for the per-object answer at draw time, so nothing
+ * per-object is ever stored in cache-owned memory.
+ *
+ * The values the loop had in hand are recomputed here rather than cached: the
+ * roster, this actor's row, and the controllers currently sitting on it.
+ * gSignHoldingIndices[] stays the update loop's cycle cursor and is only read.
+ */
+s32 obj_char_select_batch_texture_index(const ObjectModel *model,
+                                        const Object *obj, s32 batchIndex,
+                                        s32 *outTextureIndex) {
+    const Object_AnimatedObject *charSelect;
+    const TriangleBatchInfo *batch;
+    s32 characterIndex;
+    s32 playerIndex;
+    s32 cursor;
+    s32 numCursors;
+    u8 playerSelectIndices[MAXCONTROLLERS];
+
+    if (model == NULL || obj == NULL || outTextureIndex == NULL ||
+        obj->behaviorId != BHV_CHARACTER_SELECT || batchIndex < 0 ||
+        batchIndex >= model->numberOfBatches) {
+        return FALSE;
+    }
+    charSelect = obj->animatedObject;
+    if (charSelect == NULL) {
+        return FALSE;
+    }
+    characterIndex = char_select_character_index(charSelect->actorIndex);
+    if (characterIndex < 0) {
+        return FALSE;
+    }
+    numCursors = 0;
+    for (playerIndex = 0; playerIndex < MAXCONTROLLERS; playerIndex++) {
+        if (get_player_character(playerIndex) == characterIndex) {
+            playerSelectIndices[numCursors++] = playerIndex;
+        }
+    }
+    if (numCursors == 0) {
+        return FALSE;
+    }
+    /* Only the numbered placard batches are re-pointed. The ROM's `>= 0` half of
+     * this test can never fail on a u8, so only the upper bound survives. */
+    batch = DKR_PTR(const TriangleBatchInfo, model->batches);
+    if (batch[batchIndex].textureIndex >= 4) {
+        return FALSE;
+    }
+    /* The loop clamps this every tick; re-clamp so a draw that reaches an object
+     * before its first update cannot index past the live cursor list. */
+    cursor = gSignHoldingIndices[characterIndex];
+    if (cursor >= numCursors) {
+        cursor = 0;
+    }
+    *outTextureIndex = playerSelectIndices[cursor];
+    return TRUE;
+}
+#endif
+
 /**
  * Character select loop behaviour.
  * Animates characters dancing, chooses which player sign they're holding up etc.
@@ -2238,6 +2341,7 @@ void obj_loop_char_select(Object *charSelectObj, s32 updateRate) {
                         }
                     }
 
+#ifndef NATIVE_PORT
                     for (i2 = 0; i2 < objMdl->numberOfBatches; i2++) {
                         // Unneccessary check for textureIndex to be greater than or equal to zero since it's a u8 and
                         // can't be less.
@@ -2245,6 +2349,7 @@ void obj_loop_char_select(Object *charSelectObj, s32 updateRate) {
                             DKR_PTR(TriangleBatchInfo, objMdl->batches)[i2].textureIndex = playerSelectIndices[gSignHoldingIndices[i]];
                         }
                     }
+#endif
                     charSelectObj->animationID = 0;
                 }
             }

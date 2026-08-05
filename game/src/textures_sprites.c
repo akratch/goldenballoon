@@ -684,7 +684,15 @@ TextureHeader *load_texture(s32 id) {
             mempool_free(tex);
             return NULL;
         }
+#ifdef NATIVE_PORT
+        /* The rzip stream starts one TextureHeader into the assetSize bytes that
+         * were just DMA'd, so the compressed extent is what remains of them.
+         * mempool_block_end() would have reported the whole scratch block. */
+        gzip_inflate_sized(compressedData + sizeof(TextureHeader), (u8 *)tex,
+                           (s32) (assetSize - (s32) sizeof(TextureHeader)));
+#else
         gzip_inflate(compressedData + sizeof(TextureHeader), (u8 *)tex);
+#endif
         mempool_free(compressedData);
     }
 

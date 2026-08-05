@@ -35,8 +35,9 @@
  *     gzip_inflate_output_end) window gzip_inflate() derives from the rzip
  *     header's declared decompressed length. A valid stream fills it exactly,
  *     so bounded and unbounded decoding produce identical bytes.
- *   - Every input byte is taken below gzip_inflate_input_end when the caller's
- *     compressed buffer is pool-resident (it always is in this game).
+ *   - Every input byte is taken below gzip_inflate_input_end, which is the
+ *     caller's own compressed extent (gzip_inflate_sized) or, absent one, the
+ *     end of the pool block the compressed bytes live in.
  *   - Back-reference distances must stay inside what has already been produced.
  *   - gzip_inflate_block() returns a negative status for any of the above, for
  *     a malformed Huffman description, and for the reserved BTYPE 3. That status

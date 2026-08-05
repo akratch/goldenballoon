@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 OBJECTS = ROOT / "game" / "src" / "objects.c"
 OBJECTS_HEADER = ROOT / "game" / "src" / "objects.h"
+OBJECT_FUNCTIONS = ROOT / "game" / "src" / "object_functions.c"
 GFX_PC = ROOT / "platform" / "fast3d" / "gfx_pc_dkr.c"
 
 # The cache-owned batch array is spelled either through a local pointer
@@ -176,6 +177,9 @@ class ObjectMaterialOwnershipTests(unittest.TestCase):
         cls.native_objects = native_port_projection(objects, enabled=True)
         cls.legacy_objects = native_port_projection(objects, enabled=False)
         cls.native_header = native_port_projection(header, enabled=True)
+        functions = OBJECT_FUNCTIONS.read_text(encoding="utf-8")
+        cls.native_functions = native_port_projection(functions, enabled=True)
+        cls.legacy_functions = native_port_projection(functions, enabled=False)
         cls.gfx_pc = GFX_PC.read_text(encoding="utf-8")
 
     def test_mutating_door_api_is_absent_from_native_build(self) -> None:
@@ -223,6 +227,41 @@ class ObjectMaterialOwnershipTests(unittest.TestCase):
         # Positive control: the same guard still finds the legacy per-object
         # publishers, so its silence on the native build is a real result.
         legacy = batch_material_writers(self.legacy_objects)
+        self.assertTrue(legacy - set(BATCH_MATERIAL_WRITERS))
+
+    def test_char_select_numeral_is_not_written_into_the_shared_model(
+        self,
+    ) -> None:
+        # The behaviour loop shares its ObjectModel with every other actor that
+        # uses the same model id, so the placard numeral must not be stored.
+        native = function_body(self.native_functions, "obj_loop_char_select")
+        self.assertNotRegex(native, BATCH_MATERIAL_WRITE)
+        # Positive control: the same guard finds the legacy publisher, so its
+        # silence on the native projection is a real result.
+        legacy = function_body(self.legacy_functions, "obj_loop_char_select")
+        self.assertRegex(legacy, BATCH_MATERIAL_WRITE)
+
+    def test_char_select_selection_is_a_pure_draw_local_lookup(self) -> None:
+        resolver = function_body(
+            self.native_functions, "obj_char_select_batch_texture_index"
+        )
+        self.assertNotRegex(resolver, BATCH_MATERIAL_WRITE)
+        self.assertNotIn("obj_char_select_batch_texture_index",
+                         self.legacy_functions)
+
+        render = function_body(self.native_objects, "render_mesh")
+        per_char = render.find("obj_char_select_batch_texture_index(")
+        fallback = SHARED_FALLBACK_READ.search(render)
+        self.assertGreaterEqual(per_char, 0)
+        self.assertIsNotNone(fallback)
+        self.assertNotRegex(render, BATCH_MATERIAL_WRITE)
+
+    def test_native_object_behaviours_have_no_batch_material_writes(
+        self,
+    ) -> None:
+        native = batch_material_writers(self.native_functions)
+        self.assertEqual(native - set(BATCH_MATERIAL_WRITERS), set())
+        legacy = batch_material_writers(self.legacy_functions)
         self.assertTrue(legacy - set(BATCH_MATERIAL_WRITERS))
 
     def test_gl_sampler_memo_key_contains_texture_identity(self) -> None:
