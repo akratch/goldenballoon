@@ -39,9 +39,9 @@ Existing preferences are preserved when upgrading.
 ## Other fixes
 
 - `mdkr64.log` is no longer empty. Launched from Explorer the app has no
-  standard output to attach to, and the log was being rotated away and
-  truncated before that was discovered — which is why a log could never be
-  attached to a report.
+  standard output to capture, but the file was rotated and truncated anyway,
+  so every run left an empty log and destroyed the previous one. There is now
+  something to attach to a bug report.
 - The launcher's About destination is no longer clipped at common window
   heights, and the gold Play button keeps its lower edge at 800x600.
 - Changing an unrelated setting no longer rebases a cadence or presentation
@@ -67,8 +67,7 @@ Existing preferences are preserved when upgrading.
 A modern camera obstruction subsystem is present in the build but does not
 change any camera. It defaults to an observe-only policy that measures and
 records; the corrective policies are explicit opt-ins behind the
-`MDKR_CAMERA_OBSTRUCTION` environment variable and are not part of the
-supported 1.0.5 experience.
+`MDKR_CAMERA_OBSTRUCTION` environment variable and are not supported in 1.0.5.
 
 ## Known limitations
 

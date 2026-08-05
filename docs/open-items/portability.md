@@ -26,7 +26,7 @@ consistent with a stale pre-fix local executable.
 The runtime boundary is now transactional and fail closed: after normalizing the
 plaintext u16 index, it verifies the self-describing first offset and every
 code/description offset plus its in-blob NUL terminator. Any failure restores
-the complete original byte representation and stops asset loading. The
+the original bytes and stops asset loading. The
 `magic_codes` CTest pins the reported endian values, valid `ARNOLD` lookup and
 description, damaged offsets, unterminated strings, and full rollback;
 `check_asset_swap_invariants.py` independently pins decrypt-before-normalize

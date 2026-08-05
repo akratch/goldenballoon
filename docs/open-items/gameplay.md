@@ -15,9 +15,8 @@ the existing terrain detector only decides whether to draw the flat-colour void
 curtain. It does not correct the pose, is level/mode conditional, and does not see
 object-model occluders such as doors.
 
-The complete source investigation, red-team analysis, product decisions, target
-architecture, CAM-00–CAM-09 work breakdown, test matrix, rollout controls, and
-definition of done are maintained in the
+The source investigation, target architecture, CAM-00–CAM-09 work breakdown,
+test matrix, rollout controls, and definition of done live in the
 [camera obstruction and modern native presentation plan](../architecture/camera-obstruction.md).
 Until every exit gate in that plan passes, this remains an open gameplay defect;
 a center ray, fixed-radius clamp, terrain-only spring arm, or void-curtain mask is
@@ -116,8 +115,7 @@ the retail cart wedges identically at this crater jump once fed the same
 (correct) AI table. If a hardware/ares run reproduces the same wedge, this
 closes as authored-and-accepted. If it does not, the AI-table correction
 changed reachability in a way retail's own AI never encountered, and this
-needs an actual fix rather than a test-only workaround; the hardware-verification
-question remains tracked here.
+needs an actual fix rather than a test-only workaround.
 
 ### Not done, and staying that way for now
 

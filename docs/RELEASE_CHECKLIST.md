@@ -147,19 +147,22 @@ actually imports ASan. The ROM-free CTest task includes the display/runtime/
 layout/scheduler units, the deterministic audio queue controller, and SDL's
 silent queue-mode sink contract. When the selected build contains native
 launcher GPU tests, the runner includes them under their shared CTest resource
-lock; the complete local matrix never silently excludes them. The RAW16 gate
-repeats against primary, Release, and ASan artifacts. The specialized
-native-layout gate verifies linked
+lock; the complete local matrix never silently excludes them.
+
+The RAW16 gate repeats against primary, Release, and ASan artifacts. The
+specialized native-layout gate verifies linked
 ASan/alignment handlers and exact legacy controls, then runs the complete
 menu/track/vehicle/Adventure/boss/2P/widescreen matrix under halt-on-error
 alignment UBSan. The primary suite's seven-arm `check_widescreen_proportions.py`
 pixel-measures SAFE_2D and world-space golden balloons at two deterministic
 approach frames across 4:3, 16:9, 21:9, and changed FOV, with exact legacy
 stretching as its failing control.
+
 `check_native_ui_resolution.py` runs GL/WebGPU production and disabled-control
 arms, requires the HUD/minimap-only pixel delta and measured edge gain, and
 rejects any world-after-overlay draw or pass-start failure. The 2P/3P/4P gates
 extend that ordering assertion to every viewport layout.
+
 `check_door_glyphs.py` drives a fresh Adventure save into Dino Domain on GL and
 WebGPU, proves the four 1/2/3/5 race doors share one cached model, and requires
 the material-bound texture offset to remain per door while the camera moves.
@@ -170,6 +173,7 @@ distinct 2/1/3 glyphs, and compares final door pixels from GL and WebGPU. This
 catches per-texture sampler state being skipped when OpenGL changes texture
 objects, which otherwise stamps repeated numerals across the wood. Synthetic
 blank, common-glyph, and repeated-sampler controls must all fail the pixel gate.
+
 `check_video_options.py` runs both native backends and requires every in-game
 control, atomic fresh-process reload, override locking/no-bake behavior,
 unwritable-storage rollback, and malformed-launcher no-rewrite behavior. The
@@ -291,7 +295,8 @@ evidence; the post-release check below remains a human packaging/hosting check.
 It also requires exactly one authored NTSC realtime pace initialization, no
 update or wall-field count below two, a 24–36 FPS median complete-loop cadence,
 and post-startup cadence no worse than 40.0 ms p95 / 45.0 ms p99. These are
-the default Original/authored-motion baseline. It also fails if an async pipeline takes more than two
+the default Original/authored-motion baseline. It also fails if an async
+pipeline takes more than two
 authored render frames. An incomplete pipeline must skip the host opportunity
 until a new authored image is ready; the release path may not replay or swap the
 last image as a duplicate. The raw maximum and its frame number remain visible

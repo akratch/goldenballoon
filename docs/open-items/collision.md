@@ -580,8 +580,7 @@ level, `race_full_3lap_tt.txt`):
 Identical to the original "boundsweep" measurement for levels 41/54/38/46 (the
 rows that table already recorded), and fills in the remaining six boss levels
 plus one ordinary race that table did not enumerate individually. No level
-truncates. **Decision: accept, do not raise.** 84 slots is the tightest margin
-in the game and worth continuing to watch, but every measured route — boss and
+truncates. **Decision: accept, do not raise.** Every measured route — boss and
 ordinary alike — stays well clear of the 500 cap, and `check_collision_headroom.py`
 is now the tripwire if that stops being true.
 

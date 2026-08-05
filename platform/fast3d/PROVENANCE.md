@@ -79,5 +79,5 @@ and the source-tree guard `scripts/ci/check_no_rom_data.sh`. They therefore
 satisfy condition 2, which is what permits distributing them at all.
 
 The 2-cycle combiner work in `gfx_cc.c` additionally derives from the Perfect Dark
-decompilation/port (MIT); see this repository's `THIRD_PARTY.md` entry for
-`tools/mktex` for that project's licensing.
+decompilation/port (MIT); see the `platform/mixer.c` and `gfx_cc.c` rows in
+[`THIRD_PARTY.md`](../../THIRD_PARTY.md) for that project's licensing.

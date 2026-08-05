@@ -358,11 +358,10 @@ reserved. The shared
 record and computes every native region with checked arithmetic. The census
 normalizes all three ROM byte orders and recognizes both supported US/EU v80
 layouts; the available US v80 ROM has 193 sprites and a maximum 48-byte record.
-sprite 162 emits 29 `Gfx` commands where the old formula reserved 27 (16 bytes
-short), and sprite 177 emits 67 where it reserved 66 (8 bytes short). Unit
-cases cover malformed/truncated records,
-overflow, alignment, and failure cleanup; the ROM-backed gate proves every
-production loader uses the shared layout.
+Sprite 162 emits 29 `Gfx` commands where the old formula reserved 27 (16 bytes
+short), and sprite 177 emits 67 where it reserved 66 (8 bytes short). Unit cases
+cover malformed/truncated records, overflow, alignment, and failure cleanup; the
+ROM-backed gate proves every production loader uses the shared layout.
 
 ### Screen-linear RDP gradients
 
@@ -1238,7 +1237,7 @@ without producing safe new images.
 
 The production renderer now keeps gameplay on Original two-field tickets and
 publishes an atomic private rendering task instead. It double-buffers the
-complete 16 MiB arena, rebases the top list and segment table, copies external
+16 MiB arena, rebases the top list and segment table, copies external
 matrix/vertex/triangle/viewport/texture/TLUT/smooth-normal spans observed by the
 real HLE walk, and acquires only an exact authored-tick token. A read-only census
 of the already-authored alternate task supplies the true `{T,T+1}` deformation
@@ -1798,11 +1797,6 @@ per-`level_load` depths of 0/49/56/50/61 were the same transient-burst picture).
 ~6.5 KB of the 16 MB arena; `sizeof(ALEventListItem)` ~48 bytes on LP64). The
 jingle and SFX queues are left alone — ample headroom. With 256 the 12000-frame
 soak logs **0** drops.
-
-**Attribution — not caused by the two fixes above.** Neither touches audio; a
-normal race with music shows zero queue pressure; and the pre-fix build crashes in
-`track_setup_racers` at the level-28 load, i.e. strictly *before* this point.
-Unreachable on `main` (the demo never starts there).
 
 **Repro of the original hang** (for the record; fixed now):
 `MDKR_AUDIO=0 MDKR_TRACE=1 ./build/mdkr64 --headless-frames 8000

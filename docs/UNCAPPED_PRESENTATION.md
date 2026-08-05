@@ -51,8 +51,8 @@ behavior and is a useful sensitivity control, but it is not preservationist
 gameplay. The full reference methodology, audio result, and HUD-timestamp
 explanation are in [BLUEY2_PARITY.md](BLUEY2_PARITY.md).
 
-The practical rule is simple: a modern presentation option may create more
-images, but it must never create more game updates.
+The rule: a modern presentation option may create more images; it must never
+create more game updates.
 
 ## Immutable replay boundary
 

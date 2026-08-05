@@ -199,10 +199,10 @@ normalized buttons, D-pad, triggers, clicks, and right-stick directions to N64
 actions or None. The left stick remains analog steering and a single atomic
 action restores all controller defaults. **Original (recommended)** is the
 frame-limit default. Match Display, numeric caps, and
-native Uncapped create additional presentation opportunities without changing
-the gameplay cadence. The adjacent **Motion smoothing** control says exactly
-what fills those opportunities: Off holds the latest authored image;
-Interpolated draws unique presentation-only in-between images. The browser
+native Uncapped add presentation opportunities without changing the gameplay
+cadence; the adjacent **Motion smoothing** control decides what fills them:
+Off holds the latest authored image, Interpolated draws unique
+presentation-only in-between images. The browser
 explains that its ceiling is the display's `requestAnimationFrame` cadence.
 The native launcher keeps both presentation controls directly visible. The
 browser uses a compact disclosure to keep its launch card manageable on mobile.
@@ -213,9 +213,8 @@ Both settings remain restart-scoped because the host pacer and immutable replay
 resources latch at engine startup. Interpolated replay retains the complete
 authored graphics arena plus external dependencies observed by the renderer,
 and fails closed to an authored hold when adjacent ownership is unavailable.
-The launcher therefore separates frame delivery from **Gameplay cadence**;
-Enhanced remains a clearly gameplay-changing compatibility mode, not an FPS
-switch.
+Enhanced therefore stays a gameplay-changing compatibility mode rather than a
+frame-rate control.
 
 Scope is presented honestly:
 
@@ -223,9 +222,8 @@ Scope is presented honestly:
 - **RESTART** keys (`Video.FrameLimit`, `Video.MotionSmoothing`,
   `Gameplay.SimulationCadence`, and others) are badged `restart`, saved, and
   shown as `Saved for next Play: Y (current: X)`. The Settings page keeps one
-  primary action visible and renames it **Play with changes** while anything is
-  staged. The UI never implies a restart-scope change took effect. Those scopes
-  are not arbitrary — see the
+  primary action visible and renames it **Play with Changes** while anything is
+  staged. The UI never implies a restart-scope change took effect. See the
   long comments in `platform/video_config.c` for why both present-pacing keys
   latch and why flipping them live is unsafe in *both* directions.
 - Keys pinned by an environment variable or the command line are disabled and

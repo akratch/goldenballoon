@@ -2,9 +2,8 @@
 
 Per-component provenance. Read alongside [LICENSE](LICENSE) (first-party terms),
 [DISCLAIMER.md](DISCLAIMER.md) (the project's legal position), and
-[THIRD_PARTY.md](THIRD_PARTY.md) (the full per-path provenance table this
-document summarizes — every component named below has a row there with the
-exact file(s), license text location, and why it is present).
+[THIRD_PARTY.md](THIRD_PARTY.md) (the per-path provenance table this document
+summarizes; every component named below has a row there).
 
 This repository contains **no game ROM and no bulk game assets**, and never has —
 not in the working tree and not in git history.
@@ -119,9 +118,7 @@ the second notice style were either deleted
 outright (`game/include/PR/{gs2dex,os_flash,os_gbpak,os_voice,rdb}.h`,
 `game/include/sys/{asm,regdef}.h`, `game/include/ultrahost.h`) or rewritten
 clean-room (`game/include/PR/os_motor.h` and `os_version.h`, which
-remain). Any legend hit
-anywhere under `game/` is now a real regression. See
-[THIRD_PARTY.md](THIRD_PARTY.md) for the per-path provenance row.
+remain). See [THIRD_PARTY.md](THIRD_PARTY.md) for the per-path provenance row.
 
 ## Emulator-derived reference material — NOT in this repository
 

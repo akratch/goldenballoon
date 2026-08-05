@@ -123,12 +123,11 @@ reached the linked binaries, then runs halt-on-first-error alignment UBSan over:
 - measured three-/four-player racer, quadrant, minimap, and results flow;
 - the seven-arm HUD/world balloon aspect/FOV fixture.
 
-Every arm passes. The final fixture is important to the player-facing refinement:
-routing all small sprite records through the new field API still preserves HUD
-and world-balloon proportions at 4:3, 16:10, 16:9, 21:9, forced 4:3, and
-75-degree FOV; only explicit
-legacy stretching is distorted, and that arm must be rejected. Dedicated
-the three-/four-player runtime fixtures now pass separately through
+Every arm passes. The final fixture carries the player-facing refinement: routing
+all small sprite records through the new field API still preserves HUD and
+world-balloon proportions at 4:3, 16:10, 16:9, 21:9, forced 4:3, and 75-degree
+FOV; only explicit legacy stretching is distorted, and that arm must be rejected.
+The three-/four-player runtime fixtures now pass separately through
 `check_race_multiplayer.py`; they are not unresolved native prefix casts.
 
 The standard Release-led manifest at `7a7f2f7` passes all **38/38 tasks in

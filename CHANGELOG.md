@@ -110,14 +110,13 @@ cadence Original.
   under the documented Windows rule, and the relaunch states its intent with
   `--ui`, which wins over deny-by-default so even a mis-split command line
   opens the launcher.
-- **`mdkr64.log` is no longer empty after every launch.** The diagnostic log
-  rotated and truncated itself before discovering that a GUI-subsystem process
-  launched from Explorer has no standard handles to attach to, which both left
-  a zero-byte log and consumed the previous run's evidence. Missing standard
-  descriptors are now backed by the null device before the tee installs,
-  rotation is deferred until logging is certain to run, and a failed install
-  removes the empty file rather than presenting silence as the app's last
-  words.
+- **`mdkr64.log` is no longer empty after every launch.** A GUI-subsystem
+  process started from Explorer has no standard handles at all, so the tee's
+  install aborted on its first `duplicateFd` — after the log had already been
+  rotated and truncated. Every launch left a zero-byte log and consumed the
+  previous run's evidence. Missing standard descriptors are now backed by the
+  null device before the tee installs, rotation is deferred until logging is
+  certain to run, and a failed install removes the empty file.
 - The launcher's About destination is no longer clipped at common window
   heights: footer space is reserved from measured small-font metrics instead of
   five body-font lines. The gold Play button keeps its lower edge at 800x600,
@@ -221,10 +220,10 @@ cadence Original.
 
 ### Testing
 
-- Every gate in the suite is now falsifiable. Gates that could pass vacuously
-  were rebuilt around controls that must fail: absolute scheduler lead and
-  pending expectations returned to the three presentation gates (a scheduler
-  ending every run with a forty-tick backlog had passed), the browser runtime
+- Gates that could pass vacuously were rebuilt around controls that must fail:
+  absolute scheduler lead and pending expectations returned to the three
+  presentation gates (a scheduler ending every run with a forty-tick backlog
+  had passed), the browser runtime
   gate anchors on the requested frame count instead of comparing the tick count
   against itself, and the abandoned-frame relaxations in both browser gates
   reconcile against the renderer's own declared teardown retirements.
@@ -250,10 +249,9 @@ cadence Original.
 
 ### Release pipeline
 
-- Every release guard now fails for real instead of passing vacuously. The
-  Windows dispatch version normalizes each component so the manifest matches
-  CMake's zero-padding, pinned by a behavioural contract check that executes
-  the workflow's own shell; the generated manifest is a declared object
+- The Windows dispatch version normalizes each component so the manifest
+  matches CMake's zero-padding, pinned by a behavioural contract check that
+  executes the workflow's own shell; the generated manifest is a declared object
   dependency, so an incremental build cannot embed a stale one; and the
   AppImage runtime's mutable-tag digest mismatch falls back to tarball-only
   under `--dev` while still failing a release closed.

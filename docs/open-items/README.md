@@ -33,9 +33,8 @@ unchanged.
 
 ### Still open
 
-13 entries below are genuinely open. The 39 closed ones follow in
-their own table — **nothing is deleted when it is fixed**, because a closed
-entry is the only warning the next person gets that the trap exists.
+13 entries below are genuinely open. The 39 closed ones follow in their own
+table.
 
 > **Current presentation scope:** the 1.0.1 authored-image containment has been
 > superseded by the immutable-presentation wave. Public interpolation owns a

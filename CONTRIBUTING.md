@@ -2,7 +2,7 @@
 
 Read [docs/DEVELOPER_HANDBOOK.md](docs/DEVELOPER_HANDBOOK.md) first — in
 particular §3, the recurring bug shapes behind nearly every hard defect in this
-port. Reading it first saves days.
+port.
 
 One of those shapes deserves calling out here because it is invisible to upstream:
 **anything under `game/src/hasm/` is a C transcription of hand-written assembly
@@ -124,8 +124,7 @@ assertion. Use bash `case "$out" in *"$want"*)`.
 
 ## The rules
 
-These apply to every change. They are not new; they are the rules the project has
-been operating under, promoted here from `docs/PHASE3_SCOPE.md`.
+These apply to every change. They are promoted here from `docs/PHASE3_SCOPE.md`.
 
 1. **Root cause before fix.** This codebase punishes guessing. Four of its hardest
    bugs were silent and produced no crash at all. Find the mechanism, then fix it.
@@ -161,9 +160,8 @@ been operating under, promoted here from `docs/PHASE3_SCOPE.md`.
    you actually achieved — including "I audited N sites by this method and none of
    the others is reachable", which is a complete and valuable answer.
 
-   This is not a counsel of perfection; it is the highest-yield thing this project
-   has done. Every time it has been applied it found more real bugs than the report
-   that triggered it:
+   Every time this has been applied it found more real bugs than the report that
+   triggered it:
 
    | one report | the class swept | what the sweep found |
    |---|---|---|

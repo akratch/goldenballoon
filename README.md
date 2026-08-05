@@ -86,8 +86,8 @@ browser the ROM is read locally and never uploaded, transmitted, or stored on
 any server. Every release packaging path runs a structural asset/ROM guard:
 [`tools/check_no_rom.sh`](tools/check_no_rom.sh) checks staged portable and web
 artifacts, while [`macos/Scripts/verify_asset_free.sh`](macos/Scripts/verify_asset_free.sh)
-checks the exact macOS bundle. This promise is checked rather than merely
-stated. See [DISCLAIMER.md](DISCLAIMER.md) and [NOTICE.md](NOTICE.md).
+checks the exact macOS bundle. See [DISCLAIMER.md](DISCLAIMER.md) and
+[NOTICE.md](NOTICE.md).
 
 ## What this is
 

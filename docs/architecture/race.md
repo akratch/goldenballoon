@@ -10,7 +10,7 @@ racer that responds to input (accelerates, steers), rendering the track — the
 "playable proof of work". It is done, and the route below is the one the
 navigation fixtures still take.
 
-## What already works (leverage it)
+## What already works
 - The title screen's 3D background IS a live attract-mode race demo (Ancient Lake,
   AI-driven) — so the race scene renderer, track geometry, racer models, and camera
   substantially work already, WITHOUT input. This de-risks M6 massively: the engine

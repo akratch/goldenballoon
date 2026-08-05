@@ -8,5 +8,5 @@ OpenGL function loader used by the native port's renderer.
 - **Khronos headers** (`include/KHR/khrplatform.h`) are © The Khronos Group;
   the relevant notices are retained in the header and in [LICENSE](LICENSE).
 
-Not original to MGB64; not covered by this project's MIT license. See
+Not original to this project; not covered by its MIT license. See
 [../../NOTICE.md](../../NOTICE.md).

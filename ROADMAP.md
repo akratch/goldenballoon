@@ -117,7 +117,7 @@ with zero faults across 29 material IDs and 37 material/pipeline keys; the
 offline gate validates all 445 supported-ROM models, 1,146 level segments and
 16,943 batches including dormant variants; forced 4 KiB segmentation and a
 one-entry shader-index limit prove safe continuation, one same-backend rebuild,
-    and terminal failure without a renderer switch; and the 113-point fault
+and terminal failure without a renderer switch; and the 113-point fault
 registry is fully classified.
 
 **What remains.** Everything that needs hardware or a second implementation:

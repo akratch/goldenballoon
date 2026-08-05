@@ -19,7 +19,6 @@ supported-ROM policy are in [`../README.md`](../README.md).
 **If you read only one thing, read
 [`DEVELOPER_HANDBOOK.md`](DEVELOPER_HANDBOOK.md) §3** — the recurring bug shapes
 behind nearly every hard defect in this port, several of them completely silent.
-Recognising them on sight saves days.
 
 ## Building and running
 

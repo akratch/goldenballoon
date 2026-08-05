@@ -17,10 +17,8 @@
 > accepting render-driven simulation, or hiding failures behind the void curtain.
 
 This is the implementation authority and living evidence record for the
-camera-penetration defect. It records
-the source investigation, the adversarial design review, the required architecture,
-the work breakdown, and the evidence needed to call the defect closed. Target,
-implemented, and release-evidenced behavior are distinguished explicitly.
+camera-penetration defect. Target, implemented, and release-evidenced behavior
+are distinguished explicitly.
 
 ## 1. Product decision
 
@@ -49,9 +47,9 @@ visual preset:
   simulation or RNG. Presentation visibility uses the resolved camera; the legacy
   AI-activity admission gets an explicit canonical logical-camera basis.
 
-This follows the mature spring-arm model—preserve an unobstructed desired boom,
-retract on contact, and recover when clear—but raises the bar from a ray to the
-actual lens guard. Unreal exposes a camera-specific probe, probe size, desired
+This follows the standard spring-arm model—preserve an unobstructed desired boom,
+retract on contact, recover when clear—but sweeps the lens guard instead of a
+ray. Unreal exposes a camera-specific probe, probe size, desired
 unfixed position, collision displacement, and lag state in its
 [SpringArmComponent](https://dev.epicgames.com/documentation/unreal-engine/API/Runtime/Engine/USpringArmComponent?lang=en-US).
 Godot explicitly recommends sweeping the camera's near-plane pyramid because a
@@ -103,13 +101,9 @@ acceptance must be based on geometric invariants as well as pixels.
 - The resolver latches the per-viewport render projection, guards the
   presentation lens of that same viewport, derives a
   conservative lens-enclosing sphere, and composes immutable static-track and
-  dynamic hard-object queries without per-tick allocation. A ROM-free exact
-  rounded eye-to-near-plane triangle narrow phase, continuous sweep, exact static
-  and dynamic source adapters, fail-closed two-phase dispatcher, and opt-in
-  authoritative-corridor shadow profiler, analytic swept-SAT front end, and
-  bounded fail-closed grazing solver now exist. The exact two-phase result is now
-  authoritative for every Modern final-pose path; the enclosing sphere remains
-  its conservative broad phase and fallback. Dynamic model queries now use a
+  dynamic hard-object queries without per-tick allocation. The exact two-phase
+  result is authoritative for every Modern final-pose path; the enclosing sphere
+  remains its conservative broad phase and fallback. Dynamic model queries use a
   deterministic immutable BVH for both enclosing-sphere and exact phases, with
   aggregate instance/node/chunk/triangle/stationary-test fences. Every final
   renderer pose/fallback tuple is sealed only after exact endpoint validation.
@@ -1117,7 +1111,8 @@ Each engineering change follows the same loop:
 
 CI tiers are explicit:
 
-- per-change: source authority guards, 81 native tests, geometry/fault units;
+- per-change: source authority guards, the registered native tests,
+  geometry/fault units;
 - camera-integration: same-binary controls, dynamic route, projection fault,
   emergency readability, 3P+T.T., and selected lifecycle route;
 - nightly: display/FOV matrix, current 20-track/47-row breadth, 4P performance,

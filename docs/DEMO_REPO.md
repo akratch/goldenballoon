@@ -5,13 +5,11 @@
 The source and the live playable demo live in two different repositories, and
 they stay separate even though both are now public.
 
-The reason is not visibility, it is *purpose*. The demo repo is a deployment
-target for GitHub Pages: its entire contents are machine-generated build output,
-replaced wholesale on every publish. Mixing that into a source repository means
-every publish rewrites tracked files nobody authored, and the Pages site's
-history becomes indistinguishable from the project's. Keeping them apart means
-the source repo has a human history and the demo repo has a build history, and
-neither pollutes the other.
+The demo repo is a deployment target for GitHub Pages: its entire contents are
+machine-generated build output, replaced wholesale on every publish. Mixing that
+into a source repository means every publish rewrites tracked files nobody
+authored, and the Pages site's history becomes indistinguishable from the
+project's.
 
 | | source repo (this one) | demo repo |
 |---|---|---|

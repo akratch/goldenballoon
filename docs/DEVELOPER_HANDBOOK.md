@@ -1,11 +1,8 @@
 # Developer handbook
 
-The orientation document for anyone working on this port. It covers what exists
-today and what demonstrates it, the recurring 64-bit and endianness bug shapes
-that account for nearly every hard defect here (§3 — read that before debugging
-anything), the testing rules, how to stay in sync with the upstream
-decompilation, and the practices that this codebase has repeatedly punished
-people for skipping.
+Orientation for anyone working on this port. **Read §3 before debugging
+anything**: the recurring 64-bit and endianness bug shapes it lists account for
+nearly every hard defect here.
 
 **Golden Balloon** is a native and browser source port of *Diddy Kong Racing*,
 built on the community
@@ -272,9 +269,9 @@ classification table at the top of `tests/README.md`.
 
 ### The reason this list is worth keeping
 
-These shapes are the point of the section, not the individual bugs. **Every one of
-them was discovered from a single report and then swept as a class, and the sweep
-always found more than the report did.** One racer falling through one volcano became
+**Every one of these shapes was discovered from a single report and then swept as
+a class, and the sweep always found more than the report did.** One racer falling
+through one volcano became
 an audit of ~90 C bodies transcribing hand-written assembly, which turned up
 `vec3f_rotate_py` with pitch and yaw transposed (reached hundreds of times per race)
 and a silently skipped collision batch. One browser crash in the wave renderer became

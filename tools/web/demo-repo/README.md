@@ -39,9 +39,6 @@ A **publication target**, nothing more. It holds only built artifacts:
 | `build-info.json` | which source commit produced this build |
 
 **There is no source code here** — no decompiled game code, no engine source.
-This repository holds only the built web artifacts that GitHub Pages serves. The
-source and native releases live in
-[`akratch/goldenballoon`](https://github.com/akratch/goldenballoon).
 
 ## Do not send pull requests here
 

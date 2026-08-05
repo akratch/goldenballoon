@@ -29,12 +29,13 @@ The manifest registers 122 of the 125 `tests/check_*.py` scripts and expands to
 135 tasks. The three it does not name directly
 (`check_controller_settings_persistence.py`, `check_host_input_focus.py`,
 `check_launcher_tabs.py`) are CTest companions that `rom_free_units` owns, so
-every check script still runs exactly once in a default pass:
-it also runs the ROM-free display/endian/magic-code/object-layout/allocator/runtime-contract,
-sprite-layout, RDP-interpolation, font-registry/SDF, and RL-1 CTests, while filename
-entry, locked-door collision, RAW16 audio, native-layout safety, and
-widescreen/shadow safety run in their specialized
-primary/Release/ASan/alignment configurations. Startup fails if a new check script is not
+every check script still runs exactly once in a default pass. That task also
+runs the ROM-free display/endian/magic-code/object-layout/allocator/
+runtime-contract, sprite-layout, RDP-interpolation, font-registry/SDF, and RL-1
+CTests, while filename entry, locked-door collision, RAW16 audio, native-layout
+safety, and widescreen/shadow safety run in their specialized
+primary/Release/ASan/alignment configurations. Startup fails if a new check
+script is not
 registered, or if a `tests/test_*.py` has no CMake `add_test()` to carry it into
 the ctest task. The run owns one temporary save directory and exports it as both
 `MDKR_SAVE_DIR` and `MDKR_TEST_SAVE_DIR`, so no suite run writes the
@@ -61,18 +62,7 @@ The v0.3 release gate passed the **38-task optimized native/sanitizer stage in
 tasks — including the linked layout check and real Chromium — in **1m05s**. The
 vehicle sweep always emits a failed child's diagnostic tail and recognizes
 UBSan text; there is no retry or tolerated-failure path in the registered gate.
-The restoration/remaster baseline passed **45/45 tasks in 31m52s**. At that
-historical checkpoint, the WebGPU lifecycle wave added `webgpu_recovery` as task
-46; it passed all 16 injected cases while the unchanged 45-task gameplay
-baseline was not serially rerun. The present manifest additionally
-registers lighting, attract-demo, challenge/battle, first-boss, Taj, and trophy
-coverage, output-resolution UI, in-game video configuration, expanded
-WebGPU fault recovery, app-shell SDL_DROPFILE ROM acquisition, absolute
-audio output level, character-select dancer motion, zip-pad boost magnitude,
-collision candidate headroom, and shadow plausibility. It also registers the
-optimized broad-UB corpus,
-dependency-ordered final-shutdown gate, and repeated real-wasm resource
-plateau gate. The ROM-free CI-contract task fails closed if push/PR triggers,
+The ROM-free CI-contract task fails closed if push/PR triggers,
 Linux GL/WebGPU, macOS WebGPU warnings, sanitizers, linked wasm, browser save
 custody, immutable action pins, or either ROM guard disappears.
 The address-domain source task separately rejects every raw native
