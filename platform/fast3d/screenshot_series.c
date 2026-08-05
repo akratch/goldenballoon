@@ -46,6 +46,14 @@ static bool screenshot_series_u64_matches_list(const char *spec, uint64_t value)
             return true;
         }
 
+        /* strtoull accepts a leading '-' and wraps it modulo 2^64, so "-1"
+         * would parse as a range endpoint matching every room. */
+        if (*p == '-' || *p == '+') {
+            while (*p != '\0' && *p != ',') {
+                p++;
+            }
+            continue;
+        }
         first = strtoull(p, &end, 0);
         if (end == p) {
             while (*p != '\0' && *p != ',') {
@@ -202,12 +210,29 @@ bool screenshot_series_capture_if_due(screenshot_series_state *st,
             return false;
         }
 
-        fprintf(sf, "P6\n%d %d\n255\n", sw, sh);
-        for (int row = sh - 1; row >= 0; row--) {
-            fwrite(pixels + (size_t)row * (size_t)sw * 3, 1, (size_t)sw * 3, sf);
+        /* "Durable full write" is the contract: a short write or a failed close
+         * (ENOSPC, EIO) must not be counted, or the caller reads a truncated PPM
+         * as a captured frame. */
+        {
+            bool write_ok =
+                fprintf(sf, "P6\n%d %d\n255\n", sw, sh) > 0;
+            for (int row = sh - 1; write_ok && row >= 0; row--) {
+                write_ok = fwrite(pixels + (size_t)row * (size_t)sw * 3, 1,
+                                  (size_t)sw * 3, sf) == (size_t)sw * 3;
+            }
+            if (fclose(sf) != 0) {
+                write_ok = false;
+            }
+            free(pixels);
+            if (!write_ok) {
+                remove(path);
+                fprintf(stderr,
+                        "[SCREENSHOT-SERIES] frame=%d failed=write path=\"%s\"\n",
+                        frame, path);
+                fflush(stderr);
+                return false;
+            }
         }
-        fclose(sf);
-        free(pixels);
 
         st->written++;
         fprintf(stderr,

@@ -664,8 +664,13 @@ static void gfx_opengl_set_uniforms(struct ShaderProgram *prg) {
         if (g_shadow_plan.valid &&
             g_shadow_receiver_view >= 0 &&
             g_shadow_receiver_view < (int)g_shadow_plan.view_count) {
+            /* `matrices` holds exactly GFX_SHADOW_MAX_CASCADES; a budget that
+             * planned more would run off the stack array. */
             cascade_count =
                 (int)g_shadow_plan.budget.cascades_per_view;
+            if (cascade_count > GFX_SHADOW_MAX_CASCADES) {
+                cascade_count = GFX_SHADOW_MAX_CASCADES;
+            }
             size_t base =
                 (size_t)g_shadow_receiver_view *
                 g_shadow_plan.budget.cascades_per_view;
@@ -829,6 +834,9 @@ static void gfx_opengl_update_a2c_state(void) {
 }
 
 static void gfx_opengl_load_shader(struct ShaderProgram *new_prg) {
+    if (new_prg == NULL) {
+        return;   /* the vtable carries no null program; keep the current one */
+    }
     glUseProgram(new_prg->opengl_program_id);
     current_shader_program = new_prg;
     gfx_opengl_vertex_array_set_attribs(new_prg);
@@ -836,12 +844,32 @@ static void gfx_opengl_load_shader(struct ShaderProgram *new_prg) {
     gfx_opengl_update_a2c_state();
 }
 
-static void append_str(char *buf, size_t *len, const char *str) {
-    while (*str != '\0') buf[(*len)++] = *str++;
+/*
+ * Shader-source builders. `cap` is the FULL size of the destination array and
+ * the writers stop one short of it, so the caller's terminating buf[*len] = 0 is
+ * always in bounds. A generated shader that does not fit is a construction bug
+ * this backend cannot render around, so it aborts rather than truncate into a
+ * silently wrong program.
+ */
+static void append_overflow(size_t cap) {
+    fprintf(stderr,
+            "[fast3d] FATAL: generated shader source exceeded its %zu-byte buffer\n",
+            cap);
+    abort();
 }
 
-static void append_line(char *buf, size_t *len, const char *str) {
-    while (*str != '\0') buf[(*len)++] = *str++;
+static void append_str(char *buf, size_t cap, size_t *len, const char *str) {
+    size_t n = strlen(str);
+    if (n + 1 > cap - *len) append_overflow(cap);
+    memcpy(buf + *len, str, n);
+    *len += n;
+}
+
+static void append_line(char *buf, size_t cap, size_t *len, const char *str) {
+    size_t n = strlen(str);
+    if (n + 2 > cap - *len) append_overflow(cap);
+    memcpy(buf + *len, str, n);
+    *len += n;
     buf[(*len)++] = '\n';
 }
 
@@ -906,30 +934,30 @@ static const char *shader_item_to_str(uint32_t item, bool with_alpha, bool only_
     return "0.0";
 }
 
-static void append_formula(char *buf, size_t *len, uint8_t c[2][4], bool do_single, bool do_multiply, bool do_mix, bool with_alpha, bool only_alpha, bool opt_alpha) {
+static void append_formula(char *buf, size_t cap, size_t *len, uint8_t c[2][4], bool do_single, bool do_multiply, bool do_mix, bool with_alpha, bool only_alpha, bool opt_alpha) {
     if (do_single) {
-        append_str(buf, len, shader_item_to_str(c[only_alpha][3], with_alpha, only_alpha, opt_alpha, false));
+        append_str(buf, cap, len, shader_item_to_str(c[only_alpha][3], with_alpha, only_alpha, opt_alpha, false));
     } else if (do_multiply) {
-        append_str(buf, len, shader_item_to_str(c[only_alpha][0], with_alpha, only_alpha, opt_alpha, false));
-        append_str(buf, len, " * ");
-        append_str(buf, len, shader_item_to_str(c[only_alpha][2], with_alpha, only_alpha, opt_alpha, true));
+        append_str(buf, cap, len, shader_item_to_str(c[only_alpha][0], with_alpha, only_alpha, opt_alpha, false));
+        append_str(buf, cap, len, " * ");
+        append_str(buf, cap, len, shader_item_to_str(c[only_alpha][2], with_alpha, only_alpha, opt_alpha, true));
     } else if (do_mix) {
-        append_str(buf, len, "mix(");
-        append_str(buf, len, shader_item_to_str(c[only_alpha][1], with_alpha, only_alpha, opt_alpha, false));
-        append_str(buf, len, ", ");
-        append_str(buf, len, shader_item_to_str(c[only_alpha][0], with_alpha, only_alpha, opt_alpha, false));
-        append_str(buf, len, ", ");
-        append_str(buf, len, shader_item_to_str(c[only_alpha][2], with_alpha, only_alpha, opt_alpha, true));
-        append_str(buf, len, ")");
+        append_str(buf, cap, len, "mix(");
+        append_str(buf, cap, len, shader_item_to_str(c[only_alpha][1], with_alpha, only_alpha, opt_alpha, false));
+        append_str(buf, cap, len, ", ");
+        append_str(buf, cap, len, shader_item_to_str(c[only_alpha][0], with_alpha, only_alpha, opt_alpha, false));
+        append_str(buf, cap, len, ", ");
+        append_str(buf, cap, len, shader_item_to_str(c[only_alpha][2], with_alpha, only_alpha, opt_alpha, true));
+        append_str(buf, cap, len, ")");
     } else {
-        append_str(buf, len, "(");
-        append_str(buf, len, shader_item_to_str(c[only_alpha][0], with_alpha, only_alpha, opt_alpha, false));
-        append_str(buf, len, " - ");
-        append_str(buf, len, shader_item_to_str(c[only_alpha][1], with_alpha, only_alpha, opt_alpha, false));
-        append_str(buf, len, ") * ");
-        append_str(buf, len, shader_item_to_str(c[only_alpha][2], with_alpha, only_alpha, opt_alpha, true));
-        append_str(buf, len, " + ");
-        append_str(buf, len, shader_item_to_str(c[only_alpha][3], with_alpha, only_alpha, opt_alpha, false));
+        append_str(buf, cap, len, "(");
+        append_str(buf, cap, len, shader_item_to_str(c[only_alpha][0], with_alpha, only_alpha, opt_alpha, false));
+        append_str(buf, cap, len, " - ");
+        append_str(buf, cap, len, shader_item_to_str(c[only_alpha][1], with_alpha, only_alpha, opt_alpha, false));
+        append_str(buf, cap, len, ") * ");
+        append_str(buf, cap, len, shader_item_to_str(c[only_alpha][2], with_alpha, only_alpha, opt_alpha, true));
+        append_str(buf, cap, len, " + ");
+        append_str(buf, cap, len, shader_item_to_str(c[only_alpha][3], with_alpha, only_alpha, opt_alpha, false));
     }
 }
 
@@ -967,37 +995,37 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
 
     /* Use GLSL 150 for macOS Core Profile, 320 es for GLES3, 330 elsewhere */
 #ifdef MGB64_PORTMASTER_GLES
-    append_line(vs_buf, &vs_len, "#version 320 es");
-    append_line(vs_buf, &vs_len, "precision mediump float;");
+    append_line(vs_buf, sizeof(vs_buf), &vs_len, "#version 320 es");
+    append_line(vs_buf, sizeof(vs_buf), &vs_len, "precision mediump float;");
 #elif defined(__APPLE__)
-    append_line(vs_buf, &vs_len, "#version 150");
+    append_line(vs_buf, sizeof(vs_buf), &vs_len, "#version 150");
 #else
-    append_line(vs_buf, &vs_len, "#version 330 core");
+    append_line(vs_buf, sizeof(vs_buf), &vs_len, "#version 330 core");
 #endif
-    append_line(vs_buf, &vs_len, "in vec4 aVtxPos;");
+    append_line(vs_buf, sizeof(vs_buf), &vs_len, "in vec4 aVtxPos;");
     if (cc_features.opt_alpha && cc_features.diag_rdp_cvg_memory_blend) {
-        append_line(vs_buf, &vs_len, "in vec4 aDiagTri01;");
-        append_line(vs_buf, &vs_len, "in vec2 aDiagTri2;");
-        append_line(vs_buf, &vs_len, "noperspective out vec4 vDiagTri01;");
-        append_line(vs_buf, &vs_len, "noperspective out vec2 vDiagTri2;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "in vec4 aDiagTri01;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "in vec2 aDiagTri2;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "noperspective out vec4 vDiagTri01;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "noperspective out vec2 vDiagTri2;");
         num_floats += 6;
     }
     /* W1.E2.T3: world-space position attribute, at the same ordinal as the pack
      * order (after pos/diag, before texcoords) so the VBO stride stays aligned. */
     if (cc_features.opt_world_pos) {
-        append_line(vs_buf, &vs_len, "in vec3 aWorldPos;");
-        append_line(vs_buf, &vs_len, "out vec3 vWorldPos;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "in vec3 aWorldPos;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "out vec3 vWorldPos;");
         num_floats += 3;
     }
     if (cc_features.opt_sun_shadow) {
-        append_line(vs_buf, &vs_len, "out float vShadowDepth;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "out float vShadowDepth;");
     }
     /* RL-5: real smooth model normal and object-local sun direction. */
     if (cc_features.opt_dfdx_light) {
-        append_line(vs_buf, &vs_len, "in vec3 aSmoothNormal;");
-        append_line(vs_buf, &vs_len, "in vec3 aLightDir;");
-        append_line(vs_buf, &vs_len, "out vec3 vSmoothNormal;");
-        append_line(vs_buf, &vs_len, "out vec3 vLightDir;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "in vec3 aSmoothNormal;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "in vec3 aLightDir;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "out vec3 vSmoothNormal;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "out vec3 vLightDir;");
         num_floats += 6;
     }
     for (int i = 0; i < 2; i++) {
@@ -1031,7 +1059,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         }
     }
     if (cc_features.opt_fog) {
-        append_line(vs_buf, &vs_len, "in vec4 aFog;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "in vec4 aFog;");
         vs_len += ge007_sprintf(vs_buf + vs_len, "%sout vec4 vFog;\n",
                                  fog_interp);
         num_floats += 4;
@@ -1042,20 +1070,20 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
                                  input_interp, cc_features.opt_alpha ? 4 : 3, i + 1);
         num_floats += cc_features.opt_alpha ? 4 : 3;
     }
-    append_line(vs_buf, &vs_len, "void main() {");
+    append_line(vs_buf, sizeof(vs_buf), &vs_len, "void main() {");
     if (cc_features.opt_alpha && cc_features.diag_rdp_cvg_memory_blend) {
-        append_line(vs_buf, &vs_len, "vDiagTri01 = aDiagTri01;");
-        append_line(vs_buf, &vs_len, "vDiagTri2 = aDiagTri2;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "vDiagTri01 = aDiagTri01;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "vDiagTri2 = aDiagTri2;");
     }
     if (cc_features.opt_world_pos) {
-        append_line(vs_buf, &vs_len, "vWorldPos = aWorldPos;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "vWorldPos = aWorldPos;");
     }
     if (cc_features.opt_sun_shadow) {
-        append_line(vs_buf, &vs_len, "vShadowDepth = aVtxPos.w;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "vShadowDepth = aVtxPos.w;");
     }
     if (cc_features.opt_dfdx_light) {
-        append_line(vs_buf, &vs_len, "vSmoothNormal = aSmoothNormal;");
-        append_line(vs_buf, &vs_len, "vLightDir = aLightDir;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "vSmoothNormal = aSmoothNormal;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "vLightDir = aLightDir;");
     }
     for (int i = 0; i < 2; i++) {
         if (cc_features.used_textures[i]) {
@@ -1077,48 +1105,48 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         }
     }
     if (cc_features.opt_fog) {
-        append_line(vs_buf, &vs_len, "vFog = aFog;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "vFog = aFog;");
     }
     for (int i = 0; i < cc_features.num_inputs; i++) {
         vs_len += ge007_sprintf(vs_buf + vs_len, "vInput%d = aInput%d;\n", i + 1, i + 1);
     }
-    append_line(vs_buf, &vs_len, "gl_Position = aVtxPos;");
+    append_line(vs_buf, sizeof(vs_buf), &vs_len, "gl_Position = aVtxPos;");
     if (!g_depth_clamp_enabled) {
         /* Depth range fix: N64 perspective maps most geometry to z/w ≈
          * 0.998-1.005, clustering the entire scene into <1% of the depth
          * buffer. Scaling clip-space z by 0.3 spreads the useful range while
          * the CPU clipper keeps triangles inside the effective frustum.
          * Skipped when GL_DEPTH_CLAMP is available (PD's preferred approach). */
-        append_line(vs_buf, &vs_len, "gl_Position.z *= 0.3;");
+        append_line(vs_buf, sizeof(vs_buf), &vs_len, "gl_Position.z *= 0.3;");
     }
-    append_line(vs_buf, &vs_len, "}");
+    append_line(vs_buf, sizeof(vs_buf), &vs_len, "}");
 
     /* Fragment shader */
 #ifdef MGB64_PORTMASTER_GLES
-    append_line(fs_buf, &fs_len, "#version 320 es");
-    append_line(fs_buf, &fs_len, "precision mediump float;");
-    append_line(fs_buf, &fs_len, "out vec4 fragColor;");
+    append_line(fs_buf, sizeof(fs_buf), &fs_len, "#version 320 es");
+    append_line(fs_buf, sizeof(fs_buf), &fs_len, "precision mediump float;");
+    append_line(fs_buf, sizeof(fs_buf), &fs_len, "out vec4 fragColor;");
 #elif defined(__APPLE__)
-    append_line(fs_buf, &fs_len, "#version 150");
-    append_line(fs_buf, &fs_len, "out vec4 fragColor;");
+    append_line(fs_buf, sizeof(fs_buf), &fs_len, "#version 150");
+    append_line(fs_buf, sizeof(fs_buf), &fs_len, "out vec4 fragColor;");
 #else
-    append_line(fs_buf, &fs_len, "#version 330 core");
-    append_line(fs_buf, &fs_len, "out vec4 fragColor;");
+    append_line(fs_buf, sizeof(fs_buf), &fs_len, "#version 330 core");
+    append_line(fs_buf, sizeof(fs_buf), &fs_len, "out vec4 fragColor;");
 #endif
     if (cc_features.opt_world_pos) {
-        append_line(fs_buf, &fs_len, "in vec3 vWorldPos;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "in vec3 vWorldPos;");
     }
     if (cc_features.opt_sun_shadow) {
-        append_line(fs_buf, &fs_len, "in float vShadowDepth;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "in float vShadowDepth;");
     }
     if (cc_features.opt_dfdx_light) {
-        append_line(fs_buf, &fs_len, "in vec3 vSmoothNormal;");
-        append_line(fs_buf, &fs_len, "in vec3 vLightDir;");
-        append_line(fs_buf, &fs_len, "uniform vec3 uSunColorLinear;");
-        append_line(fs_buf, &fs_len, "uniform float uSunStrength;");
-        append_line(fs_buf, &fs_len,
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "in vec3 vSmoothNormal;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "in vec3 vLightDir;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform vec3 uSunColorLinear;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform float uSunStrength;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len,
                     "vec3 mdkrSrgbToLinear(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)); }");
-        append_line(fs_buf, &fs_len,
+        append_line(fs_buf, sizeof(fs_buf), &fs_len,
                     "vec3 mdkrLinearToSrgb(vec3 c) { c = max(c, vec3(0.0)); return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c)); }");
     }
     for (int i = 0; i < 2; i++) {
@@ -1150,60 +1178,60 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
                                  input_interp, cc_features.opt_alpha ? 4 : 3, i + 1);
     }
     if (cc_features.opt_alpha && cc_features.diag_rdp_cvg_memory_blend) {
-        append_line(fs_buf, &fs_len, "noperspective in vec4 vDiagTri01;");
-        append_line(fs_buf, &fs_len, "noperspective in vec2 vDiagTri2;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "noperspective in vec4 vDiagTri01;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "noperspective in vec2 vDiagTri2;");
     }
     if (cc_features.used_textures[0]) {
-        append_line(fs_buf, &fs_len, "uniform sampler2D uTex0;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform sampler2D uTex0;");
     }
     if (cc_features.used_textures[1]) {
-        append_line(fs_buf, &fs_len, "uniform sampler2D uTex1;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform sampler2D uTex1;");
     }
     if (cc_features.opt_alpha &&
         (cc_features.diag_rdp_memory_blend || cc_features.diag_rdp_cvg_memory_blend)) {
-        append_line(fs_buf, &fs_len, "uniform sampler2D uDiagFramebuffer;");
-        append_line(fs_buf, &fs_len, "uniform vec2 uDiagFramebufferOrigin;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform sampler2D uDiagFramebuffer;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform vec2 uDiagFramebufferOrigin;");
     }
     if (cc_features.opt_alpha && cc_features.diag_rdp_cvg_memory_blend) {
-        append_line(fs_buf, &fs_len, "uniform vec4 uDiagViewport;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform vec4 uDiagViewport;");
     }
     /* W1.E3.T4: sun-shadow receiver uniforms (texture unit 5; §4.4). */
     if (cc_features.opt_sun_shadow) {
-        append_line(fs_buf, &fs_len, "uniform sampler2DArrayShadow uShadowMap;");
-        append_line(fs_buf, &fs_len, "uniform mat4 uShadowMat[2];");
-        append_line(fs_buf, &fs_len, "uniform vec4 uShadowParams;");
-        append_line(fs_buf, &fs_len, "uniform vec4 uShadowSplitsLayers;");
-        append_line(fs_buf, &fs_len, "float mdkrShadowCascade(int cascade, float layer) {");
-        append_line(fs_buf, &fs_len, "  vec4 sc = uShadowMat[cascade] * vec4(vWorldPos, 1.0);");
-        append_line(fs_buf, &fs_len, "  vec3 suv = sc.xyz / sc.w * 0.5 + 0.5;");
-        append_line(fs_buf, &fs_len, "  if (any(greaterThan(abs(suv - 0.5), vec3(0.5)))) return 1.0;");
-        append_line(fs_buf, &fs_len, "  float sh = 0.0;");
-        append_line(fs_buf, &fs_len, "  for (int dy = -1; dy <= 1; ++dy)");
-        append_line(fs_buf, &fs_len, "    for (int dx = -1; dx <= 1; ++dx)");
-        append_line(fs_buf, &fs_len, "      sh += texture(uShadowMap, vec4(suv.xy + vec2(dx, dy) * uShadowParams.x, layer, suv.z - uShadowParams.y));");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform sampler2DArrayShadow uShadowMap;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform mat4 uShadowMat[2];");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform vec4 uShadowParams;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform vec4 uShadowSplitsLayers;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "float mdkrShadowCascade(int cascade, float layer) {");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "  vec4 sc = uShadowMat[cascade] * vec4(vWorldPos, 1.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "  vec3 suv = sc.xyz / sc.w * 0.5 + 0.5;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "  if (any(greaterThan(abs(suv - 0.5), vec3(0.5)))) return 1.0;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "  float sh = 0.0;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "  for (int dy = -1; dy <= 1; ++dy)");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    for (int dx = -1; dx <= 1; ++dx)");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "      sh += texture(uShadowMap, vec4(suv.xy + vec2(dx, dy) * uShadowParams.x, layer, suv.z - uShadowParams.y));");
         /* Fade to lit over the outermost band of the map footprint instead of
          * terminating on a hard line: the far cascade ends well inside the
          * camera far plane, and a sliding shadow/lit edge on long sight
          * lines reads as an artifact. */
-        append_line(fs_buf, &fs_len, "  float edge = max(abs(suv.x - 0.5), abs(suv.y - 0.5)) * 2.0;");
-        append_line(fs_buf, &fs_len, "  return mix(sh / 9.0, 1.0, smoothstep(0.92, 1.0, edge));");
-        append_line(fs_buf, &fs_len, "}");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "  float edge = max(abs(suv.x - 0.5), abs(suv.y - 0.5)) * 2.0;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "  return mix(sh / 9.0, 1.0, smoothstep(0.92, 1.0, edge));");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "}");
     }
 
     if (uses_tile_mask || cc_features.n64_filter[0] || cc_features.n64_filter[1]) {
-        append_line(fs_buf, &fs_len, "float n64TileMaskAxis(float texelCoord, float maskPeriod) {");
-        append_line(fs_buf, &fs_len, "    float extent = abs(maskPeriod);");
-        append_line(fs_buf, &fs_len, "    if (extent <= 0.5) return texelCoord;");
-        append_line(fs_buf, &fs_len, "    float coord = mod(texelCoord, maskPeriod < 0.0 ? extent * 2.0 : extent);");
-        append_line(fs_buf, &fs_len, "    if (maskPeriod < 0.0 && coord >= extent) coord = extent * 2.0 - coord;");
-        append_line(fs_buf, &fs_len, "    return coord;");
-        append_line(fs_buf, &fs_len, "}");
-        append_line(fs_buf, &fs_len, "vec2 n64TileMaskUv(vec2 uv, vec2 texSize, float maskS, float maskT) {");
-        append_line(fs_buf, &fs_len, "    vec2 texelCoord = uv * texSize;");
-        append_line(fs_buf, &fs_len, "    texelCoord.s = n64TileMaskAxis(texelCoord.s, maskS);");
-        append_line(fs_buf, &fs_len, "    texelCoord.t = n64TileMaskAxis(texelCoord.t, maskT);");
-        append_line(fs_buf, &fs_len, "    return texelCoord / texSize;");
-        append_line(fs_buf, &fs_len, "}");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "float n64TileMaskAxis(float texelCoord, float maskPeriod) {");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    float extent = abs(maskPeriod);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    if (extent <= 0.5) return texelCoord;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    float coord = mod(texelCoord, maskPeriod < 0.0 ? extent * 2.0 : extent);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    if (maskPeriod < 0.0 && coord >= extent) coord = extent * 2.0 - coord;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    return coord;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "}");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec2 n64TileMaskUv(vec2 uv, vec2 texSize, float maskS, float maskT) {");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec2 texelCoord = uv * texSize;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    texelCoord.s = n64TileMaskAxis(texelCoord.s, maskS);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    texelCoord.t = n64TileMaskAxis(texelCoord.t, maskT);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    return texelCoord / texSize;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "}");
     }
 
     if (cc_features.n64_filter[0] || cc_features.n64_filter[1]) {
@@ -1216,28 +1244,28 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
             gfx_diag_n64_filter_nearest_threshold(cc_features.opt_texture_edge,
                                                   clamped,
                                                   1.0f);
-        append_line(fs_buf, &fs_len, "uniform vec2 uN64FilterScale;");
-        append_line(fs_buf, &fs_len, "vec4 n64TextureFilter(sampler2D tex, vec2 uv, float maskS, float maskT) {");
-        append_line(fs_buf, &fs_len, "    vec2 texSize = vec2(textureSize(tex, 0));");
-        append_line(fs_buf, &fs_len, "    vec2 texelCoord = uv * texSize;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform vec2 uN64FilterScale;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec4 n64TextureFilter(sampler2D tex, vec2 uv, float maskS, float maskT) {");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec2 texSize = vec2(textureSize(tex, 0));");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec2 texelCoord = uv * texSize;");
         if (!always_3point) {
-            append_line(fs_buf, &fs_len, "    vec2 dx = dFdx(texelCoord) * uN64FilterScale.x;");
-            append_line(fs_buf, &fs_len, "    vec2 dy = dFdy(texelCoord) * uN64FilterScale.y;");
-            append_line(fs_buf, &fs_len, "    vec2 footprint = max(abs(dx), abs(dy));");
+            append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec2 dx = dFdx(texelCoord) * uN64FilterScale.x;");
+            append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec2 dy = dFdy(texelCoord) * uN64FilterScale.y;");
+            append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec2 footprint = max(abs(dx), abs(dy));");
             fs_len += ge007_sprintf(fs_buf + fs_len,
                                      "    if (max(footprint.x, footprint.y) < %.9f) {\n",
                                      nearest_threshold);
-            append_line(fs_buf, &fs_len, "        return textureLod(tex, n64TileMaskUv((floor(texelCoord) + vec2(0.5)) / texSize, texSize, maskS, maskT), 0.0);");
-            append_line(fs_buf, &fs_len, "    }");
+            append_line(fs_buf, sizeof(fs_buf), &fs_len, "        return textureLod(tex, n64TileMaskUv((floor(texelCoord) + vec2(0.5)) / texSize, texSize, maskS, maskT), 0.0);");
+            append_line(fs_buf, sizeof(fs_buf), &fs_len, "    }");
         }
-        append_line(fs_buf, &fs_len, "    vec2 offset = fract(uv * texSize - vec2(0.5));");
-        append_line(fs_buf, &fs_len, "    offset -= step(1.0, offset.x + offset.y);");
-        append_line(fs_buf, &fs_len, "    vec2 baseUv = uv - offset / texSize;");
-        append_line(fs_buf, &fs_len, "    vec4 c0 = textureLod(tex, n64TileMaskUv(baseUv, texSize, maskS, maskT), 0.0);");
-        append_line(fs_buf, &fs_len, "    vec4 c1 = textureLod(tex, n64TileMaskUv(baseUv + vec2(sign(offset.x), 0.0) / texSize, texSize, maskS, maskT), 0.0);");
-        append_line(fs_buf, &fs_len, "    vec4 c2 = textureLod(tex, n64TileMaskUv(baseUv + vec2(0.0, sign(offset.y)) / texSize, texSize, maskS, maskT), 0.0);");
-        append_line(fs_buf, &fs_len, "    return c0 + abs(offset.x) * (c1 - c0) + abs(offset.y) * (c2 - c0);");
-        append_line(fs_buf, &fs_len, "}");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec2 offset = fract(uv * texSize - vec2(0.5));");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    offset -= step(1.0, offset.x + offset.y);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec2 baseUv = uv - offset / texSize;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec4 c0 = textureLod(tex, n64TileMaskUv(baseUv, texSize, maskS, maskT), 0.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec4 c1 = textureLod(tex, n64TileMaskUv(baseUv + vec2(sign(offset.x), 0.0) / texSize, texSize, maskS, maskT), 0.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec4 c2 = textureLod(tex, n64TileMaskUv(baseUv + vec2(0.0, sign(offset.y)) / texSize, texSize, maskS, maskT), 0.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    return c0 + abs(offset.x) * (c1 - c0) + abs(offset.y) * (c2 - c0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "}");
     }
 
     /* Declare noise function if ANY combiner input uses SHADER_NOISE,
@@ -1250,32 +1278,32 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
                     if (cc_features.c[ci][cj][ck] == SHADER_NOISE) needs_noise = true;
     }
     if (needs_noise) {
-        append_line(fs_buf, &fs_len, "uniform int frame_count;");
-        append_line(fs_buf, &fs_len, "uniform int window_height;");
-        append_line(fs_buf, &fs_len, "float random(in vec3 value) {");
-        append_line(fs_buf, &fs_len, "    float random = dot(sin(value), vec3(12.9898, 78.233, 37.719));");
-        append_line(fs_buf, &fs_len, "    return fract(sin(random) * 143758.5453);");
-        append_line(fs_buf, &fs_len, "}");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform int frame_count;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform int window_height;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "float random(in vec3 value) {");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    float random = dot(sin(value), vec3(12.9898, 78.233, 37.719));");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    return fract(sin(random) * 143758.5453);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "}");
     }
     if (cc_features.opt_alpha && cc_features.diag_rdp_cvg_memory_blend) {
-        append_line(fs_buf, &fs_len, "float diagEdge(vec2 a, vec2 b, vec2 p) {");
-        append_line(fs_buf, &fs_len, "    return (p.x - a.x) * (b.y - a.y) - (p.y - a.y) * (b.x - a.x);");
-        append_line(fs_buf, &fs_len, "}");
-        append_line(fs_buf, &fs_len, "float diagInsideTri(vec2 p, vec2 a, vec2 b, vec2 c) {");
-        append_line(fs_buf, &fs_len, "    float e0 = diagEdge(a, b, p);");
-        append_line(fs_buf, &fs_len, "    float e1 = diagEdge(b, c, p);");
-        append_line(fs_buf, &fs_len, "    float e2 = diagEdge(c, a, p);");
-        append_line(fs_buf, &fs_len, "    bool hasNeg = (e0 < 0.0) || (e1 < 0.0) || (e2 < 0.0);");
-        append_line(fs_buf, &fs_len, "    bool hasPos = (e0 > 0.0) || (e1 > 0.0) || (e2 > 0.0);");
-        append_line(fs_buf, &fs_len, "    return (hasNeg && hasPos) ? 0.0 : 1.0;");
-        append_line(fs_buf, &fs_len, "}");
-        append_line(fs_buf, &fs_len, "float diagCoverageSample(vec2 pixelOffset, vec2 a, vec2 b, vec2 c) {");
-        append_line(fs_buf, &fs_len, "    vec2 p = ((gl_FragCoord.xy + pixelOffset - uDiagViewport.xy) / uDiagViewport.zw) * 2.0 - 1.0;");
-        append_line(fs_buf, &fs_len, "    return diagInsideTri(p, a, b, c);");
-        append_line(fs_buf, &fs_len, "}");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "float diagEdge(vec2 a, vec2 b, vec2 p) {");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    return (p.x - a.x) * (b.y - a.y) - (p.y - a.y) * (b.x - a.x);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "}");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "float diagInsideTri(vec2 p, vec2 a, vec2 b, vec2 c) {");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    float e0 = diagEdge(a, b, p);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    float e1 = diagEdge(b, c, p);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    float e2 = diagEdge(c, a, p);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    bool hasNeg = (e0 < 0.0) || (e1 < 0.0) || (e2 < 0.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    bool hasPos = (e0 > 0.0) || (e1 > 0.0) || (e2 > 0.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    return (hasNeg && hasPos) ? 0.0 : 1.0;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "}");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "float diagCoverageSample(vec2 pixelOffset, vec2 a, vec2 b, vec2 c) {");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec2 p = ((gl_FragCoord.xy + pixelOffset - uDiagViewport.xy) / uDiagViewport.zw) * 2.0 - 1.0;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    return diagInsideTri(p, a, b, c);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "}");
     }
 
-    append_line(fs_buf, &fs_len, "void main() {");
+    append_line(fs_buf, sizeof(fs_buf), &fs_len, "void main() {");
 
     /* Shader-side UV clamping (PD pattern): clamp tex coords to the live
      * N64 tile's logical window, not blindly to the GL texture's 0..1 range. */
@@ -1319,7 +1347,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
                                     "vec4 texVal0 = texture(uTex0, n64TileMaskUv(sampleTexCoord0, texSize0, %s, %s));\n",
                                     mask_s, mask_t);
         } else {
-            append_line(fs_buf, &fs_len, "vec4 texVal0 = texture(uTex0, sampleTexCoord0);");
+            append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec4 texVal0 = texture(uTex0, sampleTexCoord0);");
         }
     }
     if (cc_features.used_textures[1]) {
@@ -1334,7 +1362,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
                                     "vec4 texVal1 = texture(uTex1, n64TileMaskUv(sampleTexCoord1, texSize1, %s, %s));\n",
                                     mask_s, mask_t);
         } else {
-            append_line(fs_buf, &fs_len, "vec4 texVal1 = texture(uTex1, sampleTexCoord1);");
+            append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec4 texVal1 = texture(uTex1, sampleTexCoord1);");
         }
     }
     if (cc_features.opt_alpha && cc_features.diag_alpha_from_tex_intensity) {
@@ -1353,40 +1381,40 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
 
     /* 2-cycle combiner: emit formula for each cycle.
      * SHADER_COMBINED in cycle 1 references the 'texel' variable written by cycle 0. */
-    append_line(fs_buf, &fs_len, cc_features.opt_alpha ? "vec4 texel;" : "vec3 texel;");
+    append_line(fs_buf, sizeof(fs_buf), &fs_len, cc_features.opt_alpha ? "vec4 texel;" : "vec3 texel;");
 
     int num_cycles = cc_features.opt_2cyc ? 2 : 1;
     for (int cyc = 0; cyc < num_cycles; cyc++) {
-        append_str(fs_buf, &fs_len, "texel = ");
+        append_str(fs_buf, sizeof(fs_buf), &fs_len, "texel = ");
         if (!cc_features.color_alpha_same[cyc] && cc_features.opt_alpha) {
-            append_str(fs_buf, &fs_len, "vec4(");
-            append_formula(fs_buf, &fs_len, cc_features.c[cyc],
+            append_str(fs_buf, sizeof(fs_buf), &fs_len, "vec4(");
+            append_formula(fs_buf, sizeof(fs_buf), &fs_len, cc_features.c[cyc],
                            cc_features.do_single[cyc][0], cc_features.do_multiply[cyc][0],
                            cc_features.do_mix[cyc][0], false, false, true);
-            append_str(fs_buf, &fs_len, ", ");
-            append_formula(fs_buf, &fs_len, cc_features.c[cyc],
+            append_str(fs_buf, sizeof(fs_buf), &fs_len, ", ");
+            append_formula(fs_buf, sizeof(fs_buf), &fs_len, cc_features.c[cyc],
                            cc_features.do_single[cyc][1], cc_features.do_multiply[cyc][1],
                            cc_features.do_mix[cyc][1], true, true, true);
-            append_str(fs_buf, &fs_len, ")");
+            append_str(fs_buf, sizeof(fs_buf), &fs_len, ")");
         } else {
-            append_formula(fs_buf, &fs_len, cc_features.c[cyc],
+            append_formula(fs_buf, sizeof(fs_buf), &fs_len, cc_features.c[cyc],
                            cc_features.do_single[cyc][0], cc_features.do_multiply[cyc][0],
                            cc_features.do_mix[cyc][0], cc_features.opt_alpha, false,
                            cc_features.opt_alpha);
         }
-        append_line(fs_buf, &fs_len, ";");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, ";");
 
         /* Color wrapping between cycles (PD pattern) */
         if (cyc == 0 && num_cycles == 2) {
-            append_line(fs_buf, &fs_len, "texel = clamp(texel, -1.01, 1.01);");
+            append_line(fs_buf, sizeof(fs_buf), &fs_len, "texel = clamp(texel, -1.01, 1.01);");
         }
         if (quantize_combiner) {
-            append_line(fs_buf, &fs_len,
+            append_line(fs_buf, sizeof(fs_buf), &fs_len,
                         "texel = floor(clamp(texel, 0.0, 1.0) * 255.0 + 0.5) / 255.0;");
         }
     }
     /* Final clamp after all cycles */
-    append_line(fs_buf, &fs_len, "texel = clamp(texel, 0.0, 1.0);");
+    append_line(fs_buf, sizeof(fs_buf), &fs_len, "texel = clamp(texel, 0.0, 1.0);");
 
     /*
      * RL-5: the N64 combiner finishes in authored sRGB code values. Cross the
@@ -1397,12 +1425,12 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
      * base; no luma replacement or divide can erase authored mood.
      */
     if (cc_features.opt_dfdx_light) {
-        append_line(fs_buf, &fs_len, "vec3 smoothN = normalize(vSmoothNormal);");
-        append_line(fs_buf, &fs_len, "vec3 localSun = normalize(vLightDir);");
-        append_line(fs_buf, &fs_len, "float ndl = max(dot(smoothN, localSun), 0.0);");
-        append_line(fs_buf, &fs_len, "vec3 litLinear = mdkrSrgbToLinear(texel.rgb);");
-        append_line(fs_buf, &fs_len, "litLinear *= vec3(1.0) + uSunColorLinear * (uSunStrength * ndl);");
-        append_line(fs_buf, &fs_len, "texel.rgb = clamp(mdkrLinearToSrgb(litLinear), 0.0, 1.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec3 smoothN = normalize(vSmoothNormal);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec3 localSun = normalize(vLightDir);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "float ndl = max(dot(smoothN, localSun), 0.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec3 litLinear = mdkrSrgbToLinear(texel.rgb);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "litLinear *= vec3(1.0) + uSunColorLinear * (uSunStrength * ndl);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "texel.rgb = clamp(mdkrLinearToSrgb(litLinear), 0.0, 1.0);");
     }
 
     /* W1.E3.T4: sun-shadow receiver — 3x3 PCF, injected AFTER RL-5 lighting (so
@@ -1410,36 +1438,36 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
      * stay dark) and BEFORE the fog mix so fog always wins (lighting must not
      * brighten fog, §4.5). */
     if (cc_features.opt_sun_shadow) {
-        append_line(fs_buf, &fs_len, "{");
-        append_line(fs_buf, &fs_len, "  float sh = mdkrShadowCascade(0, uShadowSplitsLayers.z);");
-        append_line(fs_buf, &fs_len, "  if (uShadowParams.w > 1.5) {");
-        append_line(fs_buf, &fs_len, "    float farShadow = mdkrShadowCascade(1, uShadowSplitsLayers.w);");
-        append_line(fs_buf, &fs_len, "    float transition = smoothstep(uShadowSplitsLayers.x, uShadowSplitsLayers.y, vShadowDepth);");
-        append_line(fs_buf, &fs_len, "    sh = mix(sh, farShadow, transition);");
-        append_line(fs_buf, &fs_len, "  }");
-        append_line(fs_buf, &fs_len, "  texel.rgb *= mix(uShadowParams.z, 1.0, sh);");
-        append_line(fs_buf, &fs_len, "}");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "{");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "  float sh = mdkrShadowCascade(0, uShadowSplitsLayers.z);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "  if (uShadowParams.w > 1.5) {");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    float farShadow = mdkrShadowCascade(1, uShadowSplitsLayers.w);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    float transition = smoothstep(uShadowSplitsLayers.x, uShadowSplitsLayers.y, vShadowDepth);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    sh = mix(sh, farShadow, transition);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "  }");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "  texel.rgb *= mix(uShadowParams.z, 1.0, sh);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "}");
     }
 
     if (cc_features.opt_fog) {
         if (cc_features.opt_dfdx_light) {
-            append_line(fs_buf, &fs_len,
+            append_line(fs_buf, sizeof(fs_buf), &fs_len,
                         "texel.rgb = mdkrLinearToSrgb(mix(mdkrSrgbToLinear(texel.rgb), mdkrSrgbToLinear(vFog.rgb), vFog.a));");
         } else if (cc_features.opt_alpha) {
-            append_line(fs_buf, &fs_len, "texel = vec4(mix(texel.rgb, vFog.rgb, vFog.a), texel.a);");
+            append_line(fs_buf, sizeof(fs_buf), &fs_len, "texel = vec4(mix(texel.rgb, vFog.rgb, vFog.a), texel.a);");
         } else {
-            append_line(fs_buf, &fs_len, "texel = mix(texel, vFog.rgb, vFog.a);");
+            append_line(fs_buf, sizeof(fs_buf), &fs_len, "texel = mix(texel, vFog.rgb, vFog.a);");
         }
     }
 
     if (cc_features.opt_texture_edge && cc_features.opt_alpha) {
-        append_line(fs_buf, &fs_len,
+        append_line(fs_buf, sizeof(fs_buf), &fs_len,
                     "if (texel.a > " GFX_TEXTURE_EDGE_ALPHA_THRESHOLD_SHADER
                     ") texel.a = 1.0; else discard;");
     }
 
     if (cc_features.opt_alpha && cc_features.opt_noise) {
-        append_line(fs_buf, &fs_len, "texel.a *= floor(random(vec3(floor(gl_FragCoord.xy * (240.0 / float(window_height))), float(frame_count))) + 0.5);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "texel.a *= floor(random(vec3(floor(gl_FragCoord.xy * (240.0 / float(window_height))), float(frame_count))) + 0.5);");
     }
 
     if (cc_features.diag_color_scale) {
@@ -1462,7 +1490,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
                                 scale);
     }
     if (cc_features.opt_alpha && cc_features.room_water_alpha_suppress) {
-        append_line(fs_buf, &fs_len, "texel.a = 0.0;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "texel.a = 0.0;");
     }
 
     if (cc_features.opt_alpha && cc_features.diag_xlu_coverage_wrap_thin) {
@@ -1474,55 +1502,55 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     }
 
     if (cc_features.opt_alpha && cc_features.diag_rdp_cvg_memory_blend) {
-        append_line(fs_buf, &fs_len, "vec2 memoryUv = (gl_FragCoord.xy - uDiagFramebufferOrigin) / vec2(textureSize(uDiagFramebuffer, 0));");
-        append_line(fs_buf, &fs_len, "vec4 memoryColor = texture(uDiagFramebuffer, clamp(memoryUv, vec2(0.0), vec2(1.0)));");
-        append_line(fs_buf, &fs_len, "vec2 diagTri0 = vDiagTri01.xy;");
-        append_line(fs_buf, &fs_len, "vec2 diagTri1 = vDiagTri01.zw;");
-        append_line(fs_buf, &fs_len, "vec2 diagTri2 = vDiagTri2;");
-        append_line(fs_buf, &fs_len, "float coverageCount = 0.0;");
-        append_line(fs_buf, &fs_len, "coverageCount += diagCoverageSample(vec2(-0.500, -0.375), diagTri0, diagTri1, diagTri2);");
-        append_line(fs_buf, &fs_len, "coverageCount += diagCoverageSample(vec2( 0.000, -0.375), diagTri0, diagTri1, diagTri2);");
-        append_line(fs_buf, &fs_len, "coverageCount += diagCoverageSample(vec2(-0.250, -0.125), diagTri0, diagTri1, diagTri2);");
-        append_line(fs_buf, &fs_len, "coverageCount += diagCoverageSample(vec2( 0.250, -0.125), diagTri0, diagTri1, diagTri2);");
-        append_line(fs_buf, &fs_len, "coverageCount += diagCoverageSample(vec2(-0.500,  0.125), diagTri0, diagTri1, diagTri2);");
-        append_line(fs_buf, &fs_len, "coverageCount += diagCoverageSample(vec2( 0.000,  0.125), diagTri0, diagTri1, diagTri2);");
-        append_line(fs_buf, &fs_len, "coverageCount += diagCoverageSample(vec2(-0.250,  0.375), diagTri0, diagTri1, diagTri2);");
-        append_line(fs_buf, &fs_len, "coverageCount += diagCoverageSample(vec2( 0.250,  0.375), diagTri0, diagTri1, diagTri2);");
-        append_line(fs_buf, &fs_len, "if (coverageCount < 0.5) discard;");
-        append_line(fs_buf, &fs_len, "float memoryCoverage = floor(floor(clamp(memoryColor.a, 0.0, 1.0) * 255.0 + 0.5) / 32.0);");
-        append_line(fs_buf, &fs_len, "float coverageTotal = coverageCount + memoryCoverage;");
-        append_line(fs_buf, &fs_len, "float coverageWrap = step(8.0, coverageTotal);");
-        append_line(fs_buf, &fs_len, "float newCoverage = mod(coverageTotal, 8.0);");
-        append_line(fs_buf, &fs_len, "float newCoverageAlpha = (newCoverage * 32.0) / 255.0;");
-        append_line(fs_buf, &fs_len, "float pixelAlphaByte = floor(clamp(texel.a, 0.0, 1.0) * 255.0 + 0.5);");
-        append_line(fs_buf, &fs_len, "float a0 = floor(pixelAlphaByte / 8.0);");
-        append_line(fs_buf, &fs_len, "float a1 = floor((255.0 - pixelAlphaByte) / 8.0);");
-        append_line(fs_buf, &fs_len, "vec3 pixelByte = floor(clamp(texel.rgb, 0.0, 1.0) * 255.0 + 0.5);");
-        append_line(fs_buf, &fs_len, "vec3 memoryByte = floor(clamp(memoryColor.rgb, 0.0, 1.0) * 255.0 + 0.5);");
-        append_line(fs_buf, &fs_len, "vec3 blendedByte = floor((pixelByte * a0 + memoryByte * (a1 + 1.0)) / 32.0);");
-        append_line(fs_buf, &fs_len, "vec3 outByte = mix(memoryByte, blendedByte, coverageWrap);");
-        append_line(fs_buf, &fs_len, "texel = vec4(clamp(outByte / 255.0, 0.0, 1.0), newCoverageAlpha);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec2 memoryUv = (gl_FragCoord.xy - uDiagFramebufferOrigin) / vec2(textureSize(uDiagFramebuffer, 0));");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec4 memoryColor = texture(uDiagFramebuffer, clamp(memoryUv, vec2(0.0), vec2(1.0)));");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec2 diagTri0 = vDiagTri01.xy;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec2 diagTri1 = vDiagTri01.zw;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec2 diagTri2 = vDiagTri2;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "float coverageCount = 0.0;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "coverageCount += diagCoverageSample(vec2(-0.500, -0.375), diagTri0, diagTri1, diagTri2);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "coverageCount += diagCoverageSample(vec2( 0.000, -0.375), diagTri0, diagTri1, diagTri2);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "coverageCount += diagCoverageSample(vec2(-0.250, -0.125), diagTri0, diagTri1, diagTri2);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "coverageCount += diagCoverageSample(vec2( 0.250, -0.125), diagTri0, diagTri1, diagTri2);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "coverageCount += diagCoverageSample(vec2(-0.500,  0.125), diagTri0, diagTri1, diagTri2);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "coverageCount += diagCoverageSample(vec2( 0.000,  0.125), diagTri0, diagTri1, diagTri2);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "coverageCount += diagCoverageSample(vec2(-0.250,  0.375), diagTri0, diagTri1, diagTri2);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "coverageCount += diagCoverageSample(vec2( 0.250,  0.375), diagTri0, diagTri1, diagTri2);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "if (coverageCount < 0.5) discard;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "float memoryCoverage = floor(floor(clamp(memoryColor.a, 0.0, 1.0) * 255.0 + 0.5) / 32.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "float coverageTotal = coverageCount + memoryCoverage;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "float coverageWrap = step(8.0, coverageTotal);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "float newCoverage = mod(coverageTotal, 8.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "float newCoverageAlpha = (newCoverage * 32.0) / 255.0;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "float pixelAlphaByte = floor(clamp(texel.a, 0.0, 1.0) * 255.0 + 0.5);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "float a0 = floor(pixelAlphaByte / 8.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "float a1 = floor((255.0 - pixelAlphaByte) / 8.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec3 pixelByte = floor(clamp(texel.rgb, 0.0, 1.0) * 255.0 + 0.5);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec3 memoryByte = floor(clamp(memoryColor.rgb, 0.0, 1.0) * 255.0 + 0.5);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec3 blendedByte = floor((pixelByte * a0 + memoryByte * (a1 + 1.0)) / 32.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec3 outByte = mix(memoryByte, blendedByte, coverageWrap);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "texel = vec4(clamp(outByte / 255.0, 0.0, 1.0), newCoverageAlpha);");
     } else if (cc_features.opt_alpha && cc_features.diag_rdp_memory_blend) {
-        append_line(fs_buf, &fs_len, "vec2 memoryUv = (gl_FragCoord.xy - uDiagFramebufferOrigin) / vec2(textureSize(uDiagFramebuffer, 0));");
-        append_line(fs_buf, &fs_len, "vec4 memoryColor = texture(uDiagFramebuffer, clamp(memoryUv, vec2(0.0), vec2(1.0)));");
-        append_line(fs_buf, &fs_len, "float pixelAlphaByte = floor(clamp(texel.a, 0.0, 1.0) * 255.0 + 0.5);");
-        append_line(fs_buf, &fs_len, "float a0 = floor(pixelAlphaByte / 8.0);");
-        append_line(fs_buf, &fs_len, "float a1 = floor((255.0 - pixelAlphaByte) / 8.0);");
-        append_line(fs_buf, &fs_len, "vec3 pixelByte = floor(clamp(texel.rgb, 0.0, 1.0) * 255.0 + 0.5);");
-        append_line(fs_buf, &fs_len, "vec3 memoryByte = floor(clamp(memoryColor.rgb, 0.0, 1.0) * 255.0 + 0.5);");
-        append_line(fs_buf, &fs_len, "vec3 blendedByte = floor((pixelByte * a0 + memoryByte * (a1 + 1.0)) / 32.0);");
-        append_line(fs_buf, &fs_len, "texel = vec4(clamp(blendedByte / 255.0, 0.0, 1.0), 1.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec2 memoryUv = (gl_FragCoord.xy - uDiagFramebufferOrigin) / vec2(textureSize(uDiagFramebuffer, 0));");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec4 memoryColor = texture(uDiagFramebuffer, clamp(memoryUv, vec2(0.0), vec2(1.0)));");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "float pixelAlphaByte = floor(clamp(texel.a, 0.0, 1.0) * 255.0 + 0.5);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "float a0 = floor(pixelAlphaByte / 8.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "float a1 = floor((255.0 - pixelAlphaByte) / 8.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec3 pixelByte = floor(clamp(texel.rgb, 0.0, 1.0) * 255.0 + 0.5);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec3 memoryByte = floor(clamp(memoryColor.rgb, 0.0, 1.0) * 255.0 + 0.5);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec3 blendedByte = floor((pixelByte * a0 + memoryByte * (a1 + 1.0)) / 32.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "texel = vec4(clamp(blendedByte / 255.0, 0.0, 1.0), 1.0);");
     }
 
     if (cc_features.opt_alpha) {
-        append_line(fs_buf, &fs_len, "fragColor = texel;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "fragColor = texel;");
     } else {
-        append_line(fs_buf, &fs_len, "fragColor = vec4(texel, 1.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "fragColor = vec4(texel, 1.0);");
     }
     if (cc_features.opt_world_pos && gfx_world_pos_diag_enabled()) {
-        append_line(fs_buf, &fs_len, "fragColor = vec4(fract(vWorldPos * 0.01), 1.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "fragColor = vec4(fract(vWorldPos * 0.01), 1.0);");
     }
-    append_line(fs_buf, &fs_len, "}");
+    append_line(fs_buf, sizeof(fs_buf), &fs_len, "}");
 
     vs_buf[vs_len] = '\0';
     fs_buf[fs_len] = '\0';
@@ -1582,6 +1610,20 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     glDeleteShader(vertex_shader);
     glDeleteShader(fragment_shader);
 
+    /* A program that compiled can still fail to link (interface mismatch,
+     * driver limits); every attribute/uniform location below would silently be
+     * -1 and every draw would be a no-op. Same loud abort as a compile failure. */
+    glGetProgramiv(shader_program, GL_LINK_STATUS, &success);
+    if (!success) {
+        char error_log[1024];
+        GLsizei length = 0;
+        glGetProgramInfoLog(shader_program, sizeof(error_log), &length, error_log);
+        fprintf(stderr, "[fast3d] Shader program link failed:\n%.*s\n",
+                (int)length, error_log);
+        glDeleteProgram(shader_program);
+        abort();
+    }
+
     size_t cnt = 0;
     if (shader_program_pool_size >= shader_program_pool_cap) {
         int new_cap = shader_program_pool_cap ? shader_program_pool_cap * 2 : 64;
@@ -1592,32 +1634,35 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
             shader_program_pool_cap = new_cap;
         }
     }
+    if (shader_program_pool_size >= shader_program_pool_cap) {
+        /* Uncacheable: lookup_shader would miss forever and every draw of this
+         * combiner would compile and orphan another GL program. Refuse instead;
+         * the frontend keeps the previously bound program. */
+        fprintf(stderr, "[fast3d] WARNING: shader pool grow failed - shader not created\n");
+        glDeleteProgram(shader_program);
+        return NULL;
+    }
     struct ShaderProgram *prg = (struct ShaderProgram *)calloc(1, sizeof(struct ShaderProgram));
     if (prg == NULL) {
         fprintf(stderr, "[fast3d] FATAL: shader program allocation failed (OOM)\n");
         abort();
     }
-    if (shader_program_pool_size < shader_program_pool_cap) {
-        shader_program_pool[shader_program_pool_size++] = prg;
-        /* Variant-count telemetry (T10): the pre-dbd3c06 pool silently
-         * wrapped at 256 and corrupted live combiners past that point.
-         * One line at process exit measures how close a real session gets.
-         * Opt-in only (mirrors the GE007_BLEND_AUDIT idiom in gfx_pc.c): a
-         * default run must register no atexit handler and print nothing. */
-        {
-            static int exit_log_registered = 0;
-            if (!exit_log_registered) {
-                exit_log_registered = 1;
-                if (getenv("GE007_SHADER_POOL_AUDIT") != NULL) {
-                    atexit(gfx_opengl_log_shader_pool_size_at_exit);
-                }
+    /* Space is guaranteed by the grow check above: every program handed out is
+     * reachable from the pool, so none can be orphaned. */
+    shader_program_pool[shader_program_pool_size++] = prg;
+    /* Variant-count telemetry (T10): the pre-dbd3c06 pool silently
+     * wrapped at 256 and corrupted live combiners past that point.
+     * One line at process exit measures how close a real session gets.
+     * Opt-in only (mirrors the GE007_BLEND_AUDIT idiom in gfx_pc.c): a
+     * default run must register no atexit handler and print nothing. */
+    {
+        static int exit_log_registered = 0;
+        if (!exit_log_registered) {
+            exit_log_registered = 1;
+            if (getenv("GE007_SHADER_POOL_AUDIT") != NULL) {
+                atexit(gfx_opengl_log_shader_pool_size_at_exit);
             }
         }
-    } else {
-        /* realloc failed (OOM) above — the shader still works for this call;
-         * it just won't be cached (may recompile on next use). Prefer that
-         * over a crash, same tradeoff as the Metal backend's grow path. */
-        fprintf(stderr, "[fast3d] WARNING: shader pool grow failed - not caching\n");
     }
     prg->attrib_locations[cnt] = glGetAttribLocation(shader_program, "aVtxPos");
     prg->attrib_sizes[cnt] = 4;
@@ -1791,6 +1836,14 @@ static void gfx_opengl_delete_texture(GLuint texture_id) {
     }
 }
 
+/* Driver limits are properties of the CURRENT context, so every cache of one
+ * must be dropped by shutdown; a re-init (renderer restart, device change) can
+ * come up against different hardware. gfx_opengl_reset_driver_limits() below is
+ * the single reset point — a new cache belongs in it. */
+static float s_max_aniso = -1.0f;
+static int   s_max_offscreen_dim = -1;
+static int   s_max_msaa_samples = -1;
+
 /* NATIVE_PORT (mdkr64): which texture ids carry a full mip chain, and which
  * texture is bound per tile. set_sampler_parameters runs per draw and would
  * otherwise reset MIN_FILTER to a non-mipmap value on every bind. */
@@ -1928,19 +1981,28 @@ static void gfx_opengl_set_sampler_parameters(int tile, bool linear_filter, uint
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, gfx_cm_to_opengl(cmt));
     /* Enable anisotropic filtering if available — critical for textures
      * that tile many times at oblique angles (N64 room/terrain surfaces) */
-    static float max_aniso = -1;
-    if (max_aniso < 0) {
-        glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &max_aniso);
-        if (max_aniso <= 0) max_aniso = 1;
+    if (s_max_aniso < 0) {
+        /* GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT is not a legal pname without
+         * EXT/ARB_texture_filter_anisotropic: glGetFloatv leaves the target
+         * unwritten and queues GL_INVALID_ENUM. Drain first so the verdict is
+         * this probe's, and consume the error either way so no unrelated
+         * glGetError() check inherits it. */
+        while (glGetError() != GL_NO_ERROR) {
+        }
+        s_max_aniso = 0.0f;
+        glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &s_max_aniso);
+        if (glGetError() != GL_NO_ERROR || s_max_aniso <= 0.0f) {
+            s_max_aniso = 1.0f;
+        }
     }
-    if (max_aniso > 1) {
+    if (s_max_aniso > 1) {
         /* NATIVE_PORT (mdkr64): honour Video.AnisotropicFiltering. This used to
          * force the hardware maximum whenever linear filtering was on, which
          * made GL disagree with WebGPU (which reads g_pcTextureAnisotropy) and
          * left Pure mode filtering unfaithfully. */
         float want = (float) (g_pcTextureAnisotropy < 1 ? 1 : g_pcTextureAnisotropy);
-        if (want > max_aniso) {
-            want = max_aniso;
+        if (want > s_max_aniso) {
+            want = s_max_aniso;
         }
         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT,
                         linear_filter ? want : 1.0f);
@@ -2718,8 +2780,7 @@ void gfx_opengl_draw_synth_frame(unsigned int n) {
  * gfx_current_dimensions consistent — clamping inside ensure_scene_target would
  * crop the viewport instead). */
 int gfx_opengl_max_offscreen_dim(void) {
-    static int max_dim = -1;
-    if (max_dim < 0) {
+    if (s_max_offscreen_dim < 0) {
         GLint max_tex = 0, max_rb = 0;
         glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_tex);
         glGetIntegerv(GL_MAX_RENDERBUFFER_SIZE, &max_rb);
@@ -2727,9 +2788,9 @@ int gfx_opengl_max_offscreen_dim(void) {
         if ((int)max_rb > 0 && (int)max_rb < m) {
             m = (int)max_rb;
         }
-        max_dim = m > 0 ? m : 2048; /* conservative GL3.3 floor if the driver lies */
+        s_max_offscreen_dim = m > 0 ? m : 2048; /* conservative GL3.3 floor if the driver lies */
     }
-    return max_dim;
+    return s_max_offscreen_dim;
 }
 
 static float gfx_opengl_effective_render_scale(void) {
@@ -2749,7 +2810,6 @@ static float gfx_opengl_effective_render_scale(void) {
 }
 
 static int gfx_opengl_effective_msaa_samples(void) {
-    static int max_samples = -1;
     static int last_requested = -1;
     static int last_effective = -1;
     static int warned_clamp;
@@ -2760,18 +2820,18 @@ static int gfx_opengl_effective_msaa_samples(void) {
         return 0;
     }
 
-    if (max_samples < 0) {
+    if (s_max_msaa_samples < 0) {
         GLint gl_max_samples = 0;
 
         glGetIntegerv(GL_MAX_SAMPLES, &gl_max_samples);
-        max_samples = gl_max_samples > 0 ? (int)gl_max_samples : 0;
+        s_max_msaa_samples = gl_max_samples > 0 ? (int)gl_max_samples : 0;
     }
 
-    if (requested >= 8 && max_samples >= 8) {
+    if (requested >= 8 && s_max_msaa_samples >= 8) {
         effective = 8;
-    } else if (requested >= 4 && max_samples >= 4) {
+    } else if (requested >= 4 && s_max_msaa_samples >= 4) {
         effective = 4;
-    } else if (requested >= 2 && max_samples >= 2) {
+    } else if (requested >= 2 && s_max_msaa_samples >= 2) {
         effective = 2;
     }
 
@@ -2779,7 +2839,7 @@ static int gfx_opengl_effective_msaa_samples(void) {
         requested > 0 && effective != requested && !warned_clamp) {
         fprintf(stderr,
                 "[fast3d] Video.MSAA=%d clamped to %d (GL_MAX_SAMPLES=%d)\n",
-                requested, effective, max_samples);
+                requested, effective, s_max_msaa_samples);
         fflush(stderr);
         warned_clamp = 1;
     }
@@ -4102,6 +4162,16 @@ static bool gfx_opengl_init(void) {
     glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
     if (opengl_vao == 0 || opengl_vbo == 0 || glGetError() != GL_NO_ERROR) {
         fprintf(stderr, "[fast3d] OpenGL init could not create core buffers\n");
+        /* shutdown() is not reached for a backend that never came up, so this
+         * path owns whatever it did create. */
+        if (opengl_vbo != 0) {
+            glDeleteBuffers(1, &opengl_vbo);
+            opengl_vbo = 0;
+        }
+        if (opengl_vao != 0) {
+            glDeleteVertexArrays(1, &opengl_vao);
+            opengl_vao = 0;
+        }
         return false;
     }
 
@@ -4164,6 +4234,29 @@ void gfx_opengl_set_clear_color(float r, float g, float b) {
 }
 
 static int wireframe_checked = 0, wireframe_on = 0;
+
+/*
+ * GE007_WIREFRAME is a SCENE-geometry toggle. The composite and output-filter
+ * passes draw fullscreen triangles; under GL_LINE their only rasterized pixels
+ * are the screen border, so the composited frame never reaches the drawable.
+ * Every pass that presents rather than draws world geometry brackets itself
+ * with these two.
+ */
+static void gfx_opengl_wireframe_suspend(void) {
+#ifndef MGB64_PORTMASTER_GLES  /* glPolygonMode unavailable in GLES */
+    if (wireframe_on) {
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    }
+#endif
+}
+
+static void gfx_opengl_wireframe_resume(void) {
+#ifndef MGB64_PORTMASTER_GLES
+    if (wireframe_on) {
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    }
+#endif
+}
 
 /* §3.5(c) fix: a persistently-incomplete FBO (or a shader compile/link failure,
  * both driver/GPU-dependent and not going to spontaneously start succeeding)
@@ -4788,8 +4881,10 @@ static bool gfx_opengl_begin_output_overlay(void) {
     }
 
     /* Finish supersampling/MSAA and all world-space post effects first. */
+    gfx_opengl_wireframe_suspend();
     gfx_opengl_resolve_scene_target();
     gfx_opengl_apply_output_vi_filter();
+    gfx_opengl_wireframe_resume();
 
     /*
      * HUD geometry now targets the physical drawable. The offscreen world
@@ -4815,8 +4910,10 @@ static void gfx_opengl_end_frame(void) {
     extern const char *g_dumpFramesDir;
 
     if (!g_output_overlay_active) {
+        gfx_opengl_wireframe_suspend();
         gfx_opengl_resolve_scene_target();
         gfx_opengl_apply_output_vi_filter();
+        gfx_opengl_wireframe_resume();
     }
     /*
      * DKR does not submit a graphics task on every VI present. GL_BACK therefore
@@ -4927,6 +5024,13 @@ static void gfx_opengl_shutdown(void) {
     g_scene_target_multisampled = false;
     g_scene_depth_valid = false;
     g_diag_framebuffer_snapshot_tex = 0;
+    g_diag_framebuffer_snapshot_w = 0;
+    g_diag_framebuffer_snapshot_h = 0;
+
+    /* Context-scoped driver limits: a re-init may face different hardware. */
+    s_max_aniso = -1.0f;
+    s_max_offscreen_dim = -1;
+    s_max_msaa_samples = -1;
 
     g_output_filter_copy_tex = 0;
     g_output_filter_low_tex = 0;

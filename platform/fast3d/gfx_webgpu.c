@@ -179,6 +179,18 @@ static int      s_resize_stable = 0;
 static WGPURenderPipeline    s_resolve_pipe = NULL;
 static WGPUBindGroupLayout   s_resolve_bgl  = NULL;
 static WGPUBuffer            s_resolve_ubuf = NULL;
+/*
+ * Per-frame ring of resolve uniform buffers, for the same reason the diag
+ * viewport ring exists: wgpuQueueWriteBuffer executes BEFORE the command
+ * buffer, so a frame that resolves more than once (supersample resolve, then
+ * the present blit) would run every pass with the LAST pass's src/dst extents
+ * and tap count. Slot 0 is s_resolve_ubuf, so a single-resolve frame allocates
+ * nothing extra; slots grow on demand and are reused across frames (only the
+ * used count resets).
+ */
+static WGPUBuffer *s_resolve_ubo_ext = NULL;
+static int         s_resolve_ubo_ext_cap = 0;
+static int         s_resolve_ubo_used = 0;
 static WGPUSampler           s_resolve_samp = NULL;
 static WGPUTexture           s_resolve_tex  = NULL;
 static WGPUTextureView       s_resolve_view = NULL;
@@ -346,7 +358,14 @@ static WGPUBuffer s_light_ubo = NULL;
  * shared with GL so both shipped paths use identical camera/light math.
  */
 #define WGPU_SHADOW_DEPTH_FORMAT WGPUTextureFormat_Depth32Float
+/* GFX_SHADOW_MAX_CASCADES 4x4 matrices, then 8 floats of receiver params. The
+ * pack loop below writes matrix `n` at float offset n*16, so the two constants
+ * are one layout and must move together. */
 #define WGPU_SHADOW_UNIFORM_SIZE 160u
+_Static_assert(
+    WGPU_SHADOW_UNIFORM_SIZE ==
+        (GFX_SHADOW_MAX_CASCADES * 16u + 8u) * sizeof(float),
+    "shadow receiver uniform does not match GFX_SHADOW_MAX_CASCADES");
 #define WGPU_SHADOW_RESOURCE_MAX_FAILURES 3
 static GfxShadowPlan s_shadow_plan;
 static int s_shadow_receiver_view = -1;
@@ -1719,6 +1738,7 @@ static bool wgpu_start_frame(void) {
     s_vbuf_frame_segments = 0;
     s_sc_set = false; /* scissor is re-established by gfx_pc each frame */
     s_diag_ubo_used = 0; /* reset the per-frame viewport-UBO ring */
+    s_resolve_ubo_used = 0; /* reset the per-frame resolve-UBO ring */
     s_modern_ubo_used = 0; /* WEB-052: reset the per-frame modern-mesh UBO ring */
     wgpu_reset_pass_dynamic_state(); /* WEB-023-lite: fresh pass = no rect applied yet */
     if (!s_ready) {
@@ -2423,6 +2443,40 @@ fail:
 }
 
 /* Blit `src` into an arbitrary same-format render attachment. */
+/* Hand out this frame's next unwritten resolve uniform buffer, growing the ring
+ * rather than reusing an occupied slot (see the ring note above). */
+static WGPUBuffer wgpu_resolve_ubo_next(void) {
+    int index = s_resolve_ubo_used;
+    if (index == 0) {
+        s_resolve_ubo_used = 1;
+        return s_resolve_ubuf;
+    }
+    index -= 1;
+    if (index >= s_resolve_ubo_ext_cap) {
+        int ncap = s_resolve_ubo_ext_cap ? s_resolve_ubo_ext_cap * 2 : 4;
+        WGPUBuffer *grown = (WGPUBuffer *)realloc(
+            s_resolve_ubo_ext, (size_t)ncap * sizeof(*grown));
+        if (grown == NULL) {
+            return NULL;
+        }
+        for (int i = s_resolve_ubo_ext_cap; i < ncap; i++) grown[i] = NULL;
+        s_resolve_ubo_ext = grown;
+        s_resolve_ubo_ext_cap = ncap;
+    }
+    if (s_resolve_ubo_ext[index] == NULL) {
+        WGPUBufferDescriptor bd = {0};
+        bd.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        bd.size = sizeof(WgpuResolveU);
+        s_resolve_ubo_ext[index] = WGPU_FAULT_CREATE(
+            RESOLVE_UNIFORM, wgpuDeviceCreateBuffer(s_device, &bd));
+        if (s_resolve_ubo_ext[index] == NULL) {
+            return NULL;
+        }
+    }
+    s_resolve_ubo_used++;
+    return s_resolve_ubo_ext[index];
+}
+
 static bool wgpu_run_resolve_to(WGPUCommandEncoder enc,
                                 WGPUTextureView src, uint32_t src_w,
                                 uint32_t src_h, WGPUTextureView destination,
@@ -2430,6 +2484,14 @@ static bool wgpu_run_resolve_to(WGPUCommandEncoder enc,
     if (!wgpu_ensure_resolve() || enc == NULL || src == NULL ||
         destination == NULL || src_w == 0 || src_h == 0 ||
         dst_w == 0 || dst_h == 0) {
+        return false;
+    }
+    WGPUBuffer ubuf = wgpu_resolve_ubo_next();
+    if (ubuf == NULL) {
+        fprintf(stderr, "[webgpu] resolve uniform allocation failed\n");
+        wgpu_runtime_fatal(
+            "The graphics backend could not allocate a resolve uniform. "
+            "Reload the page to continue from the last persisted save.");
         return false;
     }
     {
@@ -2441,11 +2503,11 @@ static bool wgpu_run_resolve_to(WGPUCommandEncoder enc,
         if (taps < 1) taps = 1;
         if (taps > 8) taps = 8;      /* bounds the inner loop; scale is clamped to 4 */
         u.taps = taps;
-        wgpuQueueWriteBuffer(s_queue, s_resolve_ubuf, 0, &u, sizeof(u));
+        wgpuQueueWriteBuffer(s_queue, ubuf, 0, &u, sizeof(u));
     }
     {
         WGPUBindGroupEntry be[3] = {0};
-        be[0].binding = 0; be[0].buffer = s_resolve_ubuf; be[0].size = sizeof(WgpuResolveU);
+        be[0].binding = 0; be[0].buffer = ubuf; be[0].size = sizeof(WgpuResolveU);
         be[1].binding = 1; be[1].textureView = src;
         be[2].binding = 2; be[2].sampler = s_resolve_samp;
         WGPUBindGroupDescriptor bgd = {0};
@@ -2958,6 +3020,14 @@ static void wgpu_end_frame(void) {
      * fine, the offscreen scene still rendered (and can be dumped/read back). Exactly
     * one GetCurrentTexture per frame, as before (just hoisted above the resolve). */
     WGPUSurfaceTexture st = {0};
+    /*
+     * s_cfg_w/h are the extent of the surface this frame already rendered and
+     * is about to present into; the reconfigure they request belongs to the NEXT
+     * frame's start_frame. Zeroing them here would hand 0x0 to the present blit
+     * (which rejects it) and to the overlay/dump extents, turning a routine
+     * suboptimal acquire during a resize into a fatal reload panel.
+     */
+    bool surface_reconfigure_pending = false;
     if (!hold_present) {
         wgpuSurfaceGetCurrentTexture(s_surface, &st);
         WGPUSurfaceGetCurrentTextureStatus actual_status = st.status;
@@ -3032,8 +3102,7 @@ static void wgpu_end_frame(void) {
                 break;
             case WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal:
                 s_surface_recovery_attempts = 0;
-                s_cfg_w = 0;
-                s_cfg_h = 0;
+                surface_reconfigure_pending = true;
                 s_runtime_status = GFX_RENDERING_TRANSIENT;
                 break;
             case WGPUSurfaceGetCurrentTextureStatus_Timeout:
@@ -3042,8 +3111,7 @@ static void wgpu_end_frame(void) {
                 break;
             case WGPUSurfaceGetCurrentTextureStatus_Outdated:
             case WGPUSurfaceGetCurrentTextureStatus_Lost:
-                s_cfg_w = 0;
-                s_cfg_h = 0;
+                surface_reconfigure_pending = true;
                 s_runtime_status = GFX_RENDERING_TRANSIENT;
                 surface_retry_failed = true;
                 break;
@@ -3522,6 +3590,13 @@ static void wgpu_end_frame(void) {
      * futures are processed merely to draw an otherwise-ready frame. */
     if (s_pending_pipelines > 0) {
         wgpu_pipeline_callback_owner_drain();
+    }
+
+    /* Frame is presented and every consumer of the committed extent has run:
+     * NOW invalidate it so start_frame reconfigures the surface immediately. */
+    if (surface_reconfigure_pending) {
+        s_cfg_w = 0;
+        s_cfg_h = 0;
     }
 
     s_frame_open = false;
@@ -4172,9 +4247,14 @@ static size_t wgpu_shadow_draw_ranges(
 
 static void wgpu_shadow_upload_receiver(size_t view_index) {
     float uniform[WGPU_SHADOW_UNIFORM_SIZE / sizeof(float)] = {0};
-    const size_t cascade_count =
-        s_shadow_plan.budget.cascades_per_view;
-    const size_t base = view_index * cascade_count;
+    /* The uniform holds exactly GFX_SHADOW_MAX_CASCADES matrices; a budget that
+     * planned more would pack over the params tail. */
+    size_t cascade_count = s_shadow_plan.budget.cascades_per_view;
+    size_t base;
+    if (cascade_count > GFX_SHADOW_MAX_CASCADES) {
+        cascade_count = GFX_SHADOW_MAX_CASCADES;
+    }
+    base = view_index * (size_t)s_shadow_plan.budget.cascades_per_view;
     for (size_t cascade = 0; cascade < cascade_count; cascade++) {
         wgpu_shadow_pack_matrix(
             &uniform[cascade * 16],
@@ -5810,7 +5890,8 @@ static void wgpu_bg_cache_invalidate_view_indexed(struct WgpuTexEntry *e) {
              * been evicted+reused since registration, so drop it only if it still
              * references v (keeps the decision identical to the full sweep). */
             if (slot->bg != NULL &&
-                (slot->key[1] == v || slot->key[3] == v || slot->key[5] == v)) {
+                (slot->key[1] == v || slot->key[3] == v ||
+                 slot->key[5] == v || slot->key[7] == v)) {
                 wgpu_release_cached_bind_group(slot->bg);
                 slot->bg = NULL;
                 memset(slot->key, 0, sizeof(slot->key));
@@ -6804,6 +6885,15 @@ static void wgpu_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
     float fix_sx, fix_bx, fix_sy, fix_by;
     bool vp_fix = wgpu_viewport_fix(&vp_x, &vp_y, &vp_w, &vp_h,
                                    &fix_sx, &fix_bx, &fix_sy, &fix_by);
+    /*
+     * A rect that clamped away entirely covers no pixels, and SetViewport
+     * rejects a zero extent. Dropping only the Set would leave the PREVIOUS
+     * draw group's viewport live on the pass encoder and let this batch
+     * rasterize into that group's rect, so the whole draw goes.
+     */
+    if (vp_w <= 0 || vp_h <= 0) {
+        return;
+    }
 
     /* Bump-allocate this batch's vertex data. */
     if (buf_vbo_len > UINT32_MAX / sizeof(float)) {
@@ -8171,6 +8261,13 @@ static void wgpu_release_device_objects(void) {
     if (s_white_tex != NULL) wgpuTextureRelease(s_white_tex);
 
     if (s_resolve_ubuf != NULL) wgpuBufferRelease(s_resolve_ubuf);
+    for (int i = 0; i < s_resolve_ubo_ext_cap; i++) {
+        if (s_resolve_ubo_ext[i] != NULL) wgpuBufferRelease(s_resolve_ubo_ext[i]);
+    }
+    free(s_resolve_ubo_ext);
+    s_resolve_ubo_ext = NULL;
+    s_resolve_ubo_ext_cap = 0;
+    s_resolve_ubo_used = 0;
     if (s_post_ubuf != NULL) wgpuBufferRelease(s_post_ubuf);
     if (s_mm_ubuf != NULL) wgpuBufferRelease(s_mm_ubuf);
     for (int i = 0; i < WGPU_DIAG_UBO_RING; i++) {

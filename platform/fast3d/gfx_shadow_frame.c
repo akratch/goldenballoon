@@ -586,6 +586,26 @@ static void static_key_reseat(size_t slot, const float positions[9]) {
     }
 }
 
+/* Fold one triangle's positions into the stage AABB. Fold-only: the bound can
+ * grow but never shrink, so a frame already published against it stays a
+ * subset. */
+static void static_bounds_fold(const float positions[9]) {
+    for (size_t vertex = 0; vertex < 3; vertex++) {
+        for (size_t axis = 0; axis < 3; axis++) {
+            float value = positions[vertex * 3 + axis];
+            if (!s_static_cache.bounds_valid ||
+                value < s_static_cache.bounds_min[axis]) {
+                s_static_cache.bounds_min[axis] = value;
+            }
+            if (!s_static_cache.bounds_valid ||
+                value > s_static_cache.bounds_max[axis]) {
+                s_static_cache.bounds_max[axis] = value;
+            }
+        }
+        s_static_cache.bounds_valid = true;
+    }
+}
+
 static void sync_static_frame_references(void) {
     for (size_t index = 0; index < 2; index++) {
         if (s_frames[index].stage_generation ==
@@ -1541,6 +1561,9 @@ bool gfx_shadow_capture_triangle(
              */
             if (!static_key_tenancy_ok(slot, positions)) {
                 static_key_reseat(slot, positions);
+                /* The stage AABB is a superset of every position the cache
+                 * holds; a reseat introduces one it has never seen. */
+                static_bounds_fold(positions);
             }
         } else {
             size_t required_keys;
@@ -1593,20 +1616,7 @@ bool gfx_shadow_capture_triangle(
             static_key_insert(source_key, first_vertex);
             sync_static_frame_references();
             s_stats.static_cache_misses++;
-            for (size_t vertex = 0; vertex < 3; vertex++) {
-                for (size_t axis = 0; axis < 3; axis++) {
-                    float value = admitted[vertex * 3 + axis];
-                    if (!s_static_cache.bounds_valid ||
-                        value < s_static_cache.bounds_min[axis]) {
-                        s_static_cache.bounds_min[axis] = value;
-                    }
-                    if (!s_static_cache.bounds_valid ||
-                        value > s_static_cache.bounds_max[axis]) {
-                        s_static_cache.bounds_max[axis] = value;
-                    }
-                }
-                s_static_cache.bounds_valid = true;
-            }
+            static_bounds_fold(admitted);
         }
     } else if (!append_triangle(
                    &write->vertices,
@@ -1862,6 +1872,44 @@ void gfx_shadow_frame_shutdown(void) {
     s_excluded_casters = NULL;
     s_excluded_caster_count = 0;
     s_excluded_caster_capacity = 0;
+    /*
+     * The replay freeze and the registry it displaces are stage-lifetime state
+     * like everything above; the tests use shutdown as the reset, so anything
+     * left here is carried into the next case as a live frozen registry.
+     */
+    free(s_frozen_matrices);
+    s_frozen_matrices = NULL;
+    s_frozen_matrix_count = 0;
+    s_frozen_matrix_capacity = 0;
+    free(s_frozen_projected_ranges);
+    s_frozen_projected_ranges = NULL;
+    s_frozen_projected_range_count = 0;
+    s_frozen_projected_range_capacity = 0;
+    free(s_frozen_excluded_casters);
+    s_frozen_excluded_casters = NULL;
+    s_frozen_excluded_caster_count = 0;
+    s_frozen_excluded_caster_capacity = 0;
+    free(s_displaced_matrices);
+    s_displaced_matrices = NULL;
+    s_displaced_matrix_count = 0;
+    s_displaced_matrix_capacity = 0;
+    free(s_displaced_projected_ranges);
+    s_displaced_projected_ranges = NULL;
+    s_displaced_projected_range_count = 0;
+    s_displaced_projected_range_capacity = 0;
+    free(s_displaced_excluded_casters);
+    s_displaced_excluded_casters = NULL;
+    s_displaced_excluded_caster_count = 0;
+    s_displaced_excluded_caster_capacity = 0;
+    s_displaced_held = false;
+    s_frozen_valid = false;
+    s_freeze_count = 0;
+    s_restore_count = 0;
+    s_freeze_failures = 0;
+    s_restore_failures = 0;
+    s_capture_suppressed = false;
+    s_replay_read_index = 0;
+    s_replay_hold_previous = false;
     s_read_index = 0;
     s_write_index = 1;
     s_generation = 0;
@@ -1874,6 +1922,12 @@ void gfx_shadow_frame_shutdown(void) {
     memset(&s_register_presentation_owner, 0,
            sizeof(s_register_presentation_owner));
     s_register_presentation_owner_valid = false;
+    /* Registration context is published per call; a reset must not leave the
+     * previous stage's viewport available to inherit. */
+    s_register_viewport = 0;
+    s_register_gameplay_vp = false;
+    s_register_site = GFX_SHADOW_SITE_UNKNOWN;
+    s_register_key_is_mtx = false;
     s_trace_enabled = -1;
     s_matrix_control_drop = -1;
     s_camera_endpoint_observer = -1;
