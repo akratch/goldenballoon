@@ -68,6 +68,127 @@ custody, immutable action pins, or either ROM guard disappears.
 The address-domain source task separately rejects every raw native
 pointer-to-32-bit narrowing outside `address_domains.h` and
 `dkr_native_ptr.h`; direct conversions remain compiler errors.
+
+`camera_obstruction_authority` is a ROM-free source-level CTest for the camera
+occlusion seam. Until the resolver is integrated it permits no tick calls; once
+present, it requires exactly one `camera_obstruction_tick` call in each fixed
+tick route (`mode_game` and `update_menu_scene`), after the TT camera author and
+before sort/LOD/visibility. It also rejects resolved/display/projection camera
+APIs from the simulation-owned sort, LOD, and visibility passes: those consumers
+must retain their legacy logical basis builders or an explicitly named logical
+basis/view replacement.
+
+`camera_obstruction_resolver` is the ROM-free policy layer above the immutable
+geometry sweep. It exercises immediate skin-backed retraction, bounded fixed-step
+recovery, last-safe revalidation after projection changes, discontinuity reset,
+invalid-world fail-safe behavior, deterministic repeatability, and the diagnostic
+center-ray near-plane false-clear control. It intentionally owns no DKR state or
+environment parsing; the fixed-tick integration supplies those inputs.
+
+`camera_object_bvh` is a ROM-free white-box test of the production immutable
+object-model index. It compares indexed sphere and exact rounded-lens results
+byte-for-byte with full-world queries under identity and 64 rotated/scaled
+inputs, exercises node/chunk/triangle/stationary budget exhaustion, and injects
+NaN bounds, invalid leaf tags, duplicate children, corrupt chunk coverage,
+shrunken parents, stale generations, and same-address generation reuse. Every
+fault must return `INVALID` (or be rejected by the pre-publication validator),
+never an ordinary clear. This test intentionally includes the production cache
+translation unit so it cannot drift into a second test-only BVH implementation.
+
+`camera_dynamic_temporal` exercises the production moving-object presentation
+envelope against 4,097 renderer-transform samples per case. It covers endpoint
+identity, translation/rotation/scale, shortest-angle wrap, high coordinates, 128
+deterministic randomized poses, invalid transforms, and the moving non-door
+camera-chord cut broad phase. No dense intermediate object AABB may escape the
+published envelope.
+
+`camera_dynamic_publication` executes the invalid-until-proven dynamic census
+state machine. It proves that a failed census has no current query source, the
+first recovered census advertises a discontinuity with no previous transform,
+all hard objects cut on the failed image, and interpolation resumes only after
+two consecutive complete publications.
+
+`camera_target_visibility` pins the current-pose readability classification. A
+thin local skin may be excluded, a remote blocker is `HIDDEN`, a focus that
+remains in a thick slab is `EMBEDDED` and not visible, and source/numeric failure
+is `INVALID`. These outcomes cannot collapse into a convenient clear result.
+
+`camera_obstruction_observe` protects the camera authority boundary and rollout
+gate. The two fixed-tick calls sample all eight authored slots, publish the
+dynamic occluder list, latch selected viewport projections, and resolve into a
+native presentation sidecar. They never write `Camera`/`gCameras`, selection,
+sort/LOD/visibility, audio, or other authoritative state. `render_scene` and the
+interpolation snapshot walker consume the sidecar only inside presentation.
+Set `MDKR_CAMERA_OBSTRUCTION=modern` to enable correction, `center-ray` for the
+deliberately incomplete diagnostic control, or `observe`/unset for telemetry
+with byte-identical authored poses. Set
+`MDKR_CAMERA_TRACE=1` for summaries or `=2` for per-slot desired/effective,
+projection/guard, mapping, intent age/pivot/target, and hit diagnostics; this is
+intentionally separate from `MDKR_TRACE`. The sidecar receives last-author-wins
+intent records at the post-dialogue/shake racer seam, T.T.'s final spectate pose,
+and scripted cutscene transform writes. The finalizer consumes one fresh intent
+per selected physical slot; only an unchanged, already-consumed paused pose may
+reuse stale intent. Render projection generation and every presentation camera
+read are checked/routed through the same scoped sidecar.
+
+`check_camera_obstruction_runtime.py` is the ROM-backed, same-binary Ancient Lake
+release witness. It runs Legacy, intentionally incomplete Center-ray, and Modern
+for 5,200 deterministic frames. Legacy and Center-ray must positively reproduce
+lens penetration; Modern must actually correct poses while publishing zero
+penetrated resolved lenses, degraded sources, invalid slots, duplicate solves,
+projection mismatches, missing caches, invalid transforms, or capacity failures.
+
+```bash
+python3 tests/check_camera_obstruction_runtime.py --build build-rel \
+  --rom baserom.us.v80.z64
+```
+
+`check_camera_obstruction_display_matrix.py` runs 24 Modern geometric arms: 4:3
+low/high, 16:9, 21:9, 32:9, and portrait crossed with authored, minimum 20-degree,
+maximum 140-degree capped, and maximum 140-degree uncapped FOV policy. At every
+FOV it requires equal-aspect resolved-camera traces to match byte-for-byte,
+catching any attempt to derive world framing from resolution, render scale, or
+rounded internal render targets.
+
+The remaining registered camera runtime gates are deliberately orthogonal:
+
+- `check_camera_dynamic_obstruction_runtime.py` requires every dynamic-instance
+  blocker attribution to coincide with an applied correction and rejects every
+  hard-object publication omission.
+- `check_camera_projection_fallback_runtime.py` injects a latch failure and allows
+  restoration only for a freshly revalidated exact camera/projection pair.
+- `check_camera_obstruction_lifecycle_runtime.py` drives quit, race restart, and
+  hub/race reloads; each level generation needs a reset witness and fresh tick-1
+  solve. Its Adventure arm also proves an open/moving door is published safely.
+- `check_camera_emergency_readability_runtime.py` disables alternate shoulders in
+  a test arm and requires real corrected gameplay rows to exercise the 96..254
+  per-viewport racer opacity envelope without compromising clearance or target
+  visibility. Emergency elevated/azimuthal endpoints are counted separately.
+- `check_camera_3p_tt_runtime.py` validates the 3P T.T. fourth viewport/camera 3
+  directly, avoiding an unrelated inherited autopilot-progress limitation.
+- `check_camera_obstruction_performance_runtime.py` runs one optimized binary in
+  Observe and Modern over a long 4P route, requiring at least 5,000 active
+  four-viewport fixed ticks (more than 83 seconds at 60 Hz). It gates finalizer/query percentiles,
+  tail counts, query fan, static cache bytes/build time, exact dynamic-sidecar
+  allocation bytes, and byte-identical v3 authority state.
+  `MDKR_CAMERA_PERF=1` is allocation-free and reads an
+  intra-thread performance clock; it never uses the synthetic VI/rAF clock.
+
+The three source-role camera cache tasks are static audits of the immutable
+occlusion caches the runtime queries, and hold no ROM:
+
+- `check_camera_track_occlusion_cache.py` pins the static visual-triangle cache
+  built from a finalized level model: it is copied once in segment/batch/face
+  asset order, never mutated, and released with the level, so a camera boom
+  spanning arbitrary segments cannot read gameplay state or a stale allocation.
+- `check_camera_object_occlusion_cache.py` pins the object-model cache's
+  ownership and generation lifecycle: the cache owns its copies, its registry
+  key is the model allocation, and the entry is erased before that address can
+  be reused by a later loaded object.
+- `check_camera_dynamic_occlusion.py` pins the fixed-tick dynamic hard-occluder
+  publication: identity assignment, the precedence order used to break ties
+  between competing hits, and the purity of the census with respect to
+  authoritative state.
 The ROM-model task independently inflates all 445 supported object/level models
 and validates every renderer-consumed geometry/visibility region, batch
 sentinel, texture reference, and triangle-local vertex index, including dormant

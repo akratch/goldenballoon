@@ -16,6 +16,9 @@
 #ifndef MDKR64_DISPLAY_CONFIG_H
 #define MDKR64_DISPLAY_CONFIG_H
 
+#include <stdbool.h>
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -53,6 +56,56 @@ typedef struct MdkrProjection {
     int horizontal_fov_capped;
 } MdkrProjection;
 
+/*
+ * The game-side viewport layout values deliberately match camera.h's
+ * ViewportCount enum, but this dependency-light header must also be usable by
+ * ROM-free tests and platform code.  Keep these values in sync if the original
+ * layout enum ever grows.
+ */
+enum MdkrDisplayViewportLayout {
+    MDKR_DISPLAY_VIEWPORT_1_PLAYER = 0,
+    MDKR_DISPLAY_VIEWPORT_2_PLAYERS = 1,
+    MDKR_DISPLAY_VIEWPORT_3_PLAYERS = 2,
+    MDKR_DISPLAY_VIEWPORT_4_PLAYERS = 3,
+};
+
+/*
+ * A projection is an authored-camera property, not a temporary renderer
+ * calculation.  The resolver, render path, and snapshot publisher exchange
+ * this complete immutable record so an aspect/FOV change cannot widen the
+ * lens after the camera was safety-validated.
+ */
+typedef struct MdkrCameraProjection {
+    float logical_viewport_width;
+    float logical_viewport_height;
+    float aspect;
+    float vertical_fov;
+    float horizontal_fov;
+    float near_plane;
+    float far_plane;
+    uint64_t display_generation;
+    uint64_t generation;
+    int viewport;
+    int camera_id;
+    int camera_bank;
+    int horizontal_fov_capped;
+} MdkrCameraProjection;
+
+typedef struct MdkrCameraProjectionRequest {
+    float authored_vertical_fov;
+    float presentation_aspect;
+    float gameplay_vertical_fov;
+    float maximum_horizontal_fov;
+    float near_plane;
+    float far_plane;
+    uint64_t display_generation;
+    int viewport_layout;
+    int viewport;
+    int camera_id;
+    int widescreen_enabled;
+    int gameplay_camera;
+} MdkrCameraProjectionRequest;
+
 typedef struct MdkrBillboardCorrection {
     float clip_x;
     float clip_y;
@@ -76,6 +129,16 @@ MdkrProjection mdkr_display_calculate_projection(
     int gameplay_camera,
     float gameplay_vertical_fov,
     float maximum_horizontal_fov);
+
+/*
+ * Pure per-viewport projection contract.  In particular, two-player DKR
+ * remains a 320x240 logical lens: its half-height view is a scissor, not a
+ * half-height projection.  Three-player uses the game's four-quadrant render
+ * layout, as does four-player.
+ */
+bool mdkr_display_calculate_camera_projection(
+    const MdkrCameraProjectionRequest *request,
+    MdkrCameraProjection *out);
 
 MdkrBillboardCorrection mdkr_display_calculate_billboard_correction(
     float authored_vertical_fov,
@@ -104,6 +167,7 @@ int mdkr_display_set_gameplay_fov(const char *value);
 int mdkr_display_set_max_horizontal_fov(const char *value);
 
 void mdkr_display_set_dimensions(unsigned int width, unsigned int height);
+uint64_t mdkr_display_config_generation(void);
 unsigned int mdkr_display_width(void);
 unsigned int mdkr_display_height(void);
 int mdkr_display_widescreen_enabled(void);

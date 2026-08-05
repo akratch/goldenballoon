@@ -131,6 +131,19 @@ WORLD_SHADOW_RE = re.compile(
     r"complete=(\d+)\s+fallback=(\d+)\s+resourceFailures=(\d+)\s+"
     r"latched=(\d+)"
 )
+CAMERA_OBSTRUCTION_RE = re.compile(
+    r"camera_obstruction_observe summary .* gate=(\w+)\(logical_camera_unchanged\) "
+    r"duplicates=(\d+) projection_mismatches=(\d+) "
+    r"resolved=\{corrected=(\d+) penetrated=(\d+) invalid=(\d+) degraded=(\d+)\} "
+    r"target_hidden=(\d+) target_embedded=(\d+) emergency=(\d+)"
+)
+CAMERA_DYNAMIC_RE = re.compile(
+    r"camera_obstruction_observe summary .* dynamic=\{published=(\d+) peak=(\d+) "
+    r"observed_doors=(\d+) observed_solids=(\d+) missing_cache=(\d+) "
+    r"missing_identity=(\d+) excluded_non_solid=(\d+) uncategorized=(\d+) "
+    r"invalid_transform=(\d+) capacity_failures=(\d+) transitioning_doors=(\d+) "
+    r"active_transitioning_doors=(\d+).*? bytes=(\d+)\}"
+)
 GFX_SHUTDOWN_RE = re.compile(
     r"\[GFX-SHUTDOWN\]\s+texturesCreated=(\d+)\s+texturesDeleted=(\d+)\s+"
     r"live=(\d+)->(\d+)\s+shaders=(\d+)\s+backendReleased=(\d+)\s+"
@@ -1588,6 +1601,9 @@ def run_check(args: argparse.Namespace) -> None:
                     "MDKR_WEBGPU_FAULT": "overlay.pass",
                 },
             }
+            if args.camera_obstruction:
+                first_config["env"]["MDKR_CAMERA_OBSTRUCTION"] = args.camera_obstruction
+                first_config["env"]["MDKR_CAMERA_TRACE"] = "1"
             preload = add_config_script(cdp, first_config)
             cdp.call(
                 "Page.navigate",
@@ -2224,6 +2240,44 @@ def run_check(args: argparse.Namespace) -> None:
                 "browser racer did not advance beyond checkpoint 0",
             )
             console_text = "\n".join(cdp.console)
+            if args.camera_obstruction:
+                camera_rows = [
+                    match.groups()
+                    for line in cdp.console
+                    if (match := CAMERA_OBSTRUCTION_RE.search(line))
+                ]
+                expected_gate = args.camera_obstruction.replace("-", "_").upper()
+                require(
+                    len(camera_rows) >= args.frames - 100
+                    and all(row[0] == expected_gate for row in camera_rows),
+                    "browser camera obstruction policy/telemetry was incomplete: "
+                    f"rows={len(camera_rows)} expected={expected_gate}",
+                )
+                require(
+                    all(int(value) == 0 for row in camera_rows for value in row[1:3])
+                    and all(int(value) == 0 for row in camera_rows for value in row[4:8]),
+                    "browser camera obstruction reported an authority, projection, "
+                    "penetration, invalid, or degraded result",
+                )
+                if args.camera_obstruction == "modern":
+                    require(
+                        sum(int(row[3]) for row in camera_rows) > 0,
+                        "browser Modern route never exercised camera correction",
+                    )
+                dynamic_rows = [
+                    match.groups()
+                    for line in cdp.console
+                    if (match := CAMERA_DYNAMIC_RE.search(line))
+                ]
+                require(
+                    len(dynamic_rows) == len(camera_rows)
+                    and all(
+                        int(value) == 0
+                        for row in dynamic_rows
+                        for value in (row[4], row[5], row[7], row[8], row[9])
+                    ),
+                    "browser dynamic camera publication was incomplete or degraded",
+                )
             require(
                 len(PACE_INIT_RE.findall(console_text)) == 1,
                 "browser did not initialize exactly one NTSC authored-cadence "
@@ -3464,6 +3518,11 @@ def main() -> int:
     )
     parser.add_argument("--frames", type=int, default=3600)
     parser.add_argument("--reload-frames", type=int, default=180)
+    parser.add_argument(
+        "--camera-obstruction",
+        choices=("observe", "legacy", "center-ray", "modern"),
+        help="set and geometrically validate the first browser run's camera policy",
+    )
     parser.add_argument(
         "--timeout",
         type=float,

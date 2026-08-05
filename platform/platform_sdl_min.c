@@ -115,6 +115,19 @@ static uint64_t browser_wait_animation_frame(void) {
 }
 #endif
 #include <SDL.h>
+
+uint64_t platform_perf_monotonic_ns(void) {
+    const uint64_t frequency = SDL_GetPerformanceFrequency();
+    const uint64_t counter = SDL_GetPerformanceCounter();
+    const uint64_t seconds = frequency != 0U ? counter / frequency : 0U;
+    const uint64_t remainder = frequency != 0U ? counter % frequency : 0U;
+
+    if (frequency == 0U || seconds > UINT64_MAX / UINT64_C(1000000000)) {
+        return 0U;
+    }
+    return seconds * UINT64_C(1000000000) +
+           remainder * UINT64_C(1000000000) / frequency;
+}
 #include "platform_os.h"
 #include "fs_utf8.h"
 #include "app/app_brand.h"

@@ -8,6 +8,9 @@
 #include "audiosfx.h"
 #include "borders.h"
 #include "camera.h"
+#ifdef NATIVE_PORT
+#include "camera_obstruction_runtime.h"
+#endif
 #include "common.h"
 #include "f3ddkr.h"
 #include "fade_transition.h"
@@ -489,6 +492,7 @@ void load_next_ingame_level(s32 numPlayers, s32 trackID, Vehicle vehicle) {
  */
 void load_level_game(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicleId) {
 #ifdef NATIVE_PORT
+    camera_obstruction_runtime_reset();
     GAMEPLAY_EVENT_TRACE(
         GAMEPLAY_EVENT_LEVEL, levelId, numberOfPlayers, entranceId, vehicleId);
 #endif
@@ -552,6 +556,7 @@ void unload_level_game(void) {
 #ifdef NATIVE_PORT
     /* Before level_free(): the held display list's commands reference the
      * level's segments and the object models it is about to release. */
+    camera_obstruction_runtime_reset();
     presentation_history_retire();
 #endif
     level_free();
@@ -643,6 +648,11 @@ void mode_game(s32 updateRate) {
      * It feeds this tick's final sort/LOD/visibility basis, so advance it once
      * from fixed-tick authority before any of those consumers. */
     scene_tt_camera_tick(updateRate);
+#ifdef NATIVE_PORT
+    /* Camera obstruction finalizer. It may publish a native presentation
+     * sidecar, but never writes Camera/gCameras or logical consumers. */
+    camera_obstruction_tick(updateRate);
+#endif
     /* The authoritative half of waves_update, hoisted out of
      * render_scene (tracks.c:410) into the tick. Same guard and same pause gate
      * render_scene applied, evaluated at the same point in the frame -- gIsPaused
@@ -1131,6 +1141,7 @@ Vehicle get_level_default_vehicle(void) {
  */
 void load_level_menu(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicleId, s32 cutsceneId) {
 #ifdef NATIVE_PORT
+    camera_obstruction_runtime_reset();
     GAMEPLAY_EVENT_TRACE(
         GAMEPLAY_EVENT_LEVEL, levelId, numberOfPlayers, entranceId,
         (s32)(((u32)(u16)vehicleId << 16) |
@@ -1158,6 +1169,7 @@ void unload_level_menu(void) {
 #ifdef NATIVE_PORT
         /* Same reason as unload_level_game's call; see
          * presentation_history_retire. */
+        camera_obstruction_runtime_reset();
         presentation_history_retire();
 #endif
         level_free();
@@ -1186,6 +1198,10 @@ void update_menu_scene(s32 updateRate) {
     /* Fixed-tick ownership of the three-player TT spectator camera; see the
      * twin call and tracks.c's scene_tt_camera_tick contract. */
     scene_tt_camera_tick(updateRate);
+#ifdef NATIVE_PORT
+    /* Camera obstruction finalizer; twin of mode_game's sidecar-only call. */
+    camera_obstruction_tick(updateRate);
+#endif
     /* Authoritative wave phase, hoisted out of render_scene.
      * See the twin call in mode_game. */
     if (gWaveBlockCount) {

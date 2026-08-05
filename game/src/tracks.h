@@ -3,6 +3,9 @@
 
 #include "structs.h"
 #include "f3ddkr.h"
+#ifdef NATIVE_PORT
+#include "camera_obstruction.h"
+#endif
 
 #ifdef NATIVE_PORT
 #define LOCAL_OFFSET_TO_RAM_ADDRESS(type, ptr) \
@@ -157,6 +160,54 @@ void traverse_segments_bsp_tree(s32 nodeIndex, s32 segmentIndex, s32 segmentInde
                                 s32 *segmentsOrderIndex);
 void render_level_geometry_and_objects(void);
 #ifdef NATIVE_PORT
+/* Static level geometry only. Dynamic object meshes join this query in CAM-05.
+ * The cache owns copied, immutable data and never aliases gameplay collision
+ * candidates or the level-model heap. */
+#define MDKR_CAMERA_TRACK_OCCLUSION_HARD_MASK 0x00000001u
+
+typedef struct MdkrTrackOcclusionTelemetry {
+    size_t segment_count;
+    size_t broadphase_chunk_count;
+    size_t vertex_count;
+    size_t hard_triangle_count;
+    size_t visual_no_collision_hard_triangle_count;
+    size_t nonblocking_triangle_count;
+    size_t rejected_triangle_count;
+    size_t unknown_policy_triangle_count;
+    size_t malformed_batch_count;
+    size_t bytes;
+    uint64_t build_ns;
+    uint64_t exact_sweep_count;
+    uint64_t exact_segment_candidate_count;
+    uint64_t exact_triangle_candidate_count;
+    uint64_t exact_analytic_sat_count;
+    uint64_t exact_analytic_revalidation_miss_count;
+    uint64_t exact_bounded_interval_test_count;
+    uint64_t exact_bounded_interval_exhaustion_count;
+    uint64_t exact_stationary_test_count;
+    uint64_t exact_advance_iteration_count;
+    uint64_t exact_refinement_test_count;
+    uint64_t exact_interval_fallback_count;
+    uint64_t exact_interval_sample_count;
+    uint64_t exact_ambiguous_interval_count;
+    uint64_t exact_publication_revalidation_count;
+    uint64_t exact_invalid_sweep_count;
+    uint64_t exact_max_triangle_candidates_per_sweep;
+    uint64_t exact_max_stationary_tests_per_sweep;
+} MdkrTrackOcclusionTelemetry;
+
+/* Read-only no-truncation query over the loaded track's hard visual shell.
+ * Callers must treat INVALID as fail-closed and retain/recover a safe pose. */
+MdkrCameraSweepStatus mdkr_track_occlusion_sweep(
+    const MdkrCameraSweepInput *input,
+    MdkrCameraSweepHit *out_hit);
+/* Exact fixed-basis rounded-lens counterpart. It is intentionally separate
+ * from the sphere source until runtime policy explicitly opts into CAM-02. */
+MdkrCameraSweepStatus mdkr_track_occlusion_rounded_lens_sweep(
+    const MdkrCameraRoundedLensSweepInput *input,
+    MdkrCameraSweepHit *out_hit);
+void mdkr_track_occlusion_get_telemetry(MdkrTrackOcclusionTelemetry *out);
+
 /* Build the view basis of the LAST viewport of the frame (the one whose sort
  * survived into the next tick) without drawing, and render's own private
  * per-viewport draw order. See tracks.c. */

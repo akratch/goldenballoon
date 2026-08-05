@@ -24,7 +24,7 @@ unchanged.
 | [`allocator.md`](allocator.md) | Allocator and native memory layout — 2 entries |
 | [`web.md`](web.md) | Browser (wasm) build — 3 entries |
 | [`multiplayer.md`](multiplayer.md) | Multiplayer — 1 entry |
-| [`gameplay.md`](gameplay.md) | Gameplay, race and Adventure — 8 entries |
+| [`gameplay.md`](gameplay.md) | Gameplay, race and Adventure — 9 entries |
 | [`portability.md`](portability.md) | 64-bit (LP64), endianness and portability — 11 entries |
 | [`misc.md`](misc.md) | Everything else — 2 entries |
 
@@ -33,7 +33,7 @@ unchanged.
 
 ### Still open
 
-13 entries below are genuinely open. The 38 closed ones follow in
+14 entries below are genuinely open. The 38 closed ones follow in
 their own table — **nothing is deleted when it is fixed**, because a closed
 entry is the only warning the next person gets that the trap exists.
 
@@ -48,6 +48,7 @@ entry is the only warning the next person gets that the trap exists.
 
 | Item | Where |
 |---|---|
+| **Gameplay cameras can enter terrain and object geometry.** Every ordinary follow mode writes an unconstrained desired eye; late dialogue/shake can move it again; the conditional void detector masks terrain holes rather than resolving the camera and does not include object models. The complete projection-derived lens-guard architecture, fixed-tick authority, terrain/object policy, screen/mode matrix, CAM-00–CAM-09 work plan, and closure gates are specified | [camera obstruction modernization plan](../architecture/camera-obstruction.md), [open gameplay record](gameplay.md#open-gameplay-cameras-can-enter-terrain-and-object-geometry) |
 | **F-18 independent state reference is PARTIAL; boss cadence policy is CLOSED:** the Ancient Lake lane still has broader open-loop racing-line differences, but its fail-closed real-ROM update/input replay now makes checkpoint clocks 0–3 exact and moves the first five-unit separation from clock 18 to 767, classifying the early mismatch as timestep partitioning. The all-racer Bluey 2 lane isolates the reported boss-speed divergence: retail/Original finish at ticks 3,459/3,458 with a 1.00065× speed ratio; the Enhanced one-field arm finishes at 3,022 with a 1.13982× ratio. Interactive gameplay defaults to Original two-field complete updates, with one-field simulation explicitly available as Enhanced compatibility. Broader challenge, multiplayer, progression/save, audio, renderer-state, and remaining standard-race parity still remain outside this boss lane | [`race_state_oracle.json`](../../tools/oracle_routes/race_state_oracle.json), [`bluey2_state_oracle.json`](../../tools/oracle_routes/bluey2_state_oracle.json), [`BLUEY2_PARITY.md`](../BLUEY2_PARITY.md) |
 | **WGPU-11 external/oracle corpus breadth remains open; its local asset, capacity, and fault closeout is DONE** — 46 native menu/course/hub/multiplayer routes execute 249,339,186 strict commands with zero faults, 29 material IDs, 37 material/pipeline keys, and max 3/32 pipelines per material. The offline gate additionally validates all 445 supported-ROM models, 1,146 level segments, and 16,943 batches, including dormant variants; retail high-water is 24/32 vertices and 16/16 triangles. Forced 4 KiB segmentation and a one-entry shader-index limit prove safe continuation, no stale-pointer reuse, one bounded same-backend recovery, and terminal failure without a renderer switch. The 113-point fault registry is fully classified; native runtime gates cover all 83 native-required points and browser gates cover all three browser-required points, while 29 inherited/unemitted paths receive no coverage credit. Browser complete-corpus/minimum-feature hardware, independent state reference, and external native platforms remain | [`check_webgpu_content_census.py`](../../tests/check_webgpu_content_census.py), [`check_webgpu_fault_matrix.py`](../../tests/check_webgpu_fault_matrix.py) |
 | **M1 residuals remain deliberately deferred:** WebGPU 4x MSAA (IQ-8) and a loader-only, content-free texture-pack path (IQ-11). Supersampling already lowers IQ-8's value; IQ-11 must extend the ROM-absence guard and ship no content | [restoration/remaster sprint](renderer.md#fixed-restorationremaster-sprint--sprite-bounds-rdp-gradients-sdf-text-moving-mips-and-rl-1) |
@@ -113,6 +114,7 @@ what was done and what proves it.
 
 **Gameplay, race and adventure**
 
+- [OPEN: gameplay cameras can enter terrain and object geometry](gameplay.md#open-gameplay-cameras-can-enter-terrain-and-object-geometry)
 - [FIXED: object-model collision never reported a hit, so locked doors were intangible — wave "objcoll"](collision.md#fixed-object-model-collision-never-reported-a-hit-so-locked-doors-were-intangible--wave-objcoll)
 - [FIXED: a one-shot cutscene replayed for ever, because its latch was undefined behaviour the optimiser deleted — wave "keyshift"](gameplay.md#fixed-a-one-shot-cutscene-replayed-for-ever-because-its-latch-was-undefined-behaviour-the-optimiser-deleted--wave-keyshift)
 - [FIXED: three ROM-fidelity divergences, and the fixture class that was blocking them — wave "closedloop"](gameplay.md#fixed-three-rom-fidelity-divergences-and-the-fixture-class-that-was-blocking-them--wave-closedloop)

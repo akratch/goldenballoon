@@ -4,6 +4,9 @@
 #include "types.h"
 #include "structs.h"
 #include "f3ddkr.h"
+#ifdef NATIVE_PORT
+#include "display_config.h"
+#endif
 
 #define SCREEN_WIDTH 320
 #define SCREEN_HEIGHT 240
@@ -77,6 +80,31 @@ typedef struct Camera {
     /* 0x0040 */ ObjectHeader *header;
   } Camera;
 
+#ifdef NATIVE_PORT
+/*
+ * A renderer-equivalent world-space camera basis, built from a Camera snapshot
+ * without selecting a viewport, touching gCameras, or changing any matrix
+ * globals. `eye` is the position render actually uses after the explicit shake
+ * gate. `forward` points through the image; consequently right x up is
+ * -forward (right, up, -forward is the right-handed renderer basis).
+ */
+typedef struct MdkrCameraLensPose {
+    Vec3f eye;
+    Vec3f right;
+    Vec3f up;
+    Vec3f forward;
+} MdkrCameraLensPose;
+
+/*
+ * Reconstruct the pure inverse-view/world basis used by cam_build_view_basis()
+ * for one Camera snapshot. A nonzero apply_shake reproduces gNoCamShake's
+ * renderer behavior. Invalid position input, or invalid shake when applied,
+ * fails closed and leaves `out` untouched.
+ */
+int cam_lens_pose_from_camera_snapshot(
+    const Camera *camera, s32 apply_shake, MdkrCameraLensPose *out);
+#endif
+
 /* Size: 0x34 bytes. */
 typedef struct ScreenViewport {
     /* 0x00 */ s32 x1;
@@ -138,6 +166,25 @@ s32 viewport_world_region_uses_safe_aperture(s32 viewPortIndex);
 void mtx_ortho_fullscreen(Gfx **dList, Mtx **mtx);
 void mtx_ortho_wide_background(Gfx **dList, Mtx **mtx,
                                f32 authoredTileOffset);
+/*
+ * Native projection handshake.  The query is available to the fixed-tick
+ * camera resolver before rendering; the latch is the record render consumes
+ * for the selected viewport/camera bank in that authored image.
+ */
+bool cam_effective_projection_for_viewport(
+    s32 viewport, s32 cameraID, MdkrCameraProjection *out);
+bool cam_effective_projection_for_viewport_context(
+    s32 viewport, s32 cameraID, bool gameplayCamera,
+    MdkrCameraProjection *out);
+bool cam_latch_effective_projection_for_viewport(
+    s32 viewport, s32 cameraID, MdkrCameraProjection *out);
+bool cam_latch_effective_projection_for_viewport_context(
+    s32 viewport, s32 cameraID, bool gameplayCamera,
+    MdkrCameraProjection *out);
+bool cam_get_latched_effective_projection_for_viewport(
+    s32 viewport, MdkrCameraProjection *out);
+bool cam_restore_latched_effective_projection_for_viewport(
+    s32 viewport, s32 cameraID, const MdkrCameraProjection *projection);
 f32 cam_get_effective_horizontal_fov(void);
 f32 cam_get_effective_vertical_fov(void);
 f32 cam_get_effective_aspect(void);

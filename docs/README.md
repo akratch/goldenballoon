@@ -43,7 +43,8 @@ Recognising them on sight saves days.
 - **[`architecture/`](architecture/README.md)** — one specification per subsystem
   of the port layer: [input](architecture/input.md),
   [WebGPU](architecture/webgpu.md), [audio](architecture/audio.md),
-  [race](architecture/race.md), [web](architecture/web.md).
+  [race](architecture/race.md), [web](architecture/web.md), and the open
+  [camera-obstruction modernization plan](architecture/camera-obstruction.md).
 - **[`DEVELOPER_HANDBOOK.md`](DEVELOPER_HANDBOOK.md)** — what exists and what
   demonstrates it, the dominant bug class, the testing rules, decomp sync, and
   the practices this codebase punishes people for skipping.

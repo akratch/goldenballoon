@@ -19,6 +19,7 @@
 
 #include "structs.h"
 #include "camera.h"
+#include "camera_dynamic_occlusion.h"
 #include "game.h"
 #include "game_ui.h"
 #include "objects.h"
@@ -86,6 +87,8 @@ static void capture_object(const Object *object) {
     sample.opacity = object->opacity;
     sample.animation_id = -1;
     sample.animation_frame = 0;
+    sample.discontinuity = (uint8_t)
+        mdkr_camera_dynamic_occlusion_object_discontinuous(object);
 
     /* The ACTIVE ModelInstance, selected exactly the way obj_animate_tick and
      * render_3d_model select it: modelInstances[modelIndex], and only for

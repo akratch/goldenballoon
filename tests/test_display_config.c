@@ -37,6 +37,9 @@ static void expect_projection_isotropic(
 
 int main(void) {
     MdkrBillboardCorrection billboard;
+    MdkrCameraProjection camera_projection;
+    MdkrCameraProjection resized_projection;
+    MdkrCameraProjectionRequest camera_request;
     MdkrDisplayLayout layout;
     MdkrProjection projection;
     float rotated_billboard[4][4] = {
@@ -187,6 +190,159 @@ int main(void) {
         60.0f, projection.vertical_fov, 4.0f / 3.0f, projection.aspect, 0);
     expect_near("legacy billboard keeps X stretch", billboard.clip_x, 1.0f, 0.0001f);
     expect_near("legacy billboard keeps Y scale", billboard.clip_y, 1.0f, 0.0001f);
+
+    /* CAM-01: every consumer gets the same typed projection record.  These
+     * tests deliberately exercise logical viewports rather than physical
+     * scissors: DKR's two-player view is a full-height lens cropped by RDP. */
+    camera_request = (MdkrCameraProjectionRequest) {
+        .authored_vertical_fov = 60.0f,
+        .presentation_aspect = 4.0f / 3.0f,
+        .gameplay_vertical_fov = 0.0f,
+        .maximum_horizontal_fov = MDKR_SIMULATION_SAFE_MAX_HFOV,
+        .near_plane = 10.0f,
+        .far_plane = 15000.0f,
+        .display_generation = 100,
+        .viewport_layout = MDKR_DISPLAY_VIEWPORT_1_PLAYER,
+        .viewport = 0,
+        .camera_id = 0,
+        .widescreen_enabled = 1,
+        .gameplay_camera = 1,
+    };
+    expect_true("4:3 camera projection calculates",
+                mdkr_display_calculate_camera_projection(&camera_request, &camera_projection));
+    expect_near("4:3 record logical width", camera_projection.logical_viewport_width, 320.0f, 0.001f);
+    expect_near("4:3 record logical height", camera_projection.logical_viewport_height, 240.0f, 0.001f);
+    expect_near("4:3 record aspect", camera_projection.aspect, 4.0f / 3.0f, 0.0001f);
+    expect_near("4:3 record near", camera_projection.near_plane, 10.0f, 0.0001f);
+    expect_near("4:3 record far", camera_projection.far_plane, 15000.0f, 0.0001f);
+    expect_true("4:3 record is gameplay bank", camera_projection.camera_bank == 0);
+    expect_true("4:3 record has generation", camera_projection.generation != 0);
+
+    camera_request.presentation_aspect = 16.0f / 9.0f;
+    expect_true("16:9 camera projection calculates",
+                mdkr_display_calculate_camera_projection(&camera_request, &camera_projection));
+    expect_near("16:9 record aspect", camera_projection.aspect, 16.0f / 9.0f, 0.0001f);
+    expect_near("16:9 record horizontal FOV", camera_projection.horizontal_fov, 91.4928f, 0.01f);
+
+    camera_request.presentation_aspect = 21.0f / 9.0f;
+    expect_true("21:9 camera projection calculates",
+                mdkr_display_calculate_camera_projection(&camera_request, &camera_projection));
+    expect_true("21:9 record cap engages", camera_projection.horizontal_fov_capped);
+    expect_near("21:9 record horizontal cap", camera_projection.horizontal_fov,
+                MDKR_SIMULATION_SAFE_MAX_HFOV, 0.001f);
+
+    camera_request.presentation_aspect = 32.0f / 9.0f;
+    expect_true("32:9 camera projection calculates",
+                mdkr_display_calculate_camera_projection(&camera_request, &camera_projection));
+    expect_true("32:9 record cap engages", camera_projection.horizontal_fov_capped);
+    expect_near("32:9 record horizontal cap", camera_projection.horizontal_fov,
+                MDKR_SIMULATION_SAFE_MAX_HFOV, 0.001f);
+
+    camera_request.presentation_aspect = 9.0f / 16.0f;
+    expect_true("portrait camera projection calculates",
+                mdkr_display_calculate_camera_projection(&camera_request, &camera_projection));
+    expect_near("portrait record aspect", camera_projection.aspect, 9.0f / 16.0f, 0.0001f);
+    expect_true("portrait is not horizontally capped", !camera_projection.horizontal_fov_capped);
+
+    camera_request.presentation_aspect = 16.0f / 9.0f;
+    camera_request.viewport_layout = MDKR_DISPLAY_VIEWPORT_2_PLAYERS;
+    camera_request.viewport = 1;
+    camera_request.camera_id = 1;
+    expect_true("2P camera projection calculates",
+                mdkr_display_calculate_camera_projection(&camera_request, &camera_projection));
+    expect_near("2P keeps full-width logical viewport", camera_projection.logical_viewport_width, 320.0f, 0.001f);
+    expect_near("2P keeps full-height logical viewport", camera_projection.logical_viewport_height, 240.0f, 0.001f);
+    expect_near("2P ignores half-height scissor for aspect", camera_projection.aspect, 16.0f / 9.0f, 0.0001f);
+
+    camera_request.viewport_layout = MDKR_DISPLAY_VIEWPORT_3_PLAYERS;
+    camera_request.viewport = 2;
+    camera_request.camera_id = 2;
+    expect_true("3P camera projection calculates",
+                mdkr_display_calculate_camera_projection(&camera_request, &camera_projection));
+    expect_near("3P uses quadrant logical width", camera_projection.logical_viewport_width, 160.0f, 0.001f);
+    expect_near("3P uses quadrant logical height", camera_projection.logical_viewport_height, 120.0f, 0.001f);
+    expect_near("3P quadrant preserves host aspect", camera_projection.aspect, 16.0f / 9.0f, 0.0001f);
+    camera_request.viewport = 3;
+    camera_request.camera_id = 3;
+    expect_true("3P optional T.T. camera projection calculates",
+                mdkr_display_calculate_camera_projection(&camera_request, &camera_projection));
+    expect_near("3P T.T. camera stays quadrant width", camera_projection.logical_viewport_width, 160.0f, 0.001f);
+
+    camera_request.viewport_layout = MDKR_DISPLAY_VIEWPORT_4_PLAYERS;
+    camera_request.viewport = 3;
+    camera_request.camera_id = 7;
+    camera_request.gameplay_camera = 0;
+    expect_true("4P cutscene-bank projection calculates",
+                mdkr_display_calculate_camera_projection(&camera_request, &camera_projection));
+    expect_true("4P record preserves selected camera id", camera_projection.camera_id == 7);
+    expect_true("4P record identifies cutscene bank", camera_projection.camera_bank == 1);
+    expect_near("4P uses quadrant logical width", camera_projection.logical_viewport_width, 160.0f, 0.001f);
+    expect_near("4P uses quadrant logical height", camera_projection.logical_viewport_height, 120.0f, 0.001f);
+
+    camera_request.camera_id = 3;
+    camera_request.gameplay_camera = 1;
+    camera_request.authored_vertical_fov = 60.0f;
+    camera_request.gameplay_vertical_fov = 75.0f;
+    expect_true("FOV generation baseline calculates",
+                mdkr_display_calculate_camera_projection(&camera_request, &camera_projection));
+    resized_projection = camera_projection;
+    camera_request.authored_vertical_fov = 50.0f;
+    expect_true("authored FOV generation calculates",
+                mdkr_display_calculate_camera_projection(&camera_request, &resized_projection));
+    expect_true("authored FOV changes projection generation",
+                camera_projection.generation != resized_projection.generation);
+    expect_true("authored FOV changes effective vertical FOV",
+                camera_projection.vertical_fov != resized_projection.vertical_fov);
+
+    camera_request.authored_vertical_fov = 60.0f;
+    camera_request.display_generation++;
+    expect_true("resize generation projection calculates",
+                mdkr_display_calculate_camera_projection(&camera_request, &resized_projection));
+    expect_true("display resize changes projection generation",
+                camera_projection.generation != resized_projection.generation);
+    expect_true("resize records display generation", resized_projection.display_generation == 101);
+    expect_true("invalid camera bank is rejected", !mdkr_display_calculate_camera_projection(
+                                                   &(MdkrCameraProjectionRequest) {
+                                                       .near_plane = 10.0f,
+                                                       .far_plane = 15000.0f,
+                                                       .viewport_layout = MDKR_DISPLAY_VIEWPORT_1_PLAYER,
+                                                       .viewport = 0,
+                                                       .camera_id = 8,
+                                                   },
+                                                   &resized_projection));
+    camera_request.display_generation = 0;
+    expect_true("zero display generation is rejected",
+                !mdkr_display_calculate_camera_projection(&camera_request, &resized_projection));
+    camera_request.display_generation = 101;
+    expect_true("invalid viewport is rejected", !mdkr_display_calculate_camera_projection(
+                                                &(MdkrCameraProjectionRequest) {
+                                                    .near_plane = 10.0f,
+                                                    .far_plane = 15000.0f,
+                                                    .viewport_layout = MDKR_DISPLAY_VIEWPORT_2_PLAYERS,
+                                                    .viewport = 2,
+                                                    .camera_id = 0,
+                                                },
+                                                &resized_projection));
+
+    {
+        uint64_t previous_generation = mdkr_display_config_generation();
+        mdkr_display_set_dimensions(1237, 911);
+        expect_true("runtime resize increments display generation",
+                    mdkr_display_config_generation() > previous_generation);
+        previous_generation = mdkr_display_config_generation();
+        mdkr_display_set_dimensions(1237, 911);
+        expect_true("same dimensions leave display generation unchanged",
+                    mdkr_display_config_generation() == previous_generation);
+        expect_true("runtime FOV setup accepted", mdkr_display_set_gameplay_fov("87"));
+        previous_generation = mdkr_display_config_generation();
+        expect_true("runtime FOV update accepted", mdkr_display_set_gameplay_fov("88"));
+        expect_true("runtime FOV increments display generation",
+                    mdkr_display_config_generation() > previous_generation);
+        previous_generation = mdkr_display_config_generation();
+        expect_true("same runtime FOV accepted", mdkr_display_set_gameplay_fov("88"));
+        expect_true("same runtime FOV leaves display generation unchanged",
+                    mdkr_display_config_generation() == previous_generation);
+    }
 
     if (s_failures != 0) {
         fprintf(stderr, "%d display-config assertion(s) failed\n", s_failures);

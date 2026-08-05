@@ -12,6 +12,7 @@
 #include "mdkr_trace.h"
 #include "taj_visual.h"
 #include "presentation_snapshot.h"
+#include "camera_dynamic_occlusion.h"
 #include "gameplay_event_trace.h"
 #include "fast3d/gfx_level_lighting.h"
 #endif
@@ -1288,6 +1289,15 @@ void allocate_object_pools(void) {
     }
 #endif
     gObjPtrList = mempool_alloc_safe(sizeof(uintptr_t) * OBJECT_SLOT_COUNT, COLOUR_TAG_BLUE);
+#ifdef NATIVE_PORT
+    /* The native dynamic camera list owns only side data.  Reserve against the
+     * same fixed object-pool cardinality before any objects can spawn; per-tick
+     * publication therefore cannot allocate or truncate a live list. */
+    if (!mdkr_camera_dynamic_occlusion_prepare(OBJECT_SLOT_COUNT)) {
+        fprintf(stderr, "[FATAL] dynamic camera occlusion preparation failed\n");
+        abort();
+    }
+#endif
     gFirstTimeFinish = 0;
     gTimeTrialEnabled = 0;
     gIsTimeTrial = FALSE;
@@ -1402,6 +1412,11 @@ void free_all_objects(void) {
         swap_lead_player();
     }
     gParticlePtrList_flush();
+#ifdef NATIVE_PORT
+    /* Object pools survive a level transition, so retain the preallocated
+     * side buffers and clear their retired model/instance state only. */
+    mdkr_camera_dynamic_occlusion_reset();
+#endif
     len = gObjectCount;
     for (i = 0; i < len; i++) {
         obj_destroy(gObjPtrList[i], 1);
@@ -3317,6 +3332,7 @@ void add_particle_to_entity_list(Object *obj) {
      * faster than the object pool, which makes the generation matter more
      * here, not less. */
     presentation_snapshot_note_spawn(obj);
+    mdkr_camera_dynamic_occlusion_note_spawn(obj);
 #endif
 }
 
@@ -3968,6 +3984,7 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
      * No-op unless MDKR_PRESENT_SNAPSHOT is set.
      */
     presentation_snapshot_note_spawn(curObj);
+    mdkr_camera_dynamic_occlusion_note_spawn(curObj);
     GAMEPLAY_EVENT_TRACE(
         GAMEPLAY_EVENT_SPAWN, curObj->objectID,
         curObj->header != NULL ? curObj->header->behaviorId : -1,
@@ -4359,6 +4376,7 @@ void obj_destroy(Object *obj, s32 arg1) {
      * No-op unless MDKR_PRESENT_SNAPSHOT is set.
      */
     presentation_snapshot_note_free(obj);
+    mdkr_camera_dynamic_occlusion_note_free(obj);
 #endif
     if (obj->trans.flags & OBJ_FLAGS_PARTICLE) {
         particle_deallocate((Particle *) obj);

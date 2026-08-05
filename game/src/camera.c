@@ -13,11 +13,13 @@
 #include "weather.h"
 
 #ifdef NATIVE_PORT
+#include "camera_obstruction_runtime.h"
 #include "display_config.h"
 #include "fast3d/gfx_presentation_packet.h"
 #include "fast3d/gfx_shadow_frame.h"
 #include "presentation_snapshot.h"
 #include "thread3_main.h"
+#include <math.h>
 #include <stdio.h>  /* fprintf — the NULL-sprite assert below */
 #include <stdlib.h> /* abort   — ditto */
 #include <string.h> /* memcpy  — mdkr_camera_replay_mvp */
@@ -613,9 +615,8 @@ bool mdkr_camera_replay_billboard_matrix(
 f32 gEffectiveCamVFOV = CAMERA_DEFAULT_FOV;
 f32 gEffectiveCamHFOV = 75.17818f; /* 60-degree vertical lens at 4:3 */
 f32 gEffectiveCamAspect = CAMERA_ASPECT;
-static f32 sProjectionLogicalWidth = SCREEN_WIDTH_FLOAT;
-static f32 sProjectionLogicalHeight = SCREEN_HEIGHT_FLOAT;
-static s32 sProjectionUsesSafeWorldRegion = FALSE;
+static MdkrCameraProjection sNativeProjectionByViewport[4];
+static bool sNativeProjectionValid[4];
 static s32 sNativeOrthoDrawSpace = G_MTX_DKR_SPACE_SAFE_2D;
 #endif
 
@@ -625,49 +626,139 @@ extern s32 D_B0000578; // Used as a symbol for anti-piracy checks in the game.
 
 #ifdef NATIVE_PORT
 /**
- * Rebuild the shared perspective from the current drawable policy.
+ * Produce the exact record a fixed-tick camera resolver will later latch.  This
+ * is deliberately callable before any display-list work; no viewport scissor or
+ * renderer global participates in lens selection.
  *
  * DKR clips two-player views with scissors while retaining a full-height RSP
- * viewport, so the logical dimensions passed by viewport_main are intentionally
- * the RSP viewport dimensions, not the scissor rectangle. This preserves the
- * original vertical crop while fixing the host aspect and object proportions.
- * Framed menu views opt into the safe 4:3 region instead of the wider gameplay
- * presentation region.
+ * viewport, so the logical dimensions belong to the RSP viewport, not the
+ * scissor rectangle; display_config owns that mapping.  A framed menu view opts
+ * into the safe 4:3 region instead of the wider gameplay presentation region,
+ * and a safe-region view is never a gameplay lens.
  */
-static void cam_rebuild_native_projection(f32 logicalWidth, f32 logicalHeight,
-                                          s32 safeWorldRegion) {
+bool cam_effective_projection_for_viewport_context(
+    s32 viewport, s32 cameraID, bool gameplayCamera,
+    MdkrCameraProjection *out) {
     MdkrDisplayLayout layout;
-    MdkrProjection projection;
-    s32 gameplayCamera;
-
-    if (!(logicalWidth > 0.0f) || !(logicalHeight > 0.0f)) {
-        logicalWidth = SCREEN_WIDTH_FLOAT;
-        logicalHeight = SCREEN_HEIGHT_FLOAT;
-    }
-    sProjectionLogicalWidth = logicalWidth;
-    sProjectionLogicalHeight = logicalHeight;
-    sProjectionUsesSafeWorldRegion = safeWorldRegion != FALSE;
+    MdkrCameraProjectionRequest request;
+    const s32 safeWorldRegion =
+        viewport_world_region_uses_safe_aperture(viewport);
 
     layout = mdkr_display_layout();
-    gameplayCamera =
-        (get_game_mode() == GAMEMODE_INGAME) && !gCutsceneCameraActive &&
-        !sProjectionUsesSafeWorldRegion;
-    projection = mdkr_display_calculate_projection(
-        gCurCamFOV,
-        logicalWidth,
-        logicalHeight,
-        sProjectionUsesSafeWorldRegion ? CAMERA_ASPECT
-                                       : layout.presentation_aspect,
-        mdkr_display_widescreen_enabled(),
-        gameplayCamera,
-        mdkr_display_gameplay_fov(),
-        mdkr_display_max_horizontal_fov());
+    memset(&request, 0, sizeof(request));
+    request.authored_vertical_fov = gCurCamFOV;
+    request.presentation_aspect =
+        safeWorldRegion ? CAMERA_ASPECT : layout.presentation_aspect;
+    request.gameplay_vertical_fov = mdkr_display_gameplay_fov();
+    request.maximum_horizontal_fov = mdkr_display_max_horizontal_fov();
+    request.near_plane = CAMERA_NEAR;
+    request.far_plane = CAMERA_FAR;
+    request.display_generation = mdkr_display_config_generation();
+    request.viewport_layout = gViewportLayout;
+    request.viewport = viewport;
+    request.camera_id = cameraID;
+    request.widescreen_enabled = mdkr_display_widescreen_enabled();
+    /* Camera IDs 4..7 are the scripted/cutscene bank.  Their authored lens is
+     * not scaled by the gameplay FOV option even if a cutscene flag changes
+     * between camera selection and this query. */
+    request.gameplay_camera = gameplayCamera && !safeWorldRegion;
+    return mdkr_display_calculate_camera_projection(&request, out);
+}
+
+bool cam_effective_projection_for_viewport(
+    s32 viewport, s32 cameraID, MdkrCameraProjection *out) {
+    const bool gameplayCamera =
+        cameraID >= 0 && cameraID < 4 && get_game_mode() == GAMEMODE_INGAME &&
+        !gCutsceneCameraActive;
+    return cam_effective_projection_for_viewport_context(
+        viewport, cameraID, gameplayCamera, out);
+}
+
+bool cam_latch_effective_projection_for_viewport_context(
+    s32 viewport, s32 cameraID, bool gameplayCamera,
+    MdkrCameraProjection *out) {
+    MdkrCameraProjection projection;
+
+    if (viewport < 0 || viewport >= ARRAY_COUNT(sNativeProjectionByViewport) ||
+        !cam_effective_projection_for_viewport_context(
+            viewport, cameraID, gameplayCamera, &projection)) {
+        return false;
+    }
+    sNativeProjectionByViewport[viewport] = projection;
+    sNativeProjectionValid[viewport] = true;
+    if (out != NULL) {
+        *out = projection;
+    }
+    return true;
+}
+
+bool cam_latch_effective_projection_for_viewport(
+    s32 viewport, s32 cameraID, MdkrCameraProjection *out) {
+    const bool gameplayCamera =
+        cameraID >= 0 && cameraID < 4 && get_game_mode() == GAMEMODE_INGAME &&
+        !gCutsceneCameraActive;
+    return cam_latch_effective_projection_for_viewport_context(
+        viewport, cameraID, gameplayCamera, out);
+}
+
+bool cam_get_latched_effective_projection_for_viewport(
+    s32 viewport, MdkrCameraProjection *out) {
+    if (out == NULL || viewport < 0 || viewport >= ARRAY_COUNT(sNativeProjectionByViewport) ||
+        !sNativeProjectionValid[viewport]) {
+        return false;
+    }
+    *out = sNativeProjectionByViewport[viewport];
+    return true;
+}
+
+bool cam_restore_latched_effective_projection_for_viewport(
+    s32 viewport, s32 cameraID, const MdkrCameraProjection *projection) {
+    if (projection == NULL || viewport < 0 ||
+        viewport >= ARRAY_COUNT(sNativeProjectionByViewport) ||
+        projection->viewport != viewport || projection->camera_id != cameraID ||
+        projection->camera_bank != cameraID / 4 ||
+        projection->generation == 0U || projection->display_generation == 0U ||
+        projection->display_generation != mdkr_display_config_generation() ||
+        !isfinite(projection->logical_viewport_width) ||
+        projection->logical_viewport_width <= 0.0f ||
+        !isfinite(projection->logical_viewport_height) ||
+        projection->logical_viewport_height <= 0.0f ||
+        !isfinite(projection->aspect) || projection->aspect <= 0.0f ||
+        !isfinite(projection->vertical_fov) || projection->vertical_fov <= 0.0f ||
+        projection->vertical_fov >= 180.0f ||
+        !isfinite(projection->horizontal_fov) || projection->horizontal_fov <= 0.0f ||
+        projection->horizontal_fov >= 180.0f ||
+        !isfinite(projection->near_plane) || projection->near_plane <= 0.0f ||
+        !isfinite(projection->far_plane) ||
+        projection->far_plane <= projection->near_plane ||
+        (projection->horizontal_fov_capped != 0 &&
+         projection->horizontal_fov_capped != 1)) {
+        return false;
+    }
+    sNativeProjectionByViewport[viewport] = *projection;
+    sNativeProjectionValid[viewport] = true;
+    return true;
+}
+
+/* Render receives the record latched by the fixed-tick finalizer, never loose
+ * aspect/FOV values. Do not turn this into a query: rendering an unvalidated
+ * wider projection is precisely the mismatch this contract prevents. */
+static void cam_rebuild_native_projection(s32 viewport, s32 cameraID) {
+    MdkrCameraProjection projection;
+
+    if (!cam_get_latched_effective_projection_for_viewport(viewport, &projection) ||
+        projection.camera_id != cameraID ||
+        !camera_obstruction_projection_matches_render(
+            viewport, cameraID, projection.generation)) {
+        return;
+    }
 
     gEffectiveCamVFOV = projection.vertical_fov;
     gEffectiveCamHFOV = projection.horizontal_fov;
     gEffectiveCamAspect = projection.aspect;
     guPerspectiveF(gPerspectiveMatrixF, &perspNorm, projection.vertical_fov,
-                   projection.aspect, CAMERA_NEAR, CAMERA_FAR, CAMERA_SCALE);
+                   projection.aspect, projection.near_plane, projection.far_plane,
+                   CAMERA_SCALE);
     mtxf_to_mtx(&gPerspectiveMatrixF, &gPerspectiveMatrix);
 }
 
@@ -729,8 +820,8 @@ void cam_init(void) {
 
     gCurCamFOV = CAMERA_DEFAULT_FOV;
 #ifdef NATIVE_PORT
-    cam_rebuild_native_projection(SCREEN_WIDTH_FLOAT, SCREEN_HEIGHT_FLOAT,
-                                  FALSE);
+    (void) cam_latch_effective_projection_for_viewport(0, 0, NULL);
+    cam_rebuild_native_projection(0, 0);
 #else
     guPerspectiveF(gPerspectiveMatrixF, &perspNorm, CAMERA_DEFAULT_FOV, CAMERA_ASPECT, CAMERA_NEAR, CAMERA_FAR,
                    CAMERA_SCALE);
@@ -785,9 +876,9 @@ void cam_set_fov(f32 camFieldOfView) {
     if (CAMERA_MIN_FOV < camFieldOfView && camFieldOfView < CAMERA_MAX_FOV && camFieldOfView != gCurCamFOV) {
         gCurCamFOV = camFieldOfView;
 #ifdef NATIVE_PORT
-        cam_rebuild_native_projection(sProjectionLogicalWidth,
-                                      sProjectionLogicalHeight,
-                                      sProjectionUsesSafeWorldRegion);
+        s32 cameraID = gActiveCameraID + (gCutsceneCameraActive ? 4 : 0);
+        (void) cam_latch_effective_projection_for_viewport(gActiveCameraID, cameraID, NULL);
+        cam_rebuild_native_projection(gActiveCameraID, cameraID);
 #else
         guPerspectiveF(gPerspectiveMatrixF, &perspNorm, camFieldOfView, CAMERA_ASPECT, CAMERA_NEAR, CAMERA_FAR,
                        CAMERA_SCALE);
@@ -802,9 +893,11 @@ void cam_set_fov(f32 camFieldOfView) {
 UNUSED void cam_reset_fov(void) {
 #ifdef NATIVE_PORT
     gCurCamFOV = CAMERA_DEFAULT_FOV;
-    cam_rebuild_native_projection(sProjectionLogicalWidth,
-                                  sProjectionLogicalHeight,
-                                  sProjectionUsesSafeWorldRegion);
+    {
+        s32 cameraID = gActiveCameraID + (gCutsceneCameraActive ? 4 : 0);
+        (void) cam_latch_effective_projection_for_viewport(gActiveCameraID, cameraID, NULL);
+        cam_rebuild_native_projection(gActiveCameraID, cameraID);
+    }
 #else
     guPerspectiveF(gPerspectiveMatrixF, &perspNorm, CAMERA_DEFAULT_FOV, CAMERA_ASPECT, CAMERA_NEAR, CAMERA_FAR,
                    CAMERA_SCALE);
@@ -882,6 +975,7 @@ void camera_init_tracks_menu(Gfx **dList, Mtx **mtxS) {
 f32 get_distance_to_active_camera(f32 xPos, f32 yPos, f32 zPos) {
     s32 index;
     f32 dx, dz, dy;
+    Camera *camera;
 
     index = gActiveCameraID;
 
@@ -889,9 +983,10 @@ f32 get_distance_to_active_camera(f32 xPos, f32 yPos, f32 zPos) {
         index += 4;
     }
 
-    dz = zPos - gCameras[index].trans.z_position;
-    dx = xPos - gCameras[index].trans.x_position;
-    dy = yPos - gCameras[index].trans.y_position;
+    camera = camera_obstruction_camera_for_slot(index);
+    dz = zPos - camera->trans.z_position;
+    dx = xPos - camera->trans.x_position;
+    dy = yPos - camera->trans.y_position;
     return sqrtf((dz * dz) + ((dx * dx) + (dy * dy)));
 }
 
@@ -931,6 +1026,28 @@ void write_to_object_render_stack(s32 stackPos, f32 xPos, f32 yPos, f32 zPos, s1
     gCameras[stackPos].trans.rotation.z_rotation = arg6;
     gCameras[stackPos].cameraSegmentID = get_level_segment_index_from_position(xPos, yPos, zPos);
     gCutsceneCameraActive = TRUE;
+#ifdef NATIVE_PORT
+    {
+        MdkrCameraIntent intent;
+        const f32 horizontal = coss_f(arg5);
+
+        memset(&intent, 0, sizeof(intent));
+        intent.camera_id = stackPos;
+        intent.authored_mode = gCameras[stackPos].mode;
+        intent.family = MDKR_CAMERA_INTENT_FAMILY_SCRIPTED_CUTSCENE;
+        intent.desired_eye.x = xPos;
+        intent.desired_eye.y = yPos;
+        intent.desired_eye.z = zPos;
+        intent.pivot = intent.desired_eye;
+        /* Scripted transforms have no universal subject. Preserve the exact
+         * final orientation as a forward ray instead of inventing a target. */
+        intent.forward.x = sins_f(arg4) * horizontal;
+        intent.forward.y = -sins_f(arg5);
+        intent.forward.z = coss_f(arg4) * horizontal;
+        intent.forward_valid = TRUE;
+        camera_obstruction_intent_capture(&intent);
+    }
+#endif
 }
 
 /**
@@ -1270,20 +1387,14 @@ void viewport_main(Gfx **dlist, Mtx **mats) {
     videoWidth = GET_VIDEO_WIDTH(widthAndHeight);
     if (gScreenViewports[savedCameraID].flags & VIEWPORT_EXTRA_BG) {
 #ifdef NATIVE_PORT
-        s32 safeAperture =
-            viewport_world_region_uses_safe_aperture(savedCameraID);
-        s32 logicalWidth = videoWidth;
-        s32 logicalHeight = videoHeight;
+        /* The world region is the viewport's own persistent property, so the
+         * latched record already carries the safe-aperture lens; render only
+         * has to tell the renderer which region this image draws into. */
+        s32 cameraID = gActiveCameraID + (gCutsceneCameraActive ? 4 : 0);
 
-        if (safeAperture) {
-            logicalWidth = gScreenViewports[savedCameraID].x2 -
-                           gScreenViewports[savedCameraID].x1 + 1;
-            logicalHeight = gScreenViewports[savedCameraID].y2 -
-                            gScreenViewports[savedCameraID].y1 + 1;
-        }
-        cam_rebuild_native_projection((f32) logicalWidth,
-                                      (f32) logicalHeight, safeAperture);
-        gDkrSetWorldRegion((*dlist)++, safeAperture);
+        cam_rebuild_native_projection(savedCameraID, cameraID);
+        gDkrSetWorldRegion((*dlist)++,
+                           viewport_world_region_uses_safe_aperture(savedCameraID));
 #endif
         tempCameraID = gActiveCameraID;
         gActiveCameraID = savedCameraID;
@@ -1422,8 +1533,10 @@ void viewport_main(Gfx **dlist, Mtx **mats) {
         posX -= 4;
     }
 #ifdef NATIVE_PORT
-    cam_rebuild_native_projection((f32) (sp54_width << 1),
-                                  (f32) (sp58_height << 1), FALSE);
+    {
+        s32 cameraID = gActiveCameraID + (gCutsceneCameraActive ? 4 : 0);
+        cam_rebuild_native_projection(savedCameraID, cameraID);
+    }
     gDkrSetWorldRegion((*dlist)++, FALSE);
 #endif
     viewport_rsp_set(dlist, sp54_width, sp58_height, posX, posY);
@@ -1541,12 +1654,20 @@ static void mdkr_snapshot_authored_camera_record(s32 viewport,
     const Camera *camera;
     const ScreenViewport *screen;
     PresentationCameraEntry sample;
+    MdkrCameraProjection projection;
 
     if (viewport < 0 || viewport >= PRESENTATION_SNAPSHOT_MAX_VIEWPORTS ||
         cameraId < 0 || cameraId >= PRESENTATION_SNAPSHOT_MAX_CAMERAS) {
         return;
     }
-    camera = &gCameras[cameraId];
+    /* The pose and the matrix in one record must describe the same lens.
+     * cam_build_view_basis() authored gViewProjMatrixF from the resolved
+     * camera, so recording the unresolved gCameras entry here would make an
+     * interpolated replay diverge from the image it interpolates between. */
+    camera = camera_obstruction_snapshot_camera_for_slot(cameraId);
+    if (camera == NULL) {
+        return;
+    }
     screen = &gScreenViewports[viewport];
     memset(&sample, 0, sizeof(sample));
     sample.camera_id = cameraId;
@@ -1560,11 +1681,23 @@ static void mdkr_snapshot_authored_camera_record(s32 viewport,
     sample.pitch = camera->pitch;
     sample.shake_magnitude = camera->shakeMagnitude;
     sample.apply_shake = gNoCamShake;
+    sample.discontinuity =
+        (uint8_t) camera_obstruction_snapshot_discontinuous(cameraId);
     sample.fov = gCurCamFOV;
-    sample.vertical_fov = gEffectiveCamVFOV;
-    sample.aspect = gEffectiveCamAspect;
-    sample.near_plane = CAMERA_NEAR;
-    sample.far_plane = CAMERA_FAR;
+    if (cam_get_latched_effective_projection_for_viewport(viewport, &projection) &&
+        projection.camera_id == cameraId) {
+        sample.vertical_fov = projection.vertical_fov;
+        sample.aspect = projection.aspect;
+        sample.near_plane = projection.near_plane;
+        sample.far_plane = projection.far_plane;
+    } else {
+        /* Snapshot publication is observational; retain the established
+         * projection fallback if no validated authored record exists. */
+        sample.vertical_fov = gEffectiveCamVFOV;
+        sample.aspect = gEffectiveCamAspect;
+        sample.near_plane = CAMERA_NEAR;
+        sample.far_plane = CAMERA_FAR;
+    }
     sample.world_region =
         viewport_world_region_uses_safe_aperture(viewport) ? 1u : 0u;
     sample.viewport[0] = (f32)screen->posX;
@@ -1578,23 +1711,25 @@ static void mdkr_snapshot_authored_camera_record(s32 viewport,
 
 void cam_build_view_basis(void) {
     s32 originalCamID;
+    Camera *activeCamera;
 
     originalCamID = gActiveCameraID;
     if (gCutsceneCameraActive) {
         gActiveCameraID += 4;
     }
+    activeCamera = camera_obstruction_camera_for_slot(gActiveCameraID);
 
-    gCameraTransform.rotation.y_rotation = 0x8000 + gCameras[gActiveCameraID].trans.rotation.y_rotation;
+    gCameraTransform.rotation.y_rotation = 0x8000 + activeCamera->trans.rotation.y_rotation;
     gCameraTransform.rotation.x_rotation =
-        gCameras[gActiveCameraID].trans.rotation.x_rotation + gCameras[gActiveCameraID].pitch;
-    gCameraTransform.rotation.z_rotation = gCameras[gActiveCameraID].trans.rotation.z_rotation;
+        activeCamera->trans.rotation.x_rotation + activeCamera->pitch;
+    gCameraTransform.rotation.z_rotation = activeCamera->trans.rotation.z_rotation;
 
-    gCameraTransform.x_position = -gCameras[gActiveCameraID].trans.x_position;
-    gCameraTransform.y_position = -gCameras[gActiveCameraID].trans.y_position;
+    gCameraTransform.x_position = -activeCamera->trans.x_position;
+    gCameraTransform.y_position = -activeCamera->trans.y_position;
     if (gNoCamShake) {
-        gCameraTransform.y_position -= gCameras[gActiveCameraID].shakeMagnitude;
+        gCameraTransform.y_position -= activeCamera->shakeMagnitude;
     }
-    gCameraTransform.z_position = -gCameras[gActiveCameraID].trans.z_position;
+    gCameraTransform.z_position = -activeCamera->trans.z_position;
 
     mtxf_from_inverse_transform(&gViewMatrixF, &gCameraTransform);
     mtxf_mul(&gViewMatrixF, &gPerspectiveMatrixF, &gViewProjMatrixF);
@@ -1604,17 +1739,17 @@ void cam_build_view_basis(void) {
     sShadowRegisterViewport = originalCamID;
     sShadowRegisterGameplayVp = 1;
 
-    gCameraTransform.rotation.y_rotation = -0x8000 - gCameras[gActiveCameraID].trans.rotation.y_rotation;
+    gCameraTransform.rotation.y_rotation = -0x8000 - activeCamera->trans.rotation.y_rotation;
     gCameraTransform.rotation.x_rotation =
-        -(gCameras[gActiveCameraID].trans.rotation.x_rotation + gCameras[gActiveCameraID].pitch);
-    gCameraTransform.rotation.z_rotation = -gCameras[gActiveCameraID].trans.rotation.z_rotation;
+        -(activeCamera->trans.rotation.x_rotation + activeCamera->pitch);
+    gCameraTransform.rotation.z_rotation = -activeCamera->trans.rotation.z_rotation;
     gCameraTransform.scale = 1.0f;
-    gCameraTransform.x_position = gCameras[gActiveCameraID].trans.x_position;
-    gCameraTransform.y_position = gCameras[gActiveCameraID].trans.y_position;
+    gCameraTransform.x_position = activeCamera->trans.x_position;
+    gCameraTransform.y_position = activeCamera->trans.y_position;
     if (gNoCamShake) {
-        gCameraTransform.y_position += gCameras[gActiveCameraID].shakeMagnitude;
+        gCameraTransform.y_position += activeCamera->shakeMagnitude;
     }
-    gCameraTransform.z_position = gCameras[gActiveCameraID].trans.z_position;
+    gCameraTransform.z_position = activeCamera->trans.z_position;
 
     mtxf_from_transform(&gInverseViewMatrixF, &gCameraTransform);
     mtxf_to_mtx(&gInverseViewMatrixF, &gInverseViewMatrix);
@@ -2234,15 +2369,9 @@ s32 render_sprite_billboard(Gfx **dList, Mtx **mtx, Vertex **vtx, Object *obj, S
         // Create a billboard matrix that compensates for camera tilt,
         // so the sprite tilts consistently with other objects relative to the camera.
         // Aspect ratio compensation is applied to maintain proper sprite proportions on screen.
-        if (!gCutsceneCameraActive) {
-            tiltAngle =
-                gCameras[gActiveCameraID].trans.rotation.z_rotation +
-                MDKR_BILLBOARD_TRANSFORM->rotation.z_rotation;
-        } else {
-            tiltAngle =
-                gCameras[gActiveCameraID + 4].trans.rotation.z_rotation +
-                MDKR_BILLBOARD_TRANSFORM->rotation.z_rotation;
-        }
+        tiltAngle =
+            cam_get_active_camera()->trans.rotation.z_rotation +
+            MDKR_BILLBOARD_TRANSFORM->rotation.z_rotation;
         frameID = MDKR_BILLBOARD_ANIM_FRAME;
         gModelMatrixStackPos++;
         mtxf_billboard(
@@ -2381,7 +2510,7 @@ void render_ortho_triangle_image(Gfx **dList, Mtx **mtx, Vertex **vtx, ObjectSeg
     gCameraTransform.rotation.y_rotation = -MDKR_ORTHO_TRANSFORM->rotation.y_rotation;
     gCameraTransform.rotation.x_rotation = -MDKR_ORTHO_TRANSFORM->rotation.x_rotation;
     gCameraTransform.rotation.z_rotation =
-        gCameras[gActiveCameraID].trans.rotation.z_rotation +
+        cam_get_active_camera()->trans.rotation.z_rotation +
         MDKR_ORTHO_TRANSFORM->rotation.z_rotation;
     gCameraTransform.x_position = 0.0f;
     gCameraTransform.y_position = 0.0f;
@@ -2652,9 +2781,12 @@ s32 mtx_cam_push(Gfx **dList, Mtx **mtx, ObjectTransform *trans, f32 scaleY, f32
     }
 
     // Compute camera position relative to the model's origin in world space
-    camRelX = gCameras[index].trans.x_position - camRelX;
-    camRelY = gCameras[index].trans.y_position - camRelY;
-    camRelZ = gCameras[index].trans.z_position - camRelZ;
+    {
+        Camera *camera = camera_obstruction_camera_for_slot(index);
+        camRelX = camera->trans.x_position - camRelX;
+        camRelY = camera->trans.y_position - camRelY;
+        camRelZ = camera->trans.z_position - camRelZ;
+    }
 
     // Convert camera position from world space to the model's local coordinate space
     gCameraTransform.rotation.y_rotation = -trans->rotation.y_rotation;
@@ -2859,17 +2991,26 @@ UNUSED void cam_rotate(s32 angleX, s32 angleY, s32 angleZ) {
  * Returns the active camera, but won't apply the offset for cutscenes.
  */
 Camera *cam_get_active_camera_no_cutscenes(void) {
+#ifdef NATIVE_PORT
+    return camera_obstruction_camera_for_slot(gActiveCameraID);
+#else
     return &gCameras[gActiveCameraID];
+#endif
 }
 
 /**
  * Returns the active camera.
  */
 Camera *cam_get_active_camera(void) {
+#ifdef NATIVE_PORT
+    return camera_obstruction_camera_for_slot(
+        gActiveCameraID + (gCutsceneCameraActive ? 4 : 0));
+#else
     if (gCutsceneCameraActive) {
         return &gCameras[gActiveCameraID + 4];
     }
     return &gCameras[gActiveCameraID];
+#endif
 }
 
 /**
@@ -2877,10 +3018,14 @@ Camera *cam_get_active_camera(void) {
  * If no cutscene is active, return player 1's camera.
  */
 Camera *cam_get_cameras(void) {
+#ifdef NATIVE_PORT
+    return camera_obstruction_camera_for_slot(gCutsceneCameraActive ? 4 : 0);
+#else
     if (gCutsceneCameraActive) {
         return &gCameras[4];
     }
     return &gCameras[0];
+#endif
 }
 
 /**

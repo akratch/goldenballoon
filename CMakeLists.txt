@@ -63,6 +63,157 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME display_config COMMAND mdkr_display_config_test)
 
+    add_executable(mdkr_camera_obstruction_test
+        ${CMAKE_SOURCE_DIR}/tests/test_camera_obstruction.c
+        ${CMAKE_SOURCE_DIR}/platform/camera_obstruction.c)
+    target_include_directories(mdkr_camera_obstruction_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_camera_obstruction_test PRIVATE m)
+    endif()
+    add_test(NAME camera_obstruction COMMAND mdkr_camera_obstruction_test)
+
+    add_executable(mdkr_camera_obstruction_resolver_test
+        ${CMAKE_SOURCE_DIR}/tests/test_camera_obstruction_resolver.c
+        ${CMAKE_SOURCE_DIR}/platform/camera_obstruction_resolver.c
+        ${CMAKE_SOURCE_DIR}/platform/camera_obstruction.c)
+    target_include_directories(mdkr_camera_obstruction_resolver_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_camera_obstruction_resolver_test PRIVATE m)
+    endif()
+    add_test(NAME camera_obstruction_resolver COMMAND mdkr_camera_obstruction_resolver_test)
+
+    add_executable(mdkr_camera_obstruction_transform_test
+        ${CMAKE_SOURCE_DIR}/tests/test_camera_obstruction_transform.c
+        ${CMAKE_SOURCE_DIR}/platform/camera_obstruction_transform.c
+        ${CMAKE_SOURCE_DIR}/platform/camera_obstruction.c)
+    target_include_directories(mdkr_camera_obstruction_transform_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_camera_obstruction_transform_test PRIVATE m)
+    endif()
+    add_test(NAME camera_obstruction_transform COMMAND mdkr_camera_obstruction_transform_test)
+
+    add_executable(mdkr_camera_object_bvh_test
+        ${CMAKE_SOURCE_DIR}/tests/test_camera_object_bvh.c
+        ${CMAKE_SOURCE_DIR}/platform/camera_obstruction_transform.c
+        ${CMAKE_SOURCE_DIR}/platform/camera_obstruction.c)
+    target_include_directories(mdkr_camera_object_bvh_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/game
+        ${CMAKE_SOURCE_DIR}/game/src
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/game/include/PR
+        ${CMAKE_SOURCE_DIR}/game/include/sys
+        ${CMAKE_SOURCE_DIR}/game/libultra
+        ${CMAKE_SOURCE_DIR}/game/libultra/src/audio
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_definitions(mdkr_camera_object_bvh_test PRIVATE
+        VERSION_us_v80
+        _LANGUAGE_C
+        MODERN_CC
+        NON_MATCHING=1
+        AVOID_UB=1
+        NATIVE_PORT=1
+        F3DDKR_GBI
+        _FINALROM)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+        # Match the engine's translated-N64 header mode; textures_sprites.h has
+        # intentional unsigned enum constants outside ISO C's signed int range.
+        target_compile_options(mdkr_camera_object_bvh_test PRIVATE
+            -fms-extensions
+            -Wno-c23-extensions)
+    endif()
+    if(NOT MSVC)
+        target_link_libraries(mdkr_camera_object_bvh_test PRIVATE m)
+    endif()
+    add_test(NAME camera_object_bvh COMMAND mdkr_camera_object_bvh_test)
+
+    add_executable(mdkr_camera_dynamic_temporal_test
+        ${CMAKE_SOURCE_DIR}/tests/test_camera_dynamic_temporal.c
+        ${CMAKE_SOURCE_DIR}/game/src/camera_dynamic_temporal.c
+        ${CMAKE_SOURCE_DIR}/platform/camera_obstruction_transform.c
+        ${CMAKE_SOURCE_DIR}/platform/camera_obstruction.c)
+    target_include_directories(mdkr_camera_dynamic_temporal_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/game
+        ${CMAKE_SOURCE_DIR}/game/src
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/game/include/PR
+        ${CMAKE_SOURCE_DIR}/game/include/sys
+        ${CMAKE_SOURCE_DIR}/game/libultra
+        ${CMAKE_SOURCE_DIR}/game/libultra/src/audio
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_definitions(mdkr_camera_dynamic_temporal_test PRIVATE
+        VERSION_us_v80
+        _LANGUAGE_C
+        MODERN_CC
+        NON_MATCHING=1
+        AVOID_UB=1
+        NATIVE_PORT=1
+        F3DDKR_GBI
+        _FINALROM)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+        target_compile_options(mdkr_camera_dynamic_temporal_test PRIVATE
+            -fms-extensions
+            -Wno-c23-extensions)
+    endif()
+    if(NOT MSVC)
+        target_link_libraries(mdkr_camera_dynamic_temporal_test PRIVATE m)
+    endif()
+    add_test(NAME camera_dynamic_temporal COMMAND mdkr_camera_dynamic_temporal_test)
+
+    add_executable(mdkr_camera_dynamic_publication_test
+        ${CMAKE_SOURCE_DIR}/tests/test_camera_dynamic_publication.c
+        ${CMAKE_SOURCE_DIR}/game/src/camera_dynamic_publication.c)
+    target_include_directories(mdkr_camera_dynamic_publication_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/game/src)
+    target_compile_definitions(mdkr_camera_dynamic_publication_test PRIVATE
+        NATIVE_PORT=1)
+    add_test(NAME camera_dynamic_publication
+        COMMAND mdkr_camera_dynamic_publication_test)
+
+    add_executable(mdkr_camera_target_visibility_test
+        ${CMAKE_SOURCE_DIR}/tests/test_camera_target_visibility.c
+        ${CMAKE_SOURCE_DIR}/platform/camera_target_visibility.c
+        ${CMAKE_SOURCE_DIR}/platform/camera_obstruction_query.c
+        ${CMAKE_SOURCE_DIR}/platform/camera_obstruction.c)
+    target_include_directories(mdkr_camera_target_visibility_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_camera_target_visibility_test PRIVATE m)
+    endif()
+    add_test(NAME camera_target_visibility
+        COMMAND mdkr_camera_target_visibility_test)
+
+    add_executable(mdkr_camera_obstruction_query_test
+        ${CMAKE_SOURCE_DIR}/tests/test_camera_obstruction_query.c
+        ${CMAKE_SOURCE_DIR}/platform/camera_obstruction_query.c
+        ${CMAKE_SOURCE_DIR}/platform/camera_obstruction.c)
+    target_include_directories(mdkr_camera_obstruction_query_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_camera_obstruction_query_test PRIVATE m)
+    endif()
+    add_test(NAME camera_obstruction_query COMMAND mdkr_camera_obstruction_query_test)
+
+    add_executable(mdkr_camera_lens_pose_test
+        ${CMAKE_SOURCE_DIR}/tests/test_camera_lens_pose.c
+        ${CMAKE_SOURCE_DIR}/game/src/camera_lens_pose.c)
+    target_include_directories(mdkr_camera_lens_pose_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/game
+        ${CMAKE_SOURCE_DIR}/game/src
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/game/include/PR
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_definitions(mdkr_camera_lens_pose_test PRIVATE
+        _LANGUAGE_C=1
+        NATIVE_PORT=1)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_camera_lens_pose_test PRIVATE m)
+    endif()
+    add_test(NAME camera_lens_pose COMMAND mdkr_camera_lens_pose_test)
+
+
     add_executable(mdkr_endian_utils_test
         ${CMAKE_SOURCE_DIR}/tests/test_endian_utils.c)
     target_include_directories(mdkr_endian_utils_test PRIVATE
@@ -670,6 +821,26 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_texture_cache_identity.py)
     add_test(
+        NAME camera_obstruction_authority
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_camera_obstruction_authority.py)
+    add_test(
+        NAME camera_track_occlusion_cache
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_camera_track_occlusion_cache.py)
+    add_test(
+        NAME camera_object_occlusion_cache
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_camera_object_occlusion_cache.py)
+    add_test(
+        NAME camera_dynamic_occlusion
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_camera_dynamic_occlusion.py)
+    add_test(
+        NAME camera_obstruction_observe
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_camera_obstruction_observe.py)
+    add_test(
         NAME app_config_durability_ui_contract
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_app_config_durability_ui.py)
@@ -841,6 +1012,11 @@ file(GLOB GAME_SOURCES CONFIGURE_DEPENDS
 set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/main_pc.c
     ${CMAKE_SOURCE_DIR}/platform/display_config.c
+    ${CMAKE_SOURCE_DIR}/platform/camera_obstruction.c # pure native camera sweep kernel
+    ${CMAKE_SOURCE_DIR}/platform/camera_obstruction_resolver.c # fixed-step spring-arm policy
+    ${CMAKE_SOURCE_DIR}/platform/camera_obstruction_transform.c # pure object-local camera sweep adapter
+    ${CMAKE_SOURCE_DIR}/platform/camera_obstruction_query.c # pure track/object sweep composition
+    ${CMAKE_SOURCE_DIR}/platform/camera_target_visibility.c # target readability classification
     ${CMAKE_SOURCE_DIR}/platform/config_ini.c       # INI engine (game-agnostic)
     ${CMAKE_SOURCE_DIR}/platform/taj_mod_state.c    # versioned global Taj unlock sidecar
     ${CMAKE_SOURCE_DIR}/platform/taj_mod_state_file.c # atomic desktop/Web state backend

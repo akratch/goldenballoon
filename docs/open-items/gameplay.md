@@ -6,6 +6,23 @@
 > fixed** — a closed entry is the only warning the next person gets that the same
 > trap exists, and retractions are recorded in place rather than removed.
 
+## OPEN: gameplay cameras can enter terrain and object geometry
+
+The car, hovercraft, plane, loop, fixed, finish, and challenge camera behaviors
+author positions directly without a terrain or object obstruction resolver. Late
+dialogue and shake offsets can move the eye again after the behavior returns, and
+the existing terrain detector only decides whether to draw the flat-colour void
+curtain. It does not correct the pose, is level/mode conditional, and does not see
+object-model occluders such as doors.
+
+The complete source investigation, red-team analysis, product decisions, target
+architecture, CAM-00–CAM-09 work breakdown, test matrix, rollout controls, and
+definition of done are maintained in the
+[camera obstruction and modern native presentation plan](../architecture/camera-obstruction.md).
+Until every exit gate in that plan passes, this remains an open gameplay defect;
+a center ray, fixed-radius clamp, terrain-only spring arm, or void-curtain mask is
+explicitly a partial mitigation.
+
 
 ## OPEN, believed authored (hardware-unverified): AI stuck-recovery cooldown `unk215` only decays while reversing — the Hot Top Volcano crater wedge
 

@@ -139,6 +139,11 @@ uint64_t platform_vi_present_pace_units(void);
 /* Commit one fixed ticket to the synthetic COUNTER at the tick boundary. */
 void     platform_vi_tick_clock_commit(unsigned tick_fields);
 
+/* Diagnostic intra-thread wall clock. Unlike the VI pacer clock, this keeps
+ * advancing inside a synthetic browser animation frame, so fixed-tick work
+ * can be profiled truthfully. Values are relative-only monotonic nanoseconds. */
+uint64_t platform_perf_monotonic_ns(void);
+
 /* Objective motion-vs-clock probe (published from game/src/racer.c under
  * NATIVE_PORT for player 1 each frame; logged by the pacer trace). Lets an
  * automated run compare the racer's world-position advance against the race

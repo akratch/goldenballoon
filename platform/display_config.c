@@ -20,6 +20,7 @@ typedef struct MdkrDisplayRuntimeConfig {
     float maximum_horizontal_fov;
     unsigned int width;
     unsigned int height;
+    uint64_t generation;
 } MdkrDisplayRuntimeConfig;
 
 static MdkrDisplayRuntimeConfig s_display = {
@@ -30,7 +31,53 @@ static MdkrDisplayRuntimeConfig s_display = {
     MDKR_SIMULATION_SAFE_MAX_HFOV,
     320,
     240,
+    1,
 };
+
+/* FNV-1a gives the record an architecture-independent identity without making
+ * pointer addresses or padding part of the projection handshake. */
+#define MDKR_FNV64_OFFSET 14695981039346656037ULL
+#define MDKR_FNV64_PRIME  1099511628211ULL
+
+static uint64_t mdkr_projection_hash_u32(uint64_t hash, uint32_t value) {
+    int byte;
+
+    for (byte = 0; byte < 4; byte++) {
+        hash ^= (uint8_t) (value & 0xffU);
+        hash *= MDKR_FNV64_PRIME;
+        value >>= 8;
+    }
+    return hash;
+}
+
+static uint64_t mdkr_projection_hash_u64(uint64_t hash, uint64_t value) {
+    int byte;
+
+    for (byte = 0; byte < 8; byte++) {
+        hash ^= (uint8_t) (value & 0xffU);
+        hash *= MDKR_FNV64_PRIME;
+        value >>= 8;
+    }
+    return hash;
+}
+
+static uint64_t mdkr_projection_hash_float(uint64_t hash, float value) {
+    uint32_t bits;
+
+    /* The public calculation normalizes invalid inputs before this helper is
+     * reached, so copying the representation is a stable way to distinguish
+     * projection-relevant values without aliasing violations. */
+    memcpy(&bits, &value, sizeof(bits));
+    return mdkr_projection_hash_u32(hash, bits);
+}
+
+static void mdkr_display_bump_generation(void) {
+    /* Zero denotes an uninitialized/invalid projection record. */
+    s_display.generation++;
+    if (s_display.generation == 0) {
+        s_display.generation = 1;
+    }
+}
 
 static float mdkr_clampf(float value, float low, float high) {
     if (value < low) {
@@ -231,6 +278,108 @@ MdkrProjection mdkr_display_calculate_projection(
 
     projection.vertical_fov = vertical_fov;
     return projection;
+}
+
+static int mdkr_display_logical_viewport_dimensions(
+    int viewport_layout,
+    int viewport,
+    float *width,
+    float *height) {
+    if (width == NULL || height == NULL || viewport < 0 || viewport >= 4) {
+        return 0;
+    }
+
+    switch (viewport_layout) {
+        case MDKR_DISPLAY_VIEWPORT_1_PLAYER:
+            if (viewport != 0) {
+                return 0;
+            }
+            *width = MDKR_LOGICAL_WIDTH;
+            *height = MDKR_LOGICAL_HEIGHT;
+            return 1;
+        case MDKR_DISPLAY_VIEWPORT_2_PLAYERS:
+            if (viewport >= 2) {
+                return 0;
+            }
+            /* DKR clips this full-height RSP viewport with a scissor. */
+            *width = MDKR_LOGICAL_WIDTH;
+            *height = MDKR_LOGICAL_HEIGHT;
+            return 1;
+        case MDKR_DISPLAY_VIEWPORT_3_PLAYERS:
+            /* viewport_main intentionally renders 3P through the 4P branch.
+             * The fourth quadrant is normally the track map, but native
+             * spectator/T.T. presentation can select camera slot 3 there. */
+            *width = MDKR_LOGICAL_WIDTH * 0.5f;
+            *height = MDKR_LOGICAL_HEIGHT * 0.5f;
+            return 1;
+        case MDKR_DISPLAY_VIEWPORT_4_PLAYERS:
+            *width = MDKR_LOGICAL_WIDTH * 0.5f;
+            *height = MDKR_LOGICAL_HEIGHT * 0.5f;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+bool mdkr_display_calculate_camera_projection(
+    const MdkrCameraProjectionRequest *request,
+    MdkrCameraProjection *out) {
+    MdkrProjection projection;
+    float logical_width;
+    float logical_height;
+    uint64_t hash;
+
+    if (request == NULL || out == NULL || request->display_generation == 0 ||
+        request->camera_id < 0 || request->camera_id >= 8 ||
+        !(request->near_plane > 0.0f) || !isfinite(request->near_plane) ||
+        !(request->far_plane > request->near_plane) || !isfinite(request->far_plane) ||
+        !mdkr_display_logical_viewport_dimensions(
+            request->viewport_layout, request->viewport, &logical_width, &logical_height)) {
+        return false;
+    }
+
+    projection = mdkr_display_calculate_projection(
+        request->authored_vertical_fov,
+        logical_width,
+        logical_height,
+        request->presentation_aspect,
+        request->widescreen_enabled,
+        request->gameplay_camera,
+        request->gameplay_vertical_fov,
+        request->maximum_horizontal_fov);
+
+    memset(out, 0, sizeof(*out));
+    out->logical_viewport_width = logical_width;
+    out->logical_viewport_height = logical_height;
+    out->aspect = projection.aspect;
+    out->vertical_fov = projection.vertical_fov;
+    out->horizontal_fov = projection.horizontal_fov;
+    out->near_plane = request->near_plane;
+    out->far_plane = request->far_plane;
+    out->display_generation = request->display_generation;
+    out->viewport = request->viewport;
+    out->camera_id = request->camera_id;
+    out->camera_bank = request->camera_id / 4;
+    out->horizontal_fov_capped = projection.horizontal_fov_capped;
+
+    /* Include every value that can change the lens, its viewport meaning, or
+     * the selected camera bank.  This is deliberately a value key rather than
+     * an address/timestamp so it is useful to snapshots and diagnostics too. */
+    hash = MDKR_FNV64_OFFSET;
+    hash = mdkr_projection_hash_u64(hash, out->display_generation);
+    hash = mdkr_projection_hash_float(hash, out->logical_viewport_width);
+    hash = mdkr_projection_hash_float(hash, out->logical_viewport_height);
+    hash = mdkr_projection_hash_float(hash, out->aspect);
+    hash = mdkr_projection_hash_float(hash, out->vertical_fov);
+    hash = mdkr_projection_hash_float(hash, out->horizontal_fov);
+    hash = mdkr_projection_hash_float(hash, out->near_plane);
+    hash = mdkr_projection_hash_float(hash, out->far_plane);
+    hash = mdkr_projection_hash_u32(hash, (uint32_t) out->viewport);
+    hash = mdkr_projection_hash_u32(hash, (uint32_t) out->camera_id);
+    hash = mdkr_projection_hash_u32(hash, (uint32_t) out->camera_bank);
+    hash = mdkr_projection_hash_u32(hash, (uint32_t) out->horizontal_fov_capped);
+    out->generation = hash != 0 ? hash : 1;
+    return true;
 }
 
 MdkrBillboardCorrection mdkr_display_calculate_billboard_correction(
@@ -460,7 +609,10 @@ int mdkr_display_set_widescreen(const char *value) {
     if (!mdkr_parse_bool(value, &enabled)) {
         return 0;
     }
-    s_display.widescreen_enabled = enabled;
+    if (s_display.widescreen_enabled != enabled) {
+        s_display.widescreen_enabled = enabled;
+        mdkr_display_bump_generation();
+    }
     return 1;
 }
 
@@ -470,7 +622,10 @@ int mdkr_display_set_aspect(const char *value) {
     if (!mdkr_parse_aspect(value, &aspect)) {
         return 0;
     }
-    s_display.forced_aspect = aspect;
+    if (s_display.forced_aspect != aspect) {
+        s_display.forced_aspect = aspect;
+        mdkr_display_bump_generation();
+    }
     return 1;
 }
 
@@ -481,13 +636,19 @@ int mdkr_display_set_gameplay_fov(const char *value) {
         (mdkr_ascii_equal_ci(value, "authored") ||
          mdkr_ascii_equal_ci(value, "default") ||
          mdkr_ascii_equal_ci(value, "off"))) {
-        s_display.gameplay_vertical_fov = 0.0f;
+        if (s_display.gameplay_vertical_fov != 0.0f) {
+            s_display.gameplay_vertical_fov = 0.0f;
+            mdkr_display_bump_generation();
+        }
         return 1;
     }
     if (!mdkr_parse_float(value, &fov) || fov < 20.0f || fov > 140.0f) {
         return 0;
     }
-    s_display.gameplay_vertical_fov = fov;
+    if (s_display.gameplay_vertical_fov != fov) {
+        s_display.gameplay_vertical_fov = fov;
+        mdkr_display_bump_generation();
+    }
     return 1;
 }
 
@@ -496,13 +657,19 @@ int mdkr_display_set_max_horizontal_fov(const char *value) {
     mdkr_display_config_init();
     if (value != NULL &&
         (mdkr_ascii_equal_ci(value, "off") || !strcmp(value, "0"))) {
-        s_display.maximum_horizontal_fov = 0.0f;
+        if (s_display.maximum_horizontal_fov != 0.0f) {
+            s_display.maximum_horizontal_fov = 0.0f;
+            mdkr_display_bump_generation();
+        }
         return 1;
     }
     if (!mdkr_parse_float(value, &fov) || fov < 60.0f || fov > 175.0f) {
         return 0;
     }
-    s_display.maximum_horizontal_fov = fov;
+    if (s_display.maximum_horizontal_fov != fov) {
+        s_display.maximum_horizontal_fov = fov;
+        mdkr_display_bump_generation();
+    }
     return 1;
 }
 
@@ -522,6 +689,7 @@ void mdkr_display_set_dimensions(unsigned int width, unsigned int height) {
 
     s_display.width = width;
     s_display.height = height;
+    mdkr_display_bump_generation();
     layout = mdkr_display_layout();
     printf("[DISPLAY] drawable=%ux%u presentation=%.0fx%.0f%+.0f%+.0f "
            "safe=%.0fx%.0f%+.0f%+.0f aspect=%.5f\n",
@@ -531,6 +699,11 @@ void mdkr_display_set_dimensions(unsigned int width, unsigned int height) {
            layout.safe.width, layout.safe.height,
            layout.safe.x, layout.safe.y,
            layout.presentation_aspect);
+}
+
+uint64_t mdkr_display_config_generation(void) {
+    mdkr_display_config_init();
+    return s_display.generation;
 }
 
 unsigned int mdkr_display_width(void) {

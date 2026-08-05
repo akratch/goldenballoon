@@ -1370,8 +1370,10 @@ whether that check compares two arms the change should affect *equally*. If it
 does, it is a bug, not a tolerance problem.
 
 **Also added.** `[DISPLAY] output=WxH render=WxH scale=N` — the existing layout
-line works in render space, so its `drawable=` is the scaled scene, not the
-window. `check_browser_runtime` now asserts `output=`, which is a more precise
+line now works in output space so render-scale rounding cannot change the camera
+projection; the preceding `output=... render=...` line names both spaces. Its
+`drawable=` is now the output surface/window. `check_browser_runtime` asserts
+`output=`, which is a more precise
 assertion than the one it replaced; `drawable=` was only ever correct by the
 accident of scale being 1.
 

@@ -7,9 +7,13 @@
 #include <math.h>
 
 #include "asset_swap.h"
+#include "camera_obstruction_runtime.h"
+#include "camera_obstruction.h"
+#include "camera_obstruction_query.h"
 #include "fast3d/gfx_presentation_packet.h"
 #include "gfx_shadow_frame.h"
 #include "mdkr_bounds.h"
+#include "platform_os.h"
 #include "present_sched.h"
 #include "presentation_snapshot.h"
 #include "taj_visual.h"
@@ -44,6 +48,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #endif
 
 // Maximum size for a level model is 522.5 KiB
@@ -348,6 +353,736 @@ void mdkr_shadow_stats(s32 *dataPeak, s32 *triPeak, s32 *vtxPeak,
     if (triCap != NULL) *triCap = gShadowTriCap;
     if (vtxCap != NULL) *vtxCap = gShadowVtxCap;
 }
+
+/*
+ * CAM-03 static visual-occlusion cache.
+ *
+ * This is intentionally separate from collision.c's shared candidate list:
+ * camera booms may span arbitrary level segments, so a first-N segment list or
+ * shared scratch array is not a valid broad phase.  Geometry is copied from the
+ * finalized level model once, in segment/batch/face asset order, then never
+ * mutated.  The copied vertices also allow the cache to outlive harmless model
+ * bookkeeping changes during a loaded level without giving the query a route to
+ * gameplay state.
+ */
+typedef struct MdkrTrackOcclusionSegment {
+    MdkrCameraVec3 minimum;
+    MdkrCameraVec3 maximum;
+    size_t triangle_offset;
+    size_t triangle_count;
+    size_t chunk_offset;
+    size_t chunk_count;
+    uint8_t valid;
+} MdkrTrackOcclusionSegment;
+
+typedef struct MdkrTrackOcclusionChunk {
+    MdkrCameraVec3 minimum;
+    MdkrCameraVec3 maximum;
+    size_t triangle_offset;
+    size_t triangle_count;
+    uint8_t valid;
+} MdkrTrackOcclusionChunk;
+
+#define MDKR_TRACK_OCCLUSION_CHUNK_TRIANGLES 1U
+
+typedef struct MdkrTrackOcclusionCache {
+    MdkrCameraOcclusionWorld world;
+    MdkrCameraVec3 *vertices;
+    MdkrTrackOcclusionSegment *segments;
+    MdkrTrackOcclusionChunk *chunks;
+    uint32_t *indices;
+    MdkrCameraOcclusionTriangle *triangles;
+    MdkrTrackOcclusionTelemetry telemetry;
+    uint8_t built;
+} MdkrTrackOcclusionCache;
+
+static MdkrTrackOcclusionCache sTrackOcclusionCache;
+
+static int mdkr_track_occlusion_size_mul(size_t count, size_t item_size, size_t *out) {
+    if (out == NULL || (count != 0 && item_size > SIZE_MAX / count)) {
+        return 0;
+    }
+    *out = count * item_size;
+    return 1;
+}
+
+static int mdkr_track_occlusion_triangle_degenerate(
+    MdkrCameraVec3 a, MdkrCameraVec3 b, MdkrCameraVec3 c) {
+    const double abx = (double)b.x - a.x;
+    const double aby = (double)b.y - a.y;
+    const double abz = (double)b.z - a.z;
+    const double acx = (double)c.x - a.x;
+    const double acy = (double)c.y - a.y;
+    const double acz = (double)c.z - a.z;
+    const double bcx = (double)c.x - b.x;
+    const double bcy = (double)c.y - b.y;
+    const double bcz = (double)c.z - b.z;
+    const double cross_x = aby * acz - abz * acy;
+    const double cross_y = abz * acx - abx * acz;
+    const double cross_z = abx * acy - aby * acx;
+    const double ab2 = abx * abx + aby * aby + abz * abz;
+    const double ac2 = acx * acx + acy * acy + acz * acz;
+    const double bc2 = bcx * bcx + bcy * bcy + bcz * bcz;
+    const double max_edge2 = fmax(ab2, fmax(ac2, bc2));
+    const double cross2 = cross_x * cross_x + cross_y * cross_y + cross_z * cross_z;
+
+    return !isfinite(max_edge2) || !isfinite(cross2) || max_edge2 <= 0.0 ||
+           cross2 <= 1.0e-24 * max_edge2 * max_edge2;
+}
+
+static void mdkr_track_occlusion_expand_aabb(
+    MdkrTrackOcclusionSegment *segment, MdkrCameraVec3 point) {
+    if (!segment->valid) {
+        segment->minimum = point;
+        segment->maximum = point;
+        segment->valid = TRUE;
+        return;
+    }
+    if (point.x < segment->minimum.x) segment->minimum.x = point.x;
+    if (point.y < segment->minimum.y) segment->minimum.y = point.y;
+    if (point.z < segment->minimum.z) segment->minimum.z = point.z;
+    if (point.x > segment->maximum.x) segment->maximum.x = point.x;
+    if (point.y > segment->maximum.y) segment->maximum.y = point.y;
+    if (point.z > segment->maximum.z) segment->maximum.z = point.z;
+}
+
+static void mdkr_track_occlusion_expand_chunk_aabb(
+    MdkrTrackOcclusionChunk *chunk, MdkrCameraVec3 point) {
+    if (!chunk->valid) {
+        chunk->minimum = point;
+        chunk->maximum = point;
+        chunk->valid = TRUE;
+        return;
+    }
+    if (point.x < chunk->minimum.x) chunk->minimum.x = point.x;
+    if (point.y < chunk->minimum.y) chunk->minimum.y = point.y;
+    if (point.z < chunk->minimum.z) chunk->minimum.z = point.z;
+    if (point.x > chunk->maximum.x) chunk->maximum.x = point.x;
+    if (point.y > chunk->maximum.y) chunk->maximum.y = point.y;
+    if (point.z > chunk->maximum.z) chunk->maximum.z = point.z;
+}
+
+/* Return nonzero only for material evidence that unambiguously means a camera
+ * should pass through. Cutout and vertex-alpha content deliberately remain hard
+ * until CAM-08 gives individual assets an explicit soft-occluder policy. */
+static int mdkr_track_occlusion_batch_nonblocking(
+    const TriangleBatchInfo *batch,
+    const TextureInfo *textures,
+    s32 texture_count,
+    MdkrTrackOcclusionTelemetry *telemetry) {
+    const u32 flags = batch->flags;
+
+    if (flags & (RENDER_HIDDEN | RENDER_WATER | RENDER_DECAL | RENDER_SEMI_TRANSPARENT)) {
+        return TRUE;
+    }
+    if (batch->textureIndex != 0xFF) {
+        if (batch->textureIndex >= texture_count) {
+            /* The renderer cannot classify this safely; keep it hard and make
+             * it visible in telemetry instead of guessing that it is air. */
+            telemetry->unknown_policy_triangle_count++;
+            return FALSE;
+        }
+        if (DKR_PTR(TextureHeader, textures[batch->textureIndex].texture)->flags &
+            RENDER_SEMI_TRANSPARENT) {
+            return TRUE;
+        }
+    }
+    if (flags & (RENDER_CUTOUT | RENDER_VTX_ALPHA)) {
+        telemetry->unknown_policy_triangle_count++;
+    }
+    return FALSE;
+}
+
+static void mdkr_track_occlusion_cache_free(void) {
+    free(sTrackOcclusionCache.vertices);
+    free(sTrackOcclusionCache.indices);
+    free(sTrackOcclusionCache.triangles);
+    free(sTrackOcclusionCache.segments);
+    free(sTrackOcclusionCache.chunks);
+    memset(&sTrackOcclusionCache, 0, sizeof(sTrackOcclusionCache));
+}
+
+static void mdkr_track_occlusion_cache_fail(const char *reason) {
+    fprintf(stderr, "[FATAL] camera track-occlusion cache: %s\n", reason);
+    mdkr_track_occlusion_cache_free();
+    abort();
+}
+
+static void mdkr_track_occlusion_cache_build(void) {
+    LevelModelSegment *level_segments;
+    TextureInfo *textures;
+    size_t vertex_count = 0;
+    size_t triangle_capacity = 0;
+    size_t vertex_bytes = 0;
+    size_t index_bytes = 0;
+    size_t triangle_bytes = 0;
+    size_t segment_bytes = 0;
+    size_t chunk_capacity = 0;
+    size_t chunk_bytes = 0;
+    size_t chunk_count = 0;
+    size_t triangle_count = 0;
+    size_t vertex_base = 0;
+    uint32_t source_stable_id = 0;
+    s32 segment_index;
+    uint64_t build_started;
+
+    mdkr_track_occlusion_cache_free();
+    build_started = 0U;
+    {
+        const char *perf_value = getenv("MDKR_CAMERA_PERF");
+        if (perf_value != NULL && perf_value[0] != '\0' && perf_value[0] != '0') {
+            build_started = platform_perf_monotonic_ns();
+        }
+    }
+    if (gCurrentLevelModel == NULL || gCurrentLevelModel->numberOfSegments <= 0) {
+        mdkr_track_occlusion_cache_fail("no finalized level model");
+    }
+
+    level_segments = DKR_PTR(LevelModelSegment, gCurrentLevelModel->segments);
+    textures = DKR_PTR(TextureInfo, gCurrentLevelModel->textures);
+    for (segment_index = 0; segment_index < gCurrentLevelModel->numberOfSegments; segment_index++) {
+        const LevelModelSegment *segment = &level_segments[segment_index];
+        if (segment->numberOfVertices < 0 || segment->numberOfTriangles < 0 ||
+            segment->numberOfBatches < 0 ||
+            (size_t)segment->numberOfVertices > SIZE_MAX - vertex_count ||
+            (size_t)segment->numberOfTriangles > SIZE_MAX - triangle_capacity) {
+            mdkr_track_occlusion_cache_fail("invalid segment count");
+        }
+        vertex_count += (size_t)segment->numberOfVertices;
+        triangle_capacity += (size_t)segment->numberOfTriangles;
+    }
+    if (vertex_count > UINT32_MAX) {
+        mdkr_track_occlusion_cache_fail("vertex index space exhausted");
+    }
+    if (!mdkr_track_occlusion_size_mul(vertex_count, sizeof(MdkrCameraVec3), &vertex_bytes) ||
+        !mdkr_track_occlusion_size_mul(triangle_capacity, 3U * sizeof(uint32_t), &index_bytes) ||
+        !mdkr_track_occlusion_size_mul(triangle_capacity, sizeof(MdkrCameraOcclusionTriangle), &triangle_bytes) ||
+        !mdkr_track_occlusion_size_mul((size_t)gCurrentLevelModel->numberOfSegments,
+                                       sizeof(MdkrTrackOcclusionSegment), &segment_bytes) ||
+        triangle_capacity > SIZE_MAX - (MDKR_TRACK_OCCLUSION_CHUNK_TRIANGLES - 1U) ||
+        (triangle_capacity + MDKR_TRACK_OCCLUSION_CHUNK_TRIANGLES - 1U) /
+                MDKR_TRACK_OCCLUSION_CHUNK_TRIANGLES >
+            SIZE_MAX - (size_t)gCurrentLevelModel->numberOfSegments) {
+        mdkr_track_occlusion_cache_fail("allocation size overflow");
+    }
+    chunk_capacity =
+        (triangle_capacity + MDKR_TRACK_OCCLUSION_CHUNK_TRIANGLES - 1U) /
+            MDKR_TRACK_OCCLUSION_CHUNK_TRIANGLES +
+        (size_t)gCurrentLevelModel->numberOfSegments;
+    if (!mdkr_track_occlusion_size_mul(
+            chunk_capacity, sizeof(MdkrTrackOcclusionChunk), &chunk_bytes)) {
+        mdkr_track_occlusion_cache_fail("chunk allocation size overflow");
+    }
+    if (vertex_bytes > SIZE_MAX - index_bytes ||
+        vertex_bytes + index_bytes > SIZE_MAX - triangle_bytes ||
+        vertex_bytes + index_bytes + triangle_bytes > SIZE_MAX - segment_bytes ||
+        vertex_bytes + index_bytes + triangle_bytes + segment_bytes > SIZE_MAX - chunk_bytes) {
+        mdkr_track_occlusion_cache_fail("telemetry byte count overflow");
+    }
+
+    sTrackOcclusionCache.vertices = malloc(vertex_bytes);
+    sTrackOcclusionCache.indices = malloc(index_bytes);
+    sTrackOcclusionCache.triangles = malloc(triangle_bytes);
+    sTrackOcclusionCache.segments = calloc(1, segment_bytes);
+    sTrackOcclusionCache.chunks = calloc(1, chunk_bytes);
+    if ((vertex_bytes != 0 && sTrackOcclusionCache.vertices == NULL) ||
+        (index_bytes != 0 && sTrackOcclusionCache.indices == NULL) ||
+        (triangle_bytes != 0 && sTrackOcclusionCache.triangles == NULL) ||
+        sTrackOcclusionCache.segments == NULL ||
+        (chunk_bytes != 0 && sTrackOcclusionCache.chunks == NULL)) {
+        mdkr_track_occlusion_cache_fail("allocation failed");
+    }
+
+    for (segment_index = 0; segment_index < gCurrentLevelModel->numberOfSegments; segment_index++) {
+        const LevelModelSegment *segment = &level_segments[segment_index];
+        const Vertex *source_vertices = DKR_PTR(Vertex, segment->vertices);
+        const Triangle *source_triangles = DKR_PTR(Triangle, segment->triangles);
+        const TriangleBatchInfo *batches = DKR_PTR(TriangleBatchInfo, segment->batches);
+        MdkrTrackOcclusionSegment *out_segment = &sTrackOcclusionCache.segments[segment_index];
+        s32 vertex_index;
+        s32 batch_index;
+
+        out_segment->triangle_offset = triangle_count;
+        for (vertex_index = 0; vertex_index < segment->numberOfVertices; vertex_index++) {
+            const Vertex *source = &source_vertices[vertex_index];
+            sTrackOcclusionCache.vertices[vertex_base + (size_t)vertex_index] =
+                (MdkrCameraVec3) { (float)source->x, (float)source->y, (float)source->z };
+        }
+        for (batch_index = 0; batch_index < segment->numberOfBatches; batch_index++) {
+            const TriangleBatchInfo *batch = &batches[batch_index];
+            const TriangleBatchInfo *next_batch = &batches[batch_index + 1];
+            const s32 face_start = batch->facesOffset;
+            const s32 face_end = next_batch->facesOffset;
+            const s32 vertex_start = batch->verticesOffset;
+            const s32 vertex_end = next_batch->verticesOffset;
+            s32 face_index;
+
+            if (face_start < 0 || face_end < face_start || face_end > segment->numberOfTriangles ||
+                vertex_start < 0 || vertex_end < vertex_start || vertex_end > segment->numberOfVertices) {
+                sTrackOcclusionCache.telemetry.malformed_batch_count++;
+                continue;
+            }
+            for (face_index = face_start; face_index < face_end; face_index++) {
+                const Triangle *source = &source_triangles[face_index];
+                const size_t index_offset = triangle_count * 3U;
+                uint32_t local_indices[3];
+                MdkrCameraVec3 a;
+                MdkrCameraVec3 b;
+                MdkrCameraVec3 c;
+
+                if (source_stable_id == UINT32_MAX) {
+                    mdkr_track_occlusion_cache_fail("stable-ID space exhausted");
+                }
+                source_stable_id++;
+                local_indices[0] = (uint32_t)vertex_start + source->vi0;
+                local_indices[1] = (uint32_t)vertex_start + source->vi1;
+                local_indices[2] = (uint32_t)vertex_start + source->vi2;
+                if (local_indices[0] >= (uint32_t)vertex_end ||
+                    local_indices[1] >= (uint32_t)vertex_end ||
+                    local_indices[2] >= (uint32_t)vertex_end) {
+                    sTrackOcclusionCache.telemetry.rejected_triangle_count++;
+                    continue;
+                }
+                a = sTrackOcclusionCache.vertices[vertex_base + local_indices[0]];
+                b = sTrackOcclusionCache.vertices[vertex_base + local_indices[1]];
+                c = sTrackOcclusionCache.vertices[vertex_base + local_indices[2]];
+                if (mdkr_track_occlusion_triangle_degenerate(a, b, c)) {
+                    sTrackOcclusionCache.telemetry.rejected_triangle_count++;
+                    continue;
+                }
+                /* Validate every source face before applying material policy:
+                 * a translucent/decal tag cannot turn malformed geometry into
+                 * harmless input that silently escapes the telemetry census. */
+                if (mdkr_track_occlusion_batch_nonblocking(
+                        batch, textures, gCurrentLevelModel->numberOfTextures,
+                        &sTrackOcclusionCache.telemetry)) {
+                    sTrackOcclusionCache.telemetry.nonblocking_triangle_count++;
+                    continue;
+                }
+                /* Gameplay collision is deliberately not our authority: an
+                 * opaque visual batch can opt out of vehicle collision and
+                 * still be a wall the camera must not enter. */
+                if (batch->flags & RENDER_NO_COLLISION) {
+                    sTrackOcclusionCache.telemetry.visual_no_collision_hard_triangle_count++;
+                }
+                sTrackOcclusionCache.indices[index_offset] = (uint32_t)(vertex_base + local_indices[0]);
+                sTrackOcclusionCache.indices[index_offset + 1U] = (uint32_t)(vertex_base + local_indices[1]);
+                sTrackOcclusionCache.indices[index_offset + 2U] = (uint32_t)(vertex_base + local_indices[2]);
+                sTrackOcclusionCache.triangles[triangle_count] =
+                    (MdkrCameraOcclusionTriangle) {
+                        source_stable_id,
+                        MDKR_CAMERA_TRACK_OCCLUSION_HARD_MASK,
+                        MDKR_CAMERA_TRACK_OCCLUSION_HARD_MASK,
+                        0,
+                    };
+                mdkr_track_occlusion_expand_aabb(out_segment, a);
+                mdkr_track_occlusion_expand_aabb(out_segment, b);
+                mdkr_track_occlusion_expand_aabb(out_segment, c);
+                triangle_count++;
+            }
+        }
+        out_segment->triangle_count = triangle_count - out_segment->triangle_offset;
+        out_segment->chunk_offset = chunk_count;
+        if (out_segment->triangle_count != 0U) {
+            size_t chunk_triangle_offset;
+            const size_t segment_triangle_end =
+                out_segment->triangle_offset + out_segment->triangle_count;
+
+            for (chunk_triangle_offset = out_segment->triangle_offset;
+                 chunk_triangle_offset < segment_triangle_end;
+                 chunk_triangle_offset += MDKR_TRACK_OCCLUSION_CHUNK_TRIANGLES) {
+                MdkrTrackOcclusionChunk *chunk;
+                size_t chunk_triangle_end =
+                    chunk_triangle_offset + MDKR_TRACK_OCCLUSION_CHUNK_TRIANGLES;
+                size_t chunk_triangle_index;
+
+                if (chunk_count >= chunk_capacity) {
+                    mdkr_track_occlusion_cache_fail("chunk capacity exhausted");
+                }
+                if (chunk_triangle_end > segment_triangle_end) {
+                    chunk_triangle_end = segment_triangle_end;
+                }
+                chunk = &sTrackOcclusionCache.chunks[chunk_count++];
+                chunk->triangle_offset = chunk_triangle_offset;
+                chunk->triangle_count = chunk_triangle_end - chunk_triangle_offset;
+                for (chunk_triangle_index = chunk_triangle_offset;
+                     chunk_triangle_index < chunk_triangle_end;
+                     chunk_triangle_index++) {
+                    const size_t index_offset = chunk_triangle_index * 3U;
+                    mdkr_track_occlusion_expand_chunk_aabb(
+                        chunk, sTrackOcclusionCache.vertices[
+                            sTrackOcclusionCache.indices[index_offset]]);
+                    mdkr_track_occlusion_expand_chunk_aabb(
+                        chunk, sTrackOcclusionCache.vertices[
+                            sTrackOcclusionCache.indices[index_offset + 1U]]);
+                    mdkr_track_occlusion_expand_chunk_aabb(
+                        chunk, sTrackOcclusionCache.vertices[
+                            sTrackOcclusionCache.indices[index_offset + 2U]]);
+                }
+            }
+        }
+        out_segment->chunk_count = chunk_count - out_segment->chunk_offset;
+        vertex_base += (size_t)segment->numberOfVertices;
+    }
+
+    sTrackOcclusionCache.world.vertices = sTrackOcclusionCache.vertices;
+    sTrackOcclusionCache.world.vertex_count = vertex_count;
+    sTrackOcclusionCache.world.indices = sTrackOcclusionCache.indices;
+    sTrackOcclusionCache.world.triangles = sTrackOcclusionCache.triangles;
+    sTrackOcclusionCache.world.triangle_count = triangle_count;
+    sTrackOcclusionCache.telemetry.segment_count = (size_t)gCurrentLevelModel->numberOfSegments;
+    sTrackOcclusionCache.telemetry.broadphase_chunk_count = chunk_count;
+    sTrackOcclusionCache.telemetry.vertex_count = vertex_count;
+    sTrackOcclusionCache.telemetry.hard_triangle_count = triangle_count;
+    sTrackOcclusionCache.telemetry.bytes =
+        vertex_bytes + index_bytes + triangle_bytes + segment_bytes + chunk_bytes;
+    if (build_started != 0U) {
+        const uint64_t build_finished = platform_perf_monotonic_ns();
+        sTrackOcclusionCache.telemetry.build_ns =
+            build_finished >= build_started ? build_finished - build_started : 0U;
+    }
+    sTrackOcclusionCache.built = TRUE;
+    fprintf(stderr,
+            "[CAM-OCCLUSION] segments=%zu chunks=%zu vertices=%zu hard=%zu no-collision-hard=%zu nonblocking=%zu rejected=%zu unknown=%zu malformed=%zu bytes=%zu build_ns=%llu\n",
+            sTrackOcclusionCache.telemetry.segment_count,
+            sTrackOcclusionCache.telemetry.broadphase_chunk_count,
+            sTrackOcclusionCache.telemetry.vertex_count,
+            sTrackOcclusionCache.telemetry.hard_triangle_count,
+            sTrackOcclusionCache.telemetry.visual_no_collision_hard_triangle_count,
+            sTrackOcclusionCache.telemetry.nonblocking_triangle_count,
+            sTrackOcclusionCache.telemetry.rejected_triangle_count,
+            sTrackOcclusionCache.telemetry.unknown_policy_triangle_count,
+            sTrackOcclusionCache.telemetry.malformed_batch_count,
+            sTrackOcclusionCache.telemetry.bytes,
+            (unsigned long long)sTrackOcclusionCache.telemetry.build_ns);
+}
+
+static int mdkr_track_occlusion_bounds_overlap_sweep(
+    MdkrCameraVec3 bounds_minimum,
+    MdkrCameraVec3 bounds_maximum,
+    int bounds_valid,
+    MdkrCameraVec3 start_eye,
+    MdkrCameraVec3 desired_eye,
+    double broadphase_radius) {
+    const double start[3] = { start_eye.x, start_eye.y, start_eye.z };
+    const double end[3] = { desired_eye.x, desired_eye.y, desired_eye.z };
+    const double minimum[3] = { (double)bounds_minimum.x - broadphase_radius,
+                                (double)bounds_minimum.y - broadphase_radius,
+                                (double)bounds_minimum.z - broadphase_radius };
+    const double maximum[3] = { (double)bounds_maximum.x + broadphase_radius,
+                                (double)bounds_maximum.y + broadphase_radius,
+                                (double)bounds_maximum.z + broadphase_radius };
+    double enter = 0.0;
+    double exit = 1.0;
+    int axis;
+
+    if (!bounds_valid || !isfinite(broadphase_radius) || broadphase_radius < 0.0f) {
+        return FALSE;
+    }
+    for (axis = 0; axis < 3; axis++) {
+        const double delta = (double)end[axis] - start[axis];
+        if (fabs(delta) <= 1.0e-12) {
+            if (start[axis] < minimum[axis] || start[axis] > maximum[axis]) {
+                return FALSE;
+            }
+        } else {
+            double a = ((double)minimum[axis] - start[axis]) / delta;
+            double b = ((double)maximum[axis] - start[axis]) / delta;
+            if (a > b) {
+                const double temp = a;
+                a = b;
+                b = temp;
+            }
+            if (a > enter) enter = a;
+            if (b < exit) exit = b;
+            if (enter > exit) {
+                return FALSE;
+            }
+        }
+    }
+    return exit >= 0.0 && enter <= 1.0;
+}
+
+MdkrCameraSweepStatus mdkr_track_occlusion_sweep(
+    const MdkrCameraSweepInput *input,
+    MdkrCameraSweepHit *out_hit) {
+    MdkrCameraSweepHit best;
+    s32 segment_index;
+    int have_hit = FALSE;
+
+    if (out_hit == NULL || input == NULL || !sTrackOcclusionCache.built) {
+        if (out_hit != NULL) {
+            memset(out_hit, 0, sizeof(*out_hit));
+        }
+        return MDKR_CAMERA_SWEEP_INVALID;
+    }
+    if (input->mask != 0U &&
+        (input->mask & MDKR_CAMERA_TRACK_OCCLUSION_HARD_MASK) == 0U) {
+        return mdkr_camera_sweep(&sTrackOcclusionCache.world, input, out_hit);
+    }
+    memset(&best, 0, sizeof(best));
+    for (segment_index = 0; segment_index < (s32)sTrackOcclusionCache.telemetry.segment_count;
+         segment_index++) {
+        const MdkrTrackOcclusionSegment *segment = &sTrackOcclusionCache.segments[segment_index];
+        size_t chunk_index;
+
+        if (segment->triangle_count == 0U ||
+            !mdkr_track_occlusion_bounds_overlap_sweep(
+                segment->minimum, segment->maximum, segment->valid, input->start_eye,
+                input->desired_eye, input->guard.radius)) {
+            continue;
+        }
+        for (chunk_index = segment->chunk_offset;
+             chunk_index < segment->chunk_offset + segment->chunk_count;
+             chunk_index++) {
+            const MdkrTrackOcclusionChunk *chunk = &sTrackOcclusionCache.chunks[chunk_index];
+            MdkrCameraOcclusionWorld local_world;
+            MdkrCameraSweepHit candidate;
+            MdkrCameraSweepStatus status;
+
+            if (!mdkr_track_occlusion_bounds_overlap_sweep(
+                    chunk->minimum, chunk->maximum, chunk->valid, input->start_eye,
+                    input->desired_eye, input->guard.radius)) {
+                continue;
+            }
+            local_world = sTrackOcclusionCache.world;
+            local_world.indices += chunk->triangle_offset * 3U;
+            local_world.triangles += chunk->triangle_offset;
+            local_world.triangle_count = chunk->triangle_count;
+            status = mdkr_camera_sweep(&local_world, input, &candidate);
+            if (status == MDKR_CAMERA_SWEEP_INVALID) {
+                memset(out_hit, 0, sizeof(*out_hit));
+                return status;
+            }
+            if (status == MDKR_CAMERA_SWEEP_HIT &&
+                (!have_hit || candidate.fraction < best.fraction ||
+                 (candidate.fraction == best.fraction &&
+                  candidate.stable_id < best.stable_id))) {
+                best = candidate;
+                have_hit = TRUE;
+            }
+        }
+    }
+    if (have_hit) {
+        *out_hit = best;
+        return MDKR_CAMERA_SWEEP_HIT;
+    }
+    return mdkr_camera_sweep(&(MdkrCameraOcclusionWorld) { 0 }, input, out_hit);
+}
+
+static int mdkr_track_occlusion_rounded_candidate_better(
+    const MdkrCameraSweepHit *candidate,
+    const MdkrCameraSweepHit *best) {
+    if ((double)candidate->fraction < (double)best->fraction -
+            MDKR_CAMERA_OBSTRUCTION_QUERY_TIME_TIE_EPSILON) {
+        return TRUE;
+    }
+    if (fabs((double)candidate->fraction - (double)best->fraction) <=
+        MDKR_CAMERA_OBSTRUCTION_QUERY_TIME_TIE_EPSILON) {
+        if (candidate->stable_id != best->stable_id) {
+            return candidate->stable_id < best->stable_id;
+        }
+        if (candidate->feature != best->feature) {
+            return candidate->feature < best->feature;
+        }
+    }
+    return FALSE;
+}
+
+static void mdkr_track_occlusion_counter_add(uint64_t *counter, uint64_t value) {
+    if (UINT64_MAX - *counter < value) {
+        *counter = UINT64_MAX;
+    } else {
+        *counter += value;
+    }
+}
+
+static void mdkr_track_occlusion_record_exact_work(
+    const MdkrCameraRoundedLensSweepTelemetry *work,
+    uint64_t segment_candidates,
+    uint64_t triangle_candidates,
+    int invalid) {
+    MdkrTrackOcclusionTelemetry *telemetry = &sTrackOcclusionCache.telemetry;
+
+    mdkr_track_occlusion_counter_add(
+        &telemetry->exact_segment_candidate_count, segment_candidates);
+    mdkr_track_occlusion_counter_add(
+        &telemetry->exact_triangle_candidate_count, triangle_candidates);
+    if (work != NULL) {
+        mdkr_track_occlusion_counter_add(
+            &telemetry->exact_analytic_sat_count,
+            work->analytic_swept_sat_tests);
+        mdkr_track_occlusion_counter_add(
+            &telemetry->exact_analytic_revalidation_miss_count,
+            work->analytic_revalidation_misses);
+        mdkr_track_occlusion_counter_add(
+            &telemetry->exact_bounded_interval_test_count,
+            work->bounded_interval_tests);
+        mdkr_track_occlusion_counter_add(
+            &telemetry->exact_bounded_interval_exhaustion_count,
+            work->bounded_interval_exhaustions);
+        mdkr_track_occlusion_counter_add(
+            &telemetry->exact_stationary_test_count, work->stationary_tests);
+        mdkr_track_occlusion_counter_add(
+            &telemetry->exact_advance_iteration_count,
+            work->conservative_advance_iterations);
+        mdkr_track_occlusion_counter_add(
+            &telemetry->exact_refinement_test_count,
+            work->contact_refinement_tests);
+        mdkr_track_occlusion_counter_add(
+            &telemetry->exact_interval_fallback_count, work->interval_fallbacks);
+        mdkr_track_occlusion_counter_add(
+            &telemetry->exact_interval_sample_count, work->interval_samples);
+        mdkr_track_occlusion_counter_add(
+            &telemetry->exact_ambiguous_interval_count, work->ambiguous_intervals);
+        mdkr_track_occlusion_counter_add(
+            &telemetry->exact_publication_revalidation_count,
+            work->publication_revalidations);
+        if (work->stationary_tests > telemetry->exact_max_stationary_tests_per_sweep) {
+            telemetry->exact_max_stationary_tests_per_sweep = work->stationary_tests;
+        }
+    }
+    if (triangle_candidates > telemetry->exact_max_triangle_candidates_per_sweep) {
+        telemetry->exact_max_triangle_candidates_per_sweep = triangle_candidates;
+    }
+    if (invalid) {
+        mdkr_track_occlusion_counter_add(&telemetry->exact_invalid_sweep_count, 1U);
+    }
+}
+
+static void mdkr_track_occlusion_accumulate_exact_work(
+    MdkrCameraRoundedLensSweepTelemetry *total,
+    const MdkrCameraRoundedLensSweepTelemetry *part) {
+#define MDKR_TRACK_ADD_EXACT_FIELD(field) \
+    mdkr_track_occlusion_counter_add(&total->field, part->field)
+    MDKR_TRACK_ADD_EXACT_FIELD(triangles_seen);
+    MDKR_TRACK_ADD_EXACT_FIELD(triangles_filtered);
+    MDKR_TRACK_ADD_EXACT_FIELD(triangles_aabb_rejected);
+    MDKR_TRACK_ADD_EXACT_FIELD(triangles_narrowed);
+    MDKR_TRACK_ADD_EXACT_FIELD(analytic_swept_sat_tests);
+    MDKR_TRACK_ADD_EXACT_FIELD(analytic_revalidation_misses);
+    MDKR_TRACK_ADD_EXACT_FIELD(bounded_interval_tests);
+    MDKR_TRACK_ADD_EXACT_FIELD(bounded_interval_exhaustions);
+    MDKR_TRACK_ADD_EXACT_FIELD(stationary_tests);
+    MDKR_TRACK_ADD_EXACT_FIELD(conservative_advance_iterations);
+    MDKR_TRACK_ADD_EXACT_FIELD(contact_refinement_tests);
+    MDKR_TRACK_ADD_EXACT_FIELD(interval_fallbacks);
+    MDKR_TRACK_ADD_EXACT_FIELD(interval_samples);
+    MDKR_TRACK_ADD_EXACT_FIELD(ambiguous_intervals);
+    MDKR_TRACK_ADD_EXACT_FIELD(publication_revalidations);
+#undef MDKR_TRACK_ADD_EXACT_FIELD
+}
+
+MdkrCameraSweepStatus mdkr_track_occlusion_rounded_lens_sweep(
+    const MdkrCameraRoundedLensSweepInput *input,
+    MdkrCameraSweepHit *out_hit) {
+    MdkrCameraSweepHit best;
+    MdkrCameraRoundedLensSweepTelemetry total_work;
+    double broadphase_radius;
+    uint64_t segment_candidates = 0U;
+    uint64_t triangle_candidates = 0U;
+    s32 segment_index;
+    int have_hit = FALSE;
+
+    memset(&total_work, 0, sizeof(total_work));
+    if (sTrackOcclusionCache.built) {
+        mdkr_track_occlusion_counter_add(
+            &sTrackOcclusionCache.telemetry.exact_sweep_count, 1U);
+    }
+    if (out_hit == NULL || input == NULL || !sTrackOcclusionCache.built) {
+        if (out_hit != NULL) {
+            memset(out_hit, 0, sizeof(*out_hit));
+        }
+        if (sTrackOcclusionCache.built) {
+            mdkr_track_occlusion_record_exact_work(&total_work, 0U, 0U, TRUE);
+        }
+        return MDKR_CAMERA_SWEEP_INVALID;
+    }
+    if (input->mask != 0U &&
+        (input->mask & MDKR_CAMERA_TRACK_OCCLUSION_HARD_MASK) == 0U) {
+        MdkrCameraSweepStatus status = mdkr_camera_rounded_lens_sweep_profiled(
+            &sTrackOcclusionCache.world, input, out_hit, &total_work);
+        mdkr_track_occlusion_record_exact_work(
+            &total_work, 0U, total_work.triangles_narrowed,
+            status == MDKR_CAMERA_SWEEP_INVALID);
+        return status;
+    }
+    if (!mdkr_camera_rounded_lens_guard_conservative_radius(
+            &input->guard, &broadphase_radius)) {
+        MdkrCameraSweepStatus status = mdkr_camera_rounded_lens_sweep_profiled(
+            &(MdkrCameraOcclusionWorld) { 0 }, input, out_hit, &total_work);
+        mdkr_track_occlusion_record_exact_work(&total_work, 0U, 0U, TRUE);
+        return status;
+    }
+    memset(&best, 0, sizeof(best));
+    for (segment_index = 0; segment_index < (s32)sTrackOcclusionCache.telemetry.segment_count;
+         segment_index++) {
+        const MdkrTrackOcclusionSegment *segment = &sTrackOcclusionCache.segments[segment_index];
+        size_t chunk_index;
+
+        if (segment->triangle_count == 0U ||
+            !mdkr_track_occlusion_bounds_overlap_sweep(
+                segment->minimum, segment->maximum, segment->valid, input->start_eye,
+                input->desired_eye, broadphase_radius)) {
+            continue;
+        }
+        segment_candidates++;
+        for (chunk_index = segment->chunk_offset;
+             chunk_index < segment->chunk_offset + segment->chunk_count;
+             chunk_index++) {
+            const MdkrTrackOcclusionChunk *chunk = &sTrackOcclusionCache.chunks[chunk_index];
+            MdkrCameraOcclusionWorld local_world;
+            MdkrCameraSweepHit candidate;
+            MdkrCameraSweepStatus status;
+            MdkrCameraRoundedLensSweepTelemetry chunk_work;
+
+            if (!mdkr_track_occlusion_bounds_overlap_sweep(
+                    chunk->minimum, chunk->maximum, chunk->valid, input->start_eye,
+                    input->desired_eye, broadphase_radius)) {
+                continue;
+            }
+            local_world = sTrackOcclusionCache.world;
+            local_world.indices += chunk->triangle_offset * 3U;
+            local_world.triangles += chunk->triangle_offset;
+            local_world.triangle_count = chunk->triangle_count;
+            triangle_candidates += chunk->triangle_count;
+            status = mdkr_camera_rounded_lens_sweep_profiled(
+                &local_world, input, &candidate, &chunk_work);
+            mdkr_track_occlusion_accumulate_exact_work(&total_work, &chunk_work);
+            if (status == MDKR_CAMERA_SWEEP_INVALID) {
+                memset(out_hit, 0, sizeof(*out_hit));
+                mdkr_track_occlusion_record_exact_work(
+                    &total_work, segment_candidates, triangle_candidates, TRUE);
+                return status;
+            }
+            if (status == MDKR_CAMERA_SWEEP_HIT &&
+                (!have_hit || mdkr_track_occlusion_rounded_candidate_better(&candidate, &best))) {
+                best = candidate;
+                have_hit = TRUE;
+            }
+        }
+    }
+    if (have_hit) {
+        *out_hit = best;
+        mdkr_track_occlusion_record_exact_work(
+            &total_work, segment_candidates, triangle_candidates, FALSE);
+        return MDKR_CAMERA_SWEEP_HIT;
+    }
+    {
+        MdkrCameraSweepStatus status = mdkr_camera_rounded_lens_sweep_profiled(
+            &(MdkrCameraOcclusionWorld) { 0 }, input, out_hit, NULL);
+        mdkr_track_occlusion_record_exact_work(
+            &total_work, segment_candidates, triangle_candidates,
+            status == MDKR_CAMERA_SWEEP_INVALID);
+        return status;
+    }
+}
+
+void mdkr_track_occlusion_get_telemetry(MdkrTrackOcclusionTelemetry *out) {
+    if (out != NULL) {
+        *out = sTrackOcclusionCache.telemetry;
+    }
+}
 #endif
 
 /**
@@ -484,6 +1219,7 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
 #endif
 #ifdef NATIVE_PORT
     s32 savedCutsceneCamera;
+    camera_obstruction_presentation_begin();
 #endif
 
     gTrackDL = *dList;
@@ -687,6 +1423,9 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
     *mtx = gTrackMtxPtr;
     *vtx = gTrackVtxPtr;
     *tris = gTrackTriPtr;
+#ifdef NATIVE_PORT
+    camera_obstruction_presentation_end();
+#endif
 }
 
 /************ .rodata ************/
@@ -1607,6 +2346,29 @@ void ttcam_update(s32 updateRate) {
         camera->cameraSegmentID = get_level_segment_index_from_position(camera->trans.x_position, currentRacer->oy1,
                                                                         camera->trans.z_position);
         gTTCamID = spectateIndex;
+#ifdef NATIVE_PORT
+        {
+            MdkrCameraIntent intent;
+
+            memset(&intent, 0, sizeof(intent));
+            intent.camera_id = PLAYER_FOUR;
+            intent.authored_mode = 0;
+            intent.family = MDKR_CAMERA_INTENT_FAMILY_TT_SPECTATE;
+            intent.desired_eye.x = camera->trans.x_position;
+            intent.desired_eye.y = camera->trans.y_position;
+            intent.desired_eye.z = camera->trans.z_position;
+            /* T.T.'s exact post-selection target is the racer it just chose. */
+            intent.pivot.x = thisObject->trans.x_position;
+            intent.pivot.y = thisObject->trans.y_position;
+            intent.pivot.z = thisObject->trans.z_position;
+            intent.target = intent.pivot;
+            /* The selected racer's transform is at road contact; target the
+             * chassis center while preserving the authored orbit pivot. */
+            intent.target.y += 20.0f;
+            intent.target_valid = TRUE;
+            camera_obstruction_intent_capture(&intent);
+        }
+#endif
     }
 #ifndef NATIVE_PORT
 #undef spectateIndex
@@ -2459,6 +3221,21 @@ static void scene_render_opacity_end(const Object *obj) {
     }
 }
 
+static s32 scene_camera_obstruction_opacity(const Object *obj) {
+    const s32 viewport = get_current_viewport();
+    s32 opacity = obj->opacity;
+
+    if (obj->behaviorId == BHV_RACER &&
+        obj == get_racer_object_by_port(viewport)) {
+        const s32 emergencyOpacity =
+            camera_obstruction_racer_opacity_for_viewport(viewport);
+        if (emergencyOpacity < opacity) {
+            opacity = emergencyOpacity;
+        }
+    }
+    return opacity;
+}
+
 static void scene_viewport_route_store(
     Object *obj, MdkrViewportRoutePass pass, s32 opacity, s32 visible) {
     s32 viewport = get_current_viewport();
@@ -2606,6 +3383,7 @@ void scene_authoritative_render_tick(s32 updateRate) {
     s32 weatherUpdateRate;
     s32 weatherRanEarly;
     s32 viewportFadeTest;
+    s32 objectOpacity;
     Object *obj;
 
     mdkr_viewport_route_cache_reset(&sSceneViewportRoutes);
@@ -2654,12 +3432,13 @@ void scene_authoritative_render_tick(s32 updateRate) {
                 sSceneViewportTestTarget = obj;
                 obj->opacity = 255;
             }
+            objectOpacity = scene_camera_obstruction_opacity(obj);
             objFlags = obj->trans.flags;
             visible = 255;
             if (objFlags & OBJ_FLAGS_UNK_0080) {
                 visible = 0;
             } else if (!(objFlags & OBJ_FLAGS_PARTICLE)) {
-                visible = obj->opacity;
+                visible = objectOpacity;
             }
             if (objFlags & visibleFlags) {
                 visible = 0;
@@ -2674,7 +3453,7 @@ void scene_authoritative_render_tick(s32 updateRate) {
                  obj->unk34 > 1000.0)) {
                 scene_viewport_route_store(
                     obj, MDKR_VIEWPORT_ROUTE_OPAQUE,
-                    obj->opacity, visible);
+                    objectOpacity, visible);
                 obj_authoritative_texture_tick(
                     obj, updateRate, sSceneDrawDistance[i]);
             }
@@ -2683,6 +3462,7 @@ void scene_authoritative_render_tick(s32 updateRate) {
         /* OBJ_FLAGS_UNK_0100 pass, back to front. */
         for (i = privateCount - 1; i >= 0; i--) {
             obj = sSceneDrawOrder[i];
+            objectOpacity = scene_camera_obstruction_opacity(obj);
             objFlags = obj->trans.flags;
             visible = !(objFlags & visibleFlags);
             if (visible && (objFlags & OBJ_FLAGS_UNK_0100) &&
@@ -2690,7 +3470,7 @@ void scene_authoritative_render_tick(s32 updateRate) {
                 check_if_in_draw_range(obj)) {
                 scene_viewport_route_store(
                     obj, MDKR_VIEWPORT_ROUTE_SPECIAL,
-                    obj->opacity, visible);
+                    objectOpacity, visible);
                 obj_authoritative_texture_tick(
                     obj, updateRate, sSceneDrawDistance[i]);
             }
@@ -2699,18 +3479,22 @@ void scene_authoritative_render_tick(s32 updateRate) {
         /* Transparent/racer-FX pass, back to front. */
         for (i = privateCount - 1; i >= 0; i--) {
             obj = sSceneDrawOrder[i];
+            objectOpacity = scene_camera_obstruction_opacity(obj);
             objFlags = obj->trans.flags;
             visible = 255;
             if (objFlags & OBJ_FLAGS_UNK_0080) {
                 visible = 1;
             } else if (!(objFlags & OBJ_FLAGS_PARTICLE)) {
-                visible = obj->opacity;
+                visible = objectOpacity;
             }
             if (objFlags & visibleFlags) {
                 visible = 0;
             }
             if (obj->behaviorId == BHV_RACER && visible >= 255) {
                 visible = 0;
+            }
+            if (obj->behaviorId == BHV_RACER && objectOpacity < 255) {
+                visible = objectOpacity;
             }
             if (viewportFadeTest &&
                 obj == sSceneViewportTestTarget &&
@@ -2727,10 +3511,11 @@ void scene_authoritative_render_tick(s32 updateRate) {
                      * viewport's fade. Correct rendering must still use each
                      * earlier viewport's retained route. */
                     obj->opacity = 64;
+                    objectOpacity = 64;
                 }
                 scene_viewport_route_store(
                     obj, MDKR_VIEWPORT_ROUTE_BLEND,
-                    obj->opacity, visible);
+                    objectOpacity, visible);
                 if (visible > 0) {
                     obj_authoritative_texture_tick(
                         obj, updateRate, sSceneDrawDistance[i]);
@@ -4385,6 +5170,11 @@ void generate_track(s32 modelId) {
     u8 *mdl;
     u8 *collisionCursor;
 
+#ifdef NATIVE_PORT
+    /* A direct level reload is allowed in diagnostics; never retain copied
+     * geometry from the previous model while its heap is being replaced. */
+    mdkr_track_occlusion_cache_free();
+#endif
     set_texture_colour_tag(COLOUR_TAG_GREEN);
     gTrackModelHeap = mempool_alloc_safe(LEVEL_MODEL_MAX_SIZE, COLOUR_TAG_YELLOW);
     gCurrentLevelModel = gTrackModelHeap;
@@ -4663,6 +5453,12 @@ void generate_track(s32 modelId) {
             }
         }
     }
+#ifdef NATIVE_PORT
+    /* This is after every load-time pointer fixup, collision build, fixed heap
+     * compaction, and vertex/batch finalization. The cache never observes a
+     * half-generated model. */
+    mdkr_track_occlusion_cache_build();
+#endif
     set_texture_colour_tag(COLOUR_TAG_MAGENTA);
 }
 
@@ -4700,6 +5496,12 @@ void free_track(void) {
     s32 i;
 
     racerfx_free();
+#ifdef NATIVE_PORT
+    /* Free caller-owned copies before the level-model heap and its textures are
+     * released. Queries after this point fail closed rather than dereferencing
+     * stale geometry. */
+    mdkr_track_occlusion_cache_free();
+#endif
     if (gWaveBlockCount != 0) {
         waves_free();
     }

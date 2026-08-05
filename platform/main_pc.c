@@ -40,6 +40,7 @@
 #include "gameplay_event_trace.h"
 #include "input_consumption_trace.h"
 #include "audi_port_dkr.h"
+#include "camera_obstruction_runtime.h"
 
 /*
  * Fatal-crash write mirror. The app shell's DiagLog tee (platform/app/
@@ -470,6 +471,7 @@ shutdown:
     /* Same reason, same place: the present-path cost census (MDKR_PRESENT_PERF)
      * must report whatever it measured even when the run ends badly. */
     present_perf_summary();
+    camera_obstruction_perf_summary();
     if (audioInitialized) {
         dkr_audio_out_shutdown();
     }

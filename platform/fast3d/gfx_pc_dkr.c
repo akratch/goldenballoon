@@ -5647,15 +5647,9 @@ void gfx_set_dimensions(uint32_t width, uint32_t height) {
         width != gfx_current_dimensions.width ||
         height != gfx_current_dimensions.height;
 
-    /*
-     * Report OUTPUT and RENDER resolution explicitly.
-     *
-     * The [DISPLAY] layout line below works entirely in render space, which is
-     * self-consistent but means its "drawable" is the scaled scene, not the
-     * window. Anything asking "did the engine see my resize?" -- the browser
-     * runtime gate, a bug report, a person -- wants the window. So say both,
-     * and name them.
-     */
+    /* Report OUTPUT and RENDER resolution explicitly. Camera projection is
+     * keyed to OUTPUT below: render-scale rounding and texture caps may change
+     * internal pixels, but must never change the world-space lens. */
     if (output_changed || render_changed) {
         double applied_scale_w =
             (double)width / (double)gfx_output_dimensions.width;
@@ -5675,7 +5669,8 @@ void gfx_set_dimensions(uint32_t width, uint32_t height) {
     gfx_current_dimensions.width = width;
     gfx_current_dimensions.height = height;
     gfx_current_dimensions.aspect_ratio = (float)width / (float)height;
-    mdkr_display_set_dimensions(width, height);
+    mdkr_display_set_dimensions(
+        gfx_output_dimensions.width, gfx_output_dimensions.height);
 
     if (render_changed && gfx_rapi && gfx_rapi->on_resize) {
         gfx_rapi->on_resize();

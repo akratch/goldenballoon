@@ -46,11 +46,13 @@
 #include "vehicle_misc.h"
 
 #ifdef NATIVE_PORT
+#include "camera_obstruction_runtime.h"
 #include "mdkr_adventure.h"
 #include "gameplay_event_trace.h"
 #include "present_sched.h"
 #include <stdio.h>  /* fprintf — loud non-finite-position assert below */
 #include <stdlib.h> /* abort */
+#include <string.h> /* memset — native intent sidecar capture */
 
 /* <math.h> cannot be included here: the decomp declares its own `log` symbol,
  * which conflicts with the libm prototype. Test the IEEE-754 exponent field
@@ -169,6 +171,67 @@ u32 gCurrentButtonsReleased;
 s32 gCurrentStickX;
 s32 gCurrentStickY;
 s32 unused_8011D53C; // Set to 0 and only 0. Checked for being 1, but never true.
+
+#ifdef NATIVE_PORT
+static MdkrCameraIntentFamily racer_camera_intent_family(s16 mode) {
+    switch (mode) {
+        case CAMERA_CAR: return MDKR_CAMERA_INTENT_FAMILY_CAR;
+        case CAMERA_HOVERCRAFT: return MDKR_CAMERA_INTENT_FAMILY_HOVERCRAFT;
+        case CAMERA_PLANE: return MDKR_CAMERA_INTENT_FAMILY_PLANE;
+        case CAMERA_LOOP: return MDKR_CAMERA_INTENT_FAMILY_LOOP;
+        case CAMERA_FIXED: return MDKR_CAMERA_INTENT_FAMILY_FIXED;
+        case CAMERA_FINISH_CHALLENGE: return MDKR_CAMERA_INTENT_FAMILY_FINISH_CHALLENGE;
+        case CAMERA_FINISH_RACE: return MDKR_CAMERA_INTENT_FAMILY_FINISH_RACE;
+        default: return MDKR_CAMERA_INTENT_FAMILY_UNKNOWN;
+    }
+}
+
+/*
+ * The ordinary camera authors know their subject here, before dialogue/shake
+ * finishes. For car/hover/plane we preserve the available racer-local focus
+ * axis (ox1/oy1/oz1, ten world units ahead), rather than guessing a pivot from
+ * the final eye. Loop/fixed/finish modes use their exact object/orbit subject.
+ */
+static void racer_camera_obstruction_capture_intent(Object *obj, Object_Racer *racer) {
+    MdkrCameraIntent intent;
+
+    if (obj == NULL || racer == NULL || gCameraObject == NULL ||
+        racer->playerIndex < PLAYER_ONE || racer->playerIndex > PLAYER_FOUR) {
+        return;
+    }
+    memset(&intent, 0, sizeof(intent));
+    intent.camera_id = racer->playerIndex;
+    intent.authored_mode = gCameraObject->mode;
+    intent.family = racer_camera_intent_family(gCameraObject->mode);
+    intent.desired_eye.x = gCameraObject->trans.x_position;
+    intent.desired_eye.y = gCameraObject->trans.y_position;
+    intent.desired_eye.z = gCameraObject->trans.z_position;
+    intent.pivot.x = obj->trans.x_position + racer->ox1 * 10.0f;
+    intent.pivot.y = obj->trans.y_position + racer->oy1 * 10.0f;
+    intent.pivot.z = obj->trans.z_position + racer->oz1 * 10.0f;
+    if (intent.family == MDKR_CAMERA_INTENT_FAMILY_LOOP ||
+        intent.family == MDKR_CAMERA_INTENT_FAMILY_FIXED ||
+        intent.family == MDKR_CAMERA_INTENT_FAMILY_FINISH_RACE) {
+        intent.pivot.x = obj->trans.x_position;
+        intent.pivot.y = obj->trans.y_position;
+        intent.pivot.z = obj->trans.z_position;
+    } else if (intent.family == MDKR_CAMERA_INTENT_FAMILY_FINISH_CHALLENGE) {
+        intent.pivot.x = obj->trans.x_position;
+        intent.pivot.y = obj->trans.y_position + 45.0f;
+        intent.pivot.z = obj->trans.z_position;
+    }
+    intent.target = intent.pivot;
+    /* Racer transforms sit at the road-contact origin. Visibility and
+     * emergency framing must evaluate a readable chassis focus, not a point
+     * that is legitimately inside the road skin. Keep the boom pivot exact
+     * while lifting only the presentation target. */
+    if (intent.family != MDKR_CAMERA_INTENT_FAMILY_FINISH_CHALLENGE) {
+        intent.target.y += 20.0f;
+    }
+    intent.target_valid = TRUE;
+    camera_obstruction_intent_capture(&intent);
+}
+#endif
 s32 gRaceStartTimer;
 f32 D_8011D544; // Starts are 300, then counts down when the race starts. Usage currently unknown.
 f32 D_8011D548;
@@ -8275,6 +8338,12 @@ void update_player_camera(Object *obj, Object_Racer *racer, f32 updateRateF) {
         gCameraObject->shakeTimer += 5;
         gCameraObject->shakeMagnitude = -gCameraObject->shakeMagnitude * 0.75;
     }
+#ifdef NATIVE_PORT
+    /* Final author seam: dialogue translation, yaw, and shake are all final.
+     * Transition code may call this twice; the intent sidecar intentionally
+     * keeps only this last author while the fixed-tick finalizer solves once. */
+    racer_camera_obstruction_capture_intent(obj, racer);
+#endif
 }
 
 /**
