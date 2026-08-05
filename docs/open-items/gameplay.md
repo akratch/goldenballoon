@@ -35,7 +35,7 @@ explicitly a partial mitigation.
 
 ### Mechanism
 
-`racer_AI_pathing_inputs()`, `game/src/racer.c:670-699`:
+`racer_AI_pathing_inputs()`, `game/src/racer.c:790-803`:
 
 ```c
 if (racer->unk214 == 0 && racer->velocity < -0.5) {

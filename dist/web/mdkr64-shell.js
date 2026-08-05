@@ -1323,6 +1323,13 @@ async function boot() {
   const loadTrack = /^(?:[0-9]|[1-5][0-9]|6[0-5])(?::[0-2])?$/.test(
     loadTrackValue || ""
   ) ? loadTrackValue : null;
+  // ?camera=observe|legacy|center-ray restores a diagnostic camera policy for
+  // A/B against the shipped default (modern, which keeps the camera out of
+  // walls). Unrecognized values are ignored here; the engine's own fallback
+  // would land on observe and announce it, which is not what a typo means.
+  const cameraValue = qs.get("camera");
+  const cameraPolicy = ["observe", "legacy", "center-ray", "modern"]
+    .includes(cameraValue) ? cameraValue : null;
 
   try {
     module = await createMDKR64({
@@ -1342,6 +1349,9 @@ async function boot() {
       }
       if (loadTrack && m && m.ENV) {
         try { m.ENV.MDKR_LOAD_TRACK = loadTrack; } catch (e) {}
+      }
+      if (cameraPolicy && m && m.ENV) {
+        try { m.ENV.MDKR_CAMERA_OBSTRUCTION = cameraPolicy; } catch (e) {}
       }
       if (testConfig && testConfig.env && m && m.ENV) {
         for (const [key, value] of Object.entries(testConfig.env)) {

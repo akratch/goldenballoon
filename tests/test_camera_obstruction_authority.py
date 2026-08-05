@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Fail closed if camera correction crosses fixed-tick authority boundaries.
 
-The obstruction resolver is intentionally absent during the first implementation
-stages.  This source-level CTest therefore accepts no call sites yet, but makes
-the only valid future placement unambiguous: both fixed-tick routes must resolve
-after the TT-camera author and before simulation-owned sort/LOD/visibility.
+The obstruction runtime is live and this source-level CTest pins its only
+valid placement: both fixed-tick routes must resolve exactly once each, after
+the TT-camera author and before simulation-owned sort/LOD/visibility.
 It also prevents those simulation-owned passes from consuming a resolved,
 display, projection, effective, or presentation camera API.  Such state may be
 used only by private rendering work; their basis must remain explicitly logical.
