@@ -36,6 +36,27 @@ EXPECTED_UNDERRUNS = {
     177: (66, 67, (0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)),
 }
 
+# The complete G_VTX_APPEND blast radius of the supported ROMs: the only sprite
+# frames that emit more than one appended vertex run, as
+# {sprite_id: ((frame, tile_count, run_count), ...)}.
+#
+# Both revision-1 ROMs carry identical asset payloads, so this holds for PAL as
+# well.  Of 600 frames across 193 sprites, only these two exceed five tiles:
+#
+#   sprite 108 frame 0 -- a one-frame, six-band RGBA16 billboard (base texture
+#     446, anchor (80,122); bands 60x26@y9, 92x21@y34, 120x17@y54, 108x18@y70,
+#     96x21@y87, 52x15@y107).  These are the intro shrubs of GitHub issue #11;
+#     the sixth band is the bottom one that the pre-e14f6ee append base dropped.
+#     Reached everywhere -- it loads on every one of 27 swept route runs.
+#   sprite 178 frame 6 -- one frame of an eleven-frame RGBA32 burst animation
+#     (base texture 745, anchor (32,18)) that breaks into six fragments before
+#     fading.  Referenced by exactly one object header; not observed on any
+#     swept route.
+EXPECTED_MULTIRUN = {
+    108: ((0, 6, 2),),
+    178: ((6, 6, 2),),
+}
+
 REQUIRED_SOURCE_COUNTS = {
     "load_sprite_asset_checked(": 5,  # definition plus four readers
     "asset_load(ASSET_SPRITES": 1,
@@ -137,6 +158,42 @@ def signed_table(raw: bytes) -> list[int]:
     return values[:sentinel]
 
 
+def multirun_frames(offsets: tuple[int, ...]) -> tuple[tuple[int, int, int], ...]:
+    """Frames that emit MORE THAN ONE appended vertex run.
+
+    sprite_init_frame() issues one gSPVertexDKR(..., G_VTX_APPEND) per group of
+    at most five tiles and restarts its triangle indices at vertex 1 for each
+    group.  That is only correct because G_VTX_APPEND is a fixed base (the
+    length of the last flag-0 load) and not a running cursor -- see
+    game/include/f3ddkr.h and tests/check_intro_shrub_sprite.py.  A frame with
+    six or more tiles is therefore the ONLY shape that can expose an append-base
+    regression, so the set of such frames is the exact blast radius and is
+    pinned here.
+
+    Returns (frame_index, tile_count, run_count) for each affected frame.
+    """
+    return tuple(
+        (frame, end - start, (end - start + 4) // 5)
+        for frame, (start, end) in enumerate(zip(offsets, offsets[1:]))
+        if end - start > 5
+    )
+
+
+def prove_multirun_classifier() -> list[str]:
+    """The multi-run classifier must have an executable failure direction."""
+    failures: list[str] = []
+    # Five tiles is exactly one run; six is the first shape that appends twice.
+    if multirun_frames((0, 5)) != ():
+        failures.append("a five-tile frame was reported as multi-run")
+    if multirun_frames((0, 6)) != ((0, 6, 2),):
+        failures.append("a six-tile frame was not reported as multi-run")
+    if multirun_frames((0, 1, 12)) != ((1, 11, 3),):
+        failures.append("an eleven-tile frame did not report three runs")
+    if multirun_frames((0,)) != ():
+        failures.append("a frameless sprite produced a multi-run frame")
+    return failures
+
+
 def command_count(offsets: tuple[int, ...]) -> int:
     return sum(
         2 + 2 * (end - start) + ((end - start) + 4) // 5
@@ -144,7 +201,11 @@ def command_count(offsets: tuple[int, ...]) -> int:
     )
 
 
-def census(rom_path: Path) -> tuple[str, int, int, dict[int, tuple[int, int, tuple[int, ...]]]]:
+def census(rom_path: Path) -> tuple[
+    str, int, int,
+    dict[int, tuple[int, int, tuple[int, ...]]],
+    dict[int, tuple[tuple[int, int, int], ...]],
+]:
     rom = normalize_rom(rom_path.read_bytes())
     identity = (be32(rom, 0x10), be32(rom, 0x14))
     try:
@@ -159,6 +220,7 @@ def census(rom_path: Path) -> tuple[str, int, int, dict[int, tuple[int, int, tup
     offsets = signed_table(section(rom, lut, base, ASSET_SPRITES_TABLE))
     failures: list[str] = []
     underruns: dict[int, tuple[int, int, tuple[int, ...]]] = {}
+    multirun: dict[int, tuple[tuple[int, int, int], ...]] = {}
     max_size = 0
 
     for sprite_id, (start, end) in enumerate(zip(offsets, offsets[1:])):
@@ -202,6 +264,10 @@ def census(rom_path: Path) -> tuple[str, int, int, dict[int, tuple[int, int, tup
             failures.append(f"sprite {sprite_id}: descending frame offsets")
             continue
 
+        affected = multirun_frames(frame_offsets)
+        if affected:
+            multirun[sprite_id] = affected
+
         textures = frame_offsets[-1]
         old_count = 4 * textures + frames
         exact_count = command_count(frame_offsets)
@@ -210,7 +276,7 @@ def census(rom_path: Path) -> tuple[str, int, int, dict[int, tuple[int, int, tup
 
     if failures:
         raise ValueError("; ".join(failures))
-    return build, len(offsets) - 1, max_size, underruns
+    return build, len(offsets) - 1, max_size, underruns, multirun
 
 
 def main() -> int:
@@ -229,7 +295,7 @@ def main() -> int:
                 "sprite reader/builder source contract failed: "
                 + "; ".join(source_failures)
             )
-        build, count, max_size, underruns = census(Path(args.rom))
+        build, count, max_size, underruns, multirun = census(Path(args.rom))
     except (OSError, ValueError, struct.error) as exc:
         print(f"check_sprite_layout: FAIL — {exc}", file=sys.stderr)
         return 1
@@ -243,14 +309,41 @@ def main() -> int:
         )
         return 1
 
+    classifier_failures = prove_multirun_classifier()
+    if classifier_failures:
+        print(
+            "check_sprite_layout: FAIL — multi-run classifier is inert: "
+            + "; ".join(classifier_failures),
+            file=sys.stderr,
+        )
+        return 1
+
+    if multirun != EXPECTED_MULTIRUN:
+        print(
+            "check_sprite_layout: FAIL — the G_VTX_APPEND blast radius moved\n"
+            f"  expected: {EXPECTED_MULTIRUN}\n"
+            f"  actual:   {multirun}\n"
+            "  Every listed frame emits several appended vertex runs against\n"
+            "  one fixed base. If this set grows, the new content is covered by\n"
+            "  no pixel gate — extend tests/check_intro_shrub_sprite.py.",
+            file=sys.stderr,
+        )
+        return 1
+
     rendered = ", ".join(
         f"sprite {sprite_id} {old}->{exact}"
         for sprite_id, (old, exact, _offsets) in underruns.items()
     )
+    multirendered = ", ".join(
+        f"sprite {sprite_id} frame {frame} {tiles} tiles/{runs} runs"
+        for sprite_id, frames in EXPECTED_MULTIRUN.items()
+        for frame, tiles, runs in frames
+    )
     print(
         f"check_sprite_layout: PASS — {build}, {count} sprites, "
         f"max asset {max_size} bytes; four readers share one checked boundary; "
-        f"positive controls: {rendered}"
+        f"positive controls: {rendered}; "
+        f"multi-run append frames: {multirendered}"
     )
     return 0
 

@@ -2184,8 +2184,6 @@ static void dkr_apply_tile_uv(float *u, float *v, const struct DkrTile *t) {
     if ((rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) != G_TF_POINT) { *u += 0.5f; *v += 0.5f; }
 }
 
-/* Set up every GPU state required for the current material, and cache the
- * feature/tex info the emitter needs. Flushes on any state change. */
 /*
  * RSP clip-ratio emulation.
  *
@@ -2235,15 +2233,34 @@ static void dkr_update_clip_expansion(void) {
     rdp.clip_expanded = false;
     if (vp.width <= 0 || vp.height <= 0) return;
 
+    /*
+     * The overhang has to be worth at least one AUTHORED pixel before it counts.
+     * The game states both rectangles in whole 320x240/264 units, so on hardware
+     * they either overlap exactly or differ by whole framebuffer columns; a
+     * mapped gap thinner than one authored pixel is this port's own rounding
+     * (lroundf on two separately scaled rectangles), not geometry the RSP would
+     * have drawn. Without this floor the framed menu world views -- whose
+     * mapped viewport lands half an authored pixel inside its scissor on NTSC
+     * as well -- would be nudged, changing US output for nothing.
+     */
+    float unit_x = (rdp.logical_viewport_valid && rdp.logical_viewport.width > 0.0f)
+        ? (float)vp.width / rdp.logical_viewport.width : 1.0f;
+    float unit_y = (rdp.logical_viewport_valid && rdp.logical_viewport.height > 0.0f)
+        ? (float)vp.height / rdp.logical_viewport.height : 1.0f;
+    if (!(unit_x >= 1.0f)) unit_x = 1.0f;
+    if (!(unit_y >= 1.0f)) unit_y = 1.0f;
+
     int32_t x0 = vp.x, x1 = vp.x + vp.width;
     int32_t y0 = vp.y, y1 = vp.y + vp.height;
     if (sc.width > 0) {
-        if (sc.x < x0) x0 = sc.x;
-        if (sc.x + sc.width > x1) x1 = sc.x + sc.width;
+        if ((float)(vp.x - sc.x) >= unit_x) x0 = sc.x;
+        if ((float)((sc.x + sc.width) - (vp.x + vp.width)) >= unit_x)
+            x1 = sc.x + sc.width;
     }
     if (sc.height > 0) {
-        if (sc.y < y0) y0 = sc.y;
-        if (sc.y + sc.height > y1) y1 = sc.y + sc.height;
+        if ((float)(vp.y - sc.y) >= unit_y) y0 = sc.y;
+        if ((float)((sc.y + sc.height) - (vp.y + vp.height)) >= unit_y)
+            y1 = sc.y + sc.height;
     }
     /* FRUSTRATIO_2 stops here: the RSP keeps geometry out to twice the viewport
      * extent about the viewport centre and discards the rest. A scissor wider
@@ -2270,20 +2287,10 @@ static void dkr_update_clip_expansion(void) {
     rdp.clip_bias_x = (2.0f * (float)(vp.x - x0) + (float)vp.width - ew) / ew;
     rdp.clip_bias_y = (2.0f * (float)(vp.y - y0) + (float)vp.height - eh) / eh;
     rdp.clip_expanded = true;
-#ifdef MDKR_TEMP_CLIP_PROBE
-    if (getenv("MDKR_TEMP_CLIP_PROBE")) {
-        fprintf(stderr, "[clipexp] vp{%d,%d,%d,%d} sc{%d,%d,%d,%d} -> e{%d,%d,%d,%d} "
-                        "sx=%.6f sy=%.6f bx=%.6f by=%.6f\n",
-                vp.x, vp.y, vp.width, vp.height,
-                sc.x, sc.y, sc.width, sc.height,
-                rdp.clip_viewport.x, rdp.clip_viewport.y,
-                rdp.clip_viewport.width, rdp.clip_viewport.height,
-                rdp.clip_scale_x, rdp.clip_scale_y,
-                rdp.clip_bias_x, rdp.clip_bias_y);
-    }
-#endif
 }
 
+/* Set up every GPU state required for the current material, and cache the
+ * feature/tex info the emitter needs. Flushes on any state change. */
 /*
  * Prepare shader, texture, depth, viewport and blend state for the primitives
  * that follow.
@@ -3198,7 +3205,31 @@ static void dkr_sp_polygon(const Triangle *tris, int num_tris, bool tex_enabled)
              * the CLIPPED polygon's total signed area: clipping preserves
              * winding, so a fully-inside triangle gives exactly the old
              * dkr_ndc_cross(a,b,c) decision, while a straddling one is now
-             * decided from real on-screen geometry instead of being skipped. */
+             * decided from real on-screen geometry instead of being skipped.
+             *
+             * The cull SENSE is deliberately independent of both
+             * rsp.geometry_mode's G_CULL_FRONT bit and rdp.viewport_flip_x, and
+             * that is only correct because the two always move together.
+             * On hardware the RSP culls in SCREEN space, after the viewport
+             * transform, so a negative vscale[0] inverts every winding; the
+             * effective rule is (viewport_flip XOR G_CULL_FRONT). DKR sets both
+             * of those from the same condition and nothing else:
+             * camera.c:2102 makes vscale[0] negative exactly when
+             * CHEAT_MIRRORED_TRACKS is active, and tracks.c:1313/1362 is the
+             * only gSPSetGeometryMode(G_CULL_FRONT) in the game, emitted under
+             * the same `flip`. dRspInit clears both cull bits and G_CULL_BACK is
+             * never set again, so the flag pair is the whole story.
+             * Here the cross product is taken BEFORE dkr_emit_tri applies the
+             * x-flip, which cancels the same inversion — the two double
+             * negations agree.
+             * Measured, not assumed: a 27-run route sweep (intro/hubs/menus/
+             * attract/credits/Taj/2P-3P-4P/time-trial plus a real Adventure Two
+             * mirrored race on track 5) binned all 20,570,011 gSPPolygon calls by
+             * [viewport_flip_x][G_CULL_FRONT]: 20,082,334 in [0][0], 487,677 in
+             * [1][1] (the mirrored race), and ZERO in the disagreeing bins
+             * [0][1] and [1][0].
+             * If a future path ever separates them, this test has to become
+             * `cull_negative = (flip != cull_front)`. */
             if (!(t->flags & BACKFACE_DRAW)) {
                 float area = 0.0f;
                 for (k = 1; k + 1 < pn; k++) {
@@ -3279,6 +3310,12 @@ static void dkr_sp_moveword(uint8_t index, uint16_t offset, uint32_t data) {
             rsp.billboard = (data != 0);
             break;
         case G_MW_MVPMATRIX:    /* 0x0A (DKR) — select active matrix slot */
+            /* gSPSelectMatrixDKR(num) packs num at bit 6 (f3ddkr.h), so the
+             * two-bit field can name a fourth slot that F3DDKR does not have.
+             * Unreachable: every call site passes a G_MTX_DKR_INDEX_0..2
+             * constant, and the two that pass a variable (camera.c:2465 and
+             * :2570) assign it INDEX_0 or INDEX_1 on the line before. A
+             * 27-run DL sweep saw slot 3 zero times. */
             rsp.active_slot = (data >> 6) & 3;
             if (rsp.active_slot > 2) rsp.active_slot = 0;
             break;
@@ -3327,7 +3364,21 @@ static void dkr_sp_moveword(uint8_t index, uint16_t offset, uint32_t data) {
             break;
         }
         default:
-            /* G_MW_CLIP, G_MW_PERSPNORM, G_MW_NUMLIGHT, ... — no-op */
+            /*
+             * G_MW_CLIP (0x04), G_MW_PERSPNORM, G_MW_NUMLIGHT, ... — no-op.
+             *
+             * G_MW_CLIP is the only one of these DKR actually emits: a
+             * 27-run route sweep binned moveword indices and saw exactly
+             * {02,04,06,08,0a,0c,0e,10}, with 0x04's count always four times
+             * the G_TEXTURE count — i.e. the four words of a single
+             * gSPClipRatio, from the same rcp_dkr.c dRspInit that carries the
+             * lone gsSPTexture. That call is a literal gsSPClipRatio
+             * (FRUSTRATIO_2) and there is no other clip-ratio emitter, so the
+             * ratio is a compile-time constant of this ROM.
+             * dkr_update_clip_expansion() consumes it as that constant (its
+             * half-viewport overhang cap IS ratio 2). Should a second emitter
+             * ever appear, that cap must be driven from here instead.
+             */
             break;
     }
 }
@@ -4761,9 +4812,19 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
         /* ---- SP: geometry ---- */
         case G_MTX: {  /* gSPMatrixDKR — load slot and select it */
             uint8_t matrix_param = (uint8_t)C0(cmd, 16, 8);
+            /* Loading a slot also SELECTS it (rsp.active_slot = slot below).
+             * Source evidence, not inference: camera.c:2555 writes the sprite
+             * matrix with gSPMatrixDKR(..., G_MTX_DKR_INDEX_2), enables
+             * billboarding and draws — with no gSPSelectMatrixDKR in between —
+             * and objects.c:6914 has to emit an explicit select back to
+             * INDEX_1 after its INDEX_2 detour. Both only make sense if the
+             * load selects. The same sweep confirms all 3,223,544 billboard
+             * polygons were drawn with slot 2 active, as f3ddkr.h's
+             * billboarding note requires. */
             /* Only G_MTX_DKR_INDEX_0..2 exist; rsp.mtx / rsp.shadow_matrix /
              * rsp.shadow_matrix_valid are all sized 3. Fold the unused fourth
-             * encoding onto slot 0, as G_MW_MVPMATRIX does. */
+             * encoding onto slot 0, as G_MW_MVPMATRIX does. Unreachable: the
+             * same sweep counted G_MTX slot usage; slot 3 never occurred. */
             int slot = (int)((matrix_param >> 6) & 3);
             if (slot > 2) slot = 0;
             uint8_t draw_space = matrix_param & 7;
@@ -5454,6 +5515,24 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             DTRACE("G_CLEARGEOMETRYMODE &= ~%08x -> %08x", cmd->words.w1, rsp.geometry_mode);
             break;
         case (uint8_t)G_TEXTURE: {
+            /*
+             * gSPTexture(s, t, level, tile, on) — gbi.h packs `level` at bits
+             * 11..13 and `on` at bits 0..7 of w0. Both are dropped here.
+             *
+             * Stock F3D treats `on` as a latched global texture-enable, so
+             * ignoring it would be exactly the "per-call vs latched" defect
+             * class. It is not one for F3DDKR: the whole game emits G_TEXTURE
+             * from ONE place, rcp_dkr.c dRspInit's
+             * `gsSPTexture(0, 0, 0, 0, 0)` — s=t=level=tile=0 and on=G_OFF.
+             * If the microcode honoured `on`, retail DKR would render entirely
+             * untextured; texture enable is instead per-primitive, carried by
+             * gSPPolygon's TRIN_ENABLE_TEXTURE bit. Texturing is likewise
+             * single-level, so `level` has no consumer.
+             * Measured over a 27-run route sweep (179,397 G_TEXTURE commands
+             * across intro/hubs/menus/races/attract/credits/Taj/Adventure Two):
+             * `on`, `level`, s/t scale and `tile` were ZERO in every single one,
+             * i.e. dRspInit is provably the only emitter at runtime too.
+             */
             rsp.tex_scale_s = (uint16_t)C1(cmd, 16, 16);
             rsp.tex_scale_t = (uint16_t)C1(cmd, 0, 16);
             rsp.tile_base = (uint8_t)C0(cmd, 8, 3);
