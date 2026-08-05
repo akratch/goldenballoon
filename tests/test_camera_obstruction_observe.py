@@ -58,7 +58,8 @@ def strip_comments(source: str) -> str:
 
 def function_body(source: str, name: str) -> str:
     match = re.search(
-        rf"^[ \t]*(?:static\s+)?void\s+{re.escape(name)}\s*\([^;]*?\)\s*\{{",
+        rf"^[ \t]*(?:static\s+)?[A-Za-z_][A-Za-z0-9_]*\s+\*?\s*"
+        rf"{re.escape(name)}\s*\([^;]*?\)\s*\{{",
         source,
         re.M | re.S,
     )
@@ -149,6 +150,25 @@ def main() -> int:
     basis = function_body(camera, "cam_build_view_basis")
     failures += require("camera_obstruction_camera_for_slot" in basis,
                         "render basis must use the scoped sidecar accessor")
+
+    # The scoped accessor stands in for &gCameras[slot] at render call sites
+    # that never checked an index, and viewport_reset()'s parked camera 4 plus
+    # the cutscene bank's +4 reaches one past the last slot. It must therefore
+    # clamp rather than hand those sites a NULL to dereference.
+    slot_accessor = function_body(runtime, "camera_obstruction_camera_for_slot")
+    failures += require(
+        "return NULL" not in strip_comments(slot_accessor),
+        "camera_obstruction_camera_for_slot must clamp, never return NULL",
+    )
+    failures += require(
+        "MDKR_CAMERA_OBSTRUCTION_RUNTIME_SLOT_COUNT - 1" in slot_accessor,
+        "camera_obstruction_camera_for_slot must clamp to the last valid slot",
+    )
+    failures += require(
+        len(re.findall(r"camera_obstruction_camera_for_slot\s*\(",
+                       strip_comments(camera))) == 6,
+        "the six render camera reads must all route through the scoped accessor",
+    )
     # The authored camera record and the matrix beside it are built together in
     # camera.c; the walker only replays that record. Both halves are asserted so
     # neither can silently fall back to the unresolved gCameras entry.

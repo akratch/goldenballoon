@@ -2334,9 +2334,23 @@ void camera_obstruction_presentation_end(void) {
     }
 }
 
+/*
+ * Render substitutes this for &gCameras[slot] at call sites that never checked
+ * an index, so it must return a camera for every index those sites can produce
+ * and must never return NULL.
+ *
+ * viewport_reset() parks gActiveCameraID at 4, and the cutscene bank adds 4 to
+ * it, so the arithmetic in cam_get_active_camera() and its peers reaches 8 --
+ * one past the last slot. That combination selects no real camera; before this
+ * clamp it selected a NULL dereference in six unguarded render paths. Clamping
+ * to the last slot preserves the original engine's behavior, which indexed
+ * gCameras with the same unchecked value.
+ */
 Camera *camera_obstruction_camera_for_slot(s32 physical_slot) {
-    if (physical_slot < 0 || physical_slot >= MDKR_CAMERA_OBSTRUCTION_RUNTIME_SLOT_COUNT) {
-        return NULL;
+    if (physical_slot < 0) {
+        physical_slot = 0;
+    } else if (physical_slot >= MDKR_CAMERA_OBSTRUCTION_RUNTIME_SLOT_COUNT) {
+        physical_slot = MDKR_CAMERA_OBSTRUCTION_RUNTIME_SLOT_COUNT - 1;
     }
     if (sCameraObstructionRuntime.presentation_depth != 0U &&
         sCameraObstructionRuntime.slots[physical_slot].selected &&

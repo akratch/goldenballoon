@@ -40,6 +40,7 @@
 #include "gameplay_event_trace.h"
 #include "input_consumption_trace.h"
 #include "audi_port_dkr.h"
+#include "camera_dynamic_occlusion.h"
 #include "camera_obstruction_runtime.h"
 
 /*
@@ -475,6 +476,11 @@ shutdown:
     if (audioInitialized) {
         dkr_audio_out_shutdown();
     }
+    /* The dynamic occluder census owns host allocations sized to the object
+     * pool. Released after its telemetry has been reported and before the
+     * host-memory census below, so a retained side table shows up as a leak
+     * rather than as noise. */
+    mdkr_camera_dynamic_occlusion_shutdown();
     gfx_shutdown();
     mdkr_memory_shutdown();
     dkr_arena_shutdown();

@@ -402,10 +402,10 @@ GLOBAL_ASM("asm/math_util/mtxf_from_transform.s")
 
 #ifdef NON_MATCHING
 /**
- * Scales the Y axis of the given 4×4 transformation matrix by the specified factor.
+ * Scales the Y axis of the given 4×4 transformation matrix by the specified factor.
  * If this is a model matrix, the operation is equivalent to stretching or squashing
- * the model along its local Y axis.
- /
+ * the model along its local Y axis.
+ */
 /* Official name: mathSquashY */
 void mtxf_scale_y(MtxF *input, f32 scale) {
     (*input)[1][0] *= scale;

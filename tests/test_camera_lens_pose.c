@@ -52,30 +52,6 @@ s32 coss_s16(s16 angle) {
     return test_sine((s16)(angle + 0x4000));
 }
 
-/* Test-local renderer oracle: this is mtxf_from_transform's native C recipe.
- * The production helper must obtain its directions from this same matrix path. */
-void mtxf_from_transform(MtxF *mtx, ObjectTransform *trans) {
-    const f32 ys = sins_s16(trans->rotation.y_rotation) * (1.0f / 65536.0f);
-    const f32 yc = coss_s16(trans->rotation.y_rotation) * (1.0f / 65536.0f);
-    const f32 xs = sins_s16(trans->rotation.x_rotation) * (1.0f / 65536.0f);
-    const f32 xc = coss_s16(trans->rotation.x_rotation) * (1.0f / 65536.0f);
-    const f32 zs = sins_s16(trans->rotation.z_rotation) * (1.0f / 65536.0f);
-    const f32 zc = coss_s16(trans->rotation.z_rotation) * (1.0f / 65536.0f);
-
-    (*mtx)[0][0] = xs * ys * zs + zc * yc;
-    (*mtx)[0][1] = zs * xc;
-    (*mtx)[0][2] = xs * yc * zs - zc * ys;
-    (*mtx)[1][0] = xs * ys * zc - zs * yc;
-    (*mtx)[1][1] = zc * xc;
-    (*mtx)[1][2] = xs * yc * zc + zs * ys;
-    (*mtx)[2][0] = xc * ys;
-    (*mtx)[2][1] = -xs;
-    (*mtx)[2][2] = xc * yc;
-    (*mtx)[3][0] = trans->x_position;
-    (*mtx)[3][1] = trans->y_position;
-    (*mtx)[3][2] = trans->z_position;
-    (*mtx)[3][3] = 1.0f;
-}
 
 static Vec3f vec3(float x, float y, float z) {
     Vec3f value;

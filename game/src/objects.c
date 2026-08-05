@@ -1294,8 +1294,16 @@ void allocate_object_pools(void) {
      * same fixed object-pool cardinality before any objects can spawn; per-tick
      * publication therefore cannot allocate or truncate a live list. */
     if (!mdkr_camera_dynamic_occlusion_prepare(OBJECT_SLOT_COUNT)) {
-        fprintf(stderr, "[FATAL] dynamic camera occlusion preparation failed\n");
-        abort();
+        /* Dynamic occlusion is a camera-safety improvement, not a requirement
+         * for running the game. Every consumer of an unprepared census already
+         * fails closed: publication reports a capacity failure, the sweeps
+         * return INVALID, and the resolver degrades to its last validated safe
+         * pose. Killing the process here turned a recoverable side-table
+         * allocation failure into a crash on the default path. */
+        mdkr_camera_dynamic_occlusion_shutdown();
+        fprintf(stderr,
+                "[CAMERA] dynamic camera occlusion preparation failed; "
+                "dynamic occluders disabled for this session\n");
     }
 #endif
     gFirstTimeFinish = 0;

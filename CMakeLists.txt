@@ -131,6 +131,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
 
     add_executable(mdkr_camera_dynamic_temporal_test
         ${CMAKE_SOURCE_DIR}/tests/test_camera_dynamic_temporal.c
+        ${CMAKE_SOURCE_DIR}/tests/camera_math_link_support.c
+        ${CMAKE_SOURCE_DIR}/game/src/hasm/math_util.c
         ${CMAKE_SOURCE_DIR}/game/src/camera_dynamic_temporal.c
         ${CMAKE_SOURCE_DIR}/platform/camera_obstruction_transform.c
         ${CMAKE_SOURCE_DIR}/platform/camera_obstruction.c)
@@ -161,6 +163,44 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         target_link_libraries(mdkr_camera_dynamic_temporal_test PRIVATE m)
     endif()
     add_test(NAME camera_dynamic_temporal COMMAND mdkr_camera_dynamic_temporal_test)
+
+    add_executable(mdkr_camera_dynamic_precedence_test
+        ${CMAKE_SOURCE_DIR}/tests/test_camera_dynamic_precedence.c
+        ${CMAKE_SOURCE_DIR}/game/src/camera_dynamic_publication.c
+        ${CMAKE_SOURCE_DIR}/game/src/camera_dynamic_temporal.c
+        ${CMAKE_SOURCE_DIR}/game/src/camera_object_occlusion.c
+        ${CMAKE_SOURCE_DIR}/tests/camera_math_link_support.c
+        ${CMAKE_SOURCE_DIR}/game/src/hasm/math_util.c
+        ${CMAKE_SOURCE_DIR}/platform/camera_obstruction_transform.c
+        ${CMAKE_SOURCE_DIR}/platform/camera_obstruction.c)
+    target_include_directories(mdkr_camera_dynamic_precedence_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/game
+        ${CMAKE_SOURCE_DIR}/game/src
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/game/include/PR
+        ${CMAKE_SOURCE_DIR}/game/include/sys
+        ${CMAKE_SOURCE_DIR}/game/libultra
+        ${CMAKE_SOURCE_DIR}/game/libultra/src/audio
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_definitions(mdkr_camera_dynamic_precedence_test PRIVATE
+        VERSION_us_v80
+        _LANGUAGE_C
+        MODERN_CC
+        NON_MATCHING=1
+        AVOID_UB=1
+        NATIVE_PORT=1
+        F3DDKR_GBI
+        _FINALROM)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+        target_compile_options(mdkr_camera_dynamic_precedence_test PRIVATE
+            -fms-extensions
+            -Wno-c23-extensions)
+    endif()
+    if(NOT MSVC)
+        target_link_libraries(mdkr_camera_dynamic_precedence_test PRIVATE m)
+    endif()
+    add_test(NAME camera_dynamic_precedence
+        COMMAND mdkr_camera_dynamic_precedence_test)
 
     add_executable(mdkr_camera_dynamic_publication_test
         ${CMAKE_SOURCE_DIR}/tests/test_camera_dynamic_publication.c
@@ -198,16 +238,31 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
 
     add_executable(mdkr_camera_lens_pose_test
         ${CMAKE_SOURCE_DIR}/tests/test_camera_lens_pose.c
+        ${CMAKE_SOURCE_DIR}/tests/camera_math_link_support.c
+        ${CMAKE_SOURCE_DIR}/game/src/hasm/math_util.c
         ${CMAKE_SOURCE_DIR}/game/src/camera_lens_pose.c)
     target_include_directories(mdkr_camera_lens_pose_test PRIVATE
         ${CMAKE_SOURCE_DIR}/game
         ${CMAKE_SOURCE_DIR}/game/src
         ${CMAKE_SOURCE_DIR}/game/include
         ${CMAKE_SOURCE_DIR}/game/include/PR
+        ${CMAKE_SOURCE_DIR}/game/include/sys
+        ${CMAKE_SOURCE_DIR}/game/libultra
         ${CMAKE_SOURCE_DIR}/platform)
     target_compile_definitions(mdkr_camera_lens_pose_test PRIVATE
+        VERSION_us_v80
         _LANGUAGE_C=1
-        NATIVE_PORT=1)
+        MODERN_CC
+        NON_MATCHING=1
+        AVOID_UB=1
+        NATIVE_PORT=1
+        F3DDKR_GBI
+        _FINALROM)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+        target_compile_options(mdkr_camera_lens_pose_test PRIVATE
+            -fms-extensions
+            -Wno-c23-extensions)
+    endif()
     if(NOT MSVC)
         target_link_libraries(mdkr_camera_lens_pose_test PRIVATE m)
     endif()

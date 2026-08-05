@@ -98,6 +98,58 @@ def function_body(source: str, name: str) -> str:
     raise AssertionError(f"unterminated function {name}")
 
 
+def code_only(source: str) -> str:
+    """C source with comment and string-literal text blanked out.
+
+    Every needle below is an assertion about what the code does. Matching a
+    needle in a comment or a string is how a gate quietly passes on prose, so
+    the order-blind regex searches run against this view.
+    """
+
+    result: list[str] = []
+    index = 0
+    state = "code"
+    while index < len(source):
+        char = source[index]
+        pair = source[index:index + 2]
+        if state == "code":
+            if pair == "/*":
+                state = "block-comment"
+                index += 2
+                continue
+            if pair == "//":
+                state = "line-comment"
+                index += 2
+                continue
+            if char in ('"', "'"):
+                state = "string" if char == '"' else "character"
+            result.append(char)
+        elif state == "block-comment":
+            if pair == "*/":
+                state = "code"
+                index += 2
+                continue
+            result.append("\n" if char == "\n" else " ")
+        elif state == "line-comment":
+            if char == "\n":
+                state = "code"
+            result.append("\n" if char == "\n" else " ")
+        else:
+            if char == "\\":
+                result.append("  ")
+                index += 2
+                continue
+            if (state == "string" and char == '"') or (
+                state == "character" and char == "'"
+            ):
+                state = "code"
+                result.append(char)
+            else:
+                result.append(" ")
+        index += 1
+    return "".join(result)
+
+
 def calls_named(source: str, name: str) -> list[int]:
     """Find actual call expressions, excluding comments and declarations."""
 
@@ -154,7 +206,7 @@ class CameraObstructionAuthorityTests(unittest.TestCase):
     def test_authoritative_camera_consumers_stay_logical(self) -> None:
         for function, legacy_logical_builder in AUTHORITY_FUNCTIONS.items():
             with self.subTest(function=function):
-                body = function_body(self.objects, function)
+                body = code_only(function_body(self.objects, function))
                 self.assertIsNone(
                     RESOLVED_WORDS.search(body),
                     f"{function} must not consume resolved/display camera state",
@@ -166,21 +218,22 @@ class CameraObstructionAuthorityTests(unittest.TestCase):
                     "an explicitly named logical basis/view API",
                 )
                 self.assertTrue(
-                    legacy_logical_builder in body or LOGICAL_BASIS_CALL.search(body),
+                    calls_named(body, legacy_logical_builder)
+                    or LOGICAL_BASIS_CALL.search(body),
                     f"{function} must retain its legacy logical builder or switch "
                     "to an explicitly named logical basis/view API",
                 )
 
-    def test_future_resolver_has_exactly_two_fixed_tick_sites_or_none_yet(self) -> None:
+    def test_resolver_has_exactly_two_fixed_tick_sites(self) -> None:
+        # The finalizer is integrated. "Absent" was a pre-integration allowance,
+        # and while it stood, deleting both call sites passed this gate.
         calls = calls_named(self.thread3, "camera_obstruction_tick")
-        self.assertIn(
+        self.assertEqual(
             len(calls),
-            (0, 2),
-            "camera_obstruction_tick must be absent before integration or appear "
-            "exactly once in mode_game and once in update_menu_scene",
+            2,
+            "camera_obstruction_tick must appear exactly once in mode_game and "
+            "once in update_menu_scene",
         )
-        if not calls:
-            return
 
         mode_game = function_body(self.thread3, "mode_game")
         menu_scene = function_body(self.thread3, "update_menu_scene")

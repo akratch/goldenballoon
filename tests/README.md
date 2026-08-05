@@ -108,6 +108,18 @@ first recovered census advertises a discontinuity with no previous transform,
 all hard objects cut on the failed image, and interpolation resumes only after
 two consecutive complete publications.
 
+`camera_dynamic_precedence` pins the dynamic narrow-phase winner ordering
+against the production comparator itself, one key at a time and in both
+directions: time outside the public tie window, then spawn generation, model
+generation, source triangle, hit stable ID, and authoritative list index. It
+includes the production translation unit so the ordering under test is the one
+the sweeps call, rather than a second copy of the rule.
+
+`camera_dynamic_temporal` and `camera_lens_pose` link `game/src/hasm/math_util.c`
+so the renderer matrix recipe they compare against is the production one. Both
+carry an absolute golden arm, so a sign error in `mtxf_from_transform` fails them
+instead of moving both sides of a differential together.
+
 `camera_target_visibility` pins the current-pose readability classification. A
 thin local skin may be excluded, a remote blocker is `HIDDEN`, a focus that
 remains in a thick slab is `EMBEDDED` and not visible, and source/numeric failure

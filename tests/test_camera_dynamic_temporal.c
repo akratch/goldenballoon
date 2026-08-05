@@ -9,6 +9,21 @@
 #define DKR_ANGLE_TO_RAD (6.28318530717958647692f / 65536.0f)
 #define DENSE_SAMPLES 4096
 
+/*
+ * Containment is satisfied by ANY padding, including a padding large enough to
+ * make the published envelope useless as a broad phase. The envelope is
+ * therefore also held to the Lipschitz bound it documents: it may exceed the
+ * dense-sample AABB by at most TIGHTNESS_FACTOR times that bound.
+ *
+ * The sample count the bound is written against is pinned here rather than read
+ * from the production translation unit. A build that quietly takes fewer
+ * samples must fail this test, not silently re-derive a larger allowance for
+ * itself.
+ */
+#define PINNED_TEMPORAL_SAMPLES 16
+#define TIGHTNESS_FACTOR 4.0
+#define TIGHTNESS_EPSILON 0.05
+
 static int sFailures;
 static uint32_t sRandomState = UINT32_C(0xC04D00F1);
 
@@ -36,32 +51,6 @@ s32 coss_s16(s16 angle) {
     return test_sine((s16)(angle + 0x4000));
 }
 
-/* Test-local renderer oracle: byte-for-byte C recipe used by the production
- * native transform, including Z->X->Y order and fixed-angle quantization. */
-void mtxf_from_transform(MtxF *mtx, ObjectTransform *trans) {
-    const f32 ys = sins_s16(trans->rotation.y_rotation) * (1.0f / 65536.0f);
-    const f32 yc = coss_s16(trans->rotation.y_rotation) * (1.0f / 65536.0f);
-    const f32 xs = sins_s16(trans->rotation.x_rotation) * (1.0f / 65536.0f);
-    const f32 xc = coss_s16(trans->rotation.x_rotation) * (1.0f / 65536.0f);
-    const f32 zs = sins_s16(trans->rotation.z_rotation) * (1.0f / 65536.0f);
-    const f32 zc = coss_s16(trans->rotation.z_rotation) * (1.0f / 65536.0f);
-    const f32 scale = trans->scale;
-
-    memset(mtx, 0, sizeof(*mtx));
-    (*mtx)[0][0] = (xs * ys * zs + zc * yc) * scale;
-    (*mtx)[0][1] = (zs * xc) * scale;
-    (*mtx)[0][2] = (xs * yc * zs - zc * ys) * scale;
-    (*mtx)[1][0] = (xs * ys * zc - zs * yc) * scale;
-    (*mtx)[1][1] = (zc * xc) * scale;
-    (*mtx)[1][2] = (xs * yc * zc + zs * ys) * scale;
-    (*mtx)[2][0] = (xc * ys) * scale;
-    (*mtx)[2][1] = -xs * scale;
-    (*mtx)[2][2] = (xc * yc) * scale;
-    (*mtx)[3][0] = trans->x_position;
-    (*mtx)[3][1] = trans->y_position;
-    (*mtx)[3][2] = trans->z_position;
-    (*mtx)[3][3] = 1.0f;
-}
 
 static uint32_t next_random(void) {
     sRandomState = sRandomState * UINT32_C(1664525) + UINT32_C(1013904223);
@@ -142,12 +131,63 @@ static int contains_bounds(
         sample->maximum.z <= envelope->maximum.z + tolerance;
 }
 
+/* The documented padding recipe, evaluated at the pinned sample count. */
+static double documented_padding(
+    const MdkrCameraDynamicAabb *local,
+    const ObjectTransform *previous,
+    const ObjectTransform *current) {
+    const double angle_to_radians = 6.28318530717958647692 / 65536.0;
+    double radius_squared = 0.0;
+    double radius;
+    double maximum_scale;
+    double scale_distance;
+    double translation_distance;
+    double angular_distance;
+    int corner;
+
+    for (corner = 0; corner < 8; corner++) {
+        const double x = (corner & 1) ? local->maximum.x : local->minimum.x;
+        const double y = (corner & 2) ? local->maximum.y : local->minimum.y;
+        const double z = (corner & 4) ? local->maximum.z : local->minimum.z;
+        const double length_squared = x * x + y * y + z * z;
+
+        if (length_squared > radius_squared) radius_squared = length_squared;
+    }
+    radius = sqrt(radius_squared);
+    maximum_scale = fmax(fabs((double)previous->scale),
+                         fabs((double)current->scale));
+    scale_distance = fabs((double)current->scale - previous->scale);
+    translation_distance = sqrt(
+        ((double)current->x_position - previous->x_position) *
+            ((double)current->x_position - previous->x_position) +
+        ((double)current->y_position - previous->y_position) *
+            ((double)current->y_position - previous->y_position) +
+        ((double)current->z_position - previous->z_position) *
+            ((double)current->z_position - previous->z_position));
+    angular_distance = angle_to_radians * (
+        fabs((double)(int16_t)((uint16_t)current->rotation.x_rotation -
+                               (uint16_t)previous->rotation.x_rotation)) +
+        fabs((double)(int16_t)((uint16_t)current->rotation.y_rotation -
+                               (uint16_t)previous->rotation.y_rotation)) +
+        fabs((double)(int16_t)((uint16_t)current->rotation.z_rotation -
+                               (uint16_t)previous->rotation.z_rotation)));
+    return (translation_distance +
+            radius * (scale_distance + maximum_scale * angular_distance)) /
+               PINNED_TEMPORAL_SAMPLES +
+           radius * maximum_scale * 0.001 + 0.01;
+}
+
 static void check_dense_case(
     const char *name,
     const MdkrCameraDynamicAabb *local,
     const ObjectTransform *previous,
     const ObjectTransform *current) {
     MdkrCameraDynamicAabb envelope;
+    MdkrCameraDynamicAabb dense;
+    double allowance;
+    const float *envelope_axes;
+    const float *dense_axes;
+    int axis;
     int sample;
 
     if (!mdkr_camera_dynamic_temporal_bounds(
@@ -165,6 +205,51 @@ static void check_dense_case(
             !contains_bounds(&envelope, &sampled_bounds)) {
             fprintf(stderr, "FAIL %s dense sample %d/%d escaped\n",
                     name, sample, DENSE_SAMPLES);
+            sFailures++;
+            return;
+        }
+        if (sample == 0) {
+            dense = sampled_bounds;
+        } else {
+            if (sampled_bounds.minimum.x < dense.minimum.x)
+                dense.minimum.x = sampled_bounds.minimum.x;
+            if (sampled_bounds.minimum.y < dense.minimum.y)
+                dense.minimum.y = sampled_bounds.minimum.y;
+            if (sampled_bounds.minimum.z < dense.minimum.z)
+                dense.minimum.z = sampled_bounds.minimum.z;
+            if (sampled_bounds.maximum.x > dense.maximum.x)
+                dense.maximum.x = sampled_bounds.maximum.x;
+            if (sampled_bounds.maximum.y > dense.maximum.y)
+                dense.maximum.y = sampled_bounds.maximum.y;
+            if (sampled_bounds.maximum.z > dense.maximum.z)
+                dense.maximum.z = sampled_bounds.maximum.z;
+        }
+    }
+
+    allowance = TIGHTNESS_FACTOR *
+        documented_padding(local, previous, current) + TIGHTNESS_EPSILON;
+    envelope_axes = &envelope.minimum.x;
+    dense_axes = &dense.minimum.x;
+    for (axis = 0; axis < 3; axis++) {
+        if ((double)dense_axes[axis] - envelope_axes[axis] > allowance) {
+            fprintf(stderr,
+                    "FAIL %s envelope minimum axis %d is %f below the dense "
+                    "AABB, allowance %f\n",
+                    name, axis, (double)dense_axes[axis] - envelope_axes[axis],
+                    allowance);
+            sFailures++;
+            return;
+        }
+    }
+    envelope_axes = &envelope.maximum.x;
+    dense_axes = &dense.maximum.x;
+    for (axis = 0; axis < 3; axis++) {
+        if ((double)envelope_axes[axis] - dense_axes[axis] > allowance) {
+            fprintf(stderr,
+                    "FAIL %s envelope maximum axis %d is %f above the dense "
+                    "AABB, allowance %f\n",
+                    name, axis, (double)envelope_axes[axis] - dense_axes[axis],
+                    allowance);
             sFailures++;
             return;
         }

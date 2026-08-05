@@ -144,6 +144,12 @@ int main(void) {
     MdkrCameraObjectOcclusionExactLimits limits = { 64U, 16U, 128U, 128U };
     MdkrCameraSweepStatus linear_status;
     MdkrCameraSweepStatus indexed_status;
+    /* The sphere arm's own result. Reusing one variable for both arms silently
+     * compared later sphere queries against the exact sweep's status. */
+    MdkrCameraSweepStatus sphere_linear_status;
+    MdkrCameraObjectOcclusionExactWork cull_work;
+    MdkrCameraSweepInput cull_input;
+    size_t culled_iterations = 0U;
     size_t seen[2] = { 0U, 0U };
     size_t visited_nodes = 0U;
     size_t visited_leaves = 0U;
@@ -160,15 +166,73 @@ int main(void) {
         MDKR_CAMERA_OBJECT_OCCLUSION_HARD_MASK,
         0U,
     };
-    linear_status = mdkr_camera_sweep_object_local(
+    sphere_linear_status = mdkr_camera_sweep_object_local(
         &cache.world, &transform, &sphere_input, &linear_hit);
+    linear_status = sphere_linear_status;
     indexed_status = indexed_sphere(
         &model, 7U, &transform, &sphere_input, &indexed_hit, limits, &work);
-    expect_true("sphere indexed/full status", indexed_status == linear_status);
+    expect_true("sphere indexed/full status", indexed_status == sphere_linear_status);
     expect_true("sphere indexed/full hit", memcmp(&indexed_hit, &linear_hit, sizeof(linear_hit)) == 0);
     expect_true("sphere work census",
                 work.nodes_visited == 3U && work.chunks_retained == 2U &&
                 work.triangles_retained == 9U);
+
+    /*
+     * The census above spans the whole model, so on its own it cannot tell a
+     * working index from one that never culls. These two queries are chosen
+     * geometrically: the fixture's chunks sit on the x = 0 and x = 10 planes,
+     * so a sweep confined to one side must retain exactly one chunk and must
+     * visit fewer nodes and triangles than the model holds. An index that
+     * returns every chunk still answers correctly and is still wrong.
+     */
+    cull_input = sphere_input;
+    cull_input.start_eye = (MdkrCameraVec3) { -5.0f, 0.0f, 0.0f };
+    cull_input.desired_eye = (MdkrCameraVec3) { 5.0f, 0.0f, 0.0f };
+    indexed_status = indexed_sphere(
+        &model, 7U, &transform, &cull_input, &indexed_hit, limits, &cull_work);
+    expect_true("near-chunk query culls the far chunk",
+                indexed_status != MDKR_CAMERA_SWEEP_INVALID &&
+                cull_work.chunks_retained < 2U &&
+                cull_work.triangles_retained < 9U);
+    expect_true("near-chunk query keeps its own chunk",
+                cull_work.nodes_visited <= 3U &&
+                cull_work.chunks_retained == 1U &&
+                cull_work.triangles_retained == 8U);
+
+    cull_input.start_eye = (MdkrCameraVec3) { 7.0f, 0.0f, 0.0f };
+    cull_input.desired_eye = (MdkrCameraVec3) { 15.0f, 0.0f, 0.0f };
+    indexed_status = indexed_sphere(
+        &model, 7U, &transform, &cull_input, &indexed_hit, limits, &cull_work);
+    expect_true("far-chunk query culls the near chunk",
+                indexed_status != MDKR_CAMERA_SWEEP_INVALID &&
+                cull_work.chunks_retained < 2U &&
+                cull_work.triangles_retained < 9U);
+    expect_true("far-chunk query keeps its own chunk",
+                cull_work.nodes_visited <= 3U &&
+                cull_work.chunks_retained == 1U &&
+                cull_work.triangles_retained == 1U);
+
+    /*
+     * A query wholly outside the model must be rejected at the root, so this is
+     * the arm that makes nodes_visited discriminating: this fixture is two
+     * leaves under one root, and a traversal that descends at all reaches every
+     * node in it. Both children are examined whenever the root overlaps, so
+     * node-level strictness below the root needs a deeper tree than a
+     * three-node fixture can express.
+     */
+    cull_input.start_eye = (MdkrCameraVec3) { 50.0f, 0.0f, 0.0f };
+    cull_input.desired_eye = (MdkrCameraVec3) { 60.0f, 0.0f, 0.0f };
+    indexed_status = indexed_sphere(
+        &model, 7U, &transform, &cull_input, &indexed_hit, limits, &cull_work);
+    expect_true("disjoint query is rejected at the root",
+                indexed_status == MDKR_CAMERA_SWEEP_CLEAR &&
+                cull_work.nodes_visited < 3U &&
+                cull_work.chunks_retained < 2U &&
+                cull_work.triangles_retained < 9U);
+    expect_true("disjoint query does no leaf work",
+                cull_work.nodes_visited == 1U &&
+                cull_work.chunks_retained == 0U &&
+                cull_work.triangles_retained == 0U);
 
     exact_input.start_eye = sphere_input.start_eye;
     exact_input.desired_eye = sphere_input.desired_eye;
@@ -263,7 +327,7 @@ int main(void) {
                     limits, &work) == MDKR_CAMERA_SWEEP_INVALID);
     expect_true("reused model pointer accepts new generation",
                 indexed_sphere(&model, 8U, &transform, &sphere_input, &indexed_hit,
-                    limits, &work) == linear_status);
+                    limits, &work) == sphere_linear_status);
     cache.generation = 7U;
 
     expect_true("rotated scaled transform", mdkr_camera_object_transform_from_yaw_pitch_roll(
@@ -283,6 +347,36 @@ int main(void) {
         }, &exact_input.guard));
     exact_input.mask = MDKR_CAMERA_OBJECT_OCCLUSION_HARD_MASK;
     exact_input.ignored_object_generation = 0U;
+
+    /* Every fault arm above ran under the identity transform, where the
+     * object-local and world frames coincide. Re-run one under the rotated,
+     * scaled transform: a validator that only fails closed in object space is
+     * not the guarantee the query needs. */
+    /* Span the whole model in object space so both chunks are retained and the
+     * corrupted one is actually reached. */
+    expect_true("rotated fault start",
+                mdkr_camera_object_transform_point_to_world(
+                    &transform, (MdkrCameraVec3) { -8.0f, 0.0f, 0.0f },
+                    &sphere_input.start_eye));
+    expect_true("rotated fault desired",
+                mdkr_camera_object_transform_point_to_world(
+                    &transform, (MdkrCameraVec3) { 18.0f, 0.0f, 0.0f },
+                    &sphere_input.desired_eye));
+    sphere_input.guard.radius = 0.5f;
+    saved_root = nodes[0];
+    nodes[0].minimum.x = NAN;
+    expect_true("NaN node fails closed under a rotated transform",
+                indexed_sphere(&model, 7U, &transform, &sphere_input, &indexed_hit,
+                    limits, &work) == MDKR_CAMERA_SWEEP_INVALID);
+    nodes[0] = saved_root;
+    saved_chunk = chunks[1];
+    chunks[1].triangle_offset = 7U;
+    chunks[1].integrity = mdkr_camera_object_occlusion_chunk_integrity(&chunks[1]);
+    expect_true("corrupt chunk range fails closed under a rotated transform",
+                indexed_sphere(&model, 7U, &transform, &sphere_input, &indexed_hit,
+                    limits, &work) == MDKR_CAMERA_SWEEP_INVALID);
+    chunks[1] = saved_chunk;
+
     for (case_index = 0U; case_index < 64U; case_index++) {
         MdkrCameraVec3 local_start = {
             -8.0f + 0.03125f * (float)case_index,
@@ -308,6 +402,14 @@ int main(void) {
         expect_true("rotated sphere differential status", indexed_status == linear_status);
         expect_true("rotated sphere differential hit",
                     memcmp(&indexed_hit, &linear_hit, sizeof(linear_hit)) == 0);
+        /* Matching answers are not enough: the index must also be doing less
+         * work than the full-world sweep it agrees with. */
+        expect_true("rotated sphere differential work is bounded",
+                    work.nodes_visited <= 3U && work.chunks_retained <= 2U &&
+                    work.triangles_retained <= 9U && work.exhausted == 0U);
+        if (work.chunks_retained < 2U || work.triangles_retained < 9U) {
+            culled_iterations++;
+        }
         exact_input.start_eye = sphere_input.start_eye;
         exact_input.desired_eye = sphere_input.desired_eye;
         linear_status = mdkr_camera_rounded_lens_sweep_object_local(
@@ -317,7 +419,15 @@ int main(void) {
         expect_true("rotated exact differential status", indexed_status == linear_status);
         expect_true("rotated exact differential hit",
                     memcmp(&indexed_hit, &linear_hit, sizeof(linear_hit)) == 0);
+        expect_true("rotated exact differential work is bounded",
+                    work.nodes_visited <= 3U && work.chunks_retained <= 2U &&
+                    work.triangles_retained <= 9U && work.exhausted == 0U);
+        if (work.chunks_retained < 2U || work.triangles_retained < 9U) {
+            culled_iterations++;
+        }
     }
+    expect_true("rotated differential sweep exercises real culling",
+                culled_iterations > 0U);
 
     sCameraObjectOcclusionCaches = NULL;
     if (failures != 0) {

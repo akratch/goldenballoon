@@ -6,6 +6,81 @@ import re
 import sys
 
 
+def code_only(source: str) -> str:
+    """C source with comment and string-literal text blanked to spaces.
+
+    Every needle in this file is an assertion about what the code does. A raw
+    substring search also matches prose, so a call site could be deleted and
+    still "pass" on the comment that describes it. Offsets are preserved so the
+    ordering checks below stay meaningful.
+    """
+
+    result: list[str] = []
+    index = 0
+    state = "code"
+    while index < len(source):
+        char = source[index]
+        pair = source[index:index + 2]
+        if state == "code":
+            if pair == "/*":
+                state = "block-comment"
+                index += 2
+                result.append("  ")
+                continue
+            if pair == "//":
+                state = "line-comment"
+                index += 2
+                result.append("  ")
+                continue
+            if char in ('"', "'"):
+                state = "string" if char == '"' else "character"
+            result.append(char)
+        elif state == "block-comment":
+            if pair == "*/":
+                state = "code"
+                index += 2
+                result.append("  ")
+                continue
+            result.append("\n" if char == "\n" else " ")
+        elif state == "line-comment":
+            if char == "\n":
+                state = "code"
+            result.append("\n" if char == "\n" else " ")
+        else:
+            if char == "\\":
+                result.append("  ")
+                index += 2
+                continue
+            if (state == "string" and char == '"') or (
+                state == "character" and char == "'"
+            ):
+                state = "code"
+                result.append(char)
+            else:
+                result.append(" ")
+        index += 1
+    return "".join(result)
+
+
+def calls_named(source: str, name: str) -> list[int]:
+    """Offsets of real call expressions to `name` in comment-stripped code."""
+
+    pattern = re.compile(rf"\b{re.escape(name)}\s*\(")
+    return [match.start() for match in pattern.finditer(code_only(source))]
+
+
+def require_call(source: str, name: str, expected: int) -> int:
+    found = len(calls_named(source, name))
+    if found != expected:
+        print(
+            f"dynamic-occlusion call-site census: {name} appears {found} time(s), "
+            f"expected {expected}",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
 def require(source: str, needle: str) -> int:
     if needle not in source:
         print(f"missing dynamic-occlusion invariant: {needle}", file=sys.stderr)
@@ -19,48 +94,15 @@ def body(source: str, signature: str, following: str) -> str:
     return source[start:end]
 
 
-def dynamic_precedes_contract(candidate, best, epsilon):
-    """Dynamic winner ordering: time ties resolve through immutable identity."""
-    if candidate[0] < best[0] - epsilon:
-        return True
-    if abs(candidate[0] - best[0]) > epsilon:
-        return False
-    return candidate[1:] < best[1:]
-
-
-def check_dynamic_time_tie_boundaries(epsilon):
-    failures = 0
-
-    # A slightly later hit is a time tie, so dynamic provenance wins.
-    if not dynamic_precedes_contract((0.5 * epsilon, 1, 1, 1, 1, 1),
-                                    (0.0, 2, 1, 1, 1, 1), epsilon):
-        print("dynamic within-epsilon hit must tie-break by spawn generation", file=sys.stderr)
-        failures += 1
-    # A material time difference wins over lower identity fields.
-    if dynamic_precedes_contract((2.0 * epsilon, 1, 1, 1, 1, 1),
-                                 (0.0, 2, 1, 1, 1, 1), epsilon):
-        print("dynamic beyond-epsilon later hit must not win by identity", file=sys.stderr)
-        failures += 1
-    if not dynamic_precedes_contract((0.0, 9, 9, 9, 9, 9),
-                                     (2.0 * epsilon, 1, 1, 1, 1, 1), epsilon):
-        print("dynamic beyond-epsilon earlier hit must win over identity", file=sys.stderr)
-        failures += 1
-    # Equal-time ordering remains spawn, model, source triangle, global ID,
-    # then authoritative list index.
-    if not dynamic_precedes_contract((0.0, 3, 5, 7, 11, 13),
-                                     (0.0, 3, 5, 7, 12, 1), epsilon):
-        print("dynamic equal-time provenance ordering regressed", file=sys.stderr)
-        failures += 1
-    return failures
-
-
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
-    dynamic = (root / "game/src/camera_dynamic_occlusion.c").read_text(encoding="utf-8")
-    objects = (root / "game/src/objects.c").read_text(encoding="utf-8")
-    snapshots = (root / "platform/presentation_snapshot_walk.c").read_text(
-        encoding="utf-8"
-    )
+    dynamic = code_only(
+        (root / "game/src/camera_dynamic_occlusion.c").read_text(encoding="utf-8"))
+    objects = code_only(
+        (root / "game/src/objects.c").read_text(encoding="utf-8"))
+    snapshots = code_only(
+        (root / "platform/presentation_snapshot_walk.c").read_text(encoding="utf-8"))
+    main_pc = code_only((root / "platform/main_pc.c").read_text(encoding="utf-8"))
     query_header = (root / "platform/camera_obstruction_query.h").read_text(encoding="utf-8")
     failures = 0
 
@@ -118,6 +160,34 @@ def main() -> int:
         "mdkr_camera_dynamic_occlusion_note_free(obj);",
     ):
         failures += require(objects, needle)
+    # Census the lifecycle seam as calls, not text: one prepare, two spawn
+    # notifications, one retirement.
+    failures += require_call(objects, "mdkr_camera_dynamic_occlusion_prepare", 1)
+    failures += require_call(objects, "mdkr_camera_dynamic_occlusion_note_spawn", 2)
+    failures += require_call(objects, "mdkr_camera_dynamic_occlusion_note_free", 1)
+
+    # A side-table allocation failure disables dynamic occluders; it does not
+    # end the process. Every consumer of an unprepared census fails closed, so
+    # aborting here would turn a recoverable condition into a crash on the
+    # default path.
+    prepare_failure = body(
+        objects,
+        "if (!mdkr_camera_dynamic_occlusion_prepare(OBJECT_SLOT_COUNT))",
+        "\n    }\n")
+    if calls_named(prepare_failure, "abort"):
+        print("dynamic-occlusion preparation failure must degrade, not abort",
+              file=sys.stderr)
+        failures += 1
+    if not calls_named(prepare_failure,
+                       "mdkr_camera_dynamic_occlusion_shutdown"):
+        print("a failed preparation must leave the subsystem explicitly disabled",
+              file=sys.stderr)
+        failures += 1
+
+    # The census owns host allocations for the life of the process; teardown
+    # must release them.
+    failures += require_call(
+        main_pc, "mdkr_camera_dynamic_occlusion_shutdown", 1)
 
     tick = body(dynamic, "void mdkr_camera_dynamic_occlusion_tick(void)", "static int mdkr_camera_dynamic_hit_precedes")
     sweep = body(dynamic, "MdkrCameraSweepStatus mdkr_camera_dynamic_occlusion_sweep_detailed(", "MdkrCameraSweepStatus mdkr_camera_dynamic_occlusion_sweep(\n")
@@ -142,6 +212,12 @@ def main() -> int:
     if "mdkr_camera_sweep_object_local(" in sweep:
         print("dynamic sphere sweep must use the bounded immutable model index", file=sys.stderr)
         failures += 1
+    # Winner selection is the whole point of the precedence contract, so both
+    # sweeps are censused as call expressions rather than as text. The sphere
+    # sweep selects at three seams (temporal proxy, indexed narrow phase, and
+    # the per-instance winner); the rounded-lens sweep selects at two.
+    failures += require_call(sweep, "mdkr_camera_dynamic_hit_precedes", 3)
+    failures += require_call(rounded_sweep, "mdkr_camera_dynamic_hit_precedes", 2)
     for needle in (
         "MDKR_CAMERA_DYNAMIC_OCCLUSION_MAX_QUERY_INSTANCES",
         "MDKR_CAMERA_OBJECT_OCCLUSION_MAX_QUERY_NODES - nodes_visited",
@@ -195,8 +271,20 @@ def main() -> int:
     if epsilon_match is None:
         print("dynamic precedence requires the public query time-tie epsilon", file=sys.stderr)
         failures += 1
-    else:
-        failures += check_dynamic_time_tie_boundaries(float(epsilon_match.group(1)))
+    # The ordering itself is pinned against the production comparator by the
+    # camera_dynamic_precedence CTest target. Asserting it here against a Python
+    # copy of the same rule would only prove the two copies agree, so this gate
+    # keeps the structural half and requires that target to exist.
+    precedence_test = root / "tests" / "test_camera_dynamic_precedence.c"
+    if not precedence_test.is_file():
+        print("dynamic precedence ordering needs its production-driven C test",
+              file=sys.stderr)
+        failures += 1
+    cmake = (root / "CMakeLists.txt").read_text(encoding="utf-8")
+    if "add_test(NAME camera_dynamic_precedence" not in cmake:
+        print("the dynamic precedence C test must be registered with ctest",
+              file=sys.stderr)
+        failures += 1
     if "sTelemetry.uncategorized_model_count++" in tick:
         print("explicit non-solid exclusions must not be mislabeled unclassified", file=sys.stderr)
         failures += 1
