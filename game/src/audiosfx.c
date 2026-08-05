@@ -218,7 +218,9 @@ void sndp_init_player(audioMgrConfig *c) {
      * Allocate and initialize the per-group volume table.
      * Each group starts with maximum volume (32767).
      */
-    gSoundGroupVolume = alHeapAlloc(c->heap, sizeof(*gSoundGroupVolume), c->numGroups);
+    /* alHeapAlloc(heap, count, size): every other call site here passes count 1
+     * and the whole byte length as size. */
+    gSoundGroupVolume = alHeapAlloc(c->heap, 1, c->numGroups * (s32) sizeof(*gSoundGroupVolume));
     gSoundGroupCount = c->numGroups;
     for (i = 0; i < c->numGroups; i++) {
         gSoundGroupVolume[i] = AL_SNDP_GROUP_VOLUME_MAX;
@@ -792,6 +794,36 @@ void sndp_deallocate(ALSoundState *state) {
     }
 }
 
+#ifdef NATIVE_PORT
+/**
+ * Stop a sound and sever the sound state's back-pointer to the caller's handle
+ * slot.
+ *
+ * sndp_stop() only posts an event; the state stays allocated until the sound
+ * player drains the queue, and sndp_deallocate() then writes NULL back through
+ * userHandle. Clearing only the caller's own copy of the handle leaves that
+ * back-pointer aimed at the slot, so a caller that frees the memory holding it
+ * hands the audio player a write into freed storage. Callers that are about to
+ * release such memory must use this instead of a bare sndp_stop().
+ */
+void sndp_stop_and_detach(SoundHandle *handlePtr) {
+    ALSoundState *state;
+
+    if (handlePtr == NULL) {
+        return;
+    }
+    state = *handlePtr;
+    if (state == NULL) {
+        return;
+    }
+    sndp_stop(state);
+    if (state->userHandle == handlePtr) {
+        state->userHandle = NULL;
+    }
+    *handlePtr = NULL;
+}
+#endif
+
 /**
  * Sets the priority for voice allocation and for preempting another sound.
  * Official Name: gsSndpSetPriority
@@ -846,6 +878,17 @@ ALSoundState *sndp_play_with_priority(ALBank *bank, s16 sndIndx, u8 priority, AL
     }
 
     do {
+#ifdef NATIVE_PORT
+        /* sndIndx is 1-based into instArray[0]->soundArray. The first index
+         * comes from a caller that has already validated it, but every
+         * subsequent one is SOUND_PARAM_NEXT_SOUND() out of the previous
+         * sound's keymap -- a 10-bit ROM field, so up to 1023 regardless of how
+         * many sounds the bank actually holds. Stop the chain instead of
+         * indexing past soundArray. */
+        if (!mdkr_sound_id_valid((u32) (sndIndx - 1), (u32) bank->instArray[0]->soundCount)) {
+            break;
+        }
+#endif
         sound = bank->instArray[0]->soundArray[sndIndx - 1];
         soundState = sndp_allocate(bank, sound);
         if (soundState != NULL) {

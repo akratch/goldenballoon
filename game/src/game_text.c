@@ -11,6 +11,14 @@
 #include "racer.h"
 #include "thread3_main.h"
 
+#ifdef NATIVE_PORT
+/* Byte length of one message buffer. load_game_text_table() carves two of these
+ * out of the 0x800 table allocation starting at &entries[32] (byte 128), and
+ * init_dialogue_text() splits its own 0x780 block into two halves of the same
+ * size, so this is the capacity of every set_current_text() destination. */
+#define DKR_GAME_TEXT_BUFFER_BYTES 960
+#endif
+
 /************ .data ************/
 
 s8 gTextTableExists = FALSE;
@@ -49,7 +57,18 @@ s16 gShowSubtitles;
 s16 gSubtitleLineCount;
 s16 gCurrentTextID;
 UNUSED s16 D_8012A7BC;
-char *gSubtitleProperties[1];
+/* find_next_subtitle() writes gSubtitleProperties[0] and [1] before its
+ * `gSubtitleLineCount >= 2` stop, and render_subtitles() reads both. The decomp
+ * declares a single slot, so on N64 the second line's pointer landed on the
+ * adjacent gCurrentMessageText[0] -- the base of the 0x780 text allocation that
+ * is later mempool_free()d and reloaded into. Size the array to the real line
+ * count so the two globals stay independent. */
+#ifdef NATIVE_PORT
+#define DKR_SUBTITLE_LINE_MAX 2
+#else
+#define DKR_SUBTITLE_LINE_MAX 1
+#endif
+char *gSubtitleProperties[DKR_SUBTITLE_LINE_MAX];
 char *gCurrentMessageText[2];
 char *gCurrentTextProperties;
 s32 D_8012A7D4;
@@ -343,6 +362,22 @@ void set_current_text(s32 textID) {
 #endif
         temp = ((s32) entries[textID & 1]) & 0xFF000000;
         size = (((s32) entries[(textID & 1) + 1]) & 0xFFFFFF) - (((s32) entries[textID & 1]) & 0xFFFFFF);
+
+#ifdef NATIVE_PORT
+        /* `size` is the difference of two 24-bit offsets read straight out of the
+         * ROM text table; nothing in the format orders them or bounds the span.
+         * gTextTableEntries counts two entries past the table's 0xFFFFFFFF
+         * terminator, so the two highest ids that pass the range test above span
+         * from or to that terminator and yield a nonsensical length. Both
+         * destinations are 960-byte buffers (gGameTextTableEntries[1] ends
+         * exactly at the end of the 0x800 table allocation), and the onscreen
+         * path also stores a terminator at [size], so a message plus that byte
+         * must fit in 960. A span outside that is not loadable. */
+        if (size < 0 || size >= DKR_GAME_TEXT_BUFFER_BYTES) {
+            gCloseTextMessage = TRUE;
+            return;
+        }
+#endif
 
         if (temp) {
             asset_load(ASSET_GAME_TEXT, (uintptr_t)gCurrentMessageText[D_8012A7D4], ((s32) entries[textID & 1]) ^ temp,

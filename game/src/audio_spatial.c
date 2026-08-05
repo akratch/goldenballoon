@@ -9,6 +9,7 @@
 #include "memory.h"
 #include "menu.h"
 #include "objects.h"
+#include "runtime_contracts.h"
 #include "textures_sprites.h"
 #include "tracks.h"
 #include "types.h"
@@ -521,6 +522,16 @@ s32 audspat_distance_to_segment(f32 inX, f32 inY, f32 inZ, f32 coords[6], f32 *o
  * Official Name: amSndPlayXYZ
  */
 void audspat_play_sound_at_position(u16 soundId, f32 x, f32 y, f32 z, u8 flags, AudioPoint **handlePtr) {
+#ifdef NATIVE_PORT
+    /* gSpatialSoundTable is gSoundTable; the id reaching here comes from level
+     * data, so it carries the same validation duty as audio.c's entry points. */
+    if (!mdkr_sound_id_valid(soundId, sound_count())) {
+        if (handlePtr != NULL) {
+            *handlePtr = NULL;
+        }
+        return;
+    }
+#endif
     audspat_point_create(gSpatialSoundTable[soundId].soundBite, x, y, z, flags, gSpatialSoundTable[soundId].minVolume,
                          gSpatialSoundTable[soundId].volume, gSpatialSoundTable[soundId].range, FALSE,
                          gSpatialSoundTable[soundId].pitch, gSpatialSoundTable[soundId].priority, handlePtr);
@@ -553,7 +564,11 @@ void audspat_point_set_position(AudioPoint *audioPoint, f32 x, f32 y, f32 z) {
  */
 void audspat_point_stop(AudioPoint *point) {
     s32 i;
-    for (i = 0; i < MAX_AUDIO_POINTS; i++) {
+    /* Only gAudioPoints[0 .. gNumAudioPoints - 1] are live: the compaction in
+     * audspat_point_stop_by_index() leaves the slots above that holding stale
+     * copies of already-freed points. Matching one of those would push the same
+     * point onto the free list twice and underflow the u16 point count. */
+    for (i = 0; i < gNumAudioPoints; i++) {
         if (point == gAudioPoints[i]) {
             audspat_point_stop_by_index(i);
             break;
@@ -806,6 +821,7 @@ u8 audspat_reverb_get_strength_at_point(ReverbLine *line, f32 x, f32 y, f32 z) {
     f32 x2, y2, z2;
     f32 dx, dy, dz;
     f32 i;
+    s32 segmentIndex;
     f32 distanceAlong;
     f32 segmentLength;
     u8 segmentFound;
@@ -826,7 +842,11 @@ u8 audspat_reverb_get_strength_at_point(ReverbLine *line, f32 x, f32 y, f32 z) {
     distanceAlong = 0.0f;
     segmentFound = FALSE;
 
-    for (; !segmentFound; coords += 3) {
+    /* coords holds numSegments + 1 vertices, so segment s reads coords[0..5] for
+     * s < numSegments. A point that matches no segment (the reverb line need not
+     * pass anywhere near it) must leave the walk at the end of the line rather
+     * than run off the coordinate array. */
+    for (segmentIndex = 0; !segmentFound && segmentIndex < line->numSegments; segmentIndex++, coords += 3) {
         x1 = coords[0];
         y1 = coords[1];
         z1 = coords[2];

@@ -177,6 +177,18 @@ void audio_init(OSSched *sc) {
         if (seqCount < 0) {
             seqCount = 0;
         }
+        /* seqCount is one big-endian word straight out of ROM. The raw header it
+         * describes is 4 + seqCount * 8 bytes and lies inside the sequence span
+         * [ASSET_AUDIO_4, ASSET_AUDIO_5), so that span bounds it; unbounded, the
+         * size arithmetic below overflows s32 before it reaches mempool_alloc_safe. */
+        {
+            s32 seqSpan = addrPtr[ASSET_AUDIO_5] - addrPtr[ASSET_AUDIO_4];
+            s32 seqCountLimit = (seqSpan > 4) ? ((seqSpan - 4) / 8) : 0;
+
+            if (seqCount > seqCountLimit) {
+                seqCount = seqCountLimit;
+            }
+        }
         rawSize = seqCount * 8 + 4;
         seqfRaw = (u8 *) mempool_alloc_safe(rawSize, COLOUR_TAG_CYAN);
         asset_load(ASSET_AUDIO, (uintptr_t)seqfRaw, addrPtr[ASSET_AUDIO_4], rawSize);
@@ -765,13 +777,14 @@ void sound_update_queue(u8 updateRate) {
                 sound_play(gDelayedSounds[i].soundId, gDelayedSounds[i].handlePtr);
 
                 gDelayedSoundsCount -= 1;
+                /* j is the cursor of the tail shift that closes the hole at i;
+                 * every entry above the fired one moves down exactly once. */
                 while (j < gDelayedSoundsCount) {
-                    gDelayedSounds[i].soundId = gDelayedSounds[i + 1].soundId;
-                    gDelayedSounds[i].timer = gDelayedSounds[i + 1].timer;
-                    gDelayedSounds[i].handlePtr = gDelayedSounds[i + 1].handlePtr;
+                    gDelayedSounds[j].soundId = gDelayedSounds[j + 1].soundId;
+                    gDelayedSounds[j].timer = gDelayedSounds[j + 1].timer;
+                    gDelayedSounds[j].handlePtr = gDelayedSounds[j + 1].handlePtr;
                     j++;
                 }
-                j++;
             } else {
                 i++;
             }
@@ -1015,9 +1028,25 @@ f32 music_animation_fraction(void) {
     if (gMusicPlaying == FALSE) {
         sMusicTempo = 182;
     }
+#ifdef NATIVE_PORT
+    /* sMusicTempo is parked at -1 by music_sequence_init() until sound_update()
+     * can read the sequence's real tempo, and the wrap loop needs a positive
+     * period: a non-positive tempo makes tmp non-positive and each iteration
+     * grows gMusicAnimationTick instead of shrinking it. 182 is the same idle
+     * tempo used above when no music is playing. The -1 sentinel itself must
+     * survive, so the fallback is local. */
+    {
+        s32 tempo = (sMusicTempo > 0) ? sMusicTempo : 182;
+
+        for (tmp = 120000.0f / (f32) tempo; tmp < gMusicAnimationTick; gMusicAnimationTick -= tmp) {
+            ;
+        }
+    }
+#else
     for (tmp = 120000.0f / (f32) sMusicTempo; tmp < gMusicAnimationTick; gMusicAnimationTick -= tmp) {
         ;
     }
+#endif
     audioPrevCount = (s32) cnt;
     return gMusicAnimationTick / tmp;
 }
@@ -1354,7 +1383,12 @@ void sound_play_direct(u16 soundID, SoundHandle *handlePtr) {
  * Official Name: amSndSetVol
  */
 void sound_volume_set_relative(u16 soundID, SoundHandle soundHandle, u8 volume) {
-    s32 newVolume = ((s32) (gSoundTable[soundID].volume * (volume / 127.0f))) * 256;
+    s32 newVolume;
+
+    if (!mdkr_sound_id_valid(soundID, gSoundCount)) {
+        return;
+    }
+    newVolume = ((s32) (gSoundTable[soundID].volume * (volume / 127.0f))) * 256;
     if (soundHandle) {
         sndp_set_param(soundHandle, AL_SNDP_VOL_EVT, newVolume);
     }

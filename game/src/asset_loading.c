@@ -58,8 +58,12 @@ static s32 asset_section_bounds(u32 assetIndex, u32 *startOut, u32 *sizeOut) {
     u32 start;
     u32 end;
 
+    /* Word 0 is the section count; words 1 .. count + 1 are the section start
+     * offsets plus the end terminator. Section `assetIndex` therefore needs
+     * words assetIndex + 1 and assetIndex + 2, which exist only while
+     * assetIndex < count. */
     if (gAssetsLookupTable == NULL || startOut == NULL || sizeOut == NULL ||
-        gAssetsLookupTable[0] < assetIndex) {
+        assetIndex >= gAssetsLookupTable[0]) {
         return -1;
     }
 

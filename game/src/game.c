@@ -225,7 +225,10 @@ void level_global_init(void) {
     for (i = 0; gTempAssetTable[i] != (-1); i++) {}
     i--;
     size = gTempAssetTable[i] - gTempAssetTable[0];
-    gLevelNames = mempool_alloc_safe(i * sizeof(s32), COLOUR_TAG_YELLOW);
+    /* LP64: gLevelNames is char **, so the block must be sized by the real
+     * pointer width. sizeof(void *) == sizeof(s32) on N64, so the ROM-side
+     * allocation size is unchanged. */
+    gLevelNames = mempool_alloc_safe(i * sizeof(void *), COLOUR_TAG_YELLOW);
     gTempLevelNames = mempool_alloc_safe(size, COLOUR_TAG_YELLOW);
     asset_load(ASSET_LEVEL_NAMES, (uintptr_t)gTempLevelNames, 0, size);
     for (size = 0; size < i; size++) {
@@ -531,7 +534,9 @@ void level_load(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicl
 
     for (i = 0; gTempAssetTable[i] != -1; i++) {}
     i--;
-    if (levelId >= i) {
+    /* levelId indexes gTempAssetTable[levelId] and [levelId + 1] below, so both
+     * ends of the range have to hold, not just the upper one. */
+    if (levelId < 0 || levelId >= i) {
         stubbed_printf("LOADLEVEL Error: Level out of range\n");
         levelId = ASSET_LEVEL_CENTRALAREAHUB;
     }
@@ -570,8 +575,23 @@ void level_load(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicl
                     }
                 }
                 someAsset = (s8 *) get_misc_asset(ASSET_MISC_67);
+#ifdef NATIVE_PORT
+                /* ASSET_MISC_67 is an unterminated array of (bossLevelId,
+                 * cutsceneLevelId) byte pairs; a levelId that is absent from it
+                 * walks past the sub-asset. Its own byte length is the only
+                 * bound, and a miss must leave levelId as the boss level. */
+                {
+                    s32 bossTableSize = get_misc_asset_size(ASSET_MISC_67);
+
+                    for (var_s0 = 0; var_s0 + 1 < bossTableSize && levelId != someAsset[var_s0]; var_s0 += 2) {}
+                    if (var_s0 + 1 < bossTableSize) {
+                        levelId = someAsset[var_s0 + 1];
+                    }
+                }
+#else
                 for (var_s0 = 0; levelId != someAsset[var_s0]; var_s0 += 2) {}
                 levelId = someAsset[var_s0 + 1];
+#endif
                 entranceId = cutsceneId;
 #ifdef NATIVE_PORT
                 {
@@ -1117,6 +1137,15 @@ s8 race_is_adventure_2P(void) {
  * Used for preserving certain properties when viewing cutscenes, where this information would otherwise be lost.
  */
 void level_properties_push(s32 levelId, s32 entranceId, Vehicle vehicleId, s32 cutsceneId) {
+#ifdef NATIVE_PORT
+    /* The stack holds five 4-entry sets; a push beyond that writes past
+     * gLevelPropertyStack and into the adjacent globals. Cutscene nesting never
+     * reaches five in normal play, so dropping the push keeps the stack
+     * consistent with the matching pop. */
+    if (gLevelPropertyStackPos + 4 > (s32) ARRAY_COUNT(gLevelPropertyStack)) {
+        return;
+    }
+#endif
     gLevelPropertyStack[gLevelPropertyStackPos++] = levelId;
     gLevelPropertyStack[gLevelPropertyStackPos++] = entranceId;
     gLevelPropertyStack[gLevelPropertyStackPos++] = vehicleId;

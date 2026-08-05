@@ -575,7 +575,14 @@ void mempool_free_queue_clear(void) {
 #else
             gFreeQueue[i].freeTimer--;
 #endif
+#ifdef NATIVE_PORT
+            /* sMdkrFreeQueue is the queue this loop actually walks; gFreeQueue is
+             * the ROM-layout mirror and its entries are not maintained here. */
+            stubbed_printf("\n*** mm Error *** ---> Can't free ram at this location: %x\n",
+                           sMdkrFreeQueue[i].dataAddress);
+#else
             stubbed_printf("\n*** mm Error *** ---> Can't free ram at this location: %x\n", gFreeQueue[i].dataAddress);
+#endif
             i++;
         }
     }
@@ -759,6 +766,39 @@ s32 mempool_locked_unset(u8 *address) {
     interrupts_enable(intFlags);
     return 0;
 }
+
+#ifdef NATIVE_PORT
+/**
+ * One past the last byte of the live pool block containing `address`, or NULL
+ * when no in-use slot covers it.
+ *
+ * A bare pointer handed across an API carries no extent. Readers that must not
+ * run off the end of an allocation they did not make -- rzip's compressed input,
+ * for one -- recover the extent from the slot that owns the address.
+ */
+u8 *mempool_block_end(u8 *address) {
+    s32 poolIndex;
+    s32 slotIndex;
+    MemoryPoolSlot *slots;
+    MemoryPoolSlot *slot;
+
+    poolIndex = mempool_get_pool(address);
+    if (poolIndex == MEMPOOL_INVALID_POOL) {
+        return NULL;
+    }
+    slots = gMemoryPools[poolIndex].slots;
+    for (slotIndex = 0; slotIndex != MEMSLOT_NONE; slotIndex = slot->nextIndex) {
+        slot = &slots[slotIndex];
+        if (slot->flags != SLOT_USED && slot->flags != SLOT_SAFEGUARD) {
+            continue;
+        }
+        if (slot->size > 0 && address >= (u8 *) slot->data && address < (u8 *) slot->data + slot->size) {
+            return (u8 *) slot->data + slot->size;
+        }
+    }
+    return NULL;
+}
+#endif
 
 /**
  * Returns the index of the memory pool containing the memory address.
@@ -1028,7 +1068,8 @@ UNUSED s32 find_active_pool_slot_colours(void) {
         } while (slotColour != MEMSLOT_NONE);
     }
     slotColour = 0;
-    for (j = 0; colours[j] != 0 && j < 64; j++) {
+    /* colours holds 64 entries; the bound has to be tested before the load. */
+    for (j = 0; j < 64 && colours[j] != 0; j++) {
         stubbed_printf("Colour %x >> %d\n", colours[j], colourCounts[j]);
     }
     slotColour = 0;

@@ -114,6 +114,11 @@ void mempool_free_queue(void *dataAddress);
 s32 mempool_locked_set(u8 *address);
 s32 mempool_locked_unset(u8 *address);
 s32 mempool_get_pool(u8 *address);
+#ifdef NATIVE_PORT
+/* One past the last byte of the live pool block containing `address`, or NULL if
+ * no in-use slot covers it. The read bound a bare interior pointer lacks. */
+u8 *mempool_block_end(u8 *address);
+#endif
 u8 *align16(u8 *address);
 u8 *align8(u8 *address);
 u8 *align4(u8 *address);

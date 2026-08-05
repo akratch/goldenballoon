@@ -305,7 +305,12 @@ void light_update(ObjectLight *light, s32 updateRate) {
         while (light->unk4C >= light->unk44[light->unk4A].unk4) {
             light->unk4C -= light->unk44[light->unk4A].unk4;
             light->unk4A++;
-            if (light->unk48 < light->unk4A) {
+            /* unk48 is the frame count (light_create walks unk44[0 .. unk48 - 1]),
+             * so unk48 itself is one past the last frame: the wrap has to fire on
+             * reaching it, not after passing it. The frame this index selects
+             * supplies both the loop's own duration test and the 0x10000 / unk4
+             * divisor below. */
+            if (light->unk4A >= light->unk48) {
                 light->unk4A = 0;
             }
         }
@@ -495,6 +500,17 @@ void light_update_shading(Object *object) {
                 (light->maxZ >= objZ)) {
                 if (light->unk0 == 0) {
                     if (light->intensity >= 0x10000) {
+                        /* gShadeBuffer and gLightDirs are indexed in lockstep by
+                         * numLights, and the directionalPointLighting consumers
+                         * below read gLightDirs for whichever entries they select.
+                         * An ambient light carries no direction, so give the slot
+                         * the same degenerate value the point path uses when the
+                         * light sits on the object. */
+                        if (object->header->directionalPointLighting) {
+                            gLightDirs[numLights].x = 0.0f;
+                            gLightDirs[numLights].y = 0.0f;
+                            gLightDirs[numLights].z = -1.0f;
+                        }
                         gShadeBuffer[numLights].lightObj = light;
                         gShadeBuffer[numLights].colourR = light->colourR >> 0x10;
                         gShadeBuffer[numLights].colourG = light->colourG >> 0x10;

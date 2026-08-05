@@ -875,8 +875,12 @@ void transition_update_blank(s32 updateRate) {
             }
         } else {
             if (gTransitionEndTimer != 0xFFFF) {
-                gTransitionEndTimer -= updateRate;
-                if (gTransitionEndTimer <= 0) {
+                /* gTransitionEndTimer is u16: subtracting past zero wraps to a
+                 * large positive count, and the `<= 0` test can never see it.
+                 * Same form as the other transition end-timer updaters. */
+                if (updateRate < gTransitionEndTimer) {
+                    gTransitionEndTimer -= updateRate;
+                } else {
                     gTransitionEndTimer = 0;
                 }
             }

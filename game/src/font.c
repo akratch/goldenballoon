@@ -975,6 +975,10 @@ void *render_dialogue_text(s32 dialogueBoxID, s32 posX, s32 posY, char *text, s3
     s32 width;
     UNUSED s32 var_a0;
     char buffer[256];
+#ifdef NATIVE_PORT
+    _Static_assert(sizeof(buffer) == DKR_PARSED_STRING_MAX,
+                   "parse_string_with_number bounds its output at DKR_PARSED_STRING_MAX");
+#endif
     DialogueTextElement *ret;
     DialogueBox *textBox;
     s32 i;
@@ -1273,6 +1277,10 @@ void render_dialogue_box(Gfx **dList, Mtx **mat, Vertex **verts, s32 dialogueBox
     s32 x1, x2;
     char text[256];
     s32 y1, y2;
+#ifdef NATIVE_PORT
+    _Static_assert(sizeof(text) == DKR_PARSED_STRING_MAX,
+                   "parse_string_with_number bounds its output at DKR_PARSED_STRING_MAX");
+#endif
 
     dialogueBox = &gDialogueBoxBackground[dialogueBoxID];
 
@@ -1345,12 +1353,28 @@ void render_dialogue_box(Gfx **dList, Mtx **mat, Vertex **verts, s32 dialogueBox
  */
 #if REGION != REGION_JP
 void parse_string_with_number(char *input, char *output, s32 number) {
+#ifdef NATIVE_PORT
+    /* output holds DKR_PARSED_STRING_MAX bytes; keep the last one for the
+     * terminator. See font.h. */
+    char *outputEnd = output + DKR_PARSED_STRING_MAX - 1;
+#endif
+
     while (*input) {
         if (*input == '~') { // ~ is equivalent to a %d.
+#ifdef NATIVE_PORT
+            if (outputEnd - output < DKR_S32_STRING_MAX) {
+                break;
+            }
+#endif
             // output the number as part of the string
             s32_to_string(&output, number);
             input++;
         } else {
+#ifdef NATIVE_PORT
+            if (output >= outputEnd) {
+                break;
+            }
+#endif
             *output = *input;
             input++;
             output++;
@@ -1361,19 +1385,44 @@ void parse_string_with_number(char *input, char *output, s32 number) {
 #else
 void parse_string_with_number(char *input, char *output, s32 number) {
     char currentChar;
+#ifdef NATIVE_PORT
+    /* output holds DKR_PARSED_STRING_MAX bytes; keep the last one for the
+     * terminator. See font.h. */
+    char *outputEnd = output + DKR_PARSED_STRING_MAX - 1;
+#endif
 
     while ((currentChar = *input++)) {
         if (currentChar & 0x80) {
             char nextChar = *input++;
             if (nextChar == 0xE) {
+#ifdef NATIVE_PORT
+                if (outputEnd - output < DKR_S32_STRING_MAX) {
+                    break;
+                }
+#endif
                 s32_to_string(&output, number);
             } else {
+#ifdef NATIVE_PORT
+                if (outputEnd - output < 2) {
+                    break;
+                }
+#endif
                 *output++ = currentChar;
                 *output++ = nextChar;
             }
         } else if (currentChar == '~') { // ~ is equivalent to a %d.
+#ifdef NATIVE_PORT
+            if (outputEnd - output < DKR_S32_STRING_MAX) {
+                break;
+            }
+#endif
             s32_to_string(&output, number);
         } else {
+#ifdef NATIVE_PORT
+            if (output >= outputEnd) {
+                break;
+            }
+#endif
             *output++ = currentChar;
         }
     }

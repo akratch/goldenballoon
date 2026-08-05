@@ -2,13 +2,33 @@
 #include "asset_loading.h"
 #include "memory.h"
 #include "PR/os_libc.h"
+#ifdef NATIVE_PORT
+#include <stdio.h>
+#endif
 
 /************ .data ************/
 
+#ifndef NATIVE_PORT
 huft *gHuftTable = NULL; // gzip_huft_alloc
+#endif
 s32 *gPackedHeader = NULL;
 u8 *gzip_inflate_input = NULL;
 u8 *gzip_inflate_output = NULL;
+#ifdef NATIVE_PORT
+/* Decode bounds for the shared inflate state, set by gzip_inflate().
+ *
+ * gzip_inflate_output_start / _end delimit the destination: the rzip header's
+ * first word is the exact decompressed length, so a stream that writes past
+ * _end is corrupt rather than large, and a back-reference that reaches before
+ * _start has no data to copy.
+ *
+ * gzip_inflate_input_end is the end of the pool block the compressed bytes live
+ * in, or NULL when the input is not pool-resident -- the decoder then relies on
+ * the output bound alone. */
+u8 *gzip_inflate_output_start = NULL;
+u8 *gzip_inflate_output_end = NULL;
+u8 *gzip_inflate_input_end = NULL;
+#endif
 
 /*******************************/
 
@@ -16,15 +36,25 @@ u8 *gzip_inflate_output = NULL;
 
 u32 gzip_bit_buffer;
 u32 gzip_num_bits;
+#ifndef NATIVE_PORT
 s32 gHuftTablePos; // gzip_hufts
+#endif
 
 /******************************/
 
 /**
  * Allocate space for the decompression heap and file header.
+ *
+ * The huft decode-table heap belongs to the ROM's gzip_inflate_block(), which
+ * hasm_native/inflate_native.c replaces outright: the native decoder builds its
+ * tables on its own stack and never touches gHuftTable. The reservation is sized
+ * for 4-byte huft entries, so keeping it on an LP64 host would leave a
+ * half-sized heap under any future re-entry into gzip_huft_build().
  */
 void gzip_init(void) {
+#ifndef NATIVE_PORT
     gHuftTable = (huft *) mempool_alloc_safe(0x2800, COLOUR_TAG_BLACK);
+#endif
     gPackedHeader = (s32 *) mempool_alloc_safe(0x10, COLOUR_TAG_BLACK);
 }
 
@@ -57,14 +87,35 @@ s32 gzip_size_uncompressed(s32 assetIndex, s32 assetOffset) {
  * Official name: rzipUncompress
  */
 u8 *gzip_inflate(u8 *compressedInput, u8 *decompressedOutput) {
+#ifdef NATIVE_PORT
+    s32 status;
+
+    /* Header word 0 is the decompressed length (see gzip_size_uncompressed);
+     * every caller sizes decompressedOutput from that same word. */
+    gzip_inflate_output_start = decompressedOutput;
+    gzip_inflate_output_end = decompressedOutput + byteswap32(compressedInput);
+    gzip_inflate_input_end = mempool_block_end(compressedInput);
+#endif
     gzip_inflate_input = compressedInput + 5; // The compression header is 5 bytes.
     gzip_inflate_output = decompressedOutput;
     gzip_num_bits = 0;
     gzip_bit_buffer = 0;
+#ifdef NATIVE_PORT
+    /* A rejected block ends the stream: past a decode error the bit position is
+     * meaningless and continuing only lets a corrupt stream keep writing. */
+    while ((status = gzip_inflate_block()) > 0) {}
+    if (status < 0) {
+        fprintf(stderr, "[GZIP] inflate rejected the stream at %p (status %d, %ld of %ld bytes)\n",
+                (void *) compressedInput, (int) status, (long) (gzip_inflate_output - decompressedOutput),
+                (long) (gzip_inflate_output_end - decompressedOutput));
+    }
+#else
     while (gzip_inflate_block() != 0) {} // Keep calling gzip_inflate_block() until it returns 0.
+#endif
     return decompressedOutput;
 }
 
+#ifndef NATIVE_PORT
 /* Official name: huft_build */
 void gzip_huft_build(u32 *b, u32 n, u32 s, u16 *d, u16 *e, huft **t, s32 *m) {
     u32 a;                   /* counter for codes of length k */
@@ -242,3 +293,4 @@ void gzip_huft_build(u32 *b, u32 n, u32 s, u16 *d, u16 *e, huft **t, s32 *m) {
     }
     return;
 }
+#endif

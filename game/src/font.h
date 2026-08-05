@@ -184,6 +184,16 @@ void clear_dialogue_box_open_flag(s32 dialogueBoxID);
 void render_dialogue_boxes(Gfx **dList, Mtx **mat, Vertex **verts);
 void render_fill_rectangle(Gfx **dList, s32 ulx, s32 uly, s32 lrx, s32 lry);
 void render_dialogue_box(Gfx **dList, Mtx **mat, Vertex **verts, s32 dialogueBoxID);
+#ifdef NATIVE_PORT
+/* Capacity, in bytes, of the `output` buffer parse_string_with_number() writes,
+ * terminator included. Both call sites hand it a stack buffer of this size, and
+ * neither the source string nor the digits '~' expands to are bounded by the
+ * text format, so the function stops here. */
+#define DKR_PARSED_STRING_MAX 256
+/* Widest run s32_to_string() can emit: sign, nine leading digits, one's digit.
+ * It writes no terminator. */
+#define DKR_S32_STRING_MAX 11
+#endif
 void parse_string_with_number(char *input, char *output, s32 number);
 void s32_to_string(char **outString, s32 number);
 void load_font(s32 fontID);

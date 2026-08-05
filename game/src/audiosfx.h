@@ -128,6 +128,13 @@ void sndp_set_group_volume(u8 groupID, u16 volume);
 void sndp_apply_pitch_slide(ALSoundState *soundState);
 void sndp_stop_with_flags(u8 flags);
 void sndp_stop(SoundHandle state);
+#ifdef NATIVE_PORT
+/* Stop the sound and clear the sound state's userHandle back-pointer to
+ * *handlePtr. Required before freeing memory that contains the handle slot:
+ * sndp_deallocate() writes NULL through userHandle long after sndp_stop()
+ * returns. */
+void sndp_stop_and_detach(SoundHandle *handlePtr);
+#endif
 ALSoundState *sndp_allocate(UNUSED ALBank *arg0, ALSound *sound);
 void sndp_deallocate(ALSoundState *);
 ALSoundState *sndp_play_with_priority(ALBank *bank, s16 sndIndx, u8 priority, SoundHandle *handlePtr);

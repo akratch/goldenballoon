@@ -24,8 +24,11 @@ u8 *gzip_inflate(u8 *compressedInput, u8 *decompressedOutput);
 /* Points just past the last decompressed byte after gzip_inflate() returns; the
  * NATIVE_PORT asset-swap hooks use it to size the just-inflated buffer. */
 extern u8 *gzip_inflate_output;
-#endif
+#else
 void gzip_huft_build(u32 *b, u32 n, u32 s, u16 *d, u16 *e, huft **t, s32 *m);
+#endif
+/* Decodes one DEFLATE block: > 0 while more blocks follow, 0 after the final
+ * block, < 0 when the stream is rejected (NATIVE_PORT decoder only). */
 s32 gzip_inflate_block(void);
 
 #endif

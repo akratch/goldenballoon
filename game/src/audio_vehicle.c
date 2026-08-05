@@ -205,7 +205,12 @@ VehicleSoundData *racer_sound_init(s32 characterId, s32 vehicleId) {
         v1 = mdkr_mips_f64_to_u16((f64) soundData->basePitch[0] * 10000.0);
 
         for (j = 0; v1 >= soundData->pitchLevels[0][j] && j < 4; j++) {}
-        j--;
+        /* j is unsigned: a base pitch below pitchLevels[0][0] leaves the search
+         * at 0, and decrementing there wraps the index instead of naming the
+         * first segment. Same guard as the two runtime pitch-to-volume searches. */
+        if (j != 0) {
+            j--;
+        }
 
         interpFrac = (f32) (v1 - soundData->pitchLevels[0][j]) /
                      (soundData->pitchLevels[0][j + 1] - soundData->pitchLevels[0][j]);
@@ -268,6 +273,7 @@ void racer_sound_update(Object *obj, u32 buttonsPressed, u32 buttonsHeld, s32 ti
  */
 void racer_sound_car(Object *obj, u32 buttonsPressed, u32 buttonsHeld, s32 ticksDelta) {
     f32 interpFrac;
+    f32 interpSpan;
     f32 pitch1;
     f32 pitch2;
     u8 targetVolume;
@@ -302,29 +308,35 @@ void racer_sound_car(Object *obj, u32 buttonsPressed, u32 buttonsHeld, s32 ticks
     for (i = 0; i < 1; i++) {
         if ((gRacerSound->soundId[i]) != 0) {
             // Calculate volume by interpolating between control points based on intensity
+            /* The control-point rows hold five entries, i.e. four segments
+             * [j, j + 1] with j in 0..3. The bound has to be tested before the
+             * two loads, and j has to stay on the last segment when the
+             * intensity falls off the end of the table. */
             j = 0;
-            while ((intensity < gRacerSound->intensityLevelsForVolume[i][j] ||
-                    intensity > gRacerSound->intensityLevelsForVolume[i][j + 1]) &&
-                   j < 4) {
+            while (j < 3 && (intensity < gRacerSound->intensityLevelsForVolume[i][j] ||
+                             intensity > gRacerSound->intensityLevelsForVolume[i][j + 1])) {
                 j++;
             }
-            interpFrac =
-                (intensity - gRacerSound->intensityLevelsForVolume[i][j]) /
-                ((f32) (gRacerSound->intensityLevelsForVolume[i][j + 1] - gRacerSound->intensityLevelsForVolume[i][j]));
+            interpSpan =
+                (f32) (gRacerSound->intensityLevelsForVolume[i][j + 1] - gRacerSound->intensityLevelsForVolume[i][j]);
+            /* Equal control points make a zero-width segment; targetVolume is a
+             * u8, and a NaN fraction would reach it as an undefined conversion. */
+            interpFrac = (interpSpan != 0.0f) ? (intensity - gRacerSound->intensityLevelsForVolume[i][j]) / interpSpan
+                                              : 0.0f;
             targetVolume = gRacerSound->volumeLevels[i][j] +
                            (gRacerSound->volumeLevels[i][j + 1] - gRacerSound->volumeLevels[i][j]) * interpFrac;
 
             // Calculate base pitch similarly by interpolating between control points
             j = 0;
-            while ((intensity < gRacerSound->intensityLevelsForPitch[i][j] ||
-                    intensity > gRacerSound->intensityLevelsForPitch[i][j + 1]) &&
-                   j < 4) {
+            while (j < 3 && (intensity < gRacerSound->intensityLevelsForPitch[i][j] ||
+                             intensity > gRacerSound->intensityLevelsForPitch[i][j + 1])) {
                 j++;
             }
 
-            interpFrac =
-                (intensity - gRacerSound->intensityLevelsForPitch[i][j]) /
-                ((f32) (gRacerSound->intensityLevelsForPitch[i][j + 1] - gRacerSound->intensityLevelsForPitch[i][j]));
+            interpSpan =
+                (f32) (gRacerSound->intensityLevelsForPitch[i][j + 1] - gRacerSound->intensityLevelsForPitch[i][j]);
+            interpFrac = (interpSpan != 0.0f) ? (intensity - gRacerSound->intensityLevelsForPitch[i][j]) / interpSpan
+                                              : 0.0f;
             pitch1 = gRacerSound->pitchLevels[i][j] / 10000.0f;
             pitch2 = gRacerSound->pitchLevels[i][j + 1] / 10000.0f;
 
@@ -705,6 +717,20 @@ void racer_sound_free(Object *obj) {
 
     gRacerSound = obj->racer->vehicleSound;
     if (gRacerSound != NULL) {
+#ifdef NATIVE_PORT
+        /* Every handle slot lives inside the block freed at the end of this
+         * function, and the sound player writes NULL back through userHandle
+         * when it finally deallocates the state. Detach each slot from its
+         * sound state, spinoutSound included -- it outlives the racer whenever
+         * the object is destroyed mid-spinout. */
+        for (i = 0; i != 2; i++) {
+            sndp_stop_and_detach(&gRacerSound->soundHandle[i]);
+        }
+        sndp_stop_and_detach(&gRacerSound->engineIdleSoundHandle);
+        sndp_stop_and_detach(&gRacerSound->brakeSound);
+        sndp_stop_and_detach(&gRacerSound->spinoutSound);
+        gRacerSound->spinoutSoundOn = FALSE;
+#else
         for (i = 0; i != 2; i++) {
             if (gRacerSound->soundHandle[i] != NULL) {
                 sndp_stop(gRacerSound->soundHandle[i]);
@@ -719,6 +745,7 @@ void racer_sound_free(Object *obj) {
             sndp_stop(gRacerSound->brakeSound);
             gRacerSound->brakeSound = 0;
         }
+#endif
         for (i = 0; i < ARRAY_COUNT(gBackgroundRacerSounds); i++) {
             if (gBackgroundRacerSounds[i] == gRacerSound) {
                 gBackgroundRacerSounds[i] = NULL;
@@ -1047,6 +1074,11 @@ void racer_sound_update_all(Object **racerObjs, s32 numRacers, Camera *cameras, 
 
     for (i = 0; i < numCameras; i++) {
         racer = racerObjs[i]->racer;
+        /* A camera slot need not hold a racer -- the engine pass above already
+         * treats that as valid -- and every branch below reads racer->. */
+        if (racer == NULL) {
+            continue;
+        }
         for (j = numCameras; j < numRacers; j++) {
             if (racerObjs[j]->racer != NULL) {
                 gRacerSound = racerObjs[j]->racer->vehicleSound;

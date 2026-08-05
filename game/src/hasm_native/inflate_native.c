@@ -24,10 +24,24 @@
  * Contract preserved from the asm:
  *   - gzip_inflate_block() decodes exactly one DEFLATE block, advancing the
  *     shared input/output pointers and bit buffer, and returns (1 - BFINAL):
- *     nonzero while more blocks follow, 0 once the final block is decoded.
+ *     positive while more blocks follow, 0 once the final block is decoded.
  *   - Stored blocks discard the partial bits to reach a byte boundary, read the
  *     16-bit LEN and 16-bit NLEN (NLEN ignored, as in the asm), then copy LEN
  *     raw bytes straight from the input pointer.
+ *
+ * Bounds, added on top of that contract because a host cannot absorb an
+ * out-of-range access the way the N64's flat RDRAM did:
+ *   - Every write goes through the [gzip_inflate_output_start,
+ *     gzip_inflate_output_end) window gzip_inflate() derives from the rzip
+ *     header's declared decompressed length. A valid stream fills it exactly,
+ *     so bounded and unbounded decoding produce identical bytes.
+ *   - Every input byte is taken below gzip_inflate_input_end when the caller's
+ *     compressed buffer is pool-resident (it always is in this game).
+ *   - Back-reference distances must stay inside what has already been produced.
+ *   - gzip_inflate_block() returns a negative status for any of the above, for
+ *     a malformed Huffman description, and for the reserved BTYPE 3. That status
+ *     ends the stream in gzip_inflate(); the decoder never reports "one more
+ *     block" for input it did not consume.
  *
  * Endianness: operates on the byte-defined compressed stream and produces the
  * byte-defined decompressed stream; endianness normalization of decompressed
@@ -41,6 +55,18 @@ extern u8 *gzip_inflate_input;
 extern u8 *gzip_inflate_output;
 extern u32 gzip_bit_buffer;
 extern u32 gzip_num_bits;
+extern u8 *gzip_inflate_output_start;
+extern u8 *gzip_inflate_output_end;
+extern u8 *gzip_inflate_input_end;
+
+/* Rejection statuses. Negative so they cannot be mistaken for the block
+ * contract's 0 (final block) or 1 (more blocks follow). */
+#define INF_ERR_CODES -9      /* no code matched within MAXBITS */
+#define INF_ERR_LENCODE -10   /* length symbol outside the RFC 1951 table */
+#define INF_ERR_INPUT_END -11 /* stream demanded a byte past the input block */
+#define INF_ERR_OUTPUT_END -12 /* stream produced more than the declared length */
+#define INF_ERR_DISTANCE -13  /* back-reference points before the output start */
+#define INF_ERR_BTYPE -14     /* BTYPE 3 is reserved */
 
 #define MAXBITS 15   /* max bits in a Huffman code */
 #define MAXLCODES 286 /* max number of literal/length codes */
@@ -53,11 +79,28 @@ struct huffman {
     short *symbol; /* canonically ordered symbols */
 };
 
+/*
+ * Sticky rejection status for the block currently being decoded. The bit reader
+ * and the output writer have no way to return a status of their own, so they
+ * record it here; gzip_inflate_block() clears it on entry and reports it.
+ * Once set, decoding continues on zero bits only long enough to unwind.
+ */
+static int s_status;
+
+/* Next compressed byte, or 0 once the input block is exhausted. */
+static u32 next_byte(void) {
+    if (gzip_inflate_input_end != NULL && gzip_inflate_input >= gzip_inflate_input_end) {
+        s_status = INF_ERR_INPUT_END;
+        return 0;
+    }
+    return (u32) (*gzip_inflate_input++);
+}
+
 /* Read a single bit, LSB-first, refilling the shared buffer a byte at a time. */
 static int getbit(void) {
     int bit;
     if (gzip_num_bits == 0) {
-        gzip_bit_buffer |= (u32) (*gzip_inflate_input++);
+        gzip_bit_buffer |= next_byte();
         gzip_num_bits = 8;
     }
     bit = (int) (gzip_bit_buffer & 1u);
@@ -70,13 +113,39 @@ static int getbit(void) {
 static u32 getbits(int need) {
     u32 val;
     while (gzip_num_bits < (u32) need) {
-        gzip_bit_buffer |= (u32) (*gzip_inflate_input++) << gzip_num_bits;
+        gzip_bit_buffer |= next_byte() << gzip_num_bits;
         gzip_num_bits += 8;
     }
     val = gzip_bit_buffer & ((1u << need) - 1u);
     gzip_bit_buffer >>= need;
     gzip_num_bits -= (u32) need;
     return val;
+}
+
+/* Bytes still available in the destination window. gzip_inflate() always sets
+ * the window before the first block, so an unset end means "no destination". */
+static u32 output_room(void) {
+    if (gzip_inflate_output_end == NULL || gzip_inflate_output >= gzip_inflate_output_end) {
+        return 0;
+    }
+    return (u32) (gzip_inflate_output_end - gzip_inflate_output);
+}
+
+/* Bytes already produced, i.e. the largest legal back-reference distance. */
+static u32 output_produced(void) {
+    if (gzip_inflate_output_start == NULL || gzip_inflate_output <= gzip_inflate_output_start) {
+        return 0;
+    }
+    return (u32) (gzip_inflate_output - gzip_inflate_output_start);
+}
+
+/* Append one decompressed byte, rejecting the stream at the declared length. */
+static void put_byte(u8 value) {
+    if (output_room() == 0) {
+        s_status = INF_ERR_OUTPUT_END;
+        return;
+    }
+    *gzip_inflate_output++ = value;
 }
 
 /* Decode one symbol using the canonical Huffman table `h`. */
@@ -89,6 +158,9 @@ static int decode(const struct huffman *h) {
     for (len = 1; len <= MAXBITS; len++) {
         int count;
         code |= getbit();
+        if (s_status != 0) {
+            return s_status;
+        }
         count = h->count[len];
         if (code - count < first) {
             return h->symbol[index + (code - first)];
@@ -98,7 +170,7 @@ static int decode(const struct huffman *h) {
         first <<= 1;
         code <<= 1;
     }
-    return -9; /* ran out of codes */
+    return INF_ERR_CODES; /* ran out of codes */
 }
 
 /*
@@ -164,23 +236,42 @@ static int codes(const struct huffman *lencode, const struct huffman *distcode) 
             return symbol;
         }
         if (symbol < 256) {
-            *gzip_inflate_output++ = (u8) symbol;
+            put_byte((u8) symbol);
+            if (s_status != 0) {
+                return s_status;
+            }
         } else if (symbol > 256) {
-            int len;
+            u32 len;
             u32 dist;
             u8 *from;
 
             symbol -= 257;
             if (symbol >= 29) {
-                return -10; /* invalid length code */
+                return INF_ERR_LENCODE; /* invalid length code */
             }
-            len = kLenBase[symbol] + (int) getbits(kLenExtra[symbol]);
+            len = (u32) kLenBase[symbol] + getbits(kLenExtra[symbol]);
 
             symbol = decode(distcode);
             if (symbol < 0) {
                 return symbol;
             }
+            /* An incomplete distance code can decode to a slot construct()
+             * never filled, so the symbol is only trustworthy after this test. */
+            if (symbol >= MAXDCODES) {
+                return INF_ERR_DISTANCE;
+            }
             dist = (u32) kDistBase[symbol] + getbits(kDistExtra[symbol]);
+            if (s_status != 0) {
+                return s_status;
+            }
+            /* The match must lie in bytes this stream has already produced, and
+             * must fit in what the declared length still has room for. */
+            if (dist == 0 || dist > output_produced()) {
+                return INF_ERR_DISTANCE;
+            }
+            if (len > output_room()) {
+                return INF_ERR_OUTPUT_END;
+            }
 
             /* Contiguous output buffer -> copy back-reference in place. */
             from = gzip_inflate_output - dist;
@@ -194,7 +285,7 @@ static int codes(const struct huffman *lencode, const struct huffman *distcode) 
 }
 
 /* BTYPE 0: stored (uncompressed) block. */
-static void inflate_stored(void) {
+static int inflate_stored(void) {
     u32 len;
 
     /* Discard remaining bits in the current partial byte. */
@@ -203,10 +294,21 @@ static void inflate_stored(void) {
 
     len = getbits(16);  /* LEN  */
     (void) getbits(16); /* NLEN (one's complement of LEN, unchecked as in asm) */
-
-    while (len--) {
-        *gzip_inflate_output++ = *gzip_inflate_input++;
+    if (s_status != 0) {
+        return s_status;
     }
+
+    if (len > output_room()) {
+        return INF_ERR_OUTPUT_END;
+    }
+    while (len--) {
+        u32 byte = next_byte();
+        if (s_status != 0) {
+            return s_status;
+        }
+        *gzip_inflate_output++ = (u8) byte;
+    }
+    return 0;
 }
 
 /* BTYPE 1: fixed Huffman block. */
@@ -269,6 +371,9 @@ static int inflate_dynamic(void) {
     nlen = (int) getbits(5) + 257;
     ndist = (int) getbits(5) + 1;
     ncode = (int) getbits(4) + 4;
+    if (s_status != 0) {
+        return s_status;
+    }
     if (nlen > MAXLCODES || ndist > MAXDCODES) {
         return -3; /* bad counts */
     }
@@ -307,6 +412,9 @@ static int inflate_dynamic(void) {
             } else { /* symbol == 18 */
                 symbol = 11 + (int) getbits(7);
             }
+            if (s_status != 0) {
+                return s_status;
+            }
             if (index + symbol > nlen + ndist) {
                 return -6; /* too many lengths */
             }
@@ -336,18 +444,31 @@ static int inflate_dynamic(void) {
  * relies on (`while (gzip_inflate_block() != 0) {}`).
  */
 s32 gzip_inflate_block(void) {
-    int last = (int) getbits(1); /* BFINAL */
-    int type = (int) getbits(2); /* BTYPE  */
+    int last;
+    int type;
+    int status;
+
+    s_status = 0;
+    last = (int) getbits(1); /* BFINAL */
+    type = (int) getbits(2); /* BTYPE  */
 
     if (type == 0) {
-        inflate_stored();
+        status = inflate_stored();
     } else if (type == 1) {
-        (void) inflate_fixed();
+        status = inflate_fixed();
     } else if (type == 2) {
-        (void) inflate_dynamic();
+        status = inflate_dynamic();
+    } else {
+        /* BTYPE 3 is reserved. It consumes no input and produces no output, so
+         * reporting "more blocks follow" would spin gzip_inflate() forever. */
+        status = INF_ERR_BTYPE;
     }
-    /* type == 3 is reserved/invalid; the original would corrupt output, so we
-     * simply produce nothing for it. */
+    if (status == 0) {
+        status = s_status;
+    }
+    if (status != 0) {
+        return (s32) status;
+    }
 
     return last ? 0 : 1;
 }
