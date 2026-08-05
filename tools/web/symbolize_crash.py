@@ -41,6 +41,7 @@ Usage
     pbpaste | tools/web/symbolize_crash.py -
 """
 import argparse
+import bisect
 import os
 import re
 import sys
@@ -69,7 +70,12 @@ def sections(buf):
 
 
 def function_bodies(buf):
-    """[(body_ordinal, start_file_offset, end_file_offset)] in code-section order."""
+    """[(body_ordinal, start_file_offset, end_file_offset)] in code-section order.
+
+    Bodies are emitted consecutively, so this list is already sorted by start
+    offset and disjoint -- which is what lets the lookup below bisect it instead
+    of scanning tens of thousands of entries per frame.
+    """
     out = []
     for sid, off, size in sections(buf):
         if sid != 10:                        # 10 = code
@@ -169,9 +175,14 @@ def main():
     print("%s: %d function bodies, %d imports, %d symbols"
           % (os.path.basename(args.wasm), len(bodies), imports, len(symbols)))
     print("innermost frame first, as the browser prints it:\n")
+    starts = [body[1] for body in bodies]
     for raw in args.offsets:
         addr = int(raw, 16) if raw.lower().startswith("0x") else int(raw)
-        hit = next((b for b in bodies if b[1] <= addr < b[2]), None)
+        # The rightmost body that starts at or before addr is the only candidate;
+        # it still has to CONTAIN addr, because the offset can land in the gap
+        # past the last body or outside the code section entirely.
+        position = bisect.bisect_right(starts, addr) - 1
+        hit = bodies[position] if position >= 0 and addr < bodies[position][2] else None
         if hit is None:
             print("  0x%-9x  not inside any function body "
                   "(wrong build, or an offset from a different module)" % addr)

@@ -54,6 +54,24 @@ if [[ ! "$MDKR_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; the
 fi
 
 mkdir -p dist/web
+
+# Clear the previous link's output before staging this one. An emitted file that
+# a later toolchain stops producing (a .data package, a worker shim, an old
+# symbol map) would otherwise sit in dist/web forever and be published as though
+# it belonged to this build. The list is exact and covers ONLY build output:
+# index.html, the shell scripts, style.css, the manifest and assets/ are tracked
+# sources and must survive untouched.
+STAGED_BUILD_OUTPUT=(
+    mdkr64_web.js mdkr64_web.wasm mdkr64_web.js.symbols
+    mdkr64_web.data mdkr64_web.worker.js mdkr64_web.wasm.map
+    mdkr-save-tools.js mdkr-save-tools.wasm mdkr-save-tools.js.symbols
+    mdkr-save-tools.data mdkr-save-tools.worker.js
+    build-info.json
+)
+for stale in "${STAGED_BUILD_OUTPUT[@]}"; do
+    rm -f "dist/web/$stale"
+done
+
 cp build-web/mdkr64_web.js build-web/mdkr64_web.wasm dist/web/
 cp build-web/mdkr-save-tools.js build-web/mdkr-save-tools.wasm dist/web/
 # Ship the symbol map produced by THIS link (see the --emit-symbol-map comment in
@@ -78,6 +96,23 @@ else
     SRC_DIRTY=true
 fi
 BUILD_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# The release version, from the one place it is declared. The publisher stamps
+# it onto <html data-build-version> so a backup exported in the browser records
+# the same product version the native tools write into theirs.
+APP_VERSION="$(sed -n 's/^set(MDKR_VERSION "\([^"]*\)".*/\1/p' CMakeLists.txt | head -1)"
+if [[ -z "$APP_VERSION" ]]; then
+    echo "build_web: FAIL -- could not read MDKR_VERSION from CMakeLists.txt." >&2
+    exit 1
+fi
+# The declaration and the version this wasm was actually configured with must be
+# the same string, or the page stamp and the artifact would disagree (a stale
+# build-web/ cache is the usual cause). Fail closed rather than publish a build
+# that names two versions.
+if [[ "$APP_VERSION" != "$MDKR_VERSION" ]]; then
+    echo "build_web: FAIL -- CMakeLists declares $APP_VERSION but build-web/ is configured for $MDKR_VERSION." >&2
+    echo "  Reconfigure (tools/web/build_web.sh --clean) before publishing." >&2
+    exit 1
+fi
 cat > dist/web/build-info.json <<JSON
 {
   "project": "Golden Balloon",
@@ -90,7 +125,7 @@ cat > dist/web/build-info.json <<JSON
   "wasm_bytes": $(wc -c < dist/web/mdkr64_web.wasm | tr -d ' ')
 }
 JSON
-echo ">> provenance: $MDKR_VERSION, source $SRC_SHORT (dirty=$SRC_DIRTY) at $BUILD_UTC"
+echo ">> provenance: v$MDKR_VERSION, source $SRC_SHORT (dirty=$SRC_DIRTY) at $BUILD_UTC"
 
 wasm_bytes=$(wc -c < dist/web/mdkr64_web.wasm | tr -d ' ')
 save_tools_bytes=$(wc -c < dist/web/mdkr-save-tools.wasm | tr -d ' ')

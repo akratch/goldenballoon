@@ -7,7 +7,7 @@
   "display": "fullscreen",
   "orientation": "landscape",
   "background_color": "#061529",
-  "theme_color": "#061529",
+  "theme_color": "#0a2447",
   "icons": [
     {
       "src": "assets/apple-touch-icon.png",
@@ -19,6 +19,18 @@
       "sizes": "256x256",
       "type": "image/png",
       "purpose": "any"
+    },
+    {
+      "src": "assets/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }

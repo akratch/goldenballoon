@@ -269,7 +269,15 @@ h3 { font-size: 15px; letter-spacing: .07em; color: var(--gold); margin-bottom: 
   -webkit-tap-highlight-color: transparent;
 }
 .drop:hover, .drop:focus-visible {
-  background: rgba(255, 196, 46, .1); border-color: var(--gold); outline: none;
+  background: rgba(255, 196, 46, .1); border-color: var(--gold);
+}
+/* Keyboard focus must be distinguishable from hover, and the shared wash above
+   is not (a hovering mouse and a focused caret would look the same). The dashed
+   border goes solid and the ring from the global :focus-visible rule stays. */
+.drop:focus-visible {
+  border-style: solid;
+  outline: 2px solid var(--gold);
+  outline-offset: 3px;
 }
 .drop:active { transform: scale(.995); background: rgba(255, 196, 46, .14); }
 /* An active drag has real momentum behind it — the only interaction on this
@@ -386,7 +394,10 @@ code {
   color: var(--ink);
   background: rgba(255, 196, 46, .08);
 }
-.save-drop:active { transform: scale(.99); background: rgba(255, 196, 46, .1); }
+.save-drop:active:not(:disabled) { transform: scale(.99); background: rgba(255, 196, 46, .1); }
+/* Disabled until the save-tools module has actually mounted the store: an
+   invitation to drop a backup that nothing can read yet is a false one. */
+.save-drop:disabled { opacity: .45; cursor: not-allowed; }
 
 #save-dialog {
   width: min(960px, calc(100vw - 28px));
@@ -646,6 +657,13 @@ kbd {
   -webkit-tap-highlight-color: transparent;
 }
 .fs-btn:hover, .fs-btn:focus-visible { opacity: 1; }
+/* The button sits on live game pixels at 35% opacity, so the focus ring needs
+   its own dark halo to stay legible over whatever is being drawn behind it. */
+.fs-btn:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+  box-shadow: var(--glass-edge), 0 0 0 4px rgba(6, 21, 41, .8);
+}
 .fs-btn:active { opacity: 1; transform: scale(.92); background: rgba(8, 22, 44, .85); }
 .fs-btn { touch-action: manipulation; }
 /* With the touch overlay active, the bottom-right corner belongs to the
@@ -1079,6 +1097,17 @@ kbd {
   background: rgba(255, 255, 255, .16);
 }
 .banner-action:disabled { opacity: .55; cursor: wait; }
+
+/* Spectator notice: a standing condition of this tab, not a failure, so it
+   reads as information rather than alarm. Sits above #save-banner because both
+   can legitimately be on screen at once. */
+#session-banner {
+  position: fixed; left: 50%; bottom: 62px; transform: translateX(-50%); z-index: 20;
+  max-width: min(560px, calc(100vw - 28px));
+  background: rgba(10, 36, 71, .96); color: var(--ink);
+  border: 1px solid var(--gold);
+  padding: 10px 18px; border-radius: 4px; font-size: 14px; text-align: center;
+}
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

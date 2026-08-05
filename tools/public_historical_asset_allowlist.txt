@@ -2,3 +2,5 @@
 # This is not a blanket media exemption: any new historical path still fails.
 brand/gb1.png
 brand/gb2.png
+dist/web/assets/logo.png
+dist/web/assets/wordmark.png

@@ -80,8 +80,7 @@
           <div class="panel">
             <h2 id="picker-title">Bring your own ROM</h2>
 
-            <button id="drop" class="drop" type="button"
-                    aria-describedby="drop-help">
+            <button id="drop" class="drop" type="button">
               <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M12 16V4m0 0L8 8m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
                       fill="none" stroke="currentColor" stroke-width="2"
@@ -92,7 +91,7 @@
                 <code>.z64</code> · <code>.v64</code> · <code>.n64</code> — 12&nbsp;MB, <strong>US 1.1 or EU 1.1</strong>
               </span>
             </button>
-            <input type="file" id="rom-input" accept=".z64,.n64,.v64,.rom" hidden>
+            <input type="file" id="rom-input" accept=".z64,.n64,.v64" hidden>
 
             <p id="rom-status" role="status" aria-live="polite" tabindex="-1"></p>
 
@@ -285,8 +284,7 @@
               <button id="restore-save-snapshot" class="btn btn-ghost" type="button">Recovery points</button>
               <button id="clear-save" class="btn btn-danger" type="button">Erase saved progress</button>
             </div>
-            <button id="save-drop" class="save-drop" type="button"
-                    aria-label="Choose or drop a save backup">
+            <button id="save-drop" class="save-drop" type="button">
               Drop a <code>.mdkr-save</code> backup or exact 512-byte EEPROM here
             </button>
             <p id="save-status" role="status" aria-live="polite"></p>
@@ -370,7 +368,7 @@
   </button>
   <div id="touch-controls" class="touch-controls" role="group" hidden
        aria-label="On-screen game controls">
-    <p class="touch-rotate-hint" role="status">
+    <p class="touch-rotate-hint">
       Turn your phone sideways for more room
     </p>
     <button class="touch-pause" type="button" data-touch-button="4096"
@@ -421,6 +419,10 @@
     </button>
   </div>
 </div>
+
+<!-- Cross-tab save ownership (see mdkr64-shell.js). Only one tab may write
+     /save; a second one plays as a spectator and is told so here. -->
+<div id="session-banner" role="status" aria-live="polite" hidden></div>
 
 <!-- rom-id.js MUST come first: the shell calls dkrValidateRom() from it. It is the
      browser mirror of platform/rom_id.c (revision table + byte-order fix-up). -->

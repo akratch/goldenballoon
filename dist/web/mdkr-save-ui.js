@@ -101,15 +101,35 @@ globalThis.MDKRSaveUI = (() => {
     status.textContent = message;
   }
 
+  // #save-drop belongs in this set: it is a real <button> that opens the same
+  // import path as #import-save-button, and a drop landing on it before
+  // createRepository() resolves reaches a null module.
   function setControlsDisabled(disabled) {
     for (const id of [
       "download-save", "download-save-raw", "import-save-button",
       "download-paks", "import-paks-button", "edit-save",
-      "restore-save-snapshot", "clear-save",
+      "restore-save-snapshot", "clear-save", "save-drop",
     ]) {
       const element = byId(id);
       if (element) element.disabled = disabled;
     }
+  }
+
+  // The drop zone is a drop TARGET as well as a button, and a disabled button
+  // still receives drop events. Every entry point into a transaction therefore
+  // states the precondition itself, in a sentence a player can act on, instead
+  // of letting `repository` or `saveModule` be null one frame deeper.
+  function saveToolsReady() {
+    if (!repository || !saveModule) {
+      setStatus(
+        "Save tools are still starting. Try again in a moment.", "err");
+      return false;
+    }
+    if (released) {
+      setStatus("Reload the launcher before managing saves.", "err");
+      return false;
+    }
+    return true;
   }
 
   function loadFactory() {
@@ -469,9 +489,14 @@ globalThis.MDKRSaveUI = (() => {
       async release() {
         return serialize(async () => {
           if (released) return;
-          await syncFs(false);
+          // Ownership of /save transfers whether or not the final flush
+          // succeeds -- the engine is about to mount the same store either way.
+          // Close this module's write path FIRST so a failing flush cannot
+          // leave controls live against a store the engine now owns, then let
+          // the failure travel to the caller.
           released = true;
           setControlsDisabled(true);
+          await syncFs(false);
         });
       },
 
@@ -593,6 +618,11 @@ globalThis.MDKRSaveUI = (() => {
     },
 
     container() {
+      // tools/web/stamp_publish.sh writes data-build-version onto <html> in the
+      // PUBLISHED copy, so an exported backup records the product version that
+      // wrote it -- the same field the native CLI stamps. "browser" survives
+      // only on an unstamped local dev page, where there is no version to tell
+      // the truth about.
       const values = [
         new Date().toISOString(),
         document.documentElement.dataset.buildVersion || "browser",
@@ -892,10 +922,7 @@ globalThis.MDKRSaveUI = (() => {
 
   async function acceptControllerPakBundle(file) {
     if (!file) return;
-    if (released) {
-      setStatus("Reload the launcher before managing saves.", "err");
-      return;
-    }
+    if (!saveToolsReady()) return;
     if (file.size > MAX_PAK_INPUT) {
       setStatus("That Controller Pak bundle exceeds the 256 KiB limit.", "err");
       return;
@@ -1085,10 +1112,7 @@ globalThis.MDKRSaveUI = (() => {
 
   async function acceptImportFile(file) {
     if (!file) return;
-    if (released) {
-      setStatus("Reload the launcher before managing saves.", "err");
-      return;
-    }
+    if (!saveToolsReady()) return;
     candidateFileName = file.name || "selected file";
     if (file.size > MAX_INPUT) {
       setStatus("That file exceeds the 64 KiB save-import limit.", "err");
@@ -1599,7 +1623,7 @@ globalThis.MDKRSaveUI = (() => {
     apply.id = "save-edit-apply";
     const span = document.createElement("span");
     span.textContent = "Apply changes";
-    apply.appendChild(span);
+    apply.replaceChildren(span);
     apply.addEventListener("click", async () => {
       const bytes = codec.raw();
       apply.disabled = true;
@@ -1764,7 +1788,8 @@ globalThis.MDKRSaveUI = (() => {
         drop.addEventListener(name, (event) => {
           event.preventDefault();
           event.stopPropagation();
-          drop.classList.add("over");
+          // A disabled button still receives drop events, so do not invite one.
+          if (!drop.disabled) drop.classList.add("over");
         }));
       ["dragleave", "dragend"].forEach((name) =>
         drop.addEventListener(name, () => drop.classList.remove("over")));
@@ -1817,9 +1842,24 @@ globalThis.MDKRSaveUI = (() => {
     if (!readyPromise) return;
     try {
       await readyPromise;
-      await repository.release();
     } catch (_) {
-      // Engine boot will perform its own IDBFS mount and surface storage errors.
+      // Save tools never acquired the store, so there is nothing to hand over.
+      // Engine boot performs its own IDBFS mount and surfaces storage errors
+      // from there; refusing to boot over a module that owns nothing would be a
+      // second report of the same fact.
+      return;
+    }
+    // A failed final flush is a different claim: this module DID own /save and
+    // may still hold writes the engine is about to mount over. Say so here, and
+    // let it reach the caller's storage-failure branch rather than booting into
+    // a race.
+    try {
+      await repository.release();
+    } catch (error) {
+      setStatus(
+        "Browser storage did not accept the final save flush: " +
+        (error.message || error), "err");
+      throw error;
     }
   }
 

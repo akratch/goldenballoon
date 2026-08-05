@@ -70,6 +70,20 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
 else
     echo ">> reusing existing dist/web (--no-build)"
     tools/check_no_rom.sh dist/web
+    # The commit message, the footer and build-info.json all claim ONE source
+    # commit. Reusing a staging directory built from a different one would make
+    # the publish assert something untrue about what is live, which is the whole
+    # thing build-info.json exists to prevent.
+    staged_commit="$(sed -n 's/.*"source_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        dist/web/build-info.json 2>/dev/null || true)"
+    if [[ "$staged_commit" != "$SRC_SHA" ]]; then
+        echo "publish_demo: FAIL -- staged dist/web was built from a different commit." >&2
+        echo "  dist/web/build-info.json: ${staged_commit:-<missing>}" >&2
+        echo "  HEAD:                     $SRC_SHA" >&2
+        echo "  Rebuild (drop --no-build) so the publish and its provenance agree." >&2
+        exit 1
+    fi
+    echo ">> staged build-info.json matches HEAD ($SRC_SHORT)"
 fi
 
 # ---- gate 3: the demo repo must be a git repo, and must not be this one ------
@@ -117,18 +131,9 @@ touch "$DEMO_ROOT/.nojekyll"   # Pages must not run Jekyll over the wasm/js payl
 cp LICENSE "$DEMO_ROOT/LICENSE"
 
 # ---- cache-bust the published shell assets ----------------------------------
-# Stamp every locally-referenced asset URL with ?v=<source commit> IN THE
-# PUBLISHED COPY ONLY (the tracked dist/web sources stay pristine). A sticky
-# Safari cache can otherwise serve a stale shell against a fresh page — the
-# stamp changes every publish, so index.html alone controls what runs. The
-# shell recovers the same stamp from its own script URL and propagates it to
-# the runtime-loaded engine (mdkr64_web.js + wasm via locateFile).
-perl -pi -e "
-  s/(href=\"style\\.css)\"/\$1?v=$SRC_SHORT\"/;
-  s/(href=\"manifest\\.webmanifest)\"/\$1?v=$SRC_SHORT\"/;
-  s/(src=\"(?:rom-id|mdkr-save-ui|mdkr64-shell)\\.js)\"/\$1?v=$SRC_SHORT\"/g;
-" "$DEMO_ROOT/index.html"
-echo ">> cache-busted shell asset URLs with ?v=$SRC_SHORT"
+# One implementation, shared with the Actions publish path, so the two cannot
+# stamp differently (or one of them not at all). See tools/web/stamp_publish.sh.
+tools/web/stamp_publish.sh --dir "$DEMO_ROOT" --stamp "$SRC_SHORT"
 
 # ---- provenance in the demo repo -------------------------------------------
 ( cd "$DEMO_ROOT"

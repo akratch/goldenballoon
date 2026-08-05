@@ -37,6 +37,22 @@ let romSessionOnlyWarning = ""; // visible if a fresh pick could not reach IDBFS
 let romPersistencePending = false; // a retry can promote this in-memory ROM
 let romStorageMounted = false;
 let romSelectionEpoch = 0; // latest user pick wins across async read/hash work
+
+// #forget is the documented recovery control for a stored ROM this browser can
+// no longer boot from. It must therefore be reachable from the moment a stored
+// copy can exist — which includes the session that CREATED it, not only a
+// later reload that happens to run the page-load probe. Every path that learns
+// a stored copy exists (or might exist) goes through here; only the confirmed
+// erase hides it again.
+function revealForgetControl() {
+  const forget = $("forget");
+  if (forget) forget.hidden = false;
+}
+
+function setStoredRomAvailable(available) {
+  storedRomAvailable = available;
+  if (available) revealForgetControl();
+}
 let module = null;       // the instantiated engine Module
 let booted = false;
 let savedOnce = false;
@@ -490,7 +506,6 @@ async function validateRom(bytes, name) {
   }
   const res = dkrValidateRom(bytes, name);
   if (res.error) return res.error;
-  if (res.warning) console.warn("[ROM] " + res.warning);
   if (res.order && res.order !== "z64") {
     console.info(`[ROM] .${res.order} image converted to big-endian .z64 order.`);
   }
@@ -707,6 +722,109 @@ let enginePersistenceActive = true;
 let persistenceTimer = null;
 let persistenceListenersArmed = false;
 
+// ---- Cross-tab save ownership ----------------------------------------------
+// /save is one IndexedDB database shared by every tab on this origin, and each
+// engine instance holds its OWN in-memory MEMFS view of it. A periodic
+// syncfs(false) therefore writes that tab's whole view over whatever any other
+// tab persisted since it mounted — two tabs racing on a 5s timer means the last
+// writer silently wins and one player's progress disappears.
+//
+// So exactly one session owns writes, decided by an exclusive Web Lock held for
+// the lifetime of the document (the browser releases it on close or crash — no
+// stale-owner recovery to get wrong). A tab that cannot take the lock still
+// boots and plays; it just never writes /save and says so.
+//
+// Ownership is deliberately NOT upgraded when the owner closes: this tab's MEMFS
+// view was populated at ITS boot and has since diverged from what the owner
+// persisted, so promoting mid-session would write exactly the stale image this
+// mechanism exists to prevent. Reload to take ownership.
+//
+// navigator.locks is absent on older WebKit, so a heartbeat claim in
+// localStorage stands in. It is strictly weaker -- two tabs can race inside one
+// heartbeat, and a background tab whose timers are throttled can have its claim
+// expire underneath it -- which is why it is the fallback and not the design.
+const SAVE_LOCK_NAME = "mdkr64.save-session";
+const SAVE_CLAIM_KEY = "mdkr64.save-owner";
+const SAVE_CLAIM_TTL_MS = 15000;
+const SAVE_CLAIM_BEAT_MS = 5000;
+let saveOwnership = "unclaimed";   // "owner" | "spectator" | "unclaimed"
+let saveClaimTimer = null;
+
+function claimSaveOwnershipFallback() {
+  let claim = null;
+  try {
+    claim = JSON.parse(localStorage.getItem(SAVE_CLAIM_KEY) || "null");
+  } catch (_) { claim = null; }
+  const now = Date.now();
+  if (claim && typeof claim.at === "number" && now - claim.at < SAVE_CLAIM_TTL_MS) {
+    return "spectator";
+  }
+  const id = String(now) + "." + Math.random().toString(36).slice(2);
+  const beat = () => {
+    try {
+      localStorage.setItem(SAVE_CLAIM_KEY, JSON.stringify({ id, at: Date.now() }));
+    } catch (_) { /* storage disabled: the claim simply expires */ }
+  };
+  beat();
+  saveClaimTimer = setInterval(beat, SAVE_CLAIM_BEAT_MS);
+  addEventListener("pagehide", () => {
+    if (saveClaimTimer !== null) {
+      clearInterval(saveClaimTimer);
+      saveClaimTimer = null;
+    }
+    try {
+      const held = JSON.parse(localStorage.getItem(SAVE_CLAIM_KEY) || "null");
+      if (held && held.id === id) localStorage.removeItem(SAVE_CLAIM_KEY);
+    } catch (_) {}
+  });
+  return "owner";
+}
+
+function claimSaveOwnership() {
+  // One decision per document. A boot retry must not re-enter this and hand a
+  // second engine instance a different answer from the first.
+  if (saveOwnership !== "unclaimed") return Promise.resolve(saveOwnership);
+  const locks = navigator.locks;
+  if (!locks || typeof locks.request !== "function") {
+    saveOwnership = claimSaveOwnershipFallback();
+    return Promise.resolve(saveOwnership);
+  }
+  return new Promise((settle) => {
+    let settled = false;
+    const decide = (value) => {
+      if (settled) return;
+      settled = true;
+      saveOwnership = value;
+      settle(value);
+    };
+    locks.request(SAVE_LOCK_NAME, { mode: "exclusive", ifAvailable: true },
+      (lock) => {
+        if (!lock) {
+          decide("spectator");
+          return undefined;
+        }
+        decide("owner");
+        // Never resolving is how a Web Lock is HELD. The document's destruction
+        // is the release.
+        return new Promise(() => {});
+      }).catch((error) => {
+        // A rejected request means we do not hold the lock. Refusing to write is
+        // the only safe reading of that.
+        console.warn("[shell] save-session lock unavailable:", error);
+        decide("spectator");
+      });
+  });
+}
+
+function showSpectatorNotice() {
+  const banner = $("session-banner");
+  if (!banner) return;
+  banner.textContent =
+    "Another tab already owns saved progress. You can play here, but this tab " +
+    "will not save. Close the other tab and reload to save from this one.";
+  banner.hidden = false;
+}
+
 function publishDurability(error = null) {
   if (!module) return;
   module.__mdkrSaveDurability = {
@@ -773,7 +891,11 @@ function persist(optionsOrDone) {
   const done = typeof optionsOrDone === "function" ? optionsOrDone : null;
   const options = optionsOrDone && typeof optionsOrDone === "object"
     ? optionsOrDone : null;
-  if (!enginePersistenceActive) {
+  // A spectator tab resolves the engine's durability await without touching
+  // IDBFS. Reporting failure instead would spend the engine's save-failure UI
+  // on a condition the player cannot fix from in-game; the session banner is
+  // where this is said, once, in words.
+  if (!enginePersistenceActive || saveOwnership === "spectator") {
     const settled = persistTail.catch(() => {});
     if (done) settled.then(() => done(null), (error) => done(error));
     return settled;
@@ -833,6 +955,23 @@ function quiesceEnginePersistence(reason, done) {
   return finalFlush;
 }
 
+// Retire the module a failed boot left behind. An Emscripten heap cannot be
+// freed on demand, but everything that keeps it REACHABLE from this page can be
+// dropped — and the IDBFS mounts must be, because two live module views of the
+// same backing store is the overlap the persistence chain exists to prevent.
+function retireEngineModule(previous) {
+  if (!previous) return;
+  for (const dir of ["/save", "/rom"]) {
+    try { previous.FS.unmount(dir); } catch (_) {}
+  }
+  try { previous.__mdkrPersist = null; } catch (_) {}
+  try { previous.__mdkrPersistFailed = null; } catch (_) {}
+  try { previous.__mdkrTouchPad = null; } catch (_) {}
+  try { previous.__mdkrCanvasSize = null; } catch (_) {}
+  try { previous.canvas = null; } catch (_) {}
+  if (testState) testState.module = null;
+}
+
 async function beginEnginePersistenceSession() {
   if (persistenceTimer !== null) {
     clearInterval(persistenceTimer);
@@ -841,6 +980,7 @@ async function beginEnginePersistenceSession() {
   // A fast retry can begin before the preceding final IDBFS transaction's
   // callback hands save tooling back. Never let two module views overlap.
   await persistTail.catch(() => {});
+  retireEngineModule(module);
   persistRequested = 0;
   persistCommitted = 0;
   persistTail = Promise.resolve();
@@ -1072,6 +1212,10 @@ async function boot() {
   if (booted) return;
   booted = true;
   await beginEnginePersistenceSession();
+  // Decide write ownership BEFORE anything mounts /save, so a spectator tab has
+  // already been switched off the persistence path by the time the engine can
+  // ask for a flush.
+  if (await claimSaveOwnership() === "spectator") showSpectatorNotice();
   const canvas = $("canvas");
   const status = $("gate-msg");
   status.className = "status-line";
@@ -1199,9 +1343,12 @@ async function boot() {
         testState.exitCode = Number(code);
         testMark("exited");
       }
-      // The engine's main() returns nonzero when rom_io.c refuses the ROM.
+      // The engine's main() returns nonzero when rom_io.c refuses the ROM. The
+      // stored copy stops being bootable but still OCCUPIES storage, so this
+      // clears only the "can press Play" claim — #forget was revealed when the
+      // copy was stored and must stay reachable on exactly this screen.
       if (code && code !== 0) {
-        storedRomAvailable = false;
+        setStoredRomAvailable(false);
         $("gate").hidden = false;
         $("stage").hidden = true;
         $("rom-status").className = "err";
@@ -1293,33 +1440,40 @@ async function boot() {
     selectedRomName = "";
     pickedRomWritten = true;
     let romPersisted = false;
-    try {
-      if (testConfig && Number.isInteger(testConfig.romSyncFailCount) &&
-          testConfig.romSyncFailCount > 0) {
-        testConfig.romSyncFailCount--;
-        throw new Error("injected ROM storage sync failure");
+    // syncfs(false) flushes EVERY IDBFS mount this module owns, /save included.
+    // A spectator tab must not perform one, so it plays from the in-memory copy
+    // and leaves storing the ROM to a session that owns writes. That is policy,
+    // not a storage fault, so it raises no session-only warning and offers no
+    // retry: retrying would perform exactly the write ownership forbids.
+    if (saveOwnership !== "spectator") {
+      try {
+        if (testConfig && Number.isInteger(testConfig.romSyncFailCount) &&
+            testConfig.romSyncFailCount > 0) {
+          testConfig.romSyncFailCount--;
+          throw new Error("injected ROM storage sync failure");
+        }
+        if (testConfig && testConfig.romSyncFailOnce) {
+          testConfig.romSyncFailOnce = false;
+          throw new Error("injected ROM storage sync failure");
+        }
+        await new Promise((resolve, reject) => module.FS.syncfs(
+          false, (err) => err ? reject(err) : resolve()
+        ));
+        romPersisted = true;
+        romPersistencePending = false;
+        clearRomSessionOnlyWarning();
+      } catch (e) {
+        testError("ROM persistence failed: " + (e && e.message ? e.message : e));
+        romSessionOnlyWarning =
+          `${pickedName} is running for this session only. Browser storage ` +
+          "could not be updated, so reloading may restore an earlier ROM or " +
+          "ask you to choose it again. Keep the original file available.";
+        romPersistencePending = storageMounted;
       }
-      if (testConfig && testConfig.romSyncFailOnce) {
-        testConfig.romSyncFailOnce = false;
-        throw new Error("injected ROM storage sync failure");
-      }
-      await new Promise((resolve, reject) => module.FS.syncfs(
-        false, (err) => err ? reject(err) : resolve()
-      ));
-      romPersisted = true;
-      romPersistencePending = false;
-      clearRomSessionOnlyWarning();
-    } catch (e) {
-      testError("ROM persistence failed: " + (e && e.message ? e.message : e));
-      romSessionOnlyWarning =
-        `${pickedName} is running for this session only. Browser storage ` +
-        "could not be updated, so reloading may restore an earlier ROM or " +
-        "ask you to choose it again. Keep the original file available.";
-      romPersistencePending = storageMounted;
     }
     // The in-memory engine copy is valid even when persistence is unavailable;
     // only advertise a reusable stored copy after IDBFS was actually mounted.
-    storedRomAvailable = storageMounted && romPersisted;
+    setStoredRomAvailable(storageMounted && romPersisted);
   }
 
   // The engine's post-EEPROM-write sync calls this, so the whole page shares one
@@ -1365,10 +1519,13 @@ async function boot() {
     globalThis.__mdkrTestRetryRomPersistence = () => retryRomPersistence();
   }
 
-  // Arm persistence + audio-resume gestures (once).
-  // Browser-runtime custody tests can hold automatic retries while they prove
-  // the public Retry control itself owns the recovery transition.
-  if (!(testConfig && testConfig.disableAutoPersistence)) {
+  // Arm persistence + audio-resume gestures (once). A spectator never arms the
+  // timer at all: an unconditional 5s syncfs(false) from every tab IS the
+  // cross-tab clobber. Browser-runtime custody tests can likewise hold automatic
+  // retries while they prove the public Retry control itself owns the recovery
+  // transition.
+  if (saveOwnership !== "spectator" &&
+      !(testConfig && testConfig.disableAutoPersistence)) {
     persistenceTimer = setInterval(persist, 5000);
   }
   armEnginePersistenceListeners();
@@ -1727,7 +1884,7 @@ function wireRomUi() {
     if (!enginePersistenceActive) await persistTail.catch(() => {});
     const ok = await idbClear("/rom");
     if (ok) {
-      storedRomAvailable = false;
+      setStoredRomAvailable(false);
       romPersistencePending = false;
       romStorageMounted = false;
       clearRomSessionOnlyWarning();
@@ -1761,7 +1918,7 @@ function wireRomUi() {
 async function probeStoredRom() {
   const selection = romSelectionEpoch;
   if ((await idbCount("/rom")) === 0 || selection !== romSelectionEpoch) return;
-  $("forget").hidden = false;
+  revealForgetControl();
   const play = $("play");
   const stored = await idbReadFile("/rom", ROM_PATH);
   if (selection !== romSelectionEpoch) return;
@@ -1781,7 +1938,7 @@ async function probeStoredRom() {
     play.disabled = true;
     return;
   }
-  storedRomAvailable = true;
+  setStoredRomAvailable(true);
   if (!play.dataset.blocked) {
     play.disabled = false;
     $("rom-status").className = "ok";
@@ -1800,7 +1957,11 @@ function wireFpsReadout() {
   const el = $("fps");
   if (!el) return;
   let lastEngineFrames = 0, since = performance.now(), shown = false;
-  setInterval(() => {
+  let timer = null;
+  // The readout is off by default, so the timer only exists while it is on:
+  // a hidden overlay must not cost a wakeup twice a second for the whole
+  // session, least of all on a phone.
+  const sample = () => {
     const now = performance.now();
     const dt = now - since;
     if (dt >= 500) {
@@ -1812,9 +1973,23 @@ function wireFpsReadout() {
       lastEngineFrames = engineFrames;
       since = now;
     }
-  }, 500);
+  };
   addEventListener("keydown", (e) => {
-    if (e.key === "F3") { shown = !shown; el.hidden = !shown; }
+    if (e.key !== "F3") return;
+    shown = !shown;
+    el.hidden = !shown;
+    if (shown) {
+      // Rebase the window so the first sample measures live frames rather than
+      // everything presented since the page loaded.
+      lastEngineFrames = module && Number.isFinite(module.__mdkrFrames)
+        ? module.__mdkrFrames : 0;
+      since = performance.now();
+      el.textContent = "";
+      timer = setInterval(sample, 500);
+    } else if (timer !== null) {
+      clearInterval(timer);
+      timer = null;
+    }
   });
 }
 
@@ -2303,6 +2478,9 @@ function wireFullscreen() {
   });
   if (btn) btn.addEventListener("click", go);
   addEventListener("keydown", (e) => {
+    // A bare F only. Ctrl/Cmd/Alt+F belong to the browser (find, menus, window
+    // management) and must reach it unmodified.
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key.toLowerCase() === "f") {
       // Only while playing, and never while the user is typing in a field.
       const active = document.activeElement;
@@ -2319,8 +2497,27 @@ function wireFullscreen() {
   updateButton();
 }
 
+// ---- Offline shell (service worker) ----------------------------------------
+// Registered ONLY on a published page, which is exactly a page whose asset URLs
+// carry ?v=<commit>. A dev page served from build_web.sh output has no stamp, so
+// nothing installs and no worker can pin a half-edited local shell.
+//
+// The worker's own URL carries the same stamp, so a new build is a new script to
+// the browser: it installs beside the old one and does not activate until every
+// document using the old one is gone (see sw.js — no skipWaiting on purpose).
+// That is what keeps the JS/wasm pair consistent: whichever worker is in charge,
+// its cache holds one build and only one.
+function registerServiceWorker() {
+  if (!BUILD_QUERY || !navigator.serviceWorker) return;
+  addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js" + BUILD_QUERY, { scope: "./" })
+      .catch((error) => console.warn("[shell] offline cache unavailable:", error));
+  });
+}
+
 // ---- Startup ---------------------------------------------------------------
 (async () => {
+  registerServiceWorker();
   wireRomUi();
   const romRetry = $("rom-storage-retry");
   if (romRetry) {
@@ -2363,4 +2560,18 @@ function wireFullscreen() {
   msg.className = "status-line";
   msg.textContent = "";
   await probeStoredRom();
-})();
+})().catch((error) => {
+  // Nothing above this line has a caller. An unhandled rejection here used to
+  // leave "Checking your browser…" on screen forever with the reason only in
+  // devtools; the gate line is where a visitor is already looking.
+  const detail = String(error && error.message ? error.message : error);
+  testError(detail);
+  testMark("startup-failed");
+  const msg = $("gate-msg");
+  if (msg) {
+    msg.className = "status-line err";
+    msg.textContent =
+      "This page failed to start (" + detail.slice(0, 300) + "). Reload to try again.";
+  }
+  console.error("[shell] startup failed:", error);
+});
