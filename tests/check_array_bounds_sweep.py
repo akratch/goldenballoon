@@ -223,6 +223,19 @@ SHAPE_TRIAGE = {
     ("bare-pointer", "game/src/audio.c", "music_get_fx_mix_all_channels:channelFXMix"):
         "UNREACHABLE: marked UNUSED and has zero callers in the tree. Genuinely "
         "unbounded (one u8 per gMusicPlayer->maxChannels) if it ever gains one.",
+    # -- bounded by the allocator that sized the array. ---------------------
+    ("bare-pointer", "game/src/camera_dynamic_occlusion.c",
+     "mdkr_camera_dynamic_index_clear:buckets"):
+        "BOUNDED BY CONSTRUCTION: the loop bound is sIndexBucketCount, which the "
+        "same allocator sets to the calloc element count of all three bucket "
+        "arrays it can be handed. Every call site passes one of those file "
+        "statics and is guarded by the sIndexBucketCount == 0 early return.",
+    ("bare-pointer", "game/src/camera_object_occlusion.c",
+     "mdkr_camera_object_occlusion_sort_chunk_range:order"):
+        "BOUNDED BY PARAMETER: writes only order[position] for "
+        "begin <= position < end; end is the bound, and the recursion narrows "
+        "[begin, end) monotonically from the root call's chunk_count, which is "
+        "the array's fill count.",
     # -- the C-string contract: bounded by the input's NUL. -----------------
     ("bare-pointer", "game/src/font.c", "parse_string_with_number:output"):
         "STRING CONTRACT: copies until the input's NUL, so the output buffer must "
@@ -373,7 +386,15 @@ SHAPE_TRIAGE = {
 # Ceilings for the INFO population, per class. May fall; may not rise.
 SHAPE_INFO_MAX = {
     "bare-pointer": 0,
-    "equality-cap": 29,
+    # 29 pre-1.0.5 + 3 attributed additions, each verified bounded:
+    # camera_object_occlusion.c sweep/rounded-lens `stack_count != 0` (x2) are
+    # the node-stack pop underflow guards; every two-slot push is fenced by
+    # `stack_count + 2 > limits->nodes` immediately beforehand, which also
+    # reports exhaustion. object_functions.c
+    # `obj_char_select_batch_texture_index:numCursors == 0` is an early-out on
+    # an empty cursor list filled by the MAXCONTROLLERS loop into
+    # playerSelectIndices[MAXCONTROLLERS]; it caps nothing.
+    "equality-cap": 32,
     "shift-count": 141,
 }
 
