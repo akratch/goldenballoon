@@ -1515,6 +1515,23 @@ static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
         if (room != (size_t)-1) {
             uint32_t max_rows = (uint32_t)(room / line_bytes);
             if (height > max_rows) height = max_rows;
+            /* The row clamp only bounds whole pitches. A tile whose width needs
+             * more bytes than its own pitch (width * bpp > line_bytes) reads
+             * past the end of the LAST row, which is the arena edge; drop the
+             * rows whose full width is not backed. */
+            if (width > 0) {
+                uint32_t row_bytes;   /* inverse of texels_per_row() */
+                switch (siz) {
+                    case G_IM_SIZ_4b:  row_bytes = (width + 1u) / 2u; break;
+                    case G_IM_SIZ_16b: row_bytes = width * 2u; break;
+                    case G_IM_SIZ_32b: row_bytes = width * 4u; break;
+                    default:           row_bytes = width; break;
+                }
+                while (height > 0 &&
+                       (size_t)(height - 1u) * line_bytes + row_bytes > room) {
+                    height--;
+                }
+            }
         }
     }
     if (width == 0 || height == 0) return false;
@@ -1874,6 +1891,14 @@ static uint32_t dkr_palette_hash(uint8_t fmt) {
     return h;
 }
 
+/* The same TLUT words decode to different pixels under G_TT_RGBA16 and
+ * G_TT_IA16 (dkr_palette_entry_to_rgba32), so the type is part of the decode
+ * input. Zero outside CI so a TEXTLUT mode change cannot split non-paletted
+ * cache entries. */
+static uint32_t dkr_palette_fmt_key(uint8_t fmt) {
+    return fmt == G_IM_FMT_CI ? rdp.palette_fmt : 0u;
+}
+
 /* Bind the render tile's texture to a sampler unit; import+cache on miss.
  * Returns the uploaded dimensions (for UV normalization). */
 static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32_t *h) {
@@ -1887,6 +1912,7 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
     uint8_t fmt = rdp.tile[td].fmt, siz = rdp.tile[td].siz, pal = rdp.tile[td].palette;
     uint16_t tw = rdp.tile[td].width, th = rdp.tile[td].height;
     uint32_t ph = dkr_palette_hash(fmt);
+    uint32_t pf = dkr_palette_fmt_key(fmt);
     const uint32_t source_size_bytes = rdp.loaded_texture[tmem].size_bytes;
     const uint32_t source_line_bytes =
         dkr_tile_source_line_bytes(td, source_size_bytes);
@@ -1902,6 +1928,7 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         .source_line_bytes = source_line_bytes,
         .source_size_bytes = source_size_bytes,
         .palette_hash = ph,
+        .palette_fmt = pf,
         .width = tw,
         .height = th,
         .fmt = fmt,
@@ -1952,6 +1979,12 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
              * so retaining the old metadata would turn the next lookup into a
              * false cache hit.
              */
+            if (acquired) {
+                /* The slot carries no id until the entry below is written, so
+                 * delete_slot cannot reach a handle acquired this call; seat it
+                 * first or the texture and its live-count leak. */
+                tex_cache[slot].texture_id = tid;
+            }
             dkr_texcache_delete_slot(slot);
             return false;
         }
@@ -2213,8 +2246,21 @@ static void dkr_setup_draw_state(bool poly_tex_enabled) {
     (void)poly_tex_enabled;
     cur.use_texture = cur.feat.used_textures[0] || cur.feat.used_textures[1];
 
-    if (comb->prg != rendering_state.shader_program) {
+    /* A failed creation must not be cached: the combiner pool is regenerable and
+     * a NULL program here would make this cc_id permanently undrawable. */
+    if (comb->prg == NULL) {
+        comb->prg = dkr_lookup_or_create_shader(
+            comb->shader_id0, comb->shader_id1);
+    }
+
+    /* A backend that could not build the program leaves the previously bound one
+     * in place; the vtable takes no NULL program. */
+    if (comb->prg != NULL && comb->prg != rendering_state.shader_program) {
         gfx_flush();
+        /* The attribute set differs per program; without the unload the arrays a
+         * wider program enabled stay enabled and fetch past a narrower one's VBO
+         * stride. gfx_flush above guarantees no batch spans the switch. */
+        gfx_rapi->unload_shader(rendering_state.shader_program);
         gfx_rapi->load_shader(comb->prg);
         rendering_state.shader_program = comb->prg;
     }
@@ -2990,6 +3036,9 @@ static void dkr_load_identity(int slot) {
  * would be rejected by that function's pointer checks.
  */
 static void dkr_decode_matrix(int slot, const int32_t *a) {
+    /* Every rsp matrix array is sized for the three G_MTX_DKR_INDEX_0..2 slots
+     * (f3ddkr.h); the two-bit encoded index can name a fourth. */
+    if (slot < 0 || slot > 2) return;
     float (*mm)[4] = rsp.mtx[slot];
     uint32_t orbits = 0;
     for (int i = 0; i < 4; i++) {
@@ -3352,6 +3401,16 @@ static void dkr_dp_load_tlut(uint8_t tile, uint32_t uls, uint32_t ult,
     /* TLUT entries are big-endian ROM bytes (like texels); read MSB-first. */
     const uint8_t *src = (const uint8_t *)rdp.to_load.addr;
     if (!src) return;
+    /* Never read the TLUT past the arena: the entry count comes from the display
+     * list, the load address from the game. */
+    {
+        size_t room = dkr_arena_room(src);
+        if (room == (size_t)-1) {
+            if (!dkr_ptr_plausible(src)) return;
+        } else if ((size_t)count * sizeof(uint16_t) > room) {
+            count = (uint32_t)(room / sizeof(uint16_t));
+        }
+    }
     if (!dkr_replay_pass && count != 0u) {
         (void)gfx_retained_task_capture_dependency(
             src, src, (size_t)count * sizeof(uint16_t));
@@ -4466,7 +4525,11 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
         /* ---- SP: geometry ---- */
         case G_MTX: {  /* gSPMatrixDKR — load slot and select it */
             uint8_t matrix_param = (uint8_t)C0(cmd, 16, 8);
+            /* Only G_MTX_DKR_INDEX_0..2 exist; rsp.mtx / rsp.shadow_matrix /
+             * rsp.shadow_matrix_valid are all sized 3. Fold the unused fourth
+             * encoding onto slot 0, as G_MW_MVPMATRIX does. */
             int slot = (int)((matrix_param >> 6) & 3);
+            if (slot > 2) slot = 0;
             uint8_t draw_space = matrix_param & 7;
             uint8_t effective_draw_space =
                 draw_space == G_MTX_DKR_SPACE_INHERIT
@@ -4928,6 +4991,14 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                         dkr_replay_object_alpha_numerator,
                         dkr_replay_object_alpha_denominator,
                         position_overrides[0])) {
+                    /* Only the anchor is interpolated; dkr_sp_vertex reads an
+                     * override for EVERY vertex in the batch, so the rest must
+                     * carry their own authored positions. */
+                    for (int bi = 1; v != NULL && bi < retained_n; bi++) {
+                        position_overrides[bi][0] = (float)v[bi].x;
+                        position_overrides[bi][1] = (float)v[bi].y;
+                        position_overrides[bi][2] = (float)v[bi].z;
+                    }
                     position_override = position_overrides;
                     dkr_replay_billboard_vertex_hits++;
                 } else {
@@ -5087,8 +5158,11 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                     color_override != NULL);
             }
             if (v) {
+                /* retained_n is the count the retained/override arrays were
+                 * actually filled to; n is the display list's request. Passing n
+                 * would transform whatever the stack held past that point. */
                 dkr_sp_vertex(
-                    vertex_source, n, append, position_override,
+                    vertex_source, retained_n, append, position_override,
                     color_override);
             }
             break;

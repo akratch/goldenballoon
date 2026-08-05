@@ -330,15 +330,44 @@ static bool build_cascade(
             }
         }
     }
-    center_x = (minimum[0] + maximum[0]) * 0.5f;
-    center_y = (minimum[1] + maximum[1]) * 0.5f;
-    radius = fmaxf(
-        maximum[0] - minimum[0],
-        maximum[1] - minimum[1]) * 0.5f;
+    /*
+     * The map extent must be ROTATION-INVARIANT or the snap below cannot hold
+     * the map still: texel size is 2*radius/resolution, so a radius taken from
+     * the light-space AABB of the slice changes as the camera turns, moving the
+     * quantization grid itself and reintroducing the crawl the snap exists to
+     * remove. The slice's bounding SPHERE depends only on the slice's own
+     * shape (near/far/fov/aspect), which no camera rotation changes.
+     */
+    {
+        Vec3 slice_center = { 0.0f, 0.0f, 0.0f };
+        float radius_squared = 0.0f;
+        for (size_t index = 0; index < 8; index++) {
+            slice_center.x += slice[index].x;
+            slice_center.y += slice[index].y;
+            slice_center.z += slice[index].z;
+        }
+        slice_center.x *= 0.125f;
+        slice_center.y *= 0.125f;
+        slice_center.z *= 0.125f;
+        for (size_t index = 0; index < 8; index++) {
+            Vec3 offset = {
+                slice[index].x - slice_center.x,
+                slice[index].y - slice_center.y,
+                slice[index].z - slice_center.z,
+            };
+            float distance_squared = dot3(offset, offset);
+            if (distance_squared > radius_squared) {
+                radius_squared = distance_squared;
+            }
+        }
+        center_x = dot3(slice_center, axis_x);
+        center_y = dot3(slice_center, axis_y);
+        radius = sqrtf(radius_squared);
+    }
     if (!finite_float(radius) || radius < 1.0f) {
         return false;
     }
-    /* Quantizing the extent prevents tiny camera rotations changing texel size. */
+    /* Quantizing the extent keeps float noise in the corner math off the grid. */
     radius = ceilf(radius * 16.0f) / 16.0f;
     texel = (radius * 2.0f) / (float)resolution;
     center_x = floorf(center_x / texel + 0.5f) * texel;
