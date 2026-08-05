@@ -424,7 +424,13 @@ def check_arm(binary: Path, rom: Path, root: Path, arm: Arm, timeout: int,
         failures.append(
             f"{prefix}: advanced {sched.get('simticks')} authoritative ticks, "
             f"expected {ticks}")
-    conservation_error = completed_tick_conservation(sched, ticks, prefix)
+    # Absolute pacing pin: this arm runs a fixed two-presents-per-tick
+    # schedule with no catch-up (asserted immediately below), so the only debt
+    # it may ever hold is the single terminal ticket the finite run stops on.
+    # Anything higher means a host opportunity fell behind on content that is
+    # supposed to be perfectly paced.
+    conservation_error = completed_tick_conservation(
+        sched, ticks, prefix, expected_lead=1, expected_max_pending=1)
     if conservation_error:
         failures.append(conservation_error)
     for key in ("multidue", "catchup", "skips", "rebases"):

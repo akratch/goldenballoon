@@ -25,7 +25,11 @@ python3 tools/run_checks.py \
   --wasm build-web/mdkr64_web.wasm
 ```
 
-The manifest contains all 92 `tests/check_*.py` scripts and expands to 101 tasks:
+The manifest registers 122 of the 125 `tests/check_*.py` scripts and expands to
+135 tasks. The three it does not name directly
+(`check_controller_settings_persistence.py`, `check_host_input_focus.py`,
+`check_launcher_tabs.py`) are CTest companions that `rom_free_units` owns, so
+every check script still runs exactly once in a default pass:
 it also runs the ROM-free display/endian/magic-code/object-layout/allocator/runtime-contract,
 sprite-layout, RDP-interpolation, font-registry/SDF, and RL-1 CTests, while filename
 entry, locked-door collision, RAW16 audio, native-layout safety, and
@@ -571,7 +575,12 @@ python3 tests/check_rl1_vertex_colour_ab.py --build build --rom baserom.us.v80.z
 ```
 
 `check_sprite_layout` combines unit boundary cases with a byte-order-aware census
-of every supported sprite record. `check_rdp_interpolation` compares corrected
+of every supported sprite record. `tests/check_intro_shrub_sprite.py` covers the
+other half of the same subsystem at the RSP boundary: a sprite wider than five
+tiles is emitted as several `G_VTX_APPEND` runs that share one base, so it
+renders the authored intro and scores three fixed regions of one deterministic
+frame to prove every tile lands in its own quad rather than over the first one.
+`check_rdp_interpolation` compares corrected
 and exact-legacy gradient arms on both backends and requires timing identity.
 `check_font_sdf` runs mode/backend/control arms: Pure and Restored must be
 byte-identical, while Remastered must upload derived fields and change only

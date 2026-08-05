@@ -52,26 +52,35 @@ Options:
   --vehicle-rng-trace PATH
                       run the US 1.1 retail car-audio RNG authority witness;
                       validate the local-only trace and skip unrelated state scoring
-  --audio-dump PATH   capture the ROM's own AI DMA stream as raw LE s16 stereo;
-                      validates the local-only capture and skips state scoring
+  --audio-dump PATH   capture the ROM's own AI DMA stream as raw LE s16 stereo
+                      on race_state_oracle; validates the local-only capture
+                      and skips state scoring
   -h, --help         show this help
 
 Captures are ROM-derived and local-only. Do not commit them.
 USAGE
 }
 
+# A value option with no value must be a clean usage error, not `set -u`'s
+# "$2: unbound variable" from inside the parser (tools/ci/check_release_ready.sh
+# does the same before it dereferences "$2").
+need_value() { # need_value <option> <remaining argument count>
+    [[ "$2" -ge 2 ]] || {
+        echo "FAIL: $1 requires a value" >&2; usage >&2; exit 2; }
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --ares-bin) ARES_BIN="$2"; shift 2 ;;
-        --rom) ROM="$2"; shift 2 ;;
-        --native-bin) NATIVE_BIN="$2"; shift 2 ;;
-        --native-arm) NATIVE_ARM="$2"; shift 2 ;;
-        --ares-timeout) ARES_TIMEOUT="$2"; shift 2 ;;
+        --ares-bin) need_value "$1" "$#"; ARES_BIN="$2"; shift 2 ;;
+        --rom) need_value "$1" "$#"; ROM="$2"; shift 2 ;;
+        --native-bin) need_value "$1" "$#"; NATIVE_BIN="$2"; shift 2 ;;
+        --native-arm) need_value "$1" "$#"; NATIVE_ARM="$2"; shift 2 ;;
+        --ares-timeout) need_value "$1" "$#"; ARES_TIMEOUT="$2"; shift 2 ;;
         --keep-all-native) KEEP_ALL_NATIVE=1; shift ;;
         --skip-native) SKIP_NATIVE=1; shift ;;
         --skip-ares) SKIP_ARES=1; shift ;;
-        --vehicle-rng-trace) VEHICLE_RNG_TRACE="$2"; shift 2 ;;
-        --audio-dump) AUDIO_DUMP="$2"; shift 2 ;;
+        --vehicle-rng-trace) need_value "$1" "$#"; VEHICLE_RNG_TRACE="$2"; shift 2 ;;
+        --audio-dump) need_value "$1" "$#"; AUDIO_DUMP="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         -*) echo "Unknown arg: $1" >&2; usage >&2; exit 2 ;;
         *) if [[ -z "$ROUTE" ]]; then ROUTE="$1"; else echo "Unexpected: $1" >&2; exit 2; fi; shift ;;
@@ -87,6 +96,13 @@ if [[ -n "$VEHICLE_RNG_TRACE" ]]; then
         echo "FAIL: --vehicle-rng-trace cannot reuse an old ares run" >&2; exit 2; }
 fi
 if [[ -n "$AUDIO_DUMP" ]]; then
+    # Same fence as --vehicle-rng-trace above: this lane replaces state scoring
+    # rather than adding to it, so it may only be asked for on the route the
+    # console-audio reference is defined on (docs/ORACLE.md). Without the
+    # route pin, `--audio-dump` on any other route silently turned a scored
+    # comparison into an unscored one.
+    [[ "$ROUTE" == "race_state_oracle" ]] || {
+        echo "FAIL: --audio-dump requires race_state_oracle" >&2; exit 2; }
     [[ "$SKIP_ARES" -eq 0 ]] || {
         echo "FAIL: --audio-dump cannot reuse an old ares run" >&2; exit 2; }
     [[ ! -d "$AUDIO_DUMP" && ! -d "$AUDIO_DUMP.rate" ]] || {

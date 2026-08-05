@@ -96,7 +96,7 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import resolve_binary
+from harness_utils import resolve_binary, save_env, test_save_dir
 
 # Product scope is deliberately frozen to the two revision-1 asset layouts.
 # Keep this declaration separate from the per-ROM metadata below: the check must
@@ -207,7 +207,14 @@ DUMP_EVERY = 900
 def run_engine(build, rom, frames, script=None, dumpdir=None, extra_env=None,
                verbose=False):
     """One muted, headless run. Returns (returncode, combined output)."""
-    env = dict(os.environ)
+    # Every sibling check builds its engine environment from a clean base: an
+    # inherited MDKR_* (a trace, a fault injection, a cadence override) would
+    # otherwise silently change what this gate measures. The save directory is
+    # the one inherited value that must survive, and it is re-established from
+    # the shared harness contract rather than from a stray variable.
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(("MDKR", "GE007_"))}
+    save_env(env, test_save_dir())
     env["MDKR_AUDIO"] = "0"        # belt-and-braces; --headless-frames is the guarantee
     env["MDKR_SIMULATION_CADENCE"] = "enhanced"
     env["MDKR_SYNTH_FIELDS"] = "1"

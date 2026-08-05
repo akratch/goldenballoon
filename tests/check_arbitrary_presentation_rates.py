@@ -198,7 +198,16 @@ def compare_arm(label: str, result: Result, baseline: Result,
         failures.append(f"{label}: PCM capture differs from original")
 
     summary = result.summary
-    conservation_error = completed_tick_conservation(summary, TICKS, label)
+    # Absolute pacing pin, derived from the arm's declared rate rather than
+    # from the run: a host opportunity arrives every 1/rate second and the
+    # simulation owes tick_rate ticks per second, so at most ceil(tick_rate /
+    # rate) tickets can fall due between two opportunities, and the finite run
+    # additionally stops holding one. A rate at or above cadence therefore
+    # pins the debt at exactly 1.
+    grouped_debt = max(1, -(-tick_rate // rate))
+    conservation_error = completed_tick_conservation(
+        summary, TICKS, label, expected_lead=grouped_debt,
+        expected_max_pending=grouped_debt)
     if conservation_error:
         failures.append(conservation_error)
     expected_catchup = max(0, TICKS - expected)

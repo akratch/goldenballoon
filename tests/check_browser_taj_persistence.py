@@ -19,6 +19,7 @@ from check_browser_runtime import (
     CDPClient,
     ChromeProcess,
     CheckFailure,
+    FATAL_MARKERS,
     OverlayServer,
     ROM_BYTES,
     add_config_script,
@@ -37,12 +38,18 @@ from check_browser_runtime import (
 
 ROOT = Path(__file__).resolve().parent.parent
 UNLOCK_SCRIPT = ROOT / "tests/input_scripts/taj_unlock_select.txt"
-RELOAD_SCRIPT = """\\
+# The escaped opening line used to emit a literal "\" as the script's first
+# line. platform_input_load_script() drops it silently (no second token), so
+# nothing failed -- which is exactly why the loaded-entry count is asserted
+# against RELOAD_SCRIPT_ENTRIES below rather than assumed.
+RELOAD_SCRIPT = """\
 1250 START 4
 1330 START 4
 1520 DOWN 4
 1570 RIGHT 4
 """
+RELOAD_SCRIPT_ENTRIES = len(
+    [line for line in RELOAD_SCRIPT.splitlines() if line.strip()])
 STATE_TEXT = (
     "taj_mod_version=1\ntaj_unlocked=1\n"
     "adventure_migration_complete=1"
@@ -58,8 +65,25 @@ def wait_console(cdp: CDPClient, needle: str, timeout: float,
                 return line
         time.sleep(0.08)
     raise CheckFailure(
-        f"timed out waiting for {needle!r}; console tail:\\n" +
-        "\\n".join(cdp.console[-40:]))
+        f"timed out waiting for {needle!r}; console tail:\n" +
+        "\n".join(cdp.console[-40:]))
+
+
+def require_clean_browser(cdp: CDPClient, label: str) -> None:
+    """The same fatal-marker/exception surface the picker sibling asserts.
+
+    This check injects one rejected persist Promise on purpose; that rejection
+    is handled by the sidecar, so it must not surface as an uncaught page
+    exception, a failed request, or an engine fatal. Without this the arm could
+    pass while the page was throwing behind it.
+    """
+    console_text = "\n".join(cdp.console)
+    fatal = [marker for marker in FATAL_MARKERS
+             if marker.lower() in console_text.lower()]
+    require(not fatal, f"{label} emitted fatal markers: {fatal}")
+    require(not cdp.exceptions and not cdp.failures,
+            f"{label} raised browser errors: exceptions={cdp.exceptions}, "
+            f"failures={cdp.failures}")
 
 
 def sidecar_text(cdp: CDPClient) -> str | None:
@@ -151,6 +175,7 @@ def run(args: argparse.Namespace) -> None:
             final = snapshot(cdp)
             require(final.get("phase") == "exited" and final.get("exitCode") == 0,
                     f"failed-persist run did not exit cleanly: {final}")
+            require_clean_browser(cdp, "failed-persist Taj run")
             flushed = persist_snapshot(cdp, args.timeout)
             require(flushed.get("error") is None,
                     f"ordinary retry flush failed: {flushed.get('error')}")
@@ -179,12 +204,24 @@ def run(args: argparse.Namespace) -> None:
                 "globalThis.__mdkrTestSnapshot && globalThis.__mdkrTestSnapshot().phase",
                 lambda value: value == "main-started",
                 "persisted-Taj reload main() start", args.timeout)
+            # The reload arm is only meaningful if the engine actually received
+            # the route it was given: a malformed line is dropped silently by
+            # platform_input_load_script(), which would leave Taj restored but
+            # never selected.
+            loaded = wait_console(cdp, "[input-script] loaded ", args.timeout,
+                                  start)
+            require(
+                f"loaded {RELOAD_SCRIPT_ENTRIES} entries" in loaded,
+                f"reload route lost input entries: {loaded.strip()!r}, "
+                f"expected {RELOAD_SCRIPT_ENTRIES}",
+            )
             wait_console(cdp, "taj_roster: base=8 taj=8 enabled=1",
                          args.timeout, start)
             reload_console = cdp.console[start:]
             require(not any("magic_code_submit: accepted=1" in line
                             for line in reload_console),
                     "reload re-entered the magic-code route")
+            require_clean_browser(cdp, "persisted-Taj reload")
             cdp.call("Page.removeScriptToEvaluateOnNewDocument",
                      {"identifier": reload_preload})
         finally:

@@ -137,7 +137,10 @@ tools/run_oracle.sh race_state_oracle --skip-native \
 
 The runner keeps the host silent, validates the raw stereo frame boundary and
 rate sidecar, and prints the capture's duration and SHA-256 before it can be
-used as the `--reference` input.
+used as the `--reference` input. Like `--vehicle-rng-trace`, the option is
+accepted only on `race_state_oracle`: the lane *replaces* that route's state
+scoring rather than adding to it, so asking for it on any other route is a
+usage error instead of a silently unscored comparison.
 
 ### The vehicle-audio RNG authority lane
 

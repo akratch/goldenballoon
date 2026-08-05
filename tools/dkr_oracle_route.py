@@ -193,6 +193,16 @@ def emit_native_script(route: dict[str, Any], arm_name: str | None = None) -> No
         # authoritative sample (traced at N+1). Route JSON frames name the
         # intended present/tick phase, so lead positive entries by one here.
         # Frame zero has no earlier representable ticket and remains zero.
+        #
+        # NOTE: that clamp is the one place the mapping is not injective. An
+        # authored frame 0 and an authored frame 1 (or, under a divisor, any
+        # two events that round into 0 and 1) both emit frame 0, and
+        # script_apply() then applies both entries on the same tick, i.e. their
+        # buttons merge instead of being pressed in sequence. No shipped route
+        # authors an event that early -- every one starts well after the boot
+        # logos -- so this is a documented limit of the emitter, not a live
+        # defect. Authoring a sub-two-frame event means giving it its own
+        # representable tick first.
         frame = max(0, authored_frame - NATIVE_SCRIPT_TICK_LEAD)
         hold = max(1, (int(event.get("hold", DEFAULT_HOLD)) + divisor - 1) // divisor)
         tokens = [NATIVE_TOKEN[b] for b in event_buttons(event)]

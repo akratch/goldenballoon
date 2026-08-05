@@ -285,12 +285,28 @@ if [[ -n "$tool" ]]; then
       echo "ERROR: no sha256 tool available to verify the AppImage runtime." >&2
       exit 1
     elif [[ "$runtime_got" != "$APPIMAGE_RUNTIME_SHA256" ]]; then
-      echo "ERROR: AppImage runtime digest mismatch:" >&2
+      # The runtime's only upstream home is the mutable `continuous` tag, so a
+      # legitimate upstream rebuild changes these bytes with no new release to
+      # re-pin against. A release must still fail closed -- unreviewed runtime
+      # bytes cannot be published -- but a developer package has the same
+      # tarball-only escape the download-failure branch below already gives it,
+      # so an upstream rebuild cannot block local packaging work.
+      echo "WARN: AppImage runtime digest mismatch:" >&2
       echo "       got      ${runtime_got}" >&2
       echo "       expected ${APPIMAGE_RUNTIME_SHA256}" >&2
-      exit 1
+      if [[ "$dev" == true ]]; then
+        echo "WARN: unpinned AppImage runtime rejected; producing .tar.gz only." >&2
+        tool=""
+        runtime=""
+      else
+        echo "ERROR: refusing release package with an unpinned AppImage runtime." >&2
+        echo "       Re-pin APPIMAGE_RUNTIME_SHA256 after reviewing the new bytes," >&2
+        echo "       or re-run with --dev for tar-only." >&2
+        exit 1
+      fi
+    else
+      echo "AppImage runtime verified (sha256 ${APPIMAGE_RUNTIME_SHA256:0:12}...)"
     fi
-    echo "AppImage runtime verified (sha256 ${APPIMAGE_RUNTIME_SHA256:0:12}...)"
   elif [[ "$dev" == true ]]; then
     echo "WARN: pinned AppImage runtime download unavailable; producing .tar.gz only." >&2
     tool=""

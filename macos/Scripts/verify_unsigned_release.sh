@@ -207,7 +207,11 @@ grep -Fq '[app-ui] settings action=play restartPending=0' "${SMOKE_LOG}" ||
 grep -Fq '[app-ui] frame-rate-controls visible=1 gameplay-accuracy-separated=1' \
     "${SMOKE_LOG}" ||
     die "launcher did not render the visible frame-rate controls"
-grep -Fq '[app-ui] frame-limit value=original' "${SMOKE_LOG}" ||
+# Anchored: an unanchored substring search for the Original frame limit also
+# matches a hypothetical value such as `original-uncapped`, so the packaged
+# default would still read as proven after the default had changed. The trace
+# always prints a ` label=` field next, so the value must end right there.
+grep -Eq '^\[app-ui\] frame-limit value=original[[:space:]]' "${SMOKE_LOG}" ||
     die "launcher did not expose the Original frame-limit default"
 grep -Eq '^\[app\] smoke: rendered 4 frames, drawable [1-9][0-9]*x[1-9][0-9]*' \
     "${SMOKE_LOG}" || die "launcher smoke did not render four drawable frames"

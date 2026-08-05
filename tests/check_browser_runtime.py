@@ -149,6 +149,12 @@ GFX_SHUTDOWN_RE = re.compile(
     r"live=(\d+)->(\d+)\s+shaders=(\d+)\s+backendReleased=(\d+)\s+"
     r"cpuScratch=(\d+)"
 )
+# The renderer's own account of frames it retired at teardown without a
+# completion callback; the only thing that may raise [WGPU-BACKPRESSURE]
+# abandoned above zero.
+WGPU_RETIRE_RE = re.compile(
+    r"\[webgpu\] shutdown retiring (\d+) submitted frame\(s\)"
+)
 DEVTOOLS_RE = re.compile(r"DevTools listening on (ws://127\.0\.0\.1:(\d+)/\S+)")
 FATAL_MARKERS = (
     "[CRASH]",
@@ -1010,7 +1016,15 @@ def exercise_audio_overflow(cdp: CDPClient, timeout: float) -> dict[str, Any]:
         and audio.get("ringDroppedFrames", 0) >= minimum_drops
         and audio.get("recoveries", 0) > 0
         and audio.get("recoverySamples", 0) >= 128
-        and audio.get("completedRecoveries", 0) > 0,
+        and audio.get("completedRecoveries", 0) > 0
+        # Every armed recovery must also FINISH, and no ramp may be left
+        # part-way through. A crossfade that stops advancing is the observable
+        # signature of an underrun taken inside the envelope: the worklet used
+        # to skip its fade decrement on a starved sample, which froze the mix at
+        # a partial blend, stalled completedRecoveries, and blocked the
+        # fade===0 re-arm for every later discard.
+        and audio.get("completedRecoveries", 0) >= audio.get("recoveries", 0)
+        and audio.get("recoveryFrames", -1) == 0,
         "AudioWorklet bounded overflow recovery",
         timeout,
     )
@@ -2381,8 +2395,30 @@ def run_check(args: argparse.Namespace) -> None:
                 "browser scheduler summary is missing accounting fields: "
                 f"{sorted(required_sched - sched.keys())}",
             )
+            # The requested frame budget is the golden here. Passing the run's
+            # own sched["ticks"] made the tick expectation self-fulfilling: it
+            # reduced to "simticks equals ticks" and would have accepted any
+            # number of authoritative ticks at all.
+            #
+            # A real rAF timeline is not a metronome: a late frame leaves the
+            # fixed-tick clock owing more than one tick, which the scheduler
+            # pays back as grouped catch-up. So the anchor is args.frames plus
+            # an absolutely bounded catch-up allowance -- measured at 4 ticks
+            # per 3600 frames on a loaded host -- rather than whatever number
+            # the run happened to reach. The debt high-water marks are then
+            # bounded by that same catch-up: a browser that grouped four
+            # tickets in total cannot have held more than five at once.
+            catchup_budget = max(8, args.frames // 100)
+            require(
+                0 <= sched["catchup"] <= catchup_budget,
+                f"browser catch-up ticks {sched['catchup']} exceed the "
+                f"{catchup_budget}-tick budget for {args.frames} host "
+                f"opportunities: {sched}",
+            )
+            debt_bound = (1, 1 + sched["catchup"])
             conservation_error = completed_tick_conservation(
-                sched, sched["ticks"], "browser scheduler")
+                sched, args.frames + sched["catchup"], "browser scheduler",
+                expected_lead=debt_bound, expected_max_pending=debt_bound)
             require(
                 conservation_error is None
                 and sched["entries"] == args.frames
@@ -2462,9 +2498,24 @@ def run_check(args: argparse.Namespace) -> None:
                 f"startup={startup_non_submitted} scheduler={sched} "
                 f"backpressure={backpressure}",
             )
+            # `abandoned` is teardown-only: at shutdown the renderer polls the
+            # completion owner once and then retires whatever the page never
+            # gave it an event-loop turn to complete (gfx_webgpu.c's
+            # wgpu_abandon_in_flight). That is why it is not pinned at zero
+            # here -- but the cap alone would let any number up to the cap pass
+            # unexplained, so the count has to be exactly what the renderer
+            # itself declared it retired. No diagnostic row means the only
+            # acceptable value is zero.
+            retired_rows = [
+                int(match.group(1))
+                for line in cdp.console
+                if (match := WGPU_RETIRE_RE.search(line))
+            ]
             require(
                 (backpressure["completed"] + backpressure["abandoned"]
                     == backpressure["submitted"])
+                and backpressure["abandoned"] == sum(retired_rows)
+                and len(retired_rows) <= 1
                 and 0 <= backpressure["abandoned"] <= backpressure["cap"]
                 and backpressure["inflight"] == 0
                 and backpressure["cap"] == BROWSER_GPU_IN_FLIGHT_CAP
@@ -2472,7 +2523,8 @@ def run_check(args: argparse.Namespace) -> None:
                 and backpressure["skips"] == 0
                 and backpressure["failures"] == 0,
                 "browser WebGPU queue completion or bounded shutdown "
-                f"accounting is incoherent: {backpressure}",
+                f"accounting is incoherent: {backpressure}; "
+                f"declared teardown retirements={retired_rows}",
             )
             gfx_shutdown_rows = [
                 tuple(int(value) for value in match.groups())
@@ -3192,7 +3244,7 @@ def run_check(args: argparse.Namespace) -> None:
                 "successful public ROM Retry did not enter a visible pending "
                 f"state: {retry_success_pending}",
             )
-            recovered_notice = wait_value(
+            wait_value(
                 cdp,
                 """(() => {
                   const banner = document.getElementById("rom-session-banner");
@@ -3214,7 +3266,7 @@ def run_check(args: argparse.Namespace) -> None:
                 "public ROM durability retry succeeds visibly",
                 args.timeout,
             )
-            recovered_rom_warning = wait_value(
+            wait_value(
                 cdp,
                 """(() => {
                   const banner = document.getElementById("rom-session-banner");
@@ -3230,9 +3282,16 @@ def run_check(args: argparse.Namespace) -> None:
                 "ROM durability warning clears after a successful retry",
                 args.timeout,
             )
-            require(recovered_notice.get("stored") is True
-                    and recovered_rom_warning.get("stored") is True,
-                    "ROM retry did not promote persistent storage")
+            # Both waits above already require storedRomAvailable, so asserting
+            # it again proved nothing. What is not yet proven is that the shell
+            # flag corresponds to a durable object: read the store itself.
+            recovered_rom_files = cdp.evaluate(
+                'idbCount("/rom")', await_promise=True, timeout=args.timeout
+            )
+            require(isinstance(recovered_rom_files, int)
+                    and recovered_rom_files > 0,
+                    "public ROM Retry reported success while IndexedDB held "
+                    f"{recovered_rom_files!r} ROM objects")
             cdp.call("Emulation.clearDeviceMetricsOverride")
             cdp.call(
                 "Page.removeScriptToEvaluateOnNewDocument",
@@ -3376,14 +3435,15 @@ def run_check(args: argparse.Namespace) -> None:
 
             # Recovery path 2: forgetting the ROM must empty the remaining store.
             cdp.evaluate('document.getElementById("forget").click()')
-            forget_dialog = wait_value(
+            # wait_value already fails unless the dialog reports open, so the
+            # assertion that used to follow could not reject anything.
+            wait_value(
                 cdp,
                 'document.getElementById("forget-rom-dialog").open',
                 lambda item: item is True,
                 "stored-ROM confirmation",
                 args.timeout,
             )
-            require(forget_dialog is True, "forget confirmation did not open")
             cdp.evaluate('document.getElementById("forget-rom-confirm").click()')
             forget_status = wait_value(
                 cdp,

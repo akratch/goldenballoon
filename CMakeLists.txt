@@ -482,6 +482,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         COMMAND mdkr_video_config_runtime_test --durability-case)
     add_test(NAME video_config_launcher_merge_runtime
         COMMAND mdkr_video_config_runtime_test --launcher-merge-case)
+    add_test(NAME video_config_launcher_session_runtime
+        COMMAND mdkr_video_config_runtime_test --launcher-session-case)
 
     add_executable(mdkr_controller_mapping_test
         ${CMAKE_SOURCE_DIR}/tests/test_controller_mapping.c
@@ -1665,6 +1667,18 @@ if(NOT EMSCRIPTEN)
                 file(WRITE "${MDKR_APP_TEST_ROOT}/recovery/prefs/mdkr64_app.ini"
                     "# compact failed-engine recovery\nui_scale=2.00\n")
 
+                # Every capture-consuming test below is paired to the smoke that
+                # WRITES its ${CMAKE_CURRENT_BINARY_DIR}/app_*.bmp through a
+                # CTest fixture, not only DEPENDS. DEPENDS orders two tests when
+                # both are in the same run and is SILENTLY IGNORED otherwise, so
+                # `ctest -R app_settings_capture_content`, a `--repeat` pass that
+                # reruns one half of a pair, or any future change that stops
+                # labelling the pure-Python content tests `gpu` (and so drops
+                # them out of mdkr_serialize_gpu_ctests' shared lock) would leave
+                # a consumer reading a stale or absent capture. FIXTURES_REQUIRED
+                # pulls the producer into the run and fails the consumer closed
+                # if it did not succeed. DEPENDS is kept alongside as the
+                # explicit ordering statement.
                 add_test(NAME app_shell_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_shell_smoke PROPERTIES
                     ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_shell_smoke.bmp;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/shell/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/shell/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/shell/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
@@ -1676,6 +1690,7 @@ if(NOT EMSCRIPTEN)
                 # gameplay-changing cadence control is clearly separated.
                 add_test(NAME app_settings_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_settings_smoke PROPERTIES
+                    FIXTURES_SETUP app_settings_capture
                     ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_settings_smoke.bmp;MDKR_APP_PANEL=Settings;MDKR_APP_UI_TRACE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/settings/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/settings/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/settings/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION "frame-rate-controls visible=1 gameplay-accuracy-separated=1"
@@ -1687,6 +1702,7 @@ if(NOT EMSCRIPTEN)
                         ${CMAKE_CURRENT_BINARY_DIR}/app_settings_smoke.bmp
                         --self-test)
                 set_tests_properties(app_settings_capture_content PROPERTIES
+                    FIXTURES_REQUIRED app_settings_capture
                     DEPENDS app_settings_smoke
                     LABELS gpu
                     TIMEOUT 60)
@@ -1697,6 +1713,7 @@ if(NOT EMSCRIPTEN)
                 # multiple blue selections or losing its active indicator.
                 add_test(NAME app_top_tabs_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_top_tabs_smoke PROPERTIES
+                    FIXTURES_SETUP app_top_tabs_capture
                     ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_top_tabs.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=800x600;MDKR_APP_PANEL=Game ROM;MDKR_APP_SMOKE_NAV_TARGET=1;MDKR_APP_SMOKE_NAV_TOKEN=mdkr64-app-nav-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/top-tabs/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/top-tabs/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/top-tabs/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     PASS_REGULAR_EXPRESSION "top navigation target=1 actual=1 queued=1"
                     LABELS gpu
@@ -1706,12 +1723,14 @@ if(NOT EMSCRIPTEN)
                         ${CMAKE_SOURCE_DIR}/tests/check_launcher_tabs.py
                         ${CMAKE_CURRENT_BINARY_DIR}/app_top_tabs.bmp)
                 set_tests_properties(app_top_tabs_content PROPERTIES
+                    FIXTURES_REQUIRED app_top_tabs_capture
                     DEPENDS app_top_tabs_smoke
                     LABELS gpu
                     TIMEOUT 60)
 
                 add_test(NAME app_top_tabs_scale075_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_top_tabs_scale075_smoke PROPERTIES
+                    FIXTURES_SETUP app_top_tabs_scale075_capture
                     ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_top_tabs_scale075.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_PANEL=Game ROM;MDKR_APP_SMOKE_NAV_TARGET=1;MDKR_APP_SMOKE_NAV_TOKEN=mdkr64-app-nav-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/top-tabs-small/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/top-tabs-small/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/top-tabs-small/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     PASS_REGULAR_EXPRESSION "top navigation target=1 actual=1 queued=1"
                     LABELS gpu
@@ -1721,6 +1740,7 @@ if(NOT EMSCRIPTEN)
                         ${CMAKE_SOURCE_DIR}/tests/check_launcher_tabs.py
                         ${CMAKE_CURRENT_BINARY_DIR}/app_top_tabs_scale075.bmp)
                 set_tests_properties(app_top_tabs_scale075_content PROPERTIES
+                    FIXTURES_REQUIRED app_top_tabs_scale075_capture
                     DEPENDS app_top_tabs_scale075_smoke
                     LABELS gpu
                     TIMEOUT 60)
@@ -1731,6 +1751,7 @@ if(NOT EMSCRIPTEN)
                 # a pre-widget diagnostic trace.
                 add_test(NAME app_controller_settings_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_controller_settings_smoke PROPERTIES
+                    FIXTURES_SETUP app_controller_settings_capture
                     ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_controller_settings_smoke.bmp;MDKR_APP_SMOKE_CONTROLLER_SETTINGS=1;MDKR_APP_SMOKE_CONTROLLER_RESTORE=1;MDKR_APP_PANEL=Settings;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/controller/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/controller/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/controller/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION "controller settings rendered mappings=19 rumble=2 restoreAvailable=1 restoreSucceeded=1"
@@ -1740,12 +1761,14 @@ if(NOT EMSCRIPTEN)
                         ${CMAKE_SOURCE_DIR}/tests/check_controller_settings_persistence.py
                         ${MDKR_APP_TEST_ROOT}/controller/video.ini)
                 set_tests_properties(app_controller_settings_persistence PROPERTIES
+                    FIXTURES_REQUIRED app_controller_settings_capture
                     DEPENDS app_controller_settings_smoke
                     LABELS gpu
                     TIMEOUT 30)
 
                 add_test(NAME app_boot_recovery_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_boot_recovery_smoke PROPERTIES
+                    FIXTURES_SETUP app_boot_recovery_capture
                     ENVIRONMENT "MDKR_APP_BOOT_RECOVERY=The renderer could not start. Your ROM and settings were kept.;MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_boot_recovery.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_UI_TRACE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/recovery/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/recovery/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/recovery/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION "compact-layout dense=1 contained=1 overlap=0 contentSeparated=1"
@@ -1758,12 +1781,14 @@ if(NOT EMSCRIPTEN)
                         --compact-palette
                         --self-test)
                 set_tests_properties(app_boot_recovery_content PROPERTIES
+                    FIXTURES_REQUIRED app_boot_recovery_capture
                     DEPENDS app_boot_recovery_smoke
                     LABELS gpu
                     TIMEOUT 60)
 
                 add_test(NAME app_settings_minimum_scale2 COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_settings_minimum_scale2 PROPERTIES
+                    FIXTURES_SETUP app_settings_minimum_scale2_capture
                     ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_settings_minimum_scale2.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_PANEL=Settings;MDKR_APP_UI_TRACE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/minimum/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/minimum/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/minimum/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION "compact-layout dense=1 contained=1 overlap=0 contentSeparated=1"
@@ -1775,6 +1800,7 @@ if(NOT EMSCRIPTEN)
                         --compact-palette
                         --self-test)
                 set_tests_properties(app_settings_minimum_scale2_content PROPERTIES
+                    FIXTURES_REQUIRED app_settings_minimum_scale2_capture
                     DEPENDS app_settings_minimum_scale2
                     LABELS gpu
                     TIMEOUT 60)
@@ -1786,6 +1812,7 @@ if(NOT EMSCRIPTEN)
                 # content panning rather than only checking constants.
                 add_test(NAME app_touch_handheld_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_touch_handheld_smoke PROPERTIES
+                    FIXTURES_SETUP app_touch_handheld_capture
                     ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=10;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_touch_handheld.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=1280x720;MDKR_APP_SMOKE_TOUCH_SCROLL=1;MDKR_APP_SMOKE_TOUCH_TOKEN=mdkr64-app-touch-v1;MDKR_APP_PANEL=Settings;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/touch-handheld/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/touch-handheld/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/touch-handheld/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION "touch handheld targets=1 scroll=1"
@@ -1796,6 +1823,7 @@ if(NOT EMSCRIPTEN)
                         ${CMAKE_CURRENT_BINARY_DIR}/app_touch_handheld.bmp
                         --self-test)
                 set_tests_properties(app_touch_handheld_content PROPERTIES
+                    FIXTURES_REQUIRED app_touch_handheld_capture
                     DEPENDS app_touch_handheld_smoke
                     LABELS gpu
                     TIMEOUT 60)
@@ -1810,6 +1838,7 @@ if(NOT EMSCRIPTEN)
 
                 add_test(NAME app_dpi_transition_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_dpi_transition_smoke PROPERTIES
+                    FIXTURES_SETUP app_dpi_transition_capture
                     ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=5;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_dpi_transition.bmp;MDKR_APP_SMOKE_DPI_SEQUENCE=1,2,1;MDKR_APP_PANEL=Settings;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/dpi/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/dpi/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/dpi/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION "dpi transition scale=2 atlasGeneration="
@@ -1820,6 +1849,7 @@ if(NOT EMSCRIPTEN)
                         ${CMAKE_CURRENT_BINARY_DIR}/app_dpi_transition.bmp
                         --self-test)
                 set_tests_properties(app_dpi_transition_content PROPERTIES
+                    FIXTURES_REQUIRED app_dpi_transition_capture
                     DEPENDS app_dpi_transition_smoke
                     LABELS gpu
                     TIMEOUT 60)
@@ -2075,7 +2105,15 @@ if(WIN32)
         target_sources(${MDKR_TARGET} PRIVATE ${MDKR_RC_PATH})
         # Scoped to the .rc so the version defines never reach the C compile of
         # the engine. No embedded quotes: mdkr64.rc stringizes MDKR_VER_STR.
+        #
+        # OBJECT_DEPENDS is what makes the manifest a real input: the .rc names
+        # GoldenBalloon.manifest as a resource filename, which no dependency
+        # scanner sees, so an incremental build that regenerated only the
+        # manifest would otherwise keep linking the previous resource object
+        # and ship a stale assembly identity / longPathAware / activeCodePage
+        # block.
         set_source_files_properties(${MDKR_RC_PATH} PROPERTIES
-            COMPILE_DEFINITIONS "MDKR_VER_CSV=${MDKR_VER_CSV};MDKR_VER_STR=${MDKR_VER_STR}")
+            COMPILE_DEFINITIONS "MDKR_VER_CSV=${MDKR_VER_CSV};MDKR_VER_STR=${MDKR_VER_STR}"
+            OBJECT_DEPENDS "${MDKR_MANIFEST_PATH}")
     endif()
 endif()

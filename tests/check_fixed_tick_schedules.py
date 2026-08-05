@@ -47,6 +47,9 @@ INPUTQ_SUMMARY_RE = re.compile(r"\[INPUTQ-SUMMARY\] (.*)")
 AUDIO_SUMMARY_RE = re.compile(r"\[AUDIO-SERVICE\] (.*)")
 TICKS = 1800
 MULTIPLAYER_TICKS = 2700  # joins P2, loads Ancient Lake, and enters the race
+# SimSched bounds a single accepted host sample to a 30-tick suspension window
+# (platform/host_frame_driver.c), which is the most debt any arm here may hold.
+DEBT_WINDOW = (1, 30)
 
 
 def parse_summary(output: str) -> dict[str, int]:
@@ -325,8 +328,14 @@ def main() -> int:
                 failures.append(
                     f"{label}: audio maxpending={audio_max_pending}, "
                     "expected 1..30")
-            conservation_error = completed_tick_conservation(summary, TICKS,
-                                                              label)
+            # Deliberate lateness and suspension rebases are the subject of
+            # this gate, so its arms declare the SimSched suspension window as
+            # their debt bound instead of the steady single terminal ticket.
+            # The window is absolute: an arm that fell outside it fails here
+            # rather than being compared against its own high-water mark.
+            conservation_error = completed_tick_conservation(
+                summary, TICKS, label, expected_lead=DEBT_WINDOW,
+                expected_max_pending=DEBT_WINDOW)
             if conservation_error:
                 failures.append(conservation_error)
             if summary.get("presents", 0) + summary.get("elided", 0) != TICKS:
@@ -431,7 +440,8 @@ def main() -> int:
             summary = result[2]
             inputq_summary = result[6]
             conservation_error = completed_tick_conservation(
-                summary, MULTIPLAYER_TICKS, label)
+                summary, MULTIPLAYER_TICKS, label,
+                expected_lead=DEBT_WINDOW, expected_max_pending=DEBT_WINDOW)
             if conservation_error:
                 failures.append(conservation_error)
             if summary.get("presents", 0) + summary.get("elided", 0) != \

@@ -46,8 +46,25 @@ def resolve_binary(build: str | os.PathLike[str]) -> str:
     return str(path)
 
 
-def completed_tick_conservation(summary: Mapping[str, int], expected_ticks: int,
-                                label: str) -> str | None:
+def _debt_bound(value: int, expected: int | tuple[int, int]) -> bool:
+    """Accept an exact expectation, or an inclusive ``(low, high)`` window."""
+
+    if isinstance(expected, tuple):
+        low, high = expected
+        return low <= value <= high
+    return value == expected
+
+
+def _debt_text(expected: int | tuple[int, int]) -> str:
+    if isinstance(expected, tuple):
+        return f"{expected[0]}..{expected[1]}"
+    return str(expected)
+
+
+def completed_tick_conservation(
+        summary: Mapping[str, int], expected_ticks: int, label: str, *,
+        expected_lead: int | tuple[int, int] = 1,
+        expected_max_pending: int | tuple[int, int] = 1) -> str | None:
     """Validate a finite run after its final pass, before its next ticket.
 
     The scheduler records the pass that reached the headless budget and only
@@ -55,6 +72,17 @@ def completed_tick_conservation(summary: Mapping[str, int], expected_ticks: int,
     host ticket remains pending at clean termination. This is distinct from a
     live-frame debt assertion: callers keep their own intermediate pacing
     checks, while this helper is only for the terminal summary.
+
+    The debt high-water marks are the caller's *declared* expectation, never a
+    value read back out of the run being judged. A steady arm holds only that
+    one terminal ticket (``1``); an arm that deliberately groups catch-up
+    passes states the number its own rate implies, and an arm whose debt is
+    genuinely variable (deliberate late frames, a suspension rebase) states the
+    inclusive window it is allowed to occupy. Comparing ``lead`` against
+    ``maxpending`` instead would assert nothing: with ``rebases=0`` the trace
+    samples clock-minus-issued at exactly the points that set the driver's own
+    pending high-water, so the two sides are the same quantity and a 40-tick
+    backlog satisfies the comparison as happily as a clean run does.
     """
     ticks = summary.get("ticks", -1)
     simticks = summary.get("simticks", -1)
@@ -69,22 +97,21 @@ def completed_tick_conservation(summary: Mapping[str, int], expected_ticks: int,
     if issued + pending != ticks:
         return (f"{label}: clock conservation failed: ticks={ticks}, "
                 f"issued={issued}, pending={pending}")
+    # With the two checks above, this is equivalent to "exactly one ticket is
+    # still pending" -- issued=ticks-1 and pending=1 say the same thing here --
+    # so only one of the pair is stated.
     if simticks != issued + 1:
         return (f"{label}: bootstrap completion failed: simticks={simticks}, "
-                f"issued={issued}")
+                f"issued={issued}, pending={pending}")
     if updates + 1 != simticks:
         return (f"{label}: game-update completion failed: updates={updates}, "
                 f"simticks={simticks}")
-    if pending != 1:
-        return (f"{label}: clean completion must retain exactly one next "
-                f"ticket, pending={pending}")
-    # present_sched_trace_entry samples clock-minus-issued before taking the
-    # next ticket, so its high-water lead is exactly the driver's pending-debt
-    # high water. A clean steady run therefore ends with lead=maxpending=1;
-    # grouped catch-up may raise both, but they must never disagree.
-    if lead != max_pending:
-        return (f"{label}: scheduler lead/maxpending={lead}/{max_pending}, "
-                "expected exact agreement")
+    if not _debt_bound(lead, expected_lead):
+        return (f"{label}: scheduler lead={lead}, expected "
+                f"{_debt_text(expected_lead)}")
+    if not _debt_bound(max_pending, expected_max_pending):
+        return (f"{label}: scheduler maxpending={max_pending}, expected "
+                f"{_debt_text(expected_max_pending)}")
     return None
 
 

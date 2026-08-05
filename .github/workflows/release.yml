@@ -306,8 +306,13 @@ jobs:
           if [[ "${{ needs.validate.outputs.version }}" == "dev" ]]; then
             manifest_version="0.0.0.0"
           else
+            # The validate job accepts a two-part version (1.0) as well as a
+            # three-part one, and CMake pads the missing components with zeros
+            # to build the 4-part manifest/FILEVERSION identity. Default the
+            # same way here: without it "1.0" produced "1.0..0" and could never
+            # match the "1.0.0.0" CMake actually embedded.
             IFS=. read -r manifest_major manifest_minor manifest_patch <<< "${{ needs.validate.outputs.version }}"
-            manifest_version="${manifest_major}.${manifest_minor}.${manifest_patch}.0"
+            manifest_version="${manifest_major:-0}.${manifest_minor:-0}.${manifest_patch:-0}.0"
           fi
           python3 - "$manifest_version" build/mdkr64.exe <<'PY'
           import re

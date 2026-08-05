@@ -1134,6 +1134,56 @@ def validate_macos_packaging(sources: dict[str, str]) -> list[str]:
     return failures
 
 
+def validate_windows_manifest_version(workflow: str) -> list[str]:
+    """Run the Windows lane's own normalization and compare it with CMake's.
+
+    The expectation is derived, not transcribed: the accepted version shapes
+    come from the validate job's semver regex in this same workflow, the
+    normalization comes from the step's own shell, and the answer it must
+    produce is CMakeLists.txt's rule -- pad the dotted numeric core to four
+    components with zeros. A two-part "1.0" is the case that used to yield
+    "1.0..0" against an embedded "1.0.0.0".
+    """
+    failures: list[str] = []
+    accepted = re.search(
+        r"\^\[0-9\]\+\(\\\.\[0-9\]\+\)\{(?P<low>\d+),(?P<high>\d+)\}\$",
+        workflow,
+    )
+    if accepted is None:
+        return ["release workflow no longer declares its bare-semver shape"]
+    normalization = re.search(
+        r"^\s*IFS=\. read -r manifest_major manifest_minor manifest_patch"
+        r" <<< \"[^\"]*\"\n"
+        r"\s*manifest_version=\"(?P<expr>[^\"]*)\"$",
+        workflow,
+        re.MULTILINE,
+    )
+    if normalization is None:
+        return ["release workflow no longer normalizes the Windows manifest "
+                "version in one derivable step"]
+    expression = normalization.group("expr")
+    script = (
+        'IFS=. read -r manifest_major manifest_minor manifest_patch <<< "$1"\n'
+        f'printf %s "{expression}"\n'
+    )
+    for dots in range(int(accepted.group("low")), int(accepted.group("high")) + 1):
+        version = ".".join(str(part) for part in range(1, dots + 2))
+        expected = ".".join((version.split(".") + ["0", "0", "0", "0"])[:4])
+        result = subprocess.run(
+            ["bash", "-c", script, "manifest-version", version],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0 or result.stdout != expected:
+            failures.append(
+                f"Windows manifest normalization of {version!r} produced "
+                f"{result.stdout!r} (exit {result.returncode}), but CMake "
+                f"embeds {expected!r}"
+            )
+    return failures
+
+
 def validate_desktop_release(sources: dict[str, str]) -> list[str]:
     """Pin portable artifacts, Linux GPU qualification, and Windows CI limits."""
     workflow = sources["workflow"]
@@ -1190,7 +1240,7 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
         ),
         "Windows manifest version normalization": (
             workflow,
-            "manifest_version=\"${manifest_major}.${manifest_minor}.${manifest_patch}.0\"",
+            "IFS=. read -r manifest_major manifest_minor manifest_patch",
         ),
         "Windows ROM-free tests": (
             workflow,
@@ -1463,6 +1513,7 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
         for label, (source, needle) in required.items()
         if needle not in active_shell_source(source)
     ]
+    failures.extend(validate_windows_manifest_version(workflow))
     windows_manifest = re.search(
         r"expected=\"\$\(printf '%s\\n'(?P<body>.*?)\| LC_ALL=C sort\)\"",
         windows_packager,
@@ -2889,6 +2940,14 @@ def main() -> int:
             "linux_packager": desktop_sources["linux_packager"].replace(
                 "Linux tarball verifier accepted an unexpected archive entry.",
                 "Unexpected archive entry accepted.",
+                1,
+            ),
+        },
+        "Windows manifest two-part version default": {
+            **desktop_sources,
+            "workflow": desktop_sources["workflow"].replace(
+                "${manifest_patch:-0}",
+                "${manifest_patch}",
                 1,
             ),
         },

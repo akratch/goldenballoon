@@ -25,6 +25,7 @@ from check_browser_runtime import (
     CheckFailure,
     ChromeProcess,
     OverlayServer,
+    WGPU_RETIRE_RE,
     add_config_script,
     click_play,
     find_chrome,
@@ -288,7 +289,12 @@ def compare(arm: Arm, result: Result, baseline: Result) -> list[str]:
             f"{baseline.audio_size} (>44)")
 
     summary = result.summary
-    conservation_error = completed_tick_conservation(summary, TICKS, arm.name)
+    # Absolute pacing pin (the pending/lead entries this arm's zero-list used
+    # to carry): every browser arm below declares catchup=0, so a real rAF
+    # timeline may still deliver its opportunities unevenly but must never
+    # leave the simulation owing more than the one terminal ticket.
+    conservation_error = completed_tick_conservation(
+        summary, TICKS, arm.name, expected_lead=1, expected_max_pending=1)
     if conservation_error:
         failures.append(conservation_error)
     for key in ("multidue", "lag", "catchup", "skips",
@@ -403,12 +409,21 @@ def compare(arm: Arm, result: Result, baseline: Result) -> list[str]:
     abandoned = pressure.get("abandoned", -1)
     completed = pressure.get("completed", -1)
     submitted = pressure.get("submitted", -1)
+    # `abandoned` is teardown-only: shutdown polls the completion owner once
+    # and then retires whatever the page never gave it an event-loop turn to
+    # finish (gfx_webgpu.c's wgpu_abandon_in_flight). The cap alone would let
+    # any value below it pass unexplained, so the count must equal what the
+    # renderer itself declared it retired -- and with no such row, zero.
+    retired = [int(match.group(1)) for line in result.console
+               if (match := WGPU_RETIRE_RE.search(line))]
     if not (0 <= abandoned <= pressure.get("cap", 0) and
+            abandoned == sum(retired) and len(retired) <= 1 and
             completed + abandoned == submitted):
         failures.append(
             f"{arm.name}: WebGPU completion/teardown accounting is invalid: "
             f"submitted={submitted} completed={completed} "
-            f"abandoned={abandoned} cap={pressure.get('cap')}")
+            f"abandoned={abandoned} cap={pressure.get('cap')} "
+            f"declared teardown retirements={retired}")
 
     surface_updates = result.summary.get("surfaceupdates", -1)
     intended_updates = pressure.get("submitted", -1)
