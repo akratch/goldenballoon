@@ -1167,6 +1167,59 @@ static void mdkr_camera_dynamic_record_exact_sweep(
     }
 }
 
+/* The rounded lens is contained in the sphere of the guard's recomputed
+ * outward radius swept along the same corridor, so this proxy answers every
+ * conservative question the exact kernel would have answered with a superset.
+ * The float radius is rounded outward so the promotion never culls. */
+static MdkrCameraSweepInput mdkr_camera_dynamic_rounded_lens_proxy_input(
+    const MdkrCameraRoundedLensSweepInput *input,
+    double outward_radius) {
+    float proxy_radius = (float)outward_radius;
+
+    if ((double)proxy_radius < outward_radius) {
+        proxy_radius = nextafterf(proxy_radius, INFINITY);
+    }
+    return (MdkrCameraSweepInput) {
+        .guard = { MDKR_CAMERA_LENS_GUARD_SPHERE, proxy_radius },
+        .start_eye = input->start_eye,
+        .desired_eye = input->desired_eye,
+        .mask = input->mask,
+        .ignored_object_generation = input->ignored_object_generation,
+    };
+}
+
+/*
+ * Did the exact model kernel stop on one of the work fences this sweep handed
+ * it, rather than on a corrupt immutable index?
+ *
+ * The sphere kernel answers that question directly through
+ * MdkrCameraObjectOcclusionExactWork::exhausted. The rounded-lens kernel does
+ * not yet set that flag on any of its fence exits, so the published limits are
+ * compared against the work it reported back: it returns the moment the node,
+ * chunk, or stationary-test budget is reached, or the moment the next
+ * eight-triangle chunk no longer fits the triangle budget. The authoritative
+ * flag is still honoured first so this stays correct once the producer sets it.
+ *
+ * Reaching a fence is healthy bounded operation. Corruption is not, and must
+ * keep failing closed, so the comparison is deliberately made against the
+ * caller's own fences and nothing else.
+ */
+static int mdkr_camera_dynamic_exact_work_fenced(
+    const MdkrCameraObjectOcclusionExactLimits *limits,
+    const MdkrCameraObjectOcclusionExactWork *work) {
+    if (limits == NULL || work == NULL) {
+        return 0;
+    }
+    if (work->exhausted) {
+        return 1;
+    }
+    return work->nodes_visited >= limits->nodes ||
+        work->chunks_retained >= limits->chunks ||
+        work->triangles_retained +
+            MDKR_CAMERA_OBJECT_OCCLUSION_CHUNK_TRIANGLES > limits->triangles ||
+        work->kernel.stationary_tests >= limits->stationary_tests;
+}
+
 MdkrCameraSweepStatus mdkr_camera_dynamic_occlusion_rounded_lens_sweep_detailed(
     const MdkrCameraRoundedLensSweepInput *input,
     MdkrCameraDynamicOcclusionHit *out_hit) {
@@ -1209,6 +1262,7 @@ MdkrCameraSweepStatus mdkr_camera_dynamic_occlusion_rounded_lens_sweep_detailed(
         MdkrCameraObjectOcclusionExactLimits exact_limits;
         MdkrCameraObjectOcclusionExactWork exact_work;
         MdkrCameraSweepStatus status;
+        int conservative = 0;
 
         if (input->ignored_object_generation != 0U &&
             instance->object_spawn_generation == input->ignored_object_generation) {
@@ -1225,19 +1279,10 @@ MdkrCameraSweepStatus mdkr_camera_dynamic_occlusion_rounded_lens_sweep_detailed(
             return MDKR_CAMERA_SWEEP_INVALID;
         }
         if (instance->temporal_proxy) {
-            MdkrCameraSweepInput proxy_input;
-            float proxy_radius = (float)outward_radius;
+            const MdkrCameraSweepInput proxy_input =
+                mdkr_camera_dynamic_rounded_lens_proxy_input(
+                    input, outward_radius);
 
-            if ((double)proxy_radius < outward_radius) {
-                proxy_radius = nextafterf(proxy_radius, INFINITY);
-            }
-            proxy_input = (MdkrCameraSweepInput) {
-                .guard = { MDKR_CAMERA_LENS_GUARD_SPHERE, proxy_radius },
-                .start_eye = input->start_eye,
-                .desired_eye = input->desired_eye,
-                .mask = input->mask,
-                .ignored_object_generation = input->ignored_object_generation,
-            };
             status = mdkr_camera_dynamic_sphere_aabb_sweep(
                 &instance->temporal_bounds, &proxy_input,
                 instance->stable_instance_id, &candidate.hit);
@@ -1366,6 +1411,28 @@ MdkrCameraSweepStatus mdkr_camera_dynamic_occlusion_rounded_lens_sweep_detailed(
         chunks_retained += exact_work.chunks_retained;
         chunk_triangles += exact_work.triangles_retained;
         sTelemetry.narrowphase_candidate_count++;
+        if (status == MDKR_CAMERA_SWEEP_INVALID &&
+            mdkr_camera_dynamic_exact_work_fenced(&exact_limits, &exact_work)) {
+            /* Same recovery the sphere path takes when its kernel exhausts:
+             * work fences are healthy bounded operation, not source
+             * corruption. Preserve fail-closed safety with the already
+             * published world AABB under the lens' enclosing sphere. INVALID
+             * here would instead reach the resolver as no information at all,
+             * which is the unsafe direction: the two-phase caller would have
+             * to fall back to the sphere corridor and publish a degraded,
+             * penetrated pose. */
+            const MdkrCameraSweepInput fence_input =
+                mdkr_camera_dynamic_rounded_lens_proxy_input(
+                    input, outward_radius);
+
+            status = mdkr_camera_dynamic_sphere_aabb_sweep(
+                &instance->world_bounds, &fence_input,
+                instance->stable_instance_id, &candidate.hit);
+            if (status != MDKR_CAMERA_SWEEP_INVALID) {
+                sTelemetry.exact_conservative_fallback_count++;
+                conservative = 1;
+            }
+        }
         if (status == MDKR_CAMERA_SWEEP_INVALID) {
             sTelemetry.invalid_sweep_count++;
             mdkr_camera_dynamic_record_exact_sweep(
@@ -1379,8 +1446,14 @@ MdkrCameraSweepStatus mdkr_camera_dynamic_occlusion_rounded_lens_sweep_detailed(
         }
         candidate.object_spawn_generation = instance->object_spawn_generation;
         candidate.model_generation = instance->model_generation;
-        candidate.source_triangle_stable_id = candidate.hit.stable_id;
-        candidate.hit.stable_id = instance->stable_instance_id;
+        if (conservative) {
+            /* No exact triangle backs an enclosing-AABB recovery, and the
+             * proxy sweep already stamped the dynamic instance ID. */
+            candidate.source_triangle_stable_id = 0U;
+        } else {
+            candidate.source_triangle_stable_id = candidate.hit.stable_id;
+            candidate.hit.stable_id = instance->stable_instance_id;
+        }
         candidate.authoritative_list_index = instance->authoritative_list_index;
         if (!found || mdkr_camera_dynamic_hit_precedes(&candidate, &best)) {
             best = candidate;

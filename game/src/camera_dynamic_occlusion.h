@@ -68,6 +68,11 @@ typedef struct MdkrCameraDynamicOcclusionTelemetry {
     size_t exact_triangle_narrowed_count;
     size_t exact_stationary_test_count;
     size_t exact_invalid_sweep_count;
+    /* Exact counterpart of sphere_conservative_fallback_count: per-instance
+     * recoveries where the bounded exact model kernel ran out of published
+     * work budget and this source degraded to the conservative world AABB
+     * instead of discarding the whole sweep. */
+    size_t exact_conservative_fallback_count;
     size_t exact_max_instances_per_sweep;
     size_t exact_max_model_triangles_per_sweep;
     size_t exact_max_single_model_triangles;
