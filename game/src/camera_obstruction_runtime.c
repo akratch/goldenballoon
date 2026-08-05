@@ -2638,7 +2638,7 @@ void camera_obstruction_tick(int update_rate_fields) {
                 "missing_identity=%zu excluded_non_solid=%zu uncategorized=%zu "
                 "invalid_transform=%zu capacity_failures=%zu transitioning_doors=%zu "
                 "active_transitioning_doors=%zu temporal_moved=%zu temporal_proxy_hits=%zu "
-                "sphere_hits=%zu exact_hits=%zu sphere_fallbacks=%zu invalid_sweeps=%zu "
+                "sphere_hits=%zu exact_hits=%zu sphere_fallbacks=%zu exact_fallbacks=%zu invalid_sweeps=%zu "
                 "sphere_invalid_sweeps=%zu exact_invalid_sweeps=%zu "
                 "bytes=%zu}\n",
                 (unsigned long long)sCameraObstructionRuntime.tick_serial,
@@ -2678,6 +2678,7 @@ void camera_obstruction_tick(int update_rate_fields) {
                 dynamic_telemetry.sphere_hit_count,
                 dynamic_telemetry.exact_hit_count,
                 dynamic_telemetry.sphere_conservative_fallback_count,
+                dynamic_telemetry.exact_conservative_fallback_count,
                 dynamic_telemetry.invalid_sweep_count,
                 dynamic_telemetry.sphere_invalid_sweep_count,
                 dynamic_telemetry.exact_invalid_sweep_count,

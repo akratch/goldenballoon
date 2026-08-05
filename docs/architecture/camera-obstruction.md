@@ -454,7 +454,7 @@ instead permits at most 96 adaptive interval tests plus 16 contact refinements f
 a marginal SAT interval; exhaustion fails closed. Initial source/runtime fences,
 to be calibrated rather than silently weakened, are: static exact
 candidates p99 <= 8 and hard cap 16 per viewport corridor; dynamic p99 <= 2
-objects, hard cap 4 objects/64 BVH nodes/16 retained chunks/128 retained chunk
+objects, hard cap 4 objects/64 BVH nodes/32 retained chunks/256 retained chunk
 triangles; exact stationary evaluations p99 <= 64 and cap 128; zero interval
 fallbacks in ordinary gameplay; exact corridor
 p99 <= 0.25 ms in 1P and <= 1 ms aggregate in 4P while the inclusive camera budget
@@ -527,6 +527,33 @@ stale-generation, and same-address generation-reuse faults. That gate found and
 fixed noncanonical indexed-clear hit bytes. Actual load/free/address reuse,
 aggregate multi-instance cap injection, whole-ROM bounds, moving-solid breadth,
 and load/memory budgets remain mandatory.
+
+The chunk/triangle halves of that fence were then measured rather than assumed,
+and raised once. `55ea056` had added the exact path's conservative recovery, and
+it exposed a real saturation: on adventure-postrace ticks 3465-3471 a
+transitioning 166-triangle door demanded up to 17 retained chunks and 134
+retained triangles against the 16/128 fences, so the exact kernel exhausted,
+the recovery published the door's world AABB, and that AABB contained the
+resolved eye on ticks 3466 and 3467 (`penetrated=1`). The fences were lifted to
+1024/4096/32768 in a throwaway build and every camera route was re-run to record
+each query's true demand. The 17,000-tick adventure-postrace route peaks at 39
+node visits, 17 chunks, 134 triangles, and nine stationary tests; the
+5,200-frame, 9,000-frame, 7,000-frame, 3,400-frame, and 3,600-frame routes never
+exceed 33 nodes, seven chunks, 54 triangles, and eight stationary tests. Only
+that one door saturates anything.
+
+`MDKR_CAMERA_OBJECT_OCCLUSION_MAX_RETAINED_CHUNKS` therefore moves 16 -> 32 and
+`MDKR_CAMERA_OBJECT_OCCLUSION_MAX_QUERY_TRIANGLES` 128 -> 256, staying coupled at
+exactly `MAX_RETAINED_CHUNKS * CHUNK_TRIANGLES` so a query can never be
+triangle-fenced before it is chunk-fenced. The saturating door compiles to
+ceil(166/8) = 21 chunks and 41 BVH nodes, so the new fences admit its complete
+traversal with 52%/54% headroom and clear the measured 17/134 with 88%/91%.
+The 64-node and 128-stationary-test fences are unchanged and remain correct:
+64 already admits that model's entire 41-node tree, and no route exceeded nine
+stationary tests. Neither raised constant sizes any storage -- the only
+fence-dimensioned array is the `MAX_QUERY_NODES` traversal stack -- so the raise
+costs zero bytes and only doubles the worst-case exact triangle work per query,
+which no measured route approaches.
 
 Therefore the 1,024-sample interval fallback remains a correctness oracle and test
 reference only. The fixed-tick implementation uses swept separating-axis
@@ -993,7 +1020,7 @@ geometry, cost, or authority exit:
 | Order / owner | Engineering deliverable | Automated verification | Exit evidence |
 |---|---|---|---|
 | PERF-01 geometry — implementation complete, release evidence open | `842d62f` replaces the production sampled interval fallback with a 96-test continuous Lipschitz interval proof. The sampled implementation is reachable only through the ROM-free oracle API. Count SAT, bounded tests/exhaustion, stationary tests, and refinements; budget exhaustion returns `INVALID`, and two-phase composition retains the conservative sphere `HIT`. | Property/fuzz corpus compares production against the oracle across translation, scale, tangent, initial-overlap, face/edge/vertex, high-coordinate, and thin/oversized triangles under Clang/GCC, strict warnings, ASan/UBSan, and wasm32. Inject every work-cap boundary. | Zero false clears versus the oracle; zero ordinary-route sampled fallbacks; stationary-test p99 <= 64 and max <= 128; deterministic hit bytes and stable-ID ordering. |
-| PERF-02 collision — implementation complete, release evidence open | `d8c8bb7` builds stable-order eight-triangle chunks and an auxiliary deterministic balanced BVH, validates topology/coverage/containment before publication, checks generation and integrity during both sphere/exact traversal, and enforces aggregate instance/node/chunk/triangle/stationary budgets. `da93930` adds identity/rotated/scaled equivalence and malformed-node/chunk/per-model-cap/generation fault tests against the production representation. | Aggregate multi-instance cap injection, whole-ROM model census, repeated real load/free/address-reuse soak, and moving-door snapshot tests. | Dynamic p99 <= 2 instances, max <= 4; maximum 64 nodes/16 chunks/128 retained triangles/128 stationary tests per corridor; zero truncation/invalid/degraded results; cache within recorded load/memory budgets. |
+| PERF-02 collision — implementation complete, release evidence open | `d8c8bb7` builds stable-order eight-triangle chunks and an auxiliary deterministic balanced BVH, validates topology/coverage/containment before publication, checks generation and integrity during both sphere/exact traversal, and enforces aggregate instance/node/chunk/triangle/stationary budgets. `da93930` adds identity/rotated/scaled equivalence and malformed-node/chunk/per-model-cap/generation fault tests against the production representation. | Aggregate multi-instance cap injection, whole-ROM model census, repeated real load/free/address-reuse soak, and moving-door snapshot tests. | Dynamic p99 <= 2 instances, max <= 4; maximum 64 nodes/32 chunks/256 retained triangles/128 stationary tests per corridor; zero truncation/invalid/degraded results; cache within recorded load/memory budgets. |
 | RUNTIME-01 camera/render — implementation complete, fault fixture open | Store renderer-derived exact guard and full fallback tuple per slot. Ordinary boom queries use the two-phase result. Alternate, emergency, recovery, scripted, stationary, and post-validation build and validate the final `Camera` orientation; publication performs no later retarget. Dynamic invalidity is never cleared or published, and failed ticks retire camera/object interpolation history. | Add a ROM-free state-machine seam that injects exact clear/hit/invalid, dynamic census failure/recovery, generation mismatch, stale tuple, final retarget, and orientation-changing interpolation. Runtime fixtures assert identical open-space bytes, authored fallback on source failure, and conservative sphere hit on healthy exact-work exhaustion. | Zero final-pose penetration or hidden resolvable target; zero stale generations; invalid never clears; failed publication cannot be snapshotted or interpolated; recovery requires a complete fresh tuple. |
 | MOTION-01 design/QA | Tune expansion-only spring/hysteresis and deterministic shot scoring after safety decisions stabilize. Mark orientation-changing cuts discontinuous unless an SE(3) sweep is implemented. | Fixed routes compute jerk, retract latency, recovery duration, blocker churn, shoulder flips, emergency dwell, and discontinuity counts at 20–240 Hz presentation. Reduced-motion and camera-shake-off controls included. | Numeric thresholds pass and worst 1% clips receive signed manual review across 4:3, ultrawide, portrait, and split-screen. |
 | VIS-01 rendering/content | Add reviewed soft-occluder policy and generation-keyed, per-viewport, batch-local fade. Hard geometry continues to require clearance; emergency racer fade remains presentation-only. | Two-view opposing visibility fixture, opaque/cutout/translucent pixels, freed-ID reuse, state/RNG/event/audio hashes, and GL/WebGPU/browser screenshots. | No cross-viewport contamination, no hard-wall fade substitution, no gameplay mutation, and approved content census. |

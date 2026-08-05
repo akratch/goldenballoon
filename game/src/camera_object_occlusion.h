@@ -19,9 +19,35 @@
 
 #define MDKR_CAMERA_OBJECT_OCCLUSION_HARD_MASK 1U
 #define MDKR_CAMERA_OBJECT_OCCLUSION_CHUNK_TRIANGLES 8U
+/* threshold_basis: these are per-query aggregate work fences, calibrated from
+ * measured demand rather than chosen for roundness. Instrumented 17,000-tick
+ * adventure-postrace plus the 5,200/9,000/7,000/3,400/3,600-frame camera routes
+ * were run with the fences lifted to 1024/4096/32768 so each query's true
+ * demand could be recorded.
+ *
+ * Node visits: measured maximum 39 of 64 across every route. The transitioning
+ * 166-triangle door that saturates the chunk/triangle fences compiles to
+ * ceil(166/8) = 21 chunks and 2*21-1 = 41 BVH nodes, so 64 admits a complete
+ * traversal of that model with 56% headroom. Unchanged.
+ *
+ * Retained chunks 16 -> 32 and retained chunk triangles 128 -> 256: on
+ * adventure-postrace ticks 3465-3471 the transitioning door demanded up to 17
+ * chunks / 134 triangles, exceeding the previous 16/128 fences, so the exact
+ * kernel exhausted and the conservative world-AABB fallback published a pose
+ * whose AABB contained the resolved eye (penetrated=1 on ticks 3466/3467). The
+ * new fences cover that model's absolute worst case -- all 21 chunks / all 166
+ * triangles retained -- with 52%/54% headroom, and 88%/91% headroom over the
+ * measured 17/134. The two stay coupled at exactly
+ * MAX_RETAINED_CHUNKS * CHUNK_TRIANGLES, as before, so a query can never be
+ * triangle-fenced before it is chunk-fenced. No storage is sized by either
+ * constant (the only fence-sized array is the MAX_QUERY_NODES node stack), so
+ * the raise costs 0 bytes; it doubles only the worst-case exact triangle work
+ * per query, which no measured route approaches.
+ *
+ * Stationary tests: measured maximum 9 of 128. Unchanged. */
 #define MDKR_CAMERA_OBJECT_OCCLUSION_MAX_QUERY_NODES 64U
-#define MDKR_CAMERA_OBJECT_OCCLUSION_MAX_RETAINED_CHUNKS 16U
-#define MDKR_CAMERA_OBJECT_OCCLUSION_MAX_QUERY_TRIANGLES 128U
+#define MDKR_CAMERA_OBJECT_OCCLUSION_MAX_RETAINED_CHUNKS 32U
+#define MDKR_CAMERA_OBJECT_OCCLUSION_MAX_QUERY_TRIANGLES 256U
 #define MDKR_CAMERA_OBJECT_OCCLUSION_MAX_STATIONARY_TESTS 128U
 
 typedef struct MdkrCameraObjectOcclusionTelemetry {
