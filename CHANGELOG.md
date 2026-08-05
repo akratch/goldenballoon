@@ -8,6 +8,261 @@ From 1.0.0 onward this project follows semantic versioning for the platform
 layer's public seams (config keys, environment variables, command-line flags and
 save formats). Everything below 1.0.0 predates that commitment.
 
+## [1.0.5] — Unreleased
+
+No ROM or other game data is included. Recommended settings are unchanged from
+1.0.4: WebGPU, Restored, Frame limit Original, Motion smoothing Off, Gameplay
+cadence Original.
+
+### Fixed
+
+#### Gameplay and presentation
+
+- **Course names no longer render as a single letter or as nothing** (#10).
+  `gLevelNames` is an array of host pointers but was sized with `sizeof(s32)`,
+  which is the pointer width on N64 and half of it on every 64-bit host. The
+  table filled past the end of its pool block on each boot, so the upper half
+  of the array lived in memory something else owned and those names came back
+  corrupted. Fossil Canyon and Pirate Lagoon in Track Select and Adventure, and
+  the track names in the post-Wizpig 2 credits, show in full again.
+- **PAL no longer draws a strip down the right edge of the screen, and PAL 2D
+  art is no longer magnified or pushed off the bottom** (#12). Two faults, one
+  per symptom:
+  - The renderer mapped every logical rectangle through a hardcoded 240-line
+    height while PAL composes a 320x264 surface, so PAL 2D art was scaled up
+    and everything below centre walked off the bottom — including the track
+    map. Mapping now tracks the surface `video_init` actually publishes.
+  - The game's PAL path shifts the world viewport four columns left while the
+    scissor still spans the full surface. Hosts clip geometry at the viewport
+    edge where the RSP clips at twice it (the microcode loads `FRUSTRATIO_2`),
+    so the frame clear showed through where hardware draws scene. The viewport
+    handed to the backend now widens to cover the scissor, capped at the
+    frustum-ratio box, with the difference folded back into clip space so the
+    world-to-window mapping stays the identical affine transform. An overhang
+    counts only at a full authored pixel, so NTSC output is byte-identical and
+    the expansion never activates on the port's own sub-pixel rounding gaps.
+    Hardware reference from the ares oracle confirms real PAL units draw scene
+    content in those columns.
+- **Track Select no longer shows a bare column at the right of the backdrop.**
+  DKR authors its full-surface clip one pixel short on all four edges — its own
+  source comments call the -1 a bug — which upscaled to a six-pixel unmapped
+  column at 1920 that the widescreen background tiles then painted. A clip
+  reaching all four surface bounds within one logical pixel now snaps to the
+  region, and authored sub-rect insets are still preserved. NTSC track-select
+  output is pixel-identical to 1.0.4.
+- **Intro shrubs reach the ground again** (#11). `G_VTX_APPEND` was treated as
+  a running cursor, but the RSP keeps one base — the length of the last full
+  load — and every appended run lands directly after it. Six-tile sprite frames
+  emit two appended runs that each restart their triangle indices, so the
+  second run drew with the first run's vertices: the shrub carried a duplicate
+  crown tile, lost its bottom band, and floated. The audit found the defect's
+  blast radius across the whole ROM was exactly two six-tile frames — the intro
+  shrubs and one burst frame no route loads.
+- **The giant character portraits render in Smokey Castle and Fire Mountain
+  again** (#9), and with them the boost shockwave plume and the whole of Star
+  City's rainfall. The triangle and texcoord initializer macros built N64
+  big-endian words over union aliases of byte-structured fields, so on a
+  little-endian host every hand-packed triangle came apart: the backface-draw
+  flag landed in the wrong byte, one vertex index read 64 out of a four-vertex
+  batch, and the UVs transposed. All three effects were bound, traced, and
+  drawn, and emitted zero pixels. The macros now pack in the host's byte order
+  and stay bit-identical on a big-endian build.
+- **Taj no longer freezes during his own balloon award ceremony** (#13). The
+  playable-Taj companion spawn narrowed a shared per-level model cache entry:
+  the ceremony actor needs the full fourteen-animation set, and the rider's
+  seven-animation load had truncated that entry for the whole level — which is
+  why the freeze happened exactly when the player was Taj.
+- Taj's speed cap now exempts boost, restoring zip-pad parity with the stock
+  racers; a Taj finish in Time Trial is no longer silently discarded, because
+  the modded-roster guard narrowed to the record writes; and the sign-failure
+  path tears the composed rider down instead of leaving a force-visible,
+  unselectable Taj on character select.
+- Eighth place's racing-line selector now takes the value the N64's
+  out-of-bounds read actually produced — the adjacent table's first byte, 1 —
+  instead of a port-invented clamp. Wall recoil is restored for planes and
+  bosses, and a computer-carried egg is no longer rendered frozen.
+- Bounded the ghost menu's saved-ghost stack, the collision candidate cap, the
+  wave tables and generator slots, `obj_dist_racer`'s output array, Controller
+  Pak note-name copies, particle reads in `obj_visibility_tick`, per-tick model
+  walks, the crash-screen stack dump stride, and the `printf` paths. The rocket
+  signpost no longer reuses the model-type selector as trophy scratch, so a
+  Future Fun Land trophy no longer sends it down the sprite dispatch.
+- The native inflate path gained an output window, an input bound, a
+  back-reference check, and real block-decoder error propagation; a malformed
+  stream previously looped forever. All six callers now pass an explicit
+  compressed extent instead of falling back to the containing pool block.
+- Vehicle sound teardown stops and detaches every handle including
+  `spinoutSound`, so a finished sound can no longer write through a stale
+  handle into recycled arena memory. Every index reaching `gSoundTable`,
+  `gSpatialSoundTable`, and the composite chain is bounded, the delayed-sound
+  queue compaction shift is fixed, and the tempo -1 sentinel no longer wraps.
+- Sequence tempo meta events are validated instead of truncated to 24 bits.
+
+#### Launcher, recovery, and platform
+
+- **Return to Launcher returns to the launcher on Windows instead of closing
+  the whole application** (#14). Return to Launcher replaces the process, and
+  the Windows C runtime flattens the argument vector into one unquoted command
+  line: a space anywhere in the install path split it into several arguments,
+  the deny-by-default automation triage read any argument as scripted intent,
+  and the replacement ran headless under the GUI subsystem — no window, no
+  dialog. Every argument is now quoted at the process-replacement boundary
+  under the documented Windows rule, and the relaunch states its intent with
+  `--ui`, which wins over deny-by-default so even a mis-split command line
+  opens the launcher.
+- **`mdkr64.log` is no longer empty after every launch.** The diagnostic log
+  rotated and truncated itself before discovering that a GUI-subsystem process
+  launched from Explorer has no standard handles to attach to, which both left
+  a zero-byte log and consumed the previous run's evidence. Missing standard
+  descriptors are now backed by the null device before the tee installs,
+  rotation is deferred until logging is certain to run, and a failed install
+  removes the empty file rather than presenting silence as the app's last
+  words.
+- The launcher's About destination is no longer clipped at common window
+  heights: footer space is reserved from measured small-font metrics instead of
+  five body-font lines. The gold Play button keeps its lower edge at 800x600,
+  because the compact header is derived from live metrics instead of a
+  hardcoded 196 px.
+- A staging or engine-start failure during **Restart & Apply** now surfaces its
+  cause. The window-mode result distinguishes unavailable, invalid, and
+  superseded, and Settings reports each accurately.
+- The audio worklet's underrun path no longer skips the crossfade anchor update
+  and the fade decrement, so a stall no longer anchors the repair at the last
+  loud sample (the click) and a mid-fade underrun no longer freezes the ramp
+  and blocks re-arming. Silence flows through the same envelope path.
+- The migration stage cleanup keys on this-call-created-it rather than a marker
+  the failure path had already deleted; a refused in-flight store no longer
+  latches an unrecoverable persistence failure, and the migration flag advances
+  only when bytes actually went out.
+- The widescreen control is shown exactly when the resolved configuration is on
+  legacy stretch. ROM-panel tab requests carry priority, so a background
+  validation result can no longer swallow a player's navigation click.
+- Dropped-audio telemetry reports refused blocks and lost frames as two named
+  quantities on both paths instead of one merged count.
+
+#### Browser
+
+- **Concurrent tabs no longer clobber each other's saves.** The first session
+  takes an exclusive `navigator.locks` claim on `/save` and is the only tab
+  that syncs IDBFS; a second tab plays as a spectator with a visible notice
+  instead of silently last-writer-winning over the store. Where Web Locks is
+  absent, a weaker localStorage heartbeat stands in. Ownership is claimed at
+  launcher init, and the save manager's mutating controls — import, edit,
+  restore, erase, and the drop zone — disable in spectator tabs with the reason
+  as their tooltip. Exports stay available in every tab.
+- The save manager's drop zone is disabled until the save-tools module is
+  ready, so a drop no longer renders a raw `TypeError`; `release()` failures
+  surface instead of leaving two modules believing they own `/save`; and the
+  documented forget-stored-ROM recovery path appears in the session that stored
+  the ROM rather than only after a reload.
+- Both publish paths, script and Actions, share one stamping implementation
+  that rewrites the `?v=` cache-bust refs and the page's `data-build-version`,
+  fails closed on a missed ref, and feeds a build-scoped service worker. The
+  page now works offline from the home screen and can never serve a mixed
+  wasm/JS pair. The web revision table is parity-checked against `rom_id.c` on
+  the publish workflow.
+- WebGPU noise combiners read the per-viewport height through a dedicated
+  uniform ring, matching GL semantics in split-screen instead of hashing
+  against the full render height.
+- Modifier chords no longer trigger the fullscreen hotkey; focus rings are
+  restored on the drop zone and the fullscreen button; label-in-name and
+  double-announcement defects are fixed; and real 512 px and maskable icons are
+  generated from the brand source, with the unreferenced logo and wordmark art
+  removed.
+
+### Added
+
+- **A modern camera obstruction subsystem, ported but not enabled.** The pure
+  sweep kernel, resolver, transform adapter, track and object occlusion caches,
+  dynamic hard-occluder census, target-readability classification, and the
+  fixed-tick runtime that observes or resolves each authored camera slot are
+  all present. `MDKR_CAMERA_OBSTRUCTION` selects the policy and defaults to
+  `observe`, which measures and publishes but changes no camera; `modern`,
+  `center-ray`, and `legacy` are explicit opt-ins, and an unrecognised value
+  falls back to `observe` rather than selecting a known-unsafe arm. Render no
+  longer computes a lens: `cam_effective_projection_for_viewport()` produces
+  the immutable projection record before any display-list work, the fixed-tick
+  finalizer latches it per viewport, and native projection rebuild consumes
+  only that latched record. The architecture is documented in
+  [docs/architecture/camera-obstruction.md](docs/architecture/camera-obstruction.md).
+- Exact-query fences are sized to the measured worst case — the largest
+  transitioning door is 166 triangles, 21 chunks, and a 41-node tree, so the
+  retained-chunk fence rises from 16 to 32 and the coupled triangle fence from
+  128 to 256, at zero memory cost because both are loop bounds. Every fence
+  exit reports exhaustion explicitly instead of leaving a healthy bounded stop
+  to be misread downstream as index corruption, the sweep recovers
+  conservatively when a fence is reached, and the runtime trace reports
+  `exact_fallbacks` beside the sphere path's count so a future exhaustion is
+  visible the day it happens.
+
+### Changed
+
+- Presentation-only Taj companions are excluded from the authoritative
+  simulation hash in every walk and from the hashed object count, so their
+  per-tick visual transforms can no longer move the determinism stream or make
+  the hashed count a function of allocation success. The one expected stream
+  change — the companions leaving the hash — is measured and stated; every
+  environment-flag arm is byte-identical otherwise.
+- The video-config rescue path preserves all four invocation-owned ranks. It
+  previously rebuilt its candidate with no invocation context and kept only
+  values ranked above RUNTIME, silently dropping preset- and launcher-ranked
+  keys on any unrelated settings write — the path that could rebase a player's
+  chosen cadence. Launcher values now persist only inside the launcher-persist
+  transaction.
+- Character-select numerals resolve render-side per object, like the door
+  numerals, so the shared cached model is never mutated and the mutator is
+  compiled out of the native port.
+- The game-text entry count is scanned from the table's own `0xFFFFFFFF`
+  terminator instead of derived from padded-size arithmetic that overcounted by
+  two. On the US v80 ROM the terminator is at word 341 and the usable ids are
+  0..339; the two ids above that each spanned to or from the terminator and
+  produced a nonsense length. The span guard in `set_current_text()` is kept as
+  defense in depth rather than replaced.
+
+### Testing
+
+- Every gate in the suite is now falsifiable. Gates that could pass vacuously
+  were rebuilt around controls that must fail: absolute scheduler lead and
+  pending expectations returned to the three presentation gates (a scheduler
+  ending every run with a forty-tick backlog had passed), the browser runtime
+  gate anchors on the requested frame count instead of comparing the tick count
+  against itself, and the abandoned-frame relaxations in both browser gates
+  reconcile against the renderer's own declared teardown retirements.
+- The challenge gate carries a paired pixel witness on both collection arenas
+  and both backends: the run repeats with portraits suppressed through
+  `MDKR_SUPPRESS_PORTRAITS` and the framebuffers must differ while the gameplay
+  traces stay byte-identical. Restoring the stock packing fails it with exactly
+  zero pixels. The Taj select and results gates gained zero-baseline floors, so
+  an absent placard can no longer satisfy a relative threshold.
+- New gates: an intro-shrub gate scoring the deterministic intro frame's crown,
+  stem, and body regions on both backends; a real return-to-launcher arm in the
+  restart suite that drives an actual process replacement and asserts the
+  invocation shape of every replacement in the chain; and a sprite-layout gate
+  that classifies multi-run frames and pins that census. The camera subsystem
+  ships with its own C unit and runtime-oracle gates, each mutation-proven.
+- `check_launcher_tabs.py` is registered as a CTest companion script and now
+  asserts the Play button's rounded taper geometrically, which a clipped
+  capture fails.
+- The framed-world-views gate asserts the decorative gutters directly — the old
+  side-band box contained no gutter pixels — and gained PAL arms.
+- GPU capture tests pair producers and consumers through CTest fixtures, so a
+  content test can no longer run against a stale or missing capture.
+
+### Release pipeline
+
+- Every release guard now fails for real instead of passing vacuously. The
+  Windows dispatch version normalizes each component so the manifest matches
+  CMake's zero-padding, pinned by a behavioural contract check that executes
+  the workflow's own shell; the generated manifest is a declared object
+  dependency, so an incremental build cannot embed a stale one; and the
+  AppImage runtime's mutable-tag digest mismatch falls back to tarball-only
+  under `--dev` while still failing a release closed.
+- `--audio-dump` is fenced to the state-oracle route, so it can no longer
+  silently replace state scoring.
+- The Windows validation lane extracts the package into a space-bearing
+  directory, and the command-line quoting and no-standard-streams cases run as
+  unit tests on a real Windows kernel.
+
 ## [1.0.4] — 2026-08-04
 
 No ROM or other game data is included.

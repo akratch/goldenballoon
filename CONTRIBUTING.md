@@ -90,6 +90,8 @@ MDKR_AUDIO=0 python3 tests/check_collision_untextured.py #  ""
 MDKR_AUDIO=0 python3 tests/check_race_finish_time.py
 MDKR_AUDIO=0 python3 tests/check_race_2p_split.py
 MDKR_AUDIO=0 python3 tests/check_native_ui_resolution.py # after HUD/text/target/order changes
+MDKR_AUDIO=0 python3 tests/check_camera_obstruction_runtime.py # after ANY camera, lens, or projection change
+MDKR_AUDIO=0 python3 tests/check_camera_obstruction_display_matrix.py #   ""
 MDKR_AUDIO=0 python3 tests/check_adventure_hub.py
 MDKR_AUDIO=0 python3 tests/check_rom_revision.py       # after ANY ROM-loader change
 MDKR_AUDIO=0 python3 tests/check_save_failsafe.py      # after ANY save/EEPROM change
@@ -217,15 +219,18 @@ so the existing write-ups read clearly.
 
 Don't "clean these up":
 
-- **The `GE007_` env-var prefix in vendored `platform/fast3d/` files.** Parts of the
+- **The `GE007_` env-var prefix in vendored `platform/fast3d/` files, and in
+  `platform/mixer.c`.** Parts of the
   renderer are shared first-party code with the author's GoldenEye port (mgb64). The
   prefix stays so the two projects can converge on genuinely common code rather than
   diverging cosmetically. See [NOTICE.md](NOTICE.md).
-- **`platform/host_window.c` sitting uncompiled.** `gfx_webgpu.c` really does call
-  `platformHasHostWebGpu()`; those symbols are satisfied by the inert
-  `gfx_webgpu_stubs.c`. The two files are mutually exclusive — adding
-  `host_window.c` to the build without removing the stubs is a duplicate-symbol link
-  error.
+- **`platform/host_window.c` and `gfx_webgpu_stubs.c` both being in the build.**
+  `gfx_webgpu.c` really does call `platformHasHostWebGpu()`. With `MDKR_APP` on
+  (the default) `host_window.c` supplies the real window/device adoption and the
+  stubs file `#ifndef`s out its handoff/overlay half, so exactly one definition of
+  each symbol reaches the link; with `MDKR_APP` off the inert stubs supply all of
+  them. Removing either file, or deleting that `#ifndef`, breaks one of the two
+  configurations.
 - **`docs/ref/`** is upstream-derived reference material, not first-party. It is the
   authority `platform/asset_swap.c` is written against.
 

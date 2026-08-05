@@ -1,3 +1,100 @@
+# Golden Balloon 1.0.5
+
+*Unreleased.*
+
+Golden Balloon 1.0.5 is a fix release. It closes the six reported problems
+listed below, repairs Return to Launcher and the diagnostic log on Windows,
+and corrects launcher layout at small window sizes. No game data is included.
+
+Recommended settings are unchanged from 1.0.4: **WebGPU**, **Restored**, frame
+limit **Original**, motion smoothing **Off**, gameplay cadence **Original**.
+Existing preferences are preserved when upgrading.
+
+## Reported problems fixed
+
+- **Course names show correctly again.** Fossil Canyon and Pirate Lagoon
+  rendered as a single letter or as nothing in Track Select and Adventure, and
+  the track names in the post-Wizpig 2 credits were affected the same way. The
+  level-name table was allocated at half the size it needed on 64-bit builds.
+  (#10)
+- **The giant character portraits are back in Smokey Castle and Fire
+  Mountain**, so you can tell which corner is yours without trial and error.
+  The same fix restores the boost shockwave plume and Star City's rainfall,
+  which were also drawing nothing. (#9)
+- **Intro shrubs reach the ground** instead of floating with a repeated top.
+  (#11)
+- **PAL: the strip along the right edge of the screen is gone, and the track
+  map is no longer cut off at the bottom.** European ROMs compose a taller
+  surface than the renderer was assuming, and the port was clipping the world
+  at the viewport edge where the console clips further out. NTSC output is
+  unchanged, byte for byte. (#12)
+- **Taj no longer freezes during his own balloon award ceremony.** Playing as
+  Taj had truncated the animation set the ceremony actor shares with him. Taj
+  also keeps his boost on zip pads now, and his Time Trial finishes are no
+  longer discarded silently. (#13)
+- **Return to Launcher returns to the launcher on Windows** instead of closing
+  the whole application, including when the install path contains a space.
+  (#14)
+
+## Other fixes
+
+- `mdkr64.log` is no longer empty. Launched from Explorer the app has no
+  standard output to attach to, and the log was being rotated away and
+  truncated before that was discovered — which is why a log could never be
+  attached to a report.
+- The launcher's About destination is no longer clipped at common window
+  heights, and the gold Play button keeps its lower edge at 800x600.
+- Changing an unrelated setting no longer rebases a cadence or presentation
+  choice that came from a preset or from the launcher.
+- Audio recovery after a stall no longer clicks, and a stall part-way through
+  a fade no longer leaves the fade stuck.
+- A restart-scoped settings change that fails to stage or start now says why.
+- Track Select no longer exposes a bare column at the right of its backdrop on
+  wide displays.
+- In the browser, two tabs open at once no longer overwrite each other's saves.
+  The first tab owns the save store; a second tab plays as a spectator and says
+  so, with import, edit, restore, erase, and drag-and-drop disabled. Exports
+  still work in every tab. The page also works offline once loaded, and a
+  cached page can no longer mix an old and a new build.
+- Bounds and lifetime fixes across level text, audio, collision, ghosts,
+  Controller Pak note names, particles, and the decompressor. Eighth place's
+  racing line now matches what the original hardware actually did, wall recoil
+  works again for planes and bosses, and a computer-carried egg is no longer
+  drawn frozen.
+
+## Not enabled in this release
+
+A modern camera obstruction subsystem is present in the build but does not
+change any camera. It defaults to an observe-only policy that measures and
+records; the corrective policies are explicit opt-ins behind the
+`MDKR_CAMERA_OBSTRUCTION` environment variable and are not part of the
+supported 1.0.5 experience.
+
+## Known limitations
+
+- WebGPU with Restored presentation remains the qualified native and browser
+  path. OpenGL is a diagnostic option, and Remastered is still work in
+  progress.
+- Motion smoothing remains a preview. UV-scrolled surfaces such as waterfalls,
+  water, and lava still update on authored game ticks and may shimmer or step
+  during camera motion. Motion smoothing Off is unaffected.
+- The Windows archive is not published automatically. Hosted runners do not
+  guarantee a qualifying GPU, so the Windows package is attached only after a
+  human runs it on real Windows hardware and records the result.
+- The desktop app supports keyboard and gamepad navigation, visible focus,
+  scaling, contrast, and reduced motion. It does not claim a VoiceOver, UI
+  Automation, or other screen-reader semantic tree.
+- Linux still uses drag and drop or a typed ROM path instead of a native file
+  picker.
+- The macOS download is ad-hoc integrity sealed but not Developer ID signed or
+  notarized. macOS may show an unidentified-developer warning on first launch;
+  use **System Settings → Privacy & Security → Open Anyway** if needed.
+
+For implementation details, see [CHANGELOG.md](CHANGELOG.md). Open work is
+listed in [ROADMAP.md](ROADMAP.md).
+
+---
+
 # Golden Balloon 1.0.4
 
 *Released 2026-08-04.*

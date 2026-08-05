@@ -59,11 +59,23 @@ made explicit. It covers the current display without changing the monitor's
 video mode and avoids Windows overlapped-window borders. The setting is applied
 at window creation on startup, and Settings, F11, and Alt+Enter all use the same
 durable transition. An SDL or persistence failure keeps/restores the prior mode.
+The transition reports its own cause rather than one generic failure: the result
+enum separates a value the schema rejects (`INVALID`), no window or presentation
+surface to apply it to (`UNAVAILABLE`, retryable — the value was never examined),
+and a queued request that a newer selection replaced (`SUPERSEDED`, a
+success-shaped outcome for the dropped request). All three used to arrive as
+`INVALID`, which told the player their perfectly good value was illegal; see
+`platform/video_config.h`. Settings names each cause, and completions expire so
+it cannot announce a stale result minutes later.
 
 ## Save data
 - EEPROM file backing already exists (save/eeprom.bin). Verify init_save_data's
   first-boot path writes defaults and menus read language/settings sanely.
-- Controller Pak stays absent (ghosts disabled) — confirm menu tolerates.
+- Controller Pak was absent (ghosts disabled) at M4 and this line said to confirm
+  the menus tolerated it. It is no longer absent: `platform/virtual_pak.c` backs
+  one checksummed 32,192-byte Pak image per controller port, and ghost custody is
+  live. See
+  [`../VIRTUAL_CONTROLLER_PAK.md`](../VIRTUAL_CONTROLLER_PAK.md).
 
 ## Frame pacing (interactive)
 - DKR runs 30fps gameplay with 60Hz VI retrace. The shim's retrace synthesis is the

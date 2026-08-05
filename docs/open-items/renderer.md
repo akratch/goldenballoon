@@ -7,6 +7,140 @@
 > trap exists, and retractions are recorded in place rather than removed.
 
 
+## FIXED: three effects drew zero pixels, because hand-packed triangles were built in N64 byte order
+
+`Triangle.vertices` and `TexCoords.texCoords` are `u32` **union aliases** over the
+byte struct `{flags, vi0, vi1, vi2}` and the s16 pair `{u, v}`. Runtime-built
+geometry packed those words the way the N64 does — high byte first. On a
+little-endian host the bytes land in the wrong fields:
+`DKR_TRIANGLE(0x40, 0, 1, 3)` = `0x40000103` stores as `03 01 00 40`, i.e.
+`flags = 0x03` (`BACKFACE_DRAW` lost), indices 1, 0 and **64** out of a
+four-vertex batch, and U transposed with V. Every such triangle is
+backface-culled, degenerate and out of batch, so it emits nothing.
+
+**Why nothing caught it.** The canonical in-memory layout for ROM-sourced
+triangles is already host-natural — `platform/asset_swap.c`'s `swap_triangles()`
+deliberately leaves the four index/flag bytes alone and byte-swaps each UV s16 in
+place (see `asset_swap_notes.md` decision 6) — so disk geometry read correctly
+through the named fields and only the hand-packed words were wrong. All three
+victims bound their model, built geometry and submitted a draw; the traces were
+green and the scene metrics were green, because what they painted was nothing:
+
+- the giant character portraits in **both collection arenas**
+  (`BHV_CHARACTER_FLAG`, Fire Mountain and Smokey Castle);
+- the **boost shockwave plume** (`objects.c func_8000B38C`);
+- the **entirety of Star City's rainfall** (`weather.c`).
+
+**Fix:** `DKR_TRIANGLE`/`DKR_TEXCOORDS` in `game/include/structs.h` pack in the
+**host's** byte order, gated on `__BYTE_ORDER__`, so a big-endian build keeps the
+original packing bit-for-bit. The two call sites that hand-packed words —
+`object_functions.c`'s character-flag quad and `objects.c`'s rim — now name their
+halves instead of shifting a composite.
+
+**Verification:** `tests/check_challenge_modes.py` gains a paired pixel witness on
+both arenas and both backends. The arena runs twice, identical except for
+`MDKR_SUPPRESS_PORTRAITS` (a presentation-only test hook in `objects.c`), and the
+two framebuffers must **differ** while the gameplay traces stay byte-identical.
+Restoring the stock packing fails it with exactly zero differing pixels while
+every earlier assertion in the suite still passes — which is the point: nothing
+that existed before could see a draw that paints nothing. `MDKR_SUPPRESS_PORTRAITS`
+is documented in `DEVELOPER_HANDBOOK.md`.
+
+`check_world_fx_capture.py`'s caster census re-baselines with its mechanism
+recorded: the eighth-place racing-line correction changes which AI enters the
+light view on the pinned route, adding one racer's body and wheels to the dynamic
+set. The delta reproduces exactly across three runs on both backends, static
+stays level-scoped and unchanged, and the renderer commits measure a zero census
+delta in isolation.
+
+## FIXED: PAL was mapped as if it were NTSC — a fixed 240-line surface and no clip-ratio overdraw
+
+Two independent defects, both of them "the host is not the RSP", both PAL-only.
+
+**1. The 2D mapping divided by a hardcoded 240.** NTSC and MPAL compose against
+320x240, but PAL raises the framebuffer to 320x264 (`video.c` adds
+`PAL_HEIGHT_DIFFERENCE` to every mode) and the game lays its menus out over all
+264 rows — `gTrackSelectViewportY`, the ortho viewport's `vtrans`, the PAL text
+offsets and the full-surface scissor are all in that taller space. Dividing them
+by 240 magnifies PAL 2D art by 264/240 and walks everything below the vertical
+centre off the bottom of the surface. The mapping now tracks the surface
+`video_init` actually publishes, through `gfx_dkr_set_logical_surface()`.
+
+**2. The last four logical columns were the frame clear, not the scene.** On the
+N64 the viewport is only the NDC→screen affine map; triangles are clipped against
+the clip volume scaled by `gSPClipRatio`, and the RDP scissor is what bounds the
+image. DKR's `dRspInit` sets `FRUSTRATIO_2`, so geometry survives to twice the
+viewport extent. A host GPU clips at NDC ±1, which *is* the viewport. PAL is
+exactly the case where that matters: `camera.c`'s `viewport_scissor_set()` shifts
+the one-player viewport centre four logical pixels left on PAL while leaving the
+scissor at the full 320x264 surface, so logical columns 316..319 sit outside the
+viewport. Hardware fills them from the ratio-2 overdraw — an ares PAL capture of
+the Ancient Lake start line shows scene content in every visible framebuffer
+column — while the port showed the frame-clear colour there, a flat band 24 host
+pixels wide at 1920 that changed hue every frame.
+
+`dkr_update_clip_expansion()` widens the rectangle handed to the backend until it
+covers the scissor, capped at the ratio-2 box the RSP would really have clipped
+to, and folds the difference back into clip space so the world-to-window mapping
+is the identical affine transform (`window_x = Vx + (ndc+1)/2 * Vw` expanded to
+`Ex + (ndc*Vw/Ew + bias_x + 1)/2 * Ew`). **An overhang counts only at a full
+authored pixel:** the game states both rectangles in whole 320x240/264 units, so
+on hardware they overlap exactly or differ by whole columns, and a thinner gap is
+this port's own `lroundf` rounding on two separately scaled rectangles. Without
+that floor the framed menu world views — which land half an authored pixel inside
+their scissor on NTSC too — would move for nothing. NTSC output is byte-identical,
+proven by `cmp`.
+
+**Also in this wave.** DKR states its full-surface clip as
+`gDPSetScissor(0, 0, 0, w-1, h-1)`; `rcp_dkr.c`'s own source comments call the
+`-1` an unnecessary fill-mode habit. Scaled to the host that discarded
+`region.width / 320` columns — a hard-edged six-pixel band of stale pixels down
+the right edge at 1920, which the widescreen background tiles then painted. A
+clip reaching **all four** surface bounds within one logical pixel now snaps to
+the region, so a split-screen or menu sub-rectangle that happens to touch one
+bound keeps its authored inset exactly. The secondary-viewport backing fill
+restores the presentation world region, and track-select overlay suppression
+applies only where decorative gutters actually exist.
+
+**Verification:** `check_framed_world_views.py` asserts the decorative gutters
+directly — the old side-band box contained no gutter pixels — and gains PAL arms;
+both directions proven by mutation. NTSC track-select output is pixel-identical.
+
+## FIXED: `G_VTX_APPEND` is a base, not a running cursor — the floating intro shrubs
+
+The F3DDKR RSP keeps **one** count: the length of the last flag-0 load. A flag-0
+load writes at the start of the vertex array and stores its count; every flag-1
+load writes immediately after *that*. Two consecutive appends therefore land on
+the same base and the second overwrites the first. The HLE treated the append
+destination as a running cursor and advanced it per append.
+
+`sprite_init_frame()` depends on the real contract. A sprite frame wider than one
+RSP batch is emitted in runs of five quads: each run issues its own appended
+20-vertex load and then restarts its triangle indices at vertex 1. With the base
+advancing, run 2 landed at slot 21 while its triangles still named slots 1..4, so
+every sprite with a sixth tile drew that tile's texture over the **first** tile's
+quad and never drew it in its own place. The intro shrubs gained a duplicate
+crown tile and lost their bottom band, which left them hanging above the ground.
+
+**Blast radius, measured rather than assumed:** exactly two six-tile sprite frames
+in the whole ROM — the intro shrubs, and one burst frame no route loads.
+
+**Fix:** `rsp.vtx_append_pos` is assigned only on a flag-0 load
+(`gfx_pc_dkr.c dkr_sp_vertex`). Hardware reference from the ares oracle confirms
+the fixed frames match authored intent.
+
+**Verification:** the new registered `tests/check_intro_shrub_sprite.py` scores the
+deterministic intro frame's crown, stem and body regions on both backends;
+`check_sprite_layout.py` classifies multi-run frames and pins that census. Both
+are mutation-proven. A failed tile bind now skips the draw with a one-shot
+diagnostic instead of silently painting the previously bound texture at 1x1 scale.
+
+The remaining F3DDKR interpreter contracts audited alongside it — vertex and
+polygon encodings, triangle index base, billboard slot, matrix select, movewords,
+the texture command, cull sense and tile lifetimes — are each verified against the
+microcode contract with the evidence recorded beside the code, including the exact
+change required should the cull-sense invariant ever separate from the flip state.
+
 ## FIXED: the cascade light-depth axis pointed at the sun — wave "shadowsign"
 
 **Repro-sweep verdict for the v0.4 "random shadows from random objects" report:

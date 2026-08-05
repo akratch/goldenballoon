@@ -10,9 +10,12 @@ There is very little of one.
   build fetches its own static files and nothing else.
 - **No server.** The published page is static. Your ROM is read client-side, in your
   own browser, and is never uploaded, transmitted, or stored anywhere.
-- **No privileged operation.** No installer, no driver, no elevated permissions. The
-  only files written are the EEPROM save (`save/eeprom.bin`) and any dump you
-  explicitly ask for with a flag or env var.
+- **No privileged operation.** No installer, no driver, no elevated permissions. Everything
+  written goes to your own save and preference directories: the EEPROM save
+  (`eeprom.bin` and its `.tmp`/`.bad`/`.autosave.*` companions), the video settings
+  (`mdkr64.ini`), the launcher preferences (`mdkr64_app.ini`), the diagnostics log
+  (`mdkr64.log`, rotated to `mdkr64.prev.log`), and any dump you explicitly ask for
+  with a flag or env var.
 - **No credentials or personal data** are collected, stored, or transmitted.
 
 What remains is memory safety. The engine is a native port of decompiled 1997 C

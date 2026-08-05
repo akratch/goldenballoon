@@ -30,7 +30,7 @@ case "${SIGNING_MODE}" in
 esac
 [[ -f "${ARTIFACT}" ]] || die "artifact not found: ${ARTIFACT}"
 [[ "${VERSION}" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] ||
-    die "version must look like 1.0 or 1.0.4"
+    die "version must look like 1.0 or 1.0.5"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"

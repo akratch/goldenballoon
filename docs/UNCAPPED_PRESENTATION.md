@@ -1,6 +1,7 @@
 # Original gameplay with modern presentation
 
-Status: unreleased implementation and qualification record, 2026-08-02.
+Status: shipped in 1.0.4 (2026-08-04) with Motion smoothing labelled Preview.
+The qualification measurements below were taken 2026-08-02.
 
 ## Decision
 
@@ -121,9 +122,13 @@ does not expose a safe high-water mark or a closed pointer graph, so a compact
 copy is not presumed correct. `[RETAINED-TASK]` reports copied bytes, the copy
 budget, peak arena payload, current/peak resident payload, and budget
 rejections. A constrained diagnostic run may set
-`MDKR_RETAINED_ARENA_COPY_BUDGET_BYTES` between 0 and 16 MiB; a rejected capture
-holds the last complete endpoint rather than publishing partial memory. That is
-an allocation/load-shedding safety valve, not the normal presentation policy.
+`MDKR_RETAINED_ARENA_COPY_BUDGET_BYTES` between 1,024 bytes and 16 MiB; a
+rejected capture holds the last complete endpoint rather than publishing partial
+memory. Anything else — `0`, a smaller number, a larger one, or a non-decimal
+string — falls back to the 16 MiB default, because a sub-1,024-byte budget
+admits no capture at all and would report zero capture failures while producing
+no retained tasks. That is an allocation/load-shedding safety valve, not the
+normal presentation policy.
 Any future optimization must preserve the complete-ownership and poison gates
 before replacing the full copy with a narrower lifetime scheme.
 
@@ -173,9 +178,9 @@ The principal gates are:
   `tests/test_video_config.c`: transaction, forward-packet, and public-config
   units.
 
-The local qualification record for this change is summarized in the Unreleased
-changelog. Raw ROM-derived frames, traces, PCM, and saves remain local and are
-not committed.
+The local qualification record for this change is summarized in the 1.0.4
+changelog entry. Raw ROM-derived frames, traces, PCM, and saves remain local and
+are not committed.
 
 ## Known preview limitation
 

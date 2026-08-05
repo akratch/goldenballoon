@@ -57,7 +57,12 @@ but **2 players → straight to TRACK_SELECT(15)**. Track select then skips
   Confirmed behaviour-neutral: `check_race_drive.py` reproduces its documented
   reference exactly (4381 in-race frames, final cp=28 lap=1, max step 22.4 at
   frame 5696, slowest 240-frame mean 3.36), and `check_race_finish_time.py`
-  reproduces course time 4777 / eeprom md5 `a144ba9f…`.
+  reproduces course time 4777 with the finish time present in the written EEPROM
+  record. (The `a144ba9f…` image digest this line originally cited is a historical
+  measurement only: the gate no longer pins a digest — it asserts a created,
+  512-byte, non-blank image carrying the measured clock as a big-endian record,
+  and it runs against a run-scoped save directory rather than the repository's
+  `save/`.)
 - `hud_init()` (`game/src/game_ui.c`) traces `hudPlayers=`/`numViewports=`, which
   is the layout evidence a check can assert on.
 
@@ -158,7 +163,7 @@ the measured 4P P2 DNF is `cp=33/lap=1`, 5,225 rows, and 1.28 units/frame.
   returns `bitpattern = 0x01`~~ **RESOLVED (verified 2026-07-29):** the
   controller-status work landed the real platform presence query this note
   asked for. `controller_query()` and `osContGetReadData()`
-  (`platform/stubs_dkr.c:658/705`) now derive `bitpattern`, `status`, and
+  (`platform/stubs_dkr.c`) now derive `bitpattern`, `status`, and
   `errno` per port from `platform_pad_present()`
-  (`platform/platform_sdl_min.c:1740`), so ports 1–4 report truthfully and the
+  (`platform/platform_sdl_min.c`), so ports 1–4 report truthfully and the
   "trap for future work" no longer exists.

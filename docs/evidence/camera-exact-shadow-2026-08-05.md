@@ -233,3 +233,42 @@ is aggregate multi-instance-cap injection, actual repeated model/object
 load/free/address reuse, whole-ROM work/memory/load bounds, and moving-door/solid
 breadth; cross-compiler/browser/display breadth remains part of SHADOW-02 and
 RELEASE-01.
+
+## Follow-up: exact-path recovery and measured fence sizing
+
+The 16-chunk/128-triangle limits quoted above are superseded. Three commits
+close the fence half of this record.
+
+`55ea056` gives the exact path the conservative recovery the sphere path already
+had. A fence-shaped `INVALID` from the model kernel falls back to the same
+enclosing-sphere sweep of the instance's published world AABB and is counted as
+`exact_fallbacks`; a corruption-shaped `INVALID` still fails closed. Mutation in
+both directions pins the split: forcing every exact query into degradation
+absorbed all 642 kernel failures with zero `INVALID` sweeps, while
+corruption-shaped failures kept all 2,487 `INVALID` classifications.
+Adventure-postrace lifecycle failures fall from 6,451 rows to 2.
+
+Those two rows were one transitioning 166-triangle door saturating the exact
+chunk budget outright, so the best answer available on those ticks was
+conservative geometry containing the resolved eye (`penetrated=1` on ticks 3466
+and 3467). Re-running every camera route with the fences lifted to
+1024/4096/32768 recorded each query's true demand: the 17,000-tick
+adventure-postrace route peaks at 39 node visits, 17 chunks, 134 triangles, and
+nine stationary tests, and the 5,200/9,000/7,000/3,400/3,600-frame routes never
+exceed 33 nodes, seven chunks, 54 triangles, and eight stationary tests. Only
+that door saturates anything. `e85ed75` therefore raises
+`MAX_RETAINED_CHUNKS` 16 -> 32 and its coupled `MAX_QUERY_TRIANGLES` 128 -> 256,
+which admits that model's whole 21-chunk/166-triangle traversal. The 64-node and
+128-stationary-test fences are unchanged; 64 already admitted its 41-node tree.
+Neither raised constant sizes any storage, since the only fence-sized array is
+the unchanged node stack, so the raise costs zero bytes.
+
+`38be676` makes the exhaustion answer authoritative rather than derived. All six
+fence exits in the exact rounded-lens kernel set
+`MdkrCameraObjectOcclusionExactWork::exhausted`; the consumer's comparison of
+published limits against reported work is retained only as a subordinate
+fallback, and it cannot see the node-stack fence at all. Each flag site is
+load-bearing under its own unit arm. No fence is reached across the 16,989
+postrace summaries since the capacity raise, so the recovery path is held by
+`camera_object_bvh` fault injection under shrunken caller limits rather than by
+route coverage.

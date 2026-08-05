@@ -8,6 +8,11 @@ read-only reference for this project; apply these there separately.
 Links into `../../mgb64/` only resolve in a workspace where `mgb64` is checked
 out as a sibling directory to this repository; they are not part of this repo.
 
+`#L…` fragments in the links below are snapshot anchors from the day an entry was
+written, not durable identifiers — `objects.c`, `camera.c`, `tracks.c` and
+`gfx_pc_dkr.c` have each moved by hundreds of lines since. Follow the file and the
+named function, not the line.
+
 ## 2026-07-26 — runtime domains must be established before lookup or branch joins
 
 **Disposition: transferable boundary and test pattern; no claim that the named
@@ -1055,7 +1060,9 @@ field and global RNG stream is known.
 
 ## 2. Explicit world / safe-2D / full-bleed policy should become shared vocabulary
 
-mdkr64 now maps its 320×240 logical space to three regions:
+mdkr64 maps its authored 2D surface — 320×240 on NTSC/MPAL, 320×264 on PAL,
+published live by `video.c` through `gfx_dkr_set_logical_surface()` — to three
+regions:
 
 | Class | Policy |
 |---|---|
@@ -1066,7 +1073,13 @@ mdkr64 now maps its 320×240 logical space to three regions:
 The policy lives in one pure module
 ([mdkr64 display_config.h:1](../platform/display_config.h#L1)) and the F3DDKR
 interpreter applies it uniformly to viewport, scissor, triangles, and rectangles
-([mdkr64 gfx_pc_dkr.c:1548](../platform/fast3d/gfx_pc_dkr.c#L1548)).
+([mdkr64 gfx_pc_dkr.c](../platform/fast3d/gfx_pc_dkr.c),
+`dkr_remap_viewport_and_scissor`).
+
+Note the split: the region policy itself stays anchored to the authored 4:3 lens
+(`MDKR_LOGICAL_HEIGHT`), while the interpreter divides logical coordinates by the
+**live** surface. Dividing by a hardcoded 240 magnifies PAL 2D art by 264/240 and
+walks everything below centre off the bottom of the host surface.
 
 MGB64's design document already proposes a `DrawClass`-driven 2D table
 ([DISPLAY_INPUT_PLAN.md:120](../../mgb64/docs/design/DISPLAY_INPUT_PLAN.md#L120)),
@@ -1559,6 +1572,8 @@ typedef enum MdkrVideoSource {
     MDKR_VIDEO_SOURCE_DEFAULT = 0,
     MDKR_VIDEO_SOURCE_FILE,
     MDKR_VIDEO_SOURCE_PRESET,
+    MDKR_VIDEO_SOURCE_LAUNCHER,
+    MDKR_VIDEO_SOURCE_RUNTIME,
     MDKR_VIDEO_SOURCE_ENV,
     MDKR_VIDEO_SOURCE_CLI
 } MdkrVideoSource;
@@ -1569,6 +1584,15 @@ the value last. That converts "env beats preset beats file" from an ordering
 convention into a property a unit test asserts directly, and it makes
 re-application safe — a live settings change can re-apply from its own layer
 without a lower one clobbering it.
+
+Four of those ranks are **invocation-owned** — `PRESET`, `LAUNCHER`, `ENV` and
+`CLI` come from how this process was started and cannot be reconstructed from
+disk, while `FILE` and `RUNTIME` already live in the file a candidate is rebuilt
+from. Anything that re-resolves the saved file with no invocation context has to
+carry the invocation-owned ranks explicitly. Ours did not: the rescue path kept
+only values ranked above `RUNTIME` and silently dropped the preset- and
+launcher-ranked keys on any unrelated settings write, which is how a player's
+chosen cadence got rebased. Worth checking before porting the pattern.
 
 The second half is the seam that makes it testable: `mdkr_video_config_resolve()`
 takes the parsed ini entries, an **env-lookup function pointer**, and argv. Pass

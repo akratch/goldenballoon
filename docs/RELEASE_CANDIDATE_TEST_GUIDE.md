@@ -1,4 +1,4 @@
-# Golden Balloon 1.0.4 acceptance guide
+# Golden Balloon 1.0.5 acceptance guide
 
 Use this guide only with artifacts built from the same clean candidate commit.
 Do not publish, retag, or substitute a rebuilt file after testing begins.
@@ -10,10 +10,10 @@ bug report, not ROMs or ROM-derived captures.
 
 For each desktop artifact, record its filename and SHA-256. Verify the adjacent
 `.sha256` file where supplied and inspect `.provenance.json`: version must be
-`1.0.4`, `commit` must match the candidate commit, and its recorded hash
+`1.0.5`, `commit` must match the candidate commit, and its recorded hash
 must match the artifact.
 
-For the browser build, open `build-info.json` and confirm version `1.0.4`, the
+For the browser build, open `build-info.json` and confirm version `1.0.5`, the
 same source commit, and `source_dirty: false`. Hard-refresh before testing.
 
 Stop if any identity differs. Do not test an archive in place: extract it to a
@@ -135,6 +135,19 @@ Test once on a fresh save and once on an existing save.
    recovery message rather than leaving it on the hidden canvas.
 
 ## 6. Platform packaging
+
+Know what the hosted workflows already proved for each artifact, so this pass
+covers the rest rather than repeating it. `macos-release.yml` runs the packaged
+app through LaunchServices on a `macos-14` Apple silicon runner and requires
+WebGPU-default startup and successful surface presents there; that smoke runs
+with `MDKR_AUDIO=0` and touches no audio device, controller, or hotplug. The
+Linux AppImage and tarball are
+uploaded only after `release.yml` renders and content-checks them under Xvfb
+with Mesa's lavapipe/llvmpipe software stack, both as built and as extracted
+through `AppRun` — no hosted Linux job has ever touched a physical GPU. The
+Windows zip is built, import-checked, extracted, and launched from an unrelated
+directory, but `release.yml` never uploads it; it may be attached only after
+this pass succeeds on Windows hardware.
 
 ### macOS Apple silicon
 

@@ -42,6 +42,13 @@ This explicit conversion keeps previously calibrated native/ares routes aligned;
 removing it changes the exact `race_state_oracle` stream from 27,840 to 27,832
 rows and is rejected rather than rebaselined.
 
+The one-ticket lead clamps at zero, and that clamp is the only place the mapping
+is not injective: an authored frame 0 and an authored frame 1 both emit frame 0,
+and `script_apply()` then merges their buttons on one tick instead of pressing
+them in sequence. No shipped route authors an event that early — every one
+starts well after the boot logos — so give any sub-two-frame event its own
+representable tick before authoring it.
+
 ---
 
 ## Three things that made this harness lie (read before trusting a score)
@@ -83,13 +90,25 @@ tools/prepare_ares_oracle.sh --no-build   # clone + patch only
 
 - Clones ares at the pinned commit `91b112279…` into `build/ares-oracle/ares`
   (git-ignored). Override the source with `ARES_REPO_URL=<url-or-local-path>`.
-- The patch is tiny and confined to four ares files + two macOS cmake fixes:
+- The patch is tiny and confined to five ares files + two macOS cmake fixes:
   - `n64/controller/gamepad/gamepad.cpp` — controller read → `mdkr64OracleControllerRead`
   - `ares/node/video/screen.cpp` — each presented frame → `mdkr64OraclePresentedVideoDump`
-  - `n64/vi/vi.cpp` — appends the oracle translation unit (input + dump logic)
-  - `n64/n64.hpp` — declares the two hooks
+  - `n64/vi/vi.cpp` — appends the oracle translation unit (input, frame dump,
+    state trace, audio dump)
+  - `n64/cpu/cpu.cpp` — two per-instruction hooks at `CPU::instruction()`:
+    `mdkr64OracleMaybeForceTrack` and `mdkr64OracleTraceVehicleRng`
+  - `n64/n64.hpp` — declares the two `vi.cpp` hooks
 - Binary lands at
   `build/ares-oracle/ares/build-oracle/desktop-ui/ares.app/Contents/MacOS/ares`.
+- `MDKR64_ARES_ORACLE_DIR` (or `--work-dir`) moves that whole workspace —
+  `prepare_ares_oracle.sh` clones and builds under it, and `run_oracle.sh`
+  writes every route's captures under it. **It does not move the default ares
+  binary path.** `run_oracle.sh`'s `ARES_BIN_DEFAULT` is the literal
+  repo-relative `build/ares-oracle/...` path above and is not derived from the
+  workspace, so a build placed in an overridden directory (a scratchpad, say)
+  fails with `ares binary not executable` until you pass `--ares-bin` or set
+  `ARES_BIN`. `prepare_ares_oracle.sh` prints the exact `--ares-bin` invocation
+  when it finishes.
 
 The ares hooks read these env vars (set for you by `run_oracle.sh`):
 
@@ -104,6 +123,7 @@ The ares hooks read these env vars (set for you by `run_oracle.sh`):
 | `MDKR64_ARES_STATE_TRACE` | write the local-only US 1.1 numeric state CSV |
 | `MDKR64_ARES_AUDIO_DUMP` | write the ROM's own audio-interface PCM (raw LE s16 stereo) |
 | `MDKR64_ARES_VEHICLE_RNG_TRACE` | write the local-only US 1.1 retail car-audio RNG call witness |
+| `MDKR64_ARES_FORCE_TRACK` | `source:target` level ids; rewrite the one-player `level_load` argument so a route can reach a track the menus cannot script into (`bluey2_state_oracle` sets `5:52`) |
 
 ### The audio lane
 
@@ -231,7 +251,9 @@ One JSON drives both runners. Example (`tools/oracle_routes/title_to_options.jso
   `native_synth_fields` selects its deterministic field step, while
   `native_event_divisor` scales the native presentation-frame script to that
   cadence. `ares_phase_offsets` entries require a written `basis`; they capture
-  measured phase changes without hiding them in code.
+  measured phase changes without hiding them in code. `forced_track` (with
+  `forced_track_source`, default level id 5) is what `run_oracle.sh` turns into
+  `MDKR64_ARES_FORCE_TRACK` for a track the menus cannot script into.
 
 Inspect a route:
 ```

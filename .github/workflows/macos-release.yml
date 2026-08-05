@@ -9,9 +9,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Bundle version, without a v prefix (for example 1.0.4)"
+        description: "Bundle version, without a v prefix (for example 1.0.5)"
         required: true
-        default: "1.0.4"
+        default: "1.0.5"
       trusted_signing:
         description: "Developer ID sign and notarize (requires protected credentials)"
         required: false

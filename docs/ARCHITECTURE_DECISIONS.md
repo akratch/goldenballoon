@@ -81,7 +81,10 @@ Mirror mgb64's gfx_pc.h surface: `gfx_init(struct GfxRenderingAPI*, ...)`,
 (see `game/include/f3ddkr.h`, usage in `game/src/rcp_dkr.c`):
 - DKR `Vertex` (10B: s16 xyz, u8 rgba — NO UVs) and `Triangle` (16B: flags + 3 idx +
   3× s16 u,v) batches via `G_TRIN` (0x5) / `gSPPolygon` and `gSPVertexDKR`
-  (incl. `G_VTX_APPEND` append-to-buffer semantics, 32-vertex buffer).
+  (32-vertex buffer). `G_VTX_APPEND` is **not** a running cursor: the RSP keeps
+  one base — the length of the last flag-0 load — and every appended run lands
+  at that same base, so consecutive appends overwrite each other and each run
+  restarts its own triangle indices (`rsp.vtx_append_pos`, gfx_pc_dkr.c).
 - `G_DMADL` (0x7) sub-display-lists.
 - 3-slot matrix system (`gSPMatrixDKR`/`gSPSelectMatrixDKR`, `G_MW_MVPMATRIX` movewords).
 - Billboarding (`G_MW_BILLBOARD` moveword: add vtx 0 anchor post-MVP).

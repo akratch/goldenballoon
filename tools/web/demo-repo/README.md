@@ -33,6 +33,8 @@ A **publication target**, nothing more. It holds only built artifacts:
 | `mdkr64_web.js.symbols` | the symbol map from that exact link, so a crash trace can be read |
 | `mdkr-save-tools.wasm` / `.js` | the ROM- and renderer-free save codec/editor module |
 | `index.html`, `style.css`, `mdkr64-shell.js`, `mdkr-save-ui.js` | the launcher shell and local save-management UI |
+| `rom-id.js` | identifies and normalises your ROM in the page, before the shell loads |
+| `sw.js`, `manifest.webmanifest` | build-scoped service worker and install metadata, so the page works offline from the home screen |
 | `assets/` | project brand art |
 | `build-info.json` | which source commit produced this build |
 

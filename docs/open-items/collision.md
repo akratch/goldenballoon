@@ -256,16 +256,24 @@ actually reached, and the table above says none is. The instrument is the bound
 parameter itself.
 
 `tools/sweep_bug_shapes.py bare-pointer` enumerates every function in `game/src`
-that writes through a pointer parameter in a loop: **27 instances, all triaged**
-(the reasons live in `SHAPE_TRIAGE` in `tests/check_array_bounds_sweep.py`, which
-fails if any of them stops matching).
+that writes through a pointer parameter in a loop: **27 instances at the time of
+this wave, all triaged** (the reasons live in `SHAPE_TRIAGE` in
+`tests/check_array_bounds_sweep.py`, which fails if any of them stops matching —
+and equally if a new one appears with no reason). The population is now **31**:
+the camera-obstruction port added `mdkr_camera_interpolated_view_projections:out`,
+`mdkr_camera_dynamic_index_clear:buckets` and
+`mdkr_camera_object_occlusion_sort_chunk_range:order`, and the last two carry no
+bound-ish parameter. They are the current untriaged set — see that file, not this
+table.
 
 | verdict | n | which |
 |---|---|---|
 | **BOUNDED in this commit** | 5 | `get_inside_segment_count_xz`, `get_inside_segment_count_xyz`, `collision_get_y`, `func_800BDC80` (×2 output pointers) |
 | bounded by an existing count parameter | 6 | `resolve_collisions` (`numEntries`), `fb_memcpy` (`len`), `get_controller_pak_file_list` (×2), `font_codes_to_string`, `string_to_font_codes`, `filename_decompress` (`length`) |
-| unreachable — zero callers | 4 | `music_get_fx_mix_all_channels` (UNUSED), `func_8000E79C`, `strcpy`, `strcat` (`unused_string.c`) |
-| the C-string contract (bounded by the input's NUL) | 3 | `parse_string_with_number` (×2 — both `REGION` arms), `fontConvertString` |
+| unreachable — zero callers | 2 | `music_get_fx_mix_all_channels` (UNUSED), `func_8000E79C` |
+| **COMPILED OUT by the game-core memory-safety wave** | 2 | `strcpy`, `strcat` (`unused_string.c`, now whole-file `#ifndef NON_MATCHING`) |
+| the C-string contract (bounded by the input's NUL) | 1 | `fontConvertString` |
+| **BOUNDED by the game-core memory-safety wave** | 2 | `parse_string_with_number` (×2 — both `REGION` arms; explicit `DKR_PARSED_STRING_MAX` capacity, `_Static_assert`ed at both call sites) |
 | already handled by an earlier wave | 3 | `filename_trim`, `func_8002FF6C`, `func_80026E54` — all three had their *callers* resized, with `NATIVE_PORT` comments |
 | recorded, another wave's file | 1 | `savemenu_blank_save_destination` (menu.c) |
 | **BOUNDED by the virtual-Pak wave** | 4 | `func_800756D4` ×4 (save_data.c — pointer-plus-capacity contract; sole caller passes six elements) |
@@ -334,8 +342,10 @@ is unchanged on every path; at the boundary it stops with
 `gNumCollisionCandidates == 500`, which is what the ROM's own test produces.
 
 The sweep enumerated the class as *"a counter that indexes a write and is compared
-by equality to a constant"*: **36 instances, 7 of them against something that is
-plausibly a capacity.** Of those 7:
+by equality to a constant"*: **36 instances at the time of this wave, 7 of them
+against something that is plausibly a capacity** (the current tree measures 50 and
+18 — the camera-obstruction port and the 1.0.5 bounds work both added members).
+Of the original 7:
 
 | site | verdict |
 |---|---|
@@ -346,7 +356,8 @@ plausibly a capacity.** Of those 7:
 | `func_8001F460: var_t0 != D_8011AE78`, `func_80021600: j != D_8011AE78` | safe: linear-search idiom after `for (i = 0; i < D_8011AE78 && …; i++)`, so `!=` means "not found" |
 | `func_8001F460: var_s2 != 0x7F` | safe: 0x7F is a stream sentinel, not a capacity |
 
-The remaining 29 are `i == 0`-style state tests and are counted, not enumerated.
+The remaining 29 were `i == 0`-style state tests, counted rather than enumerated;
+the current tree counts 32 of them.
 
 **The one new find here is `waves_visibility`.** Its reset loop strides **four**
 and terminates on `!=`, so it stops only because `ARRAY_COUNT(D_8012A600)` is 24 —
@@ -381,8 +392,9 @@ and wave "keyshift"'s own trace probe), one in `objects.c` (the Taj offer) and o
 in `waves.c` (`obj_wave_height`). That is precisely the set wave "keyshift" fixed,
 reached from an independent direction — it swept the *save fields* and arrived at
 the shifts, this swept the *shift syntax* and arrived at the same six — so the
-class is closed by two methods that agree. The other **141** are shifts by a plain
-variable with no added constant; none reported a bad exponent on any route.
+class is closed by two methods that agree. The other **141** (133 in the current
+tree) are shifts by a plain variable with no added constant; none reported a bad
+exponent on any route.
 
 The enumerator matches `DKR_SHL32(x, n)` as well as `<<`, deliberately: after the
 fix the six sites contain no shift operator at all, and a `<<`-only sweep would
@@ -492,16 +504,22 @@ three are no-ops unless set.
 ### Left alone, and why
 
 - **The 29 informational equality-cap sites and the 141 informational variable
-  shifts.** Counted, not enumerated: the check fails if either population *grows*,
-  which catches a new instance without pretending 170 harmless lines were each
-  read closely.
-- **`save_data.c`'s `func_800756D4` (4 output pointers) and `menu.c`'s
-  `savemenu_blank_save_destination`.** Real members of class 1, in other waves'
-  files. The first is controller-pak enumeration and the port has no controller
-  pak.
-- **`music_get_fx_mix_all_channels`, `func_8000E79C`, `unused_string.c`'s
-  `strcpy`/`strcat`.** Genuinely unbounded and genuinely uncalled. Bounding dead
-  code buys nothing; the sweep will report them the day one gains a caller.
+  shifts** (32 and 133 in the current tree). Counted, not enumerated: the check
+  fails if either population *grows*, which catches a new instance without
+  pretending 170 harmless lines were each read closely. Note the consequence —
+  the equality-cap count has since crossed its `SHAPE_INFO_MAX` ceiling, so the
+  check is doing exactly what it was built to do and is waiting for someone to
+  read the new members.
+- **`menu.c`'s `savemenu_blank_save_destination`.** A real member of class 1 in
+  another wave's file. `save_data.c`'s `func_800756D4` was in this bucket on the
+  grounds that the port had no Controller Pak; it has one, and the virtual-Pak
+  wave gave that API an explicit output capacity (see the class-1 table above).
+- **`music_get_fx_mix_all_channels`, `func_8000E79C`.** Genuinely unbounded and
+  genuinely uncalled. Bounding dead code buys nothing; the sweep will report them
+  the day one gains a caller. `unused_string.c`'s `strcpy`/`strcat` were here
+  until the game-core memory-safety wave compiled the whole file out under
+  `#ifndef NON_MATCHING` — they carry libc's external names, so on a hosted build
+  they interposed the platform's implementations for the entire program.
 - **`filename_decompress` writes `output[length]`**, so its buffer must be
   `length + 1`. True at every call site today; noted because it is the same
   off-by-one family as the `filename_trim` overrun an earlier wave had to fix.
@@ -821,19 +839,25 @@ next step, not more code.**
 
 ### Found and deliberately NOT fixed
 
-1. **`generate_collision_candidates()` can still run off the end of
-   `gCollisionCandidates`.** The cap test is an *equality*, `if (j == 500) goto out`,
-   and the **segment-pointer insert at the top of each segment iteration is not
-   bounded at all**. Enter an iteration with `j == 499`, the segment store lands at
-   499 and `j` becomes 500; the facet loop then writes index 500 (OOB — the array is
-   exactly `500 * 4` bytes, `tracks.c:2922`), `j` becomes 501, and `j == 500` is
+1. ~~**`generate_collision_candidates()` can still run off the end of
+   `gCollisionCandidates`.**~~ **NOW GUARDED; the ROM hazard is kept on record.**
+   The ROM's cap test is an *equality*, `if (j == 500) goto out`, and its
+   segment-pointer insert at the top of each segment iteration has no test at
+   all. Enter an iteration with `j == 499`, the segment store lands at 499 and
+   `j` becomes 500; the facet loop then writes index 500 (OOB — the array is
+   exactly `500 * 4` bytes, `tracks.c`), `j` becomes 501, and `j == 500` is
    never true again, so it runs unbounded to the end of the segment list.
    `gCollisionSurfaces[j]` (500 bytes) goes with it. **Faithful to the ROM** —
    `collision.s` `.L80031368` increments `$s3` with no check and `.L80031470` is
-   `beq $s3, 0x1F4` — so it is an original-game hazard, not a port defect, and
-   after the fix above no measured track reaches 500 at all (peak 416). Not
-   patched, because changing it would diverge from the ROM for a case nothing
-   currently reaches. **If a future track is found to saturate, fix this first.**
+   `beq $s3, 0x1F4`. This wave added a `NATIVE_PORT`
+   `j >= mdkr_coll_cap(MAX_COLLISION_CANDIDATES)` pre-check, but only the
+   segment-side insert was genuinely ahead of its store; the facet-side check sat
+   one store *late*, so a full list still wrote one entry past the pool block.
+   Both checks now precede their stores (`game/src/hasm/collision.c`,
+   `generate_collision_candidates`), and the ROM's `==` test is retained below
+   them rather than edited. No measured track reaches 500 at all (peak 416), so
+   this is the failure mode rather than a behaviour change. **Still an
+   original-game hazard on any N64 build.**
 2. **`counter == 10` segment cap.** At most 10 overlapping segments are considered.
    Measured peak on every track swept: **3**. Nowhere near it.
 3. ~~**`collision_objectmodel()` used `s32 spB4[10]` / `f32 sp8C[10]`
@@ -846,10 +870,14 @@ next step, not more code.**
    `AVOID_UB=1`, which selects the `MtxF` branch. The hazard is that dropping
    `AVOID_UB` would silently reintroduce an 8-byte stack overflow. No change made;
    noted because it was carried in as an open defect and it is not one today.
-5. **`gLevelPropertyStack[5 * 4]`** (`game/src/game.c:59`) is pushed without a bound.
+5. ~~**`gLevelPropertyStack[5 * 4]`** (`game/src/game.c`) is pushed without a
+   bound.~~ **FIXED in the game-core memory-safety wave.**
    `racer_boss_finish()`'s Future-Fun-Land win branch pushes four frames and
    `level_load()` may already hold one — exactly 5, i.e. right at the limit with
-   zero slack. Not reached by anything measured. Recorded.
+   zero slack, and a sixth push wrote into the adjacent globals.
+   `level_properties_push()` now drops a push that would exceed
+   `ARRAY_COUNT(gLevelPropertyStack)` under `NATIVE_PORT`. Still not reached by
+   anything measured.
 6. **`func_800214E4()` (`objects.c`) reads `D_8011AE74[D_8011AE78]`** — one past the
    collected count — when its actor search finds no match, then passes it straight to
    `obj_init_animobject()`. Inside the 128-slot allocation, so not a wild pointer,

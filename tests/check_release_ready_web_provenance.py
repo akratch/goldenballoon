@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -14,7 +15,27 @@ ROOT = Path(__file__).resolve().parent.parent
 CHECKER = ROOT / "tools" / "ci" / "check_web_build_provenance.py"
 HEAD = "0123456789abcdef0123456789abcdef01234567"
 OTHER = "89abcdef0123456789abcdef0123456789abcdef"
-VERSION = "1.0.4"
+
+
+def candidate_version() -> str:
+    """Read the one definition of the release version, as the caller does.
+
+    check_release_ready.sh resolves MDKR_VERSION out of CMakeLists.txt and
+    hands it to the checker, so these fixtures must be built from that same
+    value. Transcribing a literal here would go stale at every version bump
+    and stop exercising the shape the release path actually passes.
+    """
+    text = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+    match = re.search(r'set\(MDKR_VERSION "([^"]+)"', text)
+    if match is None:
+        raise AssertionError("CMakeLists.txt does not set MDKR_VERSION")
+    return match.group(1)
+
+
+VERSION = candidate_version()
+# Guaranteed to differ from VERSION whatever the bump, so the rejection case
+# cannot degrade into a self-comparison that passes vacuously.
+WRONG_VERSION = f"{VERSION}-not-the-candidate"
 
 
 def run_case(name: str, record: dict[str, object], expected_code: int,
@@ -50,7 +71,8 @@ def main() -> int:
              {"source_commit": HEAD, "source_dirty": False}, 1,
              "does not equal candidate version")
     run_case("wrong staged version",
-             {"version": "1.0.3", "source_commit": HEAD, "source_dirty": False}, 1,
+             {"version": WRONG_VERSION, "source_commit": HEAD,
+              "source_dirty": False}, 1,
              "does not equal candidate version")
     print("check_release_ready_web_provenance: PASS -- clean, dirty, stale, and version fixtures")
     return 0

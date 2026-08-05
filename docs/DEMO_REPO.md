@@ -52,13 +52,25 @@ questionable. In order:
 - **dirty source tree** → refused (a published build must correspond to a commit, or
   nobody can say what is live). Override is explicit: `--allow-dirty`.
 - **build** runs `build_web.sh`, which enforces the 40 MiB wasm budget and runs
-  `tools/check_no_rom.sh`.
+  `tools/check_no_rom.sh`. With `--no-build` the ROM guard still runs over the
+  staged `dist/web`, and the staged `build-info.json` must name `HEAD` — reusing a
+  directory built from another commit would make the footer, the stamp and the
+  commit message assert something untrue about what is live.
 - **demo dir sanity** → refused if it is the source repo, is *nested* inside it, or
   is not a git repo.
 - **source leakage** → refused if the demo repo contains `game/`, `platform/` or a
   ROM. The demo repo is supposed to hold build output and nothing else; source
   appearing in it means the publisher copied the wrong tree, so this stops the
   run instead of warning.
+- **stamping** → `tools/web/stamp_publish.sh` rewrites the staged `index.html`,
+  adding `?v=<short commit>` to every locally referenced shell asset and
+  `data-build-version=<MDKR_VERSION>` to `<html>`, then re-greps for each
+  reference and exits non-zero if one is missing. A half-stamped page looks fine
+  and a sticky cache pins it forever, so a missed reference stops the publish.
+  The same script is the Actions publish path's only stamper, so the two cannot
+  drift; `mdkr64-shell.js` recovers the stamp from its own script URL and
+  propagates it to the engine, the save-tools module and the service worker, so
+  a stamped page cannot serve a mixed wasm/JS pair.
 
 ## Keeping them in sync
 

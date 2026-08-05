@@ -51,9 +51,13 @@ running on WebGPU in Chrome, rendering title/menus/race correctly.
 | Boss races | Tricky 2 end to end with production object collision; all ten load/drive. The legal first-boss campaign route clears the fourth Dino race, opens the four-balloon door, physically finishes Tricky 1 in win/loss arms, returns to the hub, and reloads exact progression | `check_collision_gridmask`, `check_boss_win_verdict`, `check_first_boss_progression`; the old stock-AI summit miss remains a positive control and route-fidelity note in `OPEN_ITEMS.md`'s objcoll entry |
 | Audio | Music + SFX + reverb via the software aspMain mixer; RAW16 instruments are converted from serialized big-endian PCM | `check_audio_output` covers format/energy/timing/reverb; `check_raw16_audio` inventories 25 music + 1 SFX RAW16 wave and compares fixed/exact-legacy PCM in both directions |
 | ROM revisions | US 1.1 + EU 1.1 byte-identical payloads supported with authored NTSC/60 and PAL/50 source clocks; the other three named and refused; `.v64`/`.n64` normalised | `check_rom_revision` + `check_simulation_cadence` |
+| Camera obstruction | The Modern resolver (`game/src/camera_obstruction_runtime.c` and the occlusion sources beside it) is integrated but **not** the default: `MDKR_CAMERA_OBSTRUCTION` selects `observe` (also the value an unrecognised string falls back to), `modern`, `center-ray`, or `legacy`, and `observe` leaves the authored camera in place | the `check_camera_obstruction_*`, `check_camera_dynamic_*`, `check_camera_projection_fallback_runtime`, `check_camera_emergency_readability_runtime`, and `check_camera_3p_tt_runtime` gates, over the `camera_*` ROM-free CTests (`ctest -R '^camera_'`); design and measured fence sizing in [`architecture/camera-obstruction.md`](architecture/camera-obstruction.md) |
 | Oracle | Patched ares runs the real ROM for pixel parity and US 1.1 racer-state comparison (silent by construction) | `race_state_oracle`: Bubbler's authored two-field route passes and the historical one-field arm fails as a positive control; broader strict standard-race parity remains reported separately |
 
-**92 check scripts / 101 full-run tasks, each validated in both directions.**
+**122 registered check scripts / 135 full-run tasks, each validated in both
+directions.** (`tools/run_checks.py --list` prints them; the three
+`tests/check_*.py` it does not name directly are CTest companions that the
+`rom_free_units` task owns.)
 (2026-07-29 additions: `check_shadow_stage_reset.py` and
 `check_touch_controls.py`. 2026-07-31 post-1.0 additions:
 `check_charselect_motion.py`, `check_shell_dropfile.py`,
@@ -94,8 +98,8 @@ The defined waves are **23/23 complete**:
 | Wave 2 lighting | RL-2, RL-5, CO-1 | 3/3 integrated |
 | Wave 3 gameplay envelope | multiplayer, Adventure Two, challenge/battle, first boss, Taj challenges, trophy series | 6/6 integrated |
 
-The default WebGPU+app native build exposes 67 ROM-free CTests: 56 non-GPU and
-11 GPU. This wave accounting is not a claim that the entire foundation or
+The default WebGPU+app native build exposes 117 ROM-free CTests: 98 non-GPU and
+19 GPU. This wave accounting is not a claim that the entire foundation or
 remaster backlog is complete.
 
 ### Wave 3 multiplayer checkpoint
@@ -141,9 +145,11 @@ matches its horizontal reflection at MAD 2.816.
 courses in win/loss arms, including production results, TT-amulet progression,
 EEPROM, fresh-process reload, and terminal-gate controls. It also carries the
 giant character portraits (`BHV_CHARACTER_FLAG`, Fire Mountain and Smokey
-Castle) as a paired pixel witness: the same arena is run twice, identically
-except for `MDKR_SUPPRESS_PORTRAITS`, and the two framebuffers must differ while
-the gameplay traces stay identical. Binding traces alone cannot see a portrait
+Castle) as a paired pixel witness on both production backends: the same arena is
+run twice on GL and again on WebGPU, identically except for
+`MDKR_SUPPRESS_PORTRAITS`, and the two framebuffers must differ while the
+gameplay traces stay identical. The battle arenas author no portraits, and that
+zero is pinned rather than skipped. Binding traces alone cannot see a portrait
 that submits a draw and paints nothing, which is exactly how the run-time
 `DKR_TRIANGLE`/`TexCoords` byte-order defect stayed invisible for a release.
 
@@ -644,8 +650,8 @@ shared resolver. `tools/run_checks.py` owns the special Release, ASan, UBSan, an
 wasm/browser shapes plus the ROM-free CTests, runs save-mutating checks sequentially,
 and rejects any unregistered `tests/check_*.py`. The manifest covered 31 scripts
 and 38 tasks at the cited checkpoint, then 32 scripts and 39 tasks after the
-runtime-boundary gate. The current manifest contains **92 scripts and
-101 tasks**. `RELEASE_CHECKLIST.md` has one command per native configuration
+runtime-boundary gate. The current manifest contains **122 scripts and
+135 tasks**. `RELEASE_CHECKLIST.md` has one command per native configuration
 and routes the wasm artifact through the same runner.
 
 ### Smaller, and each has its evidence in `docs/OPEN_ITEMS.md`
@@ -822,9 +828,18 @@ Useful trace env vars: `MDKR_TRACE=1` (menu ids, pacing, racer probe, decoded MI
 tables), `=2` + `MDKR_DL_FRAME=N` (display-list opcode trace, plus per-frame
 `nearclip=/dropped=/degen=` counters), `=3` (input reads); `MDKR_DUMP_EVERY=N`,
 `MDKR_FORCE_BOOST=frame:len`, `MDKR_AUDIO_DUMP=out.wav MDKR_AUDIO_RMS=1`,
-`MDKR_SUPPRESS_PORTRAITS=1` (drop the collection arenas' giant character
-portrait draw, so a paired run witnesses the pixels it paints),
-`MDKR_RENDERER=gl`, `MDKR_NEARCLIP=off|w|zw` (A/B the near-plane clip),
+`MDKR_SUPPRESS_PORTRAITS=1` (a `check_challenge_modes.py` test hook, not a
+player setting: it skips the `BHV_CHARACTER_FLAG` draw in `render_3d_misc()`
+under `NATIVE_PORT` only, so the paired run witnesses the pixels that draw
+paints; any value other than empty or `0` suppresses),
+`MDKR_RENDERER=gl`,
+`MDKR_CAMERA_OBSTRUCTION=observe|modern|center-ray|legacy` (the obstruction
+resolver arm; anything unrecognised falls back to `observe`, never to a
+known-unsafe arm) with `MDKR_CAMERA_TRACE=1|2` (`1` prints the per-tick
+`camera_obstruction_observe summary` line; `2` adds a per-viewport detail line
+and, under `modern`, keeps running the stationary sweep it would otherwise skip)
+and `MDKR_CAMERA_PERF=1` (`[CAMERAPERF]` per-section timings),
+`MDKR_NEARCLIP=off|w|zw` (A/B the near-plane clip),
 `MDKR_LINESWAP=off` (A/B the pre-swizzled-texture un-swizzle),
 `MDKR_GRIDMASK=off` (A/B the collision grid-mask Z fix),
 `MDKR_ROTPY=legacy` (A/B the `vec3f_rotate_py` pitch/yaw fix),
@@ -850,4 +865,11 @@ that makes a boss win present nothing; see `docs/OPEN_ITEMS.md` "wave bossverdic
 for the two tuned shadow constants — the seam that ruled acne out of the R2
 light-depth-sign investigation), `MDKR_TEST_SHADOW_BOGUS_CASTER=<world units>`
 (displace every static caster's first admission, so the depth map holds geometry
-the object has left — `check_shadow_plausibility.py`'s broken direction).
+the object has left — `check_shadow_plausibility.py`'s broken direction),
+`MDKR_TAJ_SELECT_FAIL_SPAWNS=<n>` / `MDKR_TAJ_SELECT_FAIL_SIGN_SPAWNS=<n>`
+(fail the first `n` character-select spawns, read once in
+`taj_visual_select_begin()` and clamped to 0..1000; the first fails the composed
+rider *and* its placard, the second fails only the numbered placard so a
+composed rider survives into the UNAVAILABLE picker state —
+`check_taj_visual_lifecycle.py`'s sign-only arm, which is the only one that can
+see a lit unselectable Taj left standing in the line-up).

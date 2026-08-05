@@ -177,6 +177,15 @@ global velocity safety clamp remains in force. Item use and weapon hits against
 other racers remain unchanged. Out-of-bounds recovery, course progression, and
 finish logic are never bypassed.
 
+The sustained top speed is a *cruising* cap — how fast Taj holds a line under his
+own power — so it must not eat a stock effect that ordinary physics has already
+written into `racer->velocity`. While `boostTimer` is live, `taj_physics_speed_cap`
+raises the cap to exactly the stock boosted magnitude: a floor, not a bypass, so
+the clamp can neither pull Taj below a boosted stock racer nor let his sustained
+multipliers stack on top of the boost. Clamping unconditionally at the 18.225 car
+cap clipped the stock 22.357 boosted peak, which made Taj the one character for
+whom zip pads did nothing.
+
 The shared Taj tuning helper runs immediately after ordinary car, hovercraft, or
 plane updates in both player and finish/AI dispatch paths. Authored loop and
 flying-car trigger states retain their movement authority while Taj's attack
@@ -244,6 +253,23 @@ log the failed save, and tell the player that the unlock could not be saved. The
 write is atomic, and “erase all bonuses” uses the service rather than deleting
 files directly.
 
+Two rules keep that reporting honest. A store *refused* because another
+transaction is in flight is not a failure: the candidate is queued for retry and
+the in-flight transaction keeps ownership of the reported state, so a banner is
+not raised for a write that has not been attempted. And
+`adventure_migration_complete` advances only when bytes actually went out —
+committing it in RAM after a refused or failed store made the import reconcile
+early-out for the rest of the session, so the retry that was meant to write the
+unlock never had a reason to run.
+
+`MDKR_TAJ_TEST_PLAYER` is an opt-in native bootstrap that makes one port play as
+Taj without driving the menus. It is a **shadow**: resolved once, never written
+into the persisted struct and never into the selection mask, ORed in at every
+read site. Assigning it directly made a later genuine `ABRACADABRA` compute no
+persistence change, so the unlock was never stored and the banner never showed,
+and it re-applied itself at every racer binding, clobbering the player's actual
+choice.
+
 ### Carpet and rider presentation
 
 The donor racer is created normally. Once its object and segment are valid, the
@@ -264,6 +290,36 @@ Creation/destruction is transactional. If either race asset fails validation,
 destroy any partial companion and retain the playable donor presentation. Racer
 destruction and level teardown own explicit cleanup. Object pointers are never
 left for the allocator to discover.
+
+**A presentation companion is never authoritative, and two seams enforce that.**
+
+The companions are excluded from the deterministic simulation hash — from every
+object walk and from the hashed object count (`sim_hash_object_is_presentation`
+in [`platform/sim_hash.c`](../../platform/sim_hash.c), which asks
+`taj_visual_is_presentation_object`). Their transforms are recomputed per tick
+from presentational sources, three of them behind `MDKR_TAJ_VISUAL_*` flags, so
+hashing them would assert that presentation is authoritative state and would make
+the hashed count depend on whether a companion allocation succeeded.
+
+A companion must also never be the object that decides how wide a **shared
+per-level model cache entry** is. `model_anim_offset()` narrows the animation set
+baked into the cache entry for a model id, and whichever object loads the model
+first fixes that width for the whole level. Retail is safe because
+`BHV_PARK_WARDEN` is the only consumer of the Park Warden model in the levels
+where it spawns. The Taj rider is a `BHV_PARK_WARDEN` object inside a *race*
+level, where the balloon-award ceremony actor later needs the model's full
+14-animation set for animation ids 9 and 11. With the rider loading first the
+entry held 7, `func_8001F460`'s `animationID < numberOfAnimations` guard failed,
+the animation clock never advanced, and Taj sat frozen at `animFrame` 0 through
+his own ceremony — but only when the player was Taj. The rider's spawn therefore
+skips the narrowing ([`game/src/objects.c`](../../game/src/objects.c),
+`taj_visual_spawn_lease_active`); it only ever plays rider animation 6, which the
+wider set contains.
+
+Up to eight live presentation objects also make `gObjPtrList`'s ceiling reachable
+in ordinary four-player play. `spawn_object()` now refuses the spawn at capacity
+instead of taking retail's store-then-complain path, which had already written
+past the array by the time it printed.
 
 Phase 0 validates these asset candidates at runtime:
 
@@ -304,6 +360,13 @@ Taj can play Time Trial, but an OP run is noncanonical:
 
 Adventure and trophy progress may save normally. This is an intentional secret
 character advantage; only competitive timing data is quarantined.
+
+The quarantine covers the persistent writes, not the run. `race_finish_time_trial`
+skips the best-time store, the player-ghost swap, and staff-ghost retirement for a
+Taj run, but still plays the ordinary end-of-run announcement — that is HUD and
+audio with no record side effect, and guarding the whole block made Taj time
+trials finish silently. Beating the staff ghost's time announces normally and
+leaves the staff ghost standing for a canonical attempt.
 
 ## Expected implementation surface
 

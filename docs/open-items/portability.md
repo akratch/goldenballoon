@@ -190,7 +190,7 @@ and `sra`-vs-`srl`, then hot paths over cold.
 | `game/src/hasm/collision.c` | 3 | **1 divergence**, fixed |
 | `game/src/hasm_native/obj_animate.c` | 2 (+2 helpers) | clean |
 | `game/src/hasm_native/obj_shade_fast.c` | 2 | clean |
-| `game/src/hasm_native/inflate_native.c` | 5 (+4 helpers) | clean |
+| `game/src/hasm_native/inflate_native.c` | 5 (+4 helpers) | clean **as a transcription**; see the retracted malformed-input verdict below |
 | `game/src/objects.c` `func_80017A18` | 1 | **not compiled at all** — see below |
 | `platform/math_stubs_temp.c` (the `.s` **data** section + the trig with no C body) | 9 symbols | **3 divergences**, 0 fixed |
 
@@ -270,15 +270,17 @@ the lens flare (`weather.c:631`), spotlight direction (`lights.c:413`), object
 sprite placement (`objects.c:493`).
 
 **Behaviour-neutral for the racer simulation** — 0 of 359 `[PACE]` rows changed on
-Ancient Lake, and a full 3-lap Time Trial records the **same course time 4713** in
+Ancient Lake, and a full 3-lap Time Trial records the **same course time** in
 both arms — because no call site feeds physics. That is *why* the check counts calls
 and hashes outputs instead of diffing a `[PACE]` stream: a stream diff could never
 see this fix, in either direction.
 
-(Unrelated, noted while measuring: `check_race_finish_time`'s course time is **4713**
-on current `main`, not the 4709 recorded in the "finishtime" wave below. The check
-asserts a band and cross-checks traced against recorded, so this is informational —
-and it is *not* from this wave, since both arms agree.)
+(Unrelated, noted while measuring: `check_race_finish_time`'s course time has moved
+twice — 4709 in the "finishtime" wave below, 4713 when this wave measured it, and
+**4777** as the check now records it, after the `ParticleBehaviour` stride fix moved
+the trajectory. The check asserts a 3000–9000 band and cross-checks traced against
+recorded rather than pinning a value, so this is informational — and it is *not*
+from this wave, since both arms agree.)
 
 Not wrapped in `#ifdef NATIVE_PORT`: it is a transcription correction, not a host
 adaptation, exactly as with the grid-mask fix.
@@ -450,8 +452,14 @@ an untextured collidable batch.
   the ROM path. Consistency note, not a bug: this build defines `AVOID_UB=1`, so
   the assembly *would* take the fixed branch if it were ever assembled, while the
   compiled C keeps the ROM behaviour — the C body has no `AVOID_UB` gate.
-- **`generate_collision_candidates`'s unbounded segment-pointer store** and the
-  `counter == 10` cap — already recorded under wave "gridmask"; still faithful.
+- **`generate_collision_candidates`'s `counter == 10` segment cap** — already
+  recorded under wave "gridmask"; still faithful (measured peak 3 on every track
+  swept). Its *unbounded segment-pointer store* is no longer in this bucket: a
+  `NATIVE_PORT` `j >= mdkr_coll_cap(MAX_COLLISION_CANDIDATES)` pre-check now
+  guards both inserts ahead of their stores, keeping the ROM's `==` test below
+  them rather than editing it. See
+  [wave "boundsweep"](collision.md#swept-three-shapes-no-instrument-could-see--wave-boundsweep)
+  class 2.
 - **`rand_range`'s 64-bit mixing looks wrong and is not.** `temp = (temp << 32) |
   (temp >> 1)` bears no resemblance to the assembly's 33-bit rotate
   (`dsll32`/`dsrl`/`dsll`/`dsrl32`/`or`), but every bit that differs is above bit
@@ -462,10 +470,24 @@ an untextured collidable batch.
   (and in two places spins ~2³² times or hangs). The C is the safer side of the
   divergence every time. Do not "correct" toward the ROM.
 - **`inflate_native.c` is not a transcription** but an independent puff-style
-  DEFLATE decoder. Every semantic divergence found is confined to malformed input,
-  and in each case the C is the safer arm. Side effect worth knowing:
-  `gzip_huft_build` and the 0x2800-byte `gHuftTable` allocated in `gzip_init()`
-  are now dead code.
+  DEFLATE decoder, so the audit's instruction-by-instruction method does not apply
+  to it. **This entry's original verdict — "every semantic divergence is confined
+  to malformed input, and in each case the C is the safer arm" — is RETRACTED.**
+  The game-core memory-safety wave found the opposite: the decoder had no output
+  window, no input bound, no back-reference validation, and discarded every
+  block-decoder error, so a malformed stream looped forever. It now writes only
+  inside the `[gzip_inflate_output_start, gzip_inflate_output_end)` window derived
+  from the rzip header's declared length, reads only below
+  `gzip_inflate_input_end`, validates every match distance against what it has
+  already produced, rejects reserved BTYPE 3 and malformed Huffman descriptions,
+  and reports a sticky negative status that ends the stream in `gzip_inflate()`.
+  A valid stream is byte-identical. The remediation wave then gave all six callers
+  an explicit compressed extent through `gzip_inflate_sized()`, because the
+  pool-block fallback bounded against the *destination*, not the compressed span.
+  Side effect worth knowing: `gzip_huft_build` and the 0x2800-byte `gHuftTable`
+  are compiled out under `NATIVE_PORT` rather than merely uncalled — the
+  reservation was sized for 4-byte huft entries and would have been half-sized on
+  an LP64 host.
 
 ### Smaller things noticed and left alone
 
@@ -590,11 +612,11 @@ attract demo, 2P split-screen, the Adventure hub loop and the menu graph:
 |---|---|---|---|
 | `objects.c` `collision_objectmodel` `spB4[10]`/`sp8C[10]` | 10 | **1** | latent, 9 slots spare — the probe firing also proves the function runs |
 | `tracks.c` `D_8011D128[20]` / `gTrackWaves[20]` write at `[20]` | 20 | **8** | latent, 12 slots spare |
-| `game.c` `gLevelPropertyStack[20]` pushed unbounded | 20 | **4** (one 4-word frame) | latent |
+| `game.c` `gLevelPropertyStack[20]` pushed unbounded | 20 | **4** (one 4-word frame) | **BOUNDED** since the game-core memory-safety wave: `level_properties_push()` drops a push past `ARRAY_COUNT` under `NATIVE_PORT`. Peak unchanged |
 | `camera.c` `gCameraRelPosStackZ[5]` write at index 5 | 5 | **1** | latent — contained anyway, see below |
 | `camera.c` `gModelMatrixF[5]` dereferenced while permanently NULL | — | pos peak **1**, needs 4 | latent and **faithful**: `D_80120DA0` only has storage for 5 matrices, so `gModelMatrixF[5]` is NULL on the N64 too and the real game cannot reach it either. Left alone. |
 | `objects.c:5288` `func_80016748` `f32[4][3]`-for-`MtxF` | — | n/a | already safe: `AVOID_UB=1` selects the `MtxF` branch |
-| `hasm/collision.c:126` `generate_collision_candidates` | 500 | 416 (previous wave) | faithful to the ROM, owned by the hasm audit, untouched |
+| `hasm/collision.c` `generate_collision_candidates` | 500 | 416 (previous wave) | owned by the hasm audit; both inserts now carry a `j >= cap` pre-check ahead of the store (wave "boundsweep" class 2, with the facet-side check corrected in the 1.0.5 bounds wave) |
 
 ### Fix 1 (the real one): `gTrackSelectIDs[4][6]` is a 5×6 grid, and `gFFLUnlocked` IS `[4][0]`
 

@@ -30,7 +30,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 if [[ "$version" != "dev" && ! "$version" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
-  echo "ERROR: version must be dev or bare semver (for example 1.0.4)" >&2
+  echo "ERROR: version must be dev or bare semver (for example 1.0.5)" >&2
   exit 1
 fi
 

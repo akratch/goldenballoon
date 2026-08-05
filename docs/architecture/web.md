@@ -104,6 +104,12 @@ Findings that matter for the Emscripten step:
   in-FS path. Validate size/name same as native.
 - Saves: mount IDBFS at `save/`, `FS.syncfs` after EEPROM writes (the __wasi_fd_sync
   suspend site mgb64 documents — already covered by the Asyncify EEPROM-save path).
+  Two tabs share one IndexedDB store, so write ownership is decided before
+  anything mounts `/save`: the first session takes an exclusive
+  `navigator.locks` claim and is the only one that syncs IDBFS; a later tab
+  becomes a spectator, plays from its in-memory copy, and shows a notice instead
+  of last-writer-winning over the store. Where Web Locks is absent the claim
+  falls back to a weaker localStorage heartbeat.
 
 ## Serving / packaging (mirror mgb64 dist/web)
 - Output: `mdkr64_web.wasm` + `.js` glue + a minimal `index.html` shell with a
@@ -112,6 +118,10 @@ Findings that matter for the Emscripten step:
   enabled Firefox; feature-detect and show a message otherwise.
 - Serve over HTTPS (WebGPU + SharedArrayBuffer-free since single-thread — no COOP/COEP
   headers strictly required, confirm). Static host is fine (it's a static wasm app).
+- A published page also ships `sw.js` and `manifest.webmanifest`. The service
+  worker is registered with the publish stamp appended, so each build gets its
+  own cache and an installed page can never serve one build's wasm beside
+  another's JS glue; it deliberately does not call `skipWaiting()`.
 
 ## Acceptance — met
 

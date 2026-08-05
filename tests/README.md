@@ -35,9 +35,15 @@ sprite-layout, RDP-interpolation, font-registry/SDF, and RL-1 CTests, while file
 entry, locked-door collision, RAW16 audio, native-layout safety, and
 widescreen/shadow safety run in their specialized
 primary/Release/ASan/alignment configurations. Startup fails if a new check script is not
-registered. Tasks run sequentially because
-several fixtures intentionally replace `save/eeprom.bin`; inherited `MDKR*`
-hooks are cleared and audio is forced off. `--only NAME`, `--primary-only`,
+registered, or if a `tests/test_*.py` has no CMake `add_test()` to carry it into
+the ctest task. The run owns one temporary save directory and exports it as both
+`MDKR_SAVE_DIR` and `MDKR_TEST_SAVE_DIR`, so no suite run writes the
+repository's playable `save/`; tasks run sequentially because they share that one
+directory and several fixtures intentionally replace its `eeprom.bin`. A
+standalone check still defaults to `save/` and restores the EEPROM images it
+found there. Inherited `MDKR*` hooks are cleared except for those two and
+`MDKR_TEXCACHE_VERIFY`, `MDKR_VIDEO_CONFIG_PATH` is pointed at the null device,
+and audio is forced off. `--only NAME`, `--role ROLE`, `--primary-only`,
 `--skip-instrumented`, and `--skip-wasm` are iteration/configuration tools; a
 default run is the complete gate.
 
@@ -298,8 +304,9 @@ remain byte-identical when the diagnostic seam toggles.
 
 ## World-depth visual gates
 
-The world-depth epic adds three focused native checks plus browser production
-coverage:
+The world-depth epic adds the first three checks below; the fidelity and
+presentation waves extended the same list, which ends with its browser
+production coverage:
 
 - `check_world_fx_capture.py` proves the typed capture instrument is neutral
   and depends on the exact matrix registry;
@@ -563,11 +570,12 @@ inert or overbroad result in the other.
 
 ## Restoration/remaster visual gates
 
-The current visual sprint adds five self-contained gates. Run them directly
+The current visual sprint adds six self-contained gates. Run them directly
 during renderer iteration; the complete manifest still remains the release bar.
 
 ```bash
 python3 tests/check_sprite_layout.py --build build --rom baserom.us.v80.z64
+python3 tests/check_intro_shrub_sprite.py --build build --rom baserom.us.v80.z64
 python3 tests/check_rdp_interpolation.py --build build --rom baserom.us.v80.z64
 python3 tests/check_font_sdf.py --build build --rom baserom.us.v80.z64
 python3 tests/check_mip_motion.py --build build --rom baserom.us.v80.z64
@@ -575,7 +583,11 @@ python3 tests/check_rl1_vertex_colour_ab.py --build build --rom baserom.us.v80.z
 ```
 
 `check_sprite_layout` combines unit boundary cases with a byte-order-aware census
-of every supported sprite record. `tests/check_intro_shrub_sprite.py` covers the
+of every supported sprite record. It also pins the multi-run census: of 600
+frames across 193 sprites, exactly two exceed five tiles (sprite 108 frame 0, the
+intro shrubs; sprite 178 frame 6, a burst frame no swept route loads), so that
+pair is the whole blast radius of an append-base regression.
+`tests/check_intro_shrub_sprite.py` covers the
 other half of the same subsystem at the RSP boundary: a sprite wider than five
 tiles is emitted as several `G_VTX_APPEND` runs that share one base, so it
 renders the authored intro and scores three fixed regions of one deterministic
@@ -695,7 +707,7 @@ to be taken — `MDKR_BOSS_WIN` replaced `MDKR_BOSS_SLOW` for exactly that reaso
 | `nav_to_options` | 1700 | `check_nav_fixtures.py` → `menu_init: menuId=12` | open, **by design** — menus only |
 | `nav_to_audio_options` | 1900 | `check_nav_fixtures.py` → `menuId=13` | open, by design |
 | `nav_to_save_options` | 1950 | `check_nav_fixtures.py` → `menuId=14` | open, by design |
-| `nav_to_magic_codes` | 2000 | `check_nav_fixtures.py`, `check_array_bounds_sweep.py` → `menuId=10`; the nav gate also submits valid `ARNOLD` and invalid `ARNOLE` through the onscreen keyboard | open, by design |
+| `nav_to_magic_codes` | 2050 | `check_nav_fixtures.py`, `check_array_bounds_sweep.py` → `menuId=10`; the nav gate also submits valid `ARNOLD` and invalid `ARNOLE` through the onscreen keyboard | open, by design |
 | `nav_to_character_select` | 1600 | `check_nav_fixtures.py`, `check_charselect_motion.py`, `check_determinism.py`, `check_array_bounds_sweep.py` → `menuId=3` | open, by design |
 | `nav_to_game_select` | 2000 | `check_nav_fixtures.py` → `menuId=19` | open, by design |
 | `nav_to_file_select_adventure` | 2100 | `check_nav_fixtures.py`, `check_array_bounds_sweep.py` → `menuId=6` | open, by design |
@@ -866,8 +878,17 @@ counted as runtime coverage.
 ```bash
 python3 tests/check_browser_runtime.py \
   --engine-dir build-web --shell-dir dist/web \
-  --rom baserom.us.v80.z64
+  --rom baserom.us.v80.z64 --camera-obstruction modern
 ```
+
+The registered task passes `--camera-obstruction modern`; omitting the flag
+skips that arm entirely. It sets the first browser document's camera policy and
+`MDKR_CAMERA_TRACE=1`, then requires at least `--frames` minus 100 telemetry
+rows, the requested gate on every one of them, zero duplicate solves,
+projection mismatches, penetrated or invalid or degraded resolved lenses and
+hidden targets, nonzero applied corrections on the Modern arm, and one dynamic
+publication row per camera row with zero missing caches, missing identities,
+uncategorized hits, invalid transforms, and capacity failures.
 
 This is a runtime gate, not a wasm-file inspection. Using only the Python standard
 library and the Chrome DevTools Protocol, it serves the committed shell with the
@@ -3261,18 +3282,25 @@ broad content and stateful routes. It holds an exclusive lock on its build
 directory: two concurrent runs would interleave a reconfigure with a compile and
 fail for reasons unrelated to the code under test.
 
-### Restart & Apply process replacement — `tests/check_restart_apply.py`
+### Post-engine process replacement — `tests/check_restart_apply.py`
 
 ```bash
 python3 tests/check_restart_apply.py --build build-rel --rom baserom.us.v80.z64
 ```
 
-Drives the production app's real restart transition from a private
-extracted-layout fixture on a deep Unicode path — no test seam replaces the
-executable or bypasses `main_app.cpp`. Successful replacement is one arm; the
-post-replacement boot failure and the handoff-staging failure are the other two,
-and each must clear the one-shot controls, return to the visible launcher
-recovery, and leave the copied ROM and settings intact.
+Drives both of the production app's real post-engine transitions from a private
+extracted-layout fixture on a deep Unicode path whose package directory contains
+a space, exactly as a player's install does — no test seam replaces the
+executable or bypasses `main_app.cpp`. For Restart & Apply, successful
+replacement is one arm; the post-replacement boot failure and the
+handoff-staging failure are the other two, and each must clear the one-shot
+controls, return to the visible launcher recovery, and leave the copied ROM and
+settings intact. Return to Launcher stages no ROM handoff and must arrive as a
+launcher invocation rather than an argument-bearing automation invocation, which
+`arg_triage` sends straight to the windowless engine — to the player that reads
+as the application closing. The gate asserts the exact invocation each process
+in the exec chain received, and the replacement must still find the durable ROM
+selection.
 
 ### Staged-web provenance fixtures — `tests/check_release_ready_web_provenance.py`
 

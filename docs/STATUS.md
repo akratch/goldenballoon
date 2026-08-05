@@ -6,7 +6,7 @@ Before cutting the next release, a four-lane deep review (adversarial review
 of the new commits, residual renderer mining, mobile touch layer, and a
 release-claims audit) plus one complete Release-led manifest run
 (**66/66 tasks in 96m54s** as the manifest stood at that checkpoint —
-it is 101 tasks today — including the 47m22s alignment-UBSan
+it is 135 tasks at v1.0.5 — including the 47m22s alignment-UBSan
 native-layout matrix) mined the remaining issues. Findings and dispositions
 are recorded in the renderer's wave "shadowdeep" entries in
 `docs/OPEN_ITEMS.md`. Headlines:
@@ -114,9 +114,10 @@ The defined Waves 1–3 are **23/23 complete** and integrated:
 | Wave 2 lighting | RL-2, RL-5, CO-1 | 3/3 |
 | Wave 3 gameplay | 3P/4P, Adventure Two, challenge/battle, first boss, Taj, trophy series | 6/6 |
 
-The manifest contains **92 check scripts / 101 full-run tasks**. That v0.4
-snapshot exposed **28 CTests**; the current default native configuration
-exposes **67**: 56 non-GPU and 11 GPU. Linux X11/Mesa now has a
+At v1.0.5 the manifest contains **122 check scripts / 135 full-run tasks**, plus
+three check-shaped scripts the `rom_free_units` CTest lane owns. That v0.4
+snapshot exposed **28 CTests**; the default native configuration now
+exposes **117**: 98 non-GPU and 19 GPU. Linux X11/Mesa now has a
 clean Ubuntu/GCC build and real GL plus WebGPU/Vulkan render/present runs.
 Wayland, physical Linux GPUs, WGPU-11's offline/external corpus remainder, the full Adventure graph, physical
 peripheral breadth, broader ROM support, and broader independent-oracle contracts remain
@@ -162,7 +163,8 @@ live.
 The repository now has a read-only correctness workflow separate from the
 manually dispatched Pages publisher. Every push to `main` and every pull request
 runs Linux WebGPU and OpenGL-only Release builds, a macOS WebGPU Release build
-with the high-risk warning register restored, all 27 ROM-free CTests, a Linux
+with the high-risk warning register restored, the non-GPU CTests (`ctest -LE
+gpu`, 98 at v1.0.5), a Linux
 ASan+UBSan build, linked wasm, browser save custody, clean-room history, and the
 shipped-artifact ROM guard. All actions are immutable-SHA pinned.
 

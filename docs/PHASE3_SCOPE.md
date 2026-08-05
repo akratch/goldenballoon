@@ -3,7 +3,7 @@
 > **Historical phase plan.** Statements below that 3P, challenge/battle,
 > first-boss, Taj, or trophy paths were untouched describe their original
 > checkpoints. The defined Waves 1–3 are now 23/23 complete, and the manifest
-> has since grown to 92 scripts / 101 tasks. Current status lives in
+> has since grown to 122 scripts / 135 tasks. Current status lives in
 > [`DEVELOPER_HANDBOOK.md`](DEVELOPER_HANDBOOK.md) §1/§6.
 >
 > **For any defect named below, [`open-items/`](open-items/README.md) is
@@ -26,9 +26,14 @@ against the real ROM (two at 79–84 %, one at 61 %).
 ## P3.1 — Finishing a race must record a time  **[DONE — wave "finishtime"]**
 
 A 3-lap Time Trial now finishes and its course/lap time is written to EEPROM and
-read back after a restart. Verified by `tests/check_race_finish_time.py`
-(course time 4709, `save/eeprom.bin` md5 the recorded md5), 3× from a deleted save,
-with positive controls for both fixes. Full write-up in `docs/OPEN_ITEMS.md`
+read back after a restart. Verified by `tests/check_race_finish_time.py` — the
+course time was 4709 when this wave measured it and is 4777 on the current route,
+inside the check's 3000–9000 band. The check starts from a deleted `eeprom.bin`
+in a run-scoped save directory and requires a 512-byte, non-blank image carrying
+the traced clock as a 16-bit big-endian record; the md5 comparison this line
+originally cited was against a file the run had just deleted, so it could never
+fail and has been replaced. 3× from a deleted save, with positive controls for
+both fixes. Full write-up in `docs/OPEN_ITEMS.md`
 ("P3.1 RESOLVED").
 
 **The finish path was never broken.** Three things were, and only one was a bug:

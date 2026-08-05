@@ -7,6 +7,52 @@
 > trap exists, and retractions are recorded in place rather than removed.
 
 
+## FIXED: an AudioWorklet underrun left the repair envelope out of the loop
+
+The worklet's `process()` loop treated an underrun as an early `continue`: it
+wrote silence, incremented `under`, and skipped the rest of the sample's work.
+Two invariants lived in the part it skipped.
+
+- `lastL`/`lastR` mean *"the last sample the speaker actually received"*, and they
+  are the anchor a later overflow crossfades **from**. Skipping their update
+  anchored the repair on a pre-gap sample that had stopped playing several quanta
+  earlier, so the repair itself produced the click it exists to remove.
+- `this.fade` is the crossfade countdown. Skipping its decrement froze a
+  mid-underrun ramp at a partial mix permanently: `completedRecoveries` never
+  advanced and the `fade === 0` re-arm never fired again, so the next real gap had
+  no recovery at all.
+
+**Fix:** an underrun is now an ordinary sample that happens to be silence. It runs
+the same envelope, updates the anchors, and drains the fade; only the read pointer
+stands still, because there is nothing to read
+(`platform/web_audio_worklet.c`, `webAudioOutputInit`).
+
+Related, on the native side: dropped-audio telemetry conflated two different
+quantities into one counter that in fact counted *polls*. `s_droppedBuffers`
+(blocks this port refused at `osAiSetNextBuffer`) and `s_droppedFrames` (frames
+lost with them) are now separate named quantities on both the native and web
+paths (`platform/audi_port_dkr.c`). Sequence tempo meta events are validated
+rather than truncated to 24 bits (`platform/audio_compat.c`).
+
+## FIXED: audio table indices and the vehicle-sound teardown reached recycled arena memory
+
+The game-core memory-safety wave closed a set of audio boundaries that shared one
+shape — an index or a walk trusted past the live count:
+
+- **Vehicle sound teardown left `spinoutSound` attached.** Teardown now stops and
+  detaches every handle, so a finished sound can no longer write through a stale
+  `userHandle` into arena memory the allocator has already recycled.
+- Every table index that reaches `gSoundTable`, `gSpatialSoundTable` or the
+  composite chain is bounded at use.
+- The delayed-sound queue's compaction shift is corrected.
+- The tempo `-1` sentinel wrap loop is guarded.
+- The reverb segment walk is bounded.
+- `audspat_point_stop()` no longer matches stale entries above the live count.
+
+Alongside them, colour-cycle lights stopped reading one past their frame table and
+stopped dividing by an out-of-bounds byte, and ambient lights write a defined light
+direction for shaded objects.
+
 ## PARTIALLY CLOSED: native SDL sink had no ROM-free live qualification
 
 Every game-audio check deliberately ran with `--headless-frames` and
@@ -27,7 +73,11 @@ one-second stall guard. Headless calls remain host-time independent.
 `audio_sink_contract` then opens SDL queue mode using silence—not ROM PCM—with
 the production 22050 Hz/stereo/s16 request. CI pins `SDL_AUDIODRIVER=dummy` and
 requires exact obtained format, active drain, no enqueue failure or stall
-guard, bounded queue occupancy, pause stability and explicit clear. The same
+guard, bounded queue occupancy, pause stability and explicit clear. The dummy
+driver is no longer only an environment pin: on native, `dkr_audio_out_init()`
+reads `SDL_HINT_AUDIODRIVER` and refuses the `MDKR_TEST_HEADLESS_AUDIO=1` opt-in
+unless the driver really is `dummy`, saying so on stderr, so a real device can no
+longer be opened under `--headless-frames` while looking identical in the log. The same
 binary passed for five seconds against the workstation's physical CoreAudio
 default: 476 controller calls, 214 observed application-queue drains, and a
 1,193-sample-frame high-water. A 1,000-tick pre/post extraction headless PCM
@@ -462,10 +512,15 @@ Registered in `tools/run_checks.py` as `audio_level_reference`; full assertion t
 - true peak (4x oversampled) **L +1.002 / R +1.478 dBFS**
 - 8 absolute band RMS values and 15 ten-second slice RMS values, all recorded
 
-Crest factor is deliberately part of the frozen set: the program already touches full
-scale, so a build that got **louder** cannot raise its peak — it closes the crest
-instead. Under the +3 dB control the peak is bit-identical at 32768 while the crest
-falls 2.8 dB.
+Sample peak is deliberately part of the frozen set, pinned at 0.000 dBFS within
+0.01 dB, with the crest factor reported beside it rather than bounded. Bounding
+the crest only restated the whole-RMS assertion — crest is peak minus RMS, and
+both carried the same tolerance against the same baseline — so the check asserts
+the fact the crest reasoning rests on: the program already touches full scale, so
+a build that got **louder** cannot raise its peak, it closes the crest instead.
+Under the +3 dB control the peak is bit-identical at 32768 while the crest falls
+2.8 dB, and the whole-RMS assertion is what fails on it; the −3 dB control drops
+the peak and fails the peak assertion directly.
 
 **Both directions, engine-level.** `MDKR_AUDIO_TEST_GAIN_DB` scales the synthesised PCM
 inside `dkr_audio_service_tick()` — before the engine's own RMS accounting, before the dump,

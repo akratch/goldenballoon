@@ -337,9 +337,17 @@ hash plus kart position, race clock, checkpoint, and lap to remain exact for
 requests the transition. The engine then unwinds renderer/audio state, host
 objects are released, the diagnostic tee restores stdout/stderr and joins its
 reader, and only then does the platform replace the process. Windows uses the
-wide-character runtime here, including non-ASCII and extended-length executable
-paths. A failed relaunch is shown visibly and returns non-zero instead of
-hanging on an orphaned pipe.
+wide-character runtime here (`_wexecv` on an extended-length image path),
+including non-ASCII and deep executable paths. Two things keep the replacement
+from landing headless under the deny-by-default rule: it passes an explicit
+`--ui`, and on Windows every element of the argument vector — `argv[0]`
+included — is quoted at the exec boundary, because the CRT joins that vector
+into one command line with single spaces and no quoting of its own, so an
+install path containing a space would otherwise arrive as several arguments.
+A failed relaunch is shown visibly and returns non-zero instead of hanging on an
+orphaned pipe. `check_restart_apply.py` drives Restart & Apply and Return to
+Launcher through real process replacements and asserts each replacement's
+invocation shape.
 
 **No native file dialog on Linux.** macOS uses NSOpenPanel and Windows uses
 GetOpenFileNameW (see "Getting a ROM in" above). There is no permission-free

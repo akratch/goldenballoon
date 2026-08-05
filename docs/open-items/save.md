@@ -95,14 +95,18 @@ Also checked and cleared:
   rewrites the slot to 0xFF. Worth knowing: that means **one bad byte silently
   destroys that save slot on the next boot** — faithful to the ROM, and the reason
   the quarantine below exists.
-- **Is a test hook live in the shipped web build? NO.** `dist/web/mdkr64-shell.js`
-  writes exactly one env var, `m.ENV.MDKR_TRACE`, from `?trace=`; nothing else in
-  the page touches `ENV`. Emscripten seeds `getEnvStrings()` with
+- **Is a test hook live in the shipped web build?** Not the ones this report
+  needed ruled out — but the answer is no longer "the page writes exactly one env
+  var". Emscripten seeds `getEnvStrings()` with
   `{USER, LOGNAME, PATH, PWD, HOME, LANG, _}` plus `Module.ENV`, and
   `grep -o "MDKR_[A-Z_0-9]*" dist/web/mdkr64_web.js` returns **nothing** — the
-  loader never mentions one. So `MDKR_LOAD_TRACK`, `MDKR_DRIVE_ROUTE`,
-  `MDKR_AUTOPILOT` and `MDKR_FORCE_LAPS` are all unset ⇒ all no-ops.
-  `MDKR_TRACE` only enables logging.
+  loader never mentions one. `dist/web/mdkr64-shell.js`'s `preRun` now sets
+  `MDKR_TRACE` (from `?trace=`), `MDKR_OBJCOLL`, `MDKR_LOAD_TRACK`, and any
+  `MDKR_[A-Z0-9_]+` key carried by a `testConfig.env` object, each value truncated
+  to 256 bytes. `MDKR_DRIVE_ROUTE`, `MDKR_AUTOPILOT` and `MDKR_FORCE_LAPS` remain
+  unreachable from the page, and `MDKR_TRACE` only enables logging. **Re-read the
+  `preRun` block before using this to rule anything out — the list has grown
+  once already.**
 - **Adventure-2 mismatch at FILE SELECT is not a strand.** A save with
   `cutsceneFlags & CUTSCENE_ADVENTURE_TWO` cannot be entered from normal
   Adventure: `fileselect_input_root()` (`menu.c:7857`) plays
@@ -185,10 +189,15 @@ control that clears saved progress.
 `ttAmulet > 4 || wizpigAmulet > 4` is rejected with the function's own idiom for
 "this is not a save" — `clear_game_progress()`, leaving `newGame = TRUE` — so
 `read_save_file()` erases the slot and FILE SELECT offers an unstarted file. Scope
-is deliberately narrow (the one field the fuzz proved fatal). **The deeper fix
+is deliberately narrow (the one field the fuzz proved fatal). ~~**The deeper fix
 belongs with the object code: clamp `modelIndex`/`assetCount` against
 `numberOfModelIds` in `objects.c`.** Left open here on purpose — `objects.c` was
-being edited concurrently by the boss-race wave.
+being edited concurrently by the boss-race wave.~~ **DONE in wave "core-safety":**
+the character, trophy, amulet and rocket-signpost selectors in `spawn_object()`
+all go through one final-use resolver, `mdkr_model_load_selection()`, which
+validates the save-derived value against that object header's own
+`numberOfModelIds` and selects nothing when it fails. The save-side rejection here
+is kept as the narrower belt.
 
 Post-fix the same 40-image fuzz is **0/40 anomalous**, and `wizpigAmulet` 0..7 all
 exit 0.
@@ -284,10 +293,10 @@ flushes could be lost); this is the belt to that braces.
   RIGHT press at FILE SELECT, the progress landed in slot 1; slots 0 and 2 stayed
   erased. `get_save_file_index()` is `gSaveFileIndex`, and its two resets
   (`menu_title_screen_init`, `menu_file_select_init`) both precede the pick.
-- **`1 << (j + 31)` is right on this host — by luck.** `objects.c:1807` relies on
-  MIPS masking the shift count to 5 bits. Probed directly: j=1/2/3 yield
-  `0x1/0x2/0x4`, i.e. arm64's register shift masks identically. See the new open
-  item below — it is still UB and still fragile.
+- **`1 << (j + 31)` was right on this host — by luck.** `track_setup_racers`
+  (`objects.c`) relied on MIPS masking the shift count to 5 bits. Probed directly:
+  j=1/2/3 yield `0x1/0x2/0x4`, i.e. arm64's register shift masks identically. It
+  is now `DKR_SHL32` — see the resolved item below.
 - **The `ttAmulet`/`wizpigAmulet > 4` rejection added in this wave is NOT a false
   positive.** Both writers clamp: `objects.c:6597` (`i = ttAmulet + 1; if (i > 4)
   i = 4;`) and `vehicle_tricky.c:387` (`worldBit++; if (worldBit >= 5) worldBit =
@@ -310,34 +319,44 @@ flushes could be lost); this is the belt to that braces.
      reach it either. Both defects are real; they are different defects, and this
      is the one that matches the corrected symptom.
 
-### NEW OPEN ITEM: five sites depend on MIPS masking the shift count
+### ~~NEW OPEN ITEM: five sites depend on MIPS masking the shift count~~ — CLOSED by wave "keyshift"
 `1 << (j + 31)` is how the decomp renders code that relied on MIPS's `sllv`
 masking the shift amount to 5 bits, i.e. `1 << ((j + 31) & 31)`. In C a shift of
 32 or more is **undefined behaviour**. Five sites:
 
-| site | expression |
+| site | expression as this wave found it |
 |---|---|
-| `objects.c:1807` | `settings->tajFlags \|= 1 << (j + 31)` |
-| `game.c:518` | `!(cutsceneFlags & (CUTSCENE_DINO_DOMAIN_KEY << (var_s0 + 31)))` |
-| `game.c:521` | `cutsceneFlags \|= CUTSCENE_DINO_DOMAIN_KEY << (var_s0 + 31)` |
-| `game.c:609` | `var_s0 = 8 << (settings->worldId + 31)` |
-| `waves.c:2312` | `var_t0 <<= (log->unk2 + 0x1F)` |
+| `objects.c` `track_setup_racers` | `settings->tajFlags \|= 1 << (j + 31)` |
+| `game.c` `level_load` | `!(cutsceneFlags & (CUTSCENE_DINO_DOMAIN_KEY << (var_s0 + 31)))` |
+| `game.c` `level_load` | `cutsceneFlags \|= CUTSCENE_DINO_DOMAIN_KEY << (var_s0 + 31)` |
+| `game.c` `level_load` | `var_s0 = 8 << (settings->worldId + 31)` |
+| `waves.c` `obj_wave_height` | `var_t0 <<= (log->unk2 + 0x1F)` |
 
 All four progress-flag sites were probed as **currently correct** on arm64
 (measured `0x1/0x2/0x4` for j=1/2/3), because arm64's variable shift also masks
-modulo 32 and clang emitted a register shift rather than folding. That is luck,
-not portability: if a future toolchain constant-folds any of these (the ranges are
-small and known), the result becomes 0 and the flag silently never sets — which is
-exactly Defect 4's failure mode, arriving without a code change. Not fixed here
-because each needs its own reading of what the ROM meant, and `game.c`/`waves.c`
-are other waves' files. **Cheap detector:** add `-fsanitize=shift-exponent` to the
-instrumented build in `tests/check_array_bounds_sweep.py`; that sweep's
-`-fsanitize=array-bounds` cannot see a bad shift count.
+modulo 32 and clang emitted a register shift rather than folding. That was luck,
+not portability — and worse than latent: wave "keyshift" then showed that at `-O2`
+clang folds the statement away outright, and the port's *web* build is Release, so
+this was the live, reported "key cutscene replays after every race" defect.
+
+**All five sites (plus one more the shift-syntax sweep found) now go through
+`DKR_SHL32(x, n)`** in `game/include/macros.h`, which reproduces `sllv` for every
+count; `MDKR_SHL32_CONTROL` selects the reverted form for
+`tests/check_key_cutscene_once.py`'s broken arm. The suggested detector shipped
+with it: `-fsanitize=shift-exponent` is in `tests/check_array_bounds_sweep.py`'s
+instrumented build, with a required `__ubsan_handle_shift_out_of_bounds` import so
+an empty report cannot be confused with a dropped flag. Full write-up:
+[collision.md class 3](collision.md#class-3--a-variable-shift-count-that-can-reach-32).
 
 ### Check
-`tests/check_save_failsafe.py` — five cases, headless and muted, wiping `save/`
-before and after each (a leftover save sends FILE SELECT down the resume path and
-would break `check_adventure_hub.py`):
+`tests/check_save_failsafe.py` — five cases, headless and muted, each starting
+from a known EEPROM state. Under `tools/run_checks.py` it writes into a
+run-scoped temporary save directory (`MDKR_TEST_SAVE_DIR`, exported to the engine
+as `MDKR_SAVE_DIR`); a standalone run defaults to the repository's `save/` and
+restores every EEPROM artifact it found, however it exits. A leftover save would
+otherwise send FILE SELECT down the resume path and break
+`check_adventure_hub.py`. Paths below are relative to whichever save directory is
+in effect:
 
 1. **torn** (100 of 512 bytes) → title screen at 1134, nothing but the three boot
    levels loaded, `eeprom.bin.bad` byte-identical to the input, `eeprom.bin` back to
@@ -368,4 +387,5 @@ Proven in both directions by running the controls, not by reasoning:
 | BEATEN-implies-OFFERED repair (`game/src/save_data.c`) | `taj: the kart only drove 14439.4 units (need >= 25000.0)`; `taj: the kart was stationary for 76% of the run (limit 45%)` |
 
 `check_determinism`, `check_race_drive`, `check_race_finish_time` (course time
-4713), `check_adventure_hub` and `check_adventure_race_loop` all still pass.
+4777 on the current route), `check_adventure_hub` and `check_adventure_race_loop`
+all still pass.

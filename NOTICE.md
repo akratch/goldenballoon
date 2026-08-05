@@ -134,8 +134,9 @@ committed.
 
 ## Vendored platform code shared with mgb64
 
-Parts of `platform/` (notably the GL / Metal / WebGPU backends under
-`platform/fast3d/`) originate in the author's GoldenEye port **mgb64** and are
+Parts of `platform/` (notably the GL and WebGPU backends under
+`platform/fast3d/`, plus a Metal backend that is excluded from every build
+target) originate in the author's GoldenEye port **mgb64** and are
 shared first-party work by the same authors. Some retain that project's `GE007_`
 diagnostic env-var prefix; this is intentional, so the two projects can converge on
 genuinely common code rather than diverging cosmetically.
@@ -148,9 +149,10 @@ redistributed under the terms of that project.
 
 ## Third-party libraries
 
-`lib/` contains build-time dependencies retrieved or vendored per their own
-licenses (e.g. `glad` for GL loading, the SDL game-controller database). Each
-retains its upstream license.
+`lib/` contains third-party sources and data vendored per their own licenses and
+compiled into or shipped alongside the app: Dear ImGui for the native app shell,
+`glad` for GL loading, and the SDL game-controller database. Each retains its
+upstream license.
 
 ## Full provenance table
 

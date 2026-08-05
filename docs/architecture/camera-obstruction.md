@@ -100,7 +100,8 @@ acceptance must be based on geometric invariants as well as pixels.
 - All eight `gCameras` slots are snapshotted. Correction is published only to a
   presentation sidecar; gameplay, AI, audio event logic, and state hashes retain
   the authored cameras.
-- The resolver latches an explicit per-viewport projection context, derives a
+- The resolver latches the per-viewport render projection, guards the
+  presentation lens of that same viewport, derives a
   conservative lens-enclosing sphere, and composes immutable static-track and
   dynamic hard-object queries without per-tick allocation. A ROM-free exact
   rounded eye-to-near-plane triangle narrow phase, continuous sweep, exact static
@@ -342,8 +343,23 @@ bool cam_effective_projection_for_viewport(
 
 It must produce the exact logical viewport dimensions, effective aspect, vertical
 and horizontal FOV, near/far planes, camera-bank identity, and a display-config
-generation. The render path consumes the same latched record instead of recomputing
-from mutable window state.
+generation. The render path consumes a latched record instead of recomputing from
+mutable window state.
+
+Render and the resolver ask that query about different regions of the same
+viewport, so each slot holds two records.
+`cam_resolver_projection_for_viewport_context()` always answers for the
+presentation region, and the resolver's projection, guard, and continuity
+comparisons are built from it: a framed view narrows the drawn image, not the
+viewport it is drawn into, so guarding the presentation lens keeps the guard a
+superset of every image that viewport can publish and a shot validated behind
+the frame stays valid without it.
+`cam_latch_effective_projection_for_viewport_context()` answers for the region
+render actually draws — the safe 4:3 aperture when a framed view selected it —
+and only that latched render record participates in the generation handshake.
+The world region is a render-lens input the record does not carry, so restoring
+a held validated tuple additionally requires the current region to equal the one
+that tuple was validated for.
 
 An authored image is valid only when:
 
@@ -458,8 +474,11 @@ objects, hard cap 4 objects/64 BVH nodes/32 retained chunks/256 retained chunk
 triangles; exact stationary evaluations p99 <= 64 and cap 128; zero interval
 fallbacks in ordinary gameplay; exact corridor
 p99 <= 0.25 ms in 1P and <= 1 ms aggregate in 4P while the inclusive camera budget
-in section 7.6 remains authoritative. Dynamic models exceeding the triangle cap
-remain sphere-conservative until they receive a per-model acceleration structure.
+in section 7.6 remains authoritative. Reaching one of those dynamic fences is
+healthy bounded operation, not source failure: the kernel flags exhaustion, the
+source recovers to that instance's published world AABB under the lens'
+enclosing sphere, and the summary trace counts the recovery separately on each
+phase (`sphere_fallbacks`, `exact_fallbacks`).
 
 The first ROM-backed dark launch makes this a measured stop condition, not a
 theoretical concern. In a 5,200-frame authored-4:3 Ancient Lake run,
@@ -555,6 +574,22 @@ fence-dimensioned array is the `MAX_QUERY_NODES` traversal stack -- so the raise
 costs zero bytes and only doubles the worst-case exact triangle work per query,
 which no measured route approaches.
 
+`38be676` then makes that classification authoritative instead of derived. All
+six fence exits in the exact rounded-lens kernel -- node visits, node stack,
+retained chunks, retained triangles, the pre-call stationary check, and the
+kernel's own stationary exit -- set
+`MdkrCameraObjectOcclusionExactWork::exhausted`, each split from the corruption
+predicate it had been fused into. The consumer takes that flag first and
+retains its comparison of published limits against reported work only as a
+subordinate fallback for a producer that predates the flag; that comparison
+cannot recognize the node-stack fence at all, because stack depth is frame-local
+and is never reported. A fence-shaped `INVALID` therefore recovers
+conservatively while a corruption-shaped one still fails closed. Each flag site
+is load-bearing under its own unit arm: removing any one fails exactly its fence
+class. No fence is reached across the 16,989 postrace summaries since the
+capacity raise, so the recovery path is held by that fault injection rather than
+by route coverage.
+
 Therefore the 1,024-sample interval fallback remains a correctness oracle and test
 reference only. The fixed-tick implementation uses swept separating-axis
 intervals plus a bounded 1-Lipschitz clearance proof and returns `INVALID` when it
@@ -590,6 +625,17 @@ shipped; it is rebuilt from the user's loaded assets.
 
 - Build one local-space occlusion acceleration structure per object model.
 - Maintain a stable per-tick world-AABB list for active hard/soft occluders.
+- Index the census's own lookups. Identity, model-bounds, and previous-instance
+  lookups run once per candidate per tick, and particles churn identity slots on
+  every spawn, so none of them may scan the whole capacity. Each is a chained
+  index of slot numbers — not addresses — into the fixed slot array it
+  describes, hashed on the `Object *`, on the `ObjectModel *`, and on the object
+  spawn generation respectively, with a bucket count rounded up to a power of
+  two. Identity slot choice stays "lowest vacant" through a free bitmap because
+  the arrays are addressed by slot elsewhere, and the previous-instance chains
+  are linked downward each tick so a lookup still returns the first match. The
+  tables hold no ownership: they answer exactly what the scans they replaced
+  answered.
 - Transform the lens query into object-local space; do not mutate the object or its
   interaction record.
 - Include doors and moving solids independently of `gCollisionObjectCount`.
@@ -812,7 +858,7 @@ cannot become the default before all dependencies pass.
 | ID | Owner role | Deliverable | Dependencies | Exit gate |
 |---|---|---|---|---|
 | CAM-00 | gameplay/QA | Commit deterministic wall, corner, tunnel, door, moving-object, and mode-transition witnesses; add desired/effective camera trace | none | Legacy arm reproduces each targeted failure; open-space control remains clear |
-| CAM-01 | platform/camera | Per-viewport effective projection record and generation handshake shared by resolver/render/snapshot | CAM-00 | Unit matrix covers 4:3, 16:9, 21:9, 32:9, portrait, 2P/3P/4P, FOV cap, live resize; render-generation mismatch is impossible or fails closed |
+| CAM-01 | platform/camera | Per-viewport presentation and render projection records, and the generation handshake between resolver, render, and snapshot | CAM-00 | Unit matrix covers 4:3, 16:9, 21:9, 32:9, portrait, 2P/3P/4P, FOV cap, live resize; render-generation mismatch is impossible or fails closed |
 | CAM-02 | geometry | Pure lens/sphere sweep kernel with deterministic tie-break, overlap recovery, and fuzz/unit suite | CAM-01 | ROM-free tests and sanitizers pass; no allocation/truncation; injected legacy ray control fails near-plane cases |
 | CAM-03 | collision/content | Static track occlusion cache, provenance census, hard/soft/nonblocking policy | CAM-02 | All supported-ROM levels build without unknown hard errors; memory/build/query telemetry inside budgets |
 | CAM-04 | gameplay/camera | Eight-slot sidecar, desired/resolved segment split, logical AI-visibility basis, and single fixed-tick finalizer; terrain correction for ordinary follow cameras | CAM-01–03 | Ancient Lake wall invariant passes; open-space camera bytes match; resolved segment matches resolved pose; logical AI admission/state is display/correction invariant; one solve per camera/tick |
@@ -831,11 +877,11 @@ default-on rollout.
 | Gate | Status | Implemented/test evidence | Missing release evidence / next blocker |
 |---|---|---|---|
 | CAM-00 | Strong partial | Observe/detail trace; Ancient Lake same-binary controls; Modern geometric/target-visibility post-validation; hard-door attribution; moving/open-door publication; pause/restart/post-race lifecycle witnesses; ROM-free pinned concave-corner, tunnel, thin-pillar, thick-target, and moving-solid camera-chord controls | Commit a rotating-door-across-lens fixture and a real resolver correction witness for the moving-solid chord |
-| CAM-01 | Strong partial | Exact per-viewport projection record, explicit T.T./cutscene context, render-generation check, 24-arm shape/FOV matrix, equal-aspect identity, fail-closed restored-pair fault gate | Inject projection failure concurrently with live resize/display-generation change |
+| CAM-01 | Strong partial | Exact per-viewport projection records, split presentation/render lens channels, explicit T.T./cutscene context, render-generation check, 24-arm shape/FOV matrix, equal-aspect identity, region-matched fail-closed restored-pair fault gate | Inject projection failure concurrently with live resize/display-generation change |
 | CAM-02 | Exact query/source shadow foundation; bounded cast implemented, release breadth open | Sphere path plus allocation-free rounded-pyramid static and continuous world/object-local/combined-source APIs; exact track/dynamic adapters; fail-closed two-phase policy; opt-in non-publishing corridor shadow; swept-SAT plus bounded Lipschitz interval proof with sampled reference isolated to the oracle API; SAT slicing plane, sphere-false-positive, mid-corridor, tangent, edge, outward-AABB, high-coordinate diagonal, seeded differential, purity, invalid, tie, strict, sanitizer, and exact work counters | Complete arbitrary-orientation/scale differential fuzzing and injected work-cap boundaries, then current-revision GCC and wasm32 sanitizer-equivalent evidence |
 | CAM-03 | Strong partial | Static visual-triangle cache, stable provenance, full US-v80 ROM model/track census, triangle-AABB broadphase, exact source adapter, cache bytes/build time, candidate/work counters, bounded exact TOI, and query percentiles; first exact shadow retains at most 7 track triangles | Approved fingerprinted hard/soft/ignore policy and level-load percentage budget on reference hardware |
 | CAM-04 | Strong partial | Eight-slot sidecar; author intent; resolved segment; scoped presentation reads; authority source guards; immutable renderer-derived final-pose tuple; every ordinary, alternate, emergency, scripted, and fallback publication is exact endpoint-validated | Final open-space state/event/input/RNG/audio A/B corpus and browser/backend parity rerun |
-| CAM-05 | Strong partial; bounded temporal index implemented, release evidence open | Object-model cache; fixed-capacity, generation-keyed publication; stable-order eight-triangle chunks plus deterministic balanced BVH; build-time topology/coverage/containment validation and query-time integrity checks; aggregate sphere/exact instance/node/chunk/triangle/stationary fences; healthy sphere work exhaustion falls back to the published world AABB while corruption remains invalid; moving doors publish a conservative renderer-path temporal envelope; moving non-door solids and intersecting camera chords cut presentation interpolation; production-backed dense temporal oracle and invalid/recovery publication state-machine tests; ROM-free BVH equivalence/fault tests and runtime source/fallback/invalid counters | Inject aggregate multi-instance exhaustion; add rotating-door exact-lens coverage; extend actual address-reuse and whole-ROM work/memory/load soaks |
+| CAM-05 | Strong partial; bounded temporal index implemented, release evidence open | Object-model cache; fixed-capacity, generation-keyed publication; stable-order eight-triangle chunks plus deterministic balanced BVH; build-time topology/coverage/containment validation and query-time integrity checks; aggregate sphere/exact instance/node/chunk/triangle/stationary fences; every fence exit on either phase flags exhaustion, and healthy exhaustion falls back to the published world AABB while corruption remains invalid; chained slot indices for identity/model-bounds/previous-instance census lookups; moving doors publish a conservative renderer-path temporal envelope; moving non-door solids and intersecting camera chords cut presentation interpolation; production-backed dense temporal oracle and invalid/recovery publication state-machine tests; ROM-free BVH equivalence/fault tests and runtime source/fallback/invalid counters | Inject aggregate multi-instance exhaustion; add rotating-door exact-lens coverage; extend actual address-reuse and whole-ROM work/memory/load soaks |
 | CAM-06 | Strong partial | Immediate retract, bounded recovery, scripted endpoint/chord safety, deterministic shoulder/elevation fan, sticky prior-candidate/release-band hysteresis; previous/current exact tuple validation; fixed-basis exact transition sweep; rotated-basis conservative sweep; projection/shake tuple cuts; production-backed thick-slab `target_embedded` classification that remains not-visible telemetry | Quantified jerk/retract/recovery/blocker/candidate metrics, presentation-rate routes, and signed worst-1% motion review |
 | CAM-07 | Strong partial | Follow/loop/fixed/finish/T.T./scripted families plus P2/cutscene/3P-T.T. slot mapping; current-source 47-row, 4P, WebGPU snapshot, and independent 3P+T.T. camera-3 route coverage | Approved cinematic exceptions and remaining pinned mode-transition review |
 | CAM-08 | Partial | Per-viewport presentation-only emergency racer opacity; hard surfaces never fade | Soft-occluder enrollment/fade policy and state/cross-viewport pixel proof |
@@ -1003,6 +1049,7 @@ are now encoded as mechanisms or gates, not prose-only cautions:
 | Safe orientation endpoints could sweep through a wall | Fixed-orientation motion receives an exact continuous sweep. Orientation-changing motion requires conservative SE(3) coverage or a declared interpolation discontinuity with validated endpoints. |
 | The sampled exact fallback could pass unit tests but stall a fixed tick | Kernel/source counters are mandatory in shadow and release runs. The first route found maximum 7 retained static candidates but 2,025 stationary tests from fallback sampling; the sampled fallback is now non-shipping oracle code. |
 | One retained dynamic AABB could hide an unbounded full-model sweep | Both sphere and exact object queries now traverse the immutable per-model BVH under aggregate instance/node/chunk/triangle budgets. The first bounded route peaks at 37 sphere nodes/62 triangles and 29 exact nodes/40 triangles; fault injection and breadth remain release gates. |
+| A healthy work fence could be read as index corruption | Every fence exit sets the exhaustion flag the source classifies on, including the node-stack fence that no reported counter can reveal. A fence-shaped `INVALID` recovers to the instance's published world AABB and is counted as a fallback; a corruption-shaped one still fails closed. The fences themselves are sized from instrumented route demand, not chosen: the one model that saturated 16 chunks/128 triangles published a conservative box containing the resolved eye. |
 
 Default-on remains blocked even though these defects are closed. The unresolved
 items are product-quality and breadth work, not permission to weaken safety:

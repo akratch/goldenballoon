@@ -1,6 +1,6 @@
 # Roadmap
 
-What is **not** done at v1.0.0, why it was deferred, and what would have to be
+What is **not** done as of v1.0.5, why it was deferred, and what would have to be
 true to take it up. Nothing here is promised and nothing here has a date; this
 is a statement of scope, so that "not implemented" is never mistaken for
 "overlooked".
@@ -83,6 +83,29 @@ someone playing rather than reading.
 
 The exit condition is a single deterministic start→credits gate, not a
 collection of partial routes.
+
+### Camera obstruction correction — in the binary, not the default
+
+**Where it stands.** The projection-derived lens guard is ported and compiled:
+the sweep kernel, resolver, transform adapter, static and dynamic occlusion
+caches, target-readability classification, and the fixed-tick runtime that owns
+each of the eight authored camera slots
+(`game/src/camera_obstruction_runtime.c`, `platform/camera_obstruction*.c`).
+Rendering no longer computes a lens; it consumes the projection record the
+finalizer latched. The runtime policy comes from `MDKR_CAMERA_OBSTRUCTION`, and
+**unset selects Observe** — it measures and reports but never moves a camera, so
+the shipped default behaviour is the authored one. The `modern`, `center-ray`
+and `legacy` arms exist in the same binary for comparison and for the required
+broken-direction tests, and a misspelled value falls back to Observe rather than
+silently selecting an unqualified arm.
+
+**What remains.** Every CAM-00–CAM-09 exit gate in
+[`docs/architecture/camera-obstruction.md`](docs/architecture/camera-obstruction.md).
+Until they close, the underlying defect — gameplay cameras entering terrain and
+object geometry — stays open in
+[`docs/open-items/gameplay.md`](docs/open-items/gameplay.md), and a centre ray,
+fixed-radius clamp, terrain-only spring arm, or void-curtain mask is explicitly
+a partial mitigation rather than the fix.
 
 ## Renderer
 
@@ -260,8 +283,11 @@ unsupported revisions.
   protection depends on it. Until then, every claim in this repository rests on
   local runs.
 - **Mode-coverage stragglers.** Ghost save and load are gated for one
-  (track, vehicle) pair rather than across the set, and there is no gate that
-  actually enters a magic code and observes its effect.
+  (track, vehicle) pair rather than across the set. Magic-code entry is now
+  covered — `nav_to_magic_codes` submits valid `ARNOLD` and invalid `ARNOLE`
+  through the onscreen keyboard, and `check_taj_p2_adventure.py` enters retail
+  `JOINTVENTURE` and races the two-player Adventure it unlocks — but only for
+  those codes, not across the code set.
 - **Collision-candidate headroom is a watch metric, not an action item.** Boss
   levels 41 and 54 peak at 416 of 500 candidates. The cap can no longer be
   stepped over, and the 84-slot margin is unchanged; it is recorded so that a

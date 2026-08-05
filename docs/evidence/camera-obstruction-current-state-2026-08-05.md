@@ -38,14 +38,21 @@ flipped. A default change must remain a separate reviewed commit.
 - Every ordinary, alternate, emergency, scripted, recovery, and fallback result
   is a complete renderer-derived camera/lens/projection/shake tuple and must pass
   exact final-pose validation before publication.
+- Render and the resolver hold separate projection records for one viewport. The
+  guard is built from the presentation lens, which is a superset of every image
+  that viewport can publish, while render draws the latched record and owns the
+  generation handshake. A held validated tuple is reissued only into the world
+  region it was validated for.
 - Dynamic source `INVALID` remains invalid. A failed census publishes no Modern
   sidecar, cuts every eligible hard object, retires camera/object interpolation
   history, and forces the first complete recovery image to cut again.
 - Moving doors use a 16-sample renderer-transform temporal AABB with analytic
   outward padding. Moving non-door solids render at the current fixed pose and
   cut intersecting camera chords.
-- Healthy bounded sphere-work exhaustion becomes a conservative world-AABB hit;
-  corrupt input/cache/generation remains invalid.
+- Healthy bounded work exhaustion becomes a conservative world-AABB hit on the
+  enclosing-sphere and the exact phase alike; every fence exit flags the
+  exhaustion its source classifies on, and corrupt input/cache/generation
+  remains invalid.
 - A target behind a remote blocker is `HIDDEN`. A focus still overlapping after
   bounded local-skin exclusion is `EMBEDDED` and not visible. Invalid source or
   numeric input is never collapsed into either an ordinary hidden or clear result.

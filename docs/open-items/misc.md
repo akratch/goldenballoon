@@ -8,6 +8,10 @@
 
 
 ## Integration pending
+
+**Nothing is pending here any more.** The single item below is done; the section
+keeps its name and its anchor because both are linked from the index.
+
 - [x] Wire `asset_swap_normalize` / `asset_swap_lut` hooks into game/src/asset_loading.c per contract in platform/asset_swap.h. (M2 wired the LUT + asset_table_load hooks; M3 wired the per-caller post-inflate/whole-record hooks: LEVEL_MODELS, OBJECT_MODELS + asset_swap_object_animation, OBJECTS, SPRITES, LEVEL_OBJECT_MAPS, LEVEL_HEADERS, and the ASSET_MISC LevelHeader_70 swap.) Gzip'd sections swap AFTER inflate via gzip_inflate_output sizing.
 
 ## NOT A DEFECT, but zero coverage until now: character-select dancers reported static — wave "charselectmotion"

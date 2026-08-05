@@ -13,8 +13,7 @@ Gameplay / renderer / audio / timing / menus / other:
 
 ### Scene
 - Level or menu:
-- Entry path: start menu / `--level` / other:
-- Difficulty:
+- Entry path: launcher / `--rom` / `--input-script` / other:
 - Approximate frame/time or reproduction point:
 
 ### Expected reference behavior
@@ -32,4 +31,6 @@ What this port does instead.
 - OS / version:
 - ROM revision used (`us.v80` / `pal.v80`):
 - Commit:
-- Any `GE007_*` toggles used:
+- Renderer (`MDKR_RENDERER=webgpu|gl`) and presentation mode (`--pure` /
+  `--restored` / `--remastered`):
+- Any `MDKR_*` or `GE007_*` toggles used:

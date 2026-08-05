@@ -53,12 +53,22 @@ the loader owner (see "Integration contract" below and the header comment).
    u32-swap. (the architecture decisions' generic "DL words get swapped" note is about the HLE's
    runtime input, which is already native — it does not apply to on-disk data.)
 
-6. **Union fields (bytes vs word).** `Triangle`'s first 4 bytes (flags,vi0,vi1,
-   vi2) and `TexCoords`'s `u32 texCoords` union are only ever written as a word
-   by *runtime-built* models (`object_functions.c` flag model). Disk-loaded
-   triangles are read as bytes (`verticesArray`, `.flags`) and s16 (`uv.u/.v`),
-   so the index bytes stay unswapped and each UV s16 is swapped. Same reasoning
-   keeps `ColourRGBA` (particle colour) as bytes.
+6. **Union fields (bytes vs word) — the canonical in-memory layout is
+   HOST-natural.** `Triangle`'s first 4 bytes (flags,vi0,vi1,vi2) and
+   `TexCoords`'s `u32 texCoords` union are written as a word only by
+   *runtime-built* geometry: `object_functions.c`'s character-flag quad and
+   `objects.c func_8000B38C()`'s rim. Disk-loaded triangles are read as bytes
+   (`verticesArray`, `.flags`) and s16 (`uv.u/.v`), so `swap_triangles()` leaves
+   the index bytes unswapped and swaps each UV s16 in place. That makes the
+   in-memory layout host-natural, so the runtime packers have to pack in the
+   **host's** byte order too — `DKR_TRIANGLE`/`DKR_TEXCOORDS`
+   (`game/include/structs.h`) are gated on `__BYTE_ORDER__` and remain
+   bit-identical to stock on a big-endian build. Packing N64 words instead put
+   `flags` in the wrong byte, named vertex index 64 out of a four-vertex batch,
+   and transposed U with V: the collection-arena character portraits, the boost
+   shockwave plume and Star City's rainfall each bound, built and submitted
+   geometry that emitted zero pixels. Same reasoning keeps `ColourRGBA`
+   (particle colour) as bytes.
 
 ---
 
