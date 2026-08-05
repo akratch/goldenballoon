@@ -12,6 +12,24 @@ row count, exact schema, and SHA-256 so no private ROM-derived log is shipped.
 The shared route compiler advances native script entries by one fixed ticket,
 matching the host input boundary's N-to-N+1 publication contract; this keeps
 the exact accepted stream stable instead of rebaselining around test timing.
+
+REBASELINE 2026-08-05 (d74efe02 -> 53c8ca2c). The superseded hash froze a
+second port defect, in the same shape as the first: 670c984 corrected the
+8th-place racing-line selector in func_80042D20(). racePosition is 1-indexed
+(1..8) and D_800DCDA0 holds eight entries, so 8th place reads index 8, one past
+the end. The port had clamped that to D_800DCDA0[7] == 2, a value the retail
+game never produces; on hardware the read lands in the adjacent table and
+yields D_800DCDA8[0] == 1.
+
+That is not an argument from the disassembly's symbol names -- it is checked
+against the shipped ROM on every run by check_racing_line_overrun_witness()
+below, which locates the two tables by content and asserts their adjacency and
+the overrun byte. The pin moved only after the ROM said which side was right,
+and only after a build of this tree carrying nothing but the pre-670c984 clamp
+reproduced d74efe02 exactly -- proving that single selector, and nothing else
+in the 52 commits since the old pin (the bounded/extent-carrying inflate path,
+the game-text terminator count, the texture-header handling, or the camera
+obstruction port), accounts for the difference.
 """
 
 from __future__ import annotations
@@ -30,9 +48,12 @@ from harness_utils import resolve_binary
 ROOT = Path(__file__).resolve().parent.parent
 ROUTE_TOOL = ROOT / "tools" / "dkr_oracle_route.py"
 FRAMES = 4800
-REFERENCE_COMMIT = "64936e36b4c9ef7ecdce5beb93cd662d4318548d"
+REFERENCE_COMMIT = "670c984837ce21a9bd5ff54f0a2d4339267fb872"
 EXPECTED_ROWS = 27_840
-EXPECTED_SHA256 = "d74efe02aec07aa59710ce457e54180c28a22022f3d35e7087096d5130dba49b"
+EXPECTED_SHA256 = "53c8ca2c1e67c03c3e59157c088e7eae5a2a537ffa79b298661245eead102d30"
+# Superseded by the racing-line rebaseline documented above. Kept named so a
+# bisect that lands on the old stream reports which pin it matched.
+SUPERSEDED_SHA256 = "d74efe02aec07aa59710ce457e54180c28a22022f3d35e7087096d5130dba49b"
 ARES_VEHICLE_RNG_PREFIX_SHA256 = (
     "9fd7cb9aebc163b00f9c8e4bfd292f90b684b4d46415ab5e0ef594c8bfb2d16e"
 )
@@ -42,6 +63,59 @@ FIELDS = (
     "pidx", "vehicle", "grounded", "clock", "start", "delta", "rate", "rng",
 )
 FLOAT_FIELDS = {"x", "y", "z", "xv", "yv", "zv", "fvel", "vel"}
+
+
+# game/src/racer.c's three consecutive s8 tables, by content. The AI balloon
+# table is included so the signature is long enough to be unique in the image;
+# the assertion is that D_800DCDA8 begins in the byte immediately after
+# D_800DCDA0's eighth, which is what makes index 8 read a 1 and not a 2.
+AI_BALLOON_ACTION_TABLE = bytes((1, 1, 2, 2, 4, 3, 0, 6, 4, 3, 2, 2, 5, 5, 5, 0))
+RACING_LINE_TABLE = bytes((0, 0, 0, 1, 1, 2, 2, 2))          # D_800DCDA0
+RACING_LINE_NEIGHBOUR = bytes((1, 1, 1, 2, 3, 2, 3, 2))      # D_800DCDA8
+RACING_LINE_OVERRUN_VALUE = 1     # D_800DCDA8[0]: what 8th place actually reads
+RACING_LINE_CLAMPED_VALUE = 2     # D_800DCDA0[7]: the invented clamp it replaced
+
+
+def check_racing_line_overrun_witness(image: bytes) -> int:
+    """Prove from the ROM which value 8th place's out-of-bounds read produces.
+
+    Returns the ROM offset of D_800DCDA0. Raises when the tables are not
+    adjacent, are not unique, or when the byte one past D_800DCDA0 is not the
+    value this gate's stream was rebaselined onto -- any of which would mean the
+    pin rests on an assumption the shipped image does not support.
+    """
+    # Locate D_800DCDA0 by the run that ENDS at it, so the bytes the assertions
+    # are about are not themselves part of what is being searched for.
+    signature = AI_BALLOON_ACTION_TABLE + RACING_LINE_TABLE
+    hits = []
+    start = image.find(signature)
+    while start >= 0:
+        hits.append(start)
+        start = image.find(signature, start + 1)
+    if len(hits) != 1:
+        raise ValueError(
+            "racing-line witness: expected exactly one AI-balloon/D_800DCDA0 "
+            f"run in the ROM, found {len(hits)}")
+    table = hits[0] + len(AI_BALLOON_ACTION_TABLE)
+    past = table + len(RACING_LINE_TABLE)
+    # Overrun byte first, so each assertion below is independently falsifiable:
+    # it shares its value with RACING_LINE_NEIGHBOUR[0], and the adjacency test
+    # would otherwise absorb every mutation of it.
+    if image[past] != RACING_LINE_OVERRUN_VALUE:
+        raise ValueError(
+            f"racing-line witness: the byte past D_800DCDA0 (ROM {past:#x}) is "
+            f"{image[past]}, not {RACING_LINE_OVERRUN_VALUE} -- the stream pin "
+            "assumes that is what 8th place reads")
+    if image[past:past + len(RACING_LINE_NEIGHBOUR)] != RACING_LINE_NEIGHBOUR:
+        raise ValueError(
+            f"racing-line witness: D_800DCDA0 (ROM {table:#x}) is not followed "
+            "by D_800DCDA8 -- the two tables the pin assumes are adjacent are "
+            "not adjacent in this image")
+    if image[past - 1] != RACING_LINE_CLAMPED_VALUE:
+        raise ValueError(
+            "racing-line witness: D_800DCDA0[7] is not the superseded clamp "
+            f"value {RACING_LINE_CLAMPED_VALUE}")
+    return table
 
 
 def validate(rows: list[str]) -> str:
@@ -64,6 +138,12 @@ def validate(rows: list[str]) -> str:
             except ValueError as exc:
                 raise ValueError(f"row {row_index}: invalid {expected} value {value!r}") from exc
     digest = hashlib.sha256(("\n".join(rows) + "\n").encode("utf-8")).hexdigest()
+    if digest == SUPERSEDED_SHA256:
+        raise ValueError(
+            f"raw stream SHA-256 {digest} is the SUPERSEDED pin: this build "
+            "still clamps 8th place's racing-line selector to D_800DCDA0[7] "
+            "instead of taking the adjacent table's first byte -- see the "
+            "rebaseline note at the top of this file")
     if digest != EXPECTED_SHA256:
         raise ValueError(f"raw stream SHA-256 {digest}, expected {EXPECTED_SHA256}")
     return digest
@@ -120,6 +200,20 @@ def main() -> int:
             print(f"FAIL: missing {path}", file=sys.stderr)
             return 1
     try:
+        image = rom.read_bytes()
+        table = check_racing_line_overrun_witness(image)
+        # Witness control: the witness must reject an image whose overrun byte
+        # is the superseded clamp value, or it is not testing anything.
+        mutated = bytearray(image)
+        mutated[table + len(RACING_LINE_TABLE)] = RACING_LINE_CLAMPED_VALUE
+        try:
+            check_racing_line_overrun_witness(bytes(mutated))
+        except ValueError:
+            pass
+        else:
+            raise RuntimeError("racing-line witness accepted a mutated ROM")
+        del image, mutated
+
         rows = run(binary, rom, args.timeout, args.verbose)
         digest = validate(rows)
 
@@ -140,7 +234,9 @@ def main() -> int:
     print(
         "check_authored_rng_compat: PASS "
         f"({EXPECTED_ROWS} rows, {digest}, reference {REFERENCE_COMMIT[:12]}, "
-        f"ares car-RNG witness {ARES_VEHICLE_RNG_PREFIX_SHA256[:12]})"
+        f"ares car-RNG witness {ARES_VEHICLE_RNG_PREFIX_SHA256[:12]}, "
+        f"racing-line overrun witness ROM {table:#x}+8 == "
+        f"{RACING_LINE_OVERRUN_VALUE})"
     )
     return 0
 

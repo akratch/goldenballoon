@@ -42,6 +42,15 @@ ARM 2 -- SOURCE COVERAGE.
     explicit table, so a new one cannot be added silently and an existing one
     cannot quietly lose its swap.
 
+    The swap a site owes must appear before the next asset_load(), before the
+    end of the enclosing function, and within SWAP_WINDOW_CODE_LINES
+    STATEMENTS -- comments and preprocessor directives do not count. This arm
+    is source-shaped, so it has its own positive controls
+    (check_swap_window_controls) rather than the byte-reversal controls Arm 1
+    uses: a deleted swap, a swap displaced by real code, a swap behind a second
+    DMA, a swap in the next function, and a commented-out swap must each fail,
+    while documentation and #ifdef arms must not.
+
 Usage:
     tests/check_asset_swap_invariants.py --rom baserom.us.v80.z64
 """
@@ -760,10 +769,121 @@ AUDIO_LOAD_DEST = re.compile(
     r"asset_load\(\s*ASSET_AUDIO\s*,\s*"
     r"(?:\((?:uintptr_t|u32)\)\s*)?([A-Za-z_][A-Za-z0-9_]*)")
 
-# Lines to scan after an asset_load() for the swap it owes. Sized to clear the
-# gzip_inflate + bounds-check preamble that the compressed sections run first
-# (objects.c ASSET_LEVEL_OBJECT_MAPS is the widest at ~20 lines).
-SWAP_WINDOW_LINES = 26
+# Any asset_load() call, literal or not: a second DMA closes the previous
+# site's segment, so the swap that follows it belongs to the new load.
+ANY_LOAD_CALL = re.compile(r"\basset_load\s*\(")
+
+# How far after an asset_load() the swap it owes may sit, measured in
+# SUBSTANTIVE CODE LINES -- blank lines, comments, and preprocessor directives
+# do not count.
+#
+# This used to be a raw line count (26), which made the gate a hostage to
+# formatting: wrapping objects.c's inflate call in an #ifdef/#else pair and
+# documenting it added five non-code lines between the DMA and the swap and
+# pushed asset_swap_normalize() one line outside the window, failing a site
+# whose behaviour had not changed at all. Distance in statements is what the
+# invariant is actually about (how much code runs on the raw big-endian bytes
+# before they are normalized), and it cannot drift with comments or #ifdefs.
+#
+# Widest real site: objects.c ASSET_LEVEL_OBJECT_MAPS at 18 code lines (inflate
+# + two fatal bounds checks). check_source_coverage() reports the live maximum
+# in its PASS note so this number stays honest.
+SWAP_WINDOW_CODE_LINES = 24
+
+
+def code_lines(lines):
+    """Strip comments and rank every substantive code line.
+
+    Returns one (rank, text) per input line: `text` with comments removed, and
+    `rank` a dense index over the substantive lines or None for the rest. A line
+    is not substantive when it is blank, entirely comment, or a preprocessor
+    directive. Block comments are tracked across lines, so a multi-line
+    /* ... */ can neither leave a stray token behind nor let prose that names
+    asset_load() or asset_swap_*() be mistaken for a call.
+
+    Because the ranks are dense over code only, the difference between two of
+    them is the number of statements between the lines, however the file is
+    commented or #ifdef'd.
+    """
+    result = []
+    rank = 0
+    in_block = False
+    for raw in lines:
+        text = raw
+        if in_block:
+            end = text.find("*/")
+            if end < 0:
+                result.append((None, ""))
+                continue
+            text = text[end + 2:]
+            in_block = False
+        while True:
+            start = text.find("/*")
+            if start < 0:
+                break
+            end = text.find("*/", start + 2)
+            if end < 0:
+                text = text[:start]
+                in_block = True
+                break
+            text = text[:start] + " " + text[end + 2:]
+        text = text.split("//", 1)[0].strip()
+        if not text or text.startswith("#"):
+            result.append((None, ""))
+            continue
+        result.append((rank, text))
+        rank += 1
+    return result
+
+
+def enclosing_function_end(lines, start):
+    """Index of the line that closes the function containing `start`.
+
+    Every function in this tree closes with `}` in column 0, so the first such
+    line after the call site bounds the search. A swap on the far side of it
+    belongs to a different function and cannot be the one this load owes.
+    """
+    for index in range(start + 1, len(lines)):
+        if lines[index].startswith("}"):
+            return index
+    return len(lines)
+
+
+def swap_site_verdict(lines, load_index):
+    """Locate the swap owed by the asset_load() on `lines[load_index]`.
+
+    Returns (swap_index, distance) on success, or (None, reason) describing why
+    no swap qualifies. The search stops at the end of the enclosing function and
+    at the next asset_load(), whichever comes first, and then bounds the
+    surviving candidate by SWAP_WINDOW_CODE_LINES statements.
+    """
+    code = code_lines(lines)
+    limit = enclosing_function_end(lines, load_index)
+    boundary = None
+    for index in range(load_index + 1, limit):
+        if ANY_LOAD_CALL.search(code[index][1]):
+            boundary = index
+            limit = index
+            break
+    load_rank = code[load_index][0]
+    if load_rank is None:
+        load_rank = max((rank for rank, _ in code[:load_index + 1] if rank is not None),
+                        default=-1)
+    for index in range(load_index + 1, limit):
+        rank, text = code[index]
+        if rank is None or not SWAP_CALL.search(text):
+            continue
+        distance = rank - load_rank
+        if distance > SWAP_WINDOW_CODE_LINES:
+            return None, (f"the nearest asset_swap_* call is {distance} code "
+                          f"lines away, past the {SWAP_WINDOW_CODE_LINES}-line "
+                          "window")
+        return index, distance
+    if boundary is not None:
+        return None, ("the next asset_load() runs before any asset_swap_* call, "
+                      "so these bytes reach it big-endian")
+    return None, ("there is no asset_swap_* call between it and the end of its "
+                  "function")
 
 
 def magic_code_call_order_ok(source):
@@ -839,38 +959,106 @@ def check_audio_source_ownership(rep):
     rep.note("audio source ownership: 16 raw loads, all consumers enumerated")
 
 
-def check_source_coverage(rep):
-    """Every raw asset_load() site must have a declared, satisfied disposition."""
-    sources = sorted((ROOT / "game" / "src").rglob("*.c"))
-    seen = {}
+def scan_swap_coverage(named_sources):
+    """Scan (name, source) pairs; return (problems, seen, swap distances)."""
     problems = []
-    for path in sources:
-        source = path.read_text(errors="replace")
+    seen = {}
+    distances = {}
+    for name, source in named_sources:
         lines = source.splitlines()
         for match in LOAD_CALL.finditer(source):
             number = source.count("\n", 0, match.start())
             asset = match.group(1)
-            seen.setdefault(asset, []).append(f"{path.relative_to(ROOT)}:{number + 1}")
+            seen.setdefault(asset, []).append(f"{name}:{number + 1}")
             disposition = RAW_LOAD_DISPOSITION.get(asset)
             if disposition is None:
                 problems.append(
-                    f"{path.relative_to(ROOT)}:{number + 1}: asset_load({asset}) "
+                    f"{name}:{number + 1}: asset_load({asset}) "
                     "has no entry in RAW_LOAD_DISPOSITION -- declare whether it "
                     "needs a swap")
                 continue
             if disposition != "swap":
                 continue
-            # Look ahead for the swap this site owes. The window has to clear
-            # the inflate + bounds-check preamble that the compressed sections
-            # (level models, object maps, object animations) run between the
-            # DMA and the swap.
-            window = "\n".join(lines[number:number + SWAP_WINDOW_LINES])
-            if not SWAP_CALL.search(window):
+            swap_index, detail = swap_site_verdict(lines, number)
+            if swap_index is None:
                 problems.append(
-                    f"{path.relative_to(ROOT)}:{number + 1}: asset_load({asset}) "
-                    f"is a raw ROM DMA with no asset_swap_* call within "
-                    f"{SWAP_WINDOW_LINES} lines -- this asset would be consumed "
-                    "big-endian")
+                    f"{name}:{number + 1}: asset_load({asset}) is a raw ROM DMA "
+                    f"and {detail} -- this asset would be consumed big-endian")
+            else:
+                distances[f"{name}:{number + 1}"] = detail
+    return problems, seen, distances
+
+
+def swap_coverage_ok(source):
+    """Positive-control helper: does one synthetic translation unit pass Arm 2?"""
+    problems, _, _ = scan_swap_coverage([("synthetic.c", source)])
+    return not problems
+
+
+# One real site's shape, reduced to the parts Arm 2 reads. The controls below
+# perturb it one axis at a time.
+_CONTROL_SITE = """
+void track_spawn_objects(void) {{
+    asset_load(ASSET_LEVEL_OBJECT_MAPS, (uintptr_t) compressedAsset, off, size);
+{middle}
+    asset_swap_normalize(ASSET_LEVEL_OBJECT_MAPS, mem, inflatedSize);
+}}
+"""
+
+
+def check_swap_window_controls(rep):
+    """Prove the Arm 2 window rejects what it must and tolerates what it must."""
+    baseline = _CONTROL_SITE.format(middle="    gzip_inflate_sized(a, b, size);")
+    rep.control(
+        "swap coverage: a site whose swap is deleted",
+        swap_coverage_ok(baseline),
+        swap_coverage_ok(_CONTROL_SITE.format(middle="").replace(
+            "    asset_swap_normalize(ASSET_LEVEL_OBJECT_MAPS, mem, inflatedSize);\n", "")))
+    # Documentation and #ifdef arms must NOT consume the window: doing so is
+    # exactly the false failure this window was rewritten to stop producing.
+    padding = "\n".join(["#ifdef NATIVE_PORT", "    /* explanatory comment */",
+                         "    /* second line of it */", "#else", "#endif", ""] * 8)
+    rep.control(
+        "swap coverage: 48 comment/#ifdef lines between the DMA and its swap",
+        swap_coverage_ok(_CONTROL_SITE.format(middle=padding)),
+        # Same count of real statements does breach the window, as it should.
+        swap_coverage_ok(_CONTROL_SITE.format(
+            middle="\n".join(f"    consume(step{i});" for i in range(48)))))
+    rep.control(
+        "swap coverage: a second asset_load() before the swap",
+        swap_coverage_ok(baseline),
+        swap_coverage_ok(_CONTROL_SITE.format(
+            middle="    asset_load(ASSET_SCREENS, (uintptr_t) other, off, size);")))
+    rep.control(
+        "swap coverage: a swap that sits in the next function",
+        swap_coverage_ok(baseline),
+        swap_coverage_ok("""
+void track_spawn_objects(void) {
+    asset_load(ASSET_LEVEL_OBJECT_MAPS, (uintptr_t) compressedAsset, off, size);
+    gzip_inflate_sized(a, b, size);
+}
+
+void later(void) {
+    asset_swap_normalize(ASSET_LEVEL_OBJECT_MAPS, mem, inflatedSize);
+}
+"""))
+    rep.control(
+        "swap coverage: a commented-out swap",
+        swap_coverage_ok(baseline),
+        swap_coverage_ok("""
+void track_spawn_objects(void) {
+    asset_load(ASSET_LEVEL_OBJECT_MAPS, (uintptr_t) compressedAsset, off, size);
+    /* asset_swap_normalize(ASSET_LEVEL_OBJECT_MAPS, mem, inflatedSize); */
+}
+"""))
+
+
+def check_source_coverage(rep):
+    """Every raw asset_load() site must have a declared, satisfied disposition."""
+    sources = sorted((ROOT / "game" / "src").rglob("*.c"))
+    named = [(str(path.relative_to(ROOT)), path.read_text(errors="replace"))
+             for path in sources]
+    problems, seen, distances = scan_swap_coverage(named)
     for asset, disposition in RAW_LOAD_DISPOSITION.items():
         if asset not in seen:
             problems.append(
@@ -879,6 +1067,12 @@ def check_source_coverage(rep):
     if problems:
         raise SwapInvariantError(
             "raw asset_load() coverage failures:\n  " + "\n  ".join(problems))
+
+    check_swap_window_controls(rep)
+    if distances:
+        widest, span = max(distances.items(), key=lambda item: item[1])
+        rep.note(f"swap window: widest live site {widest} at {span}/"
+                 f"{SWAP_WINDOW_CODE_LINES} code lines")
 
     check_audio_source_ownership(rep)
 
