@@ -34,16 +34,41 @@ const BUILD = new URL(self.location.href).searchParams.get("v") || "";
 const CACHE = "mdkr64-shell-" + BUILD;
 const DOCUMENT_KEY = "./?document=" + BUILD;
 
+// Everything a home-screen launch needs before the player supplies a ROM.
+// The whole set is ~2.5 MB, so it is precached at install: the worker is
+// registered after the page's own fetches (which bypass it -- no
+// clients.claim), so install-time is the only moment the first visit can be
+// made launchable offline.
+const PRECACHE = [
+  "style.css?v=" + BUILD,
+  "manifest.webmanifest?v=" + BUILD,
+  "mdkr64-shell.js?v=" + BUILD,
+  "mdkr-save-ui.js?v=" + BUILD,
+  "rom-id.js?v=" + BUILD,
+  "mdkr64_web.js?v=" + BUILD,
+  "mdkr64_web.wasm?v=" + BUILD,
+  "mdkr-save-tools.js?v=" + BUILD,
+  "mdkr-save-tools.wasm?v=" + BUILD,
+  "assets/favicon.png",
+  "assets/favicon-32.png",
+  "assets/apple-touch-icon.png",
+];
+
 self.addEventListener("install", (event) => {
   if (!BUILD) return;
-  // Only the document is pre-fetched. The engine wasm is tens of megabytes and
-  // the visitor has not asked for an install yet; it is cached the first time it
-  // is actually fetched, which is also the first time it is known to be wanted.
   event.waitUntil((async () => {
     try {
       const cache = await caches.open(CACHE);
       const response = await fetch("./", { cache: "reload" });
       if (response.ok) await cache.put(DOCUMENT_KEY, response);
+      // Fetch each asset individually so one miss does not abandon the rest;
+      // anything missed here is still captured by the runtime fetch path.
+      await Promise.all(PRECACHE.map(async (url) => {
+        try {
+          const r = await fetch(url, { cache: "reload" });
+          if (r.ok) await cache.put(url, r);
+        } catch (_) { /* runtime path fills in */ }
+      }));
     } catch (_) { /* offline at install time: the runtime path still fills in */ }
   })());
 });

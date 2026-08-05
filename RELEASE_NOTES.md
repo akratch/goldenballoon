@@ -75,9 +75,10 @@ supported 1.0.5 experience.
 - WebGPU with Restored presentation remains the qualified native and browser
   path. OpenGL is a diagnostic option, and Remastered is still work in
   progress.
-- Motion smoothing remains a preview. UV-scrolled surfaces such as waterfalls,
-  water, and lava still update on authored game ticks and may shimmer or step
-  during camera motion. Motion smoothing Off is unaffected.
+- Motion smoothing remains a preview. Interpolated draws presentation-only
+  in-between images; it does not run the game more often. UV-scrolled surfaces
+  such as waterfalls, water, and lava still update on authored game ticks and
+  may shimmer or step during camera motion. Motion smoothing Off is unaffected.
 - The Windows archive is not published automatically. Hosted runners do not
   guarantee a qualifying GPU, so the Windows package is attached only after a
   human runs it on real Windows hardware and records the result.

@@ -5290,11 +5290,16 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                         position_overrides[0])) {
                     /* Only the anchor is interpolated; dkr_sp_vertex reads an
                      * override for EVERY vertex in the batch, so the rest must
-                     * carry their own authored positions. */
-                    for (int bi = 1; v != NULL && bi < retained_n; bi++) {
-                        position_overrides[bi][0] = (float)v[bi].x;
-                        position_overrides[bi][1] = (float)v[bi].y;
-                        position_overrides[bi][2] = (float)v[bi].z;
+                     * carry their own authored positions -- from the source
+                     * this replay actually draws. When the stale-binding
+                     * branch selected retained_vertices, `v` is the reused
+                     * live memory that made the binding stale in the first
+                     * place. */
+                    for (int bi = 1; vertex_source != NULL && bi < retained_n;
+                         bi++) {
+                        position_overrides[bi][0] = (float)vertex_source[bi].x;
+                        position_overrides[bi][1] = (float)vertex_source[bi].y;
+                        position_overrides[bi][2] = (float)vertex_source[bi].z;
                     }
                     position_override = position_overrides;
                     dkr_replay_billboard_vertex_hits++;

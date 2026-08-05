@@ -551,7 +551,13 @@ globalThis.MDKRSaveUI = (() => {
           // the failure travel to the caller.
           released = true;
           setControlsDisabled(true);
-          await syncFs(false);
+          // A spectator's MEMFS view is a stale snapshot of a store another
+          // tab owns; flushing it here would overwrite the owner's newer
+          // progress with exactly the image the ownership claim exists to
+          // keep out. Spectators hand over without writing.
+          if (!spectator()) {
+            await syncFs(false);
+          }
         });
       },
 
