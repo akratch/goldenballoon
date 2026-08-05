@@ -241,11 +241,15 @@ automated coverage from manual physical-hardware acceptance. See
   UTF-8/extended-length filesystem boundary and reviewed application manifest.
   The 1.0.5 candidate must pass its Unicode and >260-character path gate on
   Windows hardware before those new guarantees can be claimed for a release.
-- Modern camera obstruction correction is present in the binary but **off by
-  default**: with `MDKR_CAMERA_OBSTRUCTION` unset the runtime only observes each
-  authored camera slot, so gameplay cameras can still enter terrain and object
-  geometry. Its CAM-00–CAM-09 release gates are not closed, and the plan and
-  evidence are in
+- Modern camera obstruction correction is **the default**: with
+  `MDKR_CAMERA_OBSTRUCTION` unset the runtime resolves every authored camera
+  slot, and it publishes no penetrated, degraded, or invalid pose on any pinned
+  route. What is not claimed is breadth — the CAM-00–CAM-09 release gates cover
+  the qualified routes, not every camera bank and mode in the game, so an
+  uncovered shot is possible. `MDKR_CAMERA_OBSTRUCTION=observe` restores the
+  authored camera and `=legacy` the original placement, both diagnostic only.
+  The correction is presentation-only and moves no authoritative state. The plan
+  and evidence are in
   [docs/architecture/camera-obstruction.md](docs/architecture/camera-obstruction.md).
 
 The full deferred scope and the evidence required to close each item are in

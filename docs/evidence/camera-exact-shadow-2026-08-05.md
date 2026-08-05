@@ -205,8 +205,10 @@ self-assign warnings in `game/src/memory.c`.
 This closes the structural scan defect, not PERF-02's release gate. Executable
 ROM-free BVH equivalence, corrupt-node/index and every-cap fault injection,
 model-address reuse, whole-ROM work/memory/load census, moving-solid correction,
-GCC/wasm, browser, 1P–4P, and display/FOV breadth remain mandatory. Observe stays
-the default and the exact result remains non-publishing.
+GCC/wasm, browser, 1P–4P, and display/FOV breadth remain mandatory. (Later on
+2026-08-05 release ownership made Modern the default; that changed the policy
+this note assumed, not the breadth work it lists.) The `MDKR_CAMERA_EXACT_SHADOW`
+comparison remains default-off and non-publishing.
 
 ## Follow-up: executable BVH equivalence and fault gate
 

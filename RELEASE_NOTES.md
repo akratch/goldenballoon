@@ -4,7 +4,8 @@
 
 Golden Balloon 1.0.5 is a fix release. It closes the six reported problems
 listed below, repairs Return to Launcher and the diagnostic log on Windows,
-and corrects launcher layout at small window sizes. No game data is included.
+corrects launcher layout at small window sizes, and stops the gameplay camera
+from entering walls. No game data is included.
 
 Recommended settings are unchanged from 1.0.4: **WebGPU**, **Restored**, frame
 limit **Original**, motion smoothing **Off**, gameplay cadence **Original**.
@@ -62,12 +63,25 @@ Existing preferences are preserved when upgrading.
   works again for planes and bosses, and a computer-carried egg is no longer
   drawn frozen.
 
-## Not enabled in this release
+## The camera stays out of walls
 
-A modern camera obstruction subsystem is present in the build but does not
-change any camera. It defaults to an observe-only policy that measures and
-records; the corrective policies are explicit opt-ins behind the
-`MDKR_CAMERA_OBSTRUCTION` environment variable and are not supported in 1.0.5.
+The gameplay camera no longer slides into terrain, doors, or other solid
+geometry. Every authored camera is now resolved against the world before it is
+drawn, on every tick, in every viewport and split-screen layout. On the routes
+this release is qualified against it never published a shot that entered a wall,
+lost its view of your racer, or fell back to a degraded one.
+
+What the game is steering is untouched. Only the picture moves, so kart
+handling, race results, ghosts, and saves are all bit-for-bit what they were —
+the same race replays identically whether the correction is on or off.
+
+This is the default and there is no menu setting for it. If you want the
+original camera back — for a side-by-side, a recording, or a bug report — set
+`MDKR_CAMERA_OBSTRUCTION=observe` to keep the authored camera exactly as the
+game writes it while the resolver still measures, or
+`MDKR_CAMERA_OBSTRUCTION=legacy` for the original placement with none of the new
+work. Both are diagnostic options: they are not stored with your preferences,
+and the corrected camera is the supported way to play.
 
 ## Known limitations
 

@@ -1,13 +1,17 @@
 # Camera obstruction and modern native presentation plan
 
-> **Target:** safe obstruction correction becomes the native/browser default only
-> after every CAM-00–CAM-09 release gate is evidenced.
-> **Current state (2026-08-05):** experimental, release-gated implementation behind an
-> explicit policy gate. The
+> **Target:** safe obstruction correction is the native/browser default; the
+> CAM-00–CAM-09 release gates evidence its breadth.
+> **Current state (2026-08-05):** correction is the production default. The
 > eight-slot presentation sidecar, projection-derived swept-sphere resolver,
 > static/dynamic query sources, recovery, alternate shots, and emergency racer
-> fade exist. Unset `MDKR_CAMERA_OBSTRUCTION` still selects Observe; this issue is
-> not release-closed and correction is not yet the production default.
+> fade exist and run on every authored slot. Unset `MDKR_CAMERA_OBSTRUCTION` now
+> selects Modern, which reports `penetrated=0 degraded=0 invalid=0` on every
+> pinned route; Observe, Center-ray, and Legacy remain in the same binary as
+> diagnostic opt-outs and broken-direction controls. The default is safe by
+> construction rather than by measurement alone: the resolver substitutes only at
+> presentation depth, so no authoritative state can move with it. The remaining
+> CAM-00–CAM-09 gates are breadth evidence, not a gate on the default.
 > **Evidence cutoff:** branch `codex/camera-obstruction-modern`, current candidate
 > recorded in `docs/evidence/camera-runtime-modern-2026-08-05.md`; US v80 ROM SHA-256
 > `7de1a8fb2a9558cfc3d9ad4497df698c1e89cf7095ac1531557df2af40ba8bcf`.
@@ -115,8 +119,9 @@ acceptance must be based on geometric invariants as well as pixels.
   deterministic shoulder/elevation fan, recomputes the resolved segment and
   orientation, and can apply a per-viewport presentation-only racer fade when no
   readable boom fits.
-- `legacy` and `center-ray` remain same-binary positive controls. Observe remains
-  the current default until the ledger and definition of done are green.
+- `legacy` and `center-ray` remain same-binary positive controls. Modern is the
+  current default; Observe is the diagnostic opt-out that retains the authored
+  pose, and remains the fallback for an unrecognised policy value.
 
 ### Source anchors for implementation
 
@@ -1045,8 +1050,12 @@ are now encoded as mechanisms or gates, not prose-only cautions:
 | One retained dynamic AABB could hide an unbounded full-model sweep | Both sphere and exact object queries now traverse the immutable per-model BVH under aggregate instance/node/chunk/triangle budgets. The first bounded route peaks at 37 sphere nodes/62 triangles and 29 exact nodes/40 triangles; fault injection and breadth remain release gates. |
 | A healthy work fence could be read as index corruption | Every fence exit sets the exhaustion flag the source classifies on, including the node-stack fence that no reported counter can reveal. A fence-shaped `INVALID` recovers to the instance's published world AABB and is counted as a fallback; a corruption-shaped one still fails closed. The fences themselves are sized from instrumented route demand, not chosen: the one model that saturated 16 chunks/128 triangles published a conservative box containing the resolved eye. |
 
-Default-on remains blocked even though these defects are closed. The unresolved
-items are product-quality and breadth work, not permission to weaken safety:
+Default-on was taken on 2026-08-05: Modern published `penetrated=0 degraded=0
+invalid=0` on every pinned route, and the substitution is confined to
+presentation depth, so the flip cannot move authoritative state whatever the
+remaining breadth work finds. The items below are still open, and they are
+product-quality and breadth work — not permission to weaken safety, and not a
+reason to keep the corrected camera off a player's screen:
 synthetic dynamic invalid/recovery and non-door chord fault fixtures; explicit
 soft-occluder enrollment/fade and cross-viewport pixels; a moving-solid
 correction transition plus pinned concave/tunnel fixtures; motion/chatter metrics
@@ -1334,17 +1343,25 @@ The new gate is registered in `tools/run_checks.py`; it is not a manual-only scr
 Add a diagnostic seam such as:
 
 ```text
-unset | observe                  current default; telemetry, authored pose retained
-MDKR_CAMERA_OBSTRUCTION=modern   experimental full static+dynamic correction
+unset | modern                   current default; full static+dynamic correction
+MDKR_CAMERA_OBSTRUCTION=observe  telemetry only, authored pose retained
 MDKR_CAMERA_OBSTRUCTION=center-ray intentionally incomplete diagnostic control
 MDKR_CAMERA_OBSTRUCTION=legacy   original direct placement + void detector
 MDKR_CAMERA_TRACE=1|2             summaries / per-query detail
 MDKR_CAMERA_EXACT_SHADOW=1        non-publishing promoted-sphere/exact corridor comparison
 ```
 
-Unknown values fail to Observe; a typo cannot silently select the known-unsafe
-Legacy behavior. The immediate rollback ladder is `modern -> observe -> legacy`,
-with no save persistence or authoritative-state migration.
+Unknown values fail to Observe, not to the default: a typo means a diagnostic
+opt-out was requested and not understood, so the run must neither silently
+correct nor silently select the known-unsafe Legacy behavior. Observe is the only
+arm that measures without moving a camera, which makes it the honest answer to an
+unparsed request; Modern is reached by leaving the variable unset, never by a
+typo. Because that fallback now differs from the default it must not be silent:
+the first unparsed resolution prints one `camera_obstruction:` line to stderr
+naming the rejected value and the valid set, and never repeats — the policy
+resolves per slot per fixed tick. The immediate rollback ladder is
+`modern -> observe -> legacy`, with no save persistence or authoritative-state
+migration.
 
 The legacy arm must reproduce the wall/door lens violation in the same executable.
 The modern arm must pass the invariant. A second injected control disables only the

@@ -5,6 +5,13 @@ Branch: `codex/camera-obstruction-modern`
 Host: macOS arm64, Clang/AppleClang  
 ROM: US v80 Rev 1, validated by the runtime banner
 
+> **Superseded on the default question (2026-08-05, 1.0.5 integration).** Release
+> ownership flipped the default: unset `MDKR_CAMERA_OBSTRUCTION` selects Modern.
+> An *unrecognized* value still resolves to Observe — that half of the sentence
+> below is unchanged and deliberate. The release work named in the final section
+> remains open as breadth evidence. The measurements in this note are the
+> evidence the flip was taken on and are otherwise unamended.
+
 ## Decision
 
 The implementation is suitable for continued opt-in gameplay validation, but it

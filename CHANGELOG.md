@@ -171,18 +171,28 @@ cadence Original.
 
 ### Added
 
-- **A modern camera obstruction subsystem, ported but not enabled.** The pure
-  sweep kernel, resolver, transform adapter, track and object occlusion caches,
-  dynamic hard-occluder census, target-readability classification, and the
-  fixed-tick runtime that observes or resolves each authored camera slot are
-  all present. `MDKR_CAMERA_OBSTRUCTION` selects the policy and defaults to
-  `observe`, which measures and publishes but changes no camera; `modern`,
-  `center-ray`, and `legacy` are explicit opt-ins, and an unrecognised value
-  falls back to `observe` rather than selecting a known-unsafe arm. Render no
-  longer computes a lens: `cam_effective_projection_for_viewport()` produces
-  the immutable projection record before any display-list work, the fixed-tick
-  finalizer latches it per viewport, and native projection rebuild consumes
-  only that latched record. The architecture is documented in
+- **Gameplay cameras no longer enter terrain or object geometry, by default.**
+  The modern camera obstruction subsystem — the pure sweep kernel, resolver,
+  transform adapter, track and object occlusion caches, dynamic hard-occluder
+  census, target-readability classification, and the fixed-tick runtime that
+  resolves each authored camera slot — is now the shipped policy rather than an
+  opt-in. `MDKR_CAMERA_OBSTRUCTION` unset selects `modern`, which published
+  `penetrated=0 degraded=0 invalid=0` on every pinned route; `observe` (measure
+  only, authored pose retained), `center-ray` (deliberately incomplete
+  diagnostic control), and `legacy` (original direct placement) remain in the
+  same binary as diagnostic opt-outs and A/B controls, and an unrecognised
+  value still falls back to `observe` — a typo may not silently correct, and
+  may not select the known-unsafe arm. That fallback now differs from the
+  default, so it is no longer silent: the first unparsed resolution prints one
+  `camera_obstruction:` line to stderr naming the rejected value and the valid
+  set. The substitution happens at presentation
+  depth only, so authoritative state is unmoved: the `[SIMHASH]` stream and the
+  state hash over a route are identical under the new default and under
+  `observe`. Render no longer computes a lens:
+  `cam_effective_projection_for_viewport()` produces the immutable projection
+  record before any display-list work, the fixed-tick finalizer latches it per
+  viewport, and native projection rebuild consumes only that latched record.
+  The architecture is documented in
   [docs/architecture/camera-obstruction.md](docs/architecture/camera-obstruction.md).
 - Exact-query fences are sized to the measured worst case — the largest
   transitioning door is 166 triangles, 21 chunks, and a 41-node tree, so the

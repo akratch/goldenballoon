@@ -48,7 +48,7 @@ running on WebGPU in Chrome, rendering title/menus/race correctly.
 | Boss races | Tricky 2 end to end with production object collision; all ten load/drive. The legal first-boss campaign route clears the fourth Dino race, opens the four-balloon door, physically finishes Tricky 1 in win/loss arms, returns to the hub, and reloads exact progression | `check_collision_gridmask`, `check_boss_win_verdict`, `check_first_boss_progression`; the old stock-AI summit miss remains a positive control and route-fidelity note in `OPEN_ITEMS.md`'s objcoll entry |
 | Audio | Music + SFX + reverb via the software aspMain mixer; RAW16 instruments are converted from serialized big-endian PCM | `check_audio_output` covers format/energy/timing/reverb; `check_raw16_audio` inventories 25 music + 1 SFX RAW16 wave and compares fixed/exact-legacy PCM in both directions |
 | ROM revisions | US 1.1 + EU 1.1 byte-identical payloads supported with authored NTSC/60 and PAL/50 source clocks; the other three named and refused; `.v64`/`.n64` normalised | `check_rom_revision` + `check_simulation_cadence` |
-| Camera obstruction | The Modern resolver (`game/src/camera_obstruction_runtime.c` and the occlusion sources beside it) is integrated but **not** the default: `MDKR_CAMERA_OBSTRUCTION` selects `observe` (also the value an unrecognised string falls back to), `modern`, `center-ray`, or `legacy`, and `observe` leaves the authored camera in place | the `check_camera_obstruction_*`, `check_camera_dynamic_*`, `check_camera_projection_fallback_runtime`, `check_camera_emergency_readability_runtime`, and `check_camera_3p_tt_runtime` gates, over the `camera_*` ROM-free CTests (`ctest -R '^camera_'`); design and measured fence sizing in [`architecture/camera-obstruction.md`](architecture/camera-obstruction.md) |
+| Camera obstruction | The Modern resolver (`game/src/camera_obstruction_runtime.c` and the occlusion sources beside it) is **the default**: unset `MDKR_CAMERA_OBSTRUCTION` selects `modern`. `observe` (measure only, authored camera left in place), `center-ray`, and `legacy` remain as diagnostic opt-outs and A/B controls, and an unrecognised string still falls back to `observe` — never to the default arm and never to the known-unsafe one. Substitution happens at presentation depth, so the default flip moves no authoritative state | the `check_camera_obstruction_*`, `check_camera_dynamic_*`, `check_camera_projection_fallback_runtime`, `check_camera_emergency_readability_runtime`, and `check_camera_3p_tt_runtime` gates, over the `camera_*` ROM-free CTests (`ctest -R '^camera_'`); design and measured fence sizing in [`architecture/camera-obstruction.md`](architecture/camera-obstruction.md) |
 | Oracle | Patched ares runs the real ROM for pixel parity and US 1.1 racer-state comparison (silent by construction) | `race_state_oracle`: Bubbler's authored two-field route passes and the historical one-field arm fails as a positive control; broader strict standard-race parity remains reported separately |
 
 **122 registered check scripts / 135 full-run tasks, each validated in both
@@ -831,8 +831,10 @@ under `NATIVE_PORT` only, so the paired run witnesses the pixels that draw
 paints; any value other than empty or `0` suppresses),
 `MDKR_RENDERER=gl`,
 `MDKR_CAMERA_OBSTRUCTION=observe|modern|center-ray|legacy` (the obstruction
-resolver arm; anything unrecognised falls back to `observe`, never to a
-known-unsafe arm) with `MDKR_CAMERA_TRACE=1|2` (`1` prints the per-tick
+resolver arm; unset is `modern`, the shipped default, and anything unrecognised
+falls back to `observe` — a typo may neither silently correct nor select a
+known-unsafe arm, and prints a one-shot `camera_obstruction:` line to stderr
+naming the value it could not parse) with `MDKR_CAMERA_TRACE=1|2` (`1` prints the per-tick
 `camera_obstruction_observe summary` line; `2` adds a per-viewport detail line
 and, under `modern`, keeps running the stationary sweep it would otherwise skip)
 and `MDKR_CAMERA_PERF=1` (`[CAMERAPERF]` per-section timings),

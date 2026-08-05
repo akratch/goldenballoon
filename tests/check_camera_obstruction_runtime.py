@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """ROM-backed wall witness for the modern camera obstruction runtime.
 
-The same deterministic Ancient Lake route runs through three policies in one
-binary. Legacy must reproduce an authored lens overlap, center-ray must prove
-that protecting only the eye center is insufficient, and Modern must correct
-every resolved lens overlap while leaving the logical camera untouched.
+The same deterministic Ancient Lake route runs through four arms in one binary.
+Legacy must reproduce an authored lens overlap, center-ray must prove that
+protecting only the eye center is insufficient, and Modern must correct every
+resolved lens overlap while leaving the logical camera untouched.
+
+The fourth arm runs with MDKR_CAMERA_OBSTRUCTION removed from the environment.
+Correction is the shipped default, so the unset arm must report the MODERN gate
+and reproduce the explicit Modern arm's counters exactly -- this is the runtime
+witness that a player who sets nothing gets the corrected camera.
 """
 
 from __future__ import annotations
@@ -36,9 +41,14 @@ def run(binary: str, rom: str, policy: str, frames: int, timeout: int,
         MDKR_PRESENT_RATE="original",
         MDKR_SIMULATION_CADENCE="enhanced",
         MDKR_SYNTH_FIELDS="1",
-        MDKR_CAMERA_OBSTRUCTION=policy,
         MDKR_CAMERA_TRACE="2",
     )
+    # "unset" is the shipped configuration, not a policy string: the variable is
+    # removed rather than emptied so an inherited value cannot mask the default.
+    if policy == "unset":
+        env.pop("MDKR_CAMERA_OBSTRUCTION", None)
+    else:
+        env["MDKR_CAMERA_OBSTRUCTION"] = policy
     if extra_env:
         env.update(extra_env)
     command = [
@@ -81,7 +91,13 @@ def inspect(policy: str, output: str) -> dict[str, int]:
     summaries = [line for line in output.splitlines() if SUMMARY in line]
     if len(details) < 3000 or not summaries:
         raise RuntimeError(f"{policy} produced incomplete telemetry ({len(details)} detail rows)")
+    gates = {match.group(1) for match in
+             (re.search(r"\bgate=([A-Z_]+)\(", row) for row in summaries)
+             if match is not None}
+    if len(gates) != 1:
+        raise RuntimeError(f"{policy} reported {sorted(gates)} gate(s), expected one")
     result = {
+        "gate": gates.pop(),
         "rows": len(details),
         "corrected": sum(field(row, "corrected") for row in details),
         "penetrated": sum(field(row, "clearance") != 0 for row in details),
@@ -113,7 +129,11 @@ def inspect(policy: str, output: str) -> dict[str, int]:
             block_field(row, "transition", "cut") for row in details
         ),
     }
-    if result["degraded"] or (policy.startswith("modern") and
+    # "unset" is a Modern arm under its shipped name, so it earns the same
+    # strictness; importers pass their own labels, and the ones that mean Modern
+    # prefix them with it.
+    corrective = policy.startswith("modern") or policy == "unset"
+    if result["degraded"] or (corrective and
                               (result["invalid"] or result["target_hidden"])):
         raise RuntimeError(f"{policy} degraded/invalid runtime: {result}")
     for row in summaries:
@@ -144,7 +164,7 @@ def main() -> int:
             raise SystemExit(f"missing: {path}")
 
     results = {}
-    for policy in ("legacy", "center-ray", "modern"):
+    for policy in ("legacy", "center-ray", "modern", "unset"):
         results[policy] = inspect(
             policy, run(binary, args.rom, policy, args.frames, args.timeout))
         print(f"  {policy:10s} {results[policy]}")
@@ -175,6 +195,24 @@ def main() -> int:
     if results["modern"]["penetrated"] != 0:
         failures.append(
             f"modern published {results['modern']['penetrated']} penetrated resolved pose(s)"
+        )
+    # Default policy. Naming the arm is not enough -- a gate label can be wrong
+    # about what ran -- so the unset arm must also reproduce the Modern arm's
+    # every counter, including the corrections it applied.
+    if results["unset"]["gate"] != "MODERN":
+        failures.append(
+            f"unset MDKR_CAMERA_OBSTRUCTION selected {results['unset']['gate']}, not MODERN"
+        )
+    if results["unset"] != results["modern"]:
+        differing = sorted(
+            key for key in results["modern"]
+            if results["unset"][key] != results["modern"][key]
+        )
+        failures.append(
+            "unset arm diverged from the explicit modern arm: " + ", ".join(
+                f"{key} {results['unset'][key]} vs {results['modern'][key]}"
+                for key in differing
+            )
         )
     if failures:
         print("check_camera_obstruction_runtime: FAIL", file=sys.stderr)

@@ -131,9 +131,10 @@ dynamic occluder list, latch selected viewport projections, and resolve into a
 native presentation sidecar. They never write `Camera`/`gCameras`, selection,
 sort/LOD/visibility, audio, or other authoritative state. `render_scene` and the
 interpolation snapshot walker consume the sidecar only inside presentation.
-Set `MDKR_CAMERA_OBSTRUCTION=modern` to enable correction, `center-ray` for the
-deliberately incomplete diagnostic control, or `observe`/unset for telemetry
-with byte-identical authored poses. Set
+Correction is the default: unset `MDKR_CAMERA_OBSTRUCTION` selects `modern`.
+Set `observe` for telemetry with byte-identical authored poses, `center-ray` for
+the deliberately incomplete diagnostic control, or `legacy` for original direct
+placement; an unrecognised value falls back to `observe`. Set
 `MDKR_CAMERA_TRACE=1` for summaries or `=2` for per-slot desired/effective,
 projection/guard, mapping, intent age/pivot/target, and hit diagnostics; this is
 intentionally separate from `MDKR_TRACE`. The sidecar receives last-author-wins
@@ -3001,7 +3002,13 @@ authored P2, P3, and P4 placards. A rendered negative control restores the full
 Park Warden shadow that originally remained after Taj was scaled for the picker;
 the oracle requires production to retain a small grounding shadow while
 rejecting the control's large dark footprint. Focused PAL and 21:9 runs qualify
-the supported second ROM revision and widescreen safe area. One injected
+the supported second ROM revision and widescreen safe area; every sampling box
+is stated in ROM-logical pixels and mapped through the presentation the
+renderer actually composed, because a forced aspect centre-fits the authored
+320x240 envelope inside the drawable (21:9 in a 1280x960 capture puts it at
+731x549+274+206) rather than stretching it over the frame. Reading those boxes
+at raw pixel coordinates samples the letterbox bar, which is how an oracle can
+report a placard that is plainly on screen as absent. One injected
 allocation failure must
 recover, while an exhausted retry budget must visibly fail closed and make the
 invisible slot unselectable.

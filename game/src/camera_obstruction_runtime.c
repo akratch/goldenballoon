@@ -339,15 +339,17 @@ static int camera_obstruction_test_disable_alternate_shot(void) {
     return value != NULL && value[0] == '1' && value[1] == '\0';
 }
 
+static int sCameraObstructionPolicyFallbackReported;
+
 static MdkrCameraObstructionRuntimePolicy camera_obstruction_runtime_policy(void) {
     const char *value = getenv("MDKR_CAMERA_OBSTRUCTION");
 
-    /* OBSERVE remains the rollout gate until the correction corpus is green. */
-    if (value == NULL || value[0] == '\0' || strcmp(value, "observe") == 0) {
-        return MDKR_CAMERA_RUNTIME_OBSERVE;
-    }
-    if (strcmp(value, "modern") == 0) {
+    /* MODERN is the shipped default: correction is qualified and permanent. */
+    if (value == NULL || value[0] == '\0' || strcmp(value, "modern") == 0) {
         return MDKR_CAMERA_RUNTIME_MODERN;
+    }
+    if (strcmp(value, "observe") == 0) {
+        return MDKR_CAMERA_RUNTIME_OBSERVE;
     }
     if (strcmp(value, "center-ray") == 0) {
         return MDKR_CAMERA_RUNTIME_CENTER_RAY;
@@ -355,7 +357,28 @@ static MdkrCameraObstructionRuntimePolicy camera_obstruction_runtime_policy(void
     if (strcmp(value, "legacy") == 0) {
         return MDKR_CAMERA_RUNTIME_LEGACY;
     }
-    /* A misspelled rollout flag must not silently select the known-unsafe arm. */
+    /*
+     * A misspelled value still resolves to OBSERVE, not to the default arm:
+     * a typo means the caller asked for a diagnostic opt-out and did not get
+     * it, so the run must not silently correct (nor silently select the
+     * known-unsafe LEGACY arm). OBSERVE is the only arm that measures without
+     * moving a camera, so it is the honest answer to an unparsed request;
+     * MODERN is reached by leaving the variable unset, never by a typo.
+     *
+     * Say so once. Now that MODERN is the default, a typo no longer lands on
+     * the same behavior the run would have had anyway -- it downgrades the
+     * camera -- so the fallback has to be visible. One shot, because this
+     * resolves per slot per fixed tick.
+     */
+    if (!sCameraObstructionPolicyFallbackReported) {
+        sCameraObstructionPolicyFallbackReported = TRUE;
+        fprintf(stderr,
+                "camera_obstruction: MDKR_CAMERA_OBSTRUCTION=\"%s\" is not a "
+                "known policy; falling back to observe (authored camera, no "
+                "correction). Valid values: modern (default), observe, "
+                "center-ray, legacy.\n",
+                value);
+    }
     return MDKR_CAMERA_RUNTIME_OBSERVE;
 }
 

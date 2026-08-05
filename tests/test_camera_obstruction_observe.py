@@ -127,6 +127,46 @@ def main() -> int:
     ):
         failures += require(needle in runtime, f"missing OBSERVE invariant: {needle}")
 
+    # Shipped policy default. Correction is permanent, so an unset or empty
+    # MDKR_CAMERA_OBSTRUCTION must resolve to MODERN, every named arm must keep
+    # working as a diagnostic opt-out, and an unrecognised value must still fail
+    # safe to OBSERVE -- a typo may neither silently correct nor silently select
+    # the known-unsafe LEGACY arm. Scoped to the function body so a stray mention
+    # of an arm name elsewhere in the file cannot satisfy it.
+    policy = strip_comments(
+        function_body(runtime, "camera_obstruction_runtime_policy"))
+    failures += require(
+        re.search(
+            r"value\s*==\s*NULL[^;{]*\{\s*return\s+MDKR_CAMERA_RUNTIME_MODERN\s*;",
+            policy,
+        ) is not None,
+        "an unset MDKR_CAMERA_OBSTRUCTION must resolve to MODERN",
+    )
+    failures += require(
+        re.search(
+            r"return\s+MDKR_CAMERA_RUNTIME_OBSERVE\s*;\s*\}\s*\Z", policy
+        ) is not None,
+        "an unrecognised MDKR_CAMERA_OBSTRUCTION must fail safe to OBSERVE",
+    )
+    # The fallback now changes behaviour relative to the default, so it may not
+    # be silent -- and it may not repeat, because the policy resolves per slot
+    # per fixed tick.
+    failures += require(
+        "sCameraObstructionPolicyFallbackReported = TRUE;" in policy and
+        "falling back to observe" in runtime,
+        "the unrecognised-policy fallback must report itself exactly once",
+    )
+    for value, arm in (("modern", "MODERN"), ("observe", "OBSERVE"),
+                       ("center-ray", "CENTER_RAY"), ("legacy", "LEGACY")):
+        failures += require(
+            re.search(
+                rf'strcmp\(value,\s*"{re.escape(value)}"\)\s*==\s*0[^;{{]*\{{\s*'
+                rf"return\s+MDKR_CAMERA_RUNTIME_{arm}\s*;",
+                policy,
+            ) is not None,
+            f"MDKR_CAMERA_OBSTRUCTION={value} must still select {arm}",
+        )
+
     failures += require("MDKR_TRACE(" not in runtime,
                         "OBSERVE tracing must not join the general MDKR_TRACE stream")
     failures += require(not re.search(r"gCameras\s*\[[^]]+\]\s*=", runtime),
