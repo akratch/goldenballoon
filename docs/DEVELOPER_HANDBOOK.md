@@ -139,7 +139,13 @@ matches its horizontal reflection at MAD 2.816.
 
 `check_challenge_modes.py` covers the four authored egg, treasure, and battle
 courses in win/loss arms, including production results, TT-amulet progression,
-EEPROM, fresh-process reload, and terminal-gate controls.
+EEPROM, fresh-process reload, and terminal-gate controls. It also carries the
+giant character portraits (`BHV_CHARACTER_FLAG`, Fire Mountain and Smokey
+Castle) as a paired pixel witness: the same arena is run twice, identically
+except for `MDKR_SUPPRESS_PORTRAITS`, and the two framebuffers must differ while
+the gameplay traces stay identical. Binding traces alone cannot see a portrait
+that submits a draw and paints nothing, which is exactly how the run-time
+`DKR_TRIANGLE`/`TexCoords` byte-order defect stayed invisible for a release.
 
 `check_first_boss_progression.py` starts from a checksum-valid legal checkpoint,
 wins the fourth Dino Domain race, enters the four-balloon boss door, and
@@ -816,6 +822,8 @@ Useful trace env vars: `MDKR_TRACE=1` (menu ids, pacing, racer probe, decoded MI
 tables), `=2` + `MDKR_DL_FRAME=N` (display-list opcode trace, plus per-frame
 `nearclip=/dropped=/degen=` counters), `=3` (input reads); `MDKR_DUMP_EVERY=N`,
 `MDKR_FORCE_BOOST=frame:len`, `MDKR_AUDIO_DUMP=out.wav MDKR_AUDIO_RMS=1`,
+`MDKR_SUPPRESS_PORTRAITS=1` (drop the collection arenas' giant character
+portrait draw, so a paired run witnesses the pixels it paints),
 `MDKR_RENDERER=gl`, `MDKR_NEARCLIP=off|w|zw` (A/B the near-plane clip),
 `MDKR_LINESWAP=off` (A/B the pre-swizzled-texture un-swizzle),
 `MDKR_GRIDMASK=off` (A/B the collision grid-mask Z fix),
