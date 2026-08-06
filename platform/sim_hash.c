@@ -347,7 +347,7 @@ static int sim_hash_enabled(void) {
 /* v1, unchanged. Kept as its own function rather than as branches inside
  * the v2 walk so that "v1 still means exactly what it meant" is verifiable
  * by reading, not by tracing conditionals. */
-static uint64_t sim_hash_compute_v1(uint64_t hash, Object **objects,
+static uint64_t sim_hash_compute_legacy_core_v1(uint64_t hash, Object **objects,
                                     s32 count) {
     for (s32 index = 0; index < count; index++) {
         const Object *object = objects[index];
@@ -367,7 +367,7 @@ static uint64_t sim_hash_compute_v1(uint64_t hash, Object **objects,
     return hash;
 }
 
-static uint64_t sim_hash_compute_v2(uint64_t hash, Object **objects,
+static uint64_t sim_hash_compute_object_particle_v2(uint64_t hash, Object **objects,
                                     s32 count, int with_render_owned) {
     for (s32 index = 0; index < count; index++) {
         const Object *object = objects[index];
@@ -952,7 +952,7 @@ static uint64_t sim_hash_models_v3(uint64_t hash, const Object *object) {
     return hash;
 }
 
-static uint64_t sim_hash_compute_v3(uint64_t hash, Object **objects,
+static uint64_t sim_hash_compute_authoritative_v3(uint64_t hash, Object **objects,
                                     s32 count) {
     hash = sim_hash_globals_v3(hash);
     for (s32 index = 0; index < count; index++) {
@@ -969,7 +969,7 @@ static uint64_t sim_hash_compute_v3(uint64_t hash, Object **objects,
         }
 
         /* v3 is a strict field superset of v2. */
-        hash = sim_hash_compute_v2(hash, (Object **)&objects[index], 1, 0);
+        hash = sim_hash_compute_object_particle_v2(hash, (Object **)&objects[index], 1, 0);
         if (object->trans.flags & OBJ_FLAGS_PARTICLE) {
             continue;
         }
@@ -1035,7 +1035,7 @@ static SimHashV3Parts sim_hash_v3_parts(void) {
         if (object == NULL || sim_hash_object_is_presentation(object)) {
             continue;
         }
-        parts.core = sim_hash_compute_v2(
+        parts.core = sim_hash_compute_object_particle_v2(
             parts.core, &objects[index], 1, 0);
         if (object->trans.flags & OBJ_FLAGS_PARTICLE) {
             continue;
@@ -1082,6 +1082,23 @@ static SimHashV3Parts sim_hash_v3_parts(void) {
     return parts;
 }
 
+/*
+ * Dispatch quick reference. MDKR_STATE_HASH's numeric values are an
+ * external contract (dozens of tests and docs pin "1"/"3" literally; see
+ * the version doc at the top of this file for the full field-set
+ * rationale) — the function NAMES below are free to be descriptive
+ * because nothing outside this file names them.
+ *
+ *   MDKR_STATE_HASH="1" -> SIM_HASH_VERSION_V1
+ *     sim_hash_compute_legacy_core_v1 — original field set, byte-for-byte.
+ *   MDKR_STATE_HASH="2" or "2x" -> SIM_HASH_VERSION_V2 / _V2X
+ *     sim_hash_compute_object_particle_v2 — archived object/particle
+ *     integrator fields ("2x" additionally folds in the render-owned
+ *     trio; see top-of-file "Historical v2 exclusions").
+ *   MDKR_STATE_HASH="3" (default gate) -> SIM_HASH_VERSION_V3
+ *     sim_hash_compute_authoritative_v3 — current authority and
+ *     render-purity gate; strict superset of v2.
+ */
 static uint64_t sim_hash_compute(s32 *out_count) {
     uint64_t hash = 14695981039346656037ull;
     uint32_t version = sim_hash_version();
@@ -1101,11 +1118,11 @@ static uint64_t sim_hash_compute(s32 *out_count) {
     hash = fnv1a64(hash, &authoritative, sizeof(authoritative));
     if (objects != NULL) {
         if (version == SIM_HASH_VERSION_V1) {
-            hash = sim_hash_compute_v1(hash, objects, count);
+            hash = sim_hash_compute_legacy_core_v1(hash, objects, count);
         } else if (version == SIM_HASH_VERSION_V3) {
-            hash = sim_hash_compute_v3(hash, objects, count);
+            hash = sim_hash_compute_authoritative_v3(hash, objects, count);
         } else {
-            hash = sim_hash_compute_v2(
+            hash = sim_hash_compute_object_particle_v2(
                 hash, objects, count,
                 version == SIM_HASH_VERSION_V2X);
         }
@@ -1308,7 +1325,7 @@ static void sim_hash_dump_objects(unsigned long long tick) {
             if (object == NULL || sim_hash_object_is_presentation(object)) {
                 continue;
             }
-            core = sim_hash_compute_v2(core, &objects[index], 1, 0);
+            core = sim_hash_compute_object_particle_v2(core, &objects[index], 1, 0);
             if (!(object->trans.flags & OBJ_FLAGS_PARTICLE)) {
                 SIM_HASH_FIELD(extra, object, distanceToCamera);
                 SIM_HASH_FIELD(extra, object, unk34);

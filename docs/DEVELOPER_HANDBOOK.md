@@ -963,14 +963,3 @@ you've run them once.
   phase/magnitude plus how much swell actually reached the surface; the seam
   that found the wave generators were inert on levels 19 and 34 (see
   `objects.c`'s `mdkr_objmap_swap_entry_body` note).
-
-One more surfaced by the same audit but **not** confidently a hatch —
-documented instead of deleted because the evidence cuts both ways:
-
-- `MDKR_TEST_PRESENTATION_REPLAY=1` (also needs
-  `MDKR_INTERNAL_TEST_TOKEN=mdkr64-presentation-replay-v1`) — a direct
-  trigger for forced presentation replay, ORed into the same flag that
-  `MDKR_TEST_DELAYED_ENDPOINT_REPLAY` sets. `check_presentation_matrix.py`
-  only ever sets the latter, so this name may be a superseded alias rather
-  than an intentional second entry point. Unverified — flag for review before
-  relying on it.

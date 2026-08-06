@@ -20,6 +20,15 @@
 #endif
 #include <PR/gbi.h>
 
+/* MGB64_PORTMASTER_GLES is never defined by this repo's CMake — this file
+ * is shared, actively-converging code with the mgb64 sibling project (see
+ * NOTICE.md "Vendored platform code shared with mgb64" and
+ * docs/DEVELOPER_HANDBOOK.md "Useful trace env vars"), and mgb64 builds a
+ * PortMaster/GLES handheld target that this repo does not. The ifdef
+ * branches below and elsewhere in this file are kept, not dead code, so
+ * this file stays a clean diff against mgb64's copy; removing them here
+ * would just be cosmetic drift for no behavioral gain on this repo's
+ * targets. */
 #ifdef MGB64_PORTMASTER_GLES
 #include <GLES3/gl32.h>
 #elif defined(__APPLE__)
