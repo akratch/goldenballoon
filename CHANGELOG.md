@@ -50,6 +50,15 @@ save formats). Everything below 1.0.0 predates that commitment.
   swing a long way off the door to keep you in view, which is not the shot it
   was written to show. It now moves only far enough to stay out of walls and
   keeps facing the door.
+- **PAL audio no longer crackles** (#19). A PAL game paints a new image every
+  40 ms, and a 60 Hz display can only hold one for 33 or 50 ms, so PAL play
+  alternates short and long frames. The sound queue kept only enough in reserve
+  for the short ones and ran dry on the long ones, which crackled. It now keeps
+  a reserve sized to the gaps it actually sees. The game's speed and the music's
+  pitch were always correct, and are untouched. PAL motion on a 60 Hz display
+  also carries that same short-long alternation as a visible ripple: setting
+  Frame Limit to Match Display with Motion smoothing on removes it without
+  changing how the game plays, and a PAL launch now mentions that once.
 
 #### Launcher and input
 
