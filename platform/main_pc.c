@@ -480,6 +480,8 @@ shutdown:
      * must report whatever it measured even when the run ends badly. */
     present_perf_summary();
     camera_obstruction_perf_summary();
+    /* MOTION-01 motion-quality census, same placement and reason. */
+    camera_obstruction_motion_summary();
     if (audioInitialized) {
         dkr_audio_out_shutdown();
     }

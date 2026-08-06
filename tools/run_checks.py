@@ -152,6 +152,9 @@ CHECKS = (
           "forced-no-alternate gameplay stress triggers only safe per-viewport racer fading"),
     Check("camera_3p_tt_runtime", "check_camera_3p_tt_runtime.py", "release",
           "3P T.T. fourth viewport resolves camera 3 safely without relying on inherited autopilot progress"),
+    Check("camera_motion_quality", "check_camera_motion_quality.py", "release",
+          "MOTION-01 hard chatter/shoulder-flip/emergency-dwell invariants plus "
+          "the reported jerk and latency baseline on the three pinned routes"),
     Check("camera_snapshot_coverage", "check_camera_snapshot_coverage.py", "release",
           "real 2P camera 1 and 3P time-trial camera 3 snapshot interpolation, "
           "WebGPU cutscene-bank camera 4, pixels, and frozen controls"),

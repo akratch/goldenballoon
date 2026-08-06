@@ -294,6 +294,7 @@ MdkrCameraObstructionResolverStatus mdkr_camera_obstruction_resolve(
     if (desired_blocked) {
         out_result->blocker_kind = obstruction_hit.kind;
         out_result->blocker_stable_id = obstruction_hit.stable_id;
+        out_result->blocker_normal = obstruction_hit.normal;
     }
     out_result->accepted = 1;
     out_result->path_was_blocked = (uint8_t)desired_blocked;

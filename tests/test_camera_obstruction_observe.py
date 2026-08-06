@@ -107,7 +107,17 @@ def main() -> int:
         "resolved_cameras",
         "camera_obstruction_presentation_begin",
         "camera_obstruction_camera_for_slot",
-        "target_hidden=%d target_embedded=%d depenetrate_only=%d emergency=%d",
+        "target_hidden=%d target_embedded=%d depenetrate_only=%d ",
+        "safety_only=%d emergency=%d ",
+        # MOTION-01. The per-family profile table, its measurement seam, and the
+        # motion census that reads the published pose must all stay reachable:
+        # a census that silently stops being emitted would read as a clean run.
+        "MDKR_CAMERA_OBSTRUCTION_TREATMENT_SAFETY_ONLY",
+        "camera_obstruction_shipped_family_treatment",
+        "MDKR_CAMERA_PROFILE_FORCE",
+        "camera_obstruction_motion_sample",
+        "camera_motion summary slot_ticks=%llu ",
+        "camera_motion stat name=%s unit=%s samples=%llu ",
         "status == MDKR_CAMERA_TARGET_VISIBILITY_EMBEDDED;",
         "target_status == MDKR_CAMERA_TARGET_VISIBILITY_INVALID",
         "camera_obstruction_publish_elevated_emergency",
