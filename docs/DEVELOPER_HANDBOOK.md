@@ -183,8 +183,11 @@ Repo shape: `game/` ~133k lines (vendored decomp + `NATIVE_PORT` patches),
    `NATIVE_PORT`, with `_Static_assert` offset locks. 63 locks in place.
 5. **Assets normalised at the load boundary** (big-endian → native), per asset type.
 6. **Graphics = F3DDKR HLE** (`platform/fast3d/gfx_pc_dkr.c`, ~new code) over the
-   shipped GL and WebGPU backends at the `GfxRenderingAPI` seam. The explicit
-   Metal backend is not built; macOS GL remains Metal-backed by the OS.
+   shipped GL and WebGPU backends at the `GfxRenderingAPI` seam. macOS GL
+   remains Metal-backed by the OS. A standalone Metal backend (`gfx_metal.mm`)
+   was never built by any target here and was removed post-1.0.6; it lives on
+   in git history and in the sister **mgb64** project if a Metal backend is
+   ever revisited.
 7. **Audio** = the first-party clean-room engine (`platform/audio_compat.c` and
    friends), its `Acmd` output executed by the software aspMain mixer
    (`platform/mixer.c`) via macro override. See
@@ -876,3 +879,29 @@ rider *and* its placard, the second fails only the numbered placard so a
 composed rider survives into the UNAVAILABLE picker state —
 `check_taj_visual_lifecycle.py`'s sign-only arm, which is the only one that can
 see a lit unselectable Taj left standing in the line-up).
+
+**A second, separate env-var family lives one layer down, in the vendored
+platform code.** The trace vars above are `MDKR_*` and belong to game-level
+code written for this project. `platform/fast3d/gfx_opengl.c`, `gfx_webgpu.c`,
+`platform/mixer.c`, and their headers instead read `GE007_*` diagnostic
+overrides — the prefix is a holdover from the author's GoldenEye port
+**mgb64**, where this code originated (mgb64 is a GoldenEye 007 port; `GE007`
+is that project's own internal naming, not something coined here). It is kept
+as-is on purpose, not renamed to `MDKR_*`: these backend files are
+shared, actively-converging code between the two projects (see "7. Feeding
+mgb64 back" below and `docs/MGB64_BACKFLOW.md`), and renaming the prefix here
+would just be cosmetic drift that makes future diffs against mgb64 harder to
+read for no behavioral gain. See NOTICE.md
+("Vendored platform code shared with mgb64") for the one-paragraph version of
+this same rationale.
+
+Do not hand-maintain an inventory of the individual `GE007_*` names here — it
+would silently go stale. To enumerate the current set, or to check what
+governs a given rendering/audio knob while debugging:
+
+```sh
+grep -rn 'GE007_' platform/ | sed -E 's/.*(GE007_[A-Z0-9_]+).*/\1/' | sort -u
+```
+
+Each one is read via `getenv`/`port_env_*` at the site that uses it; grep for
+the exact name to find its call site and default.

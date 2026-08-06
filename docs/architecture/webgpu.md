@@ -47,7 +47,8 @@ boundary is recorded in `platform/fast3d/PROVENANCE.md` and
 - `MDKR_WEBGPU_BACKEND` defaults to `ON`. It adds the WebGPU modules, defines
   `MDKR_WEBGPU_BACKEND`, and links the `webgpu` target.
 - Native builds also compile OpenGL for the explicit `MDKR_RENDERER=gl`
-  diagnostic route. The standalone Metal backend is not built.
+  diagnostic route. The standalone Metal backend (`gfx_metal.mm`) was removed
+  post-1.0.6 — it was never built by any target; see NOTICE.md.
 - Browser builds force WebGPU on and omit the OpenGL backend.
 
 ## Validation — achieved
