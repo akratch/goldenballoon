@@ -249,8 +249,10 @@ else()
 endif()
 
 # Renderer front-end + backends (platform/fast3d/). gfx_pc_dkr.c (the F3DDKR
-# HLE) + the vendored mgb64 backends. The *.c glob excludes gfx_metal.mm
-# (Obj-C++, Metal-only) and screenshot_series.c (unused capture helper). The
+# HLE) + the vendored mgb64 backends. The standalone Metal backend
+# (gfx_metal.mm) was dropped post-1.0.6 — it was never built by any target
+# here; see NOTICE.md and mgb64 if a Metal backend is ever revisited. The *.c
+# glob below also excludes screenshot_series.c (unused capture helper). The
 # WebGPU backend TUs are added back conditionally (they need the wgpu include +
 # MDKR_WEBGPU_BACKEND). Under Emscripten the GL backend (gfx_opengl.c) is dropped
 # — the wasm binary renders exclusively through WebGPU.

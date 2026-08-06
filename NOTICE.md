@@ -132,11 +132,16 @@ committed.
 ## Vendored platform code shared with mgb64
 
 Parts of `platform/` (notably the GL and WebGPU backends under
-`platform/fast3d/`, plus a Metal backend that is excluded from every build
-target) originate in the author's GoldenEye port **mgb64** and are
-shared first-party work by the same authors. Some retain that project's `GE007_`
-diagnostic env-var prefix; this is intentional, so the two projects can converge on
-genuinely common code rather than diverging cosmetically.
+`platform/fast3d/`) originate in the author's GoldenEye port **mgb64** and are
+shared first-party work by the same authors. A standalone Metal backend
+(`gfx_metal.mm`) originated there too; it was never built by any mdkr64 target
+and was removed from this repository post-1.0.6 (it lives on in mgb64 and in
+this repository's git history, should a Metal backend ever be revisited here).
+Some of the surviving files retain that project's `GE007_` diagnostic env-var
+prefix; this is intentional, not an oversight, so the two projects can converge
+on genuinely common code rather than diverging cosmetically. See
+`docs/DEVELOPER_HANDBOOK.md` ("Useful trace env vars") for what the prefix
+covers and how to enumerate it.
 
 ## SMAA antialiasing lookup tables
 
