@@ -2695,7 +2695,18 @@ f32 rotate_racer_in_water(Object *obj, Object_Racer *racer, Vec3f *pos, s8 arg3,
 void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *racer) {
     s32 pad5;
     s32 pad7;
+#ifdef NATIVE_PORT
+    /*
+     * spEC/var_f20 are written on every path before the velocity publish at
+     * the bottom of the frame (see the NATIVE_PORT note there), but the
+     * pairing spans branches GCC's -Werror=maybe-uninitialized cannot relate.
+     * The zero initializers exist only to satisfy that analysis; no path
+     * reads them.
+     */
+    f32 spEC = 0.0f;
+#else
     f32 spEC;
+#endif
     f32 spE8;
     f32 spE4;
     f32 spE0;
@@ -2703,7 +2714,11 @@ void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
     f32 spD8;
     f32 spD4;
     f32 spD0;
+#ifdef NATIVE_PORT
+    f32 var_f20 = 0.0f;
+#else
     f32 var_f20;
+#endif
     f32 racerThrottle;
     f32 racerBrake;
     s32 racerMiscAssetIdx;

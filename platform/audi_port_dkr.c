@@ -50,6 +50,14 @@
 #define SDL_MAIN_HANDLED
 #endif
 #include <SDL.h>
+/*
+ * The SDL_HINT_AUDIODRIVER macro arrived in SDL 2.24; the hint name string it
+ * expands to has been stable since 2.0. Distro headers as old as Ubuntu
+ * 22.04's 2.0.20 build the same lookup through the literal name.
+ */
+#ifndef SDL_HINT_AUDIODRIVER
+#define SDL_HINT_AUDIODRIVER "SDL_AUDIODRIVER"
+#endif
 #ifdef __EMSCRIPTEN__
 #include "web_audio_worklet.h"   /* AudioWorklet sink (drains off the main thread) */
 #endif
