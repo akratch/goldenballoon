@@ -16,6 +16,8 @@ typedef enum MdkrCameraIntentFamily {
     MDKR_CAMERA_INTENT_FAMILY_FINISH_RACE,
     MDKR_CAMERA_INTENT_FAMILY_TT_SPECTATE,
     MDKR_CAMERA_INTENT_FAMILY_SCRIPTED_CUTSCENE,
+    /* Not a family: the table bound for per-family lookup tables. */
+    MDKR_CAMERA_INTENT_FAMILY_COUNT,
 } MdkrCameraIntentFamily;
 
 /*
@@ -61,5 +63,13 @@ void camera_obstruction_tick(int update_rate_fields);
 void camera_obstruction_runtime_reset(void);
 /* Emit the optional MDKR_CAMERA_PERF allocation-free timing census. */
 void camera_obstruction_perf_summary(void);
+/*
+ * MOTION-01. Emit the optional allocation-free motion-quality census for the
+ * whole run: retract/recovery latencies, resolved-camera velocity/jerk, blocker
+ * churn, shoulder flips, emergency dwell, and discontinuity density. Collection
+ * is off unless MDKR_CAMERA_TRACE (or MDKR_CAMERA_MOTION) is on, so a release
+ * build with tracing off pays nothing.
+ */
+void camera_obstruction_motion_summary(void);
 
 #endif /* CAMERA_OBSTRUCTION_RUNTIME_H */

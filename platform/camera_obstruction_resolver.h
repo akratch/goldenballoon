@@ -94,6 +94,14 @@ typedef struct MdkrCameraObstructionResolverResult {
     MdkrCameraLensGuard guard;
     uint32_t blocker_kind;
     uint32_t blocker_stable_id;
+    /*
+     * Outward contact normal of the blocker that forced the retraction, valid
+     * only when blocker_stable_id is set. Reported, never consumed: the
+     * resolver's policy does not depend on blocker identity or orientation.
+     * MOTION-01 needs it because a static blocker's stable ID is per-triangle,
+     * so only the normal can tell one continuous wall from a new surface.
+     */
+    MdkrCameraVec3 blocker_normal;
     uint8_t accepted;
     /* True only when the anchor-to-desired sweep itself was blocked. */
     uint8_t path_was_blocked;

@@ -164,16 +164,82 @@ typedef enum MdkrCameraObstructionRuntimePolicy {
     MDKR_CAMERA_RUNTIME_CENTER_RAY,
 } MdkrCameraObstructionRuntimePolicy;
 
-/* Mode policy (docs/architecture/camera-obstruction.md section 5.8). Most
- * families follow the spring-arm boom: sweep toward the desired eye, retract
- * and recover when blocked, and fan out alternate shots below the readability
- * minimum. A depenetrate-only family instead keeps its authored eye and
- * orientation, only pushing the eye out of geometry it has penetrated; it
- * never retracts, recovers, or considers an alternate shot. */
+/*
+ * Mode policy (docs/architecture/camera-obstruction.md section 5.8). One
+ * profile per authored camera family, naming exactly which correction stages
+ * that family consents to. This is a table, not a ladder: a profile is a set of
+ * enabled stages, and the enum order is only the order they were introduced.
+ *
+ *   FULL             sweep + retract + recovery + alternate shoulder/elevation
+ *                    fan + emergency framing. The camera may leave the authored
+ *                    pivot->eye ray to keep the racer readable.
+ *   SAFETY_ONLY      sweep + retract + recovery + emergency framing, with no
+ *                    alternate fan. The eye stays on the authored pivot->eye
+ *                    ray and only moves along it. This is the racing profile:
+ *                    a shot whose composition is already load-bearing for
+ *                    steering may be shortened but must not be swung sideways.
+ *   DEPENETRATE_ONLY the authored eye and orientation are kept; the eye is only
+ *                    pushed out of geometry it has penetrated. Never retracts,
+ *                    recovers, or considers an alternate shot.
+ *
+ * Only camera_obstruction_family_treatment() decides which family gets which
+ * profile, so a route can be measured under a different profile by forcing that
+ * one function (MDKR_CAMERA_PROFILE_FORCE) rather than by editing stages.
+ */
 typedef enum MdkrCameraObstructionTreatment {
-    MDKR_CAMERA_OBSTRUCTION_TREATMENT_FOLLOW = 0,
+    MDKR_CAMERA_OBSTRUCTION_TREATMENT_FULL = 0,
+    MDKR_CAMERA_OBSTRUCTION_TREATMENT_SAFETY_ONLY,
     MDKR_CAMERA_OBSTRUCTION_TREATMENT_DEPENETRATE_ONLY,
+    MDKR_CAMERA_OBSTRUCTION_TREATMENT_COUNT,
 } MdkrCameraObstructionTreatment;
+
+static const char *const kCameraObstructionTreatmentNames
+    [MDKR_CAMERA_OBSTRUCTION_TREATMENT_COUNT] = {
+    "full", "safety_only", "depenetrate_only",
+};
+
+static const char *const kCameraIntentFamilyNames[MDKR_CAMERA_INTENT_FAMILY_COUNT] = {
+    "unknown", "car", "hovercraft", "plane", "loop", "fixed",
+    "finish_challenge", "finish_race", "tt_spectate", "scripted_cutscene",
+};
+
+/*
+ * Per-slot finite-difference and phase continuity. Lives inside the observe
+ * slot, so a level reload (which memsets the runtime) correctly retires the
+ * difference chain instead of differencing across a teleport.
+ */
+typedef struct MdkrCameraMotionSlot {
+    MdkrCameraVec3 previous_eye;
+    MdkrCameraVec3 previous_velocity;
+    MdkrCameraVec3 previous_acceleration;
+    MdkrCameraVec3 previous_forward;
+    MdkrCameraVec3 blocker_normal;
+    float previous_angular_velocity;
+    float previous_angular_acceleration;
+    uint64_t previous_tick;
+    uint64_t block_onset_tick;
+    uint64_t clear_onset_tick;
+    uint64_t recovery_onset_tick;
+    uint32_t blocker_stable_id;
+    /* Consecutive continuous resolved ticks, saturating at 4 (jerk order). */
+    uint8_t continuity_run;
+    uint8_t phase;              /* MdkrCameraMotionPhase */
+    uint8_t previous_phase;
+    uint8_t recovering;
+    uint8_t emergency;
+    uint32_t emergency_run;
+    uint8_t alternate;
+    int8_t shoulder_side;
+    uint8_t blocker_valid;
+    uint8_t block_span_degenerate;
+    uint8_t retract_pending;
+} MdkrCameraMotionSlot;
+
+typedef enum MdkrCameraMotionPhase {
+    MDKR_CAMERA_MOTION_PHASE_UNKNOWN = 0,
+    MDKR_CAMERA_MOTION_PHASE_CLEAR,
+    MDKR_CAMERA_MOTION_PHASE_BLOCKED,
+} MdkrCameraMotionPhase;
 
 typedef struct MdkrCameraObstructionObserveSlot {
     Camera authored;
@@ -257,6 +323,10 @@ typedef struct MdkrCameraObstructionObserveSlot {
     uint8_t last_validated_gameplay_projection;
     uint32_t blocker_kind;
     uint32_t blocker_stable_id;
+    MdkrCameraVec3 blocker_normal;
+    uint8_t blocker_normal_valid;
+    /* MOTION-01 census state. Read and written only by the motion sampler. */
+    MdkrCameraMotionSlot motion;
 } MdkrCameraObstructionObserveSlot;
 
 typedef struct MdkrCameraIntentRecord {
@@ -348,6 +418,99 @@ static int camera_obstruction_test_projection_failure(uint64_t tick) {
 static int camera_obstruction_test_disable_alternate_shot(void) {
     const char *value = getenv("MDKR_TEST_CAMERA_DISABLE_ALTERNATE");
     return value != NULL && value[0] == '1' && value[1] == '\0';
+}
+
+/*
+ * MOTION-01 measurement seam. MDKR_CAMERA_PROFILE_FORCE=car:safety_only,loop:full
+ * overrides the shipped per-family profile table so a pinned route can be driven
+ * under a different profile and compared. `all` sets every family at once.
+ *
+ * Diagnostic only, and gated exactly like the other diagnostic environment
+ * seams above: read once, cached, absent means the shipped table. An unparsable
+ * entry is reported and ignored rather than silently applied, because a
+ * measurement run that did not get the profile it asked for is the one result a
+ * reader cannot tell apart from the shipped table.
+ */
+static int8_t sCameraProfileForce[MDKR_CAMERA_INTENT_FAMILY_COUNT];
+static int sCameraProfileForceParsed;
+
+static int camera_obstruction_token_matches(
+    const char *token, size_t length, const char *name) {
+    return strlen(name) == length && strncmp(token, name, length) == 0;
+}
+
+static void camera_obstruction_parse_profile_force(void) {
+    const char *cursor = getenv("MDKR_CAMERA_PROFILE_FORCE");
+    size_t family;
+
+    sCameraProfileForceParsed = TRUE;
+    for (family = 0U; family < MDKR_CAMERA_INTENT_FAMILY_COUNT; family++) {
+        sCameraProfileForce[family] = -1;
+    }
+    if (cursor == NULL || cursor[0] == '\0') {
+        return;
+    }
+    while (*cursor != '\0') {
+        const char *entry_end = strchr(cursor, ',');
+        const char *colon;
+        size_t entry_length;
+        size_t family_length;
+        size_t profile_length;
+        const char *profile;
+        int matched_family = -1;
+        int matched_profile = -1;
+        size_t index;
+
+        if (entry_end == NULL) {
+            entry_end = cursor + strlen(cursor);
+        }
+        entry_length = (size_t)(entry_end - cursor);
+        colon = (const char *)memchr(cursor, ':', entry_length);
+        if (entry_length == 0U) {
+            cursor = *entry_end == '\0' ? entry_end : entry_end + 1;
+            continue;
+        }
+        if (colon != NULL) {
+            family_length = (size_t)(colon - cursor);
+            profile = colon + 1;
+            profile_length = (size_t)(entry_end - profile);
+            for (index = 0U; index < MDKR_CAMERA_INTENT_FAMILY_COUNT; index++) {
+                if (camera_obstruction_token_matches(
+                        cursor, family_length, kCameraIntentFamilyNames[index])) {
+                    matched_family = (int)index;
+                    break;
+                }
+            }
+            if (matched_family < 0 &&
+                camera_obstruction_token_matches(cursor, family_length, "all")) {
+                matched_family = (int)MDKR_CAMERA_INTENT_FAMILY_COUNT;
+            }
+            for (index = 0U; index < MDKR_CAMERA_OBSTRUCTION_TREATMENT_COUNT; index++) {
+                if (camera_obstruction_token_matches(
+                        profile, profile_length,
+                        kCameraObstructionTreatmentNames[index])) {
+                    matched_profile = (int)index;
+                    break;
+                }
+            }
+        }
+        if (matched_family < 0 || matched_profile < 0) {
+            fprintf(stderr,
+                    "camera_obstruction: MDKR_CAMERA_PROFILE_FORCE entry \"%.*s\" "
+                    "is not <family>:<profile>; ignoring it. Families: unknown, "
+                    "car, hovercraft, plane, loop, fixed, finish_challenge, "
+                    "finish_race, tt_spectate, scripted_cutscene, all. Profiles: "
+                    "full, safety_only, depenetrate_only.\n",
+                    (int)entry_length, cursor);
+        } else if (matched_family == (int)MDKR_CAMERA_INTENT_FAMILY_COUNT) {
+            for (index = 0U; index < MDKR_CAMERA_INTENT_FAMILY_COUNT; index++) {
+                sCameraProfileForce[index] = (int8_t)matched_profile;
+            }
+        } else {
+            sCameraProfileForce[matched_family] = (int8_t)matched_profile;
+        }
+        cursor = *entry_end == '\0' ? entry_end : entry_end + 1;
+    }
 }
 
 static int sCameraObstructionPolicyFallbackReported;
@@ -1397,6 +1560,8 @@ static int camera_obstruction_depenetrate_only_eye(
 
             observe->blocker_kind = path_hit.kind;
             observe->blocker_stable_id = path_hit.stable_id;
+            observe->blocker_normal = path_hit.normal;
+            observe->blocker_normal_valid = TRUE;
             if (endpoint_status == MDKR_CAMERA_SWEEP_INVALID) {
                 observe->resolver_status = MDKR_CAMERA_OBSTRUCTION_RESOLVER_INVALID;
                 return FALSE;
@@ -1841,7 +2006,200 @@ static int camera_obstruction_select_alternate_shot(
     return found;
 }
 
-static MdkrCameraObstructionTreatment camera_obstruction_family_treatment(
+/*
+ * MOTION-01 (docs/architecture/camera-obstruction.md sections 6.3 and 7.3).
+ *
+ * The motion census measures the RESOLVED camera -- the pose render actually
+ * consumes -- on the authored fixed-tick grid, because that is the only signal
+ * a player can feel. Everything here is allocation-free and lives outside
+ * sCameraObstructionRuntime so a level reload retires per-slot continuity
+ * without discarding the run's distribution.
+ *
+ * Percentiles come from a log-spaced histogram: these metrics span several
+ * decades (sub-unit jerk on an open straight, hundreds of units across a
+ * published cut) and a linear bin width honest for one end is useless at the
+ * other. Bin edges are exact powers of two subdivided
+ * MDKR_CAMERA_MOTION_BINS_PER_OCTAVE ways, so a reported p95 is within ~4.4% of
+ * the true one; min, max, and mean are exact.
+ */
+#define MDKR_CAMERA_MOTION_BINS_PER_OCTAVE 16
+#define MDKR_CAMERA_MOTION_MIN_LOG2 (-16)
+#define MDKR_CAMERA_MOTION_MAX_LOG2 16
+#define MDKR_CAMERA_MOTION_BIN_COUNT \
+    (((MDKR_CAMERA_MOTION_MAX_LOG2) - (MDKR_CAMERA_MOTION_MIN_LOG2)) * \
+     MDKR_CAMERA_MOTION_BINS_PER_OCTAVE)
+/*
+ * The doc's chatter window: a correction that clears and re-engages, or engages
+ * and clears, inside this many authored ticks is oscillation rather than a
+ * distinct obstruction.
+ */
+#define MDKR_CAMERA_MOTION_OSCILLATION_TICKS 12U
+/*
+ * Two surfaces whose contact normals agree this closely are treated as one
+ * continuous surface. Static track blockers carry a per-triangle stable ID (see
+ * tracks.c: source_stable_id increments per source face), so the ID alone
+ * cannot answer "same wall?"; the normal can.
+ */
+#define MDKR_CAMERA_MOTION_CONTINUOUS_SURFACE_DOT 0.985f
+/* Lateral offset below this is not a shoulder choice, it is numerical noise. */
+#define MDKR_CAMERA_MOTION_SHOULDER_EPSILON 1.0f
+
+typedef enum MdkrCameraMotionStatId {
+    MDKR_CAMERA_MOTION_STAT_RETRACT_LATENCY = 0,
+    MDKR_CAMERA_MOTION_STAT_RECOVERY_DURATION,
+    MDKR_CAMERA_MOTION_STAT_BLOCKED_SPAN,
+    MDKR_CAMERA_MOTION_STAT_EMERGENCY_DWELL,
+    MDKR_CAMERA_MOTION_STAT_POS_VELOCITY,
+    MDKR_CAMERA_MOTION_STAT_POS_ACCEL,
+    MDKR_CAMERA_MOTION_STAT_POS_JERK,
+    MDKR_CAMERA_MOTION_STAT_ANG_VELOCITY,
+    MDKR_CAMERA_MOTION_STAT_ANG_ACCEL,
+    MDKR_CAMERA_MOTION_STAT_ANG_JERK,
+    MDKR_CAMERA_MOTION_STAT_COUNT,
+} MdkrCameraMotionStatId;
+
+static const char *const kCameraMotionStatNames[MDKR_CAMERA_MOTION_STAT_COUNT] = {
+    "retract_latency", "recovery_duration", "blocked_span", "emergency_dwell",
+    "pos_velocity", "pos_accel", "pos_jerk",
+    "ang_velocity", "ang_accel", "ang_jerk",
+};
+
+static const char *const kCameraMotionStatUnits[MDKR_CAMERA_MOTION_STAT_COUNT] = {
+    "ticks", "ticks", "ticks", "ticks",
+    "wu/tick", "wu/tick^2", "wu/tick^3",
+    "deg/tick", "deg/tick^2", "deg/tick^3",
+};
+
+typedef struct MdkrCameraMotionStat {
+    uint64_t bins[MDKR_CAMERA_MOTION_BIN_COUNT];
+    uint64_t count;
+    uint64_t zero_count;
+    double total;
+    double min;
+    double max;
+} MdkrCameraMotionStat;
+
+typedef struct MdkrCameraMotionCensus {
+    MdkrCameraMotionStat stats[MDKR_CAMERA_MOTION_STAT_COUNT];
+    /* Resolved slot-ticks the census actually sampled. */
+    uint64_t sampled_slot_ticks;
+    /* Slot-ticks per profile, so a reader knows what the run measured. */
+    uint64_t profile_slot_ticks[MDKR_CAMERA_OBSTRUCTION_TREATMENT_COUNT];
+    uint64_t discontinuities;
+    uint64_t retract_events;
+    uint64_t recovery_events;
+    uint64_t alternate_entries;
+    uint64_t alternate_exits;
+    uint64_t emergency_entries;
+    uint64_t degenerate_ticks;
+    /* Blocker identity changes while continuously blocked, split by whether the
+     * contact normal stayed on one continuous surface. */
+    uint64_t blocker_changes;
+    uint64_t blocker_changes_same_surface;
+    uint64_t blocker_changes_new_surface;
+    /* Alternate-shot side changes, split the same way. */
+    uint64_t shoulder_flips;
+    uint64_t shoulder_flips_continuous_surface;
+    uint64_t shoulder_flips_new_surface;
+    /* clear -> blocked -> clear inside the chatter window. */
+    uint64_t oscillation_cycles;
+    uint64_t oscillation_cycles_excused;
+    /* blocked -> clear -> blocked inside the chatter window. */
+    uint64_t correction_reengagements;
+    uint64_t max_emergency_dwell;
+} MdkrCameraMotionCensus;
+
+static int sCameraMotionEnabled = -1;
+static MdkrCameraMotionCensus sCameraMotion;
+
+static int camera_obstruction_motion_enabled(void) {
+    if (sCameraMotionEnabled < 0) {
+        const char *value = getenv("MDKR_CAMERA_MOTION");
+
+        if (value != NULL && value[0] != '\0') {
+            sCameraMotionEnabled = value[0] != '0';
+        } else {
+            /* No separate opt-in required: anything already asking for camera
+             * trace output wants the motion census with it. A release build
+             * with tracing off never reaches the sampler. */
+            sCameraMotionEnabled = camera_obstruction_trace_level() >= 1;
+        }
+    }
+    return sCameraMotionEnabled != 0;
+}
+
+static void camera_obstruction_motion_record(
+    MdkrCameraMotionStatId id, double value) {
+    MdkrCameraMotionStat *stat;
+    int exponent;
+    double mantissa;
+    int bin;
+
+    if (id < 0 || id >= MDKR_CAMERA_MOTION_STAT_COUNT || !isfinite(value) ||
+        value < 0.0) {
+        return;
+    }
+    stat = &sCameraMotion.stats[id];
+    if (stat->count == 0U || value < stat->min) {
+        stat->min = value;
+    }
+    if (stat->count == 0U || value > stat->max) {
+        stat->max = value;
+    }
+    stat->total += value;
+    stat->count++;
+    if (value <= 0.0) {
+        stat->zero_count++;
+        return;
+    }
+    /* frexp gives value == mantissa * 2^exponent with mantissa in [0.5, 1). */
+    mantissa = frexp(value, &exponent);
+    bin = (exponent - 1 - MDKR_CAMERA_MOTION_MIN_LOG2) *
+              MDKR_CAMERA_MOTION_BINS_PER_OCTAVE +
+          (int)((mantissa * 2.0 - 1.0) * MDKR_CAMERA_MOTION_BINS_PER_OCTAVE);
+    if (bin < 0) {
+        bin = 0;
+    }
+    if (bin >= MDKR_CAMERA_MOTION_BIN_COUNT) {
+        bin = MDKR_CAMERA_MOTION_BIN_COUNT - 1;
+    }
+    stat->bins[bin]++;
+}
+
+static double camera_obstruction_motion_percentile(
+    const MdkrCameraMotionStat *stat, unsigned numerator) {
+    uint64_t target;
+    uint64_t seen;
+    int bin;
+
+    if (stat->count == 0U) {
+        return 0.0;
+    }
+    target = (stat->count * numerator + 99U) / 100U;
+    if (target == 0U) {
+        target = 1U;
+    }
+    seen = stat->zero_count;
+    if (seen >= target) {
+        return 0.0;
+    }
+    for (bin = 0; bin < MDKR_CAMERA_MOTION_BIN_COUNT; bin++) {
+        seen += stat->bins[bin];
+        if (seen >= target) {
+            /* Upper edge of the containing bin, clamped to the observed max so
+             * the report can never claim a value the run did not produce. */
+            const double edge = ldexp(
+                1.0 + (double)((bin % MDKR_CAMERA_MOTION_BINS_PER_OCTAVE) + 1) /
+                          MDKR_CAMERA_MOTION_BINS_PER_OCTAVE,
+                MDKR_CAMERA_MOTION_MIN_LOG2 +
+                    bin / MDKR_CAMERA_MOTION_BINS_PER_OCTAVE);
+            return edge > stat->max ? stat->max : edge;
+        }
+    }
+    return stat->max;
+}
+
+static MdkrCameraObstructionTreatment camera_obstruction_shipped_family_treatment(
     MdkrCameraIntentFamily family) {
     switch (family) {
         /* Scripted cutscenes 4-7 have no boom to retract along; the shot
@@ -1852,9 +2210,28 @@ static MdkrCameraObstructionTreatment camera_obstruction_family_treatment(
         case MDKR_CAMERA_INTENT_FAMILY_SCRIPTED_CUTSCENE:
         case MDKR_CAMERA_INTENT_FAMILY_FIXED:
             return MDKR_CAMERA_OBSTRUCTION_TREATMENT_DEPENETRATE_ONLY;
+        /* A loop-mode shot is already on rails around the racer; swinging it
+         * onto a shoulder candidate would fight the authored orbit rather than
+         * clarify it. It still retracts, recovers, and takes emergency framing.
+         * This spelling replaces the family test that used to sit inline on the
+         * alternate-fan gate; the resulting behavior is the same one. */
+        case MDKR_CAMERA_INTENT_FAMILY_LOOP:
+            return MDKR_CAMERA_OBSTRUCTION_TREATMENT_SAFETY_ONLY;
         default:
-            return MDKR_CAMERA_OBSTRUCTION_TREATMENT_FOLLOW;
+            return MDKR_CAMERA_OBSTRUCTION_TREATMENT_FULL;
     }
+}
+
+static MdkrCameraObstructionTreatment camera_obstruction_family_treatment(
+    MdkrCameraIntentFamily family) {
+    if (!sCameraProfileForceParsed) {
+        camera_obstruction_parse_profile_force();
+    }
+    if (family >= 0 && family < MDKR_CAMERA_INTENT_FAMILY_COUNT &&
+        sCameraProfileForce[family] >= 0) {
+        return (MdkrCameraObstructionTreatment)sCameraProfileForce[family];
+    }
+    return camera_obstruction_shipped_family_treatment(family);
 }
 
 static void camera_obstruction_resolve_slot(
@@ -1905,12 +2282,14 @@ static void camera_obstruction_resolve_slot(
     const int previously_obstructed = observe->was_obstructed;
     const int prior_alternate = observe->alternate_active;
     const float shake = gNoCamShake ? observe->authored.shakeMagnitude : 0.0f;
+    MdkrCameraObstructionTreatment treatment;
 
     observe->resolver_status = MDKR_CAMERA_OBSTRUCTION_RESOLVER_CLEAR;
     observe->resolved_valid = TRUE;
     observe->correction_applied = FALSE;
     observe->blocker_kind = 0U;
     observe->blocker_stable_id = 0U;
+    observe->blocker_normal_valid = FALSE;
     if (observe->intent.discontinuity) {
         observe->resolver.last_safe_valid = FALSE;
         observe->previous_pivot_valid = FALSE;
@@ -1932,8 +2311,8 @@ static void camera_obstruction_resolve_slot(
         observe->presentation_discontinuity = TRUE;
     }
     desired.y += shake;
-    if (camera_obstruction_family_treatment(observe->intent.family) ==
-            MDKR_CAMERA_OBSTRUCTION_TREATMENT_DEPENETRATE_ONLY) {
+    treatment = camera_obstruction_family_treatment(observe->intent.family);
+    if (treatment == MDKR_CAMERA_OBSTRUCTION_TREATMENT_DEPENETRATE_ONLY) {
         if (!camera_obstruction_depenetrate_only_eye(
                 observe, physical_slot, &active_query, &combined,
                 &exact_combined, use_exact, desired)) {
@@ -2042,6 +2421,8 @@ static void camera_obstruction_resolve_slot(
         &config, &input, &observe->resolver, &result);
     observe->blocker_kind = result.blocker_kind;
     observe->blocker_stable_id = result.blocker_stable_id;
+    observe->blocker_normal = result.blocker_normal;
+    observe->blocker_normal_valid = result.blocker_stable_id != 0U;
     if (result.accepted) {
         MdkrCameraVec3 alternate;
         MdkrCameraVec3 preferred_alternate;
@@ -2063,9 +2444,12 @@ static void camera_obstruction_resolve_slot(
             preferred_alternate_ptr = &preferred_alternate;
         }
 
+        /* Only FULL consents to leaving the authored pivot->eye ray. The
+         * DEPENETRATE_ONLY families never reach here (they returned above), so
+         * this test is exactly the old `family != LOOP` one. */
         if (observe->intent.target_valid &&
             !camera_obstruction_test_disable_alternate_shot() &&
-            observe->intent.family != MDKR_CAMERA_INTENT_FAMILY_LOOP &&
+            treatment == MDKR_CAMERA_OBSTRUCTION_TREATMENT_FULL &&
             isfinite(desired_distance) && isfinite(resolved_distance) &&
             desired_distance > 0.0f &&
             ((result.status == MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED &&
@@ -2148,6 +2532,373 @@ static void camera_obstruction_resolve_slot(
         observe->resolved_valid = camera_obstruction_publish_safe_fallback(
             observe, physical_slot, &combined, &exact_combined,
             use_exact, &boom_anchor);
+    }
+}
+
+/*
+ * MOTION-01 sampler. Runs once per resolved slot per authored tick, after the
+ * pose that render will consume has been published and validated. It reads
+ * only published outputs and its own history: nothing here can influence a
+ * camera, a query, or any authority state.
+ */
+static void camera_obstruction_motion_sample(
+    MdkrCameraObstructionObserveSlot *observe,
+    s32 physical_slot,
+    s32 normal_slot,
+    int trace_level) {
+    MdkrCameraMotionSlot *motion;
+    MdkrCameraLensPose pose;
+    MdkrCameraObstructionTreatment treatment;
+    const uint64_t tick = sCameraObstructionRuntime.tick_serial;
+    MdkrCameraVec3 eye = { 0.0f, 0.0f, 0.0f };
+    MdkrCameraVec3 forward = { 0.0f, 0.0f, 0.0f };
+    MdkrCameraVec3 velocity = { 0.0f, 0.0f, 0.0f };
+    MdkrCameraVec3 acceleration = { 0.0f, 0.0f, 0.0f };
+    MdkrCameraVec3 jerk = { 0.0f, 0.0f, 0.0f };
+    double angular_velocity = 0.0;
+    double angular_acceleration = 0.0;
+    double angular_jerk = 0.0;
+    int pose_valid;
+    int continuous;
+    int degenerate;
+    int emergency;
+    int alternate;
+    int retracted;
+    int recovering;
+    int blocked;
+    int cut;
+    int side = 0;
+    int phase;
+    int churn = 0;
+    int churn_same_surface = 0;
+    int flipped = 0;
+
+    if (observe == NULL || physical_slot < 0 ||
+        physical_slot >= MDKR_CAMERA_OBSTRUCTION_RUNTIME_SLOT_COUNT) {
+        return;
+    }
+    motion = &observe->motion;
+    treatment = camera_obstruction_family_treatment(observe->intent.family);
+    pose_valid = observe->resolved_valid &&
+        cam_lens_pose_from_camera_snapshot(
+            &sCameraObstructionRuntime.resolved_cameras[physical_slot],
+            gNoCamShake != 0, &pose);
+    if (pose_valid) {
+        eye.x = pose.eye.x;
+        eye.y = pose.eye.y;
+        eye.z = pose.eye.z;
+        forward.x = pose.forward.x;
+        forward.y = pose.forward.y;
+        forward.z = pose.forward.z;
+    }
+
+    /*
+     * "Degenerate" is the doc's geometrically-invalid intermediate pose: the
+     * tick published no validated safe image. Oscillation across such a tick is
+     * excused, because the camera had no correct alternative to hold.
+     */
+    degenerate = !observe->resolved_valid ||
+        observe->query_source_degraded ||
+        observe->resolved_stationary_status != MDKR_CAMERA_SWEEP_CLEAR ||
+        observe->resolver_status == MDKR_CAMERA_OBSTRUCTION_RESOLVER_INVALID ||
+        observe->resolver_status == MDKR_CAMERA_OBSTRUCTION_RESOLVER_FAILSAFE;
+    emergency = observe->elevated_emergency != 0;
+    alternate = observe->alternate_active != 0;
+    retracted =
+        observe->resolver_status == MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED;
+    recovering =
+        observe->resolver_status == MDKR_CAMERA_OBSTRUCTION_RESOLVER_RECOVERING;
+    /* Correction is engaged whenever the published eye is not free to sit on
+     * the authored desired pose, however that came about. */
+    blocked = retracted || alternate || emergency;
+    cut = observe->presentation_discontinuity != 0;
+    continuous = pose_valid && !cut && motion->continuity_run != 0U &&
+        motion->previous_tick + 1U == tick;
+
+    sCameraMotion.sampled_slot_ticks++;
+    if (treatment >= 0 && treatment < MDKR_CAMERA_OBSTRUCTION_TREATMENT_COUNT) {
+        sCameraMotion.profile_slot_ticks[treatment]++;
+    }
+    if (cut) {
+        sCameraMotion.discontinuities++;
+    }
+    if (degenerate) {
+        sCameraMotion.degenerate_ticks++;
+        motion->block_span_degenerate = TRUE;
+    }
+
+    /*
+     * Finite differences on the authored tick grid. A published cut, a dropped
+     * tick, or an unvalidated pose retires the chain rather than differencing
+     * across it: a cut is a discontinuity by construction, and reporting its
+     * step as jerk would drown the smoothness signal the metric exists for.
+     */
+    if (!pose_valid) {
+        motion->continuity_run = 0U;
+    } else if (!continuous) {
+        motion->continuity_run = 1U;
+    } else {
+        double dot;
+
+        velocity.x = eye.x - motion->previous_eye.x;
+        velocity.y = eye.y - motion->previous_eye.y;
+        velocity.z = eye.z - motion->previous_eye.z;
+        dot = (double)forward.x * motion->previous_forward.x +
+              (double)forward.y * motion->previous_forward.y +
+              (double)forward.z * motion->previous_forward.z;
+        if (dot > 1.0) {
+            dot = 1.0;
+        }
+        if (dot < -1.0) {
+            dot = -1.0;
+        }
+        angular_velocity = acos(dot) / MDKR_CAMERA_OBSTRUCTION_DEG_TO_RAD;
+        camera_obstruction_motion_record(
+            MDKR_CAMERA_MOTION_STAT_POS_VELOCITY,
+            sqrt((double)velocity.x * velocity.x +
+                 (double)velocity.y * velocity.y +
+                 (double)velocity.z * velocity.z));
+        camera_obstruction_motion_record(
+            MDKR_CAMERA_MOTION_STAT_ANG_VELOCITY, angular_velocity);
+        if (motion->continuity_run >= 2U) {
+            acceleration.x = velocity.x - motion->previous_velocity.x;
+            acceleration.y = velocity.y - motion->previous_velocity.y;
+            acceleration.z = velocity.z - motion->previous_velocity.z;
+            angular_acceleration =
+                fabs(angular_velocity - motion->previous_angular_velocity);
+            camera_obstruction_motion_record(
+                MDKR_CAMERA_MOTION_STAT_POS_ACCEL,
+                sqrt((double)acceleration.x * acceleration.x +
+                     (double)acceleration.y * acceleration.y +
+                     (double)acceleration.z * acceleration.z));
+            camera_obstruction_motion_record(
+                MDKR_CAMERA_MOTION_STAT_ANG_ACCEL, angular_acceleration);
+            if (motion->continuity_run >= 3U) {
+                jerk.x = acceleration.x - motion->previous_acceleration.x;
+                jerk.y = acceleration.y - motion->previous_acceleration.y;
+                jerk.z = acceleration.z - motion->previous_acceleration.z;
+                angular_jerk = fabs(
+                    angular_acceleration - motion->previous_angular_acceleration);
+                camera_obstruction_motion_record(
+                    MDKR_CAMERA_MOTION_STAT_POS_JERK,
+                    sqrt((double)jerk.x * jerk.x +
+                         (double)jerk.y * jerk.y +
+                         (double)jerk.z * jerk.z));
+                camera_obstruction_motion_record(
+                    MDKR_CAMERA_MOTION_STAT_ANG_JERK, angular_jerk);
+            }
+            motion->previous_acceleration = acceleration;
+            motion->previous_angular_acceleration = (float)angular_acceleration;
+        }
+        motion->previous_velocity = velocity;
+        motion->previous_angular_velocity = (float)angular_velocity;
+        if (motion->continuity_run < 4U) {
+            motion->continuity_run++;
+        }
+    }
+
+    /* Correction phase machine: retract latency, blocked spans, oscillation. */
+    phase = blocked ? (int)MDKR_CAMERA_MOTION_PHASE_BLOCKED :
+                      (int)MDKR_CAMERA_MOTION_PHASE_CLEAR;
+    if ((int)motion->phase != phase) {
+        if (phase == (int)MDKR_CAMERA_MOTION_PHASE_BLOCKED) {
+            sCameraMotion.retract_events++;
+            if (motion->phase == (uint8_t)MDKR_CAMERA_MOTION_PHASE_CLEAR &&
+                motion->previous_phase ==
+                    (uint8_t)MDKR_CAMERA_MOTION_PHASE_BLOCKED &&
+                tick - motion->clear_onset_tick <=
+                    MDKR_CAMERA_MOTION_OSCILLATION_TICKS) {
+                /* blocked -> clear -> blocked: the correction dropped out and
+                 * came straight back. This is the chatter a player sees as the
+                 * camera "pumping" against one wall. */
+                sCameraMotion.correction_reengagements++;
+            }
+            motion->block_onset_tick = tick;
+            motion->block_span_degenerate = (uint8_t)(degenerate != 0);
+            motion->retract_pending = TRUE;
+        } else {
+            if (motion->phase == (uint8_t)MDKR_CAMERA_MOTION_PHASE_BLOCKED) {
+                const uint64_t span = tick - motion->block_onset_tick;
+
+                camera_obstruction_motion_record(
+                    MDKR_CAMERA_MOTION_STAT_BLOCKED_SPAN, (double)span);
+                if (span <= MDKR_CAMERA_MOTION_OSCILLATION_TICKS) {
+                    /* clear -> blocked -> clear inside the window. */
+                    sCameraMotion.oscillation_cycles++;
+                    if (motion->block_span_degenerate) {
+                        sCameraMotion.oscillation_cycles_excused++;
+                    }
+                }
+                motion->retract_pending = FALSE;
+            }
+            motion->clear_onset_tick = tick;
+        }
+        motion->previous_phase = motion->phase;
+        motion->phase = (uint8_t)phase;
+    }
+    if (motion->retract_pending && !degenerate) {
+        /* Ticks from obstruction onset to a fully resolved, validated pose. */
+        camera_obstruction_motion_record(
+            MDKR_CAMERA_MOTION_STAT_RETRACT_LATENCY,
+            (double)(tick - motion->block_onset_tick));
+        motion->retract_pending = FALSE;
+    }
+
+    if (recovering && !motion->recovering) {
+        sCameraMotion.recovery_events++;
+        motion->recovery_onset_tick = tick;
+    } else if (!recovering && motion->recovering) {
+        camera_obstruction_motion_record(
+            MDKR_CAMERA_MOTION_STAT_RECOVERY_DURATION,
+            (double)(tick - motion->recovery_onset_tick));
+    }
+    motion->recovering = (uint8_t)(recovering != 0);
+
+    if (emergency) {
+        if (!motion->emergency) {
+            sCameraMotion.emergency_entries++;
+            motion->emergency_run = 0U;
+        }
+        motion->emergency_run++;
+        if (motion->emergency_run > sCameraMotion.max_emergency_dwell) {
+            sCameraMotion.max_emergency_dwell = motion->emergency_run;
+        }
+    } else if (motion->emergency) {
+        camera_obstruction_motion_record(
+            MDKR_CAMERA_MOTION_STAT_EMERGENCY_DWELL,
+            (double)motion->emergency_run);
+        motion->emergency_run = 0U;
+    }
+    motion->emergency = (uint8_t)(emergency != 0);
+
+    /*
+     * Blocker-identity churn. Static track blockers carry a per-triangle stable
+     * ID, so an ID change alone does not mean a new obstruction owner; the
+     * contact normal decides whether the camera is still on one continuous
+     * surface. The resolver never reads blocker identity, so churn cannot reset
+     * recovery -- this metric measures how noisy the reported identity is, and
+     * gives the shoulder-flip gate its continuous-surface test.
+     */
+    if (blocked && observe->blocker_stable_id != 0U) {
+        if (motion->blocker_valid &&
+            motion->blocker_stable_id != observe->blocker_stable_id) {
+            const double normal_dot =
+                (double)observe->blocker_normal.x * motion->blocker_normal.x +
+                (double)observe->blocker_normal.y * motion->blocker_normal.y +
+                (double)observe->blocker_normal.z * motion->blocker_normal.z;
+
+            churn = TRUE;
+            churn_same_surface = observe->blocker_normal_valid &&
+                normal_dot >= MDKR_CAMERA_MOTION_CONTINUOUS_SURFACE_DOT;
+            sCameraMotion.blocker_changes++;
+            if (churn_same_surface) {
+                sCameraMotion.blocker_changes_same_surface++;
+            } else {
+                sCameraMotion.blocker_changes_new_surface++;
+            }
+        }
+        motion->blocker_stable_id = observe->blocker_stable_id;
+        motion->blocker_normal = observe->blocker_normal;
+        motion->blocker_valid = observe->blocker_normal_valid;
+    } else if (!blocked) {
+        motion->blocker_stable_id = 0U;
+        motion->blocker_valid = FALSE;
+    }
+
+    /*
+     * Shoulder side of the published eye, measured against the authored
+     * pivot->desired ray. The authored ray has zero lateral offset by
+     * construction, so this is exactly the alternate fan's shoulder choice.
+     */
+    if (alternate && pose_valid) {
+        /* right = worldUp x boom, so only the horizontal boom terms survive. */
+        const double right_x = (double)observe->desired_eye.z -
+            observe->intent.pivot.z;
+        const double right_z = -((double)observe->desired_eye.x -
+            observe->intent.pivot.x);
+        const double length = sqrt(right_x * right_x + right_z * right_z);
+
+        if (isfinite(length) && length > 0.0) {
+            const double lateral =
+                (((double)eye.x - observe->intent.pivot.x) * right_x +
+                 ((double)eye.z - observe->intent.pivot.z) * right_z) / length;
+
+            if (lateral > MDKR_CAMERA_MOTION_SHOULDER_EPSILON) {
+                side = 1;
+            } else if (lateral < -MDKR_CAMERA_MOTION_SHOULDER_EPSILON) {
+                side = -1;
+            }
+        }
+    }
+    if (alternate && !motion->alternate) {
+        sCameraMotion.alternate_entries++;
+    } else if (!alternate && motion->alternate) {
+        sCameraMotion.alternate_exits++;
+        motion->shoulder_side = 0;
+    }
+    if (alternate && motion->alternate && side != 0 &&
+        motion->shoulder_side != 0 && side != motion->shoulder_side) {
+        flipped = TRUE;
+        sCameraMotion.shoulder_flips++;
+        if (churn_same_surface || (!churn && motion->blocker_valid)) {
+            /* The alternate side changed while the camera was still against
+             * one continuous surface. Nothing about the geometry asked for the
+             * other shoulder; this is the flapping the doc forbids. */
+            sCameraMotion.shoulder_flips_continuous_surface++;
+        } else {
+            sCameraMotion.shoulder_flips_new_surface++;
+        }
+    }
+    if (side != 0) {
+        motion->shoulder_side = (int8_t)side;
+    }
+    motion->alternate = (uint8_t)(alternate != 0);
+
+    if (pose_valid) {
+        motion->previous_eye = eye;
+        motion->previous_forward = forward;
+    }
+    motion->previous_tick = tick;
+
+    if (trace_level >= 2) {
+        fprintf(stderr,
+                "camera_motion detail tick=%llu viewport=%d normal_slot=%d "
+                "physical_slot=%d family=%d profile=%s "
+                "eye=(%.4f,%.4f,%.4f) forward=(%.5f,%.5f,%.5f) "
+                "continuity=%u pose_valid=%u continuous=%u "
+                "pos={velocity=%.5f accel=%.5f jerk=%.5f} "
+                "ang={velocity=%.5f accel=%.5f jerk=%.5f} "
+                "state={blocked=%u retracted=%u recovering=%u alternate=%u "
+                "emergency=%u degenerate=%u discontinuity=%u} "
+                "blocker={id=%u kind=%u churn=%u same_surface=%u} "
+                "shoulder={side=%d flip=%u} "
+                "span={blocked=%llu emergency=%u}\n",
+                (unsigned long long)tick, observe->viewport, normal_slot,
+                observe->physical_slot, (int)observe->intent.family,
+                kCameraObstructionTreatmentNames[treatment],
+                eye.x, eye.y, eye.z, forward.x, forward.y, forward.z,
+                motion->continuity_run, (unsigned)(pose_valid != 0),
+                (unsigned)(continuous != 0),
+                sqrt((double)velocity.x * velocity.x +
+                     (double)velocity.y * velocity.y +
+                     (double)velocity.z * velocity.z),
+                sqrt((double)acceleration.x * acceleration.x +
+                     (double)acceleration.y * acceleration.y +
+                     (double)acceleration.z * acceleration.z),
+                sqrt((double)jerk.x * jerk.x + (double)jerk.y * jerk.y +
+                     (double)jerk.z * jerk.z),
+                angular_velocity, angular_acceleration, angular_jerk,
+                (unsigned)(blocked != 0), (unsigned)(retracted != 0),
+                (unsigned)(recovering != 0), (unsigned)(alternate != 0),
+                (unsigned)(emergency != 0), (unsigned)(degenerate != 0),
+                (unsigned)(cut != 0),
+                observe->blocker_stable_id, observe->blocker_kind,
+                (unsigned)(churn != 0), (unsigned)(churn_same_surface != 0),
+                side, (unsigned)(flipped != 0),
+                (unsigned long long)(
+                    phase == (int)MDKR_CAMERA_MOTION_PHASE_BLOCKED ?
+                        tick - motion->block_onset_tick : 0U),
+                motion->emergency_run);
     }
 }
 
@@ -2398,6 +3149,11 @@ static void camera_obstruction_observe_slot(
     observe->previous_desired_eye = observe->desired_eye;
     observe->previous_desired_valid = TRUE;
 
+    /* MOTION-01 reads the published result, so it samples last. */
+    if (camera_obstruction_motion_enabled()) {
+        camera_obstruction_motion_sample(
+            observe, physical_slot, normal_slot, trace_level);
+    }
     if (trace_level >= 2) {
         camera_obstruction_trace_detail(observe, normal_slot, cutscene_bank);
     }
@@ -2580,6 +3336,7 @@ void camera_obstruction_tick(int update_rate_fields) {
     s32 resolved_target_hidden = 0;
     s32 resolved_target_embedded = 0;
     s32 depenetrate_only = 0;
+    s32 safety_only = 0;
     s32 elevated_emergency = 0;
     s32 transition_invoked = 0;
     s32 transition_clear = 0;
@@ -2645,11 +3402,15 @@ void camera_obstruction_tick(int update_rate_fields) {
         resolved_target_hidden += !observe->resolved_target_visible &&
             !observe->resolved_target_embedded;
         resolved_target_embedded += observe->resolved_target_embedded;
-        /* Which treatment each selected slot is under, so a reader can tell a
-         * bounded depenetrate-only occlusion from a follow-camera defect. */
+        /* Which profile each selected slot is under, so a reader can tell a
+         * bounded depenetrate-only occlusion from a follow-camera defect, and
+         * can see whether a route was measured under the shipped table. */
         depenetrate_only +=
             camera_obstruction_family_treatment(observe->intent.family) ==
                 MDKR_CAMERA_OBSTRUCTION_TREATMENT_DEPENETRATE_ONLY;
+        safety_only +=
+            camera_obstruction_family_treatment(observe->intent.family) ==
+                MDKR_CAMERA_OBSTRUCTION_TREATMENT_SAFETY_ONLY;
         elevated_emergency += observe->elevated_emergency;
         transition_invoked += observe->transition_invoked;
         transition_clear += observe->transition_clear;
@@ -2686,7 +3447,7 @@ void camera_obstruction_tick(int update_rate_fields) {
                 "tt=%d bank=%s gate=%s(logical_camera_unchanged) duplicates=%u "
                 "projection_mismatches=%u "
                 "resolved={corrected=%d penetrated=%d invalid=%d degraded=%d} "
-                "target_hidden=%d target_embedded=%d depenetrate_only=%d emergency=%d "
+                "target_hidden=%d target_embedded=%d depenetrate_only=%d safety_only=%d emergency=%d "
                 "dynamic_corrected=%d "
                 "transition={invoked=%d clear=%d cut=%d tuple_cut=%d} "
                 "exact_runtime={invoked=%d sphere_clear=%d exact_clear=%d "
@@ -2710,7 +3471,7 @@ void camera_obstruction_tick(int update_rate_fields) {
                 sCameraObstructionRuntime.projection_mismatch_violations,
                 corrected, resolved_penetrated, resolved_invalid, source_degraded,
                 resolved_target_hidden, resolved_target_embedded,
-                depenetrate_only,
+                depenetrate_only, safety_only,
                 elevated_emergency,
                 dynamic_corrected,
                 transition_invoked, transition_clear,
@@ -2744,6 +3505,75 @@ void camera_obstruction_tick(int update_rate_fields) {
                 dynamic_telemetry.exact_invalid_sweep_count,
                 dynamic_telemetry.allocation_bytes);
     }
+}
+
+void camera_obstruction_motion_summary(void) {
+    size_t index;
+    double per_thousand;
+
+    if (!camera_obstruction_motion_enabled()) {
+        return;
+    }
+    per_thousand = sCameraMotion.sampled_slot_ticks == 0U ? 0.0 :
+        (double)sCameraMotion.discontinuities * 1000.0 /
+            (double)sCameraMotion.sampled_slot_ticks;
+    fprintf(stderr,
+            "camera_motion summary slot_ticks=%llu "
+            "profiles={full=%llu safety_only=%llu depenetrate_only=%llu} "
+            "events={retract=%llu recovery=%llu alternate_entry=%llu "
+            "alternate_exit=%llu emergency_entry=%llu discontinuity=%llu "
+            "degenerate=%llu} "
+            "chatter={oscillation_cycles=%llu oscillation_cycles_excused=%llu "
+            "correction_reengagements=%llu} "
+            "shoulder={flips=%llu continuous_surface=%llu new_surface=%llu} "
+            "churn={blocker_changes=%llu same_surface=%llu new_surface=%llu} "
+            "emergency={max_dwell=%llu} "
+            "discontinuity_per_1000_ticks=%.4f\n",
+            (unsigned long long)sCameraMotion.sampled_slot_ticks,
+            (unsigned long long)sCameraMotion.profile_slot_ticks
+                [MDKR_CAMERA_OBSTRUCTION_TREATMENT_FULL],
+            (unsigned long long)sCameraMotion.profile_slot_ticks
+                [MDKR_CAMERA_OBSTRUCTION_TREATMENT_SAFETY_ONLY],
+            (unsigned long long)sCameraMotion.profile_slot_ticks
+                [MDKR_CAMERA_OBSTRUCTION_TREATMENT_DEPENETRATE_ONLY],
+            (unsigned long long)sCameraMotion.retract_events,
+            (unsigned long long)sCameraMotion.recovery_events,
+            (unsigned long long)sCameraMotion.alternate_entries,
+            (unsigned long long)sCameraMotion.alternate_exits,
+            (unsigned long long)sCameraMotion.emergency_entries,
+            (unsigned long long)sCameraMotion.discontinuities,
+            (unsigned long long)sCameraMotion.degenerate_ticks,
+            (unsigned long long)sCameraMotion.oscillation_cycles,
+            (unsigned long long)sCameraMotion.oscillation_cycles_excused,
+            (unsigned long long)sCameraMotion.correction_reengagements,
+            (unsigned long long)sCameraMotion.shoulder_flips,
+            (unsigned long long)sCameraMotion.shoulder_flips_continuous_surface,
+            (unsigned long long)sCameraMotion.shoulder_flips_new_surface,
+            (unsigned long long)sCameraMotion.blocker_changes,
+            (unsigned long long)sCameraMotion.blocker_changes_same_surface,
+            (unsigned long long)sCameraMotion.blocker_changes_new_surface,
+            (unsigned long long)sCameraMotion.max_emergency_dwell,
+            per_thousand);
+    /*
+     * One row per analog metric. These are BASELINE measurements: no numeric
+     * threshold is asserted anywhere on them yet. Section 7.3's signed review
+     * sets those from exactly these distributions. min/mean/max are exact; p95
+     * is the upper edge of a log-spaced bin (~4.4% wide), clamped to max.
+     */
+    for (index = 0U; index < MDKR_CAMERA_MOTION_STAT_COUNT; index++) {
+        const MdkrCameraMotionStat *stat = &sCameraMotion.stats[index];
+
+        fprintf(stderr,
+                "camera_motion stat name=%s unit=%s samples=%llu "
+                "min=%.6f mean=%.6f p95=%.6f max=%.6f\n",
+                kCameraMotionStatNames[index], kCameraMotionStatUnits[index],
+                (unsigned long long)stat->count,
+                stat->count == 0U ? 0.0 : stat->min,
+                stat->count == 0U ? 0.0 : stat->total / (double)stat->count,
+                camera_obstruction_motion_percentile(stat, 95U),
+                stat->count == 0U ? 0.0 : stat->max);
+    }
+    fflush(stderr);
 }
 
 void camera_obstruction_perf_summary(void) {
@@ -2869,6 +3699,9 @@ void camera_obstruction_tick(int update_rate_fields) {
 }
 
 void camera_obstruction_perf_summary(void) {
+}
+
+void camera_obstruction_motion_summary(void) {
 }
 
 #endif
