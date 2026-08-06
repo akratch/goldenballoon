@@ -224,10 +224,10 @@ const char *mdkr_video_allow_tearing_canonical(const char *value);
 
 /*
  * Canonical spelling for a Gameplay.MenuLanguages value ("authentic" or
- * "all"), or NULL when `value` is neither. "authentic" reproduces each
- * cartridge's own retail menu, exactly as it always has. "all" offers every
- * language the running ROM's text and font assets carry, regardless of which
- * ones that cartridge's retail menu normally lists.
+ * "all"), or NULL when `value` is neither. "all" is the default: it offers
+ * every language the running ROM's text and font assets carry, regardless of
+ * which ones that cartridge's retail menu normally lists. "authentic" is the
+ * opt-out, restoring each cartridge's own retail menu exactly as it shipped.
  */
 const char *mdkr_video_menu_languages_canonical(const char *value);
 

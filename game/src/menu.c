@@ -4344,12 +4344,13 @@ void optionscreen_render(UNUSED s32 updateRate) {
  * selector does not exist on the Japanese layout), so this is dead there. */
 /* pal.v80 and us.v80 carry byte-identical text and font assets (docs/
  * ROM_REVISIONS.md); German is the only language a retail menu hides on some
- * revision (French is already offered on US; Japanese has no selector). A
- * player may opt into it on any revision via Gameplay.MenuLanguages -- see
- * platform/video_config.c -- which is why the check below is not folded into
- * platform_source_is_european() itself: that function answers "is this the
- * validated PAL cartridge", not "should the menu list German", and the two
- * questions now have different answers when a player opts in. Read fresh
+ * revision (French is already offered on US; Japanese has no selector).
+ * Gameplay.MenuLanguages -- see platform/video_config.c -- defaults to "all",
+ * so the selector lists German on every revision out of the box; a player may
+ * opt back out to their own disc's retail menu with "authentic". That is why
+ * the check below is not folded into platform_source_is_european() itself:
+ * that function answers "is this the validated PAL cartridge", not "should
+ * the menu list German", and the two questions can now disagree. Read fresh
  * every call, not cached, so a value picked before or during this session
  * takes effect immediately -- see the schema's SCOPE_LIVE note. */
 static UNUSED s32 menu_language_has_german(void) {

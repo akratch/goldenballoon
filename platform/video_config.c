@@ -388,9 +388,11 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
      * region -- pal.v80 and us.v80 are byte-identical across every asset
      * section (docs/ROM_REVISIONS.md), so a US disc already holds working
      * German menus and subtitles, just under a retail menu that never lists
-     * them. "authentic" keeps that retail menu exactly as shipped. "all"
-     * offers every language the running disc's assets carry, whatever region
-     * it is.
+     * them. "all" offers every language the running disc's assets carry, and
+     * is the default: it is non-interfering (no gameplay, save, or ghost data
+     * changes) and simply shows a player more of what their disc already has.
+     * "authentic" is the opt-out for a player who wants their own disc's
+     * retail menu back.
      *
      * SCOPE_LIVE: game/src/menu.c's menu_language_has_german() re-reads the
      * resolved config every time the player moves the language selector, so
@@ -400,10 +402,11 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "Gameplay.MenuLanguages", "MDKR_MENU_LANGUAGES",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 0.0f,
         "Menu languages",
-        "Every cartridge holds the same on-disc translations; a US disc's own "
-        "menu just never lists them. Authentic keeps each disc's own retail "
-        "menu. All lists every language the running disc's assets carry in "
-        "the in-game language selector, whichever disc you are playing.",
+        "Every cartridge holds the same on-disc translations, in every "
+        "language, no matter which region it was sold in. By default the "
+        "in-game language selector offers all of them. Authentic restores "
+        "your disc's own retail menu -- the language list its region shipped "
+        "with, nothing added.",
         MDKR_VIDEO_CAT_PRESENTATION
     },
 };
@@ -602,8 +605,8 @@ static const char *const s_preset_text[MDKR_VIDEO_KEY_COUNT][3] = {
     /* Never pinned by any preset, for the Camera.Obstruction reason: which
      * languages the selector lists is a player's standing choice, not a
      * property of the visual preset they happen to be in.
-     * mdkr_video_config_defaults() seeds "authentic"; a resolved value
-     * survives every preset switch untouched. */
+     * mdkr_video_config_defaults() seeds "all"; a resolved value survives
+     * every preset switch untouched. */
     [MDKR_VIDEO_MENU_LANGUAGES] = { NULL, NULL, NULL },
 };
 
@@ -661,14 +664,16 @@ void mdkr_video_config_defaults(MdkrVideoConfig *config) {
         sizeof(config->values[MDKR_VIDEO_ALLOW_TEARING].text),
         "%s", "off");
     /*
-     * Authentic is the default in every mode: each cartridge's own retail
-     * menu, unchanged, until a player opts into seeing every language the
-     * disc's assets carry.
+     * All is the default in every mode: every cartridge already carries every
+     * language's text and fonts, so showing the full list is non-interfering
+     * (no gameplay, save, or ghost data changes) and simply surfaces what the
+     * disc already has. Authentic is the opt-out for a player who wants their
+     * own disc's retail menu back.
      */
     snprintf(
         config->values[MDKR_VIDEO_MENU_LANGUAGES].text,
         sizeof(config->values[MDKR_VIDEO_MENU_LANGUAGES].text),
-        "%s", "authentic");
+        "%s", "all");
 
     /* Window/input choices are player comfort, not presentation-mode state.
      * These defaults exactly preserve the pre-remapping SDL behavior, including

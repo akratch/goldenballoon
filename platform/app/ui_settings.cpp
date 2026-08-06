@@ -313,8 +313,8 @@ const Option kCameraObstruction[] = {
     {"modern", "Keep out of walls"},
 };
 const Option kMenuLanguages[] = {
-    {"authentic", "Authentic (this disc's own menu)"},
     {"all", "All (every language on the disc)"},
+    {"authentic", "Authentic (this disc's own retail menu)"},
 };
 const Option kWindowMode[] = {
     {"windowed", "Windowed"},

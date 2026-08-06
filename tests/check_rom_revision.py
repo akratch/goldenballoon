@@ -530,30 +530,30 @@ LANGUAGE_TRACE_RE = re.compile(
 def check_language_capability(args, failures):
     """Exercise the real Options route, not just the loader's German asset arm.
 
-    Starting with English, the full small cycle proves both directions: PAL is
-    EN -> DE -> EN -> FR -> DE, while the US selector remains EN <-> FR by
-    default. This catches accidental removal of PAL German and accidental
-    exposure of it for US carts.
-
-    A third arm proves the opt-in escape hatch (GitHub issue #19): us.v80 is
+    Gameplay.MenuLanguages defaults to "all" (GitHub issue #19): us.v80 is
     byte-identical to pal.v80 in every asset section (docs/ROM_REVISIONS.md
-    Sec 5), so its German text and fonts are already on the disc. Setting
-    Gameplay.MenuLanguages=all (MDKR_MENU_LANGUAGES=all) must make the US
-    selector cycle exactly like PAL's authored one, with no ROM edit and no
-    restart.
+    Sec 5), so its German text and fonts are already on the disc, and by
+    default the selector now offers them on both. Starting with English, the
+    full small cycle proves it: PAL and default-configuration US both go
+    EN -> DE -> EN -> FR -> DE. A third arm proves the opt-out
+    (MDKR_MENU_LANGUAGES=authentic) still restores the retail US menu's
+    EN <-> FR toggle, with no ROM edit and no restart either way.
     """
-    print("6. PAL v80 Options cycle exposes German; US stays English/French")
+    print("6. Menu languages default to all (PAL and US); authentic opts "
+          "US back out")
     script = LANGUAGE_SCRIPT
     if not os.path.exists(script):
         failures.append("language selector fixture is missing: %s" % script)
         print("   FAIL missing fixture")
         return
     expected = {
-        "us.v80": ([2, 0, 2, 0], 0, "EN <-> FR", None),
+        "us.v80": (
+            [1, 0, 2, 1], 1, "EN -> DE -> EN -> FR -> DE (default, US disc)",
+            None),
+        "us.v80 +MDKR_MENU_LANGUAGES=authentic": (
+            [2, 0, 2, 0], 0, "EN <-> FR (opt-out)",
+            {"MDKR_MENU_LANGUAGES": "authentic"}),
         "pal.v80": ([1, 0, 2, 1], 1, "EN -> DE -> EN -> FR -> DE", None),
-        "us.v80 +MDKR_MENU_LANGUAGES=all": (
-            [1, 0, 2, 1], 1, "EN -> DE -> EN -> FR -> DE (opt-in, US disc)",
-            {"MDKR_MENU_LANGUAGES": "all"}),
     }
     for short, (want_languages, want_european, label, extra_env) in expected.items():
         rom_short = short.split()[0]

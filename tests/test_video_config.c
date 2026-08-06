@@ -185,11 +185,12 @@ static void test_presets(void) {
     expect_true("default camera obstruction is observe",
                 !strcmp(cfg.values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
                         "observe"));
-    /* Each cartridge's own retail menu is the default; showing every language
-     * on the disc is opt-in. */
-    expect_true("default menu languages is authentic",
+    /* Showing every language the disc carries is the default -- it is
+     * non-interfering (no gameplay, save, or ghost data changes). Restoring
+     * the disc's own retail menu is the opt-out. */
+    expect_true("default menu languages is all",
                 !strcmp(cfg.values[MDKR_VIDEO_MENU_LANGUAGES].text,
-                        "authentic"));
+                        "all"));
     expect_true("defaults are DEFAULT-sourced",
                 cfg.values[MDKR_VIDEO_RENDER_SCALE].source == MDKR_VIDEO_SOURCE_DEFAULT);
     expect_true("audio defaults to authored unity",
@@ -897,24 +898,27 @@ static void test_menu_languages_domain(void) {
     mdkr_video_config_defaults(&cfg);
     expect_int("set accepts a player-facing spelling",
                mdkr_video_config_set(&cfg, MDKR_VIDEO_MENU_LANGUAGES,
-                                     "All", MDKR_VIDEO_SOURCE_ENV), 1);
+                                     "Authentic", MDKR_VIDEO_SOURCE_ENV), 1);
     expect_true("set stores the canonical spelling",
-                !strcmp(cfg.values[MDKR_VIDEO_MENU_LANGUAGES].text, "all"));
+                !strcmp(cfg.values[MDKR_VIDEO_MENU_LANGUAGES].text,
+                        "authentic"));
     expect_int("set rejects an unknown value",
                mdkr_video_config_set(&cfg, MDKR_VIDEO_MENU_LANGUAGES,
                                      "german", MDKR_VIDEO_SOURCE_CLI), 0);
     expect_true("a rejected value leaves the resolved value alone",
-                !strcmp(cfg.values[MDKR_VIDEO_MENU_LANGUAGES].text, "all"));
+                !strcmp(cfg.values[MDKR_VIDEO_MENU_LANGUAGES].text,
+                        "authentic"));
 
     /* Never pinned by a presentation-mode preset: switching modes must not
-     * silently switch the language selector back to authentic. */
+     * silently revert an explicit opt-out back to the "all" default. */
     mdkr_video_config_defaults(&cfg);
-    expect_int("set opts into all",
+    expect_int("set opts out to authentic",
                mdkr_video_config_set(&cfg, MDKR_VIDEO_MENU_LANGUAGES,
-                                     "all", MDKR_VIDEO_SOURCE_FILE), 1);
+                                     "authentic", MDKR_VIDEO_SOURCE_FILE), 1);
     mdkr_video_config_apply_preset(&cfg, MDKR_VIDEO_MODE_PURE);
     expect_true("a preset switch does not revert the language choice",
-                !strcmp(cfg.values[MDKR_VIDEO_MENU_LANGUAGES].text, "all"));
+                !strcmp(cfg.values[MDKR_VIDEO_MENU_LANGUAGES].text,
+                        "authentic"));
 }
 
 int main(void) {
