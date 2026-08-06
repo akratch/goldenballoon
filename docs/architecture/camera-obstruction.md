@@ -1253,6 +1253,18 @@ from chatter. The hard assertion is that the correction does not come *back*
 inside the window. A signed review may overrule that reading; the raw count is
 in the report either way.
 
+The first `FULL` vs `SAFETY_ONLY` comparison on the two race routes says the
+alternate fan is close to irrelevant on ordinary racing and load-bearing at the
+margin. Aggregate resolved-camera velocity, acceleration, and jerk are identical
+between the two profiles to five decimal places on both routes, because the
+correction touches on the order of 2% of ticks and the fan itself fires about
+once per 5000. Where they differ, `SAFETY_ONLY` leans harder on emergency
+framing — maximum dwell 1→4 ticks on the lake route and 3→20 on the 3P route —
+and the lake route picks up one correction re-engagement it does not have under
+`FULL`. So the racing profile is not free: removing the fan does not smooth the
+camera, it converts a shoulder step into a longer emergency hold. Choosing it
+has to be argued on composition, not on these numbers.
+
 ### 7.4 Display matrix
 
 At minimum:
