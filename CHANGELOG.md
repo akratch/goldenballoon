@@ -18,6 +18,13 @@ save formats). Everything below 1.0.0 predates that commitment.
   is off by default, no presentation mode turns it on or off for you, and it
   takes effect after a restart because the display connection is set up once at
   launch.
+- **The in-game language menu now offers German on every disc, out of the
+  box** (#19). Every disc has always carried the same menu and subtitle text
+  and fonts, in every language, no matter which region it was sold in — a US
+  disc's own menu simply never listed German. Now it does: pick a Menu
+  Languages setting in Presentation to change it. All, the default, lists
+  every language the disc carries. Authentic restores your disc's own retail
+  menu, if you'd rather have that. Switching takes effect immediately.
 
 ### Fixed
 

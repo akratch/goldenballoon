@@ -117,6 +117,29 @@ static void test_schema(void) {
     expect_int("the last controller binding is still an input key",
                mdkr_video_key_is_input(MDKR_INPUT_LAST_KEY), 1);
 
+    /*
+     * LIVE, unlike Camera.Obstruction: game/src/menu.c's
+     * menu_language_has_german() re-reads mdkr_video_config_current() every
+     * time the player moves the language selector, rather than latching a
+     * getenv() result at boot, so nothing needs a restart.
+     */
+    expect_int("menu languages key",
+               (int) mdkr_video_key_from_name("Gameplay.MenuLanguages"),
+               MDKR_VIDEO_MENU_LANGUAGES);
+    s = mdkr_video_schema(MDKR_VIDEO_MENU_LANGUAGES);
+    expect_true("menu languages env seam",
+                s != NULL && !strcmp(s->env, "MDKR_MENU_LANGUAGES"));
+    expect_int("menu languages is a string",
+               s ? (int) s->type : -1, MDKR_VIDEO_TYPE_STRING);
+    expect_int("menu languages scope is LIVE",
+               s ? (int) s->scope : -1, MDKR_VIDEO_SCOPE_LIVE);
+    expect_int("menu languages is presentation",
+               s ? (int) s->category : -1, MDKR_VIDEO_CAT_PRESENTATION);
+    expect_int("menu languages is not an input key",
+               mdkr_video_key_is_input(MDKR_VIDEO_MENU_LANGUAGES), 0);
+    expect_int("menu languages is not player comfort",
+               mdkr_video_key_is_player_comfort(MDKR_VIDEO_MENU_LANGUAGES), 0);
+
     expect_true("out-of-range key is NULL", mdkr_video_schema(MDKR_VIDEO_KEY_COUNT) == NULL);
     expect_true("negative key is NULL", mdkr_video_schema((MdkrVideoKey) -1) == NULL);
 
@@ -162,6 +185,12 @@ static void test_presets(void) {
     expect_true("default camera obstruction is observe",
                 !strcmp(cfg.values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
                         "observe"));
+    /* Showing every language the disc carries is the default -- it is
+     * non-interfering (no gameplay, save, or ghost data changes). Restoring
+     * the disc's own retail menu is the opt-out. */
+    expect_true("default menu languages is all",
+                !strcmp(cfg.values[MDKR_VIDEO_MENU_LANGUAGES].text,
+                        "all"));
     expect_true("defaults are DEFAULT-sourced",
                 cfg.values[MDKR_VIDEO_RENDER_SCALE].source == MDKR_VIDEO_SOURCE_DEFAULT);
     expect_true("audio defaults to authored unity",
@@ -840,10 +869,63 @@ static void test_camera_obstruction_domain(void) {
                         "center-ray"));
 }
 
+/*
+ * Gameplay.MenuLanguages has exactly two player-facing words and no inherited
+ * diagnostic seam to stay compatible with (unlike World Shadows / Camera
+ * Obstruction, it is a new key), so anything else -- including the empty
+ * string -- is rejected rather than folded into a default.
+ */
+static void test_menu_languages_domain(void) {
+    MdkrVideoConfig cfg;
+    const char *canonical;
+
+    canonical = mdkr_video_menu_languages_canonical("authentic");
+    expect_true("authentic is canonical",
+                canonical != NULL && !strcmp(canonical, "authentic"));
+    canonical = mdkr_video_menu_languages_canonical("all");
+    expect_true("all is canonical",
+                canonical != NULL && !strcmp(canonical, "all"));
+    canonical = mdkr_video_menu_languages_canonical("ALL");
+    expect_true("the domain is case-insensitive",
+                canonical != NULL && !strcmp(canonical, "all"));
+    expect_true("unknown value is rejected",
+                mdkr_video_menu_languages_canonical("german") == NULL);
+    expect_true("empty is rejected",
+                mdkr_video_menu_languages_canonical("") == NULL);
+    expect_true("NULL is rejected",
+                mdkr_video_menu_languages_canonical(NULL) == NULL);
+
+    mdkr_video_config_defaults(&cfg);
+    expect_int("set accepts a player-facing spelling",
+               mdkr_video_config_set(&cfg, MDKR_VIDEO_MENU_LANGUAGES,
+                                     "Authentic", MDKR_VIDEO_SOURCE_ENV), 1);
+    expect_true("set stores the canonical spelling",
+                !strcmp(cfg.values[MDKR_VIDEO_MENU_LANGUAGES].text,
+                        "authentic"));
+    expect_int("set rejects an unknown value",
+               mdkr_video_config_set(&cfg, MDKR_VIDEO_MENU_LANGUAGES,
+                                     "german", MDKR_VIDEO_SOURCE_CLI), 0);
+    expect_true("a rejected value leaves the resolved value alone",
+                !strcmp(cfg.values[MDKR_VIDEO_MENU_LANGUAGES].text,
+                        "authentic"));
+
+    /* Never pinned by a presentation-mode preset: switching modes must not
+     * silently revert an explicit opt-out back to the "all" default. */
+    mdkr_video_config_defaults(&cfg);
+    expect_int("set opts out to authentic",
+               mdkr_video_config_set(&cfg, MDKR_VIDEO_MENU_LANGUAGES,
+                                     "authentic", MDKR_VIDEO_SOURCE_FILE), 1);
+    mdkr_video_config_apply_preset(&cfg, MDKR_VIDEO_MODE_PURE);
+    expect_true("a preset switch does not revert the language choice",
+                !strcmp(cfg.values[MDKR_VIDEO_MENU_LANGUAGES].text,
+                        "authentic"));
+}
+
 int main(void) {
     test_schema();
     test_presets();
     test_camera_obstruction_domain();
+    test_menu_languages_domain();
     test_precedence();
     test_ini();
     test_resolve();

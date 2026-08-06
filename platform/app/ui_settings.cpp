@@ -317,6 +317,10 @@ const Option kCameraObstruction[] = {
     {"observe", "Authored (original camera)"},
     {"modern", "Keep out of walls"},
 };
+const Option kMenuLanguages[] = {
+    {"all", "All (every language on the disc)"},
+    {"authentic", "Authentic (this disc's own retail menu)"},
+};
 const Option kWindowMode[] = {
     {"windowed", "Windowed"},
     {"fullscreen", "Fullscreen (borderless)"},
@@ -362,6 +366,8 @@ bool optionsFor(MdkrVideoKey k, Options &out) {
         case MDKR_VIDEO_WORLD_SHADOWS:      out = {kShadows, 3}; return true;
         case MDKR_VIDEO_CAMERA_OBSTRUCTION:
             out = {kCameraObstruction, 2}; return true;
+        case MDKR_VIDEO_MENU_LANGUAGES:
+            out = {kMenuLanguages, 2}; return true;
         case MDKR_WINDOW_MODE:              out = {kWindowMode, 2}; return true;
         case MDKR_INPUT_RUMBLE_PROFILE:     out = {kRumbleProfile, 3}; return true;
         default: return false;

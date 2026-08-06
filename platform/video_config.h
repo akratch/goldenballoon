@@ -86,6 +86,8 @@ typedef enum MdkrVideoKey {
      * non-input key may follow it. */
     MDKR_VIDEO_CAMERA_OBSTRUCTION,
     MDKR_VIDEO_ALLOW_TEARING,
+    /* Appended for the same reason as the two keys above. */
+    MDKR_VIDEO_MENU_LANGUAGES,
     MDKR_VIDEO_KEY_COUNT
 } MdkrVideoKey;
 
@@ -219,6 +221,15 @@ const char *mdkr_video_camera_obstruction_canonical(const char *value);
  * same whether it arrives from the settings screen or a diagnostic run.
  */
 const char *mdkr_video_allow_tearing_canonical(const char *value);
+
+/*
+ * Canonical spelling for a Gameplay.MenuLanguages value ("authentic" or
+ * "all"), or NULL when `value` is neither. "all" is the default: it offers
+ * every language the running ROM's text and font assets carry, regardless of
+ * which ones that cartridge's retail menu normally lists. "authentic" is the
+ * opt-out, restoring each cartridge's own retail menu exactly as it shipped.
+ */
+const char *mdkr_video_menu_languages_canonical(const char *value);
 
 /*
  * Applies `value` to `key` if `source` outranks whatever set it last.

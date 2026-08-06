@@ -383,6 +383,32 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "because the display connection is set up once at launch.",
         MDKR_VIDEO_CAT_PACING
     },
+    /*
+     * Every cartridge carries the same text and font assets regardless of
+     * region -- pal.v80 and us.v80 are byte-identical across every asset
+     * section (docs/ROM_REVISIONS.md), so a US disc already holds working
+     * German menus and subtitles, just under a retail menu that never lists
+     * them. "all" offers every language the running disc's assets carry, and
+     * is the default: it is non-interfering (no gameplay, save, or ghost data
+     * changes) and simply shows a player more of what their disc already has.
+     * "authentic" is the opt-out for a player who wants their own disc's
+     * retail menu back.
+     *
+     * SCOPE_LIVE: game/src/menu.c's menu_language_has_german() re-reads the
+     * resolved config every time the player moves the language selector, so
+     * nothing needs to be latched at boot.
+     */
+    [MDKR_VIDEO_MENU_LANGUAGES] = {
+        "Gameplay.MenuLanguages", "MDKR_MENU_LANGUAGES",
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 0.0f,
+        "Menu languages",
+        "Every cartridge holds the same on-disc translations, in every "
+        "language, no matter which region it was sold in. By default the "
+        "in-game language selector offers all of them. Authentic restores "
+        "your disc's own retail menu -- the language list its region shipped "
+        "with, nothing added.",
+        MDKR_VIDEO_CAT_PRESENTATION
+    },
 };
 
 const char *mdkr_video_category_name(MdkrVideoCategory category) {
@@ -508,6 +534,7 @@ static const float s_preset[MDKR_VIDEO_KEY_COUNT][3] = {
     [MDKR_AUDIO_MASTER_VOLUME] = {    100.0f,   100.0f,     100.0f },
     [MDKR_AUDIO_MUSIC_VOLUME] = {     100.0f,   100.0f,     100.0f },
     [MDKR_AUDIO_EFFECTS_VOLUME] = {   100.0f,   100.0f,     100.0f },
+    [MDKR_VIDEO_MENU_LANGUAGES] = {     0.0f,     0.0f,       0.0f }, /* string; see below */
 };
 
 /*
@@ -575,6 +602,12 @@ static const char *const s_preset_text[MDKR_VIDEO_KEY_COUNT][3] = {
     /* Never pinned, for the FrameLimit reason: a latency preference is not an
      * art direction. */
     [MDKR_VIDEO_ALLOW_TEARING] = { NULL, NULL, NULL },
+    /* Never pinned by any preset, for the Camera.Obstruction reason: which
+     * languages the selector lists is a player's standing choice, not a
+     * property of the visual preset they happen to be in.
+     * mdkr_video_config_defaults() seeds "all"; a resolved value survives
+     * every preset switch untouched. */
+    [MDKR_VIDEO_MENU_LANGUAGES] = { NULL, NULL, NULL },
 };
 
 void mdkr_video_config_defaults(MdkrVideoConfig *config) {
@@ -630,6 +663,17 @@ void mdkr_video_config_defaults(MdkrVideoConfig *config) {
         config->values[MDKR_VIDEO_ALLOW_TEARING].text,
         sizeof(config->values[MDKR_VIDEO_ALLOW_TEARING].text),
         "%s", "off");
+    /*
+     * All is the default in every mode: every cartridge already carries every
+     * language's text and fonts, so showing the full list is non-interfering
+     * (no gameplay, save, or ghost data changes) and simply surfaces what the
+     * disc already has. Authentic is the opt-out for a player who wants their
+     * own disc's retail menu back.
+     */
+    snprintf(
+        config->values[MDKR_VIDEO_MENU_LANGUAGES].text,
+        sizeof(config->values[MDKR_VIDEO_MENU_LANGUAGES].text),
+        "%s", "all");
 
     /* Window/input choices are player comfort, not presentation-mode state.
      * These defaults exactly preserve the pre-remapping SDL behavior, including
@@ -842,6 +886,27 @@ const char *mdkr_video_camera_obstruction_canonical(const char *value) {
     return NULL;
 }
 
+/*
+ * Two player-facing words, nothing else. Unlike the world-shadow and camera
+ * seams, this key has no pre-existing diagnostic spelling to stay compatible
+ * with -- it is new -- so there is no reason to accept anything but its own
+ * two states. Empty is rejected rather than folded into "authentic": an
+ * explicit MDKR_MENU_LANGUAGES that does not parse should fail the same way
+ * as any other unrecognised value, not silently resolve to the default.
+ */
+const char *mdkr_video_menu_languages_canonical(const char *value) {
+    if (value == NULL) {
+        return NULL;
+    }
+    if (mdkr_video_ci_equal(value, "authentic")) {
+        return "authentic";
+    }
+    if (mdkr_video_ci_equal(value, "all")) {
+        return "all";
+    }
+    return NULL;
+}
+
 static int mdkr_video_parse_number(const char *value, float *out) {
     char *end;
     float parsed;
@@ -935,6 +1000,15 @@ int mdkr_video_config_set(MdkrVideoConfig *config,
         if (key == MDKR_VIDEO_CAMERA_OBSTRUCTION) {
             const char *canonical =
                 mdkr_video_camera_obstruction_canonical(value);
+            if (canonical == NULL) {
+                return 0;
+            }
+            snprintf(slot->text, sizeof(slot->text), "%s", canonical);
+            slot->source = source;
+            return 1;
+        }
+        if (key == MDKR_VIDEO_MENU_LANGUAGES) {
+            const char *canonical = mdkr_video_menu_languages_canonical(value);
             if (canonical == NULL) {
                 return 0;
             }
