@@ -195,6 +195,38 @@ static void swap_texinfos(void *data, uint32_t off, uint32_t count, uint32_t siz
  *  On-disk layout: docs/ref/asset_fileTypes/objectModel.hpp (== structs.h
  *  ObjectModel through 0x54).
  * ======================================================================== */
+/* ObjectModel header field offsets. Names follow structs.h / objectModel.hpp.
+ * `OM_UNIDENTIFIED_*` are fields neither the decomp nor this port has ever
+ * identified — they are named by offset so the swap reads as a field list
+ * without asserting a meaning nobody has established. */
+#define OM_TEXTURES                    0x00u
+#define OM_VERTICES                    0x04u
+#define OM_TRIANGLES                   0x08u
+#define OM_RESERVED_C                  0x0Cu
+#define OM_RESERVED_10                 0x10u
+#define OM_ATTACH_POINTS               0x14u
+#define OM_NUM_ATTACH_POINTS           0x18u
+#define OM_UNIDENTIFIED_1A             0x1Au /* u16, unidentified */
+#define OM_COLLISION_SPHERES           0x1Cu
+#define OM_COLLISION_SPHERES_SIZE      0x20u
+#define OM_NUM_TEXTURES                0x22u
+#define OM_NUM_VERTICES                0x24u
+#define OM_NUM_TRIANGLES               0x26u
+#define OM_NUM_BATCHES                 0x28u
+#define OM_FILE_SIZE                   0x2Cu
+#define OM_RESERVED_REFERENCES         0x30u
+#define OM_RESERVED_32                 0x32u
+#define OM_BATCHES                     0x38u
+#define OM_UNIDENTIFIED_3C             0x3Cu /* f32, unidentified */
+#define OM_RESERVED_40                 0x40u
+#define OM_RESERVED_ANIMATIONS         0x44u
+#define OM_RESERVED_NUM_ANIMATIONS     0x48u
+#define OM_NUM_ANIMATED_VERTICES       0x4Au
+#define OM_ANIMATED_VERTEX_INDICES     0x4Cu
+#define OM_HAS_ANIMATED_TEXTURE        0x50u
+#define OM_RESERVED_52                 0x52u
+#define OM_UNUSED_54                   0x54u
+
 static void swap_object_model(void *data, uint32_t size) {
     int32_t offTex, offVtx, offTri, offBat, offAttach, offSpheres, offAnimIdx;
     int16_t nTex, nVtx, nTri, nBat, nAttach, sphSize;
@@ -204,50 +236,50 @@ static void swap_object_model(void *data, uint32_t size) {
     }
 
     /* --- header (0x00 .. 0x54) --- */
-    sw32(data, 0x00); /* textures  (offset) */
-    sw32(data, 0x04); /* vertices  (offset) */
-    sw32(data, 0x08); /* triangles (offset) */
-    sw32(data, 0x0C); /* reservedC */
-    sw32(data, 0x10); /* reserved10 */
-    sw32(data, 0x14); /* attachPoints (offset) */
-    sw16(data, 0x18); /* numberOfAttachPoints */
-    sw16(data, 0x1A); /* unk1A */
-    sw32(data, 0x1C); /* collisionSpheres (offset) */
-    sw16(data, 0x20); /* collisionSpheresSize */
-    sw16(data, 0x22); /* numberOfTextures */
-    sw16(data, 0x24); /* numberOfVertices */
-    sw16(data, 0x26); /* numberOfTriangles */
-    sw16(data, 0x28); /* numberOfBatches */
-    /* 0x2A,0x2B unk : bytes */
-    sw32(data, 0x2C); /* fileSize */
-    sw16(data, 0x30); /* reservedReferences */
-    sw16(data, 0x32); /* reserved32 */
+    sw32(data, OM_TEXTURES);
+    sw32(data, OM_VERTICES);
+    sw32(data, OM_TRIANGLES);
+    sw32(data, OM_RESERVED_C);
+    sw32(data, OM_RESERVED_10);
+    sw32(data, OM_ATTACH_POINTS);
+    sw16(data, OM_NUM_ATTACH_POINTS);
+    sw16(data, OM_UNIDENTIFIED_1A);
+    sw32(data, OM_COLLISION_SPHERES);
+    sw16(data, OM_COLLISION_SPHERES_SIZE);
+    sw16(data, OM_NUM_TEXTURES);
+    sw16(data, OM_NUM_VERTICES);
+    sw16(data, OM_NUM_TRIANGLES);
+    sw16(data, OM_NUM_BATCHES);
+    /* 0x2A,0x2B unidentified : bytes */
+    sw32(data, OM_FILE_SIZE);
+    sw16(data, OM_RESERVED_REFERENCES);
+    sw16(data, OM_RESERVED_32);
     /* 0x34..0x37 : bytes */
-    sw32(data, 0x38); /* batches (offset) */
-    swf32(data, 0x3C); /* unk3C */
-    sw32(data, 0x40); /* reserved40 */
-    sw32(data, 0x44); /* reservedAnimations */
-    sw16(data, 0x48); /* reservedNumberOfAnimations */
-    sw16(data, 0x4A); /* numberOfAnimatedVertices */
-    sw32(data, 0x4C); /* animatedVertexIndices (offset) */
-    sw16(data, 0x50); /* hasAnimatedTexture */
-    sw16(data, 0x52); /* reserved52 */
-    sw32(data, 0x54); /* unused54 */
+    sw32(data, OM_BATCHES);
+    swf32(data, OM_UNIDENTIFIED_3C);
+    sw32(data, OM_RESERVED_40);
+    sw32(data, OM_RESERVED_ANIMATIONS);
+    sw16(data, OM_RESERVED_NUM_ANIMATIONS);
+    sw16(data, OM_NUM_ANIMATED_VERTICES);
+    sw32(data, OM_ANIMATED_VERTEX_INDICES);
+    sw16(data, OM_HAS_ANIMATED_TEXTURE);
+    sw16(data, OM_RESERVED_52);
+    sw32(data, OM_UNUSED_54);
 
     /* --- read now-native offsets + counts --- */
-    offTex     = rd32(data, 0x00);
-    offVtx     = rd32(data, 0x04);
-    offTri     = rd32(data, 0x08);
-    offAttach  = rd32(data, 0x14);
-    offSpheres = rd32(data, 0x1C);
-    offBat     = rd32(data, 0x38);
-    offAnimIdx = rd32(data, 0x4C);
-    nAttach    = rd16(data, 0x18);
-    sphSize    = rd16(data, 0x20);
-    nTex       = rd16(data, 0x22);
-    nVtx       = rd16(data, 0x24);
-    nTri       = rd16(data, 0x26);
-    nBat       = rd16(data, 0x28);
+    offTex     = rd32(data, OM_TEXTURES);
+    offVtx     = rd32(data, OM_VERTICES);
+    offTri     = rd32(data, OM_TRIANGLES);
+    offAttach  = rd32(data, OM_ATTACH_POINTS);
+    offSpheres = rd32(data, OM_COLLISION_SPHERES);
+    offBat     = rd32(data, OM_BATCHES);
+    offAnimIdx = rd32(data, OM_ANIMATED_VERTEX_INDICES);
+    nAttach    = rd16(data, OM_NUM_ATTACH_POINTS);
+    sphSize    = rd16(data, OM_COLLISION_SPHERES_SIZE);
+    nTex       = rd16(data, OM_NUM_TEXTURES);
+    nVtx       = rd16(data, OM_NUM_VERTICES);
+    nTri       = rd16(data, OM_NUM_TRIANGLES);
+    nBat       = rd16(data, OM_NUM_BATCHES);
 
     /* --- nested arrays --- */
     if (nTex > 0)  swap_texinfos(data, (uint32_t) offTex, (uint32_t) nTex, size);
@@ -283,6 +315,51 @@ static void swap_object_model(void *data, uint32_t size) {
  *  cross-checked against tracks.c generate_track() offset patching).
  * ======================================================================== */
 #define LEVEL_SEGMENT_SIZE 0x44u
+
+/* LevelModel header offsets (structs.h LevelModel). `LM_UNIDENTIFIED_*` /
+ * `LMSEG_UNIDENTIFIED_*` are unidentified in the decomp; where this port has
+ * observed how a field is consumed, that observation is in the trailing
+ * comment and the name still records only what is actually known. */
+#define LM_TEXTURES                 0x00u
+#define LM_SEGMENTS                 0x04u
+#define LM_SEGMENT_BOUNDING_BOXES   0x08u
+#define LM_UNIDENTIFIED_0C          0x0Cu /* s32 offset, target unidentified */
+#define LM_SEGMENT_BITFIELDS        0x10u
+#define LM_SEGMENT_BSP_TREE         0x14u
+#define LM_NUM_TEXTURES             0x18u
+#define LM_NUM_SEGMENTS             0x1Au
+#define LM_UNIDENTIFIED_1C          0x1Cu /* s16, unidentified */
+#define LM_NUM_ANIMATED_TEXTURES    0x1Eu
+#define LM_MINIMAP_SPRITE_INDEX     0x20u
+#define LM_MINIMAP_ROTATION         0x24u
+#define LM_UNIDENTIFIED_26          0x26u /* s16, unidentified */
+#define LM_MINIMAP_X_SCALE          0x28u
+#define LM_MINIMAP_Y_SCALE          0x2Cu
+#define LM_MINIMAP_OFFSET_X_ADV1    0x30u
+#define LM_MINIMAP_OFFSET_Y_ADV1    0x32u
+#define LM_MINIMAP_OFFSET_X_ADV2    0x34u
+#define LM_MINIMAP_OFFSET_Y_ADV2    0x36u
+#define LM_MINIMAP_COLOR            0x38u
+#define LM_LOWER_X_BOUNDS           0x3Cu
+#define LM_UPPER_X_BOUNDS           0x3Eu
+#define LM_LOWER_Y_BOUNDS           0x40u
+#define LM_UPPER_Y_BOUNDS           0x42u
+#define LM_LOWER_Z_BOUNDS           0x44u
+#define LM_UPPER_Z_BOUNDS           0x46u
+#define LM_MODEL_SIZE               0x48u
+
+/* LevelModelSegment offsets, relative to the segment base. */
+#define LMSEG_VERTICES              0x00u
+#define LMSEG_TRIANGLES             0x04u
+#define LMSEG_UNIDENTIFIED_08       0x08u /* s32; read as a bitfield/value elsewhere */
+#define LMSEG_BATCHES               0x0Cu
+#define LMSEG_COLLISION_FACETS      0x14u
+#define LMSEG_NUM_VERTICES          0x1Cu
+#define LMSEG_NUM_TRIANGLES         0x1Eu
+#define LMSEG_NUM_BATCHES           0x20u
+#define LMSEG_BITFIELD_INDEX        0x28u /* indexes LM_SEGMENT_BITFIELDS */
+#define LMSEG_UNIDENTIFIED_3C       0x3Cu /* s32 bitfield; only ever read as `& 2` */
+
 static void swap_level_model(void *data, uint32_t size) {
     int32_t offTex, offSeg;
     int16_t nTex, nSeg;
@@ -293,42 +370,42 @@ static void swap_level_model(void *data, uint32_t size) {
     }
 
     /* --- LevelModel header (0x00 .. 0x48) --- */
-    sw32(data, 0x00); /* textures (offset) */
-    sw32(data, 0x04); /* segments (offset) */
-    sw32(data, 0x08); /* segmentsBoundingBoxes (offset) */
-    sw32(data, 0x0C); /* unkC (offset) */
-    sw32(data, 0x10); /* segmentsBitfields (offset) */
-    sw32(data, 0x14); /* segmentsBspTree (offset) */
-    sw16(data, 0x18); /* numberOfTextures */
-    sw16(data, 0x1A); /* numberOfSegments */
-    sw16(data, 0x1C); /* unk1C */
-    sw16(data, 0x1E); /* numberOfAnimatedTextures */
-    sw32(data, 0x20); /* minimapSpriteIndex */
-    sw16(data, 0x24); /* minimapRotation */
-    sw16(data, 0x26); /* unk26 */
-    swf32(data, 0x28); /* minimapXScale */
-    swf32(data, 0x2C); /* minimapYScale */
-    sw16(data, 0x30); /* minimapOffsetXAdv1 */
-    sw16(data, 0x32); /* minimapOffsetYAdv1 */
-    sw16(data, 0x34); /* minimapOffsetXAdv2 */
-    sw16(data, 0x36); /* minimapOffsetYAdv2 */
-    sw32(data, 0x38); /* minimapColor */
-    sw16(data, 0x3C); /* lowerXBounds */
-    sw16(data, 0x3E); /* upperXBounds */
-    sw16(data, 0x40); /* lowerYBounds */
-    sw16(data, 0x42); /* upperYBounds */
-    sw16(data, 0x44); /* lowerZBounds */
-    sw16(data, 0x46); /* upperZBounds */
-    sw32(data, 0x48); /* modelSize */
+    sw32(data, LM_TEXTURES);
+    sw32(data, LM_SEGMENTS);
+    sw32(data, LM_SEGMENT_BOUNDING_BOXES);
+    sw32(data, LM_UNIDENTIFIED_0C);
+    sw32(data, LM_SEGMENT_BITFIELDS);
+    sw32(data, LM_SEGMENT_BSP_TREE);
+    sw16(data, LM_NUM_TEXTURES);
+    sw16(data, LM_NUM_SEGMENTS);
+    sw16(data, LM_UNIDENTIFIED_1C);
+    sw16(data, LM_NUM_ANIMATED_TEXTURES);
+    sw32(data, LM_MINIMAP_SPRITE_INDEX);
+    sw16(data, LM_MINIMAP_ROTATION);
+    sw16(data, LM_UNIDENTIFIED_26);
+    swf32(data, LM_MINIMAP_X_SCALE);
+    swf32(data, LM_MINIMAP_Y_SCALE);
+    sw16(data, LM_MINIMAP_OFFSET_X_ADV1);
+    sw16(data, LM_MINIMAP_OFFSET_Y_ADV1);
+    sw16(data, LM_MINIMAP_OFFSET_X_ADV2);
+    sw16(data, LM_MINIMAP_OFFSET_Y_ADV2);
+    sw32(data, LM_MINIMAP_COLOR);
+    sw16(data, LM_LOWER_X_BOUNDS);
+    sw16(data, LM_UPPER_X_BOUNDS);
+    sw16(data, LM_LOWER_Y_BOUNDS);
+    sw16(data, LM_UPPER_Y_BOUNDS);
+    sw16(data, LM_LOWER_Z_BOUNDS);
+    sw16(data, LM_UPPER_Z_BOUNDS);
+    sw32(data, LM_MODEL_SIZE);
 
-    offTex = rd32(data, 0x00);
-    offSeg = rd32(data, 0x04);
-    nTex   = rd16(data, 0x18);
-    nSeg   = rd16(data, 0x1A);
+    offTex = rd32(data, LM_TEXTURES);
+    offSeg = rd32(data, LM_SEGMENTS);
+    nTex   = rd16(data, LM_NUM_TEXTURES);
+    nSeg   = rd16(data, LM_NUM_SEGMENTS);
 
     /* segmentsBoundingBoxes: LevelModelSegmentBoundingBox = 6 x s16 each. */
     {
-        int32_t offBox = rd32(data, 0x08);
+        int32_t offBox = rd32(data, LM_SEGMENT_BOUNDING_BOXES);
         if (nSeg > 0 && offBox != 0 &&
             in_bounds((uint32_t) offBox, (uint32_t) nSeg * 12u, size)) {
             sw16_arr(data, (uint32_t) offBox, (uint32_t) nSeg * 6u);
@@ -357,23 +434,23 @@ static void swap_level_model(void *data, uint32_t size) {
                 break;
             }
             /* On-disk fields the game reads (rest are runtime scratch): */
-            sw32(data, s + 0x00); /* vertices (offset)      */
-            sw32(data, s + 0x04); /* triangles (offset)     */
-            sw32(data, s + 0x08); /* unk8 (read as bitfield/value elsewhere) */
-            sw32(data, s + 0x0C); /* batches (offset)       */
-            sw32(data, s + 0x14); /* collisionFacets (offset) */
-            sw16(data, s + 0x1C); /* numberOfVertices       */
-            sw16(data, s + 0x1E); /* numberOfTriangles      */
-            sw16(data, s + 0x20); /* numberOfBatches        */
-            sw16(data, s + 0x28); /* unk28 (segmentsBitfields index) */
-            sw32(data, s + 0x3C); /* unk3C (bitfield, read as `& 2`) */
+            sw32(data, s + LMSEG_VERTICES);
+            sw32(data, s + LMSEG_TRIANGLES);
+            sw32(data, s + LMSEG_UNIDENTIFIED_08);
+            sw32(data, s + LMSEG_BATCHES);
+            sw32(data, s + LMSEG_COLLISION_FACETS);
+            sw16(data, s + LMSEG_NUM_VERTICES);
+            sw16(data, s + LMSEG_NUM_TRIANGLES);
+            sw16(data, s + LMSEG_NUM_BATCHES);
+            sw16(data, s + LMSEG_BITFIELD_INDEX);
+            sw32(data, s + LMSEG_UNIDENTIFIED_3C);
 
-            sVtx  = rd32(data, s + 0x00);
-            sTri  = rd32(data, s + 0x04);
-            sBat  = rd32(data, s + 0x0C);
-            sNVtx = rd16(data, s + 0x1C);
-            sNTri = rd16(data, s + 0x1E);
-            sNBat = rd16(data, s + 0x20);
+            sVtx  = rd32(data, s + LMSEG_VERTICES);
+            sTri  = rd32(data, s + LMSEG_TRIANGLES);
+            sBat  = rd32(data, s + LMSEG_BATCHES);
+            sNVtx = rd16(data, s + LMSEG_NUM_VERTICES);
+            sNTri = rd16(data, s + LMSEG_NUM_TRIANGLES);
+            sNBat = rd16(data, s + LMSEG_NUM_BATCHES);
 
             if (sNVtx > 0) swap_vertices(data, (uint32_t) sVtx, (uint32_t) sNVtx, size);
             if (sNTri > 0) swap_triangles(data, (uint32_t) sTri, (uint32_t) sNTri, size);
@@ -386,7 +463,7 @@ static void swap_level_model(void *data, uint32_t size) {
              * 0x4200 instead of 0x0042 -> wild plane indexing -> nan/garbage planes
              * -> a racer's wheels never register a ground contact (can't move). */
             {
-                int32_t sCF = rd32(data, s + 0x14); /* already byteswapped above */
+                int32_t sCF = rd32(data, s + LMSEG_COLLISION_FACETS); /* already byteswapped above */
                 if (sNTri > 0 && sCF != 0 && in_bounds((uint32_t) sCF, (uint32_t) sNTri * 8u, size)) {
                     sw16_arr(data, (uint32_t) sCF, (uint32_t) sNTri * 4u);
                 }
@@ -399,6 +476,44 @@ static void swap_level_model(void *data, uint32_t size) {
  *  ASSET_LEVEL_HEADERS  (LevelHeader, fixed ~0xC4..0xC8 record)
  *  Layout: structs.h LevelHeader (wins over levelHeader.hpp on discrepancies).
  * ======================================================================== */
+/* LevelHeader offsets (structs.h LevelHeader). `LH_UNIDENTIFIED_*` are fields
+ * the decomp still calls unkNN; where levelHeader.hpp offers a candidate name
+ * that this port has not confirmed against a reader, it is recorded in the
+ * trailing comment rather than adopted into the macro name. */
+#define LH_COURSE_HEIGHT        0x08u
+#define LH_LAPS                 0x4Bu /* plain s8, no swap */
+#define LH_GEOMETRY             0x34u
+#define LH_COLLECTABLES         0x36u
+#define LH_SKYBOX               0x38u
+#define LH_FOG_NEAR             0x3Au
+#define LH_FOG_FAR              0x3Cu
+#define LH_FOG_R                0x3Eu
+#define LH_FOG_G                0x40u
+#define LH_FOG_B                0x42u
+#define LH_INSTRUMENTS          0x54u
+#define LH_WAVE_SINE_HEIGHT0    0x5Au
+#define LH_WAVE_SINE_HEIGHT1    0x5Eu
+#define LH_WAVE_SEED_SIZE       0x60u
+#define LH_WAVE_POWER           0x62u
+#define LH_UNIDENTIFIED_64      0x64u /* s16, unidentified (wave block) */
+#define LH_UNIDENTIFIED_66      0x66u /* s16, unidentified (wave block) */
+#define LH_WAVE_TEX_ID          0x68u
+#define LH_WAVE_VIEW_DIST       0x6Eu
+#define LH_MISC_ASSETS          0x74u /* s32[7], decomp unk74[7] */
+#define LH_MISC_ASSETS_COUNT    7u
+#define LH_WEATHER_ENABLE       0x90u
+#define LH_WEATHER_TYPE         0x92u
+#define LH_WEATHER_VEL_X        0x96u
+#define LH_WEATHER_VEL_Y        0x98u
+#define LH_WEATHER_VEL_Z        0x9Au
+#define LH_UNIDENTIFIED_A4      0xA4u /* u32; levelHeader.hpp calls it specialSkyTexture */
+#define LH_UNIDENTIFIED_A8      0xA8u /* s16, unidentified */
+#define LH_UNIDENTIFIED_AA      0xAAu /* s16, unidentified */
+#define LH_PULSE_LIGHT_DATA     0xACu /* s32 offset, or -1 */
+#define LH_UNIDENTIFIED_B0      0xB0u /* s16, unidentified */
+#define LH_UNIDENTIFIED_BA      0xBAu /* s16; levelHeader.hpp calls it objectMap2 */
+#define LH_TRAILING_C4          0xC4u /* u32 present on disk; the game never reads it */
+
 static void swap_level_header(void *data, uint32_t size) {
     if (size < 0xC4u) {
         return;
@@ -428,61 +543,60 @@ static void swap_level_header(void *data, uint32_t size) {
             const char *e = getenv("MDKR_FORCE_LAPS");
             sForcedLaps = (e != NULL && e[0] != '\0') ? atoi(e) : -1;
         }
-        if (sForcedLaps > 0 && size > 0x4Bu) {
-            ((int8_t *) data)[0x4B] = (int8_t) sForcedLaps; /* LevelHeader.laps */
+        if (sForcedLaps > 0 && size > LH_LAPS) {
+            ((int8_t *) data)[LH_LAPS] = (int8_t) sForcedLaps;
         }
     }
 
-    swf32(data, 0x08); /* course_height */
+    swf32(data, LH_COURSE_HEIGHT);
 
-    sw16(data, 0x34); /* geometry */
-    sw16(data, 0x36); /* collectables */
-    sw16(data, 0x38); /* skybox */
-    sw16(data, 0x3A); /* fogNear */
-    sw16(data, 0x3C); /* fogFar */
-    sw16(data, 0x3E); /* fogR */
-    sw16(data, 0x40); /* fogG */
-    sw16(data, 0x42); /* fogB */
+    sw16(data, LH_GEOMETRY);
+    sw16(data, LH_COLLECTABLES);
+    sw16(data, LH_SKYBOX);
+    sw16(data, LH_FOG_NEAR);
+    sw16(data, LH_FOG_FAR);
+    sw16(data, LH_FOG_R);
+    sw16(data, LH_FOG_G);
+    sw16(data, LH_FOG_B);
 
-    sw16(data, 0x54); /* instruments (u16) */
+    sw16(data, LH_INSTRUMENTS);
 
     /* wave parameters (s16 values interleaved with u8 fields) */
-    sw16(data, 0x5A); /* waveSineHeight0 */
-    sw16(data, 0x5E); /* waveSineHeight1 */
-    sw16(data, 0x60); /* waveSeedSize */
-    sw16(data, 0x62); /* wavePower */
-    sw16(data, 0x64); /* unk64 */
-    sw16(data, 0x66); /* unk66 */
-    sw16(data, 0x68); /* waveTexID */
-    sw16(data, 0x6E); /* waveViewDist */
+    sw16(data, LH_WAVE_SINE_HEIGHT0);
+    sw16(data, LH_WAVE_SINE_HEIGHT1);
+    sw16(data, LH_WAVE_SEED_SIZE);
+    sw16(data, LH_WAVE_POWER);
+    sw16(data, LH_UNIDENTIFIED_64);
+    sw16(data, LH_UNIDENTIFIED_66);
+    sw16(data, LH_WAVE_TEX_ID);
+    sw16(data, LH_WAVE_VIEW_DIST);
 
-    /* miscAssets[7] / unk74[7] : s32 misc-asset indices, patched via
-     * get_misc_asset() at runtime. */
-    sw32_arr(data, 0x74, 7);
+    /* misc-asset indices, patched via get_misc_asset() at runtime. */
+    sw32_arr(data, LH_MISC_ASSETS, LH_MISC_ASSETS_COUNT);
 
     /* weather block */
-    sw16(data, 0x90); /* weatherEnable */
-    sw16(data, 0x92); /* weatherType */
+    sw16(data, LH_WEATHER_ENABLE);
+    sw16(data, LH_WEATHER_TYPE);
     /* 0x94 intensity, 0x95 opacity : bytes */
-    sw16(data, 0x96); /* weatherVelX */
-    sw16(data, 0x98); /* weatherVelY */
-    sw16(data, 0x9A); /* weatherVelZ */
+    sw16(data, LH_WEATHER_VEL_X);
+    sw16(data, LH_WEATHER_VEL_Y);
+    sw16(data, LH_WEATHER_VEL_Z);
 
-    /* 0x9C cameraFOV, 0x9D..0x9F bgColor, 0xA0/0xA1 unkA0/unkA1 : bytes
+    /* 0x9C cameraFOV, 0x9D..0x9F bgColor, 0xA0/0xA1 unidentified : bytes
      * (NOTE: levelHeader.hpp calls 0xA0 a single be_int16; structs.h — which
      * the game reads — splits it into two u8 fields, so no swap here). */
-    sw32(data, 0xA4); /* unkA4 / specialSkyTexture (u32) */
-    sw16(data, 0xA8); /* unkA8 */
-    sw16(data, 0xAA); /* unkAA */
-    sw32(data, 0xAC); /* pulseLightData (s32 offset/-1) */
-    sw16(data, 0xB0); /* unkB0 */
+    sw32(data, LH_UNIDENTIFIED_A4);
+    sw16(data, LH_UNIDENTIFIED_A8);
+    sw16(data, LH_UNIDENTIFIED_AA);
+    sw32(data, LH_PULSE_LIGHT_DATA);
+    sw16(data, LH_UNIDENTIFIED_B0);
     /* 0xB2..0xB9 : bytes (voidColour etc.) */
-    sw16(data, 0xBA); /* unkBA / objectMap2 */
+    sw16(data, LH_UNIDENTIFIED_BA);
     /* 0xBC..0xC3 : bytes (gradient bg colours) */
-    /* 0xC4 trailing u32 (levelHeader.hpp unkC4) exists on disk but structs.h
-     * stops at 0xC4 and the game never reads it; swap if the record carries it. */
+    /* structs.h stops at 0xC4 and the game never reads the trailing word; swap
+     * it only if the record actually carries it. */
     if (size >= 0xC8u) {
-        sw32(data, 0xC4);
+        sw32(data, LH_TRAILING_C4);
     }
 }
 
@@ -490,53 +604,102 @@ static void swap_level_header(void *data, uint32_t size) {
  *  ASSET_OBJECTS  (ObjectHeader, one 0x78 record + arrays it points at)
  *  Layout: structs.h ObjectHeader (== objectHeader.hpp).
  * ======================================================================== */
+/* ObjectHeader offsets (structs.h ObjectHeader == objectHeader.hpp).
+ * `OH_UNIDENTIFIED_*` / `OH24_UNIDENTIFIED_*` are unidentified in the decomp. */
+#define OH_UNIDENTIFIED_00      0x00u /* s32, unidentified */
+#define OH_SHADOW_SCALE         0x04u
+#define OH_UNIDENTIFIED_08      0x08u /* f32, unidentified */
+#define OH_SCALE                0x0Cu
+#define OH_MODEL_IDS            0x10u
+#define OH_VEHICLE_PART_IDS     0x14u
+#define OH_VEHICLE_PART_INDICES 0x18u
+#define OH_OBJECT_PARTICLES     0x1Cu
+#define OH_PAD_20               0x20u
+#define OH_HEADER24             0x24u /* s32 offset -> ObjectHeader24 */
+#define OH_SHADE_AMBIENT        0x28u
+#define OH_SHADE_DIFFUSE        0x2Cu
+#define OH_FLAGS                0x30u
+#define OH_SHADOW_GROUP         0x32u
+#define OH_UNIDENTIFIED_34      0x34u /* s16, unidentified */
+#define OH_WATER_EFFECT_GROUP   0x36u
+#define OH_UNIDENTIFIED_38      0x38u /* s16, unidentified */
+#define OH_SHADE_ANGLE_Y        0x3Eu
+#define OH_SHADE_ANGLE_Z        0x40u
+#define OH_UNIDENTIFIED_42      0x42u /* s16, unidentified */
+#define OH_UNIDENTIFIED_44      0x44u /* s16, unidentified */
+#define OH_UNIDENTIFIED_46      0x46u /* s16, unidentified */
+#define OH_SHADOW_REGION        0x48u /* shadowBottom/Top region s16 */
+#define OH_UNIDENTIFIED_4A      0x4Au /* s16, unidentified */
+#define OH_UNIDENTIFIED_4C      0x4Cu /* s16, unidentified */
+#define OH_DRAW_DISTANCE        0x4Eu
+#define OH_UNIDENTIFIED_50      0x50u /* s16; objects.c:3530 scales it by the
+                                       * object's scale into Object::unk34, which
+                                       * the frustum test adds as a bounding
+                                       * radius -- so this is very likely the
+                                       * model's cull radius, but the decomp has
+                                       * not named it and nothing else reads it. */
+#define OH_NUM_MODEL_IDS        0x55u /* u8 */
+#define OH_NUM_VEHICLE_PARTS    0x56u /* u8 (attachPointCount) */
+#define OH_NUM_PARTICLES        0x57u /* u8 */
+
+/* ObjectHeader24 (0x18 bytes), relative to the OH_HEADER24 target. */
+#define OH24_UNIDENTIFIED_06    0x06u /* u16, unidentified */
+#define OH24_UNIDENTIFIED_08    0x08u /* u32 union arm, unidentified */
+#define OH24_HOME_X             0x0Cu
+#define OH24_HOME_Y             0x0Eu
+#define OH24_HOME_Z             0x10u
+#define OH24_RADIUS             0x12u
+#define OH24_UNIDENTIFIED_14    0x14u /* u16, unidentified */
+#define OH24_UNIDENTIFIED_16    0x16u /* u16, unidentified */
+#define OH24_SIZE               0x18u
+
 static void swap_object_header(void *data, uint32_t size) {
-    int32_t offModelIds, offVehParts, offParticles, offUnk24;
+    int32_t offModelIds, offVehParts, offParticles, offHeader24;
     uint8_t nModelIds, nVehParts, nParticles;
 
     if (size < 0x78u) {
         return;
     }
 
-    sw32(data, 0x00); /* unk0 */
-    swf32(data, 0x04); /* shadowScale */
-    swf32(data, 0x08); /* unk8 */
-    swf32(data, 0x0C); /* scale */
-    sw32(data, 0x10); /* modelIds (offset) */
-    sw32(data, 0x14); /* vehiclePartIds (offset) */
-    sw32(data, 0x18); /* vehiclePartIndices (offset) */
-    sw32(data, 0x1C); /* objectParticles (offset) */
-    sw32(data, 0x20); /* pad20 */
-    sw32(data, 0x24); /* unk24 (offset -> ObjectHeader24) */
-    swf32(data, 0x28); /* shadeAmbient */
-    swf32(data, 0x2C); /* shadeDiffuse */
-    sw16(data, 0x30); /* flags (u16) */
-    sw16(data, 0x32); /* shadowGroup */
-    sw16(data, 0x34); /* unk34 */
-    sw16(data, 0x36); /* waterEffectGroup */
-    sw16(data, 0x38); /* unk38 */
+    sw32(data, OH_UNIDENTIFIED_00);
+    swf32(data, OH_SHADOW_SCALE);
+    swf32(data, OH_UNIDENTIFIED_08);
+    swf32(data, OH_SCALE);
+    sw32(data, OH_MODEL_IDS);
+    sw32(data, OH_VEHICLE_PART_IDS);
+    sw32(data, OH_VEHICLE_PART_INDICES);
+    sw32(data, OH_OBJECT_PARTICLES);
+    sw32(data, OH_PAD_20);
+    sw32(data, OH_HEADER24);
+    swf32(data, OH_SHADE_AMBIENT);
+    swf32(data, OH_SHADE_DIFFUSE);
+    sw16(data, OH_FLAGS);
+    sw16(data, OH_SHADOW_GROUP);
+    sw16(data, OH_UNIDENTIFIED_34);
+    sw16(data, OH_WATER_EFFECT_GROUP);
+    sw16(data, OH_UNIDENTIFIED_38);
     /* 0x3A..0x3D : bytes */
-    sw16(data, 0x3E); /* shadeAngleY */
-    sw16(data, 0x40); /* shadeAngleZ */
-    sw16(data, 0x42); /* unk42 */
-    sw16(data, 0x44); /* unk44 */
-    sw16(data, 0x46); /* unk46 */
-    sw16(data, 0x48); /* shadowBottom/Top region s16 */
-    sw16(data, 0x4A); /* unk4A */
-    sw16(data, 0x4C); /* unk4C */
-    sw16(data, 0x4E); /* drawDistance */
-    sw16(data, 0x50); /* unk50 */
+    sw16(data, OH_SHADE_ANGLE_Y);
+    sw16(data, OH_SHADE_ANGLE_Z);
+    sw16(data, OH_UNIDENTIFIED_42);
+    sw16(data, OH_UNIDENTIFIED_44);
+    sw16(data, OH_UNIDENTIFIED_46);
+    sw16(data, OH_SHADOW_REGION);
+    sw16(data, OH_UNIDENTIFIED_4A);
+    sw16(data, OH_UNIDENTIFIED_4C);
+    sw16(data, OH_DRAW_DISTANCE);
+    sw16(data, OH_UNIDENTIFIED_50);
     /* 0x52..0x5F : bytes (counts, type, name-adjacent) */
     /* 0x60..0x6F internalName[16] : bytes */
     /* 0x70..0x77 : bytes */
 
-    offModelIds  = rd32(data, 0x10);
-    offVehParts  = rd32(data, 0x14);
-    offParticles = rd32(data, 0x1C);
-    offUnk24     = rd32(data, 0x24);
-    nModelIds    = rd8(data, 0x55); /* numberOfModelIds */
-    nVehParts    = rd8(data, 0x56); /* numberOfVehicleParts (attachPointCount) */
-    nParticles   = rd8(data, 0x57); /* numberOfParticles */
+    offModelIds  = rd32(data, OH_MODEL_IDS);
+    offVehParts  = rd32(data, OH_VEHICLE_PART_IDS);
+    offParticles = rd32(data, OH_OBJECT_PARTICLES);
+    offHeader24  = rd32(data, OH_HEADER24);
+    nModelIds    = rd8(data, OH_NUM_MODEL_IDS);
+    nVehParts    = rd8(data, OH_NUM_VEHICLE_PARTS);
+    nParticles   = rd8(data, OH_NUM_PARTICLES);
 
     /* modelIds: s32[numberOfModelIds] */
     if (nModelIds > 0 && offModelIds != 0 &&
@@ -554,18 +717,17 @@ static void swap_object_header(void *data, uint32_t size) {
         in_bounds((uint32_t) offParticles, (uint32_t) nParticles * 8u, size)) {
         sw32_arr(data, (uint32_t) offParticles, (uint32_t) nParticles * 2u);
     }
-    /* unk24 -> ObjectHeader24 (0x18): u16 unk6, u32 unk8, s16 homeX/Y/Z,
-     * u16 radius/unk14/unk16. */
-    if (offUnk24 != 0 && in_bounds((uint32_t) offUnk24, 0x18u, size)) {
-        uint32_t u = (uint32_t) offUnk24;
-        sw16(data, u + 0x06); /* unk6 */
-        sw32(data, u + 0x08); /* unk8 (union u32) */
-        sw16(data, u + 0x0C); /* homeX */
-        sw16(data, u + 0x0E); /* homeY */
-        sw16(data, u + 0x10); /* homeZ */
-        sw16(data, u + 0x12); /* radius */
-        sw16(data, u + 0x14); /* unk14 */
-        sw16(data, u + 0x16); /* unk16 */
+    /* OH_HEADER24 -> ObjectHeader24 (0x18 bytes). */
+    if (offHeader24 != 0 && in_bounds((uint32_t) offHeader24, OH24_SIZE, size)) {
+        uint32_t u = (uint32_t) offHeader24;
+        sw16(data, u + OH24_UNIDENTIFIED_06);
+        sw32(data, u + OH24_UNIDENTIFIED_08);
+        sw16(data, u + OH24_HOME_X);
+        sw16(data, u + OH24_HOME_Y);
+        sw16(data, u + OH24_HOME_Z);
+        sw16(data, u + OH24_RADIUS);
+        sw16(data, u + OH24_UNIDENTIFIED_14);
+        sw16(data, u + OH24_UNIDENTIFIED_16);
     }
 }
 
@@ -628,15 +790,24 @@ static void swap_texture(void *data, uint32_t size) {
  *  ASSET_SPRITES  (SpriteAsset header; frame offset bytes untouched)
  *  Layout: structs.h SpriteAsset (== sprite.hpp SpriteHeader, 12-byte head).
  * ======================================================================== */
+/* SpriteAsset head offsets (structs.h SpriteAsset == sprite.hpp SpriteHeader).
+ * The decomp names 0x04/0x06/0x08 unk4/unk6/unk8; structs.h resolves the first
+ * two as the sprite anchor and the third as an unused field (0 in ROM). */
+#define SPR_BASE_TEXTURE_ID 0x00u
+#define SPR_NUM_FRAMES      0x02u
+#define SPR_ANCHOR_X        0x04u
+#define SPR_ANCHOR_Y        0x06u
+#define SPR_UNUSED_FIELD    0x08u
+
 static void swap_sprite(void *data, uint32_t size) {
     if (size < 0x0Cu) {
         return;
     }
-    sw16(data, 0x00); /* baseTextureId / startTextureIndex */
-    sw16(data, 0x02); /* numberOfFrames */
-    sw16(data, 0x04); /* anchor.x (unk4) */
-    sw16(data, 0x06); /* anchor.y (unk6) */
-    sw32(data, 0x08); /* unused_field (unk8; 0 in ROM) */
+    sw16(data, SPR_BASE_TEXTURE_ID);
+    sw16(data, SPR_NUM_FRAMES);
+    sw16(data, SPR_ANCHOR_X);
+    sw16(data, SPR_ANCHOR_Y);
+    sw32(data, SPR_UNUSED_FIELD);
     /* 0x0C.. frameTexOffsets : bytes */
 }
 
@@ -797,13 +968,18 @@ static void swap_particle_behaviours(void *data, uint32_t size) {
  *  ASSET_AI_BEHAVIOUR  (array of AIBehaviourTable, 0x18 each: 2x f32 + s8[16])
  * ======================================================================== */
 #define AI_BEHAVIOUR_SIZE 0x18u
+/* AIBehaviourTable: two leading f32 the decomp still calls unk0/unk4, then a
+ * 4x4 byte percentage table. Neither f32 has been identified. */
+#define AIB_UNIDENTIFIED_00 0x00u /* f32, unidentified */
+#define AIB_UNIDENTIFIED_04 0x04u /* f32, unidentified */
+
 static void swap_ai_behaviour(void *data, uint32_t size) {
     uint32_t count = size / AI_BEHAVIOUR_SIZE;
     uint32_t i;
     for (i = 0; i < count; i++) {
         uint32_t a = i * AI_BEHAVIOUR_SIZE;
-        swf32(data, a + 0x00); /* unk0 */
-        swf32(data, a + 0x04); /* unk4 */
+        swf32(data, a + AIB_UNIDENTIFIED_00);
+        swf32(data, a + AIB_UNIDENTIFIED_04);
         /* +0x08 percentages[4][4] : bytes */
     }
 }
@@ -894,8 +1070,16 @@ void asset_swap_object_animation(void *data, uint32_t size, uint32_t numAnimated
  *  MISC section is punted at load, so this record is swapped on demand at the
  *  func_8007F1E8 call sites, with a dedup guard against per-level re-swap).
  * ======================================================================== */
-#define LH70_ENTRY_STRIDE 8u   /* s32 unk0 + u8 r,g,b,a */
+#define LH70_ENTRY_STRIDE 8u   /* one unidentified s32 + u8 r,g,b,a */
 #define LH70_HEADER_SIZE  0x18u
+/* LevelHeader_70 header: 0x00 is the entry count, 0x04..0x0C are further s32
+ * the decomp has not identified; 0x10/0x14 are RGBA byte quads. */
+#define LH70_ENTRY_COUNT       0x00u
+#define LH70_UNIDENTIFIED_04   0x04u /* s32, unidentified */
+#define LH70_UNIDENTIFIED_08   0x08u /* s32, unidentified */
+#define LH70_UNIDENTIFIED_0C   0x0Cu /* s32, unidentified */
+/* Per-entry (LevelHeader_70_18), relative to the entry base. */
+#define LH70E_UNIDENTIFIED_00  0x00u /* s32, decomp LevelHeader_70_18.unk0 */
 
 /* Session-long set of already-normalized blob pointers. gAssetsMiscSection is
  * loaded once and never freed, so raw pointer identity is stable and valid as a
@@ -928,20 +1112,19 @@ void asset_swap_misc_lightdata(void *blob) {
         return; /* already normalized on an earlier level load */
     }
 
-    /* header: 0x00..0x0C are s32 (0x00 is the entry count); 0x10/0x14 RGBA bytes */
-    sw32(blob, 0x00);
-    sw32(blob, 0x04);
-    sw32(blob, 0x08);
-    sw32(blob, 0x0C);
+    sw32(blob, LH70_ENTRY_COUNT);
+    sw32(blob, LH70_UNIDENTIFIED_04);
+    sw32(blob, LH70_UNIDENTIFIED_08);
+    sw32(blob, LH70_UNIDENTIFIED_0C);
     /* 0x10, 0x14 ColourRGBA: bytes, no swap */
 
-    count = rd32(blob, 0x00);
+    count = rd32(blob, LH70_ENTRY_COUNT);
     if (count < 0 || count > 4096) {
         return; /* implausible — leave the rest untouched */
     }
     for (i = 0; i < count; i++) {
         uint32_t e = LH70_HEADER_SIZE + (uint32_t) i * LH70_ENTRY_STRIDE;
-        sw32(blob, e + 0x00); /* LevelHeader_70_18.unk0 (s32) */
+        sw32(blob, e + LH70E_UNIDENTIFIED_00);
         /* +0x04 r,g,b,a bytes, no swap */
     }
 }
@@ -1126,6 +1309,13 @@ int asset_swap_misc_magic_codes(void *blob, uint32_t size) {
  * ======================================================================== */
 #define BOOST_ROM_STRIDE  0x80u
 #define BOOST_ROM_PREFIX  0x78u /* bytes before the two runtime pointer fields */
+/* Object_Boost on-disk offsets. The three Object_Boost_Inner blocks occupy
+ * 0x00..0x68 as 27 consecutive f32. 0x70..0x73 and 0x74 are runtime state
+ * (0 in ROM) that the decomp still calls unk70..unk74. */
+#define BOOST_INNER_F32_COUNT 27u
+#define BOOST_SPRITE_ID       0x6Cu
+#define BOOST_TEXTURE_ID      0x6Eu
+#define BOOST_UNIDENTIFIED_74 0x74u /* f32 runtime state, unidentified */
 
 uint32_t asset_swap_misc_boost(void *dst, uint32_t dstStride, uint32_t dstCapacity, const void *src,
                                uint32_t srcBytes) {
@@ -1151,13 +1341,13 @@ uint32_t asset_swap_misc_boost(void *dst, uint32_t dstStride, uint32_t dstCapaci
         memset(d + BOOST_ROM_PREFIX, 0, dstStride - BOOST_ROM_PREFIX);
 
         /* 27 f32 across the three Object_Boost_Inner blocks: 0x00 .. 0x68. */
-        for (f = 0; f < 27u; f++) {
+        for (f = 0; f < BOOST_INNER_F32_COUNT; f++) {
             swf32(d, f * 4u);
         }
-        sw16(d, 0x6Cu); /* spriteId  */
-        sw16(d, 0x6Eu); /* textureId */
+        sw16(d, BOOST_SPRITE_ID);
+        sw16(d, BOOST_TEXTURE_ID);
         /* 0x70..0x73: individual u8/s8 — deliberately NOT swapped. */
-        swf32(d, 0x74u); /* unk74 */
+        swf32(d, BOOST_UNIDENTIFIED_74);
     }
     return entries;
 }
