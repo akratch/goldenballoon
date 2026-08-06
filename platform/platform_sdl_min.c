@@ -2568,6 +2568,11 @@ static void present_pace_lazy_init(void) {
         s_presentSoftwareDeadline = true;
     } else if (s_presentKind == MDKR_PRESENT_DISPLAY) {
         s_presentEffectiveRate = platform_present_display_rate();
+        if (s_paceMode == PACE_SYNTH && s_presentEffectiveRate == 0u) {
+            /* Synthetic pacing divides per present by this rate; an
+             * unreported refresh keeps a deterministic 60 Hz stand-in. */
+            s_presentEffectiveRate = 60u;
+        }
         s_presentSoftwareDeadline = heldFrameDeadline;
     } else if (s_presentKind == MDKR_PRESENT_UNCAPPED &&
                s_paceMode == PACE_SYNTH) {

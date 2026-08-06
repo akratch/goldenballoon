@@ -185,7 +185,7 @@ def validate(run: Run) -> list[str]:
                 f"webgpu: abandoned {pressure.get('abandoned')} completions")
         if not re.search(
                 r"\[PRESENT-MODE\] backend=webgpu policy=uncapped .*"
-                r"requested=immediate effective=(?:immediate|fifo)",
+                r"tearing=0 requested=mailbox effective=(?:mailbox|fifo)",
                 run.output):
             failures.append("webgpu: missing effective uncapped present mode")
         if not re.search(

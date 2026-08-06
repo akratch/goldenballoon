@@ -823,9 +823,13 @@ static void hud_render_identity_portrait(HudElement *portrait, s32 character,
          * authored scale applies to this draw, the HUD slide/bounce and fade
          * colour apply, and PAL stretches vertically. */
         f32 yScale = portrait->scale;
+        f32 y = portrait->pos.y;
 
         if (gHudPALScale && osTvType == OS_TV_TYPE_PAL) {
             yScale = portrait->scale * 1.1f;
+        }
+        if (gMinimapXlu & 1) {
+            y -= gMinimapOpacity;
         }
         sHudTajPortrait[0].texture = tajPortrait[0].texture;
         sHudTajPortrait[0].xOffset = 0;
@@ -833,7 +837,7 @@ static void hud_render_identity_portrait(HudElement *portrait, s32 character,
         sHudTajPortrait[1].texture = NULL;
         texrect_draw_scaled(&gHudDL, sHudTajPortrait,
                             portrait->pos.x + gHudOffsetX + gHudBounceX,
-                            portrait->pos.y, portrait->scale, yScale,
+                            y, portrait->scale, yScale,
                             gHudColour, TEXRECT_POINT);
     }
     playerBit = taj_mod_player_bit(playerIndex);

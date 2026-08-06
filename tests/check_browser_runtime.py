@@ -135,7 +135,8 @@ CAMERA_OBSTRUCTION_RE = re.compile(
     r"camera_obstruction_observe summary .* gate=(\w+)\(logical_camera_unchanged\) "
     r"duplicates=(\d+) projection_mismatches=(\d+) "
     r"resolved=\{corrected=(\d+) penetrated=(\d+) invalid=(\d+) degraded=(\d+)\} "
-    r"target_hidden=(\d+) target_embedded=(\d+) emergency=(\d+)"
+    r"target_hidden=(\d+) target_embedded=(\d+) depenetrate_only=(\d+) "
+    r"emergency=(\d+)"
 )
 CAMERA_DYNAMIC_RE = re.compile(
     r"camera_obstruction_observe summary .* dynamic=\{published=(\d+) peak=(\d+) "
@@ -2269,7 +2270,11 @@ def run_check(args: argparse.Namespace) -> None:
                 )
                 require(
                     all(int(value) == 0 for row in camera_rows for value in row[1:3])
-                    and all(int(value) == 0 for row in camera_rows for value in row[4:8]),
+                    and all(int(value) == 0 for row in camera_rows for value in row[4:7])
+                    # A depenetrate-only camera (door/cutscene) may briefly lose
+                    # its target; every other camera must never hide it.
+                    and all(int(row[7]) == 0 for row in camera_rows
+                            if int(row[9]) == 0),
                     "browser camera obstruction reported an authority, projection, "
                     "penetration, invalid, or degraded result",
                 )
