@@ -25,10 +25,10 @@ python3 tools/run_checks.py \
   --wasm build-web/mdkr64_web.wasm
 ```
 
-The manifest registers 122 of the 125 `tests/check_*.py` scripts and expands to
-135 tasks. The three it does not name directly
+The manifest registers 122 of the 126 `tests/check_*.py` scripts and expands to
+135 tasks. The four it does not name directly
 (`check_controller_settings_persistence.py`, `check_host_input_focus.py`,
-`check_launcher_tabs.py`) are CTest companions that `rom_free_units` owns, so
+`check_launcher_tabs.py`, `check_overlay_input_handoff.py`) are CTest companions that `rom_free_units` owns, so
 every check script still runs exactly once in a default pass. That task also
 runs the ROM-free display/endian/magic-code/object-layout/allocator/
 runtime-contract, sprite-layout, RDP-interpolation, font-registry/SDF, and RL-1
@@ -833,7 +833,17 @@ close. Its PCM arm also requires the independent overlay pause mix, reduced but
 live music, suppressed race effects, bounded sample edges, and restoration of
 the latest underlying authored mix on resume. This prevents an input-capturing
 overlay from masquerading as a pause menu while gameplay or its dominant
-feedback continues behind it.
+feedback continues behind it. Its handoff arm opens the overlay through a real
+dispatched key event and closes it from the render callback, which is the shape
+the on-screen Resume button has under a mouse click, Enter, or gamepad nav.
+Capture must be claimed on the open and given back on the close: issue #20 was a
+suppression latch that only ever moved when the capture state changed across a
+dispatched event, so Resume left the pad muted for the rest of the session while
+F1, Escape and B/Circle were fine. `check_overlay_input_handoff.py` is the
+ROM-free companion that pins the same contract in source — one shared release
+routine, reconciled against the overlay's live answer both before and across
+dispatch — because the defect was the absence of a call, which no run of the
+paths that still worked could reveal.
 
 `check_surface_suspension.py` compares equal-tick control and minimized arms on
 both native backends. The minimized interval must stop real display-list walks

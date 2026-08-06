@@ -406,6 +406,7 @@ CTEST_COMPANION_SCRIPTS = {
     "check_controller_settings_persistence.py",
     "check_host_input_focus.py",
     "check_launcher_tabs.py",
+    "check_overlay_input_handoff.py",
 }
 
 

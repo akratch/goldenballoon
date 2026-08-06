@@ -54,6 +54,17 @@ AUDIO_RESUME_RE = re.compile(
     r"overlay=(\d+) authored-groups=(\d+),(\d+),(\d+),(\d+) "
     r"effective-groups=(\d+),(\d+),(\d+),(\d+)$", re.MULTILINE
 )
+CAPTURE_RE = re.compile(
+    r"^\[overlay-input\] game input (captured by the overlay|released to the "
+    r"game) at tick (\d+)$", re.MULTILINE
+)
+
+# The handoff arm below. Opening travels a real SDL key event, exactly as the
+# pad's menu button does; closing runs from the render callback, exactly as the
+# on-screen Resume button does under a mouse click, Enter, or ImGui gamepad nav.
+HANDOFF_TICKS = 900
+HANDOFF_OPEN_FRAME = 400
+HANDOFF_CLOSE_FRAME = 600
 
 
 def clean_environment(**updates: str) -> dict[str, str]:
@@ -110,6 +121,72 @@ def transition_edge_limit(samples: array, channels: int, rate: int,
     return transition_peak, max(8192, int(reference_peak * 1.5))
 
 
+def check_input_handoff(binary: Path, rom: Path, timeout: int) -> int:
+    """Issue #20: the pad must come back however the menu was closed.
+
+    Every close path that worked closed the overlay from inside its SDL event
+    handler -- F1, Escape, the pad's menu button, B/Circle -- so the pump saw
+    input capture change across one event and released the game's sources. The
+    on-screen Resume button closes it from the RENDER callback instead, where
+    there is no event to observe, and the suppression latch stayed set for the
+    rest of the session: the game never saw another button.
+
+    This drives exactly that shape. There is no synthetic pad here, so the
+    proof is the handoff itself: capture is claimed on the dispatched open and
+    given back on the render-callback close.
+    """
+    with tempfile.TemporaryDirectory(prefix="mdkr64_overlay_handoff_") as temp:
+        root = Path(temp)
+        prefs = root / "prefs"
+        prefs.mkdir()
+        env = clean_environment(
+            LC_ALL="C",
+            MDKR_APP_AUTOPLAY="1",
+            MDKR_APP_AUTOPLAY_TICKS=str(HANDOFF_TICKS),
+            MDKR_APP_PREFS_DIR=str(prefs),
+            MDKR_AUDIO="0",
+            MDKR_ROM=str(rom),
+            MDKR_SAVE_DIR=str(root / "save"),
+            MDKR_TEST_OVERLAY_ESCAPE_OPEN_FRAME=str(HANDOFF_OPEN_FRAME),
+            MDKR_TEST_OVERLAY_CLOSE_FRAME=str(HANDOFF_CLOSE_FRAME),
+            MDKR_VIDEO_CONFIG_PATH=str(root / "video.ini"),
+            MDKR64_HIDDEN="1",
+        )
+        process = subprocess.run(
+            [str(binary)], cwd=root, env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=timeout, check=False,
+        )
+    output = process.stdout or ""
+    if process.returncode != 0:
+        return fail(f"handoff run exited {process.returncode}", output)
+    fatal = FATAL_RE.search(output)
+    if fatal:
+        return fail(f"handoff run emitted {fatal.group(0)!r}", output)
+    if "[overlay-test] Escape handled; overlay=open" not in output:
+        return fail("the handoff run never opened the overlay", output)
+    if "[overlay-test] closed at frame" not in output:
+        return fail("the handoff run never closed the overlay", output)
+
+    transitions = [(state, int(tick)) for state, tick in CAPTURE_RE.findall(output)]
+    if [state for state, _tick in transitions] != [
+            "captured by the overlay", "released to the game"]:
+        return fail(
+            "expected exactly one capture/release pair around the overlay, "
+            f"got {transitions}", output)
+    captured, released = transitions[0][1], transitions[1][1]
+    if released <= captured:
+        return fail(
+            f"capture was released at tick {released}, before or at the tick "
+            f"it was claimed ({captured})", output)
+    print(
+        "PASS overlay input handoff: the overlay claimed game input at tick "
+        f"{captured} on a dispatched open and gave it back at tick {released} "
+        "on a close performed from the render callback (issue #20)"
+    )
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--build", default="build-rel")
@@ -123,6 +200,10 @@ def main() -> int:
     for path in (binary, rom, SCRIPT):
         if not path.is_file():
             parser.error(f"missing required file: {path}")
+
+    handoff = check_input_handoff(binary, rom, args.timeout)
+    if handoff != 0:
+        return handoff
 
     with tempfile.TemporaryDirectory(prefix="mdkr64_overlay_pause_") as temp:
         root = Path(temp)

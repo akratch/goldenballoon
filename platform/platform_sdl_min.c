@@ -1610,6 +1610,38 @@ static void input_clear_game_sources(void) {
     memset(s_controllerSource, 0, sizeof(s_controllerSource));
 }
 
+#ifdef MDKR_APP
+/* The single handoff between the shell overlay's input capture and the game.
+ *
+ * The overlay does not only open and close from inside process_event. Its
+ * on-screen Resume button closes it from the RENDER callback -- whether it was
+ * activated by mouse, by Enter, or by ImGui gamepad nav (A/Cross) -- and so
+ * does the scripted open/close schedule. Deriving the latch from a transition
+ * observed *during event dispatch* therefore saw no edge at all on those
+ * paths: overlayActive and overlayNow were both already 0 by the next event,
+ * s_gameInputSuppressed stayed 1, and the game never saw another button for
+ * the rest of the session.
+ *
+ * Reconciling against the overlay's live answer makes the handoff independent
+ * of which code path opened or closed the menu, including an engine session
+ * that ends with it open and unregisters the hooks entirely. Retiring the
+ * latched host sources on each edge is what makes it robust to a button that
+ * is still held across the transition: the game resumes neutral and latches
+ * the next real host edge instead of inheriting a press it never saw begin. */
+static void overlay_capture_sync(uint64_t target_tick) {
+    const int wants = platformOverlayWantsInput() ? 1 : 0;
+    if (wants == s_gameInputSuppressed) {
+        return;
+    }
+    s_gameInputSuppressed = wants;
+    input_clear_game_sources();
+    input_capture_live(target_tick);
+    fprintf(stderr, "[overlay-input] game input %s at tick %d\n",
+            wants ? "captured by the overlay" : "released to the game",
+            g_simTickCounter);
+}
+#endif
+
 static int test_script_only_input(void) {
     if (s_testScriptOnlyInput < 0) {
         const char *value = getenv("MDKR_TEST_SCRIPT_ONLY_INPUT");
@@ -1719,6 +1751,11 @@ void platform_input_pump(void) {
     /* Applies deferred shell/window work after the previous present and before
      * any new frame acquires a drawable. No-op without registered app hooks. */
     platformOverlayService();
+    /* The overlay may have opened or closed from the render callback since the
+     * last pump -- the Resume button and the scripted schedule both do -- so
+     * reconcile before any event is dispatched rather than waiting for an edge
+     * that dispatch will never observe. */
+    overlay_capture_sync(target_tick);
 #endif
     if (s_sdlReady) {
         SDL_Event e;
@@ -1737,19 +1774,13 @@ void platform_input_pump(void) {
              * No-op when no hooks are registered — the automation path never
              * registers any, so its event handling is unchanged.
              */
-            int overlayActive = platformOverlayWantsInput();
-            int overlayConsumed = platformOverlayProcessEvent(&e);
-            {
-                const int overlayNow = platformOverlayWantsInput();
-                if (overlayActive != overlayNow) {
-                    /* Both toggle edges are swallowed. Opening capture
-                     * publishes one neutral game sample; closing remains
-                     * neutral until a fresh post-overlay host edge arrives. */
-                    s_gameInputSuppressed = overlayNow;
-                    input_clear_game_sources();
-                    input_capture_live(target_tick);
-                }
-            }
+            const int overlayActive = platformOverlayWantsInput();
+            const int overlayConsumed = platformOverlayProcessEvent(&e);
+            /* Publishes one neutral game sample when this event opened capture,
+             * and releases it when this event closed it. The shared routine is
+             * also what the pre-dispatch reconcile above runs, so no close path
+             * has its own idea of what "give the pad back" means. */
+            overlay_capture_sync(target_tick);
             if (overlayConsumed) {
                 continue;
             }

@@ -912,6 +912,10 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/check_host_input_focus.py)
     add_test(
+        NAME overlay_input_handoff_contract
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_overlay_input_handoff.py)
+    add_test(
         NAME web_document_structure
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_web_document_structure.py)
