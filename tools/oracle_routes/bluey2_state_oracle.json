@@ -12,15 +12,15 @@
   "state_min_lap": 0,
   "state_min_checkpoint": 20,
   "state_max_position_p95": 130.0,
-  "state_max_position_error": 1000.0,
+  "state_max_position_error": 170.0,
   "state_min_progress_agreement": 0.95,
   "state_min_rng_agreement": 0.0,
   "state_max_velocity_ratio_deviation": 0.02,
   "threshold_basis": {
     "state_max_position_p95": "docs/BLUEY2_PARITY.md records 109.403882 for the passing 1.0.3 Original arm; 130.0 is that plus 18.8% headroom and stays 40x under the 5186.824 Enhanced control.",
-    "state_max_position_error": "UNMEASURED: no recorded worst-case exists, only the p95. 1000.0 is 9.1x the recorded p95 and still rejects the Enhanced control, whose p95 alone is 5186.824.",
+    "state_max_position_error": "Measured 2026-08-06 on the rebuilt ares oracle: worst-case 139.907258 (first over 130 at clock 278) for the passing 1.0.5 Original arm; 170.0 is that plus 21.5% headroom, matching the p95's headroom discipline, and stays far under the Enhanced control whose p95 alone is 5186.824.",
     "state_min_progress_agreement": "docs/BLUEY2_PARITY.md records 97.266881% passing against 8.671922% for the Enhanced control.",
-    "state_min_rng_agreement": "UNMEASURED: no recorded rng agreement exists for this lane. The comparison still fails closed when either trace carries no non-zero seed, which is the way this measurement can go vacuous.",
+    "state_min_rng_agreement": "Measured 2026-08-06 on the rebuilt ares oracle: exact rng agreement is 0.000 on this route (0 exact rows of 1866 clocks with the ares column present) - the streams diverge by early compounding and this route's authority signal is progress, laps, and checkpoints. 0.0 is the true measured floor, not a placeholder. The comparison still fails closed when either trace carries no non-zero seed.",
     "state_max_velocity_ratio_deviation": "docs/BLUEY2_PARITY.md records a 1.000646 mean-object-speed ratio, a 0.065% deviation; 0.02 is 31x that headroom and the 1.139822 Enhanced control sits 7x outside it."
   },
   "native_cadence": "original",
@@ -66,17 +66,89 @@
   },
   "marks": [],
   "events": [
-    { "frame": 1250, "buttons": ["start"], "hold": 4 },
-    { "frame": 1330, "buttons": ["start"], "hold": 4 },
-    { "frame": 1450, "buttons": ["a"], "hold": 4 },
-    { "frame": 1540, "buttons": ["a"], "hold": 4 },
-    { "frame": 1750, "buttons": ["a"], "hold": 4 },
-    { "frame": 1900, "buttons": ["down"], "hold": 4 },
-    { "frame": 2000, "buttons": ["a"], "hold": 4 },
-    { "frame": 2150, "buttons": ["a"], "hold": 4 },
-    { "frame": 2320, "buttons": ["a"], "hold": 4 },
-    { "frame": 2460, "buttons": ["a"], "hold": 4 },
-    { "frame": 2600, "buttons": ["a"], "hold": 4 },
-    { "frame": 2750, "buttons": ["a"], "hold": 6800 }
+    {
+      "frame": 1250,
+      "buttons": [
+        "start"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1330,
+      "buttons": [
+        "start"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1450,
+      "buttons": [
+        "a"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1540,
+      "buttons": [
+        "a"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1750,
+      "buttons": [
+        "a"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 1900,
+      "buttons": [
+        "down"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 2000,
+      "buttons": [
+        "a"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 2150,
+      "buttons": [
+        "a"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 2320,
+      "buttons": [
+        "a"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 2460,
+      "buttons": [
+        "a"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 2600,
+      "buttons": [
+        "a"
+      ],
+      "hold": 4
+    },
+    {
+      "frame": 2750,
+      "buttons": [
+        "a"
+      ],
+      "hold": 6800
+    }
   ]
 }
