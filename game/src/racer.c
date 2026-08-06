@@ -308,6 +308,206 @@ static void racer_input_trace(Object_Racer *racer, s32 port,
             (unsigned)gCurrentButtonsReleased,
             gCurrentStickX, gCurrentStickY, updateRate, gRaceStartTimer);
 }
+
+/*
+ * Env-gated CPU-opponent stuck-recovery witness.
+ *
+ * racer_AI_pathing_inputs() arms a 120-unit cooldown (`unk215`) whenever its
+ * "I have been stationary for 60 update units" recovery fires, and that
+ * cooldown decays on ONE condition:
+ *
+ *     if (racer->unk214 == 0 && racer->velocity < -0.5) { racer->unk215 -= updateRate; }
+ *
+ * NOTE THE SIGN. `racer->velocity` is NEGATIVE for forward motion -- racer.c
+ * assigns `racer->velocity = -sqrtf(...)` and the boss animation picks RUN at
+ * `velocity < -2.0` -- and it is measured at about -11 for an opponent driving
+ * a clean lap, and POSITIVE while the AI's reverse-out state is running (+1.9
+ * at unk214=46 in the episode quoted below). So this branch means "the reverse
+ * window has expired AND the kart is back to driving forward at speed", not
+ * "the kart is reversing". docs/open-items/gameplay.md read it the other way
+ * round until this witness measured it; the conclusion is unchanged, because a
+ * kart that cannot move satisfies neither reading.
+ *
+ * So a kart that comes out of the 60-unit reverse window still unable to move
+ * never clears the cooldown, and the recovery can never re-arm -- it is gated
+ * on `unk215 == 0`. That is measured on the AUTOPILOTED HUMAN at Hot Top Volcano's crater
+ * (docs/open-items/gameplay.md); it has never been observed on a genuine
+ * opponent, and the production unstick helper (mdkr_autopilot_unstick) is
+ * reachable only from the human autopilot branch, so a real opponent has no
+ * recovery at all. Whether the wedge is reachable for opponents is what decides
+ * that item's classification, and it was hypothesis rather than measurement.
+ *
+ * WHERE THE OPPONENTS ACTUALLY ARE. update_player_racer()'s
+ * `} else { racer_AI_pathing_inputs(...); }` is NOT the opponent path: it sits
+ * inside the `if (playerIndex == PLAYER_COMPUTER) update_AI_racer(...) else
+ * {...}` split near the top of the function, so it is reached only by a HUMAN
+ * kart that the finish/menu hand-off has already relabelled PLAYER_COMPUTER.
+ * A genuine opponent is driven by update_AI_racer(), which calls
+ * racer_AI_pathing_inputs() only while `racer->unk201 != 0`. The witness is
+ * therefore installed in update_AI_racer() and refuses any racer that has ever
+ * been seen carrying a real player index, so what it reports is opponents and
+ * nothing else.
+ *
+ * This seam makes it measurable. It is observation-only: it reads racer state
+ * and keeps its own side table, writes nothing back, and is completely inert
+ * unless MDKR_AI_STUCK_TRACE is set. It deliberately does NOT reuse MDKR_TRACE
+ * -- that variable has runtime side effects of its own (docs/open-items/
+ * renderer.md, wave "shadowdeep" R1), and a gate that has to enable it to see
+ * anything is measuring a configuration players never run.
+ *
+ * Two counters per racer, both in update-rate units so they read in the same
+ * currency as unk213/unk214/unk215:
+ *
+ *   stall   consecutive units with the cooldown armed while |velocity| < 0.5,
+ *           i.e. the exact predicate under which the ROM's decay branch cannot
+ *           possibly be taken because the kart is not moving.
+ *   nodecay consecutive units with the cooldown armed and the decay branch's
+ *           own condition (unk214 == 0 && velocity < -0.5) false. This is the
+ *           mechanically exact "made no progress toward re-arming" measure; it
+ *           legitimately covers the whole 60-unit reverse window.
+ *
+ * `arm`/`clear` events bracket every cooldown episode, so a run reports the
+ * length distribution of LEGITIMATE stuck-then-recover episodes directly --
+ * which is where tests/check_ai_unstick_opponents.py's wedge window comes from.
+ */
+#define MDKR_AI_STUCK_RACERS 16
+/* The ROM's own decay threshold, quoted rather than chosen. Compared against
+ * |velocity|, so it reads as "not moving" whichever way the kart faces. */
+#define MDKR_AI_STUCK_REVERSE_SPEED 0.5f
+
+typedef struct MdkrAiStuckState {
+    s32 stall;
+    s32 nodecay;
+    s32 stallPeak;
+    s32 nodecayPeak;
+    s32 armedFor;
+    u8 armed;
+    u8 human;
+} MdkrAiStuckState;
+
+static MdkrAiStuckState sAiStuckState[MDKR_AI_STUCK_RACERS];
+
+static s32 ai_stuck_trace_stride(void) {
+    static s32 stride = -1;
+    if (stride < 0) {
+        const char *value = getenv("MDKR_AI_STUCK_TRACE");
+        if (value == NULL || value[0] == '\0' || value[0] == '0') {
+            stride = 0;
+        } else {
+            s32 parsed = 0;
+            const char *cursor = value;
+            while (*cursor >= '0' && *cursor <= '9') {
+                parsed = (parsed * 10) + (*cursor - '0');
+                cursor++;
+            }
+            /* Any truthy non-numeric value means "sample often enough to see a
+             * shape without drowning the log": 8 racers x 12000 frames. */
+            stride = (parsed > 0) ? parsed : 30;
+        }
+    }
+    return stride;
+}
+
+/* Latch "this racer index belongs to a local player". Called from the human
+ * limb of update_player_racer's dispatch, i.e. every tick before the finish
+ * hand-off can relabel the kart PLAYER_COMPUTER -- which is what stops a
+ * finished human from being counted as an opponent for the rest of the race. */
+static void ai_stuck_mark_human(Object_Racer *racer) {
+    s32 index;
+
+    if (ai_stuck_trace_stride() == 0) {
+        return;
+    }
+    index = racer->racerIndex;
+    if (index < 0 || index >= MDKR_AI_STUCK_RACERS) {
+        return;
+    }
+    sAiStuckState[index].human = TRUE;
+}
+
+static void ai_stuck_trace(Object *obj, Object_Racer *racer, s32 updateRate) {
+    MdkrAiStuckState *state;
+    Settings *settings;
+    s32 stride;
+    s32 index;
+    s32 decaying;
+    s32 stalled;
+
+    stride = ai_stuck_trace_stride();
+    if (stride == 0) {
+        return;
+    }
+    index = racer->racerIndex;
+    if (index < 0 || index >= MDKR_AI_STUCK_RACERS) {
+        return;
+    }
+    state = &sAiStuckState[index];
+    if (state->human) {
+        return;
+    }
+
+    decaying = (racer->unk214 == 0 && racer->velocity < -MDKR_AI_STUCK_REVERSE_SPEED);
+    stalled = (racer->velocity < MDKR_AI_STUCK_REVERSE_SPEED &&
+               racer->velocity > -MDKR_AI_STUCK_REVERSE_SPEED);
+
+    /* A racer that has crossed the line is parked by design -- the game hands it
+     * to the finish/results choreography -- so nothing after that frame is
+     * evidence about the stuck-recovery loop. Counting it would manufacture a
+     * wedge out of a correct finish. */
+    if (racer->raceFinished) {
+        state->stall = 0;
+        state->nodecay = 0;
+    } else if (racer->unk215 > 0) {
+        state->armedFor += updateRate;
+        state->stall = stalled ? (state->stall + updateRate) : 0;
+        state->nodecay = decaying ? 0 : (state->nodecay + updateRate);
+        if (state->stall > state->stallPeak) {
+            state->stallPeak = state->stall;
+        }
+        if (state->nodecay > state->nodecayPeak) {
+            state->nodecayPeak = state->nodecay;
+        }
+        if (!state->armed) {
+            state->armed = TRUE;
+            state->armedFor = updateRate;
+            fprintf(stderr,
+                    "[AISTUCKEV] tick=%d racer=%d event=arm cooldown=%d "
+                    "reverse=%d idle=%d cp=%d\n",
+                    g_simTickCounter, index, racer->unk215, racer->unk214,
+                    racer->unk213, racer->courseCheckpoint);
+        }
+    } else {
+        if (state->armed) {
+            fprintf(stderr,
+                    "[AISTUCKEV] tick=%d racer=%d event=clear armed=%d "
+                    "stallPeak=%d nodecayPeak=%d cp=%d\n",
+                    g_simTickCounter, index, state->armedFor,
+                    state->stallPeak, state->nodecayPeak,
+                    racer->courseCheckpoint);
+            state->armed = FALSE;
+        }
+        state->armedFor = 0;
+        state->stall = 0;
+        state->nodecay = 0;
+        state->stallPeak = 0;
+        state->nodecayPeak = 0;
+    }
+
+    if ((g_simTickCounter % stride) != 0) {
+        return;
+    }
+    settings = get_settings();
+    fprintf(stderr,
+            "[AISTUCK] tick=%d level=%d racer=%d player=%d cooldown=%d "
+            "reverse=%d idle=%d vel=%.3f grounded=%d cp=%d lap=%d finished=%d "
+            "stall=%d nodecay=%d x=%.1f y=%.1f z=%.1f\n",
+            g_simTickCounter, settings != NULL ? settings->courseId : -1, index,
+            racer->playerIndex, racer->unk215, racer->unk214, racer->unk213,
+            (double) racer->velocity, racer->groundedWheels,
+            racer->courseCheckpoint, racer->lap, racer->raceFinished,
+            state->stall, state->nodecay, (double) obj->trans.x_position,
+            (double) obj->trans.y_position, (double) obj->trans.z_position);
+}
 #endif
 
 void func_80042D20(Object *obj, Object_Racer *racer, s32 updateRate) {
@@ -4486,7 +4686,17 @@ void update_player_racer(Object *obj, s32 updateRate) {
     tempRacer->throttleReleased = FALSE;
     if (tempRacer->playerIndex == PLAYER_COMPUTER) {
         update_AI_racer(obj, tempRacer, updateRate, updateRateF);
+#ifdef NATIVE_PORT
+        /* Observation-only opponent stuck-recovery witness (MDKR_AI_STUCK_TRACE;
+         * inert unless set). This limb -- not the input dispatch further down --
+         * is the one every genuine CPU racer takes. See
+         * tests/check_ai_unstick_opponents.py. */
+        ai_stuck_trace(obj, tempRacer, updateRate);
+#endif
     } else {
+#ifdef NATIVE_PORT
+        ai_stuck_mark_human(tempRacer);
+#endif
         // Print player 1's coordinates to the screen if the debug cheat is enabled.
         if (gRaceStartTimer == 0 && tempRacer->playerIndex == PLAYER_ONE) {
             if (get_filtered_cheats() & CHEAT_PRINT_COORDS) {

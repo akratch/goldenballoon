@@ -314,6 +314,18 @@ static void mdkr64_fill_math_tables(void) {
      * one binary can still drive both arms:
      *
      *   MDKR_RNGSEED=legacy   the invented 0x00051234 / 0 boot seeds
+     *   MDKR_RNGSEED=0x<hex>  an arbitrary 32-bit boot seed. `set_rng_seed()`
+     *                         has exactly one caller in the whole game
+     *                         (game/src/waves.c, bracketed by save/load), so
+     *                         nothing re-seeds at boot and this value is what
+     *                         the whole run draws from. It exists so a gate can
+     *                         sample a BEHAVIOUR across many independent random
+     *                         streams instead of asserting one trajectory --
+     *                         see tests/check_ai_unstick_opponents.py, which
+     *                         needs N genuinely different opponent races on the
+     *                         same track. Only an explicit `0x` prefix is
+     *                         honoured, so `legacy` / `rom` / a typo keep their
+     *                         existing meanings.
      *   MDKR_ARCTAN=trunc     truncate the arctan curve instead of rounding it
      *   MDKR_TRIG=libm        evaluate sines with libm instead of the ROM's
      *                         table + lerp
@@ -332,6 +344,30 @@ static void mdkr64_fill_math_tables(void) {
     if (seedMode != NULL && seedMode[0] == 'l') {
         gCurrentRNGSeed = DKR_RNG_SEED_LEGACY;
         gPrevRNGSeed = 0;
+    } else if (seedMode != NULL && seedMode[0] == '0' &&
+               (seedMode[1] == 'x' || seedMode[1] == 'X') && seedMode[2] != '\0') {
+        u32 parsed = 0;
+        const char *cursor = seedMode + 2;
+        int digits = 0;
+        for (; *cursor != '\0'; cursor++) {
+            u32 nibble;
+            if (*cursor >= '0' && *cursor <= '9') {
+                nibble = (u32) (*cursor - '0');
+            } else if (*cursor >= 'a' && *cursor <= 'f') {
+                nibble = (u32) (*cursor - 'a') + 10u;
+            } else if (*cursor >= 'A' && *cursor <= 'F') {
+                nibble = (u32) (*cursor - 'A') + 10u;
+            } else {
+                digits = 0; /* a malformed value selects the ROM default */
+                break;
+            }
+            parsed = (parsed << 4) | nibble;
+            digits++;
+        }
+        if (digits > 0) {
+            gCurrentRNGSeed = (s32) parsed;
+            gPrevRNGSeed = (s32) parsed;
+        }
     }
     s_trigLibm = (trigMode != NULL && trigMode[0] == 'l');
 
