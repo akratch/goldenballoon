@@ -133,6 +133,93 @@ static void test_rate_independence(void) {
     run_schedule("1000 Hz controller converges", 1000u);
 }
 
+/*
+ * A 50 Hz source presented on a 60 Hz display. The authored 2-field tick is
+ * 40 ms, which is not a whole number of 16.7 ms refreshes, so a blocking
+ * present quantises consecutive ticks onto the refresh grid: the audio service
+ * is therefore refilled on a repeating 50/33.3/50/33.3/33.3 ms beat whose mean
+ * is the authored 40 ms. The queue has to survive the 50 ms half of that beat.
+ *
+ * This is the shape reported as PAL audio crackling; before the latency target
+ * tracked the worst refill gap it emptied the sink on every long interval.
+ */
+#define PAL_FRAME_SIZE 896u
+static const uint32_t kPalBeatMicros[] = { 50000u, 33333u, 50000u, 33333u,
+                                           33334u };
+
+static void test_coarse_refill_beat(void) {
+    MdkrAudioQueueController controller;
+    /* The host sink drains in whole device periods, not continuously: SDL's
+     * queue backend hands the device one buffer at a time and pads whatever it
+     * is short. 1,024 frames is the size this port opens (audi_port_dkr.c). */
+    const uint32_t device_period = 1024u;
+    uint64_t next_device_counter = 0u;
+    uint64_t elapsed_micros = 0u;
+    uint32_t queued = 0u;
+    uint32_t min_queued_after_warmup = UINT32_MAX;
+    uint32_t short_pulls = 0u;
+    uint32_t step;
+
+    mdkr_audio_queue_controller_init(&controller);
+    for (step = 0u; step < 600u; step++) {
+        const uint32_t interval =
+            kPalBeatMicros[step % (sizeof(kPalBeatMicros) /
+                                   sizeof(kPalBeatMicros[0]))];
+        uint64_t interval_end;
+        uint32_t produced;
+
+        elapsed_micros += interval;
+        interval_end = (uint64_t)elapsed_micros * COUNTER_RATE / 1000000u;
+        while (next_device_counter <= interval_end) {
+            uint32_t take = queued < device_period ? queued : device_period;
+            if (take < device_period && step > 20u) {
+                short_pulls++;
+            }
+            queued -= take;
+            if (step > 20u && queued < min_queued_after_warmup) {
+                min_queued_after_warmup = queued;
+            }
+            next_device_counter +=
+                (uint64_t)device_period * COUNTER_RATE / OUTPUT_RATE;
+        }
+        produced = mdkr_audio_queue_controller_choose(
+            &controller, true, (uint32_t)interval_end, COUNTER_RATE,
+            OUTPUT_RATE, PAL_FRAME_SIZE, MAX_SAMPLES, queued);
+        queued += produced;
+    }
+
+    expect("a coarse refill beat never starves the sink", short_pulls == 0u);
+    expect("the beat keeps a real cushion rather than skimming empty",
+           min_queued_after_warmup != UINT32_MAX &&
+               min_queued_after_warmup > 0u);
+    expect("the worst refill gap is observable",
+           controller.stats.max_gap_frames > PAL_FRAME_SIZE);
+    expect("the latency target grew to cover that gap",
+           controller.stats.max_target_frames > PAL_FRAME_SIZE);
+    expect("the cushion stays bounded at three blocks",
+           controller.stats.max_target_frames <= PAL_FRAME_SIZE * 3u);
+    expect("a coarse beat is not misread as a stall",
+           controller.stats.stall_guards == 0u);
+}
+
+static void test_even_refill_target_is_one_block(void) {
+    MdkrAudioQueueController controller;
+    uint32_t step;
+
+    /* The authored NTSC cadence refills once per block. Nothing about the
+     * adaptive target may move that case: same target, same latency. */
+    mdkr_audio_queue_controller_init(&controller);
+    for (step = 0u; step < 200u; step++) {
+        (void)mdkr_audio_queue_controller_choose(
+            &controller, true, (uint32_t)(step * (COUNTER_RATE / 30u)),
+            COUNTER_RATE, OUTPUT_RATE, FRAME_SIZE, MAX_SAMPLES, FRAME_SIZE);
+    }
+    expect("an even refill cadence keeps the one-block target",
+           controller.stats.max_target_frames == FRAME_SIZE);
+    expect("an even refill cadence records no excess gap",
+           controller.stats.max_gap_frames == FRAME_SIZE);
+}
+
 static void test_stall_recovery(void) {
     MdkrAudioQueueController controller;
     uint32_t first;
@@ -159,6 +246,8 @@ int main(void) {
     test_headless_determinism();
     test_clamps_alignment_and_wrap();
     test_rate_independence();
+    test_even_refill_target_is_one_block();
+    test_coarse_refill_beat();
     test_stall_recovery();
     if (s_failures != 0) {
         fprintf(stderr, "%d audio-queue-controller test(s) failed\n", s_failures);

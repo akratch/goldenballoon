@@ -148,6 +148,15 @@ setting maps honestly to Match Display there. WebGPU admission is nonblocking:
 if the GPU is saturated, presentation holds a complete image and the game/audio
 thread continues.
 
+This matters most on the European (PAL) ROM. That release is authored at 50 Hz,
+so each of its images is meant to be on screen for 40 ms — which is not a whole
+number of refreshes on a 60 Hz monitor. Original therefore shows one image for
+two refreshes and the next for three, and the alternation reads as unevenness
+even though the game is running at exactly the speed it was authored to. Match
+Display with Motion smoothing Interpolated fills that in with real in-between
+images at your monitor's rate. Karts, cameras and music keep the European
+game's original timing and pitch; only the number of pictures changes.
+
 With Motion smoothing Off, Match Display and native Uncapped service held
 authored images at the display cadence. Repeating the same image faster cannot
 add motion and previously allowed an unbounded no-swap loop to consume a core

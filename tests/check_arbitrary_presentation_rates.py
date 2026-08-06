@@ -395,21 +395,30 @@ def compare_arm(label: str, result: Result, baseline: Result,
 
 def compare_display_arm(label: str, result: Result,
                         baseline: Result,
+                        tick_rate: int = 30,
                         exact_surface: bool = True) -> list[str]:
-    """Validate native display pacing without assuming the monitor refresh."""
+    """Validate native display pacing without assuming the monitor refresh.
+
+    tick_rate is the authored cadence of the source under test: 30 for an NTSC
+    ROM, 25 for a PAL one. Recovering the refresh from the opportunity count
+    has to divide by the cadence the run actually used. Assuming 30 reports a
+    50 Hz source's refresh 6/5 too high and then draws every downstream
+    expectation against a grid the run never ran on.
+    """
     presents = result.summary.get("presents", 0)
-    numerator = presents * 30
+    numerator = presents * tick_rate
     if presents < TICKS or numerator % TICKS != 0:
         return list(result.tearing) + [
             f"{label}: display opportunities={presents} do not resolve to an "
-            "integral supported refresh at or above the authored 30 Hz cadence"
+            f"integral supported refresh at or above the authored {tick_rate} "
+            "Hz cadence"
         ]
     rate = numerator // TICKS
     if rate < 30 or rate > 1000:
         return list(result.tearing) + [
             f"{label}: resolved display rate {rate} is outside 30..1000 Hz"]
     return compare_arm(
-        label, result, baseline, rate, 30, 2, 0,
+        label, result, baseline, rate, tick_rate, 2, 0,
         exact_surface=exact_surface)
 
 
@@ -578,6 +587,18 @@ def main() -> int:
             notes.append(
                 f"pal-60: {pal_60.summary.get('presents')} presents / "
                 f"{pal_60.summary.get('ticks')} fixed 25 Hz ticks")
+            # A 50 Hz source on a 60 Hz monitor is the case a PAL player
+            # actually has, and Match Display is the answer offered for it, so
+            # the resolved-refresh path has to be proven on the 25 Hz cadence
+            # and not only on the 30 Hz one it was written against.
+            pal_display = run(binary, pal_rom, root, "pal-display", "display",
+                              args.timeout, args.verbose)
+            failures.extend(compare_display_arm(
+                "pal-display", pal_display, pal_base, tick_rate=25))
+            notes.append(
+                f"pal-display: {pal_display.summary.get('presents')} host "
+                f"opportunities / {pal_display.summary.get('surfaceupdates')} "
+                "authored surface updates on the 25 Hz cadence")
         except RuntimeError as error:
             failures.append(str(error))
 

@@ -171,7 +171,8 @@ The principal gates are:
   endpoint semantics/pixels, live-arena poison, unique midpoints, and independent
   model/particle/fade/effect controls;
 - `tests/check_arbitrary_presentation_rates.py`: NTSC 30/60/90/120/144/165/240,
-  native Uncapped stand-in, PAL 60, and nonblocking WebGPU overload behavior;
+  native Uncapped stand-in, PAL 60 and PAL Match Display, and nonblocking
+  WebGPU overload behavior;
 - `tests/check_presentation_breadth.py`: boss, challenge, vehicle, 1P/4P, and
   NTSC/PAL content breadth;
 - `tests/check_presentation_lifecycle.py`: pause-to-unload, race restart, and
@@ -200,6 +201,33 @@ both UV endpoints and interpolate across texture wrapping; interpolating the
 live mutable vertices would violate the replay ownership boundary. Motion
 smoothing remains labelled Preview until that work and its visual gates land.
 The default smoothing-Off path is unaffected.
+
+## The 50 Hz source on a 60 Hz display
+
+PAL content is the case where Original's own definition works against the
+player. The authored tick is two 50 Hz fields, so one image is meant to last
+40 ms. A 60 Hz display can only offer 33.3 ms or 50 ms, and the absolute 40 ms
+grid plus a blocking present therefore alternates between them in a repeating
+3/2/3/2/2-refresh beat. The mean is exactly 25 authored images a second, so
+gameplay speed, timers and music pitch are all correct — but no two consecutive
+images are shown for the same length of time, and that is what is visible.
+NTSC has no equivalent beat: its 33.3 ms tick is exactly two 60 Hz refreshes.
+
+Match Display plus Interpolated is the answer, and it needs nothing new: the
+deadline grid is already an exact rational, the accumulator already carries
+50 Hz fields in integer units, and `tests/check_arbitrary_presentation_rates.py`
+proves both a 60 Hz cap and Match Display against the 25 Hz cadence with
+byte-identical authority streams. The engine reports the combination once at
+startup so a European player is not left to find the setting by accident.
+
+The beat also reaches audio. The synthesis service is due once per authored
+tick, so on PAL its refills inherit the same 33.3/50 ms alternation while each
+refill still carries one 40.6 ms block. A latency target of exactly one block —
+which is correct while refills and blocks are the same length, as they are on
+NTSC — leaves nothing to cover the long half, and the sink runs dry. The queue
+controller therefore targets the worst observed refill gap rather than the
+block, so an even host is unaffected and a coarse or beating one gets a
+proportional cushion.
 
 ## Player-facing recommendation
 
