@@ -1328,7 +1328,7 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
         } else {
             mtx_perspective(&gTrackDL, &gTrackMtxPtr);
             trackbg_render_gradient();
-            func_80067D3C(&gTrackDL, &gTrackMtxPtr);
+            camSetProjMtx(&gTrackDL, &gTrackMtxPtr);
             mtx_world_origin(&gTrackDL, &gTrackMtxPtr);
         }
         gDPPipeSync(gTrackDL++);
@@ -1389,7 +1389,7 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
             func_8002A31C();
             mtx_perspective(&gTrackDL, &gTrackMtxPtr);
             trackbg_render_gradient();
-            func_80067D3C(&gTrackDL, &gTrackMtxPtr);
+            camSetProjMtx(&gTrackDL, &gTrackMtxPtr);
             mtx_world_origin(&gTrackDL, &gTrackMtxPtr);
             gDPPipeSync(gTrackDL++);
             initialise_player_viewport_vars(updateRate);
@@ -2892,7 +2892,7 @@ void set_anti_aliasing(s32 setting) {
  * masked locally for the basis and put straight back.
  *
  * The reconstruction is measured, not assumed: a throwaway probe comparing the
- * gViewMatrixF built here against the one func_80067D3C builds later in the same
+ * gViewMatrixF built here against the one camSetProjMtx builds later in the same
  * frame reported 6000/6000 checks bit-identical on track 5 and on level 33.
  * Nothing between the tick and render_scene writes gCameras.
  */

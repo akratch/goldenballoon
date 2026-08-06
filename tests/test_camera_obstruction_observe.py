@@ -193,7 +193,7 @@ def main() -> int:
     failures += require("set_active_camera(" not in runtime,
                         "OBSERVE gate must not change camera selection")
     for forbidden in ("obj_sort_tick(", "obj_lod_tick(", "obj_visibility_tick(",
-                      "audspat_update_all(", "func_80067D3C("):
+                      "audspat_update_all(", "camSetProjMtx("):
         failures += require(forbidden not in runtime,
                             f"OBSERVE gate must not call {forbidden}")
 

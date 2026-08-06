@@ -31,6 +31,15 @@ clobbering the port patches**.
 > `HEAD`, before recording a baseline. `HEAD` is whatever branch the decomp
 > checkout happens to be sitting on.
 
+> ### Deliberate divergence: `camSetProjMtx` (was `func_80067D3C`)
+> Renamed here on 2026-08-07 in `game/src/camera.{c,h}` and `game/src/tracks.c`.
+> Upstream still spells it `func_80067D3C` and records
+> `// Official Name: camGetPlayerProjMtx / camSetProjMtx - ??`, i.e. upstream has
+> **not** resolved which name is right, so **a future sync will conflict on the
+> definition, the declaration and all four call sites**. Take ours for the name.
+> The reasoning for choosing the "set" half is in the doc comment on the function.
+> If upstream later resolves the `??` the other way, follow upstream and rename.
+
 > ### Hazard: `sync_decomp.sh` reads "theirs" from the decomp WORKING TREE
 > That is deliberate (uncommitted WIP counts), but it means the sync vendors
 > whatever branch the checkout is on. `../Diddy-Kong-Racing` sits on local
