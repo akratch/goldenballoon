@@ -4,8 +4,9 @@
 
 Golden Balloon 1.0.6 is a fix release. It stops menus coming up stretched after
 Track Select, gives Taj his own portrait in the collection challenges, removes
-the seam that frame limits could put across the picture, and fixes the pause
-menu, the Resume button, and PAL sound. No game data is included.
+the seam that frame limits could put across the picture, fixes the pause menu,
+the Resume button, and PAL sound, and adds German to the language menu on every
+disc. No game data is included.
 
 Recommended settings are unchanged: **WebGPU**, **Restored**, frame limit
 **Original**, motion smoothing **Off**, gameplay cadence **Original**. Existing
@@ -63,6 +64,14 @@ preferences are preserved when upgrading.
   carries the same short-long alternation as a visible ripple. Setting frame
   limit to Match Display with motion smoothing Interpolated removes it without
   changing how the game plays, and a European launch now mentions that once.
+
+## The language menu now lists German
+
+Every disc has always carried the same menu and subtitle text and fonts, in
+every language, no matter which region it was sold in — a US disc's own menu
+simply never listed German. Now it does (#19), and switching takes effect
+immediately. If you would rather have your disc's own retail menu, set
+**Settings → Presentation → Menu Languages** to **Authentic**.
 
 ## New setting: Allow Tearing
 
