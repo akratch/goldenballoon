@@ -33,18 +33,13 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import completed_tick_conservation, resolve_binary
+from harness_utils import (completed_tick_conservation, parse_last,
+                           resolve_binary)
 
 
 ROOT = Path(__file__).resolve().parent.parent
 HASH_VERSION = "3"
 
-SUMMARY_RE = re.compile(r"\[PRESENTSCHED-SUMMARY\] (.*)")
-AUDIO_RE = re.compile(r"\[AUDIO-SERVICE\] (.*)")
-REPLAY_RE = re.compile(r"\[REPLAY-SUMMARY\] (.*)")
-PACKET_RE = re.compile(r"\[PRESENT-PACKET\] (.*)")
-RETAINED_RE = re.compile(r"\[RETAINED-TASK\] (.*)")
-SNAPSHOT_RE = re.compile(r"\[SNAPSHOT\] (.*)")
 LOAD_RE = re.compile(
     r"level_load: levelId=(-?\d+) numPlayers=(-?\d+) entrance=(-?\d+) "
     r"vehicle=(-?\d+) cutscene=(-?\d+)")
@@ -106,22 +101,6 @@ SCENARIOS = (
         },
     ),
 )
-
-
-def parse_last(output: str, pattern: re.Pattern[str], name: str) -> dict[str, int]:
-    matches = list(pattern.finditer(output))
-    if not matches:
-        raise RuntimeError(f"missing [{name}] summary")
-    fields: dict[str, int] = {}
-    for token in matches[-1].group(1).split():
-        key, separator, value = token.partition("=")
-        if not separator:
-            continue
-        try:
-            fields[key] = int(value)
-        except ValueError:
-            continue
-    return fields
 
 
 def stream(output: str, marker: str) -> list[str]:
@@ -189,12 +168,12 @@ def run(binary: Path, rom: Path, root: Path, scenario: Scenario,
         events=stream(output, "[EVENTHASH]"),
         inputs=stream(output, "[INPUTHASH]"),
         audio_digest=hashlib.sha256(audio_path.read_bytes()).hexdigest(),
-        summary=parse_last(output, SUMMARY_RE, "PRESENTSCHED-SUMMARY"),
-        audio=parse_last(output, AUDIO_RE, "AUDIO-SERVICE"),
-        replay=parse_last(output, REPLAY_RE, "REPLAY-SUMMARY"),
-        packet=parse_last(output, PACKET_RE, "PRESENT-PACKET"),
-        retained=parse_last(output, RETAINED_RE, "RETAINED-TASK"),
-        snapshot=parse_last(output, SNAPSHOT_RE, "SNAPSHOT"),
+        summary=parse_last(output, "PRESENTSCHED-SUMMARY"),
+        audio=parse_last(output, "AUDIO-SERVICE"),
+        replay=parse_last(output, "REPLAY-SUMMARY"),
+        packet=parse_last(output, "PRESENT-PACKET"),
+        retained=parse_last(output, "RETAINED-TASK"),
+        snapshot=parse_last(output, "SNAPSHOT"),
     )
 
 

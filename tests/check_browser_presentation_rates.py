@@ -36,19 +36,14 @@ from check_browser_runtime import (
     wait_launcher,
     wait_value,
 )
-from harness_utils import completed_tick_conservation
+from harness_utils import (completed_tick_conservation,
+                           parse_last as harness_parse_last, present_mode_rows)
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
 ROM_BYTES = 12 * 1024 * 1024
 TICKS = 60
 
-SUMMARY_RE = re.compile(r"\[PRESENTSCHED-SUMMARY\] (.*)")
-AUDIO_RE = re.compile(r"\[AUDIO-SERVICE\] (.*)")
-REPLAY_RE = re.compile(r"\[REPLAY-SUMMARY\] (.*)")
-PACKET_RE = re.compile(r"\[PRESENT-PACKET\] (.*)")
-RETAINED_RE = re.compile(r"\[RETAINED-TASK\] (.*)")
-WGPU_BACKPRESSURE_RE = re.compile(r"\[WGPU-BACKPRESSURE\] (.*)")
 FATAL_MARKERS = (
     "[CRASH]", "[FATAL]", "memory access out of bounds", "RuntimeError:",
     "Aborted(", "device lost", "GPU process exited unexpectedly",
@@ -83,24 +78,18 @@ class Result:
     console: list[str]
 
 
-def parse_last(lines: list[str], pattern: re.Pattern[str], name: str) -> dict[str, int]:
-    match = None
-    for line in lines:
-        candidate = pattern.search(line)
-        if candidate:
-            match = candidate
-    if match is None:
-        raise CheckFailure(f"missing [{name}] summary")
-    fields: dict[str, int] = {}
-    for token in match.group(1).split():
-        key, separator, value = token.partition("=")
-        if not separator:
-            continue
-        try:
-            fields[key] = int(value)
-        except ValueError:
-            continue
-    return fields
+def parse_last(lines: list[str], name: str) -> dict[str, int]:
+    """The shared row parser, over console lines and raising CheckFailure.
+
+    This check reports through CheckFailure, which its own arm loop catches;
+    letting the shared parser's RuntimeError past would skip that handling and
+    lose the per-arm context the failure is reported with.
+    """
+
+    try:
+        return harness_parse_last("\n".join(lines), name)
+    except RuntimeError as error:
+        raise CheckFailure(str(error)) from error
 
 
 def marked(lines: list[str], prefix: str) -> list[str]:
@@ -252,13 +241,12 @@ def run_arm(server: OverlayServer, chrome_path: Path, rom: Path,
                 marked(console, "[INPUTHASH]"),
                 str(pcm.get("digest")),
                 int(pcm.get("size", 0)),
-                parse_last(console, SUMMARY_RE, "PRESENTSCHED-SUMMARY"),
-                parse_last(console, AUDIO_RE, "AUDIO-SERVICE"),
-                parse_last(console, REPLAY_RE, "REPLAY-SUMMARY"),
-                parse_last(console, PACKET_RE, "PRESENT-PACKET"),
-                parse_last(console, RETAINED_RE, "RETAINED-TASK"),
-                parse_last(
-                    console, WGPU_BACKPRESSURE_RE, "WGPU-BACKPRESSURE"),
+                parse_last(console, "PRESENTSCHED-SUMMARY"),
+                parse_last(console, "AUDIO-SERVICE"),
+                parse_last(console, "REPLAY-SUMMARY"),
+                parse_last(console, "PRESENT-PACKET"),
+                parse_last(console, "RETAINED-TASK"),
+                parse_last(console, "WGPU-BACKPRESSURE"),
                 console,
             )
         finally:
@@ -445,13 +433,14 @@ def compare(arm: Arm, result: Result, baseline: Result) -> list[str]:
             failures.append(
                 f"{arm.name}: replay {key}={result.replay.get(key)}")
 
-    mode_rows = [line for line in result.console if "[PRESENT-MODE]" in line]
-    if not any("platform=web" in line and "reason=raf-ceiling" in line
-               for line in mode_rows):
+    mode_rows = present_mode_rows("\n".join(result.console))
+    if not any(row.get("platform") == "web"
+               and row.get("reason") == "raf-ceiling" for row in mode_rows):
         failures.append(f"{arm.name}: no explicit browser rAF present-mode row")
     if arm.policy == "uncapped" and not any(
-            "requested=uncapped effective=display reason=raf-ceiling" in line
-            for line in result.console):
+            row.get("requested") == "uncapped"
+            and row.get("effective") == "display"
+            and row.get("reason") == "raf-ceiling" for row in mode_rows):
         failures.append(
             "web-uncapped: native-style request was not explicitly mapped "
             "to display")

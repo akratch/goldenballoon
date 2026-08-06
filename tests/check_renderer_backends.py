@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from harness_utils import (ABORT_MARKERS, ASSERT_MARKERS,
-                           completed_tick_conservation, fatal_re,
+                           completed_tick_conservation, fatal_re, parse_rows,
                            read_ppm as read_ppm_bytes, resolve_binary)
 
 
@@ -80,7 +80,6 @@ DISPLAY_SIZE_RE = re.compile(
     r" effectiveScale=([\d.]+)$",
     re.MULTILINE,
 )
-SCHED_RE = re.compile(r"^\[PRESENTSCHED-SUMMARY\] (.*)$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -273,22 +272,12 @@ def reported_display_size(
     return result
 
 
-def parse_last_fields(
-    output: str, pattern: re.Pattern[str]
-) -> dict[str, int] | None:
-    rows = list(pattern.finditer(output))
-    if not rows:
-        return None
-    fields: dict[str, int] = {}
-    for token in rows[-1].group(1).split():
-        key, separator, value = token.partition("=")
-        if not separator:
-            continue
-        try:
-            fields[key] = int(value)
-        except ValueError:
-            continue
-    return fields
+def parse_last_fields(output: str, tag: str) -> dict[str, int] | None:
+    """The last ``[tag]`` row, or None -- this check reports a missing
+    scheduler summary itself rather than raising out of the comparison."""
+
+    rows = parse_rows(output, tag)
+    return rows[-1] if rows else None
 
 
 def check_parity(gl_run: Run, webgpu_run: Run, verbose: bool) -> list[str]:
@@ -631,8 +620,8 @@ def check_authored_rate_sequence(
             f"Original={sorted(original_paths)}, =60={sorted(rate60_paths)}"
         ]
 
-    original_sched = parse_last_fields(original.output, SCHED_RE)
-    rate60_sched = parse_last_fields(rate60.output, SCHED_RE)
+    original_sched = parse_last_fields(original.output, "PRESENTSCHED-SUMMARY")
+    rate60_sched = parse_last_fields(rate60.output, "PRESENTSCHED-SUMMARY")
     if original_sched is None or rate60_sched is None:
         failures.append(f"{label}: missing scheduler summary")
     else:

@@ -21,14 +21,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from harness_utils import (completed_tick_conservation, fatal_re, GPU_MARKERS,
-                           resolve_binary)
+                           parse_last, present_mode_rows, resolve_binary)
 
 
 TICKS = 30
 EXPECTED_OPPORTUNITIES = TICKS * 1000 // 30
-FIELDS_RE = re.compile(r"\[PRESENTSCHED-SUMMARY\] (.*)")
-WGPU_RE = re.compile(r"\[WGPU-BACKPRESSURE\] (.*)")
-GL_RE = re.compile(r"\[GL-BACKPRESSURE\] (.*)")
 FATAL_RE = fatal_re(*GPU_MARKERS)
 
 
@@ -38,22 +35,6 @@ class Run:
     output: str
     summary: dict[str, int]
     pressure: dict[str, int]
-
-
-def parse_last(output: str, pattern: re.Pattern[str], label: str) -> dict[str, int]:
-    rows = list(pattern.finditer(output))
-    if len(rows) != 1:
-        raise RuntimeError(f"{label}: expected one telemetry row, got {len(rows)}")
-    fields: dict[str, int] = {}
-    for token in rows[0].group(1).split():
-        key, separator, value = token.partition("=")
-        if not separator:
-            continue
-        try:
-            fields[key] = int(value)
-        except ValueError:
-            continue
-    return fields
 
 
 def clean_environment(**updates: str) -> dict[str, str]:
@@ -108,10 +89,13 @@ def run_backend(binary: Path, rom: Path, backend: str | None,
                 f"{label}: expected {expected_backend} backend was not active")
         return Run(
             expected_backend, output,
-            parse_last(output, FIELDS_RE, f"{label} scheduler"),
+            parse_last(output, "PRESENTSCHED-SUMMARY",
+                       label=f"{label} scheduler", expect_one=True),
             parse_last(
-                output, WGPU_RE if expected_backend == "webgpu" else GL_RE,
-                f"{label} backpressure"),
+                output,
+                "WGPU-BACKPRESSURE" if expected_backend == "webgpu"
+                else "GL-BACKPRESSURE",
+                label=f"{label} backpressure", expect_one=True),
         )
 
 
@@ -181,10 +165,11 @@ def validate(run: Run) -> list[str]:
         if pressure.get("abandoned") != 0:
             failures.append(
                 f"webgpu: abandoned {pressure.get('abandoned')} completions")
-        if not re.search(
-                r"\[PRESENT-MODE\] backend=webgpu policy=uncapped .*"
-                r"tearing=0 requested=mailbox effective=(?:mailbox|fifo)",
-                run.output):
+        if not any(row.get("policy") == "uncapped" and row.get("tearing") == "0"
+                   and row.get("requested") == "mailbox"
+                   and row.get("effective") in ("mailbox", "fifo")
+                   for row in present_mode_rows(run.output)
+                   if row.get("backend") == "webgpu"):
             failures.append("webgpu: missing effective uncapped present mode")
         if not re.search(
                 r"\[WGPU-SHUTDOWN\].*liveChildren=0.*cpuArrays=0",
@@ -200,10 +185,12 @@ def validate(run: Run) -> list[str]:
         if pressure.get("effectiveSwap") != 0:
             failures.append(
                 f"gl: effectiveSwap={pressure.get('effectiveSwap')}, expected 0")
-        if not re.search(
-                r"\[PRESENT-MODE\] backend=gl policy=uncapped .*"
-                r"requestedSwap=0 effectiveSwap=0 supported=1",
-                run.output):
+        if not any(row.get("policy") == "uncapped"
+                   and row.get("requestedSwap") == "0"
+                   and row.get("effectiveSwap") == "0"
+                   and row.get("supported") == "1"
+                   for row in present_mode_rows(run.output)
+                   if row.get("backend") == "gl"):
             failures.append("gl: interval-0 policy was not applied")
     return failures
 
