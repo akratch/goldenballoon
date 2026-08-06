@@ -8,7 +8,7 @@ table): 2 items.
 | Item | Where |
 |---|---|
 | Boss levels 41/54 collision-candidate headroom: cap deliberately NOT raised; the 84-slot margin is measured/gated but still worth watching | [§ G4 follow-up: per-level headroom measured and gated, cap NOT raised](#g4-follow-up-per-level-headroom-measured-and-gated-cap-not-raised) |
-| "Lose animation before the race" / "1st place recorded as a loss" report on the first boss — not reproduced; superseded by gameplay.md's wave "bossverdict" | [§ Report 3 — the lose animation ... NOT REPRODUCED](#report-3--the-lose-animation-played-before-the-race-and-1st-place-recorded-as-a-loss-not-reproduced) |
+| "Lose animation before the race" / "1st place recorded as a loss" report on the first boss — symptom 1 ruled out by construction, symptom 2 not reproduced. Sometimes conflated with gameplay.md's wave "bossverdict", which explains a different, later report (no cutscene at all) and remains an unconfirmed hypothesis for this one; `check_boss_win_verdict.py` does not assert against symptom 2 | [§ Report 3 — the lose animation ... NOT REPRODUCED](#report-3--the-lose-animation-played-before-the-race-and-1st-place-recorded-as-a-loss-not-reproduced) |
 
 
 ## FIXED: object-model collision never reported a hit, so locked doors were intangible — wave "objcoll"
@@ -578,7 +578,7 @@ level, `race_full_3lap_tt.txt`):
 | **41** | 13000 | **416** | 0 | 500 | **84** |
 | **54** | 13000 | **416** | 0 | 500 | **84** |
 | 37 | 13000 | 149 | 0 | 500 | 351 |
-| 55 | 13000 | 92 | 0 | 500 | 408 |
+| 55 | 13000 | 97 | 0 | 500 | 403 |
 | 5 (Ancient Lake, ordinary race) | 6500 | 30 | 0 | 500 | 470 |
 
 Identical to the original "boundsweep" measurement for levels 41/54/38/46 (the
@@ -587,6 +587,21 @@ plus one ordinary race that table did not enumerate individually. No level
 truncates. **Decision: accept, do not raise.** Every measured route — boss and
 ordinary alike — stays well clear of the 500 cap, and `check_collision_headroom.py`
 is now the tripwire if that stops being true.
+
+**Deliberately deferred.** Boss levels 41 and 54 peak at 416 of 500
+candidates — 84 slots of measured headroom — and the cap can no longer be
+stepped over: a `j >= cap` pre-check guards both inserts ahead of their
+stores. All ten boss levels plus an ordinary race are swept per-level with
+zero truncation, and the gate freezes each level's high-water so headroom
+cannot quietly shrink without failing. Raising the cap would spend memory on
+margin that nothing has approached while removing the pressure that keeps
+this measured. There is no custom-content pipeline in this build, so headroom
+cannot shrink from unvetted levels, and racer count does not multiply
+per-call load because the candidate list resets per racer. The honest limit
+is that the sweep drives one deterministic line per level, so 84 slots is a
+measured floor for that line rather than a proof of the level's worst case —
+which is exactly why the ceiling is frozen and watched rather than papered
+over with a bigger number.
 
 ## FIXED: racers fall through Tricky's volcano — the collision grid mask never filtered in Z (wave "gridmask")
 

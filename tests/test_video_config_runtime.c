@@ -41,7 +41,6 @@ int g_pcGradePresets;
 int g_pcTonemap;
 int g_pcPerPixelLight;
 int g_pcSunShadow;
-int g_pcSunShadowRes;
 float g_pcSunShadowBias;
 float g_pcSunShadowUmbra;
 

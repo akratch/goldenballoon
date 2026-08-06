@@ -13,7 +13,6 @@
 
 #include "display_config.h"
 #include "fast3d/gfx_mipgen.h"
-#include "fast3d/gfx_shadow_cascade.h"
 #include "fast3d/gfx_uniforms.h"
 #include "present_sched.h"
 #include "user_paths.h"
@@ -454,15 +453,6 @@ void mdkr_video_config_publish(void) {
      */
     g_pcSunShadow =
         g_pcRemasterFX && strcmp(world_shadow, "off") != 0;
-    /*
-     * Not a resolution request — the cascade planner owns resolution and varies
-     * it live with the split-screen view count (2048 at 1P, 1024 at 2-4P). This
-     * publishes the 1P budget so a consumer reading the global agrees with the
-     * plan instead of contradicting it. It was a hardcoded 2048 that nothing in
-     * either backend read.
-     */
-    g_pcSunShadowRes =
-        (int) gfx_shadow_budget_for_views(1).resolution;
     /*
      * WORLD-unit comparison bias. Both receivers divide this by the planned
      * light z-span at upload, so acne/peter-panning behavior no longer

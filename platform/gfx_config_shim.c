@@ -82,7 +82,6 @@ int   g_pcSmaa            = 0;
 
 /* Sun shadow — off. */
 int   g_pcSunShadow       = 0;
-int   g_pcSunShadowRes    = 0;
 float g_pcSunShadowBias   = 0.0f;
 float g_pcSunShadowUmbra  = 0.0f;
 float g_pc_shadow_mat[4][4] = { { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 }, { 0, 0, 0, 1 } };

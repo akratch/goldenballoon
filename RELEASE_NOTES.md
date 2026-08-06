@@ -99,6 +99,9 @@ startup.
 - The macOS app is not notarized. If macOS shows an unidentified-developer
   warning on first launch, use **System Settings → Privacy & Security → Open
   Anyway**.
+- The Windows build is not code-signed. If Windows SmartScreen shows an
+  "unrecognized app" warning on first launch, choose **More info**, then
+  **Run anyway**.
 
 For implementation details, see [CHANGELOG.md](CHANGELOG.md). Open work is
 listed in [ROADMAP.md](ROADMAP.md).

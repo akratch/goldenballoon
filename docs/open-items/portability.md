@@ -7,7 +7,7 @@ table): 1 item.
 
 | Item | Where |
 |---|---|
-| Decomp arrays split across two C objects and indexed across the boundary: 3 fixed, the rest measured latent; `check_array_bounds_sweep.py` catches new ones | [§ SWEPT: decomp arrays split into two C objects — wave "splitsweep"](#swept-decomp-arrays-split-into-two-c-objects-and-indexed-across-the-boundary-wave-splitsweep) |
+| Decomp arrays split across two C objects and indexed across the boundary: 3 fixed, most of the rest measured latent — one, `get_inside_segment_count_xz()`, is recorded unmeasured rather than latent, since it writes through a bare pointer neither instrument can see; `check_array_bounds_sweep.py` catches new indexed-array cases | [§ SWEPT: decomp arrays split into two C objects — wave "splitsweep"](#swept-decomp-arrays-split-into-two-c-objects-and-indexed-across-the-boundary-wave-splitsweep) |
 
 
 ## FIXED: tagged macOS artifact exposed a stale magic-code endian failure
@@ -613,7 +613,7 @@ attract demo, 2P split-screen, the Adventure hub loop and the menu graph:
 
 | carried-in candidate | bound | measured peak | verdict |
 |---|---|---|---|
-| `objects.c` `collision_objectmodel` `spB4[10]`/`sp8C[10]` | 10 | **1** | latent, 9 slots spare — the probe firing also proves the function runs |
+| `objects.c` `collision_objectmodel` `spB4[20]`/`sp8C[20]` | 20 | **1** | **FIXED** since the collision hasm audit — both arrays now hold the full 20-object candidate capacity (was `[10]` against a count capped at 20; see `collision.md`'s wave "boundsweep" item 3); 19 slots spare |
 | `tracks.c` `D_8011D128[20]` / `gTrackWaves[20]` write at `[20]` | 20 | **8** | latent, 12 slots spare |
 | `game.c` `gLevelPropertyStack[20]` pushed unbounded | 20 | **4** (one 4-word frame) | **BOUNDED** since the game-core memory-safety wave: `level_properties_push()` drops a push past `ARRAY_COUNT` under `NATIVE_PORT`. Peak unchanged |
 | `camera.c` `gCameraRelPosStackZ[5]` write at index 5 | 5 | **1** | latent — contained anyway, see below |

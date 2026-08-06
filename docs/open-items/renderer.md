@@ -3,13 +3,15 @@
 > One subsystem of the split [open-items index](README.md), which states how these files are kept.
 
 **Currently open** (per [`README.md`](README.md#still-open)'s open/closed
-table): 3 items.
+table): 6 items.
 
 | Item | Where |
 |---|---|
 | Shadow strength is one preset-wide umbra multiplier, not per-surface: no N·L term, bias not slope-scaled, umbra values unmeasured against a reference image | [§ OPEN: shadow strength is one preset-wide choice](#open-shadow-strength-is-one-preset-wide-choice-not-a-per-surface-one) |
-| M4.5 WebGPU backend — done and qualified, but its open notes (remaining platform/backend breadth) are still live | [§ M4.5 WebGPU backend — open notes](#m45-webgpu-backend--done-qualified-fail-closed-default-open-notes) |
-| M1 residuals deliberately deferred: WebGPU 4x MSAA (IQ-8) and a loader-only, content-free texture-pack path (IQ-11) | [§ FIXED: restoration/remaster sprint](#fixed-restorationremaster-sprint--sprite-bounds-rdp-gradients-sdf-text-moving-mips-and-rl-1) |
+| Shadow gate trustworthiness: the harness environment (`MDKR_TRACE`) has twice diverged from the shipping build and let a real defect through green gates | [§ OPEN: shadow gate trustworthiness](#open-shadow-gate-trustworthiness--harness-environment-has-diverged-from-the-shipping-build-twice) |
+| M1 residuals deliberately deferred: WebGPU 4x MSAA (IQ-8) and a loader-only, content-free texture-pack path (IQ-11) | [`docs/STATUS.md` § imagequality — mipmaps reach the GPU (M1, in progress)](../STATUS.md#imagequality--mipmaps-reach-the-gpu-m1-in-progress) |
+| **(index-level item)** WGPU-11 external/oracle corpus breadth — local asset, capacity, and fault closeout is DONE (46 native routes, 249M+ strict commands, zero faults); browser complete-corpus/minimum-feature hardware, independent state reference, and external native platforms remain. Absorbs the former M4.5 "open notes" row (below), whose notes are all FIXED/CLOSED | [§ Still open](README.md#still-open), [`check_webgpu_content_census.py`](../../tests/check_webgpu_content_census.py) |
+| **(index-level item)** Fidelity architecture / presentation breadth — motion smoothing and frame limit ship off/original by default, so the retained-interpolation machinery is inert on defaults; remaining work is audible/loopback DAC qualification and the rest of the platform/device matrix. No subsystem section exists for this item; it is tracked at the index level | [§ Still open](README.md#still-open) |
 
 
 ## FIXED: three effects drew zero pixels, because hand-packed triangles were built in N64 byte order
@@ -241,6 +243,55 @@ knobs for:
 
 Not fixed here because each needs a measurement this wave did not take, and
 because the exit gate for R2 was the plausibility property, not the aesthetic.
+
+**Deliberately deferred.** World shadows only exist under the Remastered
+preset: the shadow feed is gated on `g_pcRemasterFX`, which is zero in both
+Pure and Restored, and the shipping default preset is Restored. A
+default-configuration player never sees a pixel this item describes. Within
+Remastered, `Video.WorldShadows` (off/soft/full, live, default full) answers
+the original "shadows degrade the UX" report at the level it was made. The
+residual is honest and specific: the receiver has no N·L term, so
+away-from-sun faces darken twice; the bias is one span-derived scalar rather
+than slope-scaled; and the umbra values came from playthrough judgement, not
+from a measurement against a reference image. Fixing this properly means
+establishing a reference to measure against — which for an opt-in remaster
+preset with no authored ground truth is a design exercise, not a bug fix. The
+`MDKR_SHADOW_BIAS` and `MDKR_SHADOW_UMBRA` seams exist so that when a
+reference is chosen the measurement is a parameter sweep rather than a
+rewrite.
+
+## OPEN: shadow gate trustworthiness — harness environment has diverged from the shipping build twice
+
+Not a rendering defect; a defect in how the shadow gates themselves prove
+what they claim. Both instances are already fixed at the source, but the
+underlying *class* — a gate whose harness environment differs from the
+shipping build can go green over a real defect — is still open, because
+nothing yet forces every shadow gate to also run in the exact configuration a
+player ships with.
+
+1. **Wave "shadowplay":** the four root causes below (phantom static casters,
+   hash-invented sun heading, ungrounded billboard pickups, and a
+   double-darkening umbra) were found only by a manual v0.4 playthrough while
+   `check_world_shadows.py` and its siblings passed the whole time. The
+   automated gates were exercising real shadow code but not the specific
+   configurations/geometry the report hit.
+2. **Wave "shadowdeep" R1:** *"every shadow gate exported `MDKR_TRACE=1`,
+   which is why none saw it"* — the only `gfx_shadow_stage_begin()` caller
+   sat inside `level_load()`'s `mdkr_resource_trace_enabled()` block, so the
+   static caster cache was never reset in a shipping build (no
+   `MDKR_TRACE`), but every registered shadow check set that variable and so
+   never observed the un-reset path. A shipping-build player hit this; every
+   gate that ran it was blind to it by construction.
+
+**Deliberately deferred, not fixed here.** Both underlying bugs are fixed —
+`check_shadow_stage_reset.py` now holds shipping and traced arms to the same
+terminal static-caster census, closing R1 specifically. What is still open is
+the *general* fix: an audit of every gate that exports a diagnostic env var
+the shipping build does not set, plus a shipping-configuration arm (no
+`MDKR_TRACE`) added to `check_world_shadows.py` and its siblings so the
+harness environment can never again diverge from what players run. That is a
+gate-infrastructure change, not a rendering one, and it touches every gate in
+the renderer suite rather than one file — out of scope for a docs-only pass.
 
 ## FIXED: v0.4 playthrough shadow defects — wave "shadowplay"
 
@@ -909,6 +960,14 @@ correct all along.
   backdrop belongs with the P3.2 preview-camera/backdrop work, not P3.3.
 
 ## M4.5 WebGPU backend — DONE (qualified fail-closed default). Open notes:
+
+> **Ledger note:** the open-items index no longer carries this section as its
+> own "still open" row — every note below already carries its own FIXED/CLOSED
+> strikethrough, and `gfx_webgpu_set_stage()` has zero production callers
+> (dormant, not open). The one still-live thread, external-platform
+> validation, is the same thread [WGPU-11](README.md#still-open) already
+> tracks, and this row's remaining breadth is merged there.
+
 - **Post-bring-up failure and loss handling are implemented.** Every
   instance/surface/adapter/device/queue/configure failure is injected by
   `check_webgpu_recovery.py`; native may perform one bounded same-backend device
