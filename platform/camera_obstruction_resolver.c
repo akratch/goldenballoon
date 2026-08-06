@@ -122,6 +122,16 @@ MdkrCameraObstructionResolverStatus mdkr_camera_obstruction_resolve(
     int used_last_safe = 0;
     int desired_blocked;
     int fully_recovered = 0;
+    /*
+     * Release hysteresis, resolved from the state at entry and committed only
+     * on the accepted path below. A tick that returns INVALID or FAILSAFE
+     * published no validated pose, so it must not count as a clear tick
+     * against the hold: leaving the latch untouched is the conservative
+     * reading, and it matches how last_safe_eye is already handled.
+     */
+    int retraction_latched;
+    uint32_t clear_run_ticks;
+    int release_held = 0;
 
     if (out_result == NULL) {
         return MDKR_CAMERA_OBSTRUCTION_RESOLVER_INVALID;
@@ -159,7 +169,12 @@ MdkrCameraObstructionResolverStatus mdkr_camera_obstruction_resolve(
     if (input->discontinuity) {
         /* A teleport must never recover from an unrelated previous camera shot. */
         state->last_safe_valid = 0;
+        /* ...nor hold a retraction latched by geometry it no longer sits in. */
+        state->retraction_latched = 0;
+        state->clear_run_ticks = 0U;
     }
+    retraction_latched = state->retraction_latched != 0;
+    clear_run_ticks = state->clear_run_ticks;
 
     /* The caller's previous resolved eye is preferred, but always revalidated. */
     sweep_status = mdkr_camera_resolver_stationary_sweep(
@@ -244,26 +259,53 @@ MdkrCameraObstructionResolverStatus mdkr_camera_obstruction_resolve(
             safe_fraction = 0.0f;
         }
         candidate = mdkr_camera_resolver_lerp(anchor, input->desired_eye, safe_fraction);
+        /* Engage on contact, always this tick: the hold gates release only. */
+        retraction_latched = 1;
+        clear_run_ticks = 0U;
     } else if (distance > 0.0f) {
-        float recovery = config->recovery_speed * input->fixed_delta_seconds;
-        if (!isfinite(recovery)) {
-            mdkr_camera_resolver_fail(out_result, MDKR_CAMERA_OBSTRUCTION_RESOLVER_INVALID,
-                                      anchor, guard);
-            return out_result->status;
+        float recovery;
+
+        if (retraction_latched) {
+            clear_run_ticks++;
+            if (clear_run_ticks >= config->release_hold_ticks) {
+                retraction_latched = 0;
+                clear_run_ticks = 0U;
+            } else {
+                release_held = 1;
+            }
         }
-        if (recovery > config->max_recovery_step) {
-            recovery = config->max_recovery_step;
+        if (release_held) {
+            /*
+             * Hold the boom where the caller anchored it. The anchor is
+             * pivot-relative, so a held boom still tracks the subject: it
+             * simply does not grow toward desired while the contact that
+             * caused the retraction is still unproven gone.
+             */
+            candidate = anchor;
+        } else {
+            recovery = config->recovery_speed * input->fixed_delta_seconds;
+            if (!isfinite(recovery)) {
+                mdkr_camera_resolver_fail(out_result, MDKR_CAMERA_OBSTRUCTION_RESOLVER_INVALID,
+                                          anchor, guard);
+                return out_result->status;
+            }
+            if (recovery > config->max_recovery_step) {
+                recovery = config->max_recovery_step;
+            }
+            if (recovery > distance) {
+                recovery = distance;
+            }
+            fully_recovered = recovery >= distance;
+            candidate = fully_recovered ? input->desired_eye :
+                                        mdkr_camera_resolver_lerp(anchor, input->desired_eye,
+                                                                  recovery / distance);
         }
-        if (recovery > distance) {
-            recovery = distance;
-        }
-        fully_recovered = recovery >= distance;
-        candidate = fully_recovered ? input->desired_eye :
-                                    mdkr_camera_resolver_lerp(anchor, input->desired_eye,
-                                                              recovery / distance);
     } else {
+        /* Already sitting on desired: there is no retraction left to release. */
         fully_recovered = 1;
         candidate = anchor;
+        retraction_latched = 0;
+        clear_run_ticks = 0U;
     }
 
     /* Do not publish a numerically marginal retraction or recovery candidate. */
@@ -285,8 +327,17 @@ MdkrCameraObstructionResolverStatus mdkr_camera_obstruction_resolve(
     state->last_safe_eye = candidate;
     state->projection_generation = input->projection->generation;
     state->last_safe_valid = 1;
+    state->retraction_latched = (uint8_t)(retraction_latched != 0);
+    state->clear_run_ticks = clear_run_ticks;
     memset(out_result, 0, sizeof(*out_result));
-    out_result->status = desired_blocked ? MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED :
+    /*
+     * A held tick reports RETRACTED because that is what the published eye is:
+     * a boom kept short of the authored desired pose by the obstruction
+     * correction. path_was_blocked stays the ground truth about this tick's
+     * sweep, and release_held says which of the two produced the status.
+     */
+    out_result->status = (desired_blocked || release_held) ?
+                             MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED :
                          fully_recovered ? MDKR_CAMERA_OBSTRUCTION_RESOLVER_CLEAR :
                                            MDKR_CAMERA_OBSTRUCTION_RESOLVER_RECOVERING;
     out_result->resolved_eye = candidate;
@@ -298,6 +349,7 @@ MdkrCameraObstructionResolverStatus mdkr_camera_obstruction_resolve(
     }
     out_result->accepted = 1;
     out_result->path_was_blocked = (uint8_t)desired_blocked;
+    out_result->release_held = (uint8_t)release_held;
     out_result->used_last_safe = (uint8_t)used_last_safe;
     out_result->projection_revalidated = (uint8_t)projection_changed;
     return out_result->status;

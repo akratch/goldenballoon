@@ -33,6 +33,26 @@
 #define MDKR_CAMERA_OBSTRUCTION_EXACT_ANCHOR_REFINE_STEPS 3
 #define MDKR_CAMERA_OBSTRUCTION_LENS_QUERY_CACHE_SIZE 8
 #define MDKR_CAMERA_OBSTRUCTION_HARD_MASK 1U
+/*
+ * Release hysteresis on retraction (docs/architecture/camera-obstruction.md
+ * section 7.3). Contact retracts the boom on the tick it is seen -- retract
+ * latency stays 0 -- but a clear corridor does NOT start recovery until it has
+ * been clear this many consecutive authored ticks.
+ *
+ * The value comes from the MOTION-01 traces, not from taste. On the 3P + T.T.
+ * spectate route the corridor sweep drops out against a wall it is still
+ * pressed against for runs of 1, 1, 3, 4 and 7 ticks before the same or an
+ * adjacent facet of that wall blocks again -- twice with the identical blocker
+ * id on both sides of the gap, which is what proves the gap is a false
+ * negative rather than a wall the camera drove past. 8 is the smallest hold
+ * that covers every measured run; 9 adds one tick of margin.
+ *
+ * 9 is deliberately still less than the census's 12-tick chatter window: a
+ * clear run of 9, 10 or 11 ticks releases and, if the correction comes back,
+ * is still counted as a re-engagement. The hold closes the measured defect
+ * without hollowing out the assertion that measures it.
+ */
+#define MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS 9U
 #define MDKR_CAMERA_PERF_BIN_WIDTH_NS UINT64_C(10000)
 #define MDKR_CAMERA_PERF_BIN_COUNT 1024U
 #define MDKR_CAMERA_PERF_NTSC_P99_BUDGET_NS UINT64_C(833333)
@@ -233,6 +253,7 @@ typedef struct MdkrCameraMotionSlot {
     uint8_t blocker_valid;
     uint8_t block_span_degenerate;
     uint8_t retract_pending;
+    uint8_t release_held;
 } MdkrCameraMotionSlot;
 
 typedef enum MdkrCameraMotionPhase {
@@ -325,6 +346,8 @@ typedef struct MdkrCameraObstructionObserveSlot {
     uint32_t blocker_stable_id;
     MdkrCameraVec3 blocker_normal;
     uint8_t blocker_normal_valid;
+    /* This tick was RETRACTED by the resolver's release hold, not by contact. */
+    uint8_t release_held;
     /* MOTION-01 census state. Read and written only by the motion sampler. */
     MdkrCameraMotionSlot motion;
 } MdkrCameraObstructionObserveSlot;
@@ -2083,11 +2106,33 @@ typedef struct MdkrCameraMotionCensus {
     MdkrCameraMotionStat stats[MDKR_CAMERA_MOTION_STAT_COUNT];
     /* Resolved slot-ticks the census actually sampled. */
     uint64_t sampled_slot_ticks;
+    /* Distinct authored ticks the census saw at least one slot on. */
+    uint64_t sampled_ticks;
+    uint64_t last_sampled_tick;
+    uint8_t last_sampled_tick_valid;
     /* Slot-ticks per profile, so a reader knows what the run measured. */
     uint64_t profile_slot_ticks[MDKR_CAMERA_OBSTRUCTION_TREATMENT_COUNT];
     uint64_t discontinuities;
     uint64_t retract_events;
     uint64_t recovery_events;
+    /*
+     * Ticks the resolver kept a latched retraction engaged over a corridor it
+     * reported clear (MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS), and the
+     * number of separate dropouts those ticks were spent on. This is the whole
+     * cost of the release hysteresis, stated as a number rather than asserted.
+     */
+    uint64_t release_hold_ticks;
+    uint64_t release_hold_spans;
+    /*
+     * Authored ticks on which at least one sampled slot published a cut, and
+     * the last such tick so slots inside one tick are not double counted.
+     * `discontinuities` counts slot ticks and is the right denominator for a
+     * per-slot rate; this one is the right numerator for "how often does the
+     * frame a player is shown jump", which is a per-tick question.
+     */
+    uint64_t cut_ticks;
+    uint64_t last_cut_tick;
+    uint8_t last_cut_tick_valid;
     uint64_t alternate_entries;
     uint64_t alternate_exits;
     uint64_t emergency_entries;
@@ -2268,6 +2313,7 @@ static void camera_obstruction_resolve_slot(
         .clearance_skin = 1.0f,
         .recovery_speed = 600.0f,
         .max_recovery_step = 20.0f,
+        .release_hold_ticks = MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS,
     };
     MdkrCameraObstructionResolverInput input;
     MdkrCameraObstructionResolverResult result;
@@ -2290,6 +2336,7 @@ static void camera_obstruction_resolve_slot(
     observe->blocker_kind = 0U;
     observe->blocker_stable_id = 0U;
     observe->blocker_normal_valid = FALSE;
+    observe->release_held = FALSE;
     if (observe->intent.discontinuity) {
         observe->resolver.last_safe_valid = FALSE;
         observe->previous_pivot_valid = FALSE;
@@ -2423,6 +2470,7 @@ static void camera_obstruction_resolve_slot(
     observe->blocker_stable_id = result.blocker_stable_id;
     observe->blocker_normal = result.blocker_normal;
     observe->blocker_normal_valid = result.blocker_stable_id != 0U;
+    observe->release_held = (uint8_t)(result.release_held != 0);
     if (result.accepted) {
         MdkrCameraVec3 alternate;
         MdkrCameraVec3 preferred_alternate;
@@ -2447,12 +2495,26 @@ static void camera_obstruction_resolve_slot(
         /* Only FULL consents to leaving the authored pivot->eye ray. The
          * DEPENETRATE_ONLY families never reach here (they returned above), so
          * this test is exactly the old `family != LOOP` one. */
+        /*
+         * A tick held by the release hysteresis is RETRACTED without having
+         * measured a blocker, and it must not open the fan on its own. The
+         * 0.55 clause asks "is the authored ray obstructed badly enough to be
+         * worth leaving?", and a held tick's answer to "obstructed?" is a
+         * sweep result the resolver has just decided not to trust. Swinging
+         * onto a shoulder there commits a shot change to a false negative --
+         * measured: on the 3P route it moved the boom to a lifted candidate
+         * for two ticks and then dropped it again. Contact ticks and a target
+         * that is genuinely not visible still drive the fan unchanged, and the
+         * 0.70 clause still holds an ALREADY-active alternate shot across the
+         * hold, which is that shot's own hysteresis.
+         */
         if (observe->intent.target_valid &&
             !camera_obstruction_test_disable_alternate_shot() &&
             treatment == MDKR_CAMERA_OBSTRUCTION_TREATMENT_FULL &&
             isfinite(desired_distance) && isfinite(resolved_distance) &&
             desired_distance > 0.0f &&
             ((result.status == MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED &&
+              !result.release_held &&
               resolved_distance < desired_distance * 0.55f) ||
              (prior_alternate && resolved_distance < desired_distance * 0.70f) ||
             !direct_target_visible) &&
@@ -2565,6 +2627,7 @@ static void camera_obstruction_motion_sample(
     int alternate;
     int retracted;
     int recovering;
+    int held;
     int blocked;
     int cut;
     int side = 0;
@@ -2608,6 +2671,7 @@ static void camera_obstruction_motion_sample(
         observe->resolver_status == MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED;
     recovering =
         observe->resolver_status == MDKR_CAMERA_OBSTRUCTION_RESOLVER_RECOVERING;
+    held = retracted && observe->release_held != 0;
     /* Correction is engaged whenever the published eye is not free to sit on
      * the authored desired pose, however that came about. */
     blocked = retracted || alternate || emergency;
@@ -2616,11 +2680,23 @@ static void camera_obstruction_motion_sample(
         motion->previous_tick + 1U == tick;
 
     sCameraMotion.sampled_slot_ticks++;
+    if (!sCameraMotion.last_sampled_tick_valid ||
+        sCameraMotion.last_sampled_tick != tick) {
+        sCameraMotion.sampled_ticks++;
+        sCameraMotion.last_sampled_tick = tick;
+        sCameraMotion.last_sampled_tick_valid = TRUE;
+    }
     if (treatment >= 0 && treatment < MDKR_CAMERA_OBSTRUCTION_TREATMENT_COUNT) {
         sCameraMotion.profile_slot_ticks[treatment]++;
     }
     if (cut) {
         sCameraMotion.discontinuities++;
+        if (!sCameraMotion.last_cut_tick_valid ||
+            sCameraMotion.last_cut_tick != tick) {
+            sCameraMotion.cut_ticks++;
+            sCameraMotion.last_cut_tick = tick;
+            sCameraMotion.last_cut_tick_valid = TRUE;
+        }
     }
     if (degenerate) {
         sCameraMotion.degenerate_ticks++;
@@ -2743,6 +2819,19 @@ static void camera_obstruction_motion_sample(
             (double)(tick - motion->block_onset_tick));
         motion->retract_pending = FALSE;
     }
+
+    /*
+     * Release-hold accounting. A held tick is one the resolver reported
+     * RETRACTED over a corridor its own sweep called clear, so it is exactly
+     * the tick that used to disengage the correction and pop the boom.
+     */
+    if (held) {
+        sCameraMotion.release_hold_ticks++;
+        if (!motion->release_held) {
+            sCameraMotion.release_hold_spans++;
+        }
+    }
+    motion->release_held = (uint8_t)(held != 0);
 
     if (recovering && !motion->recovering) {
         sCameraMotion.recovery_events++;
@@ -2868,7 +2957,7 @@ static void camera_obstruction_motion_sample(
                 "continuity=%u pose_valid=%u continuous=%u "
                 "pos={velocity=%.5f accel=%.5f jerk=%.5f} "
                 "ang={velocity=%.5f accel=%.5f jerk=%.5f} "
-                "state={blocked=%u retracted=%u recovering=%u alternate=%u "
+                "state={blocked=%u retracted=%u recovering=%u held=%u alternate=%u "
                 "emergency=%u degenerate=%u discontinuity=%u} "
                 "blocker={id=%u kind=%u churn=%u same_surface=%u} "
                 "shoulder={side=%d flip=%u} "
@@ -2889,7 +2978,8 @@ static void camera_obstruction_motion_sample(
                      (double)jerk.z * jerk.z),
                 angular_velocity, angular_acceleration, angular_jerk,
                 (unsigned)(blocked != 0), (unsigned)(retracted != 0),
-                (unsigned)(recovering != 0), (unsigned)(alternate != 0),
+                (unsigned)(recovering != 0), (unsigned)(held != 0),
+                (unsigned)(alternate != 0),
                 (unsigned)(emergency != 0), (unsigned)(degenerate != 0),
                 (unsigned)(cut != 0),
                 observe->blocker_stable_id, observe->blocker_kind,
@@ -3518,11 +3608,12 @@ void camera_obstruction_motion_summary(void) {
         (double)sCameraMotion.discontinuities * 1000.0 /
             (double)sCameraMotion.sampled_slot_ticks;
     fprintf(stderr,
-            "camera_motion summary slot_ticks=%llu "
+            "camera_motion summary slot_ticks=%llu ticks=%llu cut_ticks=%llu "
             "profiles={full=%llu safety_only=%llu depenetrate_only=%llu} "
             "events={retract=%llu recovery=%llu alternate_entry=%llu "
             "alternate_exit=%llu emergency_entry=%llu discontinuity=%llu "
             "degenerate=%llu} "
+            "release_hold={held_ticks=%llu spans=%llu window=%u} "
             "chatter={oscillation_cycles=%llu oscillation_cycles_excused=%llu "
             "correction_reengagements=%llu} "
             "shoulder={flips=%llu continuous_surface=%llu new_surface=%llu} "
@@ -3530,6 +3621,8 @@ void camera_obstruction_motion_summary(void) {
             "emergency={max_dwell=%llu} "
             "discontinuity_per_1000_ticks=%.4f\n",
             (unsigned long long)sCameraMotion.sampled_slot_ticks,
+            (unsigned long long)sCameraMotion.sampled_ticks,
+            (unsigned long long)sCameraMotion.cut_ticks,
             (unsigned long long)sCameraMotion.profile_slot_ticks
                 [MDKR_CAMERA_OBSTRUCTION_TREATMENT_FULL],
             (unsigned long long)sCameraMotion.profile_slot_ticks
@@ -3543,6 +3636,9 @@ void camera_obstruction_motion_summary(void) {
             (unsigned long long)sCameraMotion.emergency_entries,
             (unsigned long long)sCameraMotion.discontinuities,
             (unsigned long long)sCameraMotion.degenerate_ticks,
+            (unsigned long long)sCameraMotion.release_hold_ticks,
+            (unsigned long long)sCameraMotion.release_hold_spans,
+            (unsigned)MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS,
             (unsigned long long)sCameraMotion.oscillation_cycles,
             (unsigned long long)sCameraMotion.oscillation_cycles_excused,
             (unsigned long long)sCameraMotion.correction_reengagements,

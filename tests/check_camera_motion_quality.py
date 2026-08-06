@@ -21,6 +21,18 @@ Two tiers, deliberately unequal:
       review.  Inventing thresholds here would launder a guess into a gate, so
       this check reports the measured distributions and says so.
 
+  (c) HIGH-RATE cut density.  The census counts cuts on the authored tick
+      grid, which is the right grid for the resolver and the wrong one for the
+      player: at a presentation rate above authored, one authored tick is
+      several displayed frames, and a cut is the one thing interpolation
+      cannot carry across.  The arm below re-drives a pinned route with
+      ``MDKR_PRESENT_RATE`` high and the public ``MotionSmoothing=interpolate``
+      setting, and reports the cut rate per 1000 slot ticks (comparable
+      straight across to the authored-rate run) next to the fraction of
+      DISPLAYED frames that carry one.  Report-only, like tier (b): this is
+      the number the cut-density decision needs before camera default-on, not
+      the decision itself.
+
 The check therefore PASSES with a baseline report while tier (a) holds.  It is
 measurement infrastructure for the default-on decision, not the decision.
 """
@@ -39,7 +51,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from harness_utils import ASSERT_MARKERS, DEFAULT_BUILD_DIR, find_fatal, resolve_binary
+from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, find_fatal,
+                           parse_last, resolve_binary)
 
 MOTION_SUMMARY = "camera_motion summary"
 MOTION_STAT = "camera_motion stat"
@@ -104,6 +117,40 @@ ROUTES: tuple[Route, ...] = (
 )
 
 
+@dataclass(frozen=True)
+class HighRateArm:
+    """One route re-driven at a presentation rate above authored.
+
+    ``frame_scale`` exists because ``--headless-frames`` counts PRESENTS, not
+    authored ticks: at N times the authored rate the same route needs N times
+    the frame budget to cover the same ground.  The arm asserts nothing about
+    the numbers it produces; it asserts only that it really ran at the rate it
+    asked for and really interpolated, because a silently-degraded arm would
+    otherwise report an authored-rate number under a high-rate label.
+    """
+
+    route: str
+    present_rate: int
+    frame_scale: int
+
+
+# 240 Hz against these routes' 60 Hz authored tick: four displayed frames per
+# authored tick, the regime a high-refresh host actually runs in and the one
+# where a per-tick cut rate and a per-frame cut rate diverge most visibly.
+#
+# frame_scale MUST equal the presents-per-tick ratio, and the arm re-derives
+# and reports that ratio rather than trusting it: --headless-frames counts
+# presents, so a mismatched scale silently drives a different LENGTH of route
+# and its cut density is then not comparable with the authored-rate run above.
+#
+# Ancient Lake is the arm because its authored-rate cut density (132 per 1000
+# slot ticks) is by far the highest of the three routes -- if cut density
+# blocks default-on anywhere, it blocks it here.
+HIGH_RATE_ARMS: tuple[HighRateArm, ...] = (
+    HighRateArm(route="ancient-lake-race", present_rate=240, frame_scale=4),
+)
+
+
 def scalar(row: str, name: str) -> int:
     match = re.search(rf"\b{re.escape(name)}=(\d+)", row)
     if match is None:
@@ -150,6 +197,11 @@ def parse_stats(output: str) -> dict[str, dict[str, float]]:
 def parse_summary(row: str) -> dict[str, float]:
     return {
         "slot_ticks": scalar(row, "slot_ticks"),
+        "ticks": scalar(row, "ticks"),
+        "cut_ticks": scalar(row, "cut_ticks"),
+        "release_hold_ticks": block_scalar(row, "release_hold", "held_ticks"),
+        "release_hold_spans": block_scalar(row, "release_hold", "spans"),
+        "release_hold_window": block_scalar(row, "release_hold", "window"),
         "profile_full": block_scalar(row, "profiles", "full"),
         "profile_safety_only": block_scalar(row, "profiles", "safety_only"),
         "profile_depenetrate_only": block_scalar(row, "profiles", "depenetrate_only"),
@@ -177,7 +229,9 @@ def parse_summary(row: str) -> dict[str, float]:
     }
 
 
-def run_route(route: Route, binary: Path, rom: Path, profile_force: str | None) -> str:
+def run_route(route: Route, binary: Path, rom: Path, profile_force: str | None,
+              *, present_env: dict[str, str] | None = None,
+              frame_scale: int = 1) -> str:
     script = (Path(__file__).resolve().parent.parent / route.script).resolve()
     if not script.is_file():
         raise SystemExit(f"missing: {script}")
@@ -199,15 +253,20 @@ def run_route(route: Route, binary: Path, rom: Path, profile_force: str | None) 
             MDKR_VIDEO_CONFIG_PATH=str(Path(temp) / "missing.ini"),
         )
         env.update(route.extra_env)
+        # The presentation override lands last, on purpose: it is the one thing
+        # a high-rate arm is allowed to change about an otherwise pinned route.
+        env.update(present_env or {})
         if profile_force:
             env["MDKR_CAMERA_PROFILE_FORCE"] = profile_force
-        command = [str(binary), "--headless-frames", str(route.frames),
+        command = [str(binary), "--headless-frames",
+                   str(route.frames * frame_scale),
                    "--window-size", route.window]
         command.extend(route.extra_args)
         command.extend(("--input-script", str(script), "--rom", str(rom)))
         process = subprocess.run(
             command, env=env, text=True, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, timeout=route.timeout, check=False,
+            stderr=subprocess.STDOUT, timeout=route.timeout * frame_scale,
+            check=False,
         )
     output = process.stdout or ""
     if process.returncode != 0:
@@ -302,6 +361,12 @@ def report_baseline(name: str, summary: dict, stats: dict) -> None:
           f"alternate_in={summary['alternate_entries']} "
           f"alternate_out={summary['alternate_exits']} "
           f"emergency={summary['emergency_entries']}")
+    print(f"    release hold             "
+          f"held_ticks={summary['release_hold_ticks']} "
+          f"dropouts={summary['release_hold_spans']} "
+          f"window={summary['release_hold_window']}t "
+          f"-- ticks a latched retraction stayed engaged over a corridor its "
+          f"own sweep called clear; this is the entire cost of the hysteresis")
     print(f"    published cuts           {summary['discontinuities']} "
           f"({summary['discontinuity_per_1000_ticks']:.4f} per 1000 slot ticks)")
     if "transition_invoked" in summary:
@@ -336,6 +401,111 @@ def report_baseline(name: str, summary: dict, stats: dict) -> None:
               f"{values['p95']:>12.5f}{values['max']:>12.5f}")
 
 
+def inspect_high_rate(arm: HighRateArm, route: Route, output: str,
+                      authored: dict | None) -> tuple[dict, list[str]]:
+    """Return (high-rate measurement, failures) for one presentation arm.
+
+    The only failures raised here are "this arm did not measure what it says
+    it measured".  Every cut-density number it produces is report-only.
+    """
+
+    failures: list[str] = []
+    rows = [row for row in output.splitlines() if MOTION_SUMMARY in row]
+    if not rows:
+        raise RuntimeError(
+            f"{arm.route}@{arm.present_rate}: no '{MOTION_SUMMARY}' row")
+    summary = parse_summary(rows[-1])
+    sched = parse_last(output, "PRESENTSCHED-SUMMARY",
+                       label=f"{arm.route}@{arm.present_rate}")
+
+    presents = sched["presents"]
+    interpolated = sched["interp"]
+    sim_ticks = sched["simticks"]
+
+    # A degraded arm is worse than no arm: it would publish an authored-rate
+    # cut density under a high-rate heading. Prove the rate and the smoothing.
+    if sched["presentrate"] != arm.present_rate:
+        failures.append(
+            f"{arm.route}@{arm.present_rate}: scheduler resolved present rate "
+            f"{sched['presentrate']}, not {arm.present_rate}")
+    if interpolated <= 0:
+        failures.append(
+            f"{arm.route}@{arm.present_rate}: no interpolated presents, so "
+            "this arm measured the authored rate under a high-rate label")
+    if summary["ticks"] <= 0 or presents <= 0:
+        failures.append(
+            f"{arm.route}@{arm.present_rate}: census sampled "
+            f"{summary['ticks']} ticks over {presents} presents")
+        return {"summary": summary}, failures
+
+    # frame_scale is the claim "this arm covers the same route as the
+    # authored-rate run". If the scheduler did not actually put out that many
+    # presents per authored tick, the arm drove a different LENGTH of route and
+    # its cut density is not comparable to the number printed beside it.
+    presents_per_tick = presents / summary["ticks"]
+    if abs(presents_per_tick - arm.frame_scale) > 0.05:
+        failures.append(
+            f"{arm.route}@{arm.present_rate}: {presents_per_tick:.4f} presents "
+            f"per authored tick, but the arm budgeted frames for "
+            f"{arm.frame_scale}; the route length does not match the "
+            "authored-rate run this is reported against")
+
+    measured = {
+        "present_rate": arm.present_rate,
+        "presents": presents,
+        "interpolated_presents": interpolated,
+        "real_endpoints": sched["realendpoints"],
+        "replay_endpoints": sched["replayendpoints"],
+        "sim_ticks": sim_ticks,
+        "census_ticks": summary["ticks"],
+        "presents_per_census_tick": presents_per_tick,
+        # Directly comparable to the authored-rate route report above: same
+        # metric, same denominator, only the presentation rate differs.
+        "cuts_per_1000_slot_ticks": summary["discontinuity_per_1000_ticks"],
+        "cut_ticks": summary["cut_ticks"],
+        "cut_ticks_per_1000_ticks":
+            summary["cut_ticks"] * 1000.0 / summary["ticks"],
+        # The player-facing form. A cut tick is an authored tick whose camera
+        # cannot be reached from the previous one by interpolation, so exactly
+        # one displayed frame per cut tick is a hard camera jump and the frames
+        # inside that interval are the ones smoothing cannot help.
+        "displayed_frames_on_a_cut": summary["cut_ticks"],
+        "displayed_frame_cut_fraction": summary["cut_ticks"] / presents,
+        "frames_between_cuts":
+            presents / summary["cut_ticks"] if summary["cut_ticks"] else 0.0,
+    }
+    if authored is not None:
+        measured["authored_rate_cuts_per_1000_slot_ticks"] = \
+            authored["summary"]["discontinuity_per_1000_ticks"]
+    return measured, failures
+
+
+def report_high_rate(arm: HighRateArm, measured: dict) -> None:
+    print(f"  [{arm.route}@{arm.present_rate}] HIGH-RATE cut density "
+          "-- reported, NOT asserted")
+    print(f"    presentation             rate={measured['present_rate']} "
+          f"smoothing=interpolate presents={measured['presents']} "
+          f"interpolated={measured['interpolated_presents']} "
+          f"real_endpoints={measured['real_endpoints']} "
+          f"replay_endpoints={measured['replay_endpoints']}")
+    print(f"    authored grid            census_ticks="
+          f"{measured['census_ticks']} sim_ticks={measured['sim_ticks']} "
+          f"presents_per_tick={measured['presents_per_census_tick']:.4f}")
+    line = (f"    published cuts           "
+            f"{measured['cuts_per_1000_slot_ticks']:.4f} per 1000 slot ticks")
+    if "authored_rate_cuts_per_1000_slot_ticks" in measured:
+        line += (f" (authored-rate run: "
+                 f"{measured['authored_rate_cuts_per_1000_slot_ticks']:.4f})")
+    print(line)
+    print(f"    cut ticks                {measured['cut_ticks']} "
+          f"({measured['cut_ticks_per_1000_ticks']:.4f} per 1000 authored "
+          f"ticks) -- authored ticks where at least one slot cut")
+    print(f"    displayed-frame incidence "
+          f"{measured['displayed_frame_cut_fraction'] * 100.0:.4f}% of "
+          f"{measured['presents']} displayed frames land on a cut "
+          f"(one every {measured['frames_between_cuts']:.1f} frames)")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
@@ -348,6 +518,9 @@ def main() -> int:
                              "table is what an unset run measures.")
     parser.add_argument("--baseline-out", default=None,
                         help="write the baseline census to this JSON path")
+    parser.add_argument("--skip-high-rate", action="store_true",
+                        help="skip the high-rate cut-density arm; it re-drives "
+                             "a route at 4x the frame budget")
     args = parser.parse_args()
 
     binary = Path(resolve_binary(args.build)).resolve()
@@ -381,9 +554,41 @@ def main() -> int:
         baseline[route.name] = {"summary": summary, "stats": stats}
         report_baseline(route.name, summary, stats)
 
+    high_rate: dict[str, dict] = {}
+    selected_routes = {route.name for route in routes}
+    for arm in HIGH_RATE_ARMS if not args.skip_high_rate else ():
+        if arm.route not in selected_routes:
+            continue
+        route = next(item for item in ROUTES if item.name == arm.route)
+        label = f"{arm.route}@{arm.present_rate}"
+        print(f"  {label}: {route.name} re-driven at "
+              f"MDKR_PRESENT_RATE={arm.present_rate} with "
+              "MotionSmoothing=interpolate, for cut density per DISPLAYED "
+              "frame rather than per authored tick")
+        try:
+            output = run_route(
+                route, binary, rom, args.profile_force,
+                present_env={"MDKR_PRESENT_RATE": str(arm.present_rate),
+                             "MDKR_PRESENT_SMOOTHING": "interpolate",
+                             # The scheduler summary is what proves the arm
+                             # ran at the rate it claims and what supplies the
+                             # displayed-frame denominator.
+                             "MDKR_PRESENT_SCHED_TRACE": "1"},
+                frame_scale=arm.frame_scale)
+            measured, arm_failures = inspect_high_rate(
+                arm, route, output, baseline.get(arm.route))
+        except (RuntimeError, subprocess.TimeoutExpired) as error:
+            failures.append(f"{label}: {error}")
+            continue
+        failures.extend(arm_failures)
+        high_rate[label] = measured
+        if not arm_failures:
+            report_high_rate(arm, measured)
+
     if args.baseline_out:
         Path(args.baseline_out).write_text(
-            json.dumps({"profile_force": args.profile_force, "routes": baseline},
+            json.dumps({"profile_force": args.profile_force,
+                        "routes": baseline, "high_rate": high_rate},
                        indent=2, sort_keys=True) + "\n")
         print(f"  baseline written to {args.baseline_out}")
 

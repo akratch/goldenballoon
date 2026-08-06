@@ -224,9 +224,17 @@ The priority order is:
 5. maximum useful boom length.
 
 The camera retracts immediately when danger increases. It returns more slowly when
-space opens, with a small clearance hysteresis and blocker identity to prevent
-triangle-to-triangle chatter. Obstruction correction must not add general camera
-lag: DKR's existing vehicle cameras already author their own speed-sensitive feel.
+space opens, and it does not start returning the instant the corridor reports
+clear: a retraction stays engaged until the corridor has been clear for a whole
+release window, because a swept lens volume grazing a wall reports clear for a
+few ticks at facet seams and at shallow incidence, and expanding on that report
+pops the boom toward the authored pose and snaps it back on the next tick. The
+window is nine authored ticks, taken from the longest measured false-clear run
+plus one tick of margin, and it is deliberately shorter than the chatter window
+MOTION-01 asserts on, so the assertion still has something to catch. Retraction
+itself is never delayed by it: measured retract latency is zero and stays zero.
+Obstruction correction must not add general camera lag: DKR's existing vehicle
+cameras already author their own speed-sensitive feel.
 
 ### 4.3 Screen and viewport behavior
 
@@ -882,7 +890,7 @@ default-on rollout.
 | CAM-03 | Strong partial | Static visual-triangle cache, stable provenance, full US-v80 ROM model/track census, triangle-AABB broadphase, exact source adapter, cache bytes/build time, candidate/work counters, bounded exact TOI, and query percentiles; first exact shadow retains at most 7 track triangles | Approved fingerprinted hard/soft/ignore policy and level-load percentage budget on reference hardware |
 | CAM-04 | Strong partial | Eight-slot sidecar; author intent; resolved segment; scoped presentation reads; authority source guards; immutable renderer-derived final-pose tuple; every ordinary, alternate, emergency, scripted, and fallback publication is exact endpoint-validated | Final open-space state/event/input/RNG/audio A/B corpus and browser/backend parity rerun |
 | CAM-05 | Strong partial; bounded temporal index implemented, release evidence open | Object-model cache; fixed-capacity, generation-keyed publication; stable-order eight-triangle chunks plus deterministic balanced BVH; build-time topology/coverage/containment validation and query-time integrity checks; aggregate sphere/exact instance/node/chunk/triangle/stationary fences; every fence exit on either phase flags exhaustion, and healthy exhaustion falls back to the published world AABB while corruption remains invalid; chained slot indices for identity/model-bounds/previous-instance census lookups; moving doors publish a conservative renderer-path temporal envelope; moving non-door solids and intersecting camera chords cut presentation interpolation; production-backed dense temporal oracle and invalid/recovery publication state-machine tests; ROM-free BVH equivalence/fault tests and runtime source/fallback/invalid counters | Inject aggregate multi-instance exhaustion; add rotating-door exact-lens coverage; extend actual address-reuse and whole-ROM work/memory/load soaks |
-| CAM-06 | Strong partial | Immediate retract, bounded recovery, scripted endpoint/chord safety, deterministic shoulder/elevation fan, sticky prior-candidate/release-band hysteresis; previous/current exact tuple validation; fixed-basis exact transition sweep; rotated-basis conservative sweep; projection/shake tuple cuts; production-backed thick-slab `target_embedded` classification that remains not-visible telemetry | Quantified jerk/retract/recovery/blocker/candidate metrics, presentation-rate routes, and signed worst-1% motion review |
+| CAM-06 | Strong partial | Immediate retract, bounded recovery, retraction release hold that absorbs measured false-clear runs at facet seams, scripted endpoint/chord safety, deterministic shoulder/elevation fan, sticky prior-candidate/release-band hysteresis; previous/current exact tuple validation; fixed-basis exact transition sweep; rotated-basis conservative sweep; projection/shake tuple cuts; production-backed thick-slab `target_embedded` classification that remains not-visible telemetry | Quantified jerk/retract/recovery/blocker/candidate metrics, and signed worst-1% motion review. Presentation-rate cut density is now measured at 4x authored and reported as a baseline; no threshold is set on it |
 | CAM-07 | Strong partial | Follow/loop/fixed/finish/T.T./scripted families plus P2/cutscene/3P-T.T. slot mapping; current-source 47-row, 4P, WebGPU snapshot, and independent 3P+T.T. camera-3 route coverage | Approved cinematic exceptions and remaining pinned mode-transition review |
 | CAM-08 | Partial | Per-viewport presentation-only emergency racer opacity; hard surfaces never fade | Soft-occluder enrollment/fade policy and state/cross-viewport pixel proof |
 | CAM-09 | In progress | Release registration; same-binary oracle; 24-arm shape/FOV gate; lifecycle/3P/emergency gates; isolated native 4P p99/memory/authority gate; current Clang ASan/UBSan native target and ROM route; 84-test registered suite including new fault/oracle fixtures | Current-candidate 47-row/20-track, WebGPU/browser/wasm and resource-plateau/GCC breadth, soft policy/pixels, rotating-door/runtime moving-solid fixtures, motion/manual review, and a separately reviewed default flip |
@@ -1025,7 +1033,7 @@ geometry, cost, or authority exit:
 | PERF-01 geometry — implementation complete, release evidence open | `842d62f` replaces the production sampled interval fallback with a 96-test continuous Lipschitz interval proof. The sampled implementation is reachable only through the ROM-free oracle API. Count SAT, bounded tests/exhaustion, stationary tests, and refinements; budget exhaustion returns `INVALID`, and two-phase composition retains the conservative sphere `HIT`. | Property/fuzz corpus compares production against the oracle across translation, scale, tangent, initial-overlap, face/edge/vertex, high-coordinate, and thin/oversized triangles under Clang/GCC, strict warnings, ASan/UBSan, and wasm32. Inject every work-cap boundary. | Zero false clears versus the oracle; zero ordinary-route sampled fallbacks; stationary-test p99 <= 64 and max <= 128; deterministic hit bytes and stable-ID ordering. |
 | PERF-02 collision — implementation complete, release evidence open | `d8c8bb7` builds stable-order eight-triangle chunks and an auxiliary deterministic balanced BVH, validates topology/coverage/containment before publication, checks generation and integrity during both sphere/exact traversal, and enforces aggregate instance/node/chunk/triangle/stationary budgets. `da93930` adds identity/rotated/scaled equivalence and malformed-node/chunk/per-model-cap/generation fault tests against the production representation. | Aggregate multi-instance cap injection, whole-ROM model census, repeated real load/free/address-reuse soak, and moving-door snapshot tests. | Dynamic p99 <= 2 instances, max <= 4; maximum 64 nodes/32 chunks/256 retained triangles/128 stationary tests per corridor; zero truncation/invalid/degraded results; cache within recorded load/memory budgets. |
 | RUNTIME-01 camera/render — implementation complete, fault fixture open | Store renderer-derived exact guard and full fallback tuple per slot. Ordinary boom queries use the two-phase result. Alternate, emergency, recovery, scripted, stationary, and post-validation build and validate the final `Camera` orientation; publication performs no later retarget. Dynamic invalidity is never cleared or published, and failed ticks retire camera/object interpolation history. | Add a ROM-free state-machine seam that injects exact clear/hit/invalid, dynamic census failure/recovery, generation mismatch, stale tuple, final retarget, and orientation-changing interpolation. Runtime fixtures assert identical open-space bytes, authored fallback on source failure, and conservative sphere hit on healthy exact-work exhaustion. | Zero final-pose penetration or hidden resolvable target; zero stale generations; invalid never clears; failed publication cannot be snapshotted or interpolated; recovery requires a complete fresh tuple. |
-| MOTION-01 design/QA — instrumentation complete, thresholds and tuning open | Tune expansion-only spring/hysteresis and deterministic shot scoring after safety decisions stabilize. Mark orientation-changing cuts discontinuous unless an SE(3) sweep is implemented. The per-family profile table (§7.3.1) is now an explicit three-value enum so a route can be measured under a different profile without editing a correction stage. | `tests/check_camera_motion_quality.py` drives the three pinned routes under Modern and reads the runtime's `camera_motion` census: jerk, retract latency, recovery duration, blocker churn, shoulder flips, emergency dwell, and discontinuity density. Hard chatter/shoulder/dwell invariants assert; the analog metrics are reported as the calibration baseline. 20–240 Hz presentation, reduced-motion, and camera-shake-off controls remain open. | Numeric thresholds pass and worst 1% clips receive signed manual review across 4:3, ultrawide, portrait, and split-screen. Two open defects found by the first capture are recorded in §7.3.2. |
+| MOTION-01 design/QA — instrumentation complete, thresholds and tuning open | Tune expansion-only spring/hysteresis and deterministic shot scoring after safety decisions stabilize. Mark orientation-changing cuts discontinuous unless an SE(3) sweep is implemented. The per-family profile table (§7.3.1) is now an explicit three-value enum so a route can be measured under a different profile without editing a correction stage. | `tests/check_camera_motion_quality.py` drives the three pinned routes under Modern and reads the runtime's `camera_motion` census: jerk, retract latency, recovery duration, blocker churn, shoulder flips, emergency dwell, and discontinuity density. Hard chatter/shoulder/dwell invariants assert; the analog metrics are reported as the calibration baseline. A 240 Hz interpolated arm reports cut density per displayed frame. Reduced-motion and camera-shake-off controls remain open. | Numeric thresholds pass and worst 1% clips receive signed manual review across 4:3, ultrawide, portrait, and split-screen. What the first capture found, and what closing it cost, is recorded in §7.3.2. |
 | VIS-01 rendering/content | Add reviewed soft-occluder policy and generation-keyed, per-viewport, batch-local fade. Hard geometry continues to require clearance; emergency racer fade remains presentation-only. | Two-view opposing visibility fixture, opaque/cutout/translucent pixels, freed-ID reuse, state/RNG/event/audio hashes, and GL/WebGPU/browser screenshots. | No cross-viewport contamination, no hard-wall fade substitution, no gameplay mutation, and approved content census. |
 | RELEASE-01 QA/release | Rerun the complete current-revision matrix in optimized artifacts and archive the evidence schema below. Flip the default only in a dedicated reviewed commit with immediate Observe rollback. | 84 registered tests plus release suite, GCC/Clang, sanitizers, native backends, wasm/browser, resource plateau, load time, long 4P soak, same-binary Legacy/center-ray negative controls. | Every CAM-00–CAM-09 and LENS-01–LENS-08 row green; definition of done satisfied; release notes/manual review signed. |
 
@@ -1224,26 +1232,59 @@ asked for is the one result a reader cannot tell apart from the shipped table.
 
 `tests/check_camera_motion_quality.py` drives the Ancient Lake race, Timber's
 Island hub tour, and 3P+T.T. spectate routes under Modern and reports the
-distributions above. Two findings are open, and neither is a safety regression —
-`penetrated=0 degraded=0 invalid=0` still holds on every route:
+distributions above. It found two things. Neither was a safety regression —
+`penetrated=0 degraded=0 invalid=0` held on every route throughout:
 
-1. **Facet-seam correction dropout.** On the 3P route the correction disengages
-   for a single authored tick at the boundary between two adjacent wall
-   triangles, then immediately re-engages against the neighbouring facet (for
-   example blocker `317` → one clear tick → blocker `319`). Five such
-   re-engagements occur inside the 12-tick chatter window. Recovery is not reset
-   by this — the resolver never reads blocker identity — but the published boom
-   does pop toward the desired pose and back, which is exactly the "clear/blocked/
-   clear cycle" this section forbids. The static blocker stable ID is per source
+1. **Correction dropout against a wall the camera is still on — closed.** On
+   the 3P route the correction disengaged, the boom popped toward the desired
+   pose, and the correction re-engaged, five times inside the 12-tick chatter
+   window. The first read of this was "a single tick at a facet seam", from the
+   clearest instance (blocker `317` → one clear tick → blocker `319`).
+   Reconstructing the phase machine from the level-2 trace corrected that: the
+   five clear runs are **1, 1, 3, 4 and 7 ticks**, and two of them have the
+   *identical* blocker id on both sides (`780` → 3 clear ticks → `780`), which
+   is what proves the gap is a false negative of the swept-volume query rather
+   than a wall the kart drove past. The static blocker stable ID is per source
    face (`tracks.c` increments it per triangle), so blocker churn alone cannot
-   distinguish this from a genuinely new obstruction; the census therefore
-   classifies churn by contact normal, and reports facet churn separately.
-2. **Published-cut density.** Modern marks 17–132 presentation cuts per 1000
-   resolved slot ticks depending on route, nearly all attributed to the
-   transition validator declining to prove an interpolation-safe path. At the
-   authored present rate this is invisible, because interpolation is a no-op
-   there. It is not invisible above the authored rate, and the 20–240 Hz arm of
-   this gate is still open.
+   distinguish these cases; the census classifies churn by contact normal and
+   reports facet churn separately.
+
+   The resolver now carries an explicit release band on retraction (§4.2):
+   contact still retracts on the tick it is seen, and a latched retraction
+   holds the boom at its retracted length until the corridor has been clear for
+   nine consecutive ticks. Measured cost across the three routes is 64, 103 and
+   67 held ticks — 8, 13 and 12 dropouts absorbed — out of 5187, 11992 and
+   20463 slot ticks. Retract latency stays 0/0/0/0. Recovery duration does not
+   get worse: on the 3P route the count of recovery events falls 7 → 3 as the
+   spurious dropout-triggered recoveries disappear, and the longest recovery
+   falls 36 → 33 ticks. Emergency dwell is unchanged on all three routes.
+
+   A held tick is deliberately not allowed to open the alternate-shot fan. The
+   fan's 0.55 severity clause asks whether the authored ray is obstructed badly
+   enough to be worth leaving, and a held tick's answer to "obstructed?" is a
+   sweep result the resolver has just decided not to trust. Letting it through
+   was measured: it swung the 3P boom onto a lifted candidate for two ticks and
+   dropped it again, a 236 wu single-tick step. The 0.70 clause still holds an
+   already-active alternate shot across a hold, which is that shot's own
+   hysteresis.
+
+2. **Published-cut density — measured at rate, no threshold set.** Modern marks
+   17–132 presentation cuts per 1000 resolved slot ticks depending on route,
+   nearly all attributed to the transition validator declining to prove an
+   interpolation-safe path. At the authored present rate this is invisible,
+   because interpolation is a no-op there. The gate now carries a high-rate arm
+   that re-drives Ancient Lake — the worst of the three — at
+   `MDKR_PRESENT_RATE=240` with the public `MotionSmoothing=interpolate`
+   setting, four displayed frames per authored tick. The cut rate per 1000 slot
+   ticks comes out at 132.0609, identical to the authored-rate run, which is the
+   expected result and the arm's own sanity check: the census lives on the
+   authored grid and presentation rate must not move it. Restated per displayed
+   frame, that is **3.28% of frames landing on a cut, one every 30.5 frames**.
+   The arm asserts nothing about those numbers; it asserts only that it really
+   ran at the rate and route length it claims, because an arm that quietly
+   degraded to the authored rate would publish an authored-rate number under a
+   high-rate heading. Whether 3.28% is acceptable before camera default-on is
+   the cut-density decision, and this is the number it needs.
 
 The literal "no clear/blocked/clear cycle inside 12 ticks" bound is measured and
 reported, but is **not** the check's hard assertion: on the lake route every
