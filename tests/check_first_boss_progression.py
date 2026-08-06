@@ -329,7 +329,15 @@ def run_campaign(
             # Hot Top Volcano's corrected AI line wipes out at the crater jump
             # and wedges the kart where DKR's own recovery can no longer re-arm.
             # See the module docstring; the broken control deliberately omits it.
-            "MDKR_AUTOPILOT_UNSTICK": "1",
+            #
+            # `L<levelId>` scopes the hook to that level in the GUARD
+            # (platform/mdkr_adventure.c). "It only ever fires at Hot Top
+            # Volcano" used to be a property of the `off_course` assertion below
+            # and nothing else, which meant a new wedge site elsewhere on this
+            # route would have been rescued first and reported second. Now it is
+            # not rescued at all. The assertion stays: it is what proves the
+            # scope is doing something, and it still reports the level.
+            "MDKR_AUTOPILOT_UNSTICK": f"L{HOT_TOP_VOLCANO}",
         }
         if not (win and break_invariant):
             values["MDKR_BOSS_ROUTE"] = "1"

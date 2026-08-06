@@ -80,10 +80,23 @@ racing normally; once it exceeds 60 update-rate units the AI kicks into a
 advances to a different AI node) and arms a 120-tick cooldown (`unk215`)
 before this recovery can fire again. The cooldown only decrements when
 `unk214 == 0` (i.e. after the reverse window has run its course) **and**
-`velocity < -0.5` — the kart has to actually be driving backwards fast enough,
-not merely have finished the 60-tick window. If the kart comes out of that
-window still wedged against geometry (unable to reach `velocity < -0.5` no
-matter how hard it reverses), `unk215` never reaches 0 again, so the
+`velocity < -0.5`.
+
+> **Sign correction, from the opponent measurement below.** This section
+> previously read `velocity < -0.5` as "driving backwards fast enough".
+> It is the opposite: `racer->velocity` is **negative for forward motion** —
+> `racer.c` assigns `racer->velocity = -sqrtf(...)`, the boss animation picks
+> RUN at `velocity < -2.0`, and the opponent witness measures about **-11** for
+> a kart driving a clean lap and **+1.9** while the AI's reverse-out state is
+> running. So the branch means "the reverse window has expired **and** the kart
+> is back to driving forward at speed". Everything the section concludes is
+> unchanged — a kart that cannot move satisfies neither reading — but the
+> mechanism is that the cooldown clears itself during ordinary driving, which
+> is why a kart that gets moving again recovers within a second or two.
+
+If the kart comes out of that window still wedged against geometry — unable to
+reach `velocity < -0.5` no matter what it does — `unk215` never reaches 0
+again, so the
 `unk213`-driven recovery can never re-arm. Nothing else in `racer.c` reads or
 writes `unk215`, so once this happens the kart is stuck for the rest of the
 race.
@@ -99,6 +112,55 @@ AI table decode *correctly* for the first time — the wedge is a consequence of
 the AI table now driving this racer down a real racing line it previously
 never reached (the table was garbage before the swap fix), not a new defect
 the byte-swap correction introduced.
+
+### Measured: opponents do not wedge, and here is why
+
+This was the open question that decided the item's classification, and it is now
+measured rather than assumed. `tests/check_ai_unstick_opponents.py` races Hot Top
+Volcano — the level the wedge was found on — with a full eight-racer field and
+reads `unk213`/`unk214`/`unk215`, velocity, grounding and checkpoint for every
+**genuine** opponent every tick, through a `MDKR_AI_STUCK_TRACE` witness in
+`update_AI_racer()` that refuses any racer index ever seen carrying a real player
+index.
+
+> Worth stating, because the reachability claim reads the wrong way from a grep:
+> `update_player_racer()`'s `} else { racer_AI_pathing_inputs(...); }` is **not**
+> the opponent path. It is inside the `if (playerIndex == PLAYER_COMPUTER)
+> update_AI_racer(...) else { ... }` split near the top of the function, so it is
+> reached only by a *human* kart the finish/menu hand-off has already relabelled
+> `PLAYER_COMPUTER`. Opponents run `update_AI_racer()`, which calls
+> `racer_AI_pathing_inputs()` while `racer->unk201 != 0`.
+
+**32 races, 32 distinct boot RNG seeds (`MDKR_RNGSEED=0x<hex>`), 7 opponents
+each: 23 stuck-recovery episodes, 23 recoveries, 0 wedges.** Every armed cooldown
+reached zero again; none was still armed when a run ended. Episode peaks:
+
+| counter | meaning | observed maximum |
+|---|---|---|
+| `stall` | consecutive update units with the cooldown armed while `\|velocity\| < 0.5` | 229 |
+| `nodecay` | consecutive units armed without the decay condition ever holding | 729 |
+| `armed` | total units the cooldown was armed | 1196 |
+
+The 229 is the one that answers the question, because it *is* the wedge — and
+then it ends. Opponent 6 left the track at `(-96.1, -987.7, 2357.9)`, all wheels
+off a surface, velocity pinned at `0.472` (below the `0.5` the decay branch
+needs), cooldown at its full `120` with the reverse window already expired: 208
+update units of a kart whose recovery provably could not re-arm. At tick 14790
+DKR's own **out-of-bounds respawn** put it back on the track, and the cooldown
+decayed `120 → 114 → 84 → 54 → 24 → 0` over six samples of ordinary forward
+driving.
+
+That respawn is the opponent's recovery, and it explains the asymmetry this item
+started from: the autopiloted human at the crater lands *inside* the world,
+grounded, so nothing ever respawns it and `unk215` stays armed for 18,677 frames.
+An opponent that reaches the same state is out of bounds and gets picked up.
+
+So on the evidence available today the deadlock is **not reachable for a CPU
+opponent on this track**, which is why no player has reported a rival standing
+still, and why the item stays "believed authored, hardware-unverified" rather
+than becoming a player-visible defect. The gate is registered and fails closed:
+if no opponent ever arms the cooldown it reports that the measurement stopped
+working, rather than passing quietly.
 
 ### The existing tripwire
 
@@ -117,6 +179,22 @@ keep failing to finish); every firing is logged via the `autopilotunstick:`
 trace line, and the check asserts (`off_course` in the fourth-race
 verification block) that it **never fires outside Hot Top Volcano** — any new
 wedge site elsewhere would fail the gate rather than being silently absorbed.
+
+That "only there" property used to be enforced by **one check's assertion, not
+by the guard** — and `tests/check_race_multiplayer.py` also sets
+`MDKR_AUTOPILOT_UNSTICK=1`, on Ancient Lake, deliberately and documented ("this
+keeps a random AI wall wedge from erasing multiplayer coverage") but with no
+equivalent of `off_course`, so a wedge there was absorbed rather than reported.
+A hard scope in the guard would break that second use, so the hook now takes an
+**opt-in** one:
+
+    MDKR_AUTOPILOT_UNSTICK=1        any level (unchanged; multiplayer keeps this)
+    MDKR_AUTOPILOT_UNSTICK=L<id>    only while courseId == <id>
+
+`check_first_boss_progression.py` passes `L7`, so a wedge anywhere else on the
+campaign route is no longer rescued at all — it fails the gate on its own merits
+instead of being quietly absorbed and then reported. The `off_course` assertion
+stays, because it is what proves the scope is doing something.
 
 ### Open question: hardware verification
 

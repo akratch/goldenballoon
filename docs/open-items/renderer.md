@@ -398,6 +398,63 @@ one-frame caster lag (R14), decal receivers excluded from map shadows by
 authored intent (R15), and GL DEPTH24 vs WebGPU Depth32Float precision
 divergence. See the review report's P2 table.
 
+## FIXED (shadow family) / OPEN (everything else): the harness ran a different program
+
+R1 above is a *class*, not an incident. `MDKR_TRACE` does not only print: it is
+OR'd into `mdkr_resource_trace_enabled()` (`platform/platform_sdl_min.c`)
+alongside `MDKR_RESOURCE_STATS`, and that predicate has gated engine work. Every
+gate that exports it is therefore measuring a program that no player runs — the
+shipped native launchers set no `MDKR_*` variable at all, and
+`dist/web/mdkr64-shell.js` sets `MDKR_TRACE` only from a `?trace=` query string.
+Twice that gap let a shadow gate go green over a player-visible bug.
+
+### Closed here: the shadow family
+
+Every shadow gate now runs a **shipping-configuration arm** with `MDKR_TRACE`
+absent, and the arm asserts the same evidence rather than a weaker restatement
+of it. Where the gate captures frames, the assertion is byte equality against
+the traced arm, which names the failure mode directly instead of a symptom:
+whatever a diagnostic variable arms — a cache reset, an extra allocation, a
+different admission order — if it reaches the frame buffer, it fails, without
+anyone having had to predict it.
+
+| gate | shipping arm | what it asserts untraced |
+|---|---|---|
+| `check_shadow_stage_reset.py` | pre-existing (this is the R1 regression gate) | identical terminal `[WORLD-FX] static=` census |
+| `check_world_shadows.py` | full off/on pair per backend | the pixel handoff classification, decal-triangle handoff, `[WORLD-SHADOW]` healthy-path telemetry, **and byte-identical frames** |
+| `check_shadow_visual_ab.py` | production decal route | **byte-identical dumped frames**; `[SHADOW]` decal mode and non-decal count |
+| `check_shadow_plausibility.py` | first scene's production arm | the whole provenance half (`[WORLD-FX]`/`[SHADOW-PLAN]` have their own variable) **and byte-identical frames** |
+| `check_presentation_shadows.py` | production arm per backend | **byte-identical dumped frames** (its authority streams already use their own variables) |
+| `check_widescreen_shadow.py` | production 4:3 case | `[SHADOW]` decal mode, all three heap capacities, overflow-drop and non-decal counts — this gate dumps no frames, so it carries no pixel half |
+
+Every one of those arms also asserts that it emitted **no** `[PACE]` rows, so an
+arm that silently inherits the variable fails instead of quietly re-testing the
+traced configuration.
+
+### Open: the other 68
+
+The audit behind this section swept every `tests/check_*.py`. `harness_utils.py`
+is clean — it never injects `MDKR_TRACE`; the divergence is a per-file authoring
+convention. **75 gates export `MDKR_TRACE`.** Six are listed above.
+`check_browser_runtime.py` is mixed by accident rather than by design (some of
+its CDP scenarios override no env at all). That leaves **68 gates with no
+shipping-configuration arm**, and they are not all low-risk: they include every
+gate whose subject is a rendered image or a resource lifetime.
+
+Highest-value follow-up, by subject rather than by count:
+
+| subject | gates with no shipping arm | why it matters |
+|---|---|---|
+| resource lifetime | `check_resource_plateau.py`, `check_browser_resource_plateau.py` | both also set `MDKR_RESOURCE_STATS`, the *other* input to `mdkr_resource_trace_enabled()` — same predicate, same class, different trigger |
+| rendered image | `check_world_fx_capture.py`, `check_world_fx_matrix.py`, `check_rl1_vertex_colour_ab.py`, `check_remaster_lighting.py`, `check_mip_motion.py`, `check_font_sdf.py`, `check_framed_world_views.py`, `check_widescreen_proportions.py`, `check_door_glyphs.py`, `check_charselect_motion.py` | a diagnostic variable that reaches the frame buffer is invisible to all of them |
+| presentation/pacing | `check_presentation_breadth.py`, `check_presentation_lifecycle.py`, `check_renderer_backends.py`, `check_camera_snapshot_coverage.py`, `check_simulation_cadence.py` | these already pin their own scheduler variables, so dropping `MDKR_TRACE` may cost them nothing |
+
+A gate whose entire assertion is a trace row (`check_math_tables.py`,
+`check_nav_fixtures.py`, `check_state_hash.py`) cannot have a shipping arm and
+does not need one — what it measures does not exist without the variable. The
+ones that matter are the gates that assert on **pixels, resources or timing**
+and merely happen to read a trace row on the way.
+
 ## FIXED: restoration/remaster sprint — sprite bounds, RDP gradients, SDF text, moving mips, and RL-1
 
 Two correctness bugs and three remaster decisions shared one rule: each path

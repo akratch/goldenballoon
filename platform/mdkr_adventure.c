@@ -948,9 +948,23 @@ typedef struct MdkrAutopilotUnstickState {
  * Off unless MDKR_AUTOPILOT_UNSTICK is set, so no other fixture's trajectory can
  * move -- notably the deliberately broken collision-grid control, which must
  * keep failing to finish.
+ *
+ *   MDKR_AUTOPILOT_UNSTICK=1        any level (the original contract)
+ *   MDKR_AUTOPILOT_UNSTICK=L<id>    only while courseId == <id>
+ *
+ * The scoped form exists because "this hook only ever fires at Hot Top Volcano"
+ * was a property enforced by ONE check's assertion
+ * (tests/check_first_boss_progression.py's `off_course` block) rather than by
+ * the hook, while tests/check_race_multiplayer.py enables the unscoped form on
+ * Ancient Lake with no equivalent assertion. Scoping is opt-in rather than
+ * mandatory precisely because that multiplayer use is deliberate: the point is
+ * that a fixture which knows where the wedge is can now say so to the guard,
+ * and a new wedge site elsewhere then fails to be rescued instead of being
+ * silently absorbed.
  */
 void mdkr_autopilot_unstick(Object *obj, Object_Racer *racer, s32 updateRate) {
     static s32 sUnstickOn = -1;
+    static s32 sUnstickLevel = -1;
     static MdkrAutopilotUnstickState sState[MDKR_UNSTICK_PLAYERS];
     MdkrAutopilotUnstickState *state;
     Settings *settings;
@@ -962,6 +976,9 @@ void mdkr_autopilot_unstick(Object *obj, Object_Racer *racer, s32 updateRate) {
     if (sUnstickOn < 0) {
         const char *e = getenv("MDKR_AUTOPILOT_UNSTICK");
         sUnstickOn = (e != NULL && e[0] != '\0' && e[0] != '0') ? 1 : 0;
+        if (sUnstickOn && (e[0] == 'L' || e[0] == 'l') && e[1] != '\0') {
+            sUnstickLevel = atoi(e + 1);
+        }
     }
     if (!sUnstickOn) {
         return;
@@ -998,7 +1015,8 @@ void mdkr_autopilot_unstick(Object *obj, Object_Racer *racer, s32 updateRate) {
      *    idle firings the unrestricted version logged per campaign arm, and
      *    leaves a genuine wedge on the grid to fail the fixture loudly rather
      *    than be rescued quietly. */
-    if (mdkr_adv_slot_for(levelId) >= 0 || racer->courseCheckpoint <= 0) {
+    if ((sUnstickLevel >= 0 && levelId != sUnstickLevel) ||
+        mdkr_adv_slot_for(levelId) >= 0 || racer->courseCheckpoint <= 0) {
         state->anchorX = obj->trans.x_position;
         state->anchorZ = obj->trans.z_position;
         state->immobile = 0;

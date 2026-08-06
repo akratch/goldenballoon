@@ -350,6 +350,9 @@ CHECKS = (
           "and authored cue-transition PCM"),
     Check("first_boss_progression", "check_first_boss_progression.py", "native",
           "legal fourth Dino race through Tricky 1 save/reload"),
+    Check("ai_unstick_opponents", "check_ai_unstick_opponents.py", "native",
+          "CPU-opponent AI stuck-recovery cooldown across seeded Hot Top "
+          "Volcano races, with a reducer positive control"),
     Check("collision_gridmask", "check_collision_gridmask.py", "native",
           "collision candidate filter and boss flow"),
     Check("collision_headroom", "check_collision_headroom.py", "native",

@@ -112,7 +112,7 @@ def clean_environment() -> dict[str, str]:
 
 
 def run_arm(binary: Path, rom: Path, root: Path, backend: str, label: str,
-            mode: str, timeout: int, verbose: bool) -> Arm:
+            mode: str, timeout: int, verbose: bool, traced: bool = True) -> Arm:
     run_dir = root / label
     frame_dir = run_dir / "frames"
     save_dir = run_dir / "save"
@@ -134,12 +134,19 @@ def run_arm(binary: Path, rom: Path, root: Path, backend: str, label: str,
         MDKR_SAVE_DIR=str(save_dir),
         MDKR_SYNTH_FIELDS="1",
         MDKR_TEST_SCRIPT_ONLY_INPUT="1",
-        MDKR_TRACE="1",
         MDKR_WORLD_SHADOW="off",
         MDKR_DUMP_FROM=str(CAPTURE_FROM),
         MDKR_DUMP_EVERY="1",
         MDKR64_HIDDEN="1",
     )
+    # Every authority stream this check reads ([SIMHASH]/[EVENTHASH]/
+    # [INPUTHASH]/[PRESENT-SCHED]) has its own variable, so MDKR_TRACE is not
+    # load-bearing here -- and it arms engine behaviour of its own
+    # (mdkr_resource_trace_enabled(); wave "shadowdeep" R1 in
+    # docs/open-items/renderer.md). The shipping arm in main() runs the
+    # production mode without it and requires identical frames.
+    if traced:
+        env["MDKR_TRACE"] = "1"
     if mode != "production":
         env.update(
             MDKR_INTERNAL_TEST_TOKEN=TOKEN,
@@ -478,6 +485,35 @@ def main() -> int:
             hold = run_arm(
                 binary, rom, root, backend, f"{backend}-hold-control", "hold",
                 args.timeout, args.verbose)
+            # Shipping configuration: the production arm again with MDKR_TRACE
+            # absent, which is what the shipped launchers and the web shell
+            # actually run. The assertion is on pixels -- if a diagnostic
+            # variable reaches the frame buffer, every visual verdict above is
+            # about a program nobody ships. This is what wave "shadowdeep" R1
+            # needed and did not have.
+            shipping = run_arm(
+                binary, rom, root, backend, f"{backend}-production-shipping",
+                "production", args.timeout, args.verbose, traced=False)
+            require("[PACE]" not in shipping.output,
+                    f"{shipping.label}: [PACE] rows present with MDKR_TRACE "
+                    f"unset -- this arm is not in shipping configuration")
+            traced_frames = sorted(production.frame_dir.glob("*.ppm"))
+            ship_frames = sorted(shipping.frame_dir.glob("*.ppm"))
+            require(
+                bool(ship_frames) and len(ship_frames) == len(traced_frames),
+                f"{shipping.label}: dumped {len(ship_frames)} frames against "
+                f"{len(traced_frames)} traced")
+            differing = [
+                left.name for left, right in zip(traced_frames, ship_frames)
+                if left.read_bytes() != right.read_bytes()]
+            require(
+                not differing,
+                f"{backend}: MDKR_TRACE changes the rendered image -- "
+                f"{len(differing)} of {len(traced_frames)} frames differ from "
+                f"the same route in shipping configuration ({differing[0] if differing else ''}). "
+                f"Find what the trace variable arms besides printing "
+                f"(mdkr_resource_trace_enabled() is the known precedent)")
+            (root / shipping.label / "run.log").write_text(shipping.output)
             (root / production.label / "run.log").write_text(production.output)
             (root / control.label / "run.log").write_text(control.output)
             (root / hold.label / "run.log").write_text(hold.output)

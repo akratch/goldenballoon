@@ -45,20 +45,56 @@ save the boss had already been beaten and the skip was correct.  The "cleared"
 arm below reproduces that line field-for-field from an unmodified binary
 (`courseFlags` differs only in an arena trigger bit, 0x400000 vs 0x040000).
 
-How the two arms work
----------------------
-Both are the SAME binary, both muted + headless:
+The other half of the report, and why it needed its own assertion
+-----------------------------------------------------------------
+The sentence the player actually wrote was "I was awarded first place, still got
+the FAILURE ANIMATION and was returned without having won" (the probe line in
+vehicle_tricky.c quotes it).  Two separate presentations are wrong in that
+sentence: the win cutscene did not play, and the LOSE cutscene did.  Until the
+"decisions" wave this check only asserted the first half -- cutscene 4 loads --
+and said nothing at all about cutscene 5.  Those are not the same statement.
+`racer_boss_finish()` reaches the lose animation from its own `else` limb:
+
+    } else {                                       /* finishPos != 1 */
+        level_properties_push(SPECIAL_MAP_ID_UNK_NEG10, 0, VEHICLE_CAR, 0);
+        level_properties_push(i, 5, -1, 5);        /* <-- cutscene 5, the loss */
+        level_transition_begin(3);
+    }
+
+`finishPos` is read ONCE, into a local, several statements before either limb
+runs, and every branch after that reads the local.  So the branch is chosen by
+one value -- and any writer that lands on `racer->finishPosition` between the
+natural finish and this read flips a genuine first place onto the failure
+animation with nothing else changing.  A build that pushed BOTH (cutscene 4 from
+one path, cutscene 5 from another, on the same finish) passed the old
+assertions, because "the win cutscene loads" was satisfied.  The winning arm now
+also asserts that cutscene 5 never loads, which is the reported symptom stated
+directly rather than inferred.
+
+How the three arms work
+-----------------------
+All three are the SAME binary, all muted + headless:
 
   first    fresh save/eeprom.bin -> a genuine first visit.  Asserts the
            invariant (`bosses` and RACE_CLEARED both clear when
            racer_boss_finish reads them), that the win branch then sets BOTH in
-           the same frame, and that cutscene 4 really loads.
+           the same frame, that cutscene 4 really loads, and that cutscene 5 --
+           the failure animation -- never loads at any point in the run.
   cleared  MDKR_BOSS_PRECLEARED=46 holds the fixture's boss course at "already beaten"
            (platform/mdkr_adventure.c, no-op unless set).  This is the POSITIVE
            CONTROL: it must reproduce the report -- no pre-race cutscene, no
            post-race cutscene at all -- because that is what proves the
            invariant asserted in the first arm is load-bearing rather than
            decorative.
+  lose     the same first visit with MDKR_BOSS_WIN unset, so the human finishes
+           where the autopilot naturally puts it (second) and DKR takes its own
+           `else` limb.  This is the NON-VACUITY CONTROL for the new negative
+           assertion: cutscene 5 MUST load here.  Without it, "cutscene 5 never
+           loaded" is a claim about a log line no arm has ever been shown to
+           produce, which is indistinguishable from a typo in the regex.
+           Measured on us.v80: `level_load: levelId=57 numPlayers=1 entrance=5
+           vehicle=-1 cutscene=5` -- the same LEVELLOAD_RE the winning arm reads,
+           differing only in the two fields the assertion tests.
 
 `MDKR_BOSS_WIN=1` is what lets the human win at all headlessly (autopilot drives
 the player with the boss's own AI and otherwise always comes second): it writes
@@ -80,7 +116,7 @@ line miss the summit after nine legitimate hits, while boss 46 finishes with
 production collision enabled. The verdict invariant is boss-generic; changing
 the route does not change the state transition being asserted.
 
-    MDKR_AUDIO=0 python3 tests/check_boss_win_verdict.py -v          # ~2 min
+    MDKR_AUDIO=0 python3 tests/check_boss_win_verdict.py -v          # ~3 min
     MDKR_AUDIO=0 python3 tests/check_boss_win_verdict.py --break-invariant
 
 The second form is the both-directions proof: it sets MDKR_BOSS_PRECLEARED in
@@ -107,6 +143,7 @@ from harness_utils import (DEFAULT_BUILD_DIR, preserved_eeprom, resolve_binary,
 BOSS_TRACK = 46
 CUTSCENE_LEVEL = 57      # ASSET_MISC_67 maps both Tricky bosses -> cutscene level 57
 CUTSCENE_WIN = 4         # channel 4 of level 57; 3 = challenge, 5 = lose, 6 = amulet
+CUTSCENE_LOSE = 5        # the failure animation -- must never follow a 1st place
 RACE_CLEARED = 2         # menu.h RACE_CLEARED (bit 1 of a courseFlags entry)
 
 SCRIPT = "tests/input_scripts/race_full_3lap_tt.txt"
@@ -132,7 +169,7 @@ LEVELLOAD_RE = re.compile(
 BAD_RE = re.compile(r"\[FATAL\]|\[CRASH\]|AddressSanitizer|Assertion")
 
 
-def run(binary, rom, track, frames, precleared, verbose):
+def run(binary, rom, track, frames, precleared, verbose, boss_win=True):
     env = dict(os.environ)
     env["MDKR_AUDIO"] = "0"          # belt-and-braces; --headless-frames is the guarantee
     save_env(env, SAVE_DIR)
@@ -149,7 +186,14 @@ def run(binary, rom, track, frames, precleared, verbose):
     # rather than merely unset so an inherited MDKR_BOSS_SLOW=1 cannot reintroduce
     # it. See tests/check_collision_gridmask.py's docstring.
     env.pop("MDKR_BOSS_SLOW", None)
-    env["MDKR_BOSS_WIN"] = "1"
+    # The "lose" arm leaves this unset so the autopilot finishes where it
+    # naturally does (second) and DKR takes its own finishPos != 1 limb. That is
+    # the only arm in which cutscene 5 is SUPPOSED to load, and it is what makes
+    # the winning arm's "cutscene 5 never loads" a falsifiable statement.
+    if boss_win:
+        env["MDKR_BOSS_WIN"] = "1"
+    else:
+        env.pop("MDKR_BOSS_WIN", None)
     env["MDKR_LOAD_TRACK"] = str(track)
     env["MDKR_WATCH_COURSEFLAGS"] = str(track)
     if precleared:
@@ -159,8 +203,9 @@ def run(binary, rom, track, frames, precleared, verbose):
     cmd = [binary, "--headless-frames", str(frames),
            "--input-script", SCRIPT, "--rom", rom]
     if verbose:
-        print("  $ MDKR_LOAD_TRACK=%d MDKR_BOSS_PRECLEARED=%s %s"
-              % (track, str(track) if precleared else "(unset)", " ".join(cmd)))
+        print("  $ MDKR_LOAD_TRACK=%d MDKR_BOSS_PRECLEARED=%s MDKR_BOSS_WIN=%s %s"
+              % (track, str(track) if precleared else "(unset)",
+                 "1" if boss_win else "(unset)", " ".join(cmd)))
     proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, timeout=900)
     return proc.stdout.decode("utf-8", "replace"), proc.returncode
@@ -219,12 +264,15 @@ def run_check() -> int:
 
     failures: list[str] = []
     arms = {}
-    for name, precleared in (("first", args.break_invariant), ("cleared", True)):
+    for name, precleared, boss_win in (("first", args.break_invariant, True),
+                                       ("cleared", True, True),
+                                       ("lose", False, False)):
         # A save present makes the boss entry a REVISIT, which is the very state
         # the first arm must NOT be in. Same discipline as check_collision_gridmask.
         if os.path.exists(SAVE):
             os.remove(SAVE)
-        out, rc = run(binary, args.rom, args.track, args.frames, precleared, args.verbose)
+        out, rc = run(binary, args.rom, args.track, args.frames, precleared,
+                      args.verbose, boss_win=boss_win)
         r = arms[name] = parse(out)
         if rc != 0:
             failures.append("arm %s: exit code %d" % (name, rc))
@@ -235,13 +283,18 @@ def run_check() -> int:
             failures.append("arm %s: no 'bossfinish:' line -- racer_boss_finish() never "
                             "ran, so the boss verdict is not being exercised at all"
                             % name)
-        elif r["finish"]["finishPos"] != 1:
+        elif boss_win and r["finish"]["finishPos"] != 1:
             failures.append("arm %s: racer_boss_finish() read finishPos=%d, want 1. "
                             "MDKR_BOSS_WIN=1 writes finishPosition at the finish, so "
                             "either the hook did not fire or something overwrote it; "
                             "without a WIN this check tests nothing"
                             % (name, r["finish"]["finishPos"]))
-        if not r["watch"]:
+        elif not boss_win and r["finish"]["finishPos"] == 1:
+            failures.append("arm %s: racer_boss_finish() read finishPos=1 with "
+                            "MDKR_BOSS_WIN unset. This arm exists to take DKR's "
+                            "LOSING limb; a win here means it proves nothing about "
+                            "the failure animation" % name)
+        if boss_win and not r["watch"]:
             failures.append("arm %s: no '[BOSSW]' lines -- MDKR_WATCH_COURSEFLAGS is not "
                             "reporting, so nothing can be said about when the flags moved"
                             % name)
@@ -316,6 +369,25 @@ def run_check() -> int:
     elif cleared_frames and win_loads[0] < cleared_frames[0]:
         failures.append("FIRST WIN: a cutscene-%d load at frame %d PRECEDES the verdict at "
                         "frame %d" % (CUTSCENE_WIN, win_loads[0], cleared_frames[0]))
+    # ...and the presentation that must NOT happen. This is the reported symptom
+    # stated directly: "I was awarded first place, still got the failure
+    # animation". racer_boss_finish() reaches cutscene 5 only through its
+    # finishPos != 1 limb, so a cutscene-5 load anywhere in a run whose verdict
+    # read finishPos == 1 means something re-entered the verdict with a
+    # different position, or pushed the loss channel from outside it. Either way
+    # the player sees the wrong animation after winning. Both fields are tested
+    # because the loss is pushed as level_properties_push(i, 5, -1, 5) -- a
+    # regression that corrupts only one of them is still the reported bug.
+    lose_loads = [(en, cs, fr) for lvl, en, cs, fr in f["loads"]
+                  if lvl == CUTSCENE_LEVEL and CUTSCENE_LOSE in (en, cs)]
+    if lose_loads:
+        failures.append("FIRST WIN: the LOSE cutscene (levelId=%d channel %d) loaded %s on a "
+                        "finish that racer_boss_finish() read as finishPos=1. That is the "
+                        "reported symptom -- first place, failure animation. The loss channel "
+                        "is pushed only from the finishPos != 1 limb of racer_boss_finish() "
+                        "(vehicle_tricky.c), so find what re-read or rewrote finishPosition "
+                        "after the verdict, or what pushed the level property from outside it"
+                        % (CUTSCENE_LEVEL, CUTSCENE_LOSE, lose_loads))
     if not f["redirects"]:
         failures.append("FIRST WIN: no 'bossredirect:' line -- level_load() did not treat "
                         "boss %d as a first visit, so this arm is not a first visit and "
@@ -342,6 +414,24 @@ def run_check() -> int:
                         "should not offer a pre-race cutscene on a revisit"
                         % args.track)
 
+    # --- non-vacuity control for the negative assertion above ----------------
+    # "Cutscene 5 never loaded" is only evidence if a cutscene-5 load is
+    # something this harness can actually see. The losing arm makes it produce
+    # one, through the same LEVELLOAD_RE, in the same binary, on the same track.
+    lo = arms["lose"]
+    lose_control = [(en, cs, fr) for lvl, en, cs, fr in lo["loads"]
+                    if lvl == CUTSCENE_LEVEL and cs == CUTSCENE_LOSE]
+    if not lose_control:
+        cut_loads = [(en, cs, fr) for lvl, en, cs, fr in lo["loads"] if lvl == CUTSCENE_LEVEL]
+        failures.append("CONTROL: with MDKR_BOSS_WIN unset the human finished %s and DKR's "
+                        "losing limb should have pushed cutscene %d of level %d, but no such "
+                        "load was traced (cutscene-level loads seen: %s). The winning arm's "
+                        "'the failure animation never loads' therefore asserts nothing -- it "
+                        "is reading for a line this harness has never been shown to emit"
+                        % ("finishPos=%d" % lo["finish"]["finishPos"]
+                           if lo["finish"] else "(no verdict)",
+                           CUTSCENE_LOSE, CUTSCENE_LEVEL, cut_loads or "none"))
+
     if args.verbose:
         print("  first   watch: %s" % [(fr, hex(fl), hex(b)) for fr, fl, b in f["watch"]])
         print("  first   loads after verdict: %s"
@@ -350,13 +440,17 @@ def run_check() -> int:
         print("  cleared watch: %s" % [(fr, hex(fl), hex(b)) for fr, fl, b in c["watch"]])
         print("  cleared loads after verdict: %s"
               % [(lvl, en, cs, fr) for lvl, en, cs, fr in c["loads"] if fr > 8000])
+        print("  lose    cutscene-level loads: %s"
+              % [(en, cs, fr) for lvl, en, cs, fr in lo["loads"] if lvl == CUTSCENE_LEVEL])
 
     if failures:
         return report(failures)
     print("check_boss_win_verdict: PASS  (first win: bosses=0x%x courseFlags=0x%x -> "
-          "cutscene %d @%d; already beaten: bosses=0x%x courseFlags=0x%x -> no cutscene)"
+          "cutscene %d @%d, cutscene %d absent; already beaten: bosses=0x%x "
+          "courseFlags=0x%x -> no cutscene; losing finish -> cutscene %d @%d)"
           % (ff["bosses"], ff["courseFlags"], CUTSCENE_WIN, win_loads[0] if win_loads else -1,
-             cf["bosses"], cf["courseFlags"]))
+             CUTSCENE_LOSE, cf["bosses"], cf["courseFlags"],
+             CUTSCENE_LOSE, lose_control[0][2] if lose_control else -1))
     return 0
 
 
