@@ -2557,6 +2557,29 @@ static void present_pace_lazy_init(void) {
      * separate decision and remains armed only above the tick rate. */
     s_presentActive = s_presentKind != MDKR_PRESENT_ORIGINAL ? 1 : 0;
     if (!s_presentActive) {
+        /*
+         * A 50 Hz source keeps a 40 ms authored image. A 60 Hz monitor can only
+         * show it for two refreshes (33.3 ms) or three (50 ms), so Original
+         * alternates between them: the average is exactly right and the game
+         * runs at its authored speed, but no two consecutive images are on
+         * screen for the same length of time, which is what a PAL player sees
+         * as unevenness and what a frame counter reads as a rate below the
+         * source's own. A 60 Hz source divides evenly and has no such beat.
+         *
+         * Say so once, at the one place that knows both the source cadence and
+         * the chosen policy, and name the setting that fixes it. This is a
+         * property of the combination, not a fault, so it is a note and not a
+         * warning, and nothing about the run changes.
+         */
+        if (s_paceMode == PACE_REALTIME && s_fieldHz == 50) {
+            fprintf(stderr,
+                    "[PRESENT-POLICY] source=50Hz policy=original "
+                    "note=a 50 Hz game cannot hold every image for the same "
+                    "time on a 60 Hz display; Video.FrameLimit=display with "
+                    "Video.MotionSmoothing=interpolate gives even motion at "
+                    "your display's rate, and leaves game speed and music "
+                    "exactly as authored\n");
+        }
         return;
     }
     effectivePolicy.kind = s_presentKind;

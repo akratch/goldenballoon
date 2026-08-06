@@ -144,6 +144,11 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "at your display's refresh instead, unless Allow tearing is on. Pair a "
         "rate above original with Motion smoothing = Interpolated for unique "
         "in-between images. Gameplay remains on its fixed original cadence. "
+        "A European (50 Hz) ROM is worth pairing that way: its authored image "
+        "lasts 40 ms, which is not a whole number of 60 Hz refreshes, so "
+        "original alternates between holding it for two and for three and the "
+        "motion looks uneven. display with interpolate removes that without "
+        "changing game speed, music pitch, or timers. "
         "Requires a restart because the host pacer resolves this value once at "
         "startup.",
         MDKR_VIDEO_CAT_PACING

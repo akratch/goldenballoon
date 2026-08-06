@@ -97,7 +97,14 @@ static s32 gLastAudioFrameSamples = 0;
 /* M5 audio — port per-frame synthesis pump. Replaces the audio thread
  * (__amMain never runs in the cooperative model). Clean, arena-resident output
  * buffers replace the N64 RAM_END fixed block + Acmd-as-AudioInfo overlay. */
-#define PORT_MAX_FRAME_SAMPLES  1600   /* stereo sample-frames; covers ~4 VI fields */
+/*
+ * Per-call synthesis ceiling, in stereo sample-frames. 1,792 is four source VI
+ * fields at 50 Hz (1,764) rounded up to the synthesizer's 16-frame alignment;
+ * the previous 1,600 was four fields at 60 Hz only, so on a PAL source a
+ * refill that had to cover a long host gap was silently truncated and the
+ * deficit was never recovered. Four fields at 60 Hz (1,470) still fits.
+ */
+#define PORT_MAX_FRAME_SAMPLES  1792
 static s16 *sPortOutBuf[NUM_OUTPUT_BUFFERS];
 static u32  sPortOutIdx;
 static u32  sPortAcmdIdx;

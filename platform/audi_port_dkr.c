@@ -898,9 +898,15 @@ void dkr_audio_service_summary(void) {
             DKR_AUDIO_FIELDS_PER_QUANTUM);
     if (s_queueController.stats.live_decisions != 0u) {
         fprintf(stderr,
+                /* maxgap is the longest drain the host left between two
+                 * refills and maxtarget the depth that gap asked the
+                 * controller to hold. On an even host both stay at one
+                 * synthesis block; a gap above the block is the signature of a
+                 * refill cadence that does not divide the display, which is
+                 * what a 50 Hz source on a 60 Hz monitor produces. */
                 "[AUDIO-SINK] decisions=%llu estimateddrain=%llu produced=%llu "
                 "emptyobservations=%u stalls=%u minqueued=%u maxqueued=%u "
-                "maxproduced=%u\n",
+                "maxproduced=%u maxgap=%u maxtarget=%u\n",
                 (unsigned long long)s_queueController.stats.live_decisions,
                 (unsigned long long)
                     s_queueController.stats.estimated_consumed_frames,
@@ -910,7 +916,9 @@ void dkr_audio_service_summary(void) {
                 (unsigned)(s_queueController.stats.min_queued_frames == UINT32_MAX
                     ? 0u : s_queueController.stats.min_queued_frames),
                 (unsigned)s_queueController.stats.max_queued_frames,
-                (unsigned)s_queueController.stats.max_produced_frames);
+                (unsigned)s_queueController.stats.max_produced_frames,
+                (unsigned)s_queueController.stats.max_gap_frames,
+                (unsigned)s_queueController.stats.max_target_frames);
     }
     fflush(stderr);
 }
