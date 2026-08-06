@@ -119,7 +119,7 @@ def parse_depth(output: str) -> DepthStats | None:
     return DepthStats(int(match.group(1)), int(match.group(2)))
 
 
-def clean_environment(renderer: str | None) -> dict[str, str]:
+def clean_environment(renderer: str | None, traced: bool = True) -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
@@ -129,11 +129,22 @@ def clean_environment(renderer: str | None) -> dict[str, str]:
     env.update(
         MDKR_AUDIO="0",
         MDKR_AUTOPILOT="1",
-        MDKR_TRACE="1",
         MDKR_NO_CRASH_HANDLER="1",
         MDKR64_HIDDEN="1",
         LC_ALL="C",
     )
+    # This gate's central assertion -- byte-identical [PACE] streams across
+    # aspect ratios -- needs MDKR_TRACE, and MDKR_TRACE also arms engine
+    # behaviour of its own (mdkr_resource_trace_enabled(); wave "shadowdeep" R1
+    # in docs/open-items/renderer.md). The shipping arm below therefore carries
+    # the strongest subset that survives without a trace row: the [SHADOW] heap
+    # census and [DEPTH] counts are emitted unconditionally at shutdown, so the
+    # production shadow path can still be shown to behave the same way with
+    # every diagnostic off. This gate dumps no frames, so there is no pixel
+    # evidence to compare here -- check_world_shadows.py, check_shadow_visual_ab.py
+    # and check_shadow_plausibility.py carry that half.
+    if traced:
+        env["MDKR_TRACE"] = "1"
     if renderer:
         env["MDKR_RENDERER"] = renderer
     return env
@@ -202,15 +213,19 @@ def run_case(
     return result
 
 
-def run_failures(result: RunResult) -> list[str]:
+def run_failures(result: RunResult, traced: bool = True) -> list[str]:
     failures: list[str] = []
     if result.returncode != 0:
         failures.append(f"{result.label}: exit code {result.returncode}")
     for marker in ("[CRASH]", "[FATAL]", "AddressSanitizer"):
         if marker in result.output:
             failures.append(f"{result.label}: output contains {marker}")
-    if not result.pace:
-        failures.append(f"{result.label}: no [PACE] rows")
+    # [PACE] is trace-gated: an untraced arm must have none, and an arm that
+    # claims to be untraced but has some is not in shipping configuration.
+    if bool(result.pace) != traced:
+        failures.append(
+            f"{result.label}: {len(result.pace)} [PACE] rows with MDKR_TRACE "
+            f"{'set' if traced else 'unset'}")
     if result.shadow is None:
         failures.append(f"{result.label}: no parseable [SHADOW] report")
         return failures
@@ -319,12 +334,33 @@ def main() -> int:
             args.verbose,
         ),
     ]
+    # Shipping configuration: the production 4:3 arm again with MDKR_TRACE
+    # absent -- the way the shipped launchers and the web shell actually run.
+    shipping = run_case(
+        binary, rom, args.frames, "4:3 shipping",
+        "640x480", clean_environment(args.renderer, traced=False), None,
+        args.timeout, args.verbose,
+    )
 
     failures: list[str] = []
     for result in cases:
         failures.extend(run_failures(result))
+    failures.extend(run_failures(shipping, traced=False))
 
     reference = cases[0]
+    if shipping.shadow and reference.shadow:
+        for field in ("decal", "data_cap", "tri_cap", "vtx_cap",
+                      "overflow_drops", "non_decal"):
+            traced_value = getattr(reference.shadow, field)
+            ship_value = getattr(shipping.shadow, field)
+            if traced_value != ship_value:
+                failures.append(
+                    f"4:3 shipping: shadow {field} is {ship_value} with "
+                    f"MDKR_TRACE unset against {traced_value} with it set. A "
+                    f"diagnostic variable is changing the production shadow "
+                    f"path, so every measurement above describes a program "
+                    f"nobody ships (see wave 'shadowdeep' R1)"
+                )
     for candidate in cases[1:3]:
         if candidate.pace != reference.pace:
             failures.append(

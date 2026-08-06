@@ -134,6 +134,7 @@ def run_arm(
     bogus: float,
     timeout: int,
     verbose: bool,
+    traced: bool = True,
 ) -> Arm:
     run_dir = root / f"{scene.name}-{label}"
     frame_dir = run_dir / "frames"
@@ -149,7 +150,6 @@ def run_arm(
         LC_ALL="C",
         MDKR_AUDIO="0",
         MDKR_AUTOPILOT="1",
-        MDKR_TRACE="1",
         MDKR_WORLD_FX_TRACE="1",
         MDKR_NO_CRASH_HANDLER="1",
         MDKR64_HIDDEN="1",
@@ -160,6 +160,15 @@ def run_arm(
         MDKR_DUMP_EVERY="999999",
         MDKR_WORLD_SHADOW="full" if shadows else "off",
     )
+    # MDKR_TRACE arms engine behaviour of its own, not just printing
+    # (mdkr_resource_trace_enabled(); wave "shadowdeep" R1 in
+    # docs/open-items/renderer.md is a static-caster-cache reset that only ever
+    # ran because every shadow gate exported it). The provenance half of this
+    # check reads [WORLD-FX]/[SHADOW-PLAN], which have their own variable, so
+    # dropping MDKR_TRACE costs this gate nothing -- and the shipping arm in
+    # main() proves the traced frames are the frames players get.
+    if traced:
+        env["MDKR_TRACE"] = "1"
     if bogus:
         env["MDKR_TEST_SHADOW_BOGUS_CASTER"] = repr(bogus)
     command = [
@@ -363,6 +372,53 @@ def main() -> int:
                 f"stale={on.world_fx.get('staleCasters')} "
                 f"implausible={on.world_fx.get('implausible')}"
                 + (f"; {note}" if note else ""))
+
+        # Shipping configuration: the first scene's production arm again with
+        # MDKR_TRACE absent, which is what the shipped launchers and the web
+        # shell actually run. It carries the full provenance half (that reads
+        # MDKR_WORLD_FX_TRACE, a different variable) and adds the assertion the
+        # "shadowdeep" R1 leak needed: the frame a player sees must be the frame
+        # this gate measured.
+        ship_scene = scenes[0]
+        try:
+            shipping = run_arm(binary, rom, ship_scene, "on-shipping", True,
+                               root, args.frames, args.dump_at, args.renderer,
+                               0.0, args.timeout, args.verbose, traced=False)
+        except subprocess.TimeoutExpired:
+            failures.append(f"shipping arm timed out after {args.timeout}s")
+        else:
+            failures += provenance_failures(shipping, ship_scene)
+            if "[PACE]" in shipping.output:
+                failures.append(
+                    "shipping arm emitted [PACE] rows -- MDKR_TRACE reached it, "
+                    "so it is not in shipping configuration")
+            traced_frames = sorted(
+                (root / f"{ship_scene.name}-on" / "frames").glob("*.ppm"))
+            ship_frames = sorted(shipping.frame_dir.glob("*.ppm"))
+            if len(traced_frames) != len(ship_frames) or not ship_frames:
+                failures.append(
+                    f"shipping arm dumped {len(ship_frames)} frames against "
+                    f"{len(traced_frames)} traced")
+            else:
+                differing = [
+                    a.name for a, b in zip(traced_frames, ship_frames)
+                    if a.read_bytes() != b.read_bytes()]
+                if differing:
+                    failures.append(
+                        f"MDKR_TRACE changes the rendered image on "
+                        f"{ship_scene.name}: {len(differing)} of "
+                        f"{len(traced_frames)} frames differ from the same "
+                        f"route in shipping configuration ({differing[0]}). "
+                        f"Every pixel and caster verdict above is then about a "
+                        f"program nobody ships -- find what the trace variable "
+                        f"arms besides printing")
+                else:
+                    notes.append(
+                        f"shipping configuration ({ship_scene.name}, "
+                        f"MDKR_TRACE unset): {len(ship_frames)} frame(s) "
+                        f"byte-identical to the traced arm, "
+                        f"static={shipping.world_fx.get('static')} "
+                        f"stale={shipping.world_fx.get('staleCasters')}")
 
         # Broken direction, last: with a bogus caster injected the provenance
         # half must report the phantom. A gate that cannot fail here is not

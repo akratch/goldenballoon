@@ -12,6 +12,34 @@ off and on. The gate requires:
 * no renderer validation, lifecycle, sanitizer, or fatal report.
 
 The feature remains diagnostic until the wider scene/performance matrix passes.
+
+The shipping-configuration arms
+-------------------------------
+Everything above used to be measured only with `MDKR_TRACE=1` exported, and that
+is a configuration no player has ever run: the shipped native launchers set no
+`MDKR_*` variable at all, and the web shell sets `MDKR_TRACE` only from a
+`?trace=` query string. Twice, that gap let a shadow gate go green over a
+player-visible bug. The recorded one is wave "shadowdeep" R1
+(docs/open-items/renderer.md): `gfx_shadow_stage_begin()` -- the static-caster
+cache reset -- had its only call site inside a branch gated by
+`mdkr_resource_trace_enabled()`, which is true when EITHER `MDKR_TRACE` or
+`MDKR_RESOURCE_STATS` is set. Every shadow gate exported `MDKR_TRACE=1`, so the
+reset always fired under test and never fired in a shipping build, where the
+previous level's casters kept shadowing the next one and address-keyed dedup
+then dropped the new level's real casters.
+
+The lesson is not "that one call site"; it is that a diagnostic variable which
+also arms engine behaviour makes the whole traced measurement a statement about
+a different program. So each backend now runs its off/on pair TWICE: once traced
+(which is what unlocks `[PACE]`, hence the gameplay-state equality above) and
+once in shipping configuration, with `MDKR_TRACE` absent. The shipping arms
+carry every assertion that does not need a trace row -- the pixel handoff
+classification, the decal-triangle handoff, the `[WORLD-SHADOW]` healthy-path
+telemetry (emitted unconditionally at shutdown, not trace-gated) -- and add the
+one assertion that names the failure mode directly: the shipping frame must be
+byte-identical to the traced frame. A diagnostic variable that changes a single
+pixel of the shipped image fails here, whatever the mechanism, without anyone
+having to have predicted it.
 """
 
 from __future__ import annotations
@@ -83,11 +111,14 @@ def run_arm(
     root: Path,
     timeout: int,
     verbose: bool,
+    traced: bool = True,
 ) -> Result:
     arm = (
         "fault" if force_resource_failure
         else ("on" if enabled else "off")
     )
+    if not traced:
+        arm += "-shipping"
     run_dir = root / f"{backend}-{arm}"
     frame_dir = run_dir / "frames"
     save_dir = run_dir / "save"
@@ -104,7 +135,6 @@ def run_arm(
         MDKR_SIMULATION_CADENCE="enhanced",
         MDKR_SYNTH_FIELDS="1",
         MDKR_AUTOPILOT="1",
-        MDKR_TRACE="1",
         MDKR_RENDERER=backend,
         MDKR_LOAD_TRACK="5",
         MDKR_TEST_RENDER_FULL_ADMISSION="1",
@@ -113,6 +143,11 @@ def run_arm(
         MDKR64_HIDDEN="1",
         MDKR_SAVE_DIR=str(save_dir),
     )
+    # The one variable under audit. A shipping arm leaves it out entirely -- the
+    # env dict above is already scrubbed of every inherited MDKR_*/GE007_ key,
+    # so "absent" here really is absent.
+    if traced:
+        env["MDKR_TRACE"] = "1"
     env["MDKR_WORLD_SHADOW"] = "1" if enabled else "0"
     if force_resource_failure:
         env["MDKR_TEST_WORLD_SHADOW_RESOURCE_FAIL"] = "1"
@@ -162,7 +197,12 @@ def run_arm(
         f"{backend}-{arm}: telemetry named the wrong backend",
     )
     pace = normalized_pace(output)
-    require(pace, f"{backend}-{arm}: no gameplay-state rows")
+    # `[PACE]` is trace-gated, so a shipping arm cannot have it and must not
+    # pretend to: it carries an empty tuple and the gameplay-state equality is
+    # asserted only between traced arms.
+    require(bool(pace) == traced,
+            f"{backend}-{arm}: {len(pace)} gameplay-state rows with "
+            f"MDKR_TRACE {'set' if traced else 'unset'}")
     width, height, pixels = read_ppm(frames[0])
     return Result(
         f"{backend}-{arm}",
@@ -180,6 +220,10 @@ def verify_pair(backend: str, off: Result, on: Result) -> str:
         off.pace == on.pace,
         f"{backend}: enabling real shadows changed gameplay state",
     )
+    return verify_visual_pair(backend, off, on)
+
+
+def verify_visual_pair(backend: str, off: Result, on: Result) -> str:
     require(
         (off.width, off.height) == (on.width, on.height),
         f"{backend}: output dimensions changed",
@@ -240,6 +284,57 @@ def verify_pair(backend: str, off: Result, on: Result) -> str:
         f"(dark={dark_only}, decal-release={bright_only}, mixed={mixed}), "
         f"decal triangles {off.decal_triangles}->{on.decal_triangles}"
     )
+
+
+def verify_shipping(backend: str, traced: Result, shipping: Result) -> str:
+    """The traced measurement must describe the program players actually run.
+
+    Byte equality is the assertion that names the failure mode instead of a
+    symptom of it: whatever a diagnostic variable arms -- a cache reset, an extra
+    allocation, a different admission order -- if it reaches the frame buffer, it
+    shows up here. Wave "shadowdeep" R1 would have failed on this line, because
+    the traced arm got a per-level static-caster reset that the shipping build
+    did not.
+    """
+    require(
+        (traced.width, traced.height) == (shipping.width, shipping.height),
+        f"{backend}: output dimensions differ between the traced and shipping "
+        f"configurations ({traced.width}x{traced.height} vs "
+        f"{shipping.width}x{shipping.height})",
+    )
+    differing = sum(
+        1
+        for index in range(0, len(traced.pixels), 3)
+        if traced.pixels[index:index + 3] != shipping.pixels[index:index + 3]
+    )
+    require(
+        differing == 0,
+        f"{backend}: MDKR_TRACE changes the rendered image -- {differing} of "
+        f"{traced.width * traced.height} pixels differ between the traced arm "
+        f"and the same route in shipping configuration. Every other assertion "
+        f"in this gate is therefore about a program nobody ships. Find what the "
+        f"trace variable arms besides printing (mdkr_resource_trace_enabled() "
+        f"is the known precedent) and take the behaviour out of the diagnostic "
+        f"branch",
+    )
+    require(
+        traced.decal_triangles == shipping.decal_triangles,
+        f"{backend}: legacy decal triangle count differs between the traced "
+        f"({traced.decal_triangles}) and shipping ({shipping.decal_triangles}) "
+        f"configurations",
+    )
+    require(
+        (traced.attempted, traced.complete, traced.fallback,
+         traced.resource_failures, traced.latched) ==
+        (shipping.attempted, shipping.complete, shipping.fallback,
+         shipping.resource_failures, shipping.latched),
+        f"{backend}: shadow-map telemetry differs between the traced and "
+        f"shipping configurations "
+        f"{(traced.attempted, traced.complete, traced.fallback, traced.resource_failures, traced.latched)}"
+        f" vs "
+        f"{(shipping.attempted, shipping.complete, shipping.fallback, shipping.resource_failures, shipping.latched)}",
+    )
+    return f"{backend}: shipping configuration reproduces the traced frame exactly"
 
 
 def verify_fallback(
@@ -310,8 +405,23 @@ def main() -> int:
                     binary, rom, backend, True, True, root,
                     args.timeout, args.verbose,
                 )
+                # The same pair again with MDKR_TRACE absent -- the
+                # configuration players run. See the module docstring.
+                off_ship = run_arm(
+                    binary, rom, backend, False, False, root,
+                    args.timeout, args.verbose, traced=False,
+                )
+                on_ship = run_arm(
+                    binary, rom, backend, True, False, root,
+                    args.timeout, args.verbose, traced=False,
+                )
                 summaries.append(verify_pair(backend, off, on))
                 summaries.append(verify_fallback(backend, off, fault))
+                summaries.append(
+                    "shipping " + verify_visual_pair(backend, off_ship, on_ship)
+                )
+                summaries.append(verify_shipping(backend + " off", off, off_ship))
+                summaries.append(verify_shipping(backend + " on", on, on_ship))
     except RuntimeError as exc:
         print(f"FAIL: {exc}")
         return 1

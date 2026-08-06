@@ -13,7 +13,17 @@ pixel effect over a moving-camera interval:
     coplanar coverage loss appears and disappears as the camera moves;
   * require every affected production pixel to be component-wise darker than
     the old route. The fix may restore shadow coverage, but it may not alter
-    geometry, brighten pixels, or perturb the rest of the image.
+    geometry, brighten pixels, or perturb the rest of the image;
+  * re-run the production arm in SHIPPING CONFIGURATION -- MDKR_TRACE absent,
+    which is what the shipped launchers and the web shell actually do -- and
+    require byte-identical frames and an identical shadow/depth census.
+
+That last arm exists because every shadow gate used to export MDKR_TRACE=1, and
+that variable arms engine behaviour as well as printing: wave "shadowdeep" R1
+(docs/open-items/renderer.md) is a static-caster-cache reset whose only call site
+sat behind mdkr_resource_trace_enabled(), so it fired in every test run and in no
+shipping build, and the whole shadow suite stayed green over a player-visible
+bug. Byte equality names that failure mode directly instead of a symptom of it.
 
 Both arms run in --pure. The strict "only darker" invariant assumes shadow
 coverage is the only thing differing between them, so texture filtering has to
@@ -89,7 +99,7 @@ def final_match(pattern: re.Pattern[str], output: str) -> re.Match[str] | None:
     return matches[-1] if matches else None
 
 
-def clean_environment(renderer: str | None) -> dict[str, str]:
+def clean_environment(renderer: str | None, traced: bool = True) -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
@@ -98,11 +108,20 @@ def clean_environment(renderer: str | None) -> dict[str, str]:
     env.update(
         MDKR_AUDIO="0",
         MDKR_AUTOPILOT="1",
-        MDKR_TRACE="1",
         MDKR_NO_CRASH_HANDLER="1",
         MDKR64_HIDDEN="1",
         LC_ALL="C",
     )
+    # MDKR_TRACE is what unlocks the [PACE] rows this check compares between its
+    # two arms -- and it also arms engine behaviour of its own
+    # (mdkr_resource_trace_enabled(); wave "shadowdeep" R1 in
+    # docs/open-items/renderer.md, where every shadow gate exporting MDKR_TRACE=1
+    # is exactly why a static-caster-cache leak shipped green). The shipping arm
+    # below runs the production decal route with it absent and requires the
+    # frames to come out byte-identical, so the pixel evidence this check
+    # publishes is evidence about the program players run.
+    if traced:
+        env["MDKR_TRACE"] = "1"
     if renderer:
         env["MDKR_RENDERER"] = renderer
     return env
@@ -288,7 +307,9 @@ def main() -> int:
 
     on_frames = root / "decal-on"
     off_frames = root / "decal-off"
+    ship_frames = root / "decal-on-shipping"
     base_env = clean_environment(args.renderer)
+    ship_env = clean_environment(args.renderer, traced=False)
     on = run_arm(
         binary,
         rom,
@@ -320,15 +341,40 @@ def main() -> int:
         args.verbose,
     )
 
+    # The shipping-configuration arm: the SAME production decal route with
+    # MDKR_TRACE absent. It carries no [PACE] rows by construction, so what it
+    # asserts is pixel evidence -- byte-identical frames -- plus the untraced
+    # [SHADOW]/[DEPTH] shutdown census.
+    ship = run_arm(
+        binary,
+        rom,
+        args.frames,
+        args.dump_from,
+        args.dump_every,
+        args.window_size,
+        "decal on shipping configuration",
+        ship_frames,
+        root / "save-ship",
+        ship_env,
+        True,
+        args.timeout,
+        args.verbose,
+    )
+
     failures: list[str] = []
-    for result in (on, off):
+    for result in (on, off, ship):
         if result.returncode != 0:
             failures.append(f"{result.label}: exit code {result.returncode}")
         for marker in ("[CRASH]", "[FATAL]", "AddressSanitizer"):
             if marker in result.output:
                 failures.append(f"{result.label}: output contains {marker}")
-        if not result.pace:
+        if result is not ship and not result.pace:
             failures.append(f"{result.label}: no [PACE] state rows")
+        if result is ship and result.pace:
+            failures.append(
+                f"{result.label}: {len(result.pace)} [PACE] rows with MDKR_TRACE "
+                f"unset -- this arm is not in shipping configuration"
+            )
         if result.shadow is None:
             failures.append(f"{result.label}: no parseable [SHADOW] report")
         if result.depth is None:
@@ -350,6 +396,46 @@ def main() -> int:
         if on.depth[0] <= off.depth[0]:
             failures.append(
                 f"final ZMODE_DEC count did not decrease: {on.depth[0]} -> {off.depth[0]}"
+            )
+
+    # Same feature, same route, diagnostics off: whatever MDKR_TRACE arms
+    # besides printing must not reach the frame buffer. This is the assertion
+    # wave "shadowdeep" R1 did not have.
+    #
+    # The comparison is on PIXELS, not on the [DEPTH]/[SHADOW] totals. Those are
+    # cumulative over however many frames the run rendered, and this route is
+    # wall-clock paced (it pins neither MDKR_SYNTH_FIELDS nor
+    # MDKR_SIMULATION_CADENCE, because the invariant it exists to test is about
+    # texture filtering and needs --pure): measured 2371 / 2510 / 2590 presents
+    # across three arms of the same build, so the totals move run to run for
+    # reasons that have nothing to do with configuration. The dumped frames are
+    # keyed to simulated frame numbers and do not.
+    if ship.shadow is not None and (ship.shadow[0] != "on" or ship.shadow[2] != 0):
+        failures.append(
+            f"shipping configuration did not run the production decal path: "
+            f"{ship.shadow}"
+        )
+    ship_paths = {path.name: path for path in ship_frames.glob("frame_*.ppm")}
+    traced_paths = {path.name: path for path in on_frames.glob("frame_*.ppm")}
+    if set(ship_paths) != set(traced_paths):
+        failures.append(
+            f"shipping configuration dumped a different frame set: "
+            f"traced={len(traced_paths)} shipping={len(ship_paths)}"
+        )
+    else:
+        differing = sorted(
+            name for name in traced_paths
+            if traced_paths[name].read_bytes() != ship_paths[name].read_bytes()
+        )
+        if differing:
+            failures.append(
+                f"MDKR_TRACE changes the rendered image: {len(differing)} of "
+                f"{len(traced_paths)} frames differ between the traced arm and "
+                f"the same route in shipping configuration (first: "
+                f"{differing[0]}). Every pixel verdict in this check is "
+                f"therefore about a program nobody ships -- find what the trace "
+                f"variable arms besides printing "
+                f"(mdkr_resource_trace_enabled() is the known precedent)"
             )
 
     on_paths = {path.name: path for path in on_frames.glob("frame_*.ppm")}
