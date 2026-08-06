@@ -28,6 +28,14 @@ EEPROM_ARTIFACTS = (
     "eeprom.bin.autosave.3",
 )
 
+# The build directory a check falls back to when it is run by hand. The suite
+# never relies on it: tools/run_checks.py always passes --build explicitly, so
+# this is only the convenience default for `python3 tests/check_foo.py`. Checks
+# that must run against a *differently configured* tree (sanitizers, alternate
+# alignment) keep their own literal instead -- their default is part of what
+# they test, not a convenience.
+DEFAULT_BUILD_DIR = "build"
+
 
 def resolve_binary(build: str | os.PathLike[str]) -> str:
     """Resolve ``--build`` consistently from either a directory or executable.
@@ -114,6 +122,262 @@ def completed_tick_conservation(
         return (f"{label}: scheduler maxpending={max_pending}, expected "
                 f"{_debt_text(expected_max_pending)}")
     return None
+
+
+def read_ppm(path: str | os.PathLike[str]) -> tuple[int, int, bytes]:
+    """Read the binary P6 image ``--dump-frames`` writes.
+
+    Every part of the header is checked, because a reader that skips a field
+    cannot tell a real image from a truncated or mislabelled one, and a check
+    that then compares pixels reports a *content* failure for what was really a
+    capture failure. So: the magic must be ``P6``, the dimensions must be
+    positive, the maxval must be 255 (nothing here emits 16-bit samples), and
+    the raster must be exactly ``width * height * 3`` bytes -- no more, so a
+    doubled or concatenated dump is caught too.
+
+    Comments are honoured between header fields, and exactly one whitespace
+    byte (or a CRLF pair) is consumed as the raster delimiter. Skipping
+    arbitrary whitespace there would silently eat pixels: a legal first sample
+    may itself be 0x09, 0x0A, 0x0D or 0x20.
+
+    Returns ``(width, height, pixels)``; callers with their own ``Image`` type
+    construct it as ``Image(*read_ppm(path))``.
+    """
+
+    path = Path(path)
+    data = path.read_bytes()
+    index = 0
+    fields: list[bytes] = []
+    while len(fields) < 4:
+        while index < len(data) and data[index:index + 1].isspace():
+            index += 1
+        if index >= len(data):
+            raise ValueError(f"{path}: truncated PPM header")
+        if data[index:index + 1] == b"#":
+            newline = data.find(b"\n", index)
+            if newline < 0:
+                raise ValueError(f"{path}: unterminated PPM comment")
+            index = newline + 1
+            continue
+        end = index
+        while end < len(data) and not data[end:end + 1].isspace():
+            end += 1
+        fields.append(data[index:end])
+        index = end
+
+    if fields[0] != b"P6":
+        raise ValueError(f"{path}: expected a P6 PPM, got magic {fields[0]!r}")
+    try:
+        width, height, maximum = (int(field) for field in fields[1:])
+    except ValueError as error:
+        raise ValueError(
+            f"{path}: non-numeric PPM header field in {fields[1:]!r}") from error
+    if width <= 0 or height <= 0:
+        raise ValueError(f"{path}: PPM dimensions {width}x{height} are not positive")
+    if maximum != 255:
+        raise ValueError(f"{path}: PPM maxval is {maximum}, expected 255")
+    if index >= len(data) or not data[index:index + 1].isspace():
+        raise ValueError(f"{path}: missing the whitespace before the PPM raster")
+    index += 2 if data[index:index + 2] == b"\r\n" else 1
+
+    pixels = data[index:]
+    expected = width * height * 3
+    if len(pixels) != expected:
+        raise ValueError(
+            f"{path}: raster is {len(pixels)} bytes, expected {expected} "
+            f"for {width}x{height} RGB")
+    return width, height, pixels
+
+
+# --------------------------------------------------------------------------- #
+#  EEPROM slot encoding
+#
+#  Layout from game/include/save_layout.h: 3 x SaveFile(40) | SaveConfig(8) |
+#  CourseRecords(192) x 2 == 512. A slot's fields are an MSB-first bit stream
+#  from byte 0, exactly as func_80072C54 reads it in
+#  populate_settings_from_save_data() (game/src/save_data.c).
+# --------------------------------------------------------------------------- #
+
+SLOT_BYTES = 40
+
+
+def put_bits(bits: list[int], width: int, value: int) -> None:
+    """Append ``value`` to an MSB-first bit stream as ``width`` bits."""
+
+    bits.extend((value >> shift) & 1 for shift in range(width - 1, -1, -1))
+
+
+def pack_bits(bits: list[int]) -> bytearray:
+    """Fold an MSB-first bit stream into bytes; the length must be a multiple of 8."""
+
+    if len(bits) % 8:
+        raise ValueError(f"bit stream is {len(bits)} bits, not a whole number of bytes")
+    out = bytearray()
+    for index in range(0, len(bits), 8):
+        byte = 0
+        for bit in bits[index:index + 8]:
+            byte = (byte << 1) | bit
+        out.append(byte)
+    return out
+
+
+def slot_checksum(block: bytes | bytearray) -> int:
+    """The 16-bit checksum the engine stores in the first two bytes of a block.
+
+    populate_settings_from_save_data() sums every byte *after* the stored
+    checksum and adds 5. The seed is not a hash constant: the engine's loop
+    starts its accumulator at the number of 16-bit words it skips over -- the
+    two checksum bytes plus the header words ahead of the payload -- so the
+    figure is part of the on-disk format and a slot written with a 0 seed is
+    rejected as corrupt. The same routine covers the 192-byte CourseRecords
+    blocks, which is why this takes any block rather than only a 40-byte slot.
+    """
+
+    return (5 + sum(block[2:])) & 0xFFFF
+
+
+def seal_slot(block: bytearray) -> bytearray:
+    """Write :func:`slot_checksum` into ``block``'s first two bytes, in place."""
+
+    block[0:2] = slot_checksum(block).to_bytes(2, "big")
+    return block
+
+
+def slot_checksum_valid(block: bytes | bytearray) -> bool:
+    """Whether ``block`` carries the checksum the engine would compute for it."""
+
+    return int.from_bytes(block[:2], "big") == slot_checksum(block)
+
+
+def config_checksum(payload: int) -> int:
+    """The SaveConfig checksum: 5 plus the low 56 bits' nibbles.
+
+    read_eeprom_settings() keeps this one in the *top* byte of the 8-byte word
+    and sums nibbles 0..13 of what is left, so it is a different routine from
+    :func:`slot_checksum` despite sharing the seed.
+    """
+
+    return 5 + sum((payload >> (index * 4)) & 0xF for index in range(14))
+
+
+def config_block(payload: int) -> bytes:
+    """An 8-byte SaveConfig word carrying ``payload`` and a valid checksum."""
+
+    if payload >> 56:
+        raise ValueError(
+            f"SaveConfig payload 0x{payload:x} overlaps the checksum byte")
+    return (payload | ((config_checksum(payload) & 0xFF) << 56)).to_bytes(8, "big")
+
+
+# --------------------------------------------------------------------------- #
+#  Fatal markers
+# --------------------------------------------------------------------------- #
+
+# The markers that mean a run died rather than disagreed. Every check wants all
+# of these: [CRASH]/[FATAL] are the engine's own last words, and the sanitizer
+# lines are the ones a check would otherwise scroll past while asserting on
+# telemetry that a sanitizer already proved untrustworthy.
+FATAL_MARKERS = (
+    r"\[CRASH\]",
+    r"\[FATAL\]",
+    "AddressSanitizer",
+    "UndefinedBehaviorSanitizer",
+    "runtime error:",
+)
+
+# Named groups a check can add to the common set, so the intent reads at the
+# call site instead of arriving as a re-typed alternation.
+ABORT_MARKERS = ("SIGSEGV", "Segmentation fault", "SIGABRT", "Abort trap")
+ASSERT_MARKERS = ("Assertion",)
+FX_MARKERS = (r"\[FX BUG\]",)
+GPU_MARKERS = ("frame queue failed", "GPU completion fence failed")
+VALIDATION_MARKERS = ("Validation Error",)
+DEVICE_MARKERS = ("validation error", "device lost", "shader compilation failed")
+
+
+def fatal_re(*extra: str, ignore_case: bool = False) -> "re.Pattern[str]":
+    """:data:`FATAL_MARKERS` plus whatever else this check treats as fatal.
+
+    ``extra`` is regex source, not literals, so a check can pass either a bare
+    word or one of the ``*_MARKERS`` groups above (``*ABORT_MARKERS``).
+    """
+
+    flags = re.IGNORECASE if ignore_case else 0
+    return re.compile("|".join((*FATAL_MARKERS, *extra)), flags)
+
+
+def find_fatal(output: str, *extra: str, ignore_case: bool = False) -> str | None:
+    """The first fatal marker ``output`` contains, or ``None``.
+
+    Returning the matched text rather than a bool means the failure message can
+    say *which* marker fired without the caller re-scanning the log.
+    """
+
+    match = fatal_re(*extra, ignore_case=ignore_case).search(output)
+    return match.group(0) if match else None
+
+
+# --------------------------------------------------------------------------- #
+#  "[TAG] key=value ..." telemetry rows
+# --------------------------------------------------------------------------- #
+
+
+def row_fields(text: str) -> dict[str, int]:
+    """The integer ``key=value`` tokens in one telemetry row's payload.
+
+    Non-integer values are skipped rather than raised on: these rows mix in
+    string fields (``backend=gl``, ``reason=raf-ceiling``) that the numeric
+    callers do not read, and a reader that died on them would turn adding a
+    descriptive field to a log line into a test failure.
+    """
+
+    fields: dict[str, int] = {}
+    for token in text.split():
+        key, separator, value = token.partition("=")
+        if not separator:
+            continue
+        try:
+            fields[key] = int(value)
+        except ValueError:
+            continue
+    return fields
+
+
+def _tag_re(tags: "tuple[str, ...]") -> "re.Pattern[str]":
+    if not tags:
+        raise ValueError("parse_rows/parse_last need at least one tag")
+    alternation = "|".join(re.escape(tag) for tag in tags)
+    return re.compile(rf"\[(?:{alternation})\] (.*)")
+
+
+def parse_rows(output: str, *tags: str) -> list[dict[str, int]]:
+    """Every ``[TAG] key=value ...`` row in ``output``, oldest first.
+
+    Several tags may be given when a check accepts either of two backends'
+    spellings of the same row (``WGPU-BACKPRESSURE``/``GL-BACKPRESSURE``).
+    """
+
+    return [row_fields(match.group(1)) for match in _tag_re(tags).finditer(output)]
+
+
+def parse_last(output: str, *tags: str, label: str | None = None,
+               expect_one: bool = False) -> dict[str, int]:
+    """The last ``[TAG]`` row in ``output``; raises if there is none.
+
+    ``expect_one`` is for the checks whose whole point is that a run emitted a
+    single summary -- a second row there means the run restarted something, so
+    reading the last one would quietly hide it.
+    """
+
+    rows = parse_rows(output, *tags)
+    prefix = f"{label}: " if label else ""
+    name = "/".join(tags)
+    if not rows:
+        raise RuntimeError(f"{prefix}no [{name}] row was emitted")
+    if expect_one and len(rows) != 1:
+        raise RuntimeError(
+            f"{prefix}expected one [{name}] row, got {len(rows)}")
+    return rows[-1]
 
 
 _PRESENT_MODE_RE = re.compile(r"\[PRESENT-MODE\] (.*)")
