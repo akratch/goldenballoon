@@ -8,7 +8,7 @@ From 1.0.0 onward this project follows semantic versioning for the platform
 layer's public seams (config keys, environment variables, command-line flags and
 save formats). Everything below 1.0.0 predates that commitment.
 
-## [1.0.5] — Unreleased
+## [1.0.5] — 2026-08-06
 
 No ROM or other game data is included. Recommended settings are unchanged from
 1.0.4: WebGPU, Restored, Frame limit Original, Motion smoothing Off, Gameplay

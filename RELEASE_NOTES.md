@@ -1,6 +1,6 @@
 # Golden Balloon 1.0.5
 
-*Unreleased.*
+*Released 2026-08-06.*
 
 Golden Balloon 1.0.5 is a fix release. It closes the six reported problems
 listed below, repairs Return to Launcher and the diagnostic log on Windows,
