@@ -69,7 +69,6 @@ extern int   g_pcSmaa;
 
 /* Sun shadow map (capture-and-replay). */
 extern int   g_pcSunShadow;
-extern int   g_pcSunShadowRes;
 extern float g_pcSunShadowBias;
 extern float g_pcSunShadowUmbra;
 extern float g_pc_shadow_mat[4][4];   /* world->shadow-clip, m[row][col] */
