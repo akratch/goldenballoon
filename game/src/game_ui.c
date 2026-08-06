@@ -813,12 +813,24 @@ static void hud_render_identity_portrait(HudElement *portrait, s32 character,
     }
     tajPortrait = menu_taj_portrait();
     if (tajPortrait != NULL && tajPortrait[0].texture != NULL) {
-        texrect_draw(&gHudDL, tajPortrait,
-                     (s32)portrait->pos.x -
-                         ((s32)tajPortrait[0].texture->width / 2),
-                     (s32)portrait->pos.y -
-                         ((s32)tajPortrait[0].texture->height / 2),
-                     255, 255, 255, 255);
+        /* hud_element_render() applies portrait->scale (e.g. 0.76 for the
+         * challenge/egg-challenge HUD anchor, 1.0 for the two-player Adventure
+         * hub icon) to every retail character's portrait drawn at this same
+         * anchor. Taj's synthesized native card bypassed that scale entirely
+         * by drawing through the unscaled texrect_draw(), so it always
+         * rendered at its raw native pixel size no matter which anchor asked
+         * for it -- oversized relative to every other racer's portrait
+         * wherever the authored scale is below 1.0. Route it through
+         * texrect_draw_scaled() with the same scale instead. The offset is
+         * expressed in pre-scale texel units and gets multiplied by the same
+         * scale internally, so keeping it at -(size / 2) leaves the drawn
+         * box centred on the same point it always was -- only its size now
+         * tracks the anchor's authored scale like everyone else's. */
+        tajPortrait[0].xOffset = -(s16)(tajPortrait[0].texture->width / 2);
+        tajPortrait[0].yOffset = -(s16)(tajPortrait[0].texture->height / 2);
+        texrect_draw_scaled(&gHudDL, tajPortrait, portrait->pos.x, portrait->pos.y,
+                            portrait->scale, portrait->scale,
+                            COLOUR_RGBA32(255, 255, 255, 255), TEXRECT_POINT);
     }
     playerBit = taj_mod_player_bit(playerIndex);
     if (playerBit != 0 && !(tracedPlayers & playerBit)) {

@@ -1202,6 +1202,24 @@ void obj_loop_characterflag(Object *obj, UNUSED s32 updateRate) {
             flagModel->vertices = gCharacterFlagVertices;
             flagModel->texture = obj->textures[obj->properties.characterFlag.characterID];
 #ifdef NATIVE_PORT
+            /* Taj is a port-added playable character with no slot of his own
+             * in NUMBER_OF_CHARACTERS: he plays as a "donor" character
+             * (Diddy) underneath, so racer->characterId above resolves to
+             * Diddy's in-range ID rather than anything Taj-specific -- this
+             * is never caught by the < 0 / >= NUMBER_OF_CHARACTERS guard,
+             * because the donor ID is a perfectly valid character. Left
+             * alone, the giant wall/big-screen portrait in the collection
+             * arenas (Fire Mountain / Smokey Castle challenges) shows the
+             * donor's face instead of Taj's. Swap in the same native Taj
+             * portrait texture the HUD (hud_render_identity_portrait) and
+             * Rankings (menu_racer_portrait_for_player) screens already use
+             * so all three surfaces agree on the racer's actual identity. */
+            if (taj_physics_is_taj(racer)) {
+                DrawTexture *tajPortrait = menu_taj_portrait();
+                if (tajPortrait != NULL && tajPortrait[0].texture != NULL) {
+                    flagModel->texture = tajPortrait[0].texture;
+                }
+            }
             /* One bounded row per portrait, at the single moment the lazy
              * geometry build binds a racer.  characterID is latched >= 0 here
              * and the branch never re-enters, so this cannot spam.  It is the
@@ -1212,6 +1230,10 @@ void obj_loop_characterflag(Object *obj, UNUSED s32 updateRate) {
                        (s32) obj->properties.characterFlag.playerID,
                        (s32) obj->properties.characterFlag.characterID,
                        flagModel->texture != NULL ? "ok" : "missing");
+            if (taj_physics_is_taj(racer)) {
+                MDKR_TRACE("taj_wall_portrait: playerID=%d identity=taj source=native-taj-card",
+                           (s32) obj->properties.characterFlag.playerID);
+            }
 #endif
             /* S10.5 texture coordinates. Stock packs them as N64 words --
              * (width-1) << 21 is ((width-1) << 5) in the U half, (height-1) << 5
