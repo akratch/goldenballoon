@@ -280,7 +280,10 @@ def main() -> int:
         print("dynamic precedence ordering needs its production-driven C test",
               file=sys.stderr)
         failures += 1
-    cmake = (root / "CMakeLists.txt").read_text(encoding="utf-8")
+    # The registration lives in cmake/tests.cmake (included from CMakeLists.txt)
+    # alongside the rest of the ROM-free unit tests, not in CMakeLists.txt itself.
+    cmake = ((root / "CMakeLists.txt").read_text(encoding="utf-8") +
+              (root / "cmake" / "tests.cmake").read_text(encoding="utf-8"))
     if "add_test(NAME camera_dynamic_precedence" not in cmake:
         print("the dynamic precedence C test must be registered with ctest",
               file=sys.stderr)

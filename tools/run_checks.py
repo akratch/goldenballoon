@@ -412,14 +412,19 @@ CTEST_COMPANION_SCRIPTS = {
 
 def cmake_registered_test_scripts() -> set[str]:
     """Script basenames a CMake ``add_test()`` command actually runs."""
-    # Comment stripping is load-bearing: a commented-out registration reads
-    # exactly like a live one to a plain substring scan.
-    text = "\n".join(
-        line.split("#", 1)[0]
-        for line in (ROOT / "CMakeLists.txt").read_text(encoding="utf-8").splitlines())
+    # CMakeLists.txt include()s cmake/tests.cmake for the bulk of the ROM-free
+    # unit/contract registrations (kept out of the top-level file so the build
+    # definition isn't buried under a thousand lines of test wiring); scan both
+    # so that split doesn't make this manifest check blind to half the suite.
     registered: set[str] = set()
-    for block in re.finditer(r"add_test\((.*?)\)", text, re.DOTALL):
-        registered.update(re.findall(r"tests/([A-Za-z0-9_]+\.py)", block.group(1)))
+    for relpath in ("CMakeLists.txt", "cmake/tests.cmake"):
+        # Comment stripping is load-bearing: a commented-out registration reads
+        # exactly like a live one to a plain substring scan.
+        text = "\n".join(
+            line.split("#", 1)[0]
+            for line in (ROOT / relpath).read_text(encoding="utf-8").splitlines())
+        for block in re.finditer(r"add_test\((.*?)\)", text, re.DOTALL):
+            registered.update(re.findall(r"tests/([A-Za-z0-9_]+\.py)", block.group(1)))
     return registered
 
 
