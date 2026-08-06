@@ -312,7 +312,9 @@ production coverage:
   and memory policy;
 - `check_world_shadows.py` proves visible map darkening, actor projected-decal
   release, exact gameplay-state equivalence, and byte-identical fallback under
-  forced optional-resource loss;
+  forced optional-resource loss — and repeats the whole off/on pair per backend
+  in **shipping configuration** (`MDKR_TRACE` absent), requiring the same pixel
+  handoff and a byte-identical frame;
 - `check_state_hash.py` anchors the fidelity architecture's Phase 1
   instrument: two identical runs must produce byte-identical per-tick
   `[SIMHASH]` streams (`MDKR_STATE_HASH=3`; versioned 64-bit hash over the
@@ -531,7 +533,15 @@ production coverage:
   and without `MDKR_TRACE`, plus a `MDKR_TEST_SHADOW_STAGE_RESET_SKIP=1`
   control whose census must grow (the historical defect was a reset reachable
   only through the diagnostic path, which every other shadow gate accidentally
-  enabled);
+  enabled). **That accident is now closed at the source**: every gate in the
+  shadow family carries a shipping-configuration arm with `MDKR_TRACE` unset —
+  `check_world_shadows.py` and `check_shadow_plausibility.py` and
+  `check_shadow_visual_ab.py` and `check_presentation_shadows.py` all require
+  byte-identical frames against their traced arm, and
+  `check_widescreen_shadow.py` (which dumps no frames) requires an identical
+  `[SHADOW]` decal mode, heap capacities, overflow-drop and non-decal census.
+  A diagnostic variable that reaches the frame buffer now fails the gate
+  whatever its mechanism, instead of needing to have been predicted;
 - `check_shadow_plausibility.py` asserts the property four separate shadow
   defects have now violated: **every rendered shadow maps to a caster that is
   really there**. Two halves, because the class has two. *Provenance* reads the
@@ -1272,6 +1282,15 @@ old non-decal route and must be detected, proving the check cannot pass merely
 because the fixture rendered no shadows. Run it against an ASan build as well as
 the GL and WebGPU builds.
 
+A sixth arm repeats the production 4:3 case in **shipping configuration**
+(`MDKR_TRACE` unset). `[PACE]` cannot exist there, so what it asserts is the
+strongest untraced subset: the `[SHADOW]` decal mode, all three heap capacities,
+the overflow-drop count and the non-decal group count must be identical to the
+traced arm, and the arm must carry no `[PACE]` rows at all. This gate dumps no
+frames, so the pixel half of the same question is carried by
+`check_world_shadows.py`, `check_shadow_visual_ab.py`,
+`check_shadow_plausibility.py` and `check_presentation_shadows.py`.
+
 For the multiplayer projection path, `check_race_2p_split.py` also accepts
 `--window-size WIDTHxHEIGHT`; use `--window-size 1260x540` to exercise both
 top/bottom viewports at 21:9 while retaining its independent liveness check for
@@ -1376,6 +1395,15 @@ some (but not all) frames must differ, and every affected production pixel must
 be darker: decal bias may restore missing shadow coverage, but may not perturb
 geometry or the rest of the frame. The PPM comparison is dependency-free and
 needs no checked-in golden image.
+
+A third arm runs the production decal route in **shipping configuration**
+(`MDKR_TRACE` unset) and requires every dumped frame to be byte-identical to the
+traced arm's. The comparison is deliberately on pixels rather than on the
+`[SHADOW]`/`[DEPTH]` totals: this route is wall-clock paced (it pins neither
+`MDKR_SYNTH_FIELDS` nor the cadence, because its texture-filtering invariant
+needs `--pure`), so those cumulative counters move run to run — measured 2371 /
+2510 / 2590 presents across three arms of one build — while frames keyed to
+simulated frame numbers do not.
 
 ## Idle / attract-demo soak (no input script)
 
@@ -2387,7 +2415,7 @@ instrument is alive.
 ## Boss win verdict — `tests/check_boss_win_verdict.py` (RUN THIS AFTER ANY CHANGE THAT WRITES `courseFlagsPtr` OR `settings->bosses`)
 
 ```bash
-MDKR_AUDIO=0 python3 tests/check_boss_win_verdict.py -v              # ~2 min
+MDKR_AUDIO=0 python3 tests/check_boss_win_verdict.py -v              # ~3 min
 MDKR_AUDIO=0 python3 tests/check_boss_win_verdict.py --break-invariant   # must FAIL
 ```
 
@@ -2408,8 +2436,9 @@ first boss win** — no crash, no log. This check pins that invariant:
 
 | arm | `bosses` / `courseFlags` at the verdict | outcome |
 |---|---|---|
-| `first` (fresh save) | `0x0` / `0x40001` | cutscene 4 loads @9139 |
+| `first` (fresh save) | `0x0` / `0x40001` | cutscene 4 loads @9139, cutscene 5 never loads |
 | `cleared` (`MDKR_BOSS_PRECLEARED=38`) | `0x2` / `0x40003` | **no cutscene at all**, overworld @8432 |
+| `lose` (`MDKR_BOSS_WIN` unset) | `0x0` / `0x40001` | cutscene **5** loads — the failure animation |
 
 The `cleared` arm is the **positive control**: it reproduces the reported
 *"I won the first boss race, got no win cutscene, no amulet, and was dropped back
@@ -2417,6 +2446,18 @@ in front of the boss door"* from an unmodified binary, which is what makes the
 `first` arm's invariant assertions falsifiable rather than decorative.
 `--break-invariant` runs the regression itself — it pre-clears the boss course in
 the `first` arm too — and the check must then fail.
+
+**The other half of the report.** The player wrote *"I was awarded first place,
+still got the failure animation"*. Those are two separate wrong presentations —
+cutscene 4 missing, and cutscene 5 appearing — and only the first used to be
+asserted, so a build that pushed **both** on the same finish passed. The `first`
+arm now also requires that cutscene 5 (`level_properties_push(i, 5, -1, 5)`, the
+`finishPos != 1` limb) never loads. The `lose` arm is that assertion's
+**non-vacuity control**: with `MDKR_BOSS_WIN` unset the autopilot finishes where
+it naturally does and DKR takes its own losing limb, so the harness is shown
+producing the exact `level_load: levelId=57 … entrance=5 … cutscene=5` line the
+negative assertion reads. Without it, "cutscene 5 never loaded" would be a claim
+about a log line nothing had ever been seen to emit.
 
 Two hooks, both no-ops unless set (`platform/mdkr_adventure.c`):
 
@@ -2430,6 +2471,76 @@ Two hooks, both no-ops unless set (`platform/mdkr_adventure.c`):
   (`RACE_VISITED|RACE_CLEARED` plus the world's `bosses` bit), i.e. the state a
   save carries once the boss has been beaten once. Re-applied every frame because
   FILE SELECT reallocates `Settings` and `clear_game_progress()` would wipe it.
+
+## CPU-opponent stuck recovery — `tests/check_ai_unstick_opponents.py`
+
+```bash
+python3 tests/check_ai_unstick_opponents.py --build build -v      # ~2 min, 12 races
+python3 tests/check_ai_unstick_opponents.py --self-test           # reducer control, instant
+```
+
+`racer_AI_pathing_inputs()` arms a 120-unit cooldown (`unk215`) after every AI
+stuck-recovery, and that cooldown decays on exactly one condition —
+`unk214 == 0 && racer->velocity < -0.5`, i.e. the reverse window has expired
+**and** the kart is moving. Nothing else in `racer.c` reads or writes `unk215`,
+so a kart that comes out of the reverse window still unable to move can never
+clear the cooldown and can never re-arm the recovery. Measured on the
+autopiloted **human** at Hot Top Volcano's crater: 18,677 motionless frames
+(`docs/open-items/gameplay.md`). Whether the same wedge is reachable for a
+genuine **opponent** decides that item's classification, because
+`mdkr_autopilot_unstick()` is reachable only from the human-autopilot limb — a
+real CPU racer has no recovery at all.
+
+This gate measures it. `MDKR_AI_STUCK_TRACE=<stride>` (`game/src/racer.c`, inert
+unless set) installs an observation-only witness in `update_AI_racer()` — the
+limb genuine opponents actually take; `update_player_racer()`'s
+`racer_AI_pathing_inputs()` call is inside the *non*-computer branch and is
+reached only by a human kart the finish hand-off has relabelled — and it refuses
+any racer index ever seen carrying a real player index. It maintains two
+per-opponent counters in update-rate units: `stall` (cooldown armed while
+`|velocity| < 0.5`, the wedge signature) and `nodecay` (cooldown armed while the
+decay branch's own condition is false, which legitimately covers the reverse
+window), plus `arm`/`clear` events bracketing every episode.
+
+12 races on Hot Top Volcano, each with a distinct boot RNG seed
+(`MDKR_RNGSEED=0x<hex>`, `platform/math_util_native.c` — nothing re-seeds at
+boot, so each value is an independent random stream for the whole run; measured
+divergence is total within one lap). The check **fails closed**: zero cooldown
+episodes across all races means the witness stopped reporting, not that the
+game got better.
+
+| window | value | measured legitimate maximum |
+|---|---|---|
+| `WEDGE_WINDOW` (`stall`) | 900 | 229 update units |
+| `NODECAY_WINDOW` (`nodecay`) | 2400 | 729 update units |
+
+Both come from a 32-race, 32-seed measurement pass that produced 23 legitimate
+stuck-then-recover episodes on genuine opponents — 23 `arm`, 23 `clear`, none
+left armed. The 229 is the shape worth knowing: opponent 6 left the track at
+`(-96.1, -987.7, 2357.9)`, all wheels off a surface, velocity pinned at `0.472`
+(below the 0.5 the decay branch needs), cooldown at 120 with the reverse window
+already expired — the wedge exactly — for 208 update units, and then DKR's own
+**out-of-bounds respawn** put it back on the track and the cooldown decayed
+`120 → 114 → 84 → 54 → 24 → 0` in six samples of ordinary driving. That respawn
+is the opponent's recovery, and it is why the same track wedges the autopilot
+(which lands *inside* the world, grounded, so respawn never fires) and not the
+field. A genuine deadlock is unbounded, so 4× the legitimate maximum separates
+the two without being calibrated on any racing line.
+
+`--self-test` feeds synthetic telemetry in the engine's exact row shape through
+the same reducer and requires the wedge to be reported and the measured
+229-unit episode not to be. The engine-side witness is proven live by the
+episode census a passing run prints.
+
+**If this check ever fails, do not change gameplay to make it pass.**
+`racer_AI_pathing_inputs()` is matching decompiled code with no `GLOBAL_ASM` and
+no `NON_MATCHING`; preservation-port-versus-fix is an owner decision and the open
+item exists to hold it. Report the telemetry.
+
+This gate deliberately does **not** export `MDKR_TRACE` — that variable arms
+engine behaviour as well as printing (see the shadow-gate note under
+`check_world_shadows.py`), so a measurement taken with it set describes a
+different program.
 
 ## Bluey 2 rematch — `tests/check_bluey2_rematch.py`
 
