@@ -218,6 +218,13 @@ def main() -> int:
         ({}, ["--remastered"], "Video.AnisotropicFiltering", "16", "preset"),
         ({}, ["--remastered"], "Video.Mipmaps", "1", "preset"),
         ({}, ["--remastered"], "Video.WorldShadows", "full", "preset"),
+        # Camera correction is opt-in and preset-independent: no mode pins it,
+        # so it stays observe and stays unattributed to any layer.
+        ({}, [], "Camera.Obstruction", "observe", "default"),
+        ({}, ["--remastered"], "Camera.Obstruction", "observe", "default"),
+        ({}, ["--pure"], "Camera.Obstruction", "observe", "default"),
+        ({"MDKR_CAMERA_OBSTRUCTION": "modern"}, ["--remastered"],
+         "Camera.Obstruction", "modern", "env"),
         ({}, ["--pure"], "Video.RenderScale", "1", "preset"),
         ({"MDKR_RENDER_SCALE": "3"}, ["--pure"], "Video.RenderScale", "3", "env"),
         ({"MDKR_RENDER_SCALE": "3"},

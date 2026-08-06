@@ -90,6 +90,33 @@ static void test_schema(void) {
     expect_int("motion smoothing scope is RESTART",
                s ? (int) s->scope : -1, MDKR_VIDEO_SCOPE_RESTART);
 
+    /*
+     * RESTART because game/src/camera_obstruction_runtime.c resolves
+     * MDKR_CAMERA_OBSTRUCTION into a policy at boot and never re-reads it. The
+     * env name is that same seam, so a diagnostic override and this key are one
+     * variable.
+     */
+    expect_int("camera obstruction key",
+               (int) mdkr_video_key_from_name("Camera.Obstruction"),
+               MDKR_VIDEO_CAMERA_OBSTRUCTION);
+    s = mdkr_video_schema(MDKR_VIDEO_CAMERA_OBSTRUCTION);
+    expect_true("camera obstruction env seam",
+                s != NULL && !strcmp(s->env, "MDKR_CAMERA_OBSTRUCTION"));
+    expect_int("camera obstruction is a string",
+               s ? (int) s->type : -1, MDKR_VIDEO_TYPE_STRING);
+    expect_int("camera obstruction scope is RESTART",
+               s ? (int) s->scope : -1, MDKR_VIDEO_SCOPE_RESTART);
+    expect_int("camera obstruction is presentation",
+               s ? (int) s->category : -1, MDKR_VIDEO_CAT_PRESENTATION);
+    /* It is appended AFTER the controller block, so the input range must still
+     * be the two macros rather than "everything to the end of the enum". */
+    expect_int("camera obstruction is not an input key",
+               mdkr_video_key_is_input(MDKR_VIDEO_CAMERA_OBSTRUCTION), 0);
+    expect_int("camera obstruction is not player comfort",
+               mdkr_video_key_is_player_comfort(MDKR_VIDEO_CAMERA_OBSTRUCTION), 0);
+    expect_int("the last controller binding is still an input key",
+               mdkr_video_key_is_input(MDKR_INPUT_LAST_KEY), 1);
+
     expect_true("out-of-range key is NULL", mdkr_video_schema(MDKR_VIDEO_KEY_COUNT) == NULL);
     expect_true("negative key is NULL", mdkr_video_schema((MdkrVideoKey) -1) == NULL);
 
@@ -131,6 +158,10 @@ static void test_presets(void) {
     expect_true("default motion smoothing is fail-closed",
                 !strcmp(cfg.values[MDKR_VIDEO_MOTION_SMOOTHING].text,
                         "off"));
+    /* The authored camera is the default; correction is opt-in. */
+    expect_true("default camera obstruction is observe",
+                !strcmp(cfg.values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
+                        "observe"));
     expect_true("defaults are DEFAULT-sourced",
                 cfg.values[MDKR_VIDEO_RENDER_SCALE].source == MDKR_VIDEO_SOURCE_DEFAULT);
     expect_true("audio defaults to authored unity",
@@ -194,6 +225,9 @@ static void test_presets(void) {
     expect_true("pure leaves motion smoothing unchanged",
                 !strcmp(cfg.values[MDKR_VIDEO_MOTION_SMOOTHING].text,
                         "off"));
+    expect_true("pure leaves camera obstruction unchanged",
+                !strcmp(cfg.values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
+                        "observe"));
 
     mdkr_video_config_apply_preset(&cfg, MDKR_VIDEO_MODE_RESTORED);
     expect_true("restored preserves player master volume",
@@ -236,6 +270,11 @@ static void test_presets(void) {
     expect_true("remastered leaves motion smoothing unchanged",
                 !strcmp(cfg.values[MDKR_VIDEO_MOTION_SMOOTHING].text,
                         "off"));
+    /* Not even Remastered, which is where every other opt-in effect lives:
+     * correcting the camera is a separate choice from the art direction. */
+    expect_true("remastered leaves camera obstruction unchanged",
+                !strcmp(cfg.values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
+                        "observe"));
 
     /* Positive control: a resolved FrameLimit=60/MotionSmoothing=interpolate survives
      * every preset switch, exactly like SimulationCadence=enhanced below --
@@ -265,6 +304,29 @@ static void test_presets(void) {
     expect_true("remastered preserves resolved motion smoothing",
                 !strcmp(cfg.values[MDKR_VIDEO_MOTION_SMOOTHING].text,
                         "interpolate"));
+
+    /* The same positive control for the camera: a player who opted in must not
+     * be opted back out by picking a presentation mode. */
+    mdkr_video_config_defaults(&cfg);
+    expect_int("file may request the corrected camera",
+               mdkr_video_config_set(
+                   &cfg, MDKR_VIDEO_CAMERA_OBSTRUCTION, "modern",
+                   MDKR_VIDEO_SOURCE_FILE), 1);
+    mdkr_video_config_apply_preset(&cfg, MDKR_VIDEO_MODE_PURE);
+    expect_true("pure preserves the resolved camera policy",
+                !strcmp(cfg.values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
+                        "modern"));
+    mdkr_video_config_apply_preset(&cfg, MDKR_VIDEO_MODE_RESTORED);
+    expect_true("restored preserves the resolved camera policy",
+                !strcmp(cfg.values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
+                        "modern"));
+    mdkr_video_config_apply_preset(&cfg, MDKR_VIDEO_MODE_REMASTERED);
+    expect_true("remastered preserves the resolved camera policy",
+                !strcmp(cfg.values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
+                        "modern"));
+    expect_int("no preset re-sourced the camera policy",
+               cfg.values[MDKR_VIDEO_CAMERA_OBSTRUCTION].source,
+               MDKR_VIDEO_SOURCE_FILE);
 
     mdkr_video_config_defaults(&cfg);
     expect_int("file may request enhanced simulation",
@@ -715,9 +777,73 @@ static void test_resolve(void) {
                cfg.values[MDKR_VIDEO_ASPECT].source, MDKR_VIDEO_SOURCE_CLI);
 }
 
+/*
+ * Camera.Obstruction's domain has two halves. "observe" and "modern" are the
+ * player-facing states the settings UI offers; "legacy" and "center-ray" are
+ * arms of the MDKR_CAMERA_OBSTRUCTION seam the key inherits, kept legal so an
+ * A/B gate that drives the environment still resolves. Everything else is
+ * rejected: an unparsed camera policy must not become a stored setting.
+ */
+static void test_camera_obstruction_domain(void) {
+    MdkrVideoConfig cfg;
+    const char *canonical;
+
+    canonical = mdkr_video_camera_obstruction_canonical("observe");
+    expect_true("observe is canonical",
+                canonical != NULL && !strcmp(canonical, "observe"));
+    canonical = mdkr_video_camera_obstruction_canonical("modern");
+    expect_true("modern is canonical",
+                canonical != NULL && !strcmp(canonical, "modern"));
+    canonical = mdkr_video_camera_obstruction_canonical("MODERN");
+    expect_true("the domain is case-insensitive",
+                canonical != NULL && !strcmp(canonical, "modern"));
+    canonical = mdkr_video_camera_obstruction_canonical("legacy");
+    expect_true("legacy passes through for the diagnostic seam",
+                canonical != NULL && !strcmp(canonical, "legacy"));
+    canonical = mdkr_video_camera_obstruction_canonical("center-ray");
+    expect_true("center-ray passes through for the diagnostic seam",
+                canonical != NULL && !strcmp(canonical, "center-ray"));
+    /* A diagnostic arm may not be folded into a player-facing word: the config
+     * would then claim a policy the camera runtime is not running. */
+    expect_true("legacy is not renamed to observe",
+                strcmp(mdkr_video_camera_obstruction_canonical("legacy"),
+                       "observe") != 0);
+    expect_true("unknown policy is rejected",
+                mdkr_video_camera_obstruction_canonical("modren") == NULL);
+    expect_true("a near miss is rejected",
+                mdkr_video_camera_obstruction_canonical("center ray") == NULL);
+    /* Unlike the world-shadow seam, empty is not a spelling of anything: an
+     * empty MDKR_CAMERA_OBSTRUCTION means unset to the runtime. */
+    expect_true("empty is rejected",
+                mdkr_video_camera_obstruction_canonical("") == NULL);
+    expect_true("NULL is rejected",
+                mdkr_video_camera_obstruction_canonical(NULL) == NULL);
+
+    mdkr_video_config_defaults(&cfg);
+    expect_int("set accepts a player-facing spelling",
+               mdkr_video_config_set(&cfg, MDKR_VIDEO_CAMERA_OBSTRUCTION,
+                                     "Modern", MDKR_VIDEO_SOURCE_FILE), 1);
+    expect_true("set stores the canonical spelling",
+                !strcmp(cfg.values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
+                        "modern"));
+    expect_int("set accepts a diagnostic arm",
+               mdkr_video_config_set(&cfg, MDKR_VIDEO_CAMERA_OBSTRUCTION,
+                                     "center-ray", MDKR_VIDEO_SOURCE_ENV), 1);
+    expect_true("set stores the diagnostic arm verbatim",
+                !strcmp(cfg.values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
+                        "center-ray"));
+    expect_int("set rejects an unknown policy",
+               mdkr_video_config_set(&cfg, MDKR_VIDEO_CAMERA_OBSTRUCTION,
+                                     "modren", MDKR_VIDEO_SOURCE_CLI), 0);
+    expect_true("a rejected policy leaves the resolved value alone",
+                !strcmp(cfg.values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
+                        "center-ray"));
+}
+
 int main(void) {
     test_schema();
     test_presets();
+    test_camera_obstruction_domain();
     test_precedence();
     test_ini();
     test_resolve();

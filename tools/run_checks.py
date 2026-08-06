@@ -137,7 +137,7 @@ CHECKS = (
           "skip-render authoritative invariance (spec 12.2.1) with divergence control"),
     Check("camera_obstruction_runtime", "check_camera_obstruction_runtime.py", "release",
           "same-binary legacy/center-ray controls, modern resolved-lens safety "
-          "witness, and the unset-default arm that must reproduce it"),
+          "witness, and the unset-default arm that must reproduce observe"),
     Check("camera_obstruction_display_matrix", "check_camera_obstruction_display_matrix.py", "release",
           "Modern lens/target safety across 24 shape/FOV arms, emergency census, and equal-aspect identity"),
     Check("camera_dynamic_obstruction_runtime", "check_camera_dynamic_obstruction_runtime.py", "release",

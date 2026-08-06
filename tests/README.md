@@ -131,9 +131,10 @@ dynamic occluder list, latch selected viewport projections, and resolve into a
 native presentation sidecar. They never write `Camera`/`gCameras`, selection,
 sort/LOD/visibility, audio, or other authoritative state. `render_scene` and the
 interpolation snapshot walker consume the sidecar only inside presentation.
-Correction is the default: unset `MDKR_CAMERA_OBSTRUCTION` selects `modern`.
-Set `observe` for telemetry with byte-identical authored poses, `center-ray` for
-the deliberately incomplete diagnostic control, or `legacy` for original direct
+Correction is opt-in: unset `MDKR_CAMERA_OBSTRUCTION` selects `observe`, and the
+launcher's **Camera obstruction** setting exports `modern` onto the same
+variable. Set `modern` directly for the corrected camera, `center-ray` for the
+deliberately incomplete diagnostic control, or `legacy` for original direct
 placement; an unrecognised value falls back to `observe`. Set
 `MDKR_CAMERA_TRACE=1` for summaries or `=2` for per-slot desired/effective,
 projection/guard, mapping, intent age/pivot/target, and hit diagnostics; this is

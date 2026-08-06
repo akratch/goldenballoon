@@ -171,24 +171,30 @@ cadence Original.
 
 ### Added
 
-- **Gameplay cameras no longer enter terrain or object geometry, by default.**
-  The modern camera obstruction subsystem — the pure sweep kernel, resolver,
-  transform adapter, track and object occlusion caches, dynamic hard-occluder
-  census, target-readability classification, and the fixed-tick runtime that
-  resolves each authored camera slot — is now the shipped policy rather than an
-  opt-in. `MDKR_CAMERA_OBSTRUCTION` unset selects `modern`, which published
-  `penetrated=0 degraded=0 invalid=0` on every pinned route; `observe` (measure
-  only, authored pose retained), `center-ray` (deliberately incomplete
-  diagnostic control), and `legacy` (original direct placement) remain in the
-  same binary as diagnostic opt-outs and A/B controls, and an unrecognised
-  value still falls back to `observe` — a typo may not silently correct, and
-  may not select the known-unsafe arm. That fallback now differs from the
-  default, so it is no longer silent: the first unparsed resolution prints one
-  `camera_obstruction:` line to stderr naming the rejected value and the valid
-  set. The substitution happens at presentation
+- **A setting that keeps gameplay cameras out of terrain and object geometry.**
+  The camera obstruction subsystem — the pure sweep kernel, resolver, transform
+  adapter, track and object occlusion caches, dynamic hard-occluder census,
+  target-readability classification, and the fixed-tick runtime that resolves
+  each authored camera slot — ships behind **Camera obstruction** in the
+  launcher's Presentation settings. It is opt-in: the correction is qualified
+  on the pinned routes, not across every camera bank and mode, so the authored
+  camera stays the default. `observe` is that default and leaves the camera
+  exactly where the game writes it; `modern` corrects it and published
+  `penetrated=0 degraded=0 invalid=0` on every pinned route. The setting is
+  restart-scoped, because the camera runtime resolves its policy once at boot,
+  and preset-independent: no presentation mode turns it on or off.
+  `Camera.Obstruction` rides the same `MDKR_CAMERA_OBSTRUCTION` variable the
+  diagnostic arms use — the launcher exports the resolved value at engine
+  handoff, and only when nothing has already set it, so an environment override
+  still wins. `center-ray` (deliberately incomplete diagnostic control) and
+  `legacy` (original direct placement) remain reachable through that variable.
+  An unrecognised value falls back to `observe` — a typo may not silently
+  correct, and may not select the known-unsafe arm — and the first unparsed
+  resolution prints one `camera_obstruction:` line to stderr naming the
+  rejected value and the valid set. The substitution happens at presentation
   depth only, so authoritative state is unmoved: the `[SIMHASH]` stream and the
-  state hash over a route are identical under the new default and under
-  `observe`. Render no longer computes a lens:
+  state hash over a route are identical under `modern` and under `observe`.
+  Render no longer computes a lens:
   `cam_effective_projection_for_viewport()` produces the immutable projection
   record before any display-list work, the fixed-tick finalizer latches it per
   viewport, and native projection rebuild consumes only that latched record.

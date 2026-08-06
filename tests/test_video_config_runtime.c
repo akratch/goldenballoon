@@ -424,6 +424,29 @@ static int run_primary_case(void) {
                        ->values[MDKR_VIDEO_MOTION_SMOOTHING].text,
                    "interpolate"));
 
+    /*
+     * Camera.Obstruction is SCOPE_RESTART for the same latching reason: the
+     * camera runtime resolves MDKR_CAMERA_OBSTRUCTION once at boot. An edit
+     * therefore stages, and only the key's own domain is legal -- an unparsed
+     * policy is a rejected VALUE, not a setting that quietly stores.
+     */
+    expect("camera obstruction stages for restart",
+           mdkr_video_config_runtime_set(
+               MDKR_VIDEO_CAMERA_OBSTRUCTION, "modern") ==
+               MDKR_VIDEO_RUNTIME_RESTART);
+    expect("staged camera obstruction is in the desired config",
+           !strcmp(mdkr_video_config_desired()
+                       ->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
+                   "modern"));
+    expect("camera obstruction rejects an unknown policy",
+           mdkr_video_config_runtime_set(
+               MDKR_VIDEO_CAMERA_OBSTRUCTION, "modren") ==
+               MDKR_VIDEO_RUNTIME_INVALID);
+    expect("a rejected policy leaves the staged value alone",
+           !strcmp(mdkr_video_config_desired()
+                       ->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
+                   "modern"));
+
     expect("remaster effects stage for restart",
            mdkr_video_config_runtime_set(MDKR_VIDEO_REMASTER_FX, "1") ==
                MDKR_VIDEO_RUNTIME_RESTART);
@@ -444,6 +467,8 @@ static int run_primary_case(void) {
     expect("controller remap persisted", strstr(text, "ControllerA=r") != NULL);
     expect("window mode persisted", config_has_entry(
                text, "Window.Mode", "fullscreen"));
+    expect("camera obstruction persisted", config_has_entry(
+               text, "Camera.Obstruction", "modern"));
     expect("temporary CLI value not baked into config",
            strstr(text, "Mipmaps=1") != NULL);
     expect("all unique atomic temporary files removed",

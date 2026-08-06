@@ -81,6 +81,10 @@ typedef enum MdkrVideoKey {
     MDKR_INPUT_CONTROLLER_RIGHT_STICK_DOWN,
     MDKR_INPUT_CONTROLLER_RIGHT_STICK_LEFT,
     MDKR_INPUT_CONTROLLER_RIGHT_STICK_RIGHT,
+    /* Presentation again, appended for the reason above. The input block is
+     * bounded by the two macros below rather than by being last, so a
+     * non-input key may follow it. */
+    MDKR_VIDEO_CAMERA_OBSTRUCTION,
     MDKR_VIDEO_KEY_COUNT
 } MdkrVideoKey;
 
@@ -198,6 +202,15 @@ int mdkr_video_mode_from_name(const char *name);
  * words. Exposed so a UI can offer only what the validator takes.
  */
 const char *mdkr_video_world_shadows_canonical(const char *value);
+
+/*
+ * Canonical spelling for a Camera.Obstruction value, or NULL when `value` is
+ * not one. "observe" and "modern" are the two player-facing states; "legacy"
+ * and "center-ray" are the diagnostic arms the MDKR_CAMERA_OBSTRUCTION seam
+ * predates this key with, and they pass through unchanged so an A/B gate that
+ * drives the environment keeps resolving through the same validator.
+ */
+const char *mdkr_video_camera_obstruction_canonical(const char *value);
 
 /*
  * Applies `value` to `key` if `source` outranks whatever set it last.

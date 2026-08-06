@@ -147,6 +147,11 @@ int main() {
     expect(AppUi_videoSettingVisible(MDKR_VIDEO_MOTION_SMOOTHING, true) &&
            AppUi_videoSettingVisible(MDKR_VIDEO_MOTION_SMOOTHING, false),
            "production motion smoothing is visible on every renderer");
+    // The settings panel is the only way to opt into camera correction without
+    // setting an environment variable, so it may not be renderer-conditional.
+    expect(AppUi_videoSettingVisible(MDKR_VIDEO_CAMERA_OBSTRUCTION, true) &&
+               AppUi_videoSettingVisible(MDKR_VIDEO_CAMERA_OBSTRUCTION, false),
+           "camera obstruction opt-in is offered on every renderer");
     expect(!AppUi_videoSettingVisible(MDKR_VIDEO_MSAA, true),
            "inert MSAA setting is hidden on WebGPU");
     expect(AppUi_videoSettingVisible(MDKR_VIDEO_MSAA, false),

@@ -84,7 +84,7 @@ someone playing rather than reading.
 The exit condition is a single deterministic start→credits gate, not a
 collection of partial routes.
 
-### Camera obstruction correction — the default; breadth evidence outstanding
+### Camera obstruction correction — opt-in; breadth evidence outstanding
 
 **Where it stands.** The projection-derived lens guard is ported and compiled:
 the sweep kernel, resolver, transform adapter, static and dynamic occlusion
@@ -93,22 +93,23 @@ each of the eight authored camera slots
 (`game/src/camera_obstruction_runtime.c`, `platform/camera_obstruction*.c`).
 Rendering no longer computes a lens; it consumes the projection record the
 finalizer latched. The runtime policy comes from `MDKR_CAMERA_OBSTRUCTION`, and
-**unset selects Modern** — every authored slot is resolved, and no pinned route
-publishes a penetrated, degraded, or invalid pose. `observe` (measure only,
-authored pose retained), `center-ray` and `legacy` remain in the same binary as
-diagnostic opt-outs and as the required broken-direction controls, and a
-misspelled value falls back to Observe rather than silently correcting or
-silently selecting an unqualified arm.
+**unset selects Observe** — the authored pose is retained and only measured.
+Modern, where every authored slot is resolved and no pinned route publishes a
+penetrated, degraded, or invalid pose, is reached through the launcher's
+Camera obstruction setting or the variable directly. `center-ray` and `legacy`
+remain in the same binary as diagnostic arms and as the required
+broken-direction controls, and a misspelled value falls back to Observe rather
+than silently correcting or silently selecting an unqualified arm.
 
 **What remains.** Every CAM-00–CAM-09 exit gate in
 [`docs/architecture/camera-obstruction.md`](docs/architecture/camera-obstruction.md)
-is breadth and product-quality evidence, and they are not closed. The default
-does not wait on them: the resolver substitutes only at presentation depth, so it
-cannot move authoritative state whatever those gates find, and `observe` is an
-unweakened one-variable rollback. Until they close, the underlying defect —
-gameplay cameras entering terrain and object geometry — stays open in
-[`docs/open-items/gameplay.md`](docs/open-items/gameplay.md) as a breadth claim
-rather than a shipped-behaviour one, and a centre ray, fixed-radius clamp,
+is breadth and product-quality evidence, and they are not closed. That is what
+keeps the correction opt-in: the resolver substitutes only at presentation
+depth, so it cannot move authoritative state whatever those gates find, but
+until they close the authored camera stays the shipped one. The underlying
+defect — gameplay cameras entering terrain and object geometry — therefore stays
+open in [`docs/open-items/gameplay.md`](docs/open-items/gameplay.md) as shipped
+behaviour, not only as a breadth claim, and a centre ray, fixed-radius clamp,
 terrain-only spring arm, or void-curtain mask is still explicitly a partial
 mitigation rather than the fix.
 

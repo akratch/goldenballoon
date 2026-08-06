@@ -193,7 +193,9 @@ one that cannot be made faster by running the suite on a quieter box:
   the quiet host. The camera-obstruction default flipped from legacy to modern
   in `0c6e433` between the runs, which adds real per-tick resolver work to every
   route these tasks drive. That is the honest reading available from these two
-  logs; a clean before/after on one tree would confirm it.
+  logs; a clean before/after on one tree would confirm it. The default is
+  `observe` again now that the correction is an opt-in setting, so these figures
+  bound a configuration the suite no longer runs by default.
 
 ---
 
@@ -296,11 +298,11 @@ today. Estimated saving: one 5200-frame 1P run, roughly 20s quiet.
 
 **KEEP-SEPARATE, with the mechanism that forbids merging:**
 
-- `camera_obstruction_runtime`'s `legacy` / `center-ray` / `unset` arms.
-  `MDKR_CAMERA_OBSTRUCTION` selects one policy per process. Four policies is
-  four processes; there is no version of this that is one pass. The `legacy` and
-  `center-ray` arms are **positive controls** that must reproduce lens
-  penetration, and `unset` must reproduce `modern`'s counters exactly — the
+- `camera_obstruction_runtime`'s `legacy` / `center-ray` / `observe` / `unset`
+  arms. `MDKR_CAMERA_OBSTRUCTION` selects one policy per process. Five policies
+  is five processes; there is no version of this that is one pass. The `legacy`
+  and `center-ray` arms are **positive controls** that must reproduce lens
+  penetration, and `unset` must reproduce `observe`'s counters exactly — the
   assertion that the shipped default is the tested default.
 - `camera_projection_fallback_runtime` injects
   `MDKR_TEST_CAMERA_PROJECTION_FAIL_TICK=800`. Merging it into any clean-run
@@ -797,7 +799,7 @@ savings are larger and less meaningful.
 | 1 | `native_layout`: build `build-align` at `RelWithDebInfo` instead of `Debug`. The measured Debug-vs-Release multiplier on the same 14 checks is 4.7×/4.8×; `full_ubsan` already runs full UBSan at `RelWithDebInfo`. | **15–24m** | The three `--legacy-mem02/03/04` controls must still be *rejected* at the new level (the gate proves this about itself on its first run). All 14 sub-checks must still pass. A measured before/after on one tree, both numbers recorded. |
 | 2 | `framed_world_views`: arm-level worker pool over its ≈83 launches. Per-arm `run_dir` and `run_dir/save` isolation already exists. | **5m** (13m loaded) | Repeated runs at the chosen concurrency producing identical per-arm verdicts — these arms compare pixels and concurrent WebGPU contexts are the risk. A concurrency bound that keeps every arm inside its own 300s `--timeout`. |
 | 3 | `presentation_breadth`: same lever over its 36 spawns. GL-only, no frame dumps, per-arm `run_dir/save` — the cleanest candidate in the suite. | **4m** (12m loaded) | Identical `[SIMHASH]` streams and telemetry verdicts across at least two runs at the chosen concurrency. Confirmation that the PAL arms' ROM handles are per-arm. |
-| 4 | `presentation_matrix` (18 spawns) and `camera_obstruction_display_matrix` (24 spawns): same lever, plus folding `camera_obstruction_runtime`'s modern arm into `display_matrix`'s `4:3-high`/`authored` cell by raising it from 3600 to 5200 frames. | **3m** (6m loaded) | As #2 for the pixel-dumping arms. For the fold: a run showing the 5200-frame cell emits every counter `camera_obstruction_runtime`'s modern arm reports today, and that the `unset`-reproduces-`modern` assertion still has a `modern` result to compare against. |
+| 4 | `presentation_matrix` (18 spawns) and `camera_obstruction_display_matrix` (24 spawns): same lever, plus folding `camera_obstruction_runtime`'s modern arm into `display_matrix`'s `4:3-high`/`authored` cell by raising it from 3600 to 5200 frames. | **3m** (6m loaded) | As #2 for the pixel-dumping arms. For the fold: a run showing the 5200-frame cell emits every counter `camera_obstruction_runtime`'s modern arm reports today. The `unset`-reproduces-`observe` assertion is unaffected: it compares against the `observe` arm, which stays here. |
 | 5 | `native_layout`: drop `check_track_sweep.py` from `RUNTIME_CHECKS`. Its 20 routes are a strict subset of `check_vehicle_sweep.py`'s 47 over the same tracks, frames and autopilot. | **3m** today, ~1m after #1 | That no assertion unique to `check_track_sweep.py` — specifically the animation-target initialisation count — is build-type- or sanitizer-sensitive, i.e. that making it only against `build-rel` loses nothing. Proven the way §5's two cases are proven: from the definitions, in source. |
 
 Combined, without deleting a single gate: **roughly 30–35 minutes off a 135-minute

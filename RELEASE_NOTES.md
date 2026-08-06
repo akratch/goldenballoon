@@ -4,8 +4,8 @@
 
 Golden Balloon 1.0.5 is a fix release. It closes the six reported problems
 listed below, repairs Return to Launcher and the diagnostic log on Windows,
-corrects launcher layout at small window sizes, and stops the gameplay camera
-from entering walls. No game data is included.
+corrects launcher layout at small window sizes, and adds an opt-in setting that
+stops the gameplay camera from entering walls. No game data is included.
 
 Recommended settings are unchanged from 1.0.4: **WebGPU**, **Restored**, frame
 limit **Original**, motion smoothing **Off**, gameplay cadence **Original**.
@@ -63,25 +63,23 @@ Existing preferences are preserved when upgrading.
   works again for planes and bosses, and a computer-carried egg is no longer
   drawn frozen.
 
-## The camera stays out of walls
+## New setting: keep the camera out of walls
 
-The gameplay camera no longer slides into terrain, doors, or other solid
-geometry. Every authored camera is now resolved against the world before it is
-drawn, on every tick, in every viewport and split-screen layout. On the routes
-this release is qualified against it never published a shot that entered a wall,
-lost its view of your racer, or fell back to a degraded one.
+**Settings → Presentation → Camera obstruction** turns on a camera that no
+longer slides into terrain, doors, or other solid geometry. Every authored
+camera is resolved against the world before it is drawn, on every tick, in every
+viewport and split-screen layout. On the routes this release is qualified
+against it never published a shot that entered a wall, lost its view of your
+racer, or fell back to a degraded one.
 
 What the game is steering is untouched. Only the picture moves, so kart
 handling, race results, ghosts, and saves are all bit-for-bit what they were —
 the same race replays identically whether the correction is on or off.
 
-This is the default and there is no menu setting for it. If you want the
-original camera back — for a side-by-side, a recording, or a bug report — set
-`MDKR_CAMERA_OBSTRUCTION=observe` to keep the authored camera exactly as the
-game writes it while the resolver still measures, or
-`MDKR_CAMERA_OBSTRUCTION=legacy` for the original placement with none of the new
-work. Both are diagnostic options: they are not stored with your preferences,
-and the corrected camera is the supported way to play.
+The setting has two values: **Authored (original camera)**, the camera the game
+has always written, and **Keep out of walls**. Authored is the default while the
+correction is being polished. A change applies on the next launch, is remembered
+with your other preferences, and no presentation mode changes it for you.
 
 ## Known limitations
 

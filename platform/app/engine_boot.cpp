@@ -6,6 +6,7 @@
 // reason about and no second one to drift.
 #include "engine_entry.h"
 
+#include "app_restart.h"    // AppRestart_getEnv, AppRestart_setEnv
 #include "video_config.h"   // MdkrVideoMode, mdkr_video_schema
 
 #include <cstdio>
@@ -83,6 +84,24 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
                      "[app] video-config handoff was missing or repeated; "
                      "engine boot stopped\n");
         return 2;
+    }
+
+    // Camera.Obstruction is the one setting the engine does not read from the
+    // resolved config: game/src/camera_obstruction_runtime.c latches
+    // MDKR_CAMERA_OBSTRUCTION at boot. The launcher's value rides that same
+    // seam, and only where nothing has claimed it -- an environment value
+    // outranks the launcher (video_config.h's precedence ranking), so a set
+    // variable is left exactly as the caller wrote it, diagnostic arms
+    // included.
+    std::string existing;
+    if (!AppRestart_getEnv("MDKR_CAMERA_OBSTRUCTION", existing) ||
+        existing.empty()) {
+        const MdkrVideoConfig *resolved = mdkr_video_config_current();
+        if (resolved != nullptr) {
+            AppRestart_setEnv(
+                "MDKR_CAMERA_OBSTRUCTION",
+                resolved->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text);
+        }
     }
 
     std::fprintf(stderr, "[app] boot:");

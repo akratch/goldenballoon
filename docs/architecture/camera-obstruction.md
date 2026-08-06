@@ -2,16 +2,17 @@
 
 > **Target:** safe obstruction correction is the native/browser default; the
 > CAM-00–CAM-09 release gates evidence its breadth.
-> **Current state (2026-08-05):** correction is the production default. The
+> **Current state (2026-08-06):** correction ships as an opt-in setting. The
 > eight-slot presentation sidecar, projection-derived swept-sphere resolver,
 > static/dynamic query sources, recovery, alternate shots, and emergency racer
-> fade exist and run on every authored slot. Unset `MDKR_CAMERA_OBSTRUCTION` now
-> selects Modern, which reports `penetrated=0 degraded=0 invalid=0` on every
-> pinned route; Observe, Center-ray, and Legacy remain in the same binary as
-> diagnostic opt-outs and broken-direction controls. The default is safe by
-> construction rather than by measurement alone: the resolver substitutes only at
+> fade exist and run on every authored slot. Modern reports
+> `penetrated=0 degraded=0 invalid=0` on every pinned route and is selected by
+> the launcher's `Camera.Obstruction` setting or by `MDKR_CAMERA_OBSTRUCTION`
+> directly; unset selects Observe, and Center-ray and Legacy remain in the same
+> binary as broken-direction controls. Either policy is safe by construction
+> rather than by measurement alone: the resolver substitutes only at
 > presentation depth, so no authoritative state can move with it. The remaining
-> CAM-00–CAM-09 gates are breadth evidence, not a gate on the default.
+> CAM-00–CAM-09 gates are the breadth evidence a default flip waits on.
 > **Evidence cutoff:** branch `codex/camera-obstruction-modern`, current candidate
 > recorded in `docs/evidence/camera-runtime-modern-2026-08-05.md`; US v80 ROM SHA-256
 > `7de1a8fb2a9558cfc3d9ad4497df698c1e89cf7095ac1531557df2af40ba8bcf`.
@@ -120,8 +121,8 @@ acceptance must be based on geometric invariants as well as pixels.
   orientation, and can apply a per-viewport presentation-only racer fade when no
   readable boom fits.
 - `legacy` and `center-ray` remain same-binary positive controls. Modern is the
-  current default; Observe is the diagnostic opt-out that retains the authored
-  pose, and remains the fallback for an unrecognised policy value.
+  opt-in arm; Observe retains the authored pose, is the default, and remains the
+  fallback for an unrecognised policy value.
 
 ### Source anchors for implementation
 
@@ -1343,23 +1344,24 @@ The new gate is registered in `tools/run_checks.py`; it is not a manual-only scr
 Add a diagnostic seam such as:
 
 ```text
-unset | modern                   current default; full static+dynamic correction
-MDKR_CAMERA_OBSTRUCTION=observe  telemetry only, authored pose retained
+unset | observe                  current default; telemetry only, authored pose retained
+MDKR_CAMERA_OBSTRUCTION=modern   full static+dynamic correction; the launcher's
+                                 Camera.Obstruction setting exports this
 MDKR_CAMERA_OBSTRUCTION=center-ray intentionally incomplete diagnostic control
 MDKR_CAMERA_OBSTRUCTION=legacy   original direct placement + void detector
 MDKR_CAMERA_TRACE=1|2             summaries / per-query detail
 MDKR_CAMERA_EXACT_SHADOW=1        non-publishing promoted-sphere/exact corridor comparison
 ```
 
-Unknown values fail to Observe, not to the default: a typo means a diagnostic
-opt-out was requested and not understood, so the run must neither silently
-correct nor silently select the known-unsafe Legacy behavior. Observe is the only
-arm that measures without moving a camera, which makes it the honest answer to an
-unparsed request; Modern is reached by leaving the variable unset, never by a
-typo. Because that fallback now differs from the default it must not be silent:
-the first unparsed resolution prints one `camera_obstruction:` line to stderr
-naming the rejected value and the valid set, and never repeats — the policy
-resolves per slot per fixed tick. The immediate rollback ladder is
+Unknown values fail to Observe: a typo means a policy was requested and not
+understood, so the run must neither silently correct nor silently select the
+known-unsafe Legacy behavior. Observe is the only arm that measures without
+moving a camera, which makes it the honest answer to an unparsed request. The
+fallback must not be silent even though it lands where an unset variable does,
+because that is exactly the case a caller cannot tell apart from their request
+being honoured: the first unparsed resolution prints one `camera_obstruction:`
+line to stderr naming the rejected value and the valid set, and never repeats —
+the policy resolves per slot per fixed tick. The immediate rollback ladder is
 `modern -> observe -> legacy`, with no save persistence or authoritative-state
 migration.
 

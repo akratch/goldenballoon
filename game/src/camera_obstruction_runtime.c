@@ -344,12 +344,17 @@ static int sCameraObstructionPolicyFallbackReported;
 static MdkrCameraObstructionRuntimePolicy camera_obstruction_runtime_policy(void) {
     const char *value = getenv("MDKR_CAMERA_OBSTRUCTION");
 
-    /* MODERN is the shipped default: correction is qualified and permanent. */
-    if (value == NULL || value[0] == '\0' || strcmp(value, "modern") == 0) {
-        return MDKR_CAMERA_RUNTIME_MODERN;
-    }
-    if (strcmp(value, "observe") == 0) {
+    /*
+     * OBSERVE is the default: the authored camera is the shipped one, and
+     * correction is opt-in. The launcher's Camera.Obstruction setting reaches
+     * this arm by exporting this same variable, so there is one seam and one
+     * spelling for the choice however a player made it.
+     */
+    if (value == NULL || value[0] == '\0' || strcmp(value, "observe") == 0) {
         return MDKR_CAMERA_RUNTIME_OBSERVE;
+    }
+    if (strcmp(value, "modern") == 0) {
+        return MDKR_CAMERA_RUNTIME_MODERN;
     }
     if (strcmp(value, "center-ray") == 0) {
         return MDKR_CAMERA_RUNTIME_CENTER_RAY;
@@ -358,24 +363,22 @@ static MdkrCameraObstructionRuntimePolicy camera_obstruction_runtime_policy(void
         return MDKR_CAMERA_RUNTIME_LEGACY;
     }
     /*
-     * A misspelled value still resolves to OBSERVE, not to the default arm:
-     * a typo means the caller asked for a diagnostic opt-out and did not get
-     * it, so the run must not silently correct (nor silently select the
-     * known-unsafe LEGACY arm). OBSERVE is the only arm that measures without
-     * moving a camera, so it is the honest answer to an unparsed request;
-     * MODERN is reached by leaving the variable unset, never by a typo.
+     * A misspelled value resolves to OBSERVE, the only arm that measures
+     * without moving a camera: a typo means the caller asked for a policy and
+     * did not get it, so the run may neither silently correct nor silently
+     * select the known-unsafe LEGACY arm.
      *
-     * Say so once. Now that MODERN is the default, a typo no longer lands on
-     * the same behavior the run would have had anyway -- it downgrades the
-     * camera -- so the fallback has to be visible. One shot, because this
-     * resolves per slot per fixed tick.
+     * Say so once. The value the caller asked for was dropped, and a fallback
+     * that lands on the same behavior as an unset variable is exactly the
+     * case a player cannot tell apart from their request being honoured. One
+     * shot, because this resolves per slot per fixed tick.
      */
     if (!sCameraObstructionPolicyFallbackReported) {
         sCameraObstructionPolicyFallbackReported = TRUE;
         fprintf(stderr,
                 "camera_obstruction: MDKR_CAMERA_OBSTRUCTION=\"%s\" is not a "
                 "known policy; falling back to observe (authored camera, no "
-                "correction). Valid values: modern (default), observe, "
+                "correction). Valid values: observe (default), modern, "
                 "center-ray, legacy.\n",
                 value);
     }

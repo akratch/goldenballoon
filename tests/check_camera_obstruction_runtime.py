@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """ROM-backed wall witness for the modern camera obstruction runtime.
 
-The same deterministic Ancient Lake route runs through four arms in one binary.
+The same deterministic Ancient Lake route runs through five arms in one binary.
 Legacy must reproduce an authored lens overlap, center-ray must prove that
 protecting only the eye center is insufficient, and Modern must correct every
 resolved lens overlap while leaving the logical camera untouched.
 
-The fourth arm runs with MDKR_CAMERA_OBSTRUCTION removed from the environment.
-Correction is the shipped default, so the unset arm must report the MODERN gate
-and reproduce the explicit Modern arm's counters exactly -- this is the runtime
-witness that a player who sets nothing gets the corrected camera.
+The last arm runs with MDKR_CAMERA_OBSTRUCTION removed from the environment.
+Correction is opt-in, so the unset arm must report the OBSERVE gate and
+reproduce the explicit Observe arm's counters exactly -- this is the runtime
+witness that a player who sets nothing gets the authored camera.
 """
 
 from __future__ import annotations
@@ -129,10 +129,9 @@ def inspect(policy: str, output: str) -> dict[str, int]:
             block_field(row, "transition", "cut") for row in details
         ),
     }
-    # "unset" is a Modern arm under its shipped name, so it earns the same
-    # strictness; importers pass their own labels, and the ones that mean Modern
-    # prefix them with it.
-    corrective = policy.startswith("modern") or policy == "unset"
+    # Only the corrective arms owe zero invalid/hidden results; importers pass
+    # their own labels, and the ones that mean Modern prefix them with it.
+    corrective = policy.startswith("modern")
     if result["degraded"] or (corrective and
                               (result["invalid"] or result["target_hidden"])):
         raise RuntimeError(f"{policy} degraded/invalid runtime: {result}")
@@ -164,7 +163,7 @@ def main() -> int:
             raise SystemExit(f"missing: {path}")
 
     results = {}
-    for policy in ("legacy", "center-ray", "modern", "unset"):
+    for policy in ("legacy", "center-ray", "modern", "observe", "unset"):
         results[policy] = inspect(
             policy, run(binary, args.rom, policy, args.frames, args.timeout))
         print(f"  {policy:10s} {results[policy]}")
@@ -196,21 +195,27 @@ def main() -> int:
         failures.append(
             f"modern published {results['modern']['penetrated']} penetrated resolved pose(s)"
         )
+    # Correction is opt-in, so the observe arm is what a player who sets nothing
+    # gets: the authored camera, uncorrected.
+    if results["observe"]["corrected"] != 0:
+        failures.append(
+            f"observe arm applied {results['observe']['corrected']} correction(s)"
+        )
     # Default policy. Naming the arm is not enough -- a gate label can be wrong
-    # about what ran -- so the unset arm must also reproduce the Modern arm's
-    # every counter, including the corrections it applied.
-    if results["unset"]["gate"] != "MODERN":
+    # about what ran -- so the unset arm must also reproduce the Observe arm's
+    # every counter.
+    if results["unset"]["gate"] != "OBSERVE":
         failures.append(
-            f"unset MDKR_CAMERA_OBSTRUCTION selected {results['unset']['gate']}, not MODERN"
+            f"unset MDKR_CAMERA_OBSTRUCTION selected {results['unset']['gate']}, not OBSERVE"
         )
-    if results["unset"] != results["modern"]:
+    if results["unset"] != results["observe"]:
         differing = sorted(
-            key for key in results["modern"]
-            if results["unset"][key] != results["modern"][key]
+            key for key in results["observe"]
+            if results["unset"][key] != results["observe"][key]
         )
         failures.append(
-            "unset arm diverged from the explicit modern arm: " + ", ".join(
-                f"{key} {results['unset'][key]} vs {results['modern'][key]}"
+            "unset arm diverged from the explicit observe arm: " + ", ".join(
+                f"{key} {results['unset'][key]} vs {results['observe'][key]}"
                 for key in differing
             )
         )

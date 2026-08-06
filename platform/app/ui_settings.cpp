@@ -298,6 +298,13 @@ const Option kMode[] = {
 const Option kShadows[] = {
     {"full", "Full"}, {"soft", "Soft"}, {"off", "Off"},
 };
+// The two player-facing spellings only. mdkr_video_camera_obstruction_canonical()
+// also takes "legacy" and "center-ray" so the MDKR_CAMERA_OBSTRUCTION diagnostic
+// seam keeps working, but those are A/B arms, not states to offer a player.
+const Option kCameraObstruction[] = {
+    {"observe", "Authored (original camera)"},
+    {"modern", "Keep out of walls"},
+};
 const Option kWindowMode[] = {
     {"windowed", "Windowed"},
     {"fullscreen", "Fullscreen (borderless)"},
@@ -340,6 +347,8 @@ bool optionsFor(MdkrVideoKey k, Options &out) {
             out = {kMotionSmoothing, 2}; return true;
         case MDKR_VIDEO_MODE:               out = {kMode, 3}; return true;
         case MDKR_VIDEO_WORLD_SHADOWS:      out = {kShadows, 3}; return true;
+        case MDKR_VIDEO_CAMERA_OBSTRUCTION:
+            out = {kCameraObstruction, 2}; return true;
         case MDKR_WINDOW_MODE:              out = {kWindowMode, 2}; return true;
         case MDKR_INPUT_RUMBLE_PROFILE:     out = {kRumbleProfile, 3}; return true;
         default: return false;

@@ -334,6 +334,26 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "Input.ControllerRightStickRight", "MDKR_CONTROLLER_RIGHT_STICK_RIGHT",
         "Right stick right"),
 #undef CONTROLLER_BINDING_SCHEMA
+    /*
+     * SCOPE_RESTART because game/src/camera_obstruction_runtime.c resolves
+     * MDKR_CAMERA_OBSTRUCTION into a policy at boot and never re-reads it; the
+     * launcher exports the resolved value onto that same variable before engine
+     * entry (platform/app/engine_boot.cpp), so a value set here and a value set
+     * in the environment reach the runtime through one seam.
+     */
+    [MDKR_VIDEO_CAMERA_OBSTRUCTION] = {
+        "Camera.Obstruction", "MDKR_CAMERA_OBSTRUCTION",
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
+        "Camera obstruction",
+        "Authored is the camera the game writes, unchanged. Keep out of walls "
+        "pulls it in front of walls, doors, and other solid geometry that "
+        "would come between it and your racer. Only the picture moves: "
+        "handling, results, ghosts, and saves are identical either way. "
+        "Requires a restart because the camera runtime reads this once at "
+        "startup. In a config file or the environment the two values are "
+        "observe and modern.",
+        MDKR_VIDEO_CAT_PRESENTATION
+    },
 };
 
 const char *mdkr_video_category_name(MdkrVideoCategory category) {
@@ -455,6 +475,7 @@ static const float s_preset[MDKR_VIDEO_KEY_COUNT][3] = {
     [MDKR_VIDEO_MOTION_SMOOTHING] = {  0.0f,     0.0f,       0.0f }, /* string; see below */
     [MDKR_VIDEO_MODE]         = {       0.0f,     0.0f,       0.0f }, /* string; see below */
     [MDKR_VIDEO_WORLD_SHADOWS] = {      0.0f,     0.0f,       0.0f }, /* string; see below */
+    [MDKR_VIDEO_CAMERA_OBSTRUCTION] = {  0.0f,     0.0f,       0.0f }, /* string; see below */
     [MDKR_AUDIO_MASTER_VOLUME] = {    100.0f,   100.0f,     100.0f },
     [MDKR_AUDIO_MUSIC_VOLUME] = {     100.0f,   100.0f,     100.0f },
     [MDKR_AUDIO_EFFECTS_VOLUME] = {   100.0f,   100.0f,     100.0f },
@@ -512,6 +533,16 @@ static const char *const s_preset_text[MDKR_VIDEO_KEY_COUNT][3] = {
      * defaulting it there.
      */
     [MDKR_VIDEO_WORLD_SHADOWS] = {    "off",      "off",       "full" },
+    /*
+     * Never pinned by any preset, for the FrameLimit/MotionSmoothing reason
+     * rather than the Audio one: this is presentation, so it belongs in the
+     * preset table and is subject to Pure's read-only rule, but it is an
+     * opt-in correction to the authored camera rather than an art-direction
+     * choice, and no mode a player picks may switch it on or off behind them.
+     * mdkr_video_config_defaults() seeds "observe" for all three; a resolved
+     * value survives every preset switch untouched.
+     */
+    [MDKR_VIDEO_CAMERA_OBSTRUCTION] = { NULL, NULL, NULL },
 };
 
 void mdkr_video_config_defaults(MdkrVideoConfig *config) {
@@ -554,6 +585,15 @@ void mdkr_video_config_defaults(MdkrVideoConfig *config) {
         config->values[MDKR_VIDEO_MOTION_SMOOTHING].text,
         sizeof(config->values[MDKR_VIDEO_MOTION_SMOOTHING].text),
         "%s", "off");
+    /*
+     * The authored camera is the default in every mode. Correcting it is a
+     * deliberate choice a player makes once, not a property of the
+     * presentation preset they happen to be in.
+     */
+    snprintf(
+        config->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
+        sizeof(config->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text),
+        "%s", "observe");
 
     /* Window/input choices are player comfort, not presentation-mode state.
      * These defaults exactly preserve the pre-remapping SDL behavior, including
@@ -718,6 +758,38 @@ const char *mdkr_video_world_shadows_canonical(const char *value) {
     return NULL;
 }
 
+/*
+ * Two of these four words are a player's choice and two are diagnostics.
+ * "observe" and "modern" are what the settings UI offers and what the ini and
+ * the options screen ever show. "legacy" and "center-ray" are arms of the
+ * MDKR_CAMERA_OBSTRUCTION seam this key inherits: an A/B gate that sets the
+ * environment must keep resolving, so they are accepted and returned verbatim
+ * rather than folded into either player-facing state, which would make the
+ * config claim a policy the camera runtime is not running. Returns NULL for
+ * anything unrecognised, including the empty string -- unlike the world-shadow
+ * seam, an empty MDKR_CAMERA_OBSTRUCTION means "unset" to the runtime, and
+ * spelling that as a stored value would invent a state the runtime has no
+ * word for.
+ */
+const char *mdkr_video_camera_obstruction_canonical(const char *value) {
+    if (value == NULL) {
+        return NULL;
+    }
+    if (mdkr_video_ci_equal(value, "observe")) {
+        return "observe";
+    }
+    if (mdkr_video_ci_equal(value, "modern")) {
+        return "modern";
+    }
+    if (mdkr_video_ci_equal(value, "legacy")) {
+        return "legacy";
+    }
+    if (mdkr_video_ci_equal(value, "center-ray")) {
+        return "center-ray";
+    }
+    return NULL;
+}
+
 static int mdkr_video_parse_number(const char *value, float *out) {
     char *end;
     float parsed;
@@ -792,6 +864,16 @@ int mdkr_video_config_set(MdkrVideoConfig *config,
         }
         if (key == MDKR_VIDEO_WORLD_SHADOWS) {
             const char *canonical = mdkr_video_world_shadows_canonical(value);
+            if (canonical == NULL) {
+                return 0;
+            }
+            snprintf(slot->text, sizeof(slot->text), "%s", canonical);
+            slot->source = source;
+            return 1;
+        }
+        if (key == MDKR_VIDEO_CAMERA_OBSTRUCTION) {
+            const char *canonical =
+                mdkr_video_camera_obstruction_canonical(value);
             if (canonical == NULL) {
                 return 0;
             }

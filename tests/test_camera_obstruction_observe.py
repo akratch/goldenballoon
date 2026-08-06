@@ -127,20 +127,29 @@ def main() -> int:
     ):
         failures += require(needle in runtime, f"missing OBSERVE invariant: {needle}")
 
-    # Shipped policy default. Correction is permanent, so an unset or empty
-    # MDKR_CAMERA_OBSTRUCTION must resolve to MODERN, every named arm must keep
-    # working as a diagnostic opt-out, and an unrecognised value must still fail
-    # safe to OBSERVE -- a typo may neither silently correct nor silently select
-    # the known-unsafe LEGACY arm. Scoped to the function body so a stray mention
-    # of an arm name elsewhere in the file cannot satisfy it.
+    # Shipped policy default. Correction is an opt-in launcher setting
+    # (Camera.Obstruction), so an unset or empty MDKR_CAMERA_OBSTRUCTION must
+    # resolve to OBSERVE -- the authored camera -- every named arm must keep
+    # working, and an unrecognised value must fail safe to OBSERVE as well: a
+    # typo may neither silently correct nor silently select the known-unsafe
+    # LEGACY arm. Scoped to the function body so a stray mention of an arm name
+    # elsewhere in the file cannot satisfy it.
     policy = strip_comments(
         function_body(runtime, "camera_obstruction_runtime_policy"))
     failures += require(
         re.search(
-            r"value\s*==\s*NULL[^;{]*\{\s*return\s+MDKR_CAMERA_RUNTIME_MODERN\s*;",
+            r"value\s*==\s*NULL[^;{]*\{\s*return\s+MDKR_CAMERA_RUNTIME_OBSERVE\s*;",
             policy,
         ) is not None,
-        "an unset MDKR_CAMERA_OBSTRUCTION must resolve to MODERN",
+        "an unset MDKR_CAMERA_OBSTRUCTION must resolve to OBSERVE",
+    )
+    failures += require(
+        re.search(
+            r'value\s*==\s*NULL[^;{]*strcmp\(value,\s*"observe"\)[^;{]*\{\s*'
+            r"return\s+MDKR_CAMERA_RUNTIME_OBSERVE\s*;",
+            policy,
+        ) is not None,
+        "the unset arm must be the observe arm, not a second path to it",
     )
     failures += require(
         re.search(
@@ -148,9 +157,9 @@ def main() -> int:
         ) is not None,
         "an unrecognised MDKR_CAMERA_OBSTRUCTION must fail safe to OBSERVE",
     )
-    # The fallback now changes behaviour relative to the default, so it may not
-    # be silent -- and it may not repeat, because the policy resolves per slot
-    # per fixed tick.
+    # A dropped request is indistinguishable from an honoured one once both
+    # resolve to OBSERVE, so the fallback may not be silent -- and it may not
+    # repeat, because the policy resolves per slot per fixed tick.
     failures += require(
         "sCameraObstructionPolicyFallbackReported = TRUE;" in policy and
         "falling back to observe" in runtime,
