@@ -247,6 +247,164 @@ static uint64_t fnv1a64(uint64_t hash, const void *data, size_t size) {
     ((h) = fnv1a64((h), &(obj)->member, sizeof((obj)->member)))
 
 /* ---------------------------------------------------------------------------
+ * READABLE FIELD ALIASES
+ * ---------------------------------------------------------------------------
+ * The field streams below are the authoritative-state contract, and most of
+ * Object_Racer is still spelled `unkNN` by the decomp — an offset, not a name.
+ * A stream of ~90 consecutive `unkNN` lines is unreviewable: nobody can tell
+ * whether a field belongs in the hash, or notice one going missing.
+ *
+ * These aliases expand to the raw member token, so `SIM_HASH_FIELD(h, racer,
+ * RACER_STUCK_TIMER)` is textually identical to the old `unk213` form after
+ * preprocessing. THIS LAYER CANNOT CHANGE THE HASH: it renames nothing in the
+ * struct, reorders nothing, and adds and removes no field. Byte-identity of the
+ * v3 stream was measured before and after, not assumed.
+ *
+ * Meanings are derived from how game/src actually reads and writes each field,
+ * and the confidence is recorded honestly:
+ *
+ *   plain name          the usage is unambiguous (a value set to N and counted
+ *                       down while gating an effect is that effect's timer)
+ *   "~" in the comment  suggestive but not conclusive — the name is the best
+ *                       available reading, not an established fact
+ *   *_UNIDENTIFIED_*    no usable evidence: the field is written and read
+ *                       nowhere in this tree, or only copied around. These are
+ *                       named by type and offset ON PURPOSE. Do not replace one
+ *                       with a plausible-sounding guess; upstream has not named
+ *                       them either, and a wrong name here is worse than none.
+ *
+ * The aliases are #undef'd after the last stream that uses them, so they cannot
+ * leak into anything else in this file.
+ * ------------------------------------------------------------------------- */
+
+/* Object (shared prefix + v3 additions). */
+#define OBJ_SCALE_VELOCITY                   unk28  /* Particle calls it scaleVelocity */
+#define OBJ_CULL_RADIUS                      unk34  /* header field 0x50 * trans.scale;
+                                                     * added as the radius term in the
+                                                     * frustum plane test, and `> 1000`
+                                                     * is the always-visible escape */
+#define OBJ_UNIDENTIFIED_S8_38               unk38  /* only touched by an UNUSED function */
+
+/* Behaviour-selected ObjProperties arms. */
+#define OBJPROP_DISTANCE_UNIDENTIFIED_04     properties.distance.unk4
+#define OBJPROP_PROJECTILE_AGE_TIMER         properties.projectile.unk4      /* += updateRate; drives the scale ramp */
+#define OBJPROP_WIZPIGSHIP_UNIDENTIFIED_00   properties.wizpigship.unk0
+#define OBJPROP_ANIMOBJ_RACER_ID             properties.animatedObj.unk0     /* read as racerID */
+#define OBJPROP_ANIMOBJ_TRIGGER_RESULT       properties.animatedObj.unk4     /* ~ func_8001F460 result, tested == 0 */
+#define OBJPROP_BRIDGE_RAMP_TIMER            properties.bridgeWhaleRamp.unk0 /* entry->unkD * 2, counted down */
+#define OBJPROP_RAMP_SWITCH_BRIDGE_ID        properties.rampSwitch.unk0      /* passed to start_bridge_timer() */
+#define OBJPROP_BUBBLER_PARTICLE_DENSITY     properties.bubbler.unk0         /* entry->particleDensity vs rand_range */
+
+/* Camera trailing bytes. Hashed because they sit inside the authoritative
+ * camera record, but nothing in this tree reads or writes them. */
+#define CAM_UNIDENTIFIED_U8_3C               unk3C
+#define CAM_UNIDENTIFIED_U8_3D               unk3D
+#define CAM_UNIDENTIFIED_U8_3E               unk3E
+#define CAM_UNIDENTIFIED_U8_3F               unk3F
+
+/* ObjectInteraction. */
+#define OBJ_INTERACT_KIND                    unk11  /* 0..4; selects the collision response */
+#define OBJ_INTERACT_HEIGHT_MIN              unk16  /* ~ with _MAX, the vertical band tested
+                                                     * as `y < unk16 * 10 || unk17 * 10 < y`
+                                                     * when the kind is 1 */
+#define OBJ_INTERACT_HEIGHT_MAX              unk17
+
+/* Settings (save/progression). */
+#define SETTINGS_UNIDENTIFIED_PROGRESS_WORD_A unkA   /* ~ cleared beside keys/bosses/trophies; never read */
+#define SETTINGS_BEST_LAP_OWNER               unk115 /* [0] = racerIndex, [1] = lap index, of the best lap */
+
+/* Object_Racer. Offsets are the decomp's, i.e. the byte offset in the struct. */
+#define RACER_UNIDENTIFIED_S32_04            unk4
+#define RACER_LAST_VOICE_SOUND_ID            unk2A  /* gates interrupting the masked voice line */
+#define RACER_VEHICLE_PITCH                  unk34  /* local-Y of world velocity; suspension reaction */
+#define RACER_AI_SPLINE_ANCHOR_X             unk68  /* AI's tracked point along the checkpoint spline */
+#define RACER_AI_SPLINE_ANCHOR_Y             unk6C
+#define RACER_AI_SPLINE_ANCHOR_Z             unk70
+#define RACER_CAMERA_Y_FOLLOW_DIVISOR        unk74  /* ~ 8.0 on a trick, decays to 2.0; divides camera Y catch-up */
+#define RACER_DRIFT_VELOCITY_X               unk84  /* decomp comment calls unk84/unk88 "drift" */
+#define RACER_DRIFT_VELOCITY_Z               unk88
+#define RACER_UNIDENTIFIED_F32_98            unk98
+#define RACER_AI_SPLINE_TRAVEL_RATE          unkAC  /* self-tunes to the AI's real speed */
+#define RACER_WHEEL_SPIN_PHASE               unkB0  /* wraps in [0,5); steps wheel modelIndex */
+#define RACER_UNIDENTIFIED_F32_BC            unkBC
+#define RACER_BUOYANCY_LIFT_RAMP             unkC4  /* eases to 0.75; softens lift on water re-entry */
+#define RACER_CAMERA_LATERAL_OFFSET          unkC8  /* smoothed sideways camera offset */
+#define RACER_UNIDENTIFIED_F32_CC            unkCC
+#define RACER_TUMBLE_Y_OFFSET_DECAY          unkD0  /* ~ decays to 0; added to the tumble Y offset */
+#define RACER_FALL_IMPACT_MAGNITUDE          unkD4  /* ~ -y_velocity * 7 clamped [0,35]; no reader found */
+#define RACER_COLLISION_PROBE_POINTS         unkD8  /* f32[12] == 4 x Vec3f wheel probes */
+#define RACER_DRIFT_LEAN_ANGLE               unk10C /* eases to drift_direction << 13 */
+#define RACER_SAVED_CAR_STEER_VEL            unk110 /* per-racer save/restore of gCurrentCarSteerVel */
+#define RACER_UNIDENTIFIED_S32_114           unk114
+#define RACER_WALL_RECOIL_VEL_X              unk11C /* decomp comment: "wall recoil at half weight" */
+#define RACER_WALL_RECOIL_VEL_Z              unk120
+#define RACER_AI_RUBBERBAND_SPEED_BONUS      unk124 /* substitutes for `bananas` on AI racers */
+#define RACER_UNIDENTIFIED_S32_13C           unk13C
+#define RACER_TARGET_X_ROTATION_OFFSET       unk166 /* unsmoothed target; delta vs x_rotation_offset is a Y offset */
+#define RACER_VELOCITY_HEADING_ANGLE         unk168 /* arctan2(xVel,zVel)+0x8000; steers cameraYaw */
+#define RACER_DRIFT_COUNTERSTEER_WOBBLE      unk16E /* > 80 fails the drift into a spinout */
+#define RACER_WEAPON_ICON_SPIN_GATE          unk170 /* ~ gates the HUD weapon-icon spin; no writer found */
+#define RACER_UNIDENTIFIED_S16_176           unk176
+#define RACER_UNIDENTIFIED_U8_186            unk186
+#define RACER_PENDING_BANANA_DROP_COUNT      unk188 /* the `number` argument to drop_bananas() */
+#define RACER_STEER_WOBBLE_TIMER             unk18A /* re-rolls the random steer jitter as it counts down */
+#define RACER_ATTACK_REACTION_TIMER          unk18C /* ~ set to 360 when struck; no reader gates on it */
+#define RACER_STEER_ROTATION_RECOVERY_TARGET unk198 /* heading latched at the vehicle-mode trigger */
+#define RACER_SPECIAL_VEHICLE_MODE_TIMER     unk19A /* > 600 restores vehicleIDPrev */
+#define RACER_WALL_COLLISION_SPIN_ANGLE      unk19C /* latched +/-2048 spin kick after a wall crash */
+#define RACER_SPIN_CAMERA_YAW_RECOIL         unk19E /* decaying camera-yaw kick after a spin */
+#define RACER_CHECKPOINT_PROGRESS_TIEBREAK   unk1A8 /* breaks race-position ties on equal checkpoints */
+#define RACER_POSITION_STABLE_FRAMES         unk1B0 /* debounce before racerOrder becomes racePosition */
+#define RACER_POSITION_CHANGE_TIMER          unk1B2 /* ~ armed to 10 on a position change; no reader */
+#define RACER_UNIDENTIFIED_S32_1B4           unk1B4
+#define RACER_UNIDENTIFIED_S16_1B8           unk1B8
+#define RACER_AI_LINE_OFFSET_X               unk1BA /* lateral offset from the racing line; OOB check at +/-400 */
+#define RACER_AI_LINE_OFFSET_Y               unk1BC
+#define RACER_AI_TARGET_YAW                  unk1BE
+#define RACER_AI_TARGET_PITCH                unk1C0
+#define RACER_AI_PREV_TARGET_YAW             unk1C2 /* previous frame's value; delta drives gCurrentStickX */
+#define RACER_AI_PREV_TARGET_PITCH           unk1C4 /* previous frame's value; delta drives gCurrentStickY */
+#define RACER_AI_ACTION_TIMER                unk1C6 /* how long the AI stays committed to a decision */
+#define RACER_AI_ATTACK_ACTION_STATE         unk1C9 /* item/attack decision state; gates Z_TRIG */
+#define RACER_AI_LINE_INDEX                  unk1CA /* selects among alternate AI racing lines */
+#define RACER_SPAWN_VEHICLE_CLASS            unk1CB /* ~ spawn vehicle clamped to CAR..PLANE; no reader found */
+#define RACER_AI_GOAL_OR_SAVED_ANIM          unk1CD /* ~ reused: egg-challenge AI goal, and saved animationID
+                                                     * on the lean-bike vehicles */
+#define RACER_AI_TARGET_NODE_OR_COMMAND      unk1CE /* ~ AI node id (0xFF = none), also read as & 0x40 / & 0x80 */
+#define RACER_STEER_JITTER_OFFSET            unk1D1 /* rand_range added straight into gCurrentStickX */
+#define RACER_CRASH_SPIN_TIMER               unk1D2 /* set to 7 on a hard hit; locks the spin direction */
+#define RACER_TRICK_ROTATION_FLAG            unk1D4 /* trick rotation passed zero; allows the landing */
+#define RACER_TRICK_HOLD_TIMER               unk1D5 /* extends the trick while R is held */
+#define RACER_POST_FINISH_COUNTER            unk1D9 /* ~ counts to 60 after raceFinished; no reader */
+#define RACER_UNIDENTIFIED_U8_1DA            unk1DA
+#define RACER_WHEEL_GROUND_MASK              unk1E3 /* one bit per wheel; counted into groundedWheels */
+#define RACER_OBJECT_COLLISION_FLAGS         unk1E4 /* from collision_objectmodel(); gates pitch levelling */
+#define RACER_STEER_ANGLE_SECONDARY          unk1E8 /* ~ eased stick-Y, also the reverse-gear steer fallback */
+#define RACER_UNIDENTIFIED_S8_1E9            unk1E9
+#define RACER_UNIDENTIFIED_S8_1EA            unk1EA
+#define RACER_SKID_DURATION_COUNTER          unk1EE /* ~ counts up while sliding, capped at 15; no reader */
+#define RACER_WATER_PATH_RECOVERY_FLAG       unk1F0 /* steering back to the path after bogging in water */
+#define RACER_SPIN_PHASE                     unk1F1 /* 0 none, 1 airborne, 2 grounded */
+#define RACER_MISC_ANIM_STATE                unk1F2 /* 0 slide, 3 boost, 4 crash, 5 horn, 6 reverse */
+#define RACER_MISC_ANIM_FLAGS                unk1F3 /* 0x4 boost, 0x8 crash, 0x80 playback direction */
+#define RACER_CRASH_SOUND_COOLDOWN           unk1F6 /* reset to 30; gates the crash sound + anim */
+#define RACER_THROTTLE_HOLD_TIMER            unk1FB /* 60 while accelerating; sustains slide fx after release */
+#define RACER_EFFECT_ZONE_TYPE               unk1FE /* effect-box type, -1 when in none */
+#define RACER_EFFECT_ZONE_STRENGTH           unk1FF /* that effect box's magnitude */
+#define RACER_ONSCREEN_AI_ACTIVE_TIMER       unk201 /* 30 while recently rendered; gates AI + particles */
+#define RACER_LIGHT_DIM_JITTER_TIMER         unk206 /* ~ dims lighting and feeds the steer wobble; no writer */
+#define RACER_UNIDENTIFIED_S8_208            unk208
+#define RACER_AI_ITEM_DECISION_FLAGS         unk209 /* 0x1 picked up, 0x2 rolled, 0x4 release throttle */
+#define RACER_PREV_RACE_ORDER_INDEX          unk20B /* previous order index; drives overtake voice lines */
+#define RACER_UNIDENTIFIED_U8_20D            unk20D
+#define RACER_EGG_THROW_DEBOUNCE             unk211 /* suppresses re-trigger of Z_TRIG after releasing an egg */
+#define RACER_STUCK_TIMER                    unk213 /* AI stall accumulator; > 60 starts recovery */
+#define RACER_STUCK_REVERSE_TIMER            unk214 /* 60 ticks of forced reverse input */
+#define RACER_STUCK_RECOVERY_COOLDOWN        unk215 /* 120; only decremented while actually driving */
+#define RACER_UNIDENTIFIED_U8_216            unk216
+#define RACER_UNIDENTIFIED_U8_217            unk217
+
+/* ---------------------------------------------------------------------------
  * PRESENTATION-OBJECT EXCLUSION
  * ---------------------------------------------------------------------------
  * gObjPtrList is not purely authoritative. A port feature may compose an
@@ -392,7 +550,7 @@ static uint64_t sim_hash_compute_v2(uint64_t hash, Object **objects,
         SIM_HASH_FIELD(hash, object, x_velocity);
         SIM_HASH_FIELD(hash, object, y_velocity);
         SIM_HASH_FIELD(hash, object, z_velocity);
-        SIM_HASH_FIELD(hash, object, unk28);
+        SIM_HASH_FIELD(hash, object, OBJ_SCALE_VELOCITY);
         SIM_HASH_FIELD(hash, object, headerType);
         SIM_HASH_FIELD(hash, object, segmentID);
 
@@ -443,7 +601,7 @@ static uint64_t sim_hash_properties_v3(uint64_t hash, const Object *object) {
         case BHV_FOG_CHANGER:
         case BHV_WEATHER:
             SIM_HASH_FIELD(hash, object, properties.distance.radius);
-            SIM_HASH_FIELD(hash, object, properties.distance.unk4);
+            SIM_HASH_FIELD(hash, object, OBJPROP_DISTANCE_UNIDENTIFIED_04);
             break;
         case BHV_TORCH_MIST:
             SIM_HASH_FIELD(hash, object, properties.torchMist.speed);
@@ -460,7 +618,7 @@ static uint64_t sim_hash_properties_v3(uint64_t hash, const Object *object) {
             break;
         case BHV_WEAPON_2:
             SIM_HASH_FIELD(hash, object, properties.projectile.timer);
-            SIM_HASH_FIELD(hash, object, properties.projectile.unk4);
+            SIM_HASH_FIELD(hash, object, OBJPROP_PROJECTILE_AGE_TIMER);
             break;
         case BHV_BUOY_PIRATE_SHIP:
         case BHV_LOG:
@@ -519,7 +677,7 @@ static uint64_t sim_hash_properties_v3(uint64_t hash, const Object *object) {
             SIM_HASH_FIELD(hash, object, properties.animation.behaviourID);
             break;
         case BHV_WIZPIG_SHIP:
-            SIM_HASH_FIELD(hash, object, properties.wizpigship.unk0);
+            SIM_HASH_FIELD(hash, object, OBJPROP_WIZPIGSHIP_UNIDENTIFIED_00);
             SIM_HASH_FIELD(hash, object, properties.wizpigship.timer);
             break;
         case BHV_DINO_WHALE:
@@ -542,8 +700,8 @@ static uint64_t sim_hash_properties_v3(uint64_t hash, const Object *object) {
         case BHV_DOOR_OPENER:
         case BHV_PIG_ROCKETEER:
         case BHV_WIZPIG_GHOSTS:
-            SIM_HASH_FIELD(hash, object, properties.animatedObj.unk0);
-            SIM_HASH_FIELD(hash, object, properties.animatedObj.unk4);
+            SIM_HASH_FIELD(hash, object, OBJPROP_ANIMOBJ_RACER_ID);
+            SIM_HASH_FIELD(hash, object, OBJPROP_ANIMOBJ_TRIGGER_RESULT);
             break;
         case BHV_INFO_POINT:
             SIM_HASH_FIELD(hash, object, properties.infoPoint.radius);
@@ -562,10 +720,10 @@ static uint64_t sim_hash_properties_v3(uint64_t hash, const Object *object) {
             SIM_HASH_FIELD(hash, object, properties.door.openAngle);
             break;
         case BHV_BRIDGE_WHALE_RAMP:
-            SIM_HASH_FIELD(hash, object, properties.bridgeWhaleRamp.unk0);
+            SIM_HASH_FIELD(hash, object, OBJPROP_BRIDGE_RAMP_TIMER);
             break;
         case BHV_RAMP_SWITCH:
-            SIM_HASH_FIELD(hash, object, properties.rampSwitch.unk0);
+            SIM_HASH_FIELD(hash, object, OBJPROP_RAMP_SWITCH_BRIDGE_ID);
             break;
         case BHV_SKY_CONTROL:
             SIM_HASH_FIELD(hash, object, properties.skyControl.setting);
@@ -606,7 +764,7 @@ static uint64_t sim_hash_properties_v3(uint64_t hash, const Object *object) {
             SIM_HASH_FIELD(hash, object, properties.timeTrial.timestamp);
             break;
         case BHV_BUBBLER:
-            SIM_HASH_FIELD(hash, object, properties.bubbler.unk0);
+            SIM_HASH_FIELD(hash, object, OBJPROP_BUBBLER_PARTICLE_DENSITY);
             break;
         case BHV_BOOST:
             SIM_HASH_FIELD(hash, object, properties.boost.indexes);
@@ -623,14 +781,14 @@ static uint64_t sim_hash_racer_v3(uint64_t hash, const Object_Racer *racer) {
     SIM_HASH_FIELD(hash, racer, playerIndex);
     SIM_HASH_FIELD(hash, racer, racerIndex);
     SIM_HASH_FIELD(hash, racer, characterId);
-    SIM_HASH_FIELD(hash, racer, unk4);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_S32_04);
     SIM_HASH_FIELD(hash, racer, forwardVel);
     SIM_HASH_FIELD(hash, racer, animationSpeed);
     SIM_HASH_FIELD(hash, racer, lastSoundID);
-    SIM_HASH_FIELD(hash, racer, unk2A);
+    SIM_HASH_FIELD(hash, racer, RACER_LAST_VOICE_SOUND_ID);
     SIM_HASH_FIELD(hash, racer, velocity);
     SIM_HASH_FIELD(hash, racer, lateral_velocity);
-    SIM_HASH_FIELD(hash, racer, unk34);
+    SIM_HASH_FIELD(hash, racer, RACER_VEHICLE_PITCH);
     SIM_HASH_FIELD(hash, racer, ox1);
     SIM_HASH_FIELD(hash, racer, oy1);
     SIM_HASH_FIELD(hash, racer, oz1);
@@ -643,65 +801,65 @@ static uint64_t sim_hash_racer_v3(uint64_t hash, const Object_Racer *racer) {
     SIM_HASH_FIELD(hash, racer, prev_x_position);
     SIM_HASH_FIELD(hash, racer, prev_y_position);
     SIM_HASH_FIELD(hash, racer, prev_z_position);
-    SIM_HASH_FIELD(hash, racer, unk68);
-    SIM_HASH_FIELD(hash, racer, unk6C);
-    SIM_HASH_FIELD(hash, racer, unk70);
-    SIM_HASH_FIELD(hash, racer, unk74);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_SPLINE_ANCHOR_X);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_SPLINE_ANCHOR_Y);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_SPLINE_ANCHOR_Z);
+    SIM_HASH_FIELD(hash, racer, RACER_CAMERA_Y_FOLLOW_DIVISOR);
     SIM_HASH_FIELD(hash, racer, carBobX);
     SIM_HASH_FIELD(hash, racer, carBobY);
     SIM_HASH_FIELD(hash, racer, carBobZ);
-    SIM_HASH_FIELD(hash, racer, unk84);
-    SIM_HASH_FIELD(hash, racer, unk88);
+    SIM_HASH_FIELD(hash, racer, RACER_DRIFT_VELOCITY_X);
+    SIM_HASH_FIELD(hash, racer, RACER_DRIFT_VELOCITY_Z);
     SIM_HASH_FIELD(hash, racer, stretch_height);
     SIM_HASH_FIELD(hash, racer, stretch_height_cap);
     SIM_HASH_FIELD(hash, racer, camera_zoom);
-    SIM_HASH_FIELD(hash, racer, unk98);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_F32_98);
     SIM_HASH_FIELD(hash, racer, pitch);
     SIM_HASH_FIELD(hash, racer, roll);
     SIM_HASH_FIELD(hash, racer, yaw);
     SIM_HASH_FIELD(hash, racer, checkpoint_distance);
-    SIM_HASH_FIELD(hash, racer, unkAC);
-    SIM_HASH_FIELD(hash, racer, unkB0);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_SPLINE_TRAVEL_RATE);
+    SIM_HASH_FIELD(hash, racer, RACER_WHEEL_SPIN_PHASE);
     SIM_HASH_FIELD(hash, racer, throttle);
     SIM_HASH_FIELD(hash, racer, brake);
-    SIM_HASH_FIELD(hash, racer, unkBC);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_F32_BC);
     SIM_HASH_FIELD(hash, racer, buoyancy);
-    SIM_HASH_FIELD(hash, racer, unkC4);
-    SIM_HASH_FIELD(hash, racer, unkC8);
-    SIM_HASH_FIELD(hash, racer, unkCC);
-    SIM_HASH_FIELD(hash, racer, unkD0);
-    SIM_HASH_FIELD(hash, racer, unkD4);
-    SIM_HASH_FIELD(hash, racer, unkD8);
-    SIM_HASH_FIELD(hash, racer, unk10C);
-    SIM_HASH_FIELD(hash, racer, unk110);
-    SIM_HASH_FIELD(hash, racer, unk114);
-    SIM_HASH_FIELD(hash, racer, unk11C);
-    SIM_HASH_FIELD(hash, racer, unk120);
-    SIM_HASH_FIELD(hash, racer, unk124);
+    SIM_HASH_FIELD(hash, racer, RACER_BUOYANCY_LIFT_RAMP);
+    SIM_HASH_FIELD(hash, racer, RACER_CAMERA_LATERAL_OFFSET);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_F32_CC);
+    SIM_HASH_FIELD(hash, racer, RACER_TUMBLE_Y_OFFSET_DECAY);
+    SIM_HASH_FIELD(hash, racer, RACER_FALL_IMPACT_MAGNITUDE);
+    SIM_HASH_FIELD(hash, racer, RACER_COLLISION_PROBE_POINTS);
+    SIM_HASH_FIELD(hash, racer, RACER_DRIFT_LEAN_ANGLE);
+    SIM_HASH_FIELD(hash, racer, RACER_SAVED_CAR_STEER_VEL);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_S32_114);
+    SIM_HASH_FIELD(hash, racer, RACER_WALL_RECOIL_VEL_X);
+    SIM_HASH_FIELD(hash, racer, RACER_WALL_RECOIL_VEL_Z);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_RUBBERBAND_SPEED_BONUS);
     SIM_HASH_FIELD(hash, racer, lap_times);
-    SIM_HASH_FIELD(hash, racer, unk13C);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_S32_13C);
     SIM_HASH_FIELD(hash, racer, y_rotation_offset);
     SIM_HASH_FIELD(hash, racer, x_rotation_offset);
     SIM_HASH_FIELD(hash, racer, z_rotation_offset);
-    SIM_HASH_FIELD(hash, racer, unk166);
-    SIM_HASH_FIELD(hash, racer, unk168);
+    SIM_HASH_FIELD(hash, racer, RACER_TARGET_X_ROTATION_OFFSET);
+    SIM_HASH_FIELD(hash, racer, RACER_VELOCITY_HEADING_ANGLE);
     SIM_HASH_FIELD(hash, racer, headAngle);
     SIM_HASH_FIELD(hash, racer, headAngleTarget);
-    SIM_HASH_FIELD(hash, racer, unk16E);
-    SIM_HASH_FIELD(hash, racer, unk170);
+    SIM_HASH_FIELD(hash, racer, RACER_DRIFT_COUNTERSTEER_WOBBLE);
+    SIM_HASH_FIELD(hash, racer, RACER_WEAPON_ICON_SPIN_GATE);
     SIM_HASH_FIELD(hash, racer, balloon_type);
     SIM_HASH_FIELD(hash, racer, balloon_quantity);
     SIM_HASH_FIELD(hash, racer, balloon_level);
     SIM_HASH_FIELD(hash, racer, magnetTimer);
-    SIM_HASH_FIELD(hash, racer, unk176);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_S16_176);
     SIM_HASH_FIELD(hash, racer, magnetModelID);
     SIM_HASH_FIELD(hash, racer, bananas);
-    SIM_HASH_FIELD(hash, racer, unk186);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_U8_186);
     SIM_HASH_FIELD(hash, racer, attackType);
-    SIM_HASH_FIELD(hash, racer, unk188);
+    SIM_HASH_FIELD(hash, racer, RACER_PENDING_BANANA_DROP_COUNT);
     SIM_HASH_FIELD(hash, racer, shieldType);
-    SIM_HASH_FIELD(hash, racer, unk18A);
-    SIM_HASH_FIELD(hash, racer, unk18C);
+    SIM_HASH_FIELD(hash, racer, RACER_STEER_WOBBLE_TIMER);
+    SIM_HASH_FIELD(hash, racer, RACER_ATTACK_REACTION_TIMER);
     SIM_HASH_FIELD(hash, racer, shieldTimer);
     SIM_HASH_FIELD(hash, racer, courseCheckpoint);
     SIM_HASH_FIELD(hash, racer, nextCheckpoint);
@@ -709,106 +867,106 @@ static uint64_t sim_hash_racer_v3(uint64_t hash, const Object_Racer *racer) {
     SIM_HASH_FIELD(hash, racer, countLap);
     SIM_HASH_FIELD(hash, racer, magnetLevel3);
     SIM_HASH_FIELD(hash, racer, cameraYaw);
-    SIM_HASH_FIELD(hash, racer, unk198);
-    SIM_HASH_FIELD(hash, racer, unk19A);
-    SIM_HASH_FIELD(hash, racer, unk19C);
-    SIM_HASH_FIELD(hash, racer, unk19E);
+    SIM_HASH_FIELD(hash, racer, RACER_STEER_ROTATION_RECOVERY_TARGET);
+    SIM_HASH_FIELD(hash, racer, RACER_SPECIAL_VEHICLE_MODE_TIMER);
+    SIM_HASH_FIELD(hash, racer, RACER_WALL_COLLISION_SPIN_ANGLE);
+    SIM_HASH_FIELD(hash, racer, RACER_SPIN_CAMERA_YAW_RECOIL);
     SIM_HASH_FIELD(hash, racer, steerVisualRotation);
     SIM_HASH_FIELD(hash, racer, y_rotation_vel);
     SIM_HASH_FIELD(hash, racer, x_rotation_vel);
     SIM_HASH_FIELD(hash, racer, z_rotation_vel);
-    SIM_HASH_FIELD(hash, racer, unk1A8);
+    SIM_HASH_FIELD(hash, racer, RACER_CHECKPOINT_PROGRESS_TIEBREAK);
     SIM_HASH_FIELD(hash, racer, racerOrder);
     SIM_HASH_FIELD(hash, racer, finishPosition);
     SIM_HASH_FIELD(hash, racer, racePosition);
-    SIM_HASH_FIELD(hash, racer, unk1B0);
-    SIM_HASH_FIELD(hash, racer, unk1B2);
-    SIM_HASH_FIELD(hash, racer, unk1B4);
-    SIM_HASH_FIELD(hash, racer, unk1B8);
-    SIM_HASH_FIELD(hash, racer, unk1BA);
-    SIM_HASH_FIELD(hash, racer, unk1BC);
-    SIM_HASH_FIELD(hash, racer, unk1BE);
-    SIM_HASH_FIELD(hash, racer, unk1C0);
-    SIM_HASH_FIELD(hash, racer, unk1C2);
-    SIM_HASH_FIELD(hash, racer, unk1C4);
-    SIM_HASH_FIELD(hash, racer, unk1C6);
+    SIM_HASH_FIELD(hash, racer, RACER_POSITION_STABLE_FRAMES);
+    SIM_HASH_FIELD(hash, racer, RACER_POSITION_CHANGE_TIMER);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_S32_1B4);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_S16_1B8);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_LINE_OFFSET_X);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_LINE_OFFSET_Y);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_TARGET_YAW);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_TARGET_PITCH);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_PREV_TARGET_YAW);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_PREV_TARGET_PITCH);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_ACTION_TIMER);
     SIM_HASH_FIELD(hash, racer, isOnAlternateRoute);
-    SIM_HASH_FIELD(hash, racer, unk1C9);
-    SIM_HASH_FIELD(hash, racer, unk1CA);
-    SIM_HASH_FIELD(hash, racer, unk1CB);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_ATTACK_ACTION_STATE);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_LINE_INDEX);
+    SIM_HASH_FIELD(hash, racer, RACER_SPAWN_VEHICLE_CLASS);
     SIM_HASH_FIELD(hash, racer, aiSkill);
-    SIM_HASH_FIELD(hash, racer, unk1CD);
-    SIM_HASH_FIELD(hash, racer, unk1CE);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_GOAL_OR_SAVED_ANIM);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_TARGET_NODE_OR_COMMAND);
     SIM_HASH_FIELD(hash, racer, eggHudCounter);
     SIM_HASH_FIELD(hash, racer, spectateCamID);
-    SIM_HASH_FIELD(hash, racer, unk1D1);
-    SIM_HASH_FIELD(hash, racer, unk1D2);
+    SIM_HASH_FIELD(hash, racer, RACER_STEER_JITTER_OFFSET);
+    SIM_HASH_FIELD(hash, racer, RACER_CRASH_SPIN_TIMER);
     SIM_HASH_FIELD(hash, racer, boostTimer);
-    SIM_HASH_FIELD(hash, racer, unk1D4);
-    SIM_HASH_FIELD(hash, racer, unk1D5);
+    SIM_HASH_FIELD(hash, racer, RACER_TRICK_ROTATION_FLAG);
+    SIM_HASH_FIELD(hash, racer, RACER_TRICK_HOLD_TIMER);
     SIM_HASH_FIELD(hash, racer, vehicleID);
     SIM_HASH_FIELD(hash, racer, vehicleIDPrev);
     SIM_HASH_FIELD(hash, racer, raceFinished);
-    SIM_HASH_FIELD(hash, racer, unk1D9);
-    SIM_HASH_FIELD(hash, racer, unk1DA);
+    SIM_HASH_FIELD(hash, racer, RACER_POST_FINISH_COUNTER);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_U8_1DA);
     SIM_HASH_FIELD(hash, racer, spinout_timer);
     SIM_HASH_FIELD(hash, racer, wheel_surfaces);
     SIM_HASH_FIELD(hash, racer, trickType);
     SIM_HASH_FIELD(hash, racer, steerAngle);
     SIM_HASH_FIELD(hash, racer, groundedWheels);
-    SIM_HASH_FIELD(hash, racer, unk1E3);
-    SIM_HASH_FIELD(hash, racer, unk1E4);
+    SIM_HASH_FIELD(hash, racer, RACER_WHEEL_GROUND_MASK);
+    SIM_HASH_FIELD(hash, racer, RACER_OBJECT_COLLISION_FLAGS);
     SIM_HASH_FIELD(hash, racer, waterTimer);
     SIM_HASH_FIELD(hash, racer, drift_direction);
     SIM_HASH_FIELD(hash, racer, miscAnimCounter);
-    SIM_HASH_FIELD(hash, racer, unk1E8);
-    SIM_HASH_FIELD(hash, racer, unk1E9);
-    SIM_HASH_FIELD(hash, racer, unk1EA);
+    SIM_HASH_FIELD(hash, racer, RACER_STEER_ANGLE_SECONDARY);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_S8_1E9);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_S8_1EA);
     SIM_HASH_FIELD(hash, racer, tapTimerR);
     SIM_HASH_FIELD(hash, racer, tappedR);
     SIM_HASH_FIELD(hash, racer, squish_timer);
-    SIM_HASH_FIELD(hash, racer, unk1EE);
+    SIM_HASH_FIELD(hash, racer, RACER_SKID_DURATION_COUNTER);
     SIM_HASH_FIELD(hash, racer, boost_sound);
-    SIM_HASH_FIELD(hash, racer, unk1F0);
-    SIM_HASH_FIELD(hash, racer, unk1F1);
-    SIM_HASH_FIELD(hash, racer, unk1F2);
-    SIM_HASH_FIELD(hash, racer, unk1F3);
+    SIM_HASH_FIELD(hash, racer, RACER_WATER_PATH_RECOVERY_FLAG);
+    SIM_HASH_FIELD(hash, racer, RACER_SPIN_PHASE);
+    SIM_HASH_FIELD(hash, racer, RACER_MISC_ANIM_STATE);
+    SIM_HASH_FIELD(hash, racer, RACER_MISC_ANIM_FLAGS);
     SIM_HASH_FIELD(hash, racer, startInput);
     SIM_HASH_FIELD(hash, racer, zipperDirCorrection);
-    SIM_HASH_FIELD(hash, racer, unk1F6);
+    SIM_HASH_FIELD(hash, racer, RACER_CRASH_SOUND_COOLDOWN);
     SIM_HASH_FIELD(hash, racer, transparency);
     SIM_HASH_FIELD(hash, racer, indicator_type);
     SIM_HASH_FIELD(hash, racer, indicator_timer);
     SIM_HASH_FIELD(hash, racer, drifting);
-    SIM_HASH_FIELD(hash, racer, unk1FB);
+    SIM_HASH_FIELD(hash, racer, RACER_THROTTLE_HOLD_TIMER);
     SIM_HASH_FIELD(hash, racer, wrongWayCounter);
     SIM_HASH_FIELD(hash, racer, cameraIndex);
-    SIM_HASH_FIELD(hash, racer, unk1FE);
-    SIM_HASH_FIELD(hash, racer, unk1FF);
+    SIM_HASH_FIELD(hash, racer, RACER_EFFECT_ZONE_TYPE);
+    SIM_HASH_FIELD(hash, racer, RACER_EFFECT_ZONE_STRENGTH);
     SIM_HASH_FIELD(hash, racer, transitionTimer);
-    SIM_HASH_FIELD(hash, racer, unk201);
+    SIM_HASH_FIELD(hash, racer, RACER_ONSCREEN_AI_ACTIVE_TIMER);
     SIM_HASH_FIELD(hash, racer, silverCoinCount);
     SIM_HASH_FIELD(hash, racer, boostType);
     SIM_HASH_FIELD(hash, racer, bubbleTrapTimer);
-    SIM_HASH_FIELD(hash, racer, unk206);
-    SIM_HASH_FIELD(hash, racer, unk208);
-    SIM_HASH_FIELD(hash, racer, unk209);
+    SIM_HASH_FIELD(hash, racer, RACER_LIGHT_DIM_JITTER_TIMER);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_S8_208);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_ITEM_DECISION_FLAGS);
     /* lightFlags is the brake/headlight texture state machine. Its only
      * consumers are racer.c's light timer and objects.c's texture-offset
      * selection; the NIGHT bit samples render-computed shading. It is
      * presentation state stored in Object_Racer, not gameplay authority. */
-    SIM_HASH_FIELD(hash, racer, unk20B);
+    SIM_HASH_FIELD(hash, racer, RACER_PREV_RACE_ORDER_INDEX);
     SIM_HASH_FIELD(hash, racer, throttleReleased);
-    SIM_HASH_FIELD(hash, racer, unk20D);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_U8_20D);
     SIM_HASH_FIELD(hash, racer, delaySoundID);
     SIM_HASH_FIELD(hash, racer, delaySoundTimer);
-    SIM_HASH_FIELD(hash, racer, unk211);
+    SIM_HASH_FIELD(hash, racer, RACER_EGG_THROW_DEBOUNCE);
     SIM_HASH_FIELD(hash, racer, elevation);
-    SIM_HASH_FIELD(hash, racer, unk213);
-    SIM_HASH_FIELD(hash, racer, unk214);
-    SIM_HASH_FIELD(hash, racer, unk215);
-    SIM_HASH_FIELD(hash, racer, unk216);
-    SIM_HASH_FIELD(hash, racer, unk217);
+    SIM_HASH_FIELD(hash, racer, RACER_STUCK_TIMER);
+    SIM_HASH_FIELD(hash, racer, RACER_STUCK_REVERSE_TIMER);
+    SIM_HASH_FIELD(hash, racer, RACER_STUCK_RECOVERY_COOLDOWN);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_U8_216);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_U8_217);
     return hash;
 }
 
@@ -846,10 +1004,10 @@ static uint64_t sim_hash_globals_v3(uint64_t hash) {
     SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], pitch);
     SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], shakeTimer);
     SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], zoom);
-    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], unk3C);
-    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], unk3D);
-    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], unk3E);
-    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], unk3F);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], CAM_UNIDENTIFIED_U8_3C);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], CAM_UNIDENTIFIED_U8_3D);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], CAM_UNIDENTIFIED_U8_3E);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], CAM_UNIDENTIFIED_U8_3F);
     hash = fnv1a64(hash, &gTTCamPlayerID, sizeof(gTTCamPlayerID));
     hash = fnv1a64(hash, &gTTCamID, sizeof(gTTCamID));
     hash = fnv1a64(hash, &gTTCamSmoothTimer, sizeof(gTTCamSmoothTimer));
@@ -860,7 +1018,7 @@ static uint64_t sim_hash_globals_v3(uint64_t hash) {
     }
 
     SIM_HASH_FIELD(hash, settings, keys);
-    SIM_HASH_FIELD(hash, settings, unkA);
+    SIM_HASH_FIELD(hash, settings, SETTINGS_UNIDENTIFIED_PROGRESS_WORD_A);
     SIM_HASH_FIELD(hash, settings, bosses);
     SIM_HASH_FIELD(hash, settings, trophies);
     SIM_HASH_FIELD(hash, settings, cutsceneFlags);
@@ -874,7 +1032,7 @@ static uint64_t sim_hash_globals_v3(uint64_t hash) {
     SIM_HASH_FIELD(hash, settings, filename);
     SIM_HASH_FIELD(hash, settings, racers);
     SIM_HASH_FIELD(hash, settings, timeTrialRacer);
-    SIM_HASH_FIELD(hash, settings, unk115);
+    SIM_HASH_FIELD(hash, settings, SETTINGS_BEST_LAP_OWNER);
     SIM_HASH_FIELD(hash, settings, display_times);
 
     level_count(&levelCount, &worldCount);
@@ -974,8 +1132,8 @@ static uint64_t sim_hash_compute_v3(uint64_t hash, Object **objects,
             continue;
         }
         SIM_HASH_FIELD(hash, object, distanceToCamera);
-        SIM_HASH_FIELD(hash, object, unk34);
-        SIM_HASH_FIELD(hash, object, unk38);
+        SIM_HASH_FIELD(hash, object, OBJ_CULL_RADIUS);
+        SIM_HASH_FIELD(hash, object, OBJ_UNIDENTIFIED_S8_38);
         SIM_HASH_FIELD(hash, object, opacity);
         SIM_HASH_FIELD(hash, object, modelIndex);
         SIM_HASH_FIELD(hash, object, particleEmittersEnabled);
@@ -984,12 +1142,12 @@ static uint64_t sim_hash_compute_v3(uint64_t hash, Object **objects,
             SIM_HASH_FIELD(hash, object->interactObj, y_position);
             SIM_HASH_FIELD(hash, object->interactObj, z_position);
             SIM_HASH_FIELD(hash, object->interactObj, hitboxRadius);
-            SIM_HASH_FIELD(hash, object->interactObj, unk11);
+            SIM_HASH_FIELD(hash, object->interactObj, OBJ_INTERACT_KIND);
             SIM_HASH_FIELD(hash, object->interactObj, pushForce);
             SIM_HASH_FIELD(hash, object->interactObj, distance);
             SIM_HASH_FIELD(hash, object->interactObj, flags);
-            SIM_HASH_FIELD(hash, object->interactObj, unk16);
-            SIM_HASH_FIELD(hash, object->interactObj, unk17);
+            SIM_HASH_FIELD(hash, object->interactObj, OBJ_INTERACT_HEIGHT_MIN);
+            SIM_HASH_FIELD(hash, object->interactObj, OBJ_INTERACT_HEIGHT_MAX);
         }
         hash = sim_hash_properties_v3(hash, object);
         if (object->behaviorId == BHV_RACER && object->racer != NULL) {
@@ -1311,8 +1469,8 @@ static void sim_hash_dump_objects(unsigned long long tick) {
             core = sim_hash_compute_v2(core, &objects[index], 1, 0);
             if (!(object->trans.flags & OBJ_FLAGS_PARTICLE)) {
                 SIM_HASH_FIELD(extra, object, distanceToCamera);
-                SIM_HASH_FIELD(extra, object, unk34);
-                SIM_HASH_FIELD(extra, object, unk38);
+                SIM_HASH_FIELD(extra, object, OBJ_CULL_RADIUS);
+                SIM_HASH_FIELD(extra, object, OBJ_UNIDENTIFIED_S8_38);
                 SIM_HASH_FIELD(extra, object, opacity);
                 SIM_HASH_FIELD(extra, object, modelIndex);
                 SIM_HASH_FIELD(extra, object, particleEmittersEnabled);
@@ -1322,12 +1480,12 @@ static void sim_hash_dump_objects(unsigned long long tick) {
                     SIM_HASH_FIELD(interaction, object->interactObj, y_position);
                     SIM_HASH_FIELD(interaction, object->interactObj, z_position);
                     SIM_HASH_FIELD(interaction, object->interactObj, hitboxRadius);
-                    SIM_HASH_FIELD(interaction, object->interactObj, unk11);
+                    SIM_HASH_FIELD(interaction, object->interactObj, OBJ_INTERACT_KIND);
                     SIM_HASH_FIELD(interaction, object->interactObj, pushForce);
                     SIM_HASH_FIELD(interaction, object->interactObj, distance);
                     SIM_HASH_FIELD(interaction, object->interactObj, flags);
-                    SIM_HASH_FIELD(interaction, object->interactObj, unk16);
-                    SIM_HASH_FIELD(interaction, object->interactObj, unk17);
+                    SIM_HASH_FIELD(interaction, object->interactObj, OBJ_INTERACT_HEIGHT_MIN);
+                    SIM_HASH_FIELD(interaction, object->interactObj, OBJ_INTERACT_HEIGHT_MAX);
                 }
                 if (object->behaviorId == BHV_RACER &&
                     object->racer != NULL) {
@@ -1383,6 +1541,117 @@ static void sim_hash_dump_objects(unsigned long long tick) {
         }
     }
 }
+
+/* End of the field streams — drop the aliases so they cannot reach anything
+ * below, which addresses these structs by their real member names. */
+#undef OBJ_SCALE_VELOCITY
+#undef OBJ_CULL_RADIUS
+#undef OBJ_UNIDENTIFIED_S8_38
+#undef OBJPROP_DISTANCE_UNIDENTIFIED_04
+#undef OBJPROP_PROJECTILE_AGE_TIMER
+#undef OBJPROP_WIZPIGSHIP_UNIDENTIFIED_00
+#undef OBJPROP_ANIMOBJ_RACER_ID
+#undef OBJPROP_ANIMOBJ_TRIGGER_RESULT
+#undef OBJPROP_BRIDGE_RAMP_TIMER
+#undef OBJPROP_RAMP_SWITCH_BRIDGE_ID
+#undef OBJPROP_BUBBLER_PARTICLE_DENSITY
+#undef CAM_UNIDENTIFIED_U8_3C
+#undef CAM_UNIDENTIFIED_U8_3D
+#undef CAM_UNIDENTIFIED_U8_3E
+#undef CAM_UNIDENTIFIED_U8_3F
+#undef OBJ_INTERACT_KIND
+#undef OBJ_INTERACT_HEIGHT_MIN
+#undef OBJ_INTERACT_HEIGHT_MAX
+#undef SETTINGS_UNIDENTIFIED_PROGRESS_WORD_A
+#undef SETTINGS_BEST_LAP_OWNER
+#undef RACER_UNIDENTIFIED_S32_04
+#undef RACER_LAST_VOICE_SOUND_ID
+#undef RACER_VEHICLE_PITCH
+#undef RACER_AI_SPLINE_ANCHOR_X
+#undef RACER_AI_SPLINE_ANCHOR_Y
+#undef RACER_AI_SPLINE_ANCHOR_Z
+#undef RACER_CAMERA_Y_FOLLOW_DIVISOR
+#undef RACER_DRIFT_VELOCITY_X
+#undef RACER_DRIFT_VELOCITY_Z
+#undef RACER_UNIDENTIFIED_F32_98
+#undef RACER_AI_SPLINE_TRAVEL_RATE
+#undef RACER_WHEEL_SPIN_PHASE
+#undef RACER_UNIDENTIFIED_F32_BC
+#undef RACER_BUOYANCY_LIFT_RAMP
+#undef RACER_CAMERA_LATERAL_OFFSET
+#undef RACER_UNIDENTIFIED_F32_CC
+#undef RACER_TUMBLE_Y_OFFSET_DECAY
+#undef RACER_FALL_IMPACT_MAGNITUDE
+#undef RACER_COLLISION_PROBE_POINTS
+#undef RACER_DRIFT_LEAN_ANGLE
+#undef RACER_SAVED_CAR_STEER_VEL
+#undef RACER_UNIDENTIFIED_S32_114
+#undef RACER_WALL_RECOIL_VEL_X
+#undef RACER_WALL_RECOIL_VEL_Z
+#undef RACER_AI_RUBBERBAND_SPEED_BONUS
+#undef RACER_UNIDENTIFIED_S32_13C
+#undef RACER_TARGET_X_ROTATION_OFFSET
+#undef RACER_VELOCITY_HEADING_ANGLE
+#undef RACER_DRIFT_COUNTERSTEER_WOBBLE
+#undef RACER_WEAPON_ICON_SPIN_GATE
+#undef RACER_UNIDENTIFIED_S16_176
+#undef RACER_UNIDENTIFIED_U8_186
+#undef RACER_PENDING_BANANA_DROP_COUNT
+#undef RACER_STEER_WOBBLE_TIMER
+#undef RACER_ATTACK_REACTION_TIMER
+#undef RACER_STEER_ROTATION_RECOVERY_TARGET
+#undef RACER_SPECIAL_VEHICLE_MODE_TIMER
+#undef RACER_WALL_COLLISION_SPIN_ANGLE
+#undef RACER_SPIN_CAMERA_YAW_RECOIL
+#undef RACER_CHECKPOINT_PROGRESS_TIEBREAK
+#undef RACER_POSITION_STABLE_FRAMES
+#undef RACER_POSITION_CHANGE_TIMER
+#undef RACER_UNIDENTIFIED_S32_1B4
+#undef RACER_UNIDENTIFIED_S16_1B8
+#undef RACER_AI_LINE_OFFSET_X
+#undef RACER_AI_LINE_OFFSET_Y
+#undef RACER_AI_TARGET_YAW
+#undef RACER_AI_TARGET_PITCH
+#undef RACER_AI_PREV_TARGET_YAW
+#undef RACER_AI_PREV_TARGET_PITCH
+#undef RACER_AI_ACTION_TIMER
+#undef RACER_AI_ATTACK_ACTION_STATE
+#undef RACER_AI_LINE_INDEX
+#undef RACER_SPAWN_VEHICLE_CLASS
+#undef RACER_AI_GOAL_OR_SAVED_ANIM
+#undef RACER_AI_TARGET_NODE_OR_COMMAND
+#undef RACER_STEER_JITTER_OFFSET
+#undef RACER_CRASH_SPIN_TIMER
+#undef RACER_TRICK_ROTATION_FLAG
+#undef RACER_TRICK_HOLD_TIMER
+#undef RACER_POST_FINISH_COUNTER
+#undef RACER_UNIDENTIFIED_U8_1DA
+#undef RACER_WHEEL_GROUND_MASK
+#undef RACER_OBJECT_COLLISION_FLAGS
+#undef RACER_STEER_ANGLE_SECONDARY
+#undef RACER_UNIDENTIFIED_S8_1E9
+#undef RACER_UNIDENTIFIED_S8_1EA
+#undef RACER_SKID_DURATION_COUNTER
+#undef RACER_WATER_PATH_RECOVERY_FLAG
+#undef RACER_SPIN_PHASE
+#undef RACER_MISC_ANIM_STATE
+#undef RACER_MISC_ANIM_FLAGS
+#undef RACER_CRASH_SOUND_COOLDOWN
+#undef RACER_THROTTLE_HOLD_TIMER
+#undef RACER_EFFECT_ZONE_TYPE
+#undef RACER_EFFECT_ZONE_STRENGTH
+#undef RACER_ONSCREEN_AI_ACTIVE_TIMER
+#undef RACER_LIGHT_DIM_JITTER_TIMER
+#undef RACER_UNIDENTIFIED_S8_208
+#undef RACER_AI_ITEM_DECISION_FLAGS
+#undef RACER_PREV_RACE_ORDER_INDEX
+#undef RACER_UNIDENTIFIED_U8_20D
+#undef RACER_EGG_THROW_DEBOUNCE
+#undef RACER_STUCK_TIMER
+#undef RACER_STUCK_REVERSE_TIMER
+#undef RACER_STUCK_RECOVERY_COOLDOWN
+#undef RACER_UNIDENTIFIED_U8_216
+#undef RACER_UNIDENTIFIED_U8_217
 
 /* Test-only field-set controls. The historical numeric spelling still means
  * object:<tick>; v3 adds one independently selected target per field family:
