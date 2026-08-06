@@ -78,6 +78,13 @@ Upstream **matched** the body: decomp commit `9da89ecb "match: func_80017A18"`
 guard and the `#pragma GLOBAL_ASM` fallback, and drops the `// NON EQUIVALENT`
 comment from `objects.h`.
 
+> **Update 2026-08-07.** That branch has since merged into upstream `master` as
+> `db7482cc` (PR #749), so the "we carry a commit that is not on `master`" hazard
+> is retired. The 2026-08-07 sync replaced our copy with master's text — which
+> renames the parameters (`numCollisions`, `originPointsX`, … `scale`) and spells
+> the facet walk as `for (j = 0; j < collisionFacetCount; j++)` rather than the
+> branch's `do`/`while` — and re-applied the port deltas below.
+
 Our vendored copy of the function was **byte-identical to upstream baseline
 `3b2dd520`** — verified by extracting both function bodies and diffing — i.e. it
 carried no port patches, which makes the 3-way merge resolution unambiguous:

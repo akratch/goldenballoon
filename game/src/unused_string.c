@@ -116,6 +116,11 @@ UNUSED int strncasecmp(const char *s1, const char *s2, size_t n) {
  * c: char to fill with
  * n: size of area to clear
  */
+/* Upstream's own narrower guard, kept nested inside the NON_MATCHING guard
+ * above so this file stays textually close to upstream. It is redundant for
+ * this port (the outer guard already excludes every symbol here), but keeping
+ * it avoids re-resolving this hunk on every future sync. */
+#ifndef __GNUC__
 UNUSED void *memset(void *s, int c, size_t n) {
     unsigned char *ret = s;
 
@@ -124,5 +129,6 @@ UNUSED void *memset(void *s, int c, size_t n) {
     }
     return s;
 }
+#endif
 
 #endif

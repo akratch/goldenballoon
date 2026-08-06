@@ -254,7 +254,11 @@ static char *sPrintfLimit = NULL;
 
 #define isdigit(c) ((c >= '0') && (c <= '9'))
 
-// Returns the total number of characters written.
+/**
+ * Formats a variable argument list into a null-terminated string.
+ * Inserts debug text control codes around numeric values when fixed-width spacing is enabled.
+ * Returns the number of characters written, excluding the null terminator.
+ */
 int DKR_VSPRINTF(char *s, const char *fmt, va_list args) {
     /* Pointer into the format string.  */
     const char *f;

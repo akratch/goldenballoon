@@ -1,37 +1,36 @@
-3b2dd520667ed676424f578145c0a1c7713a28b7  # decomp commit synced 2026-07-25
+c66957033046b1d66e72fcb096bf90fb49bcedba  # decomp commit synced 2026-08-07
 #
-# This is a COMMIT, with no working-tree addendum: `git status --untracked-files=no`
-# in the decomp checkout is clean at this hash, so `theirs` for the next 3-way merge
-# is exactly this tree.
+# THIS IS A REAL UPSTREAM COMMIT on DavidSM64/Diddy-Kong-Racing master
+# ("fix void function, rework abs macro", PR #766). `git merge-base
+# --is-ancestor <this> origin/master` is TRUE, so `git show <this>:path` gives
+# exact base blobs for the next 3-way merge. Verify that before trusting a sync.
 #
-# It resolves the caveat the previous line carried ("527889b5 plus working-tree
-# func_80049794 rework in src/racer.c"). Two facts about that, recorded so nobody
-# has to re-derive them:
+# The previous baseline, 3b2dd520, was NOT an upstream commit -- the same defect
+# class the 2026-07-24 entry recorded, missed again. It was a local commit by
+# akratch on the fork branch `fork/match-func_8008FF1C` ("match: func_8008FF1C"),
+# forked from upstream ed3a12b1. `git merge-base --is-ancestor 3b2dd520
+# origin/master` was FALSE. It was still a *usable* base -- base blobs are only
+# required to equal what we actually vendored, and we did vendor that fork tree
+# -- but the recorded hash pointed at a ref that only exists on a private fork.
+# That work has since landed upstream verbatim as 8131d0da (PR #751), so nothing
+# is carried outside master any more.
 #
-#  * 527889b5 was never an upstream commit. It is a local WIP commit in the decomp
-#    checkout ("Improve func_80017A18 WIP"), forked from upstream 851b15dd, and its
-#    only vendored-path content was the objects.c/tracks.c work that later landed
-#    upstream as PR #744 (trackbg_render_flashy) -- byte-identical, so it left
-#    nothing to merge. `git merge-base --is-ancestor 527889b5 HEAD` was false, which
-#    is why sync_decomp.sh's base blobs for that hash were only approximately right.
-#  * the uncommitted func_80049794 rework we vendored on top of it became upstream
-#    PR #747 verbatim. Verified at sync time: our game/src/racer.c already contained
-#    every line of the committed match; the whole delta 527889b5..3b2dd520 for that
-#    function was one stale comment.
+# BOTH previously recorded exceptions are now RETIRED, because both landed on
+# upstream master in the 3b2dd520..c6695703 range:
 #
-# Anything vendored under game/{src,include,libultra} is base+NATIVE_PORT patches --
-# never re-copy, always 3-way merge. See docs/DECOMP_SYNC.md.
+#   * func_80017A18 (game/src/objects.c) -- was upstream 9da89ecb, living only on
+#     branch `match-func_80017A18`. Merged upstream as db7482cc (PR #749). The
+#     body in this tree is now plain master text (named parameters, `for` facet
+#     loop) plus the three documented NATIVE_PORT deltas. The
+#     ours-newer-than-theirs hazard no longer applies.
+#   * func_8008FF1C -- was the fork commit described above. Merged upstream as
+#     8131d0da (PR #751).
 #
-# ONE EXCEPTION, carried deliberately (wave "objcoll", 2026-07-26):
-#   game/src/objects.c's func_80017A18 + its objects.h declaration are NOT from
-#   this baseline. They are upstream 9da89ecb ("match: func_80017A18"), which
-#   lives only on the decomp branch match-func_80017A18, forked from 851b15dd --
-#   SEVEN commits BEHIND 3b2dd520, and `git merge-base --is-ancestor 3b2dd520
-#   9da89ecb` is FALSE.
+# Anything vendored under game/{src,include,libultra} is base+NATIVE_PORT patches
+# -- never re-copy, always 3-way merge. See docs/DECOMP_SYNC.md.
 #
-#   So a sync from master will present the old `#ifdef NON_EQUIVALENT` +
-#   GLOBAL_ASM version as "theirs" and look like it wants to revert us. DO NOT
-#   TAKE IT until that branch merges upstream. Our copy of that function was
-#   verified byte-identical to 3b2dd520's before adoption, i.e. it carried no
-#   port patches, which is why replacing it wholesale was the correct 3-way
-#   resolution. Re-verify that equality if this is ever redone.
+# NOTE for the next sync: `tools/sync_decomp.sh` reads "theirs" from the decomp
+# checkout's WORKING TREE. The checkout at ../Diddy-Kong-Racing sits on local
+# branches that diverge from master in vendored paths, so syncing straight from
+# it silently vendors local WIP. This sync used a scratch clone checked out at
+# the upstream commit above instead. Point --decomp at a clean master tree.

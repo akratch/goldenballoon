@@ -149,14 +149,6 @@ FadeTransition gDoorFadeTransition = FADE_TRANSITION(FADE_FULLSCREEN, FADE_FLAG_
 
 /*******************************/
 
-/************ .rodata ************/
-
-const char gRacerDebugCoords[] = "%.1f,%.1f,%.1f\n";
-UNUSED const char gChecksumOverflowString[] = "Chk ovflow!!\n";
-UNUSED const char gRacerBackString[] = "Back\n";
-
-/*********************************/
-
 /************ .bss ************/
 
 f32 gCurrentCourseHeight;
@@ -2772,7 +2764,7 @@ void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
     _Static_assert(sizeof(MtxF) == 16 * sizeof(f32), "MtxF is the full 4x4 written into sp60");
 #define SP60_ROWS sp60
 #else
-    f32 sp60[4]; // Should be MtxF, but produces a worse score.
+    f32 sp60[4]; // Should be MtxF, but it throws off the stack.
 #define SP60_ROWS &sp60
 #endif
     s8 playerObjectMoved;
@@ -2795,13 +2787,12 @@ void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
 
     spA2 = FALSE;
     if (gCurrentPlayerIndex != PLAYER_COMPUTER && racer->vehicleIDPrev != VEHICLE_WIZPIG && gRacerWaveCount != 0) {
-        // UNMATCHED
-        var_t9 = (var_t9 = gRacerWaveCount - 1);
+        var_t9 = gRacerWaveCount - 1;
         for (var_a0 = gRacerWaveCount - 1;
              var_a0 >= 0 && gRacerCurrentWave[var_a0]->waveHeight < obj->trans.y_position + 5; var_a0--) {
-            if (gRacerWaveCount - 1) {}
-            if (gRacerWaveCount - 1) {}
-            if (gRacerWaveCount - 1) {}
+            if (gRacerWaveCount - 1) {} // fake
+            if (gRacerWaveCount - 1) {} // more fake
+            if (gRacerWaveCount - 1) {} // even more fake
         }
 
         if (var_a0 == gRacerWaveCount - 1) {
@@ -2813,7 +2804,6 @@ void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
         if (var_f2 > 100.0f) {
             racer->drift_direction = 0;
         }
-        // previously var_f0
         racerVelocity = -racer->velocity;
         if (racerVelocity < 0.0f) {
             racerVelocity = 0.0f;
@@ -2823,7 +2813,7 @@ void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
         }
         if (racer->drift_direction == 0 && var_f2 < 38 && racerVelocity >= 8.0) {
 #ifndef NATIVE_PORT
-            if ((!racerSteerAngle)) {}
+            if (!racerSteerAngle) {} // fakematch
 #endif
             racer->drift_direction = 1;
         }
@@ -2848,11 +2838,13 @@ void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
     }
     D_8011D550 = 0;
 
-#ifdef NATIVE_PORT
-    gCurrentCarSteerVel = 0;
-#else
-    gCurrentCarSteerVel = (var_f0 > 0.0f) * 0;
+#ifndef NATIVE_PORT
+    /* Reads var_f0 only to pin the matching codegen; skipped on the host, where
+     * the read is not needed and the value may be unset. */
+    if (var_f0 > 0.0f) {} // Fake
 #endif
+
+    gCurrentCarSteerVel = 0;
 
     D_8011D558 = 0;
     spE8 = obj->trans.x_position;
@@ -2947,8 +2939,8 @@ void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
     if (((var_v0 ^ 0) == PLAYER_COMPUTER) && (gCurrentPlayerIndex != PLAYER_COMPUTER)) {
         gCurrentRacerHandlingStat = 1.4f;
     }
-    var_f20 = (obj->x_velocity * obj->x_velocity) + (obj->z_velocity * obj->z_velocity) +
-              (obj->y_velocity * obj->y_velocity);
+    var_f20 =
+        (obj->x_velocity * obj->x_velocity) + (obj->z_velocity * obj->z_velocity) + (obj->y_velocity * obj->y_velocity);
     var_f20 = sqrtf(var_f20) - 2.0;
     if (racer->vehicleID >= VEHICLE_BOSSES) {
         var_f20 = ((var_f20 - 2.0) / 2.0);
@@ -2960,8 +2952,6 @@ void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
         var_f20 = 4;
     }
     spA3 = FALSE;
-    // This line (or somewhere here about) seems to be culprit as it incorrectly uses $f12 instead of $f2
-    // This may or may not cause $20 to be swapped with $f2
     var_f20 = 1.0 - (var_f20 / 4.0);
     var_f2 = (gCurrentCourseHeight - 50.0) - obj->trans.y_position;
     if (racer->trickType < 2 && racer->trickType >= -1 && var_f2 < 0) {
@@ -2989,9 +2979,8 @@ void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
     if (var_f14 > 12.0f) {
         var_f14 = 12.0f;
     }
-    racerMiscAssetIdx = var_f14;      // racerMiscAssetIdx = Integer part of var_f14
-    var_f0 = var_f14 - (s32) var_f14; // var_f0 = fractional part of var_f14
-    // UNMATCHED
+    racerMiscAssetIdx = var_f14;
+    var_f0 = var_f14 - (s32) var_f14;
     var_f14 = (gCurrentRacerMiscAssetPtr[racerMiscAssetIdx + 1] * var_f0) +
               (gCurrentRacerMiscAssetPtr[racerMiscAssetIdx] * (1.0 - var_f0));
     spD4 = 0.01f;
@@ -3030,7 +3019,7 @@ void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
             racerBrake *= 0.3;
         }
         racer->trickType = 0;
-        if (gCurrentRacerInput & B_BUTTON && gNumViewports < 3) {
+        if (gCurrentRacerInput & B_BUTTON && gNumViewports <= 2) {
             obj->particleEmittersEnabled = OBJ_EMIT_1 | OBJ_EMIT_2;
         }
         gCurrentStickY = ((f32) gCurrentStickY) * (1.0 - var_f20);
@@ -3105,7 +3094,7 @@ void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
             if (racer->throttleReleased != 0) {
                 racer->boostType |= EMPOWER_BOOST;
             }
-            rumble_set(racer->playerIndex, 8);
+            rumble_set(racer->playerIndex, RUMBLE_TYPE_8);
             racer->zipperDirCorrection = 0;
         } else {
             obj->x_velocity *= 0.75;
@@ -3120,8 +3109,6 @@ void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
         }
         if (racer->groundedWheels != 0 || racer->unk1F1 == 2) {
             racer->unk1F1 = 2;
-            // s0.162 = x_rot_offset
-            // s0.164 = z_rot_offset
             temp_t7 = updateRate << 11;
             racer->x_rotation_offset -= temp_t7;
             var_t0 = racer->z_rotation_offset;
@@ -3362,7 +3349,6 @@ void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
             obj->particleEmittersEnabled |= OBJ_EMIT_3 | OBJ_EMIT_4;
         }
     }
-    // This line looks unmatched
     var_f0 = handle_racer_top_speed(obj, racer);
     var_f14 = var_f14 * var_f0;
     var_f14 *= 1.8;
@@ -3405,7 +3391,7 @@ void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
         obj->x_velocity -= racer->ox1 * var_f20;
         obj->y_velocity -= racer->oy1 * var_f20;
         obj->z_velocity -= racer->oz1 * var_f20;
-    var_f20 = racer->lateral_velocity * racer->lateral_velocity * spD4;
+        var_f20 = racer->lateral_velocity * racer->lateral_velocity * spD4;
         if (racer->lateral_velocity < 0) {
             var_f20 = -var_f20;
         }
@@ -4490,7 +4476,7 @@ void update_player_racer(Object *obj, s32 updateRate) {
         // Print player 1's coordinates to the screen if the debug cheat is enabled.
         if (gRaceStartTimer == 0 && tempRacer->playerIndex == PLAYER_ONE) {
             if (get_filtered_cheats() & CHEAT_PRINT_COORDS) {
-                render_printf(gRacerDebugCoords, obj->trans.x_position, obj->trans.y_position, obj->trans.z_position);
+                render_printf("%.1f,%.1f,%.1f\n", obj->trans.x_position, obj->trans.y_position, obj->trans.z_position);
             }
         }
         set_render_printf_background_colour(0, 0, 0, 128);
@@ -8813,9 +8799,11 @@ void func_80059208(Object *obj, Object_Racer *racer, s32 updateRate) {
     }
     for (i = 0; (i < 5) ^ 0; i++) {
         tempCheckpointNode = find_next_checkpoint_node(counter, racer->isOnAlternateRoute);
-        posX[i] = tempCheckpointNode->x + ((tempCheckpointNode->scale * tempCheckpointNode->rotationZFrac) * racer->unk1BA);
+        posX[i] =
+            tempCheckpointNode->x + ((tempCheckpointNode->scale * tempCheckpointNode->rotationZFrac) * racer->unk1BA);
         posY[i] = tempCheckpointNode->y + (tempCheckpointNode->scale * racer->unk1BC);
-        posZ[i] = tempCheckpointNode->z + ((tempCheckpointNode->scale * (-tempCheckpointNode->rotationXFrac)) * racer->unk1BA);
+        posZ[i] = tempCheckpointNode->z +
+                  ((tempCheckpointNode->scale * (-tempCheckpointNode->rotationXFrac)) * racer->unk1BA);
         counter++;
         if (counter == checkpointCount) {
             // @fake
@@ -9484,8 +9472,8 @@ void update_AI_racer(Object *obj, Object_Racer *racer, s32 updateRate, f32 updat
             racer->buoyancy = 0;
             gRacerWaveCount = 0;
         } else {
-            gRacerWaveCount =
-                get_level_segment_waves(obj->segmentID, obj->trans.x_position, obj->trans.z_position, &gRacerCurrentWave);
+            gRacerWaveCount = get_level_segment_waves(obj->segmentID, obj->trans.x_position, obj->trans.z_position,
+                                                      &gRacerCurrentWave);
         }
         set_collision_mode(COLLISION_MODE_DEFAULT);
         if (racer->approachTarget != NULL || gRaceStartTimer != 0 || racer->bubbleTrapTimer > 0) {
@@ -9672,48 +9660,38 @@ void update_AI_racer(Object *obj, Object_Racer *racer, s32 updateRate, f32 updat
 }
 
 void func_8005B818(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateRateF) {
-    f32 temp_f0;
+    s32 j;
     s32 checkpointIdx;
     s32 checkpointCount;
     CheckpointNode *checkpoint;
-    LevelModel *model;
-    f32 var_f28;
-/* AVOID_UB (host stack-safety): the `i < 5` fill loop below writes indices [0..4]
- * of each spline-control array, and cubic_spline_interpolation() reads
- * data[index..index+3] with index (checkpointSplineIdx) up to 1 — i.e. up to [4].
- * The decomp declares these [4]; on N64 the out-of-bounds [4] slot aliased the
- * adjacent stack scratch and was harmless, but on a bounds-checked host it
- * overruns the array into the stack canary (SIGABRT / __stack_chk_fail once the
- * racer actually drives a spline path). Size them to the real access extent. */
-#ifdef NATIVE_PORT
-#define DKR_SPLINE_CTRL_N 5
-#else
-#define DKR_SPLINE_CTRL_N 4
-#endif
-    f32 checkpointX[DKR_SPLINE_CTRL_N];
-    s32 j;
-    f32 checkpointY[DKR_SPLINE_CTRL_N];
-    f32 var_f12;
-    f32 checkpointZ[DKR_SPLINE_CTRL_N];
+    /* The spline-control arrays are [5] because the `i < 5` fill loop below writes
+     * indices [0..4] and cubic_spline_interpolation() reads data[index..index+3]
+     * with index up to 1 -- i.e. up to [4]. This port previously carried that as a
+     * NATIVE_PORT-only DKR_SPLINE_CTRL_N override over the decomp's [4], because
+     * the out-of-bounds [4] slot merely aliased adjacent stack scratch on N64 but
+     * overran into the stack canary on a bounds-checked host. Upstream's
+     * func_8005B818 rematch (PR #764, "fixing some UB") adopted [5] itself, so the
+     * override is retired and these are now plain upstream declarations. */
+    s32 i;
+    f32 checkpointX[5];
+    f32 checkpointY[5];
+    f32 checkpointZ[5];
     s32 checkpointSplineIdx;
     f32 checkpointDistance;
-    UNUSED f32 pad1;
-    UNUSED f32 pad2;
-    f32 spB8[DKR_SPLINE_CTRL_N];
+    f32 var_f28;
+    f32 spB8[5];
+    f32 spA4[5];
     f32 var_f26;
-    f32 spA4[DKR_SPLINE_CTRL_N];
-#undef DKR_SPLINE_CTRL_N
-    UNUSED f32 pad3;
     f32 sp9C;
     f32 sp98;
     f32 sp94;
-    f32 checkpointPositionOffset;
-    f32 tempRacerVelocity;
+    f32 checkpointPositionOffset; // sp90
+    f32 tempRacerVelocity; // sp8C
     f32 var_f24;
-    s32 i;
+    f32 var_f12;
     LevelHeader *levelHeader;
 #if VERSION == VERSION_80
-    UNUSED f32 pad4;
+    LevelModel *model;
 #endif
 
     gCurrentRacerMiscAssetPtr = (f32 *) get_misc_asset(ASSET_MISC_RACERACCELERATION_UNKNOWN0);
@@ -9743,17 +9721,8 @@ void func_8005B818(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
 
     if (racer->vehicleID == VEHICLE_HOVERCRAFT) {
         i = (racer->unk1BE & 0xFFFF) - (racer->unk1C2 & 0xFFFF);
-        if (i > 0x8000) {
-            i -= 0xFFFF;
-        }
-
-        if (i < -0x8000) {
-            i += 0xFFFF;
-        }
-
-        if (i < 0) {
-            i = -i;
-        }
+        WRAP(i, -0x8000, 0x8000);
+        i = ABS(i);
 
         i -= 200;
         if (i < 0) {
@@ -9780,6 +9749,7 @@ void func_8005B818(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
     }
 
     if (checkpointIdx >= checkpointCount) {
+        stubbed_printf("Chk ovflow!!\n");
         checkpointIdx -= checkpointCount;
     }
 
@@ -9796,6 +9766,7 @@ void func_8005B818(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
         checkpointIdx++;
         if (checkpointIdx == checkpointCount) {
             checkpointIdx = 0;
+            stubbed_printf("Back\n");
         }
     }
 
@@ -9822,10 +9793,10 @@ void func_8005B818(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
         var_f28 -= racer->unk70;
         if (j == 0) {
             checkpointSplineIdx = 0;
-            checkpointPositionOffset =
+            var_f12 =
                 sqrtf((var_f24 * var_f24) + (var_f26 * var_f26) + (var_f28 * var_f28)) / updateRateF;
-            if (checkpointPositionOffset != 0.0f) {
-                racer->unkAC *= (tempRacerVelocity / checkpointPositionOffset);
+            if (var_f12 != 0.0f) {
+                racer->unkAC *= (tempRacerVelocity / var_f12);
             } else {
                 j = -1;
                 racer->unkAC += 0.01;
@@ -9841,9 +9812,9 @@ void func_8005B818(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
     var_f28 = racer->unk70 - obj->trans.z_position;
     checkpointPositionOffset = sqrtf((var_f24 * var_f24) + (var_f28 * var_f28)) / updateRateF;
     if (checkpointPositionOffset > 35.0) {
-        temp_f0 = (35.0 / checkpointPositionOffset);
-        var_f24 *= temp_f0;
-        var_f28 *= temp_f0;
+        var_f12 = (35.0 / checkpointPositionOffset);
+        var_f24 *= var_f12;
+        var_f28 *= var_f12;
     }
     racer->checkpoint_distance = (1.0 - checkpointDistance);
     if (checkpointSplineIdx != 0) {
@@ -9871,11 +9842,11 @@ void func_8005B818(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
     }
     racer->unk1BA = spB8[1] + ((spB8[2] - spB8[1]) * checkpointDistance);
     racer->unk1BC = spA4[1] + ((spA4[2] - spA4[1]) * checkpointDistance);
-    temp_f0 = sqrtf((sp9C * sp9C) + (sp94 * sp94));
-    if (temp_f0 != 0.0f) {
-        sp9C /= temp_f0;
-        sp98 /= temp_f0;
-        sp94 /= temp_f0;
+    checkpointDistance = sqrtf((sp9C * sp9C) + (sp94 * sp94));
+    if (checkpointDistance != 0.0f) {
+        sp9C /= checkpointDistance;
+        sp98 /= checkpointDistance;
+        sp94 /= checkpointDistance;
         racer->steerVisualRotation = arctan2_f(sp9C, sp94) - 0x8000;
         obj->trans.rotation.y_rotation = racer->steerVisualRotation;
         obj->trans.rotation.x_rotation = arctan2_f(sp98, 1.0f);
@@ -9885,8 +9856,8 @@ void func_8005B818(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
     racer->unk1BE = racer->steerVisualRotation;
     racer->unk1C0 = obj->trans.rotation.x_rotation;
     if (move_object(obj, var_f24, var_f26, var_f28)) {
-        if (1) {}
 #if VERSION < VERSION_80
+        if (1) {}
         obj->trans.x_position += var_f24;
         obj->trans.y_position += var_f26;
         obj->trans.z_position += var_f28;

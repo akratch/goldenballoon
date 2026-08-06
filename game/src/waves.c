@@ -1290,7 +1290,8 @@ void waves_render(Gfx **dList, Mtx **mtx, s32 viewportID) {
                             var_t0 = ((sp104 & 0xFF) - 1) * numVerts * numVerts;
                             for (j = 0; j < gWaveController.subdivisions; j++) {
                                 vtx = &gWaveVertices[gWaveVertexFlip + viewportID][var_t0];
-                                tri = &gWaveTriangles[gWaveVertexFlip + viewportID][j * (gWaveController.subdivisions << 1)];
+                                tri = &gWaveTriangles[gWaveVertexFlip + viewportID]
+                                                     [j * (gWaveController.subdivisions << 1)];
 
 #ifdef NATIVE_PORT
                                 /* Wave surfaces are per-frame vertex-animated
@@ -2609,16 +2610,18 @@ f32 obj_wave_height(Object_Log *log, s32 updateRate) {
             var_t0 += log->unkE[(log->unk4 >> 1) + 1];
         }
         if (log->unk2 > 0) {
-            /* DKR_SHL32 (NATIVE_PORT): `<< (unk2 + 0x1F)` with unk2 > 0 is a shift
-             * count >= 32, i.e. UB in C; MIPS `sllv` masks it to 5 bits, so this
-             * means `<< (unk2 - 1)` -- one less than the even-index branch below,
-             * which is what halves the sum of the two interpolated samples (and is
-             * why unk2 == 0 takes the `>>= 1` path instead). Measured NOT folded in
-             * today's Release build, because clang turns the if/else into a select
-             * and so speculates the shift with a count range of [31, 286] that
-             * includes the legal 31. Latent rather than active, but the same UB as
-             * the cutscene-flag sites -- see docs/OPEN_ITEMS.md wave "keyshift". */
-            var_t0 = (s32) DKR_SHL32(var_t0, log->unk2 + 0x1F);
+            /* DKR_SHL32 (NATIVE_PORT): upstream used to spell this
+             * `<< (unk2 + 0x1F)`, a shift count >= 32 and so UB in C; MIPS `sllv`
+             * masks it to 5 bits, making it `<< (unk2 - 1)` -- one less than the
+             * even-index branch below, which is what halves the sum of the two
+             * interpolated samples (and is why unk2 == 0 takes the `>>= 1` path).
+             * Upstream has since adopted that `unk2 - 1` spelling itself, so this
+             * now carries upstream's expression; DKR_SHL32 stays because `unk2` is
+             * u8, so a bare `<< (unk2 - 1)` is still UB for counts >= 32 in this
+             * hosted build. `(unk2 + 0x1F) & 31 == (unk2 - 1) & 31` for unk2 > 0,
+             * so this is byte-identical to what the port shipped before.
+             * See docs/OPEN_ITEMS.md wave "keyshift". */
+            var_t0 = (s32) DKR_SHL32(var_t0, log->unk2 - 1);
         } else {
             var_t0 >>= 1;
         }
