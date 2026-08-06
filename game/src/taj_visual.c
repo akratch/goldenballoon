@@ -120,8 +120,6 @@ static TajVisualRacerPredicate sRacerPredicate;
 static TajVisualSpawnLease sSpawnLease;
 static TajSelectVisual sSelect;
 static s32 sTraceEnabled = -1;
-static s32 sProbeEnabled = -1;
-static s32 sProbeFirstRacer = -1;
 static s32 sSelectUnscaledShadow = -1;
 static s32 sRaceFreezeCarpet = -1;
 static s32 sRaceUnscaledCarpet = -1;
@@ -232,35 +230,6 @@ static s32 taj_visual_trace_enabled(void) {
     value = getenv("MDKR_TAJ_VISUAL_TRACE");
     sTraceEnabled = value != NULL && value[0] != '\0' && value[0] != '0';
     return sTraceEnabled;
-}
-
-/* Explicitly test-only bootstrap.  Production integration always installs the
- * taj_mod predicate; this arm lets the Phase 0 proof use a supported ROM before
- * identity/menu work exists. */
-static s32 taj_visual_probe_enabled(void) {
-    const char *value;
-    if (sProbeEnabled >= 0) {
-        return sProbeEnabled;
-    }
-    value = getenv("MDKR_TAJ_VISUAL_PROBE");
-    sProbeEnabled = value != NULL && value[0] != '\0' && value[0] != '0';
-    return sProbeEnabled;
-}
-
-/* `first` is a lifecycle-fixture arm for one-player scripted routes whose
- * title/attract setup has no human port.  It is never selected in play. */
-static s32 taj_visual_probe_first_racer_enabled(void) {
-    const char *value;
-    if (sProbeFirstRacer >= 0) {
-        return sProbeFirstRacer;
-    }
-    value = getenv("MDKR_TAJ_VISUAL_PROBE");
-    sProbeFirstRacer = value != NULL && !strcmp(value, "first");
-    return sProbeFirstRacer;
-}
-
-static s32 taj_visual_probe_predicate(s32 playerIndex) {
-    return taj_visual_probe_enabled() && playerIndex == PLAYER_ONE;
 }
 
 static s32 taj_visual_test_flag(const char *name, s32 *cached) {
@@ -942,14 +911,12 @@ static s32 taj_visual_owner_is_eligible(const Object *obj) {
             slot->state == TAJ_VISUAL_COMPOSED) {
             return TRUE;
         }
-        return sRacerPredicate == NULL &&
-               taj_visual_probe_first_racer_enabled() &&
-               get_racer_object(PLAYER_ONE) == obj;
+        return FALSE;
     }
     if (sRacerPredicate != NULL) {
         return sRacerPredicate(obj->racer->playerIndex) != FALSE;
     }
-    return taj_visual_probe_predicate(obj->racer->playerIndex);
+    return FALSE;
 }
 
 /* Drop the composed picker actor without re-arming composition.
