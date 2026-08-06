@@ -360,15 +360,30 @@ def validate_present_mode(backend: Backend, requested: str,
         raise RuntimeError(
             f"{backend.label}/{requested}: presentation policy resolved as "
             f"{actual}, expected {expected}")
+    details = rows[0][3]
+    if "tearing=0" not in details:
+        raise RuntimeError(
+            f"{backend.label}/{requested}: presentation reported a tearing "
+            f"opt-in nothing here asked for: {details.strip()}")
     if backend.resolved == "webgpu":
-        details = rows[0][3]
-        for marker in (
-                "requested=immediate", "effective=immediate", "supported=1"):
-            if marker not in details:
-                raise RuntimeError(
-                    f"{backend.label}/{requested}: WebGPU did not enable the "
-                    f"requested unlocked present mode ({marker!r} absent): "
-                    f"{details.strip()}")
+        # A rate the display cannot show asks for the queue that replaces an
+        # undisplayed image; anything it can show is paced exactly by the
+        # deadline grid on the blocking queue. Mailbox is not advertised
+        # everywhere, so FIFO is the permitted fallback — and immediate stays
+        # unreachable without the opt-in ruled out above.
+        fields = parse_fields(details)
+        display_hz = fields.get("displayHz", 0)
+        above_display = requested == "uncapped" or 0 < display_hz < 240
+        want = "mailbox" if above_display else "fifo"
+        if f"requested={want}" not in details:
+            raise RuntimeError(
+                f"{backend.label}/{requested}: policy did not request the "
+                f"{want} queue at displayHz={display_hz}: {details.strip()}")
+        if ("effective=mailbox" not in details and
+                "effective=fifo" not in details):
+            raise RuntimeError(
+                f"{backend.label}/{requested}: WebGPU resolved a present mode "
+                f"that is neither mailbox nor FIFO: {details.strip()}")
 
 
 def run_policy(binary: Path, rom: Path, backend: Backend, policy: str,

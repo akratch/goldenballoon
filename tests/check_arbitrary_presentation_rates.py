@@ -26,7 +26,11 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import completed_tick_conservation, resolve_binary
+from harness_utils import (
+    completed_tick_conservation,
+    resolve_binary,
+    tear_free_presentation,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
@@ -54,6 +58,7 @@ class Result:
     packet: dict[str, int]
     retained: dict[str, int]
     pressure: dict[str, int]
+    tearing: list[str]
 
 
 def parse_last(output: str, pattern: re.Pattern[str], name: str) -> dict[str, int]:
@@ -161,6 +166,7 @@ def run(binary: Path, rom: Path, root: Path, label: str,
         parse_last(output, RETAINED_RE, "RETAINED-TASK"),
         (parse_last(output, WGPU_RE, "WGPU-BACKPRESSURE")
          if renderer == "webgpu" else {}),
+        tear_free_presentation(output, label),
     )
 
 
@@ -175,7 +181,7 @@ def compare_arm(label: str, result: Result, baseline: Result,
                 rate: int, tick_rate: int, policy_kind: int,
                 policy_rate: int, tick_fields: int = 2,
                 exact_surface: bool = True) -> list[str]:
-    failures: list[str] = []
+    failures: list[str] = list(result.tearing)
     expected = expected_presents(rate, tick_rate)
     for name, actual, reference in (
             ("v3 state", result.state, baseline.state),
@@ -394,13 +400,14 @@ def compare_display_arm(label: str, result: Result,
     presents = result.summary.get("presents", 0)
     numerator = presents * 30
     if presents < TICKS or numerator % TICKS != 0:
-        return [
+        return list(result.tearing) + [
             f"{label}: display opportunities={presents} do not resolve to an "
             "integral supported refresh at or above the authored 30 Hz cadence"
         ]
     rate = numerator // TICKS
     if rate < 30 or rate > 1000:
-        return [f"{label}: resolved display rate {rate} is outside 30..1000 Hz"]
+        return list(result.tearing) + [
+            f"{label}: resolved display rate {rate} is outside 30..1000 Hz"]
     return compare_arm(
         label, result, baseline, rate, 30, 2, 0,
         exact_surface=exact_surface)
@@ -529,6 +536,7 @@ def main() -> int:
                 args.timeout, args.verbose, cadence="enhanced",
                 renderer="webgpu",
                 extra_env={"MDKR_TEST_AUDIO_PERTURB": "150"})
+            failures.extend(enhanced_audio_control.tearing)
             for name, actual, reference in (
                     ("v3 state", enhanced_audio_control.state,
                      enhanced_base.state),

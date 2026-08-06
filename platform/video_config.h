@@ -85,6 +85,7 @@ typedef enum MdkrVideoKey {
      * bounded by the two macros below rather than by being last, so a
      * non-input key may follow it. */
     MDKR_VIDEO_CAMERA_OBSTRUCTION,
+    MDKR_VIDEO_ALLOW_TEARING,
     MDKR_VIDEO_KEY_COUNT
 } MdkrVideoKey;
 
@@ -211,6 +212,13 @@ const char *mdkr_video_world_shadows_canonical(const char *value);
  * drives the environment keeps resolving through the same validator.
  */
 const char *mdkr_video_camera_obstruction_canonical(const char *value);
+
+/*
+ * Canonical spelling for a Video.AllowTearing value ("off" or "on"), or NULL
+ * when `value` is neither. "0"/"1" resolve too, so MDKR_ALLOW_TEARING reads the
+ * same whether it arrives from the settings screen or a diagnostic run.
+ */
+const char *mdkr_video_allow_tearing_canonical(const char *value);
 
 /*
  * Applies `value` to `key` if `source` outranks whatever set it last.

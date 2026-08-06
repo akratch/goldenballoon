@@ -71,9 +71,23 @@ int mdkr_present_policy_equal(const MdkrPresentPolicy *left,
            left->rate == right->rate;
 }
 
-int mdkr_present_policy_uses_vsync(const MdkrPresentPolicy *policy) {
-    return policy == NULL || policy->kind == MDKR_PRESENT_ORIGINAL ||
-           policy->kind == MDKR_PRESENT_DISPLAY;
+MdkrPresentSync mdkr_present_policy_sync(const MdkrPresentPolicy *policy,
+                                         unsigned display_rate) {
+    if (policy == NULL) {
+        return MDKR_PRESENT_SYNC_BLOCKING;
+    }
+    if (policy->kind == MDKR_PRESENT_UNCAPPED) {
+        return MDKR_PRESENT_SYNC_LATEST;
+    }
+    /* A cap at or below the refresh is served exactly by the blocking queue:
+     * the deadline grid below already spaces the presents, and the queue drains
+     * faster than that grid fills it, so it never becomes a second limiter. An
+     * unknown refresh keeps the blocking queue rather than guessing. */
+    if (policy->kind == MDKR_PRESENT_CAPPED && display_rate != 0u &&
+        policy->rate > display_rate) {
+        return MDKR_PRESENT_SYNC_LATEST;
+    }
+    return MDKR_PRESENT_SYNC_BLOCKING;
 }
 
 int mdkr_present_policy_needs_subloop(const MdkrPresentPolicy *policy,

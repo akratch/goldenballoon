@@ -128,26 +128,46 @@ int main(void) {
     same = present;
     expect("present policy equality includes rate",
            mdkr_present_policy_equal(&present, &same));
-    expect("numeric cap disables backend vsync",
-           !mdkr_present_policy_uses_vsync(&present));
+    expect("a cap above the display asks for the latest-image queue",
+           mdkr_present_policy_sync(&present, 60u) ==
+               MDKR_PRESENT_SYNC_LATEST);
+    expect("the same cap under a faster display keeps the blocking queue",
+           mdkr_present_policy_sync(&present, 240u) ==
+               MDKR_PRESENT_SYNC_BLOCKING);
+    expect("an unknown display refresh keeps the blocking queue",
+           mdkr_present_policy_sync(&present, 0u) ==
+               MDKR_PRESENT_SYNC_BLOCKING);
     expect("numeric cap above tick rate needs the subloop",
            mdkr_present_policy_needs_subloop(&present, 30u));
     expect("tick-rate cap does not need replay",
            mdkr_present_policy_parse("30", &present) &&
                !mdkr_present_policy_needs_subloop(&present, 30u));
+    expect("a cap below the display keeps the blocking queue",
+           mdkr_present_policy_sync(&present, 60u) ==
+               MDKR_PRESENT_SYNC_BLOCKING);
     expect("display policy parses and uses backend sync",
            mdkr_present_policy_parse("display", &present) &&
                present.kind == MDKR_PRESENT_DISPLAY &&
-               mdkr_present_policy_uses_vsync(&present) &&
+               mdkr_present_policy_sync(&present, 60u) ==
+                   MDKR_PRESENT_SYNC_BLOCKING &&
                mdkr_present_policy_needs_subloop(&present, 30u));
     expect("held display frames receive a software deadline",
            mdkr_present_policy_needs_held_frame_deadline(&present, 0));
     expect("interpolated display frames retain backend vsync pacing",
            !mdkr_present_policy_needs_held_frame_deadline(&present, 1));
-    expect("uncapped policy parses without backend sync",
+    expect("uncapped policy parses and asks for the latest-image queue",
            mdkr_present_policy_parse("uncapped", &present) &&
                present.kind == MDKR_PRESENT_UNCAPPED &&
-               !mdkr_present_policy_uses_vsync(&present));
+               mdkr_present_policy_sync(&present, 60u) ==
+                   MDKR_PRESENT_SYNC_LATEST);
+    expect("original policy keeps the blocking queue",
+           mdkr_present_policy_parse("original", &present) &&
+               mdkr_present_policy_sync(&present, 60u) ==
+                   MDKR_PRESENT_SYNC_BLOCKING);
+    expect("a null policy fails closed onto the blocking queue",
+           mdkr_present_policy_sync(NULL, 60u) ==
+               MDKR_PRESENT_SYNC_BLOCKING);
+    (void)mdkr_present_policy_parse("uncapped", &present);
     expect("held uncapped frames cannot busy-spin",
            mdkr_present_policy_needs_held_frame_deadline(&present, 0));
     expect("interpolated uncapped frames remain uncapped",

@@ -354,6 +354,30 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "observe and modern.",
         MDKR_VIDEO_CAT_PRESENTATION
     },
+    /*
+     * Off by default, and the default is the whole point: every frame limit now
+     * hands the backend a vblank-synchronized queue, so no rate a player picks
+     * can put a torn image on screen by itself. This is the one control that
+     * takes that guarantee back, in exchange for the shortest possible path
+     * from a finished frame to the panel.
+     *
+     * SCOPE_RESTART for the same reason as the two pacing keys above rather
+     * than by inheritance: the swapchain's present mode is fixed at surface
+     * configuration and the GL swap interval at context adoption, so the value
+     * has to be known before the window exists.
+     */
+    [MDKR_VIDEO_ALLOW_TEARING] = {
+        "Video.AllowTearing", "MDKR_ALLOW_TEARING",
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
+        "Allow tearing (lowest latency)",
+        "Shows each finished frame the instant it is ready instead of waiting "
+        "for the display to refresh. That removes a fraction of a frame of "
+        "input delay and can split the picture horizontally while the image is "
+        "moving. Leave this off unless you are chasing latency and prefer the "
+        "seam. Requires a restart because the display connection is set up "
+        "once at launch.",
+        MDKR_VIDEO_CAT_PACING
+    },
 };
 
 const char *mdkr_video_category_name(MdkrVideoCategory category) {
@@ -543,6 +567,10 @@ static const char *const s_preset_text[MDKR_VIDEO_KEY_COUNT][3] = {
      * value survives every preset switch untouched.
      */
     [MDKR_VIDEO_CAMERA_OBSTRUCTION] = { NULL, NULL, NULL },
+    /* Never pinned, for the FrameLimit reason: a latency preference is not an
+     * art direction, and no preset a player picks may put a seam across the
+     * picture — or take one away they asked for — behind them. */
+    [MDKR_VIDEO_ALLOW_TEARING] = { NULL, NULL, NULL },
 };
 
 void mdkr_video_config_defaults(MdkrVideoConfig *config) {
@@ -594,6 +622,10 @@ void mdkr_video_config_defaults(MdkrVideoConfig *config) {
         config->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
         sizeof(config->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text),
         "%s", "observe");
+    snprintf(
+        config->values[MDKR_VIDEO_ALLOW_TEARING].text,
+        sizeof(config->values[MDKR_VIDEO_ALLOW_TEARING].text),
+        "%s", "off");
 
     /* Window/input choices are player comfort, not presentation-mode state.
      * These defaults exactly preserve the pre-remapping SDL behavior, including
@@ -731,6 +763,22 @@ static int mdkr_video_validate_motion_smoothing(const char *value) {
            mdkr_video_ci_equal(value, "interpolate");
 }
 
+/* Two words for the player, and the "0"/"1" spellings so the env name doubles
+ * as the diagnostic seam the backends already read. */
+const char *mdkr_video_allow_tearing_canonical(const char *value) {
+    if (value == NULL) {
+        return NULL;
+    }
+    if (value[0] == '\0' || mdkr_video_ci_equal(value, "off") ||
+        mdkr_video_ci_equal(value, "0")) {
+        return "off";
+    }
+    if (mdkr_video_ci_equal(value, "on") || mdkr_video_ci_equal(value, "1")) {
+        return "on";
+    }
+    return NULL;
+}
+
 /*
  * World shadows resolve to one of three canonical words, but the key inherits
  * MDKR_WORLD_SHADOW — a seam that predates it and that every existing A/B gate
@@ -864,6 +912,15 @@ int mdkr_video_config_set(MdkrVideoConfig *config,
         }
         if (key == MDKR_VIDEO_WORLD_SHADOWS) {
             const char *canonical = mdkr_video_world_shadows_canonical(value);
+            if (canonical == NULL) {
+                return 0;
+            }
+            snprintf(slot->text, sizeof(slot->text), "%s", canonical);
+            slot->source = source;
+            return 1;
+        }
+        if (key == MDKR_VIDEO_ALLOW_TEARING) {
+            const char *canonical = mdkr_video_allow_tearing_canonical(value);
             if (canonical == NULL) {
                 return 0;
             }

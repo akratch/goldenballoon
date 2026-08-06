@@ -763,21 +763,38 @@ static void sdl_gl_backpressure_shutdown(void) {
             s_glSwapEffective, s_glSwapEffective > 0 ? 1 : 0);
 }
 
+/*
+ * The GL diagnostic backend's mirror of the WebGPU present-mode policy. GL has
+ * no mailbox, so a policy that wants the latest image still swaps on the
+ * vblank: the deadline grid keeps the requested cap, and above the refresh the
+ * swap becomes the ceiling. Only the tearing opt-in leaves the vblank, and it
+ * prefers adaptive sync, which tears on a late frame and holds otherwise.
+ *
+ * Automation keeps its uncapped swap: a finite --headless-frames budget is a
+ * throughput measurement, not an image a player looks at.
+ */
 static void sdl_apply_gl_present_policy(void) {
-    const int requested =
-        (g_headlessFrames >= 0 ||
-         !present_sched_backend_vsync_enabled()) ? 0 : 1;
+    const bool automation = g_headlessFrames >= 0;
+    const bool tearing = !automation && present_sched_allow_tearing();
+    const int requested = automation ? 0 : (tearing ? -1 : 1);
+    int result;
+    int effective;
+
     sdl_gl_backpressure_reset_stats();
-    const int result = SDL_GL_SetSwapInterval(requested);
-    const int effective = SDL_GL_GetSwapInterval();
+    result = SDL_GL_SetSwapInterval(requested);
+    if (result != 0 && tearing) {
+        result = SDL_GL_SetSwapInterval(0);
+    }
+    effective = SDL_GL_GetSwapInterval();
     s_glSwapEffective = effective;
 
     fprintf(stderr,
-            "[PRESENT-MODE] backend=gl policy=%s rate=%u "
+            "[PRESENT-MODE] backend=gl policy=%s rate=%u tearing=%d "
             "requestedSwap=%d effectiveSwap=%d supported=%d\n",
             present_sched_present_policy_name(),
-            present_sched_present_rate(), requested, effective,
-            result == 0 && effective == requested ? 1 : 0);
+            present_sched_present_rate(), tearing ? 1 : 0, requested, effective,
+            result == 0 && (effective == requested ||
+                            (tearing && effective == 0)) ? 1 : 0);
 }
 
 static int sdl_init_gl(Uint32 base_flags) {
@@ -2508,7 +2525,7 @@ static bool s_occludedDeadlineReady;
 static uint64_t s_presentLastNs;
 static uint64_t s_presentSyntheticPhase;
 
-static unsigned present_display_rate(void) {
+unsigned platform_present_display_rate(void) {
 #ifdef __EMSCRIPTEN__
     return 0u; /* measured directly from requestAnimationFrame timestamps */
 #else
@@ -2546,7 +2563,7 @@ static void present_pace_lazy_init(void) {
         s_presentEffectiveRate = present_sched_present_rate();
         s_presentSoftwareDeadline = true;
     } else if (s_presentKind == MDKR_PRESENT_DISPLAY) {
-        s_presentEffectiveRate = present_display_rate();
+        s_presentEffectiveRate = platform_present_display_rate();
         s_presentSoftwareDeadline = heldFrameDeadline;
     } else if (s_presentKind == MDKR_PRESENT_UNCAPPED &&
                s_paceMode == PACE_SYNTH) {
@@ -2559,7 +2576,7 @@ static void present_pace_lazy_init(void) {
          * can only burn a core and starve the audio sink; it cannot improve
          * visible motion. Service held frames at the display cadence while
          * leaving the requested policy and authored output unchanged. */
-        s_presentEffectiveRate = present_display_rate();
+        s_presentEffectiveRate = platform_present_display_rate();
         s_presentSoftwareDeadline = true;
     }
     if (s_presentSoftwareDeadline && s_presentEffectiveRate != 0u &&

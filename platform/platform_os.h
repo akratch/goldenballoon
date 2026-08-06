@@ -134,6 +134,10 @@ int      platform_vi_pace_compensating(void);
 /* Presentation subloop. Returns nonzero when the resolved policy needs host
  * opportunities between authoritative ticks. */
 int      platform_present_subloop_fields(void);
+/* Refresh of the display the window is on, or 0 where the host does not report
+ * one. The deadline pacer and the backend present-mode choice must agree about
+ * what "above the display" means, so both read this one number. */
+unsigned platform_present_display_rate(void);
 /* Pace one present; returns exact clock units (one source field == 1e9). */
 uint64_t platform_vi_present_pace_units(void);
 /* Commit one fixed ticket to the synthetic COUNTER at the tick boundary. */
