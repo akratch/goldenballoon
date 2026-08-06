@@ -640,7 +640,10 @@ def main() -> int:
             # full Park Warden footprint materially darkens the grass behind
             # the lower row. Limit this extra renderer run to the base layout;
             # the same scale-normalisation helper owns every roster shape.
-            if layout.name == "base" and args.aspect is None:
+            # The control runs at every requested aspect - the ultrawide task
+            # previously skipped it entirely, asserting strictly less than the
+            # default task's own base iteration.
+            if layout.name == "base":
                 control_dir = root / "base-unscaled-shadow-control"
                 control_save = control_dir / "save"
                 control_frames = control_dir / "frames"
