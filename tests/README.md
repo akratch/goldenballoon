@@ -180,6 +180,11 @@ The remaining registered camera runtime gates are deliberately orthogonal:
   visibility. Emergency elevated/azimuthal endpoints are counted separately.
 - `check_camera_3p_tt_runtime.py` validates the 3P T.T. fourth viewport/camera 3
   directly, avoiding an unrelated inherited autopilot-progress limitation.
+- `check_camera_motion_quality.py` captures the MOTION-01 motion metrics
+  (retract latency, recovery, jerk, shoulder flips, emergency dwell, published
+  cuts, blocker churn) on the lake, hub, and 3P T.T. spectate routes under
+  Modern. Chatter and shoulder-flip invariants gate hard; the analog
+  distributions print as the labelled baseline for threshold-setting.
 - `check_camera_obstruction_performance_runtime.py` runs one optimized binary in
   Observe and Modern over a long 4P route, requiring at least 5,000 active
   four-viewport fixed ticks (more than 83 seconds at 60 Hz). It gates finalizer/query percentiles,
