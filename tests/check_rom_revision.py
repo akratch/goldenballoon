@@ -531,9 +531,16 @@ def check_language_capability(args, failures):
     """Exercise the real Options route, not just the loader's German asset arm.
 
     Starting with English, the full small cycle proves both directions: PAL is
-    EN -> DE -> EN -> FR -> DE, while the US selector remains EN <-> FR. This
-    catches accidental removal of PAL German and accidental exposure of it for
-    US carts.
+    EN -> DE -> EN -> FR -> DE, while the US selector remains EN <-> FR by
+    default. This catches accidental removal of PAL German and accidental
+    exposure of it for US carts.
+
+    A third arm proves the opt-in escape hatch (GitHub issue #19): us.v80 is
+    byte-identical to pal.v80 in every asset section (docs/ROM_REVISIONS.md
+    Sec 5), so its German text and fonts are already on the disc. Setting
+    Gameplay.MenuLanguages=all (MDKR_MENU_LANGUAGES=all) must make the US
+    selector cycle exactly like PAL's authored one, with no ROM edit and no
+    restart.
     """
     print("6. PAL v80 Options cycle exposes German; US stays English/French")
     script = LANGUAGE_SCRIPT
@@ -542,20 +549,28 @@ def check_language_capability(args, failures):
         print("   FAIL missing fixture")
         return
     expected = {
-        "us.v80": ([2, 0, 2, 0], 0, "EN <-> FR"),
-        "pal.v80": ([1, 0, 2, 1], 1, "EN -> DE -> EN -> FR -> DE"),
+        "us.v80": ([2, 0, 2, 0], 0, "EN <-> FR", None),
+        "pal.v80": ([1, 0, 2, 1], 1, "EN -> DE -> EN -> FR -> DE", None),
+        "us.v80 +MDKR_MENU_LANGUAGES=all": (
+            [1, 0, 2, 1], 1, "EN -> DE -> EN -> FR -> DE (opt-in, US disc)",
+            {"MDKR_MENU_LANGUAGES": "all"}),
     }
-    for short, (want_languages, want_european, label) in expected.items():
-        rom = args.found.get(short)
+    for short, (want_languages, want_european, label, extra_env) in expected.items():
+        rom_short = short.split()[0]
+        rom = args.found.get(rom_short)
         if not rom:
             print("   %-8s SKIP (not present)" % short)
             continue
+        run_env = {"MDKR_TRACE": "1"}
+        if extra_env:
+            run_env.update(extra_env)
         with tempfile.TemporaryDirectory(prefix="mdkr-language-") as run_root:
             save = os.path.join(run_root, "save")
             os.mkdir(save)
+            run_env["MDKR_SAVE_DIR"] = save
             rc, out = run_engine(
                 args.build, rom, 1900, script=script,
-                extra_env={"MDKR_TRACE": "1", "MDKR_SAVE_DIR": save},
+                extra_env=run_env,
                 verbose=args.verbose)
         events = [(int(m.group("language")), int(m.group("european")))
                   for m in LANGUAGE_TRACE_RE.finditer(out)]
