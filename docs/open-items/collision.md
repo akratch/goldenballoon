@@ -2,6 +2,14 @@
 
 > One subsystem of the split [open-items index](README.md), which states how these files are kept.
 
+**Currently open** (per [`README.md`](README.md#still-open)'s open/closed
+table): 2 items.
+
+| Item | Where |
+|---|---|
+| Boss levels 41/54 collision-candidate headroom: cap deliberately NOT raised; the 84-slot margin is measured/gated but still worth watching | [§ G4 follow-up: per-level headroom measured and gated, cap NOT raised](#g4-follow-up-per-level-headroom-measured-and-gated-cap-not-raised) |
+| "Lose animation before the race" / "1st place recorded as a loss" report on the first boss — not reproduced; superseded by gameplay.md's wave "bossverdict" | [§ Report 3 — the lose animation ... NOT REPRODUCED](#report-3--the-lose-animation-played-before-the-race-and-1st-place-recorded-as-a-loss-not-reproduced) |
+
 
 ## FIXED: object-model collision never reported a hit, so locked doors were intangible — wave "objcoll"
 

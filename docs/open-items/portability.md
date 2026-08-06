@@ -2,6 +2,13 @@
 
 > One subsystem of the split [open-items index](README.md), which states how these files are kept.
 
+**Currently open** (per [`README.md`](README.md#still-open)'s open/closed
+table): 1 item.
+
+| Item | Where |
+|---|---|
+| Decomp arrays split across two C objects and indexed across the boundary: 3 fixed, the rest measured latent; `check_array_bounds_sweep.py` catches new ones | [§ SWEPT: decomp arrays split into two C objects — wave "splitsweep"](#swept-decomp-arrays-split-into-two-c-objects-and-indexed-across-the-boundary-wave-splitsweep) |
+
 
 ## FIXED: tagged macOS artifact exposed a stale magic-code endian failure
 

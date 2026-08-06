@@ -73,7 +73,7 @@ manifest expanded, the RAW16 task passed separately in Debug, Release, and ASan;
 the broad audio, wasm build, and real Chromium runtime also pass. At the
 `fa7adcc` billboard checkpoint, the complete Release-led manifest passed all
 37/37 tasks in 7m53s, including every ASan/UBSan, linked-wasm, and real-Chromium
-arm. At the v0.3 release checkpoint, the current manifest passed the **38-task
+arm. At the v0.3 release checkpoint, the then-current manifest passed the **38-task
 optimized native/sanitizer stage in 22m17s**, the **29-task Debug primary stage
 in 12m31s**, and both wasm-only tasks — including real Chromium — in **1m05s**.
 The restoration/remaster source branch subsequently passed the expanded
@@ -402,8 +402,9 @@ and no boss check uses the legacy collision arm to obtain a pass.
 The subsequent RAW16/endian wave is checkpointed at `a651cdc`: its focused gate
 passes in Debug, Release, and ASan, the broad audio gate remains green, wasm
 compiles cleanly, and actual Chromium reaches nonzero fixed-mode RAW16 loads.
-The expanded 37-task manifest passes completely at the later `fa7adcc`
-checkpoint in 7m53s.
+The expanded 37-task manifest passed completely at the later `fa7adcc`
+checkpoint in 7m53s (historical figure — the live task count is tracked in
+§6, item 6, "Normalise the `--build` convention").
 
 The widescreen refinement is checkpointed at `fa7adcc`. The original display
 policy kept HUD art undistorted but missed regular world billboards: F3DDKR adds
@@ -432,8 +433,9 @@ under halt-on-error alignment UBSan across all menus, tracks, legal vehicles,
 both Adventure directions, boss/object collision, 2P, and the balloon/FOV pixel
 fixture. Debug, Release, ASan, and wasm builds also pass.
 
-The standard complete manifest at `7a7f2f7` passes all **38/38 tasks in
-19m51s**, including linked wasm and real Chromium. Its first invocation had one
+The standard complete manifest at `7a7f2f7` passed all **38/38 tasks in
+19m51s** (historical figure; see §6, item 6 for the live count), including
+linked wasm and real Chromium. Its first invocation had one
 anonymous signal-6 exit on the last alignment vehicle row after 46 passes; the
 exact level-15 plane route then passed 20/20 repetitions and the whole layout
 task passed on a strict rerun. The sweep had hidden child output unless `-v`;

@@ -189,6 +189,32 @@ def validate_host_presentation(backend: Backend, policy: str,
     return False
 
 
+def explain_headless_window_server(output: str) -> str | None:
+    """Name the likely cause when the AppHost surface never had a drawable.
+
+    A locked screen or a headless/CI session with no active window server
+    hands back zero drawables for every present attempt: attempts=N
+    presented=0 unavailable=N, with N == attempts, in the run's one canonical
+    telemetry row. validate_host_presentation already treats that shape as a
+    legitimate (non-crashing) "no host-side present" outcome rather than
+    raising, but a caller that then reports it with a generic missing-marker
+    message sends debugging down the wrong path -- this codebase burned a full
+    debugging session on exactly that before the distinction was added here.
+    Detect the signature and say so plainly instead.
+    """
+    match = HOST_PRESENT_RE.search(output)
+    if not match:
+        return None
+    attempts, presented, unavailable = (
+        int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    if attempts > 0 and presented == 0 and unavailable == attempts:
+        return (
+            f"the window server provided no drawables (attempts={attempts} "
+            f"presented=0 unavailable={attempts}) — active display session "
+            "required for this arm; rerun when a session is available")
+    return None
+
+
 def host_telemetry(output: str, label: str) -> tuple[int, ...]:
     """Parse telemetry only; each outcome owns its accounting policy.
 
@@ -1071,6 +1097,9 @@ def run_fps_only_overlay(binary: Path, rom: Path, timeout: int,
         host_presented = validate_host_presentation(
             BACKENDS[0], "fps-only", output)
         if not host_presented:
+            cause = explain_headless_window_server(output)
+            if cause:
+                raise RuntimeError(f"FPS-only WebGPU overlay: {cause}")
             raise RuntimeError(
                 "FPS-only WebGPU overlay did not obtain a macOS drawable")
         rows = PRESSURE_RE["webgpu"].findall(output)

@@ -2,6 +2,10 @@
 
 > One subsystem of the split [open-items index](README.md), which states how these files are kept.
 
+**Currently open** (per [`README.md`](README.md#still-open)'s open/closed
+table): none — every entry below is closed or resolved; kept as the
+append-only historical record.
+
 
 ## Integration pending
 

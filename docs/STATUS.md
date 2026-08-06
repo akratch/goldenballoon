@@ -1,5 +1,9 @@
 # Status log
 
+> **Historical record.** This log's entries end before 1.0.1; nothing below
+> reflects the project's present state. For current status and where to find
+> it, start at [`README.md`](README.md)'s index.
+
 ## Post-v0.4 — pre-release deep review and wave "shadowdeep" (2026-07-29)
 
 Before cutting the next release, a four-lane deep review (adversarial review

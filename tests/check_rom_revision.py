@@ -523,7 +523,7 @@ def check_supported_parity(args, failures, workdir):
 # 6. PAL v80 retains its authored language selector
 # --------------------------------------------------------------------------
 LANGUAGE_TRACE_RE = re.compile(
-    r"menu_language: selected=(?P<language>\d+) european_rom=(?P<european>[01])"
+    r"menu_language: selected=(?P<language>\d+) german_menu=(?P<german>[01])"
 )
 
 
@@ -555,7 +555,7 @@ def check_language_capability(args, failures):
             {"MDKR_MENU_LANGUAGES": "authentic"}),
         "pal.v80": ([1, 0, 2, 1], 1, "EN -> DE -> EN -> FR -> DE", None),
     }
-    for short, (want_languages, want_european, label, extra_env) in expected.items():
+    for short, (want_languages, want_german, label, extra_env) in expected.items():
         rom_short = short.split()[0]
         rom = args.found.get(rom_short)
         if not rom:
@@ -572,16 +572,16 @@ def check_language_capability(args, failures):
                 args.build, rom, 1900, script=script,
                 extra_env=run_env,
                 verbose=args.verbose)
-        events = [(int(m.group("language")), int(m.group("european")))
+        events = [(int(m.group("language")), int(m.group("german")))
                   for m in LANGUAGE_TRACE_RE.finditer(out)]
         got_languages = [language for language, _ in events]
-        got_european = {european for _, european in events}
+        got_german = {german for _, german in events}
         if (rc != 0 or got_languages != want_languages or
-                got_european != {want_european}):
+                got_german != {want_german}):
             failures.append(
                 "%s language selector got %s (events %s, exit %d), want %s/%d (%s)"
                 % (short, got_languages, events, rc, want_languages,
-                   want_european, label))
+                   want_german, label))
             print("   %-8s FAIL got %s" % (short, got_languages))
         else:
             print("   %-8s ok  %s" % (short, label))

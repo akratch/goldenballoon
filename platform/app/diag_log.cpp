@@ -181,6 +181,29 @@ void ensureStandardDescriptors() {
     }
 }
 
+#if defined(_WIN32)
+/* MSYS2 UCRT64 (mingw-w64's modern CRT, distinct from the classic msvcrt this
+ * file was originally validated against) binds a GUI-subsystem process's
+ * stdout/stderr FILE objects to the sentinel _NO_CONSOLE_FILENO (-2) at CRT
+ * startup when no console was inherited. A FILE bound to that sentinel is a
+ * permanent no-op: fprintf/fwrite through it return "success" without
+ * consulting the live per-process fd table at all, so the dup2() swaps below
+ * -- which only repoint fd 1/2 at the OS level -- would never be observed by
+ * stdout/stderr on that CRT, and the tee would silently discard everything
+ * while still reporting a successful install. msvcrt does not have this
+ * failure mode, but freopen()'ing here is harmless there too (it just closes
+ * and reopens the same target), so it is done unconditionally on Windows
+ * rather than trying to detect the CRT flavor at runtime. This must run after
+ * ensureStandardDescriptors() so fd 0/1/2 are already valid: freopen's
+ * internal close+open then reuses fd 1/2 (the lowest free descriptor),
+ * instead of drifting onto some other number the rest of this file never
+ * looks at. */
+void rebindStandardStreams() {
+    std::freopen("NUL", "wb", stdout);
+    std::freopen("NUL", "wb", stderr);
+}
+#endif
+
 void closeSavedDescriptors() {
     closeFd(g_realOut);
     closeFd(g_realErr);
@@ -230,6 +253,9 @@ bool DiagLog_install() {
     g_logPath = directory.empty() ? "" : directory + "mdkr64.log";
 
     ensureStandardDescriptors();
+#if defined(_WIN32)
+    rebindStandardStreams();
+#endif
     g_realOut = duplicateFd(1);
     g_realErr = duplicateFd(2);
     int pipeFds[2] = {-1, -1};

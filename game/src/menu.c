@@ -17059,7 +17059,7 @@ void set_language(s32 language) {
     load_menu_text(language);
     mark_write_eeprom_settings();
 #ifdef NATIVE_PORT
-    MDKR_TRACE("menu_language: selected=%d european_rom=%d", (int)language,
+    MDKR_TRACE("menu_language: selected=%d german_menu=%d", (int)language,
                menu_language_has_german());
 #endif
 #endif

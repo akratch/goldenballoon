@@ -2,6 +2,15 @@
 
 > One subsystem of the split [open-items index](README.md), which states how these files are kept.
 
+**Currently open** (per [`README.md`](README.md#still-open)'s open/closed
+table): 3 items.
+
+| Item | Where |
+|---|---|
+| Shadow strength is one preset-wide umbra multiplier, not per-surface: no N·L term, bias not slope-scaled, umbra values unmeasured against a reference image | [§ OPEN: shadow strength is one preset-wide choice](#open-shadow-strength-is-one-preset-wide-choice-not-a-per-surface-one) |
+| M4.5 WebGPU backend — done and qualified, but its open notes (remaining platform/backend breadth) are still live | [§ M4.5 WebGPU backend — open notes](#m45-webgpu-backend--done-qualified-fail-closed-default-open-notes) |
+| M1 residuals deliberately deferred: WebGPU 4x MSAA (IQ-8) and a loader-only, content-free texture-pack path (IQ-11) | [§ FIXED: restoration/remaster sprint](#fixed-restorationremaster-sprint--sprite-bounds-rdp-gradients-sdf-text-moving-mips-and-rl-1) |
+
 
 ## FIXED: three effects drew zero pixels, because hand-packed triangles were built in N64 byte order
 
