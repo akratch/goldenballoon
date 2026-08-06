@@ -104,8 +104,10 @@ def main() -> int:
         try:
             width, height, pixels = read_ppm(
                 frames_dir / f"frame_{CAPTURE_FRAME}.ppm")
+            # The card draws like every retail portrait at this anchor: 40x40
+            # top-left at (260,16) of the 320x240 frame.
             samples = portrait_samples(
-                width, height, pixels, (0.755, 0.0, 0.88, 0.15))
+                width, height, pixels, (0.8125, 0.0667, 0.9375, 0.2333))
             total = len(samples)
             counts = {name: colour_count(samples, name) for name in
                       ("purple", "skin", "blue", "gold")}
