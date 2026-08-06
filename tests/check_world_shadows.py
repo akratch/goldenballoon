@@ -24,7 +24,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import (DEFAULT_BUILD_DIR, DEVICE_MARKERS, fatal_re,
+                           read_ppm, resolve_binary)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -39,11 +40,7 @@ SHADOW_RE = re.compile(
     r"\[WORLD-SHADOW\] backend=(gl|webgpu) attempted=(\d+) "
     r"complete=(\d+) fallback=(\d+) resourceFailures=(\d+) latched=(\d+)"
 )
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|validation error|device lost|shader compilation failed",
-    re.IGNORECASE,
-)
+FATAL_RE = fatal_re(*DEVICE_MARKERS, ignore_case=True)
 
 
 @dataclass(frozen=True)
@@ -75,20 +72,6 @@ def normalized_pace(output: str) -> tuple[str, ...]:
                 re.sub(r" dtms=\S+", " dtms=<wall>", line[marker:])
             )
     return tuple(rows)
-
-
-def read_ppm(path: Path) -> tuple[int, int, bytes]:
-    parts = path.read_bytes().split(b"\n", 3)
-    require(
-        len(parts) == 4 and parts[0] == b"P6" and parts[2] == b"255",
-        f"{path}: unsupported PPM header",
-    )
-    width, height = (int(value) for value in parts[1].split())
-    require(
-        len(parts[3]) == width * height * 3,
-        f"{path}: malformed RGB raster",
-    )
-    return width, height, parts[3]
 
 
 def run_arm(
@@ -294,7 +277,7 @@ def verify_fallback(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=240)
     parser.add_argument("-v", "--verbose", action="store_true")

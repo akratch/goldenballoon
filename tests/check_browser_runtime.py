@@ -63,7 +63,8 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
-from harness_utils import completed_tick_conservation
+from harness_utils import (completed_tick_conservation, config_checksum,
+                           slot_checksum_valid)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1447,8 +1448,7 @@ def save_generation_is_checksum_safe(raw: Any) -> bool:
     def block_safe(block: bytes) -> bool:
         if block in (bytes(len(block)), b"\xff" * len(block)):
             return True
-        stored = int.from_bytes(block[:2], "big")
-        return stored == (5 + sum(block[2:])) & 0xFFFF
+        return slot_checksum_valid(block)
 
     if not all(block_safe(image[index:index + 40])
                for index in range(0, 120, 40)):
@@ -1457,9 +1457,7 @@ def save_generation_is_checksum_safe(raw: Any) -> bool:
     if config not in (bytes(8), b"\xff" * 8):
         value = int.from_bytes(config, "big")
         payload = value & 0x00FFFFFFFFFFFFFF
-        checksum = 5 + sum((payload >> (index * 4)) & 0xF
-                           for index in range(14))
-        if (value >> 56) != checksum & 0xFF:
+        if (value >> 56) != config_checksum(payload) & 0xFF:
             return False
     return block_safe(image[128:320]) and block_safe(image[320:512])
 

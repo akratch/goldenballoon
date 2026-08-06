@@ -51,7 +51,9 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import resolve_binary
+from harness_utils import (config_block as save_config_block,
+                           DEFAULT_BUILD_DIR, put_bits, resolve_binary,
+                           seal_slot, SLOT_BYTES, slot_checksum_valid)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -60,7 +62,6 @@ BOSS_SCRIPT = ROOT / "tests/input_scripts/race_full_3lap_tt.txt"
 RELOAD_SCRIPT = ROOT / "tests/input_scripts/adventure_resume_race.txt"
 
 EEPROM_BYTES = 512
-SLOT_BYTES = 40
 CONFIG_OFFSET = 120
 RECORD_OFFSETS = (128, 320)
 RECORD_BYTES = 192
@@ -147,10 +148,6 @@ BAD_RE = re.compile(
 )
 
 
-def put_bits(bits: list[int], width: int, value: int) -> None:
-    bits.extend((value >> shift) & 1 for shift in range(width - 1, -1, -1))
-
-
 def read_bits(data: bytes, offset: int, width: int) -> int:
     value = 0
     for bit in range(offset, offset + width):
@@ -201,16 +198,12 @@ def save_order(rom_path: str) -> list[int]:
 
 
 def config_block() -> bytes:
-    value = 1  # retail subtitle default; Adventure Two remains locked
-    checksum = 5 + sum((value >> (i * 4)) & 0xF for i in range(14))
-    value |= (checksum & 0xFF) << 56
-    return value.to_bytes(8, "big")
+    # retail subtitle default; Adventure Two remains locked
+    return save_config_block(1)
 
 
 def sum_block(size: int) -> bytes:
-    out = bytearray(size)
-    out[:2] = ((5 + sum(out[2:])) & 0xFFFF).to_bytes(2, "big")
-    return bytes(out)
+    return bytes(seal_slot(bytearray(size)))
 
 
 def checkpoint_slot(eligible: list[int]) -> bytes:
@@ -240,8 +233,7 @@ def checkpoint_slot(eligible: list[int]) -> bytes:
         sum(bits[i + j] << (7 - j) for j in range(8))
         for i in range(0, len(bits), 8)
     )
-    slot[:2] = ((5 + sum(slot[2:])) & 0xFFFF).to_bytes(2, "big")
-    return bytes(slot)
+    return bytes(seal_slot(slot))
 
 
 def checkpoint_image(eligible: list[int]) -> bytes:
@@ -265,8 +257,7 @@ def decode_slot(save: bytes, eligible: list[int]) -> dict[str, object]:
         for level in (*FIRST_THREE, HOT_TOP_VOLCANO, TRICKY_ONE)
     }
     return {
-        "checksum_ok": read_bits(slot, 0, 16)
-        == ((5 + sum(slot[2:])) & 0xFFFF),
+        "checksum_ok": slot_checksum_valid(slot),
         "course": course,
         "taj": read_bits(slot, 84, 6),
         "bosses": read_bits(slot, 100, 12),
@@ -646,7 +637,7 @@ def validate_broken_control(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument(
         "--break-invariant", action="store_true",

@@ -107,7 +107,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, replace
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, read_ppm, resolve_binary
 
 SCRIPT = "tests/input_scripts/race_2p_split.txt"
 FRAMES = 9600          # level_load ~2491, clock starts 2662; post-race flow needs
@@ -288,26 +288,6 @@ def terminal_control_failures(
     return failures
 
 
-def read_ppm(path: str) -> tuple[int, int, bytes]:
-    data = open(path, "rb").read()
-    idx, fields = 0, []
-    while len(fields) < 4:
-        while data[idx:idx + 1].isspace():
-            idx += 1
-        if data[idx:idx + 1] == b"#":
-            while data[idx:idx + 1] not in (b"\n", b""):
-                idx += 1
-            continue
-        j = idx
-        while not data[j:j + 1].isspace():
-            j += 1
-        fields.append(data[idx:j])
-        idx = j
-    idx += 1                      # single whitespace byte before the raster
-    w, h = int(fields[1]), int(fields[2])
-    return w, h, data[idx:idx + w * h * 3]
-
-
 def band_metrics(w: int, h: int, px: bytes, y0: int, y1: int) -> tuple[int, float]:
     """(distinct 5-bit-quantized colours, luma std-dev) over one horizontal band."""
     x0, x1 = int(w * 0.15), int(w * 0.85)
@@ -472,7 +452,7 @@ def blank_half_control(frame_dir: str) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("--renderer", default=None, choices=["gl", "webgpu"],
                     help="force a backend (default: the build's native default, WebGPU)")

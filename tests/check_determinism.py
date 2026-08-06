@@ -53,7 +53,7 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 DEFAULT_FIXTURES = [
     "nav_to_character_select",  # music-synced character animation: the original repro
@@ -173,7 +173,7 @@ def check_fixture(fixture, args, renderer):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("--runs", type=int, default=2)
     ap.add_argument("--frames", type=int, default=1500)

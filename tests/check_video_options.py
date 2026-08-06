@@ -24,7 +24,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 MENU_RE = re.compile(r"menu_init: menuId=(\d+)")
 CHANGE_RE = re.compile(
@@ -342,7 +342,7 @@ def run_malformed_launcher(binary: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     args = parser.parse_args()
 

@@ -18,7 +18,7 @@ import tempfile
 from pathlib import Path
 
 from check_taj_character_select import LAYOUTS, STATE_TEXT, input_script, save_image
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -301,7 +301,7 @@ def run_determinism_case(binary: Path, rom: Path, root: Path,
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()

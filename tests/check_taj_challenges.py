@@ -34,7 +34,8 @@ import tempfile
 
 from check_adventure_two import eeprom_image
 from check_race_drive import scene_metrics
-from harness_utils import resolve_binary
+from harness_utils import (DEFAULT_BUILD_DIR, resolve_binary, seal_slot,
+                           slot_checksum_valid)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -108,7 +109,7 @@ def make_eeprom(flags: int, balloons: int) -> bytes:
     slot = bytearray(payload[:40])
     replace_bits(slot, 16 + 68, 6, flags)
     replace_bits(slot, 16 + 68 + 6 + 10 + 12, 7, balloons)
-    slot[:2] = ((5 + sum(slot[2:])) & 0xFFFF).to_bytes(2, "big")
+    seal_slot(slot)
     payload[:40] = slot
     return bytes(payload)
 
@@ -117,10 +118,7 @@ def decode_slot(payload: bytes) -> dict[str, int | bool]:
     slot = payload[:40]
     bits = "".join(f"{byte:08b}" for byte in slot)
     return {
-        "checksum_ok": (
-            int.from_bytes(slot[:2], "big") ==
-            ((5 + sum(slot[2:])) & 0xFFFF)
-        ),
+        "checksum_ok": slot_checksum_valid(slot),
         "flags": int(bits[84:90], 2),
         "balloons": int(bits[112:119], 2),
     }
@@ -542,7 +540,7 @@ def validate_arm(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("-v", "--verbose", action="store_true")

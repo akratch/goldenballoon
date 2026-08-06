@@ -82,7 +82,7 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 RACE_SCRIPT = "tests/input_scripts/nav_to_time_trial_race.txt"   # 8-racer Tracks
 TT_SCRIPT = "tests/input_scripts/race_full_3lap_tt.txt"          # solo Time Trial
@@ -334,7 +334,7 @@ def describe(arm: Arm, verbose: bool) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()

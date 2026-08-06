@@ -62,8 +62,9 @@ import shutil
 import subprocess
 import sys
 
-from harness_utils import (EEPROM_ARTIFACTS, preserved_eeprom, resolve_binary,
-                          save_env, test_save_dir)
+from harness_utils import (DEFAULT_BUILD_DIR, EEPROM_ARTIFACTS,
+                           preserved_eeprom, resolve_binary, save_env,
+                           test_save_dir)
 
 SCRIPT = "tests/input_scripts/race_full_3lap_tt.txt"
 FRAMES = 13000
@@ -134,7 +135,7 @@ def main() -> int:
 
 def run_check() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()

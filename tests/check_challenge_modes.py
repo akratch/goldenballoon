@@ -55,7 +55,7 @@ import tempfile
 
 from check_adventure_two import eeprom_image
 from check_race_drive import scene_metrics
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary, slot_checksum
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -202,7 +202,7 @@ def decode_save(
         return {"checksum_ok": False, "status": -1, "tt": -1}
     slot = payload[:40]
     checksum = int.from_bytes(slot[:2], "big")
-    expected = (5 + sum(slot[2:])) & 0xFFFF
+    expected = slot_checksum(slot)
     ordinal = eligible.index(course)
     return {
         "checksum_ok": checksum == expected,
@@ -849,7 +849,7 @@ def validate_control(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--quick", action="store_true",
                         help="run one win/loss course and one positive control")

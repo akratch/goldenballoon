@@ -80,7 +80,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
@@ -167,7 +167,7 @@ def replay_summary(output: str) -> dict[str, int]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build-rel")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("-v", "--verbose", action="store_true")

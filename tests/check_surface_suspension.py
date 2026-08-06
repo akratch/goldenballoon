@@ -12,23 +12,18 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import completed_tick_conservation, resolve_binary
+from harness_utils import (completed_tick_conservation, DEFAULT_BUILD_DIR,
+                           fatal_re, GPU_MARKERS, parse_last, resolve_binary)
 
 
 TICKS = 30
 MINIMIZE_START = 8
 MINIMIZE_END = 18
-SUMMARY_RE = re.compile(r"\[PRESENTSCHED-SUMMARY\] (.*)")
-REPLAY_RE = re.compile(r"\[REPLAY-SUMMARY\] (.*)")
-PRESSURE_RE = re.compile(r"\[(?:WGPU|GL)-BACKPRESSURE\] (.*)")
 SURFACE_RE = re.compile(
     r"\[SURFACE-PACING\] presentable=(\d+) renderElided=(\d+) "
     r"resumeRebase=(\d+) tick=(\d+) frame=(\d+)"
 )
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|frame queue failed|GPU completion fence failed"
-)
+FATAL_RE = fatal_re(*GPU_MARKERS)
 
 
 @dataclass(frozen=True)
@@ -43,22 +38,6 @@ class Result:
     replay: dict[str, int]
     pressure: dict[str, int]
     surface: list[tuple[int, int, int, int, int]]
-
-
-def parse_last(output: str, pattern: re.Pattern[str], label: str) -> dict[str, int]:
-    rows = list(pattern.finditer(output))
-    if len(rows) != 1:
-        raise RuntimeError(f"{label}: expected one row, got {len(rows)}")
-    fields: dict[str, int] = {}
-    for token in rows[0].group(1).split():
-        key, separator, value = token.partition("=")
-        if not separator:
-            continue
-        try:
-            fields[key] = int(value)
-        except ValueError:
-            continue
-    return fields
 
 
 def marked(output: str, marker: str) -> list[str]:
@@ -126,9 +105,12 @@ def run(binary: Path, rom: Path, backend: str, minimized: bool,
             marked(output, "[EVENTHASH]"),
             marked(output, "[INPUTHASH]"),
             hashlib.sha256(pcm.read_bytes()).hexdigest(),
-            parse_last(output, SUMMARY_RE, f"{label} scheduler"),
-            parse_last(output, REPLAY_RE, f"{label} replay"),
-            parse_last(output, PRESSURE_RE, f"{label} backpressure"),
+            parse_last(output, "PRESENTSCHED-SUMMARY",
+                       label=f"{label} scheduler", expect_one=True),
+            parse_last(output, "REPLAY-SUMMARY",
+                       label=f"{label} replay", expect_one=True),
+            parse_last(output, "WGPU-BACKPRESSURE", "GL-BACKPRESSURE",
+                       label=f"{label} backpressure", expect_one=True),
             [tuple(map(int, match.groups())) for match in
              SURFACE_RE.finditer(output)],
         )
@@ -251,7 +233,7 @@ def validate_pair(control: Result, minimized: Result) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build-rel")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("-v", "--verbose", action="store_true")

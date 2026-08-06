@@ -37,7 +37,9 @@ import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, fatal_re,
+                           FX_MARKERS, read_ppm as read_ppm_bytes,
+                           resolve_binary)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -63,10 +65,7 @@ MIP_RE = re.compile(r"\[MIP\] uploads=(\d+) levels=(\d+)")
 PACE_POSITION_RE = re.compile(
     r"\[PACE\] frame=(\d+).*racer x=(\S+) y=(\S+) z=(\S+)"
 )
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|Assertion|\[FX BUG\]"
-)
+FATAL_RE = fatal_re(*ASSERT_MARKERS, *FX_MARKERS)
 
 
 @dataclass(frozen=True)
@@ -136,18 +135,7 @@ def environment(backend: str) -> dict[str, str]:
 
 
 def read_ppm(path: Path) -> Image:
-    data = path.read_bytes()
-    match = re.match(br"P6\s+(\d+)\s+(\d+)\s+255\s", data)
-    if match is None:
-        raise ValueError(f"{path}: malformed P6 PPM")
-    width, height = int(match.group(1)), int(match.group(2))
-    pixels = data[match.end():]
-    if len(pixels) != width * height * 3:
-        raise ValueError(
-            f"{path}: got {len(pixels)} raster bytes, "
-            f"expected {width * height * 3}"
-        )
-    return Image(width, height, pixels)
+    return Image(*read_ppm_bytes(path))
 
 
 def normalized_pace(output: str) -> tuple[str, ...]:
@@ -333,7 +321,7 @@ def displacement(positions: tuple[tuple[int, float, float, float], ...]) -> floa
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument(
         "--backend",

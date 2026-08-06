@@ -115,11 +115,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import (
-    completed_tick_conservation,
-    resolve_binary,
-    tear_free_presentation,
-)
+from harness_utils import (completed_tick_conservation, DEFAULT_BUILD_DIR,
+                           parse_last, resolve_binary, tear_free_presentation)
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
@@ -128,13 +125,6 @@ TICKS = 3600
 # Archived v1/v2 streams remain selectable only in check_state_hash.py.
 HASH_VERSION = "3"
 
-SUMMARY_RE = re.compile(r"\[PRESENTSCHED-SUMMARY\] (.*)")
-AUDIO_SUMMARY_RE = re.compile(r"\[AUDIO-SERVICE\] (.*)")
-REPLAY_SUMMARY_RE = re.compile(r"\[REPLAY-SUMMARY\] (.*)")
-RETAINED_SUMMARY_RE = re.compile(r"\[RETAINED-TASK\] (.*)")
-OWNER_SUMMARY_RE = re.compile(r"\[PRESENT-OWNERS\] (.*)")
-PACKET_SUMMARY_RE = re.compile(r"\[PRESENT-PACKET\] (.*)")
-WGPU_BACKPRESSURE_RE = re.compile(r"\[WGPU-BACKPRESSURE\] (.*)")
 PERF_RE = re.compile(r"\[PRESENTPERF\] (.*)")
 ENDPOINT_RE = re.compile(
     r"\[PRESENT-ENDPOINT\] frame=(\d+) authored=(\d+) source=(real|replay)")
@@ -165,43 +155,11 @@ TEST_REPLAY_ENV = {
 
 
 def parse_summary(text: str) -> dict[str, int]:
-    match = None
-    for match in SUMMARY_RE.finditer(text):
-        pass
-    if match is None:
-        raise RuntimeError("no [PRESENTSCHED-SUMMARY] row was emitted")
-    fields: dict[str, int] = {}
-    for token in match.group(1).split():
-        key, _, value = token.partition("=")
-        fields[key] = int(value)
-    return fields
+    return parse_last(text, "PRESENTSCHED-SUMMARY")
 
 
 def parse_audio_summary(text: str) -> dict[str, int]:
-    match = None
-    for match in AUDIO_SUMMARY_RE.finditer(text):
-        pass
-    if match is None:
-        raise RuntimeError("no [AUDIO-SERVICE] row was emitted")
-    fields: dict[str, int] = {}
-    for token in match.group(1).split():
-        key, _, value = token.partition("=")
-        fields[key] = int(value)
-    return fields
-
-
-def parse_last_fields(text: str, pattern: re.Pattern[str], name: str) -> dict[str, int]:
-    match = None
-    for match in pattern.finditer(text):
-        pass
-    if match is None:
-        raise RuntimeError(f"no [{name}] row was emitted")
-    fields: dict[str, int] = {}
-    for token in match.group(1).split():
-        key, separator, value = token.partition("=")
-        if separator:
-            fields[key] = int(value)
-    return fields
+    return parse_last(text, "AUDIO-SERVICE")
 
 
 def parse_perf_fields(text: str) -> dict[str, dict[str, int]]:
@@ -352,7 +310,7 @@ def compare_frame_dirs(left: Path, right: Path,
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build-rel")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -539,10 +497,8 @@ def main() -> int:
                     "from the unset schedule")
         try:
             rate60_summary = parse_summary(rate60)
-            replay_summary = parse_last_fields(
-                rate60, REPLAY_SUMMARY_RE, "REPLAY-SUMMARY")
-            retained_summary = parse_last_fields(
-                rate60, RETAINED_SUMMARY_RE, "RETAINED-TASK")
+            replay_summary = parse_last(rate60, "REPLAY-SUMMARY")
+            retained_summary = parse_last(rate60, "RETAINED-TASK")
         except RuntimeError as error:
             print(f"check_presentation_matrix: FAIL\n  - arm B: {error}")
             return 1
@@ -566,12 +522,9 @@ def main() -> int:
         try:
             webgpu_unset_summary = parse_summary(webgpu_unset)
             webgpu_rate60_summary = parse_summary(webgpu_rate60)
-            webgpu_replay_summary = parse_last_fields(
-                webgpu_rate60, REPLAY_SUMMARY_RE, "REPLAY-SUMMARY")
-            webgpu_retained_summary = parse_last_fields(
-                webgpu_rate60, RETAINED_SUMMARY_RE, "RETAINED-TASK")
-            webgpu_backpressure = parse_last_fields(
-                webgpu_rate60, WGPU_BACKPRESSURE_RE, "WGPU-BACKPRESSURE")
+            webgpu_replay_summary = parse_last(webgpu_rate60, "REPLAY-SUMMARY")
+            webgpu_retained_summary = parse_last(webgpu_rate60, "RETAINED-TASK")
+            webgpu_backpressure = parse_last(webgpu_rate60, "WGPU-BACKPRESSURE")
         except RuntimeError as error:
             print(f"check_presentation_matrix: FAIL\n  - arm B WebGPU: {error}")
             return 1
@@ -847,49 +800,31 @@ def main() -> int:
             root / "effect-on" / "frames",
             root / "effect-off" / "frames")
         try:
-            smooth_replay = parse_last_fields(
-                smooth_on, REPLAY_SUMMARY_RE, "REPLAY-SUMMARY")
-            smooth_retained = parse_last_fields(
-                smooth_on, RETAINED_SUMMARY_RE, "RETAINED-TASK")
+            smooth_replay = parse_last(smooth_on, "REPLAY-SUMMARY")
+            smooth_retained = parse_last(smooth_on, "RETAINED-TASK")
             smooth_summary = parse_summary(smooth_on)
             smooth_off_summary = parse_summary(smooth_off)
             delayed_summary = parse_summary(delayed_endpoint)
-            delayed_packet = parse_last_fields(
-                delayed_endpoint, PACKET_SUMMARY_RE, "PRESENT-PACKET")
-            delayed_retained = parse_last_fields(
-                delayed_endpoint, RETAINED_SUMMARY_RE, "RETAINED-TASK")
+            delayed_packet = parse_last(delayed_endpoint, "PRESENT-PACKET")
+            delayed_retained = parse_last(delayed_endpoint, "RETAINED-TASK")
             smooth_perf = parse_perf_fields(smooth_on)
             smooth_endpoints = endpoint_rows(smooth_on)
             smooth_off_endpoints = endpoint_rows(smooth_off)
             delayed_endpoints = endpoint_rows(delayed_endpoint)
             webgpu_mechanism_summary = parse_summary(webgpu_mechanism)
-            webgpu_mechanism_replay = parse_last_fields(
-                webgpu_mechanism, REPLAY_SUMMARY_RE, "REPLAY-SUMMARY")
-            webgpu_mechanism_retained = parse_last_fields(
-                webgpu_mechanism, RETAINED_SUMMARY_RE, "RETAINED-TASK")
-            webgpu_mechanism_backpressure = parse_last_fields(
-                webgpu_mechanism, WGPU_BACKPRESSURE_RE,
-                "WGPU-BACKPRESSURE")
-            object_off_replay = parse_last_fields(
-                object_off, REPLAY_SUMMARY_RE, "REPLAY-SUMMARY")
-            object_off_packet = parse_last_fields(
-                object_off, PACKET_SUMMARY_RE, "PRESENT-PACKET")
-            deformation_off_packet = parse_last_fields(
-                deformation_off, PACKET_SUMMARY_RE, "PRESENT-PACKET")
-            deformation_on_packet = parse_last_fields(
-                deformation_on, PACKET_SUMMARY_RE, "PRESENT-PACKET")
-            particle_on_packet = parse_last_fields(
-                particle_on, PACKET_SUMMARY_RE, "PRESENT-PACKET")
-            particle_off_packet = parse_last_fields(
-                particle_off, PACKET_SUMMARY_RE, "PRESENT-PACKET")
-            particle_color_off_packet = parse_last_fields(
-                particle_color_off, PACKET_SUMMARY_RE, "PRESENT-PACKET")
-            particle_alpha_off_packet = parse_last_fields(
-                particle_alpha_off, PACKET_SUMMARY_RE, "PRESENT-PACKET")
-            effect_on_packet = parse_last_fields(
-                effect_on, PACKET_SUMMARY_RE, "PRESENT-PACKET")
-            effect_off_packet = parse_last_fields(
-                effect_off, PACKET_SUMMARY_RE, "PRESENT-PACKET")
+            webgpu_mechanism_replay = parse_last(webgpu_mechanism, "REPLAY-SUMMARY")
+            webgpu_mechanism_retained = parse_last(webgpu_mechanism, "RETAINED-TASK")
+            webgpu_mechanism_backpressure = parse_last(webgpu_mechanism, "WGPU-BACKPRESSURE")
+            object_off_replay = parse_last(object_off, "REPLAY-SUMMARY")
+            object_off_packet = parse_last(object_off, "PRESENT-PACKET")
+            deformation_off_packet = parse_last(deformation_off, "PRESENT-PACKET")
+            deformation_on_packet = parse_last(deformation_on, "PRESENT-PACKET")
+            particle_on_packet = parse_last(particle_on, "PRESENT-PACKET")
+            particle_off_packet = parse_last(particle_off, "PRESENT-PACKET")
+            particle_color_off_packet = parse_last(particle_color_off, "PRESENT-PACKET")
+            particle_alpha_off_packet = parse_last(particle_alpha_off, "PRESENT-PACKET")
+            effect_on_packet = parse_last(effect_on, "PRESENT-PACKET")
+            effect_off_packet = parse_last(effect_off, "PRESENT-PACKET")
         except RuntimeError as error:
             print(f"check_presentation_matrix: FAIL\n  - arm C: {error}")
             return 1

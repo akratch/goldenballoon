@@ -10,6 +10,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from harness_utils import ABORT_MARKERS, fatal_re
+
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "correctness.yml"
@@ -82,10 +84,7 @@ TESTS_README = TESTS / "README.md"
 PINNED_ACTION_RE = re.compile(
     r"^\s*(?:-\s+)?uses:\s+([^@\s]+)@([^\s#]+)", re.MULTILINE
 )
-CLEAN_FAILURE_FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|SIGSEGV|Segmentation fault|SIGABRT|Abort trap"
-)
+CLEAN_FAILURE_FATAL_RE = fatal_re(*ABORT_MARKERS)
 
 
 def active_shell_source(source: str) -> str:

@@ -30,7 +30,9 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, fatal_re,
+                           read_ppm as read_ppm_bytes, resolve_binary,
+                           VALIDATION_MARKERS)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,10 +50,7 @@ CHARSELECT_CONTROL_SCRIPT = (
     ROOT / "tests" / "input_scripts" / "nav_charselect_late.txt"
 )
 CREDITS_SCRIPT = ROOT / "tests" / "input_scripts" / "credits_via_cheat.txt"
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|Assertion|Validation Error"
-)
+FATAL_RE = fatal_re(*ASSERT_MARKERS, *VALIDATION_MARKERS)
 
 
 @dataclass(frozen=True)
@@ -172,15 +171,7 @@ ROUTE_PREFIXES = ("menu_init:", "level_load:")
 
 
 def read_ppm(path: Path) -> Image:
-    data = path.read_bytes()
-    match = re.match(br"P6\s+(\d+)\s+(\d+)\s+255\s", data)
-    if match is None:
-        raise RuntimeError(f"{path}: malformed P6 image")
-    width, height = int(match.group(1)), int(match.group(2))
-    pixels = data[match.end():]
-    if len(pixels) != width * height * 3:
-        raise RuntimeError(f"{path}: truncated pixel data")
-    return Image(width, height, pixels)
+    return Image(*read_ppm_bytes(path))
 
 
 def clean_environment(
@@ -923,7 +914,7 @@ def source_contract() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument(
         "--roms", default="build/roms",

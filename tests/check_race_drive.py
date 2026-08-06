@@ -94,7 +94,7 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, read_ppm, resolve_binary
 
 SCRIPT = "tests/input_scripts/nav_to_time_trial_race.txt"
 FRAMES = 7500          # ~4380 in-race frames; the AI finishes 3 laps at ~8100
@@ -160,26 +160,6 @@ def is_finite(v: float) -> bool:
     return v == v and -1e30 < v < 1e30
 
 
-def read_ppm(path: str) -> tuple[int, int, bytes]:
-    data = open(path, "rb").read()
-    idx, fields = 0, []
-    while len(fields) < 4:
-        while data[idx:idx + 1].isspace():
-            idx += 1
-        if data[idx:idx + 1] == b"#":
-            while data[idx:idx + 1] not in (b"\n", b""):
-                idx += 1
-            continue
-        j = idx
-        while not data[j:j + 1].isspace():
-            j += 1
-        fields.append(data[idx:j])
-        idx = j
-    idx += 1                      # single whitespace byte before the raster
-    w, h = int(fields[1]), int(fields[2])
-    return w, h, data[idx:idx + w * h * 3]
-
-
 def scene_metrics(path: str) -> tuple[int, float]:
     """(distinct 5-bit-quantized colours, luma std-dev) over a centre crop.
 
@@ -209,7 +189,7 @@ def scene_metrics(path: str) -> tuple[int, float]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("--keep-frames", default=None,
                     help="keep the sampled PPMs in this directory")

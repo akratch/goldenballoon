@@ -476,6 +476,9 @@ def run_runtime_matrix(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
+    # Deliberately not harness_utils.DEFAULT_BUILD_DIR: this check compares an
+    # alternately-aligned tree against the ordinary one, so which directory it
+    # reaches for is part of what it tests.
     parser.add_argument("--build", default="build-align")
     parser.add_argument("--asan-build", default="build-asan")
     parser.add_argument(

@@ -19,18 +19,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
-import re
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import (
-    completed_tick_conservation,
-    resolve_binary,
-    tear_free_presentation,
-)
+from harness_utils import (completed_tick_conservation, DEFAULT_BUILD_DIR,
+                           parse_last, resolve_binary, tear_free_presentation)
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
@@ -38,12 +34,6 @@ TICKS = 600
 HASH_VERSION = "3"
 UNCAPPED_SYNTHETIC_RATE = 1000
 
-SUMMARY_RE = re.compile(r"\[PRESENTSCHED-SUMMARY\] (.*)")
-AUDIO_RE = re.compile(r"\[AUDIO-SERVICE\] (.*)")
-REPLAY_RE = re.compile(r"\[REPLAY-SUMMARY\] (.*)")
-PACKET_RE = re.compile(r"\[PRESENT-PACKET\] (.*)")
-RETAINED_RE = re.compile(r"\[RETAINED-TASK\] (.*)")
-WGPU_RE = re.compile(r"\[WGPU-BACKPRESSURE\] (.*)")
 
 
 @dataclass(frozen=True)
@@ -59,22 +49,6 @@ class Result:
     retained: dict[str, int]
     pressure: dict[str, int]
     tearing: list[str]
-
-
-def parse_last(output: str, pattern: re.Pattern[str], name: str) -> dict[str, int]:
-    matches = list(pattern.finditer(output))
-    if not matches:
-        raise RuntimeError(f"missing [{name}] summary")
-    fields: dict[str, int] = {}
-    for token in matches[-1].group(1).split():
-        key, separator, value = token.partition("=")
-        if not separator:
-            continue
-        try:
-            fields[key] = int(value)
-        except ValueError:
-            continue
-    return fields
 
 
 def stream(output: str, marker: str) -> list[str]:
@@ -159,12 +133,12 @@ def run(binary: Path, rom: Path, root: Path, label: str,
         stream(output, "[EVENTHASH]"),
         stream(output, "[INPUTHASH]"),
         hashlib.sha256(audio_path.read_bytes()).hexdigest(),
-        parse_last(output, SUMMARY_RE, "PRESENTSCHED-SUMMARY"),
-        parse_last(output, AUDIO_RE, "AUDIO-SERVICE"),
-        parse_last(output, REPLAY_RE, "REPLAY-SUMMARY"),
-        parse_last(output, PACKET_RE, "PRESENT-PACKET"),
-        parse_last(output, RETAINED_RE, "RETAINED-TASK"),
-        (parse_last(output, WGPU_RE, "WGPU-BACKPRESSURE")
+        parse_last(output, "PRESENTSCHED-SUMMARY"),
+        parse_last(output, "AUDIO-SERVICE"),
+        parse_last(output, "REPLAY-SUMMARY"),
+        parse_last(output, "PRESENT-PACKET"),
+        parse_last(output, "RETAINED-TASK"),
+        (parse_last(output, "WGPU-BACKPRESSURE")
          if renderer == "webgpu" else {}),
         tear_free_presentation(output, label),
     )
@@ -424,7 +398,7 @@ def compare_display_arm(label: str, result: Result,
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build-rel")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--roms", default="build/roms")
     parser.add_argument("--timeout", type=int, default=1200)

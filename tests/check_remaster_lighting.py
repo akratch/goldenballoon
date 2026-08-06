@@ -18,7 +18,9 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, fatal_re,
+                           FX_MARKERS, read_ppm as read_ppm_bytes,
+                           resolve_binary)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -40,10 +42,7 @@ GRADE_RE = re.compile(
     r"tint=([-0-9.]+),([-0-9.]+),([-0-9.]+) "
     r"space=([a-z0-9/-]+)"
 )
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|Assertion|\[FX BUG\]"
-)
+FATAL_RE = fatal_re(*ASSERT_MARKERS, *FX_MARKERS)
 
 
 @dataclass(frozen=True)
@@ -120,17 +119,7 @@ def normalized_pace(output: str) -> tuple[str, ...]:
 
 
 def read_ppm(path: Path) -> Image:
-    data = path.read_bytes()
-    match = re.match(br"P6\s+(\d+)\s+(\d+)\s+255\s", data)
-    require(match is not None, f"{path}: malformed P6 PPM")
-    assert match is not None
-    width, height = int(match.group(1)), int(match.group(2))
-    pixels = data[match.end():]
-    require(
-        len(pixels) == width * height * 3,
-        f"{path}: truncated raster",
-    )
-    return Image(width, height, pixels)
+    return Image(*read_ppm_bytes(path))
 
 
 def run_arm(
@@ -279,7 +268,7 @@ def verify_production_pair(off: Result, on: Result) -> float:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=90)
     parser.add_argument("-v", "--verbose", action="store_true")

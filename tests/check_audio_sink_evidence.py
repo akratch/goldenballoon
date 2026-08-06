@@ -18,7 +18,7 @@ import sys
 import tempfile
 import wave
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -120,7 +120,7 @@ def assert_default_headless_stays_sinkless(binary: Path, rom: Path,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64", type=Path)
     parser.add_argument("--frames", default=1200, type=int)
     parser.add_argument(

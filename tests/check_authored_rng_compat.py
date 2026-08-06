@@ -43,7 +43,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 ROUTE_TOOL = ROOT / "tools" / "dkr_oracle_route.py"
@@ -187,7 +187,7 @@ def run(binary: Path, rom: Path, timeout: int, verbose: bool) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build-rel")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("-v", "--verbose", action="store_true")

@@ -22,7 +22,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -159,7 +159,7 @@ def run_backend(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--frames", type=int, default=120)
     parser.add_argument("--timeout", type=float, default=60.0)

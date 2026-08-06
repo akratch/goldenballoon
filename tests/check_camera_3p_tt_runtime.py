@@ -12,18 +12,18 @@ import tempfile
 from pathlib import Path
 
 from check_camera_obstruction_runtime import field
-from harness_utils import resolve_binary
+from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, find_fatal,
+                           resolve_binary)
 
 
 SCRIPT = Path("tests/input_scripts/race_3p_tt_camera.txt")
 SUMMARY = "camera_obstruction_observe summary"
 DETAIL = "camera_obstruction_observe detail"
-BAD = ("[CRASH]", "[FATAL]", "AddressSanitizer", "runtime error:", "Assertion")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--frames", type=int, default=7000)
     parser.add_argument("--timeout", type=int, default=600)
@@ -60,9 +60,9 @@ def main() -> int:
     failures: list[str] = []
     if process.returncode != 0:
         failures.append(f"process exited {process.returncode}")
-    for marker in BAD:
-        if marker in output:
-            failures.append(f"runtime emitted {marker}")
+    marker = find_fatal(output, *ASSERT_MARKERS)
+    if marker:
+        failures.append(f"runtime emitted {marker}")
 
     summaries = [row for row in output.splitlines()
                  if SUMMARY in row and " tt=1 " in row]

@@ -25,7 +25,9 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, fatal_re,
+                           FX_MARKERS, read_ppm as read_ppm_bytes,
+                           resolve_binary)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -35,10 +37,7 @@ ARMS = ("baked", "baked-sun", "supersede")
 CAPTURE_FRAME = 3475
 FRAMES = CAPTURE_FRAME + 1
 RL1_RE = re.compile(r"\[RL1\] arm=([a-z-]+) triangles=(\d+)")
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|Assertion|\[FX BUG\]"
-)
+FATAL_RE = fatal_re(*ASSERT_MARKERS, *FX_MARKERS)
 
 
 @dataclass(frozen=True)
@@ -97,15 +96,7 @@ def normalized_pace(output: str) -> tuple[str, ...]:
 
 
 def read_ppm(path: Path) -> Image:
-    data = path.read_bytes()
-    match = re.match(br"P6\s+(\d+)\s+(\d+)\s+255\s", data)
-    if match is None:
-        raise ValueError(f"{path}: malformed P6 PPM")
-    width, height = int(match.group(1)), int(match.group(2))
-    pixels = data[match.end():]
-    if len(pixels) != width * height * 3:
-        raise ValueError(f"{path}: truncated raster")
-    return Image(width, height, pixels)
+    return Image(*read_ppm_bytes(path))
 
 
 def run_arm(
@@ -219,7 +210,7 @@ def mean_absolute_difference(left: Image, right: Image) -> float:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument(
         "--backend", choices=("gl", "webgpu"), default="webgpu"

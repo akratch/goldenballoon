@@ -21,7 +21,7 @@ import tempfile
 import wave
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, fatal_re, resolve_binary
 
 
 TICKS = 3900
@@ -29,10 +29,7 @@ OPEN_FRAME = 3400
 CLOSE_FRAME = 3600
 SCRIPT = Path(__file__).resolve().parent / "input_scripts" / "nav_to_time_trial_race.txt"
 
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|Segmentation fault|Abort trap"
-)
+FATAL_RE = fatal_re("Segmentation fault", "Abort trap")
 BOUNDARY_RE = re.compile(
     r"^\[overlay-test\] simulation (paused|resumed) at tick (\d+) rate=(\d+)$",
     re.MULTILINE,
@@ -189,7 +186,7 @@ def check_input_handoff(binary: Path, rom: Path, timeout: int) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build-rel")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64", type=Path)
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("-v", "--verbose", action="store_true")

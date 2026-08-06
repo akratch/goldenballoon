@@ -178,7 +178,7 @@ import sys
 import tempfile
 import wave
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 # ---- fixture ---------------------------------------------------------------
 SCRIPT = "tests/input_scripts/race_drive_time_trial.txt"
@@ -897,7 +897,7 @@ def run_control(db, samples, info, rate):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("--script", default=SCRIPT)
     ap.add_argument("--frames", type=int, default=FRAMES)

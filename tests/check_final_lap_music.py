@@ -35,17 +35,15 @@ from check_audio_output import (
     parse_engine,
     tempo_report,
 )
-from harness_utils import resolve_binary
+from harness_utils import (DEFAULT_BUILD_DIR, fatal_re, FX_MARKERS,
+                           resolve_binary, VALIDATION_MARKERS)
 
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
 FRAMES = 9000
 PACE_RE = re.compile(r"\[PACE\] frame=(\d+).* lap=(-?\d+) rlap=(-?\d+)")
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|\[FX BUG\]|AddressSanitizer|"
-    r"UndefinedBehaviorSanitizer|runtime error:|Validation Error"
-)
+FATAL_RE = fatal_re(*FX_MARKERS, *VALIDATION_MARKERS)
 
 
 def beat_grid_ok(row: dict[str, float | int]) -> bool:
@@ -58,7 +56,7 @@ def beat_grid_ok(row: dict[str, float | int]) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=300)
     args = parser.parse_args()

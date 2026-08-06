@@ -23,7 +23,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SCRIPT = ROOT / "tests/input_scripts/race_drive_time_trial.txt"
@@ -209,7 +209,7 @@ def run(args: argparse.Namespace) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--script", default=str(DEFAULT_SCRIPT))
     parser.add_argument("--frames", type=int, default=3500)

@@ -68,7 +68,8 @@ import re
 import subprocess
 import sys
 
-from harness_utils import preserved_eeprom, resolve_binary, save_env, test_save_dir
+from harness_utils import (DEFAULT_BUILD_DIR, preserved_eeprom, resolve_binary,
+                           save_env, test_save_dir)
 
 TRACK = 5              # Ancient Lake -- fast to reach, plenty of terrain
 FRAMES = 3400
@@ -135,7 +136,7 @@ def main() -> int:
 
 def run_check() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("--frames", type=int, default=FRAMES)
     ap.add_argument("-v", "--verbose", action="store_true")

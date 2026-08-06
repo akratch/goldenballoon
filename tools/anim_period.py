@@ -38,6 +38,14 @@ import os
 import re
 import sys
 
+# check_charselect_motion.py reaches load_capture() below, so these frames are
+# gate evidence and get the same strict reader every check uses. Standalone CLI
+# use needs tests/ on the path; a check that imports this module already has it.
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    "tests"))
+from harness_utils import read_ppm  # noqa: E402
+
 
 def read_ppm_luma_grid(path, gw, gh, region=None):
     """Coarse grid of mean luma. Resolution-independent, so two runners at
@@ -47,17 +55,7 @@ def read_ppm_luma_grid(path, gw, gh, region=None):
     selects the same part of the picture in a 640x240 ares dump and a 1280x960
     native dump. Use it to exclude scenery that animates on its own (sky, water)
     and measure one specific thing."""
-    with open(path, "rb") as f:
-        if f.readline().strip() != b"P6":
-            raise ValueError("not a P6 PPM: %s" % path)
-        line = f.readline()
-        while line.startswith(b"#"):
-            line = f.readline()
-        w, h = map(int, line.split())
-        f.readline()                       # maxval
-        buf = f.read(w * h * 3)
-    if len(buf) < w * h * 3:
-        raise ValueError("truncated PPM: %s" % path)
+    w, h, buf = read_ppm(path)
 
     rx0, ry0, rx1, ry1 = region or (0.0, 0.0, 1.0, 1.0)
     x_lo, x_hi = int(rx0 * w), max(int(rx0 * w) + 1, int(rx1 * w))

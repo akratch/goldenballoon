@@ -95,7 +95,8 @@ import re
 import subprocess
 import sys
 
-from harness_utils import preserved_eeprom, resolve_binary, save_env, test_save_dir
+from harness_utils import (DEFAULT_BUILD_DIR, preserved_eeprom, resolve_binary,
+                           save_env, test_save_dir)
 
 # Boss level 46 = Tricky 2 (Fire Mountain), world 1. Same provenance as
 # tests/check_collision_gridmask.py -- from ASSET_MISC_BOSS_TRACKS_IDS. The
@@ -200,7 +201,7 @@ def main() -> int:
 
 def run_check() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("--track", type=int, default=BOSS_TRACK)
     ap.add_argument("--frames", type=int, default=FRAMES)

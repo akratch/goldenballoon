@@ -31,7 +31,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, present_mode_rows, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -54,10 +54,6 @@ RENDERER_RE = re.compile(
 REGISTRY_RE = re.compile(
     r"registry_state: level=(-?\d+) players=(-?\d+) cutscene=(-?\d+) "
     r"live=(\d+) high=(\d+) ambiguous=(\d+) fullFails=(\d+) maxProbe=(\d+)"
-)
-GL_PRESENT_MODE_RE = re.compile(
-    r"\[PRESENT-MODE\] backend=gl .*requestedSwap=(-?\d+) "
-    r"effectiveSwap=(-?\d+) supported=(\d+)"
 )
 FATAL_MARKERS = (
     "[CRASH]",
@@ -301,10 +297,14 @@ def run_backend(
         if expected_backend not in output:
             return failure("requested backend was not active", output)
         if renderer == "gl":
-            present = GL_PRESENT_MODE_RE.search(output)
-            if present is None:
+            gl_rows = [row for row in present_mode_rows(output)
+                       if row.get("backend") == "gl"]
+            if not gl_rows:
                 return failure("no explicit GL present-mode result", output)
-            requested, effective, supported = map(int, present.groups())
+            present = gl_rows[-1]
+            requested, effective, supported = (
+                int(present.get(key, -1)) for key in
+                ("requestedSwap", "effectiveSwap", "supported"))
             if (requested, effective, supported) != (0, 0, 1):
                 return failure(
                     "headless GL did not obtain the required unlocked swap "
@@ -385,7 +385,7 @@ def run_backend(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument(
         "--renderer", choices=("gl", "webgpu", "both"), default="both")

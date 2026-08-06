@@ -13,7 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from check_presentation_lifecycle import SCENARIOS, Scenario
-from harness_utils import resolve_binary
+from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, find_fatal,
+                           resolve_binary)
 
 
 RESET_RE = re.compile(
@@ -22,7 +23,6 @@ RESET_RE = re.compile(
 )
 LOAD_RE = re.compile(r"level_load: levelId=(-?\d+) numPlayers=(-?\d+)")
 SUMMARY = "camera_obstruction_observe summary"
-BAD = ("[CRASH]", "[FATAL]", "AddressSanitizer", "runtime error:", "Assertion")
 
 
 @dataclass(frozen=True)
@@ -72,9 +72,9 @@ def run(binary: Path, rom: Path, scenario: Scenario, root: Path,
     if process.returncode != 0:
         raise RuntimeError(
             f"{scenario.name}: exit {process.returncode}\n{output[-4000:]}")
-    for marker in BAD:
-        if marker in output:
-            raise RuntimeError(f"{scenario.name}: emitted {marker}")
+    marker = find_fatal(output, *ASSERT_MARKERS)
+    if marker:
+        raise RuntimeError(f"{scenario.name}: emitted {marker}")
     return output
 
 
@@ -198,7 +198,7 @@ def inspect(scenario: Scenario, output: str) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--only", help="comma-separated scenario names")

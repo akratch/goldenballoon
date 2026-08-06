@@ -22,7 +22,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import (ABORT_MARKERS, fatal_re, GPU_MARKERS,
+                           present_mode_rows, resolve_binary, row_fields)
 
 
 TICKS = 12
@@ -36,10 +37,6 @@ PRESSURE_RE = {
 }
 REPLAY_RE = re.compile(r"\[REPLAY-SUMMARY\] (.*)")
 RETAINED_RE = re.compile(r"\[RETAINED-TASK\] (.*)")
-PRESENT_MODE_RE = re.compile(
-    r"\[PRESENT-MODE\] backend=(gl|webgpu) policy=([a-z]+) "
-    r"rate=(\d+)\b([^\n]*)"
-)
 HOST_PRESENT_RE = re.compile(
     r"^\[APP-WGPU-PRESENT\] attempts=(\d+) presented=(\d+) "
     r"unavailable=(\d+) lastStatus=(-?\d+) encodeFailures=(\d+) "
@@ -48,14 +45,8 @@ HOST_PRESENT_RE = re.compile(
 )
 WGPU_OCCLUDED_STATUS = 0x00030001
 WGPU_ERROR_STATUS = 6
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|frame queue failed|GPU completion fence failed"
-)
-CLEAN_FAILURE_FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|SIGSEGV|Segmentation fault|SIGABRT|Abort trap"
-)
+FATAL_RE = fatal_re(*GPU_MARKERS)
+CLEAN_FAILURE_FATAL_RE = fatal_re(*ABORT_MARKERS)
 
 
 @dataclass(frozen=True)
@@ -82,19 +73,6 @@ BACKENDS = (
 )
 
 
-def parse_fields(row: str) -> dict[str, int]:
-    fields: dict[str, int] = {}
-    for token in row.split():
-        key, separator, value = token.partition("=")
-        if not separator:
-            continue
-        try:
-            fields[key] = int(value)
-        except ValueError:
-            continue
-    return fields
-
-
 def clean_environment(**updates: str) -> dict[str, str]:
     env = {
         key: value for key, value in os.environ.items()
@@ -107,7 +85,7 @@ def clean_environment(**updates: str) -> dict[str, str]:
 def validate_pressure(backend: Backend, policy: str,
                       row: str, host_presented: bool,
                       minimum_submissions: int = TICKS) -> None:
-    fields = parse_fields(row)
+    fields = row_fields(row)
     minimum_admitted = minimum_submissions
     if backend.resolved == "webgpu":
         endpoint_skips = fields.get("endpointSkips", 0)
@@ -372,45 +350,44 @@ def stage_macos_sdl2(bundle: Path, executable: Path) -> None:
 
 def validate_present_mode(backend: Backend, requested: str,
                           output: str) -> None:
-    rows = PRESENT_MODE_RE.findall(output)
+    rows = present_mode_rows(output)
     if len(rows) != 1:
         raise RuntimeError(
             f"{backend.label}/{requested}: expected one native presentation "
             f"mode row, got {len(rows)}")
+    row = rows[0]
+    details = " ".join(f"{key}={value}" for key, value in row.items())
 
     expected = (backend.resolved, "capped", "240")
     if requested == "uncapped":
         expected = (backend.resolved, "uncapped", "0")
-    actual = rows[0][:3]
+    actual = (row.get("backend"), row.get("policy"), row.get("rate"))
     if actual != expected:
         raise RuntimeError(
             f"{backend.label}/{requested}: presentation policy resolved as "
             f"{actual}, expected {expected}")
-    details = rows[0][3]
-    if "tearing=0" not in details:
+    if row.get("tearing") != "0":
         raise RuntimeError(
             f"{backend.label}/{requested}: presentation reported a tearing "
-            f"opt-in nothing here asked for: {details.strip()}")
+            f"opt-in nothing here asked for: {details}")
     if backend.resolved == "webgpu":
         # A rate the display cannot show asks for the queue that replaces an
         # undisplayed image; anything it can show is paced exactly by the
         # deadline grid on the blocking queue. Mailbox is not advertised
         # everywhere, so FIFO is the permitted fallback — and immediate stays
         # unreachable without the opt-in ruled out above.
-        fields = parse_fields(details)
-        display_hz = fields.get("displayHz", 0)
+        display_hz = row_fields(details).get("displayHz", 0)
         above_display = (requested == "uncapped" or
                          (display_hz and int(requested) > display_hz))
         want = "mailbox" if above_display else "fifo"
-        if f"requested={want}" not in details:
+        if row.get("requested") != want:
             raise RuntimeError(
                 f"{backend.label}/{requested}: policy did not request the "
-                f"{want} queue at displayHz={display_hz}: {details.strip()}")
-        if ("effective=mailbox" not in details and
-                "effective=fifo" not in details):
+                f"{want} queue at displayHz={display_hz}: {details}")
+        if row.get("effective") not in ("mailbox", "fifo"):
             raise RuntimeError(
                 f"{backend.label}/{requested}: WebGPU resolved a present mode "
-                f"that is neither mailbox nor FIFO: {details.strip()}")
+                f"that is neither mailbox nor FIFO: {details}")
 
 
 def run_policy(binary: Path, rom: Path, backend: Backend, policy: str,
@@ -494,9 +471,9 @@ def run_policy(binary: Path, rom: Path, backend: Backend, policy: str,
                 raise RuntimeError(
                     f"{backend.label}/{policy}: missing public interpolation "
                     "telemetry")
-            replay = parse_fields(replay_rows[0])
-            retained = parse_fields(retained_rows[0])
-            pressure = parse_fields(rows[0])
+            replay = row_fields(replay_rows[0])
+            retained = row_fields(retained_rows[0])
+            pressure = row_fields(rows[0])
             completed_or_shed = replay.get("walks", 0) > 0
             if backend.resolved == "webgpu":
                 completed_or_shed = completed_or_shed or (

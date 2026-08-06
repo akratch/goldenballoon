@@ -42,14 +42,14 @@ from check_first_boss_progression import (
     save_order,
     sum_block,
 )
-from harness_utils import resolve_binary
+from harness_utils import (DEFAULT_BUILD_DIR, resolve_binary, seal_slot,
+                           SLOT_BYTES, slot_checksum_valid)
 
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests/input_scripts/adventure_resume_race.txt"
 
 EEPROM_BYTES = 512
-SLOT_BYTES = 40
 CONFIG_OFFSET = 120
 BLUEY_ONE = 1
 BLUEY_TWO = 52
@@ -162,7 +162,7 @@ def checkpoint_image(eligible: list[int]) -> bytes:
         sum(bits[i + j] << (7 - j) for j in range(8))
         for i in range(0, len(bits), 8)
     )
-    slot[:2] = ((5 + sum(slot[2:])) & 0xFFFF).to_bytes(2, "big")
+    seal_slot(slot)
     image = bytearray(EEPROM_BYTES)
     image[:SLOT_BYTES] = slot
     image[SLOT_BYTES:CONFIG_OFFSET] = b"\xFF" * (CONFIG_OFFSET - SLOT_BYTES)
@@ -170,7 +170,7 @@ def checkpoint_image(eligible: list[int]) -> bytes:
     for offset in RECORD_OFFSETS:
         image[offset:offset + RECORD_BYTES] = sum_block(RECORD_BYTES)
 
-    if read_bits(image, 0, 16) != ((5 + sum(image[2:SLOT_BYTES])) & 0xFFFF):
+    if not slot_checksum_valid(image[:SLOT_BYTES]):
         raise ValueError("canonical checkpoint checksum is invalid")
     for course, wanted in status.items():
         actual = read_bits(image, 16 + eligible.index(course) * 2, 2)
@@ -337,9 +337,8 @@ def invoke(
             raise RuntimeError(f"{label}: invalid natural loss verdict {verdict.group(0)}")
 
         saved = (save_dir / "eeprom.bin").read_bytes()
-        if len(saved) != EEPROM_BYTES or read_bits(saved, 0, 16) != (
-            (5 + sum(saved[2:SLOT_BYTES])) & 0xFFFF
-        ):
+        if (len(saved) != EEPROM_BYTES
+                or not slot_checksum_valid(saved[:SLOT_BYTES])):
             raise RuntimeError(f"{label}: persisted EEPROM checksum is invalid")
         audio = wav_path.read_bytes() if wav_path.is_file() else None
         return analyse_race(label, output, audio)
@@ -503,7 +502,7 @@ def validate_audio(result: RaceResult) -> tuple[list[str], dict[str, float]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("-v", "--verbose", action="store_true")

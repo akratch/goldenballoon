@@ -52,7 +52,7 @@ import re
 import subprocess
 import sys
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 # ASSET_MISC_MAIN_TRACKS_IDS from the US v80 ROM, in menu order. Decoded with
 # tools/dump_misc_asset.py (sub-asset 28) -- 20 entries before the -1 terminator.
@@ -126,7 +126,7 @@ def run_track(build, rom, script, level, frames, vehicle, timeout):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("--script", default="tests/input_scripts/race_full_3lap_tt.txt")
     ap.add_argument("--frames", type=int, default=5200)

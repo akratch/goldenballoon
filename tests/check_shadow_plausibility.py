@@ -62,18 +62,14 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, fatal_re, read_ppm, resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "tests" / "input_scripts"
 
 WORLD_FX_RE = re.compile(r"\[WORLD-FX\] (.*)")
 PLAN_RE = re.compile(r"\[SHADOW-PLAN\] (.*)")
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:",
-    re.IGNORECASE,
-)
+FATAL_RE = fatal_re(ignore_case=True)
 
 # Bogus-caster displacement, in world units. Large enough that no float wobble
 # could produce it and that the resulting phantom is visible, small enough to
@@ -123,24 +119,6 @@ class Arm:
     world_fx: dict[str, str]
     plan: dict[str, str]
     frame_dir: Path
-
-
-def read_ppm(path: Path) -> tuple[int, int, bytes]:
-    data = path.read_bytes()
-    if not data.startswith(b"P6"):
-        raise RuntimeError(f"{path} is not a P6 PPM")
-    fields: list[int] = []
-    index = 2
-    while len(fields) < 3:
-        while index < len(data) and data[index:index + 1].isspace():
-            index += 1
-        start = index
-        while index < len(data) and not data[index:index + 1].isspace():
-            index += 1
-        fields.append(int(data[start:index]))
-    index += 1
-    width, height, _ = fields
-    return width, height, data[index:index + width * height * 3]
 
 
 def run_arm(
@@ -327,7 +305,7 @@ def attribution(on: Arm, off: Arm) -> tuple[list[str], str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--renderer", default="gl", choices=("gl", "webgpu"))
     parser.add_argument("--frames", type=int, default=3500)

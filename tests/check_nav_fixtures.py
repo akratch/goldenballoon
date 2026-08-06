@@ -43,7 +43,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 # script -> (frames, assertion).  Frames and terminal states are the ones
 # tests/README.md has always documented; this file is now the authority and the
@@ -109,7 +109,7 @@ def run_magic_code_submission(binary: str, rom: str, scripts: Path,
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("--only", default=None, help="run just this route")
     ap.add_argument("-v", "--verbose", action="store_true")

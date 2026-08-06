@@ -21,7 +21,7 @@ from pathlib import Path
 
 from check_taj_challenges import make_eeprom, replace_bits
 from check_taj_character_select import read_ppm
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary, seal_slot
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -212,14 +212,14 @@ def make_vehicle_select_eeprom() -> bytes:
     # The packed save stores 34 two-bit course statuses before tajFlags.
     # RACE_CLEARED (2) exposes the retail CAR/HOVER/PLANE selector.
     replace_bits(slot, 16, 68, int("10" * 34, 2))
-    slot[:2] = ((5 + sum(slot[2:])) & 0xFFFF).to_bytes(2, "big")
+    seal_slot(slot)
     payload[:40] = slot
     return bytes(payload)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument(
         "--save-cli",

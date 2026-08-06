@@ -78,7 +78,7 @@ import re
 import subprocess
 import sys
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 # Must match the cases in platform/math_util_native.c's self-test.
 CASES = {"A": (0x0000, 0x4000), "B": (0x2000, 0x1000)}
@@ -214,7 +214,7 @@ def fmt(v):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("--frames", type=int, default=1500)
     ap.add_argument("-v", "--verbose", action="store_true")

@@ -63,7 +63,7 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, read_ppm, resolve_binary
 
 # The one fixture that reaches MENU_NEWGAME_CINEMATIC and level 36, the authored
 # opening sequence (see the header of the script itself).
@@ -85,27 +85,6 @@ MIN_BODY = 3000        # fixed 4151..4212, broken 4223 -- vacuity guard only
 # the shaded water. Deliberately coarse: the artifact is opaque foliage.
 CHANNEL_MARGIN = 25
 MIN_GREEN = 80
-
-
-def read_ppm(path: str) -> tuple[int, int, bytes]:
-    """Minimal P6 reader (same shape as check_texture_lineswap.py's)."""
-    data = open(path, "rb").read()
-    idx, fields = 0, []
-    while len(fields) < 4:
-        while data[idx:idx + 1].isspace():
-            idx += 1
-        if data[idx:idx + 1] == b"#":
-            while data[idx:idx + 1] not in (b"\n", b""):
-                idx += 1
-            continue
-        j = idx
-        while not data[j:j + 1].isspace():
-            j += 1
-        fields.append(data[idx:j])
-        idx = j
-    idx += 1                      # single whitespace byte before the raster
-    w, h = int(fields[1]), int(fields[2])
-    return w, h, data[idx:idx + w * h * 3]
 
 
 def foliage_pixels(w: int, h: int, px: bytes,
@@ -159,7 +138,7 @@ def run(binary: str, rom: str, script: str, renderer: str,
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument(
         "--renderer", choices=("both", "gl", "webgpu"), default="both",

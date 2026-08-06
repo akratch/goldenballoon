@@ -37,7 +37,9 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import completed_tick_conservation, resolve_binary
+from harness_utils import (ABORT_MARKERS, ASSERT_MARKERS,
+                           completed_tick_conservation, fatal_re, parse_rows,
+                           read_ppm as read_ppm_bytes, resolve_binary)
 
 
 DEFAULT_SCRIPT = Path("tests/input_scripts/nav_to_time_trial_race.txt")
@@ -67,10 +69,7 @@ MAX_FRAME_MAD = 4.0
 MAX_MEAN_MAD = 2.0
 MIN_RACE_SAMPLE_FRAME = 2800
 
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|Assertion|SIGSEGV|Segmentation fault|SIGABRT|Abort trap"
-)
+FATAL_RE = fatal_re(*ASSERT_MARKERS, *ABORT_MARKERS)
 ROUTE_RE = re.compile(
     r"^\[TRACE\] (?:menu_init|level_load):.*(?:@frame~\d+)$", re.MULTILINE
 )
@@ -81,7 +80,6 @@ DISPLAY_SIZE_RE = re.compile(
     r" effectiveScale=([\d.]+)$",
     re.MULTILINE,
 )
-SCHED_RE = re.compile(r"^\[PRESENTSCHED-SUMMARY\] (.*)$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -99,49 +97,7 @@ class Run:
 
 
 def read_ppm(path: Path) -> Image:
-    """Read the binary P6 subset emitted by ``--dump-frames``."""
-
-    data = path.read_bytes()
-    index = 0
-    fields: list[bytes] = []
-    while len(fields) < 4:
-        while index < len(data) and data[index:index + 1].isspace():
-            index += 1
-        if index >= len(data):
-            raise ValueError(f"{path}: truncated PPM header")
-        if data[index:index + 1] == b"#":
-            newline = data.find(b"\n", index)
-            if newline < 0:
-                raise ValueError(f"{path}: unterminated PPM comment")
-            index = newline + 1
-            continue
-        end = index
-        while end < len(data) and not data[end:end + 1].isspace():
-            end += 1
-        fields.append(data[index:end])
-        index = end
-
-    if fields[0] != b"P6":
-        raise ValueError(f"{path}: expected P6, got {fields[0]!r}")
-    width, height, maximum = map(int, fields[1:])
-    if width <= 0 or height <= 0 or maximum != 255:
-        raise ValueError(
-            f"{path}: invalid dimensions/range {width}x{height}, max={maximum}"
-        )
-    if index >= len(data) or not data[index:index + 1].isspace():
-        raise ValueError(f"{path}: missing raster separator")
-    # The emitter writes one newline. Accept CRLF without treating LF as pixel 0.
-    if data[index:index + 2] == b"\r\n":
-        index += 2
-    else:
-        index += 1
-    expected = width * height * 3
-    pixels = data[index:]
-    if len(pixels) != expected:
-        raise ValueError(
-            f"{path}: raster is {len(pixels)} bytes, expected {expected}"
-        )
-    return Image(width, height, pixels)
+    return Image(*read_ppm_bytes(path))
 
 
 def scene_metrics(image: Image) -> tuple[int, float]:
@@ -316,22 +272,12 @@ def reported_display_size(
     return result
 
 
-def parse_last_fields(
-    output: str, pattern: re.Pattern[str]
-) -> dict[str, int] | None:
-    rows = list(pattern.finditer(output))
-    if not rows:
-        return None
-    fields: dict[str, int] = {}
-    for token in rows[-1].group(1).split():
-        key, separator, value = token.partition("=")
-        if not separator:
-            continue
-        try:
-            fields[key] = int(value)
-        except ValueError:
-            continue
-    return fields
+def parse_last_fields(output: str, tag: str) -> dict[str, int] | None:
+    """The last ``[tag]`` row, or None -- this check reports a missing
+    scheduler summary itself rather than raising out of the comparison."""
+
+    rows = parse_rows(output, tag)
+    return rows[-1] if rows else None
 
 
 def check_parity(gl_run: Run, webgpu_run: Run, verbose: bool) -> list[str]:
@@ -674,8 +620,8 @@ def check_authored_rate_sequence(
             f"Original={sorted(original_paths)}, =60={sorted(rate60_paths)}"
         ]
 
-    original_sched = parse_last_fields(original.output, SCHED_RE)
-    rate60_sched = parse_last_fields(rate60.output, SCHED_RE)
+    original_sched = parse_last_fields(original.output, "PRESENTSCHED-SUMMARY")
+    rate60_sched = parse_last_fields(rate60.output, "PRESENTSCHED-SUMMARY")
     if original_sched is None or rate60_sched is None:
         failures.append(f"{label}: missing scheduler summary")
     else:

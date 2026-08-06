@@ -26,7 +26,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, read_ppm, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -86,41 +86,6 @@ def parse_fields(output: str, pattern: re.Pattern[str], label: str) -> dict[str,
         except ValueError:
             continue
     return fields
-
-
-def read_ppm(path: Path) -> tuple[int, int, bytes]:
-    data = path.read_bytes()
-    index = 0
-    fields: list[bytes] = []
-    while len(fields) < 4:
-        while index < len(data) and data[index:index + 1].isspace():
-            index += 1
-        if data[index:index + 1] == b"#":
-            while index < len(data) and data[index:index + 1] != b"\n":
-                index += 1
-            continue
-        end = index
-        while end < len(data) and not data[end:end + 1].isspace():
-            end += 1
-        fields.append(data[index:end])
-        index = end
-    if fields[0] != b"P6" or fields[3] != b"255":
-        raise RuntimeError(f"unsupported PPM header in {path.name}")
-    # P6 has exactly one whitespace delimiter after maxval (CRLF counts as one
-    # line ending). Do not skip arbitrary whitespace here: the first pixel is
-    # binary and may legitimately start with 0x09/0x0a/0x20.
-    if data[index:index + 2] == b"\r\n":
-        index += 2
-    elif index < len(data) and data[index:index + 1].isspace():
-        index += 1
-    else:
-        raise RuntimeError(f"missing PPM pixel delimiter in {path.name}")
-    width, height = int(fields[1]), int(fields[2])
-    pixels = data[index:]
-    if len(pixels) != width * height * 3:
-        raise RuntimeError(
-            f"{path.name}: {len(pixels)} pixel bytes, expected {width * height * 3}")
-    return width, height, pixels
 
 
 def crop_bytes(frame: tuple[int, int, bytes],
@@ -457,7 +422,7 @@ def check_cutscene_arm(output: str, frame_dir: Path) -> tuple[list[str], str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("-v", "--verbose", action="store_true")
