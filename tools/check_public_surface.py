@@ -91,6 +91,13 @@ REVIEWED_CONTENT_EXEMPT_BLOBS = frozenset(
             DENYLIST_PATH,
             "7094aafed749072619d8124310a74675e6fc5d73ce1a30fb5d3d774e38592e51",
         ),
+        # Same vocabulary, after the header comment followed
+        # check_github_launch_ready.sh into tools/manual/. Reviewed: the only
+        # difference from the digest above is that one path in one comment.
+        (
+            DENYLIST_PATH,
+            "3466b7e8b574c3789f6e39f26d9fd64655d456cca70718c1cea74aea941f5b04",
+        ),
     }
 )
 

@@ -76,6 +76,7 @@ CMAKE_PROJECT = ROOT / "CMakeLists.txt"
 UI_SETTINGS = ROOT / "platform" / "app" / "ui_settings.cpp"
 APP_SOURCE_DIR = ROOT / "platform" / "app"
 RELEASE_CHECKLIST = ROOT / "docs" / "RELEASE_CHECKLIST.md"
+RELEASE_NOTES = ROOT / "RELEASE_NOTES.md"
 TESTS = ROOT / "tests"
 TESTS_README = TESTS / "README.md"
 PINNED_ACTION_RE = re.compile(
@@ -279,6 +280,98 @@ def validate_app_source_manifest(
     return failures
 
 
+def release_notes_version(source: str) -> str | None:
+    """The version RELEASE_NOTES.md's newest section is written for."""
+    match = re.search(
+        r"^#\s+Golden Balloon\s+(\d+\.\d+\.\d+)\s*$", source, re.MULTILINE
+    )
+    return None if match is None else match.group(1)
+
+
+def validate_release_notes_version(source: str) -> list[str]:
+    """The build's version and the player-facing notes' title must agree.
+
+    A version bump with no matching notes section ships an installer named for a
+    release nothing describes, and notes written ahead of the bump ship a build
+    that claims to be the previous release.
+    """
+
+    notes_version = release_notes_version(source)
+    if notes_version is None:
+        return [
+            "RELEASE_NOTES.md has no '# Golden Balloon <version>' title; "
+            f"CMakeLists.txt sets MDKR_VERSION {VERSION}"
+        ]
+    if notes_version != VERSION:
+        return [
+            f"version disagreement: CMakeLists.txt sets MDKR_VERSION "
+            f"{VERSION}, but RELEASE_NOTES.md's newest section is titled "
+            f"'Golden Balloon {notes_version}'. Bump both together."
+        ]
+    return []
+
+
+def frame_limit_help(ui_settings: str) -> str | None:
+    """kFrameLimitHelp's text, reassembled from its adjacent string literals."""
+    # The literals themselves contain ';', so the statement's own terminator is
+    # only recognisable as the one that follows the final closing quote.
+    match = re.search(
+        r'constexpr\s+const\s+char\s*\*\s*kFrameLimitHelp\s*='
+        r'(?P<body>(?:\s*"(?:[^"\\]|\\.)*")+)\s*;',
+        ui_settings,
+    )
+    if match is None:
+        return None
+    chunks = re.findall(r'"((?:[^"\\]|\\.)*)"', match.group("body"))
+    if not chunks:
+        return None
+    return "".join(chunks).replace('\\"', '"').replace("\\\\", "\\")
+
+
+def validate_frame_limit_help_pins(sources: dict[str, str]) -> list[str]:
+    """Three files quote the frame-limit help; none may drift from the source.
+
+    The help text lives once, in platform/app/ui_settings.cpp. CMakeLists.txt
+    pins it as the app_schema CTest's PASS_REGULAR_EXPRESSION and
+    macos/Scripts/verify_unsigned_release.sh pins it against the packaged app.
+    Both copies were hand-maintained and both had already gone stale, and the
+    CTest one failed open: CTest splits a PASS_REGULAR_EXPRESSION on unescaped
+    semicolons, so the trailing fragment alone kept the test green. Regenerating
+    both from the one definition is what makes them controls again.
+    """
+
+    failures: list[str] = []
+    help_text = frame_limit_help(sources["ui_settings"])
+    if help_text is None:
+        return ["kFrameLimitHelp is missing from platform/app/ui_settings.cpp"]
+    if "(" in help_text or ")" in help_text:
+        failures.append(
+            "kFrameLimitHelp gained a parenthesis: the CTest pin below is a "
+            "regex and would need it escaped"
+        )
+    # One literal ';' at a time: CTest would read each side as its own regex.
+    expected_regex = (
+        'recommended=\\"Original \\\\(recommended\\\\)\\" '
+        'group=\\"Higher refresh rates\\" '
+        'caveat=\\"' + help_text.replace(";", ".") + '\\"'
+    )
+    if expected_regex not in sources["cmake"]:
+        failures.append(
+            "MDKR_FRAME_LIMIT_UI_CONTRACT_REGEX does not quote kFrameLimitHelp; "
+            "expected caveat text: " + help_text.replace(";", ".")
+        )
+    expected_packaged = (
+        '[app] frame-limit UI contract: recommended="Original (recommended)" '
+        'group="Higher refresh rates" caveat="' + help_text + '"'
+    )
+    if expected_packaged not in sources["macos_unsigned_verify"]:
+        failures.append(
+            "verify_unsigned_release.sh does not pin the current "
+            "kFrameLimitHelp; expected line: " + expected_packaged
+        )
+    return failures
+
+
 def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
     """Keep real-GPU smoke out of headless CTest without losing release proof."""
     failures: list[str] = []
@@ -455,6 +548,7 @@ def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
             "uncapped"):
         if f'{{"{value}",' not in sources["ui_settings"]:
             failures.append(f"native frame-limit option {value!r} is missing")
+    failures.extend(validate_frame_limit_help_pins(sources))
     ctest_route = re.search(
         r'if check\.role == "ctest":(?P<body>.*?)\n\s*cmd =',
         sources["run_checks"],
@@ -2234,6 +2328,8 @@ def main() -> int:
     failures.extend(validate_release_checklist(checklist_source))
     readme_source = TESTS_README.read_text(encoding="utf-8")
     failures.extend(validate_tests_readme(readme_source))
+    release_notes_source = RELEASE_NOTES.read_text(encoding="utf-8")
+    failures.extend(validate_release_notes_version(release_notes_source))
     if failures:
         raise AssertionError("CI contract drift:\n  " + "\n  ".join(failures))
 
@@ -2568,6 +2664,32 @@ def main() -> int:
             "ui_settings": gpu_routing_sources["ui_settings"].replace(
                 "browser always maps Uncapped to Match Display.",
                 "Unbounded in a browser.",
+                1,
+            ),
+        },
+        "stale schema frame-limit pin": {
+            **gpu_routing_sources,
+            "cmake": gpu_routing_sources["cmake"].replace(
+                "unless Allow Tearing is on.",
+                "unless tearing is allowed.",
+                1,
+            ),
+        },
+        "schema frame-limit pin split on its semicolon": {
+            **gpu_routing_sources,
+            "cmake": gpu_routing_sources["cmake"].replace(
+                "new interpolated images are available. held frames",
+                "new interpolated images are available; held frames",
+                1,
+            ),
+        },
+        "stale packaged frame-limit pin": {
+            **gpu_routing_sources,
+            "macos_unsigned_verify": gpu_routing_sources[
+                "macos_unsigned_verify"
+            ].replace(
+                "A European 50 Hz game is worth pairing",
+                "A European game is worth pairing",
                 1,
             ),
         },
@@ -3894,6 +4016,25 @@ def main() -> int:
         raise AssertionError(
             "release-checklist positive controls unexpectedly passed: "
             + ", ".join(checklist_escaped)
+        )
+
+    release_notes_controls = {
+        "stale release-notes version": release_notes_source.replace(
+            f"# Golden Balloon {VERSION}", "# Golden Balloon 0.9.0", 1
+        ),
+        "missing release-notes section": release_notes_source.replace(
+            f"# Golden Balloon {VERSION}", "# Release notes", 1
+        ),
+    }
+    release_notes_escaped = [
+        name
+        for name, broken in release_notes_controls.items()
+        if not validate_release_notes_version(broken)
+    ]
+    if release_notes_escaped:
+        raise AssertionError(
+            "release-notes version controls unexpectedly passed: "
+            + ", ".join(release_notes_escaped)
         )
 
     action_count = len(PINNED_ACTION_RE.findall(source))

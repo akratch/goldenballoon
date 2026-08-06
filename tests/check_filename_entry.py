@@ -55,8 +55,8 @@ def output_tail(output: str, lines: int = 80) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--build", default="build-asan",
-                    help="build directory or mdkr64 binary (default: build-asan)")
+    ap.add_argument("--build", default="build",
+                    help="build directory or mdkr64 binary (default: build)")
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("--script", default=str(DEFAULT_SCRIPT))
     ap.add_argument("--frames", type=int, default=DEFAULT_FRAMES)

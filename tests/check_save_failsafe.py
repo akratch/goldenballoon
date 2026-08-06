@@ -124,19 +124,22 @@ import re
 import subprocess
 import sys
 
-from harness_utils import preserved_eeprom, resolve_binary, save_env, test_save_dir
+from harness_utils import (
+    EEPROM_ARTIFACTS,
+    preserved_eeprom,
+    resolve_binary,
+    save_env,
+    test_save_dir,
+)
 
 SAVE_DIR = test_save_dir()
 EEPROM = os.path.join(SAVE_DIR, "eeprom.bin")
 EEPROM_BAD = os.path.join(SAVE_DIR, "eeprom.bin.bad")
 EEPROM_TMP = os.path.join(SAVE_DIR, "eeprom.bin.tmp")
-EEPROM_PREVIOUS = os.path.join(SAVE_DIR, "eeprom.bin.previous")
-EEPROM_IMPORTING = os.path.join(SAVE_DIR, "eeprom.bin.importing")
 EEPROM_AUTOSAVES = tuple(
     os.path.join(SAVE_DIR, f"eeprom.bin.autosave.{index}")
     for index in range(1, 4)
 )
-EEPROM_AUTOSAVE_TMP = os.path.join(SAVE_DIR, "eeprom.bin.autosave.tmp")
 EEPROM_SIZE = 512
 
 ADVENTURE_SCRIPT = "tests/input_scripts/adventure_hub_drive.txt"
@@ -293,10 +296,11 @@ def erased_image() -> bytes:
 #  Harness
 # --------------------------------------------------------------------------- #
 def wipe_save() -> None:
-    for p in (
-        EEPROM, EEPROM_BAD, EEPROM_TMP, EEPROM_PREVIOUS, EEPROM_IMPORTING,
-        EEPROM_AUTOSAVE_TMP, *EEPROM_AUTOSAVES,
-    ):
+    # harness_utils.EEPROM_ARTIFACTS is the single list of everything
+    # eeprom_store()/eeprom_load() can leave behind; a local copy here would
+    # silently stop clearing whatever the platform layer learns to write next.
+    for name in EEPROM_ARTIFACTS:
+        p = os.path.join(SAVE_DIR, name)
         if os.path.exists(p):
             os.remove(p)
 

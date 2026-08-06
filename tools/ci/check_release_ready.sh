@@ -592,7 +592,7 @@ for f in \
   tools/check_public_surface.py \
   tools/make_public_source_archive.sh \
   tools/smoke_public_source_archive.sh \
-  tools/check_github_launch_ready.sh \
+  tools/manual/check_github_launch_ready.sh \
   tools/check_windows_imports.sh \
   tools/package_windows_zip.sh \
   tools/package_linux_appimage.sh \

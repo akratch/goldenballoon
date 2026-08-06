@@ -35,7 +35,7 @@ description="A decompilation and native source port of a 1997 Nintendo 64 kart r
 
 usage() {
   cat <<'USAGE'
-Usage: tools/configure_github_launch_settings.sh [options]
+Usage: tools/manual/configure_github_launch_settings.sh [options]
 
 Dry-runs the recommended GitHub repository settings for public maintenance.
 Pass --yes to actually apply settings.
@@ -60,8 +60,9 @@ Options:
 
 This helper does not change repository visibility. Some security and
 branch-protection endpoints may not be available for every repository/account;
-the helper warns for those cases and tools/check_github_launch_ready.sh is the
-public-surface verification gate.
+the helper warns for those cases and
+tools/manual/check_github_launch_ready.sh is the public-surface verification
+gate.
 USAGE
 }
 
@@ -263,7 +264,7 @@ fi
 cat <<EOF
 
 Next verification commands:
-  NO_COLOR=1 tools/check_github_launch_ready.sh --repo ${repo}
+  NO_COLOR=1 tools/manual/check_github_launch_ready.sh --repo ${repo}
   # For private mirrors or dry runs only:
-  NO_COLOR=1 tools/check_github_launch_ready.sh --repo ${repo} --allow-private
+  NO_COLOR=1 tools/manual/check_github_launch_ready.sh --repo ${repo} --allow-private
 EOF

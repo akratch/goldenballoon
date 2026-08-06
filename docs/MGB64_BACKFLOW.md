@@ -366,7 +366,7 @@ DIFFERENTLY — do NOT copy mdkr64's retrace-field synthesis into mgb64:
 
 - **Verify any native `sins_s16`/`coss_s16`-style helper returns amplitude
   0x10000, not 0x7FFF.** In mdkr64 the WEAK bring-up stub
-  (`platform/math_stubs_temp.c`) scaled `sinf()` by `32767.0f`, which halved every
+  (`platform/math_util_native.c`) scaled `sinf()` by `32767.0f`, which halved every
   sine/cosine because the decomp's callers assume 1.0 maps to **0x10000** — matrix
   builders do `sins_s16(a) * (1.0f/0x10000)` and integer callers do
   `(sins_s16(a) * v) >> 16`. The real N64 routine reads a u16 sine table and

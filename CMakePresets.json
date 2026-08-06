@@ -1,0 +1,68 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "dev",
+      "displayName": "Debug (build/)",
+      "description": "The default native configuration: Debug, fast iteration.",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "rel",
+      "displayName": "Release (build-rel/)",
+      "description": "The optimised configuration the release suite and the browser ship. Its compile_commands.json is what .clangd reads.",
+      "binaryDir": "${sourceDir}/build-rel",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "AddressSanitizer (build-asan/)",
+      "description": "Matches the ASan directory tools/run_checks.py --asan-build expects.",
+      "binaryDir": "${sourceDir}/build-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_FLAGS": "-fsanitize=address -g -O1 -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address"
+      }
+    },
+    {
+      "name": "align",
+      "displayName": "Alignment sanitizer (build-align/)",
+      "description": "Matches the directory tests/check_native_layout.py configures for itself.",
+      "binaryDir": "${sourceDir}/build-align",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "MDKR_EXTRA_C_FLAGS": "-fsanitize=alignment -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=alignment"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev"
+    },
+    {
+      "name": "rel",
+      "configurePreset": "rel"
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan"
+    },
+    {
+      "name": "align",
+      "configurePreset": "align"
+    }
+  ]
+}

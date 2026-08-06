@@ -6,7 +6,7 @@ What this covers
 `game/src/hasm/ido/math_util.s` is hand-written assembly, and its `.data` section
 holds `gArcTanTable`, `gSineTable`, `gCurrentRNGSeed`, `gPrevRNGSeed` and
 `gIntDisFlag`.  This build does not assemble that file, so
-`platform/math_stubs_temp.c` supplies those symbols instead -- the tables by
+`platform/math_util_native.c` supplies those symbols instead -- the tables by
 generating the curves at load time, the seeds as C initialisers.  Nothing had ever
 checked the substitutes against the originals, and the originals are sitting in
 the tree.
@@ -174,7 +174,7 @@ def parse_asm_word(text, name):
 
 
 def fnv1a32_u16(vals):
-    """Must match the loop in platform/math_stubs_temp.c exactly."""
+    """Must match the loop in platform/math_util_native.c exactly."""
     h = 2166136261
     for v in vals:
         v &= 0xFFFF
@@ -197,7 +197,7 @@ def sins_s16_from_asm(table, angle):
     """`XLEAF(sins_s16)`, math_util.s:2432, transcribed independently of the C.
 
     This is the point of the sinFnv assertion: the Python here and the C in
-    platform/math_stubs_temp.c are two separate readings of the same assembly, so
+    platform/math_util_native.c are two separate readings of the same assembly, so
     agreeing over all 65536 angles is real cross-checking and not a tautology.
 
         sll v0, a0, 17 ; bgez -> xori a0, 0x7FFF     mirror inside the half turn

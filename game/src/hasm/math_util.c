@@ -11,7 +11,7 @@
 
 #ifdef NATIVE_PORT
 #include "runtime_contracts.h"
-/* platform/math_stubs_temp.c -- see the use site. Declared as a plain extern
+/* platform/math_util_native.c -- see the use site. Declared as a plain extern
  * (not via a platform header) because this translation unit includes the N64 SDK
  * headers, whose <PR/os_libc.h> conflicts with libc's. Same idiom as the hooks
  * in game/src/hasm/collision.c. */

@@ -1,10 +1,6 @@
 # Open items — Renderer and visual fidelity
 
-> Part of the split [open-items index](README.md). Every defect this port has
-> hit is recorded with its mechanism, the measurement that found it, the fix, and
-> the check that would catch a regression. **Nothing is deleted when it is
-> fixed** — a closed entry is the only warning the next person gets that the same
-> trap exists, and retractions are recorded in place rather than removed.
+> One subsystem of the split [open-items index](README.md), which states how these files are kept.
 
 
 ## FIXED: three effects drew zero pixels, because hand-packed triangles were built in N64 byte order

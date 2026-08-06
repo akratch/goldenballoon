@@ -266,8 +266,13 @@ constexpr const char *kFrameLimitHelp =
     "CPU and GPU time. Rates above your display's refresh need a display "
     "connection that can drop an image it has not shown yet. Where the system "
     "does not offer one, they present at your display's refresh instead, "
-    "unless Allow Tearing is on. Uncapped removes the native limit only when "
-    "new interpolated images are available; held frames stay display-paced. A "
+    "unless Allow Tearing is on. A European 50 Hz game is worth pairing Match "
+    "Display with Interpolated: its authored image lasts 40 ms, which no whole "
+    "number of 60 Hz refreshes fits, so Original holds it for two refreshes "
+    "and then three and the motion ripples. Match Display with Interpolated "
+    "removes that without changing game speed, music pitch, or timers. "
+    "Uncapped removes the native limit only when new interpolated images are "
+    "available; held frames stay display-paced. A "
     "browser always maps Uncapped to Match Display.";
 
 const Option kCadence[] = {

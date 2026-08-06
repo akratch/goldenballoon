@@ -66,10 +66,29 @@ ln -s /path/to/your/baserom.us.v80.z64 baserom.us.v80.z64
 cmake -S . -B build && cmake --build build -j8
 ```
 
+**Also stage `build/roms/`.** Six checks resolve ROM revisions out of that
+directory instead of the single `--rom` file, and for two of them —
+`check_framed_world_views.py` and `check_arbitrary_presentation_rates.py` — the
+PAL arm is mandatory and hard-fails when no European ROM is found there. A fresh
+worktree therefore needs both symlinks, not just the first:
+
+```bash
+ln -s /path/to/your/roms build/roms   # git-ignored; see docs/ROM_REVISIONS.md
+```
+
 `MDKR_RENDERER=webgpu|gl` selects the backend — WebGPU is the native default and
 OpenGL remains available explicitly for diagnostics and parity work. The
 browser build is WebGPU-only; see
 [docs/architecture/web.md](docs/architecture/web.md).
+
+### Editor and clangd setup
+
+`CMakePresets.json` names the four build directories the suite uses — `dev`
+(`build/`, Debug), `rel` (`build-rel/`, Release), `asan` and `align` — so
+`cmake --preset rel` configures the same directory the checks expect. Every
+configuration writes `compile_commands.json`, and `.clangd` points at
+`build-rel/`; configure that preset once and editor diagnostics stop inventing
+missing headers.
 
 ## Tests
 

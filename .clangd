@@ -1,0 +1,7 @@
+# clangd reads the compilation database CMake writes into build-rel. Configure
+# it once (`cmake --preset rel`) and editor diagnostics use the same include
+# paths and defines the real build uses, instead of the compiler's bare
+# defaults. Any of the four preset directories works; build-rel is the one the
+# release suite already keeps current.
+CompileFlags:
+  CompilationDatabase: build-rel

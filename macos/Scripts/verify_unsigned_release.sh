@@ -152,8 +152,15 @@ LAUNCH_TIMEOUT_SECONDS="${MDKR_RELEASE_LAUNCH_TIMEOUT_SECONDS:-60}"
 # visible and separate from the gameplay-changing cadence setting.
 MDKR_APP_DUMP_SCHEMA=1 MDKR_AUDIO=0 "${EXECUTABLE}" \
     >"${SCHEMA_LOG}" 2>&1 || die "packaged settings schema self-check failed"
-grep -Fq '[app] frame-limit UI contract: recommended="Original (recommended)" group="Higher refresh rates" caveat="Original presents each authored image once. Higher rates repeat authored images when smoothing is Off, or create in-between images when it is Interpolated. Gameplay speed does not change. Higher rates can use more CPU and GPU time. Uncapped removes the native limit only when new interpolated images are available; held frames stay display-paced. A browser always maps Uncapped to Match Display."' \
-    "${SCHEMA_LOG}" || die "packaged frame-limit guidance drifted"
+# kFrameLimitHelp contains both ' and ", so the expected line is carried in a
+# quoted heredoc rather than a quoted string. check_ci_contract.py regenerates
+# it from platform/app/ui_settings.cpp and fails if the two disagree.
+frame_limit_contract=$(cat <<'FRAME_LIMIT_CONTRACT'
+[app] frame-limit UI contract: recommended="Original (recommended)" group="Higher refresh rates" caveat="Original presents each authored image once. Higher rates repeat authored images when smoothing is Off, or create in-between images when it is Interpolated. Gameplay speed does not change. Higher rates can use more CPU and GPU time. Rates above your display's refresh need a display connection that can drop an image it has not shown yet. Where the system does not offer one, they present at your display's refresh instead, unless Allow Tearing is on. A European 50 Hz game is worth pairing Match Display with Interpolated: its authored image lasts 40 ms, which no whole number of 60 Hz refreshes fits, so Original holds it for two refreshes and then three and the motion ripples. Match Display with Interpolated removes that without changing game speed, music pitch, or timers. Uncapped removes the native limit only when new interpolated images are available; held frames stay display-paced. A browser always maps Uncapped to Match Display."
+FRAME_LIMIT_CONTRACT
+)
+grep -Fq "${frame_limit_contract}" "${SCHEMA_LOG}" \
+    || die "packaged frame-limit guidance drifted"
 
 mkdir -p "${WORK_DIR}/defaults-prefs"
 MDKR_VIDEO_CONFIG_PATH="${WORK_DIR}/defaults.ini" \

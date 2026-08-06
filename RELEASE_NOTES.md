@@ -1,3 +1,99 @@
+# Golden Balloon 1.0.6
+
+*Released 2026-08-06.*
+
+Golden Balloon 1.0.6 is a fix release. It stops menus coming up stretched after
+Track Select, gives Taj his own portrait in the collection challenges, removes
+the seam that frame limits could put across the picture, and fixes the pause
+menu, the Resume button, and PAL sound. No game data is included.
+
+Recommended settings are unchanged: **WebGPU**, **Restored**, frame limit
+**Original**, motion smoothing **Off**, gameplay cadence **Original**. Existing
+preferences are preserved when upgrading.
+
+## Reported problems fixed
+
+- **Menus no longer come up stretched after a visit to Track Select** (#16,
+  #18). Track Select shows the live world through a wooden frame and narrows the
+  picture to fit it. Leaving Track Select left that narrower shape behind, so
+  character select — and the race you started from it — drew a 4:3 picture
+  stretched across the whole window. Every screen now starts from its own shape.
+- **Taj has his own portrait in the collection challenges** (#17). The giant
+  portrait on the wall in Fire Mountain and Smokey Castle showed Diddy's face
+  when you played as Taj. It shows Taj now, matching his scoreboard and results
+  portraits, and his in-race portrait sits at the size and place every other
+  racer's does.
+- **PAL sound no longer crackles** (#19). A European game paints a new image
+  every 40 ms and a 60 Hz display can only hold one for 33 or 50 ms, so PAL play
+  alternates short and long frames. The sound queue kept only enough in reserve
+  for the short ones and ran dry on the long ones. It now keeps a reserve sized
+  to the gaps it actually sees. Game speed and music pitch were always correct
+  and are untouched.
+- **Resume gives your controller back** (#20). Closing the pause menu with its
+  on-screen Resume button left the game deaf to the pad for the rest of the
+  session, and only restarting brought it back. Closing the same menu with F1,
+  Escape, the pad's menu button or B/Circle was always fine, which is why it
+  looked like a controller fault. Every way of leaving the menu now hands input
+  straight back, including while you are still holding the button you closed it
+  with.
+
+## Other fixes
+
+- **A frame limit no longer tears the picture.** Any frame limit above Original
+  — including caps below your display's refresh — could put an unfinished image
+  on screen, which showed as a horizontal seam across the picture. Frame limits
+  now stay on the display's refresh. Rates above your display's refresh need a
+  display connection that can drop an image it has not shown yet; where the
+  system does not offer one, they present at your display's refresh instead.
+- **The pause menu no longer replays what you pressed during the race.** Keys
+  pressed while the menu was closed piled up unseen and were fed into it when it
+  next opened, so it could scroll or press its own buttons on your behalf. The
+  menu opens fresh every time.
+- **The door camera in the adventure hubs keeps the door in shot.** With Camera
+  obstruction set to Keep out of walls, the camera watching you drive into a
+  door could swing a long way off the door to keep you in view. It now moves
+  only far enough to stay out of walls and keeps facing the door.
+- **`mdkr64.log` says where the last run went.** Every launch starts a new log
+  and keeps the one before it as `mdkr64.prev.log`. Reopening the app to try
+  something again used to leave `mdkr64.log` holding only the seconds since it
+  started, with the run you wanted to report sitting next door under a name
+  nothing had mentioned. The log now names itself and the previous run's file on
+  its first two lines.
+- **A European game says how to smooth its motion.** PAL play on a 60 Hz display
+  carries the same short-long alternation as a visible ripple. Setting frame
+  limit to Match Display with motion smoothing Interpolated removes it without
+  changing how the game plays, and a European launch now mentions that once.
+
+## New setting: Allow Tearing
+
+**Settings → Frame Rate & Motion → Allow Tearing** shows finished frames without
+waiting for the display, where the system allows it. That is the lowest input
+delay, and the picture may show a seam across it while things are moving.
+
+It is off by default, no presentation mode turns it on or off for you, and it
+takes effect on the next launch because the display connection is set up once at
+startup.
+
+## Known limitations
+
+- WebGPU is the recommended renderer. OpenGL is a diagnostic option, and the
+  Remastered look is still in progress.
+- Motion smoothing is a preview. It smooths the picture only — the game itself
+  still runs at its original pace — and scrolling surfaces such as waterfalls,
+  water, and lava can shimmer or step during camera motion. Off is unaffected.
+- The desktop app supports keyboard and gamepad navigation, visible focus,
+  scaling, contrast, and reduced motion. Screen readers are not supported yet.
+- On Linux, load a ROM by drag and drop or by typing its path; there is no
+  native file picker yet.
+- The macOS app is not notarized. If macOS shows an unidentified-developer
+  warning on first launch, use **System Settings → Privacy & Security → Open
+  Anyway**.
+
+For implementation details, see [CHANGELOG.md](CHANGELOG.md). Open work is
+listed in [ROADMAP.md](ROADMAP.md).
+
+---
+
 # Golden Balloon 1.0.5
 
 *Released 2026-08-06.*

@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 project(mdkr64 C)
+# Editors and clangd read build-rel/compile_commands.json (see .clangd). Without
+# it every include resolves against the compiler's bare default search path and
+# the editor reports missing headers that the real build finds.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(CTest)
 option(MDKR_BUILD_FUZZERS "Build coverage-guided save-format fuzzers" OFF)
 
@@ -1118,7 +1122,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/gfx_ptr.c          # registry globals (PLAN #3)
     ${CMAKE_SOURCE_DIR}/platform/gfx_config_shim.c  # render/post-FX config globals (off)
     ${CMAKE_SOURCE_DIR}/platform/hasm_stubs_temp.c
-    ${CMAKE_SOURCE_DIR}/platform/math_stubs_temp.c
+    ${CMAKE_SOURCE_DIR}/platform/math_util_native.c
     ${CMAKE_SOURCE_DIR}/platform/mixer.c            # M5: software aspMain audio mixer
     ${CMAKE_SOURCE_DIR}/platform/audi_port_dkr.c    # audio-time service + SDL/worklet sinks
     ${CMAKE_SOURCE_DIR}/platform/audio_compat.c     # clean-room synth: banks, filters, CSP player
@@ -1245,7 +1249,7 @@ target_compile_definitions(${MDKR_TARGET} PRIVATE
 # CFBundleShortVersionString, which macos/Scripts/build_app_bundle.sh stamps
 # from this same value via PlistBuddy. Kept as its own standalone statement
 # (not folded into the block above) so it stays a one-line, low-conflict diff.
-set(MDKR_VERSION "1.0.5" CACHE STRING "mdkr64 release version (semver)")
+set(MDKR_VERSION "1.0.6" CACHE STRING "mdkr64 release version (semver)")
 target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_VERSION_STRING="${MDKR_VERSION}")
 # The save CLI stamps app_version into every container it writes, so it must
 # carry the same release value the engine and app shell do. Its target is
@@ -1606,8 +1610,15 @@ if(NOT EMSCRIPTEN)
             # Schema round-trip: every key the settings panel renders must have a
             # category, a label, help text, and must resolve back by name. Runs
             # fully headless (no window, no GPU) via the shell's own self-check.
+            #
+            # The caveat below is kFrameLimitHelp (platform/app/ui_settings.cpp)
+            # verbatim, except that its one literal ";" is written "." — CTest
+            # splits a PASS_REGULAR_EXPRESSION on unescaped semicolons and would
+            # otherwise accept either half on its own. check_ci_contract.py
+            # regenerates and compares this string, so it cannot go stale.
             set(MDKR_FRAME_LIMIT_UI_CONTRACT_REGEX
-                "recommended=\"Original \\(recommended\\)\" group=\"Higher refresh rates\" caveat=\"Original presents each authored image once. Higher rates repeat authored images when smoothing is Off, or create in-between images when it is Interpolated. Gameplay speed does not change. Higher rates can use more CPU and GPU time. Uncapped removes the native limit only when new interpolated images are available; held frames stay display-paced. A browser always maps Uncapped to Match Display.\"")
+                "recommended=\"Original \\(recommended\\)\" group=\"Higher refresh rates\" caveat=\"Original presents each authored image once. Higher rates repeat authored images when smoothing is Off, or create in-between images when it is Interpolated. Gameplay speed does not change. Higher rates can use more CPU and GPU time. Rates above your display's refresh need a display connection that can drop an image it has not shown yet. Where the system does not offer one, they present at your display's refresh instead, unless Allow Tearing is on. A European 50 Hz game is worth pairing Match Display with Interpolated: its authored image lasts 40 ms, which no whole number of 60 Hz refreshes fits, so Original holds it for two refreshes and then three and the motion ripples. Match Display with Interpolated removes that without changing game speed, music pitch, or timers. Uncapped removes the native limit only when new interpolated images are available. held frames stay display-paced. A browser always maps Uncapped to Match Display.\"")
+
             add_test(NAME app_schema COMMAND ${MDKR_TARGET})
             set_tests_properties(app_schema PROPERTIES
                 ENVIRONMENT "MDKR_APP_DUMP_SCHEMA=1;MDKR_AUDIO=0"

@@ -5,14 +5,14 @@ Branch: `codex/camera-obstruction-modern`
 ROM used by runtime gates: US Rev 1 at the original repository path; no ROM or
 ROM-derived data is present in this worktree or its commits.
 
-> **Superseded on the default question (2026-08-05, 1.0.5 integration).** Release
-> ownership took the default flip: unset `MDKR_CAMERA_OBSTRUCTION` now selects
-> Modern. The deferred gates recorded below remain open as breadth work; they
-> were not converted into safety exceptions, and the flip rests on the
-> presentation-depth confinement of the substitution rather than on their
-> closure. The rollback is unchanged and unweakened —
-> `MDKR_CAMERA_OBSTRUCTION=observe`. Everything else in this note stands as the
-> record of the state at handoff.
+> **Default history (amended 2026-08-06).** During 1.0.5 integration release
+> ownership took a default flip so that an unset `MDKR_CAMERA_OBSTRUCTION`
+> selected Modern. That flip was **reverted before 1.0.5 shipped** (commit
+> 39053a7). Modern is opt-in — through the launcher's Camera obstruction setting
+> or `MDKR_CAMERA_OBSTRUCTION=modern` — and unset selects Observe, which is the
+> state this handoff recommends. The deferred gates recorded below remain open
+> as breadth work and were never converted into safety exceptions. Everything
+> else in this note stands as the record of the state at handoff.
 
 ## Handoff decision
 

@@ -5,12 +5,14 @@ Branch: `codex/camera-obstruction-modern`
 Host: macOS arm64, Clang/AppleClang  
 ROM: US v80 Rev 1, validated by the runtime banner
 
-> **Superseded on the default question (2026-08-05, 1.0.5 integration).** Release
-> ownership flipped the default: unset `MDKR_CAMERA_OBSTRUCTION` selects Modern.
-> An *unrecognized* value still resolves to Observe — that half of the sentence
-> below is unchanged and deliberate. The release work named in the final section
-> remains open as breadth evidence. The measurements in this note are the
-> evidence the flip was taken on and are otherwise unamended.
+> **Default history (amended 2026-08-06).** During 1.0.5 integration release
+> ownership briefly flipped the default so that an unset
+> `MDKR_CAMERA_OBSTRUCTION` selected Modern. That flip was **reverted before
+> 1.0.5 shipped** (commit 39053a7): Modern is opt-in, and an unset value once
+> again selects Observe, exactly as the decision below states. An *unrecognized*
+> value also resolves to Observe, with a one-shot diagnostic. The release work
+> named in the final section remains open as breadth evidence. The measurements
+> in this note are unamended.
 
 ## Decision
 

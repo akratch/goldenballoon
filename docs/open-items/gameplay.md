@@ -1,10 +1,6 @@
 # Open items — Gameplay, race and Adventure
 
-> Part of the split [open-items index](README.md). Every defect this port has
-> hit is recorded with its mechanism, the measurement that found it, the fix, and
-> the check that would catch a regression. **Nothing is deleted when it is
-> fixed** — a closed entry is the only warning the next person gets that the same
-> trap exists, and retractions are recorded in place rather than removed.
+> One subsystem of the split [open-items index](README.md), which states how these files are kept.
 
 ## OPEN: gameplay cameras can enter terrain and object geometry
 
@@ -247,7 +243,7 @@ another line-shaped fixture.
 ## FIXED: three ROM-fidelity divergences, and the fixture class that was blocking them — wave "closedloop"
 
 The "hasmaudit" wave below found three measured divergences from the ROM in
-`platform/math_stubs_temp.c` and **deliberately left all three switched off**,
+`platform/math_util_native.c` and **deliberately left all three switched off**,
 because each one shifts every AI racing line and the fixtures could not survive
 that. This wave removes the blocker and then flips them.
 
@@ -294,7 +290,7 @@ the invented `0x00051234` / `0`. `MDKR_RNGSEED=legacy` restores the old pair.
 
 The port evaluated all five with libm. The ROM interpolates a 1025-entry
 quarter-turn table. `XLEAF(sins_s16)` (math_util.s:2432) is now transcribed into
-`platform/math_stubs_temp.c`, and `gSineTable` is generated — **with no ROM data**
+`platform/math_util_native.c`, and `gSineTable` is generated — **with no ROM data**
 — as `round(sin(i*pi/2/1024) * 0x8000)`, which matches all 1025 `.half` entries.
 `sins_f`/`coss_f` route through it exactly as `LEAF(sins_f)` does (`jal sins_s16`,
 `cvt.s.w`, `mul.s` by 1/0x10000) rather than calling libm themselves — before this
@@ -479,7 +475,7 @@ real coverage hole.
 
 ### None of the three is `#ifdef NATIVE_PORT`-gated, and none needs to be
 
-All three live in `platform/math_stubs_temp.c`, which is port-only by
+All three live in `platform/math_util_native.c`, which is port-only by
 construction — it exists to supply the symbols from a `.s` this build does not
 assemble. Nothing under `game/` changed. The corrections make the port *more*
 faithful to the ROM, so even if they had been in `game/` they would be
@@ -1749,7 +1745,7 @@ follow-on cascade of latent decomp UB that only became reachable once racers
 actually move.
 
 - **ROOT CAUSE — fixed-point trig amplitude was halved.**
-  `platform/math_stubs_temp.c`'s WEAK `sins_s16`/`coss_s16`/`sins_2` scaled by
+  `platform/math_util_native.c`'s WEAK `sins_s16`/`coss_s16`/`sins_2` scaled by
   `32767.0f` (0x7FFF). DKR's fixed-point trig convention is amplitude **0x10000
   (65536)**: the real hand-asm (`src/hasm/ido/math_util.s`) reads a u16 sine table
   and `sll v0,1` (×2) it, so 1.0 → 0x10000, and every caller assumes that scale —
@@ -1795,7 +1791,8 @@ actually move.
   navs stable; frame capture at frame ~2880 shows full-size karts on Ancient Lake with HUD.
   All runs muted + headless (`MDKR_AUDIO=0 --headless-frames`).
 
-- **Note — `math_stubs_temp.c` is temporary bring-up glue.** These trig stubs are
+- **Note — `math_util_native.c` (recorded here under its former name
+  `math_stubs_temp.c`) is temporary bring-up glue.** These trig stubs are
   WEAK sinf()/cosf() approximations, not bit-exact to the ROM sine table. A future
   `hasm_native/math_util.c` should port the real table-interpolated `sins_s16`
   (`src/hasm/ido/math_util.s`) for exact fidelity; until then the amplitude is now

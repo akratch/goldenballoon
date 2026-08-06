@@ -2481,7 +2481,7 @@ collapses the candidate list to **1** and drops the racer to **y ≈ −568**, w
 forced+fixed holds 26 candidates at y 29.
 
 **`check_math_tables.py`** — the `.s` **data** section this port substitutes for.
-`platform/math_stubs_temp.c` regenerates `gArcTanTable` and supplies the RNG seeds
+`platform/math_util_native.c` regenerates `gArcTanTable` and supplies the RNG seeds
 because `game/src/hasm/ido/math_util.s` is not assembled. Two divergences are
 **still live by default and deliberately deferred**, and this check exists so they
 cannot rot and so nobody deletes the opt-in switches without reading why:

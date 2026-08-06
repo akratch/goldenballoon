@@ -25,7 +25,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import exclusive_build_dir
+from harness_utils import exclusive_build_dir, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -254,7 +254,7 @@ def run_check() -> int:
         gl_only=args.gl_only,
     ):
         return 1
-    binary = build_dir / "mdkr64"
+    binary = Path(resolve_binary(build_dir))
     if not binary.is_file():
         print(f"check_full_ubsan: missing instrumented binary: {binary}")
         return 2

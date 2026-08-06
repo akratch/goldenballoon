@@ -1,10 +1,6 @@
 # Open items — 64-bit (LP64), endianness and portability
 
-> Part of the split [open-items index](README.md). Every defect this port has
-> hit is recorded with its mechanism, the measurement that found it, the fix, and
-> the check that would catch a regression. **Nothing is deleted when it is
-> fixed** — a closed entry is the only warning the next person gets that the same
-> trap exists, and retractions are recorded in place rather than removed.
+> One subsystem of the split [open-items index](README.md), which states how these files are kept.
 
 
 ## FIXED: tagged macOS artifact exposed a stale magic-code endian failure
@@ -192,7 +188,7 @@ and `sra`-vs-`srl`, then hot paths over cold.
 | `game/src/hasm_native/obj_shade_fast.c` | 2 | clean |
 | `game/src/hasm_native/inflate_native.c` | 5 (+4 helpers) | clean **as a transcription**; see the retracted malformed-input verdict below |
 | `game/src/objects.c` `func_80017A18` | 1 | **not compiled at all** — see below |
-| `platform/math_stubs_temp.c` (the `.s` **data** section + the trig with no C body) | 9 symbols | **3 divergences**, 0 fixed |
+| `platform/math_util_native.c` (the `.s` **data** section + the trig with no C body) | 9 symbols | **3 divergences**, 0 fixed |
 
 Coverage worth stating honestly: `obj_animate`/`obj_shade_fast` were checked at
 41/41 conditional branches, 18/18 compares, 11/11 loop trip counts and 93
@@ -204,7 +200,7 @@ does **not** define — `mtxf_transform_dir`, `fix32_sqrt`, `bad_int_sqrt`,
 audited as live code. (`mtxf_transform_dir`'s dead body does contain a real error —
 `*mf[1][0]` indexes the *next matrix in memory* instead of `(*mf)[1][0]` — which
 would have to be fixed before that body is ever enabled. Its live implementation
-is the weak stub in `platform/math_stubs_temp.c`, which is correct.)
+is the weak stub in `platform/math_util_native.c`, which is correct.)
 
 ### FIXED 1: `vec3f_rotate_py()` paired each angle with itself instead of pitch with yaw
 
@@ -344,7 +340,7 @@ an untextured collidable batch.
 > a measured fix waited for its fixtures, which is the transferable part.
 
 
-1. **The RNG seed is wrong.** `platform/math_stubs_temp.c` has shipped
+1. **The RNG seed is wrong.** `platform/math_util_native.c` has shipped
    `gCurrentRNGSeed = 0x00051234`, `gPrevRNGSeed = 0` since the first platform
    commit, invented to make the link succeed. The `.data` section of
    `game/src/hasm/ido/math_util.s` has **`0x5141564D`** (`'QAVM'`) for *both*.

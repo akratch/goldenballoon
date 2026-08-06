@@ -1,5 +1,5 @@
 /**
- * math_stubs_temp.c — strong native implementations for the math_util.s
+ * math_util_native.c — strong native implementations for the math_util.s
  * hand-asm routines and their data. Their table, conversion, RNG, and gameplay
  * behavior is covered by the math/runtime gates; a missing or duplicate
  * production provider must be a link error.

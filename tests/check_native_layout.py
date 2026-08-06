@@ -35,6 +35,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from harness_utils import resolve_binary
+
 
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = ROOT / "tests"
@@ -498,7 +500,7 @@ def main() -> int:
     failures = configure_and_build(
         align_build, asan_build, args.no_build
     )
-    align_binary = align_build / "mdkr64"
+    align_binary = Path(resolve_binary(align_build))
     align_unit = align_build / "mdkr_object_layout_test"
     asan_unit = asan_build / "mdkr_object_layout_test"
     failures += verify_instrumentation(

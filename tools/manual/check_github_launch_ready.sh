@@ -30,7 +30,7 @@ ok()   { printf '  %s[OK]%s %s\n' "$GREEN" "$NC" "$1"; }
 
 usage() {
   cat <<'USAGE'
-Usage: tools/check_github_launch_ready.sh [--repo OWNER/REPO] [--allow-private]
+Usage: tools/manual/check_github_launch_ready.sh [--repo OWNER/REPO] [--allow-private]
 
 Checks GitHub-side public repository state that local CI cannot prove:
   - gh authentication

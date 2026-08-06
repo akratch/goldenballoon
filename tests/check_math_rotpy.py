@@ -51,7 +51,7 @@ direction (lights.c:413) and object sprite placement (objects.c:493).
 Why the check works this way
 ----------------------------
 Both arms come from the SAME binary: `MDKR_ROTPY=legacy` restores the
-transposition verbatim (platform/math_stubs_temp.c), so the broken arm is
+transposition verbatim (platform/math_util_native.c), so the broken arm is
 re-produced on every run and has to actually *exhibit* the defect before the
 fixed arm is credited.  Three independent things are asserted:
 
@@ -80,7 +80,7 @@ import sys
 
 from harness_utils import resolve_binary
 
-# Must match the cases in platform/math_stubs_temp.c's self-test.
+# Must match the cases in platform/math_util_native.c's self-test.
 CASES = {"A": (0x0000, 0x4000), "B": (0x2000, 0x1000)}
 Z_IN = 100.0
 

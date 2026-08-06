@@ -4,7 +4,7 @@
 # Consumers read this file at run time:
 #   - tools/check_public_surface.py scans committed/staged/outgoing Git blobs
 #     and commit messages with Python regexes;
-#   - tools/check_github_launch_ready.sh scans GitHub metadata with jq/Oniguruma.
+#   - tools/manual/check_github_launch_ready.sh scans GitHub metadata with jq/Oniguruma.
 #
 # Format: one regex alternative per line. Blank lines, and lines whose first
 # non-blank character is #, are ignored. Both engines must accept every line, so

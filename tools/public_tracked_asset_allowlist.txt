@@ -16,14 +16,4 @@ dist/web/mdkr64-shell.js
 dist/web/rom-id.js
 dist/web/style.css
 dist/web/sw.js
-docs/evidence/imgui-shell/ingame-overlay-f1.png
-docs/evidence/imgui-shell/ingame-overlay-gl.png
-docs/evidence/imgui-shell/launcher-about.png
-docs/evidence/imgui-shell/launcher-diagnostics.png
-docs/evidence/imgui-shell/launcher-rom-panel.png
-docs/evidence/imgui-shell/launcher-settings.png
-docs/evidence/imgui-shell/rompicker-firstrun.png
-docs/evidence/imgui-shell/rompicker-nsopenpanel.png
-docs/evidence/imgui-shell/rompicker-ready.png
-docs/evidence/imgui-shell/rompicker-rejected.png
 windows/mdkr64.ico
