@@ -639,7 +639,28 @@ static int onRender(void) {
 
     // Nothing to draw: skip the whole ImGui frame rather than building and
     // discarding one every frame of every race.
-    if (!g_overlay.open && !g_overlay.showFps) return 1;
+    if (!g_overlay.open && !g_overlay.showFps) {
+        // ImGui::NewFrame() is the only consumer of the event queue that
+        // onProcessEvent keeps filling, and the only thing that releases a key
+        // ImGui still believes is held. Neither runs while the overlay is
+        // hidden, so draining here is what keeps two things true:
+        //
+        //  * a race's worth of keystrokes cannot accumulate and then be
+        //    trickled into the menu the moment it opens, navigating and
+        //    activating its buttons on the player's behalf; and
+        //  * the button that closed the menu -- Enter or a nav A/Cross on
+        //    Resume -- cannot stay latched while it is held across the
+        //    transition and re-activate whatever the menu shows next time.
+        //
+        // The overlay always reopens from a neutral input state. Mouse
+        // position and gamepad state are re-read from SDL by the backend's
+        // next NewFrame(), so nothing durable is lost.
+        ImGuiIO &io = ImGui::GetIO();
+        io.ClearEventsQueue();
+        io.ClearInputKeys();
+        io.ClearInputMouse();
+        return 1;
+    }
 
     beginImGuiFrame();
     if (g_overlay.showFps) drawFpsReadout();

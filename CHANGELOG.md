@@ -51,6 +51,27 @@ save formats). Everything below 1.0.0 predates that commitment.
   was written to show. It now moves only far enough to stay out of walls and
   keeps facing the door.
 
+#### Launcher and input
+
+- **Resume gives your controller back** (#20). Closing the pause menu with its
+  on-screen Resume button left the game deaf to the pad for the rest of the
+  session: nothing you pressed reached your racer, and only restarting the game
+  brought it back. Closing the same menu with F1, Escape, the pad's menu button
+  or B/Circle was always fine, which is why it looked like a controller fault.
+  Every way of leaving the menu now hands input straight back, including while
+  you are still holding the button you closed it with. Resume clicked with the
+  mouse had the same fault and is fixed with it.
+- **The pause menu no longer replays what you pressed during the race.** Keys
+  pressed while the menu was closed piled up unseen and were fed into it when it
+  next opened, so it could scroll or press its own buttons on your behalf. The
+  menu now opens fresh every time.
+- **`mdkr64.log` says where the last run went.** Every launch starts a new log
+  and keeps the one before it as `mdkr64.prev.log`, so reopening the app to try
+  something again left `mdkr64.log` holding only the seconds since it started —
+  and the run you wanted to report sitting next door under a name nothing had
+  mentioned. The log now names itself and the previous run's file on its first
+  two lines.
+
 ## [1.0.5] — 2026-08-06
 
 No ROM or other game data is included. Recommended settings are unchanged from

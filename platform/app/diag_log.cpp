@@ -273,6 +273,24 @@ bool DiagLog_install() {
          * text-mode newline translation would make the file disagree with both
          * the in-app ring and the "rb" import above. */
         g_logFile = mdkr_fopen_utf8(g_logPath.c_str(), "wb");
+        /* Say, in the file itself, that this launch replaced the last one's
+         * log. Every launch rotates -- including the one that replaces the
+         * process for Return to Launcher and Restart & Apply -- so a player who
+         * reopens the app before collecting a log finds this one holding only
+         * the seconds since it started, with the run they meant to report now
+         * living next door under a name nothing had told them about. A run that
+         * genuinely had nothing to say is also no longer a zero-byte file, which
+         * reads as "the tee is broken again" to anyone who has seen that before.
+         *
+         * Written before the reader thread exists, so it cannot race the tee. */
+        if (g_logFile != nullptr) {
+            const std::string fate =
+                rotated == 0 ? "was rotated to " + previous
+                             : "could not be rotated and was replaced";
+            std::fprintf(g_logFile, "[log] %s\n[log] the previous run's log %s\n",
+                         g_logPath.c_str(), fate.c_str());
+            std::fflush(g_logFile);
+        }
     }
 
     try {
