@@ -216,14 +216,11 @@ bool present_sched_test_force_recompose(void) {
 
 static bool test_presentation_replay_enabled(void) {
     if (s_test_presentation_replay < 0) {
-        const char *explicit_test =
-            getenv("MDKR_TEST_PRESENTATION_REPLAY");
         const char *delayed_control =
             getenv("MDKR_TEST_DELAYED_ENDPOINT_REPLAY");
         s_test_presentation_replay =
             present_sched_internal_replay_test_enabled() &&
-            ((explicit_test != NULL && explicit_test[0] == '1') ||
-             (delayed_control != NULL && delayed_control[0] == '1'))
+            delayed_control != NULL && delayed_control[0] == '1'
                 ? 1
                 : 0;
     }
