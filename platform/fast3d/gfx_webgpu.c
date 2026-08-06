@@ -1173,10 +1173,20 @@ static WGPUCompositeAlphaMode wgpu_choose_alpha_mode(void) {
 
 /* PERF-051: present-mode selection. FIFO (vsync) is the default and the
  * byte-identity baseline — it matches the GL/Metal swap and is the only mode the
- * WebGPU spec guarantees the surface advertises. GE007_WEBGPU_PRESENT opts into a
- * lower-latency mode (the F5 uncapped-FPS prerequisite: render-only frames cannot
- * exceed the refresh rate under FIFO):
- *     fifo (default) | mailbox | immediate
+ * WebGPU spec guarantees the surface advertises.
+ *
+ * The latched presentation policy chooses between FIFO and mailbox
+ * (gfx_webgpu_surface_rank_present): a cap at or below the display is paced
+ * exactly by the software deadline grid on top of the FIFO queue, while a rate
+ * the display cannot show — a cap above it, or uncapped — needs a queue that
+ * replaces an undisplayed image instead of stalling. Immediate scans out a
+ * partial frame and is therefore never a consequence of a rate: it is reachable
+ * only through Video.AllowTearing, and a surface that does not advertise it
+ * keeps the policy's own tear-free mode.
+ *
+ * GE007_WEBGPU_PRESENT remains the diagnostic override and still wins over the
+ * policy:
+ *     fifo | mailbox | immediate
  * The requested mode is selected ONLY when the surface capabilities advertise it;
  * otherwise it falls back to FIFO with one stderr note. The requested policy is
  * process-constant, but support is resolved per active surface generation.
@@ -1184,8 +1194,40 @@ static WGPUCompositeAlphaMode wgpu_choose_alpha_mode(void) {
  * Web: the browser present is rAF-driven (emdawnwebgpu no-ops the present, see
  * gfx_webgpu_compat.h), so present mode is a native concern; the knob is harmless
  * there by construction — an unset env keeps FIFO (byte-identical to today), and the
- * env is never set on the web build. No inline __EMSCRIPTEN__ guard needed (seam
- * rule): the default path is identical on both platforms. */
+ * env is never set on the web build. */
+static bool wgpu_present_support(GfxWebgpuPresentSupport *out) {
+    WGPUSurfaceCapabilities caps = {0};
+    size_t i;
+
+    out->mailbox = false;
+    out->immediate = false;
+    if (s_surface == NULL || s_adapter == NULL ||
+        gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_CAPS_PRESENT) ||
+        wgpuSurfaceGetCapabilities(s_surface, s_adapter, &caps) !=
+            WGPUStatus_Success) {
+        wgpuSurfaceCapabilitiesFreeMembers(caps);
+        return false;
+    }
+    for (i = 0; i < caps.presentModeCount; ++i) {
+        if (caps.presentModes[i] == WGPUPresentMode_Mailbox) {
+            out->mailbox = true;
+        } else if (caps.presentModes[i] == WGPUPresentMode_Immediate) {
+            out->immediate = true;
+        }
+    }
+    wgpuSurfaceCapabilitiesFreeMembers(caps);
+    return true;
+}
+
+static WGPUPresentMode wgpu_present_mode_for(GfxWebgpuPresentMode mode) {
+    switch (mode) {
+        case GFX_WEBGPU_PRESENT_MAILBOX:   return WGPUPresentMode_Mailbox;
+        case GFX_WEBGPU_PRESENT_IMMEDIATE: return WGPUPresentMode_Immediate;
+        case GFX_WEBGPU_PRESENT_FIFO:
+        default:                           return WGPUPresentMode_Fifo;
+    }
+}
+
 static WGPUPresentMode wgpu_choose_present_mode(void) {
     WGPUPresentMode mode = WGPUPresentMode_Fifo;
     const char *want = getenv("GE007_WEBGPU_PRESENT");
@@ -1206,15 +1248,30 @@ static WGPUPresentMode wgpu_choose_present_mode(void) {
     }
 #endif
     if (!diagnostic_override) {
-        if (present_sched_backend_vsync_enabled()) {
-            fprintf(stderr,
-                    "[PRESENT-MODE] backend=webgpu policy=%s rate=%u "
-                    "requested=fifo effective=fifo supported=1\n",
-                    present_sched_present_policy_name(),
-                    present_sched_present_rate());
-            return mode;
-        }
-        want = "immediate";
+        const MdkrPresentSync sync =
+            present_sched_present_sync(platform_present_display_rate());
+        const bool tearing = present_sched_allow_tearing();
+        const GfxWebgpuPresentMode requested =
+            gfx_webgpu_surface_request_present(sync, tearing);
+        GfxWebgpuPresentSupport advertised;
+        GfxWebgpuPresentMode effective;
+        const bool caps_known = wgpu_present_support(&advertised);
+
+        effective = gfx_webgpu_surface_rank_present(sync, tearing, advertised);
+        fprintf(stderr,
+                "[PRESENT-MODE] backend=webgpu policy=%s rate=%u "
+                "displayHz=%u tearing=%d requested=%s effective=%s "
+                "supported=%d override=0%s\n",
+                present_sched_present_policy_name(),
+                present_sched_present_rate(),
+                platform_present_display_rate(), tearing ? 1 : 0,
+                gfx_webgpu_surface_present_name(requested),
+                gfx_webgpu_surface_present_name(effective),
+                requested == effective ? 1 : 0,
+                requested == effective ? ""
+                    : (caps_known ? " reason=capability-fallback"
+                                  : " reason=capabilities-unavailable"));
+        return wgpu_present_mode_for(effective);
     }
     if (strcmp(want, "fifo") == 0) {
         fprintf(stderr,

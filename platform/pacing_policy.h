@@ -27,6 +27,19 @@ typedef struct MdkrPresentPolicy {
     unsigned rate;
 } MdkrPresentPolicy;
 
+/*
+ * How a latched policy wants the backend to retire a present. BLOCKING is the
+ * vblank queue every backend guarantees; LATEST asks for a queue that replaces
+ * an undisplayed image instead of stalling the caller, which is what a rate
+ * ABOVE the display can use and a blocking queue cannot serve. Both are
+ * vblank-synchronized: neither value ever means a torn scanout, which is a
+ * separate explicit opt-in the player owns.
+ */
+typedef enum MdkrPresentSync {
+    MDKR_PRESENT_SYNC_BLOCKING = 0,
+    MDKR_PRESENT_SYNC_LATEST = 1
+} MdkrPresentSync;
+
 /* Absolute rational deadline grid for a numeric presentation cap. */
 typedef struct MdkrPresentDeadlineClock {
     uint64_t origin_ns;
@@ -65,7 +78,10 @@ uint32_t mdkr_counter_guard_commit(MdkrCounterGuard *guard, uint32_t sample);
 int mdkr_present_policy_parse(const char *value, MdkrPresentPolicy *out);
 int mdkr_present_policy_equal(const MdkrPresentPolicy *left,
                               const MdkrPresentPolicy *right);
-int mdkr_present_policy_uses_vsync(const MdkrPresentPolicy *policy);
+/* `display_rate` is the detected refresh of the display the window is on, or 0
+ * when the host has no such number (the browser measures rAF instead). */
+MdkrPresentSync mdkr_present_policy_sync(const MdkrPresentPolicy *policy,
+                                         unsigned display_rate);
 int mdkr_present_policy_needs_subloop(const MdkrPresentPolicy *policy,
                                       unsigned tick_rate);
 int mdkr_present_policy_needs_held_frame_deadline(

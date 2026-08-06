@@ -115,7 +115,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import completed_tick_conservation, resolve_binary
+from harness_utils import (
+    completed_tick_conservation,
+    resolve_binary,
+    tear_free_presentation,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
@@ -398,6 +402,7 @@ def main() -> int:
                                                           "arm A GL")
         if conservation_error:
             failures.append(conservation_error)
+        failures.extend(tear_free_presentation(baseline, "arm A GL unset"))
         if summary["ticks"] != summary["presents"]:
             failures.append(
                 "arm A: the authoritative clock and fixed-ticket adapter "
@@ -475,6 +480,8 @@ def main() -> int:
                 ("GL =60", rate60, "rate-60"),
                 ("WebGPU unset", webgpu_unset, "webgpu-clock-agreement"),
                 ("WebGPU =60", webgpu_rate60, "webgpu-rate-60")):
+            failures.extend(
+                tear_free_presentation(other_output, f"arm B: {label}"))
             other = sim_hash_rows(other_output)
             if len(other) != TICKS:
                 failures.append(

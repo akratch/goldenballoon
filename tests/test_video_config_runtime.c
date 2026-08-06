@@ -80,13 +80,16 @@ int mdkr_display_widescreen_enabled(void) { return s_widescreen; }
  */
 static char s_presentFrameLimit[32] = "(never called)";
 static char s_presentSmoothing[32] = "(never called)";
+static char s_presentTearing[32] = "(never called)";
 static int s_presentFrameLimitCalls;
 static int s_presentSmoothingCalls;
+static int s_presentTearingCalls;
 static const char *const s_config_env_names[] = {
     "MDKR_REMASTER_FX", "MDKR_WIDESCREEN", "MDKR_ASPECT",
     "MDKR_RENDER_SCALE", "MDKR_MSAA", "MDKR_ANISOTROPY",
     "MDKR_MIPMAPS", "MDKR_TEXTURE_PACK", "MDKR_FOV",
     "MDKR_VIDEO_MODE", "MDKR_PRESENT_RATE", "MDKR_PRESENT_SMOOTHING",
+    "MDKR_ALLOW_TEARING",
     "MDKR_MASTER_VOLUME", "MDKR_MUSIC_VOLUME", "MDKR_EFFECTS_VOLUME",
     "MDKR_WINDOW_MODE", "MDKR_RUMBLE_ENABLED", "MDKR_RUMBLE_PROFILE",
     "MDKR_CONTROLLER_A", "MDKR_CONTROLLER_B", "MDKR_CONTROLLER_X",
@@ -112,6 +115,13 @@ void mdkr_present_set_motion_smoothing(const char *value) {
     s_presentSmoothingCalls++;
     if (value != NULL) {
         snprintf(s_presentSmoothing, sizeof(s_presentSmoothing), "%s", value);
+    }
+}
+
+void mdkr_present_set_allow_tearing(const char *value) {
+    s_presentTearingCalls++;
+    if (value != NULL) {
+        snprintf(s_presentTearing, sizeof(s_presentTearing), "%s", value);
     }
 }
 
@@ -392,6 +402,8 @@ static int run_primary_case(void) {
            s_presentFrameLimitCalls == 0);
     expect("motion smoothing not pushed while still DEFAULT-sourced",
            s_presentSmoothingCalls == 0);
+    expect("tearing opt-in not pushed while still DEFAULT-sourced",
+           s_presentTearingCalls == 0);
 
     /*
      * FrameLimit/MotionSmoothing are SCOPE_RESTART (ship review): the present
@@ -415,6 +427,14 @@ static int run_primary_case(void) {
                MDKR_VIDEO_RUNTIME_RESTART);
     expect("staged motion smoothing did not reach present_sched",
            s_presentSmoothingCalls == 0);
+    expect("tearing opt-in stages for restart",
+           mdkr_video_config_runtime_set(MDKR_VIDEO_ALLOW_TEARING, "on") ==
+               MDKR_VIDEO_RUNTIME_RESTART);
+    expect("staged tearing opt-in did not reach present_sched",
+           s_presentTearingCalls == 0);
+    expect("staged tearing opt-in is in the desired config",
+           !strcmp(mdkr_video_config_desired()
+                       ->values[MDKR_VIDEO_ALLOW_TEARING].text, "on"));
     /* ...and the staged values are what a restart would resolve. */
     expect("staged frame limit is in the desired config",
            !strcmp(mdkr_video_config_desired()

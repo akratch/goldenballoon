@@ -538,6 +538,11 @@ void mdkr_video_config_publish(void) {
         mdkr_present_set_motion_smoothing(
             c->values[MDKR_VIDEO_MOTION_SMOOTHING].text);
     }
+    if (c->values[MDKR_VIDEO_ALLOW_TEARING].source !=
+        MDKR_VIDEO_SOURCE_DEFAULT) {
+        mdkr_present_set_allow_tearing(
+            c->values[MDKR_VIDEO_ALLOW_TEARING].text);
+    }
 }
 
 static int mdkr_video_values_equal(const MdkrVideoValue *a,

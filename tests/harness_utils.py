@@ -7,6 +7,7 @@ import errno
 import fcntl
 import hashlib
 import os
+import re
 import shutil
 import tempfile
 from collections.abc import Mapping
@@ -113,6 +114,57 @@ def completed_tick_conservation(
         return (f"{label}: scheduler maxpending={max_pending}, expected "
                 f"{_debt_text(expected_max_pending)}")
     return None
+
+
+_PRESENT_MODE_RE = re.compile(r"\[PRESENT-MODE\] (.*)")
+
+
+def present_mode_rows(output: str) -> list[dict[str, str]]:
+    """Every ``[PRESENT-MODE]`` row a run emitted, as key/value pairs."""
+    rows: list[dict[str, str]] = []
+    for match in _PRESENT_MODE_RE.finditer(output):
+        row: dict[str, str] = {}
+        for token in match.group(1).split():
+            key, separator, value = token.partition("=")
+            if separator:
+                row[key] = value
+        rows.append(row)
+    return rows
+
+
+def tear_free_presentation(output: str, label: str) -> list[str]:
+    """A presentation rate must never be a reason to tear.
+
+    Nothing in these harnesses sets ``Video.AllowTearing``, so no policy arm may
+    reach a torn present mode: WebGPU must land on fifo or mailbox, and the GL
+    diagnostic backend must report the automation swap interval it is entitled
+    to rather than a tearing opt-in it was never given.
+    """
+    problems: list[str] = []
+    rows = present_mode_rows(output)
+    if not rows:
+        return [f"{label}: no [PRESENT-MODE] row was emitted"]
+    for row in rows:
+        policy = row.get("policy", row.get("effectivePolicy", "?"))
+        if row.get("tearing", "0") != "0":
+            problems.append(
+                f"{label}: {row.get('backend')} reported tearing="
+                f"{row.get('tearing')} for policy {policy} without an opt-in")
+        if row.get("backend") == "webgpu":
+            effective = row.get("effective")
+            if effective not in ("fifo", "mailbox"):
+                problems.append(
+                    f"{label}: WebGPU presented policy {policy} with "
+                    f"effective={effective}, expected fifo or mailbox")
+        elif row.get("backend") == "gl":
+            # --headless-frames is a throughput measurement, not an image a
+            # player looks at, so automation keeps the uncapped swap. Any other
+            # interval here would mean the policy chose it.
+            if row.get("effectiveSwap") != "0":
+                problems.append(
+                    f"{label}: GL policy {policy} swapped at interval "
+                    f"{row.get('effectiveSwap')}, expected the automation 0")
+    return problems
 
 
 def test_save_dir() -> str:

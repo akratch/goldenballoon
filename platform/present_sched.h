@@ -96,7 +96,15 @@ MdkrPresentPolicyKind present_sched_present_kind(void);
 unsigned present_sched_present_requested_rate(void);
 MdkrPresentPolicyKind present_sched_present_requested_kind(void);
 bool present_sched_present_subloop(void);
-bool present_sched_backend_vsync_enabled(void);
+
+/*
+ * How the latched policy wants the backend to retire a present, given the
+ * refresh of the display the window is on (0 when the host has no such number).
+ * Neither value permits tearing; Video.AllowTearing is the only thing that does,
+ * and it is a separate player choice that applies to every policy.
+ */
+MdkrPresentSync present_sched_present_sync(unsigned display_rate);
+bool present_sched_allow_tearing(void);
 const char *present_sched_present_policy_name(void);
 const char *present_sched_present_requested_policy_name(void);
 
@@ -241,6 +249,7 @@ void present_perf_summary(void);
  */
 void mdkr_present_set_frame_limit(const char *value);
 void mdkr_present_set_motion_smoothing(const char *value);
+void mdkr_present_set_allow_tearing(const char *value);
 
 #ifdef __cplusplus
 }

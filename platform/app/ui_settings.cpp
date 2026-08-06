@@ -287,6 +287,12 @@ const Option kMotionSmoothing[] = {
     {"interpolate", "Interpolated (preview)"},
     {"off",         "Off (original motion)"},
 };
+// "0"/"1" resolve through mdkr_video_allow_tearing_canonical() for the
+// diagnostic seam; a player picks between two states, so the combo offers two.
+const Option kAllowTearing[] = {
+    {"off", "Off (tear-free)"},
+    {"on",  "On (lowest latency)"},
+};
 const Option kMode[] = {
     {"pure",       "Pure (reference presentation)"},
     {"restored",   "Restored (recommended)"},
@@ -345,6 +351,7 @@ bool optionsFor(MdkrVideoKey k, Options &out) {
         case MDKR_VIDEO_FRAME_LIMIT:        out = {kFrameLimit, 10}; return true;
         case MDKR_VIDEO_MOTION_SMOOTHING:
             out = {kMotionSmoothing, 2}; return true;
+        case MDKR_VIDEO_ALLOW_TEARING:      out = {kAllowTearing, 2}; return true;
         case MDKR_VIDEO_MODE:               out = {kMode, 3}; return true;
         case MDKR_VIDEO_WORLD_SHADOWS:      out = {kShadows, 3}; return true;
         case MDKR_VIDEO_CAMERA_OBSTRUCTION:
@@ -1097,6 +1104,12 @@ bool Settings_draw(SDL_Window *window, bool compact) {
                         legacyStretchActive)) {
                     changed |= drawKey(
                         window, MDKR_VIDEO_MOTION_SMOOTHING, compact);
+                }
+                if (AppUi_videoSettingVisible(
+                        MDKR_VIDEO_ALLOW_TEARING, webGpuRenderer,
+                        legacyStretchActive)) {
+                    changed |= drawKey(
+                        window, MDKR_VIDEO_ALLOW_TEARING, compact);
                 }
                 ui::Gap(ui::kGapS);
                 ImGui::SeparatorText("Gameplay Accuracy");

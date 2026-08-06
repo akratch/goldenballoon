@@ -70,6 +70,7 @@ static int s_present_policy_ready;
 static int s_test_replay_walk = -1;
 static int s_snapshot_forced = 0;
 static int s_smoothing = -1;
+static int s_allow_tearing = -1;
 static int s_test_presentation_replay = -1;
 static int s_internal_replay_test = -1;
 
@@ -142,9 +143,21 @@ bool present_sched_present_subloop(void) {
         &s_present_policy, tick_rate) != 0;
 }
 
-bool present_sched_backend_vsync_enabled(void) {
+MdkrPresentSync present_sched_present_sync(unsigned display_rate) {
     present_policy_lazy_init();
-    return mdkr_present_policy_uses_vsync(&s_present_policy) != 0;
+    return mdkr_present_policy_sync(&s_present_policy, display_rate);
+}
+
+static int present_tearing_value(const char *value) {
+    return value != NULL &&
+           (strcmp(value, "on") == 0 || strcmp(value, "1") == 0);
+}
+
+bool present_sched_allow_tearing(void) {
+    if (s_allow_tearing < 0) {
+        s_allow_tearing = present_tearing_value(getenv("MDKR_ALLOW_TEARING"));
+    }
+    return s_allow_tearing != 0;
 }
 
 const char *present_sched_present_policy_name(void) {
@@ -253,6 +266,10 @@ void mdkr_present_set_frame_limit(const char *value) {
 
 void mdkr_present_set_motion_smoothing(const char *value) {
     s_smoothing = value != NULL && strcmp(value, "interpolate") == 0 ? 1 : 0;
+}
+
+void mdkr_present_set_allow_tearing(const char *value) {
+    s_allow_tearing = present_tearing_value(value);
 }
 
 bool present_sched_replay_armed(void) {

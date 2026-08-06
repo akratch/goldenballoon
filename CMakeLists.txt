@@ -826,9 +826,11 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
 
     add_executable(mdkr_webgpu_surface_policy_test
         ${CMAKE_SOURCE_DIR}/tests/test_webgpu_surface_policy.c
-        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_surface_policy.c)
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_surface_policy.c
+        ${CMAKE_SOURCE_DIR}/platform/pacing_policy.c)
     target_include_directories(mdkr_webgpu_surface_policy_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/platform/fast3d)
+        ${CMAKE_SOURCE_DIR}/platform/fast3d
+        ${CMAKE_SOURCE_DIR}/platform)
     if(MSVC)
         target_compile_options(mdkr_webgpu_surface_policy_test PRIVATE /W4 /WX)
     else()
