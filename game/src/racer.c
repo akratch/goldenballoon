@@ -2681,9 +2681,11 @@ f32 rotate_racer_in_water(Object *obj, Object_Racer *racer, Vec3f *pos, s8 arg3,
 }
 
 // Plane physics, largest function in DKR.
-// Matched 2026-07-24. The empty wave-loop conditions, the dead double-assign
-// into var_t9, and the (var_v0 ^ 0) comparison are load-bearing for register
-// allocation -- do not simplify them.
+// Matched 2026-07-24. The empty wave-loop conditions (upstream marks them
+// "fake") and the (var_v0 ^ 0) comparison are load-bearing for register
+// allocation -- do not simplify them. The dead `var_t9 = (var_t9 = ...)`
+// double-assign this note also used to list is gone: upstream's 2026-08-07
+// cleanup rematched the function without it.
 void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *racer) {
     s32 pad5;
     s32 pad7;

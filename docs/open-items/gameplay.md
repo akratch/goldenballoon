@@ -608,6 +608,13 @@ race:
 | `objects.c` Taj offer | `settings->tajFlags \|= 1 << (j + 31)` | `adv_taj` (5 total balloons) | **the whole statement is DELETED at `-O2`, on arm64 and wasm32 alike.** FIXED — see the retraction below |
 | `waves.c` `obj_wave_height` | `var_t0 <<= (log->unk2 + 0x1F)` | **all four routes**, i.e. every race | NOT folded, and hottest of the four. clang turns the `if/else` into a `select` and so speculates the shift with a count range of `[31, 286]` that includes the legal 31, which is what stops the fold. Latent, FIXED anyway |
 
+> **Upstream caught up on the `waves.c` row (2026-08-07).** Upstream now spells
+> that shift `<< (unk2 - 1)` — the same semantics this wave derived — so the
+> `c6695703` sync adopted upstream's expression. `DKR_SHL32` is still wrapped
+> around it: `unk2` is `u8`, so a bare shift is still UB for counts >= 32, and
+> `(unk2 + 0x1F) & 31 == (unk2 - 1) & 31` for `unk2 > 0`, making the change
+> byte-identical. The other three sites remain this port's own fixes.
+
 Both directions of the instrument were run, because a sanitizer sweep reporting
 zero is indistinguishable from a dead one:
 
@@ -1139,6 +1146,12 @@ canary and aborts in `__stack_chk_fail`. Sized to `2 * 10` under `NATIVE_PORT`
 with a `_Static_assert`. Measured trigger: `func_80026E54(arg0=9, …)`, i.e. nine
 void segments in view at once, which the hub produces on parts of the loop.
 Same shape as the `func_8002F440` shadow-clip fix.
+
+> **Superseded upstream (2026-08-07).** Upstream now declares `f32 sp94[20]`
+> itself, so the `NATIVE_PORT` override and its `_Static_assert` were dropped at
+> the `c6695703` sync and the code today reads as plain upstream text. The fix
+> above is still the reason the size is right; it is simply no longer ours. See
+> the sync log in [DECOMP_SYNC.md](../DECOMP_SYNC.md).
 
 ### Positive controls (each fix reverted, rebuilt, `check_adventure_hub.py` re-run)
 | reverted | failure |
