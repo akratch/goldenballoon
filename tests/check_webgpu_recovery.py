@@ -384,7 +384,8 @@ def main() -> int:
         },
         (
             "[webgpu-fault] injected capabilities.present@1",
-            "using fifo",
+            "requested=mailbox effective=fifo",
+            "reason=capabilities-unavailable",
             completion(20),
         ),
         ("attempting one native device reinitialization",),
