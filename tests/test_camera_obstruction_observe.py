@@ -118,6 +118,11 @@ def main() -> int:
         "camera_obstruction_motion_sample",
         "camera_motion summary slot_ticks=%llu ",
         "camera_motion stat name=%s unit=%s samples=%llu ",
+        # The retraction release band. Wiring it to 0, or dropping the config
+        # field, restores release-on-the-first-clear-tick and the measured
+        # pop-and-snap with it; both would leave every other needle here happy.
+        ".release_hold_ticks = MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS,",
+        "#define MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS 9U",
         "status == MDKR_CAMERA_TARGET_VISIBILITY_EMBEDDED;",
         "target_status == MDKR_CAMERA_TARGET_VISIBILITY_INVALID",
         "camera_obstruction_publish_elevated_emergency",

@@ -35,13 +35,34 @@ typedef struct MdkrCameraObstructionResolverConfig {
     float recovery_speed;
     /* Absolute cap on any one expansion. Must be finite and > 0. */
     float max_recovery_step;
+    /*
+     * Release hysteresis on retraction, in consecutive authored ticks.
+     *
+     * Retraction ENGAGES on contact with zero latency and this field cannot
+     * delay it. It RELEASES -- that is, the boom is allowed to start expanding
+     * again -- only once the anchor->desired path has been reported clear for
+     * this many consecutive accepted ticks. A shorter clear run holds the boom
+     * at its retracted length instead of expanding into a contact that has not
+     * actually gone away.
+     *
+     * The band this closes is a false negative, not a tuning preference: a
+     * swept lens volume grazing a wall reports CLEAR for a few ticks at facet
+     * seams and at shallow incidence, and expanding on that report pops the
+     * boom toward desired and snaps it back on the next tick. 0 disables the
+     * hold and restores release-on-first-clear-tick.
+     */
+    uint32_t release_hold_ticks;
 } MdkrCameraObstructionResolverConfig;
 
 /* Caller-owned state. Zero-initialize or call mdkr_camera_obstruction_resolver_reset. */
 typedef struct MdkrCameraObstructionResolverState {
     MdkrCameraVec3 last_safe_eye;
     uint64_t projection_generation;
+    /* Consecutive accepted clear ticks since the latched contact. */
+    uint32_t clear_run_ticks;
     uint8_t last_safe_valid;
+    /* A retraction is engaged and has not served its release hold yet. */
+    uint8_t retraction_latched;
 } MdkrCameraObstructionResolverState;
 
 /*
@@ -105,6 +126,14 @@ typedef struct MdkrCameraObstructionResolverResult {
     uint8_t accepted;
     /* True only when the anchor-to-desired sweep itself was blocked. */
     uint8_t path_was_blocked;
+    /*
+     * True when the status is RETRACTED because a latched retraction is still
+     * serving its release hold, not because this tick's sweep hit anything.
+     * Reported so a trace can tell a contact tick from a held one; blocker
+     * identity is deliberately left empty on a held tick, because no blocker
+     * was measured.
+     */
+    uint8_t release_held;
     uint8_t used_last_safe;
     uint8_t projection_revalidated;
 } MdkrCameraObstructionResolverResult;
@@ -115,9 +144,10 @@ void mdkr_camera_obstruction_resolver_reset(
 /*
  * Resolve one fixed authored camera pose without allocating or mutating world
  * input. Retraction is immediate; a clear boom expands by at most
- * min(recovery_speed * fixed_delta_seconds, max_recovery_step). On INVALID or
- * an overlap with no revalidated fallback, accepted is zero and state is not
- * advanced to an unsafe eye.
+ * min(recovery_speed * fixed_delta_seconds, max_recovery_step), and only once
+ * release_hold_ticks consecutive clear ticks have retired a latched
+ * retraction. On INVALID or an overlap with no revalidated fallback, accepted
+ * is zero and state is not advanced to an unsafe eye.
  *
  * This is a positional prototype, not generic camera smoothing. Integration
  * must feed a pivot-relative boom-safe anchor; do not damp arbitrary authored

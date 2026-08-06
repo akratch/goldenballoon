@@ -345,6 +345,150 @@ static void test_center_ray_is_the_expected_near_plane_control(void) {
     expect_near("center ray reaches desired", result.resolved_eye.x, 100.0f, TEST_EPSILON);
 }
 
+/*
+ * Release hysteresis (MOTION-01). A swept lens volume grazing a wall reports
+ * CLEAR for a few ticks at facet seams; expanding the boom on that report and
+ * retracting again on the next tick is the measured "pop and snap" chatter.
+ * The resolver must therefore engage on contact with zero latency but hold a
+ * latched retraction until the corridor has been clear for a whole window.
+ *
+ * The world here has one wall and the clear ticks are produced by moving the
+ * desired eye short of it, which is the same shape as the runtime's dropout:
+ * an identical anchor, a corridor the sweep calls clear, and a re-block.
+ */
+static void test_release_hold_absorbs_a_transient_clear_corridor(void) {
+    const MdkrCameraVec3 vertices[] = {
+        { 5.0f, -10.0f, -10.0f }, { 5.0f, 10.0f, -10.0f }, { 5.0f, 0.0f, 10.0f },
+    };
+    const uint32_t indices[] = { 0U, 1U, 2U };
+    const MdkrCameraOcclusionTriangle triangles[] = { { 7U, 1U, 1U, 0U } };
+    const MdkrCameraOcclusionWorld world = one_wall_world(vertices, indices, triangles);
+    const MdkrCameraOcclusionWorld empty_world = { 0 };
+    const MdkrCameraProjection projection = test_projection(1U);
+    MdkrCameraObstructionResolverConfig config =
+        test_config(MDKR_CAMERA_OBSTRUCTION_POLICY_MODERN);
+    MdkrCameraObstructionResolverInput input = resolver_input(
+        &world, &projection, (MdkrCameraVec3){ 0.0f, 0.0f, 0.0f },
+        (MdkrCameraVec3){ 10.0f, 0.0f, 0.0f });
+    MdkrCameraObstructionResolverState state;
+    MdkrCameraObstructionResolverResult result;
+    float retracted_x;
+    int tick;
+
+    config.release_hold_ticks = 4U;
+    mdkr_camera_obstruction_resolver_reset(&state);
+
+    /* Contact. Retraction is immediate and the hold cannot delay it. */
+    expect_true("hold: contact retracts on the contact tick",
+                mdkr_camera_obstruction_resolve(&config, &input, &state, &result) ==
+                    MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED);
+    expect_true("hold: contact tick is a real blocker",
+                result.path_was_blocked && !result.release_held &&
+                result.blocker_stable_id == 7U);
+    retracted_x = result.resolved_eye.x;
+    input.start_safe_eye = result.resolved_eye;
+
+    /* The wall stops being reported. The boom must not grow. */
+    input.query.context = &empty_world;
+    for (tick = 1; tick < 4; tick++) {
+        expect_true("hold: dropout keeps the correction engaged",
+                    mdkr_camera_obstruction_resolve(&config, &input, &state, &result) ==
+                        MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED);
+        expect_true("hold: dropout is flagged as held, not as a contact",
+                    result.release_held && !result.path_was_blocked);
+        expect_true("hold: dropout reports no blocker it did not measure",
+                    result.blocker_stable_id == 0U);
+        expect_near("hold: boom does not expand while held",
+                    result.resolved_eye.x, retracted_x, TEST_EPSILON);
+        input.start_safe_eye = result.resolved_eye;
+    }
+
+    /* The window is served: recovery starts, bounded as before. */
+    expect_true("hold: release lets recovery start",
+                mdkr_camera_obstruction_resolve(&config, &input, &state, &result) ==
+                    MDKR_CAMERA_OBSTRUCTION_RESOLVER_RECOVERING);
+    expect_true("hold: released tick is not marked held", !result.release_held);
+    expect_true("hold: recovery is still speed bound",
+                result.resolved_eye.x - retracted_x <= 0.4001f);
+    expect_true("hold: recovery actually moves",
+                result.resolved_eye.x > retracted_x);
+}
+
+static void test_release_hold_reengages_without_latency_and_resets(void) {
+    const MdkrCameraVec3 vertices[] = {
+        { 5.0f, -10.0f, -10.0f }, { 5.0f, 10.0f, -10.0f }, { 5.0f, 0.0f, 10.0f },
+    };
+    const uint32_t indices[] = { 0U, 1U, 2U };
+    const MdkrCameraOcclusionTriangle triangles[] = { { 8U, 1U, 1U, 0U } };
+    const MdkrCameraOcclusionWorld world = one_wall_world(vertices, indices, triangles);
+    const MdkrCameraOcclusionWorld empty_world = { 0 };
+    const MdkrCameraProjection projection = test_projection(1U);
+    MdkrCameraObstructionResolverConfig config =
+        test_config(MDKR_CAMERA_OBSTRUCTION_POLICY_MODERN);
+    MdkrCameraObstructionResolverInput input = resolver_input(
+        &world, &projection, (MdkrCameraVec3){ 0.0f, 0.0f, 0.0f },
+        (MdkrCameraVec3){ 10.0f, 0.0f, 0.0f });
+    MdkrCameraObstructionResolverState state;
+    MdkrCameraObstructionResolverResult result;
+
+    config.release_hold_ticks = 4U;
+    mdkr_camera_obstruction_resolver_reset(&state);
+    (void)mdkr_camera_obstruction_resolve(&config, &input, &state, &result);
+    input.start_safe_eye = result.resolved_eye;
+
+    input.query.context = &empty_world;
+    (void)mdkr_camera_obstruction_resolve(&config, &input, &state, &result);
+    input.start_safe_eye = result.resolved_eye;
+    expect_true("hold: partial run is held", result.release_held);
+
+    /* A contact inside the window restarts the whole window. */
+    input.query.context = &world;
+    expect_true("hold: contact inside the window retracts immediately",
+                mdkr_camera_obstruction_resolve(&config, &input, &state, &result) ==
+                    MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED);
+    expect_true("hold: re-contact is a contact, not a held tick",
+                result.path_was_blocked && !result.release_held);
+    expect_true("hold: re-contact restarts the clear run",
+                state.clear_run_ticks == 0U && state.retraction_latched);
+
+    /* A published cut must not carry a latch from an unrelated shot. */
+    input.query.context = &empty_world;
+    input.discontinuity = 1U;
+    expect_true("hold: a cut drops the latch instead of holding through it",
+                mdkr_camera_obstruction_resolve(&config, &input, &state, &result) !=
+                    MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED);
+    expect_true("hold: a cut leaves nothing latched",
+                !state.retraction_latched && state.clear_run_ticks == 0U);
+}
+
+static void test_zero_release_hold_is_the_pre_hysteresis_control(void) {
+    const MdkrCameraVec3 vertices[] = {
+        { 5.0f, -10.0f, -10.0f }, { 5.0f, 10.0f, -10.0f }, { 5.0f, 0.0f, 10.0f },
+    };
+    const uint32_t indices[] = { 0U, 1U, 2U };
+    const MdkrCameraOcclusionTriangle triangles[] = { { 9U, 1U, 1U, 0U } };
+    const MdkrCameraOcclusionWorld world = one_wall_world(vertices, indices, triangles);
+    const MdkrCameraOcclusionWorld empty_world = { 0 };
+    const MdkrCameraProjection projection = test_projection(1U);
+    const MdkrCameraObstructionResolverConfig config =
+        test_config(MDKR_CAMERA_OBSTRUCTION_POLICY_MODERN);
+    MdkrCameraObstructionResolverInput input = resolver_input(
+        &world, &projection, (MdkrCameraVec3){ 0.0f, 0.0f, 0.0f },
+        (MdkrCameraVec3){ 10.0f, 0.0f, 0.0f });
+    MdkrCameraObstructionResolverState state;
+    MdkrCameraObstructionResolverResult result;
+
+    /* test_config leaves release_hold_ticks at 0: the defect must reproduce. */
+    mdkr_camera_obstruction_resolver_reset(&state);
+    (void)mdkr_camera_obstruction_resolve(&config, &input, &state, &result);
+    input.start_safe_eye = result.resolved_eye;
+    input.query.context = &empty_world;
+    expect_true("no hold: a single clear tick releases immediately",
+                mdkr_camera_obstruction_resolve(&config, &input, &state, &result) ==
+                    MDKR_CAMERA_OBSTRUCTION_RESOLVER_RECOVERING);
+    expect_true("no hold: nothing is reported as held", !result.release_held);
+}
+
 int main(void) {
     test_immediate_retract_has_skin_and_no_penetration();
     test_recovery_is_monotonic_and_bounded();
@@ -355,6 +499,9 @@ int main(void) {
     test_overlap_without_revalidated_fallback_fails_closed();
     test_repeat_is_deterministic();
     test_center_ray_is_the_expected_near_plane_control();
+    test_release_hold_absorbs_a_transient_clear_corridor();
+    test_release_hold_reengages_without_latency_and_resets();
+    test_zero_release_hold_is_the_pre_hysteresis_control();
 
     if (s_failures != 0) {
         fprintf(stderr, "%d camera-obstruction-resolver assertion(s) failed\n", s_failures);
