@@ -1253,16 +1253,10 @@ void viewport_world_region_set(s32 viewPortIndex, ViewportWorldRegion region) {
 /**
  * Return every viewport to the unframed presentation region.
  *
- * The safe aperture is a property of the scene that draws a frame around its
- * live view, not a lasting property of the viewport.  Only Track Select and the
- * later post-race pages own one, and both restate it every frame they are on
- * screen, so nothing is lost by defaulting the region whenever a new scene
- * begins.  Leaving the previous scene's aperture in place instead makes the
- * next scene's lens disagree with the region viewport_main() draws it into: a
- * 4:3 lens stretched across the full presentation rectangle.  Scene entry
- * (cam_init, menu_init) resets unconditionally so that correctness never
- * depends on a screen being left by the one exit path that happened to restore
- * it.
+ * The safe aperture belongs to the scene that draws a frame around its live
+ * view, not to the viewport.  Scene entry (cam_init, menu_init) resets the
+ * region; the screens that own an aperture -- Track Select and the later
+ * post-race pages -- restate it on every frame that draws the framed view.
  */
 void viewport_world_regions_reset(void) {
     s32 i;

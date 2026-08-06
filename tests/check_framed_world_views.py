@@ -455,7 +455,7 @@ def best_horizontal_scale(
 
 
 def stretch_horizontally(image: Image, factor: float) -> Image:
-    """The defect, synthesised: widen about the centre and clip to the surface."""
+    """Widen the image about its centre and clip it to the surface."""
     centre = (image.width - 1) / 2.0
     pixels = bytearray(len(image.pixels))
     for y in range(image.height):
@@ -514,6 +514,7 @@ def run_aperture_leak_arms(
             "aperture-leak control visited Track Select; it is no longer a "
             f"control (route {control_route})"
         )
+    arrival: dict[str, int] = {}
     for name, route in (("after-track-select", leak_route),
                         ("control", control_route)):
         if not route or "menuId=3" not in route[-1]:
@@ -521,6 +522,30 @@ def run_aperture_leak_arms(
                 f"aperture-leak {name} arm did not end on character select "
                 f"(route {route})"
             )
+        frame = re.search(r"@frame~(\d+)", route[-1])
+        if frame is None:
+            raise RuntimeError(
+                f"aperture-leak {name} arm has no character-select arrival "
+                f"frame to compare against; the menu_init trace changed shape "
+                f"(route {route[-1]})"
+            )
+        arrival[name] = int(frame.group(1))
+
+    # Both arms capture at a hardcoded frame on a screen that keeps animating,
+    # so the comparison is only meaningful while the two arms reach character
+    # select at roughly the same time. Drift is a fixture problem, not a lens
+    # problem, and has to be reported as one.
+    drift = arrival["after-track-select"] - arrival["control"]
+    if abs(drift) > 8:
+        raise RuntimeError(
+            f"aperture-leak fixture drift: the arms reach character select "
+            f"{abs(drift)} frames apart (after-track-select at "
+            f"{arrival['after-track-select']}, control at "
+            f"{arrival['control']}). The two captures no longer land on the "
+            f"same point of the screen's animation, so the lens comparison "
+            f"below cannot be trusted. Retime the input scripts or the "
+            f"capture frames; this is not a lens failure."
+        )
 
     scale, residual = best_horizontal_scale(
         captured["control"].image, captured["after-track-select"].image

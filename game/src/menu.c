@@ -3100,13 +3100,9 @@ void menu_init(u32 menuId) {
 #endif
     gCurrentMenuId = menuId;
 #ifdef NATIVE_PORT
-    /* Entering a screen is the boundary that owns the world region. Screens
-     * that draw their live view behind a frame (Track Select, the later
-     * post-race pages) state the safe aperture in their own init and restate it
-     * every frame; every other screen gets the unframed presentation region
-     * here rather than inheriting whichever aperture the previous screen was
-     * last left holding. Not every screen change routes through a level load,
-     * so this reset cannot live in cam_init() alone. */
+    /* Scene entry owns the world region; see viewport_world_regions_reset()
+     * in camera.c. Not every screen change routes through a level load, so
+     * this reset cannot live in cam_init() alone. */
     viewport_world_regions_reset();
 #endif
     reset_controller_sticks();
@@ -3768,9 +3764,6 @@ void menu_logos_screen_init(void) {
     gMenuDelay = 0;
     sBootScreenTimer = 16.0f;
     bgdraw_fillcolour(0, 0, 0);
-#ifdef NATIVE_PORT
-    viewport_world_region_set(0, VIEWPORT_WORLD_REGION_PRESENTATION);
-#endif
     if (osTvType == OS_TV_TYPE_PAL) {
         viewport_menu_set(0, 0, 38, SCREEN_WIDTH, SCREEN_HEIGHT - 16);
         set_viewport_properties(0, VIEWPORT_AUTO, VIEWPORT_AUTO, SCREEN_WIDTH, SCREEN_HEIGHT_PAL);
@@ -15160,9 +15153,6 @@ void menu_credits_init(void) {
     D_80126BD8 = 0;
     D_80126BE0 = 0;
     bgdraw_fillcolour(0, 0, 0);
-#ifdef NATIVE_PORT
-    viewport_world_region_set(0, VIEWPORT_WORLD_REGION_PRESENTATION);
-#endif
     if (osTvType == OS_TV_TYPE_PAL) {
         viewport_menu_set(0, 0, 38, SCREEN_WIDTH, 224);
         set_viewport_properties(0, VIEWPORT_AUTO, VIEWPORT_AUTO, SCREEN_WIDTH, SCREEN_HEIGHT_PAL);

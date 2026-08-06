@@ -2536,7 +2536,11 @@ unsigned platform_present_display_rate(void) {
         mode.refresh_rate <= (int)MDKR_PRESENT_RATE_MAX) {
         return (unsigned)mode.refresh_rate;
     }
-    return 60u;
+    /* No window yet, a failed query, or a refresh outside the range the pacer
+     * can work with: 0 is the contract's "the host does not report one", and
+     * the policy's unknown-refresh branch is what decides from there. Guessing
+     * 60 would make that branch unreachable on native. */
+    return 0u;
 #endif
 }
 

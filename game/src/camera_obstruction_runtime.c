@@ -1933,8 +1933,7 @@ static void camera_obstruction_resolve_slot(
     }
     desired.y += shake;
     if (camera_obstruction_family_treatment(observe->intent.family) ==
-            MDKR_CAMERA_OBSTRUCTION_TREATMENT_DEPENETRATE_ONLY &&
-        (observe->intent.forward_valid || observe->intent.target_valid)) {
+            MDKR_CAMERA_OBSTRUCTION_TREATMENT_DEPENETRATE_ONLY) {
         if (!camera_obstruction_depenetrate_only_eye(
                 observe, physical_slot, &active_query, &combined,
                 &exact_combined, use_exact, desired)) {
@@ -2580,6 +2579,7 @@ void camera_obstruction_tick(int update_rate_fields) {
     s32 dynamic_corrected = 0;
     s32 resolved_target_hidden = 0;
     s32 resolved_target_embedded = 0;
+    s32 depenetrate_only = 0;
     s32 elevated_emergency = 0;
     s32 transition_invoked = 0;
     s32 transition_clear = 0;
@@ -2645,6 +2645,11 @@ void camera_obstruction_tick(int update_rate_fields) {
         resolved_target_hidden += !observe->resolved_target_visible &&
             !observe->resolved_target_embedded;
         resolved_target_embedded += observe->resolved_target_embedded;
+        /* Which treatment each selected slot is under, so a reader can tell a
+         * bounded depenetrate-only occlusion from a follow-camera defect. */
+        depenetrate_only +=
+            camera_obstruction_family_treatment(observe->intent.family) ==
+                MDKR_CAMERA_OBSTRUCTION_TREATMENT_DEPENETRATE_ONLY;
         elevated_emergency += observe->elevated_emergency;
         transition_invoked += observe->transition_invoked;
         transition_clear += observe->transition_clear;
@@ -2681,7 +2686,7 @@ void camera_obstruction_tick(int update_rate_fields) {
                 "tt=%d bank=%s gate=%s(logical_camera_unchanged) duplicates=%u "
                 "projection_mismatches=%u "
                 "resolved={corrected=%d penetrated=%d invalid=%d degraded=%d} "
-                "target_hidden=%d target_embedded=%d emergency=%d "
+                "target_hidden=%d target_embedded=%d depenetrate_only=%d emergency=%d "
                 "dynamic_corrected=%d "
                 "transition={invoked=%d clear=%d cut=%d tuple_cut=%d} "
                 "exact_runtime={invoked=%d sphere_clear=%d exact_clear=%d "
@@ -2705,6 +2710,7 @@ void camera_obstruction_tick(int update_rate_fields) {
                 sCameraObstructionRuntime.projection_mismatch_violations,
                 corrected, resolved_penetrated, resolved_invalid, source_degraded,
                 resolved_target_hidden, resolved_target_embedded,
+                depenetrate_only,
                 elevated_emergency,
                 dynamic_corrected,
                 transition_invoked, transition_clear,

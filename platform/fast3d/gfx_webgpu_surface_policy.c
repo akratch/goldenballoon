@@ -7,13 +7,6 @@ uint32_t gfx_webgpu_surface_select_alpha(
     return opaque_advertised ? opaque_mode : automatic_mode;
 }
 
-uint32_t gfx_webgpu_surface_select_present(
-    uint32_t fifo_mode,
-    uint32_t requested_mode,
-    bool requested_advertised) {
-    return requested_advertised ? requested_mode : fifo_mode;
-}
-
 GfxWebgpuPresentMode gfx_webgpu_surface_request_present(
     MdkrPresentSync sync,
     bool allow_tearing) {
@@ -35,6 +28,16 @@ GfxWebgpuPresentMode gfx_webgpu_surface_rank_present(
         return GFX_WEBGPU_PRESENT_MAILBOX;
     }
     return GFX_WEBGPU_PRESENT_FIFO;
+}
+
+GfxWebgpuPresentMode gfx_webgpu_surface_rank_override(
+    GfxWebgpuPresentMode requested,
+    GfxWebgpuPresentSupport advertised) {
+    return gfx_webgpu_surface_rank_present(
+        requested == GFX_WEBGPU_PRESENT_MAILBOX ? MDKR_PRESENT_SYNC_LATEST
+                                                : MDKR_PRESENT_SYNC_BLOCKING,
+        requested == GFX_WEBGPU_PRESENT_IMMEDIATE,
+        advertised);
 }
 
 const char *gfx_webgpu_surface_present_name(GfxWebgpuPresentMode mode) {

@@ -1202,18 +1202,10 @@ void obj_loop_characterflag(Object *obj, UNUSED s32 updateRate) {
             flagModel->vertices = gCharacterFlagVertices;
             flagModel->texture = obj->textures[obj->properties.characterFlag.characterID];
 #ifdef NATIVE_PORT
-            /* Taj is a port-added playable character with no slot of his own
-             * in NUMBER_OF_CHARACTERS: he plays as a "donor" character
-             * (Diddy) underneath, so racer->characterId above resolves to
-             * Diddy's in-range ID rather than anything Taj-specific -- this
-             * is never caught by the < 0 / >= NUMBER_OF_CHARACTERS guard,
-             * because the donor ID is a perfectly valid character. Left
-             * alone, the giant wall/big-screen portrait in the collection
-             * arenas (Fire Mountain / Smokey Castle challenges) shows the
-             * donor's face instead of Taj's. Swap in the same native Taj
-             * portrait texture the HUD (hud_render_identity_portrait) and
-             * Rankings (menu_racer_portrait_for_player) screens already use
-             * so all three surfaces agree on the racer's actual identity. */
+            /* Taj rides on a donor character (Diddy), whose ID is in-range,
+             * so the bounds guard above never catches it and the giant wall
+             * portrait would show the donor's face. Use the same native card
+             * the HUD and Rankings draw. */
             if (taj_physics_is_taj(racer)) {
                 DrawTexture *tajPortrait = menu_taj_portrait();
                 if (tajPortrait != NULL && tajPortrait[0].texture != NULL) {
@@ -1226,14 +1218,11 @@ void obj_loop_characterflag(Object *obj, UNUSED s32 updateRate) {
              * positive witness tests/check_challenge_modes.py asserts on:
              * colour-flatness metrics alone stay green with every portrait
              * unbound. */
-            MDKR_TRACE("charflag_bound: playerID=%d characterID=%d texture=%s",
+            MDKR_TRACE("charflag_bound: playerID=%d characterID=%d texture=%s identity=%s",
                        (s32) obj->properties.characterFlag.playerID,
                        (s32) obj->properties.characterFlag.characterID,
-                       flagModel->texture != NULL ? "ok" : "missing");
-            if (taj_physics_is_taj(racer)) {
-                MDKR_TRACE("taj_wall_portrait: playerID=%d identity=taj source=native-taj-card",
-                           (s32) obj->properties.characterFlag.playerID);
-            }
+                       flagModel->texture != NULL ? "ok" : "missing",
+                       taj_physics_is_taj(racer) ? "taj" : "retail");
 #endif
             /* S10.5 texture coordinates. Stock packs them as N64 words --
              * (width-1) << 21 is ((width-1) << 5) in the U half, (height-1) << 5

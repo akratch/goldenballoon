@@ -26,10 +26,13 @@ intermediate alphas are 1/4, 1/2, and 3/4. Numeric rates use an exact rational
 deadline grid, so 90, 144, 165, 240, PAL 60, and variable display schedules do not
 need to divide the game tick evenly. Native Uncapped removes the software
 ceiling while interpolation can produce new images; it does not promise that
-the display or GPU can consume unlimited unique images. With smoothing Off,
-held authored images are serviced at display cadence because an unbounded
-no-swap loop cannot add motion and can starve audio. A browser maps Uncapped to
-its display/rAF ceiling.
+the display or GPU can consume unlimited unique images. Rates above your
+display's refresh need a display connection that can drop an image it has not
+shown yet. Where the system does not offer one, they present at your display's
+refresh instead, unless Allow Tearing is on. With smoothing Off, held authored
+images are serviced at display cadence because an unbounded no-swap loop cannot
+add motion and can starve audio. A browser maps Uncapped to its display/rAF
+ceiling.
 
 ## Why Enhanced cadence is not the uncap
 
@@ -110,7 +113,11 @@ audio, and input continue.
 
 This is the right failure mode for both a 240 Hz display and native Uncapped:
 achieved visual FPS becomes a capability result, while gameplay speed remains a
-contract. Interpolation uses adjacent authored states rather than prediction,
+contract. The display connection is part of that capability: a rate above the
+display's refresh only reaches the screen where the system offers a way to drop
+an image it has not shown yet. Where it does not, and Allow Tearing is off, the
+picture arrives at the display's refresh.
+Interpolation uses adjacent authored states rather than prediction,
 so it does not invent speculative input response. Input is still consumed on
 the next original game ticket; more presentation opportunities only pump and
 queue host edges sooner.
@@ -202,6 +209,9 @@ The default smoothing-Off path is unaffected.
 - Use a numeric cap when consistent thermals or power use matter.
 - Use native **Uncapped** for measurement or when the renderer/display stack has
   headroom; it still sheds visual work rather than changing gameplay.
+- Rates above your display's refresh need a display connection that can drop an
+  image it has not shown yet. Where the system does not offer one, they present
+  at your display's refresh instead, unless **Allow Tearing** is on.
 - Use **Motion smoothing: Off** for authored motion or comparison captures.
 - Treat **Enhanced** as an explicit gameplay-changing compatibility option, not
   a quality or FPS upgrade.
