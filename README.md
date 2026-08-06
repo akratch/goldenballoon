@@ -181,11 +181,9 @@ during engine boot, the engine tears down and returns to the launcher with the f
 visible; it does not leave the player at a terminal or dead window. F1 opens a
 true pause boundary: simulation state and the race clock remain fixed while the
 overlay owns input. Existing audio continues naturally, while game-timed audio
-cues are frozen with the simulation. Native accessibility supports keyboard and
-gamepad use,
-visible focus, scalable high-contrast UI, and restrained motion. It does not
-include a VoiceOver, UI Automation, or other screen-reader semantic tree, so
-the desktop app is not advertised as screen-reader compatible.
+cues are frozen with the simulation. The desktop app supports keyboard and
+gamepad use, visible focus, scalable high-contrast UI, and reduced motion.
+Screen readers are not supported yet.
 
 ## Status
 

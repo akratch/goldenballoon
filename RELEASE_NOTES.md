@@ -66,11 +66,8 @@ Existing preferences are preserved when upgrading.
 ## New setting: keep the camera out of walls
 
 **Settings → Presentation → Camera obstruction** turns on a camera that no
-longer slides into terrain, doors, or other solid geometry. Every authored
-camera is resolved against the world before it is drawn, on every tick, in every
-viewport and split-screen layout. On the routes this release is qualified
-against it never published a shot that entered a wall, lost its view of your
-racer, or fell back to a degraded one.
+longer slides into terrain, doors, or other solid geometry. It keeps your racer
+in view and works in every viewport and split-screen layout.
 
 What the game is steering is untouched. Only the picture moves, so kart
 handling, race results, ghosts, and saves are all bit-for-bit what they were —
@@ -83,24 +80,18 @@ with your other preferences, and no presentation mode changes it for you.
 
 ## Known limitations
 
-- WebGPU with Restored presentation remains the qualified native and browser
-  path. OpenGL is a diagnostic option, and Remastered is still work in
-  progress.
-- Motion smoothing remains a preview. Interpolated draws presentation-only
-  in-between images; it does not run the game more often. UV-scrolled surfaces
-  such as waterfalls, water, and lava still update on authored game ticks and
-  may shimmer or step during camera motion. Motion smoothing Off is unaffected.
-- The Windows archive is not published automatically. Hosted runners do not
-  guarantee a qualifying GPU, so the Windows package is attached only after a
-  human runs it on real Windows hardware and records the result.
+- WebGPU is the recommended renderer. OpenGL is a diagnostic option, and the
+  Remastered look is still in progress.
+- Motion smoothing is a preview. It smooths the picture only — the game itself
+  still runs at its original pace — and scrolling surfaces such as waterfalls,
+  water, and lava can shimmer or step during camera motion. Off is unaffected.
 - The desktop app supports keyboard and gamepad navigation, visible focus,
-  scaling, contrast, and reduced motion. It does not claim a VoiceOver, UI
-  Automation, or other screen-reader semantic tree.
-- Linux still uses drag and drop or a typed ROM path instead of a native file
-  picker.
-- The macOS download is ad-hoc integrity sealed but not Developer ID signed or
-  notarized. macOS may show an unidentified-developer warning on first launch;
-  use **System Settings → Privacy & Security → Open Anyway** if needed.
+  scaling, contrast, and reduced motion. Screen readers are not supported yet.
+- On Linux, load a ROM by drag and drop or by typing its path; there is no
+  native file picker yet.
+- The macOS app is not notarized. If macOS shows an unidentified-developer
+  warning on first launch, use **System Settings → Privacy & Security → Open
+  Anyway**.
 
 For implementation details, see [CHANGELOG.md](CHANGELOG.md). Open work is
 listed in [ROADMAP.md](ROADMAP.md).
