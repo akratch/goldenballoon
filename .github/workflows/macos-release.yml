@@ -38,7 +38,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
         with:
           fetch-depth: 0
 
@@ -219,7 +219,7 @@ jobs:
             --require "macos_signing=$EXPECTED_SIGNING"
 
       - name: Upload macOS workflow artifact
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: Golden-Balloon-${{ inputs.version }}-macos-arm64-${{ inputs.trusted_signing && 'signed-notarized' || 'unsigned' }}
           path: |
@@ -247,10 +247,10 @@ jobs:
       contents: write
     steps:
       - name: Checkout provenance tooling
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
 
       - name: Download macOS workflow artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: Golden-Balloon-${{ inputs.version }}-macos-arm64-${{ inputs.trusted_signing && 'signed-notarized' || 'unsigned' }}
           path: dist

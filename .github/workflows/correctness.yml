@@ -23,7 +23,7 @@ jobs:
     name: Policy and source contracts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
         with:
           fetch-depth: 0
       - name: Clean-room history
@@ -107,7 +107,7 @@ jobs:
             webgpu: "ON"
             extra_flags: "-Wreturn-type -Wuninitialized -Wsometimes-uninitialized -Warray-bounds -Wshift-sign-overflow -Wshift-negative-value -Wnull-pointer-arithmetic"
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -133,7 +133,7 @@ jobs:
     name: Linux ROM-free ASan + UBSan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -177,8 +177,8 @@ jobs:
     name: Linked wasm and browser save custody
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: mymindstorm/setup-emsdk@6ab9eb1bda2574c4ddb79809fc9247783eaf9021 # v14
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: mymindstorm/setup-emsdk@4528d102f7230f0e7b276855c01ea1159be0e984 # v16
         with:
           version: "4.0.10"
       - name: Build linked browser artifacts

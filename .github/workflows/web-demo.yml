@@ -25,8 +25,8 @@ jobs:
       cancel-in-progress: true
     steps:
       # Actions pinned to commit SHAs, not tags: a tag can be moved, a SHA cannot.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: mymindstorm/setup-emsdk@6ab9eb1bda2574c4ddb79809fc9247783eaf9021 # v14
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: mymindstorm/setup-emsdk@4528d102f7230f0e7b276855c01ea1159be0e984 # v16
         with: { version: "4.0.10" }
 
       - name: Build (WebGPU browser target)
@@ -93,7 +93,7 @@ jobs:
       - name: Stamp published shell (cache-bust + build version)
         run: tools/web/stamp_publish.sh --dir dist/web --stamp "${GITHUB_SHA::7}"
 
-      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with: { path: dist/web }
 
   deploy:
@@ -106,4 +106,4 @@ jobs:
     environment: { name: github-pages, url: "${{ steps.deployment.outputs.page_url }}" }
     steps:
       - id: deployment
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
