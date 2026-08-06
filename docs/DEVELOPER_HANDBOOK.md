@@ -905,3 +905,72 @@ grep -rn 'GE007_' platform/ | sed -E 's/.*(GE007_[A-Z0-9_]+).*/\1/' | sort -u
 
 Each one is read via `getenv`/`port_env_*` at the site that uses it; grep for
 the exact name to find its call site and default.
+
+### Diagnostic switches
+
+Found by an env-var audit: each has a live C-side reader and no reference
+anywhere in `tests/`, `tools/`, `docs/`, `.github/`, or a `CMakeLists.txt`/
+`cmake/` `ENVIRONMENT` line (ctest wiring counts as a reference — several
+`MDKR_APP_SMOKE_*` vars that looked orphaned at first turned out to be set
+that way and are not listed here). They still work; nothing in the suite
+currently exercises them, so treat their behavior as believed-correct until
+you've run them once.
+
+- `MDKR_APP_FILEDIALOG_SELFTEST=1` — exercise the native file picker through
+  the same live-window activation state the launcher uses, then print the
+  selection and ROM verdict and exit.
+- `MDKR_APP_OVERLAY_TEST=1` — force the pause overlay open the instant
+  `Overlay_install()` runs, for a one-shot headless render proof without
+  scripting input.
+- `MDKR_APP_UI_INPUT_TRACE=1` — trace the Frame Limit combo's
+  hover/focus/activation state to stderr as `[app-ui-test]` rows, frame by
+  frame.
+- `MDKR_AUDIO_FILTER_TRACE_JSONL=<path>` (+
+  `MDKR_AUDIO_FILTER_TRACE_WAVE_BASE=<address>`) — write one JSON row per
+  native ADPCM filter decode to `<path>`; the wave-base var narrows the trace
+  to one `ALWaveTable`.
+- `MDKR_DL_LENIENT=1` — legacy override: forces display-list fault recovery
+  (non-strict) even when `MDKR_DL_STRICT=1` is also set.
+- `MDKR_HASH_DUMP_TICK=N` (+ `MDKR_HASH_DUMP_UNTIL=M`,
+  `MDKR_HASH_DUMP_IDS=1`) — dump one `[HASHOBJ]` row per object at tick `N`
+  (or the closed range `[N,M]`); `IDS` adds a companion `[HASHOBJID]` row
+  naming each object (behaviour, host address, racer slot) so a divergent row
+  can be tied to a concrete actor.
+- `MDKR_MAX_HFOV=<deg>|off` — clamp the maximum horizontal FOV (60-175°) the
+  aspect/widescreen math can produce; `off` removes the clamp.
+- `MDKR_MUSIC_MIDI_TRACE_JSONL=<path>` — write the native MIDI sequence
+  player's channel-service trace to `<path>` as JSON lines.
+- `MDKR_MUSIC_SOLO_PROGRAMS=<list>` / `MDKR_MUSIC_MUTE_PROGRAMS=<list>` — play
+  only, or mute, the listed MIDI program numbers (comma/space-separated).
+- `MDKR_OBJMAP_PROBE=1` — log one row per byte-swapped level-object body
+  field, naming the raw (pre-swap) value against the value now consumed; the
+  seam that found the wrong entries in the endian-swap table.
+- `MDKR_RENDER_CENSUS=1` — hash authoritative state immediately before/after
+  `render_scene()` and report ticks where rendering mutated it; one summary
+  row every 600 ticks and at each change.
+- `MDKR_ROM_ALLOW_MODIFIED=1` — accept a supported-revision ROM whose
+  SHA-256 doesn't match the reference image (a hand-patched or damaged
+  dump); independent of `MDKR_ROM_ANY_REVISION`, which instead accepts an
+  unsupported revision.
+- `MDKR_TEST_OVERLAY_OPEN_FRAME=N` (+ `MDKR_TEST_OVERLAY_CLOSE_FRAME=M`) —
+  schedule the overlay open/closed directly at authoritative tick `N`/`M` via
+  `setOpen()`, bypassing the Escape-key event injection
+  `MDKR_TEST_OVERLAY_ESCAPE_OPEN_FRAME` uses. `CLOSE_FRAME` alone is
+  exercised by `check_overlay_pause.py`; `OPEN_FRAME` is not currently
+  exercised by anything but shares its scheduling code, so it is believed
+  live rather than confirmed.
+- `MDKR_WAVES_TRACE=1` — per-render `[WAVES]` row: authoritative
+  phase/magnitude plus how much swell actually reached the surface; the seam
+  that found the wave generators were inert on levels 19 and 34 (see
+  `objects.c`'s `mdkr_objmap_swap_entry_body` note).
+
+One more surfaced by the same audit but **not** confidently a hatch —
+documented instead of deleted because the evidence cuts both ways:
+
+- `MDKR_TEST_PRESENTATION_REPLAY=1` (also needs
+  `MDKR_INTERNAL_TEST_TOKEN=mdkr64-presentation-replay-v1`) — a direct
+  trigger for forced presentation replay, ORed into the same flag that
+  `MDKR_TEST_DELAYED_ENDPOINT_REPLAY` sets. `check_presentation_matrix.py`
+  only ever sets the latter, so this name may be a superseded alias rather
+  than an intentional second entry point. Unverified — flag for review before
+  relying on it.
