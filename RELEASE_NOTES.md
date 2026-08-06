@@ -64,6 +64,8 @@ preferences are preserved when upgrading.
   carries the same short-long alternation as a visible ripple. Setting frame
   limit to Match Display with motion smoothing Interpolated removes it without
   changing how the game plays, and a European launch now mentions that once.
+  Interpolated draws presentation-only in-between images; it does not run the
+  game more often.
 
 ## The language menu now lists German
 

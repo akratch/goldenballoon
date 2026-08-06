@@ -191,8 +191,9 @@ visible; it does not leave the player at a terminal or dead window. F1 opens a
 true pause boundary: simulation state and the race clock remain fixed while the
 overlay owns input. Existing audio continues naturally, while game-timed audio
 cues are frozen with the simulation. The desktop app supports keyboard and
-gamepad use, visible focus, scalable high-contrast UI, and reduced motion.
-Screen readers are not supported yet.
+gamepad use, visible focus, scalable high-contrast UI, and reduced motion. It
+does not yet speak to screen readers, so it is
+not advertised as screen-reader compatible.
 
 ## Status
 
