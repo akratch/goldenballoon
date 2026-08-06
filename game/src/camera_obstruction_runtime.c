@@ -164,6 +164,17 @@ typedef enum MdkrCameraObstructionRuntimePolicy {
     MDKR_CAMERA_RUNTIME_CENTER_RAY,
 } MdkrCameraObstructionRuntimePolicy;
 
+/* Mode policy (docs/architecture/camera-obstruction.md section 5.8). Most
+ * families follow the spring-arm boom: sweep toward the desired eye, retract
+ * and recover when blocked, and fan out alternate shots below the readability
+ * minimum. A depenetrate-only family instead keeps its authored eye and
+ * orientation, only pushing the eye out of geometry it has penetrated; it
+ * never retracts, recovers, or considers an alternate shot. */
+typedef enum MdkrCameraObstructionTreatment {
+    MDKR_CAMERA_OBSTRUCTION_TREATMENT_FOLLOW = 0,
+    MDKR_CAMERA_OBSTRUCTION_TREATMENT_DEPENETRATE_ONLY,
+} MdkrCameraObstructionTreatment;
+
 typedef struct MdkrCameraObstructionObserveSlot {
     Camera authored;
     Camera last_validated_camera;
@@ -1352,7 +1363,7 @@ static int camera_obstruction_publish_resolved(
     return observe->resolved_valid;
 }
 
-static int camera_obstruction_depenetrate_scripted_eye(
+static int camera_obstruction_depenetrate_only_eye(
     MdkrCameraObstructionObserveSlot *observe,
     s32 physical_slot,
     const MdkrCameraObstructionQuery *query,
@@ -1393,8 +1404,8 @@ static int camera_obstruction_depenetrate_scripted_eye(
             if (endpoint_status == MDKR_CAMERA_SWEEP_CLEAR) {
                 /* Both endpoints are safe but interpolation between them is
                  * not. Publish the authored endpoint as an explicit cut;
-                 * holding at the contact would strand a scripted camera on
-                 * the wrong side of a wall indefinitely. */
+                 * holding at the contact would strand a depenetrate-only
+                 * camera on the wrong side of a wall indefinitely. */
                 if (!camera_obstruction_publish_resolved(
                         observe, physical_slot, sphere_query, exact_query,
                         use_exact, desired, FALSE)) {
@@ -1830,6 +1841,22 @@ static int camera_obstruction_select_alternate_shot(
     return found;
 }
 
+static MdkrCameraObstructionTreatment camera_obstruction_family_treatment(
+    MdkrCameraIntentFamily family) {
+    switch (family) {
+        /* Scripted cutscenes 4-7 have no boom to retract along; the shot
+         * contract owns framing and only wants an emergency eye push. Fixed
+         * door cameras are authored to present a door/hub subject and must
+         * never retract, recover, or swing onto an alternate shot that stops
+         * presenting it. */
+        case MDKR_CAMERA_INTENT_FAMILY_SCRIPTED_CUTSCENE:
+        case MDKR_CAMERA_INTENT_FAMILY_FIXED:
+            return MDKR_CAMERA_OBSTRUCTION_TREATMENT_DEPENETRATE_ONLY;
+        default:
+            return MDKR_CAMERA_OBSTRUCTION_TREATMENT_FOLLOW;
+    }
+}
+
 static void camera_obstruction_resolve_slot(
     MdkrCameraObstructionObserveSlot *observe,
     s32 physical_slot,
@@ -1905,9 +1932,10 @@ static void camera_obstruction_resolve_slot(
         observe->presentation_discontinuity = TRUE;
     }
     desired.y += shake;
-    if (observe->intent.family == MDKR_CAMERA_INTENT_FAMILY_SCRIPTED_CUTSCENE &&
-        observe->intent.forward_valid) {
-        if (!camera_obstruction_depenetrate_scripted_eye(
+    if (camera_obstruction_family_treatment(observe->intent.family) ==
+            MDKR_CAMERA_OBSTRUCTION_TREATMENT_DEPENETRATE_ONLY &&
+        (observe->intent.forward_valid || observe->intent.target_valid)) {
+        if (!camera_obstruction_depenetrate_only_eye(
                 observe, physical_slot, &active_query, &combined,
                 &exact_combined, use_exact, desired)) {
             observe->resolved_valid = camera_obstruction_publish_safe_fallback(
