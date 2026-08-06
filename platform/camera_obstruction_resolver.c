@@ -112,7 +112,10 @@ MdkrCameraObstructionResolverStatus mdkr_camera_obstruction_resolve(
     MdkrCameraVec3 anchor;
     MdkrCameraVec3 candidate;
     MdkrCameraSweepHit hit;
-    MdkrCameraSweepHit obstruction_hit;
+    /* Written only when desired_blocked and read only under the same flag;
+     * zero-initialized because that pairing is a data-flow invariant the
+     * compiler cannot see, and GCC rejects the unproven read under -Werror. */
+    MdkrCameraSweepHit obstruction_hit = {0};
     MdkrCameraSweepStatus sweep_status;
     float distance;
     int projection_changed;

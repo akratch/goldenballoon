@@ -32,6 +32,13 @@
  * CaptureStackBackTrace needs. */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+/* windows.h defines the 16-bit-era `near`/`far` keywords away as empty
+ * macros, and this TU now reaches level_object_entries.h (through the camera
+ * runtime's structs.h chain), whose fog-changer entry carries fields with
+ * those authored names. The struct is the decomp's wire layout and keeps its
+ * names; the legacy macros serve nothing here. */
+#undef near
+#undef far
 #endif
 #include "platform_os.h"
 #include "display_config.h"
