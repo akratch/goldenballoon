@@ -3,14 +3,18 @@
 > One subsystem of the split [open-items index](README.md), which states how these files are kept.
 
 **Currently open** (per [`README.md`](README.md#still-open)'s open/closed
-table): 4 items.
+table): 8 items.
 
 | Item | Where |
 |---|---|
 | Gameplay cameras can enter terrain and object geometry — correction ships opt-in only (`Camera.Obstruction`), so the defect still stands in default play | [§ OPEN: gameplay cameras can enter terrain and object geometry](#open-gameplay-cameras-can-enter-terrain-and-object-geometry) |
+| **(index-level item)** F-18 boss cadence / independent state reference — Original two-field cadence matches retail ROM boss timing; oracle breadth (challenge, multiplayer, progression, audio, renderer-state) remains open. No subsystem section exists for this item; it is tracked at the index level | [§ Still open](README.md#still-open), [`BLUEY2_PARITY.md`](../BLUEY2_PARITY.md) |
 | Zip-pad boost magnitude is authored, but no route exercises a real pad crossing and no hardware trace was taken | [§ CLOSED, NOT A DEFECT: the zip-pad boost — wave "zippad"](#closed-not-a-defect-the-zip-pad-boost-is-the-magnitude-dkr-authored--wave-zippad) |
 | Independent Ancient Lake route drives a real line, but long-horizon standard-race parity against the ROM remains open | [§ The fidelity payoff, measured — and it is NOT there](#the-fidelity-payoff-measured--and-it-is-not-there) |
 | AI stuck-recovery cooldown `unk215` only decays while reversing (believed authored; hardware/ares verification still open) | [§ OPEN, believed authored: AI stuck-recovery cooldown](#open-believed-authored-hardware-unverified-ai-stuck-recovery-cooldown-unk215-only-decays-while-reversing--the-hot-top-volcano-crater-wedge) |
+| Campaign completeness (silver coins, later boss rematches, both Wizpig races, credits) is ungated, not unimplemented — disclosed in README/ROADMAP but no automated or recorded manual witness of a full start-to-credits pass | [§ OPEN: campaign completeness](#open-campaign-completeness--silver-coins-later-boss-rematches-both-wizpig-races-and-the-credits-path-are-ungated-not-unimplemented) |
+| Taj Time Trial records no best time and stores no ghost, silently — deliberate containment, not itemized outside `taj-playable-mod.md` | [§ OPEN, deliberately deferred: Taj Time Trial](#open-deliberately-deferred-taj-time-trial-records-no-best-time-and-stores-no-ghost) |
+| Ghost read/write coverage is one (track, vehicle) pair of 47 legal combinations; the same function already shipped a stack-buffer-overflow once | [§ OPEN: ghost coverage](#open-ghost-coverage-is-one-track-vehicle-pair-of-47) |
 
 ## OPEN: gameplay cameras can enter terrain and object geometry
 
@@ -250,6 +254,20 @@ another line-shaped fixture.
   the instrumented ares is ever built, the `[BOOST]` probe is already the right
   shape to diff against it.
 
+**Deliberately deferred.** The reported 44.9-vs-23.2 asymmetry does not exist:
+armed identically, the boost peaks at 22.357 with eight racers and 22.336
+solo, 0.09% apart, and saturates at 22.358 even when held 2.7× longer. All 310
+boost and velocity statements in `racer.c` are byte-identical to the decomp
+baseline, and the check is registered and gating. The residual — that no
+committed route crosses a real pad — is a consequence of the fix, not a gap in
+it: the AI line over a zip pad is chaotic with respect to any simulation
+change, so the RNG and trigonometry corrections above moved every route that
+used to cross one. A synthetic arm that sets the exact boost state the pad
+sets measures the same quantity with a reproducibility a chaotic route cannot
+offer. An ares trace would confirm the decomp matches the ROM at instruction
+level; it would not change the magnitude, which is already proven identical
+to the source the port is derived from.
+
 ## FIXED: three ROM-fidelity divergences, and the fixture class that was blocking them — wave "closedloop"
 
 The "hasmaudit" wave below found three measured divergences from the ROM in
@@ -377,6 +395,14 @@ entries low, libm wrong on 44168/65536 angles, seed `0x00051234`.
 
 ### The fidelity payoff, measured — and it is NOT there
 
+> **Historical — superseded by the reference-replay oracle.** This section's
+> "no oracle route drives a real racing line" finding predates the
+> `oracle_reference_replay.py` work (`d2808f9`, 2026-08-01): `race_state_oracle`
+> now replays the ROM's own observed update widths and input states over a real
+> Ancient Lake lap. [`docs/ORACLE.md`](../ORACLE.md) is the current, authoritative
+> source on oracle route coverage; treat the "what this wave did NOT do" bullet
+> below about racing-line coverage as historical rather than current status.
+
 `tools/run_oracle.sh` scores our frames against the real ROM in instrumented ares.
 Six routes, before (`MDKR_RNGSEED=legacy MDKR_ARCTAN=trunc MDKR_TRIG=libm`) and
 after (the new defaults), same ares captures both times:
@@ -482,6 +508,22 @@ ASan, and alignment builds pass, as do the Time Trial and boss verdict gates.
 
 No production race/save behavior changed. This closes a false diagnosis and a
 real coverage hole.
+
+### Deliberately deferred: Ancient Lake long-horizon parity
+
+Replaying the ROM's observed update widths and input states (`race_state_oracle`'s
+`reference_replay` arm, [`docs/ORACLE.md`](../ORACLE.md)) makes checkpoint
+clocks 0 through 3 exact and moves the first five-unit separation from clock 18
+to clock 767, which classifies the early mismatch as timestep partitioning
+rather than a physics divergence. Beyond that point sub-unit floating-point
+differences compound in an open loop with no corrective input — the expected
+and unavoidable behavior of any non-bit-exact re-implementation driven over
+hundreds of seconds. The diagnostic is deliberately kept red and deliberately
+excluded from the automated suite: it requires an owned ROM and a locally
+built instrumented emulator, and a green threshold would either be arbitrary
+or would silently mask a real regression. It is a developer instrument, not a
+player-facing property; nothing a player does is affected by where an
+open-loop replay diverges at clock 767.
 
 ### None of the three is `#ifdef NATIVE_PORT`-gated, and none needs to be
 
@@ -928,6 +970,10 @@ failure animation, and was returned without having won"*) and of the `bosses=0x2
 in the log above. Faithful to the ROM (the ROM writes the flags then transitions),
 so **not fixed**; recorded because it explains the save and because it is the
 reason the reported symptom is not reproducible from a fresh save.
+**This account is not itself tested — it is the most economical explanation
+of the earlier report, not a reproduction of it — and `tests/check_boss_win_verdict.py`
+asserts nothing about cutscene 5 never loading on a winning finish, so it would
+not catch a regression of the original "1st place recorded as a loss" symptom.**
 
 **What this means for the player:** nothing is broken now. That save has Tricky recorded as
 beaten, so re-racing him will keep returning you to the lobby with no cutscene —
@@ -1382,6 +1428,65 @@ stride change), `obj_init_emitter()` already sizes its region with
 colour-looping emitter, so any behaviour resting on that read was undefined, and
 the corrected build is the one whose inputs are in-bounds.
 
+## OPEN: campaign completeness — silver coins, later boss rematches, both Wizpig races, and the credits path are ungated, not unimplemented
+
+Disclosed to players at [`README.md`](../../README.md#current-limitations)
+("the complete start-to-credits campaign is not automated or claimed
+complete") and in [`ROADMAP.md`](../../ROADMAP.md), which calls this "the
+largest single piece of deferred work in the project, and the one most likely
+to matter to someone playing rather than reading." This item records the
+mechanism behind that disclosure: **the code is present and wired, and one
+silver-coin-gated rematch is already gated and passing** —
+`obj_init_silvercoin`/`obj_loop_silvercoin` and the
+`SILVER_COIN_ACTIVE`/`COLLECTED`/`INACTIVE` states (`object_functions.c`),
+persistence via `RACE_CLEARED_SILVER_COINS` (`save_data.c:430-431,569-570`),
+HUD via `hud_silver_coins` (`game_ui.c`), and the credits sequence in
+`menu.c`/`thread3_main.c`/`camera.c` all exist, with a
+`tests/input_scripts/credits_via_cheat.txt` fixture reaching credits, and
+`tests/check_bluey2_rematch.py` gating the first silver-coin-gated boss
+rematch end to end.
+
+What is missing is not the logic — this is the same decompiled retail code
+the closed portions of Adventure already run — it is a witness for the *rest*
+of the path: silver-coin progression past the first rematch, the later boss
+rematches, both Wizpig races, and the credits path reached by actually
+playing rather than by cheat. [`docs/RELEASE_CANDIDATE_TEST_GUIDE.md`](../RELEASE_CANDIDATE_TEST_GUIDE.md)
+prescribes a manual start-to-credits pass as the intentional acceptance
+boundary for this gap, but no CHANGELOG or RELEASE_NOTES entry records that
+pass as ever having been completed. So: the campaign is **ungated, not
+unimplemented**, and today it is neither automated nor recorded as manually
+witnessed.
+
+## OPEN, deliberately deferred: Taj Time Trial records no best time and stores no ghost
+
+Taj is heavily advertised ([`RELEASE_NOTES.md`](../../RELEASE_NOTES.md),
+[`README.md`](../../README.md)) but the deferred scope this causes is not
+itemized in either doc, only in
+[`docs/architecture/taj-playable-mod.md`](../architecture/taj-playable-mod.md).
+Per that doc's "Records and ghosts" section (§352-369) and "Deferred" list
+(§535-545): Taj is a virtual character overlaid on the retail roster rather
+than a true `CHARACTER_TAJ` slot, and Taj-compatible serialized ghosts or
+leaderboard semantics are explicitly deferred. `race_finish_time_trial` skips
+the best-time store, the player-ghost swap, and staff-ghost retirement for a
+Taj run — the run still plays the ordinary end-of-run announcement (HUD and
+audio only, no record side effect), so **a player Time Trialling as Taj gets
+no saved ghost and no recorded best time, silently.**
+
+**Deliberately deferred.** Taj is a virtual character overlaid on the retail
+roster rather than a true `CHARACTER_TAJ` slot, and that boundary is
+deliberate: it keeps the mod architecture from touching retail data
+migration, the character-select map asset, or the serialized record format.
+The consequence a player can observe is the intended containment, not an
+oversight — competitive timing data is quarantined precisely so a Taj run can
+never overwrite the original roster's records, staff-ghost progress,
+initials, or player ghosts, and so an existing Controller Pak or EEPROM save
+written before Taj existed stays exactly as valid afterward. Giving Taj real
+ghost and leaderboard semantics means deciding how a non-retail character is
+represented in a format retail hardware also reads — a compatibility
+question, not a bug — and belongs with the authored vehicle rows and the
+fourth carpet physics class in a second-generation asset-pack feature
+(`taj-playable-mod.md` §535-545, "Deferred").
+
 ## Playability wave — memory safety, saves, and the race finish
 
 ### FIXED: stack-buffer-overflow on the Adventure entry path (`fileselect_render`)
@@ -1721,6 +1826,25 @@ cosmetic (the *time* is stored and read back correctly). Only the Ancient Lake /
 car combination has been exercised; other tracks and the hovercraft/plane record
 slots are untested, as is a *trophy* race finish, which takes the
 `race_finish_adventure` balloon-cutscene branch rather than `postrace_start`.
+
+#### OPEN: ghost coverage is one (track, vehicle) pair of 47
+
+`timetrial_ghost_read()` — the same function root cause 3 above found a
+stack-buffer-overflow in — is exercised end to end (write, then fresh-process
+read) by exactly one test on one (track, vehicle) pair:
+`tests/check_race_finish_time.py` on Ancient Lake / car
+([`tests/README.md`](../../tests/README.md)). `check_vehicle_sweep.py` and
+`check_track_sweep.py` cover all 47 legal (track, vehicle) combinations for
+ordinary racing, but contain **zero** ghost references — they do not drive a
+Time Trial finish, so they never reach the ghost write/read path at all. This
+is a save-format path: ghost payloads are persisted to the same Controller
+Pak / EEPROM records ordinary saves use, and this exact path already shipped
+a stack-buffer-overflow that "aborted with nothing at all on stderr" (root
+cause 3 above) before it was caught. Extending the vehicle/track sweeps to
+also drive and verify a ghost round-trip on each of the 47 pairs is the gap;
+any such extension must not alter the serialized ghost layout to make the
+sweep pass, since existing Controller Pak / EEPROM saves have to keep
+reading correctly afterward.
 
 ### Part D — the Adventure trophy championship is DONE (wave "trophyseries")
 
