@@ -237,6 +237,9 @@ automated coverage from manual physical-hardware acceptance. See
 - The planned macOS 1.0.5 artifact has an ad-hoc integrity seal but no Developer ID
   trust signature or Apple notarization, so current macOS requires the manual
   first-open approval above.
+- The Windows build is not code-signed. Once a Windows archive is attached to a
+  release, Windows SmartScreen will show an "unrecognized app" warning on first
+  launch; choose **More info**, then **Run anyway** to continue.
 - Linux is best effort and lacks the macOS/WebGPU path's physical-GPU,
   display-server, controller, and OS-version breadth. Windows build/package
   validation is automated; native GPU gameplay, controller, audio, and save
