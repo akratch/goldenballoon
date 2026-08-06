@@ -33,7 +33,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import ASSERT_MARKERS, fatal_re, resolve_binary
 
 
 DEFAULT_SCRIPT = Path("tests/input_scripts/adventure_hub_drive.txt")
@@ -45,7 +45,7 @@ SANITIZER_RE = re.compile(
     r"AddressSanitizer|UndefinedBehaviorSanitizer|"
     r"global-buffer-overflow|runtime error:"
 )
-FATAL_RE = re.compile(r"\[CRASH\]|\[FATAL\]|Assertion")
+FATAL_RE = fatal_re(*ASSERT_MARKERS)
 MEM01_RE = re.compile(r"gCurFilenameCharBeingDrawn|font\.c:408")
 
 

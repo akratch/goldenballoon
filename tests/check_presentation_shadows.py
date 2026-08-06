@@ -34,7 +34,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import read_ppm, resolve_binary
+from harness_utils import DEVICE_MARKERS, fatal_re, read_ppm, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -49,11 +49,7 @@ ENDPOINT_RE = re.compile(
     re.MULTILINE,
 )
 PACKET_RE = re.compile(r"^\[PRESENT-PACKET\] (.*)$", re.MULTILINE)
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|validation error|device lost|shader compilation failed",
-    re.IGNORECASE,
-)
+FATAL_RE = fatal_re(*DEVICE_MARKERS, ignore_case=True)
 
 # A midpoint is usable once the A/B shadow-support mask has at least this many
 # pixels.  The final evidence has 97 such triples; the two tiny, nearly static

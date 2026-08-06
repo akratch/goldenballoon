@@ -21,11 +21,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import ASSERT_MARKERS, find_fatal, resolve_binary
 
 
 SCRIPT = "tests/input_scripts/race_drive_long.txt"
-BAD = ("[CRASH]", "[FATAL]", "AddressSanitizer", "runtime error:", "Assertion")
 DETAIL = "camera_obstruction_observe detail"
 SUMMARY = "camera_obstruction_observe summary"
 
@@ -64,9 +63,9 @@ def run(binary: str, rom: str, policy: str, frames: int, timeout: int,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"{policy} exited {proc.returncode}\n" + "\n".join(proc.stdout.splitlines()[-80:]))
-    for marker in BAD:
-        if marker in proc.stdout:
-            raise RuntimeError(f"{policy} emitted {marker}")
+    marker = find_fatal(proc.stdout, *ASSERT_MARKERS)
+    if marker:
+        raise RuntimeError(f"{policy} emitted {marker}")
     return proc.stdout
 
 

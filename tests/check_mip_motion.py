@@ -37,7 +37,8 @@ import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from harness_utils import read_ppm as read_ppm_bytes, resolve_binary
+from harness_utils import (ASSERT_MARKERS, fatal_re, FX_MARKERS,
+                           read_ppm as read_ppm_bytes, resolve_binary)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -63,10 +64,7 @@ MIP_RE = re.compile(r"\[MIP\] uploads=(\d+) levels=(\d+)")
 PACE_POSITION_RE = re.compile(
     r"\[PACE\] frame=(\d+).*racer x=(\S+) y=(\S+) z=(\S+)"
 )
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|Assertion|\[FX BUG\]"
-)
+FATAL_RE = fatal_re(*ASSERT_MARKERS, *FX_MARKERS)
 
 
 @dataclass(frozen=True)

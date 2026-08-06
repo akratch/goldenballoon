@@ -24,7 +24,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import read_ppm, resolve_binary
+from harness_utils import DEVICE_MARKERS, fatal_re, read_ppm, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -39,11 +39,7 @@ SHADOW_RE = re.compile(
     r"\[WORLD-SHADOW\] backend=(gl|webgpu) attempted=(\d+) "
     r"complete=(\d+) fallback=(\d+) resourceFailures=(\d+) latched=(\d+)"
 )
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|validation error|device lost|shader compilation failed",
-    re.IGNORECASE,
-)
+FATAL_RE = fatal_re(*DEVICE_MARKERS, ignore_case=True)
 
 
 @dataclass(frozen=True)

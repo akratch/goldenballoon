@@ -25,7 +25,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import read_ppm as read_ppm_bytes, resolve_binary
+from harness_utils import (ASSERT_MARKERS, fatal_re, FX_MARKERS,
+                           read_ppm as read_ppm_bytes, resolve_binary)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -35,10 +36,7 @@ ARMS = ("baked", "baked-sun", "supersede")
 CAPTURE_FRAME = 3475
 FRAMES = CAPTURE_FRAME + 1
 RL1_RE = re.compile(r"\[RL1\] arm=([a-z-]+) triangles=(\d+)")
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|Assertion|\[FX BUG\]"
-)
+FATAL_RE = fatal_re(*ASSERT_MARKERS, *FX_MARKERS)
 
 
 @dataclass(frozen=True)

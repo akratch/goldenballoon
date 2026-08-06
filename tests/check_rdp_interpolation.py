@@ -25,7 +25,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import read_ppm as read_ppm_bytes, resolve_binary
+from harness_utils import (ASSERT_MARKERS, fatal_re, FX_MARKERS,
+                           read_ppm as read_ppm_bytes, resolve_binary)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -36,10 +37,7 @@ REQUIRED_SOURCE_COUNTS = {
     "gfx_rdp_fog_from_clip(": 2,
     'getenv("MDKR_RDP_GRADIENTS")': 1,
 }
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|Assertion|\[FX BUG\]"
-)
+FATAL_RE = fatal_re(*ASSERT_MARKERS, *FX_MARKERS)
 
 
 @dataclass(frozen=True)

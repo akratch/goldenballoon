@@ -62,18 +62,14 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import read_ppm, resolve_binary
+from harness_utils import fatal_re, read_ppm, resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "tests" / "input_scripts"
 
 WORLD_FX_RE = re.compile(r"\[WORLD-FX\] (.*)")
 PLAN_RE = re.compile(r"\[SHADOW-PLAN\] (.*)")
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:",
-    re.IGNORECASE,
-)
+FATAL_RE = fatal_re(ignore_case=True)
 
 # Bogus-caster displacement, in world units. Large enough that no float wobble
 # could produce it and that the resulting phantom is visible, small enough to

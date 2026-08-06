@@ -37,7 +37,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import (completed_tick_conservation,
+from harness_utils import (ABORT_MARKERS, ASSERT_MARKERS,
+                           completed_tick_conservation, fatal_re,
                            read_ppm as read_ppm_bytes, resolve_binary)
 
 
@@ -68,10 +69,7 @@ MAX_FRAME_MAD = 4.0
 MAX_MEAN_MAD = 2.0
 MIN_RACE_SAMPLE_FRAME = 2800
 
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|Assertion|SIGSEGV|Segmentation fault|SIGABRT|Abort trap"
-)
+FATAL_RE = fatal_re(*ASSERT_MARKERS, *ABORT_MARKERS)
 ROUTE_RE = re.compile(
     r"^\[TRACE\] (?:menu_init|level_load):.*(?:@frame~\d+)$", re.MULTILINE
 )

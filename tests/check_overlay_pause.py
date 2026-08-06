@@ -21,7 +21,7 @@ import tempfile
 import wave
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import fatal_re, resolve_binary
 
 
 TICKS = 3900
@@ -29,10 +29,7 @@ OPEN_FRAME = 3400
 CLOSE_FRAME = 3600
 SCRIPT = Path(__file__).resolve().parent / "input_scripts" / "nav_to_time_trial_race.txt"
 
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|Segmentation fault|Abort trap"
-)
+FATAL_RE = fatal_re("Segmentation fault", "Abort trap")
 BOUNDARY_RE = re.compile(
     r"^\[overlay-test\] simulation (paused|resumed) at tick (\d+) rate=(\d+)$",
     re.MULTILINE,

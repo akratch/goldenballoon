@@ -20,16 +20,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from check_adventure_hub import HUB_TOUR_ROUTE
-from harness_utils import resolve_binary
+from harness_utils import ASSERT_MARKERS, fatal_re, FX_MARKERS, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parent.parent
 INPUTS = ROOT / "tests" / "input_scripts"
 BACKENDS = ("gl", "webgpu")
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|Assertion|\[FX BUG\]"
-)
+FATAL_RE = fatal_re(*ASSERT_MARKERS, *FX_MARKERS)
 WORLD_FX_RE = re.compile(
     r"\[WORLD-FX\] mode=neutral frames=(\d+) committed=(\d+) "
     r"failed=(\d+) views=(\d+) triangles=(\d+) ranges=(\d+) "

@@ -22,7 +22,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import ABORT_MARKERS, fatal_re, GPU_MARKERS, resolve_binary
 
 
 TICKS = 12
@@ -48,14 +48,8 @@ HOST_PRESENT_RE = re.compile(
 )
 WGPU_OCCLUDED_STATUS = 0x00030001
 WGPU_ERROR_STATUS = 6
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|frame queue failed|GPU completion fence failed"
-)
-CLEAN_FAILURE_FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|SIGSEGV|Segmentation fault|SIGABRT|Abort trap"
-)
+FATAL_RE = fatal_re(*GPU_MARKERS)
+CLEAN_FAILURE_FATAL_RE = fatal_re(*ABORT_MARKERS)
 
 
 @dataclass(frozen=True)

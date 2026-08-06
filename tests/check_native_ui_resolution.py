@@ -28,7 +28,9 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import read_ppm as read_ppm_bytes, resolve_binary
+from harness_utils import (ASSERT_MARKERS, fatal_re, FX_MARKERS,
+                           read_ppm as read_ppm_bytes, resolve_binary,
+                           VALIDATION_MARKERS)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -41,10 +43,7 @@ FRAMES = 3050
 # output-overlay passes prove repeated boundary use without reintroducing a
 # hardware-throughput-dependent quota.
 MIN_OUTPUT_OVERLAY_FRAMES = 8
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|Assertion|\[FX BUG\]|Validation Error"
-)
+FATAL_RE = fatal_re(*ASSERT_MARKERS, *FX_MARKERS, *VALIDATION_MARKERS)
 UI_RE = re.compile(
     r"\[UI-3\] frame=(\d+) active=(\d+) draws=(\d+) lateWorld=(\d+) "
     r"primitives=(\d+) lastWorld=(\d+) .* beginFailures=(\d+)"

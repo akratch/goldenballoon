@@ -13,7 +13,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import ASSERT_MARKERS, find_fatal, resolve_binary
 
 
 SCRIPT = Path("tests/input_scripts/race_4p_split.txt")
@@ -21,7 +21,6 @@ PERF_RE = re.compile(r"^\[CAMERAPERF\] section=(\w+) (.*)$", re.MULTILINE)
 RUN_RE = re.compile(r"^\[CAMERAPERF-RUN\] (.*)$", re.MULTILINE)
 CACHE_RE = re.compile(
     r"^\[CAM-OCCLUSION\].*\bbytes=(\d+) build_ns=(\d+)$", re.MULTILINE)
-BAD = ("[CRASH]", "[FATAL]", "AddressSanitizer", "runtime error:", "Assertion")
 P99_BUDGET_NS = 833_333       # 5% of a fastest-cadence 60 Hz fixed tick
 TAIL_BUDGET_NS = 1_666_667    # 10% diagnostic tail threshold
 MIN_ACTIVE_4P_TICKS = 5_000   # 83 seconds at the fastest 60 Hz cadence
@@ -74,9 +73,9 @@ def run(binary: Path, rom: Path, root: Path, policy: str,
     output = process.stdout or ""
     if process.returncode != 0:
         raise RuntimeError(f"{policy}: exit {process.returncode}\n{output[-4000:]}")
-    for marker in BAD:
-        if marker in output:
-            raise RuntimeError(f"{policy}: emitted {marker}")
+    marker = find_fatal(output, *ASSERT_MARKERS)
+    if marker:
+        raise RuntimeError(f"{policy}: emitted {marker}")
     metrics = {match.group(1): fields(match.group(2))
                for match in PERF_RE.finditer(output)}
     run_match = RUN_RE.search(output)

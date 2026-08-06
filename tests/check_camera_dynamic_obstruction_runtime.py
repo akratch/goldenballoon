@@ -12,13 +12,12 @@ import tempfile
 from pathlib import Path
 
 from check_adventure_hub import HUB_TOUR_ROUTE
-from harness_utils import resolve_binary
+from harness_utils import ASSERT_MARKERS, find_fatal, resolve_binary
 
 
 SCRIPT = "tests/input_scripts/adventure_hub_drive.txt"
 DETAIL = "camera_obstruction_observe detail"
 SUMMARY = "camera_obstruction_observe summary"
-BAD = ("[CRASH]", "[FATAL]", "AddressSanitizer", "runtime error:", "Assertion")
 DYNAMIC_STABLE_ID_BASE = 0x80000000
 
 
@@ -72,9 +71,9 @@ def main() -> int:
     failures: list[str] = []
     if proc.returncode != 0:
         failures.append(f"process exited {proc.returncode}")
-    for marker in BAD:
-        if marker in proc.stdout:
-            failures.append(f"runtime emitted {marker}")
+    marker = find_fatal(proc.stdout, *ASSERT_MARKERS)
+    if marker:
+        failures.append(f"runtime emitted {marker}")
 
     details = [row for row in proc.stdout.splitlines() if DETAIL in row]
     summaries = [row for row in proc.stdout.splitlines() if SUMMARY in row]

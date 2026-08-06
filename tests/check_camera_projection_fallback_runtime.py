@@ -10,12 +10,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import ASSERT_MARKERS, find_fatal, resolve_binary
 
 
 SCRIPT = "tests/input_scripts/race_drive_long.txt"
 FAULT_TICK = 800
-BAD = ("[CRASH]", "[FATAL]", "AddressSanitizer", "runtime error:", "Assertion")
 
 
 def main() -> int:
@@ -50,9 +49,9 @@ def main() -> int:
     failures: list[str] = []
     if proc.returncode != 0:
         failures.append(f"process exited {proc.returncode}")
-    for marker in BAD:
-        if marker in proc.stdout:
-            failures.append(f"runtime emitted {marker}")
+    marker = find_fatal(proc.stdout, *ASSERT_MARKERS)
+    if marker:
+        failures.append(f"runtime emitted {marker}")
 
     token = f"tick={FAULT_TICK} "
     details = [

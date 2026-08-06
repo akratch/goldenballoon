@@ -92,7 +92,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import ASSERT_MARKERS, fatal_re, resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_character_select.txt"
@@ -124,10 +124,7 @@ PERIOD_MAX = 26
 PERIOD_MIN_R = 0.3
 
 MENU_RE = re.compile(r"menu_init: menuId=(\d+)")
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|Assertion"
-)
+FATAL_RE = fatal_re(*ASSERT_MARKERS)
 EXPECTED_MENU = 3  # CHARACTER_SELECT, per tests/README.md
 
 

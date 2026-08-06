@@ -30,7 +30,9 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import read_ppm as read_ppm_bytes, resolve_binary
+from harness_utils import (ASSERT_MARKERS, fatal_re,
+                           read_ppm as read_ppm_bytes, resolve_binary,
+                           VALIDATION_MARKERS)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,10 +50,7 @@ CHARSELECT_CONTROL_SCRIPT = (
     ROOT / "tests" / "input_scripts" / "nav_charselect_late.txt"
 )
 CREDITS_SCRIPT = ROOT / "tests" / "input_scripts" / "credits_via_cheat.txt"
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|Assertion|Validation Error"
-)
+FATAL_RE = fatal_re(*ASSERT_MARKERS, *VALIDATION_MARKERS)
 
 
 @dataclass(frozen=True)

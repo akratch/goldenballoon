@@ -20,7 +20,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import completed_tick_conservation, resolve_binary
+from harness_utils import (completed_tick_conservation, fatal_re, GPU_MARKERS,
+                           resolve_binary)
 
 
 TICKS = 30
@@ -28,10 +29,7 @@ EXPECTED_OPPORTUNITIES = TICKS * 1000 // 30
 FIELDS_RE = re.compile(r"\[PRESENTSCHED-SUMMARY\] (.*)")
 WGPU_RE = re.compile(r"\[WGPU-BACKPRESSURE\] (.*)")
 GL_RE = re.compile(r"\[GL-BACKPRESSURE\] (.*)")
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|frame queue failed|GPU completion fence failed"
-)
+FATAL_RE = fatal_re(*GPU_MARKERS)
 
 
 @dataclass(frozen=True)

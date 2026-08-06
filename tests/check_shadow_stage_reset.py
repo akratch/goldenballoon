@@ -35,17 +35,13 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import fatal_re, resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
 FRAMES = 3600
 STATIC_RE = re.compile(r"\[WORLD-FX\] mode=neutral .*?static=(\d+) ")
-FATAL_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:",
-    re.IGNORECASE,
-)
+FATAL_RE = fatal_re(ignore_case=True)
 
 
 def run_arm(binary: Path, rom: Path, label: str, root: Path,
