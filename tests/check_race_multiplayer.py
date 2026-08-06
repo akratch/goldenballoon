@@ -32,7 +32,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 
-from harness_utils import read_ppm, resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, read_ppm, resolve_binary
 
 
 FRAMES = 9600
@@ -657,7 +657,7 @@ def run_case(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--renderer", choices=("gl", "webgpu"))
     parser.add_argument("--window-size", default="640x480")

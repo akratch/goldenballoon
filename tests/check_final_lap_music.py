@@ -35,8 +35,8 @@ from check_audio_output import (
     parse_engine,
     tempo_report,
 )
-from harness_utils import (fatal_re, FX_MARKERS, resolve_binary,
-                           VALIDATION_MARKERS)
+from harness_utils import (DEFAULT_BUILD_DIR, fatal_re, FX_MARKERS,
+                           resolve_binary, VALIDATION_MARKERS)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -56,7 +56,7 @@ def beat_grid_ok(row: dict[str, float | int]) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=300)
     args = parser.parse_args()

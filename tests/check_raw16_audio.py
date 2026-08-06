@@ -46,7 +46,7 @@ import wave
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -662,7 +662,7 @@ def compare_runtime(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", default="build",
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR,
                         help="native build directory or mdkr64 executable")
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--script", default=str(DEFAULT_SCRIPT))

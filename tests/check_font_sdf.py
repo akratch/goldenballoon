@@ -23,8 +23,9 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import (ASSERT_MARKERS, fatal_re, FX_MARKERS,
-                           read_ppm as read_ppm_bytes, resolve_binary)
+from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, fatal_re,
+                           FX_MARKERS, read_ppm as read_ppm_bytes,
+                           resolve_binary)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -196,7 +197,7 @@ def changed_pixels(left: Image, right: Image) -> list[tuple[int, int]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--frames", type=int, default=1200)
     parser.add_argument("--timeout", type=int, default=90)

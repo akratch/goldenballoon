@@ -54,7 +54,7 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 SCRIPT = "tests/input_scripts/adventure_hub_drive.txt"
 FRAMES = 9000
@@ -120,7 +120,7 @@ def check_crash(tag: str, rc: int, out: str, failures: list):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()

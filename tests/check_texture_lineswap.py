@@ -107,7 +107,7 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import read_ppm, resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, read_ppm, resolve_binary
 
 SCRIPT = "tests/input_scripts/race_drive_long.txt"
 FRAMES = 3900          # race clock starts ~3120; this samples the settled HUD
@@ -194,7 +194,7 @@ def run(binary: str, rom: str, script: str, frames: int, dump_from: int,
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("--script", default=SCRIPT)
     ap.add_argument("--frames", type=int, default=FRAMES)

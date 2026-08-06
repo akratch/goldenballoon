@@ -34,7 +34,8 @@ import tempfile
 
 from check_adventure_two import eeprom_image
 from check_race_drive import scene_metrics
-from harness_utils import resolve_binary, seal_slot, slot_checksum_valid
+from harness_utils import (DEFAULT_BUILD_DIR, resolve_binary, seal_slot,
+                           slot_checksum_valid)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -539,7 +540,7 @@ def validate_arm(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("-v", "--verbose", action="store_true")

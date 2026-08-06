@@ -107,7 +107,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, replace
 
-from harness_utils import read_ppm, resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, read_ppm, resolve_binary
 
 SCRIPT = "tests/input_scripts/race_2p_split.txt"
 FRAMES = 9600          # level_load ~2491, clock starts 2662; post-race flow needs
@@ -452,7 +452,7 @@ def blank_half_control(frame_dir: str) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("--renderer", default=None, choices=["gl", "webgpu"],
                     help="force a backend (default: the build's native default, WebGPU)")

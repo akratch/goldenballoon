@@ -77,7 +77,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import completed_tick_conservation, resolve_binary
+from harness_utils import (completed_tick_conservation, DEFAULT_BUILD_DIR,
+                           resolve_binary)
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
@@ -804,7 +805,7 @@ def check_tenancy_control(binary: Path, rom: Path, root: Path, timeout: int,
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build-rel")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--roms", default="build/roms",
                         help="directory searched for the pal.v80 release")

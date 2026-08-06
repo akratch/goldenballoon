@@ -106,7 +106,8 @@ import re
 import subprocess
 import sys
 
-from harness_utils import preserved_eeprom, resolve_binary, save_env, test_save_dir
+from harness_utils import (DEFAULT_BUILD_DIR, preserved_eeprom, resolve_binary,
+                           save_env, test_save_dir)
 
 # Boss level 46 = Tricky 2, the Fire Mountain spiral. Decoded from the ROM's
 # ASSET_MISC_BOSS_TRACKS_IDS with tools/dump_misc_asset.py (sub-asset 30):
@@ -296,7 +297,7 @@ def main() -> int:
 
 def run_check() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("--script", default=SCRIPT)
     ap.add_argument("--track", type=int, default=BOSS_TRACK)

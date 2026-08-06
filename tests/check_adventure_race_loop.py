@@ -80,7 +80,8 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import resolve_binary, SLOT_BYTES, slot_checksum
+from harness_utils import (DEFAULT_BUILD_DIR, resolve_binary, SLOT_BYTES,
+                           slot_checksum)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, "tests", "input_scripts", "adventure_race_loop.txt")
@@ -301,7 +302,7 @@ def run_case(binary: str, rom: str, frame_dir: str | None, verdict: str):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("--keep-frames", default=None)
     ap.add_argument("-v", "--verbose", action="store_true")

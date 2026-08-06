@@ -26,8 +26,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import (completed_tick_conservation, parse_last,
-                           resolve_binary, tear_free_presentation)
+from harness_utils import (completed_tick_conservation, DEFAULT_BUILD_DIR,
+                           parse_last, resolve_binary, tear_free_presentation)
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
@@ -399,7 +399,7 @@ def compare_display_arm(label: str, result: Result,
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build-rel")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--roms", default="build/roms")
     parser.add_argument("--timeout", type=int, default=1200)

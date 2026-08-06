@@ -19,8 +19,9 @@ import re
 import subprocess
 import tempfile
 
-from harness_utils import (config_block as save_config_block, put_bits,
-                           resolve_binary, seal_slot, SLOT_BYTES, slot_checksum)
+from harness_utils import (config_block as save_config_block,
+                           DEFAULT_BUILD_DIR, put_bits, resolve_binary,
+                           seal_slot, SLOT_BYTES, slot_checksum)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -190,7 +191,7 @@ def run_case(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--frames", type=int, default=18000)
     parser.add_argument("-v", "--verbose", action="store_true")

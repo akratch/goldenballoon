@@ -124,7 +124,8 @@ import re
 import subprocess
 import sys
 
-from harness_utils import (config_block as save_config_block, EEPROM_ARTIFACTS,
+from harness_utils import (config_block as save_config_block,
+                           DEFAULT_BUILD_DIR, EEPROM_ARTIFACTS,
                            preserved_eeprom, resolve_binary, save_env,
                            seal_slot, SLOT_BYTES, test_save_dir)
 
@@ -424,7 +425,7 @@ def main() -> int:
 
 def run_check() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()

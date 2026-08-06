@@ -12,8 +12,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import (completed_tick_conservation, fatal_re, GPU_MARKERS,
-                           parse_last, resolve_binary)
+from harness_utils import (completed_tick_conservation, DEFAULT_BUILD_DIR,
+                           fatal_re, GPU_MARKERS, parse_last, resolve_binary)
 
 
 TICKS = 30
@@ -233,7 +233,7 @@ def validate_pair(control: Result, minimized: Result) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build-rel")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("-v", "--verbose", action="store_true")

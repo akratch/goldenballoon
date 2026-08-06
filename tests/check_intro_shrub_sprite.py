@@ -63,7 +63,7 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import read_ppm, resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, read_ppm, resolve_binary
 
 # The one fixture that reaches MENU_NEWGAME_CINEMATIC and level 36, the authored
 # opening sequence (see the header of the script itself).
@@ -138,7 +138,7 @@ def run(binary: str, rom: str, script: str, renderer: str,
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument(
         "--renderer", choices=("both", "gl", "webgpu"), default="both",

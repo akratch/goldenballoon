@@ -70,7 +70,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -225,7 +225,7 @@ def run_drop(binary: Path, drop_path: Path, prefs_dir: Path, timeout: int,
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=60)
     parser.add_argument("-v", "--verbose", action="store_true")

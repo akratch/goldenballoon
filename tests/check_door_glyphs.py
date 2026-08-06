@@ -37,7 +37,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import read_ppm, resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, read_ppm, resolve_binary
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -492,7 +492,7 @@ def check_renderer(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument(
         "--renderer", choices=("both", "webgpu", "gl"), default="both"

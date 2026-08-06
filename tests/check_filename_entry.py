@@ -33,7 +33,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import ASSERT_MARKERS, fatal_re, resolve_binary
+from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, fatal_re,
+                           resolve_binary)
 
 
 DEFAULT_SCRIPT = Path("tests/input_scripts/adventure_hub_drive.txt")
@@ -55,7 +56,7 @@ def output_tail(output: str, lines: int = 80) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--build", default="build",
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR,
                     help="build directory or mdkr64 binary (default: build)")
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("--script", default=str(DEFAULT_SCRIPT))

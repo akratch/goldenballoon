@@ -113,9 +113,9 @@ import re
 import subprocess
 import sys
 
-from harness_utils import (config_block as save_config_block, preserved_eeprom,
-                           resolve_binary, save_env, seal_slot, SLOT_BYTES,
-                           test_save_dir)
+from harness_utils import (config_block as save_config_block,
+                           DEFAULT_BUILD_DIR, preserved_eeprom, resolve_binary,
+                           save_env, seal_slot, SLOT_BYTES, test_save_dir)
 
 SCRIPT = "tests/input_scripts/adventure_race_loop.txt"
 FRAMES = 17000
@@ -263,7 +263,7 @@ def main() -> int:
 
 def run_check() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", default="build-rel",
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR,
                     help="build dir; MUST be an optimised build -- see the module "
                          "docstring, a Debug build cannot observe this defect")
     ap.add_argument("--rom", default="baserom.us.v80.z64")

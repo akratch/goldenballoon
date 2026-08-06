@@ -42,8 +42,8 @@ from check_first_boss_progression import (
     save_order,
     sum_block,
 )
-from harness_utils import (resolve_binary, seal_slot, SLOT_BYTES,
-                           slot_checksum_valid)
+from harness_utils import (DEFAULT_BUILD_DIR, resolve_binary, seal_slot,
+                           SLOT_BYTES, slot_checksum_valid)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -502,7 +502,7 @@ def validate_audio(result: RaceResult) -> tuple[list[str], dict[str, float]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("-v", "--verbose", action="store_true")

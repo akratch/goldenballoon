@@ -96,7 +96,8 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import resolve_binary, save_env, test_save_dir
+from harness_utils import (DEFAULT_BUILD_DIR, resolve_binary, save_env,
+                           test_save_dir)
 
 # Product scope is deliberately frozen to the two revision-1 asset layouts.
 # Keep this declaration separate from the per-ROM metadata below: the check must
@@ -681,7 +682,7 @@ def check_mirror(args, failures):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64",
                     help="the SUPPORTED ROM; synthetic inputs are derived from it")
     ap.add_argument("--roms", default="build/roms",

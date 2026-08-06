@@ -51,9 +51,9 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import (config_block as save_config_block, put_bits,
-                           resolve_binary, seal_slot, SLOT_BYTES,
-                           slot_checksum_valid)
+from harness_utils import (config_block as save_config_block,
+                           DEFAULT_BUILD_DIR, put_bits, resolve_binary,
+                           seal_slot, SLOT_BYTES, slot_checksum_valid)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -637,7 +637,7 @@ def validate_broken_control(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument(
         "--break-invariant", action="store_true",

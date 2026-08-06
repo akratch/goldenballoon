@@ -13,7 +13,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import ASSERT_MARKERS, find_fatal, resolve_binary
+from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, find_fatal,
+                           resolve_binary)
 
 
 SCRIPT = Path("tests/input_scripts/race_4p_split.txt")
@@ -98,7 +99,7 @@ def run(binary: Path, rom: Path, root: Path, policy: str,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--frames", type=int, default=12500)
     parser.add_argument("--timeout", type=int, default=900)

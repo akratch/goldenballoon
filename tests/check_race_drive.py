@@ -94,7 +94,7 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import read_ppm, resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, read_ppm, resolve_binary
 
 SCRIPT = "tests/input_scripts/nav_to_time_trial_race.txt"
 FRAMES = 7500          # ~4380 in-race frames; the AI finishes 3 laps at ~8100
@@ -189,7 +189,7 @@ def scene_metrics(path: str) -> tuple[int, float]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("--keep-frames", default=None,
                     help="keep the sampled PPMs in this directory")

@@ -23,7 +23,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import read_ppm, resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, read_ppm, resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 FRAMES = 2740
@@ -201,7 +201,7 @@ def viewport_bounds(players: int) -> tuple[tuple[str, tuple[float, ...]], ...]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build-rel")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--renderer", choices=("gl", "webgpu"),

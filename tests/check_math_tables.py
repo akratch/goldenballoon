@@ -68,7 +68,7 @@ import re
 import subprocess
 import sys
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 ASM = os.path.join("game", "src", "hasm", "ido", "math_util.s")
 ARCTAN_LIVE = 1025          # atan2_lookup's worst-case index is 1024
@@ -253,7 +253,7 @@ def run(binary, rom, env_extra, verbose):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--build", default="build")
+    ap.add_argument("--build", default=DEFAULT_BUILD_DIR)
     ap.add_argument("--rom", default="baserom.us.v80.z64")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()

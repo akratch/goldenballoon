@@ -25,8 +25,9 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import (ASSERT_MARKERS, fatal_re, FX_MARKERS,
-                           read_ppm as read_ppm_bytes, resolve_binary)
+from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, fatal_re,
+                           FX_MARKERS, read_ppm as read_ppm_bytes,
+                           resolve_binary)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -197,7 +198,7 @@ def difference(fixed: Image, legacy: Image) -> tuple[int, float]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--frames", type=int, default=2900)
     parser.add_argument("--timeout", type=int, default=120)

@@ -23,7 +23,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 
 SOAK_FRAMES = 12000
@@ -116,7 +116,7 @@ def rolling_loads(result: Run) -> dict[int, tuple[int, int, int, int, int, int]]
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()

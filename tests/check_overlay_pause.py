@@ -21,7 +21,7 @@ import tempfile
 import wave
 from pathlib import Path
 
-from harness_utils import fatal_re, resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, fatal_re, resolve_binary
 
 
 TICKS = 3900
@@ -186,7 +186,7 @@ def check_input_handoff(binary: Path, rom: Path, timeout: int) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build-rel")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64", type=Path)
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("-v", "--verbose", action="store_true")

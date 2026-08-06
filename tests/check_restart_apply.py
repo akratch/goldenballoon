@@ -29,7 +29,7 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 
 TICKS = 12
@@ -154,7 +154,7 @@ def require_preserved_config(config: Path, output: str) -> str | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", default="build-rel")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", type=Path, default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("-v", "--verbose", action="store_true")

@@ -31,7 +31,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import present_mode_rows, resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, present_mode_rows, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -385,7 +385,7 @@ def run_backend(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument(
         "--renderer", choices=("gl", "webgpu", "both"), default="both")

@@ -33,8 +33,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import (completed_tick_conservation, parse_last,
-                           resolve_binary)
+from harness_utils import (completed_tick_conservation, DEFAULT_BUILD_DIR,
+                           parse_last, resolve_binary)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -350,7 +350,7 @@ def validate_control(reference: Result, control: Result) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build-rel")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--only", default=None,

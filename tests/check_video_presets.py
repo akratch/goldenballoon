@@ -43,7 +43,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from harness_utils import resolve_binary  # noqa: E402
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
@@ -131,7 +131,7 @@ def first_diff(a: list[str], b: list[str]) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()

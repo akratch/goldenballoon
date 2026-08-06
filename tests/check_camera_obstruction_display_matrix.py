@@ -7,7 +7,7 @@ import argparse
 import re
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 from check_camera_obstruction_runtime import inspect, run
 
 
@@ -42,7 +42,7 @@ def resolved_trace(output: str) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", default="build")
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--frames", type=int, default=3600)
     parser.add_argument("--timeout", type=int, default=180)

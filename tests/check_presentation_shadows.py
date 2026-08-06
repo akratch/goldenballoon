@@ -34,7 +34,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import DEVICE_MARKERS, fatal_re, read_ppm, resolve_binary
+from harness_utils import (DEFAULT_BUILD_DIR, DEVICE_MARKERS, fatal_re,
+                           read_ppm, resolve_binary)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -426,7 +427,7 @@ def verify(production: Arm, control: Arm, hold: Arm) -> tuple[VisualMetrics, int
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", default="build-rel",
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR,
                         help="build directory or mdkr64 executable")
     parser.add_argument("--rom", required=True,
                         help="US Rev 1 ROM (us.v80)")
