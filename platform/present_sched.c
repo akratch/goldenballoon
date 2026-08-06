@@ -584,11 +584,318 @@ void present_perf_note_matrix_reject(uint64_t worst_lsb) {
     }
 }
 
+/* ---- pacing-quality census: interval and phase distributions ------------- *
+ *
+ * See present_sched.h for what the three series mean. The shape here is one
+ * reusable fixed-bin histogram: 1024 linear bins plus an explicit over-range
+ * tail, so no sample is ever silently dropped and the memory is the same
+ * whether a run presents a hundred frames or a million.
+ *
+ * 50 us bins cover 0..51.2 ms, which brackets every refresh period the pacer
+ * supports (MDKR_PRESENT_RATE_MIN..MAX) with room for the long half of a 50 Hz
+ * source beating against a 60 Hz display. Anything past that is a stall, and a
+ * stall's exact length is not a percentile question -- `over` and `max` carry
+ * it.
+ *
+ * 4096 ppm alpha bins cover just over FOUR ticks, not one. A displayed frame
+ * normally advances the phase by well under a tick, but a frame the renderer
+ * refused to admit, or a hitch, lands the next displayed frame several ticks
+ * later -- and those are precisely the samples a quality gate cares about, so
+ * the range has to hold them rather than push them into the over-range tail.
+ * The remaining resolution is 0.4% of a tick, still far finer than the
+ * half-tick and third-tick spacings the subloop actually produces. Genuine load
+ * stalls run to tens of ticks and stay in `over`/`max`, which is where a
+ * multi-second pause belongs: its exact length is not a percentile question.
+ */
+#define PRESENT_HIST_BINS 1024u
+#define PRESENT_INTERVAL_BIN_US 50u
+#define PRESENT_ALPHA_BIN_PPM 4096u
+#define PRESENT_ALPHA_SCALE UINT64_C(1000000)
+
+typedef struct PresentHist {
+    uint64_t bins[PRESENT_HIST_BINS];
+    uint64_t over;        /* samples at or beyond the top bin edge */
+    uint64_t n;
+    uint64_t sum;
+    uint64_t sum_sq;
+    uint64_t sq_overflow; /* samples too large to square into the accumulator */
+    uint64_t min;
+    uint64_t max;
+} PresentHist;
+
+static PresentHist s_hist_present;   /* us between present opportunities */
+static PresentHist s_hist_displayed; /* us between displayed frames */
+static PresentHist s_hist_alpha;     /* ppm of a tick between displayed frames */
+
+static void present_hist_add(PresentHist *hist, uint64_t value,
+                             unsigned width) {
+    const uint64_t bin = value / width;
+    if (bin < PRESENT_HIST_BINS) {
+        hist->bins[bin]++;
+    } else {
+        hist->over++;
+    }
+    if (hist->n == 0u || value < hist->min) {
+        hist->min = value;
+    }
+    if (value > hist->max) {
+        hist->max = value;
+    }
+    hist->n++;
+    hist->sum += value;
+    /* Variance is a diagnostic, not a budget, so a sample too large to square
+     * is counted and excluded rather than allowed to wrap the accumulator into
+     * a number that looks like a measurement. */
+    if (value <= (uint64_t)UINT32_MAX &&
+        hist->sum_sq <= UINT64_MAX - value * value) {
+        hist->sum_sq += value * value;
+    } else {
+        hist->sq_overflow++;
+    }
+}
+
+/*
+ * The UPPER edge of the bin holding the requested percentile, clamped to the
+ * observed maximum. Reporting the upper edge keeps the number an honest bound:
+ * "no worse than this", never a value the run did not reach.
+ */
+static uint64_t present_hist_percentile(const PresentHist *hist, unsigned pct,
+                                        unsigned width) {
+    uint64_t target;
+    uint64_t seen = 0u;
+    unsigned index;
+
+    if (hist->n == 0u) {
+        return 0u;
+    }
+    target = (hist->n * (uint64_t)pct + 99u) / 100u;
+    if (target == 0u) {
+        target = 1u;
+    }
+    for (index = 0u; index < PRESENT_HIST_BINS; index++) {
+        seen += hist->bins[index];
+        if (seen >= target) {
+            const uint64_t edge = (uint64_t)(index + 1u) * width;
+            return edge > hist->max ? hist->max : edge;
+        }
+    }
+    return hist->max; /* the percentile fell in the over-range tail */
+}
+
+static uint64_t present_hist_variance(const PresentHist *hist) {
+    uint64_t mean;
+    uint64_t mean_sq;
+
+    if (hist->n == 0u || hist->sq_overflow != 0u) {
+        return 0u;
+    }
+    mean = hist->sum / hist->n;
+    mean_sq = hist->sum_sq / hist->n;
+    return mean_sq > mean * mean ? mean_sq - mean * mean : 0u;
+}
+
+static void present_hist_report(const char *series, const PresentHist *hist,
+                                unsigned width, const char *unit,
+                                const char *arm) {
+    fprintf(stderr,
+            "[PRESENTPERF-HIST] series=%s arm=%s unit=%s n=%llu p50=%llu "
+            "p95=%llu p99=%llu min=%llu max=%llu mean=%llu var=%llu "
+            "over=%llu binwidth=%u sqoverflow=%llu\n",
+            series, arm, unit, (unsigned long long)hist->n,
+            (unsigned long long)present_hist_percentile(hist, 50u, width),
+            (unsigned long long)present_hist_percentile(hist, 95u, width),
+            (unsigned long long)present_hist_percentile(hist, 99u, width),
+            (unsigned long long)(hist->n != 0u ? hist->min : 0u),
+            (unsigned long long)hist->max,
+            (unsigned long long)(hist->n != 0u ? hist->sum / hist->n : 0u),
+            (unsigned long long)present_hist_variance(hist),
+            (unsigned long long)hist->over, width,
+            (unsigned long long)hist->sq_overflow);
+}
+
+static uint64_t s_hist_last_present_ns;
+static uint64_t s_hist_last_displayed_ns;
+static uint64_t s_hist_last_phase_ppm;
+static int      s_hist_phase_valid;
+static uint64_t s_hist_phase_regressions; /* (ticks, alpha) went backwards */
+static uint64_t s_hist_phase_stalls;      /* two displayed frames, same phase */
+static uint64_t s_hist_present_count;
+static uint64_t s_hist_displayed_count;
+
+void present_perf_note_present(bool displayed, uint64_t alpha_num,
+                               uint64_t alpha_den) {
+    uint64_t now;
+
+    if (!present_perf_enabled()) {
+        return;
+    }
+    now = present_perf_host_ns();
+    s_hist_present_count++;
+    /*
+     * Every present after the first contributes exactly one interval, so the
+     * sample count is the present count minus one and a gate can assert that
+     * identity rather than a range. Two presents landing on the same clock
+     * nanosecond therefore record a zero-length interval -- which is what
+     * happened -- instead of vanishing and making the census look like it
+     * dropped a present.
+     */
+    if (s_hist_last_present_ns != 0u) {
+        present_hist_add(&s_hist_present,
+                         now >= s_hist_last_present_ns
+                             ? (now - s_hist_last_present_ns) / 1000u : 0u,
+                         PRESENT_INTERVAL_BIN_US);
+    }
+    s_hist_last_present_ns = now;
+    if (!displayed) {
+        return;
+    }
+    s_hist_displayed_count++;
+    if (s_hist_last_displayed_ns != 0u) {
+        present_hist_add(&s_hist_displayed,
+                         now >= s_hist_last_displayed_ns
+                             ? (now - s_hist_last_displayed_ns) / 1000u : 0u,
+                         PRESENT_INTERVAL_BIN_US);
+    }
+    s_hist_last_displayed_ns = now;
+    {
+        /*
+         * The differenced quantity is the MONOTONE phase (whole authoritative
+         * ticks, plus the sub-tick alpha), not alpha alone. Alpha alone resets
+         * to zero at every tick boundary, so differencing it would report the
+         * smoothest possible cadence -- a run with smoothing off, which
+         * displays only tick endpoints and therefore sits at alpha 0 forever --
+         * as a series of zero-length advances. Against the phase, that same run
+         * correctly reports exactly one tick of advance per displayed frame.
+         */
+        uint64_t alpha_ppm = alpha_den != 0u
+            ? alpha_num * PRESENT_ALPHA_SCALE / alpha_den : 0u;
+        uint64_t phase;
+        if (alpha_ppm > PRESENT_ALPHA_SCALE) {
+            alpha_ppm = PRESENT_ALPHA_SCALE;
+        }
+        present_sched_lazy_init();
+        phase = host_frame_driver_clock_ticks(&s_driver) *
+                    PRESENT_ALPHA_SCALE + alpha_ppm;
+        if (s_hist_phase_valid) {
+            if (phase > s_hist_last_phase_ppm) {
+                present_hist_add(&s_hist_alpha,
+                                 phase - s_hist_last_phase_ppm,
+                                 PRESENT_ALPHA_BIN_PPM);
+            } else if (phase == s_hist_last_phase_ppm) {
+                /* Two displayed frames at an identical phase: the second one
+                 * showed the player nothing new. */
+                s_hist_phase_stalls++;
+                present_hist_add(&s_hist_alpha, 0u, PRESENT_ALPHA_BIN_PPM);
+            } else {
+                /* Cannot happen while the clock is monotone. Counted rather
+                 * than clamped silently so a gate can assert it stays zero. */
+                s_hist_phase_regressions++;
+            }
+        }
+        s_hist_last_phase_ppm = phase;
+        s_hist_phase_valid = 1;
+    }
+}
+
+/* ---- present-queue-depth latency proxy ---------------------------------- *
+ *
+ * The renderer keeps a frames-in-flight counter to enforce submission
+ * backpressure. Sampled AT each present, that counter is also the depth of the
+ * queue standing between a submitted frame and the glass: with a FIFO present
+ * mode, a frame admitted behind `depth` others cannot appear for `depth`
+ * refresh periods. Multiplying the sampled depth by the refresh period is
+ * therefore a direct estimate of presentation latency, and is the number that
+ * quantifies what moving to FIFO cost.
+ *
+ * Mean and max are both reported: the mean is the latency a player lives with,
+ * the max is the worst single frame.
+ */
+static uint64_t s_depth_samples;
+static uint64_t s_depth_sum;
+static unsigned s_depth_max;
+
+void present_perf_note_queue_depth(unsigned in_flight) {
+    if (!present_perf_enabled()) {
+        return;
+    }
+    s_depth_samples++;
+    s_depth_sum += in_flight;
+    if (in_flight > s_depth_max) {
+        s_depth_max = in_flight;
+    }
+}
+
+/*
+ * The arm label a gate groups baselines by. Policy and smoothing are the two
+ * axes M3 will change, and the pace mode is included because a synthetic run's
+ * wall intervals are the loop's own speed rather than a paced cadence -- the
+ * two must never be compared as if they were the same measurement.
+ */
+static const char *present_hist_arm(void) {
+    static char arm[64];
+    snprintf(arm, sizeof(arm), "%s/%s/%s",
+             present_sched_present_policy_name(),
+             present_sched_smoothing_enabled() ? "smoothing" : "nosmoothing",
+             platform_pace_is_synthetic() ? "synth" : "realtime");
+    return arm;
+}
+
+static void present_perf_pacing_summary(void) {
+    const char *arm = present_hist_arm();
+    const unsigned refresh = platform_present_display_rate();
+    /* Nanoseconds of one refresh; 0 when the host reports no refresh rate, in
+     * which case the latency estimate below is reported as unavailable rather
+     * than computed against a guess. */
+    const uint64_t period_ns = refresh != 0u
+        ? UINT64_C(1000000000) / refresh : 0u;
+    const uint64_t mean_milli = s_depth_samples != 0u
+        ? s_depth_sum * 1000u / s_depth_samples : 0u;
+
+    present_hist_report("present-interval", &s_hist_present,
+                        PRESENT_INTERVAL_BIN_US, "us", arm);
+    present_hist_report("displayed-interval", &s_hist_displayed,
+                        PRESENT_INTERVAL_BIN_US, "us", arm);
+    fprintf(stderr,
+            "[PRESENTPERF-HIST] series=alpha-delta arm=%s unit=ppm n=%llu "
+            "p50=%llu p95=%llu p99=%llu min=%llu max=%llu mean=%llu var=%llu "
+            "over=%llu binwidth=%u sqoverflow=%llu regressions=%llu "
+            "stalls=%llu presents=%llu displayed=%llu\n",
+            arm, (unsigned long long)s_hist_alpha.n,
+            (unsigned long long)present_hist_percentile(
+                &s_hist_alpha, 50u, PRESENT_ALPHA_BIN_PPM),
+            (unsigned long long)present_hist_percentile(
+                &s_hist_alpha, 95u, PRESENT_ALPHA_BIN_PPM),
+            (unsigned long long)present_hist_percentile(
+                &s_hist_alpha, 99u, PRESENT_ALPHA_BIN_PPM),
+            (unsigned long long)(s_hist_alpha.n != 0u ? s_hist_alpha.min : 0u),
+            (unsigned long long)s_hist_alpha.max,
+            (unsigned long long)(s_hist_alpha.n != 0u
+                                     ? s_hist_alpha.sum / s_hist_alpha.n : 0u),
+            (unsigned long long)present_hist_variance(&s_hist_alpha),
+            (unsigned long long)s_hist_alpha.over, PRESENT_ALPHA_BIN_PPM,
+            (unsigned long long)s_hist_alpha.sq_overflow,
+            (unsigned long long)s_hist_phase_regressions,
+            (unsigned long long)s_hist_phase_stalls,
+            (unsigned long long)s_hist_present_count,
+            (unsigned long long)s_hist_displayed_count);
+    fprintf(stderr,
+            "[PRESENTPERF-LATENCY] arm=%s samples=%llu meandepthmilli=%llu "
+            "maxdepth=%u refreshhz=%u periodus=%llu meanlatencyus=%llu "
+            "maxlatencyus=%llu\n",
+            arm, (unsigned long long)s_depth_samples, mean_milli, s_depth_max,
+            refresh, (unsigned long long)(period_ns / 1000u),
+            (unsigned long long)(period_ns != 0u
+                ? mean_milli * period_ns / (1000u * 1000u) : 0u),
+            (unsigned long long)(period_ns != 0u
+                ? (uint64_t)s_depth_max * period_ns / 1000u : 0u));
+}
+
 void present_perf_summary(void) {
     int index;
     if (!present_perf_enabled()) {
         return;
     }
+    present_perf_pacing_summary();
     fprintf(stderr, "[PRESENTREJECT] total=%llu worstlsb=%llu",
             (unsigned long long)s_reject_total,
             (unsigned long long)s_reject_worst);

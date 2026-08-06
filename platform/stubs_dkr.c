@@ -751,7 +751,8 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                 platform_frame_service();
             } else {
                 const uint64_t perf_present = present_perf_now();
-                if (!subloop || endpoint_drew) {
+                const bool tick_displayed = !subloop || endpoint_drew;
+                if (tick_displayed) {
                     platform_frame_sync();                  /* present this frame */
                 } else {
                     /* No graphics task completed for this opportunity. Hold
@@ -761,6 +762,10 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                     platform_frame_sync_no_swap();
                 }
                 present_perf_add(PRESENT_PERF_PRESENT, perf_present);
+                /* The tick's own image is the exact alpha-zero endpoint of the
+                 * tick that just became due, so the phase is that tick with no
+                 * sub-tick offset. */
+                present_perf_note_present(tick_displayed, 0u, 1u);
             }
             if (!oracle_variable_ticket && subloop && !catchup_ticket) {
                 /*
@@ -805,6 +810,10 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                         break;
                     }
                     bool drew = false;
+                    /* Hoisted only so the pacing-quality census can report the
+                     * phase this opportunity was actually drawn at. */
+                    uint64_t drawn_numerator = 0;
+                    uint64_t drawn_denominator = 1;
                     if (!present_sched_render_elided() && dl_fresh &&
                         present_sched_smoothing_enabled() &&
                         !test_delayed_endpoint_replay()) {
@@ -814,6 +823,8 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                         size_t count;
                         const uint64_t perf_interp = present_perf_now();
                         present_sched_alpha(&numerator, &denominator);
+                        drawn_numerator = numerator;
+                        drawn_denominator = denominator;
                         count = mdkr_camera_interpolated_view_projections(
                             numerator, denominator, views,
                             sizeof(views) / sizeof(views[0]));
@@ -856,7 +867,8 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                      */
                     {
                         const uint64_t perf_ipresent = present_perf_now();
-                        if (present_sched_render_elided()) {
+                        const bool elided = present_sched_render_elided();
+                        if (elided) {
                             platform_frame_service();
                         } else if (drew) {
                             platform_frame_sync();
@@ -864,6 +876,13 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                             platform_frame_sync_no_swap();
                         }
                         present_perf_add(PRESENT_PERF_IPRESENT, perf_ipresent);
+                        /* An elided opportunity serviced the frame without
+                         * presenting at all, so it is not a present and must
+                         * not enter the cadence series. */
+                        if (!elided) {
+                            present_perf_note_present(
+                                drew, drawn_numerator, drawn_denominator);
+                        }
                     }
                 }
                 /* wall_total is host-time telemetry only. Ticket width is

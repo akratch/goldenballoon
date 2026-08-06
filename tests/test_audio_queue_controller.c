@@ -200,6 +200,11 @@ static void test_coarse_refill_beat(void) {
            controller.stats.max_target_frames <= PAL_FRAME_SIZE * 3u);
     expect("a coarse beat is not misread as a stall",
            controller.stats.stall_guards == 0u);
+    /* The whole point of the adaptive target: the PAL-on-60Hz beat is exactly
+     * the cadence that used to crackle, and it must now report a clean sink.
+     * This is the counter the pacing-quality gate asserts is zero. */
+    expect("a covered coarse beat reports no underrun",
+           controller.stats.underruns == 0u);
 }
 
 static void test_even_refill_target_is_one_block(void) {
@@ -218,6 +223,10 @@ static void test_even_refill_target_is_one_block(void) {
            controller.stats.max_target_frames == FRAME_SIZE);
     expect("an even refill cadence records no excess gap",
            controller.stats.max_gap_frames == FRAME_SIZE);
+    expect("an even refill cadence never underruns",
+           controller.stats.underruns == 0u);
+    expect("a queue held at one block never brushes the floor",
+           controller.stats.floor_breaches == 0u);
 }
 
 static void test_stall_recovery(void) {
@@ -240,6 +249,14 @@ static void test_stall_recovery(void) {
            controller.stats.stall_guards == 1u);
     expect("empty queue observations are telemetry, not inferred underruns",
            controller.stats.empty_queue_observations == 2u);
+    /*
+     * Both calls saw an empty queue, but only the second is starvation: the
+     * first is the boot prime, where the sink is empty because nothing has ever
+     * been enqueued. Separating them is what makes underruns==0 assertable by a
+     * gate -- counting the prime would make every healthy run fail.
+     */
+    expect("the boot prime is not counted as an underrun",
+           controller.stats.underruns == 1u);
 }
 
 int main(void) {

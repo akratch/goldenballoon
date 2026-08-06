@@ -24,6 +24,26 @@ typedef struct MdkrAudioQueueControllerStats {
      * where the refill cadence is genuinely coarser than the block. */
     uint32_t max_gap_frames;
     uint32_t max_target_frames;
+    /*
+     * Starvation, split by severity so a gate can assert the hard case without
+     * being held hostage to the soft one.
+     *
+     * `underruns` is the sink observed fully drained AFTER it had been fed at
+     * least once -- the player heard silence or a click. The "after it had been
+     * fed" qualifier is what separates this from empty_queue_observations,
+     * which also counts the legitimate boot prime where the queue is empty
+     * because nothing has ever been enqueued. This is the one a gate asserts
+     * is zero.
+     *
+     * `floor_breaches` is the sink still holding PCM, but less of it than the
+     * drain the controller just measured across one refill gap -- i.e. it would
+     * not have survived another gap of the same length. A leading indicator,
+     * reported rather than gated: at steady state the queue legitimately sits
+     * near one gap's worth, so brushing the floor is normal and only a rising
+     * count means the cushion is being lost.
+     */
+    uint32_t underruns;
+    uint32_t floor_breaches;
 } MdkrAudioQueueControllerStats;
 
 typedef struct MdkrAudioQueueController {

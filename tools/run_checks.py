@@ -207,6 +207,10 @@ CHECKS = (
           "default-WebGPU intro identity"),
     Check("gpu_backpressure", "check_gpu_backpressure.py", "native",
           "live uncapped GL fences and bounded WebGPU queue completions"),
+    Check("pacing_quality", "check_pacing_quality.py", "native",
+          "displayed-interval, interpolation-phase and present-queue-latency "
+          "distributions across every policy/smoothing arm, plus a realtime "
+          "no-tearing/no-underrun smoke that reports the M3 quality baseline"),
     Check("surface_suspension", "check_surface_suspension.py", "native",
           "minimized GL/WebGPU render elision and resume rebase"),
     Check("final_shutdown", "check_final_shutdown.py", "native",
