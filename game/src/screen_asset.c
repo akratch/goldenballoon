@@ -19,6 +19,7 @@ Gfx gRdpSetModeScreenAsset[] = {
  * Loads a 320x240 RGBA16 image to be displayed on the screen.
  * Returns the address of the screen asset, or 0x80100000 if no screen assets were found.
  * Unused.
+ * Official Name: screenLoad
  */
 UNUSED u8 *screenimage_load(s32 screenIndex) {
     u8 *someAddr;
@@ -59,6 +60,7 @@ UNUSED u8 *screenimage_load(s32 screenIndex) {
 /**
  * Renders a 320x240 RGBA16 screen asset.
  * Unused.
+ * Official Name: screenDraw
  */
 UNUSED void screenimage_draw(Gfx **dList, u8 *screenAddress) {
     s32 y_pos;

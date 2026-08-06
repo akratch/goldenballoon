@@ -1451,7 +1451,7 @@ void viewport_main(Gfx **dlist, Mtx **mats) {
         viewport_rsp_set(dlist, 0, 0, 0, 0);
         gActiveCameraID = tempCameraID;
         if (mats != NULL) {
-            func_80067D3C(dlist, mats);
+            camSetProjMtx(dlist, mats);
         }
         gActiveCameraID = originalCameraID;
         return;
@@ -1588,7 +1588,7 @@ void viewport_main(Gfx **dlist, Mtx **mats) {
 #endif
     viewport_rsp_set(dlist, sp54_width, sp58_height, posX, posY);
     if (mats != NULL) {
-        func_80067D3C(dlist, mats);
+        camSetProjMtx(dlist, mats);
     }
     gActiveCameraID = originalCameraID;
 }
@@ -1687,13 +1687,13 @@ void viewport_scissor(Gfx **dList) {
 }
 
 #ifdef NATIVE_PORT
-/* Fidelity Phase 2b -- the pure half of func_80067D3C: everything that derives the
+/* Fidelity Phase 2b -- the pure half of camSetProjMtx: everything that derives the
  * view / inverse-view basis from the active camera, with no display-list emission,
  * so the fixed step can reconstruct the basis render will use later in the same
  * frame (obj_sort_tick needs gViewMatrixF, the visibility prepass needs
  * gInverseViewMatrixF for the cull planes).
  *
- * Split rather than shared with func_80067D3C below, following the waves_tick
+ * Split rather than shared with camSetProjMtx below, following the waves_tick
  * pattern: the #ifndef NATIVE_PORT arm keeps the original function body verbatim,
  * so the matching build is untouched. */
 static void mdkr_snapshot_authored_camera_record(s32 viewport,
@@ -1805,8 +1805,23 @@ void cam_build_view_basis(void) {
 }
 #endif
 
-// Official Name: camGetPlayerProjMtx / camSetProjMtx - ??
-void func_80067D3C(Gfx **dList, UNUSED Mtx **mtx) {
+/**
+ * Emits the perspective normalisation into the display list and rebuilds the
+ * active camera's view, view-projection and inverse-view matrices for this
+ * viewport. Called after mtx_perspective() has set up the projection itself.
+ *
+ * Official name: camSetProjMtx
+ *
+ * Upstream records this as `camGetPlayerProjMtx / camSetProjMtx - ??`, unable to
+ * tell which of the two official names belongs here. Resolved to camSetProjMtx:
+ * the function returns void, its `Mtx **` parameter is UNUSED, and it hands
+ * nothing back to the caller -- it only *writes* global matrix state and a
+ * display-list command, so it cannot be the "get" of a matrix. camera.c's
+ * getters that do return one (get_projection_matrix_s16/_f32, get_camera_matrix)
+ * still carry no official name, and this is the last unnamed function in the
+ * file, so camGetPlayerProjMtx most likely belongs to one of those.
+ */
+void camSetProjMtx(Gfx **dList, UNUSED Mtx **mtx) {
 #ifdef NATIVE_PORT
     const s32 viewport = gActiveCameraID;
     const s32 cameraId =

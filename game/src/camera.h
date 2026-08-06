@@ -140,7 +140,7 @@ s8 check_if_showing_cutscene_camera(void);
 s32 cam_set_layout(s32 layoutID);
 void set_active_camera(s32 num);
 #ifdef NATIVE_PORT
-/* Fidelity Phase 2b: the pure (display-list-free) half of func_80067D3C -- the
+/* Fidelity Phase 2b: the pure (display-list-free) half of camSetProjMtx -- the
  * view / inverse-view basis, so the fixed step can reconstruct the basis render
  * will use later in the same frame. */
 void cam_build_view_basis(void);
@@ -212,7 +212,7 @@ MtxF *get_camera_matrix(void);
 f32 get_distance_to_camera(f32 x, f32 y, f32 z);
 void set_camera_shake_by_distance(f32 x, f32 y, f32 z, f32 dist, f32 magnitude);
 void set_camera_shake(f32 magnitude);
-void func_80067D3C(Gfx **dList, Mtx **mats);
+void camSetProjMtx(Gfx **dList, Mtx **mats);
 void render_ortho_triangle_image(Gfx **dList, Mtx **mtx, Vertex **vtx, ObjectSegment *segment, Sprite *sprite, s32 flags);
 s32 render_sprite_billboard(Gfx **dList, Mtx **mtx, Vertex **vtx, Object *obj, Sprite *sprite, s32 flags);
 #ifdef NATIVE_PORT
