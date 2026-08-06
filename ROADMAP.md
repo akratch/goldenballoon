@@ -177,7 +177,6 @@ physical-platform and DAC acceptance, not a disabled product feature.
 
 ### Shadow and visual leftovers
 
-- A dead `SunShadowRes` control and a misleading GL message (small, worth doing).
 - A placement-sensitive shadow gate that has produced false results twice
   (medium, worth doing).
 - One-frame caster lag and a decal/map inconsistency — both **accepted**, no
@@ -205,10 +204,10 @@ hybrid-GPU, Windows on Arm, and negative VM/RDP configurations.
 
 Best-effort. GL and WebGPU both build and the CI matrix includes ROM-free Linux
 cells, but physical-GPU runs, Wayland (as opposed to X11), and controller
-hotplug/rumble breadth are all unmeasured. The Wayland/Win32 surface-bridge work
-is tracked as F-03; see
-[`docs/open-items/web.md`](docs/open-items/web.md) and
-[`docs/open-items/renderer.md`](docs/open-items/renderer.md).
+hotplug/rumble breadth are all unmeasured. This is platform-acceptance breadth
+— it needs physical machines, not a source fix — and has no mechanism or
+measurement of its own to record, so unlike the numbered audit items above it
+does not have a matching entry in [`docs/open-items/`](docs/open-items/README.md).
 
 ### Native app shell — shipped
 
@@ -267,6 +266,14 @@ cheapest first:
    passes the current fixtures is not evidence; it is precisely this project's
    silent failure class. Adding a bounds check to the sub-entry accessors is
    cheaper than auditing every index and turns a silent read into a loud abort.
+   **Deliberately deferred:** the gap is not reachable today. Unsupported
+   revisions are classified from their header CRC pair and refused by name
+   before engine boot (`platform/rom_id.c:265-302,332-342`), the refusal
+   message cites this exact gap as its reason, and no override path exists for
+   that verdict — `MDKR_ROM_ALLOW_MODIFIED` only covers a damaged dump of an
+   already-supported revision. Adding the check is genuinely cheap and is the
+   correct first step whenever the supported set expands; today it is defense
+   in depth behind a gate that already fail-closes, not a live hazard.
 2. **Build the Japanese release as a separate binary.** It needs `REGION_JP`:
    font handling, game text and EEPROM layout all change, and this build compiles
    `REGION_NA`. A second build directory with a per-version asset-offset default
@@ -289,11 +296,23 @@ unsupported revisions.
   protection depends on it. Until then, every claim in this repository rests on
   local runs.
 - **Mode-coverage stragglers.** Ghost save and load are gated for one
-  (track, vehicle) pair rather than across the set. Magic-code entry is now
+  (track, vehicle) pair rather than across the set — see
+  [`docs/open-items/gameplay.md`](docs/open-items/gameplay.md#open-ghost-coverage-is-one-track-vehicle-pair-of-47)
+  for the mechanism and why it matters (this exact path already shipped a
+  silent stack overflow once). Magic-code entry is now
   covered — `nav_to_magic_codes` submits valid `ARNOLD` and invalid `ARNOLE`
   through the onscreen keyboard, and `check_taj_p2_adventure.py` enters retail
   `JOINTVENTURE` and races the two-player Adventure it unlocks — but only for
-  those codes, not across the code set.
+  those codes, not across the code set. **Deliberately deferred:** onscreen-keyboard
+  entry is proven end to end for an accepted code, a rejected near-miss that
+  differs by one character, and the retail code that unlocks two-player
+  Adventure — covering the accept path, the reject path, and the
+  highest-traffic unlock. The remaining codes share one decrypt, normalize,
+  validate and apply path, and that path's actual failure mode was an
+  endianness defect in the shared table decode (see
+  [`docs/open-items/portability.md`](docs/open-items/portability.md#fixed-tagged-macos-artifact-exposed-a-stale-magic-code-endian-failure)),
+  which any single code exercises. Sweeping the full set would multiply
+  route time without reaching new code.
 - **Collision-candidate headroom is a watch metric, not an action item.** Boss
   levels 41 and 54 peak at 416 of 500 candidates. The cap can no longer be
   stepped over, and the 84-slot margin is unchanged; it is recorded so that a
