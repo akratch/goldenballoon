@@ -138,10 +138,14 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "Frame limit",
         "original presents each authored image once. display follows the "
         "monitor, a number sets a native cap, and uncapped removes the native "
-        "software cap (the browser maps it to display). Pair a rate above "
-        "original with Motion smoothing = Interpolated for unique in-between "
-        "images. Gameplay remains on its fixed original cadence. Requires a "
-        "restart because the host pacer resolves this value once at startup.",
+        "software cap (the browser maps it to display). Rates above your "
+        "display's refresh need a display connection that can drop an image it "
+        "has not shown yet; where the system does not offer one, they present "
+        "at your display's refresh instead, unless Allow tearing is on. Pair a "
+        "rate above original with Motion smoothing = Interpolated for unique "
+        "in-between images. Gameplay remains on its fixed original cadence. "
+        "Requires a restart because the host pacer resolves this value once at "
+        "startup.",
         MDKR_VIDEO_CAT_PACING
     },
     /*
@@ -355,11 +359,8 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         MDKR_VIDEO_CAT_PRESENTATION
     },
     /*
-     * Off by default, and the default is the whole point: every frame limit now
-     * hands the backend a vblank-synchronized queue, so no rate a player picks
-     * can put a torn image on screen by itself. This is the one control that
-     * takes that guarantee back, in exchange for the shortest possible path
-     * from a finished frame to the panel.
+     * Off by default: every frame limit hands the backend a vblank-synchronized
+     * queue, and this is the only control that gives that up for latency.
      *
      * SCOPE_RESTART for the same reason as the two pacing keys above rather
      * than by inheritance: the swapchain's present mode is fixed at surface
@@ -370,12 +371,11 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "Video.AllowTearing", "MDKR_ALLOW_TEARING",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
         "Allow tearing (lowest latency)",
-        "Shows each finished frame the instant it is ready instead of waiting "
-        "for the display to refresh. That removes a fraction of a frame of "
-        "input delay and can split the picture horizontally while the image is "
-        "moving. Leave this off unless you are chasing latency and prefer the "
-        "seam. Requires a restart because the display connection is set up "
-        "once at launch.",
+        "Shows finished frames without waiting for the display, where the "
+        "system allows it. That is the lowest input delay, and the picture may "
+        "show a seam across it while things are moving. Leave this off unless "
+        "you are chasing latency and prefer the seam. Requires a restart "
+        "because the display connection is set up once at launch.",
         MDKR_VIDEO_CAT_PACING
     },
 };
@@ -568,8 +568,7 @@ static const char *const s_preset_text[MDKR_VIDEO_KEY_COUNT][3] = {
      */
     [MDKR_VIDEO_CAMERA_OBSTRUCTION] = { NULL, NULL, NULL },
     /* Never pinned, for the FrameLimit reason: a latency preference is not an
-     * art direction, and no preset a player picks may put a seam across the
-     * picture — or take one away they asked for — behind them. */
+     * art direction. */
     [MDKR_VIDEO_ALLOW_TEARING] = { NULL, NULL, NULL },
 };
 

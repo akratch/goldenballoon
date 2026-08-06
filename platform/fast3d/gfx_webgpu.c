@@ -1187,9 +1187,11 @@ static WGPUCompositeAlphaMode wgpu_choose_alpha_mode(void) {
  * GE007_WEBGPU_PRESENT remains the diagnostic override and still wins over the
  * policy:
  *     fifo | mailbox | immediate
- * The requested mode is selected ONLY when the surface capabilities advertise it;
- * otherwise it falls back to FIFO with one stderr note. The requested policy is
- * process-constant, but support is resolved per active surface generation.
+ * It names a mode instead of a policy, but goes through the same capability
+ * query and the same ranking, so a mode the surface does not advertise falls
+ * back to FIFO with one stderr note rather than failing wgpuSurfaceConfigure.
+ * The requested mode is process-constant; support is resolved per active
+ * surface generation.
  *
  * Web: the browser present is rAF-driven (emdawnwebgpu no-ops the present, see
  * gfx_webgpu_compat.h), so present mode is a native concern; the knob is harmless
@@ -1201,9 +1203,13 @@ static bool wgpu_present_support(GfxWebgpuPresentSupport *out) {
 
     out->mailbox = false;
     out->immediate = false;
+    /* Nothing was queried on these paths, so there are no members to free —
+     * handing the zero-initialised struct to the freer is not its contract. */
     if (s_surface == NULL || s_adapter == NULL ||
-        gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_CAPS_PRESENT) ||
-        wgpuSurfaceGetCapabilities(s_surface, s_adapter, &caps) !=
+        gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_CAPS_PRESENT)) {
+        return false;
+    }
+    if (wgpuSurfaceGetCapabilities(s_surface, s_adapter, &caps) !=
             WGPUStatus_Success) {
         wgpuSurfaceCapabilitiesFreeMembers(caps);
         return false;
@@ -1232,15 +1238,20 @@ static WGPUPresentMode wgpu_choose_present_mode(void) {
     WGPUPresentMode mode = WGPUPresentMode_Fifo;
     const char *want = getenv("GE007_WEBGPU_PRESENT");
     const bool diagnostic_override = want != NULL && want[0] != '\0';
+    GfxWebgpuPresentMode overrideRequested;
+    GfxWebgpuPresentMode overrideEffective;
+    GfxWebgpuPresentSupport advertised;
+    bool caps_known;
 #ifdef __EMSCRIPTEN__
     if (!diagnostic_override) {
         /* Browser canvas presentation is owned by rAF/the user agent. Numeric
          * caps skip rAF opportunities in the host clock; they do not request a
-         * native immediate swapchain the browser cannot expose. */
+         * native immediate swapchain the browser cannot expose, so nothing
+         * here can tear. */
         fprintf(stderr,
                 "[PRESENT-MODE] backend=webgpu platform=web requestedPolicy=%s "
-                "effectivePolicy=%s rate=%u requested=fifo effective=fifo "
-                "supported=1 reason=raf-ceiling\n",
+                "effectivePolicy=%s rate=%u tearing=0 requested=fifo "
+                "effective=fifo supported=1 reason=raf-ceiling\n",
                 present_sched_present_requested_policy_name(),
                 present_sched_present_policy_name(),
                 present_sched_present_rate());
@@ -1253,10 +1264,9 @@ static WGPUPresentMode wgpu_choose_present_mode(void) {
         const bool tearing = present_sched_allow_tearing();
         const GfxWebgpuPresentMode requested =
             gfx_webgpu_surface_request_present(sync, tearing);
-        GfxWebgpuPresentSupport advertised;
         GfxWebgpuPresentMode effective;
-        const bool caps_known = wgpu_present_support(&advertised);
 
+        caps_known = wgpu_present_support(&advertised);
         effective = gfx_webgpu_surface_rank_present(sync, tearing, advertised);
         fprintf(stderr,
                 "[PRESENT-MODE] backend=webgpu policy=%s rate=%u "
@@ -1274,62 +1284,37 @@ static WGPUPresentMode wgpu_choose_present_mode(void) {
         return wgpu_present_mode_for(effective);
     }
     if (strcmp(want, "fifo") == 0) {
-        fprintf(stderr,
-                "[PRESENT-MODE] backend=webgpu policy=%s rate=%u "
-                "requested=fifo effective=fifo supported=1 override=%d\n",
-                present_sched_present_policy_name(),
-                present_sched_present_rate(), diagnostic_override ? 1 : 0);
-        return mode;
-    }
-    WGPUPresentMode requested;
-    if (strcmp(want, "mailbox") == 0) {
-        requested = WGPUPresentMode_Mailbox;
+        overrideRequested = GFX_WEBGPU_PRESENT_FIFO;
+    } else if (strcmp(want, "mailbox") == 0) {
+        overrideRequested = GFX_WEBGPU_PRESENT_MAILBOX;
     } else if (strcmp(want, "immediate") == 0) {
-        requested = WGPUPresentMode_Immediate;
+        overrideRequested = GFX_WEBGPU_PRESENT_IMMEDIATE;
     } else {
         fprintf(stderr, "[webgpu] GE007_WEBGPU_PRESENT='%s' unrecognized "
                         "(fifo|mailbox|immediate); using fifo\n", want);
         return mode;
     }
-    /* Select only if the surface advertises it — a non-advertised presentMode is a
-     * wgpuSurfaceConfigure validation error. Caps unavailable ⇒ keep FIFO. */
-    if (s_surface == NULL || s_adapter == NULL) {
-        return mode;
-    }
-    WGPUSurfaceCapabilities caps = {0};
-    bool advertised = false;
-    if (!gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_CAPS_PRESENT) &&
-        wgpuSurfaceGetCapabilities(s_surface, s_adapter, &caps) ==
-            WGPUStatus_Success) {
-        for (size_t i = 0; i < caps.presentModeCount; ++i) {
-            if (caps.presentModes[i] == requested) {
-                advertised = true;
-                break;
-            }
-        }
-        mode = (WGPUPresentMode)gfx_webgpu_surface_select_present(
-            (uint32_t)WGPUPresentMode_Fifo,
-            (uint32_t)requested,
-            advertised);
-    }
-    wgpuSurfaceCapabilitiesFreeMembers(caps);
-    if (advertised) {
-        fprintf(stderr,
-                "[PRESENT-MODE] backend=webgpu policy=%s rate=%u "
-                "requested=%s effective=%s supported=1 override=%d\n",
-                present_sched_present_policy_name(),
-                present_sched_present_rate(), want, want,
-                diagnostic_override ? 1 : 0);
-    } else {
-        fprintf(stderr,
-                "[PRESENT-MODE] backend=webgpu policy=%s rate=%u "
-                "requested=%s effective=fifo supported=0 override=%d "
-                "reason=capability-fallback using fifo\n",
-                present_sched_present_policy_name(),
-                present_sched_present_rate(), want,
-                diagnostic_override ? 1 : 0);
-    }
-    return mode;
+    /* Same capability query and same ranking as the policy path — a
+     * non-advertised presentMode is a wgpuSurfaceConfigure validation error,
+     * so caps unavailable keeps FIFO. */
+    caps_known = wgpu_present_support(&advertised);
+    overrideEffective =
+        gfx_webgpu_surface_rank_override(overrideRequested, advertised);
+    fprintf(stderr,
+            "[PRESENT-MODE] backend=webgpu policy=%s rate=%u "
+            "displayHz=%u tearing=%d requested=%s effective=%s "
+            "supported=%d override=1%s\n",
+            present_sched_present_policy_name(),
+            present_sched_present_rate(),
+            platform_present_display_rate(),
+            overrideEffective == GFX_WEBGPU_PRESENT_IMMEDIATE ? 1 : 0,
+            gfx_webgpu_surface_present_name(overrideRequested),
+            gfx_webgpu_surface_present_name(overrideEffective),
+            overrideRequested == overrideEffective ? 1 : 0,
+            overrideRequested == overrideEffective ? ""
+                : (caps_known ? " reason=capability-fallback"
+                              : " reason=capabilities-unavailable"));
+    return wgpu_present_mode_for(overrideEffective);
 }
 
 /* Whether an 8-bit color target stores B,G,R,A (vs R,G,B,A) — so the readback

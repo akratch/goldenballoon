@@ -797,6 +797,11 @@ static void hud_render_taj_identity(const Object_Racer *racer) {
  * Rankings at the authored portrait anchor. This remains presentation-only. */
 static void hud_render_identity_portrait(HudElement *portrait, s32 character,
                                          s32 isTaj, s32 playerIndex) {
+    /* Private draw list: the array menu_taj_portrait() returns is the shared
+     * one Rankings and the results pages draw from, so its offsets are not
+     * ours to write. Only the texture pointer is borrowed; element[1] stays
+     * the NULL terminator both texrect scans stop on. */
+    static DrawTexture sHudTajPortrait[2];
     static u32 tracedPlayers;
     static u32 tracedEpoch;
     u32 playerBit;
@@ -813,24 +818,23 @@ static void hud_render_identity_portrait(HudElement *portrait, s32 character,
     }
     tajPortrait = menu_taj_portrait();
     if (tajPortrait != NULL && tajPortrait[0].texture != NULL) {
-        /* hud_element_render() applies portrait->scale (e.g. 0.76 for the
-         * challenge/egg-challenge HUD anchor, 1.0 for the two-player Adventure
-         * hub icon) to every retail character's portrait drawn at this same
-         * anchor. Taj's synthesized native card bypassed that scale entirely
-         * by drawing through the unscaled texrect_draw(), so it always
-         * rendered at its raw native pixel size no matter which anchor asked
-         * for it -- oversized relative to every other racer's portrait
-         * wherever the authored scale is below 1.0. Route it through
-         * texrect_draw_scaled() with the same scale instead. The offset is
-         * expressed in pre-scale texel units and gets multiplied by the same
-         * scale internally, so keeping it at -(size / 2) leaves the drawn
-         * box centred on the same point it always was -- only its size now
-         * tracks the anchor's authored scale like everyone else's. */
-        tajPortrait[0].xOffset = -(s16)(tajPortrait[0].texture->width / 2);
-        tajPortrait[0].yOffset = -(s16)(tajPortrait[0].texture->height / 2);
-        texrect_draw_scaled(&gHudDL, tajPortrait, portrait->pos.x, portrait->pos.y,
-                            portrait->scale, portrait->scale,
-                            COLOUR_RGBA32(255, 255, 255, 255), TEXRECT_POINT);
+        /* The same conventions hud_element_render() gives every retail
+         * portrait at this anchor: pos is the top-left corner, the anchor's
+         * authored scale applies to this draw, the HUD slide/bounce and fade
+         * colour apply, and PAL stretches vertically. */
+        f32 yScale = portrait->scale;
+
+        if (gHudPALScale && osTvType == OS_TV_TYPE_PAL) {
+            yScale = portrait->scale * 1.1f;
+        }
+        sHudTajPortrait[0].texture = tajPortrait[0].texture;
+        sHudTajPortrait[0].xOffset = 0;
+        sHudTajPortrait[0].yOffset = 0;
+        sHudTajPortrait[1].texture = NULL;
+        texrect_draw_scaled(&gHudDL, sHudTajPortrait,
+                            portrait->pos.x + gHudOffsetX + gHudBounceX,
+                            portrait->pos.y, portrait->scale, yScale,
+                            gHudColour, TEXRECT_POINT);
     }
     playerBit = taj_mod_player_bit(playerIndex);
     if (playerBit != 0 && !(tracedPlayers & playerBit)) {

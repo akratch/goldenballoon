@@ -373,7 +373,8 @@ def validate_present_mode(backend: Backend, requested: str,
         # unreachable without the opt-in ruled out above.
         fields = parse_fields(details)
         display_hz = fields.get("displayHz", 0)
-        above_display = requested == "uncapped" or 0 < display_hz < 240
+        above_display = (requested == "uncapped" or
+                         (display_hz and int(requested) > display_hz))
         want = "mailbox" if above_display else "fifo"
         if f"requested={want}" not in details:
             raise RuntimeError(

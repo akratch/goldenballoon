@@ -107,7 +107,7 @@ def main() -> int:
         "resolved_cameras",
         "camera_obstruction_presentation_begin",
         "camera_obstruction_camera_for_slot",
-        "target_hidden=%d target_embedded=%d emergency=%d",
+        "target_hidden=%d target_embedded=%d depenetrate_only=%d emergency=%d",
         "status == MDKR_CAMERA_TARGET_VISIBILITY_EMBEDDED;",
         "target_status == MDKR_CAMERA_TARGET_VISIBILITY_INVALID",
         "camera_obstruction_publish_elevated_emergency",

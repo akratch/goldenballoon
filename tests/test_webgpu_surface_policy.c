@@ -7,8 +7,6 @@
 enum {
     TEST_ALPHA_AUTO = 1,
     TEST_ALPHA_OPAQUE = 2,
-    TEST_PRESENT_FIFO = 10,
-    TEST_PRESENT_IMMEDIATE = 11,
 };
 
 static int require_true(bool condition, const char *message) {
@@ -22,9 +20,8 @@ static int require_true(bool condition, const char *message) {
 /*
  * The whole latched-policy matrix, from the value a player picks to the mode
  * the surface is configured with, against every combination of advertised
- * capabilities. The property under test is the one the tearing defect violated:
- * no policy, and no capability set, reaches Immediate without the explicit
- * opt-in.
+ * capabilities. The property: no policy and no capability set reaches
+ * Immediate without the explicit opt-in.
  */
 static const struct PresentCase {
     const char *name;
@@ -117,6 +114,58 @@ static int check_matrix(void) {
     return failures;
 }
 
+/*
+ * GE007_WEBGPU_PRESENT names a mode rather than a policy, so it is ranked
+ * against the same capabilities: an advertised mode is honoured, and an
+ * unadvertised one falls back to FIFO rather than being configured and
+ * rejected. Support is resolved per capability generation.
+ */
+static const struct OverrideCase {
+    const char *name;
+    GfxWebgpuPresentMode requested;
+    bool mailbox;
+    bool immediate;
+    GfxWebgpuPresentMode expected;
+} kOverrideCases[] = {
+    { "fifo is always available",
+      GFX_WEBGPU_PRESENT_FIFO,      false, false, GFX_WEBGPU_PRESENT_FIFO },
+    { "generation A advertises mailbox",
+      GFX_WEBGPU_PRESENT_MAILBOX,   true,  true,  GFX_WEBGPU_PRESENT_MAILBOX },
+    { "generation B withdraws mailbox",
+      GFX_WEBGPU_PRESENT_MAILBOX,   false, true,  GFX_WEBGPU_PRESENT_FIFO },
+    { "generation A advertises immediate",
+      GFX_WEBGPU_PRESENT_IMMEDIATE, true,  true,  GFX_WEBGPU_PRESENT_IMMEDIATE },
+    { "generation B withdraws immediate",
+      GFX_WEBGPU_PRESENT_IMMEDIATE, true,  false, GFX_WEBGPU_PRESENT_FIFO },
+    { "nothing advertised fails closed to FIFO",
+      GFX_WEBGPU_PRESENT_IMMEDIATE, false, false, GFX_WEBGPU_PRESENT_FIFO },
+};
+
+static int check_override(void) {
+    int failures = 0;
+    size_t i;
+
+    for (i = 0; i < sizeof(kOverrideCases) / sizeof(kOverrideCases[0]); ++i) {
+        const struct OverrideCase *c = &kOverrideCases[i];
+        const GfxWebgpuPresentSupport advertised = { c->mailbox, c->immediate };
+        const GfxWebgpuPresentMode chosen =
+            gfx_webgpu_surface_rank_override(c->requested, advertised);
+
+        if (chosen != c->expected) {
+            fprintf(stderr, "FAIL: override %s selected %s, expected %s\n",
+                    c->name, gfx_webgpu_surface_present_name(chosen),
+                    gfx_webgpu_surface_present_name(c->expected));
+            failures++;
+        }
+        if (c->requested != GFX_WEBGPU_PRESENT_IMMEDIATE &&
+            chosen == GFX_WEBGPU_PRESENT_IMMEDIATE) {
+            fprintf(stderr, "FAIL: override %s tore without asking\n", c->name);
+            failures++;
+        }
+    }
+    return failures;
+}
+
 int main(void) {
     int failures = 0;
 
@@ -126,12 +175,6 @@ int main(void) {
             TEST_ALPHA_OPAQUE,
             true) == TEST_ALPHA_OPAQUE,
         "generation A should select advertised opaque alpha");
-    failures += require_true(
-        gfx_webgpu_surface_select_present(
-            TEST_PRESENT_FIFO,
-            TEST_PRESENT_IMMEDIATE,
-            true) == TEST_PRESENT_IMMEDIATE,
-        "generation A should select advertised immediate presentation");
 
     /* Generation B deliberately narrows its capabilities. No state from the
      * prior generation may survive this second resolution. */
@@ -141,20 +184,9 @@ int main(void) {
             TEST_ALPHA_OPAQUE,
             false) == TEST_ALPHA_AUTO,
         "generation B should fall back to automatic alpha");
-    failures += require_true(
-        gfx_webgpu_surface_select_present(
-            TEST_PRESENT_FIFO,
-            TEST_PRESENT_IMMEDIATE,
-            false) == TEST_PRESENT_FIFO,
-        "generation B should fall back to FIFO presentation");
-    failures += require_true(
-        gfx_webgpu_surface_select_present(
-            TEST_PRESENT_FIFO,
-            TEST_PRESENT_IMMEDIATE,
-            false) == TEST_PRESENT_FIFO,
-        "unavailable capabilities should fail closed to FIFO");
 
     failures += check_matrix();
+    failures += check_override();
 
     if (failures != 0) {
         return 1;

@@ -121,6 +121,9 @@ def inspect(scenario: Scenario, output: str) -> list[str]:
     max_embedded_run = 0
     hidden_run = 0
     max_hidden_run = 0
+    hidden_rows = 0
+    follow_hidden = 0
+    follow_hidden_sample = ""
     for _, row in summaries:
         corrected += field(row, "corrected")
         if field(row, "target_embedded") > 0:
@@ -128,13 +131,18 @@ def inspect(scenario: Scenario, output: str) -> list[str]:
             max_embedded_run = max(max_embedded_run, embedded_run)
         else:
             embedded_run = 0
-        # Fixed door cameras are depenetrate-only (never fanning to an
-        # alternate shot to keep the subject visible, so as to not swing off
-        # the door they present) and may legitimately lose the racer behind
-        # a door frame for a bounded stretch; that is a target_hidden run,
-        # not a resolver defect. Follow cameras still fan to keep the target
-        # visible, so a long run remains a real regression.
-        if field(row, "target_hidden") > 0:
+        # Follow cameras fan to an alternate shot to keep the target visible,
+        # so a hidden target on a tick where every selected camera is a follow
+        # camera is a resolver defect. Fixed door cameras are depenetrate-only
+        # -- they never swing off the door they present -- and may lose the
+        # racer behind a door frame for a bounded stretch; those ticks are
+        # held to a run bound and an overall budget instead.
+        hidden = field(row, "target_hidden")
+        if hidden > 0 and field(row, "depenetrate_only") == 0:
+            follow_hidden += 1
+            follow_hidden_sample = follow_hidden_sample or row[:300]
+        if hidden > 0:
+            hidden_rows += 1
             hidden_run += 1
             max_hidden_run = max(max_hidden_run, hidden_run)
         else:
@@ -155,9 +163,20 @@ def inspect(scenario: Scenario, output: str) -> list[str]:
         failures.append(
             f"{scenario.name}: target remained embedded for {max_embedded_run} ticks"
         )
-    if max_hidden_run > 120:
+    if follow_hidden:
+        failures.append(
+            f"{scenario.name}: target hidden on {follow_hidden} tick(s) with "
+            f"every selected camera free to fan: {follow_hidden_sample}"
+        )
+    # A depenetrate-only shot may lose the racer briefly; 45 ticks is 1.5s.
+    if max_hidden_run > 45:
         failures.append(
             f"{scenario.name}: target remained hidden for {max_hidden_run} ticks"
+        )
+    if hidden_rows * 20 > len(summaries):
+        failures.append(
+            f"{scenario.name}: target hidden on {hidden_rows} of "
+            f"{len(summaries)} camera ticks, above the 1-in-20 budget"
         )
     if scenario.name == "adventure-postrace":
         active_transition_rows = sum(

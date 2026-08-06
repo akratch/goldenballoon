@@ -8,6 +8,49 @@ From 1.0.0 onward this project follows semantic versioning for the platform
 layer's public seams (config keys, environment variables, command-line flags and
 save formats). Everything below 1.0.0 predates that commitment.
 
+## [Unreleased]
+
+### Added
+
+- **Allow Tearing**, in Frame Rate & Motion. It shows finished frames without
+  waiting for the display, where the system allows it. That is the lowest input
+  delay, and the picture may show a seam across it while things are moving. It
+  is off by default, no presentation mode turns it on or off for you, and it
+  takes effect after a restart because the display connection is set up once at
+  launch.
+
+### Fixed
+
+#### Gameplay and presentation
+
+- **Menus no longer come up stretched after a visit to Track Select** (#16,
+  #18). Track Select shows the live world through a wooden frame, and narrows
+  the shape of that world view to fit it. Leaving Track Select by most routes
+  left the narrower shape behind, so the next screen — character select, and
+  then the race started from it — drew a 4:3 picture stretched across the whole
+  window. Every screen now starts from its own shape, and the screens that show
+  the world behind a frame still set theirs.
+- **Taj has his own portrait in the collection challenges** (#17). Taj rides on
+  another racer's slot underneath, so the giant portrait on the wall in the Fire
+  Mountain and Smokey Castle challenges showed Diddy's face for a Taj player. It
+  shows Taj now, matching his scoreboard and results portraits. His in-race
+  portrait also sits at the size and place every other racer's does, and slides
+  in and fades with the rest of the HUD.
+- **A frame limit no longer tears the picture.** Any Frame Limit above Original
+  — including caps below your display's refresh — could put an unfinished image
+  on screens that allow it, which showed as a horizontal seam across the
+  picture. It was only visible on some systems, which is why it went unreported
+  for so long. Frame limits now stay on the display's refresh. Rates above your
+  display's refresh need a display connection that can drop an image it has not
+  shown yet; where the system does not offer one, they present at your display's
+  refresh instead. Allow Tearing above is the one setting that gives that up on
+  purpose.
+- **The door camera in the adventure hubs keeps the door in shot.** With Camera
+  obstruction set to Modern, the camera that watches you drive into a door could
+  swing a long way off the door to keep you in view, which is not the shot it
+  was written to show. It now moves only far enough to stay out of walls and
+  keeps facing the door.
+
 ## [1.0.5] — 2026-08-06
 
 No ROM or other game data is included. Recommended settings are unchanged from

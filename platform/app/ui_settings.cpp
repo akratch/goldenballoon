@@ -263,8 +263,11 @@ constexpr const char *kFrameLimitHelp =
     "Original presents each authored image once. Higher rates repeat authored "
     "images when smoothing is Off, or create in-between images when it is "
     "Interpolated. Gameplay speed does not change. Higher rates can use more "
-    "CPU and GPU time. Uncapped removes the native limit only when new "
-    "interpolated images are available; held frames stay display-paced. A "
+    "CPU and GPU time. Rates above your display's refresh need a display "
+    "connection that can drop an image it has not shown yet. Where the system "
+    "does not offer one, they present at your display's refresh instead, "
+    "unless Allow Tearing is on. Uncapped removes the native limit only when "
+    "new interpolated images are available; held frames stay display-paced. A "
     "browser always maps Uncapped to Match Display.";
 
 const Option kCadence[] = {
@@ -287,8 +290,6 @@ const Option kMotionSmoothing[] = {
     {"interpolate", "Interpolated (preview)"},
     {"off",         "Off (original motion)"},
 };
-// "0"/"1" resolve through mdkr_video_allow_tearing_canonical() for the
-// diagnostic seam; a player picks between two states, so the combo offers two.
 const Option kAllowTearing[] = {
     {"off", "Off (tear-free)"},
     {"on",  "On (lowest latency)"},
@@ -1056,8 +1057,9 @@ bool Settings_draw(SDL_Window *window, bool compact) {
                 ui::Gap(ui::kGapS);
                 ui::TextSubtleWrapped(
                     "Frame Limit controls how often the app presents an image. "
-                    "Motion smoothing can create unique in-between images. Neither "
-                    "setting makes gameplay run faster.");
+                    "Motion smoothing can create unique in-between images. "
+                    "Allow Tearing shows a finished frame without waiting for "
+                    "the display. None of these make gameplay run faster.");
             }
             ui::Gap(ui::kGapS);
             ImGui::Indent(ui::kGapM);
