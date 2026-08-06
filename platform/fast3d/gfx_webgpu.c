@@ -3655,6 +3655,13 @@ static void wgpu_end_frame(void) {
         WGPU_COMPAT_PRESENT(s_surface);
         s_gpu_surface_presents++;
         g_surfaceFrameCounter++;
+        /* Queue-depth latency proxy: the admission counter this backend already
+         * maintains, read at the present boundary. Frames still in flight here
+         * are frames queued ahead of this one, and under FIFO each of them
+         * costs a refresh period before this image can reach the glass. A read,
+         * not a control input -- backpressure admission is decided by
+         * wgpu_backpressure_check_below() and is untouched by this. */
+        present_perf_note_queue_depth(s_gpu_frames_in_flight);
     }
     if (surface_view != NULL) {
         wgpuTextureViewRelease(surface_view);   /* PERF-008 direct-path render target */

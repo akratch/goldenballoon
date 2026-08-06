@@ -138,6 +138,14 @@ uint32_t mdkr_audio_queue_controller_choose(
             controller->stats.estimated_consumed_frames += consumed;
             if (queued_frames == 0u) {
                 controller->stats.empty_queue_observations++;
+                /* A drained sink before the first block was ever produced is
+                 * the boot prime, not starvation. See the header for why the
+                 * two are counted apart. */
+                if (controller->stats.produced_frames != 0u) {
+                    controller->stats.underruns++;
+                }
+            } else if ((uint64_t)queued_frames < consumed) {
+                controller->stats.floor_breaches++;
             }
             if (queued_frames < controller->stats.min_queued_frames) {
                 controller->stats.min_queued_frames = queued_frames;

@@ -799,6 +799,8 @@ initialization. GL remains testable only when the run explicitly sets
 ```bash
 python3 tests/check_gpu_backpressure.py \
   --build build-rel --rom baserom.us.v80.z64
+python3 tests/check_pacing_quality.py \
+  --build build-rel --rom baserom.us.v80.z64
 python3 tests/check_app_adopted_pacing.py \
   --build build-rel --rom baserom.us.v80.z64
 python3 tests/check_overlay_pause.py \
@@ -818,6 +820,51 @@ immediate/interval-0 diagnostics, zero leaked child resources, and a measured
 achieved submission rate.
 An additional no-selector arm requires the production native default to resolve
 to WebGPU, preventing a backend-policy edit from bypassing the qualified path.
+
+`check_pacing_quality.py` measures how EVENLY images arrive rather than how many
+of them do. The engine publishes three distributions at shutdown under
+`MDKR_PRESENT_PERF=1` — wall interval between present opportunities, wall
+interval between frames that actually reached the screen, and interpolation
+phase advanced between displayed frames — as fixed-bucket
+`[PRESENTPERF-HIST]` histograms carrying p50/p95/p99/max/variance, alongside a
+`[PRESENTPERF-LATENCY]` present-queue-depth estimate (mean/max GPU frames in
+flight at present, times the refresh period) that quantifies the cost of a FIFO
+present mode.
+
+Synthetic arms cover every presentation policy crossed with both smoothing
+settings and assert only structural identities: the census must count the same
+presents the scheduler did, every present after the first must contribute
+exactly one interval sample and every displayed frame exactly one phase sample,
+the interpolation phase must never run backwards or fail to advance, and with
+smoothing off no displayed frame may advance the phase by less than a whole tick
+(there are no interpolated images to display). Synthetic pacing does not sleep,
+so those arms deliberately assert no wall-clock number.
+
+The realtime arm is a genuinely paced, compositor-visible run
+(`MDKR_PACE_REALTIME=1`) on the display policy with smoothing. It gates
+no-tearing-mode and `underruns=0`, and REPORTS the displayed-interval and
+phase-variance tails as the labelled quality baseline. Those are reported rather
+than gated because a threshold chosen before a baseline exists is a guess.
+
+Two session conditions make those numbers meaningless without anything being
+wrong in the code, and both are detected and named explicitly rather than
+reported as a generic failure: a session with no window server refuses every
+drawable, and a session that accepts presents without vsync-blocking them lets
+the display policy free-run (it installs no software limiter and relies on FIFO
+to pace it). In both cases the no-tearing and no-underrun assertions still run —
+neither can be excused by the environment — and only the baseline is withheld.
+The arm is genuinely bimodal on a developer machine: the same command can
+vsync-throttle on one run and free-run on the next, so read the printed baseline
+or its absence rather than assuming one was produced. `--skip-realtime` runs the
+synthetic arms alone.
+
+`underruns` in `[AUDIO-SINK]` counts the sink observed fully drained after it
+had been fed at least once, which is the audible starvation a gate can require
+to be zero; it excludes the boot prime, where the queue is legitimately empty
+because nothing has been enqueued yet. `floorbreaches` is the softer
+"would not have survived another refill gap this long" signal, reported for
+trend. Headless runs open no audio device, so the deterministic coverage for
+both counters is `tests/test_audio_queue_controller.c`.
 `check_app_adopted_pacing.py` enters through the real ImGui launcher and makes
 the engine adopt the launcher's context/device. Numeric 240 Hz and Uncapped
 must complete on the WebGPU default and explicit GL path with fully drained GPU

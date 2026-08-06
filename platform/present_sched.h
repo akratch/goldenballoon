@@ -212,6 +212,54 @@ void present_perf_add(PresentPerfSection section, uint64_t start);
  * different association entirely" rather than one averaged number.
  */
 void present_perf_note_matrix_reject(uint64_t worst_lsb);
+
+/* ---- pacing-quality census (M2) ----------------------------------------- *
+ *
+ * WHAT IT MEASURES. Presentation quality as three distributions rather than
+ * one average, so a gate can talk about the tail a player actually notices:
+ *   present-interval    wall microseconds between consecutive PRESENT
+ *                       OPPORTUNITIES, displayed or held. This is the pacer's
+ *                       own cadence.
+ *   displayed-interval  wall microseconds between consecutive frames that
+ *                       actually reached the screen. A held (no-swap) present
+ *                       is absent from this series by construction, so a run
+ *                       that holds every other opportunity shows the doubled
+ *                       interval the player sees rather than the pacer's even
+ *                       one.
+ *   alpha-delta         interpolation phase advanced between consecutive
+ *                       DISPLAYED frames, in parts-per-million of one
+ *                       authoritative tick. Even spacing here is what makes
+ *                       interpolated motion read as smooth; the series is the
+ *                       monotone (ticks, alpha) phase differenced, so a tick
+ *                       boundary is an ordinary advance rather than a wrap.
+ *
+ * WHY A HISTOGRAM. A fixed bucket array is the only shape that yields p95/p99
+ * in bounded memory: keeping samples would grow without limit across a session,
+ * and a running mean cannot see the tail at all. The bins are linear so the
+ * resolution is uniform where the interesting mass sits.
+ *
+ * COST WHEN OFF. Gated on present_perf_enabled() exactly like [PRESENTPERF]:
+ * one cached getenv, and the hook returns before reading the clock. The bins
+ * are static storage, so an unarmed run pays no allocation either.
+ *
+ * IT ONLY READS. Nothing here feeds back into pacing, present, or simulation
+ * state; the hooks take what the path already computed and accumulate.
+ */
+
+/*
+ * One present opportunity. `displayed` is true only when the frame was actually
+ * swapped to the surface. `alpha_num`/`alpha_den` are the interpolation phase
+ * the present was drawn at, and are read only when `displayed`.
+ */
+void present_perf_note_present(bool displayed, uint64_t alpha_num,
+                               uint64_t alpha_den);
+/*
+ * GPU frames in flight sampled AT a present, for the queue-depth latency
+ * proxy. The renderer backend already maintains this counter for backpressure
+ * admission; this is a read of it at the present boundary, not a new one.
+ */
+void present_perf_note_queue_depth(unsigned in_flight);
+
 void present_perf_summary(void);
 
 /* ---- Video.FrameLimit / Video.MotionSmoothing config push (Wave C) ------- *

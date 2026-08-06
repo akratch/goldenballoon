@@ -904,9 +904,14 @@ void dkr_audio_service_summary(void) {
                  * synthesis block; a gap above the block is the signature of a
                  * refill cadence that does not divide the display, which is
                  * what a 50 Hz source on a 60 Hz monitor produces. */
+                /* underruns is the gate-able starvation count: the sink drained
+                 * to zero after it had already been fed. floorbreaches is the
+                 * softer "would not have survived another gap this long"
+                 * signal, reported for trend rather than asserted. */
                 "[AUDIO-SINK] decisions=%llu estimateddrain=%llu produced=%llu "
                 "emptyobservations=%u stalls=%u minqueued=%u maxqueued=%u "
-                "maxproduced=%u maxgap=%u maxtarget=%u\n",
+                "maxproduced=%u maxgap=%u maxtarget=%u underruns=%u "
+                "floorbreaches=%u\n",
                 (unsigned long long)s_queueController.stats.live_decisions,
                 (unsigned long long)
                     s_queueController.stats.estimated_consumed_frames,
@@ -918,7 +923,9 @@ void dkr_audio_service_summary(void) {
                 (unsigned)s_queueController.stats.max_queued_frames,
                 (unsigned)s_queueController.stats.max_produced_frames,
                 (unsigned)s_queueController.stats.max_gap_frames,
-                (unsigned)s_queueController.stats.max_target_frames);
+                (unsigned)s_queueController.stats.max_target_frames,
+                (unsigned)s_queueController.stats.underruns,
+                (unsigned)s_queueController.stats.floor_breaches);
     }
     fflush(stderr);
 }
