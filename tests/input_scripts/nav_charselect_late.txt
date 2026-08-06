@@ -1,0 +1,6 @@
+# DKR: TITLE -> CHARACTER_SELECT, with the two title press-edges delayed so the
+# screen initialises on the same frame nav_charselect_after_track_select.txt
+# reaches it (~2431). This is that route's control: same screen, same age, no
+# Track Select visit in between.
+2320 START 4
+2400 START 4

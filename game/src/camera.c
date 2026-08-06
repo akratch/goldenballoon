@@ -826,6 +826,13 @@ void cam_init(void) {
     gAdjustViewportHeight = FALSE;
     gAntiPiracyViewport = FALSE;
 
+#ifdef NATIVE_PORT
+    /* Before the latch below: a level/menu-background load starts a new scene,
+     * and the projection it latches must not inherit the previous scene's
+     * aperture. */
+    viewport_world_regions_reset();
+#endif
+
 #ifndef NATIVE_PORT
     WAIT_ON_IOBUSY(stat);
 
@@ -1241,6 +1248,28 @@ void viewport_world_region_set(s32 viewPortIndex, ViewportWorldRegion region) {
         region == VIEWPORT_WORLD_REGION_SAFE_APERTURE
             ? VIEWPORT_WORLD_REGION_SAFE_APERTURE
             : VIEWPORT_WORLD_REGION_PRESENTATION;
+}
+
+/**
+ * Return every viewport to the unframed presentation region.
+ *
+ * The safe aperture is a property of the scene that draws a frame around its
+ * live view, not a lasting property of the viewport.  Only Track Select and the
+ * later post-race pages own one, and both restate it every frame they are on
+ * screen, so nothing is lost by defaulting the region whenever a new scene
+ * begins.  Leaving the previous scene's aperture in place instead makes the
+ * next scene's lens disagree with the region viewport_main() draws it into: a
+ * 4:3 lens stretched across the full presentation rectangle.  Scene entry
+ * (cam_init, menu_init) resets unconditionally so that correctness never
+ * depends on a screen being left by the one exit path that happened to restore
+ * it.
+ */
+void viewport_world_regions_reset(void) {
+    s32 i;
+
+    for (i = 0; i < (s32) ARRAY_COUNT(sViewportWorldRegions); i++) {
+        sViewportWorldRegions[i] = VIEWPORT_WORLD_REGION_PRESENTATION;
+    }
 }
 
 s32 viewport_world_region_uses_safe_aperture(s32 viewPortIndex) {
