@@ -889,14 +889,24 @@ default-on rollout.
 
 Current recorded evidence (2026-08-05, macOS host, US-v80 hash from the banner):
 
-- The current-candidate command/results ledger and remaining release work are
-  retained in
-  [`camera-runtime-modern-2026-08-05.md`](../evidence/camera-runtime-modern-2026-08-05.md).
-
-- 84/84 registered CTests pass in `build-cam05-prod`. The full native target and
-  exact geometry/query/transform/resolver/lens-pose tests also pass strict
-  `-Wall -Wextra -Werror -Wpedantic`; focused exact geometry/query/transform
-  tests and the full native target build under ASan/UBSan.
+- The current-candidate command/results ledger, the red-team root-cause
+  closeout, and the remaining release work are retained in
+  [`camera-runtime-modern-2026-08-05.md`](../evidence/camera-runtime-modern-2026-08-05.md)
+  rather than re-narrated here: the 84/84 registered-suite pass and sanitized
+  ASan/UBSan passes across the same-binary and lifecycle routes; the
+  5,200-frame Ancient Lake same-binary witness (217 legacy penetrations, 276
+  center-ray, 95 Modern corrections, 4,572 validated presentation
+  transitions); the 24-arm display/FOV matrix; the 9,000-frame Timber's
+  Island dynamic-object route; the projection-restoration fault injection at
+  tick 800; the emergency-readability and 3P+T.T. routes; the lifecycle
+  reset/summary soak, including the 66-tick maximum embedded-target
+  interval; and the isolated 12,500-frame 4P performance gate all live
+  there.
+- The 24-arm matrix is a **safety pass, not a motion-quality pass**: elevated
+  emergency framing occurs in 26/3,587 authored 4:3 frames, 88–118/3,587
+  authored 16:9–32:9 frames, 108–234/3,587 capped-140 arms, and 333–651/3,587
+  uncapped-140 landscape arms (zero in every 20-degree arm). Those rates keep
+  CAM-06 and the exact lens-guard ultrawide work release-blocking.
 - The historical opt-in exact shadow ran only the single authoritative boom
   corridor and never published its decision. Paired shadow-on/off authored-4:3 runs produce
   zero normalized resolved-camera differences across 5,187 selected rows. Of
@@ -936,63 +946,12 @@ Current recorded evidence (2026-08-05, macOS host, US-v80 hash from the banner):
   stale generations, and same-address generation reuse all fail closed. The gate
   found and fixed the indexed clear-output canonicalization defect and passes
   focused ASan/UBSan.
-- The 5,200-frame Ancient Lake same-binary witness reports 217 penetrated legacy
-  poses and 276 center-ray lens violations. Modern applies 95 corrections and
-  publishes zero penetrated, invalid, degraded, or target-hidden resolved poses,
-  zero duplicate solves, zero projection mismatches, 2,273 exact invocations,
-  2,254 sphere-hit/exact-clear overrides, and 4,572 validated presentation
-  transitions (4,393 clear and 636 conservatively cut; counters can overlap).
-- The 24-arm 3,600-frame matrix crosses 320x240, 1280x960, 1920x1080,
-  2560x1080, 5120x1440, and 1080x1920 with authored, minimum 20-degree,
-  maximum 140-degree capped, and explicit uncapped 140-degree FOV. All arms
-  publish zero penetrated, invalid, degraded, or target-hidden Modern poses and
-  exercise exact queries in every arm. The equal-aspect 4:3 traces are identical
-  inside every FOV arm. The 20-degree arms remain correction-free, which is the
-  correct open-space outcome for their smaller lens footprint rather than a
-  missing-coverage failure.
-  This is a **safety pass, not a motion-quality pass**: elevated emergency framing
-  occurs in 26/3,587 authored 4:3 frames, 88–118/3,587 authored 16:9–32:9
-  frames, 108–234/3,587 capped-140 arms, and 333–651/3,587 uncapped-140
-  landscape arms (zero in every 20-degree arm). Those rates keep CAM-06 and the
-  exact lens-guard ultrawide work release-blocking.
 - A 20-track/3,600-frame Modern sweep, 2P 16:9 race, non-sequential camera snapshot
   coverage, strict warning build, and focused/full sanitizer routes passed during
   development.
-- The 9,000-frame Timber's Island gate produces 8,992 validated rows, 176
-  corrected rows, zero penetrated/degraded/invalid rows, up to 12 published hard
-  instances, 16 observed dynamic source hits, and four corrections whose source
-  query hit dynamic geometry. Missing cache, identity, transform, capacity,
-  unclassified, and sphere/exact invalid-query counters are release-fatal;
-  explicit non-solids and healthy bounded sphere fallbacks are reported
-  separately.
-- The injected projection-latch gate fails tick 800 after a safe prior image and
-  proves that restoration occurs only for the same camera/viewport/layout/FOV/
-  display generation and only after a fresh static+dynamic stationary sweep. The
-  restored render pair reports zero penetration, invalidity, degradation, or
-  projection mismatch.
-- The current strict `-Wall -Wextra -Werror -Wpedantic` ASan/UBSan executable
-  passes the 5,200-frame same-binary controls, a 3,600-frame 32:9 uncapped-140
-  Modern route, and the 16,989-summary Adventure lifecycle/generation soak.
-  Modern reports zero penetrated, degraded, invalid, or target-hidden poses; the
-  positive controls retain 217 legacy and 11 center-ray lens violations.
 - A current-source 9,600-frame 4P GL route produced 21,964 viewport detail rows:
   four fresh intents per tick, zero stale intents, zero penetration/invalid/
   degraded results, and zero dynamic omission or projection-authority counters.
-- The independent 3P+T.T. route produces 4,199 T.T. camera-3 summaries/details,
-  331 corrected poses, four fresh selected camera intents per tick, and zero
-  unsafe, stale, degraded, omission, or authority rows.
-- Pause-quit, pause-restart, and Adventure post-race routes produce 49 reset
-  witnesses and 26,659 safe summaries. Every level load has an intervening reset
-  and restarts at camera tick 1; the Adventure route collects balloon 10, opens a
-  hub door, and observes its moving dynamic publication. The route also records
-  a maximum 66-tick interval where the racer focus remains embedded in a hard
-  moving door after bounded local skin exclusion; it is reported
-  `target_visible=0,target_embedded=1` and separately classified rather than
-  falsely reported visible or topologically enclosed.
-- The forced-no-alternate readability route produces six presentation-only racer
-  fade rows in the 153..237 opacity envelope while retaining zero penetration,
-  invalidity, degradation, or hidden targets. Elevated emergency endpoints are
-  separately counted and require a clear full guard plus target sightline.
 - A pre-`d637f2a` WebGPU/native Release artifact passes all 47 legal
   vehicle/track combinations: 47/47 rows, 20 swept tracks, 65 decoded level
   headers, zero failed rows, and no surfaced fatal, crash, or invalid markers.
@@ -1015,13 +974,6 @@ Current recorded evidence (2026-08-05, macOS host, US-v80 hash from the banner):
   `--camera-obstruction modern` and rejects any penetration, invalid result,
   source degradation, projection mismatch, duplicate solve, missing hard dynamic
   cache/identity, unclassified object, invalid transform, or capacity failure.
-- The isolated 12,500-frame Observe/Modern 4P gate records 5,491 active
-  four-viewport ticks and byte-identical state streams. Modern finalizer timing is
-  p50 60 us, p95 470 us, p99 690 us, and max 1.240 ms against the 833.333-us p99
-  budget; Observe p99 is 70 us. Static cache maximum is 151,328 bytes and its
-  measured build is 163.708 us. Query p99/fan, long-tail, histogram-overflow, and
-  exact dynamic-sidecar-byte assertions all pass. Browser-specific timing and the
-  level-load percentage budget remain open rather than inheriting this native pass.
 
 ### 6.2 Red-team closeout and remaining stop conditions
 

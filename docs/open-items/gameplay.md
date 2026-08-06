@@ -2,6 +2,16 @@
 
 > One subsystem of the split [open-items index](README.md), which states how these files are kept.
 
+**Currently open** (per [`README.md`](README.md#still-open)'s open/closed
+table): 4 items.
+
+| Item | Where |
+|---|---|
+| Gameplay cameras can enter terrain and object geometry — correction ships opt-in only (`Camera.Obstruction`), so the defect still stands in default play | [§ OPEN: gameplay cameras can enter terrain and object geometry](#open-gameplay-cameras-can-enter-terrain-and-object-geometry) |
+| Zip-pad boost magnitude is authored, but no route exercises a real pad crossing and no hardware trace was taken | [§ CLOSED, NOT A DEFECT: the zip-pad boost — wave "zippad"](#closed-not-a-defect-the-zip-pad-boost-is-the-magnitude-dkr-authored--wave-zippad) |
+| Independent Ancient Lake route drives a real line, but long-horizon standard-race parity against the ROM remains open | [§ The fidelity payoff, measured — and it is NOT there](#the-fidelity-payoff-measured--and-it-is-not-there) |
+| AI stuck-recovery cooldown `unk215` only decays while reversing (believed authored; hardware/ares verification still open) | [§ OPEN, believed authored: AI stuck-recovery cooldown](#open-believed-authored-hardware-unverified-ai-stuck-recovery-cooldown-unk215-only-decays-while-reversing--the-hot-top-volcano-crater-wedge) |
+
 ## OPEN: gameplay cameras can enter terrain and object geometry
 
 The car, hovercraft, plane, loop, fixed, finish, and challenge camera behaviors
