@@ -3099,6 +3099,16 @@ void menu_init(u32 menuId) {
     }
 #endif
     gCurrentMenuId = menuId;
+#ifdef NATIVE_PORT
+    /* Entering a screen is the boundary that owns the world region. Screens
+     * that draw their live view behind a frame (Track Select, the later
+     * post-race pages) state the safe aperture in their own init and restate it
+     * every frame; every other screen gets the unframed presentation region
+     * here rather than inheriting whichever aperture the previous screen was
+     * last left holding. Not every screen change routes through a level load,
+     * so this reset cannot live in cam_init() alone. */
+    viewport_world_regions_reset();
+#endif
     reset_controller_sticks();
     gIgnorePlayerInputTime = 1;
     gOptionBlinkTimer = 0;

@@ -162,6 +162,7 @@ typedef enum ViewportWorldRegion {
 } ViewportWorldRegion;
 
 void viewport_world_region_set(s32 viewPortIndex, ViewportWorldRegion region);
+void viewport_world_regions_reset(void);
 s32 viewport_world_region_uses_safe_aperture(s32 viewPortIndex);
 void mtx_ortho_fullscreen(Gfx **dList, Mtx **mtx);
 void mtx_ortho_wide_background(Gfx **dList, Mtx **mtx,

@@ -704,6 +704,8 @@ to be taken — `MDKR_BOSS_WIN` replaced `MDKR_BOSS_SLOW` for exactly that reaso
 | `nav_to_game_select` | 2000 | `check_nav_fixtures.py` → `menuId=19` | open, by design |
 | `nav_to_file_select_adventure` | 2100 | `check_nav_fixtures.py`, `check_array_bounds_sweep.py` → `menuId=6` | open, by design |
 | `nav_to_track_select` | 2300 | `check_nav_fixtures.py`, `check_array_bounds_sweep.py` → `menuId=15` | open, by design |
+| `nav_charselect_after_track_select` | 2901 | `check_framed_world_views.py` (aperture-leak arm) → character select reached *through* Track Select | open, by design — menus only |
+| `nav_charselect_late` | 2901 | `check_framed_world_views.py` (aperture-leak arm) → the same screen, same age, no Track Select visit; the pair's recovered horizontal lens ratio must be 1.0 | open, by design |
 | `nav_to_time_trial_race` | 2900 / 3500 / 4000 / 7500 | `check_nav_fixtures.py` → `level_load levelId=5`; **`check_widescreen_shadow.py`**; **`check_race_drive.py`**; **`check_shadow_plausibility.py`** (+ `MDKR_LOAD_TRACK` to retarget the 1P worlds) | open to the grid, then **closed** (`MDKR_AUTOPILOT`) |
 | `race_drive_long` | 3900–4300 | `check_texture_lineswap.py`, `check_rom_revision.py`, `check_determinism.py` | open, **by design** — these three compare *pixels between two arms of the same route*, so the route only has to be identical to itself |
 | `race_drive_time_trial` | 1500 | `check_determinism.py` | open, by design — same reason |
@@ -1285,6 +1287,19 @@ Each arm is paired with `MDKR_TEST_FRAMED_WORLD_UNSAFE=1`. The renderer fault
 must be inert for presentation scenes and all 4:3 captures, while framed scenes
 must reproduce visible side-band bleed at wider ratios. Frontend routes and
 normalized gameplay traces must stay unchanged between the two arms.
+
+One further arm, `--scene charselect-aperture-leak`, asserts that an aperture
+does not outlive the screen that asked for it. Track Select's safe 4:3 region is
+per-viewport state that the projection latch reads every tick, while the
+unframed render path states the presentation region to the renderer; if the
+region survives Track Select the two disagree and every later screen draws a 4:3
+lens across the whole presentation rectangle. The arm captures character select
+twice at 16:9 — once reached through Track Select, once reached directly on the
+same frame — and recovers the horizontal scale that best maps one onto the
+other. Character select animates, so the comparison is a per-column brightness
+profile rather than a pixel identity. The recovered ratio must be 1.0; a
+synthetic 4:3 stretch of the control must be rejected, which is what keeps the
+detector honest. Measured before the fix, the leaked route recovered 0.750.
 
 `check_shadow_visual_ab.py` is the slower pixel-level companion:
 

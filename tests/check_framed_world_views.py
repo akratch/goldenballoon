@@ -41,6 +41,12 @@ TRACK_SCROLL_SCRIPT = (
 )
 TRACK_RACE_SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
 TRACK_BACK_SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_track_setup_back.txt"
+CHARSELECT_LEAK_SCRIPT = (
+    ROOT / "tests" / "input_scripts" / "nav_charselect_after_track_select.txt"
+)
+CHARSELECT_CONTROL_SCRIPT = (
+    ROOT / "tests" / "input_scripts" / "nav_charselect_late.txt"
+)
 CREDITS_SCRIPT = ROOT / "tests" / "input_scripts" / "credits_via_cheat.txt"
 FATAL_RE = re.compile(
     r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
@@ -384,6 +390,162 @@ def run_track_select_scroll(
     return f"{len(frames)} transition frames; both gutters clean"
 
 
+def column_profile(image: Image) -> list[float]:
+    """Mean brightness per column: a signature of WHERE the world landed.
+
+    Character select animates, so two captures of it are never pixel-equal.  A
+    per-column profile is dominated by the scene's fixed geometry (sky, treeline,
+    log, grass horizon), which is exactly the part a lens/region disagreement
+    moves, so it survives an idle-animation phase difference that a pixel
+    comparison could not.
+    """
+    profile: list[float] = []
+    for x in range(image.width):
+        total = 0
+        for y in range(image.height):
+            offset = (y * image.width + x) * 3
+            total += (image.pixels[offset] + image.pixels[offset + 1] +
+                      image.pixels[offset + 2])
+        profile.append(total / (3.0 * image.height))
+    return profile
+
+
+def sample_profile(profile: list[float], position: float) -> float | None:
+    count = len(profile)
+    if position < 0.0 or position > count - 1:
+        return None
+    index = int(position)
+    if index >= count - 1:
+        return profile[count - 1]
+    fraction = position - index
+    return profile[index] * (1.0 - fraction) + profile[index + 1] * fraction
+
+
+def best_horizontal_scale(
+    reference: Image, candidate: Image
+) -> tuple[float, float]:
+    """Horizontal scale about the centre that best maps candidate onto reference.
+
+    A world drawn with the safe aperture's 4:3 lens into the full presentation
+    rectangle is the reference image scaled horizontally about the screen centre
+    -- nothing else about it changes -- so the recovered scale IS the defect's
+    magnitude.  1.0 means the two images share a lens; a 4:3 lens stretched to
+    16:9 recovers 0.75.
+    """
+    if (reference.width, reference.height) != (candidate.width, candidate.height):
+        raise RuntimeError("aperture-leak arm sizes differ")
+    left = column_profile(reference)
+    right = column_profile(candidate)
+    centre = (len(left) - 1) / 2.0
+    best = (1e9, 0.0)
+    step = 0
+    while step <= 150:
+        scale = 0.70 + step * 0.005
+        total = count = 0
+        for x in range(0, len(left), 3):
+            value = sample_profile(right, centre + (x - centre) / scale)
+            if value is None:
+                continue
+            total += abs(left[x] - value)
+            count += 1
+        if count and total / count < best[0]:
+            best = (total / count, scale)
+        step += 1
+    return best[1], best[0]
+
+
+def stretch_horizontally(image: Image, factor: float) -> Image:
+    """The defect, synthesised: widen about the centre and clip to the surface."""
+    centre = (image.width - 1) / 2.0
+    pixels = bytearray(len(image.pixels))
+    for y in range(image.height):
+        row = y * image.width * 3
+        for x in range(image.width):
+            source = centre + (x - centre) / factor
+            index = min(max(int(round(source)), 0), image.width - 1)
+            offset = row + index * 3
+            pixels[row + x * 3:row + x * 3 + 3] = image.pixels[offset:offset + 3]
+    return Image(image.width, image.height, bytes(pixels))
+
+
+def run_aperture_leak_arms(
+    binary: Path,
+    rom: Path,
+    backend: str,
+    work: Path,
+    timeout: int,
+    verbose: bool,
+) -> str:
+    """The aperture must not outlive the screen that asked for it.
+
+    Track Select sets the safe 4:3 world region for its wooden frame.  That
+    region is per-viewport state the projection latch reads every tick, while
+    viewport_main() states the presentation region to the renderer for every
+    unframed view.  If the region survives Track Select, the two disagree and
+    every later screen -- character select first, then the race entered from it
+    -- draws a 4:3 lens across the whole presentation rectangle.  Both reports
+    behind this arm (a stretched player select after visiting Tracks) are that
+    one leak, so the assertion is a route comparison, not a pixel constant: the
+    same screen reached with and without a Track Select visit must share a lens.
+    """
+    size = "960x540"
+    routes = {
+        "after-track-select": CHARSELECT_LEAK_SCRIPT,
+        "control": CHARSELECT_CONTROL_SCRIPT,
+    }
+    captured: dict[str, Arm] = {}
+    for name, script in routes.items():
+        scene = Scene(
+            f"charselect-{name}", 2901, 2900, script, "presentation",
+        )
+        captured[name] = run_arm(
+            binary, rom, scene, backend, size, False, work, timeout, verbose,
+        )
+
+    leak_route = captured["after-track-select"].route
+    control_route = captured["control"].route
+    if not any("menuId=15" in line for line in leak_route):
+        raise RuntimeError(
+            "aperture-leak arm never reached Track Select; the fixture no "
+            f"longer exercises the leak (route {leak_route})"
+        )
+    if any("menuId=15" in line for line in control_route):
+        raise RuntimeError(
+            "aperture-leak control visited Track Select; it is no longer a "
+            f"control (route {control_route})"
+        )
+    for name, route in (("after-track-select", leak_route),
+                        ("control", control_route)):
+        if not route or "menuId=3" not in route[-1]:
+            raise RuntimeError(
+                f"aperture-leak {name} arm did not end on character select "
+                f"(route {route})"
+            )
+
+    scale, residual = best_horizontal_scale(
+        captured["control"].image, captured["after-track-select"].image
+    )
+    if abs(scale - 1.0) > 0.03:
+        raise RuntimeError(
+            f"charselect-aperture-leak/{backend}/{size}: character select "
+            f"reached through Track Select presents a {scale:.3f}x horizontal "
+            f"lens against the same screen reached directly. Track Select's "
+            f"safe aperture is outliving its screen."
+        )
+
+    # The detector has to be able to see the defect it is guarding against.
+    faulted = stretch_horizontally(captured["control"].image, 4.0 / 3.0)
+    fault_scale, _ = best_horizontal_scale(captured["control"].image, faulted)
+    if abs(fault_scale - 1.0) <= 0.03:
+        raise RuntimeError(
+            f"charselect-aperture-leak/{backend}/{size}: the synthetic 4:3 "
+            f"stretch recovered {fault_scale:.3f}x, so this arm can no longer "
+            "distinguish a leaked aperture from a correct lens"
+        )
+    return (f"lens ratio {scale:.3f} (residual {residual:.2f}); "
+            f"synthetic 4:3 stretch rejected at {fault_scale:.3f}")
+
+
 def find_pal_rom(directory: Path) -> Path | None:
     if not directory.is_dir():
         return None
@@ -693,6 +855,12 @@ def source_contract() -> None:
     required = (
         ("display-list region metadata", "G_MW_DKR_WORLD_REGION", header),
         ("explicit viewport policy", "ViewportWorldRegion", camera),
+        # The aperture belongs to the screen that draws a frame, so scene entry
+        # -- not one hand-picked exit path -- is what returns every viewport to
+        # the presentation region.  Both entry funnels have to keep doing it.
+        ("world region default", "void viewport_world_regions_reset(void)", camera),
+        ("scene entry resets the region", "viewport_world_regions_reset();", camera),
+        ("menu entry resets the region", "viewport_world_regions_reset();", menu),
         # Re-anchored onto cam_projection_for_viewport_region after the lens
         # latch refactor retired the old inline branch; the property asserted is
         # unchanged -- a safe-aperture view takes the authored 4:3 lens and
@@ -742,7 +910,8 @@ def main() -> int:
     parser.add_argument(
         "--scene",
         choices=tuple(scene.name for scene in SCENES) +
-        ("track-select-scroll", "pal-track-select"),
+        ("track-select-scroll", "pal-track-select",
+         "charselect-aperture-leak"),
         help="run one ordinary scene instead of the complete matrix",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -833,6 +1002,18 @@ def main() -> int:
                         f"track-select-scroll/{backend}/1260x540: "
                         f"{run_track_select_scroll(binary, rom, backend, work, args.timeout, args.verbose)}"
                     )
+            run_leak = (
+                not args.interpolated_only and
+                (not args.scene or args.scene == "charselect-aperture-leak")
+            )
+            if run_leak:
+                summaries.append(
+                    "charselect-aperture-leak/webgpu/960x540: " +
+                    run_aperture_leak_arms(
+                        binary, rom, "webgpu", work, args.timeout,
+                        args.verbose,
+                    )
+                )
             if args.verbose:
                 for summary in summaries:
                     print("  " + summary)

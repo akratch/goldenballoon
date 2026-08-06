@@ -1,0 +1,18 @@
+# DKR: TITLE -> CHARACTER_SELECT -> CAUTION -> GAME_SELECT -> [DOWN,A pick
+# Tracks] -> TRACK_SELECT, then back out with two B presses, landing on
+# CHARACTER_SELECT again (menu route 0,3,28,19,15,19,3).
+#
+# Track Select is the only front-end screen that draws its live world behind a
+# wooden aperture. This route is the one players reported: the character select
+# reached AFTER that visit must present exactly the lens the character select
+# reached without it. Paired with nav_charselect_late.txt, which enters the same
+# screen on the same frame having never seen the aperture.
+1250 START 4
+1330 START 4
+1450 A 4
+1540 A 4
+1750 A 4
+1900 DOWN 4
+2000 A 4
+2200 B 4
+2400 B 4
