@@ -37,7 +37,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import completed_tick_conservation, resolve_binary
+from harness_utils import (completed_tick_conservation,
+                           read_ppm as read_ppm_bytes, resolve_binary)
 
 
 DEFAULT_SCRIPT = Path("tests/input_scripts/nav_to_time_trial_race.txt")
@@ -99,49 +100,7 @@ class Run:
 
 
 def read_ppm(path: Path) -> Image:
-    """Read the binary P6 subset emitted by ``--dump-frames``."""
-
-    data = path.read_bytes()
-    index = 0
-    fields: list[bytes] = []
-    while len(fields) < 4:
-        while index < len(data) and data[index:index + 1].isspace():
-            index += 1
-        if index >= len(data):
-            raise ValueError(f"{path}: truncated PPM header")
-        if data[index:index + 1] == b"#":
-            newline = data.find(b"\n", index)
-            if newline < 0:
-                raise ValueError(f"{path}: unterminated PPM comment")
-            index = newline + 1
-            continue
-        end = index
-        while end < len(data) and not data[end:end + 1].isspace():
-            end += 1
-        fields.append(data[index:end])
-        index = end
-
-    if fields[0] != b"P6":
-        raise ValueError(f"{path}: expected P6, got {fields[0]!r}")
-    width, height, maximum = map(int, fields[1:])
-    if width <= 0 or height <= 0 or maximum != 255:
-        raise ValueError(
-            f"{path}: invalid dimensions/range {width}x{height}, max={maximum}"
-        )
-    if index >= len(data) or not data[index:index + 1].isspace():
-        raise ValueError(f"{path}: missing raster separator")
-    # The emitter writes one newline. Accept CRLF without treating LF as pixel 0.
-    if data[index:index + 2] == b"\r\n":
-        index += 2
-    else:
-        index += 1
-    expected = width * height * 3
-    pixels = data[index:]
-    if len(pixels) != expected:
-        raise ValueError(
-            f"{path}: raster is {len(pixels)} bytes, expected {expected}"
-        )
-    return Image(width, height, pixels)
+    return Image(*read_ppm_bytes(path))
 
 
 def scene_metrics(image: Image) -> tuple[int, float]:

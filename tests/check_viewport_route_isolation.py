@@ -23,7 +23,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import read_ppm, resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 FRAMES = 2740
@@ -63,32 +63,6 @@ class Result:
     state: tuple[str, ...]
     draws: tuple[Draw, ...]
     frames: tuple[Path, ...]
-
-
-def read_ppm(path: Path) -> tuple[int, int, bytes]:
-    data = path.read_bytes()
-    index = 0
-    fields: list[bytes] = []
-    while len(fields) < 4:
-        while index < len(data) and data[index:index + 1].isspace():
-            index += 1
-        if data[index:index + 1] == b"#":
-            while index < len(data) and data[index:index + 1] != b"\n":
-                index += 1
-            continue
-        end = index
-        while end < len(data) and not data[end:end + 1].isspace():
-            end += 1
-        fields.append(data[index:end])
-        index = end
-    if fields[0] != b"P6" or int(fields[3]) != 255:
-        raise RuntimeError(f"{path}: expected binary 8-bit PPM")
-    index += 2 if data[index:index + 2] == b"\r\n" else 1
-    width, height = int(fields[1]), int(fields[2])
-    pixels = data[index:index + width * height * 3]
-    if len(pixels) != width * height * 3:
-        raise RuntimeError(f"{path}: truncated PPM raster")
-    return width, height, pixels
 
 
 def changed_channels(left: Path, right: Path,

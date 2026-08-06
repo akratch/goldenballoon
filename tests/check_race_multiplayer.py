@@ -32,7 +32,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 
-from harness_utils import resolve_binary
+from harness_utils import read_ppm, resolve_binary
 
 
 FRAMES = 9600
@@ -141,37 +141,6 @@ QUADRANTS = {
 
 def finite(value: float) -> bool:
     return math.isfinite(value) and abs(value) < 1.0e30
-
-
-def read_ppm(path: str) -> tuple[int, int, bytes]:
-    with open(path, "rb") as stream:
-        data = stream.read()
-    index = 0
-    fields: list[bytes] = []
-    while len(fields) < 4:
-        while index < len(data) and data[index:index + 1].isspace():
-            index += 1
-        if data[index:index + 1] == b"#":
-            while index < len(data) and data[index:index + 1] != b"\n":
-                index += 1
-            continue
-        end = index
-        while end < len(data) and not data[end:end + 1].isspace():
-            end += 1
-        fields.append(data[index:end])
-        index = end
-    if fields[0] != b"P6" or int(fields[3]) != 255:
-        raise ValueError(f"{path}: expected binary 8-bit PPM")
-    if index >= len(data) or not data[index:index + 1].isspace():
-        raise ValueError(f"{path}: missing PPM header delimiter")
-    # Consume the header delimiter, not arbitrary whitespace: a legal first
-    # raster byte may itself be 0x09, 0x0A, 0x0D, 0x20, etc.
-    index += 2 if data[index:index + 2] == b"\r\n" else 1
-    width, height = int(fields[1]), int(fields[2])
-    pixels = data[index:index + width * height * 3]
-    if len(pixels) != width * height * 3:
-        raise ValueError(f"{path}: truncated raster")
-    return width, height, pixels
 
 
 def region_metrics(

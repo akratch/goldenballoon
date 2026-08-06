@@ -124,6 +124,18 @@ def completed_tick_conservation(
     return None
 
 
+class PpmError(ValueError, RuntimeError):
+    """A PPM that cannot be read as the image the check asked for.
+
+    The hand-written readers this replaced were split between ``ValueError``
+    and ``RuntimeError``, and their callers' ``except`` clauses followed
+    whichever their own copy raised. Inheriting from both means adopting the
+    shared reader cannot silently turn a check's reported failure into an
+    escaped traceback, which is the one thing a consolidation like this must
+    not do. New callers should catch ``ValueError``.
+    """
+
+
 def read_ppm(path: str | os.PathLike[str]) -> tuple[int, int, bytes]:
     """Read the binary P6 image ``--dump-frames`` writes.
 
@@ -152,11 +164,11 @@ def read_ppm(path: str | os.PathLike[str]) -> tuple[int, int, bytes]:
         while index < len(data) and data[index:index + 1].isspace():
             index += 1
         if index >= len(data):
-            raise ValueError(f"{path}: truncated PPM header")
+            raise PpmError(f"{path}: truncated PPM header")
         if data[index:index + 1] == b"#":
             newline = data.find(b"\n", index)
             if newline < 0:
-                raise ValueError(f"{path}: unterminated PPM comment")
+                raise PpmError(f"{path}: unterminated PPM comment")
             index = newline + 1
             continue
         end = index
@@ -166,24 +178,24 @@ def read_ppm(path: str | os.PathLike[str]) -> tuple[int, int, bytes]:
         index = end
 
     if fields[0] != b"P6":
-        raise ValueError(f"{path}: expected a P6 PPM, got magic {fields[0]!r}")
+        raise PpmError(f"{path}: expected a P6 PPM, got magic {fields[0]!r}")
     try:
         width, height, maximum = (int(field) for field in fields[1:])
     except ValueError as error:
-        raise ValueError(
+        raise PpmError(
             f"{path}: non-numeric PPM header field in {fields[1:]!r}") from error
     if width <= 0 or height <= 0:
-        raise ValueError(f"{path}: PPM dimensions {width}x{height} are not positive")
+        raise PpmError(f"{path}: PPM dimensions {width}x{height} are not positive")
     if maximum != 255:
-        raise ValueError(f"{path}: PPM maxval is {maximum}, expected 255")
+        raise PpmError(f"{path}: PPM maxval is {maximum}, expected 255")
     if index >= len(data) or not data[index:index + 1].isspace():
-        raise ValueError(f"{path}: missing the whitespace before the PPM raster")
+        raise PpmError(f"{path}: missing the whitespace before the PPM raster")
     index += 2 if data[index:index + 2] == b"\r\n" else 1
 
     pixels = data[index:]
     expected = width * height * 3
     if len(pixels) != expected:
-        raise ValueError(
+        raise PpmError(
             f"{path}: raster is {len(pixels)} bytes, expected {expected} "
             f"for {width}x{height} RGB")
     return width, height, pixels

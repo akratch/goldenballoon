@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from check_adventure_two import eeprom_image
-from harness_utils import resolve_binary
+from harness_utils import read_ppm, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -158,42 +158,6 @@ def find_pal_v80(roms: Path) -> Path | None:
                 and rom_header_crcs(candidate) == PAL_V80_CRCS):
             return candidate.resolve()
     return None
-
-
-def read_ppm(path: Path) -> tuple[int, int, bytes]:
-    data = path.read_bytes()
-    index = 0
-    fields: list[bytes] = []
-    while len(fields) < 4:
-        while index < len(data) and data[index:index + 1].isspace():
-            index += 1
-        if index >= len(data):
-            raise ValueError(f"{path}: truncated PPM header")
-        if data[index:index + 1] == b"#":
-            newline = data.find(b"\n", index)
-            if newline < 0:
-                raise ValueError(f"{path}: unterminated PPM comment")
-            index = newline + 1
-            continue
-        end = index
-        while end < len(data) and not data[end:end + 1].isspace():
-            end += 1
-        fields.append(data[index:end])
-        index = end
-    if fields[0] != b"P6":
-        raise ValueError(f"{path}: expected P6, got {fields[0]!r}")
-    width, height, maximum = map(int, fields[1:])
-    if width <= 0 or height <= 0 or maximum != 255:
-        raise ValueError(
-            f"{path}: invalid dimensions/range {width}x{height}, max={maximum}"
-        )
-    if index >= len(data) or not data[index:index + 1].isspace():
-        raise ValueError(f"{path}: missing raster separator")
-    index += 2 if data[index:index + 2] == b"\r\n" else 1
-    pixels = data[index:]
-    if len(pixels) != width * height * 3:
-        raise ValueError(f"{path}: truncated PPM pixels")
-    return width, height, pixels
 
 
 def centered_fit(outer_width: float, outer_height: float,

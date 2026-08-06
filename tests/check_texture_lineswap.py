@@ -107,7 +107,7 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import resolve_binary
+from harness_utils import read_ppm, resolve_binary
 
 SCRIPT = "tests/input_scripts/race_drive_long.txt"
 FRAMES = 3900          # race clock starts ~3120; this samples the settled HUD
@@ -128,27 +128,6 @@ MIN_PARITY_OFF = 1.05     # observed 1.07..1.81 (mask) / 1.45..2.43 (minimap)
 MIN_PARITY_RATIO = 1.40   # observed >= 1.79 (mask) / >= 2.10 (minimap)
 
 TEX_RE = re.compile(r"\[TEX\] lineSwappedUploads=(\d+)")
-
-
-def read_ppm(path: str) -> tuple[int, int, bytes]:
-    """Minimal P6 reader (same shape as check_race_drive.py's)."""
-    data = open(path, "rb").read()
-    idx, fields = 0, []
-    while len(fields) < 4:
-        while data[idx:idx + 1].isspace():
-            idx += 1
-        if data[idx:idx + 1] == b"#":
-            while data[idx:idx + 1] not in (b"\n", b""):
-                idx += 1
-            continue
-        j = idx
-        while not data[j:j + 1].isspace():
-            j += 1
-        fields.append(data[idx:j])
-        idx = j
-    idx += 1                      # single whitespace byte before the raster
-    w, h = int(fields[1]), int(fields[2])
-    return w, h, data[idx:idx + w * h * 3]
 
 
 def luma(path: str) -> tuple[int, int, list[int]]:

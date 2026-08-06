@@ -34,7 +34,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import read_ppm, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -215,20 +215,6 @@ def first_difference(left: list[str], right: list[str]) -> int | str:
         if left_row != right_row:
             return index
     return "stream length"
-
-
-def read_ppm(path: Path) -> tuple[int, int, bytes]:
-    data = path.read_bytes()
-    header = data.split(b"\n", 3)
-    require(len(header) == 4 and header[0] == b"P6" and header[2] == b"255",
-            f"{path}: unsupported PPM header")
-    try:
-        width, height = (int(item) for item in header[1].split())
-    except ValueError as error:
-        raise RuntimeError(f"{path}: malformed PPM dimensions") from error
-    require(width > 0 and height > 0 and len(header[3]) == width * height * 3,
-            f"{path}: malformed RGB payload")
-    return width, height, header[3]
 
 
 def frames(arm: Arm) -> dict[int, Path]:

@@ -52,7 +52,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import read_ppm as read_ppm_bytes, resolve_binary
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -241,16 +241,7 @@ def clean_environment(renderer: str | None) -> dict[str, str]:
 
 
 def read_ppm(path: Path) -> Image:
-    parts = path.read_bytes().split(b"\n", 3)
-    if len(parts) != 4 or parts[0] != b"P6" or parts[2] != b"255":
-        raise ValueError(f"{path}: unsupported PPM header")
-    width, height = (int(value) for value in parts[1].split())
-    expected = width * height * 3
-    if len(parts[3]) != expected:
-        raise ValueError(
-            f"{path}: RGB raster has {len(parts[3])} bytes, expected {expected}"
-        )
-    return Image(width, height, parts[3])
+    return Image(*read_ppm_bytes(path))
 
 
 def run_case(

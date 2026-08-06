@@ -37,7 +37,7 @@ import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import read_ppm as read_ppm_bytes, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -136,18 +136,7 @@ def environment(backend: str) -> dict[str, str]:
 
 
 def read_ppm(path: Path) -> Image:
-    data = path.read_bytes()
-    match = re.match(br"P6\s+(\d+)\s+(\d+)\s+255\s", data)
-    if match is None:
-        raise ValueError(f"{path}: malformed P6 PPM")
-    width, height = int(match.group(1)), int(match.group(2))
-    pixels = data[match.end():]
-    if len(pixels) != width * height * 3:
-        raise ValueError(
-            f"{path}: got {len(pixels)} raster bytes, "
-            f"expected {width * height * 3}"
-        )
-    return Image(width, height, pixels)
+    return Image(*read_ppm_bytes(path))
 
 
 def normalized_pace(output: str) -> tuple[str, ...]:

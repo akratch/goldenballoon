@@ -24,7 +24,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import read_ppm, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -75,20 +75,6 @@ def normalized_pace(output: str) -> tuple[str, ...]:
                 re.sub(r" dtms=\S+", " dtms=<wall>", line[marker:])
             )
     return tuple(rows)
-
-
-def read_ppm(path: Path) -> tuple[int, int, bytes]:
-    parts = path.read_bytes().split(b"\n", 3)
-    require(
-        len(parts) == 4 and parts[0] == b"P6" and parts[2] == b"255",
-        f"{path}: unsupported PPM header",
-    )
-    width, height = (int(value) for value in parts[1].split())
-    require(
-        len(parts[3]) == width * height * 3,
-        f"{path}: malformed RGB raster",
-    )
-    return width, height, parts[3]
 
 
 def run_arm(

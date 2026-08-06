@@ -81,6 +81,17 @@ with tempfile.TemporaryDirectory() as scratch:
     rejects(lambda: read_ppm(ppm("nonnum.ppm", b"P6\nwide 4\n255\n" + raster)),
             "a non-numeric dimension was accepted")
 
+    # The copies this replaced were split between ValueError and RuntimeError,
+    # and their callers' except clauses followed suit. Both must still catch,
+    # or adopting the shared reader turns a reported FAIL into a traceback.
+    for caught in (ValueError, RuntimeError):
+        try:
+            read_ppm(directory / "p5.ppm")
+        except caught:
+            pass
+        else:
+            raise SystemExit(f"FAIL: a malformed PPM did not raise {caught.__name__}")
+
 
 # --------------------------------------------------------------------------- #
 #  EEPROM slot encoding

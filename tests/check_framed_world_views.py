@@ -30,7 +30,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import read_ppm as read_ppm_bytes, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -172,15 +172,7 @@ ROUTE_PREFIXES = ("menu_init:", "level_load:")
 
 
 def read_ppm(path: Path) -> Image:
-    data = path.read_bytes()
-    match = re.match(br"P6\s+(\d+)\s+(\d+)\s+255\s", data)
-    if match is None:
-        raise RuntimeError(f"{path}: malformed P6 image")
-    width, height = int(match.group(1)), int(match.group(2))
-    pixels = data[match.end():]
-    if len(pixels) != width * height * 3:
-        raise RuntimeError(f"{path}: truncated pixel data")
-    return Image(width, height, pixels)
+    return Image(*read_ppm_bytes(path))
 
 
 def clean_environment(

@@ -62,7 +62,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import read_ppm, resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "tests" / "input_scripts"
@@ -123,24 +123,6 @@ class Arm:
     world_fx: dict[str, str]
     plan: dict[str, str]
     frame_dir: Path
-
-
-def read_ppm(path: Path) -> tuple[int, int, bytes]:
-    data = path.read_bytes()
-    if not data.startswith(b"P6"):
-        raise RuntimeError(f"{path} is not a P6 PPM")
-    fields: list[int] = []
-    index = 2
-    while len(fields) < 3:
-        while index < len(data) and data[index:index + 1].isspace():
-            index += 1
-        start = index
-        while index < len(data) and not data[index:index + 1].isspace():
-            index += 1
-        fields.append(int(data[start:index]))
-    index += 1
-    width, height, _ = fields
-    return width, height, data[index:index + width * height * 3]
 
 
 def run_arm(

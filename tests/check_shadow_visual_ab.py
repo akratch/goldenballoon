@@ -43,7 +43,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import read_ppm, resolve_binary
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -189,19 +189,6 @@ def run_arm(
     return RunResult(
         label, returncode, output, normalized_pace(output), shadow, depth
     )
-
-
-def read_ppm(path: Path) -> tuple[int, int, bytes]:
-    parts = path.read_bytes().split(b"\n", 3)
-    if len(parts) != 4 or parts[0] != b"P6" or parts[2] != b"255":
-        raise ValueError(f"{path}: unsupported PPM header")
-    width, height = (int(value) for value in parts[1].split())
-    expected = width * height * 3
-    if len(parts[3]) != expected:
-        raise ValueError(
-            f"{path}: RGB raster is {len(parts[3])} bytes, expected {expected}"
-        )
-    return width, height, parts[3]
 
 
 def scene_metrics(width: int, height: int, rgb: bytes) -> tuple[int, float]:
