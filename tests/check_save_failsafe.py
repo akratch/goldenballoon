@@ -124,13 +124,9 @@ import re
 import subprocess
 import sys
 
-from harness_utils import (
-    EEPROM_ARTIFACTS,
-    preserved_eeprom,
-    resolve_binary,
-    save_env,
-    test_save_dir,
-)
+from harness_utils import (config_block as save_config_block, EEPROM_ARTIFACTS,
+                           preserved_eeprom, resolve_binary, save_env,
+                           seal_slot, SLOT_BYTES, test_save_dir)
 
 SAVE_DIR = test_save_dir()
 EEPROM = os.path.join(SAVE_DIR, "eeprom.bin")
@@ -199,7 +195,6 @@ EVENT_RE = re.compile(
 #  populate_settings_from_save_data() (game/src/save_data.c).  No ROM bytes are
 #  involved: every image here is generated from these field widths.
 # --------------------------------------------------------------------------- #
-SLOT_BYTES = 40
 CONFIG_OFF, CONFIG_BYTES = 120, 8
 FASTLAPS_OFF, TIMES_OFF, RECORD_BYTES = 128, 320, 192
 
@@ -236,27 +231,17 @@ def _slot_bits(wizpig_amulet: int, taj_flags: int = 0,
         for j in range(8):
             b = (b << 1) | bits[i + j]
         out.append(b)
-    # populate_settings_from_save_data(): stored16 == (5 + sum(bytes[2:])) & 0xFFFF
-    s = (5 + sum(out[2:])) & 0xFFFF
-    out[0], out[1] = (s >> 8) & 0xFF, s & 0xFF
-    return bytes(out)
+    return bytes(seal_slot(out))
 
 
 def _sum_block(n: int) -> bytes:
     """A checksum-valid, otherwise-empty CourseRecords block."""
-    d = bytearray(n)
-    s = (5 + sum(d[2:])) & 0xFFFF
-    d[0], d[1] = (s >> 8) & 0xFF, s & 0xFF
-    return bytes(d)
+    return bytes(seal_slot(bytearray(n)))
 
 
 def _config_block() -> bytes:
-    """A checksum-valid SaveConfig word (read_eeprom_settings: byte 0 is the
-    checksum, and it sums nibbles 0..13, i.e. the low 56 bits)."""
-    v = 1 << 25                       # the subtitles bit; any payload will do
-    ck = 5 + sum((v >> (i * 4)) & 0xF for i in range(14))
-    v |= (ck & 0xFF) << 56
-    return v.to_bytes(8, "big")
+    """A checksum-valid SaveConfig word."""
+    return save_config_block(1 << 25)  # the subtitles bit; any payload will do
 
 
 def named_slot(taj_flags: int, balloons_total: int) -> bytes:
@@ -272,9 +257,7 @@ def named_slot(taj_flags: int, balloons_total: int) -> bytes:
             body[byte] |= 1 << shift
         else:
             body[byte] &= ~(1 << shift) & 0xFF
-    s = (5 + sum(body[2:])) & 0xFFFF
-    body[0], body[1] = (s >> 8) & 0xFF, s & 0xFF
-    return bytes(body)
+    return bytes(seal_slot(body))
 
 
 def image(slots: list[bytes]) -> bytes:

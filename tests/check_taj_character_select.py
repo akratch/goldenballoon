@@ -19,7 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from check_adventure_two import eeprom_image
-from harness_utils import read_ppm, resolve_binary
+from harness_utils import (config_block as save_config_block, read_ppm,
+                           resolve_binary)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -84,9 +85,7 @@ def config_block(drumstick: bool, tt: bool) -> bytes:
         value |= 1 << 1
     if tt:
         value |= 0xFFFFF << 4
-    checksum = 5 + sum((value >> (index * 4)) & 0xF for index in range(14))
-    value |= (checksum & 0xFF) << 56
-    return value.to_bytes(8, "big")
+    return save_config_block(value)
 
 
 def save_image(layout: Layout) -> bytes:

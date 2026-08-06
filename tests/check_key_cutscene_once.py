@@ -113,7 +113,9 @@ import re
 import subprocess
 import sys
 
-from harness_utils import preserved_eeprom, resolve_binary, save_env, test_save_dir
+from harness_utils import (config_block as save_config_block, preserved_eeprom,
+                           resolve_binary, save_env, seal_slot, SLOT_BYTES,
+                           test_save_dir)
 
 SCRIPT = "tests/input_scripts/adventure_race_loop.txt"
 FRAMES = 17000
@@ -158,11 +160,12 @@ KEY_RE = re.compile(r"keycutscene: world=(\d+) keys=0x([0-9a-f]+)"
 #  Synthetic EEPROM.  Layout from game/include/save_layout.h, and the bit order
 #  is exactly the order populate_settings_from_save_data() reads it in with
 #  func_80072C54() (game/src/save_data.c:398-413).  No ROM bytes are involved:
-#  every byte here is generated from those field widths.  Deliberately
-#  self-contained rather than shared with check_save_failsafe.py's builder, so
-#  the two checks cannot break each other.
+#  every byte here is generated from those field widths.  The field layout
+#  below stays deliberately self-contained rather than shared with
+#  check_save_failsafe.py's builder, so the two checks cannot break each
+#  other's fixture; only the checksum arithmetic is shared, because that is the
+#  engine's format rather than either check's choice.
 # --------------------------------------------------------------------------- #
-SLOT_BYTES = 40
 EEPROM_SIZE = 512
 CONFIG_OFF, CONFIG_BYTES = 120, 8
 FASTLAPS_OFF, TIMES_OFF, RECORD_BYTES = 128, 320, 192
@@ -203,24 +206,16 @@ def slot(keys: int, balloons: tuple, filename: int = 0x1234) -> bytes:
         for j in range(8):
             b = (b << 1) | bits[i + j]
         out.append(b)
-    s = (5 + sum(out[2:])) & 0xFFFF     # populate_settings_from_save_data()'s sum
-    out[0], out[1] = (s >> 8) & 0xFF, s & 0xFF
-    return bytes(out)
+    return bytes(seal_slot(out))
 
 
 def sum_block(n: int) -> bytes:
-    d = bytearray(n)
-    s = (5 + sum(d[2:])) & 0xFFFF
-    d[0], d[1] = (s >> 8) & 0xFF, s & 0xFF
-    return bytes(d)
+    return bytes(seal_slot(bytearray(n)))
 
 
 def config_block() -> bytes:
-    """A checksum-valid SaveConfig word (read_eeprom_settings sums nibbles 0..13)."""
-    v = 1 << 25                          # the subtitles bit; any payload will do
-    ck = 5 + sum((v >> (i * 4)) & 0xF for i in range(14))
-    v |= (ck & 0xFF) << 56
-    return v.to_bytes(8, "big")
+    """A checksum-valid SaveConfig word."""
+    return save_config_block(1 << 25)    # the subtitles bit; any payload will do
 
 
 def image(slot0: bytes) -> bytes:

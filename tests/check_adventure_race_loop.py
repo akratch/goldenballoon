@@ -80,12 +80,11 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import resolve_binary
+from harness_utils import resolve_binary, SLOT_BYTES, slot_checksum
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, "tests", "input_scripts", "adventure_race_loop.txt")
 FRAMES = 17000
-SLOT_BYTES = 40
 ASSET_LEVEL_HEADERS_TABLE = 22
 ASSET_LEVEL_HEADERS = 23
 LEVELHEADER_RACE_TYPE = 0x4C
@@ -225,7 +224,7 @@ def decode_progress(save: bytes, rom_path: str) -> dict[str, object]:
         raise ValueError(f"EEPROM is only {len(save)} bytes (need at least {SLOT_BYTES})")
     slot = save[:SLOT_BYTES]
     stored_checksum = read_bits(slot, 0, 16)
-    expected_checksum = (5 + sum(slot[2:])) & 0xFFFF
+    expected_checksum = slot_checksum(slot)
 
     with open(rom_path, "rb") as f:
         rom = normalize_rom(f.read())

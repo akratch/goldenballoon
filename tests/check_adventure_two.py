@@ -34,7 +34,9 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import resolve_binary
+from harness_utils import (config_block as save_config_block, put_bits,
+                           resolve_binary, seal_slot, SLOT_BYTES,
+                           slot_checksum_valid)
 
 
 MAIN_TRACK_IDS = [
@@ -51,7 +53,6 @@ VISUAL_DUMP_EVERY = 25
 VISUAL_DUMP_THROUGH = 2250
 
 EEPROM_BYTES = 512
-SLOT_BYTES = 40
 CONFIG_OFFSET = 120
 RECORD_OFFSETS = (128, 320)
 RECORD_BYTES = 192
@@ -82,10 +83,6 @@ REQUIRED_ADV2_WITNESSES = (
 )
 
 
-def put_bits(bits: list[int], width: int, value: int) -> None:
-    bits.extend((value >> shift) & 1 for shift in range(width - 1, -1, -1))
-
-
 def save_slot(adventure_two: bool) -> bytes:
     bits: list[int] = []
     put_bits(bits, 16, 0)       # checksum, populated below
@@ -109,22 +106,16 @@ def save_slot(adventure_two: bool) -> bytes:
         int("".join(str(bit) for bit in bits[i:i + 8]), 2)
         for i in range(0, len(bits), 8)
     )
-    out[0:2] = ((5 + sum(out[2:])) & 0xFFFF).to_bytes(2, "big")
-    return bytes(out)
+    return bytes(seal_slot(out))
 
 
 def config_block() -> bytes:
     # Adventure Two unlocked + the retail default subtitle bit.
-    value = (1 << 25) | 1
-    checksum = 5 + sum((value >> (i * 4)) & 0xF for i in range(14))
-    value |= (checksum & 0xFF) << 56
-    return value.to_bytes(8, "big")
+    return save_config_block((1 << 25) | 1)
 
 
 def sum_block(size: int) -> bytes:
-    out = bytearray(size)
-    out[0:2] = ((5 + sum(out[2:])) & 0xFFFF).to_bytes(2, "big")
-    return bytes(out)
+    return bytes(seal_slot(bytearray(size)))
 
 
 def eeprom_image(adventure_two: bool) -> bytes:
@@ -135,10 +126,6 @@ def eeprom_image(adventure_two: bool) -> bytes:
     for offset in RECORD_OFFSETS:
         out[offset:offset + RECORD_BYTES] = sum_block(RECORD_BYTES)
     return bytes(out)
-
-
-def slot_checksum_ok(slot: bytes) -> bool:
-    return int.from_bytes(slot[:2], "big") == ((5 + sum(slot[2:])) & 0xFFFF)
 
 
 def slot_cutscene_flags(slot: bytes) -> int:
@@ -353,7 +340,7 @@ def validate_run(
         failures.append(f"EEPROM length {len(saved)}, expected {EEPROM_BYTES}")
     else:
         slot = saved[:SLOT_BYTES]
-        if not slot_checksum_ok(slot):
+        if not slot_checksum_valid(slot):
             failures.append("save-slot checksum is invalid after campaign transition")
         flags = slot_cutscene_flags(slot)
         expected_flags = CUTSCENE_ADVENTURE_TWO if adventure_two else 0

@@ -19,12 +19,12 @@ import re
 import subprocess
 import tempfile
 
-from harness_utils import resolve_binary
+from harness_utils import (config_block as save_config_block, put_bits,
+                           resolve_binary, seal_slot, SLOT_BYTES, slot_checksum)
 
 
 ROOT = Path(__file__).resolve().parent.parent
 EEPROM_BYTES = 512
-SLOT_BYTES = 40
 CONFIG_OFFSET = 120
 RECORD_OFFSETS = (128, 320)
 RECORD_BYTES = 192
@@ -60,10 +60,6 @@ BAD_RE = re.compile(
 )
 
 
-def put_bits(bits: list[int], width: int, value: int) -> None:
-    bits.extend((value >> shift) & 1 for shift in range(width - 1, -1, -1))
-
-
 def save_slot() -> bytes:
     bits: list[int] = []
     put_bits(bits, 16, 0)
@@ -87,21 +83,15 @@ def save_slot() -> bytes:
         int("".join(str(bit) for bit in bits[i:i + 8]), 2)
         for i in range(0, len(bits), 8)
     )
-    out[0:2] = ((5 + sum(out[2:])) & 0xFFFF).to_bytes(2, "big")
-    return bytes(out)
+    return bytes(seal_slot(out))
 
 
 def sum_block(size: int) -> bytes:
-    out = bytearray(size)
-    out[0:2] = ((5 + sum(out[2:])) & 0xFFFF).to_bytes(2, "big")
-    return bytes(out)
+    return bytes(seal_slot(bytearray(size)))
 
 
 def config_block() -> bytes:
-    value = 1  # retail default subtitle bit
-    checksum = 5 + sum((value >> (i * 4)) & 0xF for i in range(14))
-    value |= (checksum & 0xFF) << 56
-    return value.to_bytes(8, "big")
+    return save_config_block(1)  # retail default subtitle bit
 
 
 def eeprom_image() -> bytes:
@@ -263,7 +253,7 @@ def main() -> int:
     else:
         slot = save[:SLOT_BYTES]
         checksum = int.from_bytes(slot[:2], "big")
-        expected_checksum = (5 + sum(slot[2:])) & 0xFFFF
+        expected_checksum = slot_checksum(slot)
         if checksum != expected_checksum:
             failures.append(
                 f"EEPROM checksum 0x{checksum:04x}, expected 0x{expected_checksum:04x}"
