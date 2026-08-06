@@ -67,6 +67,11 @@ behind nearly every hard defect in this port, several of them completely silent.
   upstream decompilation changes, and the validation required afterwards.
 - **[`../tests/README.md`](../tests/README.md)** — every regression check, its
   frame budget, its expected terminal state, and the input-script format.
+- **[`TEST_SUITE_ECONOMICS.md`](TEST_SUITE_ECONOMICS.md)** — where the complete
+  suite's 2¼–3¼ hours actually go, measured from two full runs: the per-task
+  cost table, the overlap candidates with the evidence each one still needs, and
+  the gates whose cost is the point. Documentation only; the release gate is
+  still the full run.
 
 ## Open items and status
 
