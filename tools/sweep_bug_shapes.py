@@ -64,7 +64,10 @@ SELFTEST = [
     # cannot make the class look empty.
     ("shift-count", "game/src/objects.c", "track_setup_racers:MIPS-MASK-IDIOM"),
     ("shift-count", "game/src/game.c", "level_load:MIPS-MASK-IDIOM"),
-    ("shift-count", "game/src/waves.c", "obj_wave_height:MIPS-MASK-IDIOM"),
+    # The 100%-match sync moved obj_wave_height's -1 inside DKR_SHL32's masked
+    # operand, so the added-constant idiom is gone and the site classifies as
+    # var-count. The pin follows the truth; the site itself is still found.
+    ("shift-count", "game/src/waves.c", "obj_wave_height:var-count"),
 ]
 
 IDENT = r"[A-Za-z_]\w*"
