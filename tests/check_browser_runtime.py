@@ -132,11 +132,19 @@ WORLD_SHADOW_RE = re.compile(
     r"complete=(\d+)\s+fallback=(\d+)\s+resourceFailures=(\d+)\s+"
     r"latched=(\d+)"
 )
+# The two optional groups are NON-capturing on purpose: the summary line grows
+# as the runtime gains per-family and comfort telemetry, and every index below
+# (row[0] gate, row[1:3] authority, row[3] corrected, row[4:7] resolved,
+# row[7] target_hidden) is positional. Matching the new fields without
+# capturing them keeps this gate readable against both the current line and an
+# older recorded one.
 CAMERA_OBSTRUCTION_RE = re.compile(
     r"camera_obstruction_observe summary .* gate=(\w+)\(logical_camera_unchanged\) "
+    r"(?:comfort=\w+ )?"
     r"duplicates=(\d+) projection_mismatches=(\d+) "
     r"resolved=\{corrected=(\d+) penetrated=(\d+) invalid=(\d+) degraded=(\d+)\} "
     r"target_hidden=(\d+) target_embedded=(\d+) depenetrate_only=(\d+) "
+    r"(?:safety_only=\d+ )?"
     r"emergency=(\d+)"
 )
 CAMERA_DYNAMIC_RE = re.compile(

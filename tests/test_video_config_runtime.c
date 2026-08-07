@@ -740,10 +740,14 @@ static int run_deferred_apply_case(void) {
            s_presentFrameLimitCalls == 1 &&
            !strcmp(s_presentFrameLimit, "60"));
 
-    /* --- The camera domain: LEVEL, deferred to a level load --- */
+    /* --- The camera domain: LEVEL, deferred to a level load ---
+     *
+     * The staged direction is modern -> observe, the opt-out, because that is
+     * now the change a player makes: the corrected camera is the default, so
+     * staging "modern" against the default would stage nothing at all. */
     expect("deferred camera obstruction is accepted",
            mdkr_video_config_runtime_set(
-               MDKR_VIDEO_CAMERA_OBSTRUCTION, "modern") ==
+               MDKR_VIDEO_CAMERA_OBSTRUCTION, "observe") ==
                MDKR_VIDEO_RUNTIME_LIVE);
     expect("the level boundary is pending",
            mdkr_video_config_apply_is_pending(MDKR_VIDEO_SCOPE_LEVEL));
@@ -759,19 +763,32 @@ static int run_deferred_apply_case(void) {
     /*
      * ...and while it waits, the live config still reports the policy the
      * engine is actually running. This is what the settings panel reads to say
-     * "now: Authored", and a staged value copied in early would make it lie.
+     * "now: Keep the camera out of walls", and a staged value copied in early
+     * would make it lie.
      */
     expect("the live config still holds the running policy",
            !strcmp(mdkr_video_config_current()
                        ->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
-                   "observe"));
+                   "modern"));
     expect("the desired config holds the player's choice",
            !strcmp(mdkr_video_config_desired()
                        ->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
-                   "modern"));
+                   "observe"));
     /* A LEVEL key must not raise the restart notice; that is the whole point. */
     expect("a staged LEVEL key raises no restart",
            !mdkr_video_config_restart_pending());
+
+    /* Camera.Comfort shares the domain, so the two keys must reach the engine
+     * through one boundary rather than two -- one apply, both values. */
+    expect("deferred camera comfort is accepted",
+           mdkr_video_config_runtime_set(
+               MDKR_VIDEO_CAMERA_COMFORT, "reduced") ==
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("comfort waits at the same boundary",
+           mdkr_video_config_apply_is_pending(MDKR_VIDEO_SCOPE_LEVEL) &&
+           !strcmp(mdkr_video_config_current()
+                       ->values[MDKR_VIDEO_CAMERA_COMFORT].text,
+                   "authored"));
 
     expect("the level boundary applies the camera domain",
            mdkr_video_config_apply_pending(MDKR_VIDEO_SCOPE_LEVEL) == 1 &&
@@ -779,7 +796,11 @@ static int run_deferred_apply_case(void) {
     expect("the applied policy is now the live config",
            !strcmp(mdkr_video_config_current()
                        ->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
-                   "modern"));
+                   "observe"));
+    expect("one apply carried both camera keys",
+           !strcmp(mdkr_video_config_current()
+                       ->values[MDKR_VIDEO_CAMERA_COMFORT].text,
+                   "reduced"));
 
     /* Unregistering returns the domain to the inline path rather than leaving
      * a value staged for a boundary that no longer exists. */

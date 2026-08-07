@@ -324,9 +324,14 @@ const Option kShadows[] = {
 // The two player-facing spellings only. mdkr_video_camera_obstruction_canonical()
 // also takes "legacy" and "center-ray" so the MDKR_CAMERA_OBSTRUCTION diagnostic
 // seam keeps working, but those are A/B arms, not states to offer a player.
+// Default first, as everywhere else in this table.
 const Option kCameraObstruction[] = {
+    {"modern", "Keep the camera out of walls (recommended)"},
     {"observe", "Authored (original camera)"},
-    {"modern", "Keep out of walls"},
+};
+const Option kCameraComfort[] = {
+    {"authored", "Authored motion"},
+    {"reduced", "Reduced motion"},
 };
 const Option kMenuLanguages[] = {
     {"all", "All (every language on the disc)"},
@@ -377,6 +382,8 @@ bool optionsFor(MdkrVideoKey k, Options &out) {
         case MDKR_VIDEO_WORLD_SHADOWS:      out = {kShadows, 3}; return true;
         case MDKR_VIDEO_CAMERA_OBSTRUCTION:
             out = {kCameraObstruction, 2}; return true;
+        case MDKR_VIDEO_CAMERA_COMFORT:
+            out = {kCameraComfort, 2}; return true;
         case MDKR_VIDEO_MENU_LANGUAGES:
             out = {kMenuLanguages, 2}; return true;
         case MDKR_WINDOW_MODE:              out = {kWindowMode, 2}; return true;

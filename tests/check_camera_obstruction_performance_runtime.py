@@ -46,8 +46,8 @@ def fields(text: str) -> dict[str, int]:
 
 
 def run(binary: Path, rom: Path, root: Path, policy: str,
-        frames: int, timeout: int) -> Result:
-    run_root = root / policy
+        frames: int, timeout: int, comfort: str = "authored") -> Result:
+    run_root = root / f"{policy}-{comfort}"
     run_root.mkdir()
     env = {key: value for key, value in os.environ.items()
            if not key.startswith(("MDKR", "GE007_"))}
@@ -55,6 +55,7 @@ def run(binary: Path, rom: Path, root: Path, policy: str,
         LC_ALL="C",
         MDKR_AUDIO="0",
         MDKR_AUTOPILOT="1",
+        MDKR_CAMERA_COMFORT=comfort,
         MDKR_CAMERA_OBSTRUCTION=policy,
         MDKR_CAMERA_PERF="1",
         MDKR_RENDERER="gl",
@@ -116,6 +117,11 @@ def main() -> int:
             root = Path(temp)
             observe = run(binary, rom, root, "observe", args.frames, args.timeout)
             modern = run(binary, rom, root, "modern", args.frames, args.timeout)
+            # Camera.Comfort's presentation-only proof, on exactly the terms
+            # the camera itself is held to: same route, same policy, reduced
+            # motion, and the authoritative state stream must not move.
+            comfort = run(binary, rom, root, "modern", args.frames,
+                          args.timeout, comfort="reduced")
     except (RuntimeError, subprocess.TimeoutExpired) as error:
         print(f"check_camera_obstruction_performance_runtime: FAIL\n  - {error}",
               file=sys.stderr)
@@ -169,6 +175,22 @@ def main() -> int:
         failures.append(
             f"Observe/Modern authority streams differ or are incomplete: "
             f"{len(observe.state)}/{len(modern.state)}")
+    # Same contract, second setting. Reduced motion changes the picture the
+    # sidecar publishes and nothing the simulation hashes; if this ever
+    # diverges, the comfort filter has reached the authored camera.
+    if comfort.state != modern.state or len(comfort.state) != args.frames:
+        failures.append(
+            f"Camera.Comfort moved the authority stream: "
+            f"{len(comfort.state)}/{len(modern.state)}")
+    # A smoothed desired eye sits closer to geometry on some ticks, so the
+    # comfort arm legitimately solves more often than the default one. It still
+    # has to fit the same fixed tick: an accessibility option only some hardware
+    # can afford is not one, and this is the only place that path is timed.
+    comfort_finalizer = comfort.metrics["finalizer"]
+    if comfort_finalizer.get("p99_ns", P99_BUDGET_NS + 1) > P99_BUDGET_NS:
+        failures.append(
+            f"comfort finalizer p99 {comfort_finalizer.get('p99_ns')}ns "
+            f"exceeds {P99_BUDGET_NS}ns")
     if modern.max_cache_bytes == 0 or modern.max_cache_build_ns == 0:
         failures.append("camera track-cache memory/build census was absent")
     if modern.selected.get("dynamic_bytes", 0) == 0:
@@ -181,7 +203,8 @@ def main() -> int:
         f"4P ticks={modern.selected.get('selected4', 0)}; "
         f"max track cache={modern.max_cache_bytes} bytes / "
         f"{modern.max_cache_build_ns}ns build; "
-        f"Observe p99={observe.metrics['finalizer'].get('p99_ns')}ns"
+        f"Observe p99={observe.metrics['finalizer'].get('p99_ns')}ns; "
+        f"Comfort p99={comfort.metrics['finalizer'].get('p99_ns')}ns"
     )
     if failures:
         print("check_camera_obstruction_performance_runtime: FAIL", file=sys.stderr)

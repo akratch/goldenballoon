@@ -193,8 +193,8 @@ The principal gates are:
 ## Changing these settings while you play
 
 Frame limit, Motion smoothing and Allow tearing take effect on the next frame.
-Camera obstruction takes effect the next time a track loads. None of them needs
-a relaunch, and none of them changes gameplay: the authoritative state, event
+The two Camera settings take effect the next time a track loads. None of them
+needs a relaunch, and none of them changes gameplay: the authoritative state, event
 and input streams of a run that toggles them are byte-identical to a run that
 never did, which `tests/check_live_toggle_settings.py` asserts directly against
 an untoggled baseline.

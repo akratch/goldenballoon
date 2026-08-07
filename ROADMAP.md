@@ -84,7 +84,7 @@ someone playing rather than reading.
 The exit condition is a single deterministic start→credits gate, not a
 collection of partial routes.
 
-### Camera obstruction correction — opt-in; breadth evidence outstanding
+### Camera obstruction correction — default-on; breadth evidence outstanding
 
 **Where it stands.** The projection-derived lens guard is ported and compiled:
 the sweep kernel, resolver, transform adapter, static and dynamic occlusion
@@ -93,25 +93,32 @@ each of the eight authored camera slots
 (`game/src/camera_obstruction_runtime.c`, `platform/camera_obstruction*.c`).
 Rendering no longer computes a lens; it consumes the projection record the
 finalizer latched. The runtime policy comes from `MDKR_CAMERA_OBSTRUCTION`, and
-**unset selects Observe** — the authored pose is retained and only measured.
-Modern, where every authored slot is resolved and no pinned route publishes a
-penetrated, degraded, or invalid pose, is reached through the launcher's
-Camera obstruction setting or the variable directly. `center-ray` and `legacy`
-remain in the same binary as diagnostic arms and as the required
-broken-direction controls, and a misspelled value falls back to Observe rather
-than silently correcting or silently selecting an unqualified arm.
+as of 2026-08-07 **unset selects Modern** — every authored slot is resolved and
+no pinned route publishes a penetrated, degraded, or invalid pose. Observe, where
+the authored pose is retained and only measured, is the player-facing opt-out,
+reached through the launcher's Camera setting or the variable directly.
+`center-ray` and `legacy` remain in the same binary as diagnostic arms and as
+the required broken-direction controls, and a misspelled value falls back to the
+default rather than silently switching the shipped camera off or silently
+selecting an unqualified arm. `Camera.Comfort` ships beside it: a presentation-
+only reduced-motion opt-in, off by default.
 
-**What remains.** Every CAM-00–CAM-09 exit gate in
+**What remains.** Several CAM-00–CAM-09 exit gates in
 [`docs/architecture/camera-obstruction.md`](docs/architecture/camera-obstruction.md)
-is breadth and product-quality evidence, and they are not closed. That is what
-keeps the correction opt-in: the resolver substitutes only at presentation
-depth, so it cannot move authoritative state whatever those gates find, but
-until they close the authored camera stays the shipped one. The underlying
-defect — gameplay cameras entering terrain and object geometry — therefore stays
-open in [`docs/open-items/gameplay.md`](docs/open-items/gameplay.md) as shipped
-behaviour, not only as a breadth claim, and a centre ray, fixed-radius clamp,
-terrain-only spring arm, or void-curtain mask is still explicitly a partial
-mitigation rather than the fix.
+are still open, and every one of them is *breadth of evidence* rather than a
+known defect — differential fuzzing corpora, GCC/wasm32 sanitizer-equivalent
+runs, soft-occluder enrollment and its pixel proof, WebGPU/browser and
+resource-plateau breadth, manual motion review. §10.1 of that document records
+exactly which rows the default flip rested on and which it did not wait for.
+They are now open *behind* the default rather than in front of it, which is
+survivable for one reason: the resolver substitutes only at presentation depth,
+so no open gate can turn into moved authoritative state, and `Camera.Obstruction
+= observe` is a shipped, tested setting rather than a build. The underlying
+defect — gameplay cameras entering terrain and object geometry — no longer
+stands in default play, and stays open in
+[`docs/open-items/gameplay.md`](docs/open-items/gameplay.md) on breadth alone.
+A centre ray, fixed-radius clamp, terrain-only spring arm, or void-curtain mask
+is still explicitly a partial mitigation rather than the fix.
 
 ## Renderer
 

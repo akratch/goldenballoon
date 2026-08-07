@@ -10,7 +10,27 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ## [Unreleased]
 
+### Added
+
+- **Reduced motion**, a new Camera motion setting. It calms the camera: it
+  smooths out the vertical shake from bumps, landings and explosions, and eases
+  the camera back out more gently after it has squeezed past a wall. Authored,
+  the default, leaves every bit of that motion exactly as the game wrote it.
+  Only the picture changes — your handling, your lap times, your ghosts and your
+  saves are identical either way — and it takes effect at the start of your next
+  race. It works with the camera that keeps itself out of walls; if you have
+  chosen the original camera there is nothing for it to soften.
+
 ### Changed
+
+- **The camera now keeps itself out of walls by default.** It pulls in front of
+  walls, doors and anything else solid that would come between it and your
+  racer, so you can always see where you are going instead of watching the
+  inside of a rock. Nothing about racing changes: your handling, your lap times,
+  your ghosts and your saves are all the same. If you would rather have the
+  camera the game originally wrote, it is one setting away — pick **Authored
+  (original camera)** under Camera in Settings, and it applies at the start of
+  your next race.
 
 - **Waterfalls, water and lava now move smoothly with everything else**, and
   Motion smoothing is no longer labelled a preview. With smoothing on, the
@@ -26,7 +46,7 @@ save formats). Everything below 1.0.0 predates that commitment.
   frame and you can go back and forth on the same corner until you know which
   one you prefer. Nothing else moves: your position, your lap time, the music
   and the handling are identical either way.
-- **Camera obstruction now takes effect at the start of your next race** rather
+- **The Camera settings now take effect at the start of your next race** rather
   than needing a restart. It waits for the next race on purpose — switching the
   camera in the middle of one would snap your view across the track, and the
   start of a race is the moment the camera is already being placed. The

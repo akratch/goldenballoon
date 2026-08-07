@@ -373,6 +373,35 @@ typedef struct MdkrCameraObstructionObserveSlot {
     uint8_t blocker_normal_valid;
     /* This tick was RETRACTED by the resolver's release hold, not by contact. */
     uint8_t release_held;
+    /*
+     * Camera.Comfort's vertical smoother (reduced motion only).
+     *
+     * comfort_smoothed_y is the filtered DESIRED eye height this slot last
+     * published to the resolver, and comfort_smoothed_tick is the tick_serial
+     * it was advanced on, so a second call inside one fixed tick reuses the
+     * step instead of taking another. Both are cleared by
+     * camera_obstruction_runtime_reset(), which is the whole reason
+     * Camera.Comfort can be SCOPE_LEVEL on the existing camera applier.
+     */
+    float comfort_smoothed_y;
+    uint64_t comfort_smoothed_tick;
+    uint8_t comfort_smoothed_valid;
+    /*
+     * The published height an UNCORRECTED comfort tick would carry, so the
+     * telemetry can tell the two things apart. `correction_applied` means "the
+     * resolver moved the camera off the shot it was asked for", and it feeds
+     * was_obstructed, the resolver status, and the whole MOTION-01 census.
+     * Comfort changes what was asked for; measuring that as an obstruction
+     * correction would report a permanently retracted camera on a route with
+     * no walls in it.
+     *
+     * Stored as the finished value rather than as an offset to add back,
+     * because the comparison has to be EXACT: `desired.y - shake` here and in
+     * camera_obstruction_build_final_pose are the same expression over the
+     * same operands, whereas reconstructing it from an offset would round.
+     */
+    float comfort_desired_pose_y;
+    uint8_t comfort_desired_pose_valid;
     /* MOTION-01 census state. Read and written only by the motion sampler. */
     MdkrCameraMotionSlot motion;
 } MdkrCameraObstructionObserveSlot;
@@ -628,16 +657,34 @@ static MdkrCameraObstructionRuntimePolicy camera_obstruction_runtime_policy(void
         : getenv("MDKR_CAMERA_OBSTRUCTION");
 
     /*
-     * OBSERVE is the default: the authored camera is the shipped one, and
-     * correction is opt-in. The launcher's Camera.Obstruction setting reaches
-     * this arm by exporting this same variable, so there is one seam and one
-     * spelling for the choice however a player made it.
+     * MODERN is the default: an unset or empty variable resolves to the
+     * corrected camera, running the shipped per-family treatment table
+     * (camera_obstruction_shipped_family_treatment) -- FULL for the follow
+     * families, DEPENETRATE_ONLY for door and scripted-cutscene shots.
+     *
+     * This inverted in the decisions wave. The correction shipped opt-in
+     * because it could not yet be shown to be strictly better than the
+     * authored camera on a racing route; that is no longer the position the
+     * measurements support. MOTION-01's hard invariants and baselines hold on
+     * every route under correction, the display matrix's 24 arms hold across
+     * the aspect/HFOV grid, the seam-release hold (RELEASE_HOLD_TICKS) closed
+     * the retract/expand chatter that was the last motion defect, and exact
+     * fan admission cut 24-arm emergency framings from 1585 to 46. The
+     * treatment table's own measurement is the reason follow families get
+     * FULL rather than SAFETY_ONLY.
+     *
+     * OBSERVE remains a complete, first-class opt-out, not a fallback: it
+     * publishes nothing and renders the authored camera the game writes.
+     *
+     * The launcher's Camera.Obstruction setting reaches this arm by exporting
+     * this same variable, so there is one seam and one spelling for the choice
+     * however a player made it.
      */
-    if (value == NULL || value[0] == '\0' || strcmp(value, "observe") == 0) {
-        return MDKR_CAMERA_RUNTIME_OBSERVE;
-    }
-    if (strcmp(value, "modern") == 0) {
+    if (value == NULL || value[0] == '\0' || strcmp(value, "modern") == 0) {
         return MDKR_CAMERA_RUNTIME_MODERN;
+    }
+    if (strcmp(value, "observe") == 0) {
+        return MDKR_CAMERA_RUNTIME_OBSERVE;
     }
     if (strcmp(value, "center-ray") == 0) {
         return MDKR_CAMERA_RUNTIME_CENTER_RAY;
@@ -646,10 +693,14 @@ static MdkrCameraObstructionRuntimePolicy camera_obstruction_runtime_policy(void
         return MDKR_CAMERA_RUNTIME_LEGACY;
     }
     /*
-     * A misspelled value resolves to OBSERVE, the only arm that measures
-     * without moving a camera: a typo means the caller asked for a policy and
-     * did not get it, so the run may neither silently correct nor silently
-     * select the known-unsafe LEGACY arm.
+     * A misspelled value resolves to the DEFAULT, which is now MODERN. The
+     * old rule sent a typo to OBSERVE on the argument that a run may not
+     * silently correct a camera nobody asked to correct; the flip turns that
+     * argument around. Correction is now what an unset variable gives, so
+     * landing a typo on OBSERVE would silently switch the shipped camera OFF
+     * -- a bigger surprise than landing it on the shipped behavior. What the
+     * rule protects is unchanged: a typo still may not select the known-unsafe
+     * LEGACY arm or the CENTER_RAY control.
      *
      * Say so once. The value the caller asked for was dropped, and a fallback
      * that lands on the same behavior as an unset variable is exactly the
@@ -660,12 +711,154 @@ static MdkrCameraObstructionRuntimePolicy camera_obstruction_runtime_policy(void
         sCameraObstructionPolicyFallbackReported = TRUE;
         fprintf(stderr,
                 "camera_obstruction: MDKR_CAMERA_OBSTRUCTION=\"%s\" is not a "
-                "known policy; falling back to observe (authored camera, no "
-                "correction). Valid values: observe (default), modern, "
+                "known policy; falling back to modern (the default corrected "
+                "camera). Valid values: modern (default), observe, "
                 "center-ray, legacy.\n",
                 value);
     }
-    return MDKR_CAMERA_RUNTIME_OBSERVE;
+    return MDKR_CAMERA_RUNTIME_MODERN;
+}
+
+/*
+ * Camera.Comfort: the reduced-motion opt-in, resolved exactly like the policy
+ * above -- the applied-config cache first, MDKR_CAMERA_COMFORT behind it -- so
+ * a launcher choice and an environment value reach this runtime through one
+ * seam and one spelling.
+ *
+ * Unset, empty, "authored" and anything unrecognised all resolve to authored
+ * motion. There is no fallback warning here and that asymmetry with the policy
+ * is deliberate: the policy's arms include two known-unsafe diagnostic controls
+ * a typo must never select, while this key's only other state is "leave the
+ * camera exactly as the game wrote it", which is both the default and the
+ * conservative answer.
+ */
+static int sCameraComfortFallbackReported;
+static char sCameraComfortApplied[32];
+
+static int camera_obstruction_comfort_reduced(void) {
+    const char *value = sCameraComfortApplied[0] != '\0'
+        ? sCameraComfortApplied
+        : getenv("MDKR_CAMERA_COMFORT");
+
+    if (value == NULL || value[0] == '\0' || strcmp(value, "authored") == 0) {
+        return FALSE;
+    }
+    if (strcmp(value, "reduced") == 0) {
+        return TRUE;
+    }
+    if (!sCameraComfortFallbackReported) {
+        sCameraComfortFallbackReported = TRUE;
+        fprintf(stderr,
+                "camera_obstruction: MDKR_CAMERA_COMFORT=\"%s\" is not a known "
+                "value; falling back to authored (the camera moves exactly as "
+                "the game wrote it). Valid values: authored (default), "
+                "reduced.\n",
+                value);
+    }
+    return FALSE;
+}
+
+/*
+ * Reduced motion, effect 1 of 2: vertical smoothing of the DESIRED eye.
+ *
+ * WHAT IT REMOVES. racer.c's authored camera folds a shake impulse straight
+ * into the camera's height every tick --
+ * `gCameraObject->trans.y_position += y_velocity + shakeMagnitude` -- with
+ * shakeMagnitude reversing sign every 5 authored ticks and decaying 0.75 each
+ * reversal. On a 30 Hz simulation that is a roughly 6 Hz vertical oscillation,
+ * and it is the single loudest source of camera motion a player cannot opt out
+ * of. Bumps, landings, and the vehicle-boss impacts that call
+ * set_camera_shake(12.0f) all arrive through it.
+ *
+ * WHY NOT AT THE SOURCE. The obvious fix -- skip the shake add -- is not
+ * available, and not for a stylistic reason: platform/sim_hash.c hashes
+ * gCameras[PLAYER_FOUR].trans and shakeMagnitude as AUTHORITATIVE state,
+ * because the 3P/T.T. camera's pose feeds next-tick object sort, LOD and
+ * visibility. Suppressing the impulse there would change the simulation and
+ * break the port's whole presentation/authority split. So the shake stays
+ * exactly where the game puts it, and comfort only changes what the sidecar
+ * asks the resolver to frame.
+ *
+ * WHY A FILTER RATHER THAN A SUBTRACTION. The impulse is integrated into an
+ * authored height that each camera mode then drags toward its own target with
+ * a mode-specific, per-tick retention (update_camera_car alone has two
+ * branches and a clamp). There is therefore no scalar the sidecar can subtract
+ * that reconstructs the shake-free height, and inventing one would be a guess
+ * dressed as an inverse. A low-pass makes no claim about the authored
+ * internals: it removes the band the shake lives in, has unity DC gain, so it
+ * introduces no standing height offset, and reduces every other vertical
+ * chatter a reduced-motion player also did not ask for.
+ *
+ * WHERE IT IS APPLIED, AND WHY THAT IS SAFE. On the resolver's DESIRED eye,
+ * before the solve. Smoothing the RESOLVED eye would be a correctness bug: the
+ * published pose is the one proven clear of geometry, and a lagged copy of it
+ * is not proven clear of anything. Smoothing the desired eye instead means the
+ * corrected camera still validates and publishes a pose that is clear, and the
+ * only thing comfort changes is which pose it was asked for.
+ *
+ * TIME-BASED, NOT TICK-BASED. Video.SimulationCadence changes the fixed step,
+ * so the coefficient is derived from fixed_delta_seconds. dt/(tau+dt) is the
+ * unconditionally stable first-order form: it is in [0,1) for every finite
+ * non-negative dt and needs no exp(). A paused tick has dt == 0, which holds
+ * the filter rather than stepping it.
+ *
+ * TAU. 0.13 s. One reversal of the authored shake is ~0.083 s, so the filter
+ * passes roughly a fifth of it while its own settling time stays under a fifth
+ * of a second -- slow enough to be felt as calm, not as the camera lagging the
+ * car. It is a comfort trade and it is opt-in; nothing else in the runtime
+ * depends on the number.
+ */
+#define MDKR_CAMERA_COMFORT_VERTICAL_TAU_SECONDS 0.13f
+/*
+ * Reduced motion, effect 2 of 2: a gentler boom recovery.
+ *
+ * The resolver bounds only EXPANSION -- min(recovery_speed * dt,
+ * max_recovery_step) -- and never retraction, which engages on contact with
+ * zero latency and no cap. Scaling these down therefore cannot leave the
+ * camera inside geometry for one tick longer than it otherwise would; it only
+ * makes the boom take longer to grow back out once the corridor is already
+ * clear, which is the visible motion a reduced-motion player is asking to
+ * calm. The release hysteresis is left alone: it is a false-negative fix, not
+ * a motion knob, and lengthening it would trade correctness for comfort.
+ */
+#define MDKR_CAMERA_COMFORT_RECOVERY_SCALE 0.4f
+
+static float camera_obstruction_comfort_smooth_y(
+    MdkrCameraObstructionObserveSlot *observe,
+    float desired_y,
+    float fixed_delta_seconds) {
+    float alpha;
+
+    if (observe == NULL || !isfinite(desired_y)) {
+        return desired_y;
+    }
+    /* A cut is the one moment the camera is allowed to teleport, and carrying
+     * a pre-cut height across it would drag the new shot toward the old one.
+     * Re-seed instead. */
+    if (!observe->comfort_smoothed_valid || observe->intent.discontinuity ||
+        !isfinite(observe->comfort_smoothed_y)) {
+        observe->comfort_smoothed_y = desired_y;
+        observe->comfort_smoothed_valid = TRUE;
+        observe->comfort_smoothed_tick = sCameraObstructionRuntime.tick_serial;
+        return desired_y;
+    }
+    /* Idempotent within one fixed tick: the finalizer is the only caller today,
+     * but the filter must be a function of ticks elapsed, not of calls made. */
+    if (observe->comfort_smoothed_tick == sCameraObstructionRuntime.tick_serial) {
+        return observe->comfort_smoothed_y;
+    }
+    observe->comfort_smoothed_tick = sCameraObstructionRuntime.tick_serial;
+    if (!isfinite(fixed_delta_seconds) || fixed_delta_seconds <= 0.0f) {
+        return observe->comfort_smoothed_y;
+    }
+    alpha = fixed_delta_seconds /
+        (MDKR_CAMERA_COMFORT_VERTICAL_TAU_SECONDS + fixed_delta_seconds);
+    observe->comfort_smoothed_y +=
+        (desired_y - observe->comfort_smoothed_y) * alpha;
+    if (!isfinite(observe->comfort_smoothed_y)) {
+        observe->comfort_smoothed_y = desired_y;
+    }
+    return observe->comfort_smoothed_y;
 }
 
 static MdkrCameraVec3 camera_obstruction_lerp(
@@ -1452,9 +1645,15 @@ static void camera_obstruction_publish_final_pose(
     observe->orientation_retargeted = pose->retargeted;
     observe->effective_eye = pose->rendered_eye;
     observe->resolved_valid = TRUE;
+    /* Against the shot that was ASKED for. Under Camera.Comfort that is the
+     * smoothed height the resolver was handed, not the authored one; comparing
+     * against the authored height instead would count every comfort-smoothed
+     * tick as an obstruction correction. */
     observe->correction_applied =
         pose->camera.trans.x_position != observe->authored.trans.x_position ||
-        pose->camera.trans.y_position != observe->authored.trans.y_position ||
+        pose->camera.trans.y_position != (observe->comfort_desired_pose_valid
+            ? observe->comfort_desired_pose_y
+            : observe->authored.trans.y_position) ||
         pose->camera.trans.z_position != observe->authored.trans.z_position;
     if (pose->discontinuity) observe->presentation_discontinuity = TRUE;
 }
@@ -2621,12 +2820,15 @@ static void camera_obstruction_resolve_slot(
                     mdkr_camera_obstruction_combined_sweep_adapter,
         use_exact ? (const void *)&lens_query : (const void *)&combined,
     };
+    const int comfort_reduced = camera_obstruction_comfort_reduced();
+    const float comfort_recovery_scale =
+        comfort_reduced ? MDKR_CAMERA_COMFORT_RECOVERY_SCALE : 1.0f;
     MdkrCameraObstructionResolverConfig config = {
         .policy = runtime_policy == MDKR_CAMERA_RUNTIME_CENTER_RAY ?
             MDKR_CAMERA_OBSTRUCTION_POLICY_CENTER_RAY : MDKR_CAMERA_OBSTRUCTION_POLICY_MODERN,
         .clearance_skin = 1.0f,
-        .recovery_speed = 600.0f,
-        .max_recovery_step = 20.0f,
+        .recovery_speed = 600.0f * comfort_recovery_scale,
+        .max_recovery_step = 20.0f * comfort_recovery_scale,
         .release_hold_ticks = MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS,
     };
     MdkrCameraObstructionResolverInput input;
@@ -2647,6 +2849,7 @@ static void camera_obstruction_resolve_slot(
     observe->resolver_status = MDKR_CAMERA_OBSTRUCTION_RESOLVER_CLEAR;
     observe->resolved_valid = TRUE;
     observe->correction_applied = FALSE;
+    observe->comfort_desired_pose_valid = FALSE;
     observe->blocker_kind = 0U;
     observe->blocker_stable_id = 0U;
     observe->blocker_normal_valid = FALSE;
@@ -2673,6 +2876,27 @@ static void camera_obstruction_resolve_slot(
     }
     desired.y += shake;
     treatment = camera_obstruction_family_treatment(observe->intent.family);
+    /*
+     * Camera.Comfort's vertical smoother, applied to the DESIRED eye only and
+     * after the render-side shake term, so what is smoothed is exactly the
+     * height the picture would otherwise have been framed at. Everything below
+     * -- anchor, retraction, emergency framing, publication and
+     * post-validation -- runs on this value and still proves its own pose
+     * clear. Authored motion leaves `desired` untouched.
+     *
+     * Not for DEPENETRATE_ONLY families, for the same reason they are
+     * DEPENETRATE_ONLY: door and scripted-cutscene shots are authored
+     * compositions whose framing belongs to the shot contract, not to a boom,
+     * and a fixed door camera has no vertical shake to remove in the first
+     * place. The motion this option exists to calm is the follow camera's.
+     */
+    if (comfort_reduced &&
+        treatment != MDKR_CAMERA_OBSTRUCTION_TREATMENT_DEPENETRATE_ONLY) {
+        desired.y = camera_obstruction_comfort_smooth_y(
+            observe, desired.y, fixed_delta_seconds);
+        observe->comfort_desired_pose_y = desired.y - shake;
+        observe->comfort_desired_pose_valid = TRUE;
+    }
     if (treatment == MDKR_CAMERA_OBSTRUCTION_TREATMENT_DEPENETRATE_ONLY) {
         if (!camera_obstruction_depenetrate_only_eye(
                 observe, physical_slot, &active_query, &combined,
@@ -3787,6 +4011,10 @@ void camera_obstruction_runtime_reset(void) {
  * The policy is swapped BEFORE the reset so no tick can observe the new policy
  * against pre-change state. Between them there is no tick at all — this runs
  * inside load_level_game, with the level itself not yet loaded.
+ *
+ * Camera.Comfort shares this applier. Its only per-slot state is the vertical
+ * smoother's carry (comfort_smoothed_*), which the same following reset clears,
+ * so the second key adds no new invalidation to prove.
  */
 void camera_obstruction_runtime_apply_config(void) {
     const MdkrVideoConfig *config = mdkr_video_config_current();
@@ -3797,16 +4025,27 @@ void camera_obstruction_runtime_apply_config(void) {
     }
     value = config->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text;
     /* Empty means the config has no opinion, which is not the same as
-     * "observe": leaving the override clear is what hands the decision back to
+     * "modern": leaving the override clear is what hands the decision back to
      * MDKR_CAMERA_OBSTRUCTION, including its diagnostic arms. */
     if (value == NULL || value[0] == '\0') {
         sCameraObstructionAppliedPolicy[0] = '\0';
+    } else {
+        snprintf(sCameraObstructionAppliedPolicy,
+                 sizeof(sCameraObstructionAppliedPolicy), "%s", value);
+        /* A previously-reported typo belongs to the value that was replaced. */
+        sCameraObstructionPolicyFallbackReported = FALSE;
+    }
+
+    /* Camera.Comfort rides the same applier and the same empty-means-defer
+     * rule, for the same reason: an unset config value must hand the choice
+     * back to MDKR_CAMERA_COMFORT rather than pin authored motion over it. */
+    value = config->values[MDKR_VIDEO_CAMERA_COMFORT].text;
+    if (value == NULL || value[0] == '\0') {
+        sCameraComfortApplied[0] = '\0';
         return;
     }
-    snprintf(sCameraObstructionAppliedPolicy,
-             sizeof(sCameraObstructionAppliedPolicy), "%s", value);
-    /* A previously-reported typo belongs to the value that was replaced. */
-    sCameraObstructionPolicyFallbackReported = FALSE;
+    snprintf(sCameraComfortApplied, sizeof(sCameraComfortApplied), "%s", value);
+    sCameraComfortFallbackReported = FALSE;
 }
 
 void camera_obstruction_runtime_install_config_apply(void) {
@@ -3947,7 +4186,8 @@ void camera_obstruction_tick(int update_rate_fields) {
         mdkr_camera_dynamic_occlusion_get_telemetry(&dynamic_telemetry);
         fprintf(stderr,
                 "camera_obstruction_observe summary tick=%llu selected=%d fresh_intents=%d stale_or_missing=%d "
-                "tt=%d bank=%s gate=%s(logical_camera_unchanged) duplicates=%u "
+                "tt=%d bank=%s gate=%s(logical_camera_unchanged) comfort=%s "
+                "duplicates=%u "
                 "projection_mismatches=%u "
                 "resolved={corrected=%d penetrated=%d invalid=%d degraded=%d} "
                 "target_hidden=%d target_embedded=%d depenetrate_only=%d safety_only=%d emergency=%d "
@@ -3971,6 +4211,7 @@ void camera_obstruction_tick(int update_rate_fields) {
                 runtime_policy == MDKR_CAMERA_RUNTIME_MODERN ? "MODERN" :
                 runtime_policy == MDKR_CAMERA_RUNTIME_CENTER_RAY ? "CENTER_RAY" :
                 runtime_policy == MDKR_CAMERA_RUNTIME_LEGACY ? "LEGACY" : "OBSERVE",
+                camera_obstruction_comfort_reduced() ? "reduced" : "authored",
                 sCameraObstructionRuntime.duplicate_solve_violations,
                 sCameraObstructionRuntime.projection_mismatch_violations,
                 corrected, resolved_penetrated, resolved_invalid, source_degraded,

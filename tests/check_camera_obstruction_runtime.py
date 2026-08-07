@@ -7,9 +7,14 @@ protecting only the eye center is insufficient, and Modern must correct every
 resolved lens overlap while leaving the logical camera untouched.
 
 The last arm runs with MDKR_CAMERA_OBSTRUCTION removed from the environment.
-Correction is opt-in, so the unset arm must report the OBSERVE gate and
-reproduce the explicit Observe arm's counters exactly -- this is the runtime
-witness that a player who sets nothing gets the authored camera.
+Correction is the default, so the unset arm must report the MODERN gate and
+reproduce the explicit Modern arm's counters exactly -- this is the runtime
+witness that a player who sets nothing gets the corrected camera.
+
+The explicit observe arm stays, and stays load-bearing, as the opt-out witness:
+it must still apply zero corrections, which is what proves that choosing the
+original camera actually returns the authored one rather than a renamed
+default.
 """
 
 from __future__ import annotations
@@ -49,6 +54,11 @@ def run(binary: str, rom: str, policy: str, frames: int, timeout: int,
         env.pop("MDKR_CAMERA_OBSTRUCTION", None)
     else:
         env["MDKR_CAMERA_OBSTRUCTION"] = policy
+    # Camera.Comfort is off by default and every arm here measures the authored
+    # motion. Removed rather than set, for the same reason as above: an
+    # inherited MDKR_CAMERA_COMFORT must not quietly become what this gate
+    # measured.
+    env.pop("MDKR_CAMERA_COMFORT", None)
     if extra_env:
         env.update(extra_env)
     command = [
@@ -68,6 +78,20 @@ def run(binary: str, rom: str, policy: str, frames: int, timeout: int,
     if marker:
         raise RuntimeError(f"{policy} emitted {marker}")
     return proc.stdout
+
+
+def resolved_trace(output: str) -> list[str]:
+    """Every published resolved pose, in order. Two runs that framed the same
+    picture produce identical lists."""
+    values = []
+    for row in output.splitlines():
+        if DETAIL not in row:
+            continue
+        match = re.search(r"\bresolved=\(([^)]+)\)", row)
+        if match is None:
+            raise RuntimeError("missing resolved pose")
+        values.append(match.group(1))
+    return values
 
 
 def field(row: str, name: str) -> int:
@@ -131,7 +155,10 @@ def inspect(policy: str, output: str) -> dict[str, int]:
     }
     # Only the corrective arms owe zero invalid/hidden results; importers pass
     # their own labels, and the ones that mean Modern prefix them with it.
-    corrective = policy.startswith("modern")
+    # "unset" is now one of them: the default resolves to Modern, so the arm a
+    # player who sets nothing runs owes exactly what the explicit Modern arm
+    # owes. That is the point of the flip, not an exception to it.
+    corrective = policy.startswith("modern") or policy == "unset"
     if result["degraded"] or (corrective and
                               (result["invalid"] or result["target_hidden"])):
         raise RuntimeError(f"{policy} degraded/invalid runtime: {result}")
@@ -163,12 +190,58 @@ def main() -> int:
             raise SystemExit(f"missing: {path}")
 
     results = {}
+    outputs = {}
     for policy in ("legacy", "center-ray", "modern", "observe", "unset"):
-        results[policy] = inspect(
-            policy, run(binary, args.rom, policy, args.frames, args.timeout))
+        outputs[policy] = run(binary, args.rom, policy, args.frames, args.timeout)
+        results[policy] = inspect(policy, outputs[policy])
         print(f"  {policy:10s} {results[policy]}")
 
+    # Camera.Comfort's reduced-motion arm, run on the default camera because
+    # that is the only camera it can soften -- observe publishes nothing for it
+    # to act on. Labelled "modern-..." so it carries Modern's obligations.
+    outputs["comfort"] = run(
+        binary, args.rom, "modern", args.frames, args.timeout,
+        extra_env={"MDKR_CAMERA_COMFORT": "reduced"})
+    results["comfort"] = inspect("modern-comfort-reduced", outputs["comfort"])
+    print(f"  {'comfort':10s} {results['comfort']}")
+
     failures = []
+    # Comfort is presentation, so it may change the picture and may change
+    # nothing else. Safety first: a softened desired eye is still solved
+    # against, so the published pose must still be proven clear.
+    if results["comfort"]["penetrated"] != 0:
+        failures.append(
+            f"comfort arm published {results['comfort']['penetrated']} "
+            "penetrated resolved pose(s)"
+        )
+    if results["comfort"]["gate"] != "MODERN":
+        failures.append(
+            f"comfort arm selected {results['comfort']['gate']}, not MODERN"
+        )
+    # The runtime has to have actually read the setting, and it has to have
+    # done something. A comfort option that silently no-ops is the failure this
+    # pair exists to catch.
+    if "comfort=reduced" not in outputs["comfort"]:
+        failures.append("comfort arm did not report comfort=reduced")
+    if "comfort=authored" not in outputs["modern"]:
+        failures.append("default arm did not report comfort=authored")
+    if resolved_trace(outputs["comfort"]) == resolved_trace(outputs["modern"]):
+        failures.append(
+            "comfort=reduced reproduced the authored-motion camera exactly; "
+            "the vertical smoother did nothing"
+        )
+    # ...and it has to stay legible as the thing it is. "corrected" means the
+    # resolver moved the camera off the shot it was asked for, and it feeds
+    # was_obstructed, the resolver status, and the whole MOTION-01 census.
+    # Comfort changes what is asked for. Counting that as an obstruction
+    # correction reports a permanently retracted camera on a wall-free route --
+    # it is a 35x inflation of this counter, and this bound is what catches it.
+    if results["comfort"]["corrected"] > 2 * results["modern"]["corrected"]:
+        failures.append(
+            f"comfort arm reported {results['comfort']['corrected']} corrections "
+            f"against the default arm's {results['modern']['corrected']}; the "
+            "comfort offset is being counted as an obstruction correction"
+        )
     if results["legacy"]["penetrated"] == 0:
         failures.append("legacy positive control did not reproduce a lens overlap")
     if results["center-ray"]["penetrated"] == 0:
@@ -195,27 +268,32 @@ def main() -> int:
         failures.append(
             f"modern published {results['modern']['penetrated']} penetrated resolved pose(s)"
         )
-    # Correction is opt-in, so the observe arm is what a player who sets nothing
-    # gets: the authored camera, uncorrected.
+    # The opt-out witness. Choosing the original camera has to actually return
+    # it: the observe arm must correct nothing at all. Without this the flip
+    # could ship a default that has no working way back.
     if results["observe"]["corrected"] != 0:
         failures.append(
             f"observe arm applied {results['observe']['corrected']} correction(s)"
         )
+    if results["observe"]["gate"] != "OBSERVE":
+        failures.append(
+            f"explicit observe selected {results['observe']['gate']}, not OBSERVE"
+        )
     # Default policy. Naming the arm is not enough -- a gate label can be wrong
-    # about what ran -- so the unset arm must also reproduce the Observe arm's
+    # about what ran -- so the unset arm must also reproduce the Modern arm's
     # every counter.
-    if results["unset"]["gate"] != "OBSERVE":
+    if results["unset"]["gate"] != "MODERN":
         failures.append(
-            f"unset MDKR_CAMERA_OBSTRUCTION selected {results['unset']['gate']}, not OBSERVE"
+            f"unset MDKR_CAMERA_OBSTRUCTION selected {results['unset']['gate']}, not MODERN"
         )
-    if results["unset"] != results["observe"]:
+    if results["unset"] != results["modern"]:
         differing = sorted(
-            key for key in results["observe"]
-            if results["unset"][key] != results["observe"][key]
+            key for key in results["modern"]
+            if results["unset"][key] != results["modern"][key]
         )
         failures.append(
-            "unset arm diverged from the explicit observe arm: " + ", ".join(
-                f"{key} {results['unset'][key]} vs {results['observe'][key]}"
+            "unset arm diverged from the explicit modern arm: " + ", ".join(
+                f"{key} {results['unset'][key]} vs {results['modern'][key]}"
                 for key in differing
             )
         )
