@@ -2837,7 +2837,9 @@ static MdkrPresentPolicyKind s_presentKind = MDKR_PRESENT_ORIGINAL;
 static unsigned s_presentEffectiveRate;
 static bool s_presentSoftwareDeadline;
 static MdkrPresentDeadlineClock s_presentDeadline;
+#ifndef __EMSCRIPTEN__
 static MdkrPresentDeadlineClock s_occludedDeadline;
+#endif
 static bool s_occludedDeadlineReady;
 static uint64_t s_presentLastNs;
 static uint64_t s_presentSyntheticPhase;
@@ -2869,7 +2871,9 @@ static unsigned s_presentDisplayRate;
  * not swap, so a run whose presents are all being retired by the queue never
  * touches it and its grid stays exactly the display's own.
  */
+#ifndef __EMSCRIPTEN__
 static MdkrPresentDeadlineClock s_shedDeadline;
+#endif
 static bool s_shedDeadlineReady;
 static bool s_presentLastHeld;
 
