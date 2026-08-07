@@ -1,4 +1,16 @@
-# Golden Balloon — unreleased
+# Golden Balloon 1.1.0
+
+*Released 2026-08-07.*
+
+Golden Balloon 1.1.0 is a feature release. The camera now stays out of walls
+by default, Frame Rate & Motion gets a single **Presentation pace** switch for
+the modern look, three of its settings now change the instant you touch them,
+and waterfalls, water and lava finally move with everything else. No game data
+is included.
+
+Recommended settings are unchanged: **WebGPU**, **Restored**, frame limit
+**Original**, motion smoothing **Off**, gameplay cadence **Original**. Existing
+preferences are preserved when upgrading.
 
 ## One switch for the modern picture
 
@@ -20,6 +32,15 @@ the same lap times, the same music, the same saves. Only the picture changes.
 The two settings underneath are still there, and still yours. If you have them
 on some other combination, the panel simply says **Custom** and leaves them
 alone.
+
+## Frame limit, motion smoothing and tearing change while you play
+
+These three used to be saved for the next time you pressed Play, so comparing
+two frame limits meant restarting the game twice and trying to remember what
+the first one looked like. Now the picture changes on the next frame, so you
+can go back and forth on the same corner until you know which one you prefer.
+Nothing else moves: your position, your lap time, the music and the handling
+are identical either way.
 
 ## Two new frame limits
 
@@ -75,6 +96,29 @@ labelled a preview.
 Interpolated draws presentation-only in-between images; it does not run the
 game more often. Racing, timers, sound and saves are exactly as they were, and
 Motion smoothing **Off** is untouched.
+
+## Known limitations
+
+- WebGPU is the recommended renderer. OpenGL is a diagnostic option, and the
+  Remastered look is still in progress.
+- Motion smoothing now moves the whole picture together, including
+  waterfalls, water and lava. It smooths the picture only — the game itself
+  still runs at its original pace. Off is unaffected.
+- The desktop app supports keyboard and gamepad navigation, visible focus,
+  scaling, contrast, and reduced motion. Screen readers are not supported yet.
+- On Linux, load a ROM by drag and drop or by typing its path; there is no
+  native file picker yet.
+- The macOS app is not notarized. If macOS shows an unidentified-developer
+  warning on first launch, use **System Settings → Privacy & Security → Open
+  Anyway**.
+- The Windows build is not code-signed. If Windows SmartScreen shows an
+  "unrecognized app" warning on first launch, choose **More info**, then
+  **Run anyway**.
+
+For implementation details, see [CHANGELOG.md](CHANGELOG.md). Open work is
+listed in [ROADMAP.md](ROADMAP.md).
+
+---
 
 # Golden Balloon 1.0.6
 
