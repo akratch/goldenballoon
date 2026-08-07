@@ -10,10 +10,17 @@ licensing, and are the documents to trust if this one ever drifts.
 DKR's audio is synthesised in software on the host. There is no RSP and no
 audio thread.
 
-1. **The engine.** `platform/audio_compat.c`, `platform/audio_event_queue.c`
-   and `platform/audio_fx_transfer.c` implement the libaudio surface — bank
-   and sequence-file parsing, the compact sequence player, the event queue,
-   envelope mixing, and the reverb delay lines. This is first-party
+1. **The engine.** `platform/audio_*.c` implement the libaudio surface, one
+   file per stage: `audio_bank.c` (bank and sequence-file parsing),
+   `audio_sequence.c` (the MIDI readers), `audio_envmix.c` (envelope
+   mixing), `audio_fx.c` (the reverb delay lines), `audio_filters.c`
+   (ADPCM/RAW16 loading, resampling, the buses), `audio_synth.c` (the
+   synthesis driver), `audio_seqplayer.c` and `audio_cspplayer.c` (the
+   compact sequence player), with `audio_compat.c` holding the engine
+   globals and the DKR extensions and `audio_compat_internal.h` the little
+   that crosses between them; alongside them `platform/audio_event_queue.c`
+   is the event queue and `platform/audio_fx_transfer.c` the reverb
+   delay-line transfer planner. This is first-party
    clean-room code, brought over from the sister **mgb64** project and
    extended here with a DKR extensions section (19 functions: the CC7/CC8
    dual channel-volume lanes and their accessors, the reverb gate and

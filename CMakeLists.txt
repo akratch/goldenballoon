@@ -228,7 +228,17 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/math_util_native.c
     ${CMAKE_SOURCE_DIR}/platform/mixer.c            # M5: software aspMain audio mixer
     ${CMAKE_SOURCE_DIR}/platform/audi_port_dkr.c    # audio-time service + SDL/worklet sinks
-    ${CMAKE_SOURCE_DIR}/platform/audio_compat.c     # clean-room synth: banks, filters, CSP player
+    # Clean-room native audio engine, split by stage (audio_compat_internal.h
+    # carries the include prologue and the few declarations that cross these).
+    ${CMAKE_SOURCE_DIR}/platform/audio_compat.c     # engine globals + DKR extensions
+    ${CMAKE_SOURCE_DIR}/platform/audio_bank.c       # instrument-bank + seqfile parsing
+    ${CMAKE_SOURCE_DIR}/platform/audio_sequence.c   # compressed + uncompressed MIDI readers
+    ${CMAKE_SOURCE_DIR}/platform/audio_envmix.c     # envelope mixer + equal-power pan table
+    ${CMAKE_SOURCE_DIR}/platform/audio_fx.c         # reverb/FX unit + low-pass filter
+    ${CMAKE_SOURCE_DIR}/platform/audio_filters.c    # ADPCM/RAW16 load, resampler, buses, save
+    ${CMAKE_SOURCE_DIR}/platform/audio_synth.c      # synthesis driver + alSyn* voice API
+    ${CMAKE_SOURCE_DIR}/platform/audio_seqplayer.c  # shared sequence-player state
+    ${CMAKE_SOURCE_DIR}/platform/audio_cspplayer.c  # compressed-sequence (CSP) player
     ${CMAKE_SOURCE_DIR}/platform/audio_event_queue.c # clean-room ALEventQueue + occupancy stats
     ${CMAKE_SOURCE_DIR}/platform/audio_fx_transfer.c # reverb delay-line transfer planner + guard
     ${CMAKE_SOURCE_DIR}/platform/mdkr_adventure.c   # P3.5b: Adventure route test hooks (no-op unless set)

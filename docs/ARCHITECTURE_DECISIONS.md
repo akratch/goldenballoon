@@ -47,7 +47,7 @@ docs/ref/        us.v80 linker script + symbol tables (reference for addresses)
    Below `GfxRenderingAPI` (`platform/fast3d/gfx_rendering_api.h`) everything is
    derived from mgb64 and maintained here for DKR's requirements.
 6. **Audio:** DKR targets the libultra N-Audio ABI, but the synthesiser itself
-   is **first-party clean-room code** — `platform/audio_compat.c` and friends,
+   is **first-party clean-room code** — the `platform/audio_*.c` engine,
    shared with mgb64 and extended with DKR-specific behaviour. Its `Acmd`
    output is HLE'd by `platform/mixer.c` (aspMain emulator). The 49 decompiled
    SGI-legend synthesiser sources that originally filled this role were
@@ -211,7 +211,7 @@ game controller via SDL_GameController); osGetCount/osGetTime from host clock
       leak into the master bus (+2.5 dB of peak, 4.3x the clip events).
       **Superseded in detail:** the synthesiser this entry describes was the
       decompiled SGI one. It was later deleted and replaced by the first-party
-      clean-room engine (`platform/audio_compat.c`), measured within 0.5 dB of
+      clean-room engine (`platform/audio_*.c`), measured within 0.5 dB of
       this baseline with a spectral cosine of 1.000. Everything above about the
       mixer, the pump, the sink and the addressing model still holds; see
       [docs/architecture/audio.md](architecture/audio.md).

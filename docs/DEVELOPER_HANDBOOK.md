@@ -188,7 +188,7 @@ Repo shape: `game/` ~133k lines (vendored decomp + `NATIVE_PORT` patches),
    was never built by any target here and was removed post-1.0.6; it lives on
    in git history and in the sister **mgb64** project if a Metal backend is
    ever revisited.
-7. **Audio** = the first-party clean-room engine (`platform/audio_compat.c` and
+7. **Audio** = the first-party clean-room engine (`platform/audio_*.c` and
    friends), its `Acmd` output executed by the software aspMain mixer
    (`platform/mixer.c`) via macro override. See
    [`architecture/audio.md`](architecture/audio.md).

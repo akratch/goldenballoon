@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / "platform" / "audi_port_dkr.c").read_text(encoding="utf-8")
 SFX_SOURCE = (ROOT / "game" / "src" / "audiosfx.c").read_text(encoding="utf-8")
 AUDIO_SOURCE = (ROOT / "game" / "src" / "audio.c").read_text(encoding="utf-8")
-COMPAT_SOURCE = (ROOT / "platform" / "audio_compat.c").read_text(encoding="utf-8")
+COMPAT_SOURCE = (ROOT / "platform" / "audio_seqplayer.c").read_text(encoding="utf-8")
 GAME_LOOP_SOURCE = (ROOT / "game" / "src" / "thread3_main.c").read_text(encoding="utf-8")
 HOST_TICK_SOURCE = (ROOT / "platform" / "stubs_dkr.c").read_text(encoding="utf-8")
 

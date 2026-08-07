@@ -446,7 +446,7 @@ def function_body(source: str, name: str) -> str:
 
 
 def check_source_boundary() -> None:
-    load_path = ROOT / "platform/audio_compat.c"
+    load_path = ROOT / "platform/audio_filters.c"
     mixer_path = ROOT / "platform/mixer.c"
     load = load_path.read_text(encoding="utf-8")
     mixer = mixer_path.read_text(encoding="utf-8")

@@ -1858,7 +1858,7 @@ at N+1, while route JSON frames name the intended authored present/tick phase.
 This phase conversion preserves the exact accepted digest above; removing it
 produces 27,832 rows and is the gate's required timing-regression direction.
 
-## Audio output — `tests/check_audio_output.py` (RUN THIS AFTER ANY CHANGE UNDER `game/src/audio*`, `platform/audio_compat.c`, `platform/audio_event_queue.c`, `platform/audio_fx_transfer.c`, `platform/mixer*` OR `platform/audi_port_dkr.c`)
+## Audio output — `tests/check_audio_output.py` (RUN THIS AFTER ANY CHANGE UNDER `game/src/audio*`, `platform/audio_*.c`, `platform/mixer*` OR `platform/audi_port_dkr.c`)
 
 The only check that asserts on **sound**. Until it landed, `README.md` and
 `CHANGELOG.md` both listed audio as working and nothing in `tests/` looked at it —
@@ -3643,6 +3643,15 @@ fixtures — every guard is re-run against a deliberately mutated copy of the
 source it inspects and must reject it. It also derives the release version from
 `CMakeLists.txt`'s `MDKR_VERSION` and requires this file's task list to match
 `tools/run_checks.py`'s manifest.
+
+The exact text it pins lives beside it in `tests/ci_contract_manifest.py`: one
+`Pin` per literal a named file must, or must never, contain, and one `Control`
+per deliberate break of a pin. Reword a workflow step, a refusal message or an
+artifact filename and you edit the pin and its control in the manifest; the
+check itself only holds what it computes — version agreement, the three-way
+frame-limit help comparison, occurrence counts, step ordering, the structural
+regexes over CMake and the packagers' archive manifests, the no-write output
+guards, and this file's coverage sweep.
 
 ### Optimized full-UBSan route gate — `tests/check_full_ubsan.py`
 

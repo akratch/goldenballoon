@@ -925,7 +925,7 @@ def check_audio_source_ownership(rep):
     audiomgr = (ROOT / "game/src/audiomgr.c").read_text(errors="replace")
     vehicle = (ROOT / "game/src/audio_vehicle.c").read_text(errors="replace")
     audio_header = (ROOT / "game/src/audio.h").read_text(errors="replace")
-    bank_parser = (ROOT / "platform/audio_compat.c").read_text(
+    bank_parser = (ROOT / "platform/audio_bank.c").read_text(
         errors="replace")
 
     required = {
