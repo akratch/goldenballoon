@@ -13232,6 +13232,26 @@ void postrace_free(void) {
     s32 headerWorldTex;
     LevelHeader *header;
 
+#ifdef NATIVE_PORT
+    /* The recap's aperture dies with the recap.
+     *
+     * postrace_start() states the region for the unframed finish footage and
+     * postrace_viewport() restates the safe aperture for every frame that
+     * draws the wooden frame; this is the matching release. Without it the
+     * post-race is the one aperture owner that never hands its region back,
+     * and the only thing that returns the picture to the presentation region
+     * is whatever scene happens to load next (cam_init/menu_init). Every exit
+     * this screen has today does load a scene, so that dependency is invisible
+     * -- which is exactly how issue #22 shipped: in 1.0.5 no scene-entry reset
+     * existed yet, and losing a challenge or placing 4th left the safe
+     * aperture latched, so the lobby and Try Again drew the world through a
+     * 4:3 lens stretched across the whole drawable.
+     *
+     * A screen owns its own aperture for its whole life. Releasing it here
+     * means no future exit route can reintroduce that leak. */
+    viewport_world_region_set(0, VIEWPORT_WORLD_REGION_PRESENTATION);
+#endif
+
     header = level_header();
     menu_assetgroup_free(gRaceResultsObjectIndices);
     headerWorldTex = header->world - 1;

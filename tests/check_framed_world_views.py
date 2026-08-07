@@ -30,6 +30,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from check_adventure_two import eeprom_image
 from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, fatal_re,
                            read_ppm as read_ppm_bytes, resolve_binary,
                            VALIDATION_MARKERS)
@@ -50,7 +51,36 @@ CHARSELECT_CONTROL_SCRIPT = (
     ROOT / "tests" / "input_scripts" / "nav_charselect_late.txt"
 )
 CREDITS_SCRIPT = ROOT / "tests" / "input_scripts" / "credits_via_cheat.txt"
+CHALLENGE_LOSS_SCRIPT = (
+    ROOT / "tests" / "input_scripts" / "challenge_loss_recap.txt"
+)
 FATAL_RE = fatal_re(*ASSERT_MARKERS, *VALIDATION_MARKERS)
+
+# Issue #22: losing the Dino Domain egg-hatch challenge (or placing 4th in a
+# coin race) left the picture stretched to 4:3 in the lobby and after TRY
+# AGAIN. The post-race recap latches the safe aperture for its wooden frame and
+# used to hand it back only by accident -- every exit it has happens to load a
+# scene, and cam_init()/menu_init() reset the region on the way. That made the
+# invariant a property of the exit routes rather than of the screen, which is
+# exactly how the leak shipped in 1.0.5 before those scene-entry resets existed.
+#
+# MDKR_TEST_FRAMED_WORLD_NO_SCENE_RESET removes the scene-entry backstop so this
+# arm measures the thing that is actually supposed to hold: the post-race
+# releases the aperture it took (postrace_free), so the next world view is drawn
+# through the presentation lens no matter which exit ran.
+CHALLENGE_LOSS_ENV = (
+    ("MDKR_AUTOPILOT", "1"),
+    ("MDKR_LOAD_TRACK", "11"),
+    ("MDKR_CHALLENGE_OUTCOME", "loss"),
+)
+NO_SCENE_RESET_ENV = (("MDKR_TEST_FRAMED_WORLD_NO_SCENE_RESET", "1"),)
+# The recap's framed page, and a settled frame of the arena the TRY AGAIN
+# option reloads. Both are measured, in opposite directions.
+CHALLENGE_RECAP_CAPTURE = 2850
+# Far enough into the reloaded arena that the camera is looking down the course
+# rather than at a fade or a flat wall, so the column profile in the failure
+# message can actually recover the lens the leak produces.
+CHALLENGE_RELOAD_CAPTURE = 3400
 
 
 @dataclass(frozen=True)
@@ -75,6 +105,9 @@ class Scene:
     # area, so its gutters must stay inert in BOTH arms. Ignored for
     # presentation scenes, which have no aperture to contain.
     gutter_bleed: bool = True
+    # Seed a checksum-valid Adventure One save before the run, so the fixture
+    # can resume into a world instead of driving the whole game from a new file.
+    resume_save: bool = False
 
 
 @dataclass(frozen=True)
@@ -241,6 +274,8 @@ def run_arm(
     save_dir = run_dir / "save"
     frame_dir.mkdir(parents=True)
     save_dir.mkdir()
+    if scene.resume_save:
+        (save_dir / "eeprom.bin").write_bytes(eeprom_image(False))
     command = [
         str(binary),
         "--headless-frames", str(scene.frames),
@@ -560,6 +595,130 @@ def run_aperture_leak_arms(
         )
     return (f"lens ratio {scale:.3f} (residual {residual:.2f}); "
             f"synthetic 4:3 stretch rejected at {fault_scale:.3f}")
+
+
+def run_challenge_loss_arms(
+    binary: Path,
+    rom: Path,
+    backend: str,
+    work: Path,
+    timeout: int,
+    verbose: bool,
+) -> str:
+    """A lost challenge must not leave its recap's aperture behind (issue #22).
+
+    Two directions, both required, because fixing either one alone has already
+    broken the other once:
+
+    (a) RELEASED. After the recap is dismissed, the world the next screen draws
+        must use the presentation lens. Measured with the scene-entry backstop
+        (cam_init/menu_init's viewport_world_regions_reset) DISABLED, so what is
+        under test is the post-race handing back the aperture it took rather
+        than the next level load happening to clear it. With the backstop off
+        and no release, the reloaded arena is the same image squeezed to a 4:3
+        lens: the recovered horizontal scale is 0.75 at 16:9.
+
+    (b) KEPT. The recap itself still draws its live view through the wooden
+        frame. Measured the way every other framed scene in this gate is: the
+        deliberate renderer fault must still move the recap. A "fix" that
+        suppressed the aperture for challenge recaps would silence that fault
+        and let the recap spill outside its frame -- which is exactly what the
+        first attempt at this bug did.
+    """
+    size = "960x540"
+    reload_scenes = {
+        "backstop": Scene(
+            "challenge-loss-reload", CHALLENGE_RELOAD_CAPTURE + 1,
+            CHALLENGE_RELOAD_CAPTURE, CHALLENGE_LOSS_SCRIPT, "presentation",
+            CHALLENGE_LOSS_ENV, resume_save=True,
+        ),
+        "no-scene-reset": Scene(
+            "challenge-loss-reload-no-scene-reset",
+            CHALLENGE_RELOAD_CAPTURE + 1, CHALLENGE_RELOAD_CAPTURE,
+            CHALLENGE_LOSS_SCRIPT, "presentation",
+            CHALLENGE_LOSS_ENV + NO_SCENE_RESET_ENV, resume_save=True,
+        ),
+    }
+    reloaded = {
+        name: run_arm(binary, rom, scene, backend, size, False, work, timeout,
+                      verbose)
+        for name, scene in reload_scenes.items()
+    }
+
+    # The fault may not change the run, only the region ownership under test.
+    if reloaded["backstop"].route != reloaded["no-scene-reset"].route:
+        raise RuntimeError(
+            "challenge-loss: disabling the scene-entry region reset changed "
+            f"the frontend route ({reloaded['backstop'].route} vs "
+            f"{reloaded['no-scene-reset'].route}); the two arms are no longer "
+            "the same run and the lens comparison below means nothing"
+        )
+    if reloaded["backstop"].pace != reloaded["no-scene-reset"].pace:
+        raise RuntimeError(
+            "challenge-loss: disabling the scene-entry region reset changed "
+            "gameplay pacing; the region must not be a simulation input"
+        )
+    # The route has to actually contain the loss and the reload, or the arm is
+    # measuring two frames of a menu.
+    reload_route = reloaded["backstop"].route
+    if sum("level_load: levelId=11" in line for line in reload_route) < 2:
+        raise RuntimeError(
+            "challenge-loss: the fixture no longer loses the challenge and "
+            "reloads the arena (TRY AGAIN); it must enter course 11 twice "
+            f"(route {reload_route})"
+        )
+
+    # The scene-entry reset is a backstop, not the owner. With it disabled the
+    # two runs differ in nothing at all -- the region is not a simulation input
+    # and the post-race hands its aperture back on its own -- so the frames must
+    # be pixel-identical. Anything else is the aperture outliving the recap.
+    if (reloaded["backstop"].image.pixels !=
+            reloaded["no-scene-reset"].image.pixels):
+        scale, _ = best_horizontal_scale(
+            reloaded["backstop"].image, reloaded["no-scene-reset"].image
+        )
+        raise RuntimeError(
+            f"challenge-loss-reload/{backend}/{size}: with the scene-entry "
+            f"region reset disabled, the arena reloaded after a lost challenge "
+            f"presents a {scale:.3f}x horizontal lens against the same frame "
+            f"with the backstop on (1.000 means the two share a lens; 0.750 is "
+            f"a 4:3 lens stretched across 16:9). The post-race recap is not "
+            "releasing the safe aperture it took (postrace_free), so the "
+            "picture it leaves behind for the lobby and TRY AGAIN is "
+            "stretched -- issue #22."
+        )
+    # The measurement quoted in that message has to be able to see the defect
+    # it names, or the failure would be unreadable when it fires.
+    faulted = stretch_horizontally(reloaded["backstop"].image, 4.0 / 3.0)
+    fault_scale, _ = best_horizontal_scale(reloaded["backstop"].image, faulted)
+    if abs(fault_scale - 1.0) <= 0.03:
+        raise RuntimeError(
+            f"challenge-loss-reload/{backend}/{size}: the synthetic 4:3 "
+            f"stretch recovered {fault_scale:.3f}x, so this arm can no longer "
+            "distinguish a leaked aperture from a correct lens"
+        )
+
+    recap = Scene(
+        "challenge-loss-recap", CHALLENGE_RECAP_CAPTURE + 1,
+        CHALLENGE_RECAP_CAPTURE, CHALLENGE_LOSS_SCRIPT, "safe-aperture",
+        CHALLENGE_LOSS_ENV,
+        # By the option page the wooden frame has finished shrinking and the
+        # live view is a small inset rectangle, like Track Select's browse
+        # carousel: releasing it from the safe region rescales it well inside
+        # the safe area, so neither arm may touch the gutters. The requirement
+        # is that the fault still MOVES the framed view (validate_pair's
+        # aperture delta) while the gutters stay decorative in both.
+        gutter_bleed=False, resume_save=True,
+    )
+    recap_fixed = run_arm(binary, rom, recap, backend, size, False, work,
+                          timeout, verbose)
+    recap_unsafe = run_arm(binary, rom, recap, backend, size, True, work,
+                           timeout, verbose)
+    recap_summary = validate_pair(recap, recap_fixed, recap_unsafe)
+
+    return (f"reload frame identical with the scene-entry reset disabled; "
+            f"synthetic 4:3 stretch rejected at {fault_scale:.3f}; "
+            f"recap {recap_summary}")
 
 
 def find_pal_rom(directory: Path) -> Path | None:
@@ -901,6 +1060,12 @@ def source_contract() -> None:
         ("authored surface mapping", "region.height / dkr_logical_height", renderer),
         ("authored surface published", "gfx_dkr_set_logical_surface", video),
         ("post-race viewport", "void postrace_start(s32 finishState", menu),
+        # Issue #22. The recap takes the aperture; the recap gives it back.
+        # Without this the invariant is a property of whichever scene loads
+        # next, which is how the leak shipped in 1.0.5.
+        ("post-race releases its aperture", "void postrace_free(void)", menu),
+        ("scene reset backstop is defeatable for the gate",
+         "MDKR_TEST_FRAMED_WORLD_NO_SCENE_RESET", camera),
         ("credits viewport", "void menu_credits_init(void)", menu),
     )
     missing = [name for name, needle, source in required if needle not in source]
@@ -927,7 +1092,7 @@ def main() -> int:
         "--scene",
         choices=tuple(scene.name for scene in SCENES) +
         ("track-select-scroll", "pal-track-select",
-         "charselect-aperture-leak"),
+         "charselect-aperture-leak", "challenge-loss"),
         help="run one ordinary scene instead of the complete matrix",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -1026,6 +1191,18 @@ def main() -> int:
                 summaries.append(
                     "charselect-aperture-leak/webgpu/960x540: " +
                     run_aperture_leak_arms(
+                        binary, rom, "webgpu", work, args.timeout,
+                        args.verbose,
+                    )
+                )
+            run_challenge = (
+                not args.interpolated_only and
+                (not args.scene or args.scene == "challenge-loss")
+            )
+            if run_challenge:
+                summaries.append(
+                    "challenge-loss/webgpu/960x540: " +
+                    run_challenge_loss_arms(
                         binary, rom, "webgpu", work, args.timeout,
                         args.verbose,
                     )

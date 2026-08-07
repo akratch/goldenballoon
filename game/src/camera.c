@@ -1256,11 +1256,37 @@ void viewport_world_region_set(s32 viewPortIndex, ViewportWorldRegion region) {
  * The safe aperture belongs to the scene that draws a frame around its live
  * view, not to the viewport.  Scene entry (cam_init, menu_init) resets the
  * region; the screens that own an aperture -- Track Select and the later
- * post-race pages -- restate it on every frame that draws the framed view.
+ * post-race pages -- restate it on every frame that draws the framed view,
+ * and release it when their framed view is torn down (postrace_free).
+ *
+ * The scene-entry reset and the screen's own release are deliberately BOTH
+ * present: the reset is the backstop for a screen that forgets, the release is
+ * the screen actually owning what it took.  MDKR_TEST_FRAMED_WORLD_NO_SCENE_RESET
+ * removes the backstop so a test can see whether the screens really do own
+ * their apertures; it is a deliberate fault and must never be set in a
+ * shipping run.  tests/check_framed_world_views.py's challenge-loss arm is the
+ * thing that reads it.
  */
+static s32 viewport_world_regions_scene_reset_enabled(void) {
+    static s32 sCached = -1;
+    const char *value;
+
+    if (sCached < 0) {
+        value = getenv("MDKR_TEST_FRAMED_WORLD_NO_SCENE_RESET");
+        sCached = (value != NULL && value[0] != '\0' &&
+                   strcmp(value, "0") != 0)
+                      ? 0
+                      : 1;
+    }
+    return sCached;
+}
+
 void viewport_world_regions_reset(void) {
     s32 i;
 
+    if (!viewport_world_regions_scene_reset_enabled()) {
+        return;
+    }
     for (i = 0; i < (s32) ARRAY_COUNT(sViewportWorldRegions); i++) {
         sViewportWorldRegions[i] = VIEWPORT_WORLD_REGION_PRESENTATION;
     }
