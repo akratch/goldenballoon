@@ -55,6 +55,26 @@ bool gfx_webgpu_get_output_size(int *width, int *height);
  * platform_frame_sync consumes it between complete frames. */
 bool gfx_webgpu_runtime_recovery_pending(void);
 bool gfx_webgpu_recover_device(void);
+/*
+ * Ask for the surface to be re-configured at the next frame boundary even
+ * though its SIZE has not changed (M3 slice 2).
+ *
+ * wgpu_choose_present_mode() ranks mailbox/fifo/immediate against the refresh
+ * of the display the window is on, and that ranking is baked into the
+ * swapchain at configuration time. A window dragged to a monitor with a
+ * different refresh therefore keeps a present mode chosen for the OLD one --
+ * a rate above the previous refresh but at or below the new one keeps asking
+ * for a queue it no longer needs, and vice versa. The platform layer knows
+ * when the rate changed; only the backend can re-rank. This is the seam
+ * between them.
+ *
+ * Deliberately a REQUEST, not a reconfigure: configuration must happen at the
+ * backend's own frame boundary alongside the resize path, never underneath a
+ * frame in flight. Reconfiguring re-emits the [PRESENT-MODE] row, which is how
+ * a test sees the re-rank. Safe to call before bring-up; the flag is simply
+ * consumed by the first configuration.
+ */
+void gfx_webgpu_request_surface_reconfigure(void);
 /* Emit one end-of-run material-capacity census for headless/browser gates.
  * This is observational only and remains safe before bring-up or after a
  * controlled renderer failure. */

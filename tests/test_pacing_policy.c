@@ -256,6 +256,105 @@ int main(void) {
     expect("enhanced commit injects one field",
            mdkr_pacing_clock_commit(&enhanced, target, &rebased) == 1);
 
+    /* ---- M3: interpolation phase projected onto the display grid --------- *
+     *
+     * Units are the accumulator's: one source field is 1e9, so an
+     * original-cadence NTSC tick is 2e9 and one 60 Hz refresh is 1e9.
+     */
+    {
+        const uint64_t tick = UINT64_C(2000000000);       /* 30 Hz tick */
+        const uint64_t q60 = UINT64_C(1000000000);        /* 60 Hz refresh */
+        const uint64_t q120 = UINT64_C(500000000);        /* 120 Hz refresh */
+
+        expect("no quantum leaves the measured phase alone",
+               mdkr_present_quantize_phase(UINT64_C(1234567890), tick, 0u) ==
+                   UINT64_C(1234567890));
+        expect("a tick endpoint stays exactly at zero",
+               mdkr_present_quantize_phase(0u, tick, q60) == 0u);
+        expect("a refresh at the tick rate has no sub-tick grid",
+               mdkr_present_quantize_phase(UINT64_C(900000000), tick, tick) ==
+                   UINT64_C(900000000));
+
+        /* The wake sits a little past its vblank, so the projection rounds
+         * DOWN to the grid point the display actually used. */
+        expect("a late midpoint wake projects to the midpoint",
+               mdkr_present_quantize_phase(
+                   UINT64_C(1002400000), tick, q60) == q60);
+        expect("an early midpoint wake projects to the same midpoint",
+               mdkr_present_quantize_phase(
+                   UINT64_C(996100000), tick, q60) == q60);
+        expect("jitter either side of a vblank lands on one phase",
+               mdkr_present_quantize_phase(UINT64_C(1002400000), tick, q60) ==
+                   mdkr_present_quantize_phase(
+                       UINT64_C(996100000), tick, q60));
+
+        /* Inside the first half-refresh, but already past the endpoint that
+         * went out at zero: still the next grid point, never a repeat. */
+        expect("a phase under half a refresh is still the next grid point",
+               mdkr_present_quantize_phase(UINT64_C(60000000), tick, q60) ==
+                   q60);
+
+        /* Past the last grid point inside the tick, the clock is the better
+         * authority and the measured phase stands. */
+        expect("a projection past the tick defers to the clock",
+               mdkr_present_quantize_phase(
+                   UINT64_C(1900000000), tick, q60) == UINT64_C(1900000000));
+
+        /* A faster display has more grid points inside one tick. */
+        expect("120 Hz first midpoint", mdkr_present_quantize_phase(
+                   UINT64_C(505000000), tick, q120) == q120);
+        expect("120 Hz second midpoint", mdkr_present_quantize_phase(
+                   UINT64_C(1010000000), tick, q120) == 2u * q120);
+        expect("120 Hz third midpoint", mdkr_present_quantize_phase(
+                   UINT64_C(1490000000), tick, q120) == 3u * q120);
+
+        /* Monotone: a later measurement never projects to an earlier phase.
+         * The census differences this series and gates regressions=0. */
+        {
+            uint64_t phase;
+            uint64_t previous = 0u;
+            int monotone = 1;
+            for (phase = 1u; phase < tick; phase += UINT64_C(7000037)) {
+                const uint64_t projected =
+                    mdkr_present_quantize_phase(phase, tick, q120);
+                if (projected < previous) {
+                    monotone = 0;
+                }
+                previous = projected;
+            }
+            expect("projection never runs backwards", monotone);
+        }
+    }
+
+    /* ---- M3: the shed floor's grid ---------------------------------------- */
+    {
+        MdkrPresentDeadlineClock floor_clock;
+        const uint64_t base = UINT64_C(9000000000);
+
+        expect("initialize a 60Hz floor",
+               mdkr_present_deadline_init(&floor_clock, 60u));
+        expect("the first call anchors and returns one interval on",
+               mdkr_present_grid_next(&floor_clock, base) ==
+                   base + UINT64_C(16666666));
+        /* Projected from `now` every time: an opportunity that did not wait
+         * cannot leave an index behind for one that does. */
+        expect("a later call projects from now, not from an index",
+               mdkr_present_grid_next(
+                   &floor_clock, base + UINT64_C(16666666)) ==
+                   base + UINT64_C(33333333));
+        expect("an opportunity mid-interval still gets the next grid point",
+               mdkr_present_grid_next(
+                   &floor_clock, base + UINT64_C(40000000)) ==
+                   base + UINT64_C(50000000));
+        expect("the phase is fixed at the anchor, so long runs cannot drift",
+               mdkr_present_grid_next(
+                   &floor_clock, base + UINT64_C(16666666666)) ==
+                   base + UINT64_C(16683333333));
+        expect("a floor is always strictly ahead of now",
+               mdkr_present_grid_next(&floor_clock, base + UINT64_C(1)) >
+                   base + UINT64_C(1));
+    }
+
     if (s_failures != 0) {
         return 1;
     }

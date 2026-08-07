@@ -138,6 +138,23 @@ int      platform_present_subloop_fields(void);
  * one. The deadline pacer and the backend present-mode choice must agree about
  * what "above the display" means, so both read this one number. */
 unsigned platform_present_display_rate(void);
+/*
+ * One presentation-grid interval in clock units (one source field == 1e9), or
+ * 0 when this run's presents are NOT quantized to the display's own refresh.
+ *
+ * Nonzero means the display's vblank is the only thing retiring presents --
+ * realtime pacing, a policy with no software cadence of its own, a
+ * vblank-synchronized queue that is not allowed to tear, and a refresh the host
+ * actually reports. Under exactly those conditions one present is one refresh,
+ * so the interpolation phase can be projected onto that grid instead of read
+ * off a jittery wake (mdkr_present_quantize_phase). Any other combination
+ * returns 0 and the measured phase stands, which is what keeps synthetic,
+ * capped, uncapped, browser and original runs bit-for-bit as they were.
+ *
+ * The refresh underneath this is re-derived live (see the display-changed
+ * handler); the latched POLICY is not.
+ */
+uint64_t platform_present_display_quantum_units(void);
 /* Pace one present; returns exact clock units (one source field == 1e9). */
 uint64_t platform_vi_present_pace_units(void);
 /* Commit one fixed ticket to the synthetic COUNTER at the tick boundary. */
