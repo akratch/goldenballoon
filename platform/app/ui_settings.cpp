@@ -839,8 +839,8 @@ bool drawPresentationPace(bool compact) {
         static std::string traced;
         char row[256];
         std::snprintf(row, sizeof(row),
-                      "[app-ui] presentation-pace value=%s frameLimit=%s "
-                      "motionSmoothing=%s locked=%d",
+                      "[app-ui] presentation-pace value=%.31s frameLimit=%.31s "
+                      "motionSmoothing=%.31s locked=%d",
                       mdkr_video_presentation_pace_name(
                           mdkr_video_presentation_pace(now)),
                       now->values[MDKR_VIDEO_FRAME_LIMIT].text,
