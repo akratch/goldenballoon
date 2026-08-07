@@ -1499,6 +1499,78 @@ void mdkr_camera_dynamic_occlusion_get_telemetry(
     }
 }
 
+int mdkr_camera_dynamic_occlusion_instance_footprint(
+    uint32_t stable_instance_id,
+    MdkrCameraDynamicOcclusionFootprint *out_footprint) {
+    size_t index;
+
+    if (out_footprint == NULL) {
+        return 0;
+    }
+    memset(out_footprint, 0, sizeof(*out_footprint));
+    if (stable_instance_id == 0U ||
+        !mdkr_camera_dynamic_publication_current_valid(&sPublicationState)) {
+        return 0;
+    }
+    for (index = 0U; index < sInstanceCount; index++) {
+        const MdkrCameraDynamicInstance *instance = &sInstances[index];
+        double extent;
+        double half_x;
+        double half_y;
+        double half_z;
+
+        if (instance->stable_instance_id != stable_instance_id) {
+            continue;
+        }
+        /*
+         * The published world AABB of the instance this tick. This is the only
+         * per-blocker extent the resolver result can honestly reach: a hit
+         * carries a contact point and a triangle/instance ID, not a size. A
+         * moving instance publishes a temporal proxy whose bounds cover the
+         * whole interval, so read the pose bounds and refuse the proxy rather
+         * than call a swept interval a small prop.
+         */
+        if (instance->temporal_proxy) {
+            return 0;
+        }
+        half_x = ((double)instance->world_bounds.maximum.x -
+                  (double)instance->world_bounds.minimum.x) * 0.5;
+        half_y = ((double)instance->world_bounds.maximum.y -
+                  (double)instance->world_bounds.minimum.y) * 0.5;
+        half_z = ((double)instance->world_bounds.maximum.z -
+                  (double)instance->world_bounds.minimum.z) * 0.5;
+        if (!isfinite(half_x) || !isfinite(half_y) || !isfinite(half_z) ||
+            half_x < 0.0 || half_y < 0.0 || half_z < 0.0) {
+            return 0;
+        }
+        extent = half_x > half_y ? half_x : half_y;
+        if (half_z > extent) {
+            extent = half_z;
+        }
+        if (!isfinite(extent) || extent > (double)FLT_MAX) {
+            return 0;
+        }
+        if (instance->object_spawn_generation == 0U ||
+            instance->object_spawn_generation > UINT32_MAX) {
+            return 0;
+        }
+        out_footprint->object_generation =
+            (uint32_t)instance->object_spawn_generation;
+        out_footprint->max_half_extent = (float)extent;
+        out_footprint->center.x = (float)(
+            ((double)instance->world_bounds.maximum.x +
+             (double)instance->world_bounds.minimum.x) * 0.5);
+        out_footprint->center.y = (float)(
+            ((double)instance->world_bounds.maximum.y +
+             (double)instance->world_bounds.minimum.y) * 0.5);
+        out_footprint->center.z = (float)(
+            ((double)instance->world_bounds.maximum.z +
+             (double)instance->world_bounds.minimum.z) * 0.5);
+        return 1;
+    }
+    return 0;
+}
+
 int mdkr_camera_dynamic_occlusion_object_discontinuous(const Object *object) {
     const MdkrCameraDynamicIdentity *identity;
     size_t index;

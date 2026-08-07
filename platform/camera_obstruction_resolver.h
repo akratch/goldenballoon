@@ -123,6 +123,15 @@ typedef struct MdkrCameraObstructionResolverResult {
      * so only the normal can tell one continuous wall from a new surface.
      */
     MdkrCameraVec3 blocker_normal;
+    /*
+     * Contact point of that same blocker, and its fraction along the
+     * anchor->desired boom. Reported, never consumed by the resolver's own
+     * policy. A caller that must weigh a blocker (how close is it to the
+     * authored eye, how much boom does it cost) cannot recover either from
+     * blocker_stable_id, and re-sweeping to find out would double the work.
+     */
+    MdkrCameraVec3 blocker_point;
+    float blocker_fraction;
     uint8_t accepted;
     /* True only when the anchor-to-desired sweep itself was blocked. */
     uint8_t path_was_blocked;
