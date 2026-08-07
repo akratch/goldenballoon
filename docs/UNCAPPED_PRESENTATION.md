@@ -246,15 +246,24 @@ the behaviour that shipped in 1.0.4. Refusals are counted as `uvscrollhold` in
 
 **Cost.** A confirmed site is a 32-byte record: two displacements, a triangle
 count and two per-triangle selectors. Only batches that actually moved are
-recorded, so ordinary static geometry costs nothing. The measured peak over the
-Jungle Falls and Hot Top Volcano routes is 11 live sites, 352 bytes a tick,
-held in the presentation packet and therefore outside the 16 MiB retained-arena
-copy budget entirely.
+recorded, so ordinary static geometry costs nothing, and the table is capped at
+4096 sites. The measured peak over the Jungle Falls and Hot Top Volcano routes
+is 11 live sites, 352 bytes a tick. It lives in the presentation packet, not in
+the retained task, and `[RETAINED-TASK]` confirms that directly: over the same
+3227-tick Jungle Falls capture the arena bytes, arena peak, resident bytes,
+resident peak, external dependency count and external bytes are identical
+before and after this change, and the only counter that moves is
+`externalResolve`, which counts read-only lookups. The added cost against
+`MDKR_RETAINED_ARENA_COPY_BUDGET_BYTES` is zero.
 
-`tests/check_presentation_matrix.py`'s `MDKR_TEST_UV_SCROLL_INTERPOLATION=off`
-control is the midpoint-sensitivity gate: on Jungle Falls the interpolated
-midpoints must differ between the two arms, and the authored endpoints must
-stay byte-identical.
+**The gate.** `tests/check_presentation_matrix.py`'s
+`MDKR_TEST_UV_SCROLL_INTERPOLATION=off` control is the midpoint-sensitivity
+arm: on Jungle Falls the interpolated midpoints must differ between the two
+arms and the authored endpoints must stay byte-identical, while state, event
+and input streams agree. It is non-vacuous by measurement, not just by
+argument — run against the binary built immediately before this change, the
+same two runs produce zero differing midpoints out of thirty, because the
+scrolling phase held at its endpoint value.
 
 ## The 50 Hz source on a 60 Hz display
 
