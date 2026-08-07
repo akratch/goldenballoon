@@ -1000,13 +1000,18 @@ you've run them once.
   SHA-256 doesn't match the reference image (a hand-patched or damaged
   dump); independent of `MDKR_ROM_ANY_REVISION`, which instead accepts an
   unsupported revision.
+- `MDKR_APP_AUTOPLAY_DUMP_FRAMES=<dir>` — automation only: forward
+  `--dump-frames <dir>` through the argv `mdkr64_engine_boot()` synthesizes, so
+  an app-shell run can capture frames the same way a CLI run does. Honours
+  `MDKR_DUMP_FROM`/`MDKR_DUMP_EVERY`, ignored outside an autoplay run, and
+  drives `check_overlay_pause_cutscene.py` — the only way to see what the app
+  actually presents while its overlay is open.
 - `MDKR_TEST_OVERLAY_OPEN_FRAME=N` (+ `MDKR_TEST_OVERLAY_CLOSE_FRAME=M`) —
   schedule the overlay open/closed directly at authoritative tick `N`/`M` via
   `setOpen()`, bypassing the Escape-key event injection
   `MDKR_TEST_OVERLAY_ESCAPE_OPEN_FRAME` uses. `CLOSE_FRAME` alone is
-  exercised by `check_overlay_pause.py`; `OPEN_FRAME` is not currently
-  exercised by anything but shares its scheduling code, so it is believed
-  live rather than confirmed.
+  exercised by `check_overlay_pause.py`; both are exercised by
+  `check_overlay_pause_cutscene.py`.
 - `MDKR_TEST_SETTINGS_TOGGLE=Key=value@tick[,Key=value@tick]...` — change a
   setting mid-run exactly as the in-game overlay would, at the first present
   opportunity at or after `tick`. It fires from `platform_input_pump()`, which
