@@ -3306,8 +3306,6 @@ uint64_t platform_vi_present_pace_units(void) {
         units = s_presentSyntheticPhase / s_presentEffectiveRate;
         s_presentSyntheticPhase %= s_presentEffectiveRate;
     } else {
-        const unsigned tick_rate =
-            (unsigned)s_fieldHz / (unsigned)s_minFields;
         uint64_t now = pace_host_ns();
         uint64_t target = now;
         bool deadline = s_presentSoftwareDeadline;
@@ -3317,6 +3315,8 @@ uint64_t platform_vi_present_pace_units(void) {
             s_presentSoftwareDeadline ? &s_presentDeadline : NULL;
         unsigned clock_rate = s_presentEffectiveRate;
 #ifndef __EMSCRIPTEN__
+        const unsigned tick_rate =
+            (unsigned)s_fieldHz / (unsigned)s_minFields;
         if (present_sched_render_elided()) {
             if (!s_occludedDeadlineReady) {
                 s_occludedDeadlineReady = mdkr_present_deadline_init(
