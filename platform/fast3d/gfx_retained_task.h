@@ -95,6 +95,14 @@ void *gfx_retained_task_resolve_arena_token(uint32_t token);
  * the command-specific consumer will perform the bounded read later. */
 bool gfx_retained_task_lookup_dependency(const void *original_address,
                                          size_t size, const void **out);
+/* Map a whole ORIGINAL-task address span onto the private retained bytes,
+ * whichever image holds it: the arena copy or an explicitly copied external
+ * dependency. Returns NULL unless the ENTIRE span is retained, so a caller
+ * that needs both {T} and {T+1} endpoint bytes for the same structure can
+ * refuse rather than read a partially retained one. */
+const void *gfx_retained_task_retained_span(const void *original_address,
+                                            size_t size);
+
 /* Return the readable suffix of one private external dependency. This lets the
  * HLE apply the same span checks to retained external bytes as to arena bytes. */
 bool gfx_retained_task_dependency_room(const void *retained_address,

@@ -25,6 +25,36 @@ extern "C" {
 #define GFX_PRESENTATION_PACKET_MAX_KEY_BYTES 64u
 #define GFX_PRESENTATION_DEFORM_MAX_BYTES 512u
 
+/* One gSPPolygon batch is at most 16 triangles (the G_TRIN count field is four
+ * bits, biased by one), so a per-triangle "this corner set moved" selector fits
+ * in a uint16_t and the whole UV-scroll record stays 32 bytes. */
+#define GFX_PRESENTATION_UV_SCROLL_MAX_TRIANGLES 16u
+#define GFX_PRESENTATION_UV_SCROLL_MAX_SITES 4096u
+
+/*
+ * One authored tick's UV-scroll displacement for a single triangle batch.
+ *
+ * DKR does not scroll with G_SETTILESIZE, gSPTexture or a texture matrix. Every
+ * authored scroller — the BHV_TEXTURE_SCROLL waterfall/river/lava driver, the
+ * BHV_ANIMATOR single-batch driver, the generated wave surfaces, and the
+ * rain/particle/skydome sheets — rewrites the S10.5 corner UVs inside a
+ * Triangle array in place, once per authored tick, and the display list carries
+ * only a POINTER to that array. So the retained task's copy of those bytes is a
+ * {T} endpoint, and the already-authored next task names the same array — or,
+ * for a game-declared ping-pong surface, its partner — holding {T+1}.
+ *
+ * `du`/`dv` are that tick's displacement in S10.5 texel units (32 == one
+ * texel), already wrap-resolved: see gfx_pc_dkr.c's capture for the wrap rule
+ * and the moduli each driver uses.
+ */
+typedef struct GfxPresentationUvScroll {
+    int32_t du;
+    int32_t dv;
+    uint32_t triangle_count;
+    uint16_t moved_u;   /* bit i: triangle i's U advanced by du this tick */
+    uint16_t moved_v;
+} GfxPresentationUvScroll;
+
 typedef struct GfxPresentationPacketBinding {
     GfxPresentationMatrixOwner owner;
     int viewport;
@@ -94,6 +124,15 @@ typedef struct GfxPresentationPacketStats {
     uint64_t endpoint_expected_hash;
     uint64_t endpoint_actual_hash;
     size_t deformation_peak;
+    uint64_t uv_scroll_registrations;
+    uint64_t uv_scroll_confirmations;
+    uint64_t uv_scroll_rejects;
+    uint64_t uv_scroll_collisions;
+    uint64_t uv_scroll_hits;
+    uint64_t uv_scroll_holds;
+    uint64_t uv_scroll_overrides;
+    size_t uv_scroll_peak;
+    size_t uv_scroll_bytes_peak;
 } GfxPresentationPacketStats;
 
 typedef struct GfxPresentationDeformationBinding {
@@ -160,6 +199,46 @@ bool gfx_presentation_packet_lookup_deformation_hold(
     const GfxPresentationMatrixOwner *owner, int viewport, uint32_t ordinal,
     uint64_t authored_tick, uint32_t count, uint32_t stride,
     GfxPresentationDeformationBinding *out);
+/*
+ * Stage one triangle batch's {T -> T+1} UV displacement, keyed by the batch's
+ * ORIGINAL address. Level triangle arrays are level-lifetime allocations, so
+ * the address plus the triangle count plus the batch's own topology (checked by
+ * the caller) is a stable identity within a stage; gfx_presentation_packet_
+ * invalidate() clears the table at every stage boundary.
+ *
+ * Two batches cannot share an address, so a repeat observation of the same key
+ * within one capture is a collision: the key is poisoned rather than letting
+ * the later batch decide the earlier one's phase.
+ */
+bool gfx_presentation_packet_capture_uv_scroll(
+    const void *key, const GfxPresentationUvScroll *scroll);
+/*
+ * Resolve the displacement to interpolate for one batch at `target_tick`.
+ *
+ * Succeeds only when the published table is exactly that tick AND the previous
+ * published tick agreed on the same displacement for the same key and count.
+ * Authored scroll speed is constant for a level, so a genuine scroller confirms
+ * on its second tick and stays confirmed; a one-off misread — the sole residual
+ * risk in the wrap rule — cannot reach the screen, it holds for that tick.
+ */
+bool gfx_presentation_packet_lookup_uv_scroll(
+    const void *key, uint64_t target_tick, uint32_t triangle_count,
+    GfxPresentationUvScroll *out);
+/*
+ * Publish the staged UV-scroll table under its own tick stamp.
+ *
+ * This is deliberately NOT part of publish_deformation. Deformation streams are
+ * staged by both the authoritative walk (task T) and the forward census (task
+ * T+1), so their previous/current pair alternates correctly. UV-scroll
+ * displacements are a difference between two tasks and only the census can
+ * compute one, so riding that rotation would interleave every census table with
+ * an empty one from the real walk and nothing would ever confirm.
+ *
+ * A zero tick discards the staged table without publishing.
+ */
+void gfx_presentation_packet_publish_uv_scroll(uint64_t tick);
+void gfx_presentation_packet_note_uv_scroll_override(void);
+
 /* Publish only the staged deformation/effect stream. Used by the read-only
  * census of the already-authored next task; matrix/vertex owner bindings for
  * the task being replayed remain frozen and untouched. */

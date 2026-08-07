@@ -12,6 +12,13 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ### Changed
 
+- **Waterfalls, water and lava now move smoothly with everything else**, and
+  Motion smoothing is no longer labelled a preview. With smoothing on, the
+  picture between the game's own frames used to move the camera and the racers
+  but leave scrolling surfaces where they were, so a waterfall would tick along
+  in steps while the world around it glided. All of it moves together now. The
+  game still runs at its original pace; nothing about how it plays has changed,
+  and Motion smoothing Off is untouched.
 - **Frame limit, Motion smoothing and Allow tearing now change while you
   play.** All three used to be saved for the next time you pressed Play, so
   comparing two frame limits meant restarting the game twice and trying to

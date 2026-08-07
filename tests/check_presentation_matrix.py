@@ -69,6 +69,17 @@ Arms
   free and the authoritative stream to remain identical. Compatible forward
   recipes must visibly differ from the authored-matrix hold control.
 
+  An eighth control, ``MDKR_TEST_UV_SCROLL_INTERPOLATION=off``, is the
+  midpoint-sensitivity arm for authored UV scroll. It runs Jungle Falls, whose
+  waterfall sheet and wave-driven water advance their texture phase every
+  authored tick. At an interpolated midpoint the scrolling phase must differ
+  from the phase held at BOTH bracketing endpoints, which is exactly what the
+  control measures: with the seam off the midpoint reproduces the endpoint
+  phase, so a pixel difference between the two arms at ODD present indices is
+  the interpolation, and byte-identity at EVEN indices proves the authored
+  endpoints did not move. It is non-vacuous by construction — the off arm is
+  the pre-M4 renderer's behaviour.
+
 What arm C's pixels are, and are not
 ------------------------------------
 
@@ -148,6 +159,14 @@ PARTICLE_DUMP_FROM = 8300
 EFFECT_TICKS = 4120
 EFFECT_DUMP_FROM = 8180
 EFFECT_FORCE_WINDOW = "6240:2000"
+# Jungle Falls (level 29) is the authored-UV-scroll witness: its waterfall sheet
+# is a level-model triangle batch scrolling V by 16 S10.5 units (half a texel) a
+# tick, and its wave-driven water is a ping-pong surface scrolling in both axes.
+# Measured override density over the route is one confirmed site on every tick
+# from 3000 to 3300; the final 60 presents of that band are the sampled window.
+UV_SCROLL_TICKS = 3230
+UV_SCROLL_DUMP_FROM = 6400
+UV_SCROLL_TRACK = "29"
 PRESENT_WORK_BUDGET_NS = 16_666_667
 TEST_REPLAY_ENV = {
     "MDKR_PRESENT_SMOOTHING": "interpolate",
@@ -767,6 +786,19 @@ def main() -> int:
                  "MDKR_TEST_EFFECT_INTERPOLATION": "off"},
                 EFFECT_TICKS * RATE60_PRESENTS_PER_TICK, args.timeout,
                 args.verbose, dump_from=EFFECT_DUMP_FROM)
+            uv_scroll_on = run(binary, rom, "uv-scroll-on", root,
+                {**TEST_REPLAY_ENV, "MDKR_PRESENT_RATE": "60",
+                 "MDKR_PRESENT_SCHED_TRACE": "1",
+                 "MDKR_LOAD_TRACK": UV_SCROLL_TRACK},
+                UV_SCROLL_TICKS * RATE60_PRESENTS_PER_TICK, args.timeout,
+                args.verbose, dump_from=UV_SCROLL_DUMP_FROM)
+            uv_scroll_off = run(binary, rom, "uv-scroll-off", root,
+                {**TEST_REPLAY_ENV, "MDKR_PRESENT_RATE": "60",
+                 "MDKR_PRESENT_SCHED_TRACE": "1",
+                 "MDKR_LOAD_TRACK": UV_SCROLL_TRACK,
+                 "MDKR_TEST_UV_SCROLL_INTERPOLATION": "off"},
+                UV_SCROLL_TICKS * RATE60_PRESENTS_PER_TICK, args.timeout,
+                args.verbose, dump_from=UV_SCROLL_DUMP_FROM)
         except RuntimeError as error:
             print(f"check_presentation_matrix: FAIL\n  - arm C: {error}")
             return 1
@@ -799,6 +831,16 @@ def main() -> int:
         effect_compared, effect_changed = compare_frame_dirs(
             root / "effect-on" / "frames",
             root / "effect-off" / "frames")
+        # Odd indices are the interpolated midpoints, even indices the authored
+        # endpoints. The scroll seam must move the first set and no other.
+        uv_mid_compared, uv_mid_changed = compare_frame_dirs(
+            root / "uv-scroll-on" / "frames",
+            root / "uv-scroll-off" / "frames", parity=1)
+        uv_end_compared, uv_end_changed = compare_frame_dirs(
+            root / "uv-scroll-on" / "frames",
+            root / "uv-scroll-off" / "frames", parity=0)
+        uv_moved, uv_still = intermediate_frame_verdict(
+            root / "uv-scroll-on" / "frames")
         try:
             smooth_replay = parse_last(smooth_on, "REPLAY-SUMMARY")
             smooth_retained = parse_last(smooth_on, "RETAINED-TASK")
@@ -825,6 +867,9 @@ def main() -> int:
             particle_alpha_off_packet = parse_last(particle_alpha_off, "PRESENT-PACKET")
             effect_on_packet = parse_last(effect_on, "PRESENT-PACKET")
             effect_off_packet = parse_last(effect_off, "PRESENT-PACKET")
+            uv_scroll_on_packet = parse_last(uv_scroll_on, "PRESENT-PACKET")
+            uv_scroll_off_packet = parse_last(uv_scroll_off, "PRESENT-PACKET")
+            uv_scroll_on_retained = parse_last(uv_scroll_on, "RETAINED-TASK")
         except RuntimeError as error:
             print(f"check_presentation_matrix: FAIL\n  - arm C: {error}")
             return 1
@@ -1227,11 +1272,85 @@ def main() -> int:
             f"{particle_alpha_compared} intermediate backend frames; point "
             "trails remain single-scaled and the alpha-only control is "
             "authoritatively byte-identical")
+        uv_on_rows = sim_hash_rows(uv_scroll_on)
+        uv_off_rows = sim_hash_rows(uv_scroll_off)
+        if (len(uv_on_rows) != UV_SCROLL_TICKS or
+                len(uv_off_rows) != UV_SCROLL_TICKS):
+            failures.append(
+                "arm C: UV-scroll witness did not complete exactly "
+                f"{UV_SCROLL_TICKS} authoritative ticks "
+                f"(on={len(uv_on_rows)}, off={len(uv_off_rows)})")
+        elif uv_on_rows != uv_off_rows:
+            index = first_difference(uv_on_rows, uv_off_rows)
+            failures.append(
+                "arm C: UV-scroll interpolation changed authoritative state "
+                f"at tick {index}")
+        if event_hash_rows(uv_scroll_on) != event_hash_rows(uv_scroll_off):
+            failures.append(
+                "arm C: UV-scroll interpolation changed the ordered "
+                "gameplay-event stream")
+        if input_hash_rows(uv_scroll_on) != input_hash_rows(uv_scroll_off):
+            failures.append(
+                "arm C: UV-scroll interpolation changed consumed input")
+        if uv_scroll_on_packet.get("uvscrollreg", 0) <= 0:
+            failures.append(
+                "arm C: the UV-scroll route registered no scrolling triangle "
+                "batches at all — the census found no {T,T+1} endpoint pair")
+        if uv_scroll_on_packet.get("uvscrollcollision") != 0:
+            failures.append(
+                "arm C: UV-scroll census found ambiguous batch keys "
+                f"(uvscrollcollision="
+                f"{uv_scroll_on_packet.get('uvscrollcollision')})")
+        for key in ("uvscrollconfirm", "uvscrollhit", "uvscrolloverride"):
+            if uv_scroll_on_packet.get(key, 0) <= 0:
+                failures.append(
+                    "arm C: confirmed UV-scroll displacements did not reach "
+                    f"replay ({key}={uv_scroll_on_packet.get(key)})")
+        if (uv_scroll_off_packet.get("uvscrollhit", -1) != 0 or
+                uv_scroll_off_packet.get("uvscrolloverride", -1) != 0):
+            failures.append(
+                "arm C: UV-scroll positive control left the scroll "
+                "interpolation path enabled")
+        if uv_mid_compared == 0:
+            failures.append(
+                "arm C: UV-scroll witness found no comparable interpolated "
+                "midpoint frames")
+        elif uv_mid_changed == 0:
+            failures.append(
+                "arm C: every interpolated midpoint is byte-identical with "
+                "UV-scroll interpolation enabled and disabled — the scrolling "
+                "phase is still held at its authored endpoint value")
+        if uv_end_compared == 0:
+            failures.append(
+                "arm C: UV-scroll witness found no comparable authored "
+                "endpoint frames")
+        elif uv_end_changed != 0:
+            failures.append(
+                f"arm C: {uv_end_changed}/{uv_end_compared} authored endpoint "
+                "frames moved when UV-scroll interpolation was enabled; only "
+                "midpoints may differ")
+        if uv_moved == 0:
+            failures.append(
+                "arm C: none of the UV-scroll route's "
+                f"{uv_moved + uv_still} midpoints differed from both of its "
+                "neighbours")
         notes.append(
             f"arm C: forced shield/magnet-class recipes hold the display "
             f"list's authored matrix on {effect_on_packet.get('effectphasehold', 0)} "
             f"phase gaps and differs on {effect_changed}/{effect_compared} frames "
             "and remain collision-free")
+        notes.append(
+            f"arm C: authored UV scroll confirms "
+            f"{uv_scroll_on_packet.get('uvscrollconfirm', 0)} adjacent "
+            f"{{T,T+1}} displacements from a peak of "
+            f"{uv_scroll_on_packet.get('uvscrollpeak', 0)} live scroll sites "
+            f"({uv_scroll_on_packet.get('uvscrollbytespeak', 0)} bytes of "
+            "retained displacement, held outside the arena copy budget of "
+            f"{uv_scroll_on_retained.get('arenaBudget', 0)}), holds "
+            f"{uv_scroll_on_packet.get('uvscrollhold', 0)} unconfirmed draws, "
+            f"and moves {uv_mid_changed}/{uv_mid_compared} interpolated "
+            f"midpoints while all {uv_end_compared} authored endpoints stay "
+            "byte-identical")
         notes.append(
             "arm C: retained-task publication and poison-hardened replay "
             f"average {smooth_perf.get('freeze', {}).get('meanns', 0) / 1e6:.3f} "

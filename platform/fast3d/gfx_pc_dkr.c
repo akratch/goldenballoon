@@ -251,6 +251,7 @@ static int dkr_replay_particle_interpolation = -1;
 static int dkr_replay_vertex_color_interpolation = -1;
 static int dkr_replay_primitive_alpha_interpolation = -1;
 static int dkr_replay_effect_interpolation = -1;
+static int dkr_replay_uv_scroll_interpolation = -1;
 static int dkr_test_live_arena_poison = -1;
 static int dkr_test_endpoint_vertex_bytes = -1;
 static Gfx *dkr_last_walked_dl = NULL;
@@ -522,6 +523,16 @@ static bool dkr_replay_effect_interpolation_enabled(void) {
               (strcmp(value, "off") == 0 || strcmp(value, "0") == 0));
     }
     return dkr_replay_effect_interpolation != 0;
+}
+
+static bool dkr_replay_uv_scroll_interpolation_enabled(void) {
+    if (dkr_replay_uv_scroll_interpolation < 0) {
+        const char *value = getenv("MDKR_TEST_UV_SCROLL_INTERPOLATION");
+        dkr_replay_uv_scroll_interpolation =
+            !(value != NULL &&
+              (strcmp(value, "off") == 0 || strcmp(value, "0") == 0));
+    }
+    return dkr_replay_uv_scroll_interpolation != 0;
 }
 
 static bool dkr_test_live_arena_poison_enabled(void) {
@@ -2996,7 +3007,18 @@ static void dkr_sp_vertex(const Vertex *verts, int n, bool append,
 /* SP: gSPPolygon (G_TRIN) — per-triangle UVs + backface flag                */
 /* ------------------------------------------------------------------------- */
 
-static void dkr_sp_polygon(const Triangle *tris, int num_tris, bool tex_enabled) {
+/*
+ * `uv_offset` is the presentation-only UV-scroll displacement for this batch at
+ * the current replay alpha, in the same S10.5 units as the authored corner
+ * coordinates, and `uv_offset_mask` names the triangles it applies to (bit i,
+ * from the census — drivers exclude TRI_FLAG_80 faces and regenerate others, so
+ * membership is recorded rather than re-derived here). NULL on the authoritative
+ * walk and at alpha zero, where the authored bytes must reach the backend
+ * untouched.
+ */
+static void dkr_sp_polygon(const Triangle *tris, int num_tris, bool tex_enabled,
+                           const float *uv_offset, uint16_t uv_offset_mask_u,
+                           uint16_t uv_offset_mask_v) {
     /* A texture the shader samples could not be bound: the unit still holds the
      * previous draw's image, so emitting these triangles would paint an
      * unrelated texture rather than lose one. Drop the batch instead. */
@@ -3096,6 +3118,18 @@ static void dkr_sp_polygon(const Triangle *tris, int num_tris, bool tex_enabled)
         a.u = (float)(int16_t)t->uv0.u; a.v = (float)(int16_t)t->uv0.v;
         b.u = (float)(int16_t)t->uv1.u; b.v = (float)(int16_t)t->uv1.v;
         c.u = (float)(int16_t)t->uv2.u; c.v = (float)(int16_t)t->uv2.v;
+        if (uv_offset != NULL && i < 16) {
+            if ((uv_offset_mask_u & (1u << i)) != 0u) {
+                a.u += uv_offset[0];
+                b.u += uv_offset[0];
+                c.u += uv_offset[0];
+            }
+            if ((uv_offset_mask_v & (1u << i)) != 0u) {
+                a.v += uv_offset[1];
+                b.v += uv_offset[1];
+                c.v += uv_offset[1];
+            }
+        }
 
         /*
          * Observe casters before camera near clipping/backface rejection. The
@@ -4138,6 +4172,294 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
     }
 }
 
+/* ------------------------------------------------------------------------- */
+/* Game-declared ping-pong triangle buffers                                    */
+/* ------------------------------------------------------------------------- */
+
+#define DKR_PAIRED_TRIANGLE_REGIONS 4u
+
+static struct DkrPairedTriangleRegion {
+    const uint8_t *base;
+    size_t stride;
+    unsigned count;
+} dkr_paired_triangle_regions[DKR_PAIRED_TRIANGLE_REGIONS];
+
+void gfx_dkr_note_paired_triangle_buffers(const void *base, size_t stride,
+                                          unsigned count) {
+    unsigned index;
+    unsigned free_slot = DKR_PAIRED_TRIANGLE_REGIONS;
+
+    if (base == NULL || stride == 0u || count < 2u) {
+        return;
+    }
+    for (index = 0u; index < DKR_PAIRED_TRIANGLE_REGIONS; index++) {
+        if (dkr_paired_triangle_regions[index].base == (const uint8_t *)base) {
+            dkr_paired_triangle_regions[index].stride = stride;
+            dkr_paired_triangle_regions[index].count = count;
+            return;
+        }
+        if (dkr_paired_triangle_regions[index].base == NULL &&
+            free_slot == DKR_PAIRED_TRIANGLE_REGIONS) {
+            free_slot = index;
+        }
+    }
+    if (free_slot == DKR_PAIRED_TRIANGLE_REGIONS) {
+        return;                  /* full: those surfaces keep holding */
+    }
+    dkr_paired_triangle_regions[free_slot].base = (const uint8_t *)base;
+    dkr_paired_triangle_regions[free_slot].stride = stride;
+    dkr_paired_triangle_regions[free_slot].count = count;
+}
+
+void gfx_dkr_forget_paired_triangle_buffers(const void *base) {
+    unsigned index;
+
+    for (index = 0u; index < DKR_PAIRED_TRIANGLE_REGIONS; index++) {
+        if (base == NULL ||
+            dkr_paired_triangle_regions[index].base == (const uint8_t *)base) {
+            memset(&dkr_paired_triangle_regions[index], 0,
+                   sizeof(dkr_paired_triangle_regions[index]));
+        }
+    }
+}
+
+/*
+ * Map an address inside a declared ping-pong region onto its partner phase and
+ * onto the phase-invariant key both phases share.
+ *
+ * `*out_partner` is the same offset in the other buffer of the pair and
+ * `*out_canonical` is the even-phase address, which is what the retained table
+ * is keyed by so that the two ticks of one surface agree on one key.
+ *
+ * Returns false for every address outside a declared region -- the ordinary,
+ * address-stable case, where the address is already its own identity.
+ */
+static bool dkr_paired_triangle_alias(const void *address,
+                                      const void **out_partner,
+                                      const void **out_canonical) {
+    const uint8_t *bytes = (const uint8_t *)address;
+    unsigned index;
+
+    for (index = 0u; index < DKR_PAIRED_TRIANGLE_REGIONS; index++) {
+        const struct DkrPairedTriangleRegion *region =
+            &dkr_paired_triangle_regions[index];
+        size_t span;
+        size_t offset;
+        size_t buffer;
+        size_t within;
+        if (region->base == NULL) {
+            continue;
+        }
+        span = region->stride * (size_t)region->count;
+        if (bytes < region->base || bytes >= region->base + span) {
+            continue;
+        }
+        offset = (size_t)(bytes - region->base);
+        buffer = offset / region->stride;
+        within = offset % region->stride;
+        /* Phase is bit 0 of the buffer index: waves.c selects
+         * gWaveTriangles[flip + (k << 1)], so buffers 2k and 2k+1 are the two
+         * phases of surface k. An odd `count` leaves a final unpaired buffer;
+         * it has no partner and keeps holding. */
+        if ((buffer ^ 1u) >= region->count) {
+            return false;
+        }
+        if (out_partner != NULL) {
+            *out_partner =
+                region->base + (buffer ^ 1u) * region->stride + within;
+        }
+        if (out_canonical != NULL) {
+            *out_canonical =
+                region->base + (buffer & ~(size_t)1u) * region->stride + within;
+        }
+        return true;
+    }
+    return false;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Authored UV scroll: retained {T, T+1} endpoints for one triangle batch      */
+/* ------------------------------------------------------------------------- */
+/*
+ * WHAT SCROLLS, AND HOW IT TRAVELS.
+ *
+ * No DKR scroller uses G_SETTILESIZE, gSPTexture or a texture matrix. Every one
+ * of them rewrites the S10.5 corner UVs inside a Triangle array IN PLACE, once
+ * per authored tick, and gSPPolygon (G_TRIN) carries only a pointer to that
+ * array. The drivers are obj_loop_texscroll (BHV_TEXTURE_SCROLL — the level-wide
+ * waterfall/river/lava scroller, matched by texture index), obj_loop_animator
+ * (BHV_ANIMATOR — one segment/batch), the generated wave surfaces in waves.c,
+ * and the rain/particle/skydome sheets. They differ only in which triangles they
+ * touch and in their wrap modulus.
+ *
+ * That is why this census does not need to know which driver owns a batch. The
+ * retained task holds tick T's bytes for the array; the already-authored next
+ * task names the same array now holding T+1. The difference of the two IS the
+ * tick's displacement, whatever produced it.
+ *
+ * THE WRAP RULE.
+ *
+ * Each driver periodically folds a corner back into range by adding or
+ * subtracting a whole number of texture repeats: texscroll uses width<<8 and
+ * height<<8 (8 repeats), the animator width<<7 (4 repeats), waves width*32
+ * (1 repeat), rain (width<<5)*2, the skydome width<<9, and the particle sheet a
+ * flat 512. Every one of those moduli is a multiple of 32 — one texel — because
+ * they are all whole repeats of a texture whose width is a whole number of
+ * texels. A folded corner therefore reports a raw difference of D - k*M rather
+ * than the true displacement D.
+ *
+ * Interpolating the RAW difference would sweep a scrolling surface through the
+ * whole texture inside one tick. So the shortest wrap distance is recovered
+ * structurally instead of numerically: every triangle in a batch receives the
+ * SAME displacement, a batch is at most 16 triangles, and the folds are keyed
+ * off each triangle's own first corner, so the un-folded triangles state D
+ * directly. Small differences — at or below DKR_UV_SCROLL_MAX_DELTA, eight
+ * texels a tick, well above any authored scroll (the fastest measured is four)
+ * — are the candidates for D, and they must all agree; every larger difference
+ * must then be D offset by an exact multiple of one texel.
+ *
+ * Everything else refuses. Two disagreeing small candidates is exactly what a
+ * fold shorter than the limit produces, and it refuses the batch outright
+ * rather than picking one. A batch where every triangle folded on the same tick
+ * leaves no un-folded candidate at all, and the displacement it would report is
+ * D minus the modulus; gfx_presentation_packet_lookup_uv_scroll is what keeps
+ * that off the screen, because it requires the previous published tick to have
+ * agreed on the same displacement. Authored scroll speed is a level constant,
+ * so a real scroller confirms on its second tick and stays confirmed, while a
+ * transient misread would have to repeat itself exactly to survive — which a
+ * fold, by definition, does not do on consecutive ticks.
+ */
+#define DKR_UV_SCROLL_MAX_DELTA 255   /* S10.5 units; < one texel fold (32) x8 */
+#define DKR_UV_SCROLL_FOLD_UNIT 32    /* one texel: every driver's modulus
+                                       * is a whole number of these          */
+
+/* Resolve one axis of a batch: `raw[i]` is triangle i's tick-over-tick corner
+ * difference. Returns false when the batch cannot be explained as a single
+ * displacement plus whole-texel folds. */
+static bool dkr_uv_scroll_resolve_axis(const int32_t *raw, int num_tris,
+                                       int32_t *out_delta,
+                                       uint16_t *out_moved) {
+    int32_t delta = 0;
+    bool have_delta = false;
+    uint16_t moved = 0u;
+    int i;
+
+    for (i = 0; i < num_tris; i++) {
+        int32_t value = raw[i];
+        if (value == 0 || value > DKR_UV_SCROLL_MAX_DELTA ||
+            value < -DKR_UV_SCROLL_MAX_DELTA) {
+            continue;
+        }
+        if (!have_delta) {
+            delta = value;
+            have_delta = true;
+        } else if (value != delta) {
+            /* Two different un-folded displacements in one batch: this is not
+             * one scroller, or the batch was rebuilt. Refuse. */
+            return false;
+        }
+    }
+    if (!have_delta) {
+        /* Either nothing moved (delta 0, handled by the caller) or every
+         * triangle folded on this tick and no candidate is trustworthy. */
+        *out_delta = 0;
+        *out_moved = 0u;
+        return true;
+    }
+    for (i = 0; i < num_tris; i++) {
+        int32_t value = raw[i];
+        int32_t fold;
+        if (value == 0) {
+            continue;            /* an excluded corner (e.g. TRI_FLAG_80) */
+        }
+        if (value == delta) {
+            moved |= (uint16_t)(1u << i);
+            continue;
+        }
+        fold = value - delta;
+        if (fold % DKR_UV_SCROLL_FOLD_UNIT != 0) {
+            return false;
+        }
+        moved |= (uint16_t)(1u << i);
+    }
+    *out_delta = delta;
+    *out_moved = moved;
+    return true;
+}
+
+/*
+ * Read one batch's {T} bytes out of the retained task and diff them against the
+ * live {T+1} bytes the next authored task is pointing at. Nothing here is
+ * written back: the retained image stays immutable and the live array is only
+ * read.
+ */
+static void dkr_capture_uv_scroll_endpoints(const Triangle *next,
+                                            int num_tris) {
+    const Triangle *prev;
+    const void *retained;
+    const void *previous_address = next;
+    const void *key = next;
+    size_t byte_size;
+    int32_t raw_u[GFX_PRESENTATION_UV_SCROLL_MAX_TRIANGLES];
+    int32_t raw_v[GFX_PRESENTATION_UV_SCROLL_MAX_TRIANGLES];
+    GfxPresentationUvScroll scroll;
+    int i;
+
+    if (next == NULL || num_tris <= 0 ||
+        num_tris > (int)GFX_PRESENTATION_UV_SCROLL_MAX_TRIANGLES) {
+        return;
+    }
+    byte_size = (size_t)num_tris * sizeof(*next);
+    {
+        size_t room = dkr_arena_room(next);
+        if (room == (size_t)-1 ? !dkr_ptr_plausible(next) : room < byte_size) {
+            return;
+        }
+    }
+    /* A game-declared ping-pong surface holds {T} in its OTHER buffer, and the
+     * replay walk will hand us that other address. Both phases key off the
+     * pair's even-phase address so the two ticks of one surface agree. */
+    (void)dkr_paired_triangle_alias(next, &previous_address, &key);
+    /* The key is an ORIGINAL address, which is what the replay walk translates
+     * back to. A batch whose {T} bytes are not wholly retained has no endpoint
+     * pair at all and simply holds. */
+    retained = gfx_retained_task_retained_span(previous_address, byte_size);
+    if (retained == NULL) {
+        return;
+    }
+    prev = (const Triangle *)retained;
+    for (i = 0; i < num_tris; i++) {
+        /* Topology identity. The four index/flag bytes are the batch's shape;
+         * if they moved, this address is not the same geometry it was on the
+         * previous tick and no UV correspondence exists. */
+        if (prev[i].vertices != next[i].vertices) {
+            return;
+        }
+        /* All three corners of a triangle are shifted together by every
+         * driver, so a disagreement between them is not a scroll. */
+        raw_u[i] = (int32_t)next[i].uv0.u - (int32_t)prev[i].uv0.u;
+        raw_v[i] = (int32_t)next[i].uv0.v - (int32_t)prev[i].uv0.v;
+        if ((int32_t)next[i].uv1.u - (int32_t)prev[i].uv1.u != raw_u[i] ||
+            (int32_t)next[i].uv2.u - (int32_t)prev[i].uv2.u != raw_u[i] ||
+            (int32_t)next[i].uv1.v - (int32_t)prev[i].uv1.v != raw_v[i] ||
+            (int32_t)next[i].uv2.v - (int32_t)prev[i].uv2.v != raw_v[i]) {
+            return;
+        }
+    }
+    memset(&scroll, 0, sizeof(scroll));
+    scroll.triangle_count = (uint32_t)num_tris;
+    if (!dkr_uv_scroll_resolve_axis(raw_u, num_tris, &scroll.du,
+                                    &scroll.moved_u) ||
+        !dkr_uv_scroll_resolve_axis(raw_v, num_tris, &scroll.dv,
+                                    &scroll.moved_v)) {
+        return;
+    }
+    if (scroll.du == 0 && scroll.dv == 0) {
+        return;                  /* static geometry: the hold is already exact */
+    }
+    (void)gfx_presentation_packet_capture_uv_scroll(key, &scroll);
+}
+
 /*
  * Capture the already-authored next task's continuous vertex/effect streams.
  *
@@ -4327,6 +4649,20 @@ static bool dkr_scan_future_deformations(Gfx *cmd, int depth, int limit) {
                 }
                 break;
             }
+            case G_TRIN: {
+                /* Authored UV scroll. Read-only, like the rest of the census:
+                 * the batch's live {T+1} corner UVs are diffed against the
+                 * retained {T} copy and only the resulting displacement is
+                 * kept. No triangle bytes are stored and nothing is written. */
+                uint8_t parameter = (uint8_t)C0(cmd, 16, 8);
+                int num_tris = ((parameter >> 4) & 0xf) + 1;
+                const Triangle *tris =
+                    (const Triangle *)dkr_resolve(cmd->words.w1);
+                if (tris != NULL) {
+                    dkr_capture_uv_scroll_endpoints(tris, num_tris);
+                }
+                break;
+            }
             default:
                 break;
         }
@@ -4417,13 +4753,16 @@ bool gfx_dkr_capture_future_deformations(const Gfx *begin, const Gfx *end,
            sizeof(saved_deformation_cursors));
     if (!scanned) {
         gfx_presentation_packet_capture_abort();
+        gfx_presentation_packet_publish_uv_scroll(0u);
         gfx_presentation_packet_note_future_capture(false);
         return false;
     }
     if (!gfx_presentation_packet_publish_deformation()) {
+        gfx_presentation_packet_publish_uv_scroll(0u);
         gfx_presentation_packet_note_future_capture(false);
         return false;
     }
+    gfx_presentation_packet_publish_uv_scroll(authored_tick);
     dkr_future_last_published_tick = authored_tick;
     gfx_presentation_packet_note_future_capture(true);
     return true;
@@ -4706,6 +5045,64 @@ static bool dkr_replay_effect_world(
     }
     gfx_presentation_packet_note_effect_override();
     return true;
+}
+
+/*
+ * Resolve one triangle batch's presentation-only UV-scroll displacement at the
+ * current replay alpha, or NULL to hold the authored phase.
+ *
+ * `tris` is the RETAINED copy the replay is drawing from, so the census's
+ * identity — the original level-model address — has to be recovered before the
+ * table can be consulted. Ownership stays keyed to that original address for
+ * the same reason every other retained class does: the private image is where
+ * the bytes live, not what they are.
+ *
+ * The displacement is the tick's whole advance, so alpha scales it directly:
+ * phase(alpha) = phase(T) + alpha * (phase(T+1) - phase(T)). At alpha zero the
+ * caller never reaches here and the authored bytes are emitted untouched; at
+ * alpha one the next real endpoint has already replaced this task.
+ */
+static const float *dkr_replay_uv_scroll_offset(const Triangle *tris,
+                                                int num_tris, float out[2],
+                                                uint16_t *out_mask_u,
+                                                uint16_t *out_mask_v) {
+    GfxPresentationUvScroll scroll;
+    const void *original;
+    uint64_t target_tick;
+
+    if (tris == NULL || out == NULL || num_tris <= 0 ||
+        num_tris > (int)GFX_PRESENTATION_UV_SCROLL_MAX_TRIANGLES) {
+        return NULL;
+    }
+    if (!presentation_snapshot_replay_target_tick(
+            dkr_last_walked_authored_tick, &target_tick)) {
+        return NULL;
+    }
+    original = gfx_retained_task_original_address(tris);
+    if (original == NULL) {
+        return NULL;
+    }
+    (void)dkr_paired_triangle_alias(original, NULL, &original);
+    if (!gfx_presentation_packet_lookup_uv_scroll(
+            original, target_tick, (uint32_t)num_tris, &scroll)) {
+        return NULL;
+    }
+    out[0] = presentation_lerp1(
+        0.0f, (float)scroll.du, dkr_replay_object_alpha_numerator,
+        dkr_replay_object_alpha_denominator);
+    out[1] = presentation_lerp1(
+        0.0f, (float)scroll.dv, dkr_replay_object_alpha_numerator,
+        dkr_replay_object_alpha_denominator);
+    if (out[0] == 0.0f && out[1] == 0.0f) {
+        /* Sub-unit alpha on a slow scroller: the authored phase already IS
+         * this frame's nearest presentation phase. Not a fail-closed hold --
+         * there is nothing to move. */
+        return NULL;
+    }
+    *out_mask_u = scroll.moved_u;
+    *out_mask_v = scroll.moved_v;
+    gfx_presentation_packet_note_uv_scroll_override();
+    return out;
 }
 
 static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
@@ -5476,13 +5873,24 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             const Triangle *t = (const Triangle *)dkr_resolve(cmd->words.w1);
             DTRACE("G_TRIN ntris=%d tex=%d addr=%08x->%p", num_tris, tex, cmd->words.w1, (const void *)t);
             if (t) {
+                float uv_offset[2];
+                const float *uv_offset_ptr = NULL;
+                uint16_t uv_mask_u = 0u;
+                uint16_t uv_mask_v = 0u;
+
                 if (!dkr_replay_pass) {
                     (void)gfx_retained_task_capture_dependency(
                         t, t, (size_t)num_tris * sizeof(*t));
+                } else if (dkr_replay_object_alpha_valid &&
+                           dkr_replay_object_alpha_numerator != 0u &&
+                           dkr_replay_uv_scroll_interpolation_enabled()) {
+                    uv_offset_ptr = dkr_replay_uv_scroll_offset(
+                        t, num_tris, uv_offset, &uv_mask_u, &uv_mask_v);
                 }
                 dkr_begin_primitive(
                     rsp.draw_space != G_MTX_DKR_SPACE_WORLD);
-                dkr_sp_polygon(t, num_tris, tex);
+                dkr_sp_polygon(t, num_tris, tex, uv_offset_ptr, uv_mask_u,
+                               uv_mask_v);
             }
             break;
         }

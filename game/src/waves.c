@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "gfx_shadow_frame.h"
+#include "gfx_pc_dkr.h"
 #endif
 #include <ultra64.h>
 
@@ -225,6 +226,13 @@ void waves_free(void) {
     FREE_MEM(gWaveUVTable);
     FREE_MEM(D_800E304C[0]);
     FREE_MEM(gWaveVertices[0]);
+#ifdef NATIVE_PORT
+    /* Retire the pairing before the storage goes back to the pool: a recycled
+     * address must never inherit the previous stage's phase correspondence. */
+    if (gWaveTriangles[0] != NULL) {
+        gfx_dkr_forget_paired_triangle_buffers(gWaveTriangles[0]);
+    }
+#endif
     FREE_MEM(gWaveTriangles[0]);
     FREE_TEX(gWaveTextureHeader);
     FREE_MEM(D_800E30D4);
@@ -285,6 +293,31 @@ void waves_alloc(void) {
         gWaveTriangles[2] = (Triangle *) (((uintptr_t) gWaveTriangles[1]) + allocSize);
         gWaveTriangles[3] = (Triangle *) (((uintptr_t) gWaveTriangles[2]) + allocSize);
     }
+#ifdef NATIVE_PORT
+    /* The surface for viewport k alternates between gWaveTriangles[k << 1] and
+     * [(k << 1) + 1] every authored tick (gWaveVertexFlip, waves.c:965). Tell
+     * the renderer where the pair lives so presentation replay can recognise
+     * the two phases as one surface; without it, a water or lava sheet has no
+     * cross-tick UV identity and its scroll holds at the authored phase.
+     *
+     * Split screen indexes the buffers as `flip + viewportID` when it draws
+     * (waves.c:1293, :1330) but as `flip + (k << 1)` when it fills them, so a
+     * second viewport's pair does not line up with the even/odd rule. That is
+     * harmless here: every buffer is filled from the one shared gWaveUVTable in
+     * the same pass, so all of them carry identical corner UVs and any pairing
+     * within the allocation reports the same displacement. Shapes that do not
+     * match still fail closed and hold.
+     *
+     * Presentation-only: nothing reads this back into the simulation. */
+    gfx_dkr_note_paired_triangle_buffers(
+        gWaveTriangles[0], (size_t) (u32) allocSize,
+        gWavePlayerCount != 2 ? 2u : 4u);
+    /* The void-curtain quad under the surface uses the same parity, indexed
+     * D_800E3090[gWaveVertexFlip << 1] (waves.c:1314), i.e. two Triangles per
+     * phase inside one static array. */
+    gfx_dkr_note_paired_triangle_buffers(
+        &D_800E3090[0], 2u * sizeof(Triangle), 2u);
+#endif
     gWaveTextureHeader = load_texture(gWaveController.textureId);
 }
 

@@ -1194,7 +1194,11 @@ void present_sched_trace_summary(void) {
                 "futurecaptures=%llu futurefailures=%llu "
                 "endpointchecks=%llu endpointmismatch=%llu "
                 "endpointexpected=%llu endpointactual=%llu "
-                "deformpeak=%zu\n",
+                "deformpeak=%zu "
+                "uvscrollreg=%llu uvscrollconfirm=%llu uvscrollreject=%llu "
+                "uvscrollcollision=%llu uvscrollhit=%llu uvscrollhold=%llu "
+                "uvscrolloverride=%llu uvscrollpeak=%zu "
+                "uvscrollbytespeak=%zu\n",
                 (unsigned long long)packet_stats.matrix_registrations,
                 (unsigned long long)packet_stats.vertex_registrations,
                 (unsigned long long)
@@ -1268,7 +1272,16 @@ void present_sched_trace_summary(void) {
                 (unsigned long long)packet_stats.endpoint_vertex_mismatches,
                 (unsigned long long)packet_stats.endpoint_expected_hash,
                 (unsigned long long)packet_stats.endpoint_actual_hash,
-                packet_stats.deformation_peak);
+                packet_stats.deformation_peak,
+                (unsigned long long)packet_stats.uv_scroll_registrations,
+                (unsigned long long)packet_stats.uv_scroll_confirmations,
+                (unsigned long long)packet_stats.uv_scroll_rejects,
+                (unsigned long long)packet_stats.uv_scroll_collisions,
+                (unsigned long long)packet_stats.uv_scroll_hits,
+                (unsigned long long)packet_stats.uv_scroll_holds,
+                (unsigned long long)packet_stats.uv_scroll_overrides,
+                packet_stats.uv_scroll_peak,
+                packet_stats.uv_scroll_bytes_peak);
         fprintf(stderr,
                 "[CAMERA-VP] alpha0checks=%llu alpha0mismatch=%llu "
                 "alpha0expected=%llu alpha0actual=%llu "

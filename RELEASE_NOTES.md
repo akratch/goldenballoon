@@ -1,3 +1,18 @@
+# Golden Balloon — unreleased
+
+## Waterfalls move with everything else
+
+Motion smoothing draws extra pictures in between the ones the game itself
+makes, so the world glides instead of stepping. Until now it moved the camera
+and the racers but left scrolling surfaces alone, so a waterfall, a stretch of
+water or a lava flow would tick along at the old rate while everything around
+it was smooth. They move together now, and Motion smoothing is no longer
+labelled a preview.
+
+Interpolated draws presentation-only in-between images; it does not run the
+game more often. Racing, timers, sound and saves are exactly as they were, and
+Motion smoothing **Off** is untouched.
+
 # Golden Balloon 1.0.6
 
 *Released 2026-08-06.*
