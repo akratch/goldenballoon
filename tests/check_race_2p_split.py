@@ -125,25 +125,51 @@ MENU_RE = re.compile(r"menu_init: menuId=(\d+) @frame~(\d+)")
 # The shipping default and the opt-in historical one-field mode are separate
 # products: updateRate=2 moves farther per game pass and finishes sooner. Keep
 # both baselines explicit instead of weakening one threshold until both pass.
+#
+# Sweep finding shape-12 (BUG_CLASS_SWEEP_REPORT.md #5/#6/#7): min_final_cp,
+# min_mean_speed and min_both_frames were pinned to 1.5-7% of ONE recorded
+# trajectory each. cp/frame-count/window-speed are all downstream of the
+# AI racing line, which moves under any legitimate physics/RNG/collision
+# change (see check_race_drive.py's own docstring: a ParticleBehaviour stride
+# fix alone forced MIN_FINAL_CP 20 -> 15, and the RNG-seed/arctan/trig wave
+# moved that route's checkpoint from 53 to 14). A margin that size turns a
+# healthy build into a false "not driving the track" / "stalled" / "lost
+# player" failure. Restored to check_race_drive.py's own calibration norm —
+# a floor set well below the measurement, wide enough to separate "drove
+# multiple laps" / "not wedged" / "raced for most of the run" from "went
+# nowhere", not to reproduce the measurement itself. min_final_lap (both
+# players must complete lap 2) is left as the tight, honest, monotone-
+# progress gate it already was — no cadence-shift can silently satisfy it.
 CADENCE_CONTRACTS = {
     "original": {
         "synth_fields": "2",
         "visual_last": 4700,
-        "min_both_frames": 2100,       # observed 2180
-        "min_final_cp": {"player 1": 52, "player 2": 37},  # 53 / 38
+        # Measures "both viewports produced racer state for most of the
+        # race", not "this race took >= a specific number of frames" — a
+        # faster AI line finishes sooner and must not fail this. ~40%
+        # headroom below the 2180 reference (was 2100, 3.7% headroom).
+        "min_both_frames": 1300,       # observed 2180
+        # Separates "drove the track" from "went nowhere"; cp is a pure
+        # function of the AI racing line and is not pinned tighter than
+        # that. ~45% of the 53/39 reference (was 52/37, ~1 unit margin).
+        "min_final_cp": {"player 1": 25, "player 2": 18},  # observed 53 / 39
         "min_final_lap": 2,
-        # P2's exact healthy/current reference is 11.32; retain 7% headroom.
-        "min_mean_speed": {"player 1": 24.0, "player 2": 10.5},
+        # An extremum (worst 240-frame window) over a ~5000-frame chaotic
+        # trajectory; ~50% headroom catches genuine stall/wedge without
+        # reacting to a route shift of a few percent (was 7% headroom).
+        "min_mean_speed": {"player 1": 12.0, "player 2": 6.0},  # observed 25.39 / 14.59
     },
     "enhanced": {
         "synth_fields": "1",
         "visual_last": 7400,
-        "min_both_frames": 4750,       # observed 4852 with retail audio RNG
-        "min_final_cp": {"player 1": 52, "player 2": 39},  # 53 / 40
+        "min_both_frames": 2900,       # observed 4852; ~40% headroom (was 1.9%)
+        "min_final_cp": {"player 1": 25, "player 2": 18},  # observed 53 / 40
         "min_final_lap": 2,
-        # This is an AI/end-to-end smoke lane. The retail audio RNG stream
-        # measures P2 at 1.52; human response has its own direct binding gate.
-        "min_mean_speed": {"player 1": 10.5, "player 2": 1.4},
+        # This is an AI/end-to-end smoke lane, not human-input evidence
+        # (check_2p_human_binding.py owns that). P2's reference is only
+        # 1.52 units/frame at this cadence, so its floor is scaled down
+        # with it rather than sharing player 2's original-cadence floor.
+        "min_mean_speed": {"player 1": 5.0, "player 2": 0.6},  # observed 10.78 / 1.52
     },
 }
 

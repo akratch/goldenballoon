@@ -59,7 +59,25 @@ from harness_utils import (DEFAULT_BUILD_DIR, read_ppm as read_ppm_bytes,
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "tests" / "input_scripts" / "adventure_hub_drive.txt"
 HUD_CAPTURE_FRAME = 6300
-WORLD_CAPTURE_FRAME = 6410
+# Sweep finding shape-12 (BUG_CLASS_SWEEP_REPORT.md #13): WORLD_CAPTURE_FRAME
+# used to be a bare constant, so any hub-physics/route-timing change moved the
+# kart's pose at that frame and the world balloon left the fixed x/y search
+# band with a "world balloon motif not found" failure unrelated to widescreen
+# proportions. docs/open-items/renderer.md already records the real
+# invariant: the world capture must land ~66 frames before the traced balloon
+# COLLECTED event (frame 6410 before 6476 historically) -- that gap is a
+# physics/approach-speed constant, not a frame-count constant. So the world
+# capture frame is now selected from that trace evidence (the run's own
+# `BALLOON_RE` collection frame minus the settle gap) instead of a literal,
+# with a fixture-drift check against the historical anchor before trusting
+# the fixed pixel search band (the charselect-arm pattern in
+# check_framed_world_views.py). HUD_CAPTURE_FRAME stays a literal: the HUD
+# balloon glyph is a persistent SAFE_2D screen-space element, not a
+# trajectory-dependent world position, so it carries none of this risk.
+HISTORICAL_WORLD_CAPTURE_FRAME = 6410
+WORLD_SETTLE_BEFORE_COLLECTION = 66     # historical 6476 (collect) - 6410 (capture)
+MAX_WORLD_FRAME_DRIFT = 150             # generous vs. the 66-frame settle gap itself
+WORLD_DUMP_STRIDE = 5
 # Keep running after both sampled approach frames until the fixture physically
 # collects balloon 10. This proves the world motif belongs to the intended
 # object rather than similarly coloured scenery.
@@ -78,7 +96,7 @@ DRIVE_ROUTE = (
     ":-3381,1946:-2519,1516:-1858,1099;12:E5:E0"
 )
 
-PACE_RE = re.compile(rf"\[PACE\] frame={WORLD_CAPTURE_FRAME} .*")
+PACE_FRAME_RE = re.compile(r"\[PACE\] frame=(\d+) .*")
 BALLOON_RE = re.compile(
     r"drive: level=0 step 3: balloon 10 COLLECTED \(total=(\d+)\) @frame~(\d+)"
 )
@@ -129,6 +147,7 @@ class Result:
     output: str
     hud_image: Image | None
     world_image: Image | None
+    world_frame: int | None = None
     hud: Component | None = None
     world: Component | None = None
 
@@ -232,7 +251,7 @@ def clean_environment(renderer: str | None) -> dict[str, str]:
         MDKR_NO_CRASH_HANDLER="1",
         MDKR64_HIDDEN="1",
         MDKR_DUMP_FROM=str(HUD_CAPTURE_FRAME),
-        MDKR_DUMP_EVERY=str(WORLD_CAPTURE_FRAME - HUD_CAPTURE_FRAME),
+        MDKR_DUMP_EVERY=str(WORLD_DUMP_STRIDE),
         MDKR_DRIVE_ROUTE=DRIVE_ROUTE,
         LC_ALL="C",
     )
@@ -306,27 +325,67 @@ def run_case(
             f"{case.label}: did not confirm requested {renderer} renderer"
         )
 
-    frames = sorted(frame_dir.glob("frame_*.ppm"))
-    expected_names = [
-        f"frame_{HUD_CAPTURE_FRAME:04d}.ppm",
-        f"frame_{WORLD_CAPTURE_FRAME:04d}.ppm",
-    ]
-    if [path.name for path in frames] != expected_names:
+    dumped = sorted(
+        int(match.group(1)) for path in frame_dir.glob("frame_*.ppm")
+        if (match := re.match(r"frame_(\d+)\.ppm$", path.name))
+    )
+    hud_image = None
+    world_image = None
+    world_frame = None
+    if HUD_CAPTURE_FRAME not in dumped:
         failures.append(
-            f"{case.label}: dumped {[path.name for path in frames]}, "
-            f"expected exactly {expected_names}"
+            f"{case.label}: HUD capture frame {HUD_CAPTURE_FRAME} was not "
+            f"dumped (dumped {dumped})"
         )
-        hud_image = None
-        world_image = None
     else:
         try:
-            hud_image = read_ppm(frames[0])
-            world_image = read_ppm(frames[1])
+            hud_image = read_ppm(frame_dir / f"frame_{HUD_CAPTURE_FRAME:04d}.ppm")
         except ValueError as exc:
             failures.append(str(exc))
-            hud_image = None
-            world_image = None
-    return Result(case, output, hud_image, world_image), failures
+
+    collections = BALLOON_RE.findall(output)
+    if not collections:
+        failures.append(f"{case.label}: route did not collect balloon 10")
+    else:
+        collection_frame = int(collections[-1][1])
+        target = collection_frame - WORLD_SETTLE_BEFORE_COLLECTION
+        candidates = [f for f in dumped if f <= target]
+        if not candidates:
+            failures.append(
+                f"{case.label}: no dumped frame at/before the world-capture "
+                f"target {target} (collection frame {collection_frame} - "
+                f"{WORLD_SETTLE_BEFORE_COLLECTION} settle); dumped {dumped}"
+            )
+        else:
+            world_frame = max(candidates)
+            drift = world_frame - HISTORICAL_WORLD_CAPTURE_FRAME
+            # Fixture-drift check (the charselect-arm pattern): the world
+            # balloon's fixed pixel search band below was calibrated against
+            # the historical pose at frame 6410. If a physics/route change
+            # moves the evidence-selected frame far from that anchor, the
+            # band can no longer be trusted -- report it as a FIXTURE
+            # problem, not a proportion regression.
+            if abs(drift) > MAX_WORLD_FRAME_DRIFT:
+                failures.append(
+                    f"{case.label}: world-capture fixture drift: the "
+                    f"evidence-selected frame {world_frame} (collection "
+                    f"{collection_frame} - {WORLD_SETTLE_BEFORE_COLLECTION}) "
+                    f"is {abs(drift)} frames from the historical anchor "
+                    f"{HISTORICAL_WORLD_CAPTURE_FRAME} (limit "
+                    f"{MAX_WORLD_FRAME_DRIFT}). The world balloon search band "
+                    "was calibrated against that pose and can no longer be "
+                    "trusted; retime WORLD_SETTLE_BEFORE_COLLECTION rather "
+                    "than treating this as a proportion failure."
+                )
+            else:
+                try:
+                    world_image = read_ppm(
+                        frame_dir / f"frame_{world_frame:04d}.ppm"
+                    )
+                except ValueError as exc:
+                    failures.append(str(exc))
+
+    return Result(case, output, hud_image, world_image, world_frame), failures
 
 
 def blue_components(
@@ -431,11 +490,22 @@ def world_balloon_component(image: Image) -> Component | None:
     return max(candidates, key=lambda item: item.area, default=None)
 
 
-def normalized_pace(output: str) -> str | None:
-    matches = PACE_RE.findall(output)
-    if not matches:
+def normalized_pace(output: str, frame: int) -> str | None:
+    """The [PACE] row at `frame`, with the wall-clock delta blanked out.
+
+    `frame` is now the evidence-selected world-capture frame (see run_case),
+    not a hardcoded literal, so this must be parameterized per-result rather
+    than compiled once against a module-level constant.
+    """
+    line = None
+    for candidate in reversed(output.splitlines()):
+        match = PACE_FRAME_RE.search(candidate)
+        if match and int(match.group(1)) == frame:
+            line = candidate.strip()
+            break
+    if line is None:
         return None
-    return re.sub(r" dtms=\S+", " dtms=<wall>", matches[-1])
+    return re.sub(r" dtms=\S+", " dtms=<wall>", line)
 
 
 def relative_error(actual: float, expected: float) -> float:
@@ -478,15 +548,28 @@ def analyze_results(results: list[Result], verbose: bool) -> list[str]:
         failures.append("4x3 reference image or balloon metrics unavailable")
         return failures
 
-    reference_pace = normalized_pace(reference.output)
+    reference_pace = (
+        normalized_pace(reference.output, reference.world_frame)
+        if reference.world_frame is not None else None
+    )
     reference_balloon = BALLOON_RE.findall(reference.output)
 
     for result in results:
-        pace = normalized_pace(result.output)
+        if result.world_frame != reference.world_frame:
+            failures.append(
+                f"{result.case.label}: evidence-selected world-capture frame "
+                f"{result.world_frame} differs from the 4x3 reference's "
+                f"{reference.world_frame} -- the arms are no longer comparable "
+                "at the same point in the route"
+            )
+        pace = (
+            normalized_pace(result.output, reference.world_frame)
+            if reference.world_frame is not None else None
+        )
         balloon = BALLOON_RE.findall(result.output)
         if pace is None:
             failures.append(
-                f"{result.case.label}: no frame-{WORLD_CAPTURE_FRAME} "
+                f"{result.case.label}: no frame-{reference.world_frame} "
                 "[PACE] state"
             )
         elif reference_pace is not None and pace != reference_pace:
