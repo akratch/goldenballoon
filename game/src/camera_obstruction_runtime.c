@@ -1277,6 +1277,15 @@ static MdkrCameraSweepStatus camera_obstruction_refine_boom_anchor_lens(
     MdkrCameraVec3 desired,
     MdkrCameraVec3 conservative_anchor,
     int conservative_anchor_clear,
+    /*
+     * Skip the exhaustive interior scan. The authored boom is worth 31 exact
+     * stationary probes to save -- failing it costs the shot. A shoulder-fan
+     * candidate is not: there are up to eleven of them per tick, the same scan
+     * on each is what moved the measured 4P finalizer tail from 268us to
+     * 1.687ms, and a candidate whose pivot, endpoint and conservative anchor
+     * all overlap is cheaper to drop for the next candidate than to rescue.
+     */
+    int bounded,
     MdkrCameraVec3 *out_anchor) {
     MdkrCameraSweepHit hit;
     MdkrCameraSweepStatus status;
@@ -1315,6 +1324,9 @@ static MdkrCameraSweepStatus camera_obstruction_refine_boom_anchor_lens(
          * exhaustive stable search for an interior exact-clear pocket; this
          * is uncommon but avoids escalating wide-lens corner cases directly
          * to an elevated emergency shot. */
+        if (bounded) {
+            return MDKR_CAMERA_SWEEP_HIT;
+        }
         for (step = 1; step < MDKR_CAMERA_OBSTRUCTION_ANCHOR_STEPS; step++) {
             const float fraction =
                 (float)step / MDKR_CAMERA_OBSTRUCTION_ANCHOR_STEPS;
@@ -2028,7 +2040,7 @@ static int camera_obstruction_alternate_candidate_safe(
         }
         status = camera_obstruction_refine_boom_anchor_lens(
             &lens_query, guard, pivot, candidate, anchor,
-            conservative_anchor_clear, &anchor);
+            conservative_anchor_clear, TRUE, &anchor);
     }
     if (status != MDKR_CAMERA_SWEEP_CLEAR) {
         return FALSE;
@@ -2658,7 +2670,7 @@ static void camera_obstruction_resolve_slot(
         }
         status = camera_obstruction_refine_boom_anchor_lens(
             &lens_query, observe->guard, observe->intent.pivot,
-            desired, boom_anchor, conservative_anchor_clear, &boom_anchor);
+            desired, boom_anchor, conservative_anchor_clear, FALSE, &boom_anchor);
     }
     if (status != MDKR_CAMERA_SWEEP_CLEAR) {
         if (status == MDKR_CAMERA_SWEEP_HIT &&
