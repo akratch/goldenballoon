@@ -737,6 +737,9 @@ static struct {
     struct {
         const uint8_t *addr;
         uint32_t size_bytes;
+        uint32_t dram_line_bytes; /* LOADTILE: the DRAM row pitch of the source
+                                   * image, which is NOT the tile's TMEM line.
+                                   * 0 for LOADBLOCK, where the two coincide.  */
         bool line_swapped;       /* LOADBLOCK with dxt==0: odd source rows are
                                   * pre-word-swapped (see dkr_dp_load_block).   */
     } loaded_texture[512];
@@ -745,13 +748,12 @@ static struct {
     struct { const uint8_t *addr; uint8_t siz; uint32_t width; } to_load;
 
     uint16_t palette[256];       /* TLUT (RGBA16 / IA16 entries)               */
-    uint32_t palette_fmt;        /* G_TT_RGBA16 or G_TT_IA16                   */
 
     uint32_t other_mode_h, other_mode_l;
     uint64_t combine_mode;       /* normalized 28-bit-per-cycle cc_id          */
 
     struct RGBA env_color, prim_color, authored_prim_color, fog_color,
-        fill_color;
+        fill_color, blend_color;
     uint8_t prim_lod_fraction;
 
     struct XYWidthHeight viewport, scissor;
@@ -1389,8 +1391,17 @@ static uint32_t texels_per_row(uint32_t line_bytes, uint8_t siz) {
     }
 }
 
+/* The RDP applies the G_MDSFT_TEXTLUT type at texture FETCH, not at TLUT load:
+ * a display list that issues its LOADTLUT inside the material list and selects
+ * its CI draw mode from a separately-issued SETOTHERMODE must decode under the
+ * mode in force when the texel is sampled. So read it here rather than latching
+ * it in dkr_dp_load_tlut(). */
+static inline uint32_t dkr_textlut_fmt(void) {
+    return rdp.other_mode_h & (3U << G_MDSFT_TEXTLUT);
+}
+
 static inline void palette_to_rgba32(uint16_t entry, uint8_t *out) {
-    gfx_palette_entry_to_rgba32(entry, rdp.palette_fmt == G_TT_IA16, out);
+    gfx_palette_entry_to_rgba32(entry, dkr_textlut_fmt() == G_TT_IA16, out);
 }
 
 /* ---- "Interlaced" textures: the odd-row TMEM word swap ------------------- *
@@ -1504,6 +1515,15 @@ static bool ensure_mip_buf(size_t need) {
  * pitch as the upload path or a tile reinterpretation can bind old pixels. */
 static uint32_t dkr_tile_source_line_bytes(uint8_t td, uint32_t source_size_bytes) {
     uint32_t line_bytes = rdp.tile[td].line_size_bytes;
+
+    /* A LOADTILE source has its own DRAM row pitch, recorded at load time; it is
+     * the image pitch, not the tile line, and needs none of the corrections
+     * below (those model LOADBLOCK's TMEM-line encoding). */
+    {
+        uint32_t tmem = rdp.tile[td].tmem < 512 ? rdp.tile[td].tmem : 0;
+        uint32_t dram_line = rdp.loaded_texture[tmem].dram_line_bytes;
+        if (dram_line != 0u) return dram_line;
+    }
 
     /* F3DDKR / N64 32-bit tile LINE quirk (see PR/gbi.h: G_IM_SIZ_32b_LINE_BYTES
      * == 2, not 4). gDPLoadTextureBlock derives the render tile's `line` field
@@ -1934,7 +1954,7 @@ static uint32_t dkr_palette_hash(uint8_t fmt) {
  * input. Zero outside CI so a TEXTLUT mode change cannot split non-paletted
  * cache entries. */
 static uint32_t dkr_palette_fmt_key(uint8_t fmt) {
-    return fmt == G_IM_FMT_CI ? rdp.palette_fmt : 0u;
+    return fmt == G_IM_FMT_CI ? dkr_textlut_fmt() : 0u;
 }
 
 /* Bind the render tile's texture to a sampler unit; import+cache on miss.
@@ -3712,6 +3732,7 @@ static void dkr_dp_load_block(uint8_t tile, uint32_t uls, uint32_t ult,
     if (slot >= 512) slot = 0;
     rdp.loaded_texture[slot].addr = rdp.to_load.addr;
     rdp.loaded_texture[slot].size_bytes = size_bytes;
+    rdp.loaded_texture[slot].dram_line_bytes = 0; /* LOADBLOCK: rows are contiguous */
     rdp.loaded_texture[slot].line_swapped = (dxt == 0);
     if (!dkr_replay_pass && rdp.to_load.addr != NULL && size_bytes != 0u) {
         (void)gfx_retained_task_capture_dependency(
@@ -3734,19 +3755,34 @@ static void dkr_dp_load_tile(uint8_t tile, uint32_t uls, uint32_t ult,
     uint32_t width  = (uint32_t)(sd >> 2) + 1;
     uint32_t height = (uint32_t)(td >> 2) + 1;
     uint32_t slot = rdp.tile[tile].tmem < 512 ? rdp.tile[tile].tmem : 0;
+
+    /* LOADTILE loads a SUB-RECTANGLE of the DRAM image set by SETTEXIMAGE: it
+     * starts at (uls>>2, ult>>2) within that image and walks with the IMAGE's row
+     * pitch (to_load.width texels), writing into TMEM at the tile's own line.
+     * Recording only the image base and the tile line — as this did — decodes the
+     * wrong sub-image at the wrong stride whenever the origin is non-zero or the
+     * image is wider than the tile. Both are recorded here instead. */
+    const uint8_t *addr = rdp.to_load.addr;
+    uint32_t dram_line = rdp.to_load.width << shift;
+    if (addr != NULL && dram_line != 0u) {
+        addr += (size_t)(ult >> 2) * dram_line + ((size_t)(uls >> 2) << shift);
+    } else {
+        dram_line = 0u; /* no SETTEXIMAGE pitch: fall back to the tile line */
+    }
+
     uint32_t line = rdp.tile[tile].line_size_bytes;
     if (line == 0) line = (width << shift);
-    rdp.loaded_texture[slot].addr = rdp.to_load.addr;
-    rdp.loaded_texture[slot].size_bytes = line * height;
+    rdp.loaded_texture[slot].addr = addr;
+    rdp.loaded_texture[slot].size_bytes = (dram_line ? dram_line : line) * height;
+    rdp.loaded_texture[slot].dram_line_bytes = dram_line;
     /* LOADTILE walks the source row by row, so DRAM order is plain linear. */
     rdp.loaded_texture[slot].line_swapped = false;
     rdp.tile[tile].width = (uint16_t)width;
     rdp.tile[tile].height = (uint16_t)height;
-    if (!dkr_replay_pass && rdp.to_load.addr != NULL &&
+    if (!dkr_replay_pass && addr != NULL &&
         rdp.loaded_texture[slot].size_bytes != 0u) {
         (void)gfx_retained_task_capture_dependency(
-            rdp.to_load.addr, rdp.to_load.addr,
-            rdp.loaded_texture[slot].size_bytes);
+            addr, addr, rdp.loaded_texture[slot].size_bytes);
     }
 }
 
@@ -3779,12 +3815,32 @@ static void dkr_dp_load_tlut(uint8_t tile, uint32_t uls, uint32_t ult,
     }
     for (uint32_t i = 0; i < count; i++)
         rdp.palette[palofs + i] = ((uint16_t)src[i * 2] << 8) | src[i * 2 + 1];
-    rdp.palette_fmt = (rdp.other_mode_h & (3U << G_MDSFT_TEXTLUT));
 }
 
 /* ------------------------------------------------------------------------- */
 /* RDP: combine, colours, images, scissor                                    */
 /* ------------------------------------------------------------------------- */
+
+/* The RDP's alpha-compare field (other_mode_l bits 0-1) gates the per-pixel
+ * discard against the blend colour's alpha (G_AC_THRESHOLD) or a dithered
+ * reference (G_AC_DITHER). Our shader path implements neither: it emits only the
+ * SHADER_OPT_TEXTURE_EDGE cutout. Every DKR othermode constant pins G_AC_NONE
+ * (DKR_OML_COMMON, f3ddkr.h) and no gsDPSetAlphaCompare in game/src selects
+ * anything else, so the gap is latent — but it used to be silent, which meant a
+ * display-list change would have rendered with no threshold at all and nothing
+ * would have said so. Fail loud instead. */
+static void dkr_check_alpha_compare(void) {
+    static uint32_t warned;
+    uint32_t ac = rdp.other_mode_l & (3U << G_MDSFT_ALPHACOMPARE);
+
+    if (ac != G_AC_NONE && warned < 8u) {
+        warned++;
+        fprintf(stderr,
+                "[HLE] unimplemented alpha-compare mode %u selected (other_mode_l=%08x): "
+                "the shader path has no threshold, so nothing will be discarded\n",
+                (unsigned)(ac >> G_MDSFT_ALPHACOMPARE), rdp.other_mode_l);
+    }
+}
 
 static void dkr_dp_set_combine(const Gfx *cmd) {
     /* Normalize the two SETCOMBINE words into the 28-bit-per-cycle cc_id used
@@ -6022,11 +6078,13 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             uint32_t sft = C0(cmd, 8, 8), len = C0(cmd, 0, 8);
             uint32_t mask = (len >= 32 ? 0xFFFFFFFFu : (((1U << len) - 1) << sft));
             rdp.other_mode_l = (rdp.other_mode_l & ~mask) | (cmd->words.w1 & mask);
+            dkr_check_alpha_compare();
             break;
         }
         case G_RDPSETOTHERMODE:  /* gDPSetOtherMode — whole H (24b) + L (32b) */
             rdp.other_mode_h = cmd->words.w0 & 0x00FFFFFF;
             rdp.other_mode_l = cmd->words.w1;
+            dkr_check_alpha_compare();
             DTRACE("G_RDPSETOTHERMODE h=%06x l=%08x", rdp.other_mode_h, rdp.other_mode_l);
             break;
 
@@ -6094,7 +6152,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
         case G_LOADTLUT:
             dkr_dp_load_tlut((uint8_t)C1(cmd, 24, 3), C0(cmd, 12, 12), C0(cmd, 0, 12),
                              C1(cmd, 12, 12), C1(cmd, 0, 12));
-            DTRACE("G_LOADTLUT tile=%u palfmt=%08x", (unsigned)C1(cmd, 24, 3), rdp.palette_fmt);
+            DTRACE("G_LOADTLUT tile=%u palfmt=%08x", (unsigned)C1(cmd, 24, 3), dkr_textlut_fmt());
             break;
 
         /* ---- RDP: combine / colours ---- */
@@ -6118,7 +6176,14 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                                            (uint8_t)C1(cmd,8,8), (uint8_t)C1(cmd,0,8) };
             break;
         case G_SETBLENDCOLOR:
-            break;  /* blend colour unused by the shader path */
+            /* The blend colour is the G_AC_THRESHOLD alpha-compare reference and
+             * the G_BL_CLR_BL blender input. The shader path implements neither,
+             * so this is recorded but not yet consumed; dkr_check_alpha_compare()
+             * (below, on SETOTHERMODE) is what makes the gap loud instead of
+             * silent if a display list ever selects a mode that needs it. */
+            rdp.blend_color = (struct RGBA){ (uint8_t)C1(cmd,24,8), (uint8_t)C1(cmd,16,8),
+                                             (uint8_t)C1(cmd,8,8), (uint8_t)C1(cmd,0,8) };
+            break;
         case G_SETFILLCOLOR: {
             uint32_t c = cmd->words.w1 & 0xffff;  /* RGBA5551 (low 16) */
             uint8_t r = (c >> 11) & 0x1f, g = (c >> 6) & 0x1f, b = (c >> 1) & 0x1f;

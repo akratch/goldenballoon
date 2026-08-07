@@ -72,8 +72,11 @@ were still pinned to one particular racing line:
    ROM-faithful math shortened the boss's fall to 51 frames. Restoring
    object-model collision then moved that line 2.5 units and prevented its fixed
    arm from finishing at all. The fixture now uses boss 46, the same Fire
-   Mountain geometry, and defines a fall against the fixed arm's own ceiling
-   plus a >=2x paired increase for the same racer. It requires at least one racer:
+   Mountain geometry, and defines a fall purely as a >=2x paired increase over
+   the SAME racer's fixed-arm run in the SAME run pair -- no absolute frame
+   ceiling on the fixed arm, because Fire Mountain's spiral has legitimate
+   airborne stretches and a constant there is a trajectory constant in disguise
+   (the same reason the broken arm's peak-y bound was removed). It requires at least one racer:
    the defect is already proven by the 500-entry saturation, truncation, paired
    ground loss, and broken-only failure to finish; requiring both racers to take
    the same bad line measured trajectory, not the grid-mask defect.
@@ -134,16 +137,25 @@ CONTROL_FRAMES = 6500
 # The broken arm must saturate. 500 is MAX_COLLISION_CANDIDATES (game/src/collision.h).
 CAP = 500
 MIN_BROKEN_TRUNCATIONS = 10      # measured 36 on the integrated level-46 fixture
-# A gw==0 run longer than the fixed arm permits is a fall, not a jump.
-MAX_FIXED_AIRBORNE = 45
-# "This racer lost the ground": it did something the fixed arm is forbidden to
-# do anywhere. Derive the threshold so the two cannot drift apart.
-BROKEN_AIRBORNE_PER_RACER = MAX_FIXED_AIRBORNE + 1
-MIN_BROKEN_AIRBORNE = BROKEN_AIRBORNE_PER_RACER
-MIN_BROKEN_RACERS = 1
-# ...and it must at least double the SAME racer's fixed-arm figure. Measured
-# ratio on the integrated fixture: boss 51/18 = 2.8x.
+# "This racer lost the ground": it stayed airborne far longer than the SAME run
+# pair's fixed arm managed anywhere on the same level.
+#
+# There is deliberately NO absolute ceiling on the fixed arm's airborne run. One
+# used to live here (MAX_FIXED_AIRBORNE = 45, against measured 18 boss / 27 human)
+# and it was the same shape this file already rejected for the broken arm's peak
+# y a few lines down: Fire Mountain's spiral has legitimate airborne stretches, so
+# a route move that lands one real jump differently pushes a healthy run past the
+# constant and fails the arm that is supposed to be the good one -- and because
+# the broken arm's floor was derived from it, the same nudge moved both. What the
+# check has to separate is "the grid mask drops terrain out from under racers"
+# from "it does not", and that is a PROPERTY of the pair: the broken arm must lose
+# the ground for a multiple of whatever the fixed arm does on the very same line.
+# Measured ratio on the integrated fixture: boss 51/18 = 2.8x.
 BROKEN_AIRBORNE_RATIO = 2.0
+# Floor under the derived threshold, so a fixed arm that never leaves the ground
+# at all cannot make a one-frame broken-arm hop count as "lost the ground".
+MIN_BROKEN_AIRBORNE_FLOOR = 20
+MIN_BROKEN_RACERS = 1
 # The fixed arm climbs the whole spiral (measured 4647-4868).
 #
 # There is deliberately NO corresponding upper bound on the broken arm's peak y,
@@ -270,8 +282,6 @@ def parse(out, track):
         "truncated": int(coll.group(2)) if coll else None,
         "cap": int(coll.group(3)) if coll else None,
         "airborne": max(longest.values(), default=0),
-        "racersAirborne": sorted(k for k, v in longest.items()
-                                 if v >= BROKEN_AIRBORNE_PER_RACER),
         "peakY": max((p[2] for p in pace), default=None),
         "fin": max((int(p[8]) for p in pace), default=None),
         "maxCp": max((int(p[5]) for p in pace), default=None),
@@ -371,44 +381,34 @@ def run_check() -> int:
         failures.append("MDKR_GRIDMASK=off peaked at %d candidates, never reaching "
                         "the %d cap -- positive control not reproduced"
                         % (b["maxCandidates"], CAP))
-    if b["airborne"] < MIN_BROKEN_AIRBORNE:
-        failures.append("MDKR_GRIDMASK=off: longest run with no wheel on a surface "
-                        "is %d frames (want >= %d) -- no racer fell through the "
-                        "level, so the control is not reproducing"
-                        % (b["airborne"], MIN_BROKEN_AIRBORNE))
+    # "Lost the ground" is derived PER RACER from the SAME run pair, not from a
+    # constant: this racer stayed airborne at least BROKEN_AIRBORNE_RATIO times as
+    # long in the broken arm as it did in the fixed arm on the same line, and for
+    # at least MIN_BROKEN_AIRBORNE_FLOOR frames so a one-frame hop against a
+    # never-airborne fixed run cannot qualify. See the docstring for why the old
+    # hard-coded 60 was a trajectory constant in disguise, and the constants block
+    # for why its replacement (a fixed 45/46 pair) was the same shape.
+    def lost_ground_threshold(key):
+        return max(int(BROKEN_AIRBORNE_RATIO * f["perRacerAirborne"].get(key, 0)) + 1,
+                   MIN_BROKEN_AIRBORNE_FLOOR)
+
+    broken_racers = sorted(k for k, v in b["perRacerAirborne"].items()
+                           if v >= lost_ground_threshold(k))
     # At least one racer must lose the ground. Requiring both encoded the exact
     # level-38 racing lines: after production object collision was restored,
     # level 46's broken grid mask still saturates and drops terrain under the boss
     # while the human takes a different line. The mechanism is established by
-    # saturation/truncation plus the paired fixed-arm comparison below, not by a
+    # saturation/truncation plus this paired fixed-arm comparison, not by a
     # particular number of racers following the same bad line.
-    #
-    # "Lost the ground" is BROKEN_AIRBORNE_PER_RACER, i.e. longer than the fixed
-    # arm is allowed to be anywhere, not a hand-timed frame count -- see the
-    # docstring for why the old hard-coded 60 was a trajectory constant in
-    # disguise.
-    if len(b["racersAirborne"]) < MIN_BROKEN_RACERS:
-        failures.append("MDKR_GRIDMASK=off: no racer lost the ground for "
-                        "> %d frames (%s), want >= %d. Per-racer longest gw==0 "
-                        "runs: broken=%s "
+    if len(broken_racers) < MIN_BROKEN_RACERS:
+        failures.append("MDKR_GRIDMASK=off: no racer lost the ground for >= %.1fx "
+                        "its own fixed-arm run (and >= %d frames), want >= %d "
+                        "racer(s). Per-racer longest gw==0 runs: broken=%s "
                         "fixed=%s"
-                        % (BROKEN_AIRBORNE_PER_RACER, b["racersAirborne"],
+                        % (BROKEN_AIRBORNE_RATIO, MIN_BROKEN_AIRBORNE_FLOOR,
                            MIN_BROKEN_RACERS,
                            dict(sorted(b["perRacerAirborne"].items())),
                            dict(sorted(f["perRacerAirborne"].items()))))
-    # ...and PAIRED: each of those racers must be far worse off in the broken arm
-    # than the same racer is in the fixed arm. This is the part that carries no
-    # trajectory constant at all -- it compares the two arms of the same run pair,
-    # so it holds for whatever line the AI happens to drive.
-    for key in b["racersAirborne"]:
-        fixed_run = f["perRacerAirborne"].get(key, 0)
-        if b["perRacerAirborne"][key] < BROKEN_AIRBORNE_RATIO * max(fixed_run, 1):
-            failures.append("MDKR_GRIDMASK=off: racer pi=%d ri=%d lost the ground "
-                            "for %d frames against %d in the fixed arm (want >= "
-                            "%.1fx) -- not enough of a difference to attribute to "
-                            "the grid mask"
-                            % (key[0], key[1], b["perRacerAirborne"][key], fixed_run,
-                               BROKEN_AIRBORNE_RATIO))
     # --- the fix must avoid it ---------------------------------------------
     if f["truncated"] != 0:
         failures.append("fixed arm truncated the candidate list %d time(s) (want 0) "
@@ -417,12 +417,6 @@ def run_check() -> int:
     if f["maxCandidates"] >= CAP:
         failures.append("fixed arm peaked at %d candidates, at or above the %d cap"
                         % (f["maxCandidates"], CAP))
-    if f["airborne"] > MAX_FIXED_AIRBORNE:
-        worst = max(f["perRacerAirborne"].items(), key=lambda kv: kv[1])
-        failures.append("fixed arm: racer pi=%d ri=%d spent %d consecutive frames "
-                        "with no wheel on a surface (want <= %d) -- something is "
-                        "still falling through"
-                        % (worst[0][0], worst[0][1], worst[1], MAX_FIXED_AIRBORNE))
     if f["peakY"] < MIN_FIXED_PEAK_Y:
         failures.append("fixed arm only climbed to y=%.0f (want >= %d) -- it did not "
                         "get up the spiral" % (f["peakY"], MIN_FIXED_PEAK_Y))

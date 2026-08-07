@@ -6132,6 +6132,10 @@ static uint32_t wgpu_new_texture(void) {
     e->bg_ref_n = 0;             /* PERF-019: fresh id owns no cached bind groups yet */
     e->bg_ref_overflow = false;
     e->draw_epoch = 0;           /* WEB-053: a fresh id has never been drawn */
+    e->levels = 0;               /* ids recycle LIFO, so a fresh id must not inherit the
+                                  * previous tenant's mip count: set_sampler_parameters()
+                                  * and the upload predicate both read it as this
+                                  * texture's own state. */
     if (id > s_tex_high_water) {
         s_tex_high_water = id;
     }

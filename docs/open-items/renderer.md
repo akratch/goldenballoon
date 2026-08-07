@@ -936,11 +936,49 @@ No regressions: `check_race_drive.py`, `check_determinism.py` and
    `gDPLoadMultiBlock_4bS`. Same for CI4/CI8 palettes: `dkr_dp_load_tlut()` is never
    reached on these routes. Not patched further, and not asserted on, because
    nothing demonstrates the path is reachable.
-2. **`dkr_dp_load_tile()` is dead code for DKR.** No `gDPLoadTile`/`LoadTextureTile`
-   call site exists anywhere in `game/src/` — every texture load is a `LOADBLOCK`
-   variant. It is left in place (it is correct as written, and the HLE is shared with
-   mgb64), with `line_swapped = false` recorded so it can never inherit a stale flag
-   from a previous `LOADBLOCK` into the same TMEM slot.
+2. **`dkr_dp_load_tile()` is dead code for DKR — and it was NOT correct as written.**
+   No `gDPLoadTile`/`LoadTextureTile` call site exists anywhere in `game/src/` —
+   every texture load is a `LOADBLOCK` variant. It is left in place rather than
+   deleted because the HLE is shared with mgb64, where LOADTILE is *not* dead;
+   `line_swapped = false` is recorded so it can never inherit a stale flag from a
+   previous `LOADBLOCK` into the same TMEM slot.
+
+   The earlier note here claimed the body was correct. It was not. LOADTILE loads
+   a **sub-rectangle** of the DRAM image set by SETTEXIMAGE: it begins at
+   `(uls>>2, ult>>2)` inside that image and advances by the *image's* row pitch
+   (`SETTEXIMAGE width` texels), writing into TMEM at the *tile's* line. The body
+   recorded the image base with no origin offset and dropped `rdp.to_load.width`
+   entirely, so any load with a non-zero origin, or from an image wider than the
+   tile, decoded the wrong sub-image at the wrong stride. Fixed: the recorded
+   address is offset by the origin, and the DRAM row pitch is carried in a new
+   `loaded_texture[].dram_line_bytes` which `dkr_tile_source_line_bytes()` uses as
+   the source stride when set. LOADBLOCK records 0 there and is bit-for-bit
+   unchanged (its rows really are contiguous, and it keeps the 32-bit TMEM-line
+   correction that only applies to it).
+
+4. **`G_LOADTLUT` no longer latches the TLUT type.** The RDP applies
+   `G_MDSFT_TEXTLUT` at texture *fetch*, not at TLUT load, and DKR issues its
+   LOADTLUT inside the material display list while the TT bits arrive with the
+   separately-issued draw-mode SETOTHERMODE. `rdp.palette_fmt` used to be latched
+   at load time, so a DL that loaded a TLUT before selecting its CI draw mode
+   would have decoded under the previous mode's TT. The field is gone; both
+   consumers (`palette_to_rgba32()` and the texture-cache key) now read
+   `dkr_textlut_fmt()` at decode time. The cache key already carried the resolved
+   type, so a CI texture decoded under a different TT still gets its own entry.
+   Consequence today is nil — DKR never selects `G_TT_IA16` — but the shape is now
+   right.
+
+5. **`G_SETBLENDCOLOR` is recorded, and an unimplemented alpha-compare mode is
+   now loud.** The command used to be decoded and dropped with the comment "blend
+   colour unused by the shader path". On the RDP the blend colour is both the
+   `G_AC_THRESHOLD` reference and the `G_BL_CLR_BL` blender input, and DKR does
+   emit it (`gDPSetBlendColor(gTrackDL++, 0, 0, 0, 100)`, `game/src/tracks.c`).
+   The value is now kept in `rdp.blend_color`. The shader path still implements
+   neither consumer, so rather than leaving that silent, `dkr_check_alpha_compare()`
+   warns (capped at 8 lines) whenever `other_mode_l` selects anything but
+   `G_AC_NONE`. Nothing in `game/src` does — every DKR othermode constant pins
+   `G_AC_NONE` — so this is latent; the point is that it can no longer become a
+   silent wrong render.
 3. **`dxt != 0` accumulator drift is *not* a problem here, but it is real.** With
    `dxt = ceil(2048/wpl)` and a non-power-of-two `wpl`, the RDP's line counter
    drifts by `wpl*dxt - 2048` per row. DKR's own non-interlaced non-power-of-two

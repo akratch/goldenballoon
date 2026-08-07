@@ -182,9 +182,15 @@ void obj_loop_scenery(Object *obj, s32 updateRate) {
                     if (obj->header->particleCount == 1) {
                         particleFlagShift = 0;
                     } else {
-                        particleFlagShift = rand_range(0, obj->header->particleCount - 1);
+                        /* particleCount is an s8 straight out of the object
+                         * header, so it can declare up to 127 types while
+                         * particleEmittersEnabled is a 32-bit mask. Clamp the
+                         * draw to the mask width: a header claiming more is
+                         * malformed, and the ROM's `sllv` would have folded the
+                         * count modulo 32 rather than invoking UB. */
+                        particleFlagShift = rand_range(0, MIN(obj->header->particleCount, 32) - 1);
                     }
-                    obj->particleEmittersEnabled = OBJ_EMIT_1 << particleFlagShift;
+                    obj->particleEmittersEnabled = DKR_SHL32(OBJ_EMIT_1, particleFlagShift);
                     obj_spawn_particle(obj, LOGIC_30FPS);
                 }
             }
@@ -4052,8 +4058,12 @@ void obj_loop_door(Object *doorObj, s32 updateRate) {
                 door->soundMask = NULL;
             }
         }
+        /* keyID arrives from the level's door entry, so the ROM's `>= 0` test
+         * bounds only the low side; `settings->keys` is a 32-bit key bitfield.
+         * DKR_SHL32 reproduces the MIPS `sllv` count masking the ROM relied on
+         * instead of shifting a signed 1 past its width. */
         if (door->keyID >= 0) {
-            keyBits = 1 << door->keyID;
+            keyBits = DKR_SHL32(1, door->keyID);
             if (settings->keys & keyBits) {
                 settings->courseFlagsPtr[settings->courseId] |= doorIDFlag;
             }

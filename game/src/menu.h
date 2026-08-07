@@ -457,6 +457,13 @@ typedef struct SaveFileData {
   /* 0x0C */ u32 fileSize; // Game Data File Size
 } SaveFileData;
 
+#ifndef NATIVE_PORT
+/* Pins the ROM layout the 0x10 stride comment describes. The native build carries
+ * a real host pointer at 0x08 and is deliberately wider; menu_save_options_init()
+ * sizes its allocation from sizeof(SaveFileData) so both targets are exact. */
+_Static_assert(sizeof(SaveFileData) == 0x10, "SaveFileData is a 0x10-byte record on the N64");
+#endif
+
 // Size: 12 or 16 bytes
 typedef struct unk80126878 {
   /* 0x00 */ char *text;

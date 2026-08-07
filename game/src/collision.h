@@ -21,15 +21,25 @@
  * back as a segment and crash.
  *
  * Native encoding: store the 24-bit ARENA OFFSET (the arena is 16 MB, so offsets
- * fit well under 2^31) and use bit 31 as the type tag — 0 = segment (stays
- * POSITIVE, satisfying the decoders' `>= 0` / `> 0` segment test), 1 = facet
- * (NEGATIVE). Both are reconstructed against the real arena base. This keeps the
- * sign-based dispatch in resolve_collisions() and the tracks.c camera-clip code
- * working unchanged.
+ * fit well under 2^31) and use bit 31 as the type tag — 0 = segment (POSITIVE),
+ * 1 = facet (NEGATIVE). Both are reconstructed against the real arena base. This
+ * keeps the sign-based dispatch in resolve_collisions() and the tracks.c
+ * camera-clip code working unchanged.
+ *
+ * The segment form is BIASED BY ONE so that it is strictly positive. The two
+ * decoders do not use the same test — resolve_collisions() (hasm/collision.c)
+ * dispatches on `>= 0` while the camera-clip walk in tracks.c dispatches on
+ * `> 0` — and they disagree on exactly one value: 0. Without the bias, a segment
+ * that happened to sit at arena offset 0 would encode as 0 and the camera-clip
+ * walk would route it into the FACET branch, decoding the arena base itself as a
+ * CollisionNode and indexing collision planes off pool metadata. The ROM had no
+ * such hole because K0_TO_PHYS of a real segment is never 0. With the bias the
+ * segment form is >= 1 for every arena offset, 0 is not a producible token, and
+ * `>= 0` and `> 0` classify every token identically.
  */
-#define DKR_COLL_ENCODE_SEG(seg)   ((s32) ((uintptr_t) (seg) - (uintptr_t) g_dkrArenaBase))
+#define DKR_COLL_ENCODE_SEG(seg)   ((s32) ((uintptr_t) (seg) - (uintptr_t) g_dkrArenaBase + 1u))
 #define DKR_COLL_ENCODE_FACET(f)   ((s32) (((uintptr_t) (f) - (uintptr_t) g_dkrArenaBase) | 0x80000000u))
-#define DKR_COLL_DECODE_SEG(c)     ((char *) g_dkrArenaBase + (u32) (c))
+#define DKR_COLL_DECODE_SEG(c)     ((char *) g_dkrArenaBase + ((u32) (c) - 1u))
 #define DKR_COLL_DECODE_FACET(c)   ((char *) g_dkrArenaBase + ((u32) (c) & 0x7FFFFFFFu))
 #endif
 
