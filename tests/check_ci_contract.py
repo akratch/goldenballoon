@@ -478,8 +478,8 @@ def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
 
     failures.extend(pinned("gpu_routing", sources))
     for value in (
-            "display", "30", "60", "90", "120", "144", "165", "240",
-            "uncapped"):
+            "display", "display-margin", "30", "40", "60", "90", "120", "144",
+            "165", "240", "uncapped"):
         if f'{{"{value}",' not in sources["ui_settings"]:
             failures.append(f"native frame-limit option {value!r} is missing")
     failures.extend(validate_frame_limit_help_pins(sources))

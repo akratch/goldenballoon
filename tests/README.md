@@ -416,7 +416,13 @@ production coverage:
   and the swapchain (`[SETTINGS-APPLY]`, `[PRESENT-POLICY] event=live-apply`,
   a re-emitted `[PRESENT-MODE]`), that the v3 state, event and input streams
   stay byte-identical to an untoggled baseline, and that nothing reached
-  retired replay state. The **camera** arm asserts the LEVEL deferral in the
+  retired replay state. The **pace** arm drives the settings panel's
+  Presentation pace quick choice through the same runtime call the radio button
+  makes (`Presentation.Pace=original|smooth@tick`) and owns the property no
+  other arm can see: the quick choice writes both pacing keys in ONE
+  transaction, so four `[SETTINGS-APPLY]` rows must arrive on exactly TWO
+  boundary applies. Two sequential setters would re-latch twice, and one frame
+  boundary between them would run with half the change applied. The **camera** arm asserts the LEVEL deferral in the
   direction that fails silently: the census must still report `gate=OBSERVE`
   on every tick between the edit and the level load. The **soak** arm flips
   motion smoothing 24 times across a level load — the stale walk-entry hazard
@@ -482,9 +488,12 @@ production coverage:
   before a tick was applying the next tick's scripted input one tick early.
   `check_arbitrary_presentation_rates.py` extends the same contract beyond the
   old integer-field grid. Over 600 fixed ticks it requires exact rational
-  presentation totals for NTSC `30`, `60`, `90`, `120`, `144`, `165`, `240`, and a
+  presentation totals for NTSC `30`, `40`, `60`, `90`, `120`, `144`, `165`, `240`, and a
   deterministic 1000 Hz uncapped stand-in, plus PAL `60` at exactly 2.4
-  opportunities per 25 Hz tick. Every arm must keep v3 state, ordered events,
+  opportunities per 25 Hz tick. `display-margin` is checked against the
+  `display` arm that ran on the same monitor in the same session: it must
+  resolve to exactly three Hz below whatever refresh that arm resolved to, and
+  produce the exact rational count for it. Every arm must keep v3 state, ordered events,
   consumed input, temporary PCM, audio time, and fixed two-field update counts
   byte-identical to its region's original arm; replay/packet failures and
   deformation/effect-key collisions remain zero. A second forced-WebGPU matrix
@@ -867,7 +876,8 @@ phase advanced between displayed frames — as fixed-bucket
 flight at present, times the refresh period) that quantifies the cost of a FIFO
 present mode.
 
-Synthetic arms cover every presentation policy crossed with both smoothing
+Synthetic arms cover every presentation policy — including the battery-friendly
+`40` cap and `display-margin` — crossed with both smoothing
 settings and assert only structural identities: the census must count the same
 presents the scheduler did, every present after the first must contribute
 exactly one interval sample and every displayed frame exactly one phase sample,
@@ -3596,6 +3606,13 @@ with private app preferences, video config, and save roots. Proves first-run
 selection, cross-process reload, gamepad parity, visible save failure with
 unchanged desired state, and recovery once the configuration path becomes
 writable.
+
+It also presses the Presentation pace radio button and requires ONE press to
+persist BOTH pacing keys — `FrameLimit=display` with
+`MotionSmoothing=interpolate` for Smooth, and the authored pair for Original —
+then reads them back in a fresh process. Configs the quick choice has no name
+for (a numeric cap, `40`, `display-margin`) must read back as `custom` rather
+than being shown as one of the two named pairs.
 
 ### Per-viewport route isolation — `tests/check_viewport_route_isolation.py`
 

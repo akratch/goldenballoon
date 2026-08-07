@@ -52,6 +52,12 @@ bool g_uiScaleRectValid = false;
 ImVec2 g_uiScaleRectMin;
 ImVec2 g_uiScaleRectMax;
 bool g_smokeGamepadFocusUsed = false;
+// Rendered rectangle of each presentation-pace choice, for smoke observation
+// only. Indexed by MdkrPresentationPace, so slot 0 (Custom) stays unused —
+// Custom is a reading of the two keys and never a control to press.
+bool g_paceRectValid[3] = {false, false, false};
+ImVec2 g_paceRectMin[3];
+ImVec2 g_paceRectMax[3];
 
 void setStatus(const char *text, const ImVec4 &color) {
     g_status = text ? text : "";
@@ -282,9 +288,15 @@ constexpr const char *kFrameLimitHelp =
     "number of 60 Hz refreshes fits, so Original holds it for two refreshes "
     "and then three and the motion ripples. Match Display with Interpolated "
     "removes that without changing game speed, music pitch, or timers. "
+    "Just Under Display is for a display with a variable refresh rate: it "
+    "paces a few Hz below the top of that range, which keeps the display "
+    "adapting to the game rather than falling back to a fixed refresh, and it "
+    "re-reads the rate if you move the window to another monitor. 40 Hz is a "
+    "battery-friendly choice on a handheld whose display runs at 40 or 120 Hz, "
+    "where every image is held for the same length of time. "
     "Uncapped removes the native limit only when new interpolated images are "
     "available; held frames stay display-paced. A "
-    "browser always maps Uncapped to Match Display.";
+    "browser always maps Uncapped and Just Under Display to Match Display.";
 
 const Option kCadence[] = {
     {"original", "Original (recommended)"},
@@ -293,7 +305,12 @@ const Option kCadence[] = {
 const Option kFrameLimit[] = {
     {"original", kOriginalFrameLimitLabel},
     {"display",  "Match Display"},
+    // Named for what it does rather than for the hardware feature it suits:
+    // a player who has a variable-refresh display knows they have one, and a
+    // player who does not is not helped by the acronym.
+    {"display-margin", "Just Under Display"},
     {"30",       "30 Hz"},
+    {"40",       "40 Hz (battery friendly)"},
     {"60",       "60 Hz"},
     {"90",       "90 Hz"},
     {"120",      "120 Hz"},
@@ -374,7 +391,10 @@ bool optionsFor(MdkrVideoKey k, Options &out) {
     }
     switch (k) {
         case MDKR_VIDEO_SIMULATION_CADENCE: out = {kCadence, 2}; return true;
-        case MDKR_VIDEO_FRAME_LIMIT:        out = {kFrameLimit, 10}; return true;
+        case MDKR_VIDEO_FRAME_LIMIT:
+            out = {kFrameLimit,
+                   static_cast<int>(std::size(kFrameLimit))};
+            return true;
         case MDKR_VIDEO_MOTION_SMOOTHING:
             out = {kMotionSmoothing, 2}; return true;
         case MDKR_VIDEO_ALLOW_TEARING:      out = {kAllowTearing, 2}; return true;
@@ -722,6 +742,116 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
     return changed;
 }
 
+// --- Presentation pace: one control over Frame limit + Motion smoothing ----
+//
+// WHY THIS IS SUGAR AND NOT A SETTING. The two keys below it stay the source of
+// truth: this writes them and reads them back, and holds no state of its own
+// between frames. So a player who sets them individually sees whichever quick
+// choice their pair spells, a config file written by hand behaves identically,
+// and every gate that drives Video.FrameLimit keeps testing the same thing.
+// The alternative -- a third persisted key that the other two had to be kept in
+// sync with -- has a wrong answer available at every layer, and this one does
+// not.
+//
+// WHY RADIO BUTTONS AND NOT A COMBO. Two named choices plus a state the control
+// cannot produce. A combo would have to either hide Custom, which makes the
+// panel claim a pace the player is not on, or offer it, which invites selecting
+// a value that means nothing to write. Radios show all three honestly: two
+// pressable, and Custom as a plain statement when neither is filled.
+struct PaceChoice { MdkrPresentationPace pace; const char *label; };
+const PaceChoice kPaceChoices[] = {
+    {MDKR_PRESENTATION_PACE_ORIGINAL, "Original (authored pace)"},
+    {MDKR_PRESENTATION_PACE_SMOOTH,   "Smooth (match display)"},
+};
+
+bool drawPresentationPace(bool compact) {
+    const MdkrVideoConfig *config = mdkr_video_config_desired();
+    const MdkrVideoSchema *frameSchema =
+        mdkr_video_schema(MDKR_VIDEO_FRAME_LIMIT);
+    if (config == nullptr || frameSchema == nullptr) return false;
+
+    // Locked if EITHER underlying key is pinned above RUNTIME rank: the choice
+    // writes both, so it can only be offered when both can be written.
+    const bool locked =
+        mdkr_video_config_runtime_locked(MDKR_VIDEO_FRAME_LIMIT) != 0 ||
+        mdkr_video_config_runtime_locked(MDKR_VIDEO_MOTION_SMOOTHING) != 0;
+    const MdkrPresentationPace current = mdkr_video_presentation_pace(config);
+    bool changed = false;
+
+    ImGui::PushID("presentation-pace");
+    if (locked) ImGui::BeginDisabled();
+    ImGui::TextUnformatted("Presentation pace");
+    ui::LiveBadge("applies immediately");
+
+    for (int i = 0; i < static_cast<int>(std::size(kPaceChoices)); ++i) {
+        const PaceChoice &choice = kPaceChoices[i];
+        if (i > 0) ImGui::SameLine(0.0f, ui::kGapM);
+        const bool pressed =
+            ImGui::RadioButton(choice.label, current == choice.pace);
+        const int slot = static_cast<int>(choice.pace);
+        g_paceRectMin[slot] = ImGui::GetItemRectMin();
+        g_paceRectMax[slot] = ImGui::GetItemRectMax();
+        g_paceRectValid[slot] = true;
+        if (!pressed) continue;
+        const MdkrVideoRuntimeResult result =
+            mdkr_video_config_runtime_set_presentation_pace(choice.pace);
+        // One verdict for the pair, reported against Frame limit's label: the
+        // transaction succeeded or failed as a whole, and two status lines for
+        // one press would be two claims about one thing.
+        reportResult(result, frameSchema);
+        if (resultSucceeded(result)) {
+            // Both underlying combos must resynchronize from the authoritative
+            // desired config rather than from their own stale edit buffers.
+            g_edits[static_cast<size_t>(MDKR_VIDEO_FRAME_LIMIT)] = EditState{};
+            g_edits[static_cast<size_t>(MDKR_VIDEO_MOTION_SMOOTHING)] =
+                EditState{};
+            changed = true;
+        }
+    }
+
+    if (current == MDKR_PRESENTATION_PACE_CUSTOM) {
+        ui::TextSubtleWrapped(
+            "Custom — Frame limit and Motion smoothing are set individually "
+            "below.");
+    }
+    if (locked) {
+        ImGui::EndDisabled();
+        ui::TextSubtle("Fixed for this session.");
+    } else if (!compact) {
+        ui::TextSubtleWrapped(
+            "Smooth presents on your display's own schedule and draws "
+            "in-between pictures, so the world glides instead of stepping. "
+            "Original presents each picture the game makes, once. Either way "
+            "the game runs at its original speed — racing, timers, sound and "
+            "saves are identical. This changes Frame limit and Motion "
+            "smoothing together, and takes effect straight away; you can "
+            "change it while you play.");
+    }
+    // One row per DISTINCT reading, not per frame: the panel redraws sixty
+    // times a second and a per-frame row would bury the transition a gate is
+    // looking for in thousands of identical ones.
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        const MdkrVideoConfig *now = mdkr_video_config_desired();
+        static std::string traced;
+        char row[256];
+        std::snprintf(row, sizeof(row),
+                      "[app-ui] presentation-pace value=%s frameLimit=%s "
+                      "motionSmoothing=%s locked=%d",
+                      mdkr_video_presentation_pace_name(
+                          mdkr_video_presentation_pace(now)),
+                      now->values[MDKR_VIDEO_FRAME_LIMIT].text,
+                      now->values[MDKR_VIDEO_MOTION_SMOOTHING].text,
+                      locked ? 1 : 0);
+        if (traced != row) {
+            traced = row;
+            std::fprintf(stderr, "%s\n", row);
+        }
+    }
+    ui::Gap(ui::kGapS);
+    ImGui::PopID();
+    return changed;
+}
+
 bool restoreControllerDefaults() {
     constexpr size_t kInputCount =
         static_cast<size_t>(MDKR_INPUT_LAST_KEY - MDKR_INPUT_FIRST_KEY + 1);
@@ -827,6 +957,21 @@ bool Settings_smokeFrameLimitRetryCenter(int *x, int *y) {
     return true;
 }
 
+bool Settings_smokePresentationPaceCenter(const char *pace, int *x, int *y) {
+    if (!pace || !x || !y) return false;
+    const int resolved = mdkr_video_presentation_pace_from_name(pace);
+    if (resolved <= 0 ||
+        resolved >= static_cast<int>(std::size(g_paceRectValid)) ||
+        !g_paceRectValid[resolved]) {
+        return false;
+    }
+    *x = static_cast<int>(
+        (g_paceRectMin[resolved].x + g_paceRectMax[resolved].x) * 0.5f);
+    *y = static_cast<int>(
+        (g_paceRectMin[resolved].y + g_paceRectMax[resolved].y) * 0.5f);
+    return true;
+}
+
 bool Settings_smokeUiScaleRect(int *minX, int *minY, int *maxX, int *maxY) {
     if (!minX || !minY || !maxX || !maxY || !g_uiScaleRectValid) return false;
     *minX = static_cast<int>(g_uiScaleRectMin.x);
@@ -909,8 +1054,12 @@ bool Settings_draw(SDL_Window *window, bool compact) {
         std::getenv("MDKR_APP_SMOKE_CONTROLLER_SETTINGS") != nullptr;
     const bool smokeControllerRestore =
         std::getenv("MDKR_APP_SMOKE_CONTROLLER_RESTORE") != nullptr;
+    /* Both scripted pacing gates need the same thing: Frame Rate & Motion in
+     * view without scrolling, so a queued click lands on the widget rather
+     * than on whatever the panel happened to have scrolled under it. */
     const bool selectingFrameLimit =
-        std::getenv("MDKR_APP_SMOKE_SELECT_FRAME_LIMIT") != nullptr;
+        std::getenv("MDKR_APP_SMOKE_SELECT_FRAME_LIMIT") != nullptr ||
+        std::getenv("MDKR_APP_SMOKE_SELECT_PRESENTATION_PACE") != nullptr;
     int controllerMappingWidgets = 0;
     int controllerRumbleWidgets = 0;
     bool controllerRestoreAvailable = false;
@@ -1136,6 +1285,19 @@ bool Settings_draw(SDL_Window *window, bool compact) {
                 }
             }
             if (category == MDKR_VIDEO_CAT_PACING) {
+                // Above the two rows it writes, because it is the answer for
+                // most players and the individual controls are the way to
+                // leave it, not the way to reach it.
+                if (AppUi_videoSettingVisible(
+                        MDKR_VIDEO_FRAME_LIMIT, webGpuRenderer,
+                        legacyStretchActive) &&
+                    AppUi_videoSettingVisible(
+                        MDKR_VIDEO_MOTION_SMOOTHING, webGpuRenderer,
+                        legacyStretchActive)) {
+                    changed |= drawPresentationPace(compact);
+                    ImGui::Separator();
+                    ui::Gap(ui::kGapS);
+                }
                 if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
                     static bool tracedFrameRateControls = false;
                     if (!tracedFrameRateControls) {

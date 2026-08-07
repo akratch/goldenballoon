@@ -579,6 +579,36 @@ static void test_precedence(void) {
                mdkr_video_config_set(
                    &cfg, MDKR_VIDEO_FRAME_LIMIT, "uncapped",
                    MDKR_VIDEO_SOURCE_CLI), 1);
+    expect_int("frame limit accepts display-margin",
+               mdkr_video_config_set(
+                   &cfg, MDKR_VIDEO_FRAME_LIMIT, "display-margin",
+                   MDKR_VIDEO_SOURCE_CLI), 1);
+    expect_int("frame limit accepts the battery-friendly 40 cap",
+               mdkr_video_config_set(
+                   &cfg, MDKR_VIDEO_FRAME_LIMIT, "40",
+                   MDKR_VIDEO_SOURCE_CLI), 1);
+    expect_true("the 40 cap is stored as the launcher offers it",
+                !strcmp(cfg.values[MDKR_VIDEO_FRAME_LIMIT].text, "40"));
+    /* The key's domain is half words and half numbers, so canonicalization has
+     * to cover both: a settings screen that cannot recognise its own written
+     * value would offer the player Custom for a choice they just made. */
+    expect_int("frame limit canonicalizes case",
+               mdkr_video_config_set(
+                   &cfg, MDKR_VIDEO_FRAME_LIMIT, "Display-Margin",
+                   MDKR_VIDEO_SOURCE_CLI), 1);
+    expect_true("frame limit stores its canonical word spelling",
+                !strcmp(cfg.values[MDKR_VIDEO_FRAME_LIMIT].text,
+                        "display-margin"));
+    expect_int("frame limit canonicalizes a padded number",
+               mdkr_video_config_set(
+                   &cfg, MDKR_VIDEO_FRAME_LIMIT, "060",
+                   MDKR_VIDEO_SOURCE_CLI), 1);
+    expect_true("frame limit stores the decimal cap",
+                !strcmp(cfg.values[MDKR_VIDEO_FRAME_LIMIT].text, "60"));
+    expect_int("frame limit rejects a near-miss keyword",
+               mdkr_video_config_set(
+                   &cfg, MDKR_VIDEO_FRAME_LIMIT, "display margin",
+                   MDKR_VIDEO_SOURCE_CLI), 0);
     expect_int("frame limit rejects a low numeric cap",
                mdkr_video_config_set(
                    &cfg, MDKR_VIDEO_FRAME_LIMIT, "29",
@@ -606,6 +636,73 @@ static void test_precedence(void) {
                mdkr_video_config_set(
                    &cfg, MDKR_VIDEO_MOTION_SMOOTHING, "on",
                    MDKR_VIDEO_SOURCE_CLI), 0);
+    /* The presentation-pace quick choice is a VIEW of the two keys above and
+     * holds no state of its own, so every assertion here is about reading them
+     * back -- including the case it deliberately has no name for. */
+    {
+        const char *limit = NULL;
+        const char *smoothing = NULL;
+
+        expect_int("smooth expands to display + interpolate",
+                   mdkr_video_presentation_pace_values(
+                       MDKR_PRESENTATION_PACE_SMOOTH, &limit, &smoothing) &&
+                       !strcmp(limit, "display") &&
+                       !strcmp(smoothing, "interpolate"), 1);
+        expect_int("original expands to original + off",
+                   mdkr_video_presentation_pace_values(
+                       MDKR_PRESENTATION_PACE_ORIGINAL, &limit, &smoothing) &&
+                       !strcmp(limit, "original") &&
+                       !strcmp(smoothing, "off"), 1);
+        expect_int("custom has no expansion to write",
+                   mdkr_video_presentation_pace_values(
+                       MDKR_PRESENTATION_PACE_CUSTOM, &limit, &smoothing), 0);
+
+        (void) mdkr_video_config_set(&cfg, MDKR_VIDEO_FRAME_LIMIT, "display",
+                                     MDKR_VIDEO_SOURCE_CLI);
+        (void) mdkr_video_config_set(&cfg, MDKR_VIDEO_MOTION_SMOOTHING,
+                                     "interpolate", MDKR_VIDEO_SOURCE_CLI);
+        expect_int("the two keys spelling the smooth pair read back as smooth",
+                   (int) mdkr_video_presentation_pace(&cfg),
+                   (int) MDKR_PRESENTATION_PACE_SMOOTH);
+        (void) mdkr_video_config_set(&cfg, MDKR_VIDEO_MOTION_SMOOTHING, "off",
+                                     MDKR_VIDEO_SOURCE_CLI);
+        expect_int("half of a pair is Custom, not the pair",
+                   (int) mdkr_video_presentation_pace(&cfg),
+                   (int) MDKR_PRESENTATION_PACE_CUSTOM);
+        (void) mdkr_video_config_set(&cfg, MDKR_VIDEO_FRAME_LIMIT, "original",
+                                     MDKR_VIDEO_SOURCE_CLI);
+        expect_int("the authored pair reads back as original",
+                   (int) mdkr_video_presentation_pace(&cfg),
+                   (int) MDKR_PRESENTATION_PACE_ORIGINAL);
+        (void) mdkr_video_config_set(&cfg, MDKR_VIDEO_FRAME_LIMIT, "90",
+                                     MDKR_VIDEO_SOURCE_CLI);
+        expect_int("a numeric cap is Custom",
+                   (int) mdkr_video_presentation_pace(&cfg),
+                   (int) MDKR_PRESENTATION_PACE_CUSTOM);
+        expect_int("display-margin is Custom: the quick choice does not name it",
+                   mdkr_video_config_set(&cfg, MDKR_VIDEO_FRAME_LIMIT,
+                                         "display-margin",
+                                         MDKR_VIDEO_SOURCE_CLI) &&
+                       mdkr_video_presentation_pace(&cfg) ==
+                           MDKR_PRESENTATION_PACE_CUSTOM, 1);
+        expect_int("a null config is Custom rather than a crash",
+                   (int) mdkr_video_presentation_pace(NULL),
+                   (int) MDKR_PRESENTATION_PACE_CUSTOM);
+        expect_int("pace names round-trip",
+                   mdkr_video_presentation_pace_from_name("Smooth") ==
+                           (int) MDKR_PRESENTATION_PACE_SMOOTH &&
+                       mdkr_video_presentation_pace_from_name("original") ==
+                           (int) MDKR_PRESENTATION_PACE_ORIGINAL, 1);
+        expect_int("custom is a reading and never a value to apply",
+                   mdkr_video_presentation_pace_from_name("custom"), -1);
+        expect_int("an unknown pace name is refused",
+                   mdkr_video_presentation_pace_from_name("smoothish"), -1);
+        expect_true("pace names are the ones the seams print",
+                    !strcmp(mdkr_video_presentation_pace_name(
+                                MDKR_PRESENTATION_PACE_SMOOTH), "smooth") &&
+                    !strcmp(mdkr_video_presentation_pace_name(
+                                MDKR_PRESENTATION_PACE_CUSTOM), "custom"));
+    }
     expect_int("window mode rejects unknown value",
                mdkr_video_config_set(&cfg, MDKR_WINDOW_MODE, "maximized",
                                      MDKR_VIDEO_SOURCE_CLI), 0);

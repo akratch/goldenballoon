@@ -180,6 +180,36 @@ int main(void) {
     expect("legacy keyword spelling remains case-insensitive",
            mdkr_present_policy_parse("DISPLAY", &present) &&
                present.kind == MDKR_PRESENT_DISPLAY);
+    expect("display-margin parses and never asks to tear past the display",
+           mdkr_present_policy_parse("display-margin", &present) &&
+               present.kind == MDKR_PRESENT_DISPLAY_MARGIN &&
+               mdkr_present_policy_sync(&present, 144u) ==
+                   MDKR_PRESENT_SYNC_BLOCKING &&
+               mdkr_present_policy_sync(&present, 0u) ==
+                   MDKR_PRESENT_SYNC_BLOCKING &&
+               mdkr_present_policy_needs_subloop(&present, 30u));
+    expect("display-margin keyword is case-insensitive too",
+           mdkr_present_policy_parse("Display-Margin", &present) &&
+               present.kind == MDKR_PRESENT_DISPLAY_MARGIN);
+    expect("held display-margin frames receive a software deadline",
+           mdkr_present_policy_needs_held_frame_deadline(&present, 0) &&
+               !mdkr_present_policy_needs_held_frame_deadline(&present, 1));
+    expect("the margin is a fixed step below the reported refresh",
+           mdkr_present_policy_display_margin_rate(144u) == 141u &&
+               mdkr_present_policy_display_margin_rate(240u) == 237u &&
+               mdkr_present_policy_display_margin_rate(60u) == 57u);
+    expect("a display with no headroom resolves to the schema floor",
+           mdkr_present_policy_display_margin_rate(30u) ==
+                   MDKR_PRESENT_RATE_MIN &&
+               mdkr_present_policy_display_margin_rate(33u) ==
+                   MDKR_PRESENT_RATE_MIN &&
+               mdkr_present_policy_display_margin_rate(34u) == 31u);
+    expect("an unreported refresh has nothing to sit under",
+           mdkr_present_policy_display_margin_rate(0u) == 0u);
+    expect("a near-typo is still rejected",
+           !mdkr_present_policy_parse("display margin", &present) &&
+               !mdkr_present_policy_parse("display-", &present) &&
+               !mdkr_present_policy_parse("margin", &present));
     expect("low numeric rate is rejected",
            !mdkr_present_policy_parse("29", &present));
     expect("high numeric rate is rejected",

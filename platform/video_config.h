@@ -302,6 +302,76 @@ const char *mdkr_video_camera_comfort_canonical(const char *value);
 const char *mdkr_video_allow_tearing_canonical(const char *value);
 
 /*
+ * Canonical spelling for a Video.FrameLimit value, written into `out` (which
+ * must be at least MDKR_VIDEO_STRING_MAX). Returns 1 when `value` is one the
+ * shared pacing-policy parser accepts and 0 otherwise, leaving `out` untouched.
+ *
+ * WHY THIS KEY NEEDS ONE AND DID NOT BEFORE. Its domain is half words and half
+ * numbers, so it was the one enumerated setting stored exactly as typed:
+ * `DISPLAY`, `Display` and `display` all resolved to the same policy but three
+ * different strings reached the ini and the options screen, and a combo whose
+ * table holds `display` simply showed no selection for the other two. That was
+ * survivable while every word was a single token. `display-margin` is not a
+ * single token, and a settings screen that cannot recognise its own written
+ * value would show the player Custom for a choice they just made.
+ *
+ * Words fold to their lowercase spelling; a numeric cap folds to its decimal
+ * value, so `060` and `60` are the same saved setting.
+ */
+int mdkr_video_frame_limit_canonical(const char *value, char *out, size_t cap);
+
+/* --- Presentation pace: one choice over two existing keys ----------------- *
+ *
+ * WHAT IT IS. Nearly every player who wants the modern experience wants the
+ * same PAIR of values -- Video.FrameLimit=display with
+ * Video.MotionSmoothing=interpolate -- and had to find and combine two controls
+ * in two different rows to get it. This is one name for that pair, and one name
+ * for the authored pair it replaces.
+ *
+ * WHAT IT IS NOT: a fourth state. There is no Presentation.Pace key, nothing is
+ * persisted under that name, and nothing latches it. It is a VIEW of the two
+ * keys, derived on read and expanded on write, so the two keys remain the only
+ * source of truth. Everything that already reads them -- the live-apply
+ * boundary, the ini, --video-set, the report, every gate -- keeps working with
+ * no knowledge that this exists, and a player who sets the two keys
+ * individually to a matching pair simply sees the matching quick choice
+ * selected.
+ *
+ * That is also why CUSTOM exists rather than being hidden or corrected. A
+ * numeric cap, or display without smoothing, is a perfectly good configuration
+ * that this control has no name for, and saying so is the honest answer. Custom
+ * is a description, never a value: it can be READ back from the keys and never
+ * written to them.
+ */
+typedef enum MdkrPresentationPace {
+    /* The two keys spell a combination no quick choice names. */
+    MDKR_PRESENTATION_PACE_CUSTOM = 0,
+    /* FrameLimit=original, MotionSmoothing=off. */
+    MDKR_PRESENTATION_PACE_ORIGINAL,
+    /* FrameLimit=display, MotionSmoothing=interpolate. */
+    MDKR_PRESENTATION_PACE_SMOOTH
+} MdkrPresentationPace;
+
+/* The quick choice `config`'s two pacing keys currently spell. */
+MdkrPresentationPace mdkr_video_presentation_pace(const MdkrVideoConfig *config);
+
+/* "original", "smooth" or "custom" -- the spelling the diagnostic seams and
+ * the trace rows use. Never NULL. */
+const char *mdkr_video_presentation_pace_name(MdkrPresentationPace pace);
+
+/* Parse "original"/"smooth" case-insensitively. Returns -1 for anything else,
+ * INCLUDING "custom": custom is a reading of the keys, not a thing to apply. */
+int mdkr_video_presentation_pace_from_name(const char *name);
+
+/*
+ * The two key values `pace` expands to. Returns 1 and writes both pointers for
+ * ORIGINAL and SMOOTH; returns 0 and writes nothing for CUSTOM.
+ */
+int mdkr_video_presentation_pace_values(MdkrPresentationPace pace,
+                                        const char **frame_limit,
+                                        const char **motion_smoothing);
+
+/*
  * Canonical spelling for a Gameplay.MenuLanguages value ("authentic" or
  * "all"), or NULL when `value` is neither. "all" is the default: it offers
  * every language the running ROM's text and font assets carry, regardless of
@@ -440,6 +510,25 @@ MdkrVideoRuntimeResult mdkr_video_config_runtime_set(MdkrVideoKey key,
 MdkrVideoRuntimeResult mdkr_video_config_runtime_set_many(
     const MdkrVideoRuntimeChange *changes,
     int change_count);
+
+/*
+ * Apply a presentation-pace quick choice: exactly the two-key set_many the
+ * expansion above describes, in ONE transaction.
+ *
+ * One transaction is the whole point. Two sequential setters would take the
+ * config lock twice, write the file twice, and -- under a running engine --
+ * stage two separate boundary applies, so a player switching to Smooth could
+ * be shown display-with-smoothing-off for one frame boundary. Passing both
+ * changes together makes the pair atomic on disk and gives the presentation
+ * domain ONE apply carrying both, which is what the live gate asserts.
+ *
+ * Returns MDKR_VIDEO_RUNTIME_INVALID for CUSTOM, which has no expansion, and
+ * otherwise whatever the underlying transaction returns -- including LOCKED
+ * when either key is pinned above RUNTIME rank, in which case NEITHER is
+ * written.
+ */
+MdkrVideoRuntimeResult mdkr_video_config_runtime_set_presentation_pace(
+    MdkrPresentationPace pace);
 
 /* Persist DKR's original 0..256 music/effects sliders into the shared 0..100
  * shell settings when the player leaves the original Audio Options screen. */

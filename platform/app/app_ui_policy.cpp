@@ -92,12 +92,22 @@ bool AppUi_applyDpiTransition(AppUiDpiState *state, float framebufferScale) {
 
 AppUiSmokeInputMode AppUi_validateSmokeInput(
     const char *frames, const char *selection, const char *input,
-    const char *token) {
+    const char *token, const char *pace) {
+    // Exactly one scripted selection, and it must be one of the two the
+    // launcher has scripts for. Naming them explicitly is what keeps an
+    // inherited variable from attaching synthetic input to a normal session,
+    // and requiring exactly one keeps two pointer scripts from sharing a run.
+    const bool selectsFrameLimit = selection && selection[0];
+    const bool selectsPace = pace && pace[0];
     const bool anyInputContract =
-        (selection && selection[0]) || (input && input[0]) || (token && token[0]);
+        selectsFrameLimit || selectsPace || (input && input[0]) ||
+        (token && token[0]);
     if (!anyInputContract) return AppUiSmokeInputMode::Disabled;
-    if (!frames || !frames[0] || !selection || !input || !token ||
-        std::strcmp(selection, "240") != 0 ||
+    if (!frames || !frames[0] || !input || !token ||
+        selectsFrameLimit == selectsPace ||
+        (selectsFrameLimit && std::strcmp(selection, "240") != 0) ||
+        (selectsPace && std::strcmp(pace, "original") != 0 &&
+         std::strcmp(pace, "smooth") != 0) ||
         std::strcmp(token, "mdkr64-app-ui-input-v1") != 0) {
         return AppUiSmokeInputMode::Invalid;
     }
@@ -120,7 +130,8 @@ AppUiSmokeInputMode AppUi_smokeInputMode() {
         std::getenv("MDKR_APP_SMOKE_FRAMES"),
         std::getenv("MDKR_APP_SMOKE_SELECT_FRAME_LIMIT"),
         std::getenv("MDKR_APP_SMOKE_INPUT"),
-        std::getenv("MDKR_APP_SMOKE_INPUT_TOKEN"));
+        std::getenv("MDKR_APP_SMOKE_INPUT_TOKEN"),
+        std::getenv("MDKR_APP_SMOKE_SELECT_PRESENTATION_PACE"));
 }
 
 bool AppUi_videoSettingVisible(MdkrVideoKey key, bool webGpuRenderer,

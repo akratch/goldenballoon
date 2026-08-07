@@ -85,9 +85,14 @@ enum class AppUiSmokeInputMode { Disabled, Keyboard, Gamepad, Invalid };
 // Synthetic launcher input is enabled only by a complete, versioned test
 // contract. Partial or stale environment combinations are invalid, so an
 // inherited variable can never attach a virtual controller to normal gameplay.
+//
+// `selection` is the scripted Frame limit value and `pace` the scripted
+// Presentation pace choice. EXACTLY ONE must be present: they are two pointer
+// scripts for two controls, and a run claiming both would be driving neither
+// deterministically.
 AppUiSmokeInputMode AppUi_validateSmokeInput(
     const char *frames, const char *selection, const char *input,
-    const char *token);
+    const char *token, const char *pace);
 AppUiSmokeInputMode AppUi_smokeInputMode();
 
 // Reserved config keys remain parseable for forward compatibility, but the

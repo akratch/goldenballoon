@@ -39,6 +39,11 @@ int mdkr_present_policy_parse(const char *value, MdkrPresentPolicy *out) {
         *out = parsed;
         return 1;
     }
+    if (present_ci_equal(value, "display-margin")) {
+        parsed.kind = MDKR_PRESENT_DISPLAY_MARGIN;
+        *out = parsed;
+        return 1;
+    }
     if (present_ci_equal(value, "uncapped")) {
         parsed.kind = MDKR_PRESENT_UNCAPPED;
         *out = parsed;
@@ -71,6 +76,16 @@ int mdkr_present_policy_equal(const MdkrPresentPolicy *left,
            left->rate == right->rate;
 }
 
+unsigned mdkr_present_policy_display_margin_rate(unsigned display_rate) {
+    if (display_rate == 0u) {
+        return 0u;
+    }
+    if (display_rate <= MDKR_PRESENT_RATE_MIN + MDKR_PRESENT_DISPLAY_MARGIN_HZ) {
+        return MDKR_PRESENT_RATE_MIN;
+    }
+    return display_rate - MDKR_PRESENT_DISPLAY_MARGIN_HZ;
+}
+
 MdkrPresentSync mdkr_present_policy_sync(const MdkrPresentPolicy *policy,
                                          unsigned display_rate) {
     if (policy == NULL) {
@@ -79,6 +94,10 @@ MdkrPresentSync mdkr_present_policy_sync(const MdkrPresentPolicy *policy,
     if (policy->kind == MDKR_PRESENT_UNCAPPED) {
         return MDKR_PRESENT_SYNC_LATEST;
     }
+    /* display-margin is BELOW the refresh by construction, so the blocking
+     * queue is exactly right for it and asking for a queue that drops an
+     * undisplayed image would be asking for a capability it can never use. It
+     * takes the fall-through below rather than a branch of its own. */
     /* A cap at or below the refresh is served exactly by the blocking queue:
      * the deadline grid below already spaces the presents, and the queue drains
      * faster than that grid fills it, so it never becomes a second limiter. An
@@ -108,6 +127,7 @@ int mdkr_present_policy_needs_held_frame_deadline(
         return 0;
     }
     return policy->kind == MDKR_PRESENT_DISPLAY ||
+           policy->kind == MDKR_PRESENT_DISPLAY_MARGIN ||
            policy->kind == MDKR_PRESENT_UNCAPPED;
 }
 

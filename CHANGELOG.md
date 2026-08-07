@@ -12,6 +12,27 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ### Added
 
+- **Presentation pace**, one choice at the top of Frame Rate & Motion.
+  **Smooth** gives you the modern picture — the game presents on your display's
+  own schedule and draws in-between pictures, so the world glides instead of
+  stepping. **Original** presents each picture the game makes, once, exactly as
+  it was written. Until now that meant finding two separate settings and
+  getting both of them right; it is one press now, and it applies while you
+  play. Either way the game runs at its original speed: racing, timers, sound
+  and saves are identical. If you have set Frame limit and Motion smoothing to
+  some other combination, the panel says **Custom** and leaves them alone.
+
+- **Just Under Display**, a new Frame limit choice, for a display with a
+  variable refresh rate. It paces a few Hz below the top of that display's
+  range, which is what keeps the display adapting to the game instead of
+  falling back to a fixed refresh — the thing a variable-refresh display is
+  for. It reads the rate off whichever monitor the window is on, so dragging
+  the game to a different one keeps it right.
+
+- **40 Hz**, a new Frame limit choice. On a handheld whose display runs at 40
+  or 120 Hz, every picture is held for the same length of time at 40, so the
+  motion is even and the battery lasts longer than it would at 60.
+
 - **Reduced motion**, a new Camera motion setting. It calms the camera: it
   smooths out the vertical shake from bumps, landings and explosions, and eases
   the camera back out more gently after it has squeezed past a wall. Authored,

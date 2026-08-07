@@ -1112,6 +1112,23 @@ MdkrVideoRuntimeResult mdkr_video_config_runtime_set(MdkrVideoKey key,
     return mdkr_video_config_runtime_set_many(&change, 1);
 }
 
+MdkrVideoRuntimeResult mdkr_video_config_runtime_set_presentation_pace(
+    MdkrPresentationPace pace) {
+    const char *frame_limit = NULL;
+    const char *motion_smoothing = NULL;
+    MdkrVideoRuntimeChange changes[2];
+
+    if (!mdkr_video_presentation_pace_values(pace, &frame_limit,
+                                             &motion_smoothing)) {
+        return MDKR_VIDEO_RUNTIME_INVALID;
+    }
+    changes[0].key = MDKR_VIDEO_FRAME_LIMIT;
+    changes[0].value = frame_limit;
+    changes[1].key = MDKR_VIDEO_MOTION_SMOOTHING;
+    changes[1].value = motion_smoothing;
+    return mdkr_video_config_runtime_set_many(changes, 2);
+}
+
 MdkrVideoRuntimeResult mdkr_audio_config_runtime_set_game_levels(
     unsigned music_level, unsigned effects_level) {
     char music[16];

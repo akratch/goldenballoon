@@ -644,9 +644,11 @@ function applyStoredVideoControls(qs) {
   if (rate && !qualityRateDirty && !qs.has("rate")) {
     if ([...rate.options].some((option) => option.value === storedRate)) {
       rate.value = storedRate;
-    } else if (storedRate === "uncapped") {
+    } else if (storedRate === "uncapped" || storedRate === "display-margin") {
       // A config shared from native remains loadable, but rAF is the effective
-      // browser ceiling and the launcher must reflect that honestly.
+      // browser ceiling and the launcher must reflect that honestly. The same
+      // is true of display-margin for a second reason: it needs a reported
+      // refresh to sit under, and the browser reports none.
       rate.value = "display";
     }
   }

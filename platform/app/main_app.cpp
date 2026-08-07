@@ -339,6 +339,13 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         smokeInputMode == AppUiSmokeInputMode::Gamepad;
     const char *smokeFrameLimit =
         std::getenv("MDKR_APP_SMOKE_SELECT_FRAME_LIMIT");
+    // Drives the real Presentation pace radio button through SDL, for the same
+    // reason the Frame limit script exists: the claim under test is that ONE
+    // press writes BOTH pacing keys, and only a click that travels
+    // SDL -> ImGui -> the quick-choice transaction can prove it.
+    const char *smokePresentationPace =
+        std::getenv("MDKR_APP_SMOKE_SELECT_PRESENTATION_PACE");
+    bool smokePaceClickQueued = false;
     const char *smokeUiScale =
         std::getenv("MDKR_APP_SMOKE_UI_SCALE_DRAG");
     const char *smokeTouchScroll =
@@ -368,13 +375,24 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         return 2;
     }
     if ((smokeUiScaleDrag && smokeFrameLimit) ||
+        (smokePresentationPace && (smokeUiScaleDrag || smokeFrameLimit)) ||
         (smokeTouch && (smokeUiScaleDrag || smokeFrameLimit ||
-                        smokeNavigation))) {
+                        smokePresentationPace || smokeNavigation))) {
         std::fprintf(stderr,
                      "[app] smoke: pointer scripts cannot share one input run\n");
         host.shutdown();
         return 2;
     }
+    if (smokePresentationPace &&
+        std::strcmp(smokePresentationPace, "original") != 0 &&
+        std::strcmp(smokePresentationPace, "smooth") != 0) {
+        std::fprintf(stderr,
+                     "[app] smoke: unsupported presentation pace %s "
+                     "(original or smooth)\n", smokePresentationPace);
+        host.shutdown();
+        return 2;
+    }
+    if (smokePresentationPace && frames < 8) frames = 8;
     if (smokeUiScaleDrag && frames < 11) frames = 11;
     if (smokeTouch && frames < 10) frames = 10;
     const int smokeFrameLimitSteps = smokeFrameLimit
@@ -644,6 +662,22 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                 }
             } else {
                 retryVisibleFrames = 0;
+            }
+        }
+
+        // One press of the real radio button, once it has been laid out. The
+        // rectangle is only valid after a complete frame, so this waits for it
+        // rather than assuming a fixed frame index.
+        if (smokePresentationPace && !smokePaceClickQueued) {
+            int x = 0, y = 0;
+            if (Settings_smokePresentationPaceCenter(
+                    smokePresentationPace, &x, &y)) {
+                host.queueMouseClickForSmoke(x, y);
+                smokePaceClickQueued = true;
+                std::fprintf(stderr,
+                             "[app-ui-test] presentation-pace click queued "
+                             "pace=%s at %d,%d\n",
+                             smokePresentationPace, x, y);
             }
         }
 
@@ -981,6 +1015,31 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
             std::fprintf(stderr,
                          "[app-ui-test] scripted frame-limit verdict did not "
                          "match expected persistence outcome\n");
+            renderOk = false;
+        }
+    }
+    if (smokePresentationPace) {
+        const MdkrVideoConfig *desiredConfig = mdkr_video_config_desired();
+        const char *limit = desiredConfig
+            ? desiredConfig->values[MDKR_VIDEO_FRAME_LIMIT].text : "";
+        const char *smoothing = desiredConfig
+            ? desiredConfig->values[MDKR_VIDEO_MOTION_SMOOTHING].text : "";
+        const char *resolved = desiredConfig
+            ? mdkr_video_presentation_pace_name(
+                  mdkr_video_presentation_pace(desiredConfig))
+            : "custom";
+        std::printf(
+            "[app-ui-test] presentation-pace requested=%s actual=%s "
+            "frameLimit=%s motionSmoothing=%s clicked=%d\n",
+            smokePresentationPace, resolved,
+            limit[0] ? limit : "(none)",
+            smoothing[0] ? smoothing : "(none)",
+            smokePaceClickQueued ? 1 : 0);
+        if (!smokePaceClickQueued ||
+            std::strcmp(resolved, smokePresentationPace) != 0) {
+            std::fprintf(stderr,
+                         "[app-ui-test] scripted presentation pace did not "
+                         "reach both pacing keys\n");
             renderOk = false;
         }
     }

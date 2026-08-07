@@ -261,7 +261,11 @@ PIN_GROUPS: dict[str, PinGroup] = {
             Pin("ui_settings", "interpolated image guidance",
                 must_contain="images when smoothing is Off, or create in-between images when it is "),
             Pin("ui_settings", "browser uncapped fallback guidance",
-                must_contain="browser always maps Uncapped to Match Display."),
+                must_contain="browser always maps Uncapped and Just Under Display to Match Display."),
+            Pin("ui_settings", "variable-refresh frame-limit guidance",
+                must_contain="Just Under Display is for a display with a variable refresh rate"),
+            Pin("ui_settings", "battery-friendly handheld cap guidance",
+                must_contain="battery-friendly choice on a handheld whose display runs at 40 or 120 Hz"),
         ),
     ),
     # The macOS release workflow's signing, notarization and publication policy.
@@ -1200,8 +1204,22 @@ CONTROL_GROUPS: dict[str, ControlGroup] = {
             Control(
                 "browser fallback guidance mutation",
                 "ui_settings",
-                "browser always maps Uncapped to Match Display.",
+                "browser always maps Uncapped and Just Under Display to Match Display.",
                 "Unbounded in a browser.",
+                count=1,
+            ),
+            Control(
+                "variable-refresh guidance mutation",
+                "ui_settings",
+                "Just Under Display is for a display with a variable refresh rate",
+                "Just Under Display is for any display",
+                count=1,
+            ),
+            Control(
+                "battery-friendly cap guidance mutation",
+                "ui_settings",
+                "battery-friendly choice on a handheld whose display runs at 40 or 120 Hz",
+                "40 Hz is a choice on a handheld",
                 count=1,
             ),
             Control(

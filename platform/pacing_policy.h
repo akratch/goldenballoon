@@ -15,11 +15,33 @@
 #define MDKR_PRESENT_RATE_MIN 30u
 #define MDKR_PRESENT_RATE_MAX 1000u
 
+/*
+ * How far below the display's own refresh `display-margin` sits, in Hz.
+ *
+ * WHY THREE. A variable-refresh display holds its adaptive range only while the
+ * application keeps arriving BEFORE the panel's minimum frame time. Sit exactly
+ * on the refresh and every ordinary scheduling hiccup crosses it, the panel
+ * falls back to its fixed ceiling for that frame, and the resulting alternation
+ * is the judder VRR exists to remove. A small fixed step is the usual remedy,
+ * and it is fixed rather than proportional because the thing being absorbed is
+ * host-side jitter -- a scheduler slip is roughly the same number of
+ * microseconds at 120 Hz as at 240, so a proportional margin would give away
+ * far too much headroom at the high end and not enough at the low.
+ */
+#define MDKR_PRESENT_DISPLAY_MARGIN_HZ 3u
+
 typedef enum MdkrPresentPolicyKind {
     MDKR_PRESENT_ORIGINAL = 0,
     MDKR_PRESENT_CAPPED = 1,
     MDKR_PRESENT_DISPLAY = 2,
     MDKR_PRESENT_UNCAPPED = 3,
+    /*
+     * Follow the display, minus a small fixed margin. Like MDKR_PRESENT_DISPLAY
+     * the player's choice carries no number: the rate is a property of the
+     * monitor the window is currently on and is re-derived from it, including
+     * when the window moves to another monitor.
+     */
+    MDKR_PRESENT_DISPLAY_MARGIN = 4,
 } MdkrPresentPolicyKind;
 
 typedef struct MdkrPresentPolicy {
@@ -78,6 +100,21 @@ uint32_t mdkr_counter_guard_commit(MdkrCounterGuard *guard, uint32_t sample);
 int mdkr_present_policy_parse(const char *value, MdkrPresentPolicy *out);
 int mdkr_present_policy_equal(const MdkrPresentPolicy *left,
                               const MdkrPresentPolicy *right);
+
+/*
+ * The cadence `display-margin` resolves to for a display reporting
+ * `display_rate` Hz: display_rate - MDKR_PRESENT_DISPLAY_MARGIN_HZ, floored at
+ * MDKR_PRESENT_RATE_MIN so the result is always a rate the deadline grid and
+ * the schema both accept.
+ *
+ * Returns 0 for a `display_rate` of 0 -- the host reports no refresh, there is
+ * nothing to sit under, and the caller must fall back to plain `display`
+ * behaviour rather than invent a number. A display at or below the floor
+ * resolves to the floor, which is at or above its own refresh; that is the
+ * honest answer, because a 30 Hz panel has no headroom to give back and the
+ * blocking queue is already the limiter.
+ */
+unsigned mdkr_present_policy_display_margin_rate(unsigned display_rate);
 /* `display_rate` is the detected refresh of the display the window is on, or 0
  * when the host has no such number (the browser measures rAF instead). */
 MdkrPresentSync mdkr_present_policy_sync(const MdkrPresentPolicy *policy,

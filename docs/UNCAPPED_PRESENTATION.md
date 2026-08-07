@@ -1,8 +1,9 @@
 # Original gameplay with modern presentation
 
 Status: shipped in 1.0.4 (2026-08-04); the Preview label was removed once
-authored UV scroll gained retained endpoints. The qualification measurements
-below were taken 2026-08-02.
+authored UV scroll gained retained endpoints. The Presentation pace quick
+choice, `display-margin` and the 40 Hz cap are unreleased. The qualification
+measurements below were taken 2026-08-02.
 
 ## Decision
 
@@ -12,12 +13,22 @@ fidelity setting. `Video.FrameLimit` controls how often the host may present;
 `Video.MotionSmoothing=interpolate` controls whether opportunities between game
 ticks contain a newly reconstructed image or hold the last authored one.
 
+One choice sits above both of them. **Presentation pace** is a quick choice
+with two settings, and it is sugar rather than a fourth state: **Smooth** writes
+`Video.FrameLimit=display` and `Video.MotionSmoothing=interpolate`, **Original**
+writes `original` and `off`, and the panel reads whichever pair the two keys
+currently spell back out again. Any other combination reads back as **Custom**.
+Nothing is persisted under a third name, so a config file, `--video-set`, the
+in-game panel and every gate keep working on exactly the two keys they always
+did. The pair is written in one transaction and applies at one frame boundary,
+so no frame is ever served with half of it.
+
 These are deliberately separate controls:
 
 | Control | Owns | Does not own |
 |---|---|---|
 | Gameplay cadence: Original | Physics, AI, animation decisions, timers, RNG, input consumption, audio service, saves | Monitor refresh and intermediate images |
-| Frame limit: Display/numeric/Uncapped | Host presentation opportunities and event pumping | Game tickets or game speed |
+| Frame limit: Display/Just Under Display/numeric/Uncapped | Host presentation opportunities and event pumping | Game tickets or game speed |
 | Motion smoothing: Interpolated | Camera/object/vertex/effect presentation between adjacent authored tasks | Prediction, collision, AI, input, audio, or persistence |
 | Pure/Restored/Remastered | Rendering style and fidelity | Simulation or presentation cadence |
 
@@ -34,6 +45,30 @@ refresh instead, unless Allow Tearing is on. With smoothing Off, held authored
 images are serviced at display cadence because an unbounded no-swap loop cannot
 add motion and can starve audio. A browser maps Uncapped to its display/rAF
 ceiling.
+
+`Video.FrameLimit=display-margin` — **Just Under Display** — follows the same
+live display rate as `display` and then subtracts a fixed three Hz, floored at
+the schema's 30 Hz minimum. It is the setting a variable-refresh display wants:
+such a display holds its adaptive range only while the application keeps
+arriving before the panel's minimum frame time, and sitting exactly on the
+refresh means every ordinary scheduling slip crosses it and drops the panel back
+to its fixed ceiling for that frame. The margin is fixed rather than
+proportional because what it absorbs is host-side jitter, which is roughly the
+same number of microseconds at 120 Hz as at 240. It is served by an absolute
+rational deadline grid at that rate and by the ordinary blocking present queue —
+it is below the refresh by construction, so it never asks for a queue that drops
+an undisplayed image and it never implies tearing. Like `display`, the rate is a
+property of the monitor rather than the player's choice, so it is re-derived
+when the window moves to a display with a different refresh; the latched policy
+itself is untouched. Where the host reports no refresh there is nothing to sit
+under and the policy behaves as plain `display`, which is also what a browser
+gets: rAF is measured rather than queried, so `display-margin` resolves to
+`display` there and says so on stderr.
+
+`40` is an ordinary numeric cap and needs nothing special from the scheduler —
+that is the point. It is offered in the launcher because a handheld whose panel
+runs at 40 or 120 Hz holds every image for exactly the same length of time at
+40, which is even motion at a fraction of 60's power draw.
 
 ## Why Enhanced cadence is not the uncap
 
