@@ -117,8 +117,12 @@ static void test_angle_shortest_arc(void) {
            "angle: 0 -> 0xC000 takes the short negative arc");
     expect(presentation_lerp_angle((int16_t)0xC000, 0, 1, 2) == -8192,
            "angle: 0xC000 -> 0 takes the short positive arc");
-    expect(presentation_lerp_angle(0, (int16_t)0x8000, 1, 2) == -16384,
-           "angle: exact half turn resolves negative, deterministically");
+    /* The ambiguous half turn (delta == INT16_MIN, both arcs equal) is past
+     * the rotation snap threshold (see test_rotation_snap): it now snaps to
+     * current rather than picking an arbitrary blend arc. */
+    expect(presentation_lerp_angle(0, (int16_t)0x8000, 1, 2) ==
+               (int16_t)0x8000,
+           "angle: exact half turn snaps instead of picking an arc");
 
     /* Wrap through 0 the short way: 0xFF00 -> 0x0100 is +512, not -65024. */
     expect(presentation_lerp_angle((int16_t)0xFF00, 0x0100, 1, 2) == 0,
@@ -133,6 +137,30 @@ static void test_angle_shortest_arc(void) {
            "angle: alpha > 1 clamps to current");
     expect(presentation_lerp_angle(1234, -4321, 1, 0) == 1234,
            "angle: zero denominator is previous");
+}
+
+static void test_rotation_snap(void) {
+    /* > 0x4000 shortest-arc delta: any intermediate alpha snaps to current.
+     * Calibrated to Ghostship's proven threshold: a quarter turn per tick is
+     * beyond any legitimate smooth motion; blending across it draws the
+     * model swinging through poses the simulation never held. */
+    expect(presentation_lerp_angle(0, 0x4001, 1, 2) == 0x4001,
+           "delta just past a quarter turn snaps to current");
+    expect(presentation_lerp_angle(0, 0x4000, 1, 2) == 0x2000,
+           "exactly a quarter turn still blends");
+    /* The ambiguous half turn (delta == INT16_MIN) now snaps too. */
+    expect(presentation_lerp_angle(0, (int16_t)0x8000, 1, 2) ==
+               (int16_t)0x8000,
+           "ambiguous half turn snaps instead of picking an arc");
+    /* Wrap case: 0x7000 -> 0x9000 is a +0x2000 shortest arc; still blends. */
+    expect(presentation_lerp_angle((int16_t)0x7000, (int16_t)0x9000, 1, 2) ==
+               (int16_t)0x8000,
+           "wrap-crossing small delta still blends");
+    /* Endpoint exactness is untouched by the snap. */
+    expect(presentation_lerp_angle(0, 0x4001, 0, 2) == 0,
+           "alpha 0 returns previous even past the snap threshold");
+    expect(presentation_lerp_angle(0, 0x4001, 2, 2) == 0x4001,
+           "alpha 1 returns current");
 }
 
 /* ---- 3. exact rational alpha endpoints ----------------------------------- */
@@ -1006,6 +1034,7 @@ static void test_disabled_seam(void) {
 
 int main(void) {
     test_angle_shortest_arc();
+    test_rotation_snap();
     test_exact_endpoints();
     test_discrete_rule();
     test_identity_generation_reuse();

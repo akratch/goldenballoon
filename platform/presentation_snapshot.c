@@ -798,6 +798,10 @@ int16_t presentation_lerp_angle(int16_t a, int16_t b, uint64_t numerator,
     }
     /* The narrowing to int16_t IS the shortest-arc selection. */
     delta = (int16_t)((uint16_t)((uint16_t)b - (uint16_t)a));
+    if (delta > PRESENTATION_SNAPSHOT_ROTATION_SNAP ||
+        delta < -PRESENTATION_SNAPSHOT_ROTATION_SNAP) {
+        return b; /* beyond a quarter turn: snap, never smear */
+    }
     alpha = (double)numerator / (double)denominator;
     stepped = (int32_t)((double)delta * alpha); /* truncates toward zero */
     /* Unsigned addition so the wrap around 0x7FFF/0x8000 is defined. */

@@ -89,6 +89,21 @@ extern "C" {
  */
 #define PRESENTATION_SNAPSHOT_TELEPORT_UNITS 2000.0f
 
+/*
+ * Rotation snap threshold, in DKR fixed angle units of per-tick shortest-arc
+ * delta (0x10000 == one turn).
+ *
+ * Calibration: blending is only honest when the simulation could plausibly
+ * have passed through the intermediate orientations. A quarter turn per
+ * authored tick (90 deg / 33 ms == 2700 deg/s) is beyond any steered racer
+ * rotation; deltas past it are spin-outs, snap turns and animation pops,
+ * where a blend draws orientations the tick never held ("paper" smearing).
+ * Ghostship ships the same 0x4000 boundary and it is the single heuristic
+ * most responsible for its clean fast-motion feel. The ambiguous half turn
+ * (delta == -0x8000, both arcs equal) also snaps: either arc is a guess.
+ */
+#define PRESENTATION_SNAPSHOT_ROTATION_SNAP 0x4000
+
 /* One captured object pose. Native-only; no original struct is embedded. */
 typedef struct PresentationObjectEntry {
     const void *address;      /* Object * — identity half one */
