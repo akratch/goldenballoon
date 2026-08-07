@@ -62,6 +62,13 @@ Arms
   without double-scaling point trails, whose opacity is already in vertex
   alpha.
 
+  A seventh control, ``MDKR_TEST_EFFECT_INTERPOLATION=off``, forces the authored
+  level-3 shield path around each racer in both arms. Shield matrices combine a
+  shared render object's local rotation/scale/shear recipe with a generation-
+  keyed racer root, so this arm requires both identities to remain collision-
+  free and the authoritative stream to remain identical. Compatible forward
+  recipes must visibly differ from the authored-matrix hold control.
+
   An eighth control, ``MDKR_TEST_UV_SCROLL_INTERPOLATION=off``, is the
   midpoint-sensitivity arm for authored UV scroll. It runs Jungle Falls, whose
   waterfall sheet and wave-driven water advance their texture phase every
@@ -72,13 +79,6 @@ Arms
   the interpolation, and byte-identity at EVEN indices proves the authored
   endpoints did not move. It is non-vacuous by construction — the off arm is
   the pre-M4 renderer's behaviour.
-
-  A seventh control, ``MDKR_TEST_EFFECT_INTERPOLATION=off``, forces the authored
-  level-3 shield path around each racer in both arms. Shield matrices combine a
-  shared render object's local rotation/scale/shear recipe with a generation-
-  keyed racer root, so this arm requires both identities to remain collision-
-  free and the authoritative stream to remain identical. Compatible forward
-  recipes must visibly differ from the authored-matrix hold control.
 
 What arm C's pixels are, and are not
 ------------------------------------
@@ -1331,7 +1331,8 @@ def main() -> int:
                 "midpoints may differ")
         if uv_moved == 0:
             failures.append(
-                "arm C: no UV-scroll-route midpoint differed from both of its "
+                "arm C: none of the UV-scroll route's "
+                f"{uv_moved + uv_still} midpoints differed from both of its "
                 "neighbours")
         notes.append(
             f"arm C: forced shield/magnet-class recipes hold the display "
