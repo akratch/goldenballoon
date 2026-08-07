@@ -485,11 +485,13 @@ bool AppHost::configureWgpuSurface(int w, int h) {
     cfg.alphaMode = WGPUCompositeAlphaMode_Auto;
     cfg.presentMode = WGPUPresentMode_Fifo;   // vsync; matches the GL swap interval
     // One frame in flight, the minimum the backend allows, for the same reason
-    // the engine pins it (WGPU_SURFACE_MAX_FRAME_LATENCY in gfx_webgpu.c). It
-    // has to be pinned HERE too rather than left to the engine's own configure:
-    // the launcher presents its UI through this configuration, and the depth is
-    // a property of the configuration, so any re-configure that does not carry
-    // it returns the surface to the backend's two-deep default.
+    // and at the same documented trade as the engine's pin (see
+    // WGPU_SURFACE_MAX_FRAME_LATENCY in gfx_webgpu.c: latency minimized, CPU
+    // and GPU no longer overlapping). It has to be pinned HERE too rather than
+    // left to the engine's own configure: the launcher presents its UI through
+    // this configuration, and the depth is a property of the configuration, so
+    // any re-configure that does not carry it returns the surface to the
+    // backend's two-deep default.
     WGPUSurfaceConfigurationExtras latency = {};
     latency.chain.sType = (WGPUSType)WGPUSType_SurfaceConfigurationExtras;
     latency.desiredMaximumFrameLatency = 1;
@@ -511,6 +513,19 @@ bool AppHost::configureWgpuSurface(int w, int h) {
     cfgW_ = (unsigned)w;
     cfgH_ = (unsigned)h;
     wgpuSurfaceConfigured_ = true;
+    // The adopted window's own configure witness. The engine reports its swap
+    // chain on the [PRESENT-MODE] row, but that row is emitted by the present
+    // mode RANKING (gfx_webgpu.c, wgpu_choose_present_mode), and this path does
+    // no ranking -- the launcher hardcodes FIFO. Without a row of its own the
+    // depth pinned here would be entirely unwitnessed, and a gate reading only
+    // [PRESENT-MODE] would be asserting the engine's configure twice while
+    // believing it covered both. Emitted after the configure succeeded, so the
+    // row means "this is what the surface is", not "this is what was asked".
+    std::fprintf(stderr,
+                 "[SURFACE-CONFIG] backend=webgpu owner=app-shell "
+                 "presentMode=fifo frameLatency=%u width=%u height=%u\n",
+                 latency.desiredMaximumFrameLatency, cfgW_, cfgH_);
+    std::fflush(stderr);
     return true;
 }
 

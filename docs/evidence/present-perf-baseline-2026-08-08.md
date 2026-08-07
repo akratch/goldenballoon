@@ -15,10 +15,14 @@ figure, which predates the tear-free present-mode policy.
 
 Two of the three defenses were already in place and are cited below. The third
 — swap-chain depth — was not pinned at all and is now pinned to the backend
-minimum (commit e9fa33a). One residual gap is recorded rather than fixed, with
-its reason: it is a wasted-work gap, not the stall the reference port was
-defending against, and closing it safely needs an automation carve-out this
-note does not have a way to witness.
+minimum (commit e9fa33a), on the latency argument alone and at a documented
+throughput trade this session could not measure.
+
+What this note does **not** establish is listed under "Explicitly open" rather
+than left to inference: the throughput cost of the depth pin, WebGPU surface
+acquire and present cost, and one occlusion gap that is a wasted-work cost
+rather than the stall the reference port was defending against. All four share
+one cause — no un-occluded foreground window was obtainable here.
 
 ## The three questions
 
@@ -91,6 +95,16 @@ wgpu-native's default `desiredMaximumFrameLatency = 2` — one whole refresh
 (16.7 ms at 60 Hz) of input-to-photon latency above the pacer's own spacing.
 The reference port pins the same value to 1 (`Fast3dWindow.cpp:1418`).
 
+**This is a trade, and the vendored header names both halves of it**
+(`webgpu/wgpu.h`, `WGPUSurfaceConfigurationExtras`): "1: Minimize latency (CPU
+and GPU cannot run in parallel)." Depth 1 means the next acquire cannot return
+until the previous image is done with, so CPU frame N+1 no longer overlaps GPU
+frame N — free on a CPU-bound frame, not free on a GPU-bound one. **The
+throughput cost on this workload is unmeasured**, because the runs below
+presented zero frames; see the open list. The pin is taken on the latency
+argument alone, and the constant is the thing to revisit if a measured run shows
+it costs frames on a GPU-bound scene.
+
 Pinned at surface **configure**, not at bring-up, because the depth is a
 property of the configuration: a resize, a present-mode re-rank or a surface
 recovery that dropped the chain would silently restore the default. Both sites
@@ -98,18 +112,23 @@ carry it — the engine's own (`platform/fast3d/gfx_webgpu.c:113`, `1454-1465`)
 and the app shell's adopted window (`platform/app/app_host.cpp:486-497`), since
 Play continues in the launcher's surface.
 
-Now observable as `frameLatency=` on the `[PRESENT-MODE]` row that already
-carries the swap chain's other decisions, and asserted by
-`tests/check_app_adopted_pacing.py` on every configure it observes. The web row
-reports `frameLatency=0`: the browser canvas swap chain is the user agent's to
-size and emdawnwebgpu has no extras chain to hang this on.
+Witnessed by two separate rows, because the two configure sites are not the
+same event. The engine reports `frameLatency=` on the `[PRESENT-MODE]` row that
+already carries the swap chain's other decisions — but that row is emitted by
+the present-mode ranking, which only the engine performs. The launcher's
+adopted-window configure hardcodes FIFO, ranks nothing, and therefore reports
+itself on its own `[SURFACE-CONFIG] owner=app-shell` row. `check_app_adopted_pacing.py`
+asserts both; asserting only the first would have checked the engine twice while
+reading as though it covered the adopted window too. The web `[PRESENT-MODE]`
+row reports `frameLatency=0`: the browser canvas swap chain is the user agent's
+to size and emdawnwebgpu has no extras chain to hang this on.
 
-Witnessed after the change:
-
-```
-[PRESENT-MODE] backend=webgpu policy=capped rate=60 displayHz=60 tearing=0
-               requested=fifo effective=fifo supported=1 frameLatency=1 override=0
-```
+Witnessed after the change: the engine's `[PRESENT-MODE]` row reports
+`frameLatency=1` at a 60 Hz cap, and the app shell's `[SURFACE-CONFIG]` row
+reports `owner=app-shell presentMode=fifo frameLatency=1` for the adopted
+2560x1600 window. Four negative controls confirm the pair of assertions bites:
+a missing shell row, a shell row at depth 2, and an engine row at depth 2 each
+fail the gate, and only both-pinned passes.
 
 ### (c) Does the GL swap-interval fallback busy-wait or sleep when occluded?
 
@@ -191,6 +210,29 @@ That failure is the known display-gated arm and is independent of the changes in
 this note — it needs an un-occluded foreground window, which a command-launched
 session on this host does not get. Every other arm of that gate, including the
 new `frameLatency=1` assertion, passed.
+
+## Explicitly open
+
+Nothing below is a finding this note is making; each is a measurement it could
+not take, recorded so that later work does not mistake silence for a result.
+
+1. **The throughput cost of `desiredMaximumFrameLatency = 1` is unmeasured.**
+   The header's own words are "CPU and GPU cannot run in parallel", so the pin
+   trades throughput on a GPU-bound frame for a refresh of latency on every
+   frame. The runs here presented zero images, so they cannot say what that
+   costs on a real scene. Needed: the same census on a foreground display
+   session, run at depth 1 and depth 2, comparing displayed-interval means and
+   the backpressure hold counts. Until then the pin rests on the latency
+   argument alone.
+2. **WebGPU surface acquire and present cost is unmeasured.** Same cause. The
+   CPU-side sections (replay, freeze, interp, snapshot) and the pacing
+   distributions are valid; nothing in this note bounds the drawable path.
+3. **Wasted render work on an occluded-but-mapped window is unfixed**, for the
+   reasons in (a). It needs an automation carve-out and a test seam before it
+   can be witnessed at all.
+4. **The FPS-overlay arm of `tests/check_app_adopted_pacing.py` has never run
+   here.** It needs an un-occluded foreground window. Every other arm of that
+   gate, including both frame-latency witnesses, passes.
 
 ## Reproducing
 

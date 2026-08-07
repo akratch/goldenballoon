@@ -94,18 +94,27 @@ static enum GfxRenderingStatus s_runtime_status =
 /*
  * SWAP-CHAIN DEPTH. wgpu-native defaults desiredMaximumFrameLatency to 2: the
  * acquire for frame N+1 is allowed to return while frame N is still queued for
- * scan-out, which buys throughput and costs one whole refresh of input-to-photon
- * latency. This port does not want that trade. Its own GPU admission already
- * bounds work in flight (WGPU-BACKPRESSURE cap), the presentation subloop is
- * paced to an absolute deadline grid rather than to whatever the queue lets
- * through, and every extra queued image is a frame of lag between the stick and
- * the kart -- the one thing a racing game cannot buy back later.
+ * scan-out, which costs one whole refresh of input-to-photon latency -- a frame
+ * of lag between the stick and the kart, the one thing a racing game cannot buy
+ * back later. 1 is the minimum the backend allows and is what libultraship pins
+ * (Fast3dWindow.cpp:1418).
  *
- * 1 is the minimum the backend allows and is what libultraship pins for the
- * same reason (Fast3dWindow.cpp:1418). It does NOT serialize the frame: the
- * value counts refreshes between acquire and presentation, not CPU/GPU overlap
- * within a frame, and the pacer's deadline is what decides when the next
- * opportunity opens.
+ * THIS IS A TRADE, NOT A FREE WIN, and the vendored header says so in as many
+ * words (webgpu/wgpu.h, WGPUSurfaceConfigurationExtras): "1: Minimize latency
+ * (CPU and GPU cannot run in parallel)." Depth 1 means the next acquire cannot
+ * return until the previous image is done with, so CPU frame N+1 no longer
+ * overlaps GPU frame N. On a CPU-bound frame that is free; on a GPU-bound one
+ * it is not, and the two costs serialize.
+ *
+ * WHAT WE HAVE AND HAVE NOT MEASURED. The 2026-08-08 census
+ * (docs/evidence/present-perf-baseline-2026-08-08.md) confirmed the pin
+ * configures cleanly and left the pacing distributions unchanged, but every
+ * window that session created was reported Occluded by the Metal backend, so
+ * those runs presented ZERO frames. The throughput cost of losing CPU/GPU
+ * overlap on this workload is therefore UNMEASURED, and it stays on that note's
+ * open list until a foreground display session can run the comparison. The pin
+ * is taken on the latency argument alone; if a measured run shows it costs
+ * frames on a GPU-bound scene, this is the constant to revisit.
  *
  * Native only. The browser present is rAF-driven and the canvas swap chain is
  * the user agent's to size; emdawnwebgpu has no extras chain to hang this on.
