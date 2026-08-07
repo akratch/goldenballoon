@@ -2115,6 +2115,40 @@ the complete 0x4C mixed-field swap map, byte-field preservation, and
 transactional rejection of short records. `runtime_contracts` exhaustively
 checks the shared vehicle-model mapping used by both initialization and update.
 
+## Line-particle ribbon orientation — `tests/check_line_particle_orientation.py`
+
+A line particle is a ribbon laid along the emitter's path, spread either side of
+it by a half-width offset on **one** of the parent's local axes. Which axis is
+authored per particle descriptor (`lineOrientation`: 0 → local X, 1 → Y, 2 → Z),
+and a plane's wing contrail is authored 0 — flat across the wings. This check
+flies Hot Top Volcano in a plane under `MDKR_AUTOPILOT`, reads the ribbon basis
+out of `MDKR_LINE_PARTICLE_TRACE=1`'s `[LINEPART]` rows, and requires every
+emitted ribbon to spread along local X.
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_line_particle_orientation.py -v   # ~1 min, muted + headless
+```
+
+It asserts the **geometry** (the local offset vector actually used to build the
+vertices), not the orientation number that selected it, so an orientation value
+that stopped reaching the vertex maths cannot pass. The world-space vector is
+reported but never asserted — it is the local vector after the plane's own
+pitch/roll, which is exactly why the local one is the roll-independent
+statement. Two guards keep it honest: an in-process positive control replays the
+measured pre-fix ribbon (orientation 1, local `(0, 2, 0)`) and must see it
+rejected, and a non-vacuity floor requires at least 100 ribbons, so a route that
+stopped emitting trails fails instead of passing silently.
+
+The defect it closes is a bit-order one, not a byte-order one, and byte-swapping
+cannot reach it: `lineOrientation` is a 6-bit C bitfield in the descriptor's
+`0x0A` halfword, which the N64's compiler packs from the most significant bit
+down and a little-endian host packs from the least significant bit up. Read
+LSB-first, the four padding bits of the stock value `0x0001` became orientation
+1, and every wing contrail in the game was built as a vertical sheet — a
+hairline seen edge-on from the chase camera instead of a broad flat band. Read
+the derivation next to the `PARTICLE_DESC_*` accessors in `game/src/particles.h`
+before adding any new field to a ROM-sourced struct.
+
 ## Texture "interlace" check — `tests/check_texture_lineswap.py` (RUN THIS AFTER ANY TEXTURE-DECODE CHANGE)
 
 About **30 %** of every texture DKR uploads is *pre-swizzled*: its odd rows have the
