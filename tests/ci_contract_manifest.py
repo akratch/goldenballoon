@@ -1239,8 +1239,8 @@ CONTROL_GROUPS: dict[str, ControlGroup] = {
             Control(
                 "stale packaged frame-limit pin",
                 "unsigned_verify",
-                "A European 50 Hz game is worth pairing",
-                "A European game is worth pairing",
+                "A European 50 Hz game paces unevenly",
+                "A European game paces unevenly",
                 count=1,
             ),
         ),

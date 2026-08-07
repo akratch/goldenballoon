@@ -245,11 +245,11 @@ static void test_presets(void) {
     expect_true("default motion smoothing is fail-closed",
                 !strcmp(cfg.values[MDKR_VIDEO_MOTION_SMOOTHING].text,
                         "off"));
-    /* The corrected camera is the default; the authored camera is the
-     * one-setting opt-out. */
-    expect_true("default camera obstruction is modern",
+    /* The authored camera is the default; correction is the one-setting
+     * opt-in. */
+    expect_true("default camera obstruction is observe",
                 !strcmp(cfg.values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
-                        "modern"));
+                        "observe"));
     /* Authored motion is the default: comfort is an accessibility opt-in. */
     expect_true("default camera comfort is authored",
                 !strcmp(cfg.values[MDKR_VIDEO_CAMERA_COMFORT].text,
@@ -325,7 +325,7 @@ static void test_presets(void) {
                         "off"));
     expect_true("pure leaves camera obstruction unchanged",
                 !strcmp(cfg.values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
-                        "modern"));
+                        "observe"));
     expect_true("pure leaves camera comfort unchanged",
                 !strcmp(cfg.values[MDKR_VIDEO_CAMERA_COMFORT].text,
                         "authored"));
@@ -375,7 +375,7 @@ static void test_presets(void) {
      * correcting the camera is a separate choice from the art direction. */
     expect_true("remastered leaves camera obstruction unchanged",
                 !strcmp(cfg.values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
-                        "modern"));
+                        "observe"));
     /* And not even Remastered may switch a reduced-motion choice back on. */
     expect_true("remastered leaves camera comfort unchanged",
                 !strcmp(cfg.values[MDKR_VIDEO_CAMERA_COMFORT].text,

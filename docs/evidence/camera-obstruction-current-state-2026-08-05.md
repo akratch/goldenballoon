@@ -14,18 +14,24 @@ ROM-derived data is present in this worktree or its commits.
 > as breadth work and were never converted into safety exceptions. Everything
 > else in this note stands as the record of the state at handoff.
 
-> **Superseded (amended 2026-08-07).** The default flipped to Modern in the
-> decisions wave, as a dedicated reviewed change and with ownership's approval.
-> It was *not* taken on the "all gates green" bar this note recommends — the
-> deferred rows below are still deferred. What changed since this handoff is
-> that MOTION-01's hard invariants and baselines hold on every route with
-> correction as the default path, the 24-arm display matrix holds across the
-> aspect/HFOV grid, the seam-release hold closed the retract/expand chatter, and
-> exact fan admission cut 24-arm emergency framings from 1585 to 46. See §10.1
-> of `docs/architecture/camera-obstruction.md` for the exact accounting of what
-> the flip rests on and what it did not wait for. `Camera.Obstruction=observe`
-> is the rollback this note asks to be retained, and it is retained — as a
-> shipped, tested, player-facing setting.
+> **Amended 2026-08-07, twice.** The default flipped to Modern in the decisions
+> wave, as a dedicated reviewed change and with ownership's approval. It was
+> *not* taken on the "all gates green" bar this note recommends — the deferred
+> rows below were still deferred. The measurements offered instead were:
+> MOTION-01's hard invariants and baselines holding on every route with
+> correction as the default path, the 24-arm display matrix holding across the
+> aspect/HFOV grid, the seam-release hold closing the retract/expand chatter,
+> and exact fan admission cutting 24-arm emergency framings from 1585 to 46.
+>
+> **The flip was then reverted the same day.** Device acceptance on real
+> hardware found the corrected camera too sensitive in play. No measurement
+> above regressed; the instrumented bar simply did not capture what a person
+> playing the game noticed. So this note's original recommendation — that
+> Modern remain opt-in until the gate table is green — stands, and it stands
+> reinforced. `Camera.Obstruction=observe` is the rollback this note asks to be
+> retained; it is retained, it is the default again, and it is what made the
+> reversal cost a setting rather than a build. See §10.1 of
+> `docs/architecture/camera-obstruction.md` for the full accounting.
 
 ## Handoff decision
 

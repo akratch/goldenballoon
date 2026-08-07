@@ -283,11 +283,11 @@ constexpr const char *kFrameLimitHelp =
     "CPU and GPU time. Rates above your display's refresh need a display "
     "connection that can drop an image it has not shown yet. Where the system "
     "does not offer one, they present at your display's refresh instead, "
-    "unless Allow Tearing is on. A European 50 Hz game is worth pairing Match "
-    "Display with Interpolated: its authored image lasts 40 ms, which no whole "
+    "unless Allow Tearing is on. A European 50 Hz game paces unevenly under "
+    "Original: its authored image lasts 40 ms, which no whole "
     "number of 60 Hz refreshes fits, so Original holds it for two refreshes "
     "and then three and the motion ripples. Match Display with Interpolated "
-    "removes that without changing game speed, music pitch, or timers. "
+    "removes that ripple without changing game speed, music pitch, or timers. "
     "Just Under Display is for a display with a variable refresh rate: it "
     "paces a few Hz below the top of that range, which keeps the display "
     "adapting to the game rather than falling back to a fixed refresh, and it "
@@ -341,10 +341,12 @@ const Option kShadows[] = {
 // The two player-facing spellings only. mdkr_video_camera_obstruction_canonical()
 // also takes "legacy" and "center-ray" so the MDKR_CAMERA_OBSTRUCTION diagnostic
 // seam keeps working, but those are A/B arms, not states to offer a player.
-// Default first, as everywhere else in this table.
+// Default first, as everywhere else in this table. The corrected camera was
+// the default for one wave; device acceptance sent it back to opt-in, so
+// Authored leads again and neither label recommends the other.
 const Option kCameraObstruction[] = {
-    {"modern", "Keep the camera out of walls (recommended)"},
     {"observe", "Authored (original camera)"},
+    {"modern", "Keep the camera out of walls"},
 };
 const Option kCameraComfort[] = {
     {"authored", "Authored motion"},
@@ -819,13 +821,15 @@ bool drawPresentationPace(bool compact) {
         ui::TextSubtle("Fixed for this session.");
     } else if (!compact) {
         ui::TextSubtleWrapped(
-            "Smooth presents on your display's own schedule and draws "
-            "in-between pictures, so the world glides instead of stepping. "
-            "Original presents each picture the game makes, once. Either way "
-            "the game runs at its original speed — racing, timers, sound and "
-            "saves are identical. This changes Frame limit and Motion "
-            "smoothing together, and takes effect straight away; you can "
-            "change it while you play.");
+            "Original presents each picture the game makes, once — the "
+            "motion the game was drawn with. Smooth presents on your "
+            "display's own schedule and draws in-between pictures, so motion "
+            "reads as more continuous; the in-between pictures are invented, "
+            "and fast-moving parts of the screen can show artifacts in them. "
+            "Either way the game runs at its original speed — racing, timers, "
+            "sound and saves are identical. This changes Frame limit and "
+            "Motion smoothing together, and takes effect straight away; you "
+            "can change it while you play.");
     }
     // One row per DISTINCT reading, not per frame: the panel redraws sixty
     // times a second and a per-frame row would bury the transition a gate is

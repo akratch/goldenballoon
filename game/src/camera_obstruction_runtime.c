@@ -657,34 +657,32 @@ static MdkrCameraObstructionRuntimePolicy camera_obstruction_runtime_policy(void
         : getenv("MDKR_CAMERA_OBSTRUCTION");
 
     /*
-     * MODERN is the default: an unset or empty variable resolves to the
-     * corrected camera, running the shipped per-family treatment table
+     * OBSERVE is the default: the authored camera is the shipped one, and
+     * correction is opt-in. The launcher's Camera.Obstruction setting reaches
+     * this arm by exporting this same variable, so there is one seam and one
+     * spelling for the choice however a player made it.
+     *
+     * This default was flipped to MODERN in the decisions wave and flipped
+     * back here. The instrumented case for the flip stands as measured --
+     * MOTION-01's invariants and baselines, the 24-arm display matrix, the
+     * seam-release hold, exact fan admission -- and it was not enough. Device
+     * acceptance on 2026-08-07 rejected the corrected camera as a default:
+     * too sensitive in play, causing issues the metrics did not see. The
+     * lesson recorded in docs/architecture/camera-obstruction.md section 10.1
+     * is that those thresholds are necessary but not sufficient, and need
+     * recalibration against that verdict before another flip is attempted.
+     *
+     * MODERN remains a complete, first-class opt-in, not a fallback: it runs
+     * the shipped per-family treatment table
      * (camera_obstruction_shipped_family_treatment) -- FULL for the follow
-     * families, DEPENETRATE_ONLY for door and scripted-cutscene shots.
-     *
-     * This inverted in the decisions wave. The correction shipped opt-in
-     * because it could not yet be shown to be strictly better than the
-     * authored camera on a racing route; that is no longer the position the
-     * measurements support. MOTION-01's hard invariants and baselines hold on
-     * every route under correction, the display matrix's 24 arms hold across
-     * the aspect/HFOV grid, the seam-release hold (RELEASE_HOLD_TICKS) closed
-     * the retract/expand chatter that was the last motion defect, and exact
-     * fan admission cut 24-arm emergency framings from 1585 to 46. The
-     * treatment table's own measurement is the reason follow families get
-     * FULL rather than SAFETY_ONLY.
-     *
-     * OBSERVE remains a complete, first-class opt-out, not a fallback: it
-     * publishes nothing and renders the authored camera the game writes.
-     *
-     * The launcher's Camera.Obstruction setting reaches this arm by exporting
-     * this same variable, so there is one seam and one spelling for the choice
-     * however a player made it.
+     * families, DEPENETRATE_ONLY for door and scripted-cutscene shots -- and
+     * is one setting away for any player who wants it.
      */
-    if (value == NULL || value[0] == '\0' || strcmp(value, "modern") == 0) {
-        return MDKR_CAMERA_RUNTIME_MODERN;
-    }
-    if (strcmp(value, "observe") == 0) {
+    if (value == NULL || value[0] == '\0' || strcmp(value, "observe") == 0) {
         return MDKR_CAMERA_RUNTIME_OBSERVE;
+    }
+    if (strcmp(value, "modern") == 0) {
+        return MDKR_CAMERA_RUNTIME_MODERN;
     }
     if (strcmp(value, "center-ray") == 0) {
         return MDKR_CAMERA_RUNTIME_CENTER_RAY;
@@ -693,14 +691,13 @@ static MdkrCameraObstructionRuntimePolicy camera_obstruction_runtime_policy(void
         return MDKR_CAMERA_RUNTIME_LEGACY;
     }
     /*
-     * A misspelled value resolves to the DEFAULT, which is now MODERN. The
-     * old rule sent a typo to OBSERVE on the argument that a run may not
-     * silently correct a camera nobody asked to correct; the flip turns that
-     * argument around. Correction is now what an unset variable gives, so
-     * landing a typo on OBSERVE would silently switch the shipped camera OFF
-     * -- a bigger surprise than landing it on the shipped behavior. What the
-     * rule protects is unchanged: a typo still may not select the known-unsafe
-     * LEGACY arm or the CENTER_RAY control.
+     * A misspelled value resolves to OBSERVE, the only arm that measures
+     * without moving a camera: a typo means the caller asked for a policy and
+     * did not get it, so the run may neither silently correct nor silently
+     * select the known-unsafe LEGACY arm. With correction back to opt-in,
+     * that landing point is once again the same behavior as an unset
+     * variable -- a typo may not switch the corrected camera on behind a
+     * player who never chose it.
      *
      * Say so once. The value the caller asked for was dropped, and a fallback
      * that lands on the same behavior as an unset variable is exactly the
@@ -711,12 +708,12 @@ static MdkrCameraObstructionRuntimePolicy camera_obstruction_runtime_policy(void
         sCameraObstructionPolicyFallbackReported = TRUE;
         fprintf(stderr,
                 "camera_obstruction: MDKR_CAMERA_OBSTRUCTION=\"%s\" is not a "
-                "known policy; falling back to modern (the default corrected "
-                "camera). Valid values: modern (default), observe, "
+                "known policy; falling back to observe (authored camera, no "
+                "correction). Valid values: observe (default), modern, "
                 "center-ray, legacy.\n",
                 value);
     }
-    return MDKR_CAMERA_RUNTIME_MODERN;
+    return MDKR_CAMERA_RUNTIME_OBSERVE;
 }
 
 /*

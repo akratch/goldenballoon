@@ -252,18 +252,20 @@ automated coverage from manual physical-hardware acceptance. See
   UTF-8/extended-length filesystem boundary and reviewed application manifest.
   The 1.1.0 candidate must pass its Unicode and >260-character path gate on
   Windows hardware before those new guarantees can be claimed for a release.
-- The camera keeps itself out of walls **by default**, through the launcher's
-  Camera setting. The runtime resolves every authored camera slot and publishes
-  no penetrated, degraded, or invalid pose on any pinned route. What is not
-  claimed is breadth — the CAM-00–CAM-09 release gates cover the qualified
-  routes, not every camera bank and mode in the game, so an uncovered shot is
-  possible; **Authored (original camera)** is a supported setting that returns
-  the camera the game writes, and it applies at the next race.
+- The camera can be kept out of walls, as an **opt-in** through the launcher's
+  Camera setting (**Keep the camera out of walls**). The runtime resolves every
+  authored camera slot and publishes no penetrated, degraded, or invalid pose on
+  any pinned route. What is not claimed is breadth — the CAM-00–CAM-09 release
+  gates cover the qualified routes, not every camera bank and mode in the game,
+  so an uncovered shot is possible. The default is **Authored (original
+  camera)**, the camera the game writes; the correction was made default-on on
+  2026-08-07 and reverted the same day on device acceptance, which found it too
+  sensitive in play. Either choice applies at the next race.
   `Camera.Comfort` sits beside it as a reduced-motion option, off by default.
   `MDKR_CAMERA_OBSTRUCTION` overrides the setting and additionally reaches the
   `center-ray` and `legacy` diagnostic arms. Both the correction and the comfort
   option are presentation-only and move no authoritative state. The plan,
-  evidence, and what the default flip rests on are in
+  evidence, and the record of the flip and its reversal are in
   [docs/architecture/camera-obstruction.md](docs/architecture/camera-obstruction.md).
 
 The full deferred scope and the evidence required to close each item are in

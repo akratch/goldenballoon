@@ -7,7 +7,7 @@ table): 8 items.
 
 | Item | Where |
 |---|---|
-| Gameplay cameras can enter terrain and object geometry — the correction is now the default (`Camera.Obstruction`), so the defect no longer stands in default play; it stays open on breadth of evidence | [§ OPEN: gameplay cameras can enter terrain and object geometry](#open-gameplay-cameras-can-enter-terrain-and-object-geometry) |
+| Gameplay cameras can enter terrain and object geometry — the correction ships as an opt-in (`Camera.Obstruction`); default-on was tried and rejected by device acceptance on 2026-08-07, so the defect still stands in default play | [§ OPEN: gameplay cameras can enter terrain and object geometry](#open-gameplay-cameras-can-enter-terrain-and-object-geometry) |
 | **(index-level item)** F-18 boss cadence / independent state reference — Original two-field cadence matches retail ROM boss timing; oracle breadth (challenge, multiplayer, progression, audio, renderer-state) remains open. No subsystem section exists for this item; it is tracked at the index level | [§ Still open](README.md#still-open), [`BLUEY2_PARITY.md`](../BLUEY2_PARITY.md) |
 | Zip-pad boost magnitude is authored, but no route exercises a real pad crossing and no hardware trace was taken | [§ CLOSED, NOT A DEFECT: the zip-pad boost — wave "zippad"](#closed-not-a-defect-the-zip-pad-boost-is-the-magnitude-dkr-authored--wave-zippad) |
 | Independent Ancient Lake route drives a real line, but long-horizon standard-race parity against the ROM remains open | [§ The fidelity payoff, measured — and it is NOT there](#the-fidelity-payoff-measured--and-it-is-not-there) |
@@ -29,18 +29,22 @@ The source investigation, target architecture, CAM-00–CAM-09 work breakdown,
 test matrix, rollout controls, and definition of done live in the
 [camera obstruction and modern native presentation plan](../architecture/camera-obstruction.md).
 
-**Updated 2026-08-07.** The resolver is now what a player who sets nothing gets:
-an unset `MDKR_CAMERA_OBSTRUCTION` resolves to Modern, and the launcher offers
-**Authored (original camera)** as the opt-out. On the qualified routes the
-described defect is corrected — no penetrated, degraded, or invalid pose is
-published — so the paragraph above describes the *authored* camera, which is
-still exactly what `Camera.Obstruction=observe` renders.
+**Updated 2026-08-07.** The resolver was briefly what a player who sets nothing
+gets, and is not any more: it was made the default and reverted the same day
+when device acceptance found the corrected camera too sensitive in play. An
+unset `MDKR_CAMERA_OBSTRUCTION` resolves to Observe, and the launcher offers
+**Keep the camera out of walls** as the opt-in. On the qualified routes the
+described defect is corrected under that opt-in — no penetrated, degraded, or
+invalid pose is published — but the paragraph above describes the *authored*
+camera, which is what a default install renders.
 
 The item stays open because the exit gates that remain are breadth of evidence,
 not closed defects: soft-occluder enrollment and its pixel proof are unbuilt,
 and the differential-fuzz, GCC/wasm32 sanitizer-equivalent, WebGPU/browser and
 resource-plateau corpora have not been run. An uncovered bank or mode is still
-possible. §10.1 of the plan records what the default flip rested on. A center
+possible. It also stays open because the defect stands in default play again:
+correcting it is a setting a player has to find. §10.1 of the plan records what
+the default flip rested on and why device acceptance reversed it. A center
 ray, fixed-radius clamp, terrain-only spring arm, or void-curtain mask remains
 explicitly a partial mitigation rather than the fix.
 
