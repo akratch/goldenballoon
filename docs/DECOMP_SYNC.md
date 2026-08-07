@@ -40,6 +40,27 @@ clobbering the port patches**.
 > The reasoning for choosing the "set" half is in the doc comment on the function.
 > If upstream later resolves the `??` the other way, follow upstream and rename.
 
+> ### The rest of the raw symbols are ALIASED, not renamed
+> `camSetProjMtx` above is the only in-place rename this tree carries, and the
+> cost it documents — a guaranteed conflict on the definition, the declaration
+> and every call site, forever — is exactly why there is not a second one. The
+> other ~446 address-named symbols get readable names in
+> **`game/include/decomp_names.h`** instead: `#define readable_name func_XXXXXXXX`,
+> so port-owned code reads well while the vendored text stays byte-identical and
+> the compiler still sees the raw token. A sync cannot touch that header, because
+> `sync_decomp.sh` derives its work list from paths that exist *in the decomp*,
+> and upstream has no such file; if upstream ever adds one, `git show
+> BASELINE:include/decomp_names.h` finds no blob and the file is SKIPped rather
+> than overwritten.
+>
+> **`#ifdef NATIVE_PORT` blocks inside vendored files keep the raw names.** They
+> are vendored text on the same lines upstream edits, so aliasing them would buy
+> readability with merge conflicts — the trade this whole approach exists to
+> avoid. For those, the header is a glossary you grep, not something you include.
+> Adding a name requires an evidence line; the rule and the refusals are in the
+> header's own comment, and the remaining count is tracked in
+> [`open-items/misc.md`](open-items/misc.md) wave "decompnames".
+
 > ### Hazard: `sync_decomp.sh` reads "theirs" from the decomp WORKING TREE
 > That is deliberate (uncommitted WIP counts), but it means the sync vendors
 > whatever branch the checkout is on. `../Diddy-Kong-Racing` sits on local

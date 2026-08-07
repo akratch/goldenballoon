@@ -35,6 +35,7 @@
  */
 #include <ultra64.h>
 #include "address_domains.h"
+#include "decomp_names.h"
 #include "memory.h"
 
 /* ---- Memory / ROM bound symbols (referenced by game code) --------------- *
@@ -70,5 +71,6 @@ OSViMode osViModeMpalLpn1, osViModeMpalLan1;
 
 /* Anti-piracy sentinel (camera.c reads D_B0000578 & 0xFFFF == 0x8965). On the
  * N64 this is a magic cart address; seed the expected value so the check that
- * would otherwise flag piracy stays satisfied. */
-s32 D_B0000578 = 0x8965;
+ * would otherwise flag piracy stays satisfied. The name is an alias for
+ * D_B0000578 (game/include/decomp_names.h), so this still defines that symbol. */
+s32 gAntiPiracySentinel = 0x8965;

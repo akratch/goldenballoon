@@ -290,7 +290,7 @@ static uint64_t fnv1a64(uint64_t hash, const void *data, size_t size) {
 #define OBJPROP_PROJECTILE_AGE_TIMER         properties.projectile.unk4      /* += updateRate; drives the scale ramp */
 #define OBJPROP_WIZPIGSHIP_UNIDENTIFIED_00   properties.wizpigship.unk0
 #define OBJPROP_ANIMOBJ_RACER_ID             properties.animatedObj.unk0     /* read as racerID */
-#define OBJPROP_ANIMOBJ_TRIGGER_RESULT       properties.animatedObj.unk4     /* ~ func_8001F460 result, tested == 0 */
+#define OBJPROP_ANIMOBJ_TRIGGER_RESULT       properties.animatedObj.unk4     /* ~ obj_update_animated_object result, == 0 */
 #define OBJPROP_BRIDGE_RAMP_TIMER            properties.bridgeWhaleRamp.unk0 /* entry->unkD * 2, counted down */
 #define OBJPROP_RAMP_SWITCH_BRIDGE_ID        properties.rampSwitch.unk0      /* passed to start_bridge_timer() */
 #define OBJPROP_BUBBLER_PARTICLE_DENSITY     properties.bubbler.unk0         /* entry->particleDensity vs rand_range */

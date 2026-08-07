@@ -30,8 +30,9 @@ enum {
     AL_FILTER_START_VOICE,
     AL_FILTER_STOP_VOICE,
     AL_FILTER_SET_FXAMT,
-    /* DKR: aux-bus source removal (alAuxBusParam), used by func_80065A80 to
-     * re-parent a physical voice's envmixer from one aux bus to another. */
+    /* DKR: aux-bus source removal (alAuxBusParam), used by
+     * alSynSetVoiceAuxBus (func_80065A80) to re-parent a physical voice's
+     * envmixer from one aux bus to another. */
     AL_FILTER_UNK11
 };
 
@@ -342,7 +343,7 @@ typedef struct PVoice_s {
     ALEnvMixer		envmixer;
     s32                 offset;
     /* DKR: index of the aux bus this voice's envmixer is currently a source
-     * of, so func_80065A80() can re-parent it. Zero-initialised by the audio
+     * of, so alSynSetVoiceAuxBus() (func_80065A80) can re-parent it. Zero-initialised by the audio
      * heap, which matches the bus every voice is wired to at construction. */
     u8                  unkDC;
 } PVoice;

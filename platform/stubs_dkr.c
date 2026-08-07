@@ -2431,8 +2431,9 @@ long mdkr_coll_truncations(void)    { return s_collTruncations; }
  *   slot 1  get_inside_segment_count_xyz()  -> caller's inSegs[28]
  *   slot 2  collision_get_y()               -> callers now share
  *           COLLISION_Y_QUERY_CAPACITY (16); the wave builder keeps 30
- *   slot 3  func_800BDC80() triangle fill    -> D_8011C3B8[64] / D_8011C8B8[128]
- *   slot 4  func_800BDC80() height fill      -> its own local spD8[300]
+ *   slot 3  waves_get_shadow_tile_triangles() -> gShadowWaveTileTris[64] /
+ *           (func_800BDC80) triangle fill        gShadowWaveTilePlanes[128]
+ *   slot 4  the same function's height fill   -> its own local spD8[300]
  *
  * They are the whole `bare-pointer` class as enumerated by
  * tools/sweep_bug_shapes.py. Nothing can see the shape from outside: UBSan

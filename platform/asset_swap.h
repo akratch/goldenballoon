@@ -164,7 +164,8 @@ void asset_swap_object_animation(void *data, uint32_t size, uint32_t numAnimated
  * In-place BE->host swap of ONE LevelHeader_70 "pulsating light" sub-asset
  * fetched from the (punted, heterogeneous) ASSET_MISC section via
  * get_misc_asset(). ASSET_MISC is not normalized at load, so these records are
- * still big-endian; their type is only knowable at the func_8007F1E8 call sites
+ * still big-endian; their type is only knowable at the reset_colour_cycle
+ * (func_8007F1E8) call sites
  * (game.c LevelHeader.unk74[] loop, game_ui.c ASSET_MISC_58).
  *
  * Layout (docs/OPEN_ITEMS.md): 0x00 s32 count, 0x04/0x08/0x0C s32 (swap),

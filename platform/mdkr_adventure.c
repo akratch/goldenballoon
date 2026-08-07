@@ -13,8 +13,8 @@
  * Timber's Island (ASSET_LEVEL_CENTRALAREAHUB) was drivable but no headless run
  * had ever ENTERED a race from it.  Entering one means driving through a
  * BHV_EXIT object: obj_loop_exit() latches racer->exitObj, racer_enter_door()
- * then drives the last stretch and calls func_8006D968() on the exit's
- * level_entry.  Two properties make that unreachable by scripted input:
+ * then drives the last stretch and calls set_level_transition_from_exit_entry()
+ * (func_8006D968) on the exit's level_entry.  Two properties make that unreachable by scripted input:
  *
  *   - it is a point target: the exit only latches inside its activation radius
  *     AND on the correct side of its facing plane

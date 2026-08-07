@@ -5,6 +5,7 @@
 
 #include "asset_enums.h"
 #include "audio.h"
+#include "decomp_names.h"
 #include "game.h"
 #include "macros.h"
 #include "math_util.h"
@@ -1100,7 +1101,7 @@ update_actor:
         taj_select_trace("animation");
     }
     rider->animFrame += (s16)updateRate;
-    func_80061C0C(rider);
+    obj_clamp_model_animation(rider);
 
     sign = sSelect.sign;
     if (sign != NULL) {
@@ -1114,7 +1115,7 @@ update_actor:
             sign->trans.flags |= OBJ_FLAGS_INVISIBLE;
         }
         sign->animFrame += (s16)updateRate;
-        func_80061C0C(sign);
+        obj_clamp_model_animation(sign);
     }
 }
 
@@ -1175,7 +1176,7 @@ static void taj_visual_sync(TajVisualSlot *slot, s32 updateRate) {
          * animated vertex stream. Never call update_carpet() here: the claimed
          * companion intentionally owns no racer/AI/camera state. */
         carpet->animFrame += (s16)updateRate;
-        func_80061C0C(carpet);
+        obj_clamp_model_animation(carpet);
     }
 
     /* The retail Taj challenge keeps Park Warden and the flying carpet at the
@@ -1194,7 +1195,7 @@ static void taj_visual_sync(TajVisualSlot *slot, s32 updateRate) {
     /* Park Warden animation 6 is the authored Taj challenge carpet pose. */
     rider->animationID = TAJ_VISUAL_RIDER_ANIMATION;
     rider->animFrame += (s16)animationRate;
-    func_80061C0C(rider);
+    obj_clamp_model_animation(rider);
 
     if (taj_visual_trace_enabled() && slot->animationWitnessCount <
         TAJ_VISUAL_ANIMATION_WITNESS_LIMIT) {

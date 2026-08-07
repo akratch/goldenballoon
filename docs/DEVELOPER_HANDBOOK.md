@@ -343,10 +343,11 @@ after any change to the pacer, the counter, or anything the game reads as time.
 ## 5. Keeping up with the decomp
 
 Upstream reached **100% matching** in July 2026. This port is synced to
-`3b2dd520` (2026-07-25), which was at 99.38% — that figure describes the
-*baseline this tree carries*, not upstream today, and it was stale within a day
-of the sync. See [`DECOMP_SYNC.md`](DECOMP_SYNC.md), which is canonical for
-sync state.
+`c6695703` (2026-08-07), which is a real commit on upstream `master` — verify
+that with `git merge-base --is-ancestor` before recording any baseline, because
+two of the last three recorded baselines were private-fork commits. Whatever
+this paragraph says, [`DECOMP_SYNC.md`](DECOMP_SYNC.md) and `.decomp-baseline`
+are canonical for sync state.
 **Never re-copy files over `game/`** — it carries our `NATIVE_PORT` patches. Use
 the 3-way merge tooling:
 
@@ -358,6 +359,45 @@ Baseline commit lives in `.decomp-baseline`. Full process + validation in
 **`docs/DECOMP_SYNC.md`** (includes a sync log). Rule for conflicts: take *theirs* for
 decomp logic, keep *ours* inside `#ifdef NATIVE_PORT`. A *matching* refactor upstream
 should be behaviour-neutral — the racer probe numbers must be byte-identical before/after.
+
+### Reading vendored code: `game/include/decomp_names.h`
+
+A residue of the vendored tree is still named after the address it lives at —
+`func_800BDC80`, `D_8011C238`. **`game/include/decomp_names.h`** is the glossary:
+one entry per symbol, giving a readable name and, on the same line, the evidence
+that earned it.
+
+The entries are `#define`s in the direction `readable_name` → raw symbol, so a
+port-owned file can `#include "decomp_names.h"` and *call* the readable name
+while the compiler and linker still see the raw one. It works on a definition
+too — `platform/audio_compat.c` defines `alSynSetVoiceAuxBus()` and the object
+file still exports `func_80065A80`.
+
+**The constraint that shapes all of this: never rename a symbol in vendored
+text.** Every raw token in `game/{src,include}` is a line upstream may also
+edit, and renaming it converts the next sync's clean merge into a hand-resolved
+conflict — permanently. That applies to the port's own `#ifdef NATIVE_PORT`
+blocks too: they *live* in vendored files, so their call sites stay raw and use
+the header purely as a lookup. Only files the decomp does not have may use the
+aliases in code: everything under `platform/`, and the port-authored sources in
+`game/src` (`taj_*.c`, `camera_*.c`, `object_layout.c`, `sprite_layout.c`,
+`runtime_contracts.c`, `hasm_native/`). The tree carries exactly one deliberate
+in-place rename, `camSetProjMtx`, and `DECOMP_SYNC.md` records it as a standing
+conflict accepted on purpose.
+
+**Adding a name requires an evidence line.** Cite the thing that proves it — an
+existing comment, the `switch` arm the function is dispatched from, the named
+field its result is stored into, a check that pins the contents. Mark
+role-derived readings with `~` in the comment and put `_UNVERIFIED` in the name
+when even the role is a reading. If you cannot cite anything, leave the symbol
+out: **a wrong name is worse than `func_`**, because the address at least admits
+that nobody knows. The header's closing section lists the symbols this rule has
+already refused, and `docs/open-items/misc.md` (wave "decompnames") counts what
+is left.
+
+Comments keep citing the raw address even where the code no longer does. The
+address is the searchable key into `symbol_addrs.us.v80`, the `.s` files and
+upstream's tracker; a readable name is not.
 
 ---
 
