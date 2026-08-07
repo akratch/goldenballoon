@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import json
 import os
 import re
 import shlex
@@ -761,6 +762,26 @@ def preflight(
     missing = [f"{label}: {path}" for label, path in required if not path.is_file()]
     if missing:
         raise RuntimeError("missing required artifact(s):\n  " + "\n  ".join(missing))
+
+    if roles & set(BROWSER_ROLES):
+        # A commit landing mid-suite would otherwise poison every browser
+        # task silently except the one check that reads build-info.json —
+        # and that one only when its turn comes, deep into the run.
+        info_path = ROOT / "dist" / "web" / "build-info.json"
+        try:
+            record = json.loads(info_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise RuntimeError(f"staged web build-info unreadable: {error}")
+        head = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+            check=True, text=True, stdout=subprocess.PIPE,
+        ).stdout.strip()
+        staged = record.get("source_commit")
+        if staged != head:
+            raise RuntimeError(
+                "staged web output predates HEAD "
+                f"({staged!r} != {head!r}); rerun tools/web/build_web.sh"
+            )
 
     if "release" in roles:
         build_type = cmake_build_type(release)
