@@ -240,6 +240,14 @@ static bool                  s_readback_latched    = false;
 
 /* Per-frame objects, valid only between start_frame and end_frame. */
 static WGPUCommandEncoder    s_encoder    = NULL;
+/*
+ * WEB-053: identifies the command encoder a recorded draw belongs to. Bumped
+ * once per encoder creation; a texture entry stamps it when a draw that samples
+ * the entry is recorded. Comparing the stamp against the live epoch answers the
+ * only question the in-place texture re-upload needs: "could an already recorded
+ * but not yet submitted draw still read these texels?"
+ */
+static uint32_t              s_draw_epoch = 1;
 static WGPURenderPassEncoder s_pass       = NULL;
 static bool                  s_frame_open = false;
 static bool                  s_output_overlay_active = false;
@@ -2202,6 +2210,14 @@ static bool wgpu_start_frame(void) {
     wgpu_update_noise_ubo();
     wgpu_update_light_ubo();
 
+    /* WEB-053: every draw recorded from here on belongs to a new encoder. A
+     * texture last drawn under an earlier epoch has had its command buffer
+     * finished (submitted or discarded), so overwriting its texels in place can
+     * no longer rewrite a pending draw. See wgpu_upload_texture. */
+    s_draw_epoch++;
+    if (s_draw_epoch == 0) {
+        s_draw_epoch = 1;   /* 0 is the never-drawn sentinel */
+    }
     s_encoder = WGPU_FAULT_CREATE(
         FRAME_ENCODER, wgpuDeviceCreateCommandEncoder(s_device, NULL));
     if (s_encoder == NULL) {
@@ -5989,6 +6005,7 @@ struct WgpuTexEntry {
     bool            bg_ref_overflow;                /* list overflowed → release full-sweeps */
     uint8_t         bg_ref_n;                       /* live candidate count */
     uint16_t        bg_refs[WGPU_TEX_BG_REFS];      /* bg-cache slot indices (0..WGPU_BG_CACHE-1) */
+    uint32_t        draw_epoch;                     /* WEB-053: encoder epoch of the last recorded draw */
 };
 static struct WgpuTexEntry *s_tex = NULL;   /* indexed by (id - 1) */
 static uint32_t s_tex_cap = 0;
@@ -6114,6 +6131,7 @@ static uint32_t wgpu_new_texture(void) {
     e->used = true;
     e->bg_ref_n = 0;             /* PERF-019: fresh id owns no cached bind groups yet */
     e->bg_ref_overflow = false;
+    e->draw_epoch = 0;           /* WEB-053: a fresh id has never been drawn */
     if (id > s_tex_high_water) {
         s_tex_high_water = id;
     }
@@ -6181,12 +6199,19 @@ static bool wgpu_upload_texture(const uint8_t *rgba32_buf, int width, int height
      * BEFORE the frame's command buffer, so a same-id re-upload issued after
      * an earlier draw in the SAME frame would retroactively swap that draw's
      * texels (the old destroy+recreate path pinned the old texture via the
-     * bind group and was safe by construction). Currently unreachable — the
-     * TMEM cache hits on unchanged content and eviction deletes rather than
-     * recycles ids — but any future caching change that re-uploads a drawn-
-     * this-frame id must go back to recreate (or defer the write). */
+     * bind group and was safe by construction).
+     *
+     * That hazard IS reachable: the frontend's texture cache is a round-robin
+     * ring whose cursor advances on every miss, so once the ring has wrapped it
+     * replaces still-live entries by re-uploading into the SAME backend id
+     * (platform/fast3d/gfx_pc_dkr.c, dkr_bind_texture). Under cache pressure the
+     * replaced entry can be one this frame has already drawn. The ordering
+     * invariant is therefore enforced rather than assumed: a texture stamped
+     * with the live encoder epoch is read by a recorded, unsubmitted draw, so it
+     * takes the recreate path below. The old WGPUTexture stays alive through the
+     * bind group that references it until that command buffer is submitted. */
     if (e->tex != NULL && e->view != NULL && e->w == width && e->h == height &&
-        e->levels <= 1) {
+        e->levels <= 1 && e->draw_epoch != s_draw_epoch) {
         dst.texture = e->tex;
         wgpuQueueWriteTexture(s_queue, &dst, rgba32_buf, bytes, &layout, &ext);
         return true;
@@ -6238,6 +6263,10 @@ static bool wgpu_upload_texture(const uint8_t *rgba32_buf, int width, int height
     e->w = width;
     e->h = height;
     e->levels = 1;
+    /* WEB-053: the replacement objects carry no recorded reads. Clearing the
+     * stamp lets a further same-frame re-upload of this id take the cheap
+     * in-place path again, right up until the next draw stamps it. */
+    e->draw_epoch = 0;
     return true;
 }
 
@@ -6314,6 +6343,7 @@ static bool wgpu_upload_texture_mipped(const uint8_t *const *level_rgba,
     e->w = level_w[0];
     e->h = level_h[0];
     e->levels = level_count;
+    e->draw_epoch = 0;   /* WEB-053: replacement objects carry no recorded reads */
     return true;
 }
 
@@ -7206,6 +7236,13 @@ static void wgpu_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_
             if (e != NULL && e->view != NULL) { v1 = e->view; e1 = e; }
             if (s_bound_sampler[1] != NULL) m1 = s_bound_sampler[1];
         }
+        /* WEB-053: this draw is about to be recorded into the live encoder, so
+         * these two textures are now read by a command buffer that has not been
+         * submitted. Stamping here (rather than after the Draw) is deliberately
+         * conservative: the few paths that bail out between here and the Draw
+         * cost at most one extra texture recreate, never a missed hazard. */
+        if (e0 != NULL) e0->draw_epoch = s_draw_epoch;
+        if (e1 != NULL) e1->draw_epoch = s_draw_epoch;
         WGPUTextureView draw_snapshot_view = wgpu_draw_snapshot_view();
         WGPUTextureView shadow_view = NULL;
         WGPUSampler shadow_sampler = NULL;

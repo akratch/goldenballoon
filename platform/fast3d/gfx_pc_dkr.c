@@ -2132,8 +2132,47 @@ static struct {
 } cur;
 
 static int dkr_rdp_gradient_legacy = -1;
+static int dkr_texedge_legacy = -1;
 static int dkr_rl1_arm = -1;
 static int dkr_rl5_enabled = -1;
+
+static bool dkr_texedge_legacy_enabled(void) {
+    if (dkr_texedge_legacy < 0) {
+        const char *value = getenv("MDKR_TEXEDGE");
+        dkr_texedge_legacy = value != NULL && strcmp(value, "legacy") == 0;
+    }
+    return dkr_texedge_legacy != 0;
+}
+
+/*
+ * Classify an RDP blender word as a hardware cutout (alpha test) rather than a
+ * translucent blend.
+ *
+ * On the RDP the three bits are not interchangeable. CVG_X_ALPHA only scales
+ * coverage by the pipeline alpha; ALPHA_CVG_SEL is what substitutes that scaled
+ * coverage for the blender's A_IN input, which is what turns the pair into the
+ * "one-bit stencil" a TEX_EDGE mode relies on; FORCE_BL keeps the blender
+ * running on every pixel so the pipeline alpha survives as a real blend factor.
+ * A cutout is CVG_X_ALPHA and ALPHA_CVG_SEL together, without FORCE_BL --
+ * exactly the signature of G_RM_*_TEX_EDGE / TEX_INTER / TEX_TERR.
+ *
+ * DKR forked a render mode around precisely this distinction:
+ * G_RM_AA_ZB_XLU_LINE_MOD (game/include/f3ddkr.h) is documented in the game
+ * source as "modified version of RM_AA_ZB_XLU_LINE, with ALPHA_CVG_SEL
+ * disabled" and carries CVG_X_ALPHA | FORCE_BL | GBL(CLR_IN, A_IN, CLR_MEM,
+ * 1MA) -- an ordinary alpha blend. Testing CVG_X_ALPHA alone collapses that
+ * authored blend into a 0.19 alpha-test cutout.
+ *
+ * MDKR_TEXEDGE=legacy restores the CVG_X_ALPHA-only test for A/B comparison.
+ */
+static bool dkr_other_mode_l_is_cutout(uint32_t other_mode_l) {
+    if (dkr_texedge_legacy_enabled()) {
+        return (other_mode_l & CVG_X_ALPHA) == CVG_X_ALPHA;
+    }
+    return (other_mode_l & (CVG_X_ALPHA | ALPHA_CVG_SEL)) ==
+               (CVG_X_ALPHA | ALPHA_CVG_SEL) &&
+           (other_mode_l & FORCE_BL) == 0;
+}
 
 static bool dkr_rdp_gradient_legacy_enabled(void) {
     if (dkr_rdp_gradient_legacy < 0) {
@@ -2327,7 +2366,7 @@ static bool dkr_setup_draw_state(bool poly_tex_enabled) {
     /* Blend / render-mode classification (Emill fast3d fallback path). */
     bool blend_alpha = (rdp.other_mode_l & (3U << 20)) == ((uint32_t)G_BL_CLR_MEM << 20) &&
                        (rdp.other_mode_l & (3U << 16)) == ((uint32_t)G_BL_1MA << 16);
-    bool texture_edge = (rdp.other_mode_l & CVG_X_ALPHA) == CVG_X_ALPHA;
+    bool texture_edge = dkr_other_mode_l_is_cutout(rdp.other_mode_l);
     bool use_fog = (rdp.other_mode_l >> 30) == G_BL_CLR_FOG;
     bool use_noise = (rdp.other_mode_l & G_AC_DITHER) == G_AC_DITHER;
     bool is_2cyc = (rdp.other_mode_h & (3U << G_MDSFT_CYCLETYPE)) == G_CYC_2CYCLE;
@@ -3148,8 +3187,7 @@ static void dkr_sp_polygon(const Triangle *tris, int num_tris, bool tex_enabled,
             (rsp.geometry_mode & G_ZBUFFER) != 0 &&
             (rdp.other_mode_l & Z_CMP) == Z_CMP &&
             (rdp.other_mode_l & ZMODE_DEC) != ZMODE_DEC) {
-            bool texture_edge =
-                (rdp.other_mode_l & CVG_X_ALPHA) == CVG_X_ALPHA;
+            bool texture_edge = dkr_other_mode_l_is_cutout(rdp.other_mode_l);
             bool alpha_blend =
                 rendering_state.blend_mode == GFX_BLEND_ALPHA;
             float viewport[4] = {

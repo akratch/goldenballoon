@@ -1423,6 +1423,18 @@ rule versus 28 from the clipped vertex. In production captures, the correction
 changes 954,454 of 1,228,800 GL pixels (component MAD 10.533) and 954,422 on
 WebGPU (component MAD 10.532), while all 2,900 `[PACE]` rows remain identical.
 
+**A cutout is now the render mode the RDP calls a cutout.** The alpha-test
+classification used to fire on `CVG_X_ALPHA` alone; it now requires
+`CVG_X_ALPHA | ALPHA_CVG_SEL` without `FORCE_BL`, the signature the
+`G_RM_*_TEX_EDGE` family actually carries. DKR forked `G_RM_AA_ZB_XLU_LINE_MOD`
+specifically to clear `ALPHA_CVG_SEL` and authored a genuine alpha blend, which
+the old test collapsed into a hard 0.19 alpha test that also baked into the
+cached mip chain. Soft alpha edges on character models blend instead of snapping
+to opaque: 131 of 1,228,800 pixels move on the pinned character-select frame,
+identically on GL and WebGPU, while in-race frames are byte-identical.
+`MDKR_TEXEDGE=legacy` keeps the old test as a diagnostic control, and
+`check_texture_edge_classification` bounds the delta from both sides.
+
 ### Remastered interface: runtime-derived SDF fonts
 
 Font lifetimes are explicit. `font.c` registers and unregisters each
