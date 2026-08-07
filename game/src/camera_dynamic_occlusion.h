@@ -129,6 +129,25 @@ MdkrCameraSweepStatus mdkr_camera_dynamic_occlusion_rounded_lens_sweep(
 void mdkr_camera_dynamic_occlusion_get_telemetry(
     MdkrCameraDynamicOcclusionTelemetry *out_telemetry);
 
+/*
+ * Published per-instance footprint, for callers that must tell a small prop
+ * from a wall-sized solid. Side-effect free and valid only for the current
+ * fixed tick's published list; returns 0 for an unknown ID, a failed
+ * publication, or an instance published as a temporal (swept) proxy.
+ */
+typedef struct MdkrCameraDynamicOcclusionFootprint {
+    /* Largest world-AABB half-extent of this instance's current pose. */
+    float max_half_extent;
+    MdkrCameraVec3 center;
+    /* Value a caller passes as MdkrCameraSweepInput::ignored_object_generation
+     * to exclude exactly this instance from both dynamic phases. */
+    uint32_t object_generation;
+} MdkrCameraDynamicOcclusionFootprint;
+
+int mdkr_camera_dynamic_occlusion_instance_footprint(
+    uint32_t stable_instance_id,
+    MdkrCameraDynamicOcclusionFootprint *out_footprint);
+
 /* Moving non-door hard solids render at the current fixed pose instead of
  * interpolating through an endpoint-only collision snapshot. Doors retain
  * interpolation because their conservative temporal proxy is queryable. */

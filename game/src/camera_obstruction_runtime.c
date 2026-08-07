@@ -53,6 +53,24 @@
  * without hollowing out the assertion that measures it.
  */
 #define MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS 9U
+/*
+ * Soft-occluder mitigation, interim form (docs/architecture/camera-obstruction.md
+ * VIS-01). Foliage, fences and small signs carry no reviewed soft/hard
+ * provenance yet, so they fail closed to HARD and retract the boom exactly like
+ * a wall. Until the fade census exists, a race-profile follow camera stops
+ * *retracting* for a small blocker that is neither close nor cheap; it never
+ * stops being validated against one. The published pose is still proven clear
+ * of the complete occluder set, so this trades a correction for nothing.
+ *
+ * "Small" is the blocker's published world-AABB largest half-extent, the only
+ * per-blocker size a sweep result can honestly reach, and it is available only
+ * for dynamic instances. Static track triangles have no comparable measure: a
+ * tessellated wall and a fence plank are both small triangles, so no static
+ * blocker is ever treated as soft here. That gap is real and is VIS-01's.
+ */
+#define MDKR_CAMERA_OBSTRUCTION_SOFT_MAX_HALF_EXTENT 60.0f
+#define MDKR_CAMERA_OBSTRUCTION_SOFT_NEAR_DISTANCE 90.0f
+#define MDKR_CAMERA_OBSTRUCTION_SOFT_MIN_BOOM_FRACTION 0.75f
 #define MDKR_CAMERA_PERF_BIN_WIDTH_NS UINT64_C(10000)
 #define MDKR_CAMERA_PERF_BIN_COUNT 1024U
 #define MDKR_CAMERA_PERF_NTSC_P99_BUDGET_NS UINT64_C(833333)
@@ -315,6 +333,12 @@ typedef struct MdkrCameraObstructionObserveSlot {
     uint8_t correction_applied;
     uint8_t alternate_active;
     uint8_t elevated_emergency;
+    /* Soft-occluder mitigation census for this tick: a small dynamic blocker
+     * failed both correction gates, and whether its correction was actually
+     * declined (the authored lens validated clear) or kept. */
+    uint8_t soft_blocker_seen;
+    uint8_t soft_blocker_declined;
+    float soft_blocker_extent;
     uint8_t orientation_retargeted;
     uint8_t presentation_discontinuity;
     uint8_t resolved_target_visible;
@@ -441,6 +465,43 @@ static int camera_obstruction_test_projection_failure(uint64_t tick) {
 static int camera_obstruction_test_disable_alternate_shot(void) {
     const char *value = getenv("MDKR_TEST_CAMERA_DISABLE_ALTERNATE");
     return value != NULL && value[0] == '1' && value[1] == '\0';
+}
+
+/*
+ * Soft-occluder measurement seam. MDKR_TEST_CAMERA_SOFT_EXTENT=<units> raises
+ * the "small blocker" half-extent so a route whose published props are all
+ * larger than the shipped threshold can still exercise the decline policy end
+ * to end. It exists because the measured answer on the only prop-dense route
+ * is that nothing qualifies (see the census in the return report): without a
+ * seam the branch would ship unexercised, which is exactly the class of
+ * false closure section 6.2 forbids.
+ *
+ * Read once and cached, like the other diagnostic seams. Absent, unparsable,
+ * or non-positive means the shipped threshold.
+ */
+static float sCameraSoftExtentOverride;
+static int sCameraSoftExtentParsed;
+
+static float camera_obstruction_soft_max_half_extent(void) {
+    if (!sCameraSoftExtentParsed) {
+        const char *value = getenv("MDKR_TEST_CAMERA_SOFT_EXTENT");
+        sCameraSoftExtentParsed = 1;
+        sCameraSoftExtentOverride = 0.0f;
+        if (value != NULL && value[0] != '\0') {
+            char *end = NULL;
+            const double parsed = strtod(value, &end);
+            if (end != NULL && *end == '\0' && isfinite(parsed) &&
+                parsed > 0.0 && parsed <= (double)FLT_MAX) {
+                sCameraSoftExtentOverride = (float)parsed;
+            } else {
+                fprintf(stderr,
+                        "camera_obstruction: ignoring unparsable "
+                        "MDKR_TEST_CAMERA_SOFT_EXTENT=%s\n", value);
+            }
+        }
+    }
+    return sCameraSoftExtentOverride > 0.0f ? sCameraSoftExtentOverride :
+        MDKR_CAMERA_OBSTRUCTION_SOFT_MAX_HALF_EXTENT;
 }
 
 /*
@@ -839,6 +900,9 @@ static void camera_obstruction_snapshot_authored_slots(void) {
         observe->intent_usable = FALSE;
         observe->presentation_discontinuity = FALSE;
         observe->elevated_emergency = FALSE;
+        observe->soft_blocker_seen = FALSE;
+        observe->soft_blocker_declined = FALSE;
+        observe->soft_blocker_extent = 0.0f;
         observe->resolved_stationary_status = MDKR_CAMERA_SWEEP_INVALID;
         observe->exact_shadow_status = MDKR_CAMERA_SWEEP_INVALID;
         observe->exact_shadow_outcome = MDKR_CAMERA_OBSTRUCTION_TWO_PHASE_INVALID;
@@ -885,6 +949,7 @@ static void camera_obstruction_trace_detail(
             "source_degraded=%u racer_opacity=%u blocker=%u/%u} "
             "stationary={status=%d hit=%u overlap=%u blocker=%u/%u} "
             "corridor={status=%d hit=%u overlap=%u blocker=%u/%u} "
+            "soft_blocker={seen=%u declined=%u extent=%.3f} "
             "dynamic_source={sphere_hit=%u exact_hit=%u} "
             "transition={invoked=%u clear=%u cut=%u tuple_cut=%u} "
             "exact_runtime={invoked=%u sphere_clear=%u exact_clear=%u exact_hit=%u "
@@ -927,6 +992,8 @@ static void camera_obstruction_trace_detail(
             observe->corridor_status,
             observe->corridor_status == MDKR_CAMERA_SWEEP_HIT,
             corridor->started_overlapping, corridor->kind, corridor->stable_id,
+            observe->soft_blocker_seen, observe->soft_blocker_declined,
+            observe->soft_blocker_extent,
             observe->dynamic_source_hit, observe->exact_dynamic_source_hit,
             observe->transition_invoked, observe->transition_clear,
             observe->transition_cut, observe->transition_tuple_cut,
@@ -1210,6 +1277,15 @@ static MdkrCameraSweepStatus camera_obstruction_refine_boom_anchor_lens(
     MdkrCameraVec3 desired,
     MdkrCameraVec3 conservative_anchor,
     int conservative_anchor_clear,
+    /*
+     * Skip the exhaustive interior scan. The authored boom is worth 31 exact
+     * stationary probes to save -- failing it costs the shot. A shoulder-fan
+     * candidate is not: there are up to eleven of them per tick, the same scan
+     * on each is what moved the measured 4P finalizer tail from 268us to
+     * 1.687ms, and a candidate whose pivot, endpoint and conservative anchor
+     * all overlap is cheaper to drop for the next candidate than to rescue.
+     */
+    int bounded,
     MdkrCameraVec3 *out_anchor) {
     MdkrCameraSweepHit hit;
     MdkrCameraSweepStatus status;
@@ -1248,6 +1324,9 @@ static MdkrCameraSweepStatus camera_obstruction_refine_boom_anchor_lens(
          * exhaustive stable search for an interior exact-clear pocket; this
          * is uncommon but avoids escalating wide-lens corner cases directly
          * to an elevated emergency shot. */
+        if (bounded) {
+            return MDKR_CAMERA_SWEEP_HIT;
+        }
         for (step = 1; step < MDKR_CAMERA_OBSTRUCTION_ANCHOR_STEPS; step++) {
             const float fraction =
                 (float)step / MDKR_CAMERA_OBSTRUCTION_ANCHOR_STEPS;
@@ -1921,9 +2000,49 @@ static int camera_obstruction_alternate_candidate_safe(
     MdkrCameraFinalPose pose;
     MdkrCameraSweepInput sweep;
     MdkrCameraSweepHit hit;
+    MdkrCameraObstructionLensQuery lens_query = { 0 };
+    MdkrCameraSweepStatus status;
 
-    if (camera_obstruction_find_boom_anchor(
-            sphere_query, guard, pivot, candidate, &anchor) != MDKR_CAMERA_SWEEP_CLEAR) {
+    /*
+     * Build the candidate's final pose first so its own rounded-lens guard --
+     * the lens that would actually be published, with the retargeted look-at
+     * basis -- is available to the boom admission below. Nothing here consumes
+     * a query, so an unbuildable pose is rejected before any work is spent.
+     */
+    if (!camera_obstruction_build_final_pose(observe, candidate, TRUE, &pose)) {
+        return FALSE;
+    }
+    lens_query.sphere = sphere_query;
+    lens_query.exact = exact_query;
+    lens_query.guard = &pose.guard;
+    lens_query.observe = observe;
+
+    /*
+     * Boom admission is a composition constraint -- "is this candidate's boom
+     * connected to the subject through free space" -- evaluated at a fixed
+     * orientation, so it takes the exact rounded-lens narrow phase. The
+     * enclosing sphere over-estimates by (radius - half-extent) in every
+     * direction it is not actually wide in, which at ultrawide/high-FOV lenses
+     * refused nearly every shoulder candidate and forced elevated emergency
+     * framing instead. Measured on the 3,587-frame Ancient Lake route at
+     * 5120x1440 / uncapped 140 degrees: the sphere anchor rejected 3,672 of
+     * 3,700 candidate evaluations.
+     */
+    status = camera_obstruction_find_boom_anchor(
+        sphere_query, guard, pivot, candidate, &anchor);
+    if (status == MDKR_CAMERA_SWEEP_INVALID) {
+        return FALSE;
+    }
+    if (use_exact) {
+        const int conservative_anchor_clear = status == MDKR_CAMERA_SWEEP_CLEAR;
+        if (!conservative_anchor_clear) {
+            anchor = candidate;
+        }
+        status = camera_obstruction_refine_boom_anchor_lens(
+            &lens_query, guard, pivot, candidate, anchor,
+            conservative_anchor_clear, TRUE, &anchor);
+    }
+    if (status != MDKR_CAMERA_SWEEP_CLEAR) {
         return FALSE;
     }
     sweep = (MdkrCameraSweepInput) {
@@ -1932,16 +2051,24 @@ static int camera_obstruction_alternate_candidate_safe(
         .desired_eye = candidate,
         .mask = MDKR_CAMERA_OBSTRUCTION_HARD_MASK,
     };
-    if (mdkr_camera_obstruction_combined_sweep(sphere_query, &sweep, &hit) !=
-        MDKR_CAMERA_SWEEP_CLEAR ||
+    status = use_exact ?
+        camera_obstruction_lens_sweep(&lens_query, &sweep, &hit) :
+        mdkr_camera_obstruction_combined_sweep(sphere_query, &sweep, &hit);
+    if (status != MDKR_CAMERA_SWEEP_CLEAR ||
         !camera_obstruction_target_visible(sphere_query, target, candidate)) {
         return FALSE;
     }
-    /* A fallback may cut, but never cut through a hard shell. */
+    /*
+     * A fallback may cut, but never cut through a hard shell. This interval is
+     * the only orientation-CHANGING motion in the chain, so it deliberately
+     * keeps the orientation-free conservative sphere: a fixed-basis exact
+     * sweep would not cover the rotation, and section 6.2 requires either
+     * conservative SE(3) coverage or a declared discontinuity with validated
+     * endpoints here.
+     */
     sweep.start_eye = transition_start;
     if (mdkr_camera_obstruction_combined_sweep(sphere_query, &sweep, &hit) !=
-        MDKR_CAMERA_SWEEP_CLEAR ||
-        !camera_obstruction_build_final_pose(observe, candidate, TRUE, &pose)) {
+        MDKR_CAMERA_SWEEP_CLEAR) {
         return FALSE;
     }
     return camera_obstruction_final_pose_stationary_clear(
@@ -2279,6 +2406,168 @@ static MdkrCameraObstructionTreatment camera_obstruction_family_treatment(
     return camera_obstruction_shipped_family_treatment(family);
 }
 
+/*
+ * Would this retraction be driven by a small blocker that has not earned it?
+ *
+ * Returns the blocker's published half-extent through out_extent when the
+ * answer is yes. Both gates are deliberately conservative:
+ *
+ *  - proximity: a small prop far from the authored eye covers few pixels and
+ *    is not worth a boom move; one that is genuinely close still corrects.
+ *  - minimum boom: whatever else it costs, a small blocker may not crush the
+ *    race camera's boom. Below the floor the shot is worse than the occlusion.
+ *
+ * Nothing here decides safety. The caller must still validate the pose it
+ * publishes against the complete occluder set, so a small blocker that really
+ * does overlap the authored lens keeps its correction.
+ */
+static int camera_obstruction_soft_blocker_declined(
+    const MdkrCameraObstructionResolverResult *result,
+    MdkrCameraObstructionTreatment treatment,
+    MdkrCameraVec3 pivot,
+    MdkrCameraVec3 desired,
+    float *out_extent) {
+    MdkrCameraDynamicOcclusionFootprint footprint;
+    float contact_distance;
+    float desired_distance;
+    float resolved_distance;
+
+    if (out_extent != NULL) {
+        *out_extent = 0.0f;
+    }
+    /* Race-profile follow cameras only; the bounded depenetrate-only and
+     * safety-only families never trade a correction for composition. */
+    if (treatment != MDKR_CAMERA_OBSTRUCTION_TREATMENT_FULL ||
+        !result->accepted || result->release_held ||
+        result->status != MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED ||
+        !result->path_was_blocked ||
+        result->blocker_stable_id < UINT32_C(0x80000000)) {
+        return FALSE;
+    }
+    if (!mdkr_camera_dynamic_occlusion_instance_footprint(
+            result->blocker_stable_id, &footprint) ||
+        !isfinite(footprint.max_half_extent)) {
+        return FALSE;
+    }
+    if (out_extent != NULL) {
+        /* Report the measured size of every dynamic blocker whose footprint
+         * resolves, not only the ones this policy declines: the census is how
+         * the "small" threshold stays calibrated against real content. */
+        *out_extent = footprint.max_half_extent;
+    }
+    if (footprint.max_half_extent >
+        camera_obstruction_soft_max_half_extent()) {
+        return FALSE;
+    }
+    contact_distance = camera_obstruction_distance(result->blocker_point, desired);
+    desired_distance = camera_obstruction_distance(pivot, desired);
+    resolved_distance = camera_obstruction_distance(pivot, result->resolved_eye);
+    if (!isfinite(contact_distance) || !isfinite(desired_distance) ||
+        !isfinite(resolved_distance) || desired_distance <= 0.0f) {
+        return FALSE;
+    }
+    if (contact_distance < MDKR_CAMERA_OBSTRUCTION_SOFT_NEAR_DISTANCE &&
+        resolved_distance >= desired_distance *
+            MDKR_CAMERA_OBSTRUCTION_SOFT_MIN_BOOM_FRACTION) {
+        /* Close enough to matter and cheap enough to pay for. Correct. */
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/*
+ * Wide-lens boom fallback.
+ *
+ * The boom anchor search walks the authored pivot->desired SEGMENT. At large
+ * lens half-angles the exact rounded lens can have no valid pose anywhere on
+ * that one-dimensional set even though composition-preserving poses sit just
+ * off it, and the only remaining fallback was the elevated emergency fan --
+ * which abandons the authored shot for a world-axis crane pose and marks the
+ * frame as emergency framing. Measured on the 3,587-frame Ancient Lake route
+ * at uncapped 140 degrees, every single elevated-emergency frame came from
+ * this escalation, in every aspect arm.
+ *
+ * So try the deterministic shoulder fan first. Its candidates keep the authored
+ * boom distance and subject framing, every published endpoint is exact
+ * rounded-lens validated with its own retargeted basis, and its cut is covered
+ * by the same conservative sphere sweep the ordinary alternate path uses. The
+ * elevated emergency fan remains the next rung and is unchanged.
+ */
+static int camera_obstruction_publish_wide_lens_shoulder(
+    MdkrCameraObstructionObserveSlot *observe,
+    s32 physical_slot,
+    const MdkrCameraObstructionCombinedQuery *sphere_query,
+    const MdkrCameraObstructionRoundedLensCombinedQuery *exact_query,
+    int use_exact,
+    MdkrCameraVec3 desired) {
+    MdkrCameraVec3 candidate;
+    MdkrCameraVec3 transition_start;
+    MdkrCameraVec3 preferred;
+    const MdkrCameraVec3 *preferred_ptr = NULL;
+    MdkrCameraFinalPose pose;
+    MdkrCameraSweepHit hit;
+
+    if (!use_exact || !observe->intent.target_valid ||
+        camera_obstruction_family_treatment(observe->intent.family) !=
+            MDKR_CAMERA_OBSTRUCTION_TREATMENT_FULL ||
+        camera_obstruction_test_disable_alternate_shot()) {
+        return FALSE;
+    }
+    /*
+     * Prefer cutting from the pose the player is currently looking at. Without
+     * a validated last-safe eye the authored pose is the only honest start;
+     * the transition sweep below still has to prove that chord.
+     */
+    transition_start = observe->resolver.last_safe_valid &&
+            !observe->intent.discontinuity ?
+        observe->resolver.last_safe_eye : desired;
+    /* Candidate-identity hysteresis: hold the shoulder already on screen. */
+    if (observe->alternate_active && observe->resolver.last_safe_valid &&
+        observe->previous_pivot_valid && !observe->intent.discontinuity) {
+        preferred.x = observe->resolver.last_safe_eye.x +
+            observe->intent.pivot.x - observe->previous_pivot.x;
+        preferred.y = observe->resolver.last_safe_eye.y +
+            observe->intent.pivot.y - observe->previous_pivot.y;
+        preferred.z = observe->resolver.last_safe_eye.z +
+            observe->intent.pivot.z - observe->previous_pivot.z;
+        preferred_ptr = &preferred;
+    }
+    if (!camera_obstruction_select_alternate_shot(
+            observe, sphere_query, exact_query, observe->guard,
+            observe->intent.pivot, observe->intent.target, desired,
+            transition_start, preferred_ptr, &candidate, use_exact)) {
+        return FALSE;
+    }
+    /*
+     * select_alternate_shot proves each candidate, but the proof it keeps is
+     * the winner's admission, not a published pose. Rebuild and revalidate the
+     * exact final pose here so publication owns its own endpoint proof and can
+     * never publish a camera that was validated before its look-at rotation.
+     */
+    if (!camera_obstruction_build_final_pose(observe, candidate, TRUE, &pose) ||
+        !camera_obstruction_final_pose_stationary_clear(
+            observe, sphere_query, exact_query, &pose, use_exact, &hit) ||
+        !camera_obstruction_target_visible(
+            sphere_query, observe->intent.target, pose.rendered_eye)) {
+        return FALSE;
+    }
+    pose.discontinuity = TRUE;
+    camera_obstruction_publish_final_pose(observe, physical_slot, &pose);
+    if (!observe->resolved_valid) {
+        return FALSE;
+    }
+    observe->resolver.last_safe_eye = pose.rendered_eye;
+    observe->resolver.last_safe_valid = TRUE;
+    observe->resolver.projection_generation = observe->projection.generation;
+    observe->resolver_status = MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED;
+    observe->alternate_active = TRUE;
+    observe->was_obstructed = TRUE;
+    observe->previous_pivot = observe->intent.pivot;
+    observe->previous_pivot_valid = TRUE;
+    observe->presentation_discontinuity = TRUE;
+    return TRUE;
+}
+
 static void camera_obstruction_resolve_slot(
     MdkrCameraObstructionObserveSlot *observe,
     s32 physical_slot,
@@ -2381,9 +2670,15 @@ static void camera_obstruction_resolve_slot(
         }
         status = camera_obstruction_refine_boom_anchor_lens(
             &lens_query, observe->guard, observe->intent.pivot,
-            desired, boom_anchor, conservative_anchor_clear, &boom_anchor);
+            desired, boom_anchor, conservative_anchor_clear, FALSE, &boom_anchor);
     }
     if (status != MDKR_CAMERA_SWEEP_CLEAR) {
+        if (status == MDKR_CAMERA_SWEEP_HIT &&
+            camera_obstruction_publish_wide_lens_shoulder(
+                observe, physical_slot, &combined, &exact_combined,
+                use_exact, desired)) {
+            return;
+        }
         if (status == MDKR_CAMERA_SWEEP_HIT &&
             camera_obstruction_publish_elevated_emergency(
                 observe, physical_slot, &combined, &exact_combined,
@@ -2466,6 +2761,47 @@ static void camera_obstruction_resolve_slot(
     input.discontinuity = observe->intent.discontinuity;
     observe->resolver_status = mdkr_camera_obstruction_resolve(
         &config, &input, &observe->resolver, &result);
+    /*
+     * Soft-occluder mitigation. A small dynamic prop that fails both the
+     * proximity and minimum-boom gates does not get to move a race camera --
+     * but only if the authored pose it would have retracted from is itself
+     * provably clear of EVERYTHING, this blocker included. That check is the
+     * same exact rounded-lens final-pose validation every other publication
+     * uses, so declining the correction can never publish a penetrated lens;
+     * the worst case is that the check fails and the measured correction
+     * stands untouched.
+     */
+    if (camera_obstruction_soft_blocker_declined(
+            &result, treatment, observe->intent.pivot, desired,
+            &observe->soft_blocker_extent)) {
+        MdkrCameraFinalPose authored_pose;
+        MdkrCameraSweepHit authored_hit;
+        const uint8_t degraded_before = observe->query_source_degraded;
+
+        observe->soft_blocker_seen = TRUE;
+        if (camera_obstruction_build_final_pose(
+                observe, desired, FALSE, &authored_pose) &&
+            camera_obstruction_final_pose_stationary_clear(
+                observe, &combined, &exact_combined, &authored_pose,
+                use_exact, &authored_hit)) {
+            result.resolved_eye = desired;
+            result.status = MDKR_CAMERA_OBSTRUCTION_RESOLVER_CLEAR;
+            result.path_was_blocked = 0U;
+            result.blocker_kind = 0U;
+            result.blocker_stable_id = 0U;
+            observe->resolver_status = result.status;
+            observe->resolver.last_safe_eye = desired;
+            observe->resolver.last_safe_valid = TRUE;
+            observe->resolver.retraction_latched = 0U;
+            observe->resolver.clear_run_ticks = 0U;
+            observe->resolver.projection_generation = observe->projection.generation;
+            observe->soft_blocker_declined = TRUE;
+        } else {
+            /* The authored lens really does contain it. Keep the correction
+             * and do not leave a probe's degradation on the slot. */
+            observe->query_source_degraded = degraded_before;
+        }
+    }
     observe->blocker_kind = result.blocker_kind;
     observe->blocker_stable_id = result.blocker_stable_id;
     observe->blocker_normal = result.blocker_normal;
@@ -3428,6 +3764,8 @@ void camera_obstruction_tick(int update_rate_fields) {
     s32 depenetrate_only = 0;
     s32 safety_only = 0;
     s32 elevated_emergency = 0;
+    s32 soft_blocker_seen = 0;
+    s32 soft_blocker_declined = 0;
     s32 transition_invoked = 0;
     s32 transition_clear = 0;
     s32 transition_cut = 0;
@@ -3502,6 +3840,8 @@ void camera_obstruction_tick(int update_rate_fields) {
             camera_obstruction_family_treatment(observe->intent.family) ==
                 MDKR_CAMERA_OBSTRUCTION_TREATMENT_SAFETY_ONLY;
         elevated_emergency += observe->elevated_emergency;
+        soft_blocker_seen += observe->soft_blocker_seen;
+        soft_blocker_declined += observe->soft_blocker_declined;
         transition_invoked += observe->transition_invoked;
         transition_clear += observe->transition_clear;
         transition_cut += observe->transition_cut;
@@ -3539,6 +3879,7 @@ void camera_obstruction_tick(int update_rate_fields) {
                 "resolved={corrected=%d penetrated=%d invalid=%d degraded=%d} "
                 "target_hidden=%d target_embedded=%d depenetrate_only=%d safety_only=%d emergency=%d "
                 "dynamic_corrected=%d "
+                "soft_blocker={seen=%d declined=%d} "
                 "transition={invoked=%d clear=%d cut=%d tuple_cut=%d} "
                 "exact_runtime={invoked=%d sphere_clear=%d exact_clear=%d "
                 "exact_hit=%d override=%d degraded=%d} "
@@ -3564,6 +3905,7 @@ void camera_obstruction_tick(int update_rate_fields) {
                 depenetrate_only, safety_only,
                 elevated_emergency,
                 dynamic_corrected,
+                soft_blocker_seen, soft_blocker_declined,
                 transition_invoked, transition_clear,
                 transition_cut, transition_tuple_cut,
                 exact_runtime_invoked, exact_runtime_sphere_clear,
