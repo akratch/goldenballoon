@@ -14,6 +14,7 @@
  */
 
 #include <libaudio.h>
+#include "decomp_names.h"
 #include "synthInternals.h"
 #include "seqp.h"
 #include "audio_event_queue.h"
@@ -3961,7 +3962,8 @@ static void native_csp_handle_midi(ALCSPlayer *seqp, ALEvent *event)
                  * Faithful-to-original oddity: the stored fxmix is set to 0
                  * but the live voices are driven to `vel`, so stored and
                  * audible state deliberately diverge until something next
-                 * touches that channel's fxmix. func_80063A90() is the only
+                 * touches that channel's fxmix. alSeqSetFxSendFloor()
+                 * (func_80063A90) is the only
                  * caller and it passes a CHANNEL INDEX as `vel`, so in
                  * practice the comparison runs against small values. This is
                  * reproduced as-is because the music mix depends on it.
@@ -4924,7 +4926,8 @@ s32 alAuxBusParam(void *filter, s32 param_id, void *param)
         bus->sourceCount < bus->maxSources) {
         bus->sources[bus->sourceCount++] = (ALFilter *)param;
     } else if (param_id == AL_FILTER_UNK11) {
-        /* DKR: remove a source (func_80065A80's re-parent). Swap-remove —
+        /* DKR: remove a source (alSynSetVoiceAuxBus / func_80065A80's
+         * re-parent). Swap-remove —
          * bus order carries no meaning, the pull just sums every source. */
         s32 i;
 
@@ -5641,8 +5644,11 @@ void alSeqChOn(ALCSPlayer *seqp, u8 chan)
  * Post the global FX-send floor described in the AL_MIDI_UNK_5F handler.
  * The status byte carries no channel nibble because the handler sweeps
  * every channel regardless.
+ *
+ * The name is an alias for func_80063A90 (game/include/decomp_names.h); the
+ * symbol this defines is still the raw one the vendored callers link against.
  */
-void func_80063A90(ALCSPlayer *seqp, u8 chan)
+void alSeqSetFxSendFloor(ALCSPlayer *seqp, u8 chan)
 {
     csp_post_midi(seqp, AL_MIDI_ControlChange, AL_MIDI_UNK_5F, chan);
 }
@@ -5656,8 +5662,11 @@ void func_80063A90(ALCSPlayer *seqp, u8 chan)
  * from another owner may still be wired to the bus that owner wanted.
  * Every CSP note-on calls this with bus 0 to guarantee the voice is on the
  * bus its new owner expects before it sounds. No-op when it already is.
+ *
+ * The name is an alias for func_80065A80 (game/include/decomp_names.h); the
+ * symbol this defines is still the raw one the vendored callers link against.
  */
-void func_80065A80(ALSynth *drvr, PVoice *pvoice, s16 bus)
+void alSynSetVoiceAuxBus(ALSynth *drvr, PVoice *pvoice, s16 bus)
 {
     if (drvr == NULL || pvoice == NULL || drvr->auxBus == NULL) {
         return;

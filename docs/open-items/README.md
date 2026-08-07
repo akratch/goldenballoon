@@ -26,14 +26,14 @@ unchanged.
 | [`multiplayer.md`](multiplayer.md) | Multiplayer — 1 entry |
 | [`gameplay.md`](gameplay.md) | Gameplay, race and Adventure — 11 entries |
 | [`portability.md`](portability.md) | 64-bit (LP64), endianness and portability — 12 entries |
-| [`misc.md`](misc.md) | Everything else — 2 entries |
+| [`misc.md`](misc.md) | Everything else — 3 entries |
 
 
 ## Contents
 
 ### Still open
 
-16 entries below are genuinely open (the former M4.5 WebGPU backend "open
+17 entries below are genuinely open (the former M4.5 WebGPU backend "open
 notes" row was merged into the WGPU-11 row below it — every one of its notes
 already carried its own FIXED/CLOSED strikethrough, and the only live thread
 was the same external-platform validation WGPU-11 already tracks — and four
@@ -69,6 +69,8 @@ table.
 | **Taj Time Trial records no best time and stores no ghost, silently.** Deliberate containment, per [`docs/architecture/taj-playable-mod.md`](../architecture/taj-playable-mod.md) §352-369/§535-545: Taj is a virtual character overlaid on the retail roster, not a true `CHARACTER_TAJ` slot, so competitive timing data is quarantined to protect existing saves/ghosts/records rather than by oversight. **Deliberately deferred:** giving Taj real ghost/leaderboard semantics is a save-compatibility question — how a non-retail character is represented in a format retail hardware also reads — not a bug fix, and belongs with the authored vehicle rows and fourth carpet physics class in a second-generation asset-pack feature | [gameplay record](gameplay.md#open-deliberately-deferred-taj-time-trial-records-no-best-time-and-stores-no-ghost) |
 | **Ghost read/write coverage is one (track, vehicle) pair of 47.** `timetrial_ghost_read()` is exercised end to end by exactly one test on Ancient Lake / car; `check_vehicle_sweep.py`/`check_track_sweep.py` cover all 47 legal combinations for racing but never drive a Time Trial finish, so they never reach the ghost path. This exact function already shipped a stack-buffer-overflow that aborted with nothing on stderr before it was caught (root cause 3, Part B). A save-format path: any coverage fix must not alter the serialized ghost layout | [gameplay record](gameplay.md#open-ghost-coverage-is-one-track-vehicle-pair-of-47) |
 | **Shadow gate trustworthiness: the harness environment has twice diverged from the shipping build and let a real defect through green gates.** Wave "shadowplay"'s four root causes were found only by manual playthrough while `check_world_shadows.py` and its siblings passed throughout; wave "shadowdeep" R1 found that every registered shadow gate set `MDKR_TRACE=1`, which is why none of them saw a shipping-build-only static-caster-cache leak. Both underlying bugs are fixed. **Deliberately deferred:** what remains is a gate-infrastructure change — auditing every gate that exports a diagnostic env var the shipping build does not set, and adding a shipping-configuration arm to the shadow gates — not a rendering fix, and it touches the whole renderer suite rather than one file | [renderer record](renderer.md#open-shadow-gate-trustworthiness--harness-environment-has-diverged-from-the-shipping-build-twice) |
+| **446 vendored decomp symbols are still spelled as ROM addresses.** 154 `func_` and 292 `D_` across 2550 sites in `game/`; 84 of them now carry evidence-backed readable aliases in `game/include/decomp_names.h`, covering 63 of the 64 the port actually exercises. The rest is archaeology, and the rule is **never blind-rename**: a name without a citation is worse than the address, and the audit that opened this wave got two of its own examples backwards. Renaming in vendored text is also permanent merge-conflict surface, so names are aliases, never in-place edits | [misc record](misc.md#not-a-defect-but-a-standing-readability-hazard-446-vendored-symbols-are-still-spelled-as-rom-addresses--wave-decompnames) |
+
 
 ### Closed, kept as a record
 

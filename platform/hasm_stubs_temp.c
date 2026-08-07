@@ -4,7 +4,7 @@
  *
  * Required gameplay providers are deliberately absent here. obj_animate,
  * obj_shade_fast, calc_dynamic_lighting_for_object_2, gzip_inflate_block, and
- * func_80049794 all have strong production definitions; omitting one must fail
+ * racer_update_plane (func_80049794) all have strong production definitions; omitting one must fail
  * the link rather than select a successful no-op.
  */
 #include <stdio.h>
@@ -32,7 +32,8 @@
 #endif
 
 /* ---- other still-hand-asm game functions (undecompiled .s) -------------- */
-/* func_80017A18 -- THE STUB THAT USED TO LIVE HERE IS GONE. Wave "objcoll"
+/* object_model_test_collisions (func_80017A18) -- THE STUB THAT USED TO LIVE
+ * HERE IS GONE. Wave "objcoll"
  * adopted upstream's matched body (decomp commit 9da89ecb) into
  * game/src/objects.c, so the strong definition there is what links now and
  * object-model collision genuinely reports hits.

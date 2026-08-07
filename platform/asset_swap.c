@@ -1068,7 +1068,7 @@ void asset_swap_object_animation(void *data, uint32_t size, uint32_t numAnimated
 /* ==========================================================================
  *  ASSET_MISC sub-asset: LevelHeader_70 "pulsating light" data (heterogeneous
  *  MISC section is punted at load, so this record is swapped on demand at the
- *  func_8007F1E8 call sites, with a dedup guard against per-level re-swap).
+ *  reset_colour_cycle (func_8007F1E8) call sites, with a dedup guard against per-level re-swap).
  * ======================================================================== */
 #define LH70_ENTRY_STRIDE 8u   /* one unidentified s32 + u8 r,g,b,a */
 #define LH70_HEADER_SIZE  0x18u
