@@ -1,0 +1,141 @@
+# Resume a checksum-valid Adventure One save, let MDKR_LOAD_TRACK retarget the
+# one race load to a Wizpig course, then answer the post-race cutscene chain.
+#
+# Everything up to 2050 is adventure_resume_race.txt verbatim: it is the same
+# frontend, and the same already-started first slot.
+#
+# What is added is the tail. A won Wizpig race does not return to a hub: it
+# pushes a stack of cutscene levels (the Wizpig animation, and for Wizpig 2 the
+# two "last bit" scenes) and finally a negative map id, which thread3_main.c
+# turns into LEVEL_CONTEXT_CREDITS. Each of those pops needs either the scene to
+# run itself out or an A press (thread3_main.c:900), and DKR's menus are
+# edge-detected, so this is single taps with gaps -- never a hold. Extra taps
+# after the credits have started are harmless: menu_credits_loop only uses A to
+# speed the scroll.
+
+1250 START 4
+1330 START 4
+1450 A 4
+1540 A 4
+1750 A 4
+
+# GAME_SELECT: Adventure One is option 0.
+1900 A 4
+
+# FILE_SELECT: resume the already-started first slot.
+2050 A 4
+
+# --- Post-race cutscene chain -> credits ---
+7600 A 6
+7800 A 6
+8000 A 6
+8200 A 6
+8400 A 6
+8600 A 6
+8800 A 6
+9000 A 6
+9200 A 6
+9400 A 6
+9600 A 6
+9800 A 6
+10000 A 6
+10200 A 6
+10400 A 6
+10600 A 6
+10800 A 6
+11000 A 6
+11200 A 6
+11400 A 6
+11600 A 6
+11800 A 6
+12000 A 6
+12200 A 6
+12400 A 6
+12600 A 6
+12800 A 6
+13000 A 6
+13200 A 6
+13400 A 6
+13600 A 6
+13800 A 6
+14000 A 6
+14200 A 6
+14400 A 6
+14600 A 6
+14800 A 6
+15000 A 6
+15200 A 6
+15400 A 6
+15600 A 6
+15800 A 6
+16000 A 6
+16200 A 6
+16400 A 6
+16600 A 6
+16800 A 6
+17000 A 6
+17200 A 6
+17400 A 6
+17600 A 6
+17800 A 6
+18000 A 6
+18200 A 6
+18400 A 6
+18600 A 6
+18800 A 6
+19000 A 6
+19200 A 6
+19400 A 6
+19600 A 6
+19800 A 6
+20000 A 6
+20200 A 6
+20400 A 6
+20600 A 6
+20800 A 6
+21000 A 6
+21200 A 6
+21400 A 6
+21600 A 6
+21800 A 6
+22000 A 6
+22200 A 6
+22400 A 6
+22600 A 6
+22800 A 6
+23000 A 6
+23200 A 6
+23400 A 6
+23600 A 6
+23800 A 6
+24000 A 6
+24200 A 6
+24400 A 6
+24600 A 6
+24800 A 6
+25000 A 6
+25200 A 6
+25400 A 6
+25600 A 6
+25800 A 6
+26000 A 6
+26200 A 6
+26400 A 6
+26600 A 6
+26800 A 6
+27000 A 6
+27200 A 6
+27400 A 6
+27600 A 6
+27800 A 6
+28000 A 6
+28200 A 6
+28400 A 6
+28600 A 6
+28800 A 6
+29000 A 6
+29200 A 6
+29400 A 6
+29600 A 6
+29800 A 6
+30000 A 6

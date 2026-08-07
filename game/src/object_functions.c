@@ -2724,6 +2724,39 @@ void obj_loop_exit(Object *obj, UNUSED s32 updateRate) {
     }
     // The above ensures only one of the boss warps is active so they don't overlap. This could also probably have been
     // done in the initialiser.
+#ifdef NATIVE_PORT
+    /* NATIVE_PORT, read-only: this pair of tests IS the boss-rematch gate. A
+     * world lobby carries two overlapping boss warps -- WARP_BOSS_FIRST to the
+     * first boss and WARP_BOSS_REMATCH to the rematch -- and which one is live is
+     * decided here, every frame, from balloonsPtr[worldId] alone. Eight world
+     * balloons is four race clears plus four silver-coin clears, so this is the
+     * exact point at which collecting silver coins stops sending the player to
+     * the first boss and starts sending them to the rematch.
+     *
+     * The decision is not otherwise observable: it has no save bit and no HUD,
+     * and a headless route cannot reach the lobby's boss door (it is behind
+     * geometry the AI spline does not path through), so witnessing the gate by
+     * driving through it is not available. Reporting the verdict where the game
+     * itself computes it makes the gate assertable from the lobby. Latched per
+     * (level, warp) so it costs one line per boss warp per lobby visit. */
+    if (exit->bossFlag != WARP_STANDARD && mdkr_trace_enabled()) {
+        static s32 sWarpLevel = -1;
+        static s32 sWarpSeen[2] = { -1, -1 };
+        s32 idx = (exit->bossFlag == WARP_BOSS_REMATCH) ? 1 : 0;
+        if (settings->courseId != sWarpLevel) {
+            sWarpLevel = settings->courseId;
+            sWarpSeen[0] = -1;
+            sWarpSeen[1] = -1;
+        }
+        if (sWarpSeen[idx] != enableWarp) {
+            sWarpSeen[idx] = enableWarp;
+            mdkr_trace("bosswarp: level=%d dest=%d warp=%s worldBalloons=%d enabled=%d",
+                       (int) settings->courseId, (int) obj->level_entry->exit.destinationMapId,
+                       (exit->bossFlag == WARP_BOSS_REMATCH) ? "rematch" : "first",
+                       (int) settings->balloonsPtr[settings->worldId], (int) enableWarp);
+        }
+    }
+#endif
     if (enableWarp && obj->interactObj->distance < exit->radius) {
         dist = exit->radius;
         racerObjects = get_racer_objects(&numberOfRacers);
@@ -4899,6 +4932,21 @@ void obj_loop_silvercoin(Object *obj, s32 updateRate) {
                         obj->trans.flags |= OBJ_FLAGS_INVIS_PLAYER1 << racer->playerIndex;
                         music_jingle_play(SEQUENCE_SILVER_COIN_1 + racer->silverCoinCount);
                         racer->silverCoinCount++;
+#ifdef NATIVE_PORT
+                        /* NATIVE_PORT, read-only: the silver-coin pickup is the
+                         * only event that moves racer->silverCoinCount, and that
+                         * counter is the sole input to the >= 8 test in
+                         * set_course_finish_flags() that writes
+                         * RACE_CLEARED_SILVER_COINS. Nothing else prints it -- the
+                         * HUD reads it straight out of the racer -- so without
+                         * this line a headless run cannot tell "collected seven
+                         * coins" from "collected none". Trace-gated; at most eight
+                         * lines per player per race, and it reads state the two
+                         * statements above have already committed. */
+                        MDKR_TRACE("silvercoin: playerIndex=%d count=%d action=0x%x @frame~%d",
+                                   (int) racer->playerIndex, (int) racer->silverCoinCount,
+                                   (unsigned) obj->properties.silverCoin.action, (int) g_frameCounter);
+#endif
                     }
                 }
             }

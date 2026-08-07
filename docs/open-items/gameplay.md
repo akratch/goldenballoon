@@ -1470,6 +1470,35 @@ pass as ever having been completed. So: the campaign is **ungated, not
 unimplemented**, and today it is neither automated nor recorded as manually
 witnessed.
 
+### MOSTLY CLOSED: `tests/check_campaign_progression.py`
+
+The bulk of the above is now gated. That check does not attempt one continuous
+start-to-credits drive — it would run for hours and fail as one opaque blob.
+It gates each progression **seam** with a save fixture entering it and an
+assertion on what production writes leaving it, with each fixture derived from
+what the previous seam is proved to write
+([`tests/fixtures/README.md`](../../tests/fixtures/README.md) carries the
+bit-level derivation):
+
+- **silver coins** — all eight collected on a real course entered through the
+  hub and lobby, `RACE_CLEARED_SILVER_COINS` written once, the two balloon
+  counters incremented, and the whole thing read back by a second process;
+- **all four boss rematches** — each awarding its `1 << (world + 6)` bit and
+  exactly one `wizpigAmulet` piece, against a first-encounter control that must
+  award the first-boss bit and no amulet;
+- **Wizpig 2** — won, setting and persisting `bosses & 0x20`, the single value
+  `menu_credits_init` reads to choose the true ending over "THE END?".
+
+Four things remain manual, each for a measured headless reason recorded in that
+fixtures README rather than papered over: the lobby's boss-rematch **door**
+driven rather than retargeted (the kart stalls 1,240 units short of it),
+**Wizpig 1** (its unlock cutscene is on the hub-load path and did not fire from
+a resumed save), the **T.T. amulet** challenges and the **trophy**
+championships (the latter separately gated by `check_trophy_series.py`), and the
+**credits screen** reached by finishing Wizpig 2 — `ASSET_LEVEL_WIZPIG2ANIM`
+does not run itself out headlessly, so the check asserts the bit that selects
+the ending rather than the screen that shows it.
+
 ## OPEN, deliberately deferred: Taj Time Trial records no best time and stores no ghost
 
 Taj is heavily advertised ([`RELEASE_NOTES.md`](../../RELEASE_NOTES.md),

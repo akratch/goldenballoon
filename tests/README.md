@@ -2494,6 +2494,52 @@ boss bit; loss persists Hot Top cleared and Tricky visited only. Both retain
 zero TT/Wizpig amulet pieces: the first world boss awards a balloon and boss
 clear, while the amulet piece belongs to the second boss.
 
+## Campaign progression — `tests/check_campaign_progression.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_campaign_progression.py -v          # ~3.5 min
+MDKR_AUDIO=0 python3 tests/check_campaign_progression.py --quick     # ~40 s
+MDKR_AUDIO=0 python3 tests/check_campaign_progression.py --quick --break-invariant  # must FAIL
+```
+
+`--break-invariant` drives seam A on the stock AI line instead. Measured, that
+line takes 6 of the 8 coins, so nothing is written and six assertions go red —
+which is what keeps the silver-coin arm from being satisfied by a race that
+merely happened.
+
+This is where the campaign stops being ungated. It picks up from the state the
+first-boss check leaves behind and gates each later progression **seam** with a
+save fixture entering it and an assertion on what production writes leaving it,
+so the fixtures compose into a witnessed campaign. Which courses belong to which
+world is read out of the ROM's own level headers, never from the level names —
+they disagree, and a fixture that guesses silently exercises nothing.
+
+| Seam | What it drives | What it must write |
+|---|---|---|
+| A | Ancient Lake entered through the real hub and lobby, all eight silver coins collected by the game's own coin objects | `RACE_CLEARED_SILVER_COINS` written once, status 2 -> 3 in EEPROM, `balloons` (6,4) -> (7,5), reloaded by a second process, no amulet |
+| B | all four worlds' second boss races, won | the world's `1 << (world + 6)` bit, `wizpigAmulet` +1 exactly, one amulet cutscene, boss course cleared |
+| B control | the same race and the same win from a save whose first boss was never beaten | the FIRST-boss bit, **no** rematch bit, **no** amulet, no amulet cutscene |
+| E | Wizpig 2, won | `bosses & 0x20` live and persisted — the one value `menu_credits_init` reads to choose "TO BE CONTINUED …" over "THE END?" |
+
+Seam A needs `MDKR_SILVER_ROUTE=1`. DKR places silver coins off the racing line
+on purpose, so `MDKR_AUTOPILOT`'s stock AI sweeps up only 5–6 of 8 (measured on
+Ancient Lake over three laps) and the `silverCoinCount >= 8` write can never
+happen. Like `MDKR_BOSS_ROUTE`, the hook supplies **steering only**, and only
+toward a coin within 1,400 units so the kart keeps making checkpoint progress; it
+never touches `silverCoinCount` or the coin objects, so a coin still counts only
+when `obj_loop_silvercoin` sees its own `distance < 80`.
+
+The contrast arm runs `credits_via_cheat.txt` and confirms it reaches
+`MENU_CREDITS` from a save file that was never started — which is why arriving at
+credits is not by itself evidence about the campaign.
+
+**What this deliberately does not prove**, with the measured obstacle for each,
+is in [`tests/fixtures/README.md`](fixtures/README.md): the lobby boss-rematch
+door driven rather than retargeted, Wizpig 1, the T.T. amulet challenges and the
+trophy championships (the latter gated separately by `check_trophy_series.py`),
+and the credits screen reached by finishing Wizpig 2. Those remain the manual
+acceptance steps in `docs/RELEASE_CANDIDATE_TEST_GUIDE.md`.
+
 ## Hand-asm transcription checks (RUN THESE AFTER ANY CHANGE UNDER `game/src/hasm*`)
 
 Three checks guard the bug class described in `HANDOFF.md` §3's sixth shape: **C

@@ -350,6 +350,10 @@ CHECKS = (
           "and authored cue-transition PCM"),
     Check("first_boss_progression", "check_first_boss_progression.py", "native",
           "legal fourth Dino race through Tricky 1 save/reload"),
+    Check("campaign_progression", "check_campaign_progression.py", "native",
+          "silver-coin collection, persistence and world balloons; all four boss "
+          "rematches and their Wizpig amulet pieces with a first-encounter "
+          "control; Wizpig 2 setting the true-ending credits bit"),
     Check("collision_gridmask", "check_collision_gridmask.py", "native",
           "collision candidate filter and boss flow"),
     Check("collision_headroom", "check_collision_headroom.py", "native",
