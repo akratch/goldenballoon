@@ -13022,6 +13022,34 @@ s32 menu_postrace(Gfx **dList, Mtx **matrices, Vertex **vertices, s32 updateRate
             }
             break;
         case POSTRACE_STAGE_OPTIONS:
+#ifdef NATIVE_PORT
+            /* The post-race option list is the ONLY route to
+             * timetrial_save_player_ghost(), and its highlighted index is the
+             * only thing that decides whether a run saves its ghost or picks
+             * TRY AGAIN. The frame this stage opens moves with the track (a
+             * three-lap finish lands anywhere from ~7500 to ~12500 frames
+             * depending on the pair), so a fixed input script cannot aim at
+             * "SAVE GHOST" across the 47 legal pairs. Publishing the option
+             * index and the live option count lets a check drive the menu from
+             * measurement instead of from a hardcoded frame. Emitted only when
+             * something changes, so a stage that sits still costs one line. */
+            {
+                extern int g_frameCounter;
+                static s32 sTracedOption = -1;
+                static s32 sTracedCount = -1;
+                static s32 sTracedHasGhost = -1;
+                s32 tracedHasGhost = has_ghost_to_save() ? 1 : 0;
+                if (gMenuOption != sTracedOption || gResultOptionCount != sTracedCount ||
+                    tracedHasGhost != sTracedHasGhost) {
+                    sTracedOption = gMenuOption;
+                    sTracedCount = gResultOptionCount;
+                    sTracedHasGhost = tracedHasGhost;
+                    MDKR_TRACE("[TTGHOST] frame=%d event=options option=%d count=%d hasghost=%d",
+                               g_frameCounter, (int) gMenuOption, (int) gResultOptionCount,
+                               (int) tracedHasGhost);
+                }
+            }
+#endif
             if (gTracksSaveGhost) {
                 gTracksSaveGhost++;
                 if (gTracksSaveGhost >= 5) {

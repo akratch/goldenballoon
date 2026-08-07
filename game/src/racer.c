@@ -9137,6 +9137,13 @@ s32 timetrial_load_player_ghost(s32 controllerID, s32 mapId, s16 arg2, s16 *char
     s16 nodeCount;
 
     nodeID = (gCurrentGhostIndex + 1) & 1;
+#ifdef NATIVE_PORT
+    /* func_80074B34() only writes *nodeCount on the query form (characterID !=
+     * NULL); the probe below must not read it otherwise. Seed it so the traced
+     * value is an explicit "not reported" rather than whatever was on the
+     * stack. */
+    nodeCount = -1;
+#endif
     cpakStatus = func_80074B34(controllerID, mapId, arg2, (u16 *) characterID, time, &nodeCount,
                                (unk80075000 *) gGhostData[nodeID]);
     if (characterID) {
@@ -9148,6 +9155,21 @@ s32 timetrial_load_player_ghost(s32 controllerID, s32 mapId, s16 arg2, s16 *char
         }
     }
 
+#ifdef NATIVE_PORT
+    /* Ghosts are the one piece of player data that round-trips through the
+     * Controller Pak keyed by the (level, vehicle) PAIR (save_data.c
+     * func_80074B34 matches on both), so "the ghost came back" is only
+     * assertable per pair if the pair and the payload shape are both published.
+     * status 0 == CONTROLLER_PAK_GOOD. See tests/check_ghost_matrix.py. */
+    {
+        extern int g_frameCounter;
+        MDKR_TRACE("[TTGHOST] frame=%d event=load level=%d vehicle=%d status=%d nodes=%d "
+                   "character=%d time=%d",
+                   g_frameCounter, (int) mapId, (int) arg2, (int) cpakStatus, (int) nodeCount,
+                   characterID != NULL ? (int) *characterID : -1,
+                   time != NULL ? (int) *time : -1);
+    }
+#endif
     return cpakStatus;
 }
 
@@ -9207,9 +9229,26 @@ SIDeviceStatus timetrial_write_player_ghost(s32 controllerIndex, s32 mapId, s16 
         taj_physics_trace_record_suppressed(NULL);
         return CONTROLLER_PAK_BAD_DATA;
     }
-#endif
+    {
+        SIDeviceStatus writeStatus =
+            func_80075000(controllerIndex, (s16) mapId, arg2, arg3, arg4, gGhostNodeCount[gCurrentGhostIndex],
+                          (unk80075000_body *) gGhostData[gCurrentGhostIndex]);
+        /* The write half of the pair-keyed round trip the load probe closes.
+         * `nodes` is what is about to be serialised, so a check can compare it
+         * against the count a FRESH process reads back for the same
+         * (level, vehicle) rather than trusting that a status of 0 means the
+         * payload survived. status 0 == CONTROLLER_PAK_GOOD. */
+        extern int g_frameCounter;
+        MDKR_TRACE("[TTGHOST] frame=%d event=save level=%d vehicle=%d status=%d nodes=%d "
+                   "character=%d time=%d",
+                   g_frameCounter, (int) mapId, (int) arg2, (int) writeStatus,
+                   (int) gGhostNodeCount[gCurrentGhostIndex], (int) arg3, (int) arg4);
+        return writeStatus;
+    }
+#else
     return func_80075000(controllerIndex, (s16) mapId, arg2, arg3, arg4, gGhostNodeCount[gCurrentGhostIndex],
                          (unk80075000_body *) gGhostData[gCurrentGhostIndex]);
+#endif
 }
 
 /**

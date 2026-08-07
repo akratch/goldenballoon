@@ -3144,6 +3144,116 @@ what `race_finish_time_trial()` sums when it runs, so the two reads sit a few
 updates apart. They coincided before and no longer do. See `docs/OPEN_ITEMS.md`
 "P3.5".
 
+## Ghost matrix — `tests/check_ghost_matrix.py`
+
+`check_race_finish_time.py` above exercises `timetrial_ghost_read()` on **one** of
+the 47 legal (track, vehicle) pairs — Ancient Lake in the car. That one row is how
+the 3-vs-4 control-point overflow was found, and it was found by accident. This
+check covers the other 46.
+
+The pair matters, not just the track: a Controller Pak ghost slot is keyed on
+**both** ids, so `func_80074B34()` / `func_80075000()` (`game/src/save_data.c`)
+match on `levelId` *and* `vehicleId`. Ancient Lake in a car round-tripping says
+nothing about Ancient Lake in a plane.
+
+```bash
+python3 tests/check_ghost_matrix.py               # all 47 pairs, ~15 min
+python3 tests/check_ghost_matrix.py --subset      # every track and vehicle once
+python3 tests/check_ghost_matrix.py --pairs 5:0,15:2
+python3 tests/check_ghost_matrix.py --matrix      # print the pairs and exit
+```
+
+Reference run (us.v80, `build-rel`): **46 pairs round-tripped a ghost through a
+fresh process, 1 documented non-producer, 15.4 min** — measured alongside other
+ROM work on the same machine, so treat it as an upper bound rather than a floor.
+Three pairs needed the fallback cadence (19 hovercraft, 30 plane, 33 hovercraft).
+
+Three runs per pair, each in its own `MDKR_SAVE_DIR` — 47 ghosts do not fit in the
+pak's 6 slots (`DKR_GHOST_SLOT_COUNT`), and per-pair isolation is what keeps them
+from contending:
+
+1. **measure** — drive to the finish and read the frame the post-race OPTIONS
+   stage opens offering SAVE GHOST. A three-lap finish lands anywhere between
+   ~7370 and ~12470 frames depending on the pair, so a fixed script cannot aim at
+   a menu row across 47 rows; `[TTGHOST] event=options` makes the aim a
+   measurement. Its trailing taps pick TRY AGAIN, which re-enters the level and
+   plays back the just-recorded ghost — the in-process half of the coverage, and
+   the original overflow route.
+2. **write** — fresh save dir, identical re-drive, menu steered onto SAVE GHOST
+   (the only route to `timetrial_save_player_ghost()`). Asserts
+   `[TTGHOST] event=save … status=0` with a non-empty node count and that
+   `controller-pak-1.mdp` appeared.
+3. **read** — a **fresh process** on that save dir. `[TTGHOST] event=load` must
+   report the same pair and the same `nodes`/`character`/`time` that were
+   written, and playback must run from a player bank (0/1, not the staff ghost).
+
+`nodes`/`character`/`time` are the whole of `GhostHeader` apart from its checksum,
+so matching all three is the serialised record surviving a process boundary in
+every field the format carries. On top of the trace comparison the write run
+locates that header **in the pak image itself**, by its measured contents rather
+than a hardcoded offset — the same discipline `check_race_finish_time.py` uses for
+the EEPROM course record, and for the same reason: a layout or byte-order
+regression in the ghost serialiser moves those bytes and fails here, where an
+offset-keyed probe would keep passing. The read run then asserts the pak comes out
+**byte-identical**, because an identical re-drive cannot beat the stored time and
+must not rewrite player data.
+
+The pak image holds `GhostHeader`/`GhostNode` exactly as the machine laid them
+out, which is what a real Controller Pak holds too (raw N64-order structs); on a
+little-endian host the same design yields little-endian fields, so the check
+builds its search pattern from `sys.byteorder`. It asserts "the struct
+round-tripped verbatim", not "the port picked an endianness".
+
+The save format is frozen — this check proves the **current** layout round-trips;
+it must never be relaxed to accommodate a layout change.
+
+Every run asserts the **exit code** and the presence of the markers a healthy run
+emits, never merely the absence of a crash marker: the defect class this exists
+for (`__stack_chk_fail`) prints nothing at all to stderr.
+
+`--re-entry-pair` (default `5:0`) additionally drives write → reload → read →
+re-enter → read again, because the original overflow only appeared on a *repeat*
+read within one process.
+
+### Pacing decides which pairs can be lapped at all
+
+Whether `MDKR_AUTOPILOT` completes a lap is **pacing-dependent, in both
+directions** — neither simulation cadence laps the whole matrix:
+
+| pair | Original (`SYNTH_FIELDS=2`) | Enhanced (`SYNTH_FIELDS=1`) |
+| --- | --- | --- |
+| track 4, hovercraft | finishes frame 5614 | stalls at `rlap` 1, `cp` 25 |
+| track 33, car | finishes frame 6837 | stalls at `rlap` 1, `cp` 52 |
+| track 19, hovercraft | stalls at `rlap` 0 | finishes |
+| track 30, plane | stalls at `rlap` 0 | finishes |
+| track 33, hovercraft | stalls at `rlap` 0 | finishes |
+
+All measured over a 40000-frame budget. Track 33 appears on **both** sides, which
+is the point: this splits per *pair*, not per track. Track 4 offers **only** the
+hovercraft, so pinning Enhanced would leave a whole track unlappable; pinning
+Original loses three more pairs. So each pair is driven on the **first cadence
+that gets it round**
+(`CADENCE_ARMS`, Original first — the pacing `check_vehicle_sweep.py` sweeps this
+same matrix under), and any pair that needed the fallback is tagged
+`[enhanced cadence]` in the output rather than quietly absorbed.
+
+A run that *dies* is never allowed to fall through to the next cadence — that would
+let a crash read as "that pacing just could not lap it".
+
+This is a pacing-dependent AI/driving divergence, not a ghost defect. It is
+recorded here because it decides which pairs this check can cover, and because it
+is invisible to `check_vehicle_sweep.py`, which asserts forward progress
+(`maxcp >= 3`) rather than lap completion.
+
+⚠️ One legal pair is a documented **non-producer** and is asserted to stay that way
+rather than skipped: Spaceport Alpha (15) **in the car**. Its autopilot racing line
+dead-ends at `courseCheckpoint` 10 and completes no lap in 40000 frames on *either*
+cadence, and DKR only records a ghost for a course time under 10800 frames
+(`race_finish_time_trial()`). The pair is legal in the ROM's `available_vehicles`
+mask and is driveable by a human; it is the AI line that does not get a car round
+that track. If it ever finishes, the check fails and tells you to promote it out of
+`NO_GHOST_PAIRS`.
+
 ## Taj vehicle challenges — `tests/check_taj_challenges.py`
 
 This is the end-to-end gate for all three dynamically created Timber's Island
