@@ -1295,7 +1295,7 @@ def main() -> int:
         if uv_scroll_on_packet.get("uvscrollreg", 0) <= 0:
             failures.append(
                 "arm C: the UV-scroll route registered no scrolling triangle "
-                "batches at all - the census found no {T,T+1} endpoint pair")
+                "batches at all — the census found no {T,T+1} endpoint pair")
         if uv_scroll_on_packet.get("uvscrollcollision") != 0:
             failures.append(
                 "arm C: UV-scroll census found ambiguous batch keys "
@@ -1318,7 +1318,7 @@ def main() -> int:
         elif uv_mid_changed == 0:
             failures.append(
                 "arm C: every interpolated midpoint is byte-identical with "
-                "UV-scroll interpolation enabled and disabled - the scrolling "
+                "UV-scroll interpolation enabled and disabled — the scrolling "
                 "phase is still held at its authored endpoint value")
         if uv_end_compared == 0:
             failures.append(
@@ -1347,7 +1347,7 @@ def main() -> int:
             f"({uv_scroll_on_packet.get('uvscrollbytespeak', 0)} bytes of "
             "retained displacement, held outside the arena copy budget of "
             f"{uv_scroll_on_retained.get('arenaBudget', 0)}), holds "
-            f"{uv_scroll_on_packet.get('uvscrollhold', 0)} unconfirmed ticks, "
+            f"{uv_scroll_on_packet.get('uvscrollhold', 0)} unconfirmed draws, "
             f"and moves {uv_mid_changed}/{uv_mid_compared} interpolated "
             f"midpoints while all {uv_end_compared} authored endpoints stay "
             "byte-identical")
