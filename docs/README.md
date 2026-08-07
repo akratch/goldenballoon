@@ -75,6 +75,9 @@ behind nearly every hard defect in this port, several of them completely silent.
 
 ## Open items and status
 
+- **[`DEFINITION_OF_DONE.md`](DEFINITION_OF_DONE.md)** — the 1.1.0 closure
+  ledger: every claim a skeptic might test, the gate that checks it, and the
+  named residuals that need hardware this project's machines lack.
 - **[`open-items/`](open-items/README.md)** — every known and fixed defect, by
   subsystem, each with its mechanism, the measurement that found it, the fix, and
   how it was verified. **Nothing is deleted when it is fixed**: read the entry for
