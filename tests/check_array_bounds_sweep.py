@@ -380,15 +380,10 @@ SHAPE_TRIAGE = {
         "has no key constant -- and `8 << (worldId + 31)` with worldId 1..5 yields "
         "the five CUTSCENE_*_BOSS constants. The first two ARE the reported "
         "'key animation plays after every race'.",
-    # Re-keyed when the 100%-match sync moved the -1 inside DKR_SHL32's masked
-    # operand: the added-constant idiom is gone, so the site classifies as
-    # var-count. The reasoning below is unchanged and still correct.
-    ("shift-count", "game/src/waves.c", "obj_wave_height:var-count"):
-        "FIXED by wave \"keyshift\" (DKR_SHL32). << (unk2 - 1) is the only value "
-        "that makes the odd-phase branch the midpoint of two height-table entries "
-        "the even branch scales by << unk2, and the `else { var_t0 >>= 1; }` is the "
-        "author's own handling of unk2 - 1 < 0. Not folded today (clang selects the "
-        "branch), so latent rather than active -- but the same UB.",
+    # obj_wave_height's shift needs no entry any more: the 100%-match sync
+    # moved the -1 inside DKR_SHL32's masked operand, so the added-constant
+    # idiom is gone and the site classifies as INFO var-count. The keyshift
+    # reasoning it used to carry lives in docs/open-items/portability.md.
 }
 
 # Ceilings for the INFO population, per class. May fall; may not rise.
