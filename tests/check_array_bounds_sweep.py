@@ -184,15 +184,20 @@ SHAPE_TRIAGE = {
     #    WATCH: if a third caller ever passes a non-literal arg1, all four of
     #    these become live and collision_objectmodel's own f32[4] locals overflow
     #    first -- before func_80017A18 is even entered.
-    ("bare-pointer", "game/src/objects.c", "func_80017A18:arg6"):
-        "BOUNDED BY LITERAL: writes arg6[i] for i < arg1; arg1 is 4 or 1 at the "
-        "only two call sites, into collision_objectmodel's f32[4] locals.",
-    ("bare-pointer", "game/src/objects.c", "func_80017A18:arg7"):
+    #    The 100%-match sync adopted upstream's named parameters for this
+    #    function (arg6/arg7/arg8/argA became targetPointsX/Y/Z/surfaces); the
+    #    bodies were verified byte-identical in behaviour, so the reasoning
+    #    below carries over unchanged under the new keys.
+    ("bare-pointer", "game/src/objects.c", "func_80017A18:targetPointsX"):
+        "BOUNDED BY LITERAL: writes targetPointsX[i] for i < arg1; arg1 is 4 "
+        "or 1 at the only two call sites, into collision_objectmodel's f32[4] "
+        "locals.",
+    ("bare-pointer", "game/src/objects.c", "func_80017A18:targetPointsY"):
         "BOUNDED BY LITERAL: same loop, same count, same f32[4] capacity.",
-    ("bare-pointer", "game/src/objects.c", "func_80017A18:arg8"):
+    ("bare-pointer", "game/src/objects.c", "func_80017A18:targetPointsZ"):
         "BOUNDED BY LITERAL: same loop, same count, same f32[4] capacity.",
-    ("bare-pointer", "game/src/objects.c", "func_80017A18:argA"):
-        "BOUNDED BY LITERAL: writes argA[i] = 0 for i < arg1; capacity is "
+    ("bare-pointer", "game/src/objects.c", "func_80017A18:surfaces"):
+        "BOUNDED BY LITERAL: writes surfaces[i] = 0 for i < arg1; capacity is "
         "racer.c's s8 sp58[4] at the arg1 == 4 site and a single s8 at the "
         "arg1 == 1 site. At the bound, zero slack, not exceedable.",
     #    (arg2 is deliberately NOT listed: it is only ever `arg2[0]++`, a single
