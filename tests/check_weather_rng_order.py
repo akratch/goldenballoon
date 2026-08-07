@@ -33,8 +33,12 @@ EXPECTED_WEATHER_ROWS = 813
 # newline terminated. This is the reviewed object -> weather -> HUD route after
 # restoring retail racer_sound_car() and its ares-proven shared-RNG draws. The
 # earlier oracle came from the port build that incorrectly skipped car audio.
+# Re-frozen when line-particle orientation was restored to the N64's MSB-first
+# bit positions (issue #24): the prior digest was captured with every line
+# particle on the wrong local axis. Reverting that one accessor reproduces the
+# old digest exactly, so the orientation restore is the whole delta.
 EXPECTED_ORIGINAL_SHA256 = (
-    "fe180923803148e9ea3e5be6f913e9daa6831c4f5d9f12fe345f7d0bf3fea5a9"
+    "2269b7deeb8ca4102f9e23addc2fcbbeb127fe8a11e9b88aa3a6beea0431a732"
 )
 # Positive control for the scheduler/fixture boundary.  Delaying every positive
 # input edge by one ticket used to be easy to do accidentally when the host
@@ -44,7 +48,7 @@ EXPECTED_ORIGINAL_SHA256 = (
 # the expected digest to whichever route happened to run.
 EXPECTED_LATE_PHASE_WEATHER_ROWS = 812
 EXPECTED_LATE_PHASE_SHA256 = (
-    "7e85f0928581c3034db1c1a919dbcc130afb2a67f629fb9e087abf5a4916d51c"
+    "1772adde9e513bfaafc146a6e2133b8f24127d64fb6b864b33e2c98b17826b54"
 )
 
 
