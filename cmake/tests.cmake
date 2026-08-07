@@ -622,6 +622,38 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME audio_queue_controller
         COMMAND mdkr_audio_queue_controller_test)
 
+    # The ring links SDL only for its atomics/barriers; it opens no device, so
+    # this stays a plain ROM-free unit test with no driver requirement.
+    add_executable(mdkr_audio_ring_test
+        ${CMAKE_SOURCE_DIR}/tests/test_audio_ring.c
+        ${CMAKE_SOURCE_DIR}/platform/audio_ring.c)
+    target_include_directories(mdkr_audio_ring_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${SDL2_INCLUDE_DIRS})
+    target_link_directories(mdkr_audio_ring_test PRIVATE
+        ${SDL2_LIBRARY_DIRS})
+    target_compile_definitions(mdkr_audio_ring_test PRIVATE SDL_MAIN_HANDLED)
+    target_link_libraries(mdkr_audio_ring_test PRIVATE ${SDL2_LIBRARIES})
+    add_test(NAME audio_ring COMMAND mdkr_audio_ring_test)
+
+    # Closed-loop delivery resilience: real controller + real ring driven
+    # against a modelled host device in virtual time. Asserts both directions
+    # (the shipped design starves, the current one does not), so the arm proves
+    # its own non-vacuity without needing a display or an output device.
+    add_executable(mdkr_audio_resilience_test
+        ${CMAKE_SOURCE_DIR}/tests/test_audio_resilience.c
+        ${CMAKE_SOURCE_DIR}/platform/audio_ring.c
+        ${CMAKE_SOURCE_DIR}/platform/audio_queue_controller.c)
+    target_include_directories(mdkr_audio_resilience_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${SDL2_INCLUDE_DIRS})
+    target_link_directories(mdkr_audio_resilience_test PRIVATE
+        ${SDL2_LIBRARY_DIRS})
+    target_compile_definitions(mdkr_audio_resilience_test PRIVATE
+        SDL_MAIN_HANDLED)
+    target_link_libraries(mdkr_audio_resilience_test PRIVATE ${SDL2_LIBRARIES})
+    add_test(NAME audio_resilience COMMAND mdkr_audio_resilience_test)
+
     add_executable(mdkr_audio_sink_evidence_test
         ${CMAKE_SOURCE_DIR}/tests/test_audio_sink_evidence.c
         ${CMAKE_SOURCE_DIR}/platform/audio_sink_evidence.c)

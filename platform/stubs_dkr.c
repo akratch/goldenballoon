@@ -918,6 +918,11 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
             /* Credit and service this completed pass even when its headless
              * completion requested exit. The next-ticket gate below is the
              * first point at which shutdown can stop work. */
+            /* TEST-ONLY frametime hitch, injected at the tick boundary just
+             * before the audio service so it delays the refill exactly the way
+             * a real hitch does. Inert unless MDKR_TEST_MAINLOOP_STALL_NS is
+             * set; it moves host wall time only, never simulation state. */
+            dkr_audio_test_mainloop_stall();
             dkr_audio_advance_fields(
                 oracle_variable_ticket
                     ? (unsigned)oracle_update_fields

@@ -259,8 +259,101 @@ static void test_stall_recovery(void) {
            controller.stats.underruns == 1u);
 }
 
+/*
+ * The host asks for a whole device period at a time and is served short if the
+ * sink holds less. A target expressed only in synthesis blocks cannot see that:
+ * the shortfall happens inside the host, between refills, so the refill-gap
+ * signal never observes it. WASAPI, PulseAudio/PipeWire and CoreAudio all
+ * negotiate different periods, which is why this is the per-platform knob.
+ */
+static void test_device_period_floors_the_target(void) {
+    MdkrAudioQueueController controller;
+    uint32_t step;
+
+    /* A period FINER than one block must change nothing at all — this is the
+     * common case (the port asks for 256 frames) and it must not cost latency. */
+    mdkr_audio_queue_controller_init(&controller);
+    mdkr_audio_queue_controller_set_device_period(&controller, 256u);
+    for (step = 0u; step < 200u; step++) {
+        (void)mdkr_audio_queue_controller_choose(
+            &controller, true, (uint32_t)(step * (COUNTER_RATE / 30u)),
+            COUNTER_RATE, OUTPUT_RATE, FRAME_SIZE, MAX_SAMPLES, FRAME_SIZE);
+    }
+    expect("a fine device period leaves the one-block target untouched",
+           controller.stats.max_target_frames == FRAME_SIZE);
+
+    /* A period COARSER than one block must raise the floor to it, or the
+     * device is served short on every callback no matter how even the refill
+     * cadence looks from the producer's side. */
+    mdkr_audio_queue_controller_init(&controller);
+    mdkr_audio_queue_controller_set_device_period(&controller, 2048u);
+    for (step = 0u; step < 200u; step++) {
+        (void)mdkr_audio_queue_controller_choose(
+            &controller, true, (uint32_t)(step * (COUNTER_RATE / 30u)),
+            COUNTER_RATE, OUTPUT_RATE, FRAME_SIZE, MAX_SAMPLES, FRAME_SIZE);
+    }
+    expect("a coarse device period raises the target to one period",
+           controller.stats.max_target_frames == 2048u);
+    expect("the device-period floor is not misread as a refill gap",
+           controller.stats.max_gap_frames == FRAME_SIZE);
+}
+
+/*
+ * A long main-loop hitch, with and without ground truth.
+ *
+ * Inferring the drain from elapsed host time forces a defensive stall guard:
+ * an interval implying more than four blocks is assumed to be a suspended
+ * process and replaced with half a block. That is right about suspension and
+ * wrong about a frametime hitch -- and when it fires it throws away the gap
+ * measurement, so the adaptive target collapses to one block at exactly the
+ * moment it needed to grow. A callback sink can measure the drain instead of
+ * guessing, and then there is nothing to defend against.
+ */
+static void test_measured_drain_survives_a_hitch(void) {
+    MdkrAudioQueueController estimated;
+    MdkrAudioQueueController measured;
+    /* 150 ms of drain at 22050 Hz: well past the four-block guard threshold. */
+    const uint32_t hitch_frames = 3307u;
+    const uint32_t hitch_counter = COUNTER_RATE / 1000u * 150u;
+
+    mdkr_audio_queue_controller_init(&estimated);
+    (void)mdkr_audio_queue_controller_choose(
+        &estimated, true, 0u, COUNTER_RATE, OUTPUT_RATE,
+        FRAME_SIZE, MAX_SAMPLES, FRAME_SIZE);
+    (void)mdkr_audio_queue_controller_choose(
+        &estimated, true, hitch_counter, COUNTER_RATE, OUTPUT_RATE,
+        FRAME_SIZE, MAX_SAMPLES, 0u);
+    expect("an inferred drain trips the stall guard on a real hitch",
+           estimated.stats.stall_guards == 1u);
+    expect("the tripped guard hides the gap the sink must cover",
+           estimated.stats.max_gap_frames == FRAME_SIZE);
+
+    mdkr_audio_queue_controller_init(&measured);
+    (void)mdkr_audio_queue_controller_choose(
+        &measured, true, 0u, COUNTER_RATE, OUTPUT_RATE,
+        FRAME_SIZE, MAX_SAMPLES, FRAME_SIZE);
+    mdkr_audio_queue_controller_note_drain(&measured, hitch_frames);
+    (void)mdkr_audio_queue_controller_choose(
+        &measured, true, hitch_counter, COUNTER_RATE, OUTPUT_RATE,
+        FRAME_SIZE, MAX_SAMPLES, 0u);
+    expect("a measured drain never trips the stall guard",
+           measured.stats.stall_guards == 0u);
+    expect("a measured drain reports the real gap",
+           measured.stats.max_gap_frames == hitch_frames);
+    expect("the real gap raises the latency target",
+           measured.stats.max_target_frames > FRAME_SIZE);
+    expect("the raised target still respects the cushion ceiling",
+           measured.stats.max_target_frames <= FRAME_SIZE * 3u);
+    /* The measurement is single-shot: the next decision must fall back to the
+     * estimate rather than reusing a stale drain forever. */
+    expect("a measured drain is consumed by the decision it informs",
+           !measured.have_measured_drain);
+}
+
 int main(void) {
     test_headless_determinism();
+    test_device_period_floors_the_target();
+    test_measured_drain_survives_a_hitch();
     test_clamps_alignment_and_wrap();
     test_rate_independence();
     test_even_refill_target_is_one_block();

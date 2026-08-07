@@ -202,6 +202,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/viewport_route_cache.c  # object x viewport draw admission
     ${CMAKE_SOURCE_DIR}/platform/audio_service_clock.c # host audio time -> bounded PCM debt
     ${CMAKE_SOURCE_DIR}/platform/audio_queue_controller.c # sink drain -> bounded PCM block
+    ${CMAKE_SOURCE_DIR}/platform/audio_ring.c        # SPSC sink ring + underflow concealment
     ${CMAKE_SOURCE_DIR}/platform/audio_sink_evidence.c # accepted-SDL PCM diagnostic capture
     ${CMAKE_SOURCE_DIR}/platform/audio_volume.c       # player mix + click-free master gain
     ${CMAKE_SOURCE_DIR}/platform/present_sched.c    # its retrace-branch wiring (Phase 3 Wave B)

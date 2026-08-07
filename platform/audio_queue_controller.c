@@ -80,7 +80,34 @@ static uint32_t audio_latency_target(MdkrAudioQueueController *controller,
     if (cushion > ceiling - frame_size) {
         cushion = ceiling - frame_size;
     }
-    return frame_size + cushion;
+    {
+        uint32_t target = frame_size + cushion;
+        /* Floor at one host request granularity. See the setter's comment: a
+         * target below the device period is served short no matter how even
+         * the refill cadence is, and the refill-gap signal cannot observe it
+         * because the shortfall happens inside the host, not between refills. */
+        if (controller->device_period > target) {
+            target = controller->device_period;
+        }
+        return target;
+    }
+}
+
+void mdkr_audio_queue_controller_note_drain(
+    MdkrAudioQueueController *controller, uint32_t frames) {
+    if (controller == NULL) {
+        return;
+    }
+    controller->measured_drain = frames;
+    controller->have_measured_drain = true;
+}
+
+void mdkr_audio_queue_controller_set_device_period(
+    MdkrAudioQueueController *controller, uint32_t device_period) {
+    if (controller == NULL) {
+        return;
+    }
+    controller->device_period = device_period;
 }
 
 void mdkr_audio_queue_controller_init(MdkrAudioQueueController *controller) {
@@ -116,7 +143,15 @@ uint32_t mdkr_audio_queue_controller_choose(
         int64_t correction;
         int64_t signed_produce;
 
-        if (controller == NULL || !controller->have_last_counter) {
+        if (controller != NULL && controller->have_measured_drain) {
+            /* Ground truth from the sink's own consumer. No stall guard: the
+             * host cannot have played more than it played. */
+            consumed = controller->measured_drain;
+            controller->have_measured_drain = false;
+            controller->measured_drain = 0u;
+            controller->have_last_counter = true;
+            controller->stats.measured_decisions++;
+        } else if (controller == NULL || !controller->have_last_counter) {
             consumed = frame_size / 2u;
             if (controller != NULL) {
                 controller->have_last_counter = true;
@@ -158,9 +193,11 @@ uint32_t mdkr_audio_queue_controller_choose(
         {
             const uint32_t target =
                 audio_latency_target(controller, frame_size, consumed);
-            if (controller != NULL &&
-                target > controller->stats.max_target_frames) {
-                controller->stats.max_target_frames = target;
+            if (controller != NULL) {
+                controller->target_frames = target;
+                if (target > controller->stats.max_target_frames) {
+                    controller->stats.max_target_frames = target;
+                }
             }
             correction = (int64_t)target - (int64_t)queued_frames;
         }

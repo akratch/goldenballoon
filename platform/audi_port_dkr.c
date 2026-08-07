@@ -12,16 +12,25 @@
  *     -> pick its sample count (queue occupancy, or fixed deterministic count)
  *     -> amAudioSynthFrame(n)   (audiomgr.c: __clearAudioDMA + alAudioFrame ->
  *                                synthesis straight into an arena PCM buffer)
- *     -> osAiSetNextBuffer(buf, n*4)   (queue to the SDL device below)
+ *     -> osAiSetNextBuffer(buf, n*4)   (push to the host sink below)
  *
- * Host output is an SDL2 audio device in queue mode (stereo s16 @ OUTPUT_RATE).
- * The sample production is decoupled from the SDL sink so an M8 web build can
- * swap an AudioWorklet in without touching the service clock. Under --headless-frames
- * the SDL device is not opened, but synthesis still runs (so CI exercises the
- * whole DSP path); set MDKR_AUDIO_DUMP=out.wav to capture the PCM for RMS/peak
- * validation, or MDKR_AUDIO_RMS=1 to print running RMS/peak to stderr.
- * MDKR_AUDIO_SINK_DUMP=accepted.wav is a separate native diagnostic that
- * records only post-recovery PCM accepted by SDL's application queue.
+ * Host output is an SDL2 audio device in CALLBACK mode (stereo s16 @
+ * OUTPUT_RATE), fed through the single-producer/single-consumer ring in
+ * platform/audio_ring.c. The main loop only ever pushes; SDL's own audio thread
+ * pulls. This is the native counterpart of the browser's AudioWorklet, and the
+ * reason it is not SDL_QueueAudio is that queue mode pads any shortfall with
+ * hard silence INSIDE SDL, so a dropout reaches the speaker as a pair of step
+ * discontinuities the port cannot see or soften (issue #23). Owning the
+ * consumer lets an underrun be crossfaded, and lets the latency controller be
+ * driven by the drain the device really took rather than one inferred from
+ * elapsed host time.
+ *
+ * Under --headless-frames the SDL device is not opened, but synthesis still
+ * runs (so CI exercises the whole DSP path); set MDKR_AUDIO_DUMP=out.wav to
+ * capture the PCM for RMS/peak validation, or MDKR_AUDIO_RMS=1 to print running
+ * RMS/peak to stderr. MDKR_AUDIO_SINK_DUMP=accepted.wav is a separate native
+ * diagnostic that records only post-recovery PCM the sink accepted into the
+ * output ring.
  *
  * MDKR_AUDIO_RMS=1 additionally emits one
  *
@@ -65,6 +74,7 @@
 #include "platform_os.h"
 #include "audio_service_clock.h"
 #include "audio_queue_controller.h"
+#include "audio_ring.h"
 #include "audio_sink_evidence.h"
 #include "audio_volume.h"
 #include "audi_port_dkr.h"
@@ -130,8 +140,47 @@ extern u8    sfxRelativeVolume;
 #define DKR_AUDIO_BYTES_PER_FRAME (DKR_AUDIO_CHANNELS * sizeof(s16))
 #define DKR_AUDIO_RECONNECT_FRAMES 128u
 
+/*
+ * Device period requested from SDL, in sample-frames.
+ *
+ * This is the granularity at which the host asks for audio, and it sets the
+ * floor under any workable latency target: the sink must always hold at least
+ * one period or the device is served short. The port used to ask for 1024
+ * frames — 46 ms at 22050 Hz — which is coarser than the 33 ms synthesis block
+ * that refills it, so the host's own granularity, not the game, dominated the
+ * buffering requirement.
+ *
+ * 256 frames is 11.6 ms. Every backend we ship on can serve it (WASAPI shared
+ * mode's default period is ~10 ms, PulseAudio and PipeWire negotiate freely,
+ * CoreAudio's default is 512 frames at 48 kHz which is well under this once
+ * resampled). SDL reports what it actually got in `have.samples`, and that
+ * negotiated value — not this request — is what feeds the controller, so a
+ * host that insists on something coarser is accommodated rather than starved.
+ */
+#define DKR_AUDIO_DEVICE_PERIOD 256
+
+/*
+ * Ring capacity in frames — 65536 is 2.97 s at 22050 Hz.
+ *
+ * This is a CEILING, not an operating point: the latency controller decides
+ * how full the ring actually runs (roughly 60-70 ms).
+ *
+ * It is deliberately sized ABOVE the emergency backlog limit this port already
+ * enforced (DKR_QUEUE_LIMIT_FRAMES blocks, about 44,000 frames), so that limit
+ * stays the thing that governs a runaway producer, exactly as it did under
+ * SDL_QueueAudio. Sizing the ring under it would silently replace a tested
+ * backlog policy — refuse the block, record it, splice with a crossfade — with
+ * an untested one: evict the oldest frames instead. Changing the transport is
+ * not licence to change the policy layered on top of it. The overflow path
+ * below therefore exists as a correctness backstop that healthy operation must
+ * never reach, and the sink-evidence route asserts it does not.
+ */
+#define DKR_AUDIO_RING_FRAMES 65536u
+
 /* ---- SDL device state ---------------------------------------------------- */
 static SDL_AudioDeviceID s_dev;
+static MdkrAudioRing s_ring;
+static u32 s_devicePeriod = DKR_AUDIO_DEVICE_PERIOD;
 static int   s_devOpen;
 static int   s_disabled;          /* MDKR_AUDIO=0 or headless: no SDL device   */
 static int   s_shutdownComplete;
@@ -176,7 +225,35 @@ static u32 audio_queued_bytes(void) {
     }
 #endif
     if (!s_devOpen) return 0;
-    return SDL_GetQueuedAudioSize(s_dev);
+    /* Ring occupancy replaces SDL_GetQueuedAudioSize. Same meaning — PCM
+     * handed to the host and not yet played — but it is now a plain atomic
+     * read instead of a call that takes SDL's device lock, so sampling the
+     * latency signal can no longer contend with the audio thread. */
+    return mdkr_audio_ring_fill(&s_ring) * (u32)DKR_AUDIO_BYTES_PER_FRAME;
+}
+
+/*
+ * SDL audio-thread callback. Runs on SDL's own real-time-ish thread, NOT the
+ * game main loop — this is the decoupling that issue #23 is about, and the
+ * direct analogue of the browser's AudioWorklet `process()`.
+ *
+ * It does exactly one thing: copy frames out of the ring, concealing anything
+ * the ring cannot supply. No allocation, no locks, no SDL calls, no logging —
+ * nothing that could block, because blocking here is a guaranteed dropout.
+ */
+static void SDLCALL dkr_audio_device_callback(void *userdata, Uint8 *stream,
+                                              int len) {
+    MdkrAudioRing *ring = (MdkrAudioRing *)userdata;
+    const u32 frames = (u32)len / (u32)DKR_AUDIO_BYTES_PER_FRAME;
+
+    if (len <= 0) {
+        return;
+    }
+    if (frames == 0u) {
+        memset(stream, 0, (size_t)len);
+        return;
+    }
+    mdkr_audio_ring_pull(ring, (s16 *)stream, frames);
 }
 
 /* ---- pump rate controller ------------------------------------------------ */
@@ -193,6 +270,14 @@ static u64 s_serviceIdle;
 static u64 s_serviceNotReady;
 static u64 s_serviceSamples;
 static u64 s_serviceMaxQueued;
+static u64 s_catchupBlocks;
+static u64 s_catchupFrames;
+#ifndef __EMSCRIPTEN__
+/* Ground-truth drain bookkeeping for the native callback sink. The browser
+ * reads occupancy from the worklet instead, so these have no meaning there. */
+static u32 s_lastRequestedFrames;
+static int s_haveLastRequested;
+#endif
 static int s_serviceTrace = -1;
 static int64_t s_servicePerturb = INT64_MIN;
 
@@ -325,6 +410,85 @@ static void audio_measure_and_dump(const s16 *buf, u32 bytes) {
     }
 }
 
+/* ---- test-only main-loop hitch injector (MDKR_TEST_MAINLOOP_STALL_NS) ----
+ *
+ * See audi_port_dkr.h for the contract. This is the measurement instrument for
+ * the delivery question: it makes "how long a frametime hitch does the sink
+ * survive" a number rather than a hypothesis, and it is what the resilience
+ * gate arms. It busy-spins on SDL's performance counter because a real hitch
+ * occupies the CPU; sleeping would let the scheduler flatter the host.
+ */
+static int64_t s_stallNs = INT64_MIN;
+static uint32_t s_stallEvery = 1u;
+static uint64_t s_stallAfter;
+static uint64_t s_stallTicks;
+static uint64_t s_stallApplied;
+
+static void audio_stall_config(void) {
+    const char *spec;
+    char *end;
+    if (s_stallNs != INT64_MIN) {
+        return;
+    }
+    s_stallNs = 0;
+    spec = getenv("MDKR_TEST_MAINLOOP_STALL_NS");
+    if (spec == NULL || spec[0] == '\0') {
+        return;
+    }
+    end = NULL;
+    {
+        long long parsed = strtoll(spec, &end, 10);
+        if (end == spec || *end != '\0' || parsed <= 0) {
+            return;
+        }
+        s_stallNs = (int64_t)parsed;
+    }
+    spec = getenv("MDKR_TEST_MAINLOOP_STALL_EVERY");
+    if (spec != NULL && spec[0] != '\0') {
+        long long parsed = strtoll(spec, &end, 10);
+        if (end != spec && *end == '\0' && parsed > 0) {
+            s_stallEvery = (uint32_t)parsed;
+        }
+    }
+    spec = getenv("MDKR_TEST_MAINLOOP_STALL_AFTER");
+    if (spec != NULL && spec[0] != '\0') {
+        long long parsed = strtoll(spec, &end, 10);
+        if (end != spec && *end == '\0' && parsed >= 0) {
+            s_stallAfter = (uint64_t)parsed;
+        }
+    }
+    printf("[AUDIO-STALL] TEST HITCH INJECTED: %lld ns every %u tick(s) after "
+           "tick %llu — this build's main loop is DELIBERATELY LATE\n",
+           (long long)s_stallNs, (unsigned)s_stallEvery,
+           (unsigned long long)s_stallAfter);
+}
+
+void dkr_audio_test_mainloop_stall(void) {
+    Uint64 freq;
+    Uint64 deadline;
+
+    audio_stall_config();
+    if (s_stallNs <= 0) {
+        return;
+    }
+    s_stallTicks++;
+    if (s_stallTicks <= s_stallAfter ||
+        ((s_stallTicks - s_stallAfter) % (uint64_t)s_stallEvery) != 0u) {
+        return;
+    }
+    freq = SDL_GetPerformanceFrequency();
+    if (freq == 0u) {
+        return;
+    }
+    /* ns -> counter ticks without overflowing on large stalls. */
+    deadline = SDL_GetPerformanceCounter() +
+               (Uint64)(((double)s_stallNs / 1e9) * (double)freq);
+    while (SDL_GetPerformanceCounter() < deadline) {
+        /* Busy. A real frametime hitch does not yield. */
+    }
+    s_stallApplied++;
+}
+
 /* ---- host device lifecycle ---------------------------------------------- */
 
 void dkr_audio_out_shutdown(void);
@@ -420,23 +584,52 @@ void dkr_audio_out_init(void) {
         s_disabled = 1;
         return;
     }
+    /* The ring must exist before the device is opened: SDL may invoke the
+     * callback as soon as the device is unpaused, and on some backends even
+     * during open. */
+    if (!mdkr_audio_ring_init(&s_ring, DKR_AUDIO_RING_FRAMES)) {
+        fprintf(stderr, "[AUDIO] could not allocate the %u-frame output ring\n",
+                (unsigned)DKR_AUDIO_RING_FRAMES);
+        s_disabled = 1;
+        return;
+    }
     memset(&want, 0, sizeof(want));
     want.freq = DKR_OUTPUT_RATE;
     want.format = AUDIO_S16SYS;
     want.channels = DKR_AUDIO_CHANNELS;
-    want.samples = 1024;
-    want.callback = NULL; /* queue mode */
-    s_dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    want.samples = DKR_AUDIO_DEVICE_PERIOD;
+    /* Callback mode. The audio thread pulls from the ring; the main loop only
+     * ever pushes. See audio_ring.h for why we own this path rather than
+     * letting SDL_QueueAudio pad shortfalls with unconcealed silence. */
+    want.callback = dkr_audio_device_callback;
+    want.userdata = &s_ring;
+    /*
+     * Allow SDL to hand back a different buffer size, but nothing else. Format
+     * and channel changes would silently reinterpret our PCM; a different
+     * period is exactly what we want to learn about and adapt to.
+     */
+    s_dev = SDL_OpenAudioDevice(NULL, 0, &want, &have,
+                                SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
     if (s_dev == 0) {
         fprintf(stderr, "[AUDIO] SDL_OpenAudioDevice failed: %s\n", SDL_GetError());
+        mdkr_audio_ring_free(&s_ring);
         s_disabled = 1;
         return;
     }
+    /* The NEGOTIATED period is what the latency floor must respect, not the
+     * one we asked for. A host that insists on a coarse buffer gets a
+     * correspondingly deeper target instead of a starved device. */
+    s_devicePeriod = have.samples != 0 ? (u32)have.samples
+                                       : (u32)DKR_AUDIO_DEVICE_PERIOD;
+    mdkr_audio_queue_controller_set_device_period(
+        &s_queueController, s_devicePeriod);
     SDL_PauseAudioDevice(s_dev, 0);
     s_devOpen = 1;
     audio_sink_evidence_open();
-    printf("[AUDIO] SDL device open: %d Hz, %d ch, %d buf\n",
-           have.freq, have.channels, have.samples);
+    printf("[AUDIO] SDL device open: %d Hz, %d ch, %d buf (requested %d), "
+           "ring=%u frames, mode=callback\n",
+           have.freq, have.channels, have.samples, DKR_AUDIO_DEVICE_PERIOD,
+           (unsigned)mdkr_audio_ring_capacity(&s_ring));
 }
 
 void dkr_audio_out_shutdown(void) {
@@ -456,8 +649,27 @@ void dkr_audio_out_shutdown(void) {
     }
 #endif
     if (s_devOpen) {
+        MdkrAudioRingStats ring;
+        /* Close FIRST: this joins SDL's audio thread, so the callback is
+         * guaranteed not to be running before the ring it reads is freed. */
         SDL_CloseAudioDevice(s_dev);
         s_devOpen = 0;
+        mdkr_audio_ring_stats(&s_ring, &ring);
+        printf("[AUDIO-RING] period=%u capacity=%u callbacks=%u "
+               "maxcallback=%u pushed=%llu pulled=%llu silence=%llu "
+               "underruns=%u concealments=%u overflows=%u evicted=%llu "
+               "minfill=%u\n",
+               (unsigned)s_devicePeriod,
+               (unsigned)mdkr_audio_ring_capacity(&s_ring),
+               (unsigned)ring.callbacks, (unsigned)ring.max_callback_frames,
+               (unsigned long long)ring.pushed_frames,
+               (unsigned long long)ring.pulled_frames,
+               (unsigned long long)ring.silence_frames,
+               (unsigned)ring.underruns, (unsigned)ring.concealments,
+               (unsigned)ring.overflows,
+               (unsigned long long)ring.evicted_frames,
+               (unsigned)ring.min_fill_frames);
+        mdkr_audio_ring_free(&s_ring);
     }
     /* Ring eviction inside the worklet loses frames without ever refusing a
      * block, so the block counter alone would report a clean shutdown after an
@@ -556,6 +768,11 @@ void dkr_audio_out_shutdown(void) {
             }
         }
     }
+    if (s_stallApplied != 0u) {
+        printf("[AUDIO-STALL] injected=%llu ns=%lld every=%u\n",
+               (unsigned long long)s_stallApplied, (long long)s_stallNs,
+               (unsigned)s_stallEvery);
+    }
     printf("[AUDIO-SHUTDOWN] device=%d web=%d complete=1\n",
            had_device, had_web);
 }
@@ -603,31 +820,32 @@ s32 osAiSetNextBuffer(void *buf, u32 size) {
         if (blockBytes == 0) {
             blockBytes = (DKR_OUTPUT_RATE / 15u) * DKR_AUDIO_BYTES_PER_FRAME;
         }
-        queued = SDL_GetQueuedAudioSize(s_dev);
+        queued = mdkr_audio_ring_fill(&s_ring) * (u32)DKR_AUDIO_BYTES_PER_FRAME;
         if (mdkr_audio_sink_queue_fits(
                 queued, size, blockBytes, DKR_QUEUE_LIMIT_FRAMES)) {
             const u32 frameCount = size / DKR_AUDIO_BYTES_PER_FRAME;
             const int repairPending = frameCount != 0u &&
                                       s_reconnect.pending &&
                                       s_reconnect.have_previous;
+            u32 evicted;
             mdkr_audio_reconnect_prepare_stereo(
                 &s_reconnect, samples, frameCount,
                 DKR_AUDIO_RECONNECT_FRAMES);
-            if (SDL_QueueAudio(s_dev, buf, size) == 0) {
-                mdkr_audio_reconnect_note_accepted_stereo(
-                    &s_reconnect, samples, frameCount);
-                /* SDL queue mode copies on success. Capture the exact repaired
-                 * PCM only after that acceptance, never a rejected candidate. */
-                if (s_sinkEvidence.capture != NULL) {
-                    mdkr_audio_sink_evidence_accepted(
-                        &s_sinkEvidence, samples, size, repairPending);
-                }
-            } else {
-                s_queueFailures++;
+            /* The ring push cannot fail: it is a memcpy into storage we own.
+             * The old SDL_QueueAudio failure branch existed because that call
+             * allocated, and an allocation failure inside the sink was a real
+             * (if rare) way to lose a block. Overflow is now an eviction with
+             * its own accounting rather than a refusal. */
+            evicted = mdkr_audio_ring_push(&s_ring, samples, frameCount);
+            mdkr_audio_reconnect_note_accepted_stereo(
+                &s_reconnect, samples, frameCount);
+            if (evicted != 0u) {
+                s_droppedFrames += evicted;
                 mdkr_audio_reconnect_note_gap(&s_reconnect);
-                if (s_sinkEvidence.capture != NULL) {
-                    mdkr_audio_sink_evidence_rejected(&s_sinkEvidence);
-                }
+            }
+            if (s_sinkEvidence.capture != NULL) {
+                mdkr_audio_sink_evidence_accepted(
+                    &s_sinkEvidence, samples, size, repairPending);
             }
         } else {
             s_droppedBuffers++;
@@ -717,6 +935,25 @@ static s32 dkr_choose_frame_samples(void) {
     u32 now = haveSink ? osGetCount() : 0u;
     u32 queued = haveSink ? (audio_queued_bytes() >> 2) : 0u;
 
+#ifndef __EMSCRIPTEN__
+    /* Ground-truth drain: the audio thread counted exactly what it handed the
+     * device since the previous refill. This replaces the elapsed-time
+     * estimate and, with it, the stall guard that used to discard the gap
+     * measurement during a long hitch. See
+     * mdkr_audio_queue_controller_note_drain. */
+    if (haveSink && s_devOpen) {
+        const u32 requested = mdkr_audio_ring_requested(&s_ring);
+        if (s_haveLastRequested) {
+            /* uint32 subtraction: wrap-safe by construction, like the ring's
+             * own indices. */
+            mdkr_audio_queue_controller_note_drain(
+                &s_queueController, requested - s_lastRequestedFrames);
+        }
+        s_lastRequestedFrames = requested;
+        s_haveLastRequested = 1;
+    }
+#endif
+
     /* Headless remains a deterministic fixed block. A live SDL/worklet sink
      * replaces the estimated drain and corrects toward one synthesis-frame of
      * latency. This shared pure controller is exercised by ROM-free simulated
@@ -724,6 +961,62 @@ static s32 dkr_choose_frame_samples(void) {
     return (s32)mdkr_audio_queue_controller_choose(
         &s_queueController, haveSink != 0, now, DKR_COUNTER_RATE,
         DKR_OUTPUT_RATE, frameSize, maxSamples, queued);
+}
+
+/*
+ * Bounded same-tick catch-up.
+ *
+ * Audio time advances by AUTHORED fields, not wall time (see
+ * dkr_audio_advance_fields), so a main-loop hitch produces no backlog of due
+ * quanta — `maxpending` stays at 1 through a 100 ms stall. The sink is simply
+ * short by however much the device drained while the loop was away, and the
+ * only way that deficit is ever repaid is the controller's occupancy
+ * correction, which is capped at one synthesis call per tick
+ * (PORT_MAX_FRAME_SAMPLES = 1792 frames). Refilling a deep drain therefore
+ * took three or four ticks, and the sink stayed thin — and a second hitch
+ * inside that window was fatal — for over 100 ms after the first.
+ *
+ * This closes that window: while the sink holds less than one host request
+ * plus one refill interval, issue further synthesis blocks in the SAME tick.
+ * It is a pure recovery path. On a healthy tick the sink sits near
+ * consumed+target (~1470 frames), far above the floor, so this never fires and
+ * steady-state latency is unchanged. Producing extra PCM here does not run
+ * audio ahead of the authored timeline; it repays time the device already
+ * consumed while the producer was late.
+ */
+#define DKR_AUDIO_CATCHUP_BLOCKS 4
+
+static s32 dkr_catchup_frame_samples(void) {
+    const u32 frameSize = amAudioGetFrameSize();
+    const u32 maxSamples = amAudioGetMaxSamples();
+    u32 floorFrames;
+    u32 fill;
+    u32 need;
+
+    if (!audio_have_sink() || frameSize == 0u || maxSamples < 16u) {
+        return 0;
+    }
+    /*
+     * "Recovered" means the sink is back at the latency target the controller
+     * just sized against. A healthy tick leaves the sink at consumed+target,
+     * comfortably above it, so this is inert. It engages only when the
+     * per-call synthesis cap (PORT_MAX_FRAME_SAMPLES) truncated the correction
+     * and the sink is therefore still short after its one block.
+     */
+    floorFrames = s_queueController.target_frames;
+    if (floorFrames == 0u) {
+        floorFrames = s_devicePeriod + frameSize;
+    }
+    fill = audio_queued_bytes() / (u32)DKR_AUDIO_BYTES_PER_FRAME;
+    if (fill >= floorFrames) {
+        return 0;
+    }
+    need = floorFrames - fill;
+    if (need > maxSamples) {
+        need = maxSamples;
+    }
+    need &= ~15u;
+    return (s32)need;
 }
 
 /* ---- output-level test seam (MDKR_AUDIO_TEST_GAIN_DB) --------------------
@@ -868,6 +1161,29 @@ void dkr_audio_service_tick(void) {
     if (buf != NULL) {
         osAiSetNextBuffer(buf, (u32)frameSamples * 4);
     }
+
+    /* Recovery only — see dkr_catchup_frame_samples. Inert on a healthy tick. */
+    {
+        int extra;
+        for (extra = 0; extra < DKR_AUDIO_CATCHUP_BLOCKS; extra++) {
+            const s32 catchup = dkr_catchup_frame_samples();
+            s16 *catchupBuf;
+            if (catchup < 16) {
+                break;
+            }
+            catchupBuf = amAudioSynthFrame(catchup);
+            if (catchupBuf == NULL) {
+                break;
+            }
+            audio_apply_test_gain(catchupBuf, catchup);
+            mdkr_audio_gain_ramp_apply_s16(
+                &s_masterGain, catchupBuf, (u32)catchup, DKR_AUDIO_CHANNELS);
+            s_serviceSamples += (u64)catchup;
+            s_catchupBlocks++;
+            s_catchupFrames += (u64)catchup;
+            osAiSetNextBuffer(catchupBuf, (u32)catchup * 4);
+        }
+    }
     audio_trace_music();
 }
 
@@ -910,8 +1226,15 @@ void dkr_audio_service_summary(void) {
                  * signal, reported for trend rather than asserted. */
                 "[AUDIO-SINK] decisions=%llu estimateddrain=%llu produced=%llu "
                 "emptyobservations=%u stalls=%u minqueued=%u maxqueued=%u "
+                /* deviceperiod and measureddrains are read back out of the
+                 * CONTROLLER, not from the sink's own copies. They exist to
+                 * witness that the sink actually wired those two inputs up,
+                 * so reporting the sink's intent instead of the controller's
+                 * state would make them agree with themselves and witness
+                 * nothing. */
                 "maxproduced=%u maxgap=%u maxtarget=%u underruns=%u "
-                "floorbreaches=%u\n",
+                "floorbreaches=%u catchupblocks=%llu catchupframes=%llu "
+                "deviceperiod=%u measureddrains=%llu\n",
                 (unsigned long long)s_queueController.stats.live_decisions,
                 (unsigned long long)
                     s_queueController.stats.estimated_consumed_frames,
@@ -925,7 +1248,12 @@ void dkr_audio_service_summary(void) {
                 (unsigned)s_queueController.stats.max_gap_frames,
                 (unsigned)s_queueController.stats.max_target_frames,
                 (unsigned)s_queueController.stats.underruns,
-                (unsigned)s_queueController.stats.floor_breaches);
+                (unsigned)s_queueController.stats.floor_breaches,
+                (unsigned long long)s_catchupBlocks,
+                (unsigned long long)s_catchupFrames,
+                (unsigned)s_queueController.device_period,
+                (unsigned long long)
+                    s_queueController.stats.measured_decisions);
     }
     fflush(stderr);
 }
