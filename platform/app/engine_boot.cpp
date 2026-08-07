@@ -56,6 +56,16 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             owned.push_back("--input-script");
             owned.push_back(cfg->input_script);
         }
+        // Automation-only: let an app-shell run capture frames the same way the
+        // CLI does, so a gate can inspect what the app actually presents while
+        // its overlay is open. Inert unless the variable is set.
+        if (cfg->automation_ticks > 0) {
+            const char *dump = std::getenv("MDKR_APP_AUTOPLAY_DUMP_FRAMES");
+            if (dump != nullptr && dump[0] != '\0') {
+                owned.push_back("--dump-frames");
+                owned.push_back(dump);
+            }
+        }
         // Staged RESTART-scope settings ride in as --video-set, which sits at
         // MDKR_VIDEO_SOURCE_CLI — above the ini the panel also wrote them to.
         // Same value from both layers, so precedence is a no-op here; passing

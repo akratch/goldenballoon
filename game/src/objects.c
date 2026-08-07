@@ -10729,9 +10729,18 @@ f32 func_8001C6C4(Object_NPC *npc, Object *npcParentObj, f32 updateRateF, f32 sp
         zDiff -= zDiff2;
         if (var_s0 == 0) {
             someBool = FALSE;
-            dist = sqrtf((xDiff * xDiff) + (yDiff * yDiff) + (zDiff * zDiff)) / updateRateF;
-            if (dist != 0.0f) {
-                npc->unk8 *= (speedF / dist);
+#ifdef NATIVE_PORT
+            /* The same zero-rate divide func_8001F460 carries, in the NPC path
+             * follower: at a paused update rate this produced inf/NaN and stored
+             * it in npc->unk8, which feeds npc->unk0 above and never recovers.
+             * See the note there. */
+            if (updateRateF > 0.0f)
+#endif
+            {
+                dist = sqrtf((xDiff * xDiff) + (yDiff * yDiff) + (zDiff * zDiff)) / updateRateF;
+                if (dist != 0.0f) {
+                    npc->unk8 *= (speedF / dist);
+                }
             }
         }
     }
@@ -12843,9 +12852,24 @@ s32 func_8001F460(Object *arg0, s32 arg1, Object *arg2) {
         sp11C -= arg0->trans.z_position;
         if (var_s0 != 1) {
             var_s2 = 0;
-            var_f2 = sqrtf((sp124 * sp124) + (sp120 * sp120) + (sp11C * sp11C)) / sp114;
-            if (var_f2 != 0) {
-                obj64->unk4 *= obj64->unk8 / var_f2;
+#ifdef NATIVE_PORT
+            /* sp114 is the update rate, and the app's pause overlay is the one
+             * caller that can make it zero -- the console game never froze an
+             * animation path in place. Dividing here produced inf (or NaN when
+             * the path step was also zero), which then multiplied into unk4 and
+             * from there into var_f20, the interpolation parameter: one paused
+             * frame poisoned the spline's own position, and every camera and
+             * object matrix built from it became NaN for the rest of the
+             * session. A rate of zero means "advance nothing", so leave the
+             * speed adaptation alone; the interpolation below re-evaluates at
+             * the unchanged parameter and reproduces the frozen pose exactly. */
+            if (sp114 > 0.0f)
+#endif
+            {
+                var_f2 = sqrtf((sp124 * sp124) + (sp120 * sp120) + (sp11C * sp11C)) / sp114;
+                if (var_f2 != 0) {
+                    obj64->unk4 *= obj64->unk8 / var_f2;
+                }
             }
         }
     }
@@ -12860,9 +12884,17 @@ s32 func_8001F460(Object *arg0, s32 arg1, Object *arg2) {
         sp11C -= arg0->trans.z_position;
     }
 
-    arg0->x_velocity = sp124 / sp114;
-    arg0->y_velocity = sp120 / sp114;
-    arg0->z_velocity = sp11C / sp114;
+#ifdef NATIVE_PORT
+    /* Same zero-rate seam as the speed adaptation above: keep the velocities the
+     * paused frame inherited rather than dividing by zero into them. The move
+     * below is a no-op at a frozen parameter, so the pose is preserved. */
+    if (sp114 > 0.0f)
+#endif
+    {
+        arg0->x_velocity = sp124 / sp114;
+        arg0->y_velocity = sp120 / sp114;
+        arg0->z_velocity = sp11C / sp114;
+    }
     move_object(arg0, sp124, sp120, sp11C);
 
     switch (obj64->unk2E) {

@@ -850,6 +850,8 @@ python3 tests/check_app_adopted_pacing.py \
   --build build-rel --rom baserom.us.v80.z64
 python3 tests/check_overlay_pause.py \
   --build build-rel --rom baserom.us.v80.z64
+python3 tests/check_overlay_pause_cutscene.py \
+  --build build-rel --rom baserom.us.v80.z64
 python3 tests/check_surface_suspension.py \
   --build build-rel --rom baserom.us.v80.z64
 ```
@@ -937,6 +939,24 @@ ROM-free companion that pins the same contract in source — one shared release
 routine, reconciled against the overlay's live answer both before and across
 dispatch — because the defect was the absence of a call, which no run of the
 paths that still worked could reveal.
+
+`check_overlay_pause_cutscene.py` covers the other half of that pause: a scene
+running under a MENU rather than in a race. `check_overlay_pause.py` proves the
+simulation freezes; this proves the PICTURE survives the freeze. It opens the
+overlay during the title screen's scripted camera and during the new-game intro
+animation, and requires every frame presented while it is open to keep roughly
+the boundary frame's colour count, stay within a few mean levels of that frame,
+and start moving again after the close. Both arms went to a single flat colour —
+each level's own background fill — and stayed there for the rest of the session:
+the pause hands the game a zero update rate, `update_menu_scene` (unlike
+`mode_game`) keeps running `obj_update` at it because that is what re-arms the
+cutscene camera each tick, and the animation-path followers in `game/src/objects.c`
+divided by that rate. One paused frame produced inf/NaN, stored it in the
+spline's own interpolation parameter, and every camera and object matrix built
+from it was NaN from then on. The colour-count assertion alone would pass on a
+scene that kept animating behind the overlay, so the hold assertion runs beside
+it. Frame capture from an app-shell run comes from `MDKR_APP_AUTOPLAY_DUMP_FRAMES`,
+which forwards `--dump-frames` through the synthesized engine argv.
 
 `check_surface_suspension.py` compares equal-tick control and minimized arms on
 both native backends. The minimized interval must stop real display-list walks
