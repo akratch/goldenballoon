@@ -852,7 +852,7 @@ shows up), and the live-path case-1 count is zero. Tracked as future work.
   since ALBankFile/ALBank/ALInstrument/ALSound/ALWaveTable embed 4-byte on-disk
   pointer slots that are 8 bytes here), the bank/seqfile parsers were rewritten
   (then the decompiled `bnkf.c` under `NATIVE_PORT`, now the bank parser in
-  `platform/audio_compat.c`) to read the raw big-endian image
+  `platform/audio_bank.c`) to read the raw big-endian image
   through explicit byte offsets and build fresh, host-laid-out, arena-resident
   structs (the mgb64 audio_compat.c model). Raw ADPCM/VADPCM sample data stays in
   ROM, byte-order-defined (fetched by the audiomgr DMA callback). Since wave

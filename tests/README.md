@@ -1841,7 +1841,7 @@ at N+1, while route JSON frames name the intended authored present/tick phase.
 This phase conversion preserves the exact accepted digest above; removing it
 produces 27,832 rows and is the gate's required timing-regression direction.
 
-## Audio output — `tests/check_audio_output.py` (RUN THIS AFTER ANY CHANGE UNDER `game/src/audio*`, `platform/audio_compat.c`, `platform/audio_event_queue.c`, `platform/audio_fx_transfer.c`, `platform/mixer*` OR `platform/audi_port_dkr.c`)
+## Audio output — `tests/check_audio_output.py` (RUN THIS AFTER ANY CHANGE UNDER `game/src/audio*`, `platform/audio_*.c`, `platform/mixer*` OR `platform/audi_port_dkr.c`)
 
 The only check that asserts on **sound**. Until it landed, `README.md` and
 `CHANGELOG.md` both listed audio as working and nothing in `tests/` looked at it —

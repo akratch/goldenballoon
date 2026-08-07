@@ -181,7 +181,7 @@ dedicated function with `model->numberOfAnimatedVertices` (see below).
 - **`ASSET_AUDIO` — NO LONGER A PUNT (closed 2026-07-30).** The sound/sequence
   banks are libultra-format `ALBankFile`/`ALSeqFile`, and audio is live and
   enabled by default. The conversion is implemented, but **outside this
-  module**: the clean-room audio engine (`platform/audio_compat.c`) parses the
+  module**: the clean-room audio engine (`platform/audio_bank.c`) parses the
   bank image through explicit big-endian byte accessors and builds native host
   structs — which also solves the LP64 4-byte-offset-vs-8-byte-pointer problem
   rather than just the byte order. Covered there: bank/instrument/sound counts
@@ -390,7 +390,7 @@ Audio is live and on by default now (M5), but the section still cannot be sent
 through one blanket swap: it mixes pointer-bearing bank images, byte streams,
 small typed tables, and raw samples. Ownership is therefore per consumer:
 
-- `platform/audio_compat.c` implements `alBnkfNew`/`alSeqFileNewFrom` with
+- `platform/audio_bank.c` implements `alBnkfNew`/`alSeqFileNewFrom` with
   explicit `bank_ctl_u16/s16/u32/s32` reads and builds native host structs,
   which also solves the LP64 4-byte-offset problem.
 - `SoundData.soundBite`/`.range`, the custom-FX s32 array, and the compressed

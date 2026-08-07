@@ -32,7 +32,7 @@ quantities into one counter that in fact counted *polls*. `s_droppedBuffers`
 (blocks this port refused at `osAiSetNextBuffer`) and `s_droppedFrames` (frames
 lost with them) are now separate named quantities on both the native and web
 paths (`platform/audi_port_dkr.c`). Sequence tempo meta events are validated
-rather than truncated to 24 bits (`platform/audio_compat.c`).
+rather than truncated to 24 bits (`platform/audio_filters.c`).
 
 ## FIXED: audio table indices and the vehicle-sound teardown reached recycled arena memory
 
@@ -223,7 +223,7 @@ route under the native fixed pump measured 71/256, 3/50, and 19/512. The full
 > **Provenance, since this section predates the clean-room swap.** The
 > synthesiser described below was the decompiled SGI one. It has since been
 > **deleted** and replaced by the first-party clean-room engine in
-> `platform/audio_compat.c` / `audio_event_queue.c` / `audio_fx_transfer.c`,
+> `platform/audio_*.c` / `audio_event_queue.c` / `audio_fx_transfer.c`,
 > extended with DKR-specific behaviour. The replacement measured within 0.5 dB
 > of the pre-swap baseline (spectral cosine 1.000). The wiring described here
 > — macro override, per-frame pump, host sink, and the LP64 addressing model —

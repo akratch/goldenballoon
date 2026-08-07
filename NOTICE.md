@@ -57,7 +57,10 @@ target.** The 49 decompiled synthesiser sources that used to live under
 `game/libultra/src/audio/` — the SGI-legend `libaudio` implementation (bank
 parser, sequence player, envelope mixer, resampler, ADPCM decoder, reverb) —
 were deleted outright (commit `2a180eb`) and replaced by
-`platform/audio_compat.c`, `audio_event_queue.c` and `audio_fx_transfer.c` —
+`platform/audio_compat.c` (since split by stage into `audio_bank.c`,
+`audio_sequence.c`, `audio_envmix.c`, `audio_fx.c`, `audio_filters.c`,
+`audio_synth.c`, `audio_seqplayer.c` and `audio_cspplayer.c`),
+`audio_event_queue.c` and `audio_fx_transfer.c` —
 first-party audio code, clean-room in origin, brought over from the sister
 **mgb64** codebase and extended here with DKR-specific behavior (dual aux-bus
 `fxType[2]` lanes, `CSP_CHAN()` channel-state stride, arena-resident
@@ -69,8 +72,8 @@ The clean-room engine's audio *behavior* was cross-verified against the
 decompiled synthesiser it replaced before that source was deleted — the same
 decomp-derived lineage this document describes for `game/` generally — so the
 swap changed the implementation, not the game's audio semantics. This is a
-standing practice, not a one-time pass: `platform/audio_compat.c` carries an
-in-code comment at every site where its behavior was checked against — and,
+standing practice, not a one-time pass: the engine's sources carry an
+in-code comment at every site where their behavior was checked against — and,
 where they disagree, deliberately made to match — the deleted decomp source
 or DKR's own documented quirks, rather than mgb64's original GoldenEye
 behavior. Current sites (see the comment at each for the full reasoning):

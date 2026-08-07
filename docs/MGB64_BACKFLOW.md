@@ -177,12 +177,14 @@ initial integration remain useful for the mgb64 side:
 
 ## M5 audio — CONVERGED on mgb64's engine (was an engine difference)
 
-> **Updated:** mdkr64 no longer runs the stock SGI synthesiser. `platform/audio_compat.c`,
+> **Updated:** mdkr64 no longer runs the stock SGI synthesiser. The
+> `platform/audio_*.c` engine (one translation unit until it was split by stage),
 > `audio_event_queue.c` and `audio_fx_transfer.c` are ported from mgb64, and the 49
 > decompiled `game/libultra/src/audio/**.c` files are deleted. The two projects now
 > share one audio engine, so fixes flow BOTH ways — this section is kept because it
 > records why the swap was needed and which DKR-specific behaviour had to be added
-> on top. See "DKR EXTENSIONS" at the end of `platform/audio_compat.c`.
+> on top. See "DKR EXTENSIONS" at the end of `platform/audio_compat.c`, which
+> is what that file keeps after the split.
 >
 > Three integration points bit us and are worth back-porting as cautions:
 > 1. **`ALSynConfig.fxType` is an ARRAY in DKR** (`fxType[2]`, one per aux bus) but a
