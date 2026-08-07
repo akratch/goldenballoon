@@ -1,5 +1,6 @@
 #include "lights.h"
 
+#include "asset_swap.h"
 #include "game.h"
 #include "libc/math.h"
 #include "macros.h"
@@ -186,6 +187,14 @@ ObjectLight *light_add_from_object_header(Object *obj, ObjectHeader24 *arg1) {
         light->targetIntensityDiff = 0;
         if (arg1->unk6 != 0xFFFF) {
             light->unk44_asset = (MiscAssetObjectHeader24 *) get_misc_asset(arg1->unk6);
+#ifdef NATIVE_PORT
+            /* MISC section is punted at load; this blob is still big-endian.
+             * Normalize it before the count/duration fields below are read —
+             * the same call game.c and game_ui.c make for the sibling route
+             * through LevelHeader.unk74[]. The swapper dedupes on blob identity,
+             * so reaching the same sub-asset both ways swaps it exactly once. */
+            asset_swap_misc_lightdata(light->unk44_asset);
+#endif
             light->unk48 = light->unk44_asset->unk0;
             light->unk4A = 0;
             light->unk4C = 0;

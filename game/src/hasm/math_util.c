@@ -160,9 +160,13 @@ GLOBAL_ASM("asm/math_util/mtxf_transform_point.s")
  * Official name: mathMtxFastXFMF
  */
 void mtxf_transform_dir(MtxF *mf, Vec3f *in, Vec3f *out) {
-    out->f[0] = (in->f[0] * (*mf)[0][0]) + (in->f[1] * *mf[1][0]) + (in->f[2] * (*mf)[2][0]);
-    out->f[1] = (in->f[0] * (*mf)[0][1]) + (in->f[1] * *mf[1][1]) + (in->f[2] * (*mf)[2][1]);
-    out->f[2] = (in->f[0] * (*mf)[0][2]) + (in->f[1] * *mf[1][2]) + (in->f[2] * (*mf)[2][2]);
+    /* `mf` is a pointer to the whole 4x4, so the row subscript has to be applied
+     * to `*mf`. Written as `*mf[1][0]` the middle term reads row 1 of the NEXT
+     * matrix in memory (64 bytes past this one) — see LEAF(mtxf_transform_dir),
+     * which loads 0x0/0x10/0x20 from a single matrix. */
+    out->f[0] = (in->f[0] * (*mf)[0][0]) + (in->f[1] * (*mf)[1][0]) + (in->f[2] * (*mf)[2][0]);
+    out->f[1] = (in->f[0] * (*mf)[0][1]) + (in->f[1] * (*mf)[1][1]) + (in->f[2] * (*mf)[2][1]);
+    out->f[2] = (in->f[0] * (*mf)[0][2]) + (in->f[1] * (*mf)[1][2]) + (in->f[2] * (*mf)[2][2]);
 }
 #else
 GLOBAL_ASM("asm/math_util/mtxf_transform_dir.s")
@@ -989,7 +993,9 @@ f32 area_triangle_2d(f32 x0, f32 z0, f32 x1, f32 z1, f32 x2, f32 z2) {
     f32 d1 = sqrtf((dx1 * dx1) + (dz1 * dz1)); // Distance between points 1 & 2
     f32 d2 = sqrtf((dx2 * dx2) + (dz2 * dz2)); // Distance between points 2 & 0
     f32 m = 0.5f * (d0 + d1 + d2);             // Half the sum of the distances?
-    f32 result = m * (m - d0) * (m - d1) * (m - d2);
+    // Reordered multiplication to preserve exact bitwise result: LEAF(area_triangle_2d)
+    // pairs the factors ((m*(m-d0)) * ((m-d1)*(m-d2))) rather than folding left to right.
+    f32 result = (m * (m - d0)) * ((m - d1) * (m - d2));
     if (result < 0.0f) {
         result = 0.0f;
     }

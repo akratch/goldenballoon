@@ -3049,7 +3049,18 @@ void init_save_data(void) {
     saveFileSize = courseFlagsPtrSize;
     saveFileSize += numWorlds * sizeof(s16); // balloonsPtrSize;
     saveFileSize += sizeof(Settings);
+#ifdef NATIVE_PORT
+    /* The ROM rounds the per-slot stride to 4, which is _Alignof(Settings) when
+     * every member pointer is 4 bytes. On LP64 Settings holds real host pointers
+     * (courseFlagsPtr, balloonsPtr, the flap/course initials and times arrays),
+     * so its alignment is 8; with an odd world count the 4-byte round leaves
+     * slots 1 and 3 — and every pointer field inside them — at 4 mod 8, which is
+     * UB that -fsanitize=alignment reports. Round to the struct's real alignment;
+     * this only ever grows the stride, so the layout is otherwise unchanged. */
+    saveFileSize = (saveFileSize + (s32) (_Alignof(Settings) - 1)) & ~((s32) (_Alignof(Settings) - 1));
+#else
     saveFileSize = (saveFileSize + 3) & ~3; // align to a 4-byte boundary
+#endif
 
     *gSavefileData = mempool_alloc_safe(saveFileSize * ARRAY_COUNT(gSavefileData), COLOUR_TAG_WHITE);
 
@@ -5563,7 +5574,14 @@ void menu_save_options_init(void) {
     gMenuStage = SAVEMENU_WAIT;
     gOpacityDecayTimer = 0;
     D_80126A64 = (char *) mempool_alloc_safe(0x800, COLOUR_TAG_WHITE);
-    gSaveMenuFilesSource = (SaveFileData *) mempool_alloc_safe(0xA00, COLOUR_TAG_WHITE);
+    /* Two 80-entry arrays carved out of one slot. The ROM's 0xA00 is 160 * 0x10,
+     * i.e. the N64's SaveFileData stride; on LP64 `saveFileExt` is an 8-byte host
+     * pointer and the record is 24 bytes, so the literal would leave the
+     * destination array (which starts at element 80) only 26 entries of room.
+     * Size the request from the real element width instead — identical to 0xA00
+     * wherever sizeof(SaveFileData) == 0x10. */
+    gSaveMenuFilesSource =
+        (SaveFileData *) mempool_alloc_safe(160 * (s32) sizeof(SaveFileData), COLOUR_TAG_WHITE);
     gSaveMenuFilesDest = &gSaveMenuFilesSource[80];
     gSaveMenuOptionCountUpper = 0;
     gSaveMenuOptionSource = 0;

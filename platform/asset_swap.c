@@ -1086,24 +1086,68 @@ void asset_swap_object_animation(void *data, uint32_t size, uint32_t numAnimated
 /* Per-entry (LevelHeader_70_18), relative to the entry base. */
 #define LH70E_UNIDENTIFIED_00  0x00u /* s32, decomp LevelHeader_70_18.unk0 */
 
-/* Session-long set of already-normalized blob pointers. gAssetsMiscSection is
- * loaded once and never freed, so raw pointer identity is stable and valid as a
- * dedup key. The distinct LevelHeader_70 blob count per session is tiny. */
+/* Session-long set of already-normalized blob pointers. Raw pointer identity is
+ * a valid dedup key only for as long as the MISC section the blobs live in is
+ * the same allocation: if ASSET_MISC were ever reloaded it would very likely
+ * land at the same arena address (boot allocation order is deterministic), and a
+ * memo built against the old section would then suppress the swap of a fresh
+ * big-endian record. game/src/objects.c dkr_misc_swap_claim() guards its own memo
+ * exactly this way; misc_memo_check_section() below gives these two the same guard.
+ *
+ * The tables also fail CLOSED on overflow — a full table reports "already
+ * swapped" (skip) rather than "not yet swapped" (re-swap), because re-swapping a
+ * record puts it back into big-endian, which is strictly worse than leaving one
+ * un-normalized record alone. */
 #define LH70_SWAPPED_MAX 512
 static const void *s_lh70Swapped[LH70_SWAPPED_MAX];
 static uint32_t    s_lh70SwappedCount;
 
-static int lh70_already_swapped(const void *blob) {
+/* The PulsatingLightData memo (defined with its swapper further down) shares the
+ * same section-identity guard. */
+#define PULSE_SWAPPED_MAX 128
+static const void *s_pulseSwapped[PULSE_SWAPPED_MAX];
+static uint32_t    s_pulseSwappedCount;
+
+/* Weak so the standalone unit-test binaries that link asset_swap.c without
+ * game/src/objects.c still resolve it (they never load a MISC section, so the
+ * guard below is a no-op there). The game binary's strong definition wins. */
+__attribute__((weak)) int32_t *gAssetsMiscSection;
+static const void *s_miscMemoSection;
+static int s_miscMemoSectionSeen;
+
+/* Drop both memos if the MISC section they were built against has been replaced. */
+static void misc_memo_check_section(void) {
+    const void *section = (const void *) gAssetsMiscSection;
+
+    if (!s_miscMemoSectionSeen || s_miscMemoSection != section) {
+        s_miscMemoSectionSeen = 1;
+        s_miscMemoSection = section;
+        s_lh70SwappedCount = 0;
+        s_pulseSwappedCount = 0;
+    }
+}
+
+/* Returns 1 if `blob` has already been normalized (or cannot be recorded, in
+ * which case skipping is the safe direction), 0 if the caller should swap it. */
+static int misc_memo_claim(const void **table, uint32_t *count, uint32_t max,
+                           const void *blob) {
     uint32_t i;
-    for (i = 0; i < s_lh70SwappedCount; i++) {
-        if (s_lh70Swapped[i] == blob) {
+
+    misc_memo_check_section();
+    for (i = 0; i < *count; i++) {
+        if (table[i] == blob) {
             return 1;
         }
     }
-    if (s_lh70SwappedCount < LH70_SWAPPED_MAX) {
-        s_lh70Swapped[s_lh70SwappedCount++] = blob;
+    if (*count >= max) {
+        return 1; /* table full: fail closed — never swap the same record twice */
     }
+    table[(*count)++] = blob;
     return 0;
+}
+
+static int lh70_already_swapped(const void *blob) {
+    return misc_memo_claim(s_lh70Swapped, &s_lh70SwappedCount, LH70_SWAPPED_MAX, blob);
 }
 
 void asset_swap_misc_lightdata(void *blob) {
@@ -1157,11 +1201,9 @@ void asset_swap_misc_lightdata(void *blob) {
 #define PULSE_HEADER_SIZE 0x0Cu
 #define PULSE_FRAME_SIZE  4u
 
-/* Same rationale as s_lh70Swapped: gAssetsMiscSection is loaded once and never
- * freed, but level_load() re-fetches the same offset on every level load. */
-#define PULSE_SWAPPED_MAX 128
-static const void *s_pulseSwapped[PULSE_SWAPPED_MAX];
-static uint32_t    s_pulseSwappedCount;
+/* Same rationale, and the same memo, as s_lh70Swapped: level_load() re-fetches
+ * the same offset on every level load. Table declared with s_lh70Swapped above so
+ * both share the MISC-section identity guard. */
 
 void asset_swap_misc_pulsating(void *blob, uint32_t size) {
     uint32_t i, frames, capacity;
@@ -1169,13 +1211,8 @@ void asset_swap_misc_pulsating(void *blob, uint32_t size) {
     if (blob == NULL || size < PULSE_HEADER_SIZE) {
         return;
     }
-    for (i = 0; i < s_pulseSwappedCount; i++) {
-        if (s_pulseSwapped[i] == blob) {
-            return; /* already normalized on an earlier level load */
-        }
-    }
-    if (s_pulseSwappedCount < PULSE_SWAPPED_MAX) {
-        s_pulseSwapped[s_pulseSwappedCount++] = blob;
+    if (misc_memo_claim(s_pulseSwapped, &s_pulseSwappedCount, PULSE_SWAPPED_MAX, blob)) {
+        return; /* already normalized on an earlier level load */
     }
 
     sw16(blob, 0x00); /* numberFrames */

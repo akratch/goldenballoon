@@ -280,7 +280,8 @@ table.
 | verdict | n | which |
 |---|---|---|
 | **BOUNDED in this commit** | 5 | `get_inside_segment_count_xz`, `get_inside_segment_count_xyz`, `collision_get_y`, `func_800BDC80` (×2 output pointers) |
-| bounded by an existing count parameter | 6 | `resolve_collisions` (`numEntries`), `fb_memcpy` (`len`), `get_controller_pak_file_list` (×2), `font_codes_to_string`, `string_to_font_codes`, `filename_decompress` (`length`) |
+| bounded by an existing count parameter | 5 | `resolve_collisions` (`numEntries`), `fb_memcpy` (`len`), `get_controller_pak_file_list` (×2), `string_to_font_codes`, `filename_decompress` (`length`) |
+| **BOUNDED by the virtual-Pak wave (caller-side)** | 1 | `font_codes_to_string` — the `stringLength` parameter bounds the *loop*, not the *write*: the function pads to `stringLength` and then writes a terminator at `outString[stringLength]`, so it needs width **plus one**. Filing it as "bounded by an existing count parameter" was wrong. `copy_controller_pak_data()`'s two stack buffers were resized to `PFS_FILE_NAME_LEN + 1` / `PFS_FILE_EXT_LEN + 1` under `NATIVE_PORT`; the heap caller already carved 0x12 / 6. |
 | unreachable — zero callers | 2 | `music_get_fx_mix_all_channels` (UNUSED), `func_8000E79C` |
 | **COMPILED OUT by the game-core memory-safety wave** | 2 | `strcpy`, `strcat` (`unused_string.c`, now whole-file `#ifndef NON_MATCHING`) |
 | the C-string contract (bounded by the input's NUL) | 1 | `fontConvertString` |

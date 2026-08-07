@@ -216,8 +216,12 @@ SHAPE_TRIAGE = {
     ("bare-pointer", "game/src/save_data.c", "get_controller_pak_file_list:fileTypes"):
         "BOUNDED BY PARAMETER: same loop, same cap.",
     ("bare-pointer", "game/src/save_data.c", "font_codes_to_string:outString"):
-        "BOUNDED BY PARAMETER: stringLength. Also save_data.c, owned by another "
-        "wave -- recorded, not touched.",
+        "BOUNDED BY THE CALLERS, not by the parameter: stringLength bounds the "
+        "loop but the function also writes a terminator at outString[stringLength], "
+        "so a destination needs the field width PLUS one. Both callers supply it -- "
+        "get_controller_pak_file_list() carves 0x12/6-byte slices, and "
+        "copy_controller_pak_data()'s stack buffers are PFS_FILE_NAME_LEN + 1 / "
+        "PFS_FILE_EXT_LEN + 1 under NATIVE_PORT.",
     ("bare-pointer", "game/src/save_data.c", "string_to_font_codes:outString"):
         "BOUNDED BY PARAMETER: stringLength. save_data.c, not touched.",
     ("bare-pointer", "game/src/menu.c", "filename_decompress:output"):

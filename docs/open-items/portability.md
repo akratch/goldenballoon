@@ -189,7 +189,7 @@ and `sra`-vs-`srl`, then hot paths over cold.
 
 | file | C bodies | verdict |
 |---|---|---|
-| `game/src/hasm/math_util.c` | 30 `NON_MATCHING` + 4 plain (of 44 `LEAF`s) | **2 divergences**, 1 fixed |
+| `game/src/hasm/math_util.c` | 30 `NON_MATCHING` + 4 plain (of 44 `LEAF`s) | **3 divergences**, 2 fixed |
 | `game/src/hasm/collision.c` | 3 | **1 divergence**, fixed |
 | `game/src/hasm_native/obj_animate.c` | 2 (+2 helpers) | clean |
 | `game/src/hasm_native/obj_shade_fast.c` | 2 | clean |
@@ -204,10 +204,11 @@ sign-sensitive loads; `gzip_asm.s` at all 781 lines, 111 branch instructions and
 Four `math_util.c` bodies are guarded by `#ifdef NON_EQUIVALENT`, which this build
 does **not** define — `mtxf_transform_dir`, `fix32_sqrt`, `bad_int_sqrt`,
 `calc_dyn_lighting_for_level_segment` are therefore **not compiled** and were not
-audited as live code. (`mtxf_transform_dir`'s dead body does contain a real error —
-`*mf[1][0]` indexes the *next matrix in memory* instead of `(*mf)[1][0]` — which
-would have to be fixed before that body is ever enabled. Its live implementation
-is the weak stub in `platform/math_util_native.c`, which is correct.)
+audited as live code. (`mtxf_transform_dir`'s dead body contained a real error —
+`*mf[1][0]` indexes the *next matrix in memory* instead of `(*mf)[1][0]`. It has
+since been **corrected in place** so the trap cannot fire if the body is ever
+enabled; the live implementation is still `platform/math_util_native.c`, which
+was correct all along.)
 
 ### FIXED 1: `vec3f_rotate_py()` paired each angle with itself instead of pitch with yaw
 
@@ -335,6 +336,31 @@ The forced+legacy arm's candidate list collapses to a single entry — the segme
 pointer, with no facets behind it — and the racer drops straight through the
 world. That is the shape the divergence would take on any level that did contain
 an untextured collidable batch.
+
+### FIXED 3: `area_triangle_2d()` folded four factors left-to-right where the assembly pairs them
+
+**Mechanism.** `game/src/hasm/math_util.c`. The `NON_MATCHING` body wrote Heron's
+product as `m * (m - d0) * (m - d1) * (m - d2)`, which C evaluates strictly
+left-to-right as `(((m*(m-d0))*(m-d1))*(m-d2))`. `LEAF(area_triangle_2d)`
+(`game/src/hasm/ido/math_util.s:2618-2620`) builds a balanced tree instead:
+
+```
+mul.s fv0, ft0, ft5     # fv0 = (s - d0) * s
+mul.s ft1, ft2          # ft1 = (s - d1) * (s - d2)
+mul.s fv0, ft1          # fv0 = fv0 * ft1
+```
+
+Single-precision multiplication is not associative, so the two groupings differ
+by up to ~1 ULP before the `sqrt`. Everything else in the body — the half
+perimeter `0.5f * ((d0 + d1) + d2)`, the three `sqrtf` distances, and the
+negative clamp — already matched instruction for instruction; only the grouping
+did not. Re-associated to `(m * (m - d0)) * ((m - d1) * (m - d2))`, the same
+correction and the same comment style as `mtxf_mul()` above it.
+
+**Consequence.** Sub-ULP on an area that the sole caller
+(`game/src/tracks.c`, occlusion accumulation) reduces to a visibility fraction,
+so nothing observable changed — this is a free bit-exactness restoration, and it
+closes a divergence the table above previously did not record.
 
 ### Found, measured, and deliberately NOT fixed *(items 1–3 were fixed in wave "closedloop")*
 
