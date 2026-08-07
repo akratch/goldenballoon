@@ -950,6 +950,27 @@ No regressions: `check_race_drive.py`, `check_determinism.py` and
    magnitude entirely, so it is *immune* to the drift the hardware would show; that
    is a latent divergence from hardware, in our favour, and nothing in DKR exposes
    it. Recorded, not modelled.
+4. **`DkrTile.masks`/`maskt` are decoded and never consumed.** `dkr_dp_set_tile()`
+   stores both fields; nothing else reads them. Every backend derives the wrap
+   period from the uploaded texture's own dimensions and keys only on
+   `G_TX_CLAMP`/`G_TX_MIRROR` (`gfx_cm_to_opengl`, `wgpu_cm_to_address`, the Metal
+   equivalent), so a tile whose mask period differs from its size would tile at the
+   wrong period. `game/src/font.c` does hardcode `masks = maskt = 8` (period 256)
+   with `G_TX_WRAP` for glyph atlases far smaller than 256 texels, which is what
+   makes the gap look live on a read.
+   Measured instead of argued: the renderer was instrumented to flag every texture
+   bind where an axis wraps and `1 << mask` differs from the uploaded extent, then
+   run over the adventure hub, a full three-lap race, character select and the
+   magic-codes text screens. Across **more than 400,000 binds the count is zero** —
+   every wrapping axis carries `mask == log2(extent)` (`material_init()` computes
+   exactly that and falls back to `CLAMP` + `G_TX_NOMASK` for non-power-of-two
+   sizes), and every `mask == 0` tile clamps on both axes, so the field can never
+   disagree with the size that is actually used. The font atlases never reach the
+   sampler with a wrapping axis. The one residual divergence is the RDP's bilinear
+   edge tap at `s = width - 1`, which on hardware would fetch the adjacent TMEM word
+   while `REPEAT` wraps to column 0 — at most a one-texel seam, and the remastered
+   text path already forces point filtering with `CLAMP`. Recorded, not modelled:
+   consuming the mask would add a sampler dimension no shipped content exercises.
 
 ## P3.3 MAGIC_CODES / FILE_SELECT text fidelity — wave "p33-text"
 Two independent renderer defects, both found by reading the oracle montage's diff
@@ -2210,3 +2231,109 @@ crosses ~29 checkpoints, completes a lap and takes a genuine `SURFACE_ZIP_PAD` b
 at ~frame 5650 (sustained ~22.3 units/frame, ~2× the ~12 top speed) — so an
 input-script route DOES now reach a zip pad, and `MDKR_FORCE_BOOST` is no longer the
 only way to see boost graphics on camera.
+
+
+## FIXED: an authored alpha blend rendered as a hard cutout, and a texture re-upload could rewrite a draw already recorded — wave "sweep-renderer"
+
+Two renderer defects raised by an external bug-class sweep, both re-validated
+against current `main` before anything was changed.
+
+### The cutout classifier ignored the bit the game forked a render mode over
+
+`dkr_setup_draw_state()` decided "this material is an alpha-tested cutout" from
+`CVG_X_ALPHA` alone. On the RDP that bit only scales coverage by alpha;
+`ALPHA_CVG_SEL` is what substitutes coverage for the blender's `A_IN` and makes
+the pair behave as a one-bit stencil, and `FORCE_BL` keeps the blender running so
+the pipeline alpha survives as a real blend factor. The cutout signature is
+`CVG_X_ALPHA | ALPHA_CVG_SEL` **without** `FORCE_BL` — exactly
+`G_RM_*_TEX_EDGE` / `TEX_INTER` / `TEX_TERR`.
+
+DKR forked a render mode around precisely this. `game/include/f3ddkr.h` defines
+`RM_AA_ZB_XLU_LINE_MOD` as `CVG_X_ALPHA | FORCE_BL | ZMODE_XLU |
+GBL(CLR_IN, A_IN, CLR_MEM, 1MA)` with the in-source comment "modified version of
+RM_AA_ZB_XLU_LINE, with ALPHA_CVG_SEL disabled" — an ordinary alpha blend. The
+game puts it in the anti-aliased + Z-compare slot of all four
+`dRenderSettingsCutout` groups and all four `dRenderSettingsBlinkingLights`
+cutout groups (`game/src/textures_sprites.c`), while the neighbouring
+Z-compare-only slot uses `G_RM_AA_ZB_TEX_EDGE`. The two are distinguished inside
+one table; the HLE collapsed them. The misclassification also reached the
+texture cache, which built the cutout mip chain
+(`gfx_mip_build_cutout`, `GFX_TEXTURE_EDGE_ALPHA_THRESHOLD_U8`).
+
+**Consequence on screen:** every backend emitted
+`if (texel.a > 0.19) texel.a = 1.0; else discard;` for those draws, so an authored
+soft alpha edge rendered as a hard-edged fully opaque one, and anything the
+pipeline faded below 0.19 vanished outright instead of fading out.
+
+**Fix.** `dkr_other_mode_l_is_cutout()` (`platform/fast3d/gfx_pc_dkr.c`) requires
+the full signature, and both classification sites — the draw-state decision and
+the shadow-caster decision in `dkr_sp_polygon()` — call it. `MDKR_TEXEDGE=legacy`
+restores the old `CVG_X_ALPHA`-only test as an A/B control, matching the
+`MDKR_RDP_GRADIENTS` convention.
+
+**Measured blast radius.** Instrumented over a full three-lap race, the
+reclassified word (`other_mode_l = 0xc8105858`) appears in roughly one draw batch
+per frame and always at `prim_color.a = 255` on that route, so in-race frames are
+byte-identical (0 changed pixels at frames 1200/1900/2600/3300/4000/4700/5400).
+The screen change lands on character models: on `nav_to_character_select` frame
+1500, 131 of 1,228,800 pixels move with a peak single-channel delta of 203,
+identically on GL and WebGPU. The affected band is the gold overlay material on a
+character's headgear, whose soft alpha edge previously snapped to solid opaque
+yellow and now blends with the model beneath it. Same result on the adventure-hub
+route, which passes through the same screen.
+
+**Gate.** `tests/check_texture_edge_classification.py` (registered in
+`tools/run_checks.py` as `texture_edge_classification`) runs the pinned route on
+both backends against the `legacy` control and bounds the delta from both sides:
+too few pixels means the correction never reached the screen, a whole-screen
+delta means it reached more than the authored blend.
+
+### WEB-053's "currently unreachable" premise was false
+
+`wgpu_upload_texture()` writes into the existing `WGPUTexture` in place when the
+dimensions match, keeping the view and any warm bind groups. Its comment recorded
+the ordering hazard — `wgpuQueueWriteTexture` executes before the frame's command
+buffer, so re-uploading a texture a recorded-but-unsubmitted draw already samples
+retroactively swaps that draw's texels — and then asserted the hazard was
+unreachable because "eviction deletes rather than recycles ids".
+
+That premise does not hold. The frontend texture cache is a round-robin ring:
+`tex_cache_next` advances on **every** miss regardless of slot validity and is
+only rewound by `gfx_reset_renderer_caches()`, so once the ring has wrapped, a
+miss replaces a still-valid long-lived entry by re-uploading into the **same**
+backend id (`dkr_bind_texture`, `platform/fast3d/gfx_pc_dkr.c`). Measured on a
+full three-lap race at the shipping `DKR_TEXCACHE_SIZE` of 1024: the ring wraps
+around frame 2860 and recycling begins, exactly as predicted. On that route the
+two observed recycles were cross-frame with mismatched dimensions, so they took
+the safe recreate path — the shipped cache is simply large enough for the content
+those routes load. Re-running the same race with the ring shrunk to 64 slots to
+emulate a cache-pressure scene produced 66,900 recycles, **every one of them of a
+texture already drawn in the same frame**, and 14,892 of those with matching
+dimensions — precisely the in-place-write hazard. The invariant was being relied
+on, not maintained.
+
+**Fix.** The backend now enforces the ordering rather than assuming it. A
+monotonic `s_draw_epoch` is bumped once per command-encoder creation; every
+texture entry that becomes `v0`/`v1` of a bind group stamps the live epoch as the
+draw is recorded. `wgpu_upload_texture()` takes the in-place path only when the
+entry's stamp is not the live epoch — otherwise it falls through to the existing
+destroy-and-recreate path, which is safe by construction because the bind group
+holds a reference to the old texture until its command buffer is submitted. Both
+recreate paths clear the stamp, so a further same-frame re-upload of the same id
+takes the cheap path again. The Metal backend allocates a fresh texture per
+upload and OpenGL issues draws immediately at `gfx_flush()`, so neither was
+exposed and neither changed.
+
+**Consequence on screen:** only under cache pressure, and only on WebGPU — a
+scene loading more distinct textures than the 1024-entry ring holds would have
+shown earlier draws in the frame sampling a later draw's image (a texture from
+elsewhere in the level appearing on a surface for one frame). No shipped route
+measured here reaches it; the fix removes the dependence on that being true.
+
+### Verified as already fixed since the sweep ran
+
+The sweep also reported that `dkr_bind_tile()`'s `bind_ok` fed only a trace, so a
+failed bind drew with the previous batch's texture. That is no longer true:
+`dkr_setup_draw_state()` returns `bind_ok[0] && bind_ok[1]`, and both callers act
+on it — `dkr_sp_polygon()` returns early and the texture-rectangle path skips the
+whole emit-and-flush block. No change needed.

@@ -607,13 +607,14 @@ inert or overbroad result in the other.
 
 ## Restoration/remaster visual gates
 
-The current visual sprint adds six self-contained gates. Run them directly
+The current visual sprint adds seven self-contained gates. Run them directly
 during renderer iteration; the complete manifest still remains the release bar.
 
 ```bash
 python3 tests/check_sprite_layout.py --build build --rom baserom.us.v80.z64
 python3 tests/check_intro_shrub_sprite.py --build build --rom baserom.us.v80.z64
 python3 tests/check_rdp_interpolation.py --build build --rom baserom.us.v80.z64
+python3 tests/check_texture_edge_classification.py --build build --rom baserom.us.v80.z64
 python3 tests/check_font_sdf.py --build build --rom baserom.us.v80.z64
 python3 tests/check_mip_motion.py --build build --rom baserom.us.v80.z64
 python3 tests/check_rl1_vertex_colour_ab.py --build build --rom baserom.us.v80.z64
@@ -631,6 +632,12 @@ renders the authored intro and scores three fixed regions of one deterministic
 frame to prove every tile lands in its own quad rather than over the first one.
 `check_rdp_interpolation` compares corrected
 and exact-legacy gradient arms on both backends and requires timing identity.
+`check_texture_edge_classification` does the same for the cutout-versus-blend
+render-mode decision: DKR forked `G_RM_AA_ZB_XLU_LINE_MOD` to clear
+`ALPHA_CVG_SEL` while keeping `CVG_X_ALPHA`, and reading only `CVG_X_ALPHA` turned
+that authored alpha blend into a hard 0.19 alpha test. The gate pins the
+character-select frame where the difference lands and bounds it from both sides,
+so an inert change and an over-broad one both fail.
 `check_font_sdf` runs mode/backend/control arms: Pure and Restored must be
 byte-identical, while Remastered must upload derived fields and change only
 known text regions. `check_mip_motion` measures temporal second-difference energy
