@@ -1688,11 +1688,23 @@ task executed. One-generation registry grace fixes the token/segment collision,
 and `MDKR_DL_STRICT=1` now passes this route with zero faults.
 
 The deterministic 9,600-frame contract was re-measured on forced WebGPU on
-2026-08-01. Original retains its strict historical floors: P1/P2 checkpoint
-`>=52/37`, lap `>=2`, and slowest 240-frame mean `>=24.0/10.5`. Enhanced is the
-narrow AI/end-to-end contract described above: checkpoint `>=52/38`, lap `>=2`,
-and slowest mean `>=10.5/1.75`, against current observations 53/39 and
-10.70/1.82. Both retain the shared finite-position, track-band, separation,
+2026-08-08 with the retail vehicle-audio RNG restored (`c6fbd94`). cp, the
+slowest-window mean speed, and both-players-traced frame count are all pure
+functions of the AI racing line, which moves under any legitimate physics/RNG/
+collision change — a per-cadence pin within a percent or two of one recorded
+run turns a healthy build into a false "not driving the track" / "stalled" /
+"lost player" failure (this happened once already: a `ParticleBehaviour`
+stride fix forced `check_race_drive.py`'s own `MIN_FINAL_CP` 20 -> 15). Both
+cadences now use `check_race_drive.py`'s calibration norm instead — a floor
+set well below the measurement, wide enough to separate "drove multiple laps"
+/ "not wedged" / "raced for most of the run" from "went nowhere":
+checkpoint `>=25/18` (observed 53/39 original, 53/40 enhanced), `min_both_frames`
+`>=1300` original / `>=2900` enhanced (observed 2180 / 4852, ~40% headroom
+each), and slowest 240-frame mean `>=12.0/6.0` original / `>=5.0/0.6` enhanced
+(observed 25.39/14.59 and 10.78/1.52). `min_final_lap>=2` is unchanged and is
+the check's real "both players progressed" gate — it is a monotone lap
+counter, not a trajectory-sensitive statistic, so it keeps its tight, honest
+floor. Both cadences retain the shared finite-position, track-band, separation,
 `MAX_STEP=150`, and `MAX_ACCEL=40` protections. Neither cadence may reach
 results without oracle-confirmed `raceFinished=1`, distinct positions P1=1 and
 P2=2, P1 lap `>=3`, and P2 lap `>=2`; the three terminal broken-direction

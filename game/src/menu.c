@@ -37,6 +37,7 @@ extern int g_frameCounter;
 #include "printf.h"
 #include "racer.h"
 #include "rcp_dkr.h"
+#include "runtime_contracts.h"
 #include "save_data.h"
 #include "save_layout.h"
 #include "structs.h"
@@ -14621,14 +14622,30 @@ s32 menu_trophy_race_rankings_loop(s32 updateRate) {
                             gInAdvModeTrophyRace = FALSE;
                             ret = settings->courseId | MENU_RESULT_FLAGS_200;
                             if (sp34 < 3) {
-                                temp0 = settings->worldId - 1;
-                                temp0 <<= 1;
-                                prevOption = ((3 - sp34) & 3);
-                                temp6 = (settings->trophies >> temp0) & 3;
-                                if (temp6 < prevOption) {
-                                    settings->trophies &= ~(3 << temp0);
-                                    settings->trophies |= (prevOption << temp0);
-                                    safe_mark_write_save_file(get_save_file_index());
+                                // Triage sweep (BUG_CLASS_SWEEP_REPORT.md #15):
+                                // `worldId - 1` doubled is a negative/UB shift
+                                // count whenever worldId <= 0 (WORLD_NONE=-1,
+                                // WORLD_CENTRAL_AREA=0). mdkr_trophy_state()
+                                // already exists and bounds worldId to 1..4 for
+                                // the two READ sites of this same trophies
+                                // field (object_functions.c, objects.c); this
+                                // WRITE site was left doing the raw shift.
+                                // Reachability of worldId<=0 here specifically
+                                // was not established either way by the sweep,
+                                // so route this through the same contract the
+                                // readers use rather than leave the asymmetry.
+                                u32 trophyState;
+                                if (mdkr_trophy_state(settings->trophies,
+                                                       settings->worldId,
+                                                       &trophyState)) {
+                                    temp0 = (settings->worldId - 1) << 1;
+                                    prevOption = ((3 - sp34) & 3);
+                                    temp6 = (s32) trophyState;
+                                    if (temp6 < prevOption) {
+                                        settings->trophies &= ~(3 << temp0);
+                                        settings->trophies |= (prevOption << temp0);
+                                        safe_mark_write_save_file(get_save_file_index());
+                                    }
                                 }
                             }
 #ifdef NATIVE_PORT

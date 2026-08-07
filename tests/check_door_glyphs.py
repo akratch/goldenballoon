@@ -32,6 +32,7 @@ import argparse
 from collections import defaultdict
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -55,7 +56,32 @@ DRIVE_ROUTE = (
 # doorID -> authored balloon requirement for the four race doors in level 12.
 EXPECTED_DOORS = {2: 1, 1: 2, 3: 3, 6: 5}
 EXPECTED_SIXTEEN_OFFSETS = {8: 24, 9: 0}
-PIXEL_FRAME = 6820
+# Sweep finding shape-12 (BUG_CLASS_SWEEP_REPORT.md #8): a single hardcoded
+# PIXEL_FRAME dumped and pixel-scored the one camera pose a driven route
+# happened to hold on the calibration build. Any hub-physics/route-timing
+# change moves the arrival by a few frames, the fixed GLYPH_BOXES land off
+# the glyphs, and the gate fails with "glyphs do not distinguish" -- a
+# renderer-regression message for what is really a missed camera pose.
+#
+# Fix: dump a WINDOW of frames spanning the historical lobby-load/door-
+# submission region, and pick the capture frame from the run's own
+# [DOOR-TEX] evidence (the frame after all four numbered doors are first
+# submitted together) instead of a frame-number constant. The GLYPH_BOXES /
+# DOOR_FACE_BOXES pixel regions are the actual point of this half of the
+# check (the numerals must be ON screen and distinct), so they stay fixed;
+# what changes is which captured frame they are read from. A fixture-drift
+# check (the charselect-arm pattern in check_framed_world_views.py) then
+# fails loudly, as a FIXTURE problem rather than a pixel regression, if the
+# selected frame ever lands too far from the historical anchor for those
+# fixed boxes to still be trustworthy.
+DUMP_WINDOW_START = 6700       # margin below the historical lobby load (~6796)
+DUMP_WINDOW_STRIDE = 4
+DOOR_SETTLE_FRAMES = 20        # historical gap: all-visible@6797 -> capture@6820
+HISTORICAL_PIXEL_FRAME = 6820  # anchor for the drift check below, not a constant read
+MAX_FRAME_DRIFT = 120          # generous: covers a route/physics timing shift an
+                               # order of magnitude larger than the door-settle gap
+                               # itself, while still catching "camera pose is not
+                               # what these hardcoded boxes were calibrated against"
 DOOR_CROP = (130, 285, 980, 430)
 GLYPH_BOXES = (
     (209, 328, 273, 392),
@@ -309,7 +335,16 @@ def check_pixel_controls(reference: tuple[int, int, bytes]) -> list[str]:
 def run_renderer(
     binary: str, rom: str, renderer: str, rate: str, verbose: bool
 ):
-    with tempfile.TemporaryDirectory(prefix=f"mdkr-door-glyph-{renderer}-") as run_dir:
+    """Run one renderer arm.
+
+    Returns (proc, output, run_dir). The caller (check_renderer) must decide
+    which dumped frame to read -- the [DOOR-TEX] evidence needed for that
+    decision only exists after parsing `output` -- so this function does NOT
+    clean up run_dir; ownership of that (and the responsibility to remove it)
+    passes to the caller.
+    """
+    run_dir = tempfile.mkdtemp(prefix=f"mdkr-door-glyph-{renderer}-")
+    try:
         os.mkdir(os.path.join(run_dir, "save"))
         env = {
             key: value for key, value in os.environ.items()
@@ -338,32 +373,60 @@ def run_renderer(
         frame_dir = Path(run_dir) / "frames"
         if rate == "original":
             frame_dir.mkdir()
-            env["MDKR_DUMP_FROM"] = str(PIXEL_FRAME)
-            env["MDKR_DUMP_EVERY"] = "999999"
+            env["MDKR_DUMP_FROM"] = str(DUMP_WINDOW_START)
+            env["MDKR_DUMP_EVERY"] = str(DUMP_WINDOW_STRIDE)
             cmd[3:3] = ["--dump-frames", str(frame_dir)]
         if verbose:
             print("$ " + " ".join(cmd) + f"  # {renderer}, rate={rate}")
         proc = subprocess.run(
             cmd, cwd=run_dir, env=env, capture_output=True, text=True
         )
-        capture = None
-        capture_error = None
-        if rate == "original":
-            frame = frame_dir / f"frame_{PIXEL_FRAME}.ppm"
-            try:
-                capture = read_ppm(frame)
-            except (OSError, ValueError) as error:
-                capture_error = str(error)
-        return proc, proc.stdout + proc.stderr, capture, capture_error
+        return proc, proc.stdout + proc.stderr, (str(frame_dir) if rate == "original" else None), run_dir
+    except Exception:
+        shutil.rmtree(run_dir, ignore_errors=True)
+        raise
+
+
+def select_evidence_frame(
+    dumped_frames: list[int], simultaneous: list[int]
+) -> tuple[int | None, str | None]:
+    """Pick the capture frame from [DOOR-TEX] evidence, not a hardcoded literal.
+
+    The frame that matters is the first one where all four numbered doors were
+    submitted together, plus a settle margin (DOOR_SETTLE_FRAMES, matching the
+    historical 6797 -> 6820 gap) so the camera has finished any same-tick
+    motion. Returns (frame, error).
+    """
+    if not simultaneous:
+        return None, "no frame submitted all four differently numbered doors"
+    target = min(simultaneous) + DOOR_SETTLE_FRAMES
+    candidates = [f for f in dumped_frames if f >= target]
+    if not candidates:
+        return None, (
+            f"no dumped frame at/after the door-settle target {target} "
+            f"(first all-visible frame {min(simultaneous)} + "
+            f"{DOOR_SETTLE_FRAMES}); dumped {dumped_frames}"
+        )
+    return min(candidates), None
 
 
 def check_renderer(
     binary: str, rom: str, renderer: str, rate: str, verbose: bool
 ) -> tuple[list[str], tuple[int, int, bytes] | None]:
-    proc, output, capture, capture_error = run_renderer(
+    proc, output, frame_dir, run_dir = run_renderer(
         binary, rom, renderer, rate, verbose
     )
+    try:
+        return _check_renderer_output(renderer, rate, verbose, proc, output, frame_dir)
+    finally:
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+
+def _check_renderer_output(
+    renderer: str, rate: str, verbose: bool, proc, output: str, frame_dir: str | None
+) -> tuple[list[str], tuple[int, int, bytes] | None]:
     failures: list[str] = []
+    capture: tuple[int, int, bytes] | None = None
 
     if proc.returncode != 0:
         failures.append(f"{renderer}: exit code {proc.returncode}")
@@ -371,8 +434,6 @@ def check_renderer(
         if marker in output:
             line = next((line for line in output.splitlines() if marker in line), marker)
             failures.append(f"{renderer}: {line.strip()}")
-    if capture_error is not None:
-        failures.append(f"{renderer}: final-pixel capture failed: {capture_error}")
 
     lobby_frames = [
         int(match.group(2)) for match in LEVEL_RE.finditer(output)
@@ -446,6 +507,54 @@ def check_renderer(
         failures.append(
             f"{renderer}: no frame submitted all four differently numbered doors"
         )
+
+    if rate == "original" and frame_dir is not None:
+        dumped_frames = sorted(
+            int(match.group(1)) for f in os.listdir(frame_dir)
+            if (match := re.match(r"frame_(\d+)\.ppm$", f))
+        )
+        selected_frame, selection_error = select_evidence_frame(
+            dumped_frames, simultaneous
+        )
+        if selection_error is not None:
+            failures.append(f"{renderer}: {selection_error}")
+        else:
+            # Fixture-drift check (the charselect-arm pattern): the pixel
+            # boxes below are fixed screen-space regions calibrated against
+            # the historical anchor frame. If a physics/route change moves
+            # the evidence-derived capture frame far from that anchor, the
+            # boxes can no longer be trusted, and that is a FIXTURE problem,
+            # not a glyph-rendering regression -- report it as one instead of
+            # silently scoring the wrong part of the screen.
+            drift = selected_frame - HISTORICAL_PIXEL_FRAME
+            if abs(drift) > MAX_FRAME_DRIFT:
+                failures.append(
+                    f"{renderer}: door-glyph fixture drift: the evidence-"
+                    f"selected capture frame {selected_frame} is {abs(drift)} "
+                    f"frames from the historical anchor {HISTORICAL_PIXEL_FRAME} "
+                    f"(limit {MAX_FRAME_DRIFT}). The GLYPH_BOXES/DOOR_FACE_BOXES "
+                    "pixel regions were calibrated against that pose and can no "
+                    "longer be trusted; retime DUMP_WINDOW_START/"
+                    "HISTORICAL_PIXEL_FRAME rather than treating this as a "
+                    "renderer regression."
+                )
+            else:
+                frame_path = Path(frame_dir) / f"frame_{selected_frame:04d}.ppm"
+                try:
+                    capture = read_ppm(frame_path)
+                except (OSError, ValueError) as error:
+                    failures.append(
+                        f"{renderer}: final-pixel capture failed: {error}"
+                    )
+                else:
+                    if verbose:
+                        print(
+                            f"  {renderer}/{rate}: evidence-selected capture "
+                            f"frame={selected_frame} "
+                            f"(all-visible@{min(simultaneous)}, "
+                            f"drift {drift:+d} from historical anchor "
+                            f"{HISTORICAL_PIXEL_FRAME})"
+                        )
 
     if bad_offsets:
         row, expected = bad_offsets[0]

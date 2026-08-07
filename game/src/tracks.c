@@ -1528,7 +1528,21 @@ void void_check(u8 *segmentIds, s32 numberOfSegments, s32 viewportIndex) {
     s32 *ptr2;
     LevelModelSegmentBoundingBox *bbox;
     s16 sum;
+#ifdef NATIVE_PORT
+    // Triage sweep (BUG_CLASS_SWEEP_REPORT.md #14, tracks.c void_check): the
+    // ROM-era array is sized as a guess at the N64 frame layout ("real size is
+    // unknown"), with no bound on the push below. D_8011D49E can hold up to
+    // D_8011D4BA (175) paired entries -- two per void edge -- so up to 87
+    // edges could theoretically be open at once; sized here for that worst
+    // case rather than the guessed 24. Measured peak across the hub tour and
+    // all 20 main + boss tracks is 10 (14-element headroom at the old size),
+    // so this has not been observed to fire, but the fix is cheap and the
+    // capacity guard below makes an over-long run degrade (dropped edge)
+    // instead of corrupting the stack frame if it ever does.
+    s8 sp7C[88];
+#else
     s8 sp7C[24]; // possible UB here, real size is unknown
+#endif
     s32 pad;
 
     gVoidTris[0] = gVoidMesh[viewportIndex].tris[0];
@@ -1624,8 +1638,15 @@ void void_check(u8 *segmentIds, s32 numberOfSegments, s32 viewportIndex) {
     while (i < D_8011D49E) {
         while (i < D_8011D49E && var_s4 == D_8011D478[i].unk0) {
             if (D_8011D478[i].unk6 & 2) {
+#ifdef NATIVE_PORT
+                if (var_s0 < (s32) ARRAY_COUNT(sp7C)) {
+                    sp7C[var_s0] = D_8011D478[i].unk7;
+                    var_s0++;
+                }
+#else
                 sp7C[var_s0] = D_8011D478[i].unk7;
                 var_s0++;
+#endif
             } else {
                 for (j = 0; j < var_s0; j++) {
                     if (sp7C[j] == D_8011D478[i].unk7) {
