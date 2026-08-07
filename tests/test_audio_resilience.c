@@ -35,6 +35,7 @@
  * would fail the second assertion; a test that could not detect starvation at
  * all would fail the first.
  */
+#include "audi_port_dkr.h"
 #include "audio_queue_controller.h"
 #include "audio_ring.h"
 
@@ -44,8 +45,14 @@
 #define OUTPUT_RATE   22050u
 #define COUNTER_RATE  46875000u
 #define FRAME_SIZE    736u     /* ceil(22050*2/60) rounded to 16            */
-#define MAX_SAMPLES   1792u    /* PORT_MAX_FRAME_SAMPLES (audiomgr.c)       */
-#define RING_FRAMES   65536u   /* DKR_AUDIO_RING_FRAMES (audi_port_dkr.c)   */
+/*
+ * Taken from the port itself, not copied. A model whose synthesis cap or ring
+ * depth drifts from the shipped values proves nothing about the shipped
+ * delivery loop -- and it would drift silently, because both used to be bare
+ * literals here with only a comment naming their origin.
+ */
+#define MAX_SAMPLES   MDKR_AUDIO_MAX_FRAME_SAMPLES
+#define RING_FRAMES   MDKR_AUDIO_RING_FRAMES
 #define TICK_MICROS   33333u   /* one authored two-field tick               */
 #define CATCHUP_BLOCKS 4
 

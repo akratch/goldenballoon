@@ -636,6 +636,35 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_link_libraries(mdkr_audio_ring_test PRIVATE ${SDL2_LIBRARIES})
     add_test(NAME audio_ring COMMAND mdkr_audio_ring_test)
 
+    # The concurrent half of the same contract. Kept a separate target because
+    # it is a different KIND of test: the sequential one is deterministic and
+    # asserts exact values, this one runs two real threads and can only assert
+    # invariants. Uses SDL's own threads (the ring already links SDL for its
+    # atomics), so the producer/consumer pair is the same primitive the port
+    # actually runs on. Still opens no device.
+    add_executable(mdkr_audio_ring_threaded_test
+        ${CMAKE_SOURCE_DIR}/tests/test_audio_ring_threaded.c
+        ${CMAKE_SOURCE_DIR}/platform/audio_ring.c)
+    target_include_directories(mdkr_audio_ring_threaded_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${SDL2_INCLUDE_DIRS})
+    target_link_directories(mdkr_audio_ring_threaded_test PRIVATE
+        ${SDL2_LIBRARY_DIRS})
+    target_compile_definitions(mdkr_audio_ring_threaded_test PRIVATE
+        SDL_MAIN_HANDLED)
+    target_link_libraries(mdkr_audio_ring_threaded_test PRIVATE
+        ${SDL2_LIBRARIES})
+    if(MSVC)
+        target_compile_options(mdkr_audio_ring_threaded_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_audio_ring_threaded_test PRIVATE
+            -Wall -Wextra -Werror)
+    endif()
+    add_test(NAME audio_ring_threaded COMMAND mdkr_audio_ring_threaded_test)
+    # Two threads streaming ~1.6M frames plus a flood arm; generous under a
+    # sanitizer, where every atomic is instrumented.
+    set_tests_properties(audio_ring_threaded PROPERTIES TIMEOUT 300)
+
     # Closed-loop delivery resilience: real controller + real ring driven
     # against a modelled host device in virtual time. Asserts both directions
     # (the shipped design starves, the current one does not), so the arm proves

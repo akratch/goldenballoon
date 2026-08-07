@@ -95,12 +95,6 @@ void mdkr_audio_sink_evidence_accepted(MdkrAudioSinkEvidence *evidence,
     }
 }
 
-void mdkr_audio_sink_evidence_rejected(MdkrAudioSinkEvidence *evidence) {
-    if (evidence != NULL) {
-        evidence->rejected_blocks++;
-    }
-}
-
 void mdkr_audio_sink_evidence_dropped(MdkrAudioSinkEvidence *evidence) {
     if (evidence != NULL) {
         evidence->dropped_blocks++;

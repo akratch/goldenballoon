@@ -21,8 +21,6 @@ static uint32_t read_u32le(const unsigned char *bytes) {
 int main(void) {
     MdkrAudioSinkEvidence evidence;
     const int16_t accepted[] = { 100, -100, 200, -200 };
-    const int16_t rejected[] = { 300, -300 };
-    const int16_t dropped[] = { 400, -400 };
     const int16_t repaired[] = { 500, -500, 600, -600 };
     unsigned char wav[44u + sizeof(accepted) + sizeof(repaired)];
     FILE *capture = tmpfile();
@@ -36,7 +34,6 @@ int main(void) {
            mdkr_audio_sink_evidence_begin(&evidence, capture, 44100u, 2u));
 
     mdkr_audio_sink_evidence_accepted(&evidence, accepted, sizeof(accepted), 0);
-    mdkr_audio_sink_evidence_rejected(&evidence);
     mdkr_audio_sink_evidence_dropped(&evidence);
     mdkr_audio_sink_evidence_accepted(&evidence, repaired, sizeof(repaired), 1);
     mdkr_audio_sink_evidence_finish(&evidence);
@@ -45,7 +42,6 @@ int main(void) {
     expect("accepted bytes only",
            evidence.accepted_bytes == sizeof(accepted) + sizeof(repaired));
     expect("repaired accepted block counted", evidence.repaired_blocks == 1u);
-    expect("rejected block counted", evidence.rejected_blocks == 1u);
     expect("dropped block counted", evidence.dropped_blocks == 1u);
     expect("capture has no write error", !evidence.capture_failed);
 
@@ -55,7 +51,7 @@ int main(void) {
     expect("wave header", memcmp(wav, "RIFF", 4u) == 0 &&
            memcmp(wav + 8u, "WAVE", 4u) == 0 &&
            memcmp(wav + 36u, "data", 4u) == 0);
-    expect("wave data length excludes rejected and dropped blocks",
+    expect("wave data length excludes dropped blocks",
            read_u32le(wav + 40u) == sizeof(accepted) + sizeof(repaired));
     expect("wave header retains capture sample rate",
            read_u32le(wav + 24u) == 44100u);

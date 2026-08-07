@@ -766,7 +766,12 @@ def preflight(
     if missing:
         raise RuntimeError("missing required artifact(s):\n  " + "\n  ".join(missing))
 
-    if roles & set(BROWSER_ROLES):
+    # Deliberately NOT all of BROWSER_ROLES. This guard is about the STAGED
+    # tree under dist/web/, which only the served browser lanes read. The
+    # "wasm" role's sole check inspects the linked module in build-web/
+    # directly and never touches dist/web/, so demanding a fresh stage from it
+    # would fail a lane whose inputs are provably unaffected.
+    if roles & {"browser", "browser_save"}:
         # A commit landing mid-suite would otherwise poison every browser
         # task silently except the one check that reads build-info.json —
         # and that one only when its turn comes, deep into the run.
@@ -775,15 +780,42 @@ def preflight(
             record = json.loads(info_path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
             raise RuntimeError(f"staged web build-info unreadable: {error}")
-        head = subprocess.run(
-            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
-            check=True, text=True, stdout=subprocess.PIPE,
-        ).stdout.strip()
+        if not isinstance(record, dict):
+            raise RuntimeError(
+                f"staged web build-info must contain a JSON object: {info_path}")
+        # Fail closed the way tools/ci/check_web_build_provenance.py does: a
+        # git invocation that cannot answer is not evidence of freshness.
+        try:
+            completed = subprocess.run(
+                ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+                check=True, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise RuntimeError(
+                f"cannot resolve HEAD to date the staged web build: {error}")
+        head = completed.stdout.strip()
+        if not head:
+            raise RuntimeError(
+                "cannot resolve HEAD to date the staged web build: "
+                "git rev-parse returned nothing")
         staged = record.get("source_commit")
+        if not isinstance(staged, str):
+            raise RuntimeError(
+                "staged web build-info source_commit is missing or not a "
+                "string; rerun tools/web/build_web.sh")
         if staged != head:
             raise RuntimeError(
                 "staged web output predates HEAD "
                 f"({staged!r} != {head!r}); rerun tools/web/build_web.sh"
+            )
+        # `is False` deliberately rejects 0, null, strings, and omissions: a
+        # stage built from a dirty tree matches HEAD while containing sources
+        # that HEAD does not describe.
+        if record.get("source_dirty") is not False:
+            raise RuntimeError(
+                f"staged web output source_dirty={record.get('source_dirty')!r}; "
+                "rebuild from a clean source tree with tools/web/build_web.sh"
             )
 
     if "release" in roles:

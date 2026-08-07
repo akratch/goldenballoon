@@ -1,6 +1,7 @@
 #include "audiomgr.h"
 #ifdef NATIVE_PORT
 #include "asset_swap.h"
+#include "audi_port_dkr.h"   /* MDKR_AUDIO_MAX_FRAME_SAMPLES mirror only */
 #endif
 #include "asset_loading.h"
 #include "common.h"
@@ -105,6 +106,10 @@ static s32 gLastAudioFrameSamples = 0;
  * deficit was never recovered. Four fields at 60 Hz (1,470) still fits.
  */
 #define PORT_MAX_FRAME_SAMPLES  1792
+/* Published for the ROM-free delivery model — see platform/audi_port_dkr.h.
+ * This file owns the number; the header only mirrors it, and this pins them. */
+_Static_assert(PORT_MAX_FRAME_SAMPLES == (int)MDKR_AUDIO_MAX_FRAME_SAMPLES,
+               "audiomgr synthesis cap and its published mirror must agree");
 static s16 *sPortOutBuf[NUM_OUTPUT_BUFFERS];
 static u32  sPortOutIdx;
 static u32  sPortAcmdIdx;

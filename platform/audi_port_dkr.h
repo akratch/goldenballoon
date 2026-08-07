@@ -7,6 +7,24 @@
 extern "C" {
 #endif
 
+/*
+ * Two delivery constants published here because they are load-bearing OUTSIDE
+ * the translation unit that owns each of them.
+ *
+ * tests/test_audio_resilience.c models the whole native delivery loop — the
+ * real controller and the real ring against a modelled device — and its
+ * conclusions ("the current design does not starve") only transfer to the
+ * shipped port if it is sized like the shipped port. It used to copy both
+ * numbers as bare literals with a comment naming the file they came from,
+ * which is a comment, not a constraint: retuning either constant would leave
+ * the model asserting things about a configuration nobody ships.
+ *
+ * Each is _Static_assert-ed against its owning definition at that definition's
+ * site, so a divergence is a build failure rather than a stale test.
+ */
+#define MDKR_AUDIO_RING_FRAMES       65536u  /* audi_port_dkr.c ring capacity  */
+#define MDKR_AUDIO_MAX_FRAME_SAMPLES 1792u   /* audiomgr.c per-call synth cap  */
+
 void dkr_audio_out_init(void);
 void dkr_audio_out_shutdown(void);
 

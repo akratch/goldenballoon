@@ -1,4 +1,4 @@
-/* Opt-in evidence for PCM that a native SDL queue accepted. */
+/* Opt-in evidence for PCM the native sink accepted into its output ring. */
 #ifndef MDKR_AUDIO_SINK_EVIDENCE_H
 #define MDKR_AUDIO_SINK_EVIDENCE_H
 
@@ -17,7 +17,6 @@ typedef struct MdkrAudioSinkEvidence {
     uint64_t accepted_blocks;
     uint64_t accepted_bytes;
     uint64_t repaired_blocks;
-    uint64_t rejected_blocks;
     uint64_t dropped_blocks;
     int capture_failed;
 } MdkrAudioSinkEvidence;
@@ -31,13 +30,21 @@ int mdkr_audio_sink_evidence_begin(MdkrAudioSinkEvidence *evidence,
                                    uint32_t sample_rate,
                                    uint16_t channels);
 
-/* Call accepted only after the native queue operation has returned success.
- * Rejected and dropped blocks are deliberately counted but never written. */
+/*
+ * Call accepted only once the block has actually entered the output ring —
+ * that, and not "reached the speaker", is what this capture is evidence of.
+ * The sink cannot refuse a block any more (a ring push is a memcpy into
+ * storage the port owns), so there is no rejected counter; the remaining loss
+ * modes are the backlog limiter, which counts a dropped block and writes
+ * nothing, and ring overflow, which overwrites frames already captured here
+ * and is accounted separately by the ring's evicted_frames/overflows. A
+ * capture can therefore contain frames the device never played, and that is
+ * the intended reading: it proves what the sink accepted, not what was heard.
+ */
 void mdkr_audio_sink_evidence_accepted(MdkrAudioSinkEvidence *evidence,
                                        const void *pcm,
                                        uint32_t bytes,
                                        int repaired);
-void mdkr_audio_sink_evidence_rejected(MdkrAudioSinkEvidence *evidence);
 void mdkr_audio_sink_evidence_dropped(MdkrAudioSinkEvidence *evidence);
 
 /* Patches the WAV header and flushes the stream without closing it. */

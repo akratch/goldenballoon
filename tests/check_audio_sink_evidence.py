@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "tests" / "input_scripts" / "race_drive_time_trial.txt"
 SUMMARY_RE = re.compile(
     r"\[AUDIO-SINK-EVIDENCE\] accepted_blocks=(\d+) accepted_bytes=(\d+) "
-    r"repaired_blocks=(\d+) rejected_blocks=(\d+) dropped_blocks=(\d+) "
+    r"repaired_blocks=(\d+) dropped_blocks=(\d+) "
     r"capture_bytes=(\d+) capture_failed=(\d+)"
 )
 BAD_RE = re.compile(
@@ -77,11 +77,11 @@ def assert_accepted_capture(capture: Path, output: str) -> None:
         raise AssertionError(
             "expected one accepted-SDL summary\n" + output[-5000:]
         )
-    accepted_blocks, accepted_bytes, repaired_blocks, rejected_blocks, \
+    accepted_blocks, accepted_bytes, repaired_blocks, \
         dropped_blocks, capture_bytes, capture_failed = map(int, summaries[0])
     if accepted_blocks <= 0 or accepted_bytes <= 0:
         raise AssertionError(f"no PCM reached SDL: {summaries[0]}")
-    if rejected_blocks != 0 or dropped_blocks != 0:
+    if dropped_blocks != 0:
         raise AssertionError(
             "short dummy route must not lose PCM: " + str(summaries[0])
         )

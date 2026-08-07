@@ -114,17 +114,23 @@ uint32_t mdkr_audio_ring_push(MdkrAudioRing *ring, const int16_t *interleaved,
 
     fill = ring_fill_raw(ring);
     if (fill + frames > ring->capacity) {
-        /* Overflow: drop the OLDEST frames by advancing the READ index. The
-         * consumer owns `tail`, so this is the one place the producer touches
-         * it. It is safe because eviction only happens when the ring is full,
-         * which means the consumer is not keeping up and the frames being
-         * dropped are ones it has not reached; a concurrent pull can at worst
-         * make the eviction slightly larger than strictly necessary, never
-         * corrupt an index. Latency, not correctness, is what is at stake. */
-        uint32_t need = fill + frames - ring->capacity;
-        uint32_t tail = (uint32_t)SDL_AtomicGet(&ring->tail);
-        SDL_AtomicSet(&ring->tail, (int)(tail + need));
-        evicted += need;
+        /*
+         * Overflow: drop the OLDEST frames. The producer does NOT do that by
+         * advancing `tail` — `tail` belongs to the consumer, and writing it
+         * here would race the read-modify-write the consumer performs at the
+         * end of every pull, which can regress the index and publish a fill
+         * larger than the ring physically holds. Instead the producer just
+         * keeps writing: it overwrites the oldest slots and lets `head` run
+         * past `tail` by more than the capacity. That surplus IS the signal.
+         * The consumer sees fill > capacity on its next pull, clamps its own
+         * tail to head - capacity, and crossfades the skip.
+         *
+         * The count below is therefore an estimate of what that will cost: a
+         * pull concurrent with this push retires frames we already counted as
+         * lost, so the true loss can only be smaller. Documented as such on
+         * mdkr_audio_ring_push.
+         */
+        evicted += fill + frames - ring->capacity;
     }
 
     head = (uint32_t)SDL_AtomicGet(&ring->head);
@@ -175,19 +181,43 @@ void mdkr_audio_ring_pull(MdkrAudioRing *ring, int16_t *interleaved,
 
     ring->stats.callbacks++;
     ring->stats.requested_frames += frames;
-    /* Publish the control counter with a release barrier so the producer
-     * cannot observe a request count that precedes the ring state it implies. */
-    SDL_MemoryBarrierRelease();
+    /* SDL_AtomicSet is itself a full barrier, so no hand-rolled release is
+     * needed — and none would mean anything here anyway: this counter
+     * publishes no payload, it is just the running total of what the device
+     * has asked for. */
     SDL_AtomicSet(&ring->requested,
                   (int)((uint32_t)SDL_AtomicGet(&ring->requested) + frames));
     if (frames > ring->stats.max_callback_frames) {
         ring->stats.max_callback_frames = frames;
     }
+
+    tail = (uint32_t)SDL_AtomicGet(&ring->tail);
+    if (available > ring->capacity) {
+        /*
+         * The producer overran us: it wrote past the oldest frames we had not
+         * reached yet, and signalled it by letting head lead tail by more than
+         * the capacity (see the overflow policy in audio_ring.h). Resolve it
+         * on this side, where `tail` is ours to move: skip straight to the
+         * oldest frame that still exists, head - capacity. The frames in
+         * between are gone — they were overwritten before we read them — so
+         * the jump is an audible discontinuity and gets the same crossfade as
+         * an underflow edge.
+         */
+        const uint32_t skipped = available - ring->capacity;
+        tail += skipped;
+        available = ring->capacity;
+        SDL_AtomicSet(&ring->tail, (int)tail);
+        ring->stats.overflow_skips++;
+        if (ring->primed) {
+            ring_arm_fade(ring);
+        }
+    }
     if (ring->primed && available < ring->stats.min_fill_frames) {
         ring->stats.min_fill_frames = available;
     }
-
-    tail = (uint32_t)SDL_AtomicGet(&ring->tail);
+    if (available > ring->stats.max_readable_frames) {
+        ring->stats.max_readable_frames = available;
+    }
     for (i = 0u; i < frames; i++) {
         int32_t l;
         int32_t r;
