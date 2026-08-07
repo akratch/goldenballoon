@@ -283,6 +283,27 @@ void presentation_snapshot_note_camera_cut(int camera_id) {
     s_camera_cut_pending |= 1u << (unsigned)camera_id;
 }
 
+/*
+ * Per-tick camera cut journal (test observability only).
+ *
+ * The exit row counts discontinuities in aggregate, which is enough to prove
+ * the flag fires SOMEWHERE but not that it fires at the tick a particular cut
+ * happened. The coverage gate needs the second thing: it classifies cuts
+ * itself, from the raw poses below, and then demands that no blend spans one.
+ * Emitting the recipe rather than a verdict is the point — a journal that only
+ * printed this module's own discontinuity flag could not disagree with it.
+ */
+static int s_cut_trace = -1;
+
+static bool camera_cut_trace_enabled(void) {
+    if (s_cut_trace < 0) {
+        const char *value = getenv("MDKR_TEST_CAMERA_CUT_TRACE");
+        s_cut_trace = value != NULL && value[0] != '\0' &&
+                      strcmp(value, "0") != 0;
+    }
+    return s_cut_trace != 0;
+}
+
 typedef struct AuthoredCameraSet {
     uint64_t tick;
     uint8_t valid_mask;
@@ -601,6 +622,29 @@ void presentation_snapshot_capture_commit(void) {
     for (size_t index = 0; index < write->camera_count; index++) {
         const PresentationCameraEntry *entry = &write->cameras[index];
         SnapCameraHistory *history = &s_camera_history[index];
+        if (camera_cut_trace_enabled()) {
+            /* s_current still names the frame that is about to become
+             * previous, so this is exactly the pair resolve_camera will be
+             * offered — same four conditions, in the same order. */
+            const PresentationSnapshot *before =
+                s_current >= 0 ? &s_frames[s_current] : NULL;
+            const bool blend =
+                !entry->discontinuity && before != NULL && before->valid &&
+                before->stage_generation == write->stage_generation &&
+                index < before->camera_count &&
+                before->cameras[index].camera_id == entry->camera_id;
+            printf("[CAMERA-CUT] tick=%llu vp=%zu cams=%zu cam=%d blend=%d "
+                   "region=%u x=%.3f y=%.3f z=%.3f rx=%d ry=%d rz=%d "
+                   "pitch=%d fov=%.4f vfov=%.4f near=%.3f far=%.3f\n",
+                   (unsigned long long)write->authored_tick, index,
+                   write->camera_count, (int)entry->camera_id, blend ? 1 : 0,
+                   (unsigned)entry->world_region, (double)entry->position[0],
+                   (double)entry->position[1], (double)entry->position[2],
+                   (int)entry->rotation_x, (int)entry->rotation_y,
+                   (int)entry->rotation_z, (int)entry->pitch,
+                   (double)entry->fov, (double)entry->vertical_fov,
+                   (double)entry->near_plane, (double)entry->far_plane);
+        }
         history->camera_id = entry->camera_id;
         history->last_position[0] = entry->position[0];
         history->last_position[1] = entry->position[1];
