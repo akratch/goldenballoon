@@ -380,7 +380,10 @@ SHAPE_TRIAGE = {
         "has no key constant -- and `8 << (worldId + 31)` with worldId 1..5 yields "
         "the five CUTSCENE_*_BOSS constants. The first two ARE the reported "
         "'key animation plays after every race'.",
-    ("shift-count", "game/src/waves.c", "obj_wave_height:MIPS-MASK-IDIOM"):
+    # Re-keyed when the 100%-match sync moved the -1 inside DKR_SHL32's masked
+    # operand: the added-constant idiom is gone, so the site classifies as
+    # var-count. The reasoning below is unchanged and still correct.
+    ("shift-count", "game/src/waves.c", "obj_wave_height:var-count"):
         "FIXED by wave \"keyshift\" (DKR_SHL32). << (unk2 - 1) is the only value "
         "that makes the odd-phase branch the midpoint of two height-table entries "
         "the even branch scales by << unk2, and the `else { var_t0 >>= 1; }` is the "
