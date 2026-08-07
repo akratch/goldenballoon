@@ -392,13 +392,18 @@ def parse_last(output: str, *tags: str, label: str | None = None,
     return rows[-1]
 
 
-_PRESENT_MODE_RE = re.compile(r"\[PRESENT-MODE\] (.*)")
+def text_rows(output: str, *tags: str) -> list[dict[str, str]]:
+    """Every ``[TAG] key=value ...`` row, with values kept AS TEXT.
 
-
-def present_mode_rows(output: str) -> list[dict[str, str]]:
-    """Every ``[PRESENT-MODE]`` row a run emitted, as key/value pairs."""
+    The counterpart to parse_rows: that one drops non-integer values, which is
+    right for the numeric callers and wrong for a caller reading
+    ``policy=display-margin`` or ``reason=raf-ceiling``. Reading those as fields
+    rather than as substrings is what stops ``requested=uncapped`` also matching
+    ``requested=uncappedfoo`` and stops the field ORDER in a log line being
+    load-bearing.
+    """
     rows: list[dict[str, str]] = []
-    for match in _PRESENT_MODE_RE.finditer(output):
+    for match in _tag_re(tags).finditer(output):
         row: dict[str, str] = {}
         for token in match.group(1).split():
             key, separator, value = token.partition("=")
@@ -406,6 +411,23 @@ def present_mode_rows(output: str) -> list[dict[str, str]]:
                 row[key] = value
         rows.append(row)
     return rows
+
+
+def present_mode_rows(output: str) -> list[dict[str, str]]:
+    """Every ``[PRESENT-MODE]`` row a run emitted, as key/value pairs."""
+    return text_rows(output, "PRESENT-MODE")
+
+
+def present_policy_rows(output: str) -> list[dict[str, str]]:
+    """Every ``[PRESENT-POLICY]`` row a run emitted, as key/value pairs.
+
+    Distinct from present_mode_rows and easy to confuse with it, which is
+    exactly what went wrong once: PRESENT-MODE is the SWAPCHAIN's decision
+    (``requested=fifo effective=fifo``) and PRESENT-POLICY is the PACER's
+    (``requested=uncapped effective=display``). A browser-coercion assertion
+    that reads the wrong one finds no matching row and can never pass.
+    """
+    return text_rows(output, "PRESENT-POLICY")
 
 
 def tear_free_presentation(output: str, label: str) -> list[str]:

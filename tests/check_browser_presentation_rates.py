@@ -36,12 +36,16 @@ from check_browser_runtime import (
     wait_value,
 )
 from harness_utils import (completed_tick_conservation,
-                           parse_last as harness_parse_last, present_mode_rows)
+                           parse_last as harness_parse_last,
+                           present_mode_rows, present_policy_rows)
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
 ROM_BYTES = 12 * 1024 * 1024
 TICKS = 60
+# Policies the browser cannot serve and coerces to `display`, each announcing
+# itself on a [PRESENT-POLICY] row.
+BROWSER_COERCED_POLICIES = ("uncapped",)
 
 FATAL_MARKERS = (
     "[CRASH]", "[FATAL]", "memory access out of bounds", "RuntimeError:",
@@ -169,7 +173,8 @@ def run_arm(server: OverlayServer, chrome_path: Path, rom: Path,
             require(
                 isinstance(browser_choices, list)
                 and "display" in browser_choices
-                and "uncapped" not in browser_choices,
+                and not any(policy in browser_choices
+                            for policy in BROWSER_COERCED_POLICIES),
                 f"browser frame-rate choices are dishonest: {browser_choices}",
             )
             browser_labels = cdp.evaluate(
@@ -436,13 +441,20 @@ def compare(arm: Arm, result: Result, baseline: Result) -> list[str]:
     if not any(row.get("platform") == "web"
                and row.get("reason") == "raf-ceiling" for row in mode_rows):
         failures.append(f"{arm.name}: no explicit browser rAF present-mode row")
-    if arm.policy == "uncapped" and not any(
-            row.get("requested") == "uncapped"
-            and row.get("effective") == "display"
-            and row.get("reason") == "raf-ceiling" for row in mode_rows):
-        failures.append(
-            "web-uncapped: native-style request was not explicitly mapped "
-            "to display")
+    # The PACER's coercion, which is a different row from the swapchain's mode
+    # above: `uncapped` has no unbounded browser swapchain to ask for, so it
+    # must resolve to display and must SAY so -- a config shared from a native
+    # machine stays loadable while the run states which policy it is really on.
+    if arm.policy in BROWSER_COERCED_POLICIES:
+        policy_rows = present_policy_rows("\n".join(result.console))
+        if not any(row.get("platform") == "web"
+                   and row.get("requested") == arm.policy
+                   and row.get("effective") == "display"
+                   and row.get("reason") == "raf-ceiling"
+                   for row in policy_rows):
+            failures.append(
+                f"{arm.name}: the native-only {arm.policy} request was not "
+                f"explicitly mapped to display (saw {policy_rows})")
     return failures
 
 

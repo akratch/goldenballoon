@@ -444,12 +444,21 @@ def run_policy(binary: Path, rom: Path, backend: Backend, policy: str,
                 raise RuntimeError(
                     f"{backend.label}/{policy}: missing {marker!r}")
         if stage_via_launcher:
+            # APPLIED, not "staged", and restartPending=0. Video.FrameLimit
+            # became SCOPE_LIVE: the launcher no longer holds the value back
+            # for the next launch, and the panel no longer has a restart to
+            # announce. The claim this arm makes is unchanged and is checked
+            # by the presentation rows below -- a value chosen in the launcher
+            # and never placed in the environment reaches the engine's own
+            # pacing -- but the words the panel uses to say so are the LIVE
+            # ones now, and asserting the RESTART ones would be asserting that
+            # a fixed restart requirement came back.
             for marker in (
-                "[app] autoplay video setting staged: "
+                "[app] autoplay video setting applied: "
                 f"Video.FrameLimit={policy}",
-                "[app-ui] settings action=play-with-changes restartPending=1",
+                "[app-ui] settings action=play restartPending=0",
                 f"[app-ui] frame-limit value={policy} label={policy} Hz "
-                "restartPending=1",
+                "restartPending=0",
             ):
                 if marker not in output:
                     raise RuntimeError(
