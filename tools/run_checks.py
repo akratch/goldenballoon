@@ -338,6 +338,10 @@ CHECKS = (
           "all four Adventure trophy championships, quit/retry, and EEPROM reload"),
     Check("race_finish_time", "check_race_finish_time.py", "native",
           "three-lap finish and EEPROM time"),
+    Check("ghost_matrix", "check_ghost_matrix.py", "native",
+          "Time Trial ghost recorded, saved, and reloaded by a fresh process "
+          "over all forty-seven legal track/vehicle pairs",
+          timeout=2400),
     Check("boost_magnitude", "check_boost_magnitude.py", "native",
           "zip-pad boost per-frame speed trace, racer-count independence, and "
           "perturbed-boost-constant positive controls"),
