@@ -42,6 +42,18 @@ typedef struct DeformationList {
     size_t capacity;
 } DeformationList;
 
+typedef struct UvScrollEntry {
+    const void *key;                 /* ORIGINAL triangle-batch address */
+    GfxPresentationUvScroll scroll;
+    bool ambiguous;
+} UvScrollEntry;
+
+typedef struct UvScrollList {
+    UvScrollEntry *entries;
+    size_t count;
+    size_t capacity;
+} UvScrollList;
+
 static PacketList s_live_matrices;
 static PacketList s_live_vertices;
 static PacketList s_frozen_matrices;
@@ -49,6 +61,11 @@ static PacketList s_frozen_vertices;
 static DeformationList s_deform_live;
 static DeformationList s_deform_current;
 static DeformationList s_deform_previous;
+static UvScrollList s_uv_live;
+static UvScrollList s_uv_current;
+static UvScrollList s_uv_previous;
+static uint64_t s_uv_current_tick;
+static uint64_t s_uv_previous_tick;
 static uint64_t s_deform_live_tick;
 static uint64_t s_deform_current_tick;
 static uint64_t s_deform_previous_tick;
@@ -150,6 +167,160 @@ static bool deformation_grow(DeformationList *list, size_t need) {
     list->entries = grown;
     list->capacity = next;
     return true;
+}
+
+static bool uv_scroll_grow(UvScrollList *list, size_t need) {
+    size_t next;
+    UvScrollEntry *grown;
+
+    if (list == NULL || need > GFX_PRESENTATION_UV_SCROLL_MAX_SITES) {
+        return false;
+    }
+    if (list->capacity >= need) {
+        return true;
+    }
+    next = list->capacity != 0u ? list->capacity : PACKET_INITIAL_BINDINGS;
+    while (next < need) {
+        if (next > GFX_PRESENTATION_UV_SCROLL_MAX_SITES / 2u) {
+            next = GFX_PRESENTATION_UV_SCROLL_MAX_SITES;
+        } else {
+            next *= 2u;
+        }
+        if (next < need && next == GFX_PRESENTATION_UV_SCROLL_MAX_SITES) {
+            return false;
+        }
+    }
+    grown = (UvScrollEntry *)realloc(list->entries, next * sizeof(*grown));
+    if (grown == NULL) {
+        return false;
+    }
+    list->entries = grown;
+    list->capacity = next;
+    return true;
+}
+
+static const UvScrollEntry *uv_scroll_find(const UvScrollList *list,
+                                           const void *key) {
+    size_t index;
+
+    if (list == NULL || key == NULL) {
+        return NULL;
+    }
+    for (index = list->count; index > 0u; index--) {
+        if (list->entries[index - 1u].key == key) {
+            return &list->entries[index - 1u];
+        }
+    }
+    return NULL;
+}
+
+bool gfx_presentation_packet_capture_uv_scroll(
+    const void *key, const GfxPresentationUvScroll *scroll) {
+    UvScrollEntry *entry;
+    size_t index;
+
+    if (!s_deform_capture_active || s_deform_capture_failed || key == NULL ||
+        scroll == NULL || scroll->triangle_count == 0u ||
+        scroll->triangle_count > GFX_PRESENTATION_UV_SCROLL_MAX_TRIANGLES ||
+        (scroll->du == 0 && scroll->dv == 0) ||
+        (scroll->moved_u == 0u && scroll->moved_v == 0u)) {
+        s_stats.uv_scroll_rejects++;
+        return false;
+    }
+    for (index = s_uv_live.count; index > 0u; index--) {
+        UvScrollEntry *candidate = &s_uv_live.entries[index - 1u];
+        if (candidate->key != key) {
+            continue;
+        }
+        /* One triangle array is one batch. A second observation of the same
+         * address inside a single authored task means the census cannot tell
+         * the two apart on replay, so poison the key rather than let the later
+         * one decide the earlier one's phase. */
+        if (candidate->scroll.du == scroll->du &&
+            candidate->scroll.dv == scroll->dv &&
+            candidate->scroll.triangle_count == scroll->triangle_count &&
+            candidate->scroll.moved_u == scroll->moved_u &&
+            candidate->scroll.moved_v == scroll->moved_v) {
+            return true;
+        }
+        candidate->ambiguous = true;
+        s_stats.uv_scroll_collisions++;
+        return false;
+    }
+    if (!uv_scroll_grow(&s_uv_live, s_uv_live.count + 1u)) {
+        s_stats.uv_scroll_rejects++;
+        return false;
+    }
+    entry = &s_uv_live.entries[s_uv_live.count++];
+    memset(entry, 0, sizeof(*entry));
+    entry->key = key;
+    entry->scroll = *scroll;
+    s_stats.uv_scroll_registrations++;
+    if (s_uv_live.count > s_stats.uv_scroll_peak) {
+        s_stats.uv_scroll_peak = s_uv_live.count;
+        s_stats.uv_scroll_bytes_peak = s_uv_live.count * sizeof(*entry);
+    }
+    return true;
+}
+
+bool gfx_presentation_packet_lookup_uv_scroll(
+    const void *key, uint64_t target_tick, uint32_t triangle_count,
+    GfxPresentationUvScroll *out) {
+    const UvScrollEntry *current;
+    const UvScrollEntry *previous;
+
+    if (!s_frozen_valid || key == NULL || out == NULL || target_tick == 0u ||
+        s_uv_current_tick != target_tick ||
+        s_uv_previous_tick + 1u != s_uv_current_tick) {
+        return false;
+    }
+    current = uv_scroll_find(&s_uv_current, key);
+    if (current == NULL) {
+        /* Not a scroller. The authored bytes are already exact, so this is
+         * not a hold -- there is nothing to interpolate. */
+        return false;
+    }
+    previous = uv_scroll_find(&s_uv_previous, key);
+    /* Confirmation, not just presence. Authored scroll speed is a level
+     * constant, so a real scroller reproduces the same displacement every
+     * tick. Requiring the previous published tick to agree is what keeps a
+     * single mis-resolved wrap off the screen. */
+    if (previous == NULL || current->ambiguous || previous->ambiguous ||
+        current->scroll.triangle_count != triangle_count ||
+        previous->scroll.triangle_count != triangle_count ||
+        current->scroll.du != previous->scroll.du ||
+        current->scroll.dv != previous->scroll.dv ||
+        current->scroll.moved_u != previous->scroll.moved_u ||
+        current->scroll.moved_v != previous->scroll.moved_v) {
+        /* A known scroller whose two published ticks disagree: hold its
+         * authored phase for this tick rather than guess. */
+        s_stats.uv_scroll_holds++;
+        return false;
+    }
+    *out = current->scroll;
+    s_stats.uv_scroll_confirmations++;
+    return true;
+}
+
+void gfx_presentation_packet_publish_uv_scroll(uint64_t tick) {
+    UvScrollList recycled;
+
+    if (tick == 0u) {
+        s_uv_live.count = 0u;
+        return;
+    }
+    recycled = s_uv_previous;
+    s_uv_previous = s_uv_current;
+    s_uv_previous_tick = s_uv_current_tick;
+    s_uv_current = s_uv_live;
+    s_uv_current_tick = tick;
+    s_uv_live = recycled;
+    s_uv_live.count = 0u;
+}
+
+void gfx_presentation_packet_note_uv_scroll_override(void) {
+    s_stats.uv_scroll_hits++;
+    s_stats.uv_scroll_overrides++;
 }
 
 static bool list_register(PacketList *list, const void *key, size_t key_size,
@@ -315,6 +486,7 @@ void gfx_presentation_packet_note_dependency_endpoint(
 
 void gfx_presentation_packet_capture_begin(uint64_t tick) {
     s_deform_live.count = 0u;
+    s_uv_live.count = 0u;
     s_deform_live_tick = tick;
     s_deform_capture_active = true;
     s_deform_capture_failed = false;
@@ -322,6 +494,7 @@ void gfx_presentation_packet_capture_begin(uint64_t tick) {
 
 void gfx_presentation_packet_capture_abort(void) {
     s_deform_live.count = 0u;
+    s_uv_live.count = 0u;
     s_deform_live_tick = 0u;
     s_deform_capture_active = false;
     s_deform_capture_failed = false;
@@ -431,6 +604,7 @@ bool gfx_presentation_packet_publish_deformation(void) {
     }
     if (s_deform_capture_failed) {
         s_deform_live.count = 0u;
+        s_uv_live.count = 0u;
         s_deform_capture_active = false;
         return false;
     }
@@ -471,6 +645,7 @@ void gfx_presentation_packet_freeze(void) {
         s_stats.frozen_matrices = 0u;
         s_stats.frozen_vertices = 0u;
         s_deform_live.count = 0u;
+        s_uv_live.count = 0u;
         s_deform_capture_active = false;
         return;
     }
@@ -799,6 +974,11 @@ void gfx_presentation_packet_invalidate(void) {
     s_deform_live.count = 0u;
     s_deform_current.count = 0u;
     s_deform_previous.count = 0u;
+    s_uv_live.count = 0u;
+    s_uv_current.count = 0u;
+    s_uv_previous.count = 0u;
+    s_uv_current_tick = 0u;
+    s_uv_previous_tick = 0u;
     s_deform_live_tick = 0u;
     s_deform_current_tick = 0u;
     s_deform_previous_tick = 0u;
@@ -822,6 +1002,9 @@ void gfx_presentation_packet_shutdown(void) {
     free(s_deform_live.entries);
     free(s_deform_current.entries);
     free(s_deform_previous.entries);
+    free(s_uv_live.entries);
+    free(s_uv_current.entries);
+    free(s_uv_previous.entries);
     memset(&s_live_matrices, 0, sizeof(s_live_matrices));
     memset(&s_live_vertices, 0, sizeof(s_live_vertices));
     memset(&s_frozen_matrices, 0, sizeof(s_frozen_matrices));
@@ -829,6 +1012,11 @@ void gfx_presentation_packet_shutdown(void) {
     memset(&s_deform_live, 0, sizeof(s_deform_live));
     memset(&s_deform_current, 0, sizeof(s_deform_current));
     memset(&s_deform_previous, 0, sizeof(s_deform_previous));
+    memset(&s_uv_live, 0, sizeof(s_uv_live));
+    memset(&s_uv_current, 0, sizeof(s_uv_current));
+    memset(&s_uv_previous, 0, sizeof(s_uv_previous));
+    s_uv_current_tick = 0u;
+    s_uv_previous_tick = 0u;
     memset(&s_stats, 0, sizeof(s_stats));
     s_deform_live_tick = 0u;
     s_deform_current_tick = 0u;

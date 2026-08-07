@@ -168,9 +168,11 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
         "Motion smoothing",
         "interpolate draws presentation-only in-between images from adjacent "
-        "authored tasks. It does not advance physics, AI, timers, audio, or input "
-        "more often. off presents only the game's authored images. Requires a "
-        "restart because retained replay resources are armed at startup.",
+        "authored tasks. Cameras, objects, and scrolling surfaces such as "
+        "waterfalls, water, and lava all move in step. It does not advance "
+        "physics, AI, timers, audio, or input more often. off presents only the "
+        "game's authored images. Requires a restart because retained replay "
+        "resources are armed at startup.",
         MDKR_VIDEO_CAT_PACING
     },
     [MDKR_VIDEO_MODE] = {

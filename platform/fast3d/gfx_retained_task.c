@@ -443,6 +443,25 @@ bool gfx_retained_task_lookup_dependency(const void *original_address,
     return false;
 }
 
+const void *gfx_retained_task_retained_span(const void *original_address,
+                                            size_t size) {
+    const void *retained = NULL;
+    size_t offset;
+
+    if (!s_task.valid || original_address == NULL || size == 0u) {
+        return NULL;
+    }
+    if (span_in_range(original_address, size, s_task.original_arena,
+                      s_task.arena_size, &offset)) {
+        return s_task.arena + offset;
+    }
+    if (gfx_retained_task_lookup_dependency(original_address, size,
+                                            &retained)) {
+        return retained;
+    }
+    return NULL;
+}
+
 bool gfx_retained_task_dependency_room(const void *retained_address,
                                        size_t *out) {
     size_t index;

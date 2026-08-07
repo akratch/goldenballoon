@@ -8,6 +8,18 @@ From 1.0.0 onward this project follows semantic versioning for the platform
 layer's public seams (config keys, environment variables, command-line flags and
 save formats). Everything below 1.0.0 predates that commitment.
 
+## [Unreleased]
+
+### Changed
+
+- **Waterfalls, water and lava now move smoothly with everything else**, and
+  Motion smoothing is no longer labelled a preview. With smoothing on, the
+  picture between the game's own frames used to move the camera and the racers
+  but leave scrolling surfaces where they were, so a waterfall would tick along
+  in steps while the world around it glided. All of it moves together now. The
+  game still runs at its original pace; nothing about how it plays has changed,
+  and Motion smoothing Off is untouched.
+
 ## [1.0.6] — 2026-08-06
 
 ### Added

@@ -1,7 +1,8 @@
 # Original gameplay with modern presentation
 
-Status: shipped in 1.0.4 (2026-08-04) with Motion smoothing labelled Preview.
-The qualification measurements below were taken 2026-08-02.
+Status: shipped in 1.0.4 (2026-08-04); the Preview label was removed once
+authored UV scroll gained retained endpoints. The qualification measurements
+below were taken 2026-08-02.
 
 ## Decision
 
@@ -160,7 +161,8 @@ The implementation is accepted only if all four layers agree:
    semantic vertex stream and backend pixels.
 3. **Midpoint sensitivity:** production midpoints differ from both adjacent
    endpoints, while object, deformation, particle geometry, vertex color,
-   primitive alpha, and shield controls each cause an independent pixel change.
+   primitive alpha, shield, and authored-UV-scroll controls each cause an
+   independent pixel change.
 4. **Lifetime safety:** replay succeeds while the complete live arena is
    poisoned, across unload/restart/reissue boundaries, with zero stale fallback,
    key collision, capture failure, or dependency failure.
@@ -169,7 +171,7 @@ The principal gates are:
 
 - `tests/check_presentation_matrix.py`: fixed authority, GL/WebGPU agreement,
   endpoint semantics/pixels, live-arena poison, unique midpoints, and independent
-  model/particle/fade/effect controls;
+  model/particle/fade/effect/UV-scroll controls;
 - `tests/check_arbitrary_presentation_rates.py`: NTSC 30/60/90/120/144/165/240,
   native Uncapped stand-in, PAL 60 and PAL Match Display, and nonblocking
   WebGPU overload behavior;
@@ -190,17 +192,69 @@ The local qualification record for this change is summarized in the 1.0.4
 changelog entry. Raw ROM-derived frames, traces, PCM, and saves remain local and
 are not committed.
 
-## Known preview limitation
+## Authored UV scroll
 
-Static level geometry with authored UV scrolling, including waterfalls, does
-not yet have stable retained T/T+1 UV identity. Those texture phases therefore
-advance only on original game ticks even while cameras and supported objects
-receive in-between presentation states. At high display rates this can look
-stepped or shimmer during camera motion. A correct implementation must retain
-both UV endpoints and interpolate across texture wrapping; interpolating the
-live mutable vertices would violate the replay ownership boundary. Motion
-smoothing remains labelled Preview until that work and its visual gates land.
-The default smoothing-Off path is unaffected.
+No DKR scroller uses `G_SETTILESIZE`, `gSPTexture` or a texture matrix. Every
+one of them rewrites the S10.5 corner UVs inside a `Triangle` array in place,
+once per authored tick, and `gSPPolygon` (`G_TRIN`) carries only a pointer to
+that array. The drivers are `obj_loop_texscroll` (the level-wide
+waterfall/river/lava scroller, matched by texture index), `obj_loop_animator`
+(one segment and batch), the generated wave surfaces in `waves.c`, and the
+rain, particle and skydome sheets. They differ only in which triangles they
+touch and in the modulus they fold back at.
+
+That is why the retained endpoints do not need to know which driver owns a
+batch. The retained task already holds tick T's bytes for the array, because
+`G_TRIN` copies them as a task dependency; the already-authored next task names
+the same array now holding T+1. The difference of the two is the tick's
+displacement, whatever produced it, and replay adds `alpha` times that
+displacement to the authored corner coordinates. Nothing is written back: the
+retained image stays immutable and the live array is only read, so the replay
+ownership boundary is untouched and alpha zero is byte-exact.
+
+**Wrapping.** Each driver periodically folds a corner back into range by adding
+or subtracting a whole number of texture repeats: `texscroll` uses `width<<8`
+and `height<<8` (eight repeats), the animator `width<<7` (four), waves
+`width*32` (one), rain `(width<<5)*2`, the skydome `width<<9`, and the particle
+sheet a flat 512. Every one of those is a multiple of 32 — one texel — because
+they are all whole repeats of a texture that is a whole number of texels wide.
+Interpolating the raw difference across a fold would sweep the surface through
+its entire texture inside one tick, so the shortest wrap distance is recovered
+structurally rather than numerically: every triangle in a batch takes the same
+displacement, a batch is at most sixteen triangles, and the un-folded ones state
+the displacement directly. Anything larger must then be that displacement offset
+by an exact multiple of one texel. A batch that cannot be explained that way
+registers nothing and holds.
+
+**Identity.** Endpoints are keyed by the triangle array's original address, and
+a batch also has to reproduce its own topology — the four index and flag bytes
+of every triangle — between the two ticks. `waves.c` is the one driver that
+double-buffers its geometry: it builds into `gWaveTriangles[flip + (k << 1)]`
+and flips `flip` every tick, so one surface sits at two alternating addresses.
+That correspondence is declared by the game through
+`gfx_dkr_note_paired_triangle_buffers` rather than guessed by the renderer, and
+both phases of a pair key off the same even-phase address.
+
+**Refusals.** A displacement reaches the screen only when the previous published
+tick agreed on the same one for the same key. Authored scroll speed is a level
+constant, so a real scroller confirms on its second tick and stays confirmed;
+anything else — a batch appearing for the first time, a batch whose bytes are
+not wholly retained, a fold that leaves no un-folded triangle to read the
+displacement from — holds its authored phase for that tick, which is exactly
+the behaviour that shipped in 1.0.4. Refusals are counted as `uvscrollhold` in
+`[PRESENT-PACKET]`.
+
+**Cost.** A confirmed site is a 32-byte record: two displacements, a triangle
+count and two per-triangle selectors. Only batches that actually moved are
+recorded, so ordinary static geometry costs nothing. The measured peak over the
+Jungle Falls and Hot Top Volcano routes is 11 live sites, 352 bytes a tick,
+held in the presentation packet and therefore outside the 16 MiB retained-arena
+copy budget entirely.
+
+`tests/check_presentation_matrix.py`'s `MDKR_TEST_UV_SCROLL_INTERPOLATION=off`
+control is the midpoint-sensitivity gate: on Jungle Falls the interpolated
+midpoints must differ between the two arms, and the authored endpoints must
+stay byte-identical.
 
 ## The 50 Hz source on a 60 Hz display
 

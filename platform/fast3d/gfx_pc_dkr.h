@@ -146,6 +146,26 @@ void gfx_dkr_resource_generation_begin(
 void gfx_dkr_stage_resources_released(void);
 
 /*
+ * Declare a ping-pong pair of triangle buffers.
+ *
+ * Some authored geometry is double-buffered by the game itself: waves.c builds
+ * the water/lava surface into gWaveTriangles[flip + ...] and flips `flip` every
+ * authored tick, so the SAME surface is at one address on tick T and a different
+ * one on tick T+1. Retained presentation replay keys UV-scroll endpoints by
+ * address, and an address that alternates carries no identity across ticks.
+ *
+ * This is the game stating the correspondence rather than the renderer guessing
+ * it: `base` is buffer 0, `stride` is the byte distance to the next buffer, and
+ * `count` is how many buffers the allocation holds. Buffer 2i and 2i+1 are the
+ * two phases of one surface. Registration is presentation-only -- nothing here
+ * is read on the authoritative path, and an unregistered buffer simply keeps the
+ * previous hold behaviour.
+ */
+void gfx_dkr_note_paired_triangle_buffers(const void *base, size_t stride,
+                                          unsigned count);
+void gfx_dkr_forget_paired_triangle_buffers(const void *base);
+
+/*
  * Identify decoded texture payloads owned by ASSET_FONTS, with the glyph cells
  * that may be sampled from each atlas. Remastered mode derives only registered
  * atlases; Pure and Restored never enter the derivation path.

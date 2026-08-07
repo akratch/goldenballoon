@@ -292,7 +292,7 @@ const Option kFrameLimit[] = {
     {"uncapped", "Uncapped (native)"},
 };
 const Option kMotionSmoothing[] = {
-    {"interpolate", "Interpolated (preview)"},
+    {"interpolate", "Interpolated"},
     {"off",         "Off (original motion)"},
 };
 const Option kAllowTearing[] = {
