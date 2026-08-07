@@ -353,6 +353,10 @@ CHECKS = (
     Check("ai_unstick_opponents", "check_ai_unstick_opponents.py", "native",
           "CPU-opponent AI stuck-recovery cooldown across seeded Hot Top "
           "Volcano races, with a reducer positive control"),
+    Check("campaign_progression", "check_campaign_progression.py", "native",
+          "silver-coin collection, persistence and world balloons; all four boss "
+          "rematches and their Wizpig amulet pieces with a first-encounter "
+          "control; Wizpig 2 setting the true-ending credits bit"),
     Check("collision_gridmask", "check_collision_gridmask.py", "native",
           "collision candidate filter and boss flow"),
     Check("collision_headroom", "check_collision_headroom.py", "native",

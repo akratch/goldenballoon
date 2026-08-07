@@ -83,6 +83,22 @@
  *       closed-loop route primitive for tests/check_first_boss_progression.py,
  *       not a result or progression shortcut.
  *
+ *   MDKR_SILVER_ROUTE=1
+ *       Steer toward the nearest silver coin this player has not collected, when
+ *       one is within MDKR_SILVER_RADIUS (default 1400) units; otherwise leave
+ *       the AI line alone. The same shape as MDKR_BOSS_ROUTE and for the same
+ *       reason: DKR places silver coins off the racing line on purpose, so the
+ *       stock AI collects 5-6 of 8 (measured, Ancient Lake, three laps) and
+ *       set_course_finish_flags()'s `silverCoinCount >= 8` write can never be
+ *       observed. Steering only -- it never touches silverCoinCount or the coin
+ *       objects, so a coin still counts only when obj_loop_silvercoin() sees its
+ *       own interactObj->distance < 80. The radius is what keeps the detour
+ *       local: divert at any range and the kart stops making checkpoint
+ *       progress, so it never finishes and nothing is written at all.
+ *       Used by tests/check_campaign_progression.py.
+ *
+ *   MDKR_SILVER_RADIUS=<units>   silver-coin detour range (default 1400)
+ *
  *   MDKR_AUTOPILOT_UNSTICK=1
  *       Re-arm DKR's OWN stuck-recovery for the MDKR_AUTOPILOT racer when that
  *       recovery has become unreachable. racer_AI_pathing_inputs() reverses a
@@ -470,6 +486,9 @@ static s32 sAdvObjdump = 0;
 static s32 sAdvVerbose = 0;
 static s32 sAdvBossRoute = 0;
 static s32 sAdvBossRouteAnnounced = 0;
+static s32 sAdvSilverRoute = 0;
+static f32 sAdvSilverRadius = 1400.0f;
+static s32 sAdvSilverSeeking = 0;
 
 #define MDKR_TRICKY_ONE_LEVEL 38
 #define MDKR_TRICKY_SUMMIT_CHECKPOINT 36
@@ -567,6 +586,12 @@ static void mdkr_adv_init(void) {
     sAdvVerbose = (e != NULL && e[0] == '1') ? 1 : 0;
     e = getenv("MDKR_BOSS_ROUTE");
     sAdvBossRoute = (e != NULL && e[0] == '1') ? 1 : 0;
+    e = getenv("MDKR_SILVER_ROUTE");
+    sAdvSilverRoute = (e != NULL && e[0] == '1') ? 1 : 0;
+    e = getenv("MDKR_SILVER_RADIUS");
+    if (e != NULL && e[0] != '\0') {
+        sAdvSilverRadius = (f32) atof(e);
+    }
 }
 
 /* ------------------------------------------------------------------- dump */
@@ -751,7 +776,7 @@ void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate) {
     mdkr_taj_p2_lead_prepare(racer);
     mdkr_taj_p2_lead_trace(racer);
     mdkr_adv_init();
-    if (sAdvLevelCount == 0 && !sAdvObjdump && !sAdvBossRoute) {
+    if (sAdvLevelCount == 0 && !sAdvObjdump && !sAdvBossRoute && !sAdvSilverRoute) {
         return;
     }
     settings = get_settings();
@@ -814,6 +839,73 @@ void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate) {
         mdkr_adv_steer(racer, MDKR_TRICKY_FINISH_TARGET_X - obj->trans.x_position,
                        MDKR_TRICKY_FINISH_TARGET_Z - obj->trans.z_position, 0);
         return;
+    }
+
+    /*
+     * MDKR_SILVER_ROUTE -- the silver-coin analogue of MDKR_BOSS_ROUTE, and for
+     * the same reason: the stock AI line cannot complete the objective.
+     *
+     * DKR's silver coins are deliberately placed OFF the racing line -- that is
+     * what makes the challenge a challenge -- so racer_AI_pathing_inputs(), which
+     * drives MDKR_AUTOPILOT, sweeps up only the coins that happen to sit near the
+     * spline. Measured on Ancient Lake over three laps: 5 and 6 of 8. Since
+     * set_course_finish_flags() writes RACE_CLEARED_SILVER_COINS only at
+     * silverCoinCount >= 8, an autopilot run can never witness that write, and
+     * the whole silver-coin seam stays unobservable.
+     *
+     * This supplies STEERING ONLY, exactly like the Tricky 1 summit recovery
+     * above. It does not move the kart, touch collision, set laps, checkpoints,
+     * raceFinished or any verdict, and -- the point -- it does not touch
+     * silverCoinCount or the coin objects. A coin still counts only when
+     * obj_loop_silvercoin() sees the production interactObj->distance < 80 and
+     * increments the counter itself, so what is being witnessed remains the
+     * game's own collection and persistence path.
+     *
+     * The detour is deliberately LOCAL (default 1400 units, MDKR_SILVER_RADIUS):
+     * diverting at any range would abandon the AI line entirely and the kart
+     * would stop making checkpoint progress, so laps -- and therefore the finish
+     * that triggers the flag write -- would never happen. Within the radius the
+     * kart peels off, collects, and is handed straight back to the AI. Three laps
+     * give each coin three chances.
+     */
+    if (sAdvSilverRoute && !racer->raceFinished) {
+        Object *coin = NULL;
+        f32 best = sAdvSilverRadius * sAdvSilverRadius;
+        s32 collectedBit = 1 << racer->playerIndex; /* SILVER_COIN_COLLECTED << playerIndex */
+        s32 i;
+        for (i = 0; i < gObjectCount; i++) {
+            Object *cand = gObjPtrList[i];
+            f32 cx, cz, d2;
+            if (cand == NULL) {
+                continue;
+            }
+            if (cand->behaviorId != BHV_SILVER_COIN && cand->behaviorId != BHV_SILVER_COIN_2) {
+                continue;
+            }
+            /* INACTIVE coins free themselves at init, so anything still in the
+             * list is live; skip only the ones this player already has. */
+            if (cand->properties.silverCoin.action & collectedBit) {
+                continue;
+            }
+            cx = cand->trans.x_position - obj->trans.x_position;
+            cz = cand->trans.z_position - obj->trans.z_position;
+            d2 = (cx * cx) + (cz * cz);
+            if (d2 < best) {
+                best = d2;
+                coin = cand;
+            }
+        }
+        if (coin != NULL) {
+            if (!sAdvSilverSeeking && mdkr_trace_enabled()) {
+                mdkr_trace("silverroute: level=%d seeking coin at (%.1f, %.1f) @frame~%d", (int) levelId,
+                           coin->trans.x_position, coin->trans.z_position, g_frameCounter);
+            }
+            sAdvSilverSeeking = 1;
+            mdkr_adv_steer(racer, coin->trans.x_position - obj->trans.x_position,
+                           coin->trans.z_position - obj->trans.z_position, 0);
+            return;
+        }
+        sAdvSilverSeeking = 0;
     }
 
     slot = sAdvPrevSlot;

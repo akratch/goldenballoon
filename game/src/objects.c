@@ -2112,6 +2112,18 @@ void track_spawn_objects(s32 mapID, s32 index) {
     if (level_type()) {
         gIsSilverCoinRace = FALSE;
     }
+#ifdef NATIVE_PORT
+    /* NATIVE_PORT, read-only: gIsSilverCoinRace is decided exactly once, here,
+     * at object-map spawn, and it decides whether the coin objects exist at all
+     * (obj_init_silvercoin frees itself otherwise). A fixture that gets any one
+     * of these five inputs wrong produces a race with no coins and no error, so
+     * the inputs are printed next to the verdict. One line per level load. */
+    MDKR_TRACE("silvercoinrace: courseId=%d worldId=%d bosses=0x%x courseFlags=0x%x "
+               "raceType=%d tracksMode=%d verdict=%d",
+               (int) settings->courseId, (int) settings->worldId, (unsigned) settings->bosses,
+               (unsigned) settings->courseFlagsPtr[settings->courseId], (int) level_type(),
+               (int) is_in_tracks_mode(), (int) gIsSilverCoinRace);
+#endif
 
     D_8011AD3E = 0;
     mem = mempool_alloc_safe(OBJECT_MAP_SIZE, COLOUR_TAG_BLUE);
@@ -9640,6 +9652,20 @@ s8 set_course_finish_flags(Settings *settings) {
     Object_Racer *racer;
 
     racer = gRacersByPosition[PLAYER_ONE]->racer;
+#ifdef NATIVE_PORT
+    /* NATIVE_PORT, read-only: the whole silver-coin seam converges on this one
+     * function, and every branch it can take is invisible from outside. The
+     * three things a witness has to separate are (a) the leading racer was a
+     * computer, so nothing at all is written, (b) this was still a first clear,
+     * so RACE_CLEARED is written and the coins are irrelevant, and (c) it was a
+     * silver-coin replay, in which case the coin count decides. Printed before
+     * the branch so the inputs are the pre-write values. One line per race. */
+    MDKR_TRACE("silvercoinfinish: courseId=%d leadPlayerIndex=%d coins=%d silverRace=%d "
+               "timeTrial=%d courseFlags=0x%x",
+               (int) settings->courseId, (int) racer->playerIndex, (int) racer->silverCoinCount,
+               (int) gIsSilverCoinRace, (int) gIsTimeTrial,
+               (unsigned) settings->courseFlagsPtr[settings->courseId]);
+#endif
     if (racer->playerIndex == PLAYER_COMPUTER) {
         return FALSE;
     }
