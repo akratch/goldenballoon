@@ -59,6 +59,24 @@ This is exactly the moment silver coins unlock: `gIsSilverCoinRace`
 (`game/src/objects.c:2103`) needs the course already `RACE_CLEARED` **and**
 `1 << worldId` present in `settings->bosses`.
 
+## The chain is carried, not rebuilt
+
+Fixtures A and B below are constructed. Everything after the first rematch is
+**carried**: `Slot.from_save()` reads a real persisted EEPROM back into the same
+shape, and the next seam runs on it with only the fields a later gate needs
+overridden, each override named at its call site.
+
+So the four seam B arms are not four independent runs from four synthetic saves —
+each is fought on the EEPROM the previous one persisted. `wizpigAmulet` climbing
+1 → 2 → 3 → 4 (and `bosses` 0x9e → 0x19e → 0x39e → 0x79e) is therefore something
+production wrote four times. Seam C runs on the end of that chain, seam E on the
+end of seam C. Each carried step also asserts that no bit the incoming save held
+was dropped, so “carried” is checked, not assumed.
+
+The only constructed inputs left are fixture A, the seam B negative control
+(deliberately not a legitimate state), and the four premise fields listed under
+fixture E.
+
 ## Fixture B — “that world is silver-coin complete”
 
 Entered by seam B. It is fixture A with seam A applied four times. Seam A proves
@@ -86,21 +104,41 @@ Production then reads the race as a first encounter and awards the first-boss
 bit and no amulet. Without that arm, “the rematch awarded an amulet” would be
 consistent with “any boss win awards an amulet”.
 
-## Fixture E — “everything but the last race”
+## Fixture C — the end of the seam B chain, unmodified
 
-Entered by seam E. It is fixture B applied to all four worlds, then seam B run on
-each. Seam B proves a rematch win sets `1 << (world + 6)` and advances
-`wizpigAmulet` by exactly one, so four worlds give the four rematch bits and
-`wizpigAmulet == 4` — which is the whole of Wizpig 1’s gate
-(`game/src/game.c:643`).
+Entered by seam C. No overrides at all: it is the EEPROM the fourth rematch
+persisted. Four rematch wins give the four `1 << (world + 6)` bits and
+`wizpigAmulet == 4`, which is the whole of Wizpig 1’s gate
+(`game/src/game.c:642-643`). The three-piece negative control is the same chain
+one link earlier, which is why it needs no construction either.
 
-The rest of the fixture is Wizpig 2’s own gate (`game/src/game.c:755`, and the
-T.T. door at `game/src/object_functions.c:4116`): `trophies == 0xFF`,
-`ttAmulet == 4` with the four world keys, Future Fun Land’s four races cleared,
-and at least 47 total balloons.
+### Why this seam was first reported as not firing
 
-Three of those fields are **not** derived from a seam this check witnesses, and
-are listed below rather than quietly folded in.
+`game_load_level`’s `level_load:` trace (`game/src/game.c:500`) prints the level
+that was **asked** for. The Wizpig-face branch 140 lines later pushes the hub
+onto the level-properties stack, rewrites `levelId` to
+`ASSET_MISC_68[4]` (= 42, `WIZPIGMOUTHSEQUENCE`), plays it, and pops the hub back.
+Both loads therefore print `levelId=0`, and a redirected hub load is
+byte-identical in the log to an ordinary one — the first pass over this read the
+two hub loads as “the cutscene did not fire” when they are in fact its signature.
+
+The save disagreed all along: `CUTSCENE_WIZPIG_FACE` (0x2000) has exactly one
+writer, `game/src/game.c:648`, inside that branch, and it was set. The
+`wizpigface:` trace was added so the redirect is stated where it happens rather
+than inferred, and seam C asserts both it and the persisted flag.
+
+## Fixture E — seam C’s save, plus what Wizpig 2 additionally wants
+
+Entered by seam E. The campaign half is carried out of seam C untouched: the four
+rematch bits and `wizpigAmulet == 4` from seam B’s wins, Wizpig 1’s cleared
+course and `bosses` bit 0 from seam C’s.
+
+Four fields are **overridden**, and they are the only things in the whole chain
+this check asserts without having watched them. They are Wizpig 2’s other gate
+(`game/src/game.c:755`, and the T.T. door at
+`game/src/object_functions.c:4116`): `trophies == 0xFF`, `ttAmulet == 4` with the
+four world keys, Future Fun Land’s four races cleared, and at least 47 total
+balloons. See the residual list below.
 
 ## Residual manual acceptance
 
@@ -119,22 +157,16 @@ reaches the first boss only as `12:E7:E38`. What is unwitnessed is therefore the
 **approach**, not the gate: the gate itself is `balloonsPtr[worldId] == 8`, and
 seam A proves silver clears are what produce that number.
 
-**2. Wizpig 1.** Not witnessed at all. The Wizpig-face cutscene that opens it is
-triggered on the *hub load path* rather than by an object
-(`game/src/game.c:642-650`), and a resumed save with `wizpigAmulet == 4` was
-measured loading the hub twice without redirecting to
-`ASSET_LEVEL_WIZPIGMOUTHSEQUENCE`. Fixture E therefore asserts Wizpig 1 cleared
-and `bosses` bit 0 as a *premise*, because Wizpig 2 is unreachable without them,
-and seam E claims nothing about Wizpig 1.
-
-**3. The T.T. amulet and the trophy championships.** `ttAmulet` is written by the
+**2. The T.T. amulet and the trophy championships.** `ttAmulet` is written by the
 four T.T. challenge levels (`game/src/objects.c:9256-9268`) and `trophies` by the
 trophy-race rankings screen. The trophy side already has a gate —
 [`check_trophy_series.py`](../check_trophy_series.py) drives all four
 championships and their EEPROM persistence — but neither is chained into this
-file, so fixture E states both as premises.
+file, so fixture E states both as premises. The Future Fun Land unlock they feed
+(`trophies & 0xFF == 0xFF` plus Wizpig 1, `game/src/thread3_main.c:1895-1899`) is
+unwitnessed for the same reason.
 
-**4. The credits screen from a won Wizpig 2.** Seam E proves the campaign sets
+**3. The credits screen from a won Wizpig 2.** Seam E proves the campaign sets
 and persists `bosses & 0x20`, which is the single value `menu_credits_init`
 (`game/src/menu.c:15188-15201`) reads to choose “TO BE CONTINUED …” and
 `SEQUENCE_CRESCENT_ISLAND` over “THE END?”. It does not reach the screen. After

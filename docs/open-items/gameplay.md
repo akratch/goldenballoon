@@ -1561,21 +1561,30 @@ bit-level derivation):
 - **silver coins** — all eight collected on a real course entered through the
   hub and lobby, `RACE_CLEARED_SILVER_COINS` written once, the two balloon
   counters incremented, and the whole thing read back by a second process;
-- **all four boss rematches** — each awarding its `1 << (world + 6)` bit and
-  exactly one `wizpigAmulet` piece, against a first-encounter control that must
-  award the first-boss bit and no amulet;
+- **all four boss rematches** — each fought on the EEPROM the previous one
+  persisted, so `wizpigAmulet` climbing 1, 2, 3, 4 is written by production four
+  times rather than asserted into a fixture; against a first-encounter control
+  that must award the first-boss bit and no amulet;
+- **Wizpig 1** — four amulet pieces redirecting the next Timber's Island load to
+  the Wizpig mouth sequence (three pieces must not), then the race itself won;
 - **Wizpig 2** — won, setting and persisting `bosses & 0x20`, the single value
   `menu_credits_init` reads to choose the true ending over "THE END?".
 
-Four things remain manual, each for a measured headless reason recorded in that
-fixtures README rather than papered over: the lobby's boss-rematch **door**
-driven rather than retargeted (the kart stalls 1,240 units short of it),
-**Wizpig 1** (its unlock cutscene is on the hub-load path and did not fire from
-a resumed save), the **T.T. amulet** challenges and the **trophy**
-championships (the latter separately gated by `check_trophy_series.py`), and the
-**credits screen** reached by finishing Wizpig 2 — `ASSET_LEVEL_WIZPIG2ANIM`
-does not run itself out headlessly, so the check asserts the bit that selects
-the ending rather than the screen that shows it.
+Three things remain manual, each for a measured reason recorded in that fixtures
+README rather than papered over: the lobby's boss-rematch **door** driven rather
+than retargeted (the kart stalls 1,240 units short of it), the **T.T. amulet**
+challenges and the **trophy** championships with the Future Fun Land unlock they
+feed (the trophy side separately gated by `check_trophy_series.py`), and the
+**credits screen** reached by finishing Wizpig 2 — `ASSET_LEVEL_WIZPIG2ANIM` does
+not run itself out headlessly, so the check asserts the bit that selects the
+ending rather than the screen that shows it.
+
+One methodological note worth keeping, because it cost a false "unwitnessed"
+finding: `game_load_level` traces the level it was **asked** for, and the
+Wizpig-face branch rewrites that level afterwards, then pushes and pops the hub
+around the cutscene. A redirected hub load is therefore indistinguishable in the
+level-load stream from an ordinary one. The `wizpigface:` trace states the
+redirect where it happens instead.
 
 ## OPEN, deliberately deferred: Taj Time Trial records no best time and stores no ghost
 

@@ -26,13 +26,21 @@ A  Silver coins persist.       Ancient Lake, entered through the real hub and
                                the game's own coin objects; the flag, the balloon
                                counts and the EEPROM round-trip are asserted, the
                                last of them from a second process.
-B  Rematch awards the amulet.  Three worlds' second boss races, won. Each must
-                               set the world's rematch boss bit and advance
-                               wizpigAmulet exactly once. The negative control is
-                               the same race from a save where the FIRST boss was
+B  Rematch awards the amulet.  All four worlds' second boss races, won, each one
+                               fought on the EEPROM the previous one persisted --
+                               so wizpigAmulet climbing 1, 2, 3, 4 is something
+                               production wrote four times rather than something
+                               a fixture asserted. The negative control is the
+                               same race from a save where the FIRST boss was
                                never beaten: production must award the first-boss
                                bit and NO amulet, which is what proves the amulet
                                is gated on the rematch actually being a rematch.
+C  Four pieces open Wizpig 1.  The carried four-piece save loaded into Timber's
+                               Island must redirect to the Wizpig mouth sequence
+                               and latch CUTSCENE_WIZPIG_FACE; the same chain one
+                               rematch earlier, at three pieces, must not. Then
+                               Wizpig 1 itself is raced and won, setting its
+                               central-area boss bit.
 E  Wizpig 2 selects the true   The final boss, won. `menu_credits_init` chooses
    ending.                     between "THE END" (cheat), "THE END?" (legitimate,
                                Wizpig 2 not beaten) and "TO BE CONTINUED ..." +
@@ -46,11 +54,12 @@ E  Wizpig 2 selects the true   The final boss, won. `menu_credits_init` chooses
 
 What this deliberately does NOT prove
 -------------------------------------
-See tests/fixtures/README.md, "Residual manual acceptance". In short: Wizpig 1's
-own race, the T.T.-amulet challenge levels, the lighthouse/Future Fun Land
-unlock, and the credits SCREEN reached by finishing Wizpig 2 rather than by cheat
-are not driven here. Each has a specific headless obstacle, recorded there. None
-of them is weakened into a vacuous assertion in this file.
+See tests/fixtures/README.md, "Residual manual acceptance". In short: the lobby's
+boss-rematch door driven rather than retargeted, the T.T.-amulet challenge
+levels, the trophy championships and the lighthouse/Future Fun Land unlock, and
+the credits SCREEN reached by finishing Wizpig 2 rather than by cheat are not
+driven here. Each has a specific recorded obstacle. None of them is weakened into
+a vacuous assertion in this file.
 
 Every EEPROM image is built in a private temporary directory and deleted. No
 ROM-derived data is committed by this check.
@@ -303,6 +312,34 @@ class Slot:
         )
         return bytes(seal_slot(slot))
 
+    @classmethod
+    def from_save(cls, save: bytes, eligible: list[int]) -> "Slot":
+        """Read a real persisted slot back into the same shape.
+
+        This is what lets a fixture be *carried* rather than *constructed*: a
+        seam's own output becomes the next seam's input with every field
+        production wrote left exactly as production wrote it, and only the
+        fields a later gate needs -- each one named at the call site -- overridden.
+        """
+        slot = save[:SLOT_BYTES]
+        return cls(
+            status={
+                course: read_bits(slot, BIT_COURSES + i * 2, 2)
+                for i, course in enumerate(eligible)
+            },
+            taj=read_bits(slot, BIT_TAJ, 6),
+            trophies=read_bits(slot, BIT_TROPHIES, 10),
+            bosses=read_bits(slot, BIT_BOSSES, 12),
+            balloons=[read_bits(slot, BIT_BALLOONS + i * 7, 7) for i in range(6)],
+            tt_amulet=read_bits(slot, BIT_TT_AMULET, 3),
+            wizpig_amulet=read_bits(slot, BIT_WIZPIG_AMULET, 3),
+            world_flags=[
+                read_bits(slot, BIT_WORLD_FLAGS + i * 16, 16) for i in range(6)
+            ],
+            keys=read_bits(slot, BIT_KEYS, 8),
+            cutscenes=read_bits(slot, BIT_CUTSCENES, 32),
+        )
+
     def image(self, eligible: list[int]) -> bytes:
         out = bytearray(EEPROM_BYTES)
         out[:SLOT_BYTES] = self.encode(eligible)
@@ -387,49 +424,66 @@ def derive_seam_b(topo: WorldTopology, *, first_boss_beaten: bool = True) -> Slo
     )
 
 
-def derive_seam_e(topos: dict[int, WorldTopology]) -> Slot:
-    """Fixture E -- fixture B applied to every world, then seam B run on each.
+def derive_all_worlds_silver(topos: dict[int, WorldTopology]) -> Slot:
+    """The seam B chain's starting point -- fixture A x4, seam A x16.
 
-    Seam B proves that winning a world's rematch sets `1 << (world + 6)` and
-    advances wizpigAmulet by exactly one. Four worlds therefore give the four
-    rematch bits and wizpigAmulet == 4, which is the whole of Wizpig 1's gate
-    (game/src/game.c:643). Wizpig 1's own cleared course and its `bosses` bit 0
-    are the residual manual step recorded in tests/fixtures/README.md -- they are
-    set here because Wizpig 2 is unreachable without them, and this arm is
-    explicitly not claiming to have witnessed Wizpig 1.
-
-    The remaining fields are Wizpig 2's own gate (game/src/game.c:755): all four
-    trophy championships (`trophies == 0xFF`, the shape check_trophy_series
-    proves production writes), the four T.T. amulet pieces and their world keys,
-    Future Fun Land's four races cleared, and at least 47 total balloons.
+    Four copies of fixture A, one per world, each with seam A applied to all four
+    of its courses. Per world that is status 3 on the four races and eight world
+    balloons; across four worlds the global counter is 4 x 8 plus the two hub
+    balloons fixture A already carried.
     """
     status: dict[int, int] = {}
-    bosses = BOSS_FIRST_BIT(WORLD_CENTRAL_AREA)
+    bosses = 0
+    cutscenes = 0
     balloons = [0] * 6
     for world, topo in sorted(topos.items()):
         if world == WORLD_FUTURE_FUN_LAND:
-            for course in topo.races:
-                status[course] = STATUS_CLEARED
-            balloons[world] = 4
             continue
         for course in topo.races:
             status[course] = STATUS_SILVER
         status[topo.first_boss] = STATUS_CLEARED
-        status[topo.rematch_boss] = STATUS_CLEARED
-        bosses |= BOSS_FIRST_BIT(world) | BOSS_REMATCH_BIT(world)
+        bosses |= BOSS_FIRST_BIT(world)
         balloons[world] = 8
-    status[37] = STATUS_CLEARED  # Wizpig 1, per the residual note above
-    balloons[0] = 47
+        cutscenes |= CUTSCENE_BOSS_DOOR(world)
+    balloons[0] = 4 * 8 + 2
     return Slot(
         status=status,
-        trophies=0xFF,
         bosses=bosses,
         balloons=balloons,
-        tt_amulet=4,
-        wizpig_amulet=4,
-        world_flags=[HUB_BALLOON_FLAGS if i == 0 else 0xFFFF for i in range(6)],
-        keys=0xF,
+        cutscenes=cutscenes,
+        world_flags=[
+            HUB_BALLOON_FLAGS if i == 0 else 0xFFFF for i in range(6)
+        ],
     )
+
+
+def derive_seam_e(base: bytes, topos: dict[int, WorldTopology],
+                  eligible: list[int]) -> Slot:
+    """Fixture E -- seam C's own persisted save, plus Wizpig 2's remaining gate.
+
+    Everything that gets Wizpig 2 to accept the player as far as the *campaign*
+    is concerned is carried out of the seam A -> B -> C chain untouched: the four
+    rematch bits and wizpigAmulet == 4 were written by seam B's four wins, and
+    Wizpig 1's cleared course and `bosses` bit 0 by seam C's.
+
+    Only Wizpig 2's other gate (game/src/game.c:755, and the T.T. door at
+    game/src/object_functions.c:4116) is added, and it is added because this
+    check does not witness it: all four trophy championships (`trophies == 0xFF`
+    -- the shape check_trophy_series.py proves production writes), the four T.T.
+    amulet pieces and their world keys, Future Fun Land's four races, and the 47
+    total balloons the door counts. Those four overrides are the whole of what
+    fixture E asserts without having seen it, and they are listed as premises in
+    tests/fixtures/README.md.
+    """
+    slot = Slot.from_save(base, eligible)
+    slot.trophies = 0xFF
+    slot.tt_amulet = 4
+    slot.keys = 0xF
+    for course in topos[WORLD_FUTURE_FUN_LAND].races:
+        slot.status[course] = STATUS_CLEARED
+    slot.balloons[WORLD_FUTURE_FUN_LAND] = 4
+    slot.balloons[0] = max(slot.balloons[0], 47)
+    return slot
 
 
 # ------------------------------------------------------------------- running
@@ -642,9 +696,11 @@ REMATCH_FRAMES = 9000
 def run_seam_b(
     binary: Path, rom: Path, topo: WorldTopology, eligible: list[int],
     timeout: int, failures: list[str], *, first_boss_beaten: bool = True,
+    fixture: bytes | None = None, expect_amulet: int = 1,
 ) -> dict[str, object]:
     label = f"seamB-w{topo.world}" + ("" if first_boss_beaten else "-control")
-    fixture = derive_seam_b(topo, first_boss_beaten=first_boss_beaten).image(eligible)
+    if fixture is None:
+        fixture = derive_seam_b(topo, first_boss_beaten=first_boss_beaten).image(eligible)
     boss = topo.rematch_boss
     run = invoke(
         binary, rom, label, fixture=fixture, script=RESUME_SCRIPT,
@@ -704,9 +760,10 @@ def run_seam_b(
                 f"{label}: rematch bit 0x{rematch:x} absent from persisted "
                 f"bosses=0x{state['bosses']:x}"
             )
-        if state["wizpig_amulet"] != 1:
+        if state["wizpig_amulet"] != expect_amulet:
             failures.append(
-                f"{label}: wizpigAmulet={state['wizpig_amulet']}, want exactly 1 piece"
+                f"{label}: wizpigAmulet={state['wizpig_amulet']}, want exactly "
+                f"{expect_amulet} piece(s) after this many rematch wins"
             )
         if len(amulet_scenes) != 1:
             failures.append(
@@ -714,6 +771,14 @@ def run_seam_b(
             )
         if course_status(run.save[:SLOT_BYTES], eligible, boss) != STATUS_CLEARED:
             failures.append(f"{label}: rematch course {boss} was not marked cleared")
+        # Every bit the incoming save already held must survive this win, or the
+        # chain is not carrying forward what it claims to.
+        carried = decode(fixture)["bosses"]
+        if state["bosses"] & carried != carried:
+            failures.append(
+                f"{label}: persisted bosses=0x{state['bosses']:x} dropped bits from "
+                f"the carried save 0x{carried:x}"
+            )
     else:
         # The control: identical race, identical win, but the save says this
         # world's first boss is still standing. Production must read it as a
@@ -731,7 +796,131 @@ def run_seam_b(
             )
         if amulet_scenes:
             failures.append(f"{label}: Wizpig amulet cutscene played for a first-boss win")
-    return {"bosses": state["bosses"], "amulet": state["wizpig_amulet"]}
+    return {
+        "bosses": state["bosses"],
+        "amulet": state["wizpig_amulet"],
+        "save": run.save,
+    }
+
+
+# ------------------------------------------------------------------- seam C
+
+
+WIZPIG_ONE = 37
+WIZPIG_MOUTH_SEQUENCE = 42
+CUTSCENE_WIZPIG_FACE = 0x2000
+FACE_FRAMES = 6000
+WIZPIG_ONE_FRAMES = 20000
+
+WIZPIG_FACE_RE = re.compile(
+    r"wizpigface: hub=(?P<hub>\d+) -> cutsceneLevel=(?P<target>\d+) "
+    r"wizpigAmulet=(?P<amulet>\d+) cutsceneFlags=0x(?P<flags>[0-9a-f]+)"
+)
+
+
+def run_seam_c(
+    binary: Path, rom: Path, chained: bytes, three_pieces: bytes,
+    eligible: list[int], timeout: int, failures: list[str],
+) -> bytes:
+    """Wizpig 1: the four-piece unlock, then the race itself.
+
+    The unlock is NOT visible in the level-load stream. `game_load_level` traces
+    the level it was asked for and only afterwards rewrites it to the Wizpig
+    mouth sequence, so a redirected hub load and an ordinary one print the same
+    line; the redirect then pushes the hub, plays the scene, and pops it back, so
+    the log shows two plain hub loads either way. The `wizpigface:` trace exists
+    for that reason, and `CUTSCENE_WIZPIG_FACE` -- which has exactly one writer,
+    inside the redirect branch -- corroborates it in the save.
+    """
+    face = invoke(
+        binary, rom, "seamC-face", fixture=chained, script=RESUME_SCRIPT,
+        frames=FACE_FRAMES, timeout=timeout,
+        values={"MDKR_AUTOPILOT": "1", "MDKR_DRIVE_ROUTE": HUB_TO_DINO},
+    )
+    base_failures(face, failures)
+    if decode(chained)["cutscenes"] & CUTSCENE_WIZPIG_FACE:
+        failures.append("seamC: the carried save had already seen the Wizpig face")
+    redirects = list(WIZPIG_FACE_RE.finditer(face.output))
+    if len(redirects) != 1:
+        failures.append(
+            f"seamC: {len(redirects)} Wizpig-face redirects on the hub load, want 1"
+        )
+    else:
+        redirect = redirects[0]
+        if int(redirect["target"]) != WIZPIG_MOUTH_SEQUENCE:
+            failures.append(
+                f"seamC: hub redirected to level {redirect['target']}, "
+                f"want {WIZPIG_MOUTH_SEQUENCE}"
+            )
+        if int(redirect["amulet"]) != 4:
+            failures.append(f"seamC: redirect fired at {redirect['amulet']} amulet pieces")
+    if face.save is None or not decode(face.save)["cutscenes"] & CUTSCENE_WIZPIG_FACE:
+        failures.append("seamC: CUTSCENE_WIZPIG_FACE was not persisted")
+
+    # Negative control: the identical hub load from the same chain one rematch
+    # earlier. Three pieces is not four, so production must not redirect.
+    control = invoke(
+        binary, rom, "seamC-control", fixture=three_pieces, script=RESUME_SCRIPT,
+        frames=FACE_FRAMES, timeout=timeout,
+        values={"MDKR_AUTOPILOT": "1", "MDKR_DRIVE_ROUTE": HUB_TO_DINO},
+    )
+    base_failures(control, failures)
+    if decode(three_pieces)["wizpig_amulet"] != 3:
+        failures.append("seamC control: the carried save did not hold three pieces")
+    if WIZPIG_FACE_RE.search(control.output):
+        failures.append("seamC control: Wizpig 1 unlocked with only three amulet pieces")
+    if control.save is not None and decode(control.save)["cutscenes"] & CUTSCENE_WIZPIG_FACE:
+        failures.append("seamC control: CUTSCENE_WIZPIG_FACE set with three pieces")
+
+    # The race. Entered by retarget, as every boss in this file is; what is being
+    # asserted is the verdict and the central-area boss bit it writes.
+    race = invoke(
+        binary, rom, "seamC-race", fixture=face.save or chained, script=RESUME_SCRIPT,
+        frames=WIZPIG_ONE_FRAMES, timeout=timeout,
+        values={
+            "MDKR_AUTOPILOT": "1",
+            "MDKR_AUTOPILOT_UNSTICK": "1",
+            "MDKR_DRIVE_ROUTE": f"{HUB_TO_DINO};12:E{ANCIENT_LAKE}",
+            "MDKR_LOAD_TRACK": str(WIZPIG_ONE),
+            "MDKR_BOSS_WIN": "1",
+            "MDKR_WATCH_COURSEFLAGS": str(WIZPIG_ONE),
+        },
+    )
+    base_failures(race, failures)
+    verdicts = [
+        m for m in BOSS_FINISH_RE.finditer(race.output) if int(m["course"]) == WIZPIG_ONE
+    ]
+    if not verdicts:
+        failures.append("seamC: no production verdict for Wizpig 1")
+    else:
+        verdict = verdicts[0]
+        if int(verdict["position"]) != 1 or int(verdict["player"]) != 0:
+            failures.append(f"seamC: not a human first place: {verdict.group(0)}")
+        if int(verdict["world"]) != WORLD_CENTRAL_AREA:
+            failures.append(
+                f"seamC: Wizpig 1 raced under world {verdict['world']}, "
+                f"want {WORLD_CENTRAL_AREA}"
+            )
+        if int(verdict["bosses"], 16) & BOSS_FIRST_BIT(WORLD_CENTRAL_AREA):
+            failures.append("seamC: the Wizpig 1 bit was already set when the race ended")
+    if race.save is None:
+        failures.append("seamC: no EEPROM was written")
+        return chained
+    state = decode(race.save)
+    if not state["checksum_ok"]:
+        failures.append("seamC: persisted slot checksum is invalid")
+    if not state["bosses"] & BOSS_FIRST_BIT(WORLD_CENTRAL_AREA):
+        failures.append(
+            f"seamC: persisted bosses=0x{state['bosses']:x} lacks Wizpig 1's bit"
+        )
+    if course_status(race.save[:SLOT_BYTES], eligible, WIZPIG_ONE) != STATUS_CLEARED:
+        failures.append("seamC: Wizpig 1 was not marked cleared")
+    if state["wizpig_amulet"] != 4:
+        failures.append(
+            f"seamC: wizpigAmulet became {state['wizpig_amulet']}; Wizpig 1 is not "
+            "an amulet boss"
+        )
+    return race.save
 
 
 # ------------------------------------------------------------------- seam E
@@ -742,13 +931,23 @@ CHEAT_FRAMES = 4200
 
 
 def run_seam_e(
-    binary: Path, rom: Path, topos: dict[int, WorldTopology], eligible: list[int],
-    timeout: int, failures: list[str],
+    binary: Path, rom: Path, base: bytes, topos: dict[int, WorldTopology],
+    eligible: list[int], timeout: int, failures: list[str],
 ) -> dict[str, object]:
-    fixture = derive_seam_e(topos).image(eligible)
+    fixture = derive_seam_e(base, topos, eligible).image(eligible)
     before = decode(fixture)
     if before["bosses"] & BOSS_WIZPIG_TWO_BIT:
         failures.append("seamE: fixture already carried the Wizpig 2 bit")
+    # The campaign half of this fixture is carried, not constructed: seam B wrote
+    # the four rematch bits and the four amulet pieces, seam C wrote Wizpig 1's.
+    carried = decode(base)
+    if before["bosses"] & carried["bosses"] != carried["bosses"]:
+        failures.append("seamE: fixture lost boss bits the chain had written")
+    if before["wizpig_amulet"] != 4 or not carried["bosses"] & BOSS_FIRST_BIT(WORLD_CENTRAL_AREA):
+        failures.append(
+            "seamE: fixture was not built on a chain that reached four amulet "
+            "pieces and a Wizpig 1 win"
+        )
     run = invoke(
         binary, rom, "seamE", fixture=fixture, script=RESUME_SCRIPT,
         frames=WIZPIG_FRAMES, timeout=timeout,
@@ -833,6 +1032,13 @@ def run_seam_e(
 # ---------------------------------------------------------------------- main
 
 
+def report(failures: list[str]) -> int:
+    print(f"check_campaign_progression: FAIL ({len(failures)} issue(s))")
+    for failure in failures:
+        print(f"  - {failure}")
+    return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
@@ -882,14 +1088,6 @@ def main() -> int:
         print(f"  seam A  silver coins on course {ANCIENT_LAKE}: "
               f"coins={len(seam_a.get('coins', []))} balloons={seam_a.get('balloons')}")
 
-        rematch_worlds = [dino.world] if args.quick else sorted(
-            w for w, t in topos.items() if w != WORLD_FUTURE_FUN_LAND
-        )
-        for world in rematch_worlds:
-            result = run_seam_b(binary, rom, topos[world], eligible, args.timeout, failures)
-            print(f"  seam B  world {world} rematch {topos[world].rematch_boss}: "
-                  f"bosses=0x{result.get('bosses', 0):x} "
-                  f"amulet={result.get('amulet')}")
         control = run_seam_b(
             binary, rom, topos[dino.world], eligible, args.timeout, failures,
             first_boss_beaten=False,
@@ -897,18 +1095,54 @@ def main() -> int:
         print(f"  seam B  first-encounter control: "
               f"bosses=0x{control.get('bosses', 0):x} amulet={control.get('amulet')}")
 
-        if not args.quick:
-            seam_e = run_seam_e(binary, rom, topos, eligible, args.timeout, failures)
+        if args.quick:
+            result = run_seam_b(binary, rom, dino, eligible, args.timeout, failures)
+            print(f"  seam B  world {dino.world} rematch {dino.rematch_boss}: "
+                  f"bosses=0x{result.get('bosses', 0):x} amulet={result.get('amulet')}")
+            if failures:
+                return report(failures)
+            print("check_campaign_progression: PASS (quick)")
+            return 0
+
+        # The chain proper. Each rematch is fought on the EEPROM the previous one
+        # persisted, so wizpigAmulet reaching four is something production wrote
+        # four times, not something this file asserted into a fixture.
+        carried = derive_all_worlds_silver(topos).image(eligible)
+        three_pieces = carried
+        for index, world in enumerate(
+            sorted(w for w in topos if w != WORLD_FUTURE_FUN_LAND), start=1
+        ):
+            if index == 4:
+                three_pieces = carried
+            result = run_seam_b(
+                binary, rom, topos[world], eligible, args.timeout, failures,
+                fixture=carried, expect_amulet=index,
+            )
+            if result.get("save") is None:
+                failures.append(f"seam B chain: world {world} produced no save")
+                break
+            carried = result["save"]
+            print(f"  seam B  world {world} rematch {topos[world].rematch_boss}: "
+                  f"bosses=0x{result.get('bosses', 0):x} amulet={result.get('amulet')}")
+
+        if not failures:
+            after_wizpig_one = run_seam_c(
+                binary, rom, carried, three_pieces, eligible, args.timeout, failures
+            )
+            print(f"  seam C  Wizpig 1: bosses="
+                  f"0x{decode(after_wizpig_one)['bosses']:x} "
+                  f"cutscenes=0x{decode(after_wizpig_one)['cutscenes']:x}")
+
+            seam_e = run_seam_e(
+                binary, rom, after_wizpig_one, topos, eligible, args.timeout, failures
+            )
             print(f"  seam E  Wizpig 2: bosses=0x{seam_e.get('bosses', 0):x}")
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
 
     if failures:
-        print(f"check_campaign_progression: FAIL ({len(failures)} issue(s))")
-        for failure in failures:
-            print(f"  - {failure}")
-        return 1
+        return report(failures)
     print("check_campaign_progression: PASS")
     return 0
 

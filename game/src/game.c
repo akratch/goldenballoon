@@ -647,6 +647,24 @@ void level_load(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicl
             cutsceneId = CUTSCENE_NONE;
             settings->cutsceneFlags |= CUTSCENE_WIZPIG_FACE;
             levelId = ((s8 *) get_misc_asset(ASSET_MISC_68))[4];
+#ifdef NATIVE_PORT
+            /* NATIVE_PORT, read-only: this is the Wizpig 1 unlock -- four amulet
+             * pieces turn the next Timber's Island load into the Wizpig mouth
+             * sequence, which is what opens the central boss.
+             *
+             * It has to be reported HERE because the `level_load:` trace above
+             * has already printed the level that was *asked* for, and this branch
+             * rewrites it afterwards. Reading that trace alone, the redirect is
+             * invisible: the hub is requested, silently replaced by the mouth
+             * sequence, and then popped back off the level-properties stack, so
+             * the log shows two ordinary hub loads and no sign of the unlock.
+             * (That misreading is exactly why this seam was first reported as
+             * "did not fire".) One line per save file, since the flag it sets is
+             * the branch's own guard. */
+            mdkr_trace("wizpigface: hub=%d -> cutsceneLevel=%d wizpigAmulet=%d cutsceneFlags=0x%x",
+                       (int) prevLevelID, (int) levelId, (int) settings->wizpigAmulet,
+                       (unsigned) settings->cutsceneFlags);
+#endif
         }
     }
     D_800DD32C = 0;
