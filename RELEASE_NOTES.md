@@ -1,5 +1,34 @@
 # Golden Balloon — unreleased
 
+## The camera stays out of walls
+
+Take a corner tight against a rock face and the camera used to go into the
+rock with you. For a second or two you were driving by sound and hope, and on
+some corners it happened every lap.
+
+It doesn't now. The camera pulls in front of walls, doors and anything else
+solid that would come between it and your racer, and eases back out once the
+way is clear. This is on by default.
+
+Nothing about racing changes. Your handling, your lap times, your ghosts and
+your saves are identical — only the picture moves.
+
+If you would rather have the camera exactly as the game originally wrote it,
+it is one setting away: **Authored (original camera)**, under Camera in
+Settings. It applies at the start of your next race, so the view never jumps
+mid-corner.
+
+## A calmer camera, if you want one
+
+There is a new **Camera motion** setting beside it. **Reduced motion** smooths
+out the vertical shake from bumps, landings and explosions, and eases the
+camera back out more gently after it has squeezed past a wall. **Authored** is
+the default and leaves all of that exactly as it was.
+
+It works with the camera that keeps itself out of walls; if you have chosen the
+original camera there is nothing for it to soften. Like the camera setting, it
+applies at the start of your next race and changes nothing but the picture.
+
 ## Waterfalls move with everything else
 
 Motion smoothing draws extra pictures in between the ones the game itself

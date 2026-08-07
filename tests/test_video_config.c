@@ -183,6 +183,27 @@ static void test_schema(void) {
     expect_int("menu languages is not player comfort",
                mdkr_video_key_is_player_comfort(MDKR_VIDEO_MENU_LANGUAGES), 0);
 
+    /*
+     * LEVEL, like Camera.Obstruction and for the same applier: both keys are
+     * read by game/src/camera_obstruction_runtime.c and both are cleared by
+     * the level-boundary reset that already precedes cam_init().
+     */
+    expect_int("camera comfort key",
+               (int) mdkr_video_key_from_name("Camera.Comfort"),
+               MDKR_VIDEO_CAMERA_COMFORT);
+    s = mdkr_video_schema(MDKR_VIDEO_CAMERA_COMFORT);
+    expect_true("camera comfort env seam",
+                s != NULL && !strcmp(s->env, "MDKR_CAMERA_COMFORT"));
+    expect_int("camera comfort is a string",
+               s ? (int) s->type : -1, MDKR_VIDEO_TYPE_STRING);
+    expect_int("camera comfort scope is LEVEL",
+               s ? (int) s->scope : -1, MDKR_VIDEO_SCOPE_LEVEL);
+    expect_int("camera comfort is presentation",
+               s ? (int) s->category : -1, MDKR_VIDEO_CAT_PRESENTATION);
+    expect_int("camera comfort shares the camera apply domain",
+               (int) mdkr_video_key_apply_domain(MDKR_VIDEO_CAMERA_COMFORT),
+               (int) mdkr_video_key_apply_domain(MDKR_VIDEO_CAMERA_OBSTRUCTION));
+
     expect_true("out-of-range key is NULL", mdkr_video_schema(MDKR_VIDEO_KEY_COUNT) == NULL);
     expect_true("negative key is NULL", mdkr_video_schema((MdkrVideoKey) -1) == NULL);
 
@@ -224,10 +245,15 @@ static void test_presets(void) {
     expect_true("default motion smoothing is fail-closed",
                 !strcmp(cfg.values[MDKR_VIDEO_MOTION_SMOOTHING].text,
                         "off"));
-    /* The authored camera is the default; correction is opt-in. */
-    expect_true("default camera obstruction is observe",
+    /* The corrected camera is the default; the authored camera is the
+     * one-setting opt-out. */
+    expect_true("default camera obstruction is modern",
                 !strcmp(cfg.values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
-                        "observe"));
+                        "modern"));
+    /* Authored motion is the default: comfort is an accessibility opt-in. */
+    expect_true("default camera comfort is authored",
+                !strcmp(cfg.values[MDKR_VIDEO_CAMERA_COMFORT].text,
+                        "authored"));
     /* Showing every language the disc carries is the default -- it is
      * non-interfering (no gameplay, save, or ghost data changes). Restoring
      * the disc's own retail menu is the opt-out. */
@@ -299,7 +325,10 @@ static void test_presets(void) {
                         "off"));
     expect_true("pure leaves camera obstruction unchanged",
                 !strcmp(cfg.values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
-                        "observe"));
+                        "modern"));
+    expect_true("pure leaves camera comfort unchanged",
+                !strcmp(cfg.values[MDKR_VIDEO_CAMERA_COMFORT].text,
+                        "authored"));
 
     mdkr_video_config_apply_preset(&cfg, MDKR_VIDEO_MODE_RESTORED);
     expect_true("restored preserves player master volume",
@@ -346,7 +375,11 @@ static void test_presets(void) {
      * correcting the camera is a separate choice from the art direction. */
     expect_true("remastered leaves camera obstruction unchanged",
                 !strcmp(cfg.values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
-                        "observe"));
+                        "modern"));
+    /* And not even Remastered may switch a reduced-motion choice back on. */
+    expect_true("remastered leaves camera comfort unchanged",
+                !strcmp(cfg.values[MDKR_VIDEO_CAMERA_COMFORT].text,
+                        "authored"));
 
     /* Positive control: a resolved FrameLimit=60/MotionSmoothing=interpolate survives
      * every preset switch, exactly like SimulationCadence=enhanced below --
@@ -913,6 +946,49 @@ static void test_camera_obstruction_domain(void) {
 }
 
 /*
+ * Camera.Comfort has exactly two player-facing words and, like
+ * Gameplay.MenuLanguages, no inherited diagnostic seam, so anything else --
+ * including the empty string -- is rejected rather than folded into the
+ * default.
+ */
+static void test_camera_comfort_domain(void) {
+    MdkrVideoConfig cfg;
+    const char *canonical;
+
+    canonical = mdkr_video_camera_comfort_canonical("authored");
+    expect_true("authored is canonical",
+                canonical != NULL && !strcmp(canonical, "authored"));
+    canonical = mdkr_video_camera_comfort_canonical("reduced");
+    expect_true("reduced is canonical",
+                canonical != NULL && !strcmp(canonical, "reduced"));
+    canonical = mdkr_video_camera_comfort_canonical("REDUCED");
+    expect_true("the domain is case-insensitive",
+                canonical != NULL && !strcmp(canonical, "reduced"));
+    expect_true("an unknown comfort value is rejected",
+                mdkr_video_camera_comfort_canonical("reduce") == NULL);
+    expect_true("empty is rejected",
+                mdkr_video_camera_comfort_canonical("") == NULL);
+    expect_true("NULL is rejected",
+                mdkr_video_camera_comfort_canonical(NULL) == NULL);
+
+    mdkr_video_config_defaults(&cfg);
+    expect_int("set accepts a player-facing spelling",
+               mdkr_video_config_set(&cfg, MDKR_VIDEO_CAMERA_COMFORT,
+                                     "Reduced", MDKR_VIDEO_SOURCE_FILE), 1);
+    expect_true("set stores the canonical spelling",
+                !strcmp(cfg.values[MDKR_VIDEO_CAMERA_COMFORT].text, "reduced"));
+    expect_int("set rejects an unknown comfort value",
+               mdkr_video_config_set(&cfg, MDKR_VIDEO_CAMERA_COMFORT,
+                                     "reduce", MDKR_VIDEO_SOURCE_CLI), 0);
+    expect_true("a rejected value leaves the resolved value alone",
+                !strcmp(cfg.values[MDKR_VIDEO_CAMERA_COMFORT].text, "reduced"));
+    /* A reduced-motion choice is not art direction: no preset may undo it. */
+    mdkr_video_config_apply_preset(&cfg, MDKR_VIDEO_MODE_REMASTERED);
+    expect_true("a resolved comfort choice survives a preset switch",
+                !strcmp(cfg.values[MDKR_VIDEO_CAMERA_COMFORT].text, "reduced"));
+}
+
+/*
  * Gameplay.MenuLanguages has exactly two player-facing words and no inherited
  * diagnostic seam to stay compatible with (unlike World Shadows / Camera
  * Obstruction, it is a new key), so anything else -- including the empty
@@ -968,6 +1044,7 @@ int main(void) {
     test_schema();
     test_presets();
     test_camera_obstruction_domain();
+    test_camera_comfort_domain();
     test_menu_languages_domain();
     test_precedence();
     test_ini();

@@ -131,11 +131,13 @@ dynamic occluder list, latch selected viewport projections, and resolve into a
 native presentation sidecar. They never write `Camera`/`gCameras`, selection,
 sort/LOD/visibility, audio, or other authoritative state. `render_scene` and the
 interpolation snapshot walker consume the sidecar only inside presentation.
-Correction is opt-in: unset `MDKR_CAMERA_OBSTRUCTION` selects `observe`, and the
-launcher's **Camera obstruction** setting exports `modern` onto the same
-variable. Set `modern` directly for the corrected camera, `center-ray` for the
-deliberately incomplete diagnostic control, or `legacy` for original direct
-placement; an unrecognised value falls back to `observe`. Set
+Correction is the default: unset `MDKR_CAMERA_OBSTRUCTION` selects `modern`, and
+the launcher's **Camera** setting exports `observe` — the authored camera — onto
+the same variable when a player opts out. Set `center-ray` for the deliberately
+incomplete diagnostic control, or `legacy` for original direct placement; an
+unrecognised value falls back to the default, `modern`. `MDKR_CAMERA_COMFORT=reduced`
+turns on the presentation-only reduced-motion filter over the corrected camera;
+unset and unrecognised values are `authored`. Set
 `MDKR_CAMERA_TRACE=1` for summaries or `=2` for per-slot desired/effective,
 projection/guard, mapping, intent age/pivot/target, and hit diagnostics; this is
 intentionally separate from `MDKR_TRACE`. The sidecar receives last-author-wins
@@ -186,10 +188,12 @@ The remaining registered camera runtime gates are deliberately orthogonal:
   Modern. Chatter and shoulder-flip invariants gate hard; the analog
   distributions print as the labelled baseline for threshold-setting.
 - `check_camera_obstruction_performance_runtime.py` runs one optimized binary in
-  Observe and Modern over a long 4P route, requiring at least 5,000 active
-  four-viewport fixed ticks (more than 83 seconds at 60 Hz). It gates finalizer/query percentiles,
-  tail counts, query fan, static cache bytes/build time, exact dynamic-sidecar
-  allocation bytes, and byte-identical v3 authority state.
+  Observe, Modern, and Modern + reduced motion over a long 4P route, requiring
+  at least 5,000 active four-viewport fixed ticks (more than 83 seconds at 60 Hz).
+  It gates finalizer/query percentiles, tail counts, query fan, static cache
+  bytes/build time, exact dynamic-sidecar allocation bytes, and byte-identical
+  v3 authority state across all three — which is `Camera.Comfort`'s
+  presentation-only proof as well as the camera's.
   `MDKR_CAMERA_PERF=1` is allocation-free and reads an
   intra-thread performance clock; it never uses the synthetic VI/rAF clock.
 

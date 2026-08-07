@@ -48,7 +48,7 @@ running on WebGPU in Chrome, rendering title/menus/race correctly.
 | Boss races | Tricky 2 end to end with production object collision; all ten load/drive. The legal first-boss campaign route clears the fourth Dino race, opens the four-balloon door, physically finishes Tricky 1 in win/loss arms, returns to the hub, and reloads exact progression | `check_collision_gridmask`, `check_boss_win_verdict`, `check_first_boss_progression`; the old stock-AI summit miss remains a positive control and route-fidelity note in `OPEN_ITEMS.md`'s objcoll entry |
 | Audio | Music + SFX + reverb via the software aspMain mixer; RAW16 instruments are converted from serialized big-endian PCM | `check_audio_output` covers format/energy/timing/reverb; `check_raw16_audio` inventories 25 music + 1 SFX RAW16 wave and compares fixed/exact-legacy PCM in both directions |
 | ROM revisions | US 1.1 + EU 1.1 byte-identical payloads supported with authored NTSC/60 and PAL/50 source clocks; the other three named and refused; `.v64`/`.n64` normalised | `check_rom_revision` + `check_simulation_cadence` |
-| Camera obstruction | The Modern resolver (`game/src/camera_obstruction_runtime.c` and the occlusion sources beside it) is **opt-in**: unset `MDKR_CAMERA_OBSTRUCTION` selects `observe`, which measures and leaves the authored camera in place, and the launcher's `Camera.Obstruction` setting is what a player turns `modern` on with. That setting is **level-scoped**, not restart-scoped: an in-game change is staged and applied by `camera_obstruction_runtime_apply_config()` at the next level load, immediately before the `camera_obstruction_runtime_reset()` that path has always run — the same reset that retires the outgoing policy's held poses. A frame-boundary apply would be a hard cut of the rendered eye with no path that fades between two policies, and the level boundary is the one moment the game already cuts the camera. `center-ray` and `legacy` remain diagnostic A/B controls, and an unrecognised string falls back to `observe` — never to a correcting arm and never to the known-unsafe one. Substitution happens at presentation depth, so neither policy moves authoritative state | the `check_camera_obstruction_*`, `check_camera_dynamic_*`, `check_camera_projection_fallback_runtime`, `check_camera_emergency_readability_runtime`, and `check_camera_3p_tt_runtime` gates, over the `camera_*` ROM-free CTests (`ctest -R '^camera_'`); design and measured fence sizing in [`architecture/camera-obstruction.md`](architecture/camera-obstruction.md) |
+| Camera obstruction | The Modern resolver (`game/src/camera_obstruction_runtime.c` and the occlusion sources beside it) is the **default**: unset `MDKR_CAMERA_OBSTRUCTION` selects `modern`, and the launcher's `Camera.Obstruction` setting is what a player chooses `observe` with — the authored camera, which measures and leaves the camera the game writes in place. `Camera.Comfort` rides the same key's applier and is a reduced-motion opt-in over the corrected camera only (a low-pass on the resolver's desired eye plus a 0.4x recovery scale; both presentation-only, both defaulting off). That setting is **level-scoped**, not restart-scoped: an in-game change is staged and applied by `camera_obstruction_runtime_apply_config()` at the next level load, immediately before the `camera_obstruction_runtime_reset()` that path has always run — the same reset that retires the outgoing policy's held poses. A frame-boundary apply would be a hard cut of the rendered eye with no path that fades between two policies, and the level boundary is the one moment the game already cuts the camera. `center-ray` and `legacy` remain diagnostic A/B controls, and an unrecognised string falls back to the default, `modern` — never to the known-unsafe arm, and never silently off. Substitution happens at presentation depth, so neither policy moves authoritative state | the `check_camera_obstruction_*`, `check_camera_dynamic_*`, `check_camera_projection_fallback_runtime`, `check_camera_emergency_readability_runtime`, and `check_camera_3p_tt_runtime` gates, over the `camera_*` ROM-free CTests (`ctest -R '^camera_'`); design and measured fence sizing in [`architecture/camera-obstruction.md`](architecture/camera-obstruction.md) |
 | Oracle | Patched ares runs the real ROM for pixel parity and US 1.1 racer-state comparison (silent by construction) | `race_state_oracle`: Bubbler's authored two-field route passes and the historical one-field arm fails as a positive control; broader strict standard-race parity remains reported separately |
 
 **127 registered check scripts / 141 full-run tasks, each validated in both
@@ -835,11 +835,11 @@ player setting: it skips the `BHV_CHARACTER_FLAG` draw in `render_3d_misc()`
 under `NATIVE_PORT` only, so the paired run witnesses the pixels that draw
 paints; any value other than empty or `0` suppresses),
 `MDKR_RENDERER=gl`,
-`MDKR_CAMERA_OBSTRUCTION=observe|modern|center-ray|legacy` (the obstruction
-resolver arm; unset is `observe`, the authored camera, and anything unrecognised
-falls back to it — a typo may neither silently correct nor select a
-known-unsafe arm, and prints a one-shot `camera_obstruction:` line to stderr
-naming the value it could not parse. The launcher's `Camera.Obstruction` setting
+`MDKR_CAMERA_OBSTRUCTION=modern|observe|center-ray|legacy` (the obstruction
+resolver arm; unset is `modern`, the corrected camera, and anything unrecognised
+falls back to it — a typo may not silently switch the shipped camera off and may
+not select a known-unsafe arm, and prints a one-shot `camera_obstruction:` line
+to stderr naming the value it could not parse. The launcher's `Camera.Obstruction` setting
 exports the same variable at engine handoff, and only when nothing already set
 it, so this override outranks the launcher — and, because it does, an in-game
 change to the setting is refused as `LOCKED` whenever this variable is set,
@@ -847,6 +847,12 @@ leaving the diagnostic arm in charge for the whole run) with `MDKR_CAMERA_TRACE=
 `camera_obstruction_observe summary` line; `2` adds a per-viewport detail line
 and, under `modern`, keeps running the stationary sweep it would otherwise skip)
 and `MDKR_CAMERA_PERF=1` (`[CAMERAPERF]` per-section timings),
+`MDKR_CAMERA_COMFORT=authored|reduced` (the reduced-motion opt-in behind
+`Camera.Comfort`; unset and anything unrecognised are `authored`. `reduced`
+low-passes the resolver's *desired* eye vertically and scales boom recovery by
+0.4 — both presentation-only, and the perf gate proves the authoritative state
+stream is byte-identical either way. It has no effect under `observe`, which
+publishes nothing for it to act on),
 `MDKR_NEARCLIP=off|w|zw` (A/B the near-plane clip),
 `MDKR_LINESWAP=off` (A/B the pre-swizzled-texture un-swizzle),
 `MDKR_GRIDMASK=off` (A/B the collision grid-mask Z fix),

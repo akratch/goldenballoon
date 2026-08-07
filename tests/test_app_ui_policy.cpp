@@ -147,11 +147,16 @@ int main() {
     expect(AppUi_videoSettingVisible(MDKR_VIDEO_MOTION_SMOOTHING, true) &&
            AppUi_videoSettingVisible(MDKR_VIDEO_MOTION_SMOOTHING, false),
            "production motion smoothing is visible on every renderer");
-    // The settings panel is the only way to opt into camera correction without
+    // The settings panel is the only way back to the original camera without
     // setting an environment variable, so it may not be renderer-conditional.
+    // The same goes for the reduced-motion option beside it: an accessibility
+    // control that some renderers hide is not an accessibility control.
     expect(AppUi_videoSettingVisible(MDKR_VIDEO_CAMERA_OBSTRUCTION, true) &&
                AppUi_videoSettingVisible(MDKR_VIDEO_CAMERA_OBSTRUCTION, false),
-           "camera obstruction opt-in is offered on every renderer");
+           "the camera choice is offered on every renderer");
+    expect(AppUi_videoSettingVisible(MDKR_VIDEO_CAMERA_COMFORT, true) &&
+               AppUi_videoSettingVisible(MDKR_VIDEO_CAMERA_COMFORT, false),
+           "reduced motion is offered on every renderer");
     expect(!AppUi_videoSettingVisible(MDKR_VIDEO_MSAA, true),
            "inert MSAA setting is hidden on WebGPU");
     expect(AppUi_videoSettingVisible(MDKR_VIDEO_MSAA, false),

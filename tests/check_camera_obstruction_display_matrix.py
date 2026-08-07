@@ -4,11 +4,10 @@
 from __future__ import annotations
 
 import argparse
-import re
 from pathlib import Path
 
 from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
-from check_camera_obstruction_runtime import inspect, run
+from check_camera_obstruction_runtime import inspect, resolved_trace, run
 
 
 MATRIX = (
@@ -25,19 +24,6 @@ FOV_MATRIX = (
     ("140", None, "140-capped"),
     ("140", "off", "140-uncapped"),
 )
-DETAIL = "camera_obstruction_observe detail"
-
-
-def resolved_trace(output: str) -> list[str]:
-    values = []
-    for row in output.splitlines():
-        if DETAIL not in row:
-            continue
-        match = re.search(r"\bresolved=\(([^)]+)\)", row)
-        if match is None:
-            raise RuntimeError("missing resolved pose")
-        values.append(match.group(1))
-    return values
 
 
 def main() -> int:

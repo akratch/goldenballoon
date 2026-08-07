@@ -228,11 +228,14 @@ Scope is presented honestly:
   next host-frame boundary: after the previous present has retired and before
   the next tick's pacing decision, which is the only point at which no replay
   walk is in flight.
-- **LEVEL** keys (`Camera.Obstruction`) are badged `next track`, saved, and
-  shown as `Set to Y — takes effect the next time a track loads (now: X)`. A
+- **LEVEL** keys (`Camera.Obstruction`, `Camera.Comfort`) are badged
+  `next track`, saved, and shown as
+  `Set to Y — takes effect the next time a track loads (now: X)`. A
   camera policy change is a hard cut of the rendered eye and the resolver has no
   path that fades between two policies, so it is applied where the game already
-  cuts the camera. No relaunch is involved.
+  cuts the camera. No relaunch is involved. `Camera.Comfort` shares the domain and
+  the boundary: one applier carries both keys, and one level-boundary reset
+  clears the per-slot state either of them invalidates.
 - **RESTART** keys (`Gameplay.SimulationCadence`, `Video.RemasterFX`,
   `Video.Mipmaps`, and others) are badged `restart`, saved, and shown as
   `Saved for next Play: Y (current: X)`. The Settings page keeps one primary

@@ -346,12 +346,14 @@ def check_camera_arm(result: Result) -> list[str]:
         failures.append(
             f"{result.label}: {len(rows)} camera applies, expected 1")
         return failures
+    # modern -> observe: the corrected camera is the default now, so the change
+    # a player actually makes here is choosing the original camera back.
     _domain, boundary, key, old, new = rows[0]
     if (boundary, key, old, new) != ("level", "Camera.Obstruction",
-                                     "observe", "modern"):
+                                     "modern", "observe"):
         failures.append(
             f"{result.label}: camera apply was {(boundary, key, old, new)}, "
-            f"expected ('level', 'Camera.Obstruction', 'observe', 'modern')")
+            f"expected ('level', 'Camera.Obstruction', 'modern', 'observe')")
 
     lines = result.output.splitlines()
     toggle_at = next((i for i, line in enumerate(lines)
@@ -374,20 +376,22 @@ def check_camera_arm(result: Result) -> list[str]:
     # THE ASSERTION THIS ARM EXISTS FOR. Between the edit and the level load the
     # engine must still be running the OLD policy: a frame boundary that applied
     # the camera domain early is a mid-race cut, and the census is the only
-    # thing that would ever report it.
+    # thing that would ever report it. The arm now toggles modern -> observe,
+    # so the old policy is MODERN and the staged one is OBSERVE; the direction
+    # is what changed, not the claim.
     during = gates(lines[toggle_at:apply_at])
-    if "MODERN" in during:
+    if "OBSERVE" in during:
         failures.append(
-            f"{result.label}: the census reported MODERN before the level "
+            f"{result.label}: the census reported OBSERVE before the level "
             f"boundary; a LEVEL key was applied mid-race")
-    if "OBSERVE" not in during:
+    if "MODERN" not in during:
         failures.append(
-            f"{result.label}: no OBSERVE census rows between the edit and the "
+            f"{result.label}: no MODERN census rows between the edit and the "
             f"level load; the arm proved nothing about the wait")
     after = gates(lines[apply_at:])
-    if "MODERN" not in after:
+    if "OBSERVE" not in after:
         failures.append(
-            f"{result.label}: the census never reported MODERN after the level "
+            f"{result.label}: the census never reported OBSERVE after the level "
             f"boundary; the applied policy did not reach the camera runtime")
     return failures
 
@@ -416,7 +420,7 @@ ARMS: tuple[Arm, ...] = (
         (("Video.FrameLimit", "original", FIRST_TICK),
          ("Video.FrameLimit", "120", SECOND_TICK))),
     Arm("tearing", (("Video.AllowTearing", "on", FIRST_TICK),)),
-    Arm("camera", (("Camera.Obstruction", "modern", CAMERA_TICK),),
+    Arm("camera", (("Camera.Obstruction", "observe", CAMERA_TICK),),
         camera_trace=True),
     Arm("soak", soak_toggles()),
 )

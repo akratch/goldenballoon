@@ -142,43 +142,109 @@ def main() -> int:
     ):
         failures += require(needle in runtime, f"missing OBSERVE invariant: {needle}")
 
-    # Shipped policy default. Correction is an opt-in launcher setting
-    # (Camera.Obstruction), so an unset or empty MDKR_CAMERA_OBSTRUCTION must
-    # resolve to OBSERVE -- the authored camera -- every named arm must keep
-    # working, and an unrecognised value must fail safe to OBSERVE as well: a
-    # typo may neither silently correct nor silently select the known-unsafe
-    # LEGACY arm. Scoped to the function body so a stray mention of an arm name
-    # elsewhere in the file cannot satisfy it.
+    # Shipped policy default. The corrected camera is what a player who sets
+    # nothing gets, so an unset or empty MDKR_CAMERA_OBSTRUCTION must resolve
+    # to MODERN, every named arm must keep working, and an unrecognised value
+    # must land on the same default: a typo may not silently switch the shipped
+    # camera off, and may not select the known-unsafe LEGACY arm or the
+    # CENTER_RAY control either. Scoped to the function body so a stray mention
+    # of an arm name elsewhere in the file cannot satisfy it.
     policy = strip_comments(
         function_body(runtime, "camera_obstruction_runtime_policy"))
     failures += require(
         re.search(
-            r"value\s*==\s*NULL[^;{]*\{\s*return\s+MDKR_CAMERA_RUNTIME_OBSERVE\s*;",
+            r"value\s*==\s*NULL[^;{]*\{\s*return\s+MDKR_CAMERA_RUNTIME_MODERN\s*;",
             policy,
         ) is not None,
-        "an unset MDKR_CAMERA_OBSTRUCTION must resolve to OBSERVE",
+        "an unset MDKR_CAMERA_OBSTRUCTION must resolve to MODERN",
     )
     failures += require(
         re.search(
-            r'value\s*==\s*NULL[^;{]*strcmp\(value,\s*"observe"\)[^;{]*\{\s*'
+            r'value\s*==\s*NULL[^;{]*strcmp\(value,\s*"modern"\)[^;{]*\{\s*'
+            r"return\s+MDKR_CAMERA_RUNTIME_MODERN\s*;",
+            policy,
+        ) is not None,
+        "the unset arm must be the modern arm, not a second path to it",
+    )
+    failures += require(
+        re.search(
+            r"return\s+MDKR_CAMERA_RUNTIME_MODERN\s*;\s*\}\s*\Z", policy
+        ) is not None,
+        "an unrecognised MDKR_CAMERA_OBSTRUCTION must fail safe to MODERN",
+    )
+    # The opt-out has to stay a real arm rather than a spelling of the default:
+    # an explicit "observe" must still reach OBSERVE.
+    failures += require(
+        re.search(
+            r'strcmp\(value,\s*"observe"\)\s*==\s*0[^;{]*\{\s*'
             r"return\s+MDKR_CAMERA_RUNTIME_OBSERVE\s*;",
             policy,
         ) is not None,
-        "the unset arm must be the observe arm, not a second path to it",
+        "MDKR_CAMERA_OBSTRUCTION=observe must still select OBSERVE",
+    )
+    # A dropped request is indistinguishable from an honoured one once both
+    # resolve to the default, so the fallback may not be silent -- and it may
+    # not repeat, because the policy resolves per slot per fixed tick.
+    failures += require(
+        "sCameraObstructionPolicyFallbackReported = TRUE;" in policy and
+        "falling back to modern" in runtime,
+        "the unrecognised-policy fallback must report itself exactly once",
+    )
+    # Camera.Comfort is presentation on the same terms as the camera it
+    # softens. Its two effects must stay where they can only change the
+    # picture: the vertical smoother on the resolver's DESIRED eye (smoothing
+    # the resolved eye would publish a pose nothing proved clear), and the
+    # recovery scale on expansion only (retraction has no cap to soften).
+    comfort = strip_comments(
+        function_body(runtime, "camera_obstruction_comfort_reduced"))
+    failures += require(
+        re.search(
+            r"value\s*==\s*NULL[^;{]*\{\s*return\s+FALSE\s*;", comfort
+        ) is not None,
+        "an unset MDKR_CAMERA_COMFORT must resolve to authored motion",
+    )
+    failures += require(
+        re.search(r"return\s+FALSE\s*;\s*\}\s*\Z", comfort) is not None,
+        "an unrecognised MDKR_CAMERA_COMFORT must fail safe to authored motion",
+    )
+    resolve = strip_comments(
+        function_body(runtime, "camera_obstruction_resolve_slot"))
+    failures += require(
+        "desired.y = camera_obstruction_comfort_smooth_y(" in resolve,
+        "Camera.Comfort must smooth the desired eye, not the resolved pose",
     )
     failures += require(
         re.search(
-            r"return\s+MDKR_CAMERA_RUNTIME_OBSERVE\s*;\s*\}\s*\Z", policy
+            r"comfort_reduced\s*&&\s*treatment\s*!=\s*"
+            r"MDKR_CAMERA_OBSTRUCTION_TREATMENT_DEPENETRATE_ONLY",
+            resolve,
         ) is not None,
-        "an unrecognised MDKR_CAMERA_OBSTRUCTION must fail safe to OBSERVE",
+        "Camera.Comfort must leave authored door/cutscene compositions alone",
     )
-    # A dropped request is indistinguishable from an honoured one once both
-    # resolve to OBSERVE, so the fallback may not be silent -- and it may not
-    # repeat, because the policy resolves per slot per fixed tick.
     failures += require(
-        "sCameraObstructionPolicyFallbackReported = TRUE;" in policy and
-        "falling back to observe" in runtime,
-        "the unrecognised-policy fallback must report itself exactly once",
+        ".recovery_speed = 600.0f * comfort_recovery_scale," in resolve and
+        ".max_recovery_step = 20.0f * comfort_recovery_scale," in resolve and
+        "release_hold_ticks = MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS,"
+        in resolve,
+        "Camera.Comfort may scale recovery only, never the release hold",
+    )
+    smoother = strip_comments(
+        function_body(runtime, "camera_obstruction_comfort_smooth_y"))
+    failures += require(
+        "gCameras" not in smoother and "gCameraObject" not in smoother,
+        "the comfort smoother must not touch authoritative camera state",
+    )
+    # correction_applied means the RESOLVER moved the camera off the shot it was
+    # asked for. Comfort changes what is asked for, so the comparison has to
+    # carry the comfort offset -- otherwise every smoothed tick reads as an
+    # obstruction correction and was_obstructed, the resolver status, and the
+    # MOTION-01 census all inherit it.
+    failures += require(
+        "observe->comfort_desired_pose_y = desired.y - shake;" in resolve and
+        re.search(
+            r"correction_applied\s*=[^;]*comfort_desired_pose_valid", runtime
+        ) is not None,
+        "the comfort offset must not be counted as an obstruction correction",
     )
     for value, arm in (("modern", "MODERN"), ("observe", "OBSERVE"),
                        ("center-ray", "CENTER_RAY"), ("legacy", "LEGACY")):

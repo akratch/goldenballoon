@@ -88,6 +88,14 @@ typedef enum MdkrVideoKey {
     MDKR_VIDEO_ALLOW_TEARING,
     /* Appended for the same reason as the two keys above. */
     MDKR_VIDEO_MENU_LANGUAGES,
+    /*
+     * Appended, not slotted beside Camera.Obstruction, for the reason stated
+     * at the top of this block: the enum index IS the schema row and the menu
+     * wheel order, so grouping a related key by inserting it would renumber
+     * every key after it. Camera.Comfort reads as camera state to a player
+     * because the settings panel groups by category, not by enum order.
+     */
+    MDKR_VIDEO_CAMERA_COMFORT,
     MDKR_VIDEO_KEY_COUNT
 } MdkrVideoKey;
 
@@ -274,6 +282,17 @@ const char *mdkr_video_world_shadows_canonical(const char *value);
  * drives the environment keeps resolving through the same validator.
  */
 const char *mdkr_video_camera_obstruction_canonical(const char *value);
+
+/*
+ * Canonical spelling for a Camera.Comfort value ("authored" or "reduced"), or
+ * NULL when `value` is neither. "authored" is the default and means the camera
+ * moves exactly as the game authored it; "reduced" is the accessibility
+ * opt-in. Both spellings are new -- there is no pre-existing diagnostic seam to
+ * stay compatible with -- so, like Gameplay.MenuLanguages, nothing else is
+ * accepted and the empty string is rejected rather than folded into the
+ * default.
+ */
+const char *mdkr_video_camera_comfort_canonical(const char *value);
 
 /*
  * Canonical spelling for a Video.AllowTearing value ("off" or "on"), or NULL

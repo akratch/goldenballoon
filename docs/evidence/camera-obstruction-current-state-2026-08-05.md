@@ -14,6 +14,19 @@ ROM-derived data is present in this worktree or its commits.
 > as breadth work and were never converted into safety exceptions. Everything
 > else in this note stands as the record of the state at handoff.
 
+> **Superseded (amended 2026-08-07).** The default flipped to Modern in the
+> decisions wave, as a dedicated reviewed change and with ownership's approval.
+> It was *not* taken on the "all gates green" bar this note recommends — the
+> deferred rows below are still deferred. What changed since this handoff is
+> that MOTION-01's hard invariants and baselines hold on every route with
+> correction as the default path, the 24-arm display matrix holds across the
+> aspect/HFOV grid, the seam-release hold closed the retract/expand chatter, and
+> exact fan admission cut 24-arm emergency framings from 1585 to 46. See §10.1
+> of `docs/architecture/camera-obstruction.md` for the exact accounting of what
+> the flip rests on and what it did not wait for. `Camera.Obstruction=observe`
+> is the rollback this note asks to be retained, and it is retained — as a
+> shipped, tested, player-facing setting.
+
 ## Handoff decision
 
 The current Modern implementation is validated for opt-in native gameplay and

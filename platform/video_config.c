@@ -406,14 +406,16 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
     [MDKR_VIDEO_CAMERA_OBSTRUCTION] = {
         "Camera.Obstruction", "MDKR_CAMERA_OBSTRUCTION",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_LEVEL, 0.0f, 0.0f,
-        "Camera obstruction",
-        "Authored is the camera the game writes, unchanged. Keep out of walls "
-        "pulls it in front of walls, doors, and other solid geometry that "
-        "would come between it and your racer. Only the picture moves: "
-        "handling, results, ghosts, and saves are identical either way. "
-        "Takes effect the next time a track loads, so the camera never jumps "
+        "Camera",
+        "Keep the camera out of walls is the default. It pulls the camera in "
+        "front of walls, doors, and anything else solid that would come "
+        "between it and your racer, so you can always see where you are "
+        "going. Authored is the original camera, exactly as the game writes "
+        "it, and it is one setting away whenever you want it. Only the "
+        "picture moves either way: handling, results, ghosts, and saves are "
+        "identical. Takes effect at the next race, so the camera never jumps "
         "mid-corner. In a config file or the environment the two values are "
-        "observe and modern.",
+        "modern and observe.",
         MDKR_VIDEO_CAT_PRESENTATION
     },
     /*
@@ -478,6 +480,51 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "with, nothing added.",
         MDKR_VIDEO_CAT_PRESENTATION
     },
+    /*
+     * SCOPE_LEVEL, in the CAMERA domain, riding the applier Camera.Obstruction
+     * already installed (game/src/camera_obstruction_runtime.c's
+     * camera_obstruction_runtime_apply_config). Both keys are read by the same
+     * runtime and both are cleared by the same level-boundary reset, so this
+     * key adds a value to an existing seam rather than a second one.
+     *
+     * NOT LIVE, and for a weaker reason than Camera.Obstruction's: a comfort
+     * flip is not a hard cut of the eye -- the vertical filter converges and
+     * the recovery rate is re-read every tick, so mid-race application would
+     * be merely a visible softening rather than a teleport. It is LEVEL
+     * because the runtime's proven re-init is still only
+     * camera_obstruction_runtime_reset(), the per-slot filter state this key
+     * adds is cleared by exactly that reset, and buying a new mid-race
+     * boundary for a setting a player changes once is not worth proving.
+     *
+     * PRESENTATION-ONLY, on the same terms as the camera it softens. Both
+     * effects live entirely inside the obstruction runtime's sidecar: the
+     * vertical filter is applied to the resolver's *desired* eye, before the
+     * solve, so the published pose is still proven clear of geometry; and the
+     * recovery rate only bounds EXPANSION, never retraction. Neither writes
+     * Camera, gCameras, or any simulation state -- which is not a style
+     * preference here, because platform/sim_hash.c hashes
+     * gCameras[PLAYER_FOUR].trans and shakeMagnitude as authoritative (the
+     * 3P/T.T. camera feeds next-tick object sort and LOD). Softening the
+     * authored shake where the game writes it -- racer.c's
+     * `trans.y_position += y_velocity + shakeMagnitude` -- would therefore
+     * change the simulation, so this key does not go near it.
+     */
+    [MDKR_VIDEO_CAMERA_COMFORT] = {
+        "Camera.Comfort", "MDKR_CAMERA_COMFORT",
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_LEVEL, 0.0f, 0.0f,
+        "Camera motion",
+        "Reduced motion calms the camera: it smooths out the vertical shake "
+        "from bumps, landings and explosions, and eases the camera back out "
+        "more gently after it has squeezed past a wall. Authored is the "
+        "default and leaves every bit of that motion exactly as the game "
+        "wrote it. This changes the picture only -- handling, results, "
+        "ghosts, and saves are identical -- and it applies to the "
+        "keep-out-of-walls camera, so it has nothing to soften if you have "
+        "chosen the original camera. Takes effect at the next race. In a "
+        "config file or the environment the two values are authored and "
+        "reduced.",
+        MDKR_VIDEO_CAT_PRESENTATION
+    },
 };
 
 const char *mdkr_video_category_name(MdkrVideoCategory category) {
@@ -512,6 +559,7 @@ MdkrVideoApplyDomain mdkr_video_key_apply_domain(MdkrVideoKey key) {
         case MDKR_VIDEO_ALLOW_TEARING:
             return MDKR_VIDEO_APPLY_PRESENTATION;
         case MDKR_VIDEO_CAMERA_OBSTRUCTION:
+        case MDKR_VIDEO_CAMERA_COMFORT:
             return MDKR_VIDEO_APPLY_CAMERA;
         default:
             return MDKR_VIDEO_APPLY_NONE;
@@ -623,6 +671,7 @@ static const float s_preset[MDKR_VIDEO_KEY_COUNT][3] = {
     [MDKR_AUDIO_MUSIC_VOLUME] = {     100.0f,   100.0f,     100.0f },
     [MDKR_AUDIO_EFFECTS_VOLUME] = {   100.0f,   100.0f,     100.0f },
     [MDKR_VIDEO_MENU_LANGUAGES] = {     0.0f,     0.0f,       0.0f }, /* string; see below */
+    [MDKR_VIDEO_CAMERA_COMFORT] = {     0.0f,     0.0f,       0.0f }, /* string; see below */
 };
 
 /*
@@ -680,13 +729,19 @@ static const char *const s_preset_text[MDKR_VIDEO_KEY_COUNT][3] = {
     /*
      * Never pinned by any preset, for the FrameLimit/MotionSmoothing reason
      * rather than the Audio one: this is presentation, so it belongs in the
-     * preset table and is subject to Pure's read-only rule, but it is an
-     * opt-in correction to the authored camera rather than an art-direction
-     * choice, and no mode a player picks may switch it on or off behind them.
-     * mdkr_video_config_defaults() seeds "observe" for all three; a resolved
+     * preset table and is subject to Pure's read-only rule, but which of the
+     * two cameras a player is racing with is their standing choice rather than
+     * an art-direction one, and no mode a player picks may switch it behind
+     * them -- in either direction. Pure in particular does not get to hand back
+     * the authored camera's defect in the name of reference presentation.
+     * mdkr_video_config_defaults() seeds "modern" for all three; a resolved
      * value survives every preset switch untouched.
      */
     [MDKR_VIDEO_CAMERA_OBSTRUCTION] = { NULL, NULL, NULL },
+    /* Never pinned by any preset, for the Camera.Obstruction reason and one
+     * more: a reduced-motion choice is an accessibility setting, and no visual
+     * preset may reach in and undo it. defaults() seeds "authored". */
+    [MDKR_VIDEO_CAMERA_COMFORT] = { NULL, NULL, NULL },
     /* Never pinned, for the FrameLimit reason: a latency preference is not an
      * art direction. */
     [MDKR_VIDEO_ALLOW_TEARING] = { NULL, NULL, NULL },
@@ -739,14 +794,23 @@ void mdkr_video_config_defaults(MdkrVideoConfig *config) {
         sizeof(config->values[MDKR_VIDEO_MOTION_SMOOTHING].text),
         "%s", "off");
     /*
-     * The authored camera is the default in every mode. Correcting it is a
-     * deliberate choice a player makes once, not a property of the
-     * presentation preset they happen to be in.
+     * The corrected camera is the default in every mode, and the authored
+     * camera is the one-setting opt-out. Which of the two a player is in
+     * remains their standing choice rather than a property of the presentation
+     * preset they happen to be in -- that is why neither is pinned by Pure,
+     * Restored or Remastered above.
      */
     snprintf(
         config->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
         sizeof(config->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text),
-        "%s", "observe");
+        "%s", "modern");
+    /* Authored motion is the default: comfort is an accessibility opt-in, and
+     * nothing a player did not ask for may soften the camera the game
+     * writes. */
+    snprintf(
+        config->values[MDKR_VIDEO_CAMERA_COMFORT].text,
+        sizeof(config->values[MDKR_VIDEO_CAMERA_COMFORT].text),
+        "%s", "authored");
     snprintf(
         config->values[MDKR_VIDEO_ALLOW_TEARING].text,
         sizeof(config->values[MDKR_VIDEO_ALLOW_TEARING].text),
@@ -943,8 +1007,28 @@ const char *mdkr_video_world_shadows_canonical(const char *value) {
 }
 
 /*
+ * Two player-facing words, nothing else, for Gameplay.MenuLanguages' reason:
+ * this key is new, so there is no older diagnostic spelling to stay compatible
+ * with. Empty is rejected rather than folded into "authored" -- an explicit
+ * MDKR_CAMERA_COMFORT that does not parse should fail the same way as any
+ * other unrecognised value.
+ */
+const char *mdkr_video_camera_comfort_canonical(const char *value) {
+    if (value == NULL) {
+        return NULL;
+    }
+    if (mdkr_video_ci_equal(value, "authored")) {
+        return "authored";
+    }
+    if (mdkr_video_ci_equal(value, "reduced")) {
+        return "reduced";
+    }
+    return NULL;
+}
+
+/*
  * Two of these four words are a player's choice and two are diagnostics.
- * "observe" and "modern" are what the settings UI offers and what the ini and
+ * "modern" and "observe" are what the settings UI offers and what the ini and
  * the options screen ever show. "legacy" and "center-ray" are arms of the
  * MDKR_CAMERA_OBSTRUCTION seam this key inherits: an A/B gate that sets the
  * environment must keep resolving, so they are accepted and returned verbatim
@@ -1088,6 +1172,15 @@ int mdkr_video_config_set(MdkrVideoConfig *config,
         if (key == MDKR_VIDEO_CAMERA_OBSTRUCTION) {
             const char *canonical =
                 mdkr_video_camera_obstruction_canonical(value);
+            if (canonical == NULL) {
+                return 0;
+            }
+            snprintf(slot->text, sizeof(slot->text), "%s", canonical);
+            slot->source = source;
+            return 1;
+        }
+        if (key == MDKR_VIDEO_CAMERA_COMFORT) {
+            const char *canonical = mdkr_video_camera_comfort_canonical(value);
             if (canonical == NULL) {
                 return 0;
             }
