@@ -26,9 +26,9 @@ runtime matrix), or grab a desktop build from the
 
 | Platform | File | Notes |
 |---|---|---|
-| macOS (Apple silicon) | `Golden-Balloon-1.0.5-macos-arm64-unsigned.dmg` | Candidate filename; publication remains blocked until the full human acceptance pass. Intentionally unsigned; see the first-open note below |
-| Linux (x86-64) | `Golden-Balloon-1.0.5-linux-x86_64.tar.gz` | Published only if the release workflow's built + extracted WebGPU/GL pixel gates pass; the AppImage accompanies it. SDL2 is bundled; the host graphics driver is still required |
-| Windows (x64) | `Golden-Balloon-1.0.5-windows-x64.zip` | Candidate filename; hosted CI never publishes it, so the exact extracted archive requires current Windows hardware acceptance for WebGPU, controller, audio, saves, Unicode/long paths, and relaunch before a maintainer may attach it |
+| macOS (Apple silicon) | `Golden-Balloon-1.1.0-macos-arm64-unsigned.dmg` | Candidate filename; publication remains blocked until the full human acceptance pass. Intentionally unsigned; see the first-open note below |
+| Linux (x86-64) | `Golden-Balloon-1.1.0-linux-x86_64.tar.gz` | Published only if the release workflow's built + extracted WebGPU/GL pixel gates pass; the AppImage accompanies it. SDL2 is bundled; the host graphics driver is still required |
+| Windows (x64) | `Golden-Balloon-1.1.0-windows-x64.zip` | Candidate filename; hosted CI never publishes it, so the exact extracted archive requires current Windows hardware acceptance for WebGPU, controller, audio, saves, Unicode/long paths, and relaunch before a maintainer may attach it |
 
 Hosted Windows CI validates the native binary, import table, package, and
 extracted startup, but does not provide a stable GPU environment for rendered
@@ -38,7 +38,7 @@ controller, audio, save, and relaunch. That manual evidence boundary remains
 visible in the release notes.
 
 If the named Linux files are absent from the release, its software-GPU publish
-gate did not pass and there is no qualified 1.0.5 Linux binary; build from
+gate did not pass and there is no qualified 1.1.0 Linux binary; build from
 source instead of redistributing an unverified workflow artifact.
 
 Then:
@@ -56,7 +56,7 @@ Then:
 Each release file ships with a `.provenance.json` naming the exact source
 commit and SHA-256 it was built from.
 
-For the current 1.0.5 candidate, follow the
+For the current 1.1.0 candidate, follow the
 **[human acceptance guide](docs/RELEASE_CANDIDATE_TEST_GUIDE.md)** and verify
 each artifact's checksum and provenance sidecar before opening it. Maintainer
 policy and automated release gates are in the
@@ -65,7 +65,7 @@ policy and automated release gates are in the
 > **macOS packaging notice:** the known-bad 1.0.0 DMG can produce Finder's
 > “damaged and can't be opened” dialog because its executable was modified
 > after the linker's integrity signature. This is not the ordinary
-> unidentified-developer warning. The 1.0.5 candidate is intended to ship
+> unidentified-developer warning. The 1.1.0 candidate is intended to ship
 > without Developer ID signing/notarization, so first launch may show the normal
 > unidentified-developer warning. After the first blocked launch, open **System
 > Settings → Privacy & Security**, scroll down, choose **Open Anyway**, and
@@ -75,7 +75,7 @@ policy and automated release gates are in the
 > signature integrity, self-contained dependencies, WebGPU selection, and the
 > macOS 13 deployment target. “Damaged” is never an expected result. A future
 > Developer ID/notarized build, if published, has the distinct name
-> `Golden-Balloon-1.0.5-macos-arm64-signed-notarized.dmg` and distinct
+> `Golden-Balloon-1.1.0-macos-arm64-signed-notarized.dmg` and distinct
 > `developer-id-notarized` provenance; it is not the artifact for this patch.
 
 ### No game data is included
@@ -234,7 +234,7 @@ automated coverage from manual physical-hardware acceptance. See
   retained only for diagnostics while its known opening-sequence visual-parity
   issue is investigated; Remastered remains opt-in WIP until its visual gates
   close.
-- The planned macOS 1.0.5 artifact has an ad-hoc integrity seal but no Developer ID
+- The planned macOS 1.1.0 artifact has an ad-hoc integrity seal but no Developer ID
   trust signature or Apple notarization, so current macOS requires the manual
   first-open approval above.
 - The Windows build is not code-signed. Once a Windows archive is attached to a
@@ -250,7 +250,7 @@ automated coverage from manual physical-hardware acceptance. See
   diagnostics are deferred to a future portability release.
 - The published Windows 1.0.3 archive predates the current source tree's
   UTF-8/extended-length filesystem boundary and reviewed application manifest.
-  The 1.0.5 candidate must pass its Unicode and >260-character path gate on
+  The 1.1.0 candidate must pass its Unicode and >260-character path gate on
   Windows hardware before those new guarantees can be claimed for a release.
 - The camera keeps itself out of walls **by default**, through the launcher's
   Camera setting. The runtime resolves every authored camera slot and publishes

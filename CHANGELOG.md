@@ -8,7 +8,7 @@ From 1.0.0 onward this project follows semantic versioning for the platform
 layer's public seams (config keys, environment variables, command-line flags and
 save formats). Everything below 1.0.0 predates that commitment.
 
-## [Unreleased]
+## [1.1.0] — 2026-08-07
 
 ### Added
 
