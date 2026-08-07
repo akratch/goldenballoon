@@ -182,9 +182,49 @@ The principal gates are:
   chains and the unwalked-matrix boundary;
 - `tests/check_browser_presentation_rates.py`: real Chromium fixed and irregular
   rAF schedules, authority parity, replay ownership, and surface accounting;
+- `tests/check_live_toggle_settings.py`: the settings changing MID-RUN rather
+  than at boot — see the next section;
 - `tests/test_gfx_retained_task.c`, `tests/test_presentation_packet.c`, and
   `tests/test_video_config.c`: transaction, forward-packet, and public-config
   units.
+
+## Changing these settings while you play
+
+Frame limit, Motion smoothing and Allow tearing take effect on the next frame.
+Camera obstruction takes effect the next time a track loads. None of them needs
+a relaunch, and none of them changes gameplay: the authoritative state, event
+and input streams of a run that toggles them are byte-identical to a run that
+never did, which `tests/check_live_toggle_settings.py` asserts directly against
+an untoggled baseline.
+
+That was not free, and the reason is worth recording because it is the same
+reason these keys were restart-scoped for four releases. Both receivers latch.
+The host pacer resolves its policy once into a deadline grid; the presentation
+replay captures walk-entry state — the saved RDP/RSP registers and the SEGMENT
+TABLE — refreshed by `gfx_start_frame` only while replay is armed, and cleared
+by nothing but `gfx_dkr_replay_invalidate()`. Writing either from the settings
+panel is unsafe in both directions: engaging late pays for freeze and snapshot
+work no subloop consumes, and disengaging late leaves the still-latched subloop
+replaying against a segment table whose bases point into freed level memory.
+
+So the setter does not write them. It marks the owning subsystem's domain
+pending, and the engine applies it at the host-frame boundary in
+`stubs_dkr.c`'s `osRecvMesg` video-queue branch — after the previous
+authoritative pass and its entire subloop have completed, before the next tick's
+pacing decision, which is the one point at which no replay walk is in flight.
+The applier then runs as one indivisible step: invalidate the replay history
+first and unconditionally in both directions, reset the snapshot stage, re-arm
+the snapshot one-shot, push the new policy, re-initialise the pacer state
+machine, and re-rank the backend's present mode. Before the boundary everything
+runs on the old value; after it, everything runs on the new one.
+
+The gate's soak arm flips Motion smoothing off and on twenty-four times across a
+level load and holds `[RETAINED-TASK] rejects`, `[PRESENT-PACKET]
+unsafestalefallback` and `[REPLAY-SUMMARY] staletenants` at zero, with an ASan
+lane behind it. Removing the invalidation from the applier and rerunning the
+same soak produces 36 retained-task rejections — replays reaching for a task
+belonging to a retired generation — so the assertion is measured to detect the
+hazard rather than assumed to.
 
 The local qualification record for this change is summarized in the 1.0.4
 changelog entry. Raw ROM-derived frames, traces, PCM, and saves remain local and

@@ -434,6 +434,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         target_link_libraries(mdkr_video_config_runtime_test PRIVATE m)
     endif()
     add_test(NAME video_config_runtime COMMAND mdkr_video_config_runtime_test)
+    add_test(NAME video_config_deferred_apply_runtime
+        COMMAND mdkr_video_config_runtime_test --deferred-apply-case)
     add_test(NAME video_config_pure_comfort_runtime
         COMMAND mdkr_video_config_runtime_test --pure-comfort-case)
     add_test(NAME video_config_corrupt_handoff_runtime

@@ -48,10 +48,10 @@ running on WebGPU in Chrome, rendering title/menus/race correctly.
 | Boss races | Tricky 2 end to end with production object collision; all ten load/drive. The legal first-boss campaign route clears the fourth Dino race, opens the four-balloon door, physically finishes Tricky 1 in win/loss arms, returns to the hub, and reloads exact progression | `check_collision_gridmask`, `check_boss_win_verdict`, `check_first_boss_progression`; the old stock-AI summit miss remains a positive control and route-fidelity note in `OPEN_ITEMS.md`'s objcoll entry |
 | Audio | Music + SFX + reverb via the software aspMain mixer; RAW16 instruments are converted from serialized big-endian PCM | `check_audio_output` covers format/energy/timing/reverb; `check_raw16_audio` inventories 25 music + 1 SFX RAW16 wave and compares fixed/exact-legacy PCM in both directions |
 | ROM revisions | US 1.1 + EU 1.1 byte-identical payloads supported with authored NTSC/60 and PAL/50 source clocks; the other three named and refused; `.v64`/`.n64` normalised | `check_rom_revision` + `check_simulation_cadence` |
-| Camera obstruction | The Modern resolver (`game/src/camera_obstruction_runtime.c` and the occlusion sources beside it) is **opt-in**: unset `MDKR_CAMERA_OBSTRUCTION` selects `observe`, which measures and leaves the authored camera in place, and the launcher's `Camera.Obstruction` setting is what a player turns `modern` on with. `center-ray` and `legacy` remain diagnostic A/B controls, and an unrecognised string falls back to `observe` — never to a correcting arm and never to the known-unsafe one. Substitution happens at presentation depth, so neither policy moves authoritative state | the `check_camera_obstruction_*`, `check_camera_dynamic_*`, `check_camera_projection_fallback_runtime`, `check_camera_emergency_readability_runtime`, and `check_camera_3p_tt_runtime` gates, over the `camera_*` ROM-free CTests (`ctest -R '^camera_'`); design and measured fence sizing in [`architecture/camera-obstruction.md`](architecture/camera-obstruction.md) |
+| Camera obstruction | The Modern resolver (`game/src/camera_obstruction_runtime.c` and the occlusion sources beside it) is **opt-in**: unset `MDKR_CAMERA_OBSTRUCTION` selects `observe`, which measures and leaves the authored camera in place, and the launcher's `Camera.Obstruction` setting is what a player turns `modern` on with. That setting is **level-scoped**, not restart-scoped: an in-game change is staged and applied by `camera_obstruction_runtime_apply_config()` at the next level load, immediately before the `camera_obstruction_runtime_reset()` that path has always run — the same reset that retires the outgoing policy's held poses. A frame-boundary apply would be a hard cut of the rendered eye with no path that fades between two policies, and the level boundary is the one moment the game already cuts the camera. `center-ray` and `legacy` remain diagnostic A/B controls, and an unrecognised string falls back to `observe` — never to a correcting arm and never to the known-unsafe one. Substitution happens at presentation depth, so neither policy moves authoritative state | the `check_camera_obstruction_*`, `check_camera_dynamic_*`, `check_camera_projection_fallback_runtime`, `check_camera_emergency_readability_runtime`, and `check_camera_3p_tt_runtime` gates, over the `camera_*` ROM-free CTests (`ctest -R '^camera_'`); design and measured fence sizing in [`architecture/camera-obstruction.md`](architecture/camera-obstruction.md) |
 | Oracle | Patched ares runs the real ROM for pixel parity and US 1.1 racer-state comparison (silent by construction) | `race_state_oracle`: Bubbler's authored two-field route passes and the historical one-field arm fails as a positive control; broader strict standard-race parity remains reported separately |
 
-**122 registered check scripts / 135 full-run tasks, each validated in both
+**127 registered check scripts / 141 full-run tasks, each validated in both
 directions.** (`tools/run_checks.py --list` prints them; the three
 `tests/check_*.py` it does not name directly are CTest companions that the
 `rom_free_units` task owns.)
@@ -841,7 +841,9 @@ falls back to it — a typo may neither silently correct nor select a
 known-unsafe arm, and prints a one-shot `camera_obstruction:` line to stderr
 naming the value it could not parse. The launcher's `Camera.Obstruction` setting
 exports the same variable at engine handoff, and only when nothing already set
-it, so this override outranks the launcher) with `MDKR_CAMERA_TRACE=1|2` (`1` prints the per-tick
+it, so this override outranks the launcher — and, because it does, an in-game
+change to the setting is refused as `LOCKED` whenever this variable is set,
+leaving the diagnostic arm in charge for the whole run) with `MDKR_CAMERA_TRACE=1|2` (`1` prints the per-tick
 `camera_obstruction_observe summary` line; `2` adds a per-viewport detail line
 and, under `modern`, keeps running the stationary sweep it would otherwise skip)
 and `MDKR_CAMERA_PERF=1` (`[CAMERAPERF]` per-section timings),
@@ -959,6 +961,15 @@ you've run them once.
   exercised by `check_overlay_pause.py`; `OPEN_FRAME` is not currently
   exercised by anything but shares its scheduling code, so it is believed
   live rather than confirmed.
+- `MDKR_TEST_SETTINGS_TOGGLE=Key=value@tick[,Key=value@tick]...` — change a
+  setting mid-run exactly as the in-game overlay would, at the first present
+  opportunity at or after `tick`. It fires from `platform_input_pump()`, which
+  runs on every present INCLUDING the presentation subloop's, so an edit lands
+  at the same hostile moment a real one does rather than at a boundary chosen to
+  be convenient. Each entry fires once; a soak is a long list. Every edit prints
+  a `[SETTINGS-TOGGLE]` row carrying `applied=0|1`, so a key pinned by the
+  environment or the command line is visibly refused rather than silently doing
+  nothing. Drives `check_live_toggle_settings.py`; inert unless set.
 - `MDKR_WAVES_TRACE=1` — per-render `[WAVES]` row: authoritative
   phase/magnitude plus how much swell actually reached the surface; the seam
   that found the wave generators were inert on levels 19 and 34 (see

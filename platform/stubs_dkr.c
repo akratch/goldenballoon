@@ -148,6 +148,7 @@ EM_ASYNC_JS(int, mdkr_persist_save_async, (int kind), {
 #include "tick_dispatch_gate.h"
 #include "pacing_policy.h"
 #include "present_sched.h"
+#include "video_config.h"   /* the live-settings apply boundary, below */
 #include "presentation_snapshot.h"
 #include "gameplay_event_trace.h"
 #include "input_consumption_trace.h"
@@ -620,6 +621,23 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                 platform_oracle_update_fields(
                     (uint64_t)g_simTickCounter, &oracle_update_fields) != 0;
             const uint64_t perf_entry = present_perf_now();
+            /*
+             * THE LIVE-SETTINGS APPLY BOUNDARY (video_config.h).
+             *
+             * Here, and deliberately not one line later. The previous
+             * authoritative pass is complete and its presentation subloop has
+             * exited, so no replay walk is in flight; the next tick's pacing
+             * decision is the very next statement, so a policy applied now is
+             * indistinguishable from one the run booted with. Both halves
+             * matter: applying after platform_present_subloop_fields() would
+             * pace this tick on the policy the player just replaced, and
+             * applying anywhere inside the subloop would be the stale-walk
+             * hazard itself.
+             *
+             * Unconditional and free when idle: no pending domain means one
+             * loop over three pointers.
+             */
+            (void)mdkr_video_config_apply_pending(MDKR_VIDEO_SCOPE_LIVE);
             const int subloop = platform_present_subloop_fields();
             const bool catchup_ticket =
                 present_sched_pending_ticks() != 0u;

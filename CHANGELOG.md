@@ -8,6 +8,24 @@ From 1.0.0 onward this project follows semantic versioning for the platform
 layer's public seams (config keys, environment variables, command-line flags and
 save formats). Everything below 1.0.0 predates that commitment.
 
+## [Unreleased]
+
+### Changed
+
+- **Frame limit, Motion smoothing and Allow tearing now change while you
+  play.** All three used to be saved for the next time you pressed Play, so
+  comparing two frame limits meant restarting the game twice and trying to
+  remember what the first one looked like. Now the picture changes on the next
+  frame and you can go back and forth on the same corner until you know which
+  one you prefer. Nothing else moves: your position, your lap time, the music
+  and the handling are identical either way.
+- **Camera obstruction now takes effect at the start of your next race** rather
+  than needing a restart. It waits for the next race on purpose — switching the
+  camera in the middle of one would snap your view across the track, and the
+  start of a race is the moment the camera is already being placed. The
+  Settings screen tells you which of the two you are currently racing with
+  while the new one waits.
+
 ## [1.0.6] — 2026-08-06
 
 ### Added

@@ -11,6 +11,12 @@
 #ifdef NATIVE_PORT
 #include "camera_obstruction_runtime.h"
 #endif
+/* Its own guarded block, deliberately: tests/test_camera_obstruction_observe.py
+ * matches the three lines above exactly, to prove the matching build cannot
+ * pull in the native observer. */
+#ifdef NATIVE_PORT
+#include "video_config.h"   /* the level apply boundary, in the load paths */
+#endif
 #include "common.h"
 #include "f3ddkr.h"
 #include "fade_transition.h"
@@ -492,6 +498,11 @@ void load_next_ingame_level(s32 numPlayers, s32 trackID, Vehicle vehicle) {
  */
 void load_level_game(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicleId) {
 #ifdef NATIVE_PORT
+    /* THE LEVEL APPLY BOUNDARY (video_config.h). A staged Camera.Obstruction
+     * change takes effect here, so the reset immediately below is the one that
+     * retires the outgoing policy's held poses -- the same reset this path has
+     * always run, doing the same job for one more reason. */
+    (void)mdkr_video_config_apply_pending(MDKR_VIDEO_SCOPE_LEVEL);
     camera_obstruction_runtime_reset();
     GAMEPLAY_EVENT_TRACE(
         GAMEPLAY_EVENT_LEVEL, levelId, numberOfPlayers, entranceId, vehicleId);
@@ -1141,6 +1152,11 @@ Vehicle get_level_default_vehicle(void) {
  */
 void load_level_menu(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicleId, s32 cutsceneId) {
 #ifdef NATIVE_PORT
+    /* The level apply boundary, for the same reason as load_level_game's. A
+     * menu background is a track load like any other, and servicing it here is
+     * what lets a change made in the pause overlay land at the transition the
+     * player is already watching rather than at the one after it. */
+    (void)mdkr_video_config_apply_pending(MDKR_VIDEO_SCOPE_LEVEL);
     camera_obstruction_runtime_reset();
     GAMEPLAY_EVENT_TRACE(
         GAMEPLAY_EVENT_LEVEL, levelId, numberOfPlayers, entranceId,

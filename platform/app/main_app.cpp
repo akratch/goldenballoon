@@ -187,7 +187,7 @@ int runFileDialogSelfTest() {
 int dumpSchema() {
     mdkr_video_config_init(0, nullptr);
 
-    int live = 0, restart = 0;
+    int live = 0, level = 0, restart = 0;
     std::printf("[app] config schema: %d settings\n", MDKR_VIDEO_KEY_COUNT);
     for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
         const MdkrVideoSchema *s = mdkr_video_schema((MdkrVideoKey)i);
@@ -206,17 +206,21 @@ int dumpSchema() {
             std::fprintf(stderr, "[app] %s does not round-trip by name\n", s->name);
             return 1;
         }
-        if (s->scope == MDKR_VIDEO_SCOPE_RESTART)
+        const char *scope = "LIVE";
+        if (s->scope == MDKR_VIDEO_SCOPE_RESTART) {
+            scope = "RESTART";
             ++restart;
-        else
+        } else if (s->scope == MDKR_VIDEO_SCOPE_LEVEL) {
+            scope = "LEVEL";
+            ++level;
+        } else {
             ++live;
+        }
         std::printf("[app] %-28s cat=%-12s scope=%s env=%s\n",
-                    s->name,
-                    cat,
-                    s->scope == MDKR_VIDEO_SCOPE_RESTART ? "RESTART" : "LIVE",
-                    s->env);
+                    s->name, cat, scope, s->env);
     }
-    std::printf("[app] scopes: live=%d restart=%d\n", live, restart);
+    std::printf("[app] scopes: live=%d level=%d restart=%d\n",
+                live, level, restart);
     Settings_dumpSchemaContract();
     return 0;
 }

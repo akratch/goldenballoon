@@ -402,6 +402,23 @@ production coverage:
   READY/GO cue, the correct 1P/2P music-start or 4P music-mute branch, and a
   forced wrong-way nag timer that completes. This protects the fixed-tick owner
   from silently drifting back into HUD rendering.
+- `check_live_toggle_settings.py` gates the same settings being CHANGED
+  mid-run. `Video.FrameLimit`, `Video.MotionSmoothing` and
+  `Video.AllowTearing` apply at the host-frame boundary and
+  `Camera.Obstruction` at the next level load, driven headlessly by
+  `MDKR_TEST_SETTINGS_TOGGLE=Key=value@tick`, which fires from
+  `platform_input_pump()` so an edit lands at the same point inside the frame
+  the in-game overlay's would. Every arm asserts the change reached the pacer
+  and the swapchain (`[SETTINGS-APPLY]`, `[PRESENT-POLICY] event=live-apply`,
+  a re-emitted `[PRESENT-MODE]`), that the v3 state, event and input streams
+  stay byte-identical to an untoggled baseline, and that nothing reached
+  retired replay state. The **camera** arm asserts the LEVEL deferral in the
+  direction that fails silently: the census must still report `gate=OBSERVE`
+  on every tick between the edit and the level load. The **soak** arm flips
+  motion smoothing 24 times across a level load — the stale walk-entry hazard
+  the deferred apply exists to close — and runs again on the ASan lane, where
+  a stale segment base would be a read of freed level memory rather than a
+  plausible image.
 - `check_presentation_matrix.py` is the fidelity spec's §12.2.2 gate:
   presentation rate must never move the authoritative tick. All stream
   comparisons use the same **v3** authority contract as state-hash and render
