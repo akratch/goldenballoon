@@ -84,7 +84,7 @@ someone playing rather than reading.
 The exit condition is a single deterministic start→credits gate, not a
 collection of partial routes.
 
-### Camera obstruction correction — default-on; breadth evidence outstanding
+### Camera obstruction correction — ships opt-in; default-on rejected on device
 
 **Where it stands.** The projection-derived lens guard is ported and compiled:
 the sweep kernel, resolver, transform adapter, static and dynamic occlusion
@@ -93,23 +93,28 @@ each of the eight authored camera slots
 (`game/src/camera_obstruction_runtime.c`, `platform/camera_obstruction*.c`).
 Rendering no longer computes a lens; it consumes the projection record the
 finalizer latched. The runtime policy comes from `MDKR_CAMERA_OBSTRUCTION`, and
-as of 2026-08-07 **unset selects Modern** — every authored slot is resolved and
-no pinned route publishes a penetrated, degraded, or invalid pose. Observe, where
-the authored pose is retained and only measured, is the player-facing opt-out,
-reached through the launcher's Camera setting or the variable directly.
+**unset selects Observe** — the authored pose, retained and only measured.
+Modern, where every authored slot is resolved and no pinned route publishes a
+penetrated, degraded, or invalid pose, is the player-facing opt-in, reached
+through the launcher's Camera setting or the variable directly. It was made the
+default on 2026-08-07 and reverted the same day: device acceptance found the
+corrected camera too sensitive in play, and no instrumented gate had caught it.
 `center-ray` and `legacy` remain in the same binary as diagnostic arms and as
 the required broken-direction controls, and a misspelled value falls back to the
-default rather than silently switching the shipped camera off or silently
-selecting an unqualified arm. `Camera.Comfort` ships beside it: a presentation-
-only reduced-motion opt-in, off by default.
+default rather than silently correcting a camera nobody asked to correct or
+silently selecting an unqualified arm. `Camera.Comfort` ships beside it: a
+presentation-only reduced-motion opt-in, off by default.
 
 **What remains.** Several CAM-00–CAM-09 exit gates in
 [`docs/architecture/camera-obstruction.md`](docs/architecture/camera-obstruction.md)
 are still open, and every one of them is *breadth of evidence* rather than a
 known defect — differential fuzzing corpora, GCC/wasm32 sanitizer-equivalent
 runs, soft-occluder enrollment and its pixel proof, WebGPU/browser and
-resource-plateau breadth, manual motion review. §10.1 of that document records
-exactly which rows the default flip rested on and which it did not wait for.
+resource-plateau breadth. Manual motion review is no longer merely open: it ran
+on device and rejected the default. §10.1 of that document records which rows
+the flip rested on, which it did not wait for, and why passing all of them was
+not sufficient — MOTION-01's thresholds need recalibrating against that verdict
+before another flip is attempted.
 They are now open *behind* the default rather than in front of it, which is
 survivable for one reason: the resolver substitutes only at presentation depth,
 so no open gate can turn into moved authoritative state, and `Camera.Obstruction

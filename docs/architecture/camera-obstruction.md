@@ -2,20 +2,22 @@
 
 > **Target:** safe obstruction correction is the native/browser default; the
 > CAM-00–CAM-09 release gates evidence its breadth.
-> **Current state (2026-08-07):** correction is the default. The
+> **Current state (2026-08-07):** correction is a shipped opt-in, not the
+> default. It *was* made the default earlier the same day and was reverted the
+> same day on human device acceptance — see §10.1, which is now the record of
+> both the flip and its reversal. The
 > eight-slot presentation sidecar, projection-derived swept-sphere resolver,
 > static/dynamic query sources, recovery, alternate shots, and emergency racer
 > fade exist and run on every authored slot. Modern reports
-> `penetrated=0 degraded=0 invalid=0` on every pinned route, and an unset or
-> empty `MDKR_CAMERA_OBSTRUCTION` now resolves to it; Observe is the
-> player-facing opt-out (`Camera.Obstruction=observe`, or the launcher's
-> **Authored (original camera)**) and Center-ray and Legacy remain in the same
+> `penetrated=0 degraded=0 invalid=0` on every pinned route, and reaches a
+> player through `Camera.Obstruction=modern` or the launcher's **Keep the
+> camera out of walls**; an unset or empty `MDKR_CAMERA_OBSTRUCTION` resolves
+> to Observe, the authored camera, and Center-ray and Legacy remain in the same
 > binary as broken-direction controls. Either policy is safe by construction
 > rather than by measurement alone: the resolver substitutes only at
 > presentation depth, so no authoritative state can move with it. `Camera.Comfort`
 > ships beside it as a reduced-motion opt-in, on the same presentation-only
-> terms. See §10.1 for which CAM/LENS rows the flip rests on and which were
-> superseded by measurement.
+> terms, and applies to the corrected camera.
 > **Evidence cutoff:** branch `codex/camera-obstruction-modern`, current candidate
 > recorded in `docs/evidence/camera-runtime-modern-2026-08-05.md`; US v80 ROM SHA-256
 > `7de1a8fb2a9558cfc3d9ad4497df698c1e89cf7095ac1531557df2af40ba8bcf`.
@@ -39,7 +41,8 @@ visual preset:
   resolver produces the safe shot after every behavior, dialogue offset, and shake
   contribution is known.
 - Safety is on by default in Pure, Restored, and Remastered modes — written as a
-  target here, and true since 2026-08-07. Pure remains an
+  target here, and **not yet true**: it was true for part of 2026-08-07 and was
+  reverted to opt-in that day by device acceptance (§10.1). Pure remains an
   image-treatment/reference preset; it is not permission to retain a disruptive
   camera defect. No preset pins the key in either direction, so a player's
   choice of camera survives every mode switch. A same-binary legacy mode exists
@@ -899,7 +902,7 @@ default-on rollout.
 | CAM-06 | Strong partial | Immediate retract, bounded recovery, retraction release hold that absorbs measured false-clear runs at facet seams, scripted endpoint/chord safety, deterministic shoulder/elevation fan, sticky prior-candidate/release-band hysteresis; previous/current exact tuple validation; fixed-basis exact transition sweep; rotated-basis conservative sweep; projection/shake tuple cuts; production-backed thick-slab `target_embedded` classification that remains not-visible telemetry | Quantified jerk/retract/recovery/blocker/candidate metrics, and signed worst-1% motion review. Presentation-rate cut density is now measured at 4x authored and reported as a baseline; no threshold is set on it |
 | CAM-07 | Strong partial | Follow/loop/fixed/finish/T.T./scripted families plus P2/cutscene/3P-T.T. slot mapping; current-source 47-row, 4P, WebGPU snapshot, and independent 3P+T.T. camera-3 route coverage | Approved cinematic exceptions and remaining pinned mode-transition review |
 | CAM-08 | Partial | Per-viewport presentation-only emergency racer opacity; hard surfaces never fade | Soft-occluder enrollment/fade policy and state/cross-viewport pixel proof |
-| CAM-09 | In progress; default flipped 2026-08-07 | Release registration; same-binary oracle; 24-arm shape/FOV gate; lifecycle/3P/emergency gates; isolated native 4P p99/memory/authority gate; current Clang ASan/UBSan native target and ROM route; 84-test registered suite including new fault/oracle fixtures; **the separately reviewed default flip, taken on the §10.1 measurements rather than on a fully green ledger** | Current-candidate 47-row/20-track, WebGPU/browser/wasm and resource-plateau/GCC breadth, soft policy/pixels, rotating-door/runtime moving-solid fixtures, and motion/manual review — all still open, and all now open *behind* the default rather than in front of it |
+| CAM-09 | In progress; default flipped and reverted 2026-08-07 | Release registration; same-binary oracle; 24-arm shape/FOV gate; lifecycle/3P/emergency gates; isolated native 4P p99/memory/authority gate; current Clang ASan/UBSan native target and ROM route; 84-test registered suite including new fault/oracle fixtures; **the separately reviewed default flip, taken on the §10.1 measurements rather than on a fully green ledger — and reverted the same day when this row's own manual-review arm ran and rejected it** | Current-candidate 47-row/20-track, WebGPU/browser/wasm and resource-plateau/GCC breadth, soft policy/pixels, rotating-door/runtime moving-solid fixtures. Motion/manual review is no longer merely open: device acceptance ran, returned "too sensitive/causes issues", and sent the default back to `observe` (§10.1). Correction ships opt-in |
 
 Current recorded evidence (2026-08-05, macOS host, US-v80 hash from the banner):
 
@@ -1091,9 +1094,9 @@ geometry, cost, or authority exit:
 | PERF-01 geometry — implementation complete, release evidence open | `842d62f` replaces the production sampled interval fallback with a 96-test continuous Lipschitz interval proof. The sampled implementation is reachable only through the ROM-free oracle API. Count SAT, bounded tests/exhaustion, stationary tests, and refinements; budget exhaustion returns `INVALID`, and two-phase composition retains the conservative sphere `HIT`. | Property/fuzz corpus compares production against the oracle across translation, scale, tangent, initial-overlap, face/edge/vertex, high-coordinate, and thin/oversized triangles under Clang/GCC, strict warnings, ASan/UBSan, and wasm32. Inject every work-cap boundary. | Zero false clears versus the oracle; zero ordinary-route sampled fallbacks; stationary-test p99 <= 64 and max <= 128; deterministic hit bytes and stable-ID ordering. |
 | PERF-02 collision — implementation complete, release evidence open | `d8c8bb7` builds stable-order eight-triangle chunks and an auxiliary deterministic balanced BVH, validates topology/coverage/containment before publication, checks generation and integrity during both sphere/exact traversal, and enforces aggregate instance/node/chunk/triangle/stationary budgets. `da93930` adds identity/rotated/scaled equivalence and malformed-node/chunk/per-model-cap/generation fault tests against the production representation. | Aggregate multi-instance cap injection, whole-ROM model census, repeated real load/free/address-reuse soak, and moving-door snapshot tests. | Dynamic p99 <= 2 instances, max <= 4; maximum 64 nodes/32 chunks/256 retained triangles/128 stationary tests per corridor; zero truncation/invalid/degraded results; cache within recorded load/memory budgets. |
 | RUNTIME-01 camera/render — implementation complete, fault fixture open | Store renderer-derived exact guard and full fallback tuple per slot. Ordinary boom queries use the two-phase result. Alternate, emergency, recovery, scripted, stationary, and post-validation build and validate the final `Camera` orientation; publication performs no later retarget. Dynamic invalidity is never cleared or published, and failed ticks retire camera/object interpolation history. | Add a ROM-free state-machine seam that injects exact clear/hit/invalid, dynamic census failure/recovery, generation mismatch, stale tuple, final retarget, and orientation-changing interpolation. Runtime fixtures assert identical open-space bytes, authored fallback on source failure, and conservative sphere hit on healthy exact-work exhaustion. | Zero final-pose penetration or hidden resolvable target; zero stale generations; invalid never clears; failed publication cannot be snapshotted or interpolated; recovery requires a complete fresh tuple. |
-| MOTION-01 design/QA — instrumentation complete, thresholds and tuning open | Tune expansion-only spring/hysteresis and deterministic shot scoring after safety decisions stabilize. Mark orientation-changing cuts discontinuous unless an SE(3) sweep is implemented. The per-family profile table (§7.3.1) is now an explicit three-value enum so a route can be measured under a different profile without editing a correction stage. | `tests/check_camera_motion_quality.py` drives the three pinned routes under Modern and reads the runtime's `camera_motion` census: jerk, retract latency, recovery duration, blocker churn, shoulder flips, emergency dwell, and discontinuity density. Hard chatter/shoulder/dwell invariants assert; the analog metrics are reported as the calibration baseline. A 240 Hz interpolated arm reports cut density per displayed frame. The reduced-motion control is no longer open: it shipped as `Camera.Comfort` (§7.9), which covers both halves of this row — the vertical shake and the recovery rate — as presentation-only transforms, because the authored shake itself is authoritative state (`platform/sim_hash.c`) and cannot be gated at its source. | Numeric thresholds pass and worst 1% clips receive signed manual review across 4:3, ultrawide, portrait, and split-screen. What the first capture found, and what closing it cost, is recorded in §7.3.2. |
+| MOTION-01 design/QA — instrumentation complete, thresholds and tuning open | Tune expansion-only spring/hysteresis and deterministic shot scoring after safety decisions stabilize. Mark orientation-changing cuts discontinuous unless an SE(3) sweep is implemented. The per-family profile table (§7.3.1) is now an explicit three-value enum so a route can be measured under a different profile without editing a correction stage. | `tests/check_camera_motion_quality.py` drives the three pinned routes under Modern and reads the runtime's `camera_motion` census: jerk, retract latency, recovery duration, blocker churn, shoulder flips, emergency dwell, and discontinuity density. Hard chatter/shoulder/dwell invariants assert; the analog metrics are reported as the calibration baseline. A 240 Hz interpolated arm reports cut density per displayed frame. The reduced-motion control is no longer open: it shipped as `Camera.Comfort` (§7.9), which covers both halves of this row — the vertical shake and the recovery rate — as presentation-only transforms, because the authored shake itself is authoritative state (`platform/sim_hash.c`) and cannot be gated at its source. | Numeric thresholds pass and worst 1% clips receive signed manual review across 4:3, ultrawide, portrait, and split-screen. What the first capture found, and what closing it cost, is recorded in §7.3.2. **Thresholds need recalibration before any future default flip (§10.1):** every one of them was satisfied by the build device acceptance rejected on 2026-08-07 as too sensitive in play. Passing this row as currently tuned is necessary and demonstrably not sufficient, and rerunning it unchanged is not new evidence. |
 | VIS-01 rendering/content | Add reviewed soft-occluder policy and generation-keyed, per-viewport, batch-local fade. The interim decline (small dynamic blockers that are neither close nor cheap stop retracting a race camera, after the authored lens validates exact-clear of the complete occluder set) is in place but has no measured target: on the hub route the only dynamic blockers are two door instances of ~302 unit half-extent, every small prop is already excluded from the camera hard set as non-solid, and static track triangles carry no comparable size at all. Hard geometry continues to require clearance; emergency racer fade remains presentation-only. | Two-view opposing visibility fixture, opaque/cutout/translucent pixels, freed-ID reuse, state/RNG/event/audio hashes, and GL/WebGPU/browser screenshots. | No cross-viewport contamination, no hard-wall fade substitution, no gameplay mutation, and approved content census. |
-| RELEASE-01 QA/release | Rerun the complete current-revision matrix in optimized artifacts and archive the evidence schema below. Flip the default only in a dedicated reviewed commit with immediate Observe rollback. | 84 registered tests plus release suite, GCC/Clang, sanitizers, native backends, wasm/browser, resource plateau, load time, long 4P soak, same-binary Legacy/center-ray negative controls. | Partially met. The change was dedicated and reviewed — the branch alters the camera default and the reduced-motion option ownership required to ship with it, and nothing else — and the immediate Observe rollback exists as written, now as a player-facing setting. "Every CAM/LENS row green" did not happen; §10.1 records what was substituted for it. |
+| RELEASE-01 QA/release | Rerun the complete current-revision matrix in optimized artifacts and archive the evidence schema below. Flip the default only in a dedicated reviewed commit with immediate Observe rollback. | 84 registered tests plus release suite, GCC/Clang, sanitizers, native backends, wasm/browser, resource plateau, load time, long 4P soak, same-binary Legacy/center-ray negative controls. | Not met, and the protocol is what caught it. The change was dedicated and reviewed — the branch altered the camera default and the reduced-motion option ownership required to ship with it, and nothing else — and the immediate Observe rollback existed as written and was used: device acceptance rejected the default on 2026-08-07 and it was reverted the same day at a setting's cost. "Every CAM/LENS row green" did not happen; §10.1 records what was substituted for it and what that substitution missed. |
 
 Absolute screen-size independence is evaluated in world space: pixel resolution
 must not alter a trace when effective aspect/FOV are equal, while each distinct
@@ -1122,7 +1125,7 @@ result are archived; a terminal summary alone is not evidence.
 | C — motion product quality | Instrument retract latency, recovery duration, positional/angular velocity and jerk, blocker churn, shot-side flips, emergency/fade dwell, and discontinuity density. Tune only expansion/recovery/shot scoring; hard clearance is immutable. | Deterministic routes at 20/30/50/60 fixed cadence and 20–240 Hz presentation, shake on/off, reduced-motion, 1P–4P, 4:3/portrait/16:9/21:9/32:9, authored/FOV extrema. Archive worst 1% clips. | Section 7.3 numeric bounds pass; no repeatable nausea, steering ambiguity, shoulder flap, or prolonged unreadable framing in signed design/QA review. |
 | D — visibility policy | Finish the fingerprinted hard/soft/nonblocking census. Either implement generation-keyed per-viewport batch-local soft fade or record an explicit release deferral. Never fade hard geometry. | Opposing split-view pixels, opaque/cutout/translucent fixtures, freed-ID reuse, GL/WebGPU/browser captures, and state/event/RNG/audio hashes. | No cross-viewport contamination, object/global material write, hard-wall substitution, identity leak, or authority delta. |
 | E — platform parity and soak | Build optimized current source with Clang, GCC, and Emscripten; run native GL, native WebGPU, and Chromium, including fullscreen, DPR, live resize, projection fault, minimize/resume, pause/restart, and repeated level transitions. | Backend-equivalent safety/authority counters, browser frame/load distributions, 30-minute 4P obstruction soak, teardown diagnostics, and resource plateau. | Correctness matches native reference; p99/load/memory budgets in sections 7.6 and 10 pass; no sanitizer, browser console, teardown, or timing regression. |
-| F — default decision | Freeze tuning and evidence schema; rerun the entire matrix from clean optimized artifacts; perform independent code, gameplay, and release review. Change only the default in a dedicated commit. | Signed CAM-00–CAM-09 and LENS-01–LENS-08 ledger, release note, rollback drill, ROM/build fingerprints, and archived captures/traces. | **Superseded 2026-08-07, and recorded as superseded rather than as satisfied.** The written bar was "every row green". The flip was taken instead on the §10.1 measurements, with ownership's approval, because the rows that stayed amber are breadth-of-evidence rows rather than known defects. Rollback is unchanged and still requires no save migration — and is now a player-facing setting, not a build. |
+| F — default decision | Freeze tuning and evidence schema; rerun the entire matrix from clean optimized artifacts; perform independent code, gameplay, and release review. Change only the default in a dedicated commit. | Signed CAM-00–CAM-09 and LENS-01–LENS-08 ledger, release note, rollback drill, ROM/build fingerprints, and archived captures/traces. | **Open again as of 2026-08-07.** The written bar was "every row green". It was substituted for on 2026-08-07 by the §10.1 measurements, the default was flipped, and the *gameplay review* this row also requires then rejected it on device — so the row is not superseded after all, and is recorded as unmet. The rollback worked exactly as written: a player-facing setting and a re-seeded default, no build, no save migration. Any future attempt owes the gameplay-review clause first, not last. |
 
 Each engineering change follows the same loop:
 
@@ -1468,10 +1471,11 @@ The new gate is registered in `tools/run_checks.py`; it is not a manual-only scr
 Add a diagnostic seam such as:
 
 ```text
-unset | modern                   current default; full static+dynamic correction,
-                                 running the §7.3.1 per-family treatment table
-MDKR_CAMERA_OBSTRUCTION=observe  the player-facing opt-out; telemetry only,
-                                 authored pose retained. The launcher's
+unset | observe                  current default; telemetry only, authored pose
+                                 retained
+MDKR_CAMERA_OBSTRUCTION=modern   the player-facing opt-in; full static+dynamic
+                                 correction, running the §7.3.1 per-family
+                                 treatment table. The launcher's
                                  Camera.Obstruction setting exports this
 MDKR_CAMERA_OBSTRUCTION=center-ray intentionally incomplete diagnostic control
 MDKR_CAMERA_OBSTRUCTION=legacy   original direct placement + void detector
@@ -1480,19 +1484,21 @@ MDKR_CAMERA_TRACE=1|2             summaries / per-query detail
 MDKR_CAMERA_EXACT_SHADOW=1        non-publishing promoted-sphere/exact corridor comparison
 ```
 
-Unknown values fail to the default, which is now Modern. The rule the old
-fallback protected is unchanged — a typo may not select the known-unsafe Legacy
-behavior or the incomplete Center-ray control — but its old landing point
-inverted with the default: sending a typo to Observe would now silently switch
-the shipped camera *off*, which is the larger surprise. The fallback must not be
+Unknown values fail to Observe, the default and the only arm that measures
+without moving a camera: a typo may neither silently correct nor silently select
+the known-unsafe Legacy behavior or the incomplete Center-ray control. (This
+landing point followed the default to Modern for part of 2026-08-07 and came
+back with it.) The fallback must not be
 silent even though it lands where an unset variable does, because that is
 exactly the case a caller cannot tell apart from their request being honoured:
 the first unparsed resolution prints one `camera_obstruction:` line to stderr
 naming the rejected value and the valid set, and never repeats — the policy
 resolves per slot per fixed tick. The immediate rollback ladder is
 `modern -> observe -> legacy`, with no save persistence or authoritative-state
-migration; `observe` is a supported player-facing state, so the first rung of
-that ladder is one setting away and needs no build.
+migration; `observe` is a supported player-facing state and is now also the
+default, so the first rung of that ladder is one setting away and needs no
+build. The 2026-08-07 acceptance reversal used exactly that rung, and the
+build-side change was a re-seeded default rather than a code path.
 
 The legacy arm must reproduce the wall/door lens violation in the same executable.
 The modern arm must pass the invariant. A second injected control disables only the
@@ -1621,15 +1627,45 @@ The issue may be marked fixed only when all statements are true:
 
 Anything less is a partial mitigation and remains open in this document.
 
-### 10.1 What the 2026-08-07 default flip actually rests on
+### 10.1 The 2026-08-07 default flip, and its reversal the same day
 
-The bar this section and §6.4's row F wrote down was *every CAM-00–CAM-09 and
-LENS-01–LENS-08 row green*. That bar was not met, and this subsection exists so
-nobody reads the flip as evidence that it was. Ownership took the decision on
-the measurements below instead. Recording the substitution is the point; a gate
-table that quietly relaxes to match what shipped is worth nothing.
+**Outcome first: the flip was built, gated, taken — and reverted. The default is
+`observe` again. Correction ships as an opt-in.**
 
-**Rows the flip rests on — green, and load-bearing:**
+Two things happened on 2026-08-07 and this subsection records both, because the
+second is the more useful engineering fact.
+
+**The flip.** The bar this section and §6.4's row F wrote down was *every
+CAM-00–CAM-09 and LENS-01–LENS-08 row green*. That bar was not met, and this
+subsection exists so nobody reads the flip as evidence that it was. Ownership
+took the decision on the measurements below instead. Recording the substitution
+is the point; a gate table that quietly relaxes to match what shipped is worth
+nothing.
+
+**The reversal.** The default-on build then went to human device acceptance and
+was rejected there. The verdict, verbatim: *"the camera thing is too
+sensitive/causes issues."* Nothing in the instrumented ladder below regressed —
+every row cited as load-bearing was still green when the default was pulled.
+The correction was not withdrawn and no code path was removed; only the seeded
+default and the launcher's ordering changed, which is exactly the cheap
+reversal §7.8's rollback ladder promised.
+
+**What that costs this document.** The measured case for default-on was
+*necessary and not sufficient*, and that is the finding worth carrying forward.
+MOTION-01's chatter, shoulder-flip, emergency-dwell and jerk/latency thresholds
+were all satisfied by a camera that a person playing the game on a device
+described as too sensitive. So the thresholds are not calibrated against the
+thing they are proxies for. **Before any future flip attempt, MOTION-01's
+thresholds must be recalibrated against this verdict** — the specific play the
+owner rejected has to become a case the gate can fail on — and a device
+acceptance pass has to be a named row in the ladder rather than a step after
+it. A rerun of the same numbers is not new evidence for the same decision.
+
+The tables below are kept as written, and are the record of the flip that was
+taken. They are no longer a description of the shipped default.
+
+**Rows the flip rested on — green, load-bearing, and still green at the
+reversal:**
 
 | Row | What closed it |
 | --- | --- |
@@ -1650,12 +1686,20 @@ table that quietly relaxes to match what shipped is worth nothing.
   unbuilt. VIS-01's interim rule (small dynamic blockers stop *retracting*, never
   stop being validated) means the gap costs a correction, never a safe pose.
 - **CAM-09** — WebGPU/browser/resource-plateau breadth and manual motion review
-  remain. These are now open behind the default rather than in front of it.
+  remain. Manual motion review is the row that ran next, and it is the row that
+  reversed the decision.
 
-**What makes that trade acceptable, and what would reverse it:** every amber row
-above is a *coverage* row, and the correction is safe by construction rather
+**What made that trade acceptable, and what actually reversed it:** every amber
+row above is a *coverage* row, and the correction is safe by construction rather
 than by coverage — it substitutes only at presentation depth, so no amber row
-can turn into moved authoritative state. The reversal condition is unchanged and
-cheap: `Camera.Obstruction=observe` is a shipped, tested, player-facing setting
-with its own gate arm, so rolling back is a setting, not a build, and costs no
-save migration.
+could turn into moved authoritative state, and none did. What reversed the
+decision was none of them. It was CAM-09's manual review arm: device acceptance,
+by a person playing the game, finding the corrected camera too sensitive in play.
+The reversal cost was as advertised — `Camera.Obstruction=observe` is a shipped,
+tested, player-facing setting with its own gate arm, so the rollback was a
+setting and a re-seeded default, not a build, and cost no save migration.
+
+**The standing lesson.** Safe-by-construction is a claim about authority, not
+about whether a camera is pleasant to play behind. Correctness gates cleared it;
+a human did not. Any future attempt at this default needs the human judgement
+encoded as a gate row *before* the flip, not discovered after it.

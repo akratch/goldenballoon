@@ -218,15 +218,15 @@ def main() -> int:
         ({}, ["--remastered"], "Video.AnisotropicFiltering", "16", "preset"),
         ({}, ["--remastered"], "Video.Mipmaps", "1", "preset"),
         ({}, ["--remastered"], "Video.WorldShadows", "full", "preset"),
-        # The corrected camera is the default and is preset-independent: no
-        # mode pins it, so it stays modern and stays unattributed to any layer.
-        ({}, [], "Camera.Obstruction", "modern", "default"),
-        ({}, ["--remastered"], "Camera.Obstruction", "modern", "default"),
-        ({}, ["--pure"], "Camera.Obstruction", "modern", "default"),
-        # ...and the opt-out reaches it from the environment, which is what
-        # makes "the original camera is one setting away" checkable.
-        ({"MDKR_CAMERA_OBSTRUCTION": "observe"}, ["--remastered"],
-         "Camera.Obstruction", "observe", "env"),
+        # Camera correction is opt-in and preset-independent: no mode pins it,
+        # so it stays observe and stays unattributed to any layer.
+        ({}, [], "Camera.Obstruction", "observe", "default"),
+        ({}, ["--remastered"], "Camera.Obstruction", "observe", "default"),
+        ({}, ["--pure"], "Camera.Obstruction", "observe", "default"),
+        # ...and the opt-in reaches it from the environment, which is what
+        # makes "the corrected camera is one setting away" checkable.
+        ({"MDKR_CAMERA_OBSTRUCTION": "modern"}, ["--remastered"],
+         "Camera.Obstruction", "modern", "env"),
         # Comfort is off by default and equally preset-independent: not even
         # Remastered may switch a reduced-motion choice on or off.
         ({}, [], "Camera.Comfort", "authored", "default"),

@@ -790,12 +790,12 @@ static int run_deferred_apply_case(void) {
 
     /* --- The camera domain: LEVEL, deferred to a level load ---
      *
-     * The staged direction is modern -> observe, the opt-out, because that is
-     * now the change a player makes: the corrected camera is the default, so
-     * staging "modern" against the default would stage nothing at all. */
+     * The staged direction is observe -> modern, the opt-in, because that is
+     * the change a player makes again: the authored camera is the default, so
+     * staging "observe" against the default would stage nothing at all. */
     expect("deferred camera obstruction is accepted",
            mdkr_video_config_runtime_set(
-               MDKR_VIDEO_CAMERA_OBSTRUCTION, "observe") ==
+               MDKR_VIDEO_CAMERA_OBSTRUCTION, "modern") ==
                MDKR_VIDEO_RUNTIME_LIVE);
     expect("the level boundary is pending",
            mdkr_video_config_apply_is_pending(MDKR_VIDEO_SCOPE_LEVEL));
@@ -811,17 +811,16 @@ static int run_deferred_apply_case(void) {
     /*
      * ...and while it waits, the live config still reports the policy the
      * engine is actually running. This is what the settings panel reads to say
-     * "now: Keep the camera out of walls", and a staged value copied in early
-     * would make it lie.
+     * "now: Authored", and a staged value copied in early would make it lie.
      */
     expect("the live config still holds the running policy",
            !strcmp(mdkr_video_config_current()
                        ->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
-                   "modern"));
+                   "observe"));
     expect("the desired config holds the player's choice",
            !strcmp(mdkr_video_config_desired()
                        ->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
-                   "observe"));
+                   "modern"));
     /* A LEVEL key must not raise the restart notice; that is the whole point. */
     expect("a staged LEVEL key raises no restart",
            !mdkr_video_config_restart_pending());
@@ -844,7 +843,7 @@ static int run_deferred_apply_case(void) {
     expect("the applied policy is now the live config",
            !strcmp(mdkr_video_config_current()
                        ->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
-                   "observe"));
+                   "modern"));
     expect("one apply carried both camera keys",
            !strcmp(mdkr_video_config_current()
                        ->values[MDKR_VIDEO_CAMERA_COMFORT].text,

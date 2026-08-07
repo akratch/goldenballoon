@@ -163,8 +163,8 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "at your display's refresh instead, unless Allow tearing is on. Pair a "
         "rate above original with Motion smoothing = Interpolated for unique "
         "in-between images. Gameplay remains on its fixed original cadence. "
-        "A European (50 Hz) ROM is worth pairing that way: its authored image "
-        "lasts 40 ms, which is not a whole number of 60 Hz refreshes, so "
+        "A European (50 Hz) ROM paces unevenly under original: its authored "
+        "image lasts 40 ms, which is not a whole number of 60 Hz refreshes, so "
         "original alternates between holding it for two and for three and the "
         "motion looks uneven. display with interpolate removes that without "
         "changing game speed, music pitch, or timers. "
@@ -414,15 +414,13 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "Camera.Obstruction", "MDKR_CAMERA_OBSTRUCTION",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_LEVEL, 0.0f, 0.0f,
         "Camera",
-        "Keep the camera out of walls is the default. It pulls the camera in "
-        "front of walls, doors, and anything else solid that would come "
-        "between it and your racer, so you can always see where you are "
-        "going. Authored is the original camera, exactly as the game writes "
-        "it, and it is one setting away whenever you want it. Only the "
-        "picture moves either way: handling, results, ghosts, and saves are "
-        "identical. Takes effect at the next race, so the camera never jumps "
-        "mid-corner. In a config file or the environment the two values are "
-        "modern and observe.",
+        "Authored is the camera the game writes, unchanged, and it is what "
+        "you get unless you change this. Keep the camera out of walls pulls "
+        "it in front of walls, doors, and anything else solid that would come "
+        "between it and your racer. Only the picture moves either way: "
+        "handling, results, ghosts, and saves are identical. Takes effect at "
+        "the next race, so the camera never jumps mid-corner. In a config "
+        "file or the environment the two values are observe and modern.",
         MDKR_VIDEO_CAT_PRESENTATION
     },
     /*
@@ -743,9 +741,8 @@ static const char *const s_preset_text[MDKR_VIDEO_KEY_COUNT][3] = {
      * preset table and is subject to Pure's read-only rule, but which of the
      * two cameras a player is racing with is their standing choice rather than
      * an art-direction one, and no mode a player picks may switch it behind
-     * them -- in either direction. Pure in particular does not get to hand back
-     * the authored camera's defect in the name of reference presentation.
-     * mdkr_video_config_defaults() seeds "modern" for all three; a resolved
+     * them -- in either direction.
+     * mdkr_video_config_defaults() seeds "observe" for all three; a resolved
      * value survives every preset switch untouched.
      */
     [MDKR_VIDEO_CAMERA_OBSTRUCTION] = { NULL, NULL, NULL },
@@ -805,16 +802,18 @@ void mdkr_video_config_defaults(MdkrVideoConfig *config) {
         sizeof(config->values[MDKR_VIDEO_MOTION_SMOOTHING].text),
         "%s", "off");
     /*
-     * The corrected camera is the default in every mode, and the authored
-     * camera is the one-setting opt-out. Which of the two a player is in
-     * remains their standing choice rather than a property of the presentation
-     * preset they happen to be in -- that is why neither is pinned by Pure,
-     * Restored or Remastered above.
+     * The authored camera is the default in every mode. Correcting it is a
+     * deliberate choice a player makes once, not a property of the
+     * presentation preset they happen to be in -- that is why neither camera
+     * is pinned by Pure, Restored or Remastered above.
+     *
+     * This seeded "modern" for one wave and was seeded back on 2026-08-07,
+     * when device acceptance rejected the corrected camera as a default.
      */
     snprintf(
         config->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
         sizeof(config->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text),
-        "%s", "modern");
+        "%s", "observe");
     /* Authored motion is the default: comfort is an accessibility opt-in, and
      * nothing a player did not ask for may soften the camera the game
      * writes. */
@@ -1139,7 +1138,7 @@ const char *mdkr_video_camera_comfort_canonical(const char *value) {
 
 /*
  * Two of these four words are a player's choice and two are diagnostics.
- * "modern" and "observe" are what the settings UI offers and what the ini and
+ * "observe" and "modern" are what the settings UI offers and what the ini and
  * the options screen ever show. "legacy" and "center-ray" are arms of the
  * MDKR_CAMERA_OBSTRUCTION seam this key inherits: an A/B gate that sets the
  * environment must keep resolving, so they are accepted and returned verbatim

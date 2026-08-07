@@ -1325,12 +1325,11 @@ async function boot() {
   const loadTrack = /^(?:[0-9]|[1-5][0-9]|6[0-5])(?::[0-2])?$/.test(
     loadTrackValue || ""
   ) ? loadTrackValue : null;
-  // ?camera=observe|legacy|center-ray selects a camera policy for A/B against
-  // the shipped default (modern, the camera that keeps itself out of walls).
-  // There is no setting for it in the web shell; observe is how a page asks for
-  // the authored camera back. Unrecognized values are ignored here; the
-  // engine's own fallback would land on modern and announce it, which is not
-  // what a typo means.
+  // ?camera=modern|legacy|center-ray selects a camera policy for A/B against
+  // the shipped default (observe, the authored camera). There is no setting for
+  // it in the web shell; modern is how a page opts into wall correction.
+  // Unrecognized values are ignored here; the engine's own fallback would land
+  // on observe and announce it, which is not what a typo means.
   const cameraValue = qs.get("camera");
   const cameraPolicy = ["observe", "legacy", "center-ray", "modern"]
     .includes(cameraValue) ? cameraValue : null;

@@ -147,7 +147,7 @@ int main() {
     expect(AppUi_videoSettingVisible(MDKR_VIDEO_MOTION_SMOOTHING, true) &&
            AppUi_videoSettingVisible(MDKR_VIDEO_MOTION_SMOOTHING, false),
            "production motion smoothing is visible on every renderer");
-    // The settings panel is the only way back to the original camera without
+    // The settings panel is the only way to opt into camera correction without
     // setting an environment variable, so it may not be renderer-conditional.
     // The same goes for the reduced-motion option beside it: an accessibility
     // control that some renderers hide is not an accessibility control.

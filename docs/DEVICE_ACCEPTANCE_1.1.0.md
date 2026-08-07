@@ -36,12 +36,17 @@ gated on this pass.*
 
 ## New behavior to exercise (1.0.6 → 1.1.0)
 
-- [ ] **Camera default**: on a fresh config the camera stays out of walls
-  (drive at walls/doors in the adventure hub and in races — the camera pulls
-  in instead of clipping). Settings → Authored (original camera) restores the
-  retail camera at the next race, no restart.
-- [ ] **Camera comfort**: the reduced-motion option visibly calms camera
-  shake and recovery; switching back restores authored motion.
+- [ ] **Camera default**: on a fresh config the camera is **Authored
+  (original camera)** — the retail camera, unchanged. Settings → Camera →
+  Keep the camera out of walls turns the correction on at the next race, no
+  restart (drive at walls/doors in the adventure hub and in races — the camera
+  pulls in instead of clipping), and switching back restores the retail camera
+  the same way. *This row was run on 2026-08-07 against a build that shipped
+  the correction ON by default; it was rejected as too sensitive in play, and
+  the default was reverted to Authored. The correction ships as an opt-in.*
+- [ ] **Camera comfort**: with Keep the camera out of walls selected, the
+  reduced-motion option visibly calms camera shake and recovery; switching
+  back restores authored motion. (Nothing to observe on the original camera.)
 - [ ] **No tearing**: every Frame limit choice (including 40, 90, 120,
   "Just under display", Uncapped) shows no horizontal seam while panning.
   Allow Tearing ON is the one exception — it may tear, by choice.
@@ -49,9 +54,12 @@ gated on this pass.*
   tearing mid-race — the picture changes on the next frame, no restart; lap
   time/position/music unaffected. Presentation pace (Original/Smooth) is the
   one-click version.
-- [ ] **Smooth mode look**: with Presentation pace = Smooth, waterfalls,
+- [ ] **Smooth mode look**: Presentation pace is **Original** on a fresh
+  config; Smooth is the opt-in. With Presentation pace = Smooth, waterfalls,
   water, and lava move fluidly with the world (no stepping/shimmer —
-  Jungle Falls waterfall and Hot Top lava are the reference spots).
+  Jungle Falls waterfall and Hot Top lava are the reference spots). *Run
+  2026-08-07: jitter and artifacts remain visible in high-motion areas, which
+  is why Smooth stays opt-in and Motion smoothing Off stays the default.*
 - [ ] **Ultrawide (your monitor)**: race at 21:9/32:9, wide FOV if you use
   it — the camera should NOT jump to overhead emergency framing in normal
   play (was frequent at wide FOV before).

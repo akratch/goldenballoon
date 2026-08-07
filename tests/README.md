@@ -131,11 +131,11 @@ dynamic occluder list, latch selected viewport projections, and resolve into a
 native presentation sidecar. They never write `Camera`/`gCameras`, selection,
 sort/LOD/visibility, audio, or other authoritative state. `render_scene` and the
 interpolation snapshot walker consume the sidecar only inside presentation.
-Correction is the default: unset `MDKR_CAMERA_OBSTRUCTION` selects `modern`, and
-the launcher's **Camera** setting exports `observe` — the authored camera — onto
-the same variable when a player opts out. Set `center-ray` for the deliberately
+Correction is opt-in: unset `MDKR_CAMERA_OBSTRUCTION` selects `observe` — the
+authored camera — and the launcher's **Camera** setting exports `modern` onto
+the same variable when a player opts in. Set `center-ray` for the deliberately
 incomplete diagnostic control, or `legacy` for original direct placement; an
-unrecognised value falls back to the default, `modern`. `MDKR_CAMERA_COMFORT=reduced`
+unrecognised value falls back to the default, `observe`. `MDKR_CAMERA_COMFORT=reduced`
 turns on the presentation-only reduced-motion filter over the corrected camera;
 unset and unrecognised values are `authored`. Set
 `MDKR_CAMERA_TRACE=1` for summaries or `=2` for per-slot desired/effective,

@@ -39,27 +39,30 @@ save formats). Everything below 1.0.0 predates that commitment.
   the default, leaves every bit of that motion exactly as the game wrote it.
   Only the picture changes — your handling, your lap times, your ghosts and your
   saves are identical either way — and it takes effect at the start of your next
-  race. It works with the camera that keeps itself out of walls; if you have
-  chosen the original camera there is nothing for it to soften.
+  race. It works with the camera that keeps itself out of walls, so it has
+  nothing to soften while you are on the original camera.
+
+- **Keep the camera out of walls**, a new Camera setting. It pulls the camera in
+  front of walls, doors and anything else solid that would come between it and
+  your racer, instead of letting it go into the rock with you on a tight corner.
+  It is one setting away under Camera in Settings and it is not on to begin
+  with: **Authored (original camera)**, the camera the game was originally
+  written with, is what you get unless you choose otherwise. Nothing about
+  racing changes either way — your handling, your lap times, your ghosts and
+  your saves are all the same — and the choice applies at the start of your next
+  race.
 
 ### Changed
-
-- **The camera now keeps itself out of walls by default.** It pulls in front of
-  walls, doors and anything else solid that would come between it and your
-  racer, so you can always see where you are going instead of watching the
-  inside of a rock. Nothing about racing changes: your handling, your lap times,
-  your ghosts and your saves are all the same. If you would rather have the
-  camera the game originally wrote, it is one setting away — pick **Authored
-  (original camera)** under Camera in Settings, and it applies at the start of
-  your next race.
 
 - **Waterfalls, water and lava now move smoothly with everything else**, and
   Motion smoothing is no longer labelled a preview. With smoothing on, the
   picture between the game's own frames used to move the camera and the racers
   but leave scrolling surfaces where they were, so a waterfall would tick along
   in steps while the world around it glided. All of it moves together now. The
-  game still runs at its original pace; nothing about how it plays has changed,
-  and Motion smoothing Off is untouched.
+  game still runs at its original pace; nothing about how it plays has changed.
+  The in-between pictures are invented from the ones around them, so fast-moving
+  parts of the screen can show artifacts in them — which is why Motion smoothing
+  Off remains the default, and Off is untouched.
 - **Frame limit, Motion smoothing and Allow tearing now change while you
   play.** All three used to be saved for the next time you pressed Play, so
   comparing two frame limits meant restarting the game twice and trying to

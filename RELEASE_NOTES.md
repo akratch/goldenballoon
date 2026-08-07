@@ -2,15 +2,15 @@
 
 *Released 2026-08-07.*
 
-Golden Balloon 1.1.0 is a feature release. The camera now stays out of walls
-by default, Frame Rate & Motion gets a single **Presentation pace** switch for
-the modern look, three of its settings now change the instant you touch them,
-and waterfalls, water and lava finally move with everything else. No game data
-is included.
+Golden Balloon 1.1.0 is a feature release. There is a new camera that keeps
+itself out of walls if you want it, Frame Rate & Motion gets a single
+**Presentation pace** switch for the modern look, three of its settings now
+change the instant you touch them, and waterfalls, water and lava finally move
+with everything else. No game data is included.
 
 Recommended settings are unchanged: **WebGPU**, **Restored**, frame limit
-**Original**, motion smoothing **Off**, gameplay cadence **Original**. Existing
-preferences are preserved when upgrading.
+**Original**, motion smoothing **Off**, gameplay cadence **Original**, camera
+**Authored**. Existing preferences are preserved when upgrading.
 
 ## One switch for the modern picture
 
@@ -55,23 +55,26 @@ game to a different monitor and it reads the new rate.
 picture is held for exactly the same length of time at 40, so the motion is
 even — and it is a good deal easier on the battery than 60.
 
-## The camera stays out of walls
+## A camera that keeps out of walls, if you want it
 
-Take a corner tight against a rock face and the camera used to go into the
-rock with you. For a second or two you were driving by sound and hope, and on
-some corners it happened every lap.
+Take a corner tight against a rock face and the camera goes into the rock with
+you. For a second or two you are driving by sound and hope, and on some corners
+it happens every lap.
 
-It doesn't now. The camera pulls in front of walls, doors and anything else
-solid that would come between it and your racer, and eases back out once the
-way is clear. This is on by default.
+There is now a camera that doesn't do that. **Keep the camera out of walls**,
+under Camera in Settings, pulls the camera in front of walls, doors and
+anything else solid that would come between it and your racer, and eases it
+back out once the way is clear.
 
-Nothing about racing changes. Your handling, your lap times, your ghosts and
-your saves are identical — only the picture moves.
+It is one setting away and it is not on to begin with — **Authored (original
+camera)** is what you get unless you choose otherwise, and it is the camera the
+game was originally written with. The new one is worth a few laps to see
+whether you prefer it; it feels different to drive behind, and which one suits
+you is genuinely a matter of taste.
 
-If you would rather have the camera exactly as the game originally wrote it,
-it is one setting away: **Authored (original camera)**, under Camera in
-Settings. It applies at the start of your next race, so the view never jumps
-mid-corner.
+Either way nothing about racing changes. Your handling, your lap times, your
+ghosts and your saves are identical — only the picture moves. The setting
+applies at the start of your next race, so the view never jumps mid-corner.
 
 ## A calmer camera, if you want one
 
@@ -80,8 +83,8 @@ out the vertical shake from bumps, landings and explosions, and eases the
 camera back out more gently after it has squeezed past a wall. **Authored** is
 the default and leaves all of that exactly as it was.
 
-It works with the camera that keeps itself out of walls; if you have chosen the
-original camera there is nothing for it to soften. Like the camera setting, it
+It works with the camera that keeps itself out of walls, so it has nothing to
+soften while you are on the original camera. Like the camera setting, it
 applies at the start of your next race and changes nothing but the picture.
 
 ## Waterfalls move with everything else
@@ -103,7 +106,9 @@ Motion smoothing **Off** is untouched.
   Remastered look is still in progress.
 - Motion smoothing now moves the whole picture together, including
   waterfalls, water and lava. It smooths the picture only — the game itself
-  still runs at its original pace. Off is unaffected.
+  still runs at its original pace. The in-between pictures are invented from
+  the ones around them, so fast-moving parts of the screen can show artifacts
+  in them; that is why **Off** is the default, and Off is unaffected.
 - The desktop app supports keyboard and gamepad navigation, visible focus,
   scaling, contrast, and reduced motion. Screen readers are not supported yet.
 - On Linux, load a ROM by drag and drop or by typing its path; there is no
