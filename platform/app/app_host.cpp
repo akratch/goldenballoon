@@ -484,6 +484,16 @@ bool AppHost::configureWgpuSurface(int w, int h) {
     cfg.height = (uint32_t)h;
     cfg.alphaMode = WGPUCompositeAlphaMode_Auto;
     cfg.presentMode = WGPUPresentMode_Fifo;   // vsync; matches the GL swap interval
+    // One frame in flight, the minimum the backend allows, for the same reason
+    // the engine pins it (WGPU_SURFACE_MAX_FRAME_LATENCY in gfx_webgpu.c). It
+    // has to be pinned HERE too rather than left to the engine's own configure:
+    // the launcher presents its UI through this configuration, and the depth is
+    // a property of the configuration, so any re-configure that does not carry
+    // it returns the surface to the backend's two-deep default.
+    WGPUSurfaceConfigurationExtras latency = {};
+    latency.chain.sType = (WGPUSType)WGPUSType_SurfaceConfigurationExtras;
+    latency.desiredMaximumFrameLatency = 1;
+    cfg.nextInChain = &latency.chain;
     if (gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_HOST_SURFACE_CONFIGURE)) {
         std::fprintf(stderr,
                      "[app] injected initial WebGPU surface configuration failure\n");

@@ -388,6 +388,17 @@ def validate_present_mode(backend: Backend, requested: str,
             raise RuntimeError(
                 f"{backend.label}/{requested}: WebGPU resolved a present mode "
                 f"that is neither mailbox nor FIFO: {details}")
+        # Swap-chain depth is part of the same configuration and is the half of
+        # it a player feels rather than sees: every extra queued image is a
+        # refresh of lag between the stick and the kart. It must be the
+        # backend's minimum on EVERY configure, in the adopted window as much as
+        # in the engine's own, because a re-configure that drops the extras
+        # chain silently restores the two-deep default.
+        if row.get("frameLatency") != "1":
+            raise RuntimeError(
+                f"{backend.label}/{requested}: WebGPU configured the surface "
+                f"with frameLatency={row.get('frameLatency')}, expected the "
+                f"pinned minimum 1: {details}")
 
 
 def run_policy(binary: Path, rom: Path, backend: Backend, policy: str,

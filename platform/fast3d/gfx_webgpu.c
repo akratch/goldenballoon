@@ -91,6 +91,26 @@ static bool              s_ready    = false;   /* device + surface both live */
 static enum GfxRenderingStatus s_runtime_status =
     GFX_RENDERING_UNINITIALIZED;
 #define WGPU_SURFACE_RECOVERY_LIMIT 120u
+/*
+ * SWAP-CHAIN DEPTH. wgpu-native defaults desiredMaximumFrameLatency to 2: the
+ * acquire for frame N+1 is allowed to return while frame N is still queued for
+ * scan-out, which buys throughput and costs one whole refresh of input-to-photon
+ * latency. This port does not want that trade. Its own GPU admission already
+ * bounds work in flight (WGPU-BACKPRESSURE cap), the presentation subloop is
+ * paced to an absolute deadline grid rather than to whatever the queue lets
+ * through, and every extra queued image is a frame of lag between the stick and
+ * the kart -- the one thing a racing game cannot buy back later.
+ *
+ * 1 is the minimum the backend allows and is what libultraship pins for the
+ * same reason (Fast3dWindow.cpp:1418). It does NOT serialize the frame: the
+ * value counts refreshes between acquire and presentation, not CPU/GPU overlap
+ * within a frame, and the pacer's deadline is what decides when the next
+ * opportunity opens.
+ *
+ * Native only. The browser present is rAF-driven and the canvas swap chain is
+ * the user agent's to size; emdawnwebgpu has no extras chain to hang this on.
+ */
+#define WGPU_SURFACE_MAX_FRAME_LATENCY 1u
 static unsigned s_surface_recovery_attempts = 0;
 static bool s_native_recovery_attempted = false;
 static bool s_callback_recovery_pending = false;
@@ -1260,7 +1280,8 @@ static WGPUPresentMode wgpu_choose_present_mode(void) {
         fprintf(stderr,
                 "[PRESENT-MODE] backend=webgpu platform=web requestedPolicy=%s "
                 "effectivePolicy=%s rate=%u tearing=0 requested=fifo "
-                "effective=fifo supported=1 reason=raf-ceiling\n",
+                "effective=fifo supported=1 frameLatency=0 "
+                "reason=raf-ceiling\n",
                 present_sched_present_requested_policy_name(),
                 present_sched_present_policy_name(),
                 present_sched_present_rate());
@@ -1280,13 +1301,14 @@ static WGPUPresentMode wgpu_choose_present_mode(void) {
         fprintf(stderr,
                 "[PRESENT-MODE] backend=webgpu policy=%s rate=%u "
                 "displayHz=%u tearing=%d requested=%s effective=%s "
-                "supported=%d override=0%s\n",
+                "supported=%d frameLatency=%u override=0%s\n",
                 present_sched_present_policy_name(),
                 present_sched_present_rate(),
                 platform_present_display_rate(), tearing ? 1 : 0,
                 gfx_webgpu_surface_present_name(requested),
                 gfx_webgpu_surface_present_name(effective),
                 requested == effective ? 1 : 0,
+                WGPU_SURFACE_MAX_FRAME_LATENCY,
                 requested == effective ? ""
                     : (caps_known ? " reason=capability-fallback"
                                   : " reason=capabilities-unavailable"));
@@ -1312,7 +1334,7 @@ static WGPUPresentMode wgpu_choose_present_mode(void) {
     fprintf(stderr,
             "[PRESENT-MODE] backend=webgpu policy=%s rate=%u "
             "displayHz=%u tearing=%d requested=%s effective=%s "
-            "supported=%d override=1%s\n",
+            "supported=%d frameLatency=%u override=1%s\n",
             present_sched_present_policy_name(),
             present_sched_present_rate(),
             platform_present_display_rate(),
@@ -1320,6 +1342,7 @@ static WGPUPresentMode wgpu_choose_present_mode(void) {
             gfx_webgpu_surface_present_name(overrideRequested),
             gfx_webgpu_surface_present_name(overrideEffective),
             overrideRequested == overrideEffective ? 1 : 0,
+            WGPU_SURFACE_MAX_FRAME_LATENCY,
             overrideRequested == overrideEffective ? ""
                 : (caps_known ? " reason=capability-fallback"
                               : " reason=capabilities-unavailable"));
@@ -1427,6 +1450,18 @@ static bool wgpu_configure_surface(uint32_t w, uint32_t h) {
     cfg.height = h;
     cfg.alphaMode = wgpu_choose_alpha_mode();   /* WEB-049: Opaque when advertised, else Auto */
     cfg.presentMode = wgpu_choose_present_mode();   /* PERF-051: FIFO default (vsync), GE007_WEBGPU_PRESENT opt-in */
+#ifndef __EMSCRIPTEN__
+    /* Pin the swap chain to one frame in flight (see
+     * WGPU_SURFACE_MAX_FRAME_LATENCY). Chained here rather than at bring-up
+     * because it is a property of the CONFIGURATION, so every re-configure --
+     * resize, present-mode change, surface recovery -- has to carry it or the
+     * backend silently returns to its default depth. */
+    WGPUSurfaceConfigurationExtras latency = {0};
+    latency.chain.sType =
+        (WGPUSType)WGPUSType_SurfaceConfigurationExtras;
+    latency.desiredMaximumFrameLatency = WGPU_SURFACE_MAX_FRAME_LATENCY;
+    cfg.nextInChain = &latency.chain;
+#endif
     if (gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_SURFACE_CONFIGURE)) {
         return false;
     }
