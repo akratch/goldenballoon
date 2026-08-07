@@ -29,8 +29,11 @@
  * runs (so CI exercises the whole DSP path); set MDKR_AUDIO_DUMP=out.wav to
  * capture the PCM for RMS/peak validation, or MDKR_AUDIO_RMS=1 to print running
  * RMS/peak to stderr. MDKR_AUDIO_SINK_DUMP=accepted.wav is a separate native
- * diagnostic that records only post-recovery PCM the sink accepted into the
- * output ring.
+ * diagnostic that records post-recovery PCM the sink accepted INTO THE OUTPUT
+ * RING. That is deliberately a record of acceptance, not of playback: a block
+ * the ring later overwrites on overflow still appears in the capture, because
+ * the overwrite happens after the fact and is accounted by the ring's own
+ * evicted_frames/overflows rather than by rewriting history here.
  *
  * MDKR_AUDIO_RMS=1 additionally emits one
  *
@@ -138,6 +141,14 @@ extern u8    sfxRelativeVolume;
  * nonadjacent timelines, which is directly audible as a pop. */
 #define DKR_QUEUE_LIMIT_FRAMES 60u
 #define DKR_AUDIO_BYTES_PER_FRAME (DKR_AUDIO_CHANNELS * sizeof(s16))
+/*
+ * The ring is a fixed stereo container and this file hands it raw interleaved
+ * PCM by pointer, so a channel-count divergence would not fail to compile — it
+ * would silently reinterpret the buffer and halve or double the frame count
+ * every block. Tie the two constants together where they meet.
+ */
+_Static_assert(MDKR_AUDIO_RING_CHANNELS == DKR_AUDIO_CHANNELS,
+               "audio ring channel count must match the port's output format");
 #define DKR_AUDIO_RECONNECT_FRAMES 128u
 
 /*
@@ -175,7 +186,7 @@ extern u8    sfxRelativeVolume;
  * below therefore exists as a correctness backstop that healthy operation must
  * never reach, and the sink-evidence route asserts it does not.
  */
-#define DKR_AUDIO_RING_FRAMES 65536u
+#define DKR_AUDIO_RING_FRAMES MDKR_AUDIO_RING_FRAMES
 
 /* ---- SDL device state ---------------------------------------------------- */
 static SDL_AudioDeviceID s_dev;
@@ -185,7 +196,6 @@ static int   s_devOpen;
 static int   s_disabled;          /* MDKR_AUDIO=0 or headless: no SDL device   */
 static int   s_shutdownComplete;
 static u32   s_droppedBuffers;
-static u32   s_queueFailures;
 /* Two independent quantities, one meaning each. s_droppedBuffers counts whole
  * sink BLOCKS this port refused at osAiSetNextBuffer; s_droppedFrames counts
  * the frames lost, including the worklet ring evictions that lose frames
@@ -244,11 +254,13 @@ static u32 audio_queued_bytes(void) {
 static void SDLCALL dkr_audio_device_callback(void *userdata, Uint8 *stream,
                                               int len) {
     MdkrAudioRing *ring = (MdkrAudioRing *)userdata;
-    const u32 frames = (u32)len / (u32)DKR_AUDIO_BYTES_PER_FRAME;
+    u32 frames;
 
     if (len <= 0) {
         return;
     }
+    /* Only meaningful once len is known positive: the cast is unsigned. */
+    frames = (u32)len / (u32)DKR_AUDIO_BYTES_PER_FRAME;
     if (frames == 0u) {
         memset(stream, 0, (size_t)len);
         return;
@@ -503,9 +515,15 @@ void dkr_audio_out_init(void) {
         &s_serviceClock, DKR_AUDIO_FIELDS_PER_QUANTUM);
     mdkr_audio_queue_controller_init(&s_queueController);
     s_droppedBuffers = 0u;
-    s_queueFailures = 0u;
     s_droppedFrames = 0u;
     s_webTerminalFailures = 0u;
+#ifndef __EMSCRIPTEN__
+    /* The drain baseline belongs to a ring instance. Carrying a stale one over
+     * a re-init would difference the new ring's requested counter against the
+     * old ring's last sample and hand the controller a garbage first drain. */
+    s_lastRequestedFrames = 0u;
+    s_haveLastRequested = 0;
+#endif
     mdkr_audio_reconnect_init(&s_reconnect);
     mdkr_audio_sink_evidence_init(&s_sinkEvidence);
     s_appliedVolumeGeneration = 0u;
@@ -658,7 +676,7 @@ void dkr_audio_out_shutdown(void) {
         printf("[AUDIO-RING] period=%u capacity=%u callbacks=%u "
                "maxcallback=%u pushed=%llu pulled=%llu silence=%llu "
                "underruns=%u concealments=%u overflows=%u evicted=%llu "
-               "minfill=%u\n",
+               "skips=%u minfill=%u maxreadable=%u\n",
                (unsigned)s_devicePeriod,
                (unsigned)mdkr_audio_ring_capacity(&s_ring),
                (unsigned)ring.callbacks, (unsigned)ring.max_callback_frames,
@@ -668,7 +686,9 @@ void dkr_audio_out_shutdown(void) {
                (unsigned)ring.underruns, (unsigned)ring.concealments,
                (unsigned)ring.overflows,
                (unsigned long long)ring.evicted_frames,
-               (unsigned)ring.min_fill_frames);
+               (unsigned)ring.overflow_skips,
+               (unsigned)ring.min_fill_frames,
+               (unsigned)ring.max_readable_frames);
         mdkr_audio_ring_free(&s_ring);
     }
     /* Ring eviction inside the worklet loses frames without ever refusing a
@@ -681,12 +701,6 @@ void dkr_audio_out_shutdown(void) {
                 "with a short crossfade\n",
                 (unsigned)s_droppedBuffers,
                 (unsigned long long)s_droppedFrames);
-    }
-    if (s_queueFailures > s_webTerminalFailures) {
-        fprintf(stderr,
-                "[AUDIO-SINK] warning: native enqueue failures=%u; "
-                "the next accepted block was armed for continuity repair\n",
-                (unsigned)(s_queueFailures - s_webTerminalFailures));
     }
     if (s_webTerminalFailures != 0u) {
         fprintf(stderr,
@@ -708,12 +722,11 @@ void dkr_audio_out_shutdown(void) {
         s_sinkEvidence.capture = NULL;
         printf("[AUDIO-SINK-EVIDENCE] accepted_blocks=%llu "
                "accepted_bytes=%llu repaired_blocks=%llu "
-               "rejected_blocks=%llu dropped_blocks=%llu capture_bytes=%u "
+               "dropped_blocks=%llu capture_bytes=%u "
                "capture_failed=%d\n",
                (unsigned long long)s_sinkEvidence.accepted_blocks,
                (unsigned long long)s_sinkEvidence.accepted_bytes,
                (unsigned long long)s_sinkEvidence.repaired_blocks,
-               (unsigned long long)s_sinkEvidence.rejected_blocks,
                (unsigned long long)s_sinkEvidence.dropped_blocks,
                (unsigned)s_sinkEvidence.capture_bytes,
                s_sinkEvidence.capture_failed);
@@ -803,7 +816,6 @@ s32 osAiSetNextBuffer(void *buf, u32 size) {
             s_droppedBuffers++;
             s_droppedFrames += size / DKR_AUDIO_BYTES_PER_FRAME;
         } else if (pushed < 0) {
-            s_queueFailures++;
             /* The browser backend was already committed, so no SDL device is
              * available to receive a recovery block. Keep this state terminal
              * and explicit rather than claiming the loss was crossfaded. */
@@ -986,6 +998,7 @@ static s32 dkr_choose_frame_samples(void) {
  */
 #define DKR_AUDIO_CATCHUP_BLOCKS 4
 
+#ifndef __EMSCRIPTEN__
 static s32 dkr_catchup_frame_samples(void) {
     const u32 frameSize = amAudioGetFrameSize();
     const u32 maxSamples = amAudioGetMaxSamples();
@@ -1018,6 +1031,7 @@ static s32 dkr_catchup_frame_samples(void) {
     need &= ~15u;
     return (s32)need;
 }
+#endif /* !__EMSCRIPTEN__ */
 
 /* ---- output-level test seam (MDKR_AUDIO_TEST_GAIN_DB) --------------------
  *
@@ -1162,7 +1176,21 @@ void dkr_audio_service_tick(void) {
         osAiSetNextBuffer(buf, (u32)frameSamples * 4);
     }
 
-    /* Recovery only — see dkr_catchup_frame_samples. Inert on a healthy tick. */
+#ifndef __EMSCRIPTEN__
+    /*
+     * Recovery only — see dkr_catchup_frame_samples. Inert on a healthy tick.
+     *
+     * NATIVE ONLY, for the same reason note_drain above is: this recovery is
+     * sized against the SDL ring's ground-truth occupancy, and the browser has
+     * no such ring. dkr_catchup_frame_samples() guards on audio_have_sink(),
+     * which is also true for the worklet, so leaving it ungated would run the
+     * loop in the browser against a foreign latency model. Worse, each of the
+     * up-to-DKR_AUDIO_CATCHUP_BLOCKS probes calls audio_queued_bytes(), and on
+     * the web path that call is not a read — it DRAINS
+     * webAudioOutputConsumeDroppedFrames(). Polling it five times per service
+     * tick instead of once does not change the total drop count, but it does
+     * multiply the worklet-side call traffic the browser gates measure.
+     */
     {
         int extra;
         for (extra = 0; extra < DKR_AUDIO_CATCHUP_BLOCKS; extra++) {
@@ -1184,6 +1212,7 @@ void dkr_audio_service_tick(void) {
             osAiSetNextBuffer(catchupBuf, (u32)catchup * 4);
         }
     }
+#endif
     audio_trace_music();
 }
 

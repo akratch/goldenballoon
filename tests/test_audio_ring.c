@@ -123,10 +123,20 @@ static void test_overflow_drops_the_oldest(void) {
     fill_block(in, 1024u, 256u);
     expect("overflow evicts exactly the surplus",
            mdkr_audio_ring_push(&ring, in, 256u) == 256u);
-    expect("overflow keeps the ring exactly full",
-           mdkr_audio_ring_fill(&ring) == 1024u);
+    /*
+     * The producer signals the overwrite by letting head lead tail by more
+     * than the capacity; it may NOT retire the frames itself, because `tail`
+     * belongs to the consumer. So the surplus is visible in the fill until the
+     * consumer resolves it.
+     */
+    expect("overflow leaves the surplus visible to the consumer",
+           mdkr_audio_ring_fill(&ring) == 1024u + 256u);
 
     mdkr_audio_ring_pull(&ring, out, 1024u);
+    expect("the consumer clamps the overflow away",
+           ring.stats.overflow_skips == 1u);
+    expect("the clamp leaves the ring empty after a full-capacity pull",
+           mdkr_audio_ring_fill(&ring) == 0u);
     for (i = 0u; i < 1024u; i++) {
         if (out[i * 2u] != sample_at(256u + i, 0u)) {
             kept_newest = 0;
@@ -279,6 +289,40 @@ static void test_partial_pull_keeps_the_remainder(void) {
     mdkr_audio_ring_free(&ring);
 }
 
+/*
+ * Every other case here asks for a capacity that is ALREADY a power of two, so
+ * round_up_pow2 has never actually had to round anything: a broken
+ * implementation that returned its argument unchanged would pass the whole
+ * file. The mask arithmetic every read and write depends on is only valid for
+ * a power-of-two capacity, so feed it a value that is not one.
+ */
+static void test_capacity_rounds_a_non_power_of_two_up(void) {
+    MdkrAudioRing ring;
+    int16_t in[64 * 2];
+    uint32_t capacity;
+
+    expect("odd-capacity ring initialises", mdkr_audio_ring_init(&ring, 3000u));
+    capacity = mdkr_audio_ring_capacity(&ring);
+    expect("a non-power-of-two request rounds UP to the next power of two",
+           capacity == 4096u);
+    expect("capacity is at least the request", capacity >= 3000u);
+    expect("the mask is capacity-1", ring.mask == capacity - 1u);
+    expect("capacity is a power of two", (capacity & (capacity - 1u)) == 0u);
+    /* And the rounded ring is functional, not just correctly sized. */
+    fill_block(in, 0u, 64u);
+    expect("the rounded ring accepts a push",
+           mdkr_audio_ring_push(&ring, in, 64u) == 0u);
+    expect("the rounded ring reports its fill",
+           mdkr_audio_ring_fill(&ring) == 64u);
+    mdkr_audio_ring_free(&ring);
+
+    /* A request below the floor is raised to it, still a power of two. */
+    expect("undersized ring initialises", mdkr_audio_ring_init(&ring, 1u));
+    expect("a sub-minimum request is raised to the 1024-frame floor",
+           mdkr_audio_ring_capacity(&ring) == 1024u);
+    mdkr_audio_ring_free(&ring);
+}
+
 static void test_oversized_push_keeps_the_tail(void) {
     MdkrAudioRing ring;
     int16_t *in;
@@ -317,6 +361,7 @@ int main(void) {
     test_boot_prime_is_not_an_underrun();
     test_partial_pull_keeps_the_remainder();
     test_oversized_push_keeps_the_tail();
+    test_capacity_rounds_a_non_power_of_two_up();
     if (s_failures != 0) {
         fprintf(stderr, "%d audio-ring test(s) failed\n", s_failures);
         return 1;
