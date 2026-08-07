@@ -118,11 +118,7 @@ typedef struct ParticleDescriptor {
     /* 0x08 */ s16 lifeTime;
     union {
         /* 0x0A */ s16 lifeTimeRange; // Used by general particle
-        struct {
-            /* 0x0A */ u16 lineOrientation : 6; // Used by line particle
-            /* 0x0A */ u16 line_unused_B : 6; // (Not) Used by line particle
-        };
-        /* 0x0A */ u16 unused_point_field : 6; // (Not) Used by point particle
+        /* 0x0A */ u16 packedFields;  // Line/point particles: see PARTICLE_DESC_* accessors below
     };
     /* 0x0C */ u8 opacity;
     /* 0x0D */ u8 opacityVel;
@@ -130,6 +126,35 @@ typedef struct ParticleDescriptor {
     /* 0x10 */ f32 scale;
     /* 0x14 */ ColourRGBA colour;
 } ParticleDescriptor;
+
+/*
+ * ParticleDescriptor's 0x0A halfword is a PACKED BITFIELD on line and point
+ * particles, and it must not be read through C bitfield members.
+ *
+ * The ROM authored it for the N64's compiler, which allocates bitfields from
+ * the MOST significant bit down: `u16 lineOrientation : 6` occupies bits 15..10
+ * and `line_unused_B : 6` bits 9..4, with bits 3..0 padding. A little-endian
+ * host compiler allocates from the LEAST significant bit up, so the very same
+ * declaration reads bits 5..0 instead. Byte-swapping cannot fix this: the
+ * asset swapper (platform/asset_swap.c swap_particles) already restores the
+ * halfword's NUMERIC value at +0x0A, and the field still lands on the wrong
+ * bits because the disagreement is about bit POSITION inside that value.
+ *
+ * Every stock line-particle descriptor stores 0x0001 here -- lineOrientation 0
+ * (the trail widens along the parent's local X, i.e. flat across the wings)
+ * with 1 left in the four padding bits. Read LSB-first that padding becomes
+ * lineOrientation 1, which update_line_particle() maps to the local Y axis, so
+ * the plane's wing contrails were built as vertical ribbons instead of
+ * horizontal ones -- a trail rendered as `|` where the console draws `--`.
+ * Descriptor 12 (0x0821) is the one line particle that wants orientation 2
+ * (local Z) and was likewise read as 33, falling through to X.
+ *
+ * These accessors extract the N64 bit positions explicitly, so they are
+ * host-independent and bit-identical to the original on a big-endian build.
+ */
+#define PARTICLE_DESC_LINE_ORIENTATION(desc) ((s32) (((desc)->packedFields >> 10) & 0x3F))
+#define PARTICLE_DESC_LINE_UNUSED_B(desc) ((s32) (((desc)->packedFields >> 4) & 0x3F))
+#define PARTICLE_DESC_POINT_UNUSED(desc) ((s32) (((desc)->packedFields >> 10) & 0x3F))
 
 /* Size: 0x08 bytes */
 typedef struct ColorLoopEntry {

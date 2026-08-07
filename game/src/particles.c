@@ -9,7 +9,9 @@
 #include <ultra64.h>
 #ifdef NATIVE_PORT
 #include "fast3d/gfx_presentation_packet.h"
+#include "mdkr_trace.h"
 #include "presentation_snapshot.h"
+#include <stdlib.h>
 #include <string.h>
 #endif
 
@@ -1382,7 +1384,7 @@ PointParticle *create_point_particle(Object *obj, ParticleEmitter *emitter) {
         }
     }
     particle->modelFrame = 0;
-    particle->unused_76 = descriptor->unused_point_field;
+    particle->unused_76 = PARTICLE_DESC_POINT_UNUSED(descriptor);
     particle->meshRegenerated = FALSE;
     if (model->texture == NULL) {
         // Only point particles with textures are supported
@@ -1644,8 +1646,8 @@ Particle *create_line_particle(Object *obj, ParticleEmitter *emitter) {
         model->vertices[0].b = particle->colour.b;
         model->vertices[0].a = emitter->lineOpacity;
     }
-    particle->lineOrientation = descriptor->lineOrientation;
-    particle->line_unused_6B = descriptor->line_unused_B;
+    particle->lineOrientation = PARTICLE_DESC_LINE_ORIENTATION(descriptor);
+    particle->line_unused_6B = PARTICLE_DESC_LINE_UNUSED_B(descriptor);
     particle->trans.x_position = obj->trans.x_position;
     particle->trans.y_position = obj->trans.y_position;
     particle->trans.z_position = obj->trans.z_position;
@@ -2214,6 +2216,34 @@ void delete_point_particle_from_sequence(PointParticle *particle) {
  * Line particles have their own update function because they behave differently from other particle types.
  * Instead of moving, they generate their mesh in three steps and remain stationary until their lifetime ends.
  */
+#ifdef NATIVE_PORT
+/*
+ * Reports the ribbon basis a line particle is actually built from: the
+ * half-width offset in the parent's LOCAL frame (which local axis the trail
+ * spreads along, i.e. its orientation) and the same vector after the parent's
+ * rotation has been applied (where it ends up in the world). A plane's wing
+ * contrail must spread along local X -- flat across the wings -- so the local
+ * vector is the direct, roll-independent statement of the trail's orientation.
+ * Off unless MDKR_LINE_PARTICLE_TRACE is set; one cached getenv when off.
+ */
+static void mdkr_line_particle_trace(Particle *particle, ParticleEmitter *emitter, Vec3f *localOffset,
+                                     Vec3f *worldOffset) {
+    extern int g_frameCounter;
+    static s32 sEnabled = -1;
+
+    if (sEnabled < 0) {
+        const char *e = getenv("MDKR_LINE_PARTICLE_TRACE");
+        sEnabled = (e != NULL && e[0] != '\0' && atoi(e) != 0);
+    }
+    if (!sEnabled || emitter == NULL) {
+        return;
+    }
+    mdkr_trace("[LINEPART] frame=%d desc=%d orient=%d local=%.6g,%.6g,%.6g world=%.6g,%.6g,%.6g", g_frameCounter,
+               (s32) emitter->descriptorID, (s32) particle->lineOrientation, localOffset->x, localOffset->y,
+               localOffset->z, worldOffset->x, worldOffset->y, worldOffset->z);
+}
+#endif
+
 void update_line_particle(Particle *particle) {
     Vec3f vtxOffset;
     f32 tempf;
@@ -2273,7 +2303,15 @@ void update_line_particle(Particle *particle) {
                     vtxOffset.y = scale;
                     break;
             }
+#ifdef NATIVE_PORT
+            {
+                Vec3f localOffset = vtxOffset;
+                vec3f_rotate(&obj->trans.rotation, &vtxOffset);
+                mdkr_line_particle_trace(particle, emitter, &localOffset, &vtxOffset);
+            }
+#else
             vec3f_rotate(&obj->trans.rotation, &vtxOffset);
+#endif
         } else {
             vtxOffset.x = obj->x_velocity;
             vtxOffset.y = obj->y_velocity;

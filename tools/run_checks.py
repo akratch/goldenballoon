@@ -128,6 +128,8 @@ CHECKS = (
           "bounded Ancient Lake/Fire Mountain three-arm lighting decision"),
     Check("remaster_lighting", "check_remaster_lighting.py", "native",
           "runtime-derived sun, smooth-normal lighting, colour boundary, and mode isolation"),
+    Check("line_particle_orientation", "check_line_particle_orientation.py", "native",
+          "plane wing contrail ribbons spread along the ROM-authored local axis"),
     Check("world_fx_capture", "check_world_fx_capture.py", "native",
           "capture-once world caster ownership, material classes, and state/frame invariance"),
     Check("world_fx_matrix", "check_world_fx_matrix.py", "native",

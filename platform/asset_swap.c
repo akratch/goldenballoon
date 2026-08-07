@@ -912,7 +912,12 @@ static void swap_particles(void *data, uint32_t size) {
         sw16(data, p + 0x04); /* textureID */
         sw16(data, p + 0x06); /* textureFrameStep */
         sw16(data, p + 0x08); /* lifeTime */
-        sw16(data, p + 0x0A); /* lifeTimeRange / bitfield union (u16) */
+        /* lifeTimeRange, aliased by the line/point particles' packed bit
+         * fields. Swapping restores this halfword's numeric VALUE, which is all
+         * a swapper can do: the sub-fields inside it are at N64 bit POSITIONS
+         * and must be extracted with the PARTICLE_DESC_* accessors in
+         * game/src/particles.h, never through host C bitfield members. */
+        sw16(data, p + 0x0A);
         /* +0x0C opacity,opacityVel : bytes */
         sw16(data, p + 0x0E); /* opacityTimer */
         swf32(data, p + 0x10); /* scale */
