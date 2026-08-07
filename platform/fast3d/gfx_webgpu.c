@@ -160,6 +160,15 @@ enum {
 
 /* Configured swapchain size; 0 forces a (re)configure on the next start_frame. */
 static uint32_t s_cfg_w = 0, s_cfg_h = 0;
+/*
+ * A reconfigure owed for a reason the SIZE cannot express -- today, a display
+ * refresh change that invalidates the present-mode ranking baked at the last
+ * configuration (gfx_webgpu_request_surface_reconfigure). Consumed by the next
+ * configuration attempt, successful or not: a surface that cannot be
+ * configured is already a fatal path, and retrying it every frame would only
+ * bury that in noise.
+ */
+static bool s_cfg_present_mode_dirty = false;
 static bool s_surface_copy_dst = false;
 static bool s_surface_copy_src = false;
 
@@ -1327,6 +1336,10 @@ static bool wgpu_format_is_bgra(WGPUTextureFormat f) {
 
 static int wgpu_dump_surface_frame(void);   /* GE007_WEBGPU_DUMP_SURFACE target, or -1 */
 
+void gfx_webgpu_request_surface_reconfigure(void) {
+    s_cfg_present_mode_dirty = true;
+}
+
 static bool wgpu_configure_surface(uint32_t w, uint32_t h) {
     if (s_surface == NULL || s_device == NULL || w == 0 || h == 0) {
         return false;
@@ -1335,6 +1348,10 @@ static bool wgpu_configure_surface(uint32_t w, uint32_t h) {
     WGPUSurfaceCapabilities caps = {0};
     bool format_supported = false;
     size_t i;
+    /* Consume the request here rather than on success: this call re-ranks the
+     * present mode either way, and a configuration that fails is fatal at the
+     * caller rather than something to retry. */
+    s_cfg_present_mode_dirty = false;
     cfg.device = s_device;
     cfg.format = s_surface_format;
     /* The scene is rendered offscreen and copied here at present, so the surface
@@ -2163,7 +2180,8 @@ static bool wgpu_start_frame(void) {
      * resource exists. This prevents a resize from publishing dimensions that
      * no complete render-target set can satisfy.
      */
-    if ((out_w != s_cfg_w || out_h != s_cfg_h) &&
+    if ((out_w != s_cfg_w || out_h != s_cfg_h ||
+         s_cfg_present_mode_dirty) &&
         !wgpu_configure_surface(out_w, out_h)) {
         fprintf(stderr,
                 "[webgpu] surface configuration failed for %ux%u\n",

@@ -446,11 +446,90 @@ void present_sched_note_stale(void) {
     s_stale++;
 }
 
+/* ---- interpolation phase at the PREDICTED display time (M3 slice 1) ------ *
+ *
+ * The driver reports the phase at "now" -- the instant the pacer's wait
+ * returned. Under a queue that retires exactly one present per refresh, "now"
+ * is a vblank plus however long the compositor and the scheduler took to hand
+ * the loop back, and that slop is pure noise in a quantity whose EVENNESS is
+ * the entire perceptual point. The display, meanwhile, will show this frame at
+ * a grid point, and showed the previous one at the grid point before it.
+ * Projecting the measured phase onto that grid is therefore not an
+ * approximation of the phase -- it is the phase, read off the clock that
+ * actually governs it. The constant pipeline latency is common to every frame
+ * and cancels in the difference, so this corrects evenness without adding or
+ * removing latency.
+ *
+ * THE ACCUMULATOR IS UNTOUCHED. Ticks become due exactly when they did, at
+ * exactly the same host opportunities, from exactly the same measured
+ * intervals; only the number handed to the camera substitution moves. That is
+ * what makes the byte-identity arms
+ * (tests/check_arbitrary_presentation_rates.py) the right proof for this
+ * change: state, events, input and PCM must all be unmoved.
+ *
+ * platform_present_display_quantum_units() returns 0 for every run whose
+ * presents are not vblank-quantized, and this is then exactly what it was.
+ */
+
+/*
+ * The grid phase already handed to a present within the current tick.
+ *
+ * Rounding onto a grid is monotone but not STRICTLY so: two opportunities
+ * inside the same refresh round to the same index, and two displayed frames at
+ * the same phase are one image shown twice -- which the census reports as a
+ * `stalls` sample and a player sees as a hitch. The honest quantized answer for
+ * the second one is the NEXT index, because that is when the queue will
+ * actually show it. Kept here rather than in the pure helper because it is
+ * memory of a sequence, not arithmetic.
+ */
+static uint64_t s_alpha_grid_tick;
+static uint64_t s_alpha_grid_last;
+
+/* `advance` claims the returned grid index for a present. A diagnostic reader
+ * passes false so it cannot consume one a present is entitled to. */
+static uint64_t present_sched_alpha_projected(uint64_t num, uint64_t den,
+                                              bool advance) {
+    const uint64_t quantum = platform_present_display_quantum_units();
+    const uint64_t ticks = host_frame_driver_clock_ticks(&s_driver);
+    uint64_t projected;
+
+    if (ticks != s_alpha_grid_tick) {
+        s_alpha_grid_tick = ticks;
+        s_alpha_grid_last = 0u;
+    }
+    projected = mdkr_present_quantize_phase(num, den, quantum);
+    if (quantum == 0u || projected == 0u) {
+        return projected;
+    }
+    if (projected <= s_alpha_grid_last) {
+        /*
+         * Another opportunity inside the same refresh. It will be shown one
+         * refresh later than the last one, so that is its phase.
+         *
+         * When no whole grid step is left inside this tick -- the ordinary
+         * shape at a 60 Hz display against a 30 Hz tick, where the only grid
+         * points ARE the endpoint and the midpoint -- there is no honest
+         * answer to give it: the display has no third slot, and this frame is
+         * genuinely one image too many. Repeating the last phase says exactly
+         * that, and the census counts it as a `stalls` sample. Inventing a
+         * sub-grid value instead would hide a redundant present behind a
+         * number no display will ever show it at.
+         */
+        const uint64_t bumped = s_alpha_grid_last + quantum;
+        projected = bumped < den ? bumped : s_alpha_grid_last;
+    }
+    if (advance && projected > s_alpha_grid_last) {
+        s_alpha_grid_last = projected;
+    }
+    return projected;
+}
+
 void present_sched_alpha(uint64_t *numerator, uint64_t *denominator) {
     uint64_t num = 0;
     uint64_t den = 1;
     present_sched_lazy_init();
     host_frame_driver_alpha(&s_driver, &num, &den);
+    num = present_sched_alpha_projected(num, den, true);
     if (numerator != NULL) {
         *numerator = num;
     }
@@ -482,7 +561,10 @@ void present_sched_trace_entry(unsigned fields, unsigned due,
     if (!present_sched_trace_enabled()) {
         return;
     }
-    present_sched_alpha(&num, &den);
+    /* Read-only: the trace must observe the phase a present WOULD be given,
+     * never consume a grid index a present is entitled to. */
+    host_frame_driver_alpha(&s_driver, &num, &den);
+    num = present_sched_alpha_projected(num, den, false);
     /* `delta` is due clock ticks minus issued game-loop tickets. It is zero in
      * steady state and positive only while ordinary catch-up debt is draining;
      * `frame` is separately the presentation count. */
@@ -840,6 +922,21 @@ static const char *present_hist_arm(void) {
 static void present_perf_pacing_summary(void) {
     const char *arm = present_hist_arm();
     const unsigned refresh = platform_present_display_rate();
+    /*
+     * The display grid the interpolation phase was projected onto, as ppm of
+     * one authoritative tick -- the same unit the alpha-delta series is in, so
+     * a gate can assert directly that the displayed phases ARE grid points
+     * (tests/check_pacing_quality.py).
+     *
+     * 0 says the projection declined, which is the whole of what makes a run
+     * bit-for-bit what it was before M3. Every synthetic arm must report 0;
+     * a vblank-quantized realtime arm must not.
+     */
+    const uint64_t quantum_units = platform_present_display_quantum_units();
+    const uint64_t grid_ppm =
+        (quantum_units != 0u && s_driver.clock.tick_units != 0u)
+            ? quantum_units * PRESENT_ALPHA_SCALE / s_driver.clock.tick_units
+            : 0u;
     /* Nanoseconds of one refresh; 0 when the host reports no refresh rate, in
      * which case the latency estimate below is reported as unavailable rather
      * than computed against a guess. */
@@ -856,7 +953,7 @@ static void present_perf_pacing_summary(void) {
             "[PRESENTPERF-HIST] series=alpha-delta arm=%s unit=ppm n=%llu "
             "p50=%llu p95=%llu p99=%llu min=%llu max=%llu mean=%llu var=%llu "
             "over=%llu binwidth=%u sqoverflow=%llu regressions=%llu "
-            "stalls=%llu presents=%llu displayed=%llu\n",
+            "stalls=%llu presents=%llu displayed=%llu gridppm=%llu\n",
             arm, (unsigned long long)s_hist_alpha.n,
             (unsigned long long)present_hist_percentile(
                 &s_hist_alpha, 50u, PRESENT_ALPHA_BIN_PPM),
@@ -874,7 +971,8 @@ static void present_perf_pacing_summary(void) {
             (unsigned long long)s_hist_phase_regressions,
             (unsigned long long)s_hist_phase_stalls,
             (unsigned long long)s_hist_present_count,
-            (unsigned long long)s_hist_displayed_count);
+            (unsigned long long)s_hist_displayed_count,
+            (unsigned long long)grid_ppm);
     fprintf(stderr,
             "[PRESENTPERF-LATENCY] arm=%s samples=%llu meandepthmilli=%llu "
             "maxdepth=%u refreshhz=%u periodus=%llu meanlatencyus=%llu "

@@ -31,6 +31,17 @@
 #include <limits.h>
 #include <time.h>
 #ifndef __EMSCRIPTEN__
+#ifdef _WIN32
+/* Ahead of SDL_syswm.h, which pulls the same header in without these guards.
+ * The pacer's Windows wait (pace_sleep_until) needs the waitable-timer API. */
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 #include <glad/glad.h>          /* GL loader — desktop only; web is WebGPU-only */
 #include <SDL_syswm.h>
 #else
@@ -1686,6 +1697,10 @@ static void input_capture_live(uint64_t target_tick) {
     }
 }
 
+/* The pacer's live display-rate re-derivation, called from the SDL event pump
+ * above and defined with the rest of the present-pacing state below. */
+static void present_pace_note_display_changed(void);
+
 /* PAC-007: native surface suspension state. Ordinary finite hidden tests keep
  * rendering offscreen; an interactive window (or the explicit visible-headless
  * lifecycle gate) elides GPU walks while SDL says it is hidden/minimized. */
@@ -1840,6 +1855,21 @@ void platform_input_pump(void) {
                         input_clear_game_sources();
                         input_changed = 1;
                     }
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+                    /*
+                     * The window moved to a display with, potentially, a
+                     * different refresh. Re-derive the rate and everything
+                     * standing on it; the latched policy is untouched. This is
+                     * the ONE event SDL2 offers here -- a mode change on the
+                     * SAME display raises nothing, so a player who changes
+                     * their refresh in place still needs a relaunch, which is
+                     * what the pacing keys' SCOPE_RESTART already tells them.
+                     */
+                    else if (e.window.event ==
+                             SDL_WINDOWEVENT_DISPLAY_CHANGED) {
+                        present_pace_note_display_changed();
+                    }
+#endif
                     break;
                 case SDL_CONTROLLERDEVICEADDED:
                     gc_try_open(e.cdevice.which);
@@ -2415,6 +2445,88 @@ static void pace_lazy_init(void) {
                s_fieldHz, platform_source_field_hz());
 }
 
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+/* ---- Windows wait precision (M3 slice 4) --------------------------------- *
+ *
+ * THE PROBLEM. mingw-w64's nanosleep is a Sleep() shim, and Sleep() rounds up
+ * to the system timer tick -- 15.6 ms by default. A pacer asking for 16.67 ms
+ * gets 31.2 ms, so a 60 Hz cadence collapses to 32 and every present-interval
+ * distribution this milestone measures is meaningless on Windows. The tick is
+ * not per-process precision: it is what the whole scheduler quantizes to.
+ *
+ * WHY A WAITABLE TIMER AND NOT timeBeginPeriod. timeBeginPeriod(1) works, and
+ * used to be the only option, but it raises the timer resolution GLOBALLY --
+ * every process on the machine wakes more often and burns more power for the
+ * duration, which is why Windows has progressively de-fanged it. A
+ * high-resolution waitable timer (Windows 10 1803+) gives this thread ~0.5 ms
+ * wait accuracy without touching anyone else's scheduling, and lives in
+ * kernel32, which the executable already imports -- so it adds no DLL to the
+ * import table tools/check_windows_imports.sh allowlists, where winmm would.
+ *
+ * WHY IT IS RESOLVED AT RUNTIME. CREATE_WAITABLE_TIMER_HIGH_RESOLUTION and
+ * CreateWaitableTimerExW are newer than some MinGW header sets and newer than
+ * Windows 8. GetProcAddress keeps a build against older headers, and a run on
+ * an older OS, from failing to link or to start; both fall back to the
+ * portable wait below, which is exactly what shipped before this.
+ *
+ * WHY A SPIN AT THE END. Even a high-resolution timer is a scheduler wake, so
+ * the last fraction of a millisecond is not reliably landed. The wait stops
+ * PACE_WIN_SPIN_NS short and spins the remainder with a pause hint. One
+ * millisecond of spin per present is ~6% of one core at 60 Hz, paid only when
+ * the pacer would otherwise overshoot its deadline.
+ *
+ * NOT TESTED ON HARDWARE. This lane has no Windows box; it is compile-verified
+ * against the MinGW cross toolchain (cmake/mingw-w64-x86_64.cmake) only. The
+ * non-Windows builds do not reach any of it.
+ */
+#ifndef CREATE_WAITABLE_TIMER_MANUAL_RESET
+#define CREATE_WAITABLE_TIMER_MANUAL_RESET 0x00000001
+#endif
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+
+#define PACE_WIN_SPIN_NS UINT64_C(1000000)   /* spin the last millisecond */
+
+typedef HANDLE(WINAPI *PaceCreateWaitableTimerExW)(LPSECURITY_ATTRIBUTES,
+                                                   LPCWSTR, DWORD, DWORD);
+
+static HANDLE s_paceWinTimer;
+static int s_paceWinTimerState;   /* 0 untried, 1 ready, -1 unavailable */
+
+/*
+ * Process-lifetime handle by design: it is created at most once and the wait
+ * below is on the hot path. The OS reclaims it at exit like every other
+ * process-lifetime handle the host holds.
+ */
+static HANDLE pace_win_timer(void) {
+    if (s_paceWinTimerState == 0) {
+        HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+        PaceCreateWaitableTimerExW create = NULL;
+
+        s_paceWinTimerState = -1;
+        if (kernel32 != NULL) {
+            create = (PaceCreateWaitableTimerExW)(void (*)(void))
+                GetProcAddress(kernel32, "CreateWaitableTimerExW");
+        }
+        if (create != NULL) {
+            /* Without the high-resolution flag this timer is no better than
+             * the portable wait, so a refusal is treated as unavailable
+             * rather than retried without it. */
+            s_paceWinTimer = create(
+                NULL, NULL,
+                CREATE_WAITABLE_TIMER_MANUAL_RESET |
+                    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                TIMER_ALL_ACCESS);
+            if (s_paceWinTimer != NULL) {
+                s_paceWinTimerState = 1;
+            }
+        }
+    }
+    return s_paceWinTimerState == 1 ? s_paceWinTimer : NULL;
+}
+#endif /* _WIN32 && !__EMSCRIPTEN__ */
+
 static uint64_t pace_sleep_until(uint64_t target_ns) {
     uint64_t now = pace_host_ns();
 #ifdef __EMSCRIPTEN__
@@ -2427,6 +2539,37 @@ static uint64_t pace_sleep_until(uint64_t target_ns) {
     do {
         now = browser_wait_animation_frame();
     } while (now + 2000000ULL < target_ns);
+#elif defined(_WIN32)
+    {
+        HANDLE timer = pace_win_timer();
+        while (now < target_ns) {
+            const uint64_t rem = target_ns - now;
+            if (rem <= PACE_WIN_SPIN_NS) {
+                YieldProcessor();
+                now = pace_host_ns();
+                continue;
+            }
+            if (timer != NULL) {
+                LARGE_INTEGER due;
+                /* Negative is the relative form, in 100 ns units. */
+                due.QuadPart =
+                    -(LONGLONG)((rem - PACE_WIN_SPIN_NS) / UINT64_C(100));
+                if (due.QuadPart == 0) {
+                    due.QuadPart = -1;
+                }
+                if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) {
+                    WaitForSingleObject(timer, INFINITE);
+                } else {
+                    Sleep(0);
+                }
+            } else {
+                /* No high-resolution timer: the coarse wait still gets most of
+                 * the way there, and the spin above lands the rest. */
+                Sleep((DWORD)((rem - PACE_WIN_SPIN_NS) / UINT64_C(1000000)));
+            }
+            now = pace_host_ns();
+        }
+    }
 #else
     while (now < target_ns) {
         uint64_t rem = target_ns - now;
@@ -2555,8 +2698,95 @@ static MdkrPresentDeadlineClock s_occludedDeadline;
 static bool s_occludedDeadlineReady;
 static uint64_t s_presentLastNs;
 static uint64_t s_presentSyntheticPhase;
+/*
+ * The refresh of the display the window is on, re-derived live (M3 slice 2).
+ *
+ * present_pace_lazy_init() latches the POLICY once and must keep doing so --
+ * video_config.c's schema rows spell out why re-resolving it under a running
+ * engine is unsafe in both directions. The RATE is a different kind of value:
+ * it is not a player choice at all, it is a property of the monitor the window
+ * currently happens to be on, and dragging the window to a 144 Hz panel does
+ * not change what the player asked for. So the rate refreshes and everything
+ * derived from it refreshes with it, while kind/requested-rate/smoothing/
+ * tearing stay exactly as they were latched.
+ */
+static unsigned s_presentDisplayRate;
+/*
+ * Shed floor (M3 slice 3). A policy that has no software cadence relies on the
+ * presentation queue to block the loop -- which it does, but only for an
+ * opportunity that actually SWAPS. An opportunity whose replay refused, or
+ * whose optional image GPU admission shed, calls
+ * platform_frame_sync_no_swap(): nothing is queued, so nothing blocks, and a
+ * consistently-behind GPU can spin between refusals at whatever speed the loop
+ * runs. Serving the refusal on the display cadence is the same remedy the
+ * 1.0.4 held-frame deadline applies to smoothing-off, narrowed to the case
+ * that actually lacks a limiter.
+ *
+ * This is a FLOOR, not a cadence: it arms only after an opportunity that did
+ * not swap, so a run whose presents are all being retired by the queue never
+ * touches it and its grid stays exactly the display's own.
+ */
+static MdkrPresentDeadlineClock s_shedDeadline;
+static bool s_shedDeadlineReady;
+static bool s_presentLastHeld;
+
+/*
+ * MDKR_TEST_DISPLAY_RATE_SWITCH=<hz>@<tick> -- the headless seam for the
+ * display-change path (M3 slice 2).
+ *
+ * Dragging a window between monitors of different refresh cannot be performed
+ * by an automated run, but everything downstream of the EVENT can: from the
+ * moment the handler fires, the whole chain is "the host now reports a
+ * different number". So this makes the host report a different number at a
+ * chosen tick and synthesizes the same handler SDL's display-changed event
+ * calls. What it does not cover is SDL's event delivery itself, which needs a
+ * second monitor; tests/check_pacing_quality.py's docstring carries that manual
+ * step.
+ *
+ * Test-only and inert unless set, like MDKR_TEST_PACE_REBASE_EVERY beside it.
+ */
+static int s_displaySwitchState = -1;   /* -1 unparsed, 0 disarmed, 1 armed */
+static unsigned s_displaySwitchRate;
+static uint64_t s_displaySwitchTick;
+static bool s_displaySwitchFired;
+
+static void display_switch_lazy_init(void) {
+    const char *value;
+    char *end = NULL;
+    unsigned long rate;
+    unsigned long long tick;
+
+    if (s_displaySwitchState >= 0) {
+        return;
+    }
+    s_displaySwitchState = 0;
+    value = getenv("MDKR_TEST_DISPLAY_RATE_SWITCH");
+    if (value == NULL || value[0] == '\0') {
+        return;
+    }
+    rate = strtoul(value, &end, 10);
+    if (end == value || end == NULL || *end != '@' ||
+        rate < MDKR_PRESENT_RATE_MIN || rate > MDKR_PRESENT_RATE_MAX) {
+        fprintf(stderr, "[PRESENT-DISPLAY] MDKR_TEST_DISPLAY_RATE_SWITCH='%s' "
+                        "unrecognized (<hz>@<tick>); ignored\n", value);
+        return;
+    }
+    tick = strtoull(end + 1, &end, 10);
+    if (end == NULL || *end != '\0') {
+        fprintf(stderr, "[PRESENT-DISPLAY] MDKR_TEST_DISPLAY_RATE_SWITCH='%s' "
+                        "unrecognized (<hz>@<tick>); ignored\n", value);
+        return;
+    }
+    s_displaySwitchRate = (unsigned)rate;
+    s_displaySwitchTick = (uint64_t)tick;
+    s_displaySwitchState = 1;
+}
 
 unsigned platform_present_display_rate(void) {
+    display_switch_lazy_init();
+    if (s_displaySwitchState == 1 && s_displaySwitchFired) {
+        return s_displaySwitchRate;
+    }
 #ifdef __EMSCRIPTEN__
     return 0u; /* measured directly from requestAnimationFrame timestamps */
 #else
@@ -2582,6 +2812,7 @@ static void present_pace_lazy_init(void) {
         return;
     }
     pace_lazy_init();
+    s_presentDisplayRate = platform_present_display_rate();
     s_presentKind = present_sched_present_kind();
     /* Every non-original policy owns host opportunity pacing, even when a
      * numeric cap is at/below an enhanced simulation tick rate. Replay is a
@@ -2621,7 +2852,7 @@ static void present_pace_lazy_init(void) {
         s_presentEffectiveRate = present_sched_present_rate();
         s_presentSoftwareDeadline = true;
     } else if (s_presentKind == MDKR_PRESENT_DISPLAY) {
-        s_presentEffectiveRate = platform_present_display_rate();
+        s_presentEffectiveRate = s_presentDisplayRate;
         if (s_paceMode == PACE_SYNTH && s_presentEffectiveRate == 0u) {
             /* Synthetic pacing divides per present by this rate; an
              * unreported refresh keeps a deterministic 60 Hz stand-in. */
@@ -2639,7 +2870,7 @@ static void present_pace_lazy_init(void) {
          * can only burn a core and starve the audio sink; it cannot improve
          * visible motion. Service held frames at the display cadence while
          * leaving the requested policy and authored output unchanged. */
-        s_presentEffectiveRate = platform_present_display_rate();
+        s_presentEffectiveRate = s_presentDisplayRate;
         s_presentSoftwareDeadline = true;
     }
     if (s_presentSoftwareDeadline && s_presentEffectiveRate != 0u &&
@@ -2661,6 +2892,124 @@ int platform_present_subloop_fields(void) {
 }
 
 /*
+ * The window is now on a display with a different refresh (M3 slice 2).
+ *
+ * WHAT REFRESHES. Everything the pacer derived FROM the refresh: the effective
+ * rate for a policy that follows the display, every deadline grid standing on
+ * that rate, and the backend's present-mode ranking (a rate above the old
+ * refresh may be at or below the new one, or the reverse, and the swapchain
+ * baked that decision at configuration time).
+ *
+ * WHAT DOES NOT. The latched policy -- kind, requested rate, smoothing,
+ * tearing. video_config.c's schema rows argue at length why re-resolving those
+ * under a running engine is unsafe in both directions, and none of that
+ * argument is weakened by the monitor changing: the player asked for `display`
+ * or for `144`, and they still are. A numeric cap in particular keeps its
+ * number; only the ranking it is compared against moves.
+ *
+ * The grids are re-INITIALISED rather than re-phased. A deadline grid is an
+ * absolute rational schedule anchored at an origin, so a grid built for 60 Hz
+ * cannot be reinterpreted at 144 Hz; the next target re-anchors at the next
+ * call, which is one opportunity of phase and no drift.
+ */
+static void present_pace_note_display_changed(void) {
+    unsigned rate;
+
+    if (s_presentActive < 0) {
+        /* The policy has not been latched yet, so the lazy init that latches
+         * it will read the current rate anyway. */
+        return;
+    }
+    rate = platform_present_display_rate();
+    if (rate == s_presentDisplayRate) {
+        return;
+    }
+    fprintf(stderr,
+            "[PRESENT-DISPLAY] event=display-changed oldHz=%u newHz=%u "
+            "policy=%s effectiveRate=%u\n",
+            s_presentDisplayRate, rate,
+            present_sched_present_policy_name(), s_presentEffectiveRate);
+    s_presentDisplayRate = rate;
+    /*
+     * Synthetic pacing does not sleep: s_presentEffectiveRate is the DIVISOR of
+     * a deterministic per-present timeline there, not a measurement of any
+     * display. Moving it would make a headless run depend on which monitor the
+     * window happened to be on, which is the one property those runs exist to
+     * not have. The present-mode re-rank below still happens -- it is what the
+     * display-change arm asserts, and it touches no clock.
+     */
+    if (s_paceMode == PACE_REALTIME) {
+        if (s_presentActive && rate != 0u &&
+            (s_presentKind == MDKR_PRESENT_DISPLAY ||
+             s_presentKind == MDKR_PRESENT_UNCAPPED)) {
+            /* Only the policies whose cadence IS the display's. A numeric
+             * cap's effective rate is the player's number and must not move. */
+            s_presentEffectiveRate = rate;
+        }
+        if (s_presentSoftwareDeadline && s_presentEffectiveRate != 0u) {
+            (void)mdkr_present_deadline_init(
+                &s_presentDeadline, s_presentEffectiveRate);
+        }
+        s_occludedDeadlineReady = false;
+        s_shedDeadlineReady = false;
+    }
+    /*
+     * Re-rank the present mode. Only the WebGPU backend ranks at surface
+     * configuration; the GL path fixes its swap interval at context adoption
+     * and stays SCOPE_RESTART (see video_config.c's Video.AllowTearing row),
+     * so there is nothing to re-rank there.
+     */
+#if defined(MDKR_WEBGPU_BACKEND) && !defined(__EMSCRIPTEN__)
+    if (mdkr_render_backend() == MDKR_BACKEND_WEBGPU) {
+        gfx_webgpu_request_surface_reconfigure();
+    }
+#endif
+}
+
+/*
+ * Poll the test seam that stands in for SDL's display-changed event. Real
+ * runs never enter the body: s_displaySwitchState is 0 unless
+ * MDKR_TEST_DISPLAY_RATE_SWITCH parsed, and the whole call is one compare.
+ */
+static void present_pace_poll_display_switch(void) {
+    display_switch_lazy_init();
+    if (s_displaySwitchState != 1 || s_displaySwitchFired) {
+        return;
+    }
+    if (present_sched_ticks() < s_displaySwitchTick) {
+        return;
+    }
+    s_displaySwitchFired = true;
+    present_pace_note_display_changed();
+}
+
+uint64_t platform_present_display_quantum_units(void) {
+    present_pace_lazy_init();
+    if (s_paceMode != PACE_REALTIME) {
+        /* Synthetic pacing does not sleep and has no vblank to project onto.
+         * Declining here is what keeps every headless arm byte-identical. */
+        return 0u;
+    }
+    if (!s_presentActive || s_presentSoftwareDeadline) {
+        /* Original presents one image per tick, and a software cadence is
+         * already the thing spacing presents -- its grid, not the display's,
+         * is what an opportunity lands on. */
+        return 0u;
+    }
+    if (s_presentDisplayRate == 0u || present_sched_allow_tearing()) {
+        return 0u;
+    }
+    if (present_sched_present_sync(s_presentDisplayRate) !=
+        MDKR_PRESENT_SYNC_BLOCKING) {
+        /* A latest-image queue drops undisplayed frames rather than pacing the
+         * caller, so a present is not one refresh. */
+        return 0u;
+    }
+    return (uint64_t)s_fieldHz * UINT64_C(1000000000) /
+           (uint64_t)s_presentDisplayRate;
+}
+
+/*
  * Pace one present and return exact source-field units. Unlike
  * platform_vi_pace_measure() this never applies s_minFields: the tick floor is
  * enforced by the accumulator that consumes these counts, not by sleeping.
@@ -2669,6 +3018,7 @@ uint64_t platform_vi_present_pace_units(void) {
     uint64_t units;
 
     present_pace_lazy_init();
+    present_pace_poll_display_switch();
     s_viLastPaceRebased = 0;
     if (!s_presentActive) {
         /* Not engaged: one present is one tick, exactly as before. */
@@ -2679,6 +3029,9 @@ uint64_t platform_vi_present_pace_units(void) {
         s_surfaceResumeRebasePending = 0;
         s_presentLastNs = pace_host_ns();
         s_occludedDeadlineReady = false;
+        /* Suspension time is retired, not paced across: the floor's grid
+         * phase belongs to the session that was interrupted. */
+        s_shedDeadlineReady = false;
         if (s_presentSoftwareDeadline) {
             (void)mdkr_present_deadline_init(
                 &s_presentDeadline, s_presentEffectiveRate);
@@ -2713,31 +3066,72 @@ uint64_t platform_vi_present_pace_units(void) {
         units = s_presentSyntheticPhase / s_presentEffectiveRate;
         s_presentSyntheticPhase %= s_presentEffectiveRate;
     } else {
+        const unsigned tick_rate =
+            (unsigned)s_fieldHz / (unsigned)s_minFields;
         uint64_t now = pace_host_ns();
         uint64_t target = now;
         bool deadline = s_presentSoftwareDeadline;
+        /* Which grid this opportunity is being spaced on, so the commit and
+         * rebase paths below cannot disagree with the wait above about it. */
+        MdkrPresentDeadlineClock *clock =
+            s_presentSoftwareDeadline ? &s_presentDeadline : NULL;
+        unsigned clock_rate = s_presentEffectiveRate;
 #ifndef __EMSCRIPTEN__
         if (present_sched_render_elided()) {
-            const unsigned tick_rate =
-                (unsigned)s_fieldHz / (unsigned)s_minFields;
             if (!s_occludedDeadlineReady) {
                 s_occludedDeadlineReady = mdkr_present_deadline_init(
                     &s_occludedDeadline, tick_rate) != 0;
             }
             if (s_occludedDeadlineReady) {
                 deadline = true;
-                target = mdkr_present_deadline_target(
-                    &s_occludedDeadline, now);
+                clock = &s_occludedDeadline;
+                clock_rate = tick_rate;
             }
         } else {
             s_occludedDeadlineReady = false;
+            if (!s_presentSoftwareDeadline && s_presentLastHeld) {
+                /*
+                 * SHED FLOOR. A policy with no software cadence relies on the
+                 * presentation queue to space its opportunities, and the queue
+                 * only does that for one that actually SWAPS. An opportunity
+                 * whose replay refused, or whose optional image GPU admission
+                 * shed, hands the queue nothing -- so nothing blocks, and the
+                 * loop's next speed is the machine's. That cannot put one more
+                 * image on screen; it can burn a core and starve the audio
+                 * sink trying.
+                 *
+                 * One display interval is the floor, because that is the
+                 * soonest a NEW image could have mattered. It is a FLOOR and
+                 * not a cadence: an opportunity that swapped does not consult
+                 * it at all, so a run whose GPU keeps up is paced exactly as
+                 * before by the queue itself, and the grid's fixed phase means
+                 * a run that does consult it cannot accumulate drift the way
+                 * sleeping a relative interval from each refusal would.
+                 *
+                 * When the host reports no refresh, the authoritative tick is
+                 * the honest fallback: there is by definition nothing new to
+                 * show between ticks.
+                 */
+                const unsigned shed_rate = s_presentEffectiveRate != 0u
+                    ? s_presentEffectiveRate
+                    : (s_presentDisplayRate != 0u ? s_presentDisplayRate
+                                                  : tick_rate);
+                if (!s_shedDeadlineReady) {
+                    s_shedDeadlineReady = mdkr_present_deadline_init(
+                        &s_shedDeadline, shed_rate) != 0;
+                }
+                if (s_shedDeadlineReady) {
+                    /* Deliberately NOT `clock`: the floor carries no index for
+                     * the commit/rebase paths below to advance, and `clock` is
+                     * NULL on every path that reaches here. */
+                    target = mdkr_present_grid_next(&s_shedDeadline, now);
+                    deadline = true;
+                }
+            }
         }
 #endif
-        if (deadline) {
-            if (!present_sched_render_elided()) {
-                target = mdkr_present_deadline_target(
-                    &s_presentDeadline, now);
-            }
+        if (deadline && clock != NULL) {
+            target = mdkr_present_deadline_target(clock, now);
         }
 #ifdef __EMSCRIPTEN__
         /* Browser presentation is at most one opportunity per rAF. Numeric
@@ -2757,14 +3151,8 @@ uint64_t platform_vi_present_pace_units(void) {
             /* Suspension/debugger/occlusion time is retired, not simulated. */
             units = (uint64_t)s_minFields * UINT64_C(1000000000);
             s_viLastPaceRebased = 1;
-            if (deadline) {
-                MdkrPresentDeadlineClock *clock =
-                    present_sched_render_elided()
-                        ? &s_occludedDeadline : &s_presentDeadline;
-                const unsigned rate = present_sched_render_elided()
-                    ? (unsigned)s_fieldHz / (unsigned)s_minFields
-                    : s_presentEffectiveRate;
-                (void)mdkr_present_deadline_init(clock, rate);
+            if (deadline && clock != NULL) {
+                (void)mdkr_present_deadline_init(clock, clock_rate);
                 (void)mdkr_present_deadline_target(clock, now);
             }
         } else {
@@ -2772,11 +3160,8 @@ uint64_t platform_vi_present_pace_units(void) {
                 ? now - s_presentLastNs : 0u;
             units = elapsed > UINT64_MAX / (uint64_t)s_fieldHz
                 ? UINT64_MAX : elapsed * (uint64_t)s_fieldHz;
-            if (deadline) {
-                mdkr_present_deadline_commit(
-                    present_sched_render_elided()
-                        ? &s_occludedDeadline : &s_presentDeadline,
-                    now);
+            if (deadline && clock != NULL) {
+                mdkr_present_deadline_commit(clock, now);
             }
         }
         s_presentLastNs = now;
@@ -3265,6 +3650,9 @@ static void platform_frame_sync_impl(int swap, int count_present) {
 }
 
 void platform_frame_sync(void) {
+    /* This opportunity hands an image to the presentation queue, so the queue
+     * is what paces the next one; the shed floor stands down. */
+    s_presentLastHeld = false;
     platform_frame_sync_impl(1, 1);
 }
 
@@ -3305,6 +3693,9 @@ void platform_frame_sync(void) {
  * and in the browser that pacing call is the Asyncify rAF yield.
  */
 void platform_frame_sync_no_swap(void) {
+    /* Nothing was queued, so nothing will block the next opportunity. The
+     * pacer's shed floor reads this (platform_vi_present_pace_units). */
+    s_presentLastHeld = true;
     platform_frame_sync_impl(0, 1);
 }
 

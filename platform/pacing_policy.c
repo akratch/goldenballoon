@@ -111,6 +111,41 @@ int mdkr_present_policy_needs_held_frame_deadline(
            policy->kind == MDKR_PRESENT_UNCAPPED;
 }
 
+uint64_t mdkr_present_quantize_phase(uint64_t phase_units,
+                                     uint64_t tick_units,
+                                     uint64_t quantum_units) {
+    uint64_t index;
+    uint64_t quantized;
+
+    if (quantum_units == 0u || tick_units == 0u || phase_units == 0u) {
+        return phase_units;
+    }
+    /* A refresh at or slower than the tick has no sub-tick grid to project
+     * onto: every opportunity is already an endpoint. */
+    if (quantum_units >= tick_units) {
+        return phase_units;
+    }
+    /* Nearest grid index. The pacer wakes just AFTER a vblank, so the measured
+     * phase sits a little above its grid point and rounding (not flooring)
+     * is what recovers the index the display used. */
+    index = (phase_units + quantum_units / 2u) / quantum_units;
+    if (index == 0u) {
+        /* Inside the first half-refresh, yet past the endpoint that already
+         * went out at phase zero. This opportunity is still the next grid
+         * point; collapsing it onto the endpoint would show the same image
+         * twice. */
+        index = 1u;
+    }
+    quantized = index * quantum_units;
+    if (quantized >= tick_units) {
+        /* The projection crossed the tick boundary. The accumulator is the
+         * authority on where a tick ends, so defer to the measured phase
+         * rather than pin the frame to a boundary it has not reached. */
+        return phase_units;
+    }
+    return quantized;
+}
+
 static uint64_t present_grid_time_ns(const MdkrPresentDeadlineClock *clock,
                                      uint64_t index) {
     uint64_t whole_seconds = index / (uint64_t)clock->rate;
@@ -145,6 +180,39 @@ uint64_t mdkr_present_deadline_target(MdkrPresentDeadlineClock *clock,
         clock->initialized = 1;
     }
     return present_grid_time_ns(clock, clock->next_index);
+}
+
+uint64_t mdkr_present_grid_next(MdkrPresentDeadlineClock *clock,
+                                uint64_t now_ns) {
+    uint64_t elapsed_ns;
+    uint64_t elapsed_intervals;
+
+    if (clock == NULL || clock->rate == 0u) {
+        return now_ns;
+    }
+    if (!clock->initialized) {
+        clock->origin_ns = now_ns;
+        clock->next_index = 1u;
+        clock->initialized = 1;
+        return present_grid_time_ns(clock, 1u);
+    }
+    elapsed_ns = now_ns > clock->origin_ns ? now_ns - clock->origin_ns : 0u;
+    /* floor(elapsed * rate / 1e9), overflow-safe for host-time ranges. */
+    elapsed_intervals =
+        (elapsed_ns / NS_PER_SECOND) * (uint64_t)clock->rate +
+        ((elapsed_ns % NS_PER_SECOND) * (uint64_t)clock->rate) /
+            NS_PER_SECOND;
+    {
+        uint64_t next = present_grid_time_ns(clock, elapsed_intervals + 1u);
+        if (next <= now_ns) {
+            /* Grid times are truncated to whole nanoseconds, so `now` can land
+             * exactly on the point this index names. A floor that returns the
+             * present instant is not a floor; take the following one. Grid
+             * spacing is milliseconds, so one step always clears it. */
+            next = present_grid_time_ns(clock, elapsed_intervals + 2u);
+        }
+        return next;
+    }
 }
 
 void mdkr_present_deadline_commit(MdkrPresentDeadlineClock *clock,
