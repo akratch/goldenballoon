@@ -447,6 +447,54 @@ static int run_primary_case(void) {
                    "interpolate"));
 
     /*
+     * The presentation-pace quick choice: ONE call that must move BOTH keys.
+     * The counters are what make "together" checkable -- a Smooth press that
+     * pushed only the frame limit would leave the run half-converted and every
+     * value-based assertion below would still pass on the half that moved.
+     */
+    {
+        const int limitBefore = s_presentFrameLimitCalls;
+        const int smoothingBefore = s_presentSmoothingCalls;
+        expect("smooth quick choice applies live",
+               mdkr_video_config_runtime_set_presentation_pace(
+                   MDKR_PRESENTATION_PACE_SMOOTH) ==
+                   MDKR_VIDEO_RUNTIME_LIVE);
+        expect("smooth quick choice pushed BOTH pacing keys once",
+               s_presentFrameLimitCalls == limitBefore + 1 &&
+               s_presentSmoothingCalls == smoothingBefore + 1 &&
+               !strcmp(s_presentFrameLimit, "display") &&
+               !strcmp(s_presentSmoothing, "interpolate"));
+        expect("smooth quick choice reads back as smooth",
+               mdkr_video_presentation_pace(mdkr_video_config_desired()) ==
+                   MDKR_PRESENTATION_PACE_SMOOTH);
+        expect("original quick choice applies live",
+               mdkr_video_config_runtime_set_presentation_pace(
+                   MDKR_PRESENTATION_PACE_ORIGINAL) ==
+                   MDKR_VIDEO_RUNTIME_LIVE);
+        expect("original quick choice restored the authored pair",
+               !strcmp(mdkr_video_config_desired()
+                           ->values[MDKR_VIDEO_FRAME_LIMIT].text,
+                       "original") &&
+               !strcmp(mdkr_video_config_desired()
+                           ->values[MDKR_VIDEO_MOTION_SMOOTHING].text, "off") &&
+               mdkr_video_presentation_pace(mdkr_video_config_desired()) ==
+                   MDKR_PRESENTATION_PACE_ORIGINAL);
+        expect("custom is refused: it has no expansion to write",
+               mdkr_video_config_runtime_set_presentation_pace(
+                   MDKR_PRESENTATION_PACE_CUSTOM) ==
+                   MDKR_VIDEO_RUNTIME_INVALID);
+        /* Restore what the rest of the case expects to find. */
+        expect("frame limit restored for the remaining assertions",
+               mdkr_video_config_runtime_set(
+                   MDKR_VIDEO_FRAME_LIMIT, "240") ==
+                   MDKR_VIDEO_RUNTIME_LIVE);
+        expect("motion smoothing restored for the remaining assertions",
+               mdkr_video_config_runtime_set(
+                   MDKR_VIDEO_MOTION_SMOOTHING, "interpolate") ==
+                   MDKR_VIDEO_RUNTIME_LIVE);
+    }
+
+    /*
      * Camera.Obstruction is SCOPE_LEVEL. With no CAMERA applier registered
      * there is no level boundary to wait for either, so it behaves as a plain
      * live key here -- the value is stored and the boot-time seam

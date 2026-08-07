@@ -101,7 +101,8 @@ CHECKS = (
           "and broken-direction mutations",
           args=("--self-test",)),
     Check("app_ui_input", "check_app_ui_input.py", "native",
-          "real ImGui keyboard/gamepad selection, reload, scale matrix, "
+          "real ImGui keyboard/gamepad selection, the Presentation pace quick "
+          "choice writing both pacing keys, reload, scale matrix, "
           "save failure, and retry"),
     Check("audio_options_persistence", "check_audio_options_persistence.py", "native",
           "original Audio Options durable exit, visible save failure, retry, "
@@ -166,11 +167,13 @@ CHECKS = (
           "fixed two-field authority across lateness, catch-up, suspension, "
           "state/event invariance, and sensitivity controls"),
     Check("arbitrary_presentation_rates", "check_arbitrary_presentation_rates.py",
-          "release", "exact original/30/60/120/144/165/240/uncapped native "
-          "presentation with NTSC/PAL state, event, input, and PCM invariance"),
+          "release", "exact original/30/40/60/120/144/165/240/display-margin/"
+          "uncapped native presentation with NTSC/PAL state, event, input, "
+          "and PCM invariance"),
     Check("live_toggle_settings", "check_live_toggle_settings.py", "release",
           "mid-run FrameLimit/MotionSmoothing/AllowTearing/Camera.Obstruction "
-          "changes apply at their declared boundary, re-rank the present mode, "
+          "and Presentation pace changes apply at their declared boundary, "
+          "re-rank the present mode, "
           "leave the authoritative streams byte-identical, and survive a "
           "24-flip smoothing soak without reaching retired replay state"),
     Check("presentation_matrix", "check_presentation_matrix.py", "release",
@@ -420,7 +423,7 @@ CHECKS = (
           "bounded touch edge transport, overlay gating/persistence, chord and neutral"),
     Check("browser_presentation_rates", "check_browser_presentation_rates.py",
           "browser", "display/capped/irregular rAF scheduling, fixed authority, "
-          "and explicit uncapped-to-display semantics"),
+          "and explicit uncapped/display-margin-to-display semantics"),
     Check("browser_taj_character_select",
           "check_browser_taj_character_select.py", "browser",
           "real Chrome/WebGPU Taj unlock, physical picker actor, P1 placard, "

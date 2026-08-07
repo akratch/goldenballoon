@@ -149,8 +149,15 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 0.0f,
         "Frame limit",
         "original presents each authored image once. display follows the "
-        "monitor, a number sets a native cap, and uncapped removes the native "
-        "software cap (the browser maps it to display). Rates above your "
+        "monitor, display-margin sits a few Hz under it, a number sets a "
+        "native cap, and uncapped removes the native "
+        "software cap (the browser maps both display-margin and uncapped to "
+        "display). display-margin is for a variable-refresh display: staying "
+        "just below the top of its range keeps it adapting to the game instead "
+        "of falling back to a fixed refresh, and it re-reads the rate if you "
+        "move the window to another monitor. A cap of 40 is a good "
+        "battery-friendly choice on a handheld whose display runs at 40 or "
+        "120 Hz. Rates above your "
         "display's refresh need a display connection that can drop an image it "
         "has not shown yet; where the system does not offer one, they present "
         "at your display's refresh instead, unless Allow tearing is on. Pair a "
@@ -450,7 +457,11 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "Shows finished frames without waiting for the display, where the "
         "system allows it. That is the lowest input delay, and the picture may "
         "show a seam across it while things are moving. Leave this off unless "
-        "you are chasing latency and prefer the seam. Takes effect on the next "
+        "you are chasing latency and prefer the seam. If your display has a "
+        "variable refresh rate, leave it off: the display already adapts to "
+        "the game, and turning this on gives that up for a seam you do not "
+        "need. Frame limit = Just under display is the setting that suits "
+        "those displays. Takes effect on the next "
         "frame; you can change it while you play.",
         MDKR_VIDEO_CAT_PACING
     },
@@ -953,14 +964,114 @@ static int mdkr_video_validate_gameplay_fov(const char *value) {
            parsed >= 20.0f && parsed <= 140.0f;
 }
 
-static int mdkr_video_validate_frame_limit(const char *value) {
-    MdkrPresentPolicy policy;
-    return mdkr_present_policy_parse(value, &policy);
-}
-
 static int mdkr_video_validate_motion_smoothing(const char *value) {
     return mdkr_video_ci_equal(value, "off") ||
            mdkr_video_ci_equal(value, "interpolate");
+}
+
+int mdkr_video_frame_limit_canonical(const char *value, char *out, size_t cap) {
+    MdkrPresentPolicy policy;
+
+    if (value == NULL || out == NULL || cap == 0 ||
+        !mdkr_present_policy_parse(value, &policy)) {
+        return 0;
+    }
+    switch (policy.kind) {
+        case MDKR_PRESENT_DISPLAY:
+            snprintf(out, cap, "display");
+            return 1;
+        case MDKR_PRESENT_DISPLAY_MARGIN:
+            snprintf(out, cap, "display-margin");
+            return 1;
+        case MDKR_PRESENT_UNCAPPED:
+            snprintf(out, cap, "uncapped");
+            return 1;
+        case MDKR_PRESENT_CAPPED:
+            snprintf(out, cap, "%u", policy.rate);
+            return 1;
+        case MDKR_PRESENT_ORIGINAL:
+        default:
+            snprintf(out, cap, "original");
+            return 1;
+    }
+}
+
+/* --- Presentation pace (see video_config.h) ------------------------------ */
+
+int mdkr_video_presentation_pace_values(MdkrPresentationPace pace,
+                                        const char **frame_limit,
+                                        const char **motion_smoothing) {
+    const char *limit;
+    const char *smoothing;
+
+    switch (pace) {
+        case MDKR_PRESENTATION_PACE_ORIGINAL:
+            limit = "original";
+            smoothing = "off";
+            break;
+        case MDKR_PRESENTATION_PACE_SMOOTH:
+            limit = "display";
+            smoothing = "interpolate";
+            break;
+        case MDKR_PRESENTATION_PACE_CUSTOM:
+        default:
+            return 0;
+    }
+    if (frame_limit != NULL) *frame_limit = limit;
+    if (motion_smoothing != NULL) *motion_smoothing = smoothing;
+    return 1;
+}
+
+MdkrPresentationPace mdkr_video_presentation_pace(
+    const MdkrVideoConfig *config) {
+    static const MdkrPresentationPace kPaces[] = {
+        MDKR_PRESENTATION_PACE_ORIGINAL, MDKR_PRESENTATION_PACE_SMOOTH
+    };
+
+    if (config == NULL) {
+        return MDKR_PRESENTATION_PACE_CUSTOM;
+    }
+    for (size_t i = 0; i < sizeof(kPaces) / sizeof(kPaces[0]); i++) {
+        const char *limit = NULL;
+        const char *smoothing = NULL;
+        if (!mdkr_video_presentation_pace_values(kPaces[i], &limit,
+                                                 &smoothing)) {
+            continue;
+        }
+        /* Case-insensitively, because the comparison must agree with the
+         * validators rather than with however the value happened to be typed;
+         * mdkr_video_config_set canonicalises both keys, so in practice this
+         * only matters for a config assembled by hand in a test. */
+        if (mdkr_video_ci_equal(config->values[MDKR_VIDEO_FRAME_LIMIT].text,
+                                limit) &&
+            mdkr_video_ci_equal(
+                config->values[MDKR_VIDEO_MOTION_SMOOTHING].text, smoothing)) {
+            return kPaces[i];
+        }
+    }
+    return MDKR_PRESENTATION_PACE_CUSTOM;
+}
+
+const char *mdkr_video_presentation_pace_name(MdkrPresentationPace pace) {
+    switch (pace) {
+        case MDKR_PRESENTATION_PACE_ORIGINAL: return "original";
+        case MDKR_PRESENTATION_PACE_SMOOTH:   return "smooth";
+        case MDKR_PRESENTATION_PACE_CUSTOM:
+        default:                              return "custom";
+    }
+}
+
+int mdkr_video_presentation_pace_from_name(const char *name) {
+    if (name == NULL) {
+        return -1;
+    }
+    if (mdkr_video_ci_equal(name, "original")) {
+        return (int) MDKR_PRESENTATION_PACE_ORIGINAL;
+    }
+    if (mdkr_video_ci_equal(name, "smooth")) {
+        return (int) MDKR_PRESENTATION_PACE_SMOOTH;
+    }
+    return -1;
 }
 
 /* Two words for the player, and the "0"/"1" spellings so the env name doubles
@@ -1197,6 +1308,16 @@ int mdkr_video_config_set(MdkrVideoConfig *config,
             slot->source = source;
             return 1;
         }
+        if (key == MDKR_VIDEO_FRAME_LIMIT) {
+            char canonical[MDKR_VIDEO_STRING_MAX];
+            if (!mdkr_video_frame_limit_canonical(value, canonical,
+                                                  sizeof(canonical))) {
+                return 0;
+            }
+            snprintf(slot->text, sizeof(slot->text), "%s", canonical);
+            slot->source = source;
+            return 1;
+        }
         if (key == MDKR_VIDEO_MOTION_SMOOTHING &&
             mdkr_video_validate_motion_smoothing(value)) {
             snprintf(slot->text, sizeof(slot->text), "%s",
@@ -1210,8 +1331,6 @@ int mdkr_video_config_set(MdkrVideoConfig *config,
              !mdkr_video_validate_gameplay_fov(value)) ||
             (key == MDKR_VIDEO_SIMULATION_CADENCE &&
              !mdkr_pacing_cadence_valid(value)) ||
-            (key == MDKR_VIDEO_FRAME_LIMIT &&
-             !mdkr_video_validate_frame_limit(value)) ||
             (key == MDKR_VIDEO_MOTION_SMOOTHING &&
              !mdkr_video_validate_motion_smoothing(value))) {
             return 0;

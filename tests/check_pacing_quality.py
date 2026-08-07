@@ -182,18 +182,30 @@ DISPLAY_SWITCH_CAP_HZ = 100
 DISPLAY_SWITCH_TO_HZ = 120
 DISPLAY_SWITCH_TICK = 60
 DISPLAY_SWITCH_TICKS = 140
+# MDKR_PRESENT_DISPLAY_MARGIN_HZ (platform/pacing_policy.h), duplicated as a
+# number on purpose: a gate that read the constant out of the source it is
+# checking would agree with any value the source happened to hold.
+DISPLAY_MARGIN_HZ = 3
 
 # [PRESENTSCHED-SUMMARY] presentkind, as published by MdkrPresentPolicyKind.
 KIND_ORIGINAL = 0
 KIND_CAPPED = 1
 KIND_DISPLAY = 2
 KIND_UNCAPPED = 3
+KIND_DISPLAY_MARGIN = 4
 
 POLICIES: tuple[tuple[str, str, int], ...] = (
     # label fragment, MDKR_PRESENT_RATE value, expected presentkind
     ("original", "original", KIND_ORIGINAL),
     ("capped60", "60", KIND_CAPPED),
+    # 40 is the battery-friendly handheld cap (M5). It is here rather than only
+    # in the rational-count gate because it is the one offered cap that is
+    # BELOW the 60 Hz stand-in refresh and ABOVE the 30 Hz simulation cadence,
+    # so it is the arm where the deadline grid, the display's own queue and the
+    # tick boundary all disagree about spacing at once.
+    ("capped40", "40", KIND_CAPPED),
     ("display", "display", KIND_DISPLAY),
+    ("display-margin", "display-margin", KIND_DISPLAY_MARGIN),
     ("uncapped", "uncapped", KIND_UNCAPPED),
 )
 
@@ -637,6 +649,48 @@ def check_display_change(result: Run) -> list[str]:
     return failures
 
 
+def check_display_margin_change(result: Run) -> list[str]:
+    """display-margin re-derives its cadence when the display changes.
+
+    This is the whole of what makes the setting honest. `display` follows the
+    monitor and needs nothing but the new number; display-margin has to put that
+    number back through the margin, and a handler that recognised only the
+    display/uncapped kinds would leave the pacer on a grid built for the
+    monitor the window left -- above the new panel's range on the way down, and
+    needlessly far below it on the way up. Nothing else in this file would see
+    that: the counts and the phase series stay perfectly plausible either way.
+
+    The row publishes `resolvedRate` precisely so a headless run can check the
+    derivation. Its `effectiveRate` deliberately does not move under synthetic
+    pacing -- that is what keeps these runs independent of the machine's own
+    monitor -- so asserting on that instead would assert nothing.
+    """
+    label = result.label
+    rows = [line for line in result.output.splitlines()
+            if "[PRESENT-DISPLAY] event=display-changed" in line]
+    if len(rows) != 1:
+        return [f"{label}: expected exactly one [PRESENT-DISPLAY] "
+                f"display-changed row, saw {len(rows)}"]
+
+    fields = {}
+    for token in rows[0].split():
+        key, separator, value = token.partition("=")
+        if separator:
+            fields[key] = value
+    failures: list[str] = []
+    if fields.get("policy") != "display-margin":
+        failures.append(
+            f"{label}: the display change was handled under "
+            f"policy={fields.get('policy')}, not display-margin")
+    expected = max(DISPLAY_SWITCH_TO_HZ - DISPLAY_MARGIN_HZ, 30)
+    if fields.get("resolvedRate") != str(expected):
+        failures.append(
+            f"{label}: resolvedRate={fields.get('resolvedRate')} after a move "
+            f"to a {DISPLAY_SWITCH_TO_HZ}Hz display, expected {expected} — the "
+            "margin was not re-derived from the new refresh")
+    return failures
+
+
 def baseline_note(result: Run) -> str:
     displayed = result.hist["displayed-interval"]
     alpha = result.hist["alpha-delta"]
@@ -713,6 +767,18 @@ def main() -> int:
             failures.extend(check_display_change(result))
             notes.append(
                 f"{label}: refresh re-derived live and present mode re-ranked")
+
+            label = "synth-display-margin-change"
+            result = run_arm(
+                binary, rom, root, label, "display-margin", "interpolate",
+                DISPLAY_SWITCH_TICKS, args.timeout, args.verbose,
+                extra_env={
+                    "MDKR_TEST_DISPLAY_RATE_SWITCH":
+                        f"{DISPLAY_SWITCH_TO_HZ}@{DISPLAY_SWITCH_TICK}",
+                })
+            failures.extend(check_display_margin_change(result))
+            notes.append(
+                f"{label}: margin re-derived against the new refresh")
 
             if args.skip_realtime:
                 notes.append("realtime arm skipped by --skip-realtime")

@@ -48,6 +48,15 @@ level load, and gate=MODERN only after. A frame boundary that applied the
 camera domain early would be a mid-race cut with no other symptom, and this is
 the only thing that would see it.
 
+THE PACE ARM DRIVES THE SETTINGS PANEL'S QUICK CHOICE, not an imitation of
+it: `Presentation.Pace=original|smooth` routes through
+mdkr_video_config_runtime_set_presentation_pace(), the exact call the radio
+button makes. What it owns that no other arm can see is ATOMICITY -- the quick
+choice writes Video.FrameLimit and Video.MotionSmoothing in ONE transaction, so
+the presentation domain must show two [SETTINGS-APPLY] rows and exactly ONE
+re-latch. Two sequential setters would produce two re-latches, and between them
+one frame boundary would run with half the change applied.
+
 WHY LAUNCH-RANK VALUES AND NOT THE ENVIRONMENT. The arms need a base policy the
 in-game setter is allowed to replace. MDKR_PRESENT_RATE would pin the key at
 ENV rank, above RUNTIME, and every toggle would resolve as LOCKED -- a gate
@@ -305,12 +314,24 @@ def check_toggles_landed(result: Result, arm: Arm) -> list[str]:
     return failures
 
 
-def check_presentation_apply(result: Result, expected: list[tuple[str, str, str]]
-                             ) -> list[str]:
+def check_presentation_apply(result: Result, expected: list[tuple[str, str, str]],
+                             transactions: int | None = None) -> list[str]:
     """One ordered apply per transaction, naming old -> new, and reaching both
     the pacer ([PRESENT-POLICY] event=live-apply) and the backend's present-mode
-    ranking (a re-emitted [PRESENT-MODE])."""
+    ranking (a re-emitted [PRESENT-MODE]).
+
+    `transactions` is how many BOUNDARY applies those rows are expected to have
+    arrived on, and defaults to one per row. It is not the same number for a
+    quick choice: that writes two keys in ONE set_many, so the domain stages two
+    transitions and flushes them at a SINGLE boundary -- two [SETTINGS-APPLY]
+    rows, one re-latch. Asserting both numbers separately is what distinguishes
+    an atomic pair from two edits that merely happened to both land, and the
+    difference is visible to a player as a frame served with half the change
+    applied.
+    """
     failures: list[str] = []
+    if transactions is None:
+        transactions = len(expected)
     rows = applies(result.output, "presentation")
     got = [(key, old, new) for _d, _b, key, old, new in rows]
     if got != expected:
@@ -323,18 +344,20 @@ def check_presentation_apply(result: Result, expected: list[tuple[str, str, str]
                 f"{result.label}: {key} applied at boundary={boundary}; a LIVE "
                 f"key must apply at the host-frame boundary")
     live = LIVE_APPLY_RE.findall(result.output)
-    if len(live) != len(expected):
+    if len(live) != transactions:
         failures.append(
             f"{result.label}: {len(live)} [PRESENT-POLICY] event=live-apply "
-            f"rows for {len(expected)} applies; the pacer was not re-latched")
+            f"rows for {transactions} transaction(s); the pacer was not "
+            f"re-latched exactly once per apply")
     # The boot row plus one per apply. Fewer means the backend kept the ranking
     # it baked at configuration, which is the bug Video.AllowTearing's old
     # RESTART scope was standing in for.
     modes = len(present_mode_rows(result.output))
-    if modes < 1 + len(expected):
+    if modes < 1 + transactions:
         failures.append(
             f"{result.label}: {modes} [PRESENT-MODE] rows for "
-            f"{len(expected)} applies; the present mode was not re-ranked")
+            f"{transactions} transaction(s); the present mode was not "
+            f"re-ranked")
     return failures
 
 
@@ -420,6 +443,12 @@ ARMS: tuple[Arm, ...] = (
         (("Video.FrameLimit", "original", FIRST_TICK),
          ("Video.FrameLimit", "120", SECOND_TICK))),
     Arm("tearing", (("Video.AllowTearing", "on", FIRST_TICK),)),
+    # The settings panel's Presentation pace quick choice, driven through the
+    # same runtime call the radio button makes. Both directions, because
+    # leaving Smooth has to write its own pair as surely as reaching it does.
+    Arm("pace",
+        (("Presentation.Pace", "original", FIRST_TICK),
+         ("Presentation.Pace", "smooth", SECOND_TICK))),
     Arm("camera", (("Camera.Obstruction", "observe", CAMERA_TICK),),
         camera_trace=True),
     Arm("soak", soak_toggles()),
@@ -514,6 +543,33 @@ def main() -> int:
                 failures.append(
                     "tearing: the live apply did not report tearing=1; the "
                     "opt-in never reached present_sched")
+        if "pace" in results:
+            # Four key transitions, TWO boundary applies: the quick choice's
+            # whole contract in one assertion. The base is FrameLimit=120 with
+            # smoothing on, so Original has real work to do in both keys and
+            # Smooth has to move both back.
+            failures += check_presentation_apply(
+                results["pace"],
+                [("Video.FrameLimit", "120", "original"),
+                 ("Video.MotionSmoothing", "interpolate", "off"),
+                 ("Video.FrameLimit", "original", "display"),
+                 ("Video.MotionSmoothing", "off", "interpolate")],
+                transactions=2)
+            live = LIVE_APPLY_RE.findall(results["pace"].output)
+            if len(live) == 2:
+                # policy AND smoothing move together in one re-latch. A pacer
+                # that took the frame limit and kept the old smoothing is the
+                # half-applied frame this arm exists to rule out.
+                if live[0][0] != "original" or live[0][2] != "0":
+                    failures.append(
+                        "pace: the Original quick choice did not re-latch the "
+                        f"pacer to original with smoothing off (got "
+                        f"policy={live[0][0]} smoothing={live[0][2]})")
+                if live[1][0] != "display" or live[1][2] != "1":
+                    failures.append(
+                        "pace: the Smooth quick choice did not re-latch the "
+                        f"pacer to display with smoothing on (got "
+                        f"policy={live[1][0]} smoothing={live[1][2]})")
         if "camera" in results:
             failures += check_camera_arm(results["camera"])
         if "soak" in results:

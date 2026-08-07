@@ -72,6 +72,81 @@ def select_240(executable: Path, root: Path, input_mode: str,
     return run(executable, env, tuple(expected))
 
 
+def select_pace(executable: Path, root: Path, pace: str) -> str:
+    """Press the real Presentation pace radio button once.
+
+    The claim under test is that ONE press writes BOTH pacing keys. The
+    launcher's own verdict already fails the run when the resolved pace does
+    not match the request; the caller additionally reads the saved file, so a
+    quick choice that only reached memory cannot pass.
+    """
+    video = root / "video.ini"
+    env = common(root, video)
+    env.update({
+        "MDKR_APP_SMOKE_FRAMES": "12",
+        "MDKR_APP_SMOKE_SELECT_PRESENTATION_PACE": pace,
+        "MDKR_APP_SMOKE_INPUT": "keyboard",
+        "MDKR_APP_SMOKE_INPUT_TOKEN": "mdkr64-app-ui-input-v1",
+        "MDKR_APP_UI_TRACE": "1",
+    })
+    return run(executable, env, (
+        f"presentation-pace click queued pace={pace}",
+        f"presentation-pace requested={pace} actual={pace}",
+        "surface presents=",
+    ))
+
+
+def read_pace(executable: Path, root: Path) -> str:
+    """What a FRESH process reads the two saved keys back as."""
+    env = common(root, root / "video.ini")
+    env.update({"MDKR_APP_SMOKE_FRAMES": "4", "MDKR_APP_UI_TRACE": "1"})
+    output = run(executable, env, ("[app-ui] presentation-pace value=",))
+    for line in output.splitlines():
+        marker = "[app-ui] presentation-pace value="
+        if marker in line:
+            return line.split(marker, 1)[1].split()[0]
+    raise RuntimeError("no presentation-pace trace row")
+
+
+def check_presentation_pace(executable: Path, temporary: Path) -> None:
+    """The quick choice writes two keys, reads them back, and admits Custom."""
+    root = temporary / "pace"
+    root.mkdir()
+    select_pace(executable, root, "smooth")
+    saved = (root / "video.ini").read_text(encoding="utf-8")
+    for expected in ("FrameLimit=display", "MotionSmoothing=interpolate"):
+        if expected not in saved:
+            raise RuntimeError(
+                f"Smooth did not persist {expected}; the quick choice moved "
+                "one key without the other")
+    if read_pace(executable, root) != "smooth":
+        raise RuntimeError("a fresh process did not read the pair back as Smooth")
+
+    # And back. Original is not merely "not Smooth": it has to write its own
+    # pair, or a player could never leave Smooth from this control.
+    select_pace(executable, root, "original")
+    saved = (root / "video.ini").read_text(encoding="utf-8")
+    for expected in ("FrameLimit=original", "MotionSmoothing=off"):
+        if expected not in saved:
+            raise RuntimeError(f"Original did not persist {expected}")
+    if read_pace(executable, root) != "original":
+        raise RuntimeError("a fresh process did not read the pair back as Original")
+
+    # A combination the quick choice has no name for must be reported as
+    # Custom rather than silently shown as one of the two named pairs -- and a
+    # numeric cap or display-margin is a perfectly good thing for a player to
+    # be on.
+    for limit in ("90", "display-margin", "40"):
+        custom = temporary / f"pace-custom-{limit}"
+        custom.mkdir()
+        (custom / "video.ini").write_text(
+            f"[Video]\nFrameLimit={limit}\nMotionSmoothing=interpolate\n",
+            encoding="utf-8")
+        if read_pace(executable, custom) != "custom":
+            raise RuntimeError(
+                f"FrameLimit={limit} was not reported as a custom pace")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("executable", type=Path, nargs="?")
@@ -109,6 +184,8 @@ def main() -> int:
         gamepad = temporary / "gamepad"
         gamepad.mkdir()
         select_240(executable, gamepad, "gamepad")
+
+        check_presentation_pace(executable, temporary)
 
         # Persisted-scale reload matrix. Each value is read by two independent
         # processes; malformed parsing or cumulative style state cannot hide
@@ -194,7 +271,9 @@ def main() -> int:
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
 
-    print("app UI input valid: keyboard, gamepad, stable UI-scale drag, reload, same-process Retry, and recovery passed")
+    print("app UI input valid: keyboard, gamepad, presentation-pace quick "
+          "choice, stable UI-scale drag, reload, same-process Retry, and "
+          "recovery passed")
     return 0
 
 

@@ -1785,11 +1785,23 @@ static void platform_surface_visibility_update(void) {
  * rather than failing quietly — a gate that drove MDKR_PRESENT_RATE and then
  * asserted a toggle took effect would otherwise pass by testing nothing.
  *
+ * ONE PSEUDO-KEY. `Presentation.Pace=original|smooth` is the settings panel's
+ * quick choice rather than a schema key, and it is here for the same reason
+ * every real key is: an automated run cannot press a radio button, but from
+ * mdkr_video_config_runtime_set_presentation_pace() onward the press and this
+ * are the same call. Routing it through that function rather than expanding it
+ * into two entries is what makes the arm test the quick choice -- including
+ * that its two writes are ONE transaction and reach ONE apply boundary -- and
+ * not an imitation of it that could keep passing after the real control broke.
+ *
  * Test-only and inert unless set.
  */
 #define MDKR_TEST_TOGGLE_MAX 64
+#define MDKR_TEST_TOGGLE_PACE_NAME "Presentation.Pace"
 
 typedef struct MdkrTestToggle {
+    /* MDKR_VIDEO_KEY_COUNT means the pseudo-key above; `value` then holds the
+     * pace name rather than a key value. */
     MdkrVideoKey key;
     char value[MDKR_VIDEO_NAME_MAX];
     uint64_t tick;
@@ -1849,14 +1861,31 @@ static void settings_toggle_lazy_init(void) {
         }
         memcpy(name, cursor, name_len);
         name[name_len] = '\0';
-        key = mdkr_video_key_from_name(name);
         tick = strtoull(at + 1, &tail, 10);
-        if (key == MDKR_VIDEO_KEY_COUNT || tail != entry_end) {
-            fprintf(stderr, "[SETTINGS-TOGGLE] entry \"%.*s\" names no setting "
-                            "or no tick; ignored\n",
-                    (int)(entry_end - cursor), cursor);
-            cursor = end != NULL ? end + 1 : entry_end;
-            continue;
+        if (strcmp(name, MDKR_TEST_TOGGLE_PACE_NAME) == 0) {
+            char pace[MDKR_VIDEO_NAME_MAX];
+            memcpy(pace, eq + 1, value_len);
+            pace[value_len] = '\0';
+            /* The sentinel the poll below reads as "this is the quick choice";
+             * `value` then carries the pace name rather than a key value. */
+            key = MDKR_VIDEO_KEY_COUNT;
+            if (mdkr_video_presentation_pace_from_name(pace) < 0 ||
+                tail != entry_end) {
+                fprintf(stderr, "[SETTINGS-TOGGLE] entry \"%.*s\" names no "
+                                "presentation pace or no tick; ignored\n",
+                        (int)(entry_end - cursor), cursor);
+                cursor = end != NULL ? end + 1 : entry_end;
+                continue;
+            }
+        } else {
+            key = mdkr_video_key_from_name(name);
+            if (key == MDKR_VIDEO_KEY_COUNT || tail != entry_end) {
+                fprintf(stderr, "[SETTINGS-TOGGLE] entry \"%.*s\" names no "
+                                "setting or no tick; ignored\n",
+                        (int)(entry_end - cursor), cursor);
+                cursor = end != NULL ? end + 1 : entry_end;
+                continue;
+            }
         }
         s_toggles[s_toggleCount].key = key;
         memcpy(s_toggles[s_toggleCount].value, eq + 1, value_len);
@@ -1883,14 +1912,24 @@ static void settings_toggle_poll(void) {
             continue;
         }
         s_toggles[i].fired = 1;
-        schema = mdkr_video_schema(s_toggles[i].key);
-        result = mdkr_video_config_runtime_set(s_toggles[i].key,
-                                               s_toggles[i].value);
+        if (s_toggles[i].key == MDKR_VIDEO_KEY_COUNT) {
+            schema = NULL;
+            result = mdkr_video_config_runtime_set_presentation_pace(
+                (MdkrPresentationPace)
+                    mdkr_video_presentation_pace_from_name(
+                        s_toggles[i].value));
+        } else {
+            schema = mdkr_video_schema(s_toggles[i].key);
+            result = mdkr_video_config_runtime_set(s_toggles[i].key,
+                                                   s_toggles[i].value);
+        }
         fprintf(stderr,
                 "[SETTINGS-TOGGLE] tick=%llu key=%s value=%s result=%d "
                 "applied=%d\n",
                 (unsigned long long)now,
-                schema != NULL ? schema->name : "?",
+                schema != NULL ? schema->name
+                               : (s_toggles[i].key == MDKR_VIDEO_KEY_COUNT
+                                      ? MDKR_TEST_TOGGLE_PACE_NAME : "?"),
                 s_toggles[i].value, (int)result,
                 mdkr_video_runtime_result_applied(result) ? 1 : 0);
         fflush(stderr);
@@ -3006,6 +3045,30 @@ static void present_pace_lazy_init(void) {
             s_presentEffectiveRate = 60u;
         }
         s_presentSoftwareDeadline = heldFrameDeadline;
+    } else if (s_presentKind == MDKR_PRESENT_DISPLAY_MARGIN) {
+        /*
+         * The one policy whose whole content is a SOFTWARE cadence strictly
+         * under the display's. `display` deliberately installs no limiter and
+         * lets the blocking queue set the pace; this one cannot do that,
+         * because the queue's pace IS the refresh and the point here is to
+         * finish before it. So the deadline grid is unconditional rather than
+         * inherited from heldFrameDeadline: it is the mechanism, not a
+         * fallback for held frames.
+         *
+         * The margin is applied to the SAME live refresh `display` follows,
+         * including the synthetic stand-in, so a headless run is deterministic
+         * for the same reason display's is. An unreported refresh on a real
+         * session leaves the rate at 0 and the branch below declines to build
+         * a grid, which is exactly plain `display` behaviour -- the honest
+         * answer when there is no number to sit under.
+         */
+        unsigned refresh = s_presentDisplayRate;
+        if (s_paceMode == PACE_SYNTH && refresh == 0u) {
+            refresh = 60u;
+        }
+        s_presentEffectiveRate =
+            mdkr_present_policy_display_margin_rate(refresh);
+        s_presentSoftwareDeadline = s_presentEffectiveRate != 0u;
     } else if (s_presentKind == MDKR_PRESENT_UNCAPPED &&
                s_paceMode == PACE_SYNTH) {
         /* Deterministic headless stand-in: 1 ms opportunities. Live uncapped
@@ -3059,8 +3122,29 @@ int platform_present_subloop_fields(void) {
  * cannot be reinterpreted at 144 Hz; the next target re-anchors at the next
  * call, which is one opportunity of phase and no drift.
  */
+/*
+ * What THIS policy's cadence resolves to on a display reporting `rate`.
+ *
+ * One function for the log row and the install below, so the row is a statement
+ * about the code that runs rather than a second opinion beside it. A numeric cap
+ * and Original keep whatever they already had: their cadence is not a property
+ * of the monitor.
+ */
+static unsigned present_pace_rate_for_display(unsigned rate) {
+    switch (s_presentKind) {
+        case MDKR_PRESENT_DISPLAY:
+        case MDKR_PRESENT_UNCAPPED:
+            return rate;
+        case MDKR_PRESENT_DISPLAY_MARGIN:
+            return mdkr_present_policy_display_margin_rate(rate);
+        default:
+            return s_presentEffectiveRate;
+    }
+}
+
 static void present_pace_note_display_changed(void) {
     unsigned rate;
+    unsigned resolved;
 
     if (s_presentActive < 0) {
         /* The policy has not been latched yet, so the lazy init that latches
@@ -3071,11 +3155,22 @@ static void present_pace_note_display_changed(void) {
     if (rate == s_presentDisplayRate) {
         return;
     }
+    resolved = present_pace_rate_for_display(rate);
+    /*
+     * `effectiveRate` is what the pacer is running on at this instant;
+     * `resolvedRate` is what the latched policy's cadence WORKS OUT TO on the
+     * new display. A realtime run installs the second as the first immediately
+     * below. A synthetic run deliberately does not -- its effective rate is a
+     * deterministic divisor, not a measurement -- so publishing both is what
+     * lets a headless gate check the derivation without making the run depend
+     * on which monitor it happened to be on.
+     */
     fprintf(stderr,
             "[PRESENT-DISPLAY] event=display-changed oldHz=%u newHz=%u "
-            "policy=%s effectiveRate=%u\n",
+            "policy=%s effectiveRate=%u resolvedRate=%u\n",
             s_presentDisplayRate, rate,
-            present_sched_present_policy_name(), s_presentEffectiveRate);
+            present_sched_present_policy_name(), s_presentEffectiveRate,
+            resolved);
     s_presentDisplayRate = rate;
     /*
      * Synthetic pacing does not sleep: s_presentEffectiveRate is the DIVISOR of
@@ -3087,11 +3182,16 @@ static void present_pace_note_display_changed(void) {
      */
     if (s_paceMode == PACE_REALTIME) {
         if (s_presentActive && rate != 0u &&
-            (s_presentKind == MDKR_PRESENT_DISPLAY ||
-             s_presentKind == MDKR_PRESENT_UNCAPPED)) {
-            /* Only the policies whose cadence IS the display's. A numeric
-             * cap's effective rate is the player's number and must not move. */
-            s_presentEffectiveRate = rate;
+            s_presentKind != MDKR_PRESENT_CAPPED &&
+            s_presentKind != MDKR_PRESENT_ORIGINAL) {
+            /* Only the policies whose cadence is DERIVED FROM the display's --
+             * equal to it for display/uncapped, a fixed step under it for
+             * display-margin. A numeric cap's effective rate is the player's
+             * number and must not move. */
+            s_presentEffectiveRate = resolved;
+            if (s_presentKind == MDKR_PRESENT_DISPLAY_MARGIN) {
+                s_presentSoftwareDeadline = s_presentEffectiveRate != 0u;
+            }
         }
         if (s_presentSoftwareDeadline && s_presentEffectiveRate != 0u) {
             (void)mdkr_present_deadline_init(

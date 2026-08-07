@@ -84,6 +84,46 @@ bool present_sched_internal_replay_test_enabled(void) {
     return s_internal_replay_test != 0;
 }
 
+/*
+ * Reduce the requested policy to one this PLATFORM can actually serve.
+ *
+ * Native serves every policy, so this is a no-op there and the compiler drops
+ * it. The browser has exactly one presentation clock -- requestAnimationFrame
+ * -- and cannot be asked for anything else:
+ *
+ *   - `uncapped` would mean a native-style unbounded swapchain, which no build
+ *     here has;
+ *   - `display-margin` would mean a software grid a fixed number of Hz UNDER
+ *     the refresh, and that needs a refresh NUMBER to subtract from. The
+ *     browser never reports one (platform_present_display_rate returns 0 there
+ *     by design; rAF is measured, not queried), so there is nothing to sit
+ *     under. Sitting under a rate you had to guess is worse than following the
+ *     one the browser is actually retiring presents on.
+ *
+ * Both therefore resolve to `display`, and both say so on stderr rather than
+ * silently: a config shared from a native machine stays loadable, and the run
+ * states plainly which policy it is really on. The REQUESTED policy is kept
+ * untouched so the report and the launcher still show the player's choice.
+ */
+static void present_policy_resolve_for_platform(void) {
+#ifdef __EMSCRIPTEN__
+    const char *requested = NULL;
+
+    if (s_present_policy.kind == MDKR_PRESENT_UNCAPPED) {
+        requested = "uncapped";
+    } else if (s_present_policy.kind == MDKR_PRESENT_DISPLAY_MARGIN) {
+        requested = "display-margin";
+    }
+    if (requested != NULL) {
+        s_present_policy.kind = MDKR_PRESENT_DISPLAY;
+        s_present_policy.rate = 0u;
+        fprintf(stderr,
+                "[PRESENT-POLICY] platform=web requested=%s "
+                "effective=display reason=raf-ceiling\n", requested);
+    }
+#endif
+}
+
 static void present_policy_lazy_init(void) {
     const char *value;
 
@@ -97,18 +137,7 @@ static void present_policy_lazy_init(void) {
         s_present_requested_policy.rate = 0u;
     }
     s_present_policy = s_present_requested_policy;
-#ifdef __EMSCRIPTEN__
-    if (s_present_policy.kind == MDKR_PRESENT_UNCAPPED) {
-        /* rAF is the browser's presentation ceiling. `uncapped` can arrive
-         * from a shared config file or diagnostic env, but must never imply a
-         * native-style unbounded swapchain in this build. */
-        s_present_policy.kind = MDKR_PRESENT_DISPLAY;
-        s_present_policy.rate = 0u;
-        fprintf(stderr,
-                "[PRESENT-POLICY] platform=web requested=uncapped "
-                "effective=display reason=raf-ceiling\n");
-    }
-#endif
+    present_policy_resolve_for_platform();
     s_present_policy_ready = 1;
 }
 
@@ -165,6 +194,7 @@ const char *present_sched_present_policy_name(void) {
     switch (s_present_policy.kind) {
         case MDKR_PRESENT_CAPPED: return "capped";
         case MDKR_PRESENT_DISPLAY: return "display";
+        case MDKR_PRESENT_DISPLAY_MARGIN: return "display-margin";
         case MDKR_PRESENT_UNCAPPED: return "uncapped";
         case MDKR_PRESENT_ORIGINAL:
         default: return "original";
@@ -176,6 +206,7 @@ const char *present_sched_present_requested_policy_name(void) {
     switch (s_present_requested_policy.kind) {
         case MDKR_PRESENT_CAPPED: return "capped";
         case MDKR_PRESENT_DISPLAY: return "display";
+        case MDKR_PRESENT_DISPLAY_MARGIN: return "display-margin";
         case MDKR_PRESENT_UNCAPPED: return "uncapped";
         case MDKR_PRESENT_ORIGINAL:
         default: return "original";
@@ -249,15 +280,7 @@ void mdkr_present_set_frame_limit(const char *value) {
         s_present_requested_policy.rate = 0u;
     }
     s_present_policy = s_present_requested_policy;
-#ifdef __EMSCRIPTEN__
-    if (s_present_policy.kind == MDKR_PRESENT_UNCAPPED) {
-        s_present_policy.kind = MDKR_PRESENT_DISPLAY;
-        s_present_policy.rate = 0u;
-        fprintf(stderr,
-                "[PRESENT-POLICY] platform=web requested=uncapped "
-                "effective=display reason=raf-ceiling\n");
-    }
-#endif
+    present_policy_resolve_for_platform();
     s_present_policy_ready = 1;
 }
 

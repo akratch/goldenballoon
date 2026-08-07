@@ -50,6 +50,12 @@ int Settings_smokeFrameLimitDownSteps(const char *from, const char *to);
 // access is restored in the same process.
 bool Settings_smokeFrameLimitRetryCenter(int *x, int *y);
 
+// Center of a rendered Presentation pace radio button ("original" or "smooth")
+// in logical window coordinates. Returns false until that control has been
+// drawn, and for "custom", which is a reading of the two underlying keys and
+// has no widget. Smoke-only observation; it never mutates UI state.
+bool Settings_smokePresentationPaceCenter(const char *pace, int *x, int *y);
+
 // Bounds of the rendered UI-scale slider in logical window coordinates.
 // Smoke-only observation used to drive a real held-pointer drag and prove the
 // widget does not move underneath that pointer before the edit is committed.

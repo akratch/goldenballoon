@@ -199,31 +199,49 @@ int main() {
            "restored surface resumes immediately");
 
     using SmokeMode = AppUiSmokeInputMode;
-    expect(AppUi_validateSmokeInput(nullptr, nullptr, nullptr, nullptr) ==
-               SmokeMode::Disabled,
+    expect(AppUi_validateSmokeInput(nullptr, nullptr, nullptr, nullptr,
+                                    nullptr) == SmokeMode::Disabled,
            "no synthetic-input environment leaves smoke input disabled");
     expect(AppUi_validateSmokeInput("24", "240", "gamepad",
-                                    "mdkr64-app-ui-input-v1") ==
+                                    "mdkr64-app-ui-input-v1", nullptr) ==
                SmokeMode::Gamepad,
            "complete versioned gamepad contract is accepted");
     expect(AppUi_validateSmokeInput("18", "240", "keyboard",
-                                    "mdkr64-app-ui-input-v1") ==
+                                    "mdkr64-app-ui-input-v1", nullptr) ==
                SmokeMode::Keyboard,
            "complete versioned keyboard contract is accepted");
     expect(AppUi_validateSmokeInput(nullptr, "240", "gamepad",
-                                    "mdkr64-app-ui-input-v1") ==
+                                    "mdkr64-app-ui-input-v1", nullptr) ==
                SmokeMode::Invalid,
            "missing smoke frame contract is rejected");
-    expect(AppUi_validateSmokeInput("24", "240", "gamepad", nullptr) ==
-               SmokeMode::Invalid,
+    expect(AppUi_validateSmokeInput("24", "240", "gamepad", nullptr,
+                                    nullptr) == SmokeMode::Invalid,
            "missing authorization token is rejected");
-    expect(AppUi_validateSmokeInput("24", "240", "gamepad", "stale") ==
-               SmokeMode::Invalid,
+    expect(AppUi_validateSmokeInput("24", "240", "gamepad", "stale",
+                                    nullptr) == SmokeMode::Invalid,
            "stale authorization token is rejected");
     expect(AppUi_validateSmokeInput("24", nullptr, "gamepad",
-                                    "mdkr64-app-ui-input-v1") ==
+                                    "mdkr64-app-ui-input-v1", nullptr) ==
                SmokeMode::Invalid,
            "partial controller environment is rejected");
+    // The presentation-pace script is the second scripted selection, and the
+    // contract has to be exactly as strict about it as about the first.
+    expect(AppUi_validateSmokeInput("10", nullptr, "keyboard",
+                                    "mdkr64-app-ui-input-v1", "smooth") ==
+               SmokeMode::Keyboard,
+           "complete versioned presentation-pace contract is accepted");
+    expect(AppUi_validateSmokeInput("10", nullptr, "keyboard",
+                                    "mdkr64-app-ui-input-v1", "custom") ==
+               SmokeMode::Invalid,
+           "custom is not a pace a script may select");
+    expect(AppUi_validateSmokeInput("10", "240", "keyboard",
+                                    "mdkr64-app-ui-input-v1", "smooth") ==
+               SmokeMode::Invalid,
+           "two scripted selections in one run are rejected");
+    expect(AppUi_validateSmokeInput("10", nullptr, nullptr,
+                                    "mdkr64-app-ui-input-v1", "smooth") ==
+               SmokeMode::Invalid,
+           "a pace selection without an input mode is rejected");
 
     if (failures) {
         std::printf("%d app UI policy failure(s)\n", failures);

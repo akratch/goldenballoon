@@ -1,5 +1,39 @@
 # Golden Balloon — unreleased
 
+## One switch for the modern picture
+
+The smooth, modern version of Diddy Kong Racing has been in here for a while,
+but you had to know to build it: set Frame limit to Match Display, then set
+Motion smoothing to Interpolated, in two different rows. Get one of them wrong
+and you got half of it.
+
+There is one control for it now, at the top of Frame Rate & Motion.
+**Presentation pace: Smooth** gives you the whole thing — the game presents on
+your display's own schedule and draws pictures in between the ones it makes, so
+the world glides instead of stepping. **Original** puts it back exactly as the
+game was written: each picture, once.
+
+It applies while you are playing, so you can try both on the same corner. And
+either way the game itself is untouched — the same speed, the same handling,
+the same lap times, the same music, the same saves. Only the picture changes.
+
+The two settings underneath are still there, and still yours. If you have them
+on some other combination, the panel simply says **Custom** and leaves them
+alone.
+
+## Two new frame limits
+
+**Just Under Display** is for a monitor with a variable refresh rate. Those
+displays adapt to the game, but only while the game keeps arriving a little
+early; sit exactly on the top of the range and the odd late frame drops the
+display back to a fixed refresh, which is the stutter you were trying to avoid.
+This paces a few Hz below the top of the range and stays inside it. Drag the
+game to a different monitor and it reads the new rate.
+
+**40 Hz** is for a handheld. On a display that runs at 40 or 120 Hz, every
+picture is held for exactly the same length of time at 40, so the motion is
+even — and it is a good deal easier on the battery than 60.
+
 ## The camera stays out of walls
 
 Take a corner tight against a rock face and the camera used to go into the

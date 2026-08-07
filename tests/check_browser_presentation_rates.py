@@ -5,7 +5,7 @@ The real wasm/WebGPU build runs in Chromium. A shell-owned rAF seam injects
 bounded timestamps while still yielding to the browser event loop, allowing
 display-144, capped-60-on-144, irregular display, and a shared native
 ``uncapped`` config to be checked independently of the CI monitor. Browser
-uncapped must resolve explicitly to display/rAF rather than claiming an
+uncapped and display-margin must resolve explicitly to display/rAF rather than claiming an
 unbounded native swapchain. Every non-Original arm sends the raw public
 interpolation request and proves production emits immutable intermediate images.
 """
@@ -36,12 +36,16 @@ from check_browser_runtime import (
     wait_value,
 )
 from harness_utils import (completed_tick_conservation,
-                           parse_last as harness_parse_last, present_mode_rows)
+                           parse_last as harness_parse_last,
+                           present_mode_rows, present_policy_rows)
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
 ROM_BYTES = 12 * 1024 * 1024
 TICKS = 60
+# Policies the browser cannot serve and coerces to `display`, each announcing
+# itself on a [PRESENT-POLICY] row.
+BROWSER_COERCED_POLICIES = ("uncapped", "display-margin")
 
 FATAL_MARKERS = (
     "[CRASH]", "[FATAL]", "memory access out of bounds", "RuntimeError:",
@@ -169,7 +173,8 @@ def run_arm(server: OverlayServer, chrome_path: Path, rom: Path,
             require(
                 isinstance(browser_choices, list)
                 and "display" in browser_choices
-                and "uncapped" not in browser_choices,
+                and not any(policy in browser_choices
+                            for policy in BROWSER_COERCED_POLICIES),
                 f"browser frame-rate choices are dishonest: {browser_choices}",
             )
             browser_labels = cdp.evaluate(
@@ -436,13 +441,21 @@ def compare(arm: Arm, result: Result, baseline: Result) -> list[str]:
     if not any(row.get("platform") == "web"
                and row.get("reason") == "raf-ceiling" for row in mode_rows):
         failures.append(f"{arm.name}: no explicit browser rAF present-mode row")
-    if arm.policy == "uncapped" and not any(
-            row.get("requested") == "uncapped"
-            and row.get("effective") == "display"
-            and row.get("reason") == "raf-ceiling" for row in mode_rows):
-        failures.append(
-            "web-uncapped: native-style request was not explicitly mapped "
-            "to display")
+    # The PACER's coercion, which is a different row from the swapchain's mode
+    # above: `uncapped` has no unbounded browser swapchain to ask for, and
+    # `display-margin` has no reported refresh to sit under. Both must resolve
+    # to display and both must SAY so, so a config shared from a native machine
+    # stays loadable while the run states which policy it is really on.
+    if arm.policy in BROWSER_COERCED_POLICIES:
+        policy_rows = present_policy_rows("\n".join(result.console))
+        if not any(row.get("platform") == "web"
+                   and row.get("requested") == arm.policy
+                   and row.get("effective") == "display"
+                   and row.get("reason") == "raf-ceiling"
+                   for row in policy_rows):
+            failures.append(
+                f"{arm.name}: the native-only {arm.policy} request was not "
+                f"explicitly mapped to display (saw {policy_rows})")
     return failures
 
 
@@ -501,6 +514,12 @@ def main() -> int:
         Arm("web-display-144", "display", frame_144, TICKS * 144 // 30, 2, 2),
         Arm("web-cap-60-on-144", "60", frame_144, TICKS * 2, 1, 1, 60, 60),
         Arm("web-uncapped", "uncapped", frame_144, TICKS * 144 // 30, 2, 3),
+        # display-margin has the same shape of answer for a different reason:
+        # the browser reports no refresh to subtract a margin from, so it paces
+        # exactly as `display` does while the requested policy stays the
+        # player's.
+        Arm("web-display-margin", "display-margin", frame_144,
+            TICKS * 144 // 30, 2, 4),
         Arm("web-irregular", "display",
             [8_000_000, 13_000_000, 6_000_000,
              15_000_000, 11_000_000, 9_000_000],

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Exact arbitrary-rate host pacing must remain gameplay-neutral.
 
-Runs the same fixed-tick route at original, common numeric caps, and the
+Runs the same fixed-tick route at original, common numeric caps, the
+display-derived policies, and the
 deterministic headless stand-in for uncapped presentation. Original cadence is
 kept on the GL oracle lane, while Enhanced cadence is forced through WebGPU at
 original/30/45/60/120/uncapped. Every arm must produce the exact rational
@@ -33,6 +34,11 @@ SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
 TICKS = 600
 HASH_VERSION = "3"
 UNCAPPED_SYNTHETIC_RATE = 1000
+# MDKR_PRESENT_DISPLAY_MARGIN_HZ (platform/pacing_policy.h). Duplicated as a
+# number rather than derived, deliberately: this gate is the control on that
+# constant, and a gate that read it from the source it is checking would agree
+# with any value.
+DISPLAY_MARGIN_HZ = 3
 
 
 
@@ -367,10 +373,29 @@ def compare_arm(label: str, result: Result, baseline: Result,
     return failures
 
 
+def resolved_rate(result: Result, tick_rate: int) -> int | None:
+    """The cadence a display-following arm actually ran at, from its own count.
+
+    Neither `display` nor `display-margin` carries a number the gate could
+    assert against: both are derived from whatever monitor the run happened to
+    be on. What IS fixed is the identity presents == TICKS * rate / tick_rate,
+    so the rate is recovered from the run and everything downstream is drawn
+    against the grid it really used. Returns None when the count does not
+    resolve to a whole supported rate, which is itself a failure.
+    """
+    presents = result.summary.get("presents", 0)
+    numerator = presents * tick_rate
+    if presents < TICKS or numerator % TICKS != 0:
+        return None
+    rate = numerator // TICKS
+    return rate if 30 <= rate <= 1000 else None
+
+
 def compare_display_arm(label: str, result: Result,
                         baseline: Result,
                         tick_rate: int = 30,
-                        exact_surface: bool = True) -> list[str]:
+                        exact_surface: bool = True,
+                        policy_kind: int = 2) -> list[str]:
     """Validate native display pacing without assuming the monitor refresh.
 
     tick_rate is the authored cadence of the source under test: 30 for an NTSC
@@ -378,21 +403,20 @@ def compare_display_arm(label: str, result: Result,
     has to divide by the cadence the run actually used. Assuming 30 reports a
     50 Hz source's refresh 6/5 too high and then draws every downstream
     expectation against a grid the run never ran on.
+
+    `policy_kind` is 2 for `display` and 4 for `display-margin`: both derive
+    their cadence from the monitor, so both are checked the same way, but they
+    must publish themselves as the distinct policies they are.
     """
-    presents = result.summary.get("presents", 0)
-    numerator = presents * tick_rate
-    if presents < TICKS or numerator % TICKS != 0:
+    rate = resolved_rate(result, tick_rate)
+    if rate is None:
         return list(result.tearing) + [
-            f"{label}: display opportunities={presents} do not resolve to an "
-            f"integral supported refresh at or above the authored {tick_rate} "
-            "Hz cadence"
+            f"{label}: display opportunities="
+            f"{result.summary.get('presents')} do not resolve to a whole "
+            f"supported rate at or above the authored {tick_rate} Hz cadence"
         ]
-    rate = numerator // TICKS
-    if rate < 30 or rate > 1000:
-        return list(result.tearing) + [
-            f"{label}: resolved display rate {rate} is outside 30..1000 Hz"]
     return compare_arm(
-        label, result, baseline, rate, tick_rate, 2, 0,
+        label, result, baseline, rate, tick_rate, policy_kind, 0,
         exact_surface=exact_surface)
 
 
@@ -443,6 +467,35 @@ def main() -> int:
                 f"opportunities / {gl_display.summary.get('surfaceupdates')} "
                 "authored surface updates")
 
+            # display-margin: the same live refresh `display` follows, minus a
+            # fixed step. It has no number of its own, so the ONLY way to gate
+            # it is against the display arm that ran on the same monitor in the
+            # same session -- which is exactly the relationship a player is
+            # choosing when they pick it.
+            gl_margin = run(binary, rom, root, "ntsc-display-margin",
+                            "display-margin", args.timeout, args.verbose)
+            failures.extend(compare_display_arm(
+                "ntsc-display-margin", gl_margin, ntsc_base, policy_kind=4))
+            display_rate = resolved_rate(gl_display, 30)
+            margin_rate = resolved_rate(gl_margin, 30)
+            if display_rate is None or margin_rate is None:
+                failures.append(
+                    "ntsc-display-margin: could not resolve both the display "
+                    f"and display-margin cadences (display={display_rate}, "
+                    f"margin={margin_rate})")
+            else:
+                expected_margin = max(display_rate - DISPLAY_MARGIN_HZ, 30)
+                if margin_rate != expected_margin:
+                    failures.append(
+                        f"ntsc-display-margin: paced at {margin_rate} Hz "
+                        f"against a {display_rate} Hz display, expected "
+                        f"{expected_margin}")
+                notes.append(
+                    f"ntsc-display-margin: {margin_rate} Hz under a "
+                    f"{display_rate} Hz display "
+                    f"/ {gl_margin.summary.get('presents')} host "
+                    "opportunities")
+
             webgpu_display = run(
                 binary, rom, root, "ntsc-webgpu-display", "display",
                 args.timeout, args.verbose, renderer="webgpu")
@@ -457,6 +510,12 @@ def main() -> int:
 
             for label, policy, rate in (
                     ("ntsc-30", "30", 30),
+                    # The battery-friendly handheld cap. Nothing about the
+                    # deadline grid is special-cased for it -- that is the
+                    # claim: an arbitrary rate is an arbitrary rate, and 40 on
+                    # a 30 Hz cadence is a 4:3 ratio that no whole number of
+                    # ticks divides.
+                    ("ntsc-40", "40", 40),
                     ("ntsc-60", "60", 60),
                     ("ntsc-90", "90", 90),
                     ("ntsc-120", "120", 120),
