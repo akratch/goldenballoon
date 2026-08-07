@@ -684,13 +684,20 @@ void level_load(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicl
     gMapId = levelId;
     for (var_s0 = 0; var_s0 < 7; var_s0++) {
         if ((s32) gCurrentLevelHeader->unk74[var_s0] != -1) {
+#ifdef NATIVE_PORT
+            /* Capture the sub-asset index before the slot is overwritten with the
+             * resolved pointer: the swap below needs its byte length to bound the
+             * entry walk. */
+            s32 miscIndex = (s32) gCurrentLevelHeader->unk74[var_s0];
+#endif
             gCurrentLevelHeader->unk74[var_s0] =
                 DKR_TOK(get_misc_asset((s32) gCurrentLevelHeader->unk74[var_s0]));
 #ifdef NATIVE_PORT
             /* MISC section is punted at load (heterogeneous); this LevelHeader_70
              * blob is still big-endian — normalize it before func_8007F1E8 reads
              * its count/entry fields. Deduped against per-level re-swap. */
-            asset_swap_misc_lightdata(DKR_PTR(void, gCurrentLevelHeader->unk74[var_s0]));
+            asset_swap_misc_lightdata(DKR_PTR(void, gCurrentLevelHeader->unk74[var_s0]),
+                                      (u32) get_misc_asset_size(miscIndex));
 #endif
             func_8007F1E8(DKR_PTR(LevelHeader_70, gCurrentLevelHeader->unk74[var_s0]));
         }

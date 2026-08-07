@@ -3934,9 +3934,20 @@ static void platform_frame_sync_impl(int swap, int count_present) {
              * `legacy` to remove the guards); maxCandidates is the write index
              * high-water mark, so maxCandidates > cap means the cap was stepped
              * over -- which is the whole assertion. */
-            printf("[COLL] maxCandidates=%d truncated=%ld cap=%d\n",
+            extern long mdkr_coll_canary_trips(void);
+            extern int  mdkr_coll_canary_armed(void);
+            /* `canary` is the MDKR_COLLALLOC control: -1 when unarmed (the
+             * default build allocates exactly 500 and has no canary slot), and
+             * otherwise the number of generate_collision_candidates() calls that
+             * wrote the slot at index == cap. That slot is the FIRST one a
+             * missing or mis-ordered bounds guard touches and one no correct path
+             * can reach, so a nonzero count is a guard regression -- the evidence
+             * MDKR_COLLCAP alone cannot produce, because it leaves the boundary
+             * inside a full-size allocation. */
+            printf("[COLL] maxCandidates=%d truncated=%ld cap=%d canary=%ld\n",
                    mdkr_coll_max_candidates(), mdkr_coll_truncations(),
-                   mdkr_coll_cap(500));
+                   mdkr_coll_cap(500),
+                   mdkr_coll_canary_armed() ? mdkr_coll_canary_trips() : -1L);
         }
         /* Segment-overlap list high-water marks. These two lists are written
          * through a bare pointer by get_inside_segment_count_x[y]z(), so the

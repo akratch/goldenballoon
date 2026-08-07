@@ -2820,6 +2820,13 @@ static int dkr_clip_near(const struct LoadedVertex *in, int n,
     int i;
 
     if (dkr_clip_mode_get() == 2) { /* off — reproduce the pre-clip behaviour */
+        /* `out` is a DKR_CLIP_MAX_VERTS array at the one call site, and the
+         * clipping path below bounds every write against that. This arm must
+         * carry the same bound rather than trusting `n`: the only reason it is
+         * safe today is that its single caller passes the literal 3. */
+        if (n > DKR_CLIP_MAX_VERTS) {
+            n = DKR_CLIP_MAX_VERTS;
+        }
         for (i = 0; i < n; i++) out[i] = in[i];
         return n;
     }

@@ -219,6 +219,7 @@
 #include "menu.h"
 #include "objects.h"
 #include "racer.h"
+#include "runtime_contracts.h"
 #include "taj_mod.h"
 #include "thread3_main.h"
 #include "mdkr_trace.h"
@@ -597,6 +598,31 @@ static void mdkr_adv_init(void) {
 /* ------------------------------------------------------------------- dump */
 
 /**
+ * Is course flag `index` set for the current course?  Returns -1 when the flag
+ * cannot be read (no settings, no flag array, or an index outside the 16-bit
+ * course-flag field).
+ *
+ * This is the ONE spelling of the flag in this file.  The game-side authority is
+ * mdkr_course_flag() (game/src/runtime_contracts.c), which rejects index < 0 or
+ * >= 16 and shifts a UINT32_C(0x10000); obj_loop_door(), obj_loop_goldenballoon()
+ * and the trigger loop all go through it.  Spelling the shift out again here got
+ * the bound wrong: `0x10000 << doorID` with only `doorID >= 0` checked is signed
+ * overflow at doorID == 15 (the value is 1 << 31, and 0x10000 is a signed int)
+ * and shift-count UB at doorID >= 16.  doorID is an s8 from level data that
+ * func_8000CC20() can also assign at runtime from a 16-slot pool, so 15 is
+ * reachable.  Routing both callers through the contract keeps the diagnostic and
+ * the simulation reading the same bit.
+ */
+static s32 mdkr_adv_course_flag_set(Settings *settings, s32 index) {
+    u32 flag;
+    if (settings == NULL || settings->courseFlagsPtr == NULL ||
+        !mdkr_course_flag(index, &flag)) {
+        return -1;
+    }
+    return (settings->courseFlagsPtr[settings->courseId] & flag) != 0;
+}
+
+/**
  * Print the level's exit / door / balloon / NPC objects.
  *
  * All LevelObjectEntry_Exit, _Door and _GoldenBalloon body fields are single
@@ -636,9 +662,7 @@ static void mdkr_adv_dump_level(s32 levelId) {
                        (int) obj->behaviorId, (int) dr->doorID, (int) dr->balloonCount, (int) dr->doorType,
                        (int) dr->radius, (int) dr->textID, (int) dr->keyID, (int) entry->levelID,
                        (int) entry->localBalloons, (int) entry->common.objectID,
-                       (settings != NULL && dr->doorID >= 0)
-                           ? ((settings->courseFlagsPtr[settings->courseId] & (0x10000 << dr->doorID)) != 0)
-                           : -1);
+                       mdkr_adv_course_flag_set(settings, dr->doorID));
             nDoor++;
         } else if (obj->behaviorId == BHV_GOLDEN_BALLOON) {
             LevelObjectEntry_GoldenBalloon *entry = &obj->level_entry->goldenBalloon;
@@ -705,10 +729,7 @@ static s32 mdkr_adv_slot_for(s32 levelId) {
 /* A golden balloon is collected when obj_loop_goldenballoon has set its bit in
  * courseFlagsPtr[courseId] -- the same flag the door check reads. */
 static s32 mdkr_adv_balloon_collected(Settings *settings, s32 balloonID) {
-    if (settings == NULL || settings->courseFlagsPtr == NULL || balloonID < 0 || balloonID > 14) {
-        return 0;
-    }
-    return (settings->courseFlagsPtr[settings->courseId] & (0x10000 << balloonID)) != 0;
+    return mdkr_adv_course_flag_set(settings, balloonID) > 0;
 }
 
 /**

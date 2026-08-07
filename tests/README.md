@@ -2451,12 +2451,15 @@ MDKR_AUDIO=0 python3 tests/check_collision_headroom.py -v      # ~3 min
 
 Three things, in order:
 
-1. **Guard presence** — a static source check that the `j >= mdkr_coll_cap
-   (MAX_COLLISION_CANDIDATES)) { goto out; }` text is still present at both
-   insert sites in `game/src/hasm/collision.c` (the segment insert and the
-   facet insert). If wave "boundsweep"'s fix ever regresses to the ROM's bare
+1. **Guard presence and ORDER** — a static source check that the
+   `j >= mdkr_coll_cap(MAX_COLLISION_CANDIDATES)) { goto out; }` text is still
+   present at both insert sites in `game/src/hasm/collision.c` (the segment
+   insert and the facet insert), *and* that each guard sits above the store it
+   guards. If wave "boundsweep"'s fix ever regresses to the ROM's bare
    `j == MAX_COLLISION_CANDIDATES` equality test, this fails before anything
-   else runs.
+   else runs. Presence alone is not the property: the facet insert once carried
+   its pre-check *below* its own store, which lets the segment insert hand it
+   `j == cap` and puts one element at index `cap`.
 2. **Per-level sweep** — one `MDKR_AUTOPILOT` run per level, all ten boss
    levels (`ASSET_MISC_BOSS_TRACKS_IDS` = 38, 46, 40, 53, 1, 52, 41, 54, 37, 55)
    at 13000 frames plus Ancient Lake (track 5, an ordinary race) at 6500,
@@ -2473,6 +2476,16 @@ Three things, in order:
    that the run truncates, then evaluates the SAME "truncated must be 0" rule
    step 2 applies against this forced arm and requires it to report a
    failure — proof the sweep's assertion is not vacuous.
+4. **Allocation-lowering control** — `MDKR_COLLALLOC=1 MDKR_COLLCAP=150` on the
+   same route. `MDKR_COLLCAP` alone moves the boundary *inside* a full-size
+   500-entry allocation, so a store at index `cap` is a real element of a real
+   array and nothing reports it — which is why the boundary control ran green
+   while the facet insert's guard sat below its store. `MDKR_COLLALLOC=1` sizes
+   the allocation to the effective cap plus one canary element and arms the
+   canary at index `cap`: the first slot a missing or mis-ordered guard writes,
+   and one no correct path can reach. `[COLL] canary=` must be 0 (`-1` means
+   unarmed, which is itself a failure in this arm). Verified to discriminate:
+   `canary=1` on a build with the facet guard moved back below its store.
 
 Measured baseline (this binary, `MDKR_AUTOPILOT`, one run per level):
 

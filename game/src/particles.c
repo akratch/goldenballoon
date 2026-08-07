@@ -1,5 +1,6 @@
 #include "particles.h"
 #include "asset_loading.h"
+#include "asset_swap.h"
 #include "camera.h"
 #include "libc/math.h"
 #include "math_util.h"
@@ -329,9 +330,17 @@ void init_particle_assets(void) {
                 /* NATIVE_PORT: colourLoop is a 4-byte slot (see particles.h), so
                  * store the arena pointer's low 32 bits; PARTICLE_COLOUR_LOOP
                  * reconstructs it. */
-                gParticleBehavioursAssetTable[i]->colourLoop =
-                    DKR_TOK(get_misc_asset(
-                        (s32) gParticleBehavioursAssetTable[i]->colourLoop));
+                s32 loopIndex = (s32) gParticleBehavioursAssetTable[i]->colourLoop;
+                gParticleBehavioursAssetTable[i]->colourLoop = DKR_TOK(get_misc_asset(loopIndex));
+                /* ASSET_MISC is punted at load, so this sub-asset is still
+                 * big-endian: numEntries would read as 0x04000000 and the
+                 * `colourIndex >= numEntries` bound in the two spawn paths
+                 * (spawn_line_particle / spawn_particle) would never fire,
+                 * letting colourIndex walk off the blob 8 bytes per particle.
+                 * Deduped against the LevelHeader_70 view of the same blob. */
+                asset_swap_misc_colourloop(
+                    DKR_PTR(void, gParticleBehavioursAssetTable[i]->colourLoop),
+                    (u32) get_misc_asset_size(loopIndex));
             }
         }
         mempool_free(rawTable);

@@ -176,8 +176,33 @@ void asset_swap_object_animation(void *data, uint32_t size, uint32_t numAnimated
  * level and re-fetches the same offsets, so this guards against double-swap by
  * remembering every blob pointer it has already normalized (no-op on a repeat).
  * No-op on a big-endian host and for blob==NULL.
+ *
+ * @param blob  the raw sub-asset bytes.
+ * @param size  byte length of the sub-asset (get_misc_asset_size), which bounds
+ *              the entry walk; 0 means "unknown", i.e. trust the count.
  */
-void asset_swap_misc_lightdata(void *blob);
+void asset_swap_misc_lightdata(void *blob, uint32_t size);
+
+/**
+ * In-place BE->host swap of ONE ColorLoopEntry[] sub-asset, resolved from
+ * ParticleBehaviour.colourLoop (particles.c) through get_misc_asset().
+ *
+ * The reader is `if (emitter->colourIndex >= colourLoop->numEntries)
+ * emitter->colourIndex = 0;` followed by `colourLoop[colourIndex + 2].rgba`.
+ * Left big-endian, a true numEntries of 4 decodes as 0x04000000, the bound never
+ * fires, and colourIndex walks 8 bytes per spawned particle off the end of the
+ * blob (previously recorded as an unfixed residual in docs/asset_swap_notes.md).
+ * Only `numEntries` needs normalizing; the RGBA fields are bytes.
+ *
+ * Sub-asset 58 is ALSO read as a LevelHeader_70, so this shares one
+ * normalization and one dedup registry with asset_swap_misc_lightdata() -- see
+ * the field-by-field argument above misc_lh70_normalize() in asset_swap.c for
+ * why one pass satisfies both views regardless of which consumer arrives first.
+ *
+ * @param blob  the raw sub-asset bytes.
+ * @param size  byte length of the sub-asset (get_misc_asset_size).
+ */
+void asset_swap_misc_colourloop(void *blob, uint32_t size);
 
 /**
  * In-place BE->host swap of ONE PulsatingLightData sub-asset fetched from the

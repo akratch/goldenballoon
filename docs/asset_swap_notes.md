@@ -534,31 +534,43 @@ the pre-fix denormals unambiguously were not.
 
 ---
 
-## Residual risks (found by the audit, deliberately NOT fixed)
+## Residual risks (found by the audit)
 
-- **Colour-loop / `LevelHeader_70` aliasing.** `ParticleBehaviour.colourLoop`
-  resolves to MISC sub-assets 58/59/60 and is read as `ColorLoopEntry[]`
-  (`s32 numEntries` + RGBA, 8-byte stride). Left big-endian, `numEntries`
-  decodes to `0x04000000` instead of 4, defeating the
-  `colourIndex >= numEntries` bound before `colourLoop[colourIndex + 2]` — a
-  potential out-of-bounds read, confirmed against the ROM. **But** sub-asset 58
-  is *also* read as a `LevelHeader_70` by `game_ui.c` (`ASSET_MISC_58`) and
-  normalized by `asset_swap_misc_lightdata()`, and the two struct shapes
-  disagree about which words are `s32`: the lightdata view swaps 0x04/0x0C and
-  treats 0x10/0x14 as RGBA bytes, while the colour-loop view needs 0x10 as an
-  `s32` and 0x04/0x0C as bytes. The views are mutually destructive, and which
-  one runs first is initialization-order dependent. Fixing this needs a decision
-  about what sub-asset 58 actually *is*, which is beyond an endianness audit.
-  The gate **reports** the mismatch and deliberately does not enforce a bound
-  (enforcing one would encode a decision this audit left open).
-- **`ObjectHeader.unk24` light array.** `objects.c` indexes
-  `unk24[i]` for `i < numLightSources`, but `swap_object_header()` normalizes
-  only record 0. This is inert today: **every one of the 304 retail object
-  headers declares `numLightSources == 0`**, and `unk24` is never an in-bounds
-  0x18 record (49 headers point exactly at `fileSize`, 255 past it), so the
-  swap's `in_bounds` guard already makes it a no-op. The gate asserts
-  `numLightSources == 0` for all headers, so a ROM or edit that populates the
-  array trips the gate instead of shipping big-endian records.
+Two of the three below were left unfixed at the time and have since been closed;
+they are kept, struck through, with the reasoning that resolved them, so the
+argument is auditable rather than just gone.
+
+- ~~**Colour-loop / `LevelHeader_70` aliasing.**~~ **FIXED.**
+  `ParticleBehaviour.colourLoop` resolves to MISC sub-assets 58/59/60 and is
+  read as `ColorLoopEntry[]` (`s32 numEntries` + RGBA, 8-byte stride). Left
+  big-endian, `numEntries` decoded to `0x04000000` instead of 4, defeating the
+  `colourIndex >= numEntries` bound before `colourLoop[colourIndex + 2]` — an
+  out-of-bounds read, confirmed against the ROM. This was held open because
+  sub-asset 58 is *also* read as a `LevelHeader_70` by `game_ui.c`
+  (`ASSET_MISC_58`) and normalized by `asset_swap_misc_lightdata()`, and the two
+  views looked mutually destructive. Reading the two shapes field by field
+  settles it: the colour-loop view needs exactly ONE `s32` normalized —
+  `numEntries` at 0x00, which is the `LevelHeader_70` entry count at the same
+  offset — and reads everything else as bytes at offsets the `LevelHeader_70`
+  walk never swaps (it reads only each record's `+0x04` RGBA; the walk swaps
+  0x04/0x08/0x0C and each entry's leading word). One normalization therefore
+  satisfies both views. `asset_swap_misc_colourloop()` shares that
+  normalization and its dedup registry with `asset_swap_misc_lightdata()`, so
+  whichever consumer resolves a blob first normalizes it and the other cannot
+  swap it back — initialization order no longer matters. Verified at runtime:
+  sub-assets 58/59/60 are 52 bytes each and now read `numEntries == 4`, so the
+  reader's furthest access is `colourLoop[5]` at bytes 40..47, inside the blob.
+  Both entry points now take the sub-asset's byte length and bound the entry
+  walk to it.
+- ~~**`ObjectHeader.unk24` light array.**~~ **FIXED.** `objects.c` indexes
+  `unk24[i]` for `i < numLightSources`, but `swap_object_header()` normalized
+  only record 0, so records 1..n-1 would stay big-endian. `swap_object_header()`
+  now reads `numLightSources` (0x5A) and loops the `ObjectHeader24`
+  normalization, keeping the per-record `in_bounds()` guard. Inert on retail —
+  **every one of the 304 retail object headers declares `numLightSources == 0`**
+  and `unk24` is never an in-bounds 0x18 record (49 headers point exactly at
+  `fileSize`, 255 past it) — so this is future-proofing, and the gate's
+  `numLightSources == 0` assertion stays green and stays useful.
 - **BSP node count.** `tracks.c` swaps `numberOfSegments - 1` BSP nodes. That is
   the correct count for a binary tree partitioning N segments, but it is a
   structural inference, not a value read from the asset. Not re-derived here.

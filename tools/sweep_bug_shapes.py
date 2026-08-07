@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mechanically enumerate three bug SHAPES across game/src -- CONTRIBUTING.md rule 6.
+"""Mechanically enumerate three bug SHAPES across game/src and platform/ -- CONTRIBUTING.md rule 6.
 
 Each of these three classes is invisible to every runtime instrument this project
 owns, for a different reason, which is why the sweep has to be static:
@@ -51,7 +51,15 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCAN_DIRS = ["game/src"]
+# game/src is the decomp; platform/ is the port's own C, and the same three
+# shapes live there for the same reasons -- a port file is not exempt from a
+# pointer parameter with no count. Scoping the walk to game/src put every
+# platform/ site outside every sweep this project has run: that is how
+# mdkr_adventure.c's door-flag trace kept an unbounded `0x10000 << doorID` next
+# to a correctly-bounded twin in the same file. Adding platform/ here is the
+# instrument fix; the findings it produces are triaged in
+# tests/check_array_bounds_sweep.py's SHAPE_TRIAGE exactly like game/src's.
+SCAN_DIRS = ["game/src", "platform"]
 
 # The parser must keep finding these. Each is a triaged instance documented in
 # docs/OPEN_ITEMS.md; if the enumeration stops producing one, the sweep is broken.
@@ -68,6 +76,12 @@ SELFTEST = [
     # operand, so the added-constant idiom is gone and the site classifies as
     # var-count. The pin follows the truth; the site itself is still found.
     ("shift-count", "game/src/waves.c", "obj_wave_height:var-count"),
+    # platform/ pins. Without one of these, dropping platform/ back out of
+    # SCAN_DIRS -- or a parse shortfall that silences it -- would still report
+    # "selftest PASS", which is the failure mode this list exists to prevent.
+    # Both are triaged in tests/check_array_bounds_sweep.py's SHAPE_TRIAGE.
+    ("bare-pointer", "platform/stubs_dkr.c", "osContGetReadData:pad"),
+    ("shift-count", "platform/fast3d/gfx_pc_dkr.c", "dkr_generate_cc:MIPS-MASK-IDIOM"),
 ]
 
 IDENT = r"[A-Za-z_]\w*"

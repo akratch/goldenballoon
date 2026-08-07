@@ -26,7 +26,10 @@ What this check does
 ---------------------
 1. Confirms the `j >= cap` guard source text is present at both insert sites
    (a static, cheap check that the fix this gate depends on has not regressed
-   to the ROM's bare equality test).
+   to the ROM's bare equality test), AND that each guard sits ABOVE the store it
+   guards. Presence alone is not the property: the facet insert once carried its
+   pre-check below its own store, which lets the segment insert hand it j == cap
+   and puts one element at index cap.
 2. Drives all ten boss levels (the tightest margins in the game) plus one
    ordinary race, one run each, MDKR_AUTOPILOT + MDKR_TRACE, and reads the
    `[COLL] maxCandidates=N truncated=N cap=N` line every route already emits
@@ -46,6 +49,14 @@ What this check does
    step 2 "truncated must be 0" rule exists to catch. Evaluating that same rule
    against the forced run confirms it actually fires: the control is not
    vacuous.
+4. Allocation-lowering control: MDKR_COLLCAP alone moves the boundary INSIDE a
+   full-size 500-entry allocation, so a store at index == cap is unobservable --
+   it is a real element of a real array. MDKR_COLLALLOC=1 (platform/stubs_dkr.c,
+   game/src/tracks.c) lowers the ALLOCATION to the effective cap and arms a
+   canary element at index == cap. That slot is the first one a missing or
+   mis-ordered guard touches and one no correct path can reach, so
+   `[COLL] canary=` must read 0. This is the arm that would have caught the
+   facet insert's guard sitting below its store.
 
 This does NOT raise MAX_COLLISION_CANDIDATES, touch generate_collision_candidates()
 or compute_grid_overlap_mask(), or change gameplay in any way -- read-only
@@ -94,7 +105,8 @@ CAP = 500  # MAX_COLLISION_CANDIDATES, game/src/collision.h
 CONTROL_TRACK = 41
 CONTROL_FORCED_CAP = 150  # well under the natural 416 peak on this track
 
-COLL_RE = re.compile(r"\[COLL\] maxCandidates=(\d+) truncated=(\d+) cap=(\d+)")
+COLL_RE = re.compile(
+    r"\[COLL\] maxCandidates=(\d+) truncated=(\d+) cap=(\d+)(?: canary=(-?\d+))?")
 
 # --- the guard this check depends on ----------------------------------------
 # Both insert sites in generate_collision_candidates() must pre-check the
@@ -106,6 +118,15 @@ COLL_RE = re.compile(r"\[COLL\] maxCandidates=(\d+) truncated=(\d+) cap=(\d+)")
 COLLISION_C = os.path.join("game", "src", "hasm", "collision.c")
 GUARD_PATTERN = re.compile(
     r"if\s*\(\s*j\s*>=\s*mdkr_coll_cap\s*\(\s*MAX_COLLISION_CANDIDATES\s*\)\s*\)\s*\{\s*goto\s+out\s*;")
+# The two guarded stores, in source order. Each must have its guard ABOVE it --
+# the defect this pair of assertions exists for is a pre-check written below the
+# store it documents itself as pre-checking.
+STORE_PATTERNS = [
+    ("segment insert",
+     re.compile(r"gCollisionCandidates\[j\]\s*=\s*DKR_COLL_ENCODE_SEG")),
+    ("facet insert",
+     re.compile(r"gCollisionCandidates\[j\]\s*=\s*DKR_COLL_ENCODE_FACET")),
+]
 
 # --- frozen baseline ----------------------------------------------------------
 # Measured on this binary: one MDKR_AUTOPILOT run per level (race_full_3lap_tt.txt,
@@ -155,10 +176,33 @@ def check_guard_present() -> list:
                 "CANDIDATES)) { goto out; }` guard in %s (segment insert + facet "
                 "insert), found %d -- the wave \"boundsweep\" fix has regressed"
                 % (COLLISION_C, len(matches))]
-    return []
+
+    # Presence is not enough: a bounds guard placed BELOW the store it guards is
+    # not a guard. Both inserts must PRE-check, so each store's guard has to sit
+    # between the previous store and its own.
+    problems = []
+    for label, store in STORE_PATTERNS:
+        m = store.search(text)
+        if m is None:
+            problems.append("could not find the %s store in %s -- this check "
+                            "can no longer prove the guard precedes it"
+                            % (label, COLLISION_C))
+            continue
+        guards_before = [g.start() for g in GUARD_PATTERN.finditer(text)
+                         if g.start() < m.start()]
+        want = 1 if label == "segment insert" else 2
+        if len(guards_before) < want:
+            problems.append("the %s store in %s is not preceded by its `j >= "
+                            "mdkr_coll_cap(...)` pre-check (%d guard(s) above "
+                            "it, expected %d) -- a guard placed after the store "
+                            "lets the previous insert hand this one j == cap and "
+                            "one element still lands at index cap"
+                            % (label, COLLISION_C, len(guards_before), want))
+    return problems
 
 
-def run(binary, rom, track, frames, forced_cap=None, verbose=False):
+def run(binary, rom, track, frames, forced_cap=None, verbose=False,
+        lower_alloc=False):
     if os.path.exists(SAVE):
         os.remove(SAVE)
     env = dict(os.environ)
@@ -171,6 +215,10 @@ def run(binary, rom, track, frames, forced_cap=None, verbose=False):
         env["MDKR_COLLCAP"] = str(forced_cap)
     else:
         env.pop("MDKR_COLLCAP", None)
+    if lower_alloc:
+        env["MDKR_COLLALLOC"] = "1"
+    else:
+        env.pop("MDKR_COLLALLOC", None)
     cmd = [binary, "--headless-frames", str(frames), "--input-script", SCRIPT, "--rom", rom]
     if verbose:
         print("  $ MDKR_LOAD_TRACK=%d MDKR_COLLCAP=%s %s" %
@@ -183,6 +231,8 @@ def run(binary, rom, track, frames, forced_cap=None, verbose=False):
         "maxCandidates": int(m.group(1)),
         "truncated": int(m.group(2)),
         "cap": int(m.group(3)),
+        # -1 / absent == the canary is not armed (MDKR_COLLALLOC unset).
+        "canary": int(m.group(4)) if m and m.group(4) is not None else -1,
     } if m else None
     return proc.returncode, coll, out
 
@@ -317,6 +367,47 @@ def run_check() -> int:
                 print("  confirmed: the same rule step 2 applies would FAIL this "
                       "forced arm (truncated=%d) -- the control is not vacuous"
                       % coll_f["truncated"])
+
+    # --- 4. boundary control that lowers the ALLOCATION, not just the cap ----
+    # MDKR_COLLCAP on its own cannot observe the failure it exists for: it moves
+    # the boundary down while the allocation stays 500 entries, so a store at
+    # index == cap still lands inside the block and nothing reports it. That is
+    # how the facet insert's pre-check could sit BELOW its own store while this
+    # control ran green. MDKR_COLLALLOC=1 sizes the allocation to the effective
+    # cap plus one canary element and arms the canary at index == cap: the first
+    # slot a missing or mis-ordered guard writes, and one no correct path can
+    # reach. canary must be 0.
+    print("\nallocation-lowering control: MDKR_COLLALLOC=1 MDKR_COLLCAP=%d on "
+          "track %d (allocation lowered to the cap, canary armed at index %d)"
+          % (CONTROL_FORCED_CAP, CONTROL_TRACK, CONTROL_FORCED_CAP))
+    rc_a, coll_a, _out_a = run(binary, args.rom, CONTROL_TRACK, frames,
+                               forced_cap=CONTROL_FORCED_CAP,
+                               lower_alloc=True, verbose=args.verbose)
+    if rc_a != 0:
+        failures.append("alloc control: run exited %d (expected 0)" % rc_a)
+    elif coll_a is None:
+        failures.append("alloc control: no '[COLL]' line")
+    else:
+        print("  lowered run: maxCandidates=%d truncated=%d cap=%d canary=%d" %
+              (coll_a["maxCandidates"], coll_a["truncated"], coll_a["cap"],
+               coll_a["canary"]))
+        if coll_a["canary"] < 0:
+            failures.append("alloc control: canary reported unarmed (-1) -- "
+                            "MDKR_COLLALLOC did not reach the allocation in "
+                            "game/src/tracks.c, so this control proves nothing")
+        elif coll_a["canary"] != 0:
+            failures.append("alloc control: canary tripped %d time(s) -- an "
+                            "element was written at index == cap, i.e. a bounds "
+                            "guard in generate_collision_candidates() is missing "
+                            "or sits below the store it guards"
+                            % coll_a["canary"])
+        else:
+            print("  canary intact: no write at index == cap with the "
+                  "allocation lowered to the cap")
+        if coll_a["truncated"] == 0:
+            failures.append("alloc control: truncated=0 -- the route never "
+                            "reached the lowered boundary, so the canary was "
+                            "never given the chance to trip")
 
     print()
     if failures:

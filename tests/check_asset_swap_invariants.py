@@ -623,15 +623,19 @@ def check_misc(rom, rep):
         entries = len(blob) // 8
         num = bes32(blob, 0)
         loop_report.append((index, num, entries))
-        # NOTE: this is reported, not enforced -- misc 58 is ALSO read as a
-        # LevelHeader_70 by game_ui.c, and the two struct shapes disagree about
-        # which words are s32. See docs/asset_swap_notes.md "colour-loop /
-        # LevelHeader_70 aliasing". Enforcing a bound here would encode a
-        # decision this audit deliberately left open.
-        if not 0 < num <= entries:
-            rep.note(
-                f"  WARNING misc[{index}] colourLoop numEntries {num} vs "
-                f"{entries} entries (known open item, not enforced)")
+        # ENFORCED since asset_swap_misc_colourloop() exists: the reader is
+        # `if (colourIndex >= numEntries) colourIndex = 0;` followed by
+        # `colourLoop[colourIndex + 2]`, so the furthest record it can touch is
+        # index numEntries + 1 and the blob must hold numEntries + 2 records.
+        # This was previously only reported, because misc 58 is ALSO read as a
+        # LevelHeader_70 and the two views were believed to be in conflict; they
+        # are not (docs/asset_swap_notes.md, "Colour-loop / LevelHeader_70
+        # aliasing"), and one shared normalization now serves both.
+        if not 0 < num <= entries - 2:
+            raise SwapInvariantError(
+                f"misc[{index}] colourLoop numEntries {num} does not fit "
+                f"{entries} records: the reader indexes [numEntries + 1], so "
+                f"the blob needs numEntries + 2 records")
     rep.note(f"colour loops: {loop_report}")
     return count
 

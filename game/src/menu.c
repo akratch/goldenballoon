@@ -14712,6 +14712,18 @@ void ghostmenu_generate(void) {
     u16 swapByte;
     UNUSED s32 pad;
 
+#ifdef NATIVE_PORT
+    /* Lock the sizing above to the source array it is filled from: the fill loop
+     * writes one entry per controller-pak ghost slot, so validIDs must have at
+     * least as many slots as gGhostLevelIDsPak, and gGhostWorldIDs is written
+     * from the same counter. On the ROM the two extra halfwords landed in dead
+     * frame slack; on a host toolchain they land wherever the frame layout put
+     * the next local (or on the stack canary). */
+    _Static_assert(ARRAY_COUNT(validIDs) >= ARRAY_COUNT(gGhostLevelIDsPak) &&
+                       ARRAY_COUNT(gGhostWorldIDs) >= ARRAY_COUNT(gGhostLevelIDsPak),
+                   "one validIDs/gGhostWorldIDs slot per controller-pak ghost slot");
+#endif
+
     gGhostMenuTotal = 0;
     mainTrackIds = (u8 *) get_misc_asset(ASSET_MISC_MAIN_TRACKS_IDS);
 

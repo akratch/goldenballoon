@@ -641,6 +641,7 @@ static void swap_level_header(void *data, uint32_t size) {
 #define OH_NUM_MODEL_IDS        0x55u /* u8 */
 #define OH_NUM_VEHICLE_PARTS    0x56u /* u8 (attachPointCount) */
 #define OH_NUM_PARTICLES        0x57u /* u8 */
+#define OH_NUM_LIGHT_SOURCES    0x5Au /* s8 (structs.h ObjectHeader) */
 
 /* ObjectHeader24 (0x18 bytes), relative to the OH_HEADER24 target. */
 #define OH24_UNIDENTIFIED_06    0x06u /* u16, unidentified */
@@ -717,17 +718,38 @@ static void swap_object_header(void *data, uint32_t size) {
         in_bounds((uint32_t) offParticles, (uint32_t) nParticles * 8u, size)) {
         sw32_arr(data, (uint32_t) offParticles, (uint32_t) nParticles * 2u);
     }
-    /* OH_HEADER24 -> ObjectHeader24 (0x18 bytes). */
-    if (offHeader24 != 0 && in_bounds((uint32_t) offHeader24, OH24_SIZE, size)) {
-        uint32_t u = (uint32_t) offHeader24;
-        sw16(data, u + OH24_UNIDENTIFIED_06);
-        sw32(data, u + OH24_UNIDENTIFIED_08);
-        sw16(data, u + OH24_HOME_X);
-        sw16(data, u + OH24_HOME_Y);
-        sw16(data, u + OH24_HOME_Z);
-        sw16(data, u + OH24_RADIUS);
-        sw16(data, u + OH24_UNIDENTIFIED_14);
-        sw16(data, u + OH24_UNIDENTIFIED_16);
+    /* OH_HEADER24 -> ObjectHeader24[numLightSources] (0x18 bytes each).
+     *
+     * light_setup_light_sources() (objects.c) indexes this as an ARRAY:
+     * DKR_PTR(ObjectHeader24, header->unk24)[i] for i < header->numLightSources,
+     * and light_add_from_object_header() (lights.c) reads homeX/homeY/homeZ,
+     * radius, unk14, unk16 and unk6 out of each record. Normalizing only record
+     * 0 would leave records 1..n-1 big-endian.
+     *
+     * Inert on retail: every one of the 304 us.v80 object headers declares
+     * numLightSources == 0 (asserted by tests/check_asset_swap_invariants.py),
+     * so today `n` is 0 and this loop does not execute at all -- the swap for
+     * record 0 that used to run unconditionally was itself already gated off by
+     * in_bounds(), because no retail header's unk24 points at an in-bounds 0x18
+     * record. This is future-proofing for a ROM or asset edit that populates the
+     * array, and it keeps the pinned zero-lights gate green either way. */
+    if (offHeader24 != 0) {
+        int32_t nLights = (int32_t) (int8_t) rd8(data, OH_NUM_LIGHT_SOURCES);
+        int32_t li;
+        for (li = 0; li < nLights; li++) {
+            uint32_t u = (uint32_t) offHeader24 + (uint32_t) li * OH24_SIZE;
+            if (!in_bounds(u, OH24_SIZE, size)) {
+                break;
+            }
+            sw16(data, u + OH24_UNIDENTIFIED_06);
+            sw32(data, u + OH24_UNIDENTIFIED_08);
+            sw16(data, u + OH24_HOME_X);
+            sw16(data, u + OH24_HOME_Y);
+            sw16(data, u + OH24_HOME_Z);
+            sw16(data, u + OH24_RADIUS);
+            sw16(data, u + OH24_UNIDENTIFIED_14);
+            sw16(data, u + OH24_UNIDENTIFIED_16);
+        }
     }
 }
 
@@ -1106,7 +1128,36 @@ static int lh70_already_swapped(const void *blob) {
     return 0;
 }
 
-void asset_swap_misc_lightdata(void *blob) {
+/* The bounded core, shared by both views of this blob shape.
+ *
+ * ASSET_MISC sub-asset 58 is read as a LevelHeader_70 by game_ui.c AND as a
+ * ColorLoopEntry[] by particles.c (ParticleBehaviour.colourLoop), and 59/60 are
+ * read only as colour loops. The two struct shapes are not in conflict over the
+ * bytes each consumer actually reads:
+ *
+ *   LevelHeader_70  0x00 s32 unk0 (entry count)   ColorLoopEntry[0].numEntries
+ *                   0x04/0x08/0x0C s32            entry[0].rgba / entry[1] words
+ *                   0x10/0x14 ColourRGBA bytes    entry[2].rgba  <- read, bytes
+ *                   0x18+ entry[i].unk0 s32       entry[3..].numEntries word
+ *                                                 (the colour loop reads only
+ *                                                  each record's +0x04 RGBA)
+ *
+ * The colour-loop reader needs exactly one s32 normalized -- numEntries at 0x00,
+ * which is the LevelHeader_70 entry count at the same offset -- and reads
+ * everything else as bytes at offsets this walk never swaps. So ONE
+ * normalization satisfies both views, and both entry points share one dedup
+ * registry: whichever consumer resolves the blob first normalizes it, and the
+ * other cannot double-swap it back. Getting that wrong is why the colour-loop
+ * swap was previously left undone (docs/asset_swap_notes.md, "Residual risks").
+ *
+ * `size` is the sub-asset's byte length (get_misc_asset_size) and bounds the
+ * entry walk, because the entry count is authored data and nothing else limits
+ * it. It changes nothing on us.v80 -- sub-assets 58/59/60 are 52 bytes and their
+ * count of 4 puts the last swapped word at 0x30..0x33, exactly inside -- so this
+ * is future-proofing against an asset whose count outruns its blob, the same
+ * bound asset_swap_misc_pulsating() already carries. Pass 0 when the length is
+ * not knowable, which keeps the previous unbounded behaviour. */
+static void misc_lh70_normalize(void *blob, uint32_t size) {
     int32_t count;
     int32_t i;
 
@@ -1114,7 +1165,7 @@ void asset_swap_misc_lightdata(void *blob) {
         return;
     }
     if (lh70_already_swapped(blob)) {
-        return; /* already normalized on an earlier level load */
+        return; /* already normalized on an earlier level load / other view */
     }
 
     sw32(blob, LH70_ENTRY_COUNT);
@@ -1129,9 +1180,24 @@ void asset_swap_misc_lightdata(void *blob) {
     }
     for (i = 0; i < count; i++) {
         uint32_t e = LH70_HEADER_SIZE + (uint32_t) i * LH70_ENTRY_STRIDE;
+        /* Bound by the bytes this walk actually WRITES (the leading s32), not by
+         * the 8-byte stride: sub-asset 58's last entry starts 4 bytes before the
+         * end of the blob, and its RGBA tail is not swapped anyway. Bounding on
+         * the stride would silently drop a legal swap. */
+        if (size != 0u && !in_bounds(e + LH70E_UNIDENTIFIED_00, 4u, size)) {
+            break; /* authored count runs past the blob — stop at the edge */
+        }
         sw32(blob, e + LH70E_UNIDENTIFIED_00);
         /* +0x04 r,g,b,a bytes, no swap */
     }
+}
+
+void asset_swap_misc_lightdata(void *blob, uint32_t size) {
+    misc_lh70_normalize(blob, size);
+}
+
+void asset_swap_misc_colourloop(void *blob, uint32_t size) {
+    misc_lh70_normalize(blob, size);
 }
 
 /* ==========================================================================
