@@ -1020,7 +1020,8 @@ static void present_perf_pacing_summary(void) {
             "[PRESENTPERF-LATENCY] arm=%s samples=%llu meandepthmilli=%llu "
             "maxdepth=%u refreshhz=%u periodus=%llu meanlatencyus=%llu "
             "maxlatencyus=%llu\n",
-            arm, (unsigned long long)s_depth_samples, mean_milli, s_depth_max,
+            arm, (unsigned long long)s_depth_samples,
+            (unsigned long long)mean_milli, s_depth_max,
             refresh, (unsigned long long)(period_ns / 1000u),
             (unsigned long long)(period_ns != 0u
                 ? mean_milli * period_ns / (1000u * 1000u) : 0u),
