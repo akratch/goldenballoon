@@ -180,6 +180,45 @@ static MdkrCameraIntentFamily racer_camera_intent_family(s16 mode) {
 }
 
 /*
+ * The camera mode each viewport's camera was in the last time it authored a
+ * pose, so a change of mode can be recognised as the reframe it is.
+ *
+ * Every mode owns a different rule for where the eye goes, and each one
+ * WRITES that position rather than travelling to it: the finish camera to a
+ * trackside spectate object, the door camera to wherever the following camera
+ * happened to be standing, the challenge camera onto a 150-unit boom orbiting
+ * the racer. The first tick under a new rule therefore reframes the shot, and
+ * the distances involved are usually a few hundred units — motion-sized, well
+ * under the snapshot's teleport threshold, and so invisible to capture.
+ *
+ * Read here rather than at the assignment sites because the mode is set from
+ * three of them (this file's raceFinished/exitObj tests, the spectate handover
+ * inside update_camera_finish_race, and the challenge end in objects.c), and
+ * only the pose author knows which tick the new rule first ran on. Comparing
+ * here catches all three, on exactly that tick.
+ *
+ * Stale entries across a level change are harmless in both directions: a stale
+ * MATCH raises no note, but the level boundary already resets snapshot history
+ * so that pair cannot be blended anyway, and a stale mismatch costs one
+ * un-interpolated frame.
+ */
+static s16 sRacerCameraAuthoredMode[PLAYER_FOUR + 1] = { -1, -1, -1, -1 };
+
+static void racer_camera_note_mode_cut(Object_Racer *racer) {
+    s16 previous;
+
+    if (gCameraObject == NULL || racer->playerIndex < PLAYER_ONE ||
+        racer->playerIndex > PLAYER_FOUR) {
+        return;
+    }
+    previous = sRacerCameraAuthoredMode[racer->playerIndex];
+    sRacerCameraAuthoredMode[racer->playerIndex] = gCameraObject->mode;
+    if (previous >= 0 && previous != gCameraObject->mode) {
+        presentation_snapshot_note_camera_cut(racer->playerIndex);
+    }
+}
+
+/*
  * The ordinary camera authors know their subject here, before dialogue/shake
  * finishes. For car/hover/plane we preserve the available racer-local focus
  * axis (ox1/oy1/oz1, ten world units ahead), rather than guessing a pivot from
@@ -8477,31 +8516,14 @@ void update_player_camera(Object *obj, Object_Racer *racer, f32 updateRateF) {
                 break;
         }
     }
-#ifdef NATIVE_PORT
-    {
-        /* A mode change reframes the shot: the finish camera jumps to a
-         * trackside spectate point and the door camera stops dead where the
-         * following camera happened to be. Neither is motion, and neither is
-         * far enough to trip the snapshot's teleport threshold, so say it. */
-        const s16 authoredMode = gCameraObject->mode;
-
-        if (racer->raceFinished == TRUE && gCameraObject->mode != CAMERA_FINISH_CHALLENGE) {
-            gCameraObject->mode = CAMERA_FINISH_RACE;
-        }
-        if (racer->exitObj) {
-            gCameraObject->mode = CAMERA_FIXED;
-        }
-        if (gCameraObject->mode != authoredMode) {
-            presentation_snapshot_note_camera_cut(racer->playerIndex);
-        }
-    }
-#else
     if (racer->raceFinished == TRUE && gCameraObject->mode != CAMERA_FINISH_CHALLENGE) {
         gCameraObject->mode = CAMERA_FINISH_RACE;
     }
     if (racer->exitObj) {
         gCameraObject->mode = CAMERA_FIXED;
     }
+#ifdef NATIVE_PORT
+    racer_camera_note_mode_cut(racer);
 #endif
     // Set the camera behaviour based on current mode.
     switch (gCameraObject->mode) {
@@ -8862,6 +8884,12 @@ void update_camera_finish_race(UNUSED f32 updateRate, Object *obj, Object_Racer 
     cameraID = racer->spectateCamID;
     cam = spectate_nearest(obj, &cameraID);
     if (cam == NULL) {
+        /* A track with no spectate objects at all: hand the shot to the
+         * challenge camera. Nothing is authored this tick — the early return
+         * leaves the pose alone — and the jump onto the challenge camera's
+         * boom orbit lands on the NEXT tick, where racer_camera_note_mode_cut
+         * sees the mode it authored under change and notes it. Noting it here
+         * would flag a tick the camera never moved on. */
         gCameraObject->mode = CAMERA_FINISH_CHALLENGE;
         return;
     }
