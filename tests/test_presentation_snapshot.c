@@ -666,6 +666,37 @@ static void test_resolved_fields(void) {
            "is held exactly");
 }
 
+/* A quarter-turn-plus camera pan in one tick is a cut or a whip; task 1.1's
+ * rotation snap must apply to the camera path exactly like the object path.
+ * The snap is per-field, not per-camera: fov and position still blend while
+ * rotation_y jumps straight to current. */
+static void test_camera_fast_pan_snaps(void) {
+    PresentationCameraPose pose;
+    PresentationCameraEntry camera_sample;
+
+    begin();
+
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 0.0f, 0.0f, 0.0f);
+    camera_sample.rotation_y = 0;
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 0.0f, 0.0f, 0.0f);
+    camera_sample.rotation_y = 0x5000; /* > 0x4000 shortest-arc delta */
+    camera_sample.fov = 70.0f;
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &pose),
+           "camera fast pan: viewport 0 resolves");
+    expect(pose.rotation_y == 0x5000,
+           "camera fast pan: rotation snaps to current instead of blending");
+    expect(pose.fov > 60.0f && pose.fov < 70.0f,
+           "camera fast pan: fov still blends across the same tick");
+}
+
 static void test_authored_camera_latch(void) {
     PresentationCameraEntry cameras[4];
     PresentationCameraEntry camera0 = make_camera(4, 10.0f, 20.0f, 30.0f);
@@ -1041,6 +1072,7 @@ int main(void) {
     test_identity_ensure_generation();
     test_discontinuity();
     test_resolved_fields();
+    test_camera_fast_pan_snaps();
     test_authored_camera_latch();
     test_authored_tick_pair();
     test_deformation_compatibility();
