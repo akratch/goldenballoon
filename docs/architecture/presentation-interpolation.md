@@ -5,7 +5,9 @@
 > the disagreement is called out by name in
 > [Corrections to inherited descriptions](#corrections-to-inherited-descriptions).
 > This document is the review anchor for presentation work: a change that
-> contradicts it updates it first.
+> contradicts it updates it first. The 1.0.1 "Historical experiment —
+> generation-keyed core-object interpolation" note referenced throughout is at
+> `CHANGELOG.md:780-834`.
 
 The authoritative simulation runs in fixed original-region quanta. The host
 presents at whatever rate the player's policy asks for. Everything between those
@@ -20,7 +22,10 @@ That question closed the 1.0.1 experiment. `docs/FPS_UNCAP_RELEASE_AUDIT.md:50`
 begins can observe rewritten viewport, matrix, vertex, texture, and nested
 display-list dependencies from mutable arenas*. The audit's remedy was scope
 reduction — turn the replay off. The remedy on `main` today is different and
-stronger: the replay still runs, but it no longer reads mutable memory at all.
+stronger: the replay still runs, but every dependency it reads is one the real
+walk copied. That is a claim about the *arena* and about *explicitly captured*
+externals. It is not yet a proven claim about every non-arena pointer the
+address registry can resolve — see [residual obligation 2](#residual-obligations).
 
 ---
 
@@ -36,16 +41,21 @@ Call one iteration of `main_game_loop` (`game/src/thread3_main.c:288`) pass *N*.
 
 | # | Site | What happens |
 |---|---|---|
-| 1 | `thread3_main.c:323` | `gfxtask_run_xbus(gDisplayLists[gSPTaskNum], …)` submits the list **authored during pass N−1**. `gSPTaskNum` flips immediately after (`:324`). |
+| 1 | `thread3_main.c:323` | `gfxtask_run_xbus(gDisplayLists[gSPTaskNum], …)` submits the list **authored during pass N−1**. `gSPTaskNum` flips immediately after (`:324`). **Guarded** by `gDrawFrameTimer == 0 && !elideCatchupRender` (`:318-322`): a frame-timer hold or an elided catch-up pass submits nothing, and steps 2-4 do not happen. |
 | 2 | `stubs_dkr.c:584` → `:480` | `osSendMesg` dispatches that task synchronously. `sched_dispatch_task` calls `gfx_start_frame()` (`:502`), `gfx_run()` (`:520`), `gfx_end_frame()` (`:521`). **This is the real HLE walk of task K.** |
 | 3 | `gfx_pc_dkr.c:6466-6481` | Inside `gfx_start_frame`, while replay is armed: `gfx_retained_task_capture_begin(authored_tick, g_dkrArenaBase, g_dkrArenaSize)`, `gfx_presentation_packet_capture_begin`, and a byte copy of the walk-entry `rdp`/`rsp`/`gfx_segment_table`/texrect state. |
 | 4 | `gfx_pc_dkr.c:6589-6596` | Inside `gfx_end_frame`, while replay is armed: `gfx_retained_task_capture_commit(dkr_last_walked_dl, dkr_walk_entry_segments)`, then `gfx_presentation_packet_freeze()` and `gfx_shadow_replay_freeze()`. **Task K's ownership transaction publishes here.** |
 | 5 | `thread3_main.c:331-427` | The game authors **task K+1** into the alternate list/matrix/vertex/triangle heaps and terminates it with `gDPFullSync`/`gSPEndDisplayList`. |
-| 6 | `thread3_main.c:436` | `gfxtask_wait()` collects the completion message for task K. |
+| 6 | `thread3_main.c:436` | `gfxtask_wait()` collects the completion message for task K. **Guarded** by `gDrawFrameTimer != 1` (`:430`) and `gSkipGfxTask == FALSE && !elideCatchupRender` (`:431-435`) — the same conditions that decided whether step 1 submitted anything. |
 | 7 | `thread3_main.c:442` | `mempool_free_queue_clear()` — deferred frees land here. |
 | 8 | `thread3_main.c:466` → `video.c:381` | `fb_update` reaches its blocking `osRecvMesg(gVideoMesgQueue, …)`. **That call is the host boundary.** |
 | 9 | `stubs_dkr.c:612-905` | The host-boundary adapter runs: live settings apply, pacing, instruments, the alpha-0 endpoint present, and the presentation subloop. |
 | 10 | return to `thread3_main.c:471` | Pass N ends. Pass N+1 begins at step 1 and submits task K+1. |
+
+A pass whose guards skip steps 1-4 publishes no new retained task and does not
+advance `dkr_frame_index`, so `dl_fresh` (`stubs_dkr.c:741-743`) is false at step
+9 and the interval holds the front image instead of replaying — the guards
+subtract replay opportunities, never add them.
 
 Two consequences follow, and only the second one is a defence.
 
@@ -86,7 +96,7 @@ Reads, in order, with the tick boundary each retained copy was taken at:
 
 | Read | Source | Taken at |
 |---|---|---|
-| Refusal preconditions | `dkr_last_walked_dl`, `dkr_replay_pass`, `dkr_walk_entry_valid`, `gfx_presentation_packet_frozen()` (`:6655-6658`) | live flags; all cleared together by `gfx_dkr_replay_invalidate()` (`:6758-6765`) |
+| Refusal preconditions | `dkr_last_walked_dl`, `dkr_replay_pass`, `dkr_walk_entry_valid`, `gfx_presentation_packet_frozen()` (`:6655-6658`) | `dkr_last_walked_dl`, `dkr_walk_entry_valid` and the packet's frozen flag are cleared by `gfx_dkr_replay_invalidate()` (`:6758-6765`). `dkr_replay_pass` is **not** — it is the re-entrancy guard, set at `:6667` and cleared at `:6738` inside the replay's own cleanup. |
 | The authored task | `gfx_retained_task_acquire(dkr_last_walked_authored_tick, …)` (`:6659-6662`) — refuses any tick but the one requested | step 4 of pass N |
 | Frozen matrix/camera registry | `gfx_shadow_replay_restore(overrides, override_count)` (`:6664`) | step 4 (`gfx_shadow_replay_freeze`) |
 | HLE entry state | `memcpy(&rdp, dkr_walk_entry_rdp, …)`, `&rsp`, `gfx_segment_table` ← `retained_task.segments`, `dkr_in_texrect` (`:6703-6707`) | step 3 of pass N |
@@ -163,7 +173,13 @@ The common arm for all of them is `present_sched_replay_armed()`
 (`present_sched.c:315-335`): a present policy above the tick rate
 (`present_sched_present_subloop()`) **and** `present_sched_smoothing_enabled()`.
 Both resolve from player-facing config keys whose defaults are `original` and
-`off` (`video_config.c:799-806`). Nothing here is `#if 0`, nothing is dead code,
+`off` (`video_config.c:799-806`). One short-circuit precedes both:
+`present_sched_test_replay_walk()` returns armed before either check runs
+(`present_sched.c:316-318`), so `MDKR_TEST_REPLAY_WALK` arms the capture, freeze
+and snapshot machinery even under Original with smoothing off — which is exactly
+what the zero-delta harness needs. It fails closed without the versioned token
+(`present_sched.c:222-225`), which is why that variable is a test seam rather
+than a diagnostic. Nothing here is `#if 0`, nothing is dead code,
 and nothing is behind a build flag: it all compiles into every native and browser
 build and runs when a player selects Frame limit above original with Motion
 smoothing = Interpolated.
@@ -178,14 +194,14 @@ smoothing = Interpolated.
 | Direct world-space particle meshes (point/line) | `gfx_presentation_packet_register_vertex_identity`, `_note_particle_deformation` | `MDKR_TEST_PARTICLE_INTERPOLATION=off\|0` (`:487-495`) — opt-out | `check_presentation_matrix.py` particle control | Current. |
 | Primitive alpha (sprite/model/line-particle) | `gfx_presentation_packet_note_primitive_alpha` | `MDKR_TEST_PRIMITIVE_ALPHA_INTERPOLATION=off\|0` (`:507-516`) — opt-out | `check_presentation_matrix.py` fade control | Current. Note the 8.8-in-signed-field decode the CHANGELOG records is in the shipped path. |
 | Shield/magnet shear (two-lifetime recipe) | `mdkr_camera_replay_effect_world` (`gfx_pc_dkr.c:422-425`); `_note_effect_override` | `MDKR_TEST_EFFECT_INTERPOLATION=off\|0` (`:518-526`) — opt-out | `check_presentation_matrix.py` effect control | Current. |
-| Authored UV scroll | `GfxPresentationUvScroll` (`gfx_presentation_packet.h:34-56`); capture `gfx_pc_dkr.c:4396-4461`, apply `:5884-5889` | `MDKR_TEST_UV_SCROLL_INTERPOLATION=off\|0` (`:528-536`) — opt-out | `test_presentation_packet.c`; `check_presentation_matrix.py` UV-scroll arm | Current. **Not** in the CHANGELOG's historical note — it landed after it (`docs/UNCAPPED_PRESENTATION.md:270+`). |
-| Projected shadow deformation | `gfx_presentation_packet_register_projected_shadow_vertex`, `_note_projected_shadow_deformation` | `MDKR_TEST_PROJECTED_SHADOW_INTERPOLATION` requires the versioned token to turn **off** (`:465-474`); `MDKR_TEST_PROJECTED_SHADOW_VERTEX_LERP` requires it to turn **on** (`:476-485`) | `check_presentation_matrix.py` | Current. Asymmetric gating is deliberate: the production behaviour is unreachable from a bare env var in either direction. |
+| Authored UV scroll | `GfxPresentationUvScroll` (`gfx_presentation_packet.h:34-56`); capture `gfx_pc_dkr.c:4396-4461`, apply `:5884-5889` | `MDKR_TEST_UV_SCROLL_INTERPOLATION=off\|0` (`:528-536`) — opt-out | `tests/check_presentation_matrix.py:72`, `:799` — **the only test in the tree that exercises it.** `tests/test_presentation_packet.c` contains no UV-scroll coverage (zero occurrences of `uv` or `scroll`); `gfx_presentation_packet_capture_uv_scroll` and `_lookup_uv_scroll` have no unit caller at all. | Current, but **unit-uncovered**: the only evidence is an integration arm that needs a ROM. |
+| Projected shadow deformation | `gfx_presentation_packet_register_projected_shadow_vertex`, `_note_projected_shadow_deformation` | `MDKR_TEST_PROJECTED_SHADOW_INTERPOLATION` requires the versioned token to turn **off** (`:465-474`); `MDKR_TEST_PROJECTED_SHADOW_VERTEX_LERP` requires it to turn **on** (`:476-485`) | `tests/check_presentation_shadows.py:155`, `:157` — the only gate that sets either variable; `check_presentation_matrix.py` does **not**. Registration itself is unit-covered at `tests/test_presentation_packet.c:170-190`. | Current. Asymmetric gating is deliberate: the production behaviour is unreachable from a bare env var in either direction. |
 | Forward `{T+1}` structural census | `gfx_dkr_capture_future_deformations` (`gfx_pc_dkr.c:4673`), scanner `dkr_scan_future_deformations` (`:4477`) | armed only; requires `presentation_snapshot_replay_target_tick` agreement (`:4695-4701`) | `test_presentation_packet.c` forward-packet cases | Current. Read-only: flow control, segment/billboard state, owner matrices, `G_VTX`, `G_TRIN` only. |
 | Camera snapshot / bank endpoints | `gfx_shadow_frame.{h,c}`; `gfx_shadow_camera_endpoint_validate` (`stubs_dkr.c:754`) | `MDKR_TEST_CAMERA_VP_ENDPOINTS` (`gfx_shadow_frame.c:219`) | `tests/check_camera_snapshot_coverage.py` | Current. This is `PRES-002`'s subject and it is production, not diagnostic. |
-| Zero-delta replay harness | `gfx_dkr_replay_walk(NULL, 0)` (`stubs_dkr.c:532`) | `MDKR_TEST_REPLAY_WALK` (`present_sched.c:221-241`); `=2` additionally forces recompose | `check_presentation_matrix.py` endpoint arm | Test seam. Never armed on a shipping path. |
+| Zero-delta replay harness | `gfx_dkr_replay_walk(NULL, 0)` (`stubs_dkr.c:532`) | `MDKR_TEST_REPLAY_WALK` **and** the versioned token (`present_sched.c:216-241`); `recompose` additionally forces recompose | `tests/check_render_purity.py:194`, `:198`, `:228` — the only gate that sets it | Test seam. Never armed on a shipping path. |
 | Delayed endpoint replay (negative control) | `stubs_dkr.c:756-766` | `MDKR_TEST_DELAYED_ENDPOINT_REPLAY=1` **and** `MDKR_INTERNAL_TEST_TOKEN` | `check_presentation_matrix.py` | Test seam. Restores the pre-fix ordering on purpose. |
-| Live-arena poison gate | `dkr_test_live_arena_poison_enabled` (`gfx_pc_dkr.c:538-546`); replay `:6684-6692`, `:6723-6728` | `MDKR_TEST_RETAINED_ARENA_POISON` **and** the token | `check_presentation_matrix.py` lifetime-safety arm | Test seam. This is the adversarial proof that the replay reads nothing live. |
-| Retained-dependency rewrite gate | `gfx_presentation_packet.c:95` (`MDKR_TEST_RETAINED_DEPENDENCY_REWRITE`) | env | `test_presentation_packet.c` | Test seam. |
+| Live-arena poison gate | `dkr_test_live_arena_poison_enabled` (`gfx_pc_dkr.c:538-546`); replay `:6684-6692`, `:6723-6728` | `MDKR_TEST_RETAINED_ARENA_POISON` **and** the token | `check_presentation_matrix.py` lifetime-safety arm | Test seam. It proves the replay reads no live **arena** byte. It does **not** cover non-arena reads — see [residual obligation 2](#residual-obligations). |
+| Retained-dependency rewrite gate | `gfx_presentation_packet.c:95` (`MDKR_TEST_RETAINED_DEPENDENCY_REWRITE`) | env | `tests/check_presentation_matrix.py:697`, `:716` — the only gate that sets it. `tests/test_presentation_packet.c` does **not** exercise it (zero occurrences of `rewrite`). | Test seam. |
 | Presentation perf census | `present_perf_*` (`present_sched.c:652`, `MDKR_PRESENT_PERF`) | env | `check_presentation_matrix.py` cost gate | Test/telemetry seam. |
 
 Staleness summary: **no shelved code was found.** The 1.0.1 note describes a
@@ -211,8 +227,8 @@ timing argument that closes it **today**.
 
 | Audit row | Disposition | Basis |
 |---|---|---|
-| `PRES-001` (`FPS_UNCAP_RELEASE_AUDIT.md:50`) | **CLOSED — superseded, not by scope reduction** | The row's remedy was disabling the replay. `main` instead re-enabled it on top of an atomic retained-task transaction: whole-arena private image + explicitly copied external dependencies + transactional publish (a failed capture leaves the last complete task intact and the opportunity holds). The row's *hazard statement* remains literally true of any implementation that reads live memory — see §1.1: task K+1 **is** already authored when the subloop runs. It is the reading, not the timing, that changed. |
-| `PRES-002` (`FPS_UNCAP_RELEASE_AUDIT.md:51`) | **CLOSED — its stated precondition is met** | The row permits re-enabling once there is "an immutable `{T,T+1}` ownership model and new endpoint/midpoint evidence." The ownership model is §3's table plus the forward census (`gfx_pc_dkr.c:4673`). The evidence contract is the four layers at `docs/UNCAPPED_PRESENTATION.md:188-226` — authority, endpoint identity, midpoint sensitivity, lifetime safety — with `check_presentation_matrix.py`, `check_camera_snapshot_coverage.py` and the live-arena poison gate as the principal arms. Camera snapshots latch at display-list projection emission, not later from mutable camera globals (`UNCAPPED_PRESENTATION.md:134-139`). |
+| `PRES-001` (`FPS_UNCAP_RELEASE_AUDIT.md:50`) | **CLOSED — superseded, not by scope reduction** | The row's remedy was disabling the replay. `main` instead re-enabled it on top of an atomic retained-task transaction: whole-arena private image + explicitly copied external dependencies + transactional publish (a failed capture leaves the last complete task intact and the opportunity holds). The row's *hazard statement* remains literally true of any implementation that reads live memory — see §1.1: task K+1 **is** already authored when the subloop runs. It is the reading, not the timing, that changed. **Scope of this closure:** each of the five classes has a verified capture site (above). It is not a proof that no *other* handler reads an uncaptured non-arena dependency — `dkr_retain_resolved_pointer` fails open on a lookup miss (`gfx_pc_dkr.c:937`). See residual obligation 2. |
+| `PRES-002` (`FPS_UNCAP_RELEASE_AUDIT.md:51`) | **CLOSED — its stated precondition is met** | The row permits re-enabling once there is "an immutable `{T,T+1}` ownership model and new endpoint/midpoint evidence." The ownership model is §3's table plus the forward census (`gfx_pc_dkr.c:4673`). The evidence contract is the four layers at `docs/UNCAPPED_PRESENTATION.md:188-226` — authority, endpoint identity, midpoint sensitivity, lifetime safety — with `check_presentation_matrix.py`, `check_camera_snapshot_coverage.py` and the live-arena poison gate (arena reads only — residual obligation 2) as the principal arms. Camera snapshots latch at display-list projection emission, not later from mutable camera globals (`UNCAPPED_PRESENTATION.md:134-139`). |
 
 Both rows carry the audit's own header caveat (`FPS_UNCAP_RELEASE_AUDIT.md:3-10`):
 that ledger is historical and superseded, and its "release blocked" framing
@@ -226,9 +242,41 @@ Not `PRES-001` failures, but the properties any future change must preserve:
    exists because the arena exposes no safe high-water mark or closed pointer
    graph (`UNCAPPED_PRESENTATION.md:161-176`). §1.1 shows the timing argument
    that would justify narrowing it is false.
-2. **Keep the live-arena poison gate in the acceptance set.** It is the only
-   check that fails if a new command handler reads a live pointer during replay.
-3. **Keep `MDKR_VIDEO_SCOPE_LIVE` apply at a single call site.** The safety of
+2. **Close the uncaptured-external gap — it is not covered by any current gate.**
+   `dkr_retain_resolved_pointer` (`gfx_pc_dkr.c:927-938`) redirects a resolved
+   pointer to private bytes *only if* `gfx_retained_task_lookup_dependency`
+   finds it. On a miss it **returns the live pointer** (`:937`), and the walk
+   reads live memory. That is fail-**open**, and it is the exact shape of the
+   defect `PRES-001` describes: a handler that reads a mutable non-arena
+   dependency without a matching `gfx_retained_task_capture_dependency` call
+   during the real walk would silently read task K+1's bytes.
+
+   The live-arena poison gate does not catch it. `dkr_test_live_arena_poison`
+   memsets **only the arena** — `memset(live_arena, 0xa5, live_arena_size)`
+   (`gfx_pc_dkr.c:6690`, bounded by `g_dkrArenaBase`/`g_dkrArenaSize` captured
+   at `:6682-6683`). Registry-resolved globals, rodata display lists, and any
+   other non-arena storage are untouched by the poison, so an uncaptured
+   external read passes the gate green. Nothing else in the acceptance set
+   covers it either: the capture sites in §3 were verified by reading the
+   handlers that *have* them, which cannot demonstrate the absence of a handler
+   that does not.
+
+   The two mitigation candidates, neither implemented:
+   - a static audit that enumerates every `dkr_resolve` consumer and asserts a
+     paired capture, ideally enforced rather than performed once; or
+   - making `dkr_retain_resolved_pointer` **fail closed** during replay — return
+     `NULL` (or set `dkr_replay_dependency_failed`) on a lookup miss for any
+     pointer outside the retained arena window, so an uncaptured dependency
+     aborts the replay and holds the authored image instead of drawing from
+     mutable memory. This is the stronger option and it is testable: it turns
+     the gap into a visible replay failure rather than a silent misread.
+
+   Until one of them lands, "the replay reads nothing live" is true of the arena
+   and of explicitly captured externals, and unproven elsewhere.
+3. **Keep the live-arena poison gate in the acceptance set** for the coverage it
+   does have: it is the only check that fails if a handler reads a live *arena*
+   byte during replay.
+4. **Keep `MDKR_VIDEO_SCOPE_LIVE` apply at a single call site.** The safety of
    the presentation domain is a property of `stubs_dkr.c:640` being the only
    place it runs (`video_config.c:106-146`).
 
