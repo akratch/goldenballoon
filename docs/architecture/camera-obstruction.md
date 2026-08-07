@@ -910,11 +910,13 @@ Current recorded evidence (2026-08-05, macOS host, US-v80 hash from the banner):
   reset/summary soak, including the 66-tick maximum embedded-target
   interval; and the isolated 12,500-frame 4P performance gate all live
   there.
-- The 24-arm matrix is a **safety pass, not a motion-quality pass**: elevated
-  emergency framing occurs in 26/3,587 authored 4:3 frames, 88–118/3,587
-  authored 16:9–32:9 frames, 108–234/3,587 capped-140 arms, and 333–651/3,587
-  uncapped-140 landscape arms (zero in every 20-degree arm). Those rates keep
-  CAM-06 and the exact lens-guard ultrawide work release-blocking.
+- The 24-arm matrix was a **safety pass, not a motion-quality pass**, because
+  elevated emergency framing was reached far too often at wide lenses. The rate
+  is now 0/3,587 in every authored and 20-degree arm, 0–7 in the capped-140
+  arms, and 4–7 in the uncapped-140 arms, against 10–124 and 155–336 before
+  (1,585 emergency frames across the matrix, now 46). What the measurement
+  found, and why the fix is not the one this document had been predicting, is
+  in section 6.2.1.
 - The historical opt-in exact shadow ran only the single authoritative boom
   corridor and never published its decision. Paired shadow-on/off authored-4:3 runs produce
   zero normalized resolved-camera differences across 5,187 selected rows. Of
@@ -999,7 +1001,7 @@ are now encoded as mechanisms or gates, not prose-only cautions:
 | A failed dynamic census could interpolate hard objects across an unknown transform | A failed publication makes all eligible hard objects discontinuous on that tick. The first complete recovered census also forces a current-pose cut for every hard instance; interpolation resumes only after two consecutive valid publications. |
 | A dynamic ID could appear in telemetry without driving correction | The door gate now requires every high-bit dynamic blocker row to be corrected and reports blocked/corrected/uncorrected counts. |
 | Zero lens penetration could still hide the racer | Post-validation and release summaries gate target visibility; the racer target is a chassis focus above the road-contact origin. A focus still overlapping after bounded local skin exclusion is `target_visible=0,target_embedded=1`; it is not claimed visible, and it does not masquerade as a solvable remote occluder. |
-| The enclosing sphere can make extreme wide/high-FOV lenses appear to have no valid boom | A bounded deterministic elevated/azimuthal emergency fan publishes only clear, target-visible endpoints and records every use. This is a safety fallback, not acceptance of its composition; exact near-plane/pyramid narrow phase remains the ultrawide quality fix. |
+| The enclosing sphere can make extreme wide/high-FOV lenses appear to have no valid boom | A bounded deterministic elevated/azimuthal emergency fan publishes only clear, target-visible endpoints and records every use. This is a safety fallback, not acceptance of its composition. Measured: the sphere was not what reached it on the authored boom — see section 6.2.1. |
 | Mean process CPU could conceal 4P query tails or a frozen browser timer | Allocation-free intra-thread histograms report finalizer/slot/static/dynamic/publication p50/p95/p99/max and tails; the release gate uses sustained 4P coverage and state identity. |
 | Cutout or vertex alpha could be globally misclassified as soft | ROM-derived immutable batch/texture provenance and a reviewed fingerprinted allowlist are required; missing provenance fails closed to hard. |
 | A whole-object fade could leak across viewports or hide hard batches | The target renderer design is per-viewport, batch-local opacity; global `Object.opacity`, model, texture, and collision state are forbidden. |
@@ -1023,6 +1025,56 @@ correction transition plus pinned concave/tunnel fixtures; motion/chatter metric
 and manual review; browser/load-time budgets; simultaneous resize/projection-fault
 coverage; and current-candidate 47-row/20-track, GCC, and resource-plateau breadth.
 
+### 6.2.1 What the ultrawide over-retraction actually was
+
+This document predicted for a long time that ultrawide over-retraction was the
+conservative enclosing sphere standing in for the exact lens on the
+authoritative boom, and that making the exact rounded-lens narrow phase
+authoritative there would fix it. Two measurements say otherwise, and the
+prediction is retained here because it was wrong in an instructive way.
+
+**Every** elevated-emergency frame in the 24-arm matrix, in every aspect and
+FOV arm, came from one call site: the boom-anchor search escalating directly to
+`camera_obstruction_publish_elevated_emergency`. On those frames the exact
+narrow phase was already authoritative and had already run: it independently
+refused the pivot, the desired eye, and all 31 interior points of the authored
+boom. The conservative sphere had refused too, so it was never the decider.
+At large lens half-angles the authored boom *segment* genuinely contains no
+valid pose — the anchor search is one-dimensional and the blocked set is not,
+so the search set and the solution set simply do not intersect.
+
+The sphere did still decide one thing that mattered: the shoulder fan's boom
+admission was sphere-only. At 5120x1440 with an uncapped 140-degree lens it
+rejected 3,672 of 3,700 candidate evaluations, so when the authored boom failed
+there was no composition-preserving rung left and the emergency crane was the
+only remaining option. That is exactly the class this section already forbids —
+"every place where a sphere false positive can force emergency framing must
+either use the exact result or deliberately record the conservative fallback" —
+and it was simply an unenumerated instance of it.
+
+The fix is therefore in two parts, and neither is "add exactness to the boom":
+
+1. The shoulder fan's boom admission (anchor probes and the anchor-to-candidate
+   corridor) uses the exact rounded-lens narrow phase, with the candidate's own
+   retargeted lens basis rather than the authored one. The cut interval keeps
+   its orientation-free conservative sphere sweep: that is the one motion in
+   the chain whose orientation changes, and this section requires either
+   conservative SE(3) coverage or a declared discontinuity with validated
+   endpoints there.
+2. A boom with no valid anchor tries that fan before the elevated emergency
+   fan. The shoulder keeps the authored boom distance and subject framing; the
+   emergency candidate that was previously winning is a fixed world-axis offset
+   from the pivot with a 78–147 unit lift and a forced retarget.
+
+The fan's exact anchor search is bounded (it stops at the bracket instead of
+running the authored boom's 31-probe interior scan) because eleven unbounded
+candidates a tick moved the measured 4P finalizer tail from 268us to 1.687ms.
+Bounded, it is p99 220us / max 428us against the section 7.6 budgets of 833us
+and 1.667ms, from 150us / 268us before.
+
+The residual 4–7 frames per wide arm are frames where the shoulder fan also
+finds nothing. They are honest emergencies, not the escalation defect.
+
 ### 6.3 Exact-lens critical path from shadow to production
 
 This order is mandatory. Later visual polish cannot be used to bypass an earlier
@@ -1034,7 +1086,7 @@ geometry, cost, or authority exit:
 | PERF-02 collision — implementation complete, release evidence open | `d8c8bb7` builds stable-order eight-triangle chunks and an auxiliary deterministic balanced BVH, validates topology/coverage/containment before publication, checks generation and integrity during both sphere/exact traversal, and enforces aggregate instance/node/chunk/triangle/stationary budgets. `da93930` adds identity/rotated/scaled equivalence and malformed-node/chunk/per-model-cap/generation fault tests against the production representation. | Aggregate multi-instance cap injection, whole-ROM model census, repeated real load/free/address-reuse soak, and moving-door snapshot tests. | Dynamic p99 <= 2 instances, max <= 4; maximum 64 nodes/32 chunks/256 retained triangles/128 stationary tests per corridor; zero truncation/invalid/degraded results; cache within recorded load/memory budgets. |
 | RUNTIME-01 camera/render — implementation complete, fault fixture open | Store renderer-derived exact guard and full fallback tuple per slot. Ordinary boom queries use the two-phase result. Alternate, emergency, recovery, scripted, stationary, and post-validation build and validate the final `Camera` orientation; publication performs no later retarget. Dynamic invalidity is never cleared or published, and failed ticks retire camera/object interpolation history. | Add a ROM-free state-machine seam that injects exact clear/hit/invalid, dynamic census failure/recovery, generation mismatch, stale tuple, final retarget, and orientation-changing interpolation. Runtime fixtures assert identical open-space bytes, authored fallback on source failure, and conservative sphere hit on healthy exact-work exhaustion. | Zero final-pose penetration or hidden resolvable target; zero stale generations; invalid never clears; failed publication cannot be snapshotted or interpolated; recovery requires a complete fresh tuple. |
 | MOTION-01 design/QA — instrumentation complete, thresholds and tuning open | Tune expansion-only spring/hysteresis and deterministic shot scoring after safety decisions stabilize. Mark orientation-changing cuts discontinuous unless an SE(3) sweep is implemented. The per-family profile table (§7.3.1) is now an explicit three-value enum so a route can be measured under a different profile without editing a correction stage. | `tests/check_camera_motion_quality.py` drives the three pinned routes under Modern and reads the runtime's `camera_motion` census: jerk, retract latency, recovery duration, blocker churn, shoulder flips, emergency dwell, and discontinuity density. Hard chatter/shoulder/dwell invariants assert; the analog metrics are reported as the calibration baseline. A 240 Hz interpolated arm reports cut density per displayed frame. Reduced-motion and camera-shake-off controls remain open. | Numeric thresholds pass and worst 1% clips receive signed manual review across 4:3, ultrawide, portrait, and split-screen. What the first capture found, and what closing it cost, is recorded in §7.3.2. |
-| VIS-01 rendering/content | Add reviewed soft-occluder policy and generation-keyed, per-viewport, batch-local fade. Hard geometry continues to require clearance; emergency racer fade remains presentation-only. | Two-view opposing visibility fixture, opaque/cutout/translucent pixels, freed-ID reuse, state/RNG/event/audio hashes, and GL/WebGPU/browser screenshots. | No cross-viewport contamination, no hard-wall fade substitution, no gameplay mutation, and approved content census. |
+| VIS-01 rendering/content | Add reviewed soft-occluder policy and generation-keyed, per-viewport, batch-local fade. The interim decline (small dynamic blockers that are neither close nor cheap stop retracting a race camera, after the authored lens validates exact-clear of the complete occluder set) is in place but has no measured target: on the hub route the only dynamic blockers are two door instances of ~302 unit half-extent, every small prop is already excluded from the camera hard set as non-solid, and static track triangles carry no comparable size at all. Hard geometry continues to require clearance; emergency racer fade remains presentation-only. | Two-view opposing visibility fixture, opaque/cutout/translucent pixels, freed-ID reuse, state/RNG/event/audio hashes, and GL/WebGPU/browser screenshots. | No cross-viewport contamination, no hard-wall fade substitution, no gameplay mutation, and approved content census. |
 | RELEASE-01 QA/release | Rerun the complete current-revision matrix in optimized artifacts and archive the evidence schema below. Flip the default only in a dedicated reviewed commit with immediate Observe rollback. | 84 registered tests plus release suite, GCC/Clang, sanitizers, native backends, wasm/browser, resource plateau, load time, long 4P soak, same-binary Legacy/center-ray negative controls. | Every CAM-00–CAM-09 and LENS-01–LENS-08 row green; definition of done satisfied; release notes/manual review signed. |
 
 Absolute screen-size independence is evaluated in world space: pixel resolution
@@ -1473,7 +1525,7 @@ None may reduce hard clearance. FOV remains owned by the existing display settin
 | Camera correction or display choice changes AI via visibility | logical-admission/RNG/state A/B | Keep AI activity on desired pose + canonical authored projection; any delta stops rollout |
 | Visual cache blocks invisible or soft material | provenance census + dark launch | Reclassify by stable asset/batch policy; do not lower global clearance |
 | Visual cache misses `NO_COLLISION` geometry | legacy witness plus visual-triangle census | Final target includes opaque visual triangles, not gameplay facets alone |
-| Ultrawide over-retracts | 21:9/32:9 correction distributions | Ship exact guard narrow phase before declaring ultrawide complete |
+| Ultrawide over-retracts | 24-arm elevated-emergency rates per aspect and FOV band | Closed for the escalation defect (section 6.2.1); the residual 4-7 frames per wide arm are frames with no shoulder either |
 | Corner oscillation/shoulder flipping | blocker/candidate trace and motion metrics | hysteresis, prior-shot score, deterministic minimum dwell; stop if rapid alternation persists |
 | Focus starts in geometry | overlap counters and targeted fixtures | depenetration/last-safe/emergency framing; never loop at zero boom |
 | Resize races projection | generation assertions | latch pose/projection atomically; fail closed on mismatch |
