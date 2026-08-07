@@ -271,6 +271,18 @@ typedef struct SnapCameraHistory {
 
 static SnapCameraHistory s_camera_history[PRESENTATION_SNAPSHOT_MAX_VIEWPORTS];
 
+/* One bit per gCameras[] slot the game has declared cut this tick; consumed
+ * by that slot's capture and cleared when the capture completes. */
+static uint32_t s_camera_cut_pending;
+
+void presentation_snapshot_note_camera_cut(int camera_id) {
+    if (camera_id < 0 || camera_id >= PRESENTATION_SNAPSHOT_MAX_CAMERAS ||
+        !presentation_snapshot_enabled()) {
+        return;
+    }
+    s_camera_cut_pending |= 1u << (unsigned)camera_id;
+}
+
 typedef struct AuthoredCameraSet {
     uint64_t tick;
     uint8_t valid_mask;
@@ -517,6 +529,11 @@ bool presentation_snapshot_capture_camera(
                     history->last_capture + 1u != s_capture_serial ||
                     history->camera_id != sample->camera_id ||
                     history->last_world_region != sample->world_region;
+    if (sample->camera_id >= 0 &&
+        sample->camera_id < PRESENTATION_SNAPSHOT_MAX_CAMERAS &&
+        (s_camera_cut_pending & (1u << (unsigned)sample->camera_id)) != 0u) {
+        discontinuous = true; /* the game snapped this camera (see the note) */
+    }
     if (!discontinuous) {
         const float moved =
             distance_squared(history->last_position, sample->position);
@@ -541,6 +558,11 @@ void presentation_snapshot_capture_commit(void) {
     }
     s_capturing = false;
     write = &s_frames[s_write];
+    /* Notes belong to the tick that raised them and are spent here, on the
+     * capture that just read them. A capture that fails whole spends them too:
+     * the next published pair is not capture-adjacent, so it is discontinuous
+     * on its own account and needs no carried-over note. */
+    s_camera_cut_pending = 0u;
 
     if (s_write_failed) {
         /*
@@ -688,6 +710,7 @@ void presentation_snapshot_shutdown(void) {
     s_publish_serial = 0;
     s_stage_generation = 0;
     s_generation_serial = 0;
+    s_camera_cut_pending = 0u;
 }
 
 static void presentation_snapshot_report(void) {

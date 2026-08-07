@@ -232,6 +232,24 @@ void presentation_snapshot_note_spawn(const void *object);
 void presentation_snapshot_note_free(const void *object);
 
 /*
+ * Note that this tick's camera pose is a CUT, not motion.
+ *
+ * Capture already recognises the cuts it can see from the pose alone: a
+ * different gCameras[] slot, a change of draw region, a capture gap, or a jump
+ * past PRESENTATION_SNAPSHOT_TELEPORT_UNITS. A game-side cut that clears none
+ * of those bars is invisible to it — the spectate cameras are the case that
+ * matters, because two adjacent trackside camera objects usually sit well
+ * under the teleport threshold and both belong to the same camera slot. Blend
+ * that and the camera flies between two shots inside one authoritative tick.
+ *
+ * So the sites that SNAP a camera say so here, exactly the way spawn/free are
+ * noted at the object lifecycle sites: the note is a fact the game knows and
+ * the pose does not carry. It applies to the next capture of `camera_id` and
+ * is consumed by it. No-op unless the seam is enabled.
+ */
+void presentation_snapshot_note_camera_cut(int camera_id);
+
+/*
  * Return the generation currently assigned by the lifecycle registry without
  * exposing or reading the live Object. Matrix registration uses this to bind
  * a frozen display-list transform to the exact object lifetime that produced

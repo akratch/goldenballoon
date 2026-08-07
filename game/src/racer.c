@@ -50,6 +50,7 @@
 #include "mdkr_adventure.h"
 #include "gameplay_event_trace.h"
 #include "present_sched.h"
+#include "presentation_snapshot.h"
 #include <stdio.h>  /* fprintf — loud non-finite-position assert below */
 #include <stdlib.h> /* abort */
 #include <string.h> /* memset — native intent sidecar capture */
@@ -8476,12 +8477,32 @@ void update_player_camera(Object *obj, Object_Racer *racer, f32 updateRateF) {
                 break;
         }
     }
+#ifdef NATIVE_PORT
+    {
+        /* A mode change reframes the shot: the finish camera jumps to a
+         * trackside spectate point and the door camera stops dead where the
+         * following camera happened to be. Neither is motion, and neither is
+         * far enough to trip the snapshot's teleport threshold, so say it. */
+        const s16 authoredMode = gCameraObject->mode;
+
+        if (racer->raceFinished == TRUE && gCameraObject->mode != CAMERA_FINISH_CHALLENGE) {
+            gCameraObject->mode = CAMERA_FINISH_RACE;
+        }
+        if (racer->exitObj) {
+            gCameraObject->mode = CAMERA_FIXED;
+        }
+        if (gCameraObject->mode != authoredMode) {
+            presentation_snapshot_note_camera_cut(racer->playerIndex);
+        }
+    }
+#else
     if (racer->raceFinished == TRUE && gCameraObject->mode != CAMERA_FINISH_CHALLENGE) {
         gCameraObject->mode = CAMERA_FINISH_RACE;
     }
     if (racer->exitObj) {
         gCameraObject->mode = CAMERA_FIXED;
     }
+#endif
     // Set the camera behaviour based on current mode.
     switch (gCameraObject->mode) {
         default:
@@ -8844,6 +8865,17 @@ void update_camera_finish_race(UNUSED f32 updateRate, Object *obj, Object_Racer 
         gCameraObject->mode = CAMERA_FINISH_CHALLENGE;
         return;
     }
+#ifdef NATIVE_PORT
+    if (cameraID != racer->spectateCamID) {
+        /* spectate_nearest has handed the shot to a different trackside
+         * camera object. The camera does not travel there — it is simply
+         * written to the new object's position on this tick — and adjacent
+         * spectate points are typically a few hundred units apart, well
+         * inside the teleport threshold. This is the cut the threshold
+         * cannot see. */
+        presentation_snapshot_note_camera_cut(racer->playerIndex);
+    }
+#endif
     racer->spectateCamID = cameraID;
     gCameraObject->trans.x_position = cam->trans.x_position;
     gCameraObject->trans.y_position = cam->trans.y_position;
