@@ -30,23 +30,41 @@ def main() -> int:
     start = SOURCE.index("s32 osAiSetNextBuffer")
     end = SOURCE.index("/* ---- music tempo trace", start)
     sink = SOURCE[start:end]
-    require(sink.index("audio_measure_and_dump") < sink.index("SDL_QueueAudio"),
+    require(sink.index("audio_measure_and_dump") <
+            sink.index("mdkr_audio_ring_push"),
             "existing deterministic capture must stay before the host sink")
 
-    success = re.search(
-        r"if \(SDL_QueueAudio\(s_dev, buf, size\) == 0\) \{(?P<body>.*?)\n\s*\} else \{",
-        sink, re.DOTALL)
-    require(success is not None, "native SDL success/failure branch is required")
-    require("mdkr_audio_sink_evidence_accepted" in success.group("body"),
-            "only SDL-success branch may capture accepted PCM")
-    require("mdkr_audio_reconnect_note_accepted_stereo" in success.group("body"),
-            "accepted evidence must follow the same repaired block bookkeeping")
-    require("repairPending" in success.group("body"),
-            "accepted evidence must label reconnect-repaired blocks")
+    # Native delivery is a callback sink fed by an SPSC ring (platform/
+    # audio_ring.c), not SDL_QueueAudio. The distinction matters to this
+    # contract because the ring push is a copy into storage this port owns and
+    # therefore CANNOT fail -- the old success/failure pair around
+    # SDL_QueueAudio described a call that allocated and could refuse. What
+    # replaces "the host rejected this block" is "the ring was full and evicted
+    # the oldest frames", which is a different event with different
+    # bookkeeping, so it is asserted separately below rather than folded in.
+    # Match a CALL, not the name: the prose above and around the sink names
+    # SDL_QueueAudio deliberately, to explain what was replaced and why.
+    require(re.search(r"\bSDL_QueueAudio\s*\(", SOURCE) is None,
+            "native delivery must not regress to queue mode: the queue path "
+            "pads shortfalls with unconcealed silence inside SDL")
+    require("want.callback = dkr_audio_device_callback" in SOURCE,
+            "the native sink must be driven by SDL's audio thread")
 
-    failure_tail = sink[success.end():]
-    require("mdkr_audio_sink_evidence_rejected" in failure_tail,
-            "SDL rejection must be visible to evidence telemetry")
+    push = re.search(
+        r"evicted = mdkr_audio_ring_push\(&s_ring, samples, frameCount\);"
+        r"(?P<body>.*?)\n\s*\} else \{",
+        sink, re.DOTALL)
+    require(push is not None, "native ring push branch is required")
+    require("mdkr_audio_sink_evidence_accepted" in push.group("body"),
+            "only the accepted push may capture accepted PCM")
+    require("mdkr_audio_reconnect_note_accepted_stereo" in push.group("body"),
+            "accepted evidence must follow the same repaired block bookkeeping")
+    require("repairPending" in push.group("body"),
+            "accepted evidence must label reconnect-repaired blocks")
+    require("mdkr_audio_reconnect_note_gap" in push.group("body"),
+            "ring eviction must arm the same continuity repair a lost block did")
+    require("s_droppedFrames += evicted" in push.group("body"),
+            "ring eviction must be visible as lost frames")
     require("mdkr_audio_sink_evidence_dropped" in sink,
             "emergency queue drops must be visible to evidence telemetry")
 

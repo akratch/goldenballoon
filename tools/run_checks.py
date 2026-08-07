@@ -277,6 +277,9 @@ CHECKS = (
           "and stale-tempo control"),
     Check("audio_sink_evidence", "check_audio_sink_evidence.py", "native",
           "real-ROM accepted-SDL PCM capture, loss telemetry, and headless opt-out"),
+    Check("audio_resilience", "check_audio_resilience.py", "native",
+          "shipped-binary callback/ring sink wiring: mode, ring conservation, "
+          "negotiated device period, and measured drain"),
     Check("vehicle_audio", "check_vehicle_audio.py", "native",
           "ROM-derived vehicle sound IDs, engine-loop activation, pitch, and "
           "idle/main crossfade"),

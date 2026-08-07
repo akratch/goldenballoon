@@ -1957,7 +1957,8 @@ This short real-ROM engine route is the native bridge between deterministic
 pre-sink PCM and the SDL application queue. It uses the test-only
 `MDKR_TEST_HEADLESS_AUDIO=1` opt-in together with `SDL_AUDIODRIVER=dummy`, then
 sets `MDKR_AUDIO_SINK_DUMP` and requires a valid, nonempty 22050 Hz stereo s16 WAV
-whose payload and telemetry exactly match blocks accepted by `SDL_QueueAudio`.
+whose payload and telemetry exactly match the blocks the native sink accepted
+into its output ring.
 The route must have zero rejected, dropped, or recovery-repaired blocks. It also runs
 a control proving ordinary headless mode remains sinkless when the opt-in is absent.
 
@@ -1980,6 +1981,44 @@ PCM to remain byte-identical under 3–6-field catch-up and suspension rebases;
 forced-WebGPU original/30/45/60/120/uncapped schedules. A live device is still
 required to qualify SDL or AudioWorklet underrun, backlog, and DAC-drift
 behavior.
+
+## Shipped callback/ring sink wiring — `tests/check_audio_resilience.py`
+
+The `audio_resilience` CTest proves the *mechanism* — the lock-free SPSC ring in
+`platform/audio_ring.c`, its underflow-concealing crossfade, and a latency
+controller driven by a measured drain rather than an elapsed-time estimate — with
+no ROM and no device. It cannot see whether the engine still uses any of it. A
+revert to `SDL_QueueAudio`, or a deleted
+`mdkr_audio_queue_controller_set_device_period()` or
+`mdkr_audio_queue_controller_note_drain()` call, leaves every C unit green and
+ships broken audio. `tests/check_audio_resilience.py` closes that gap by running
+the real binary against the dummy driver and asserting on the four seams that
+only exist when the wiring is intact: the device-open banner must report
+`mode=callback` with a power-of-two ring of at least 8192 frames; the
+`[AUDIO-RING]` shutdown summary must agree with that banner's period and
+capacity, must never report an overflow or an evicted frame, and must never see a
+callback ask for more than one period; the `[AUDIO-SINK]` controller row must
+carry the *negotiated* `deviceperiod=`; and its `stalls=` must be zero, because
+the stall guard exists only to bound an estimated drain and a headless run — which
+free-runs far ahead of real time — trips it whenever the estimate is back. Frame
+conservation ties it together: `pushed=` on the ring line must equal `samples=`
+on the `[AUDIO-SERVICE]` line, so the ring is carrying exactly what the
+synthesiser made and nothing else.
+
+Underruns and concealments are deliberately *not* asserted here. Headless runs
+outpace real time by a wide margin, so the ring stays deep and starvation never
+occurs; a zero-underrun assertion would pass for the wrong reason. Starvation and
+its crossfade stay with the deterministic CTest. The run needs both
+`MDKR_TEST_HEADLESS_AUDIO=1` and `SDL_AUDIODRIVER=dummy` (the opt-in is refused
+without the dummy driver) plus `MDKR_AUDIO_SERVICE_TRACE=1` for the controller and
+service rows. A control arm re-runs with `MDKR_AUDIO=0`, which keeps synthesis but
+opens no host device, and requires the banner and the ring summary to be absent —
+proof that the detectors are reading the sink and would notice its removal.
+
+```bash
+python3 tests/check_audio_resilience.py --build build-rel --rom baserom.us.v80.z64
+python3 tests/check_audio_resilience.py --no-controls
+```
 
 ## Absolute output level — `tests/check_audio_level_reference.py` (RUN THIS ALONGSIDE `check_audio_output.py`, SAME TRIGGER PATHS)
 
