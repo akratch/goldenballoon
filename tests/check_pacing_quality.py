@@ -30,10 +30,59 @@ quality measurement.
 
 The REALTIME arm is where the quality numbers come from -- a genuinely paced,
 compositor-visible run on the display policy with smoothing. It gates the
-things that must never regress (no tearing mode, no audio underrun) and REPORTS
-the displayed-interval and phase-variance tails as the labelled M3 baseline.
-Those are reported rather than gated on purpose: a threshold invented before a
-baseline exists is a guess, and this run is what turns it into a number.
+things that must never regress (no tearing mode, no audio underrun) and
+publishes the displayed-interval and phase-variance tails as the labelled
+baseline for the next milestone.
+
+M3 TURNED TWO OF THOSE REPORTS INTO GATES. M2 published them rather than gating
+them for a good reason -- a threshold invented before a baseline exists is a
+guess -- and M2's run is what turned them into numbers. Now that M3 has moved
+them, the interpolation-phase variance and the displayed-interval p99 are held
+to bounds derived from the post-M3 measurement with 2x headroom, so ordinary
+machine variance cannot flake them but a real regression cannot hide either.
+They are gated only on a run that actually paced (see below); publishing or
+gating a number taken from a session that never throttled would be worse than
+measuring nothing.
+
+AND ONLY WHEN EVERY PACED ATTEMPT MISSES. This arm is bimodal by nature, and a
+busy machine can hand one attempt a tail squarely inside the pre-M3 range --
+measured, not hypothesised. No threshold can separate that from a regression,
+because it IS the same number; the thing that separates them is that a
+regression repeats and a transient does not. So a paced attempt that misses its
+bounds is retried, and the run fails only when no paced attempt came in. The
+pre-M3 build missed these bounds by 5x to 25x on every run it made, so the
+retry costs nothing in detection.
+
+THE VBLANK PROJECTION (M3 slice 1) is asserted structurally rather than
+numerically, because it is a claim about WHICH VALUES ARE POSSIBLE and not
+about how big they are. Under a vblank-quantized queue the engine projects the
+interpolation phase onto the display's own grid and publishes that grid as
+`gridppm`. So:
+
+  * every synthetic arm must report `gridppm=0`. Synthetic pacing has no vblank
+    to project onto, and the projection declining there is exactly what keeps
+    those runs bit-for-bit what they were before M3 -- which is what
+    tests/check_arbitrary_presentation_rates.py's byte-identity arms prove;
+  * a realtime arm that paced must report a nonzero `gridppm` AND displayed
+    phases that ARE grid points. A run that quietly stopped projecting would
+    keep passing every count-based identity in here; only this catches it.
+
+THE DISPLAY-CHANGE ARM (M3 slice 2) covers a window moving to a monitor with a
+different refresh. What can be automated is everything downstream of the event:
+MDKR_TEST_DISPLAY_RATE_SWITCH=<hz>@<tick> makes the host report a different
+refresh at a chosen tick and runs the same handler SDL's display-changed event
+does, and the arm asserts the backend re-ranked its present mode against the
+new number rather than keeping the one baked at configuration.
+
+  MANUAL STEP, NOT COVERED HERE: SDL's delivery of
+  SDL_WINDOWEVENT_DISPLAY_CHANGED itself needs two monitors of different
+  refresh, which no headless run has. To check it by hand, start a windowed run
+  with MDKR_PRESENT_RATE=display and drag the window between the two monitors;
+  stderr must show one `[PRESENT-DISPLAY] event=display-changed` row per
+  crossing with the two refresh rates, followed by a re-emitted `[PRESENT-MODE]`
+  row carrying the new `displayHz`. A refresh change on the SAME display raises
+  no SDL event at all and still needs a relaunch, which is what the pacing
+  keys' SCOPE_RESTART already tells the player.
 
 WHEN THE ENVIRONMENT CANNOT PRODUCE A BASELINE. Two session conditions make the
 realtime numbers meaningless without anything being wrong in the code:
@@ -86,12 +135,53 @@ SYNTH_TICKS = 200
 REALTIME_SECONDS = 30
 REALTIME_TICKS = REALTIME_SECONDS * 30
 # A long automation window can lose its drawable partway through, which costs
-# the baseline but nothing else. One retry converts most of those into a usable
-# measurement; more than that is just spending minutes on a session that is not
-# going to pace.
-REALTIME_ATTEMPTS = 2
+# the baseline but nothing else, and a busy machine can turn one attempt's tail
+# into a number that looks like a regression. Retries convert most of both into
+# a usable measurement; more than a few is just spending minutes on a session
+# that is not going to pace.
+REALTIME_ATTEMPTS = 3
 
 ONE_TICK_PPM = 1_000_000
+
+# M3 GATE BOUNDS.
+#
+# Both are 2x the post-M3 measurement on the reference machine, rounded up to a
+# round number. The factor is not caution about the change -- it is caution
+# about the MEASUREMENT: this arm shares a machine with whatever else is running
+# on it, and the same binary legitimately varies by a factor of two or three
+# between runs. A bound tight enough to catch that variance would fail on a busy
+# afternoon and teach everyone to ignore it. Two times the measured value still
+# catches the regressions worth catching, because the M2->M3 move was an order
+# of magnitude, not a percentage.
+#
+# Recorded so the next milestone can see what it inherited. Both columns are
+# three runs of this file on one machine, the pre-M3 column measured by running
+# the pre-M3 binary against this same gate:
+#
+#   phase variance    before 3.4e10 - 1.8e11 ppm^2  ->  after 1.3e9 - 1.3e10
+#   phase p50         before 303104 - 499712 ppm    ->  after 503808 ppm
+#   phase p99         before 720896 - 1000000 ppm   ->  after 503808 ppm
+#   displayed p99     before 17.8 - 19.1 ms         ->  after 18.0 - 20.1 ms
+#
+# The phase numbers are slice 1 (the vblank projection): the median phase was
+# not even reliably the midpoint before, and now every percentile out to the
+# 99th is one grid point. The displayed-interval p99 is NOT improved and is not
+# claimed to be -- slice 3 removed presents that were never going to reach the
+# screen, not the compositor jitter of the ones that do. It is gated to stop it
+# getting worse, not as evidence that it got better.
+ALPHA_VAR_MAX_PPM2 = 30_000_000_000
+DISPLAYED_P99_MAX_US = 40_000
+
+# The display-change arm's transition. 100 is deliberately BETWEEN the two
+# refresh rates: a 100 Hz cap wants a latest-image queue against a 60 Hz
+# display and is served exactly by the blocking one at 120 Hz, so a backend
+# that failed to re-rank keeps asking for the wrong queue and the arm can see
+# it. The tick is far enough in that the surface is definitely configured.
+DISPLAY_SWITCH_POLICY = "100"
+DISPLAY_SWITCH_CAP_HZ = 100
+DISPLAY_SWITCH_TO_HZ = 120
+DISPLAY_SWITCH_TICK = 60
+DISPLAY_SWITCH_TICKS = 140
 
 # [PRESENTSCHED-SUMMARY] presentkind, as published by MdkrPresentPolicyKind.
 KIND_ORIGINAL = 0
@@ -166,7 +256,8 @@ def arm_label(output: str) -> str:
 
 def run_arm(binary: Path, rom: Path, root: Path, label: str, policy: str,
             smoothing: str, ticks: int, timeout: int, verbose: bool,
-            *, realtime: bool = False) -> Run:
+            *, realtime: bool = False,
+            extra_env: dict[str, str] | None = None) -> Run:
     run_dir = root / label
     save_dir = run_dir / "save"
     save_dir.mkdir(parents=True)
@@ -198,6 +289,8 @@ def run_arm(binary: Path, rom: Path, root: Path, label: str, policy: str,
         # inside that budget, so the intervals are wall time the host actually
         # slept rather than a synthetic per-present field count.
         env["MDKR_PACE_REALTIME"] = "1"
+    if extra_env:
+        env.update(extra_env)
     command = [
         str(binary), "--headless-ticks", str(ticks),
         "--window-size", "320x240", "--rom", str(rom),
@@ -297,6 +390,53 @@ def explain_unthrottled_presentation(result: Run) -> str | None:
     return None
 
 
+def grid_locked(reported: int, grid: int, binwidth: int) -> bool:
+    """Whether a reported percentile is a point on the `grid`.
+
+    Percentiles come out of a fixed-bin histogram, so the number is the bin's
+    upper edge and the true sample lies in ``(reported - binwidth, reported]``.
+    A grid point is therefore "hit" when some whole multiple of the grid falls
+    in that half-open window.
+    """
+    if grid <= 0 or reported <= 0:
+        return False
+    multiple = reported // grid
+    for candidate in (multiple, multiple + 1):
+        if candidate >= 1 and reported - binwidth < candidate * grid <= reported:
+            return True
+    return False
+
+
+def check_vblank_projection(result: Run) -> list[str]:
+    """The displayed phases really are points on the display's own grid.
+
+    Only meaningful for an arm that paced against a vblank-quantized queue; the
+    caller decides that. A count-based check cannot see this: a build that
+    stopped projecting would still present the right NUMBER of images at the
+    right phases-on-average, and only stop being even.
+    """
+    label = result.label
+    alpha = result.hist["alpha-delta"]
+    grid = alpha.get("gridppm", 0)
+    failures: list[str] = []
+
+    if grid <= 0:
+        return [
+            f"{label}: gridppm={grid} — this arm paced against the display's "
+            "own refresh, so the interpolation phase must be projected onto "
+            "its grid; the projection declined"]
+    binwidth = alpha.get("binwidth", 0)
+    for percentile in ("p50", "p95"):
+        reported = alpha.get(percentile, 0)
+        if not grid_locked(reported, grid, binwidth):
+            failures.append(
+                f"{label}: alpha-delta {percentile}={reported}ppm is not a "
+                f"multiple of the {grid}ppm display grid (binwidth "
+                f"{binwidth}ppm) — displayed phases are not landing on "
+                "projected vblanks")
+    return failures
+
+
 def check_plumbing(result: Run, kind: int, smoothing_on: bool) -> list[str]:
     """The structural identities that must hold for any correct run."""
     label = result.label
@@ -369,6 +509,17 @@ def check_plumbing(result: Run, kind: int, smoothing_on: bool) -> list[str]:
                 f"phase only {alpha.get('min')} ppm, under one tick — an "
                 "interpolated image reached the screen")
 
+    # Synthetic pacing does not sleep and has no vblank, so the M3 projection
+    # must decline here. This is the assertion that keeps every headless arm --
+    # including the byte-identity ones in check_arbitrary_presentation_rates --
+    # bit-for-bit what they were: a projection that engaged under synthetic
+    # pacing would move the interpolation phase and move them with it.
+    if alpha.get("gridppm", -1) != 0:
+        failures.append(
+            f"{label}: gridppm={alpha.get('gridppm')} under synthetic pacing "
+            "— the display-grid projection must decline where there is no "
+            "vblank, or headless runs stop being reproducible")
+
     for name in SERIES:
         if result.hist[name].get("sqoverflow", 0) != 0:
             failures.append(
@@ -397,6 +548,93 @@ def check_audio(result: Run) -> list[str]:
         return [f"{result.label}: audio sink starved {underruns} times "
                 "(underruns must be 0)"]
     return []
+
+
+def check_realtime_quality(result: Run) -> list[str]:
+    """The M3 numeric gates, for a run that genuinely paced.
+
+    Called only after both environment explanations came back clean: on a
+    session that never throttled, these distributions describe the loop's own
+    speed and holding them to a bound would be gating noise.
+    """
+    label = result.label
+    displayed = result.hist["displayed-interval"]
+    alpha = result.hist["alpha-delta"]
+    failures: list[str] = []
+
+    variance = alpha.get("var", -1)
+    if variance < 0 or variance > ALPHA_VAR_MAX_PPM2:
+        failures.append(
+            f"{label}: interpolation-phase variance {variance}ppm^2 exceeds "
+            f"{ALPHA_VAR_MAX_PPM2}ppm^2 — displayed frames are not evenly "
+            "spaced in phase, which is what a player sees as stutter")
+    p99 = displayed.get("p99", -1)
+    if p99 < 0 or p99 > DISPLAYED_P99_MAX_US:
+        failures.append(
+            f"{label}: displayed-interval p99 {p99}us exceeds "
+            f"{DISPLAYED_P99_MAX_US}us — the slowest 1% of frames are "
+            "arriving late enough to be seen")
+    failures.extend(check_vblank_projection(result))
+    return failures
+
+
+def check_display_change(result: Run) -> list[str]:
+    """The refresh was re-derived live and the present mode re-ranked.
+
+    The `[PRESENT-MODE]` row is emitted at every surface configuration, so a
+    run whose display changed must show a SECOND one carrying the new refresh.
+    Without the re-rank the swapchain keeps a present mode chosen for a monitor
+    the window is no longer on -- which nothing else in this file can see,
+    because the counts and cadences all stay plausible.
+    """
+    label = result.label
+    failures: list[str] = []
+    changes = [line for line in result.output.splitlines()
+               if "[PRESENT-DISPLAY] event=display-changed" in line]
+    modes = [line for line in result.output.splitlines()
+             if "[PRESENT-MODE]" in line]
+
+    def field(row: str, name: str) -> str:
+        for token in row.split():
+            key, separator, value = token.partition("=")
+            if separator and key == name:
+                return value
+        return ""
+
+    if len(changes) != 1:
+        return [f"{label}: expected exactly one [PRESENT-DISPLAY] "
+                f"display-changed row, saw {len(changes)}"]
+    # The rate the run BOOTED at is whatever this machine's display reports, so
+    # it is read rather than asserted; only the rate it moved TO is ours.
+    booted = field(changes[0], "oldHz")
+    if field(changes[0], "newHz") != str(DISPLAY_SWITCH_TO_HZ):
+        failures.append(
+            f"{label}: display-change row did not report the forced "
+            f"{DISPLAY_SWITCH_TO_HZ}Hz rate: {changes[0].strip()}")
+
+    rates = [field(row, "displayHz") for row in modes]
+    if str(DISPLAY_SWITCH_TO_HZ) not in rates:
+        failures.append(
+            f"{label}: no [PRESENT-MODE] row was re-emitted at "
+            f"displayHz={DISPLAY_SWITCH_TO_HZ} (saw {rates}) — the surface was "
+            "not reconfigured, so the present mode is still ranked against the "
+            "monitor the window left")
+
+    # The cap deliberately sits BETWEEN the two refresh rates, so the ranking
+    # crosses: above a 60 Hz display a 100 Hz cap wants a queue that can drop
+    # an undisplayed image, and at 120 Hz the blocking queue serves it exactly.
+    # A re-emitted row that requested the same mode either way would prove
+    # nothing -- but only where the boot rate is actually below the cap, which
+    # is a property of the machine and not of the change under test.
+    requested = [field(row, "requested") for row in modes]
+    if booted.isdigit() and int(booted) < DISPLAY_SWITCH_CAP_HZ:
+        if len(set(requested)) < 2:
+            failures.append(
+                f"{label}: the present-mode REQUEST did not change across a "
+                f"{booted}Hz -> {DISPLAY_SWITCH_TO_HZ}Hz change that straddles "
+                f"the {DISPLAY_SWITCH_CAP_HZ}Hz cap (saw {requested}) — the "
+                "ranking is still being made against the old refresh")
+    return failures
 
 
 def baseline_note(result: Run) -> str:
@@ -462,14 +700,31 @@ def main() -> int:
                         f"{result.hist['alpha-delta'].get('displayed')} "
                         "displayed")
 
+            # Deterministic and cheap, so it runs regardless of --skip-realtime:
+            # nothing in it is a wall-clock measurement.
+            label = "synth-display-change"
+            result = run_arm(
+                binary, rom, root, label, DISPLAY_SWITCH_POLICY, "interpolate",
+                DISPLAY_SWITCH_TICKS, args.timeout, args.verbose,
+                extra_env={
+                    "MDKR_TEST_DISPLAY_RATE_SWITCH":
+                        f"{DISPLAY_SWITCH_TO_HZ}@{DISPLAY_SWITCH_TICK}",
+                })
+            failures.extend(check_display_change(result))
+            notes.append(
+                f"{label}: refresh re-derived live and present mode re-ranked")
+
             if args.skip_realtime:
                 notes.append("realtime arm skipped by --skip-realtime")
             else:
                 cause = None
+                quality: list[str] = []
+                paced = 0
                 # Losing the drawable partway through a long automation run is
-                # transient, so one retry is worth a valid baseline. Both
-                # attempts are fully gated; only the baseline needs a session
-                # that paced for the whole run.
+                # transient, so a retry is worth a valid baseline. Every attempt
+                # is fully gated on the things the environment cannot excuse;
+                # only the baseline and the M3 bounds need a session that paced
+                # for the whole run.
                 for attempt in range(1, REALTIME_ATTEMPTS + 1):
                     label = "realtime-display-smoothing"
                     if attempt > 1:
@@ -493,12 +748,28 @@ def main() -> int:
                             f"{label}: interpolation phase ran backwards")
                     cause = (explain_no_display_session(result)
                              or explain_unthrottled_presentation(result))
-                    if not cause:
-                        # Reported, not gated: M3's targets come from these.
-                        baselines.append(baseline_note(result))
+                    if cause:
+                        notes.append(f"{label}: no valid baseline — {cause}")
+                        continue
+                    # This session paced, so its distributions describe
+                    # presentation rather than the environment and the M3
+                    # bounds apply to them.
+                    paced += 1
+                    baselines.append(baseline_note(result))
+                    quality = check_realtime_quality(result)
+                    if not quality:
                         break
-                    notes.append(f"{label}: no valid baseline — {cause}")
-                if cause:
+                    notes.append(
+                        f"{label}: paced, but outside the M3 bounds — "
+                        f"{len(quality)} bound(s); retrying, because this arm "
+                        "is bimodal and a single transient is not a regression")
+                if quality:
+                    # Every paced attempt was out of bounds. A real regression
+                    # cannot pass any of them -- the pre-M3 phase variance was
+                    # 5x to 25x the bound on every run -- while a stall on one
+                    # busy attempt does not survive being repeated.
+                    failures.extend(quality)
+                if paced == 0:
                     notes.append(
                         f"realtime arm: NO BASELINE after {REALTIME_ATTEMPTS} "
                         "attempts. The no-tearing and no-underrun assertions "
@@ -511,10 +782,17 @@ def main() -> int:
         print("check_pacing_quality: FAIL")
         for failure in failures:
             print(f"  - {failure}")
+        # The distributions the failure is about, so the numbers do not have to
+        # be reproduced by hand before anyone can read the result.
+        for baseline in baselines:
+            print(f"  - measured: {baseline}")
         return 1
     print("check_pacing_quality: PASS -- displayed-interval, interpolation-"
           "phase and present-queue-latency census consistent across every "
-          "policy/smoothing arm, with no phase regression and no audio underrun")
+          "policy/smoothing arm, with no phase regression and no audio "
+          "underrun; displayed phases land on the projected display grid, the "
+          "refresh re-derives live, and the paced tails are within the M3 "
+          "bounds")
     for note in notes:
         print(f"  - {note}")
     for baseline in baselines:
