@@ -134,6 +134,14 @@ int      platform_vi_pace_compensating(void);
 /* Presentation subloop. Returns nonzero when the resolved policy needs host
  * opportunities between authoritative ticks. */
 int      platform_present_subloop_fields(void);
+/*
+ * Apply a staged Video.FrameLimit / Video.MotionSmoothing / Video.AllowTearing
+ * change as one ordered step. Registered as the MDKR_VIDEO_APPLY_PRESENTATION
+ * domain's applier and called ONLY from video_config's boundary runner, which
+ * the engine invokes at the host-frame boundary — never from a settings stack.
+ * See the definition in platform_sdl_min.c for what that boundary guarantees.
+ */
+void     platform_present_config_apply(void);
 /* Refresh of the display the window is on, or 0 where the host does not report
  * one. The deadline pacer and the backend present-mode choice must agree about
  * what "above the display" means, so both read this one number. */

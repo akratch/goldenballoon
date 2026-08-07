@@ -61,6 +61,13 @@ int camera_obstruction_racer_opacity_for_viewport(s32 viewport);
  * Camera/gCameras or simulation state. */
 void camera_obstruction_tick(int update_rate_fields);
 void camera_obstruction_runtime_reset(void);
+/*
+ * Register this runtime as the owner of Camera.Obstruction's deferred apply
+ * (video_config.h). Called once during engine startup. Until it is, the key
+ * behaves exactly as it always did: resolved from MDKR_CAMERA_OBSTRUCTION at
+ * the first tick that asks, with no way to change it under a running engine.
+ */
+void camera_obstruction_runtime_install_config_apply(void);
 /* Emit the optional MDKR_CAMERA_PERF allocation-free timing census. */
 void camera_obstruction_perf_summary(void);
 /*

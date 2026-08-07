@@ -84,8 +84,19 @@ void reportResult(MdkrVideoRuntimeResult r, const MdkrVideoSchema *s) {
     char buf[320];
     switch (r) {
         case MDKR_VIDEO_RUNTIME_LIVE:
-            std::snprintf(buf, sizeof(buf), "%s applied.", s->label);
-            setStatus(buf, AppTheme::good());
+            /* LIVE is the setter's verdict about persistence and precedence,
+             * not about WHEN the engine picks the value up — a LEVEL-scoped key
+             * returns it too. Saying "applied" for one of those would claim a
+             * change the player can see is not on screen yet. */
+            if (s->scope == MDKR_VIDEO_SCOPE_LEVEL) {
+                std::snprintf(buf, sizeof(buf),
+                              "%s is set — it takes effect the next time a "
+                              "track loads.", s->label);
+                setStatus(buf, AppTheme::accent());
+            } else {
+                std::snprintf(buf, sizeof(buf), "%s applied.", s->label);
+                setStatus(buf, AppTheme::good());
+            }
             break;
         case MDKR_VIDEO_RUNTIME_RESTART:
             std::snprintf(buf, sizeof(buf),
@@ -433,6 +444,14 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
     if (s->scope == MDKR_VIDEO_SCOPE_RESTART) {
         ImGui::SameLine();
         ui::RestartBadge();
+    } else if (s->scope == MDKR_VIDEO_SCOPE_LEVEL) {
+        ui::LiveBadge("next track");
+    } else if (mdkr_video_key_apply_domain(k) != MDKR_VIDEO_APPLY_NONE) {
+        /* Only the keys that USED to demand a restart say so. Every other LIVE
+         * key has always applied immediately and has never carried a badge;
+         * giving them one now would add noise to twenty rows to make a point
+         * about four. */
+        ui::LiveBadge("applies immediately");
     }
 
     ImGui::SetNextItemWidth(ui::kControlWidth());
@@ -646,6 +665,20 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
         formatValue(k, s, live(k), liveBuf, sizeof(liveBuf));
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
         ImGui::Text("Saved for next Play: %s (current: %s)",
+                    optionLabel(k, valueBuf), optionLabel(k, liveBuf));
+        ImGui::PopStyleColor();
+    } else if (s->scope == MDKR_VIDEO_SCOPE_LEVEL && differsFromLive(k, s)) {
+        // Same honesty, one boundary earlier. The desired/live split is exactly
+        // as real here as it is for a RESTART key — video_config_runtime.c
+        // deliberately does not copy a staged LEVEL value into the live config
+        // until the level applier runs — so the panel can name both without
+        // guessing, and "the next time a track loads" is a promise the engine
+        // keeps rather than a hope.
+        char liveBuf[MDKR_VIDEO_STRING_MAX];
+        formatValue(k, s, live(k), liveBuf, sizeof(liveBuf));
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+        ImGui::Text("Set to %s — takes effect the next time a track loads "
+                    "(now: %s)",
                     optionLabel(k, valueBuf), optionLabel(k, liveBuf));
         ImGui::PopStyleColor();
     }

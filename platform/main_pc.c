@@ -118,6 +118,10 @@ static void mdkr_crash_handler(int sig) {
 extern void osInitialize(void);
 extern void thread0_create(void);
 extern void thread3_main(void *arg);
+/* game/src/camera_obstruction_runtime.c — claims the CAMERA apply domain.
+ * Declared here for the same reason as the three above: the entry point does
+ * not pull the game's camera headers. */
+extern void camera_obstruction_runtime_install_config_apply(void);
 
 /* Renderer front-end (platform/fast3d/gfx_pc_dkr.c) + the OpenGL backend vtable
  * (platform/fast3d/gfx_opengl.c). Forward-declared opaquely to avoid pulling the
@@ -460,6 +464,21 @@ int main(int argc, char **argv) {
     }
     printf("[mdkr64] entering boot path...\n");
 
+    /*
+     * Claim the deferred-apply domains (video_config.h). AFTER gfx_init and
+     * before the game boot chain, which is the only window that satisfies both
+     * ends of the contract: every receiver these appliers touch now exists, and
+     * no settings UI can have run yet, so no edit can have taken the inline
+     * publish path that registration turns off.
+     *
+     * Before this point the same keys resolve and publish exactly as they
+     * always did — which is what keeps --video-set, the launcher's pre-Play
+     * panel, and headless runs on one unchanged path.
+     */
+    mdkr_video_config_register_apply(MDKR_VIDEO_APPLY_PRESENTATION,
+                                     platform_present_config_apply);
+    camera_obstruction_runtime_install_config_apply();
+
     /* Phase 4: the game boot chain, collapsed onto this thread. */
     osInitialize();
     thread0_create();
@@ -467,6 +486,14 @@ int main(int argc, char **argv) {
     exitCode = platform_exit_code();
 
 shutdown:
+    /*
+     * Release the apply domains before anything they touch is torn down. A
+     * settings edit arriving after this point takes the inline publish path,
+     * which writes the config and nothing else -- the correct outcome once
+     * there is no longer a pacer or a camera sidecar to apply it to.
+     */
+    mdkr_video_config_register_apply(MDKR_VIDEO_APPLY_PRESENTATION, NULL);
+    mdkr_video_config_register_apply(MDKR_VIDEO_APPLY_CAMERA, NULL);
     if (!platform_oracle_update_fields_finish()) {
         exitCode = EXIT_FAILURE;
     }

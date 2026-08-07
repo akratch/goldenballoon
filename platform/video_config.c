@@ -103,38 +103,50 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
      * converts elapsed time into exact sub-field scheduler/audio units, so none
      * of those values is rounded onto the source 50/60 Hz VI grid.
      *
-     * SCOPE_RESTART, not SCOPE_LIVE, and the asymmetry with Video.Widescreen /
-     * Video.Aspect / Video.RenderScale is deliberate. Both consumers LATCH:
+     * SCOPE_LIVE with an apply DOMAIN, which is a different thing from the
+     * plain SCOPE_LIVE Video.Widescreen / Video.Aspect / Video.RenderScale
+     * carry. Those are complete when publish() returns. This one is not, and
+     * the reason is the pair of latches this key's receivers hold:
      *
      *   - platform_sdl_min.c's present_pace_lazy_init() resolves the present
      *     policy ONCE, on the first platform_present_subloop_fields() call,
-     *     into file-static deadline state. Nothing ever re-resolves it.
+     *     into file-static deadline state.
      *   - gfx_pc_dkr.c's gfx_start_frame()/gfx_end_frame() capture the replay's
      *     walk-entry state (dkr_walk_entry_*) and freeze the shadow matrix
      *     registry only when present_sched_replay_armed() is true, and
      *     present_sched.c arms the presentation snapshot store behind a
      *     one-shot (s_snapshot_forced).
      *
-     * So a "live" change is unsafe in BOTH directions. Engaging late is dead
-     * cost: the freeze/snapshot work starts happening but the subloop never
-     * runs, because the platform policy was already latched inactive. Disengaging late
-     * is worse than dead: the subloop is still latched ON, while
-     * present_sched_replay_armed() has gone false, so gfx_start_frame stops
-     * refreshing dkr_walk_entry_* -- which gfx_dkr_replay_invalidate() is the
-     * only thing that ever clears -- and gfx_dkr_replay_walk() goes on
-     * memcpy'ing a STALE segment table (gfx_pc_dkr.c's replay branch) into the
-     * live HLE state. Stale segment bases are wild pointers.
+     * Writing the new value straight from the setter is unsafe in BOTH
+     * directions, and this is the hazard the deferred apply exists to close.
+     * Engaging late is dead cost: the freeze/snapshot work starts happening but
+     * the subloop never runs, because the platform policy was already latched
+     * inactive. Disengaging late is worse than dead: the subloop is still
+     * latched ON, while present_sched_replay_armed() has gone false, so
+     * gfx_start_frame stops refreshing dkr_walk_entry_* -- which
+     * gfx_dkr_replay_invalidate() is the only thing that ever clears -- and
+     * gfx_dkr_replay_walk() goes on memcpy'ing a STALE segment table
+     * (gfx_pc_dkr.c's replay branch) into the live HLE state. Stale segment
+     * bases are wild pointers.
      *
-     * Making the seams genuinely re-resolvable is Phase 3's live/interactive
-     * slice (design doc §6 slice 3), which is the first slice that has a reason
-     * to want it. Until then RESTART is the honest scope: the value still
-     * resolves normally at boot from file/CLI/env, and mdkr_video_config_publish
-     * still pushes it into present_sched there (video_config_runtime.c) -- it
-     * just cannot be flipped underneath a running engine.
+     * WHAT MAKES IT SAFE NOW. Nothing here is bypassed; the latches are still
+     * latches, and they are re-latched rather than mutated. The setter only
+     * marks MDKR_VIDEO_APPLY_PRESENTATION pending. The engine's host-frame
+     * boundary (stubs_dkr.c's osRecvMesg video-queue branch, entered after the
+     * previous authoritative pass and its whole subloop have completed, and
+     * before the next tick's platform_present_subloop_fields() call) then runs
+     * platform_present_config_apply() as ONE ordered step:
+     * gfx_dkr_replay_invalidate() first -- so no walk-entry state survives the
+     * change in either direction -- then the snapshot stage reset, then the
+     * policy push, then a full re-init of the pacer state machine and the
+     * backend's present mode. There is no host opportunity at which a replay
+     * can observe a walk entry captured under the other policy, because the
+     * only thing that can observe one is the subloop, and the subloop is not
+     * running at that boundary.
      */
     [MDKR_VIDEO_FRAME_LIMIT] = {
         "Video.FrameLimit", "MDKR_PRESENT_RATE",
-        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 0.0f,
         "Frame limit",
         "original presents each authored image once. display follows the "
         "monitor, a number sets a native cap, and uncapped removes the native "
@@ -149,28 +161,38 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "original alternates between holding it for two and for three and the "
         "motion looks uneven. display with interpolate removes that without "
         "changing game speed, music pitch, or timers. "
-        "Requires a restart because the host pacer resolves this value once at "
-        "startup.",
+        "Takes effect on the next frame; you can change it while you play.",
         MDKR_VIDEO_CAT_PACING
     },
     /*
-     * RESTART for the same reason as Video.FrameLimit above, and it is not
-     * merely inherited: present_sched_replay_armed() short-circuits to false
-     * when smoothing is off, so a boot with MotionSmoothing=off never arms the
-     * snapshot store, never captures dkr_walk_entry_* and never freezes the
-     * registry. Flipping it to interpolate afterwards would drive the subloop
-     * into a replay with no frozen registry and no snapshot pair -- every
-     * intermediate frame silently identical to the tick's own. The reverse flip
-     * lands in the same stale-walk-entry hazard FrameLimit's note describes.
+     * LIVE with the same PRESENTATION domain as Video.FrameLimit above, and
+     * that is not merely inherited: present_sched_replay_armed() short-circuits
+     * to false when smoothing is off, so a run with MotionSmoothing=off never
+     * arms the snapshot store, never captures dkr_walk_entry_* and never
+     * freezes the registry. Flipping it to interpolate would otherwise drive
+     * the subloop into a replay with no frozen registry and no snapshot pair --
+     * every intermediate frame silently identical to the tick's own -- and the
+     * reverse flip lands in the stale-walk-entry hazard FrameLimit's note
+     * describes.
+     *
+     * Both of those are properties of the state at the moment of the flip, and
+     * both are answered by the same ordered apply: the boundary invalidates the
+     * replay history and re-arms the snapshot one-shot, so the first tick after
+     * an off->interpolate change starts capturing again from nothing, and the
+     * first tick after interpolate->off leaves nothing behind that a later
+     * re-arm could inherit. gfx_dkr_replay_walk() additionally refuses outright
+     * while dkr_walk_entry_valid is false, so the window between the boundary
+     * and the next real walk cannot replay at all -- it holds the authored
+     * image, which is exactly what smoothing=off looks like anyway.
      */
     [MDKR_VIDEO_MOTION_SMOOTHING] = {
         "Video.MotionSmoothing", "MDKR_PRESENT_SMOOTHING",
-        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 0.0f,
         "Motion smoothing",
         "interpolate draws presentation-only in-between images from adjacent "
         "authored tasks. It does not advance physics, AI, timers, audio, or input "
-        "more often. off presents only the game's authored images. Requires a "
-        "restart because retained replay resources are armed at startup.",
+        "more often. off presents only the game's authored images. Takes effect "
+        "on the next frame; you can change it while you play.",
         MDKR_VIDEO_CAT_PACING
     },
     [MDKR_VIDEO_MODE] = {
@@ -344,22 +366,51 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "Right stick right"),
 #undef CONTROLLER_BINDING_SCHEMA
     /*
-     * SCOPE_RESTART because game/src/camera_obstruction_runtime.c resolves
-     * MDKR_CAMERA_OBSTRUCTION into a policy at boot and never re-reads it; the
-     * launcher exports the resolved value onto that same variable before engine
-     * entry (platform/app/engine_boot.cpp), so a value set here and a value set
-     * in the environment reach the runtime through one seam.
+     * SCOPE_LEVEL, in the CAMERA domain -- and the choice of LEVEL over LIVE is
+     * the one scope decision here that is not forced by a safety argument, so
+     * it is worth being exact about which argument it IS.
+     *
+     * The setting was RESTART because game/src/camera_obstruction_runtime.c
+     * resolved MDKR_CAMERA_OBSTRUCTION with no way for anything but a relaunch
+     * to change what it read; the launcher exports the resolved value onto that
+     * same variable before engine entry (platform/app/engine_boot.cpp), so a
+     * value set here and a value set in the environment reach the runtime
+     * through one seam. That seam now has a setter beside it
+     * (camera_obstruction_runtime_set_policy) and the env read is the fallback,
+     * so "relaunch the whole app" is no longer the honest answer.
+     *
+     * NOT LIVE, for two reasons, neither of which is memory safety:
+     *
+     *   1. The obstruction runtime's only proven re-init is
+     *      camera_obstruction_runtime_reset(), and every existing caller of it
+     *      is a level boundary (thread3_main.c, before cam_init()). Reusing it
+     *      there costs nothing and inherits a path the camera suite already
+     *      covers. Mid-race it would zero live state -- presentation_depth,
+     *      viewport_slot_valid, last_physical_slot_by_viewport -- whose
+     *      invariants are maintained across the render's begin/end scope, and
+     *      the value of proving that at a new boundary is nil, because:
+     *   2. A policy flip is a HARD CUT of the rendered eye. The resolver's
+     *      whole retract/recovery design (RELEASE_HOLD_TICKS, the transition
+     *      cut census, the discontinuity flag) exists so the corrected camera
+     *      never teleports, and it has no path that fades between two
+     *      policies. A level load is the one moment the game already cuts the
+     *      camera, so applying there is not a compromise -- it is the only
+     *      moment the change is invisible.
+     *
+     * The player-facing cost of LEVEL over LIVE is a menu transition, and the
+     * thing that actually mattered -- that choosing a camera should not mean
+     * quitting the app -- is delivered either way.
      */
     [MDKR_VIDEO_CAMERA_OBSTRUCTION] = {
         "Camera.Obstruction", "MDKR_CAMERA_OBSTRUCTION",
-        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_LEVEL, 0.0f, 0.0f,
         "Camera obstruction",
         "Authored is the camera the game writes, unchanged. Keep out of walls "
         "pulls it in front of walls, doors, and other solid geometry that "
         "would come between it and your racer. Only the picture moves: "
         "handling, results, ghosts, and saves are identical either way. "
-        "Requires a restart because the camera runtime reads this once at "
-        "startup. In a config file or the environment the two values are "
+        "Takes effect the next time a track loads, so the camera never jumps "
+        "mid-corner. In a config file or the environment the two values are "
         "observe and modern.",
         MDKR_VIDEO_CAT_PRESENTATION
     },
@@ -367,20 +418,36 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
      * Off by default: every frame limit hands the backend a vblank-synchronized
      * queue, and this is the only control that gives that up for latency.
      *
-     * SCOPE_RESTART for the same reason as the two pacing keys above rather
-     * than by inheritance: the swapchain's present mode is fixed at surface
-     * configuration and the GL swap interval at context adoption, so the value
-     * has to be known before the window exists.
+     * SCOPE_LIVE in the PRESENTATION domain, for a reason of its own rather
+     * than by inheritance from the two pacing keys above. The claim it used to
+     * carry -- that the display connection is set up once at launch -- was only
+     * ever half true, and the half that was true stopped being true in M3:
+     *
+     *   - The WebGPU swapchain does bake its present mode at surface
+     *     configuration, but gfx_webgpu_request_surface_reconfigure() already
+     *     exists to re-rank it, because a display change invalidates the same
+     *     ranking for reasons that have nothing to do with this key.
+     *   - The GL swap interval is not fixed at context adoption at all.
+     *     sdl_apply_gl_present_policy() is a plain SDL_GL_SetSwapInterval call
+     *     that an existing context accepts at any time; it was simply only ever
+     *     called once.
+     *
+     * Both are re-applied by the domain's boundary applier. Tearing rides with
+     * the pacing keys rather than beside them because the effective present
+     * mode is a function of policy AND tearing together (platform_sdl_min.c's
+     * platform_present_display_quantum_units consults both), so re-ranking one
+     * without the other would leave the pacer projecting onto a vblank the
+     * backend is no longer waiting for.
      */
     [MDKR_VIDEO_ALLOW_TEARING] = {
         "Video.AllowTearing", "MDKR_ALLOW_TEARING",
-        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 0.0f,
         "Allow tearing (lowest latency)",
         "Shows finished frames without waiting for the display, where the "
         "system allows it. That is the lowest input delay, and the picture may "
         "show a seam across it while things are moving. Leave this off unless "
-        "you are chasing latency and prefer the seam. Requires a restart "
-        "because the display connection is set up once at launch.",
+        "you are chasing latency and prefer the seam. Takes effect on the next "
+        "frame; you can change it while you play.",
         MDKR_VIDEO_CAT_PACING
     },
     /*
@@ -428,6 +495,25 @@ const MdkrVideoSchema *mdkr_video_schema(MdkrVideoKey key) {
         return NULL;
     }
     return &s_schema[key];
+}
+
+/*
+ * The domain table, kept here rather than as a schema column so the invariant
+ * below can be stated as code. A key that names a domain is making a claim
+ * about a specific receiver's re-init seam, and there are four of them; a
+ * fifth would be a design decision, not a table edit.
+ */
+MdkrVideoApplyDomain mdkr_video_key_apply_domain(MdkrVideoKey key) {
+    switch (key) {
+        case MDKR_VIDEO_FRAME_LIMIT:
+        case MDKR_VIDEO_MOTION_SMOOTHING:
+        case MDKR_VIDEO_ALLOW_TEARING:
+            return MDKR_VIDEO_APPLY_PRESENTATION;
+        case MDKR_VIDEO_CAMERA_OBSTRUCTION:
+            return MDKR_VIDEO_APPLY_CAMERA;
+        default:
+            return MDKR_VIDEO_APPLY_NONE;
+    }
 }
 
 int mdkr_video_key_is_audio(MdkrVideoKey key) {

@@ -74,27 +74,66 @@ static void test_schema(void) {
                 s->min == 0.0f && s->max == 100.0f);
 
     /*
-     * RESTART, not LIVE. Both seams latch (present_pace_lazy_init's
-     * s_presentFields, gfx_start_frame's walk-entry capture gated on
-     * present_sched_replay_armed) so a mid-run flip is dead cost engaging and
-     * a stale-segment-table replay disengaging. See video_config.c's rows.
+     * LIVE, and specifically LIVE WITH A DOMAIN. Both seams still latch
+     * (present_pace_lazy_init's deadline state, gfx_start_frame's walk-entry
+     * capture gated on present_sched_replay_armed); what changed is that the
+     * setter no longer writes them at all under a running engine. The domain is
+     * the assertion that matters -- a key that went LIVE without one would be
+     * exactly the unsafe mid-run flip the old RESTART scope was protecting
+     * against, and this pair of expectations is what makes that unrepresentable
+     * as a one-line schema edit. See video_config.c's rows.
      */
     s = mdkr_video_schema(MDKR_VIDEO_FRAME_LIMIT);
     expect_true("frame limit env seam",
                 s != NULL && !strcmp(s->env, "MDKR_PRESENT_RATE"));
-    expect_int("frame limit scope is RESTART",
-               s ? (int) s->scope : -1, MDKR_VIDEO_SCOPE_RESTART);
+    expect_int("frame limit scope is LIVE",
+               s ? (int) s->scope : -1, MDKR_VIDEO_SCOPE_LIVE);
+    expect_int("frame limit applies in the presentation domain",
+               (int) mdkr_video_key_apply_domain(MDKR_VIDEO_FRAME_LIMIT),
+               MDKR_VIDEO_APPLY_PRESENTATION);
     s = mdkr_video_schema(MDKR_VIDEO_MOTION_SMOOTHING);
     expect_true("motion smoothing env seam",
                 s != NULL && !strcmp(s->env, "MDKR_PRESENT_SMOOTHING"));
-    expect_int("motion smoothing scope is RESTART",
-               s ? (int) s->scope : -1, MDKR_VIDEO_SCOPE_RESTART);
+    expect_int("motion smoothing scope is LIVE",
+               s ? (int) s->scope : -1, MDKR_VIDEO_SCOPE_LIVE);
+    expect_int("motion smoothing applies in the presentation domain",
+               (int) mdkr_video_key_apply_domain(MDKR_VIDEO_MOTION_SMOOTHING),
+               MDKR_VIDEO_APPLY_PRESENTATION);
+    s = mdkr_video_schema(MDKR_VIDEO_ALLOW_TEARING);
+    expect_int("allow tearing scope is LIVE",
+               s ? (int) s->scope : -1, MDKR_VIDEO_SCOPE_LIVE);
+    expect_int("allow tearing applies in the presentation domain",
+               (int) mdkr_video_key_apply_domain(MDKR_VIDEO_ALLOW_TEARING),
+               MDKR_VIDEO_APPLY_PRESENTATION);
 
     /*
-     * RESTART because game/src/camera_obstruction_runtime.c resolves
-     * MDKR_CAMERA_OBSTRUCTION into a policy at boot and never re-reads it. The
-     * env name is that same seam, so a diagnostic override and this key are one
-     * variable.
+     * The invariant video_config.h states, asserted over the WHOLE schema
+     * rather than over the four keys that motivated it. A restart-scoped key
+     * has no boundary to be applied at, and a level-scoped key exists only
+     * because some receiver asked for the level boundary; a future key that
+     * violates either is a design mistake this catches at the table.
+     */
+    for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; i++) {
+        const MdkrVideoSchema *row = mdkr_video_schema((MdkrVideoKey) i);
+        const MdkrVideoApplyDomain domain =
+            mdkr_video_key_apply_domain((MdkrVideoKey) i);
+        char label[128];
+        snprintf(label, sizeof(label), "%s scope/domain agree",
+                 row != NULL ? row->name : "?");
+        expect_true(label,
+                    row != NULL &&
+                    !(domain != MDKR_VIDEO_APPLY_NONE &&
+                      row->scope == MDKR_VIDEO_SCOPE_RESTART) &&
+                    !(row->scope == MDKR_VIDEO_SCOPE_LEVEL &&
+                      domain == MDKR_VIDEO_APPLY_NONE));
+    }
+
+    /*
+     * LEVEL, not LIVE and no longer RESTART. camera_obstruction_runtime.c now
+     * has a setter beside its MDKR_CAMERA_OBSTRUCTION read, so a relaunch is no
+     * longer the only way to change it; the level boundary is chosen over the
+     * frame boundary because a policy flip is a hard cut of the rendered eye
+     * and a level load is the one moment the game already cuts the camera.
      */
     expect_int("camera obstruction key",
                (int) mdkr_video_key_from_name("Camera.Obstruction"),
@@ -104,8 +143,12 @@ static void test_schema(void) {
                 s != NULL && !strcmp(s->env, "MDKR_CAMERA_OBSTRUCTION"));
     expect_int("camera obstruction is a string",
                s ? (int) s->type : -1, MDKR_VIDEO_TYPE_STRING);
-    expect_int("camera obstruction scope is RESTART",
-               s ? (int) s->scope : -1, MDKR_VIDEO_SCOPE_RESTART);
+    expect_int("camera obstruction scope is LEVEL",
+               s ? (int) s->scope : -1, MDKR_VIDEO_SCOPE_LEVEL);
+    expect_int("camera obstruction applies in the camera domain",
+               (int) mdkr_video_key_apply_domain(
+                   MDKR_VIDEO_CAMERA_OBSTRUCTION),
+               MDKR_VIDEO_APPLY_CAMERA);
     expect_int("camera obstruction is presentation",
                s ? (int) s->category : -1, MDKR_VIDEO_CAT_PRESENTATION);
     /* It is appended AFTER the controller block, so the input range must still

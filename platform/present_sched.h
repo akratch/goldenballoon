@@ -275,19 +275,27 @@ void present_perf_summary(void);
  * reaches the seam at boot, through the same mdkr_video_config_publish() hook
  * every other key uses.
  *
- * CORRECTION (ship review): an earlier version of this comment claimed the two
- * keys were therefore "genuinely LIVE, not merely read once at boot dressed up
- * as LIVE". That was wrong, and both keys are SCOPE_RESTART now. Overwriting
- * these two cached ints is necessary for a mid-run change to take effect but
- * nowhere near sufficient: the consumers downstream of them latch.
- * present_pace_lazy_init() (platform_sdl_min.c) resolves the present policy
- * once into its deadline state and never revisits it, so engaging late costs the
- * freeze/snapshot work with no subloop to spend it on; and gfx_start_frame()
- * stops refreshing dkr_walk_entry_* the moment present_sched_replay_armed()
- * goes false, while the already-latched subloop keeps replaying -- memcpy'ing
- * a stale segment table into live HLE state. See video_config.c's schema rows
- * for the full argument. Making the seams re-resolvable belongs to the
- * live/interactive slice (design doc §6 slice 3).
+ * WHY THESE SETTERS ARE NOT, BY THEMSELVES, "LIVE". An early version of this
+ * comment claimed they were -- that overwriting the cached ints made the keys
+ * "genuinely LIVE, not merely read once at boot dressed up as LIVE". That was
+ * wrong, and the reason is worth keeping: overwriting these two cached ints is
+ * NECESSARY for a mid-run change to take effect and nowhere near SUFFICIENT,
+ * because the consumers downstream of them latch. present_pace_lazy_init()
+ * (platform_sdl_min.c) resolves the present policy once into its deadline state
+ * and never revisits it, so engaging late costs the freeze/snapshot work with
+ * no subloop to spend it on; and gfx_start_frame() stops refreshing
+ * dkr_walk_entry_* the moment present_sched_replay_armed() goes false, while
+ * the already-latched subloop keeps replaying -- memcpy'ing a stale segment
+ * table into live HLE state.
+ *
+ * The keys ARE SCOPE_LIVE now, and none of the above stopped being true. What
+ * changed is that these setters are no longer reachable from a settings panel
+ * under a running engine at all. video_config.c's MDKR_VIDEO_APPLY_PRESENTATION
+ * domain stages the change; platform_present_config_apply() calls these at the
+ * host-frame boundary, after retiring the replay history and before re-latching
+ * the pacer, as one ordered step. Calling them from anywhere else while the
+ * engine runs would reintroduce exactly the hazard this paragraph describes.
+ * See video_config.c's Video.FrameLimit row for the full argument.
  *
  * `value` is `original`, `display`, `uncapped`, or a validated integer cap
  * from 30 through 1000; smoothing is `off` or `interpolate`. Called only when
@@ -298,6 +306,13 @@ void present_perf_summary(void);
 void mdkr_present_set_frame_limit(const char *value);
 void mdkr_present_set_motion_smoothing(const char *value);
 void mdkr_present_set_allow_tearing(const char *value);
+
+/*
+ * Re-arm the snapshot store's one-shot so the policy a live change is switching
+ * TO gets its own arming decision rather than inheriting the one the previous
+ * policy made. Called by platform_present_config_apply() only.
+ */
+void present_sched_replay_rearm(void);
 
 #ifdef __cplusplus
 }

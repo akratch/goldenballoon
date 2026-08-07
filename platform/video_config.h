@@ -100,11 +100,57 @@ typedef enum MdkrVideoType {
     MDKR_VIDEO_TYPE_STRING
 } MdkrVideoType;
 
-/* Whether a change takes effect immediately or needs a relaunch. */
+/*
+ * When a change reaches the running engine.
+ *
+ * LIVE and LEVEL are both "no relaunch"; they differ only in WHICH boundary
+ * the engine is willing to swap the value at, and that difference is a
+ * property of the receiving subsystem rather than of the setting's importance.
+ *
+ *   LIVE     the next host-frame boundary — after the previous present has
+ *            retired and before the next tick's pacing decision. Everything
+ *            the value feeds is re-derived there, as one ordered apply.
+ *   LEVEL    the next level load. For a receiver whose only proven re-init
+ *            seam is the one the level boundary already runs, and for which a
+ *            mid-race swap would be a visible cut rather than a fade.
+ *   RESTART  the value cannot be swapped under a running engine at all.
+ *
+ * Ordered LIVE < LEVEL < RESTART, so `scope >= MDKR_VIDEO_SCOPE_RESTART` and
+ * `scope == MDKR_VIDEO_SCOPE_RESTART` both keep meaning "needs a relaunch".
+ */
 typedef enum MdkrVideoScope {
     MDKR_VIDEO_SCOPE_LIVE = 0,
+    MDKR_VIDEO_SCOPE_LEVEL,
     MDKR_VIDEO_SCOPE_RESTART
 } MdkrVideoScope;
+
+/*
+ * Which subsystem owns the deferred apply for a key.
+ *
+ * A LIVE/LEVEL key is one of two kinds. Most of them are published straight
+ * into their receiver by mdkr_video_config_publish() and are complete the
+ * moment that returns (Video.Widescreen writes display_config; Audio.* writes
+ * the mixer). Those carry MDKR_VIDEO_APPLY_NONE.
+ *
+ * The rest have a receiver that CANNOT accept a write at an arbitrary point in
+ * the frame: it owns latched state that has to be torn down and rebuilt as one
+ * indivisible step, at a boundary where nothing it owns is in flight. Those
+ * name the domain that owns that step. video_config_runtime.c stages the value
+ * and the domain's registered callback performs the whole apply at the
+ * boundary — never the setter's own call stack, which is an ImGui draw inside
+ * somebody else's frame.
+ *
+ *   PRESENTATION  the host pacer, the presentation replay/subloop, and the
+ *                 backend's present mode. Video.FrameLimit,
+ *                 Video.MotionSmoothing, Video.AllowTearing.
+ *   CAMERA        the camera obstruction sidecar. Camera.Obstruction.
+ */
+typedef enum MdkrVideoApplyDomain {
+    MDKR_VIDEO_APPLY_NONE = 0,
+    MDKR_VIDEO_APPLY_PRESENTATION,
+    MDKR_VIDEO_APPLY_CAMERA,
+    MDKR_VIDEO_APPLY_DOMAIN_COUNT
+} MdkrVideoApplyDomain;
 
 /*
  * Precedence rank. Monotonic: a set from a lower source never overwrites a
@@ -176,6 +222,20 @@ typedef struct MdkrVideoConfig {
 /* --- Pure API (no globals, no environment, no I/O) --- */
 
 const MdkrVideoSchema *mdkr_video_schema(MdkrVideoKey key);
+
+/*
+ * The subsystem that owns `key`'s deferred apply, or MDKR_VIDEO_APPLY_NONE
+ * when publish() completes the key by itself. Pure, so the mapping is a thing
+ * tests/test_video_config.c asserts directly rather than a property of the
+ * running engine.
+ *
+ * INVARIANT: a key with a domain is never SCOPE_RESTART, and a key that is
+ * SCOPE_LEVEL always has one. A restart-scoped key has no boundary to be
+ * applied at, and a level-scoped key exists precisely because some receiver
+ * asked for the level boundary.
+ */
+MdkrVideoApplyDomain mdkr_video_key_apply_domain(MdkrVideoKey key);
+
 int mdkr_video_key_is_audio(MdkrVideoKey key);
 int mdkr_video_key_is_input(MdkrVideoKey key);
 int mdkr_video_key_is_player_comfort(MdkrVideoKey key);
@@ -376,8 +436,77 @@ int mdkr_video_config_runtime_locked(MdkrVideoKey key);
 /*
  * Writes the resolved values into renderer/display state and publishes player
  * audio levels. Safe to call repeatedly; LIVE settings take effect next frame.
+ *
+ * Keys with an apply domain are the exception, and only once that domain has
+ * registered a callback below: publish() then leaves them to the boundary
+ * rather than writing a latched receiver from whatever stack called it.
  */
 void mdkr_video_config_publish(void);
+
+/* --- Deferred apply -------------------------------------------------------
+ *
+ * WHY THIS EXISTS. A settings edit arrives from an ImGui draw inside the app
+ * shell's overlay, which runs inside the engine's own frame — mid-present for
+ * the WebGPU backend, and possibly inside a presentation subloop that is
+ * already replaying a retained display list. Several receivers cannot be
+ * rewritten there at any price: the present pacer has a latched policy and a
+ * deadline grid derived from it, the presentation replay holds walk-entry
+ * state (segment table included) that only gfx_dkr_replay_invalidate() clears,
+ * and the camera obstruction sidecar holds a validated pose it will otherwise
+ * keep reusing. Writing half of that under a running walk is how a stale
+ * segment base becomes a wild pointer.
+ *
+ * THE SHAPE. The setter validates, persists, and updates the config
+ * immediately — the player's choice is never in doubt and never lost. What it
+ * defers is the hardware/engine-state consequence: it marks the owning domain
+ * pending, and the engine calls mdkr_video_config_apply_pending() at the one
+ * boundary that domain declared safe. The domain's callback then performs the
+ * WHOLE apply as one ordered step. There is no partial state in between:
+ * before the boundary everything runs on the old value, after it everything
+ * runs on the new one.
+ *
+ * WHEN NOTHING IS REGISTERED. A domain with no callback is not deferred at
+ * all — publish() writes it inline exactly as it always did. That is what
+ * keeps the launcher-before-Play phase, --video-set, and every ROM-free test
+ * working unchanged: they have no engine to defer to, and a value staged for a
+ * boundary nobody services would silently never apply.
+ */
+
+/*
+ * Register `apply` as `domain`'s boundary applier. Called once by the owning
+ * subsystem during engine startup, before any settings UI can exist. Passing
+ * NULL unregisters, which is what a shutdown path wants so a late edit cannot
+ * call into a torn-down subsystem.
+ */
+void mdkr_video_config_register_apply(MdkrVideoApplyDomain domain,
+                                      void (*apply)(void));
+
+/*
+ * Run every domain pending at `boundary`, in domain order, and emit one
+ * [SETTINGS-APPLY] row per key naming old and new. Returns the number of
+ * domains applied, so a gate can assert that a boundary did work.
+ *
+ * `boundary` is MDKR_VIDEO_SCOPE_LIVE at the host-frame boundary and
+ * MDKR_VIDEO_SCOPE_LEVEL at a level load, and the match is EXACT: a boundary
+ * services only the domains that named it. A level load does not opportunis-
+ * tically flush a LIVE domain, and — the direction that matters — a host-frame
+ * boundary never applies a LEVEL domain early, which would be precisely the
+ * mid-race camera cut that made Camera.Obstruction LEVEL in the first place.
+ */
+int mdkr_video_config_apply_pending(MdkrVideoScope boundary);
+
+/* True when any domain is waiting for `boundary`. Cheap; the engine calls the
+ * apply entry point unconditionally and this is what makes that free. */
+int mdkr_video_config_apply_is_pending(MdkrVideoScope boundary);
+
+/*
+ * Push the resolved pacing keys (Video.FrameLimit / Video.MotionSmoothing /
+ * Video.AllowTearing) into present_sched. publish() calls this itself while the
+ * presentation domain has no registered applier; once it does, that applier
+ * calls it — after invalidating the replay history — and publish() does not.
+ * Exposed so there is one implementation rather than two that must agree.
+ */
+void mdkr_video_config_push_presentation(void);
 
 /* --video-list: prints every setting, its value, and which layer set it. */
 void mdkr_video_config_report(void);

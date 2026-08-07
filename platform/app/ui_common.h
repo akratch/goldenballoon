@@ -45,6 +45,9 @@ void BrandRule();
 void TouchScrollCurrentWindow();
 void SectionHeader(const char *title, const char *subtitle);
 void RestartBadge();                                 // non-interactive muted chip
+// The "this one changes under the running game" chip. Subtle, not accent: it
+// informs where RestartBadge warns.
+void LiveBadge(const char *text);
 
 // Filled actions. BrandPrimaryButton is the launcher’s persistent gold CTA;
 // PrimaryButton remains cobalt for in-game overlay actions.

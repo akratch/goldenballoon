@@ -405,55 +405,60 @@ static int run_primary_case(void) {
            s_presentTearingCalls == 0);
 
     /*
-     * FrameLimit/MotionSmoothing are SCOPE_RESTART (ship review): the present
-     * pacer latches its period on the first present and the replay's
-     * walk-entry capture is armed once, so an in-game flip either buys nothing
-     * or leaves the already-latched subloop replaying a stale segment table.
-     * An in-game edit must therefore STAGE -- write the file, report RESTART,
-     * and leave the running engine's cached seam value exactly where it was.
-     * The push into present_sched still happens, at boot, from publish().
+     * FrameLimit/MotionSmoothing/AllowTearing are SCOPE_LIVE with the
+     * PRESENTATION apply domain. NO DOMAIN IS REGISTERED IN THIS PROCESS --
+     * there is no engine here to defer to -- so the contract under test is the
+     * un-deferred one: publish() pushes them inline exactly as it always did,
+     * and the setter reports LIVE. That is not a weaker case than the deferred
+     * one; it is the case that keeps --video-set, the launcher's pre-Play
+     * panel, and every ROM-free run on the path they have always taken. The
+     * deferred path has its own case (run_deferred_apply_case) below.
      */
-    expect("frame limit stages for restart",
+    expect("frame limit applies live",
            mdkr_video_config_runtime_set(MDKR_VIDEO_FRAME_LIMIT, "240") ==
-               MDKR_VIDEO_RUNTIME_RESTART);
-    expect("staged frame limit did not reach present_sched",
-           s_presentFrameLimitCalls == 0);
-    expect("frame limit restart is pending",
-           mdkr_video_config_restart_pending());
-    expect("motion smoothing stages for restart",
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("live frame limit reached present_sched",
+           s_presentFrameLimitCalls == 1 &&
+           !strcmp(s_presentFrameLimit, "240"));
+    expect("a live frame limit raises no restart",
+           !mdkr_video_config_restart_pending());
+    expect("motion smoothing applies live",
            mdkr_video_config_runtime_set(
                MDKR_VIDEO_MOTION_SMOOTHING, "interpolate") ==
-               MDKR_VIDEO_RUNTIME_RESTART);
-    expect("staged motion smoothing did not reach present_sched",
-           s_presentSmoothingCalls == 0);
-    expect("tearing opt-in stages for restart",
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("live motion smoothing reached present_sched",
+           s_presentSmoothingCalls == 1 &&
+           !strcmp(s_presentSmoothing, "interpolate"));
+    expect("tearing opt-in applies live",
            mdkr_video_config_runtime_set(MDKR_VIDEO_ALLOW_TEARING, "on") ==
-               MDKR_VIDEO_RUNTIME_RESTART);
-    expect("staged tearing opt-in did not reach present_sched",
-           s_presentTearingCalls == 0);
-    expect("staged tearing opt-in is in the desired config",
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("live tearing opt-in reached present_sched",
+           s_presentTearingCalls == 1 && !strcmp(s_presentTearing, "on"));
+    expect("live tearing opt-in is in the desired config",
            !strcmp(mdkr_video_config_desired()
                        ->values[MDKR_VIDEO_ALLOW_TEARING].text, "on"));
-    /* ...and the staged values are what a restart would resolve. */
-    expect("staged frame limit is in the desired config",
+    /* ...and the applied values are also what a restart would resolve. */
+    expect("live frame limit is in the desired config",
            !strcmp(mdkr_video_config_desired()
                        ->values[MDKR_VIDEO_FRAME_LIMIT].text, "240"));
-    expect("staged motion smoothing is in the desired config",
+    expect("live motion smoothing is in the desired config",
            !strcmp(mdkr_video_config_desired()
                        ->values[MDKR_VIDEO_MOTION_SMOOTHING].text,
                    "interpolate"));
 
     /*
-     * Camera.Obstruction is SCOPE_RESTART for the same latching reason: the
-     * camera runtime resolves MDKR_CAMERA_OBSTRUCTION once at boot. An edit
-     * therefore stages, and only the key's own domain is legal -- an unparsed
-     * policy is a rejected VALUE, not a setting that quietly stores.
+     * Camera.Obstruction is SCOPE_LEVEL. With no CAMERA applier registered
+     * there is no level boundary to wait for either, so it behaves as a plain
+     * live key here -- the value is stored and the boot-time seam
+     * (MDKR_CAMERA_OBSTRUCTION) remains what the camera runtime reads. Only the
+     * key's own domain is legal: an unparsed policy is a rejected VALUE, not a
+     * setting that quietly stores.
      */
-    expect("camera obstruction stages for restart",
+    expect("camera obstruction stores without a restart",
            mdkr_video_config_runtime_set(
                MDKR_VIDEO_CAMERA_OBSTRUCTION, "modern") ==
-               MDKR_VIDEO_RUNTIME_RESTART);
-    expect("staged camera obstruction is in the desired config",
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("stored camera obstruction is in the desired config",
            !strcmp(mdkr_video_config_desired()
                        ->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
                    "modern"));
@@ -558,11 +563,20 @@ static int run_primary_case(void) {
     expect("handoff clears restart pending",
            !mdkr_video_config_restart_pending());
 
-    mdkr_video_config_init(3, argv); /* remains idempotent after handoff */
-    mdkr_video_config_publish();
-    expect("240 frame limit reached present scheduler once",
-           s_presentFrameLimitCalls == 1 &&
-           !strcmp(s_presentFrameLimit, "240"));
+    {
+        /* Once PER PUBLISH, which is the property that matters -- a publish
+         * that pushed twice, or not at all, would both be bugs. Counting from a
+         * mark rather than from zero because the live edits earlier in this
+         * case legitimately pushed too; the old absolute count only worked
+         * while the key was RESTART-scoped and could not be pushed before
+         * here. */
+        const int before = s_presentFrameLimitCalls;
+        mdkr_video_config_init(3, argv); /* remains idempotent after handoff */
+        mdkr_video_config_publish();
+        expect("240 frame limit reached present scheduler once",
+               s_presentFrameLimitCalls == before + 1 &&
+               !strcmp(s_presentFrameLimit, "240"));
+    }
     expect("one-shot handoff rejects a second transition",
            !mdkr_video_config_handoff_to_engine(3, engine_argv));
 
@@ -575,6 +589,217 @@ static int run_primary_case(void) {
         return 1;
     }
     printf("all video_config runtime tests passed\n");
+    return 0;
+}
+
+/* --------------------------------------------------------------------------
+ *  Deferred apply (video_config.h). The ROM-free half of the live-toggle gate.
+ *
+ * WHAT THIS CASE OWNS. The MECHANISM: that a registered domain defers, that the
+ * deferral is exact about which boundary, that the value is not published to
+ * its receiver one instant before that boundary, and that a LEVEL key's live
+ * config keeps telling the truth while it waits. What it deliberately does NOT
+ * own is whether the resulting engine state is correct -- that needs a ROM and
+ * a running pacer, and tests/check_live_toggle_settings.py is where it lives.
+ * ------------------------------------------------------------------------ */
+
+static int s_presentationApplies;
+static int s_cameraApplies;
+
+static void fake_presentation_apply(void) {
+    s_presentationApplies++;
+    /* The real applier's step 4. Standing in for it here is what lets this case
+     * assert that the push happens at the BOUNDARY and not at the setter. */
+    mdkr_video_config_push_presentation();
+}
+
+static void fake_camera_apply(void) {
+    s_cameraApplies++;
+}
+
+static int run_deferred_apply_case(void) {
+    char temporary[2048];
+    char original[2048];
+    char config_path[2300];
+    char *argv[] = { "mdkr-video-runtime-test" };
+
+    s_failures = 0;
+    expect("deferred-apply temporary directory created",
+           mdkr_test_make_temp_directory(
+               temporary, sizeof(temporary), "mdkr-deferred-apply-runtime"));
+    if (s_failures != 0) return 1;
+    expect("deferred-apply original cwd captured",
+           getcwd(original, sizeof(original)) != NULL);
+    expect("deferred-apply entered temporary directory", chdir(temporary) == 0);
+    for (size_t i = 0;
+         i < sizeof(s_config_env_names) / sizeof(s_config_env_names[0]); i++) {
+        (void)mdkr_test_env_unset(s_config_env_names[i]);
+    }
+    snprintf(config_path, sizeof(config_path), "%s/mdkr64.ini", temporary);
+    expect("deferred-apply config path override set",
+           mdkr_test_env_set("MDKR_VIDEO_CONFIG_PATH", config_path, 1) == 0);
+
+    mdkr_video_config_init(1, argv);
+    mdkr_video_config_publish();
+
+    s_presentFrameLimitCalls = 0;
+    s_presentSmoothingCalls = 0;
+    s_presentTearingCalls = 0;
+    s_presentationApplies = 0;
+    s_cameraApplies = 0;
+
+    /* Nothing is registered yet, so nothing is pending and a boundary is a
+     * no-op. This is the state every headless run stays in forever. */
+    expect("no boundary work before registration",
+           mdkr_video_config_apply_pending(MDKR_VIDEO_SCOPE_LIVE) == 0 &&
+           mdkr_video_config_apply_pending(MDKR_VIDEO_SCOPE_LEVEL) == 0);
+
+    mdkr_video_config_register_apply(MDKR_VIDEO_APPLY_PRESENTATION,
+                                     fake_presentation_apply);
+    mdkr_video_config_register_apply(MDKR_VIDEO_APPLY_CAMERA,
+                                     fake_camera_apply);
+
+    /* Registration alone must not make a boundary do work. pending_scope's
+     * zero-initialized value is SCOPE_LIVE, so a domain that did not clear it
+     * on registration would fire here -- an apply nobody asked for, on a value
+     * nobody changed. */
+    expect("registration alone stages nothing",
+           mdkr_video_config_apply_pending(MDKR_VIDEO_SCOPE_LIVE) == 0 &&
+           s_presentationApplies == 0);
+
+    /* --- The presentation domain: LIVE, deferred to the frame boundary --- */
+    expect("deferred frame limit is accepted",
+           mdkr_video_config_runtime_set(MDKR_VIDEO_FRAME_LIMIT, "120") ==
+               MDKR_VIDEO_RUNTIME_LIVE);
+    /* THE HAZARD ASSERTION. present_sched must not have been touched by the
+     * setter's own call stack: in the engine that stack is an ImGui draw,
+     * possibly inside a presentation subloop that is replaying a retained
+     * display list captured under the OLD policy. */
+    expect("a deferred frame limit does not reach present_sched at set time",
+           s_presentFrameLimitCalls == 0);
+    expect("the frame boundary is pending",
+           mdkr_video_config_apply_is_pending(MDKR_VIDEO_SCOPE_LIVE));
+    /* ...and the LEVEL boundary is NOT, because a boundary services only the
+     * domains that named it. */
+    expect("the level boundary is not pending for a LIVE key",
+           !mdkr_video_config_apply_is_pending(MDKR_VIDEO_SCOPE_LEVEL));
+    expect("a level boundary does not flush a LIVE domain",
+           mdkr_video_config_apply_pending(MDKR_VIDEO_SCOPE_LEVEL) == 0 &&
+           s_presentationApplies == 0 && s_presentFrameLimitCalls == 0);
+
+    expect("the frame boundary applies the presentation domain",
+           mdkr_video_config_apply_pending(MDKR_VIDEO_SCOPE_LIVE) == 1);
+    expect("the applier is what pushed into present_sched",
+           s_presentationApplies == 1 && s_presentFrameLimitCalls == 1 &&
+           !strcmp(s_presentFrameLimit, "120"));
+    expect("a serviced boundary is no longer pending",
+           !mdkr_video_config_apply_is_pending(MDKR_VIDEO_SCOPE_LIVE) &&
+           mdkr_video_config_apply_pending(MDKR_VIDEO_SCOPE_LIVE) == 0);
+
+    /* Two keys of one domain in one transaction are ONE apply, not two. The
+     * ordered teardown/rebuild is expensive and, more to the point, running it
+     * twice would invalidate the replay history the first pass just rebuilt. */
+    {
+        const MdkrVideoRuntimeChange changes[2] = {
+            { MDKR_VIDEO_MOTION_SMOOTHING, "interpolate" },
+            { MDKR_VIDEO_ALLOW_TEARING, "on" },
+        };
+        expect("a two-key presentation transaction is accepted",
+               mdkr_video_config_runtime_set_many(changes, 2) ==
+                   MDKR_VIDEO_RUNTIME_LIVE);
+        expect("neither key reached present_sched at set time",
+               s_presentSmoothingCalls == 0 && s_presentTearingCalls == 0);
+        expect("two keys of one domain are one apply",
+               mdkr_video_config_apply_pending(MDKR_VIDEO_SCOPE_LIVE) == 1 &&
+               s_presentationApplies == 2);
+        expect("both keys reached present_sched from that one apply",
+               s_presentSmoothingCalls == 1 && s_presentTearingCalls == 1 &&
+               !strcmp(s_presentSmoothing, "interpolate") &&
+               !strcmp(s_presentTearing, "on"));
+    }
+
+    /*
+     * TWO EDITS BEFORE ONE BOUNDARY. A settings combobox can be moved twice in
+     * a frame, and the boundary must apply the LATEST choice -- the same
+     * newest-intent-wins rule AppWindow_requestMode already follows. The apply
+     * still happens once, because the ordered teardown/rebuild is per domain
+     * and not per edit.
+     */
+    s_presentFrameLimitCalls = 0;
+    expect("the first of two frame-limit edits is accepted",
+           mdkr_video_config_runtime_set(MDKR_VIDEO_FRAME_LIMIT, "144") ==
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("the second replaces it",
+           mdkr_video_config_runtime_set(MDKR_VIDEO_FRAME_LIMIT, "60") ==
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("neither reached present_sched before the boundary",
+           s_presentFrameLimitCalls == 0);
+    expect("two edits are still one apply",
+           mdkr_video_config_apply_pending(MDKR_VIDEO_SCOPE_LIVE) == 1);
+    expect("the boundary applied the newest choice, not the first",
+           s_presentFrameLimitCalls == 1 &&
+           !strcmp(s_presentFrameLimit, "60"));
+
+    /* --- The camera domain: LEVEL, deferred to a level load --- */
+    expect("deferred camera obstruction is accepted",
+           mdkr_video_config_runtime_set(
+               MDKR_VIDEO_CAMERA_OBSTRUCTION, "modern") ==
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("the level boundary is pending",
+           mdkr_video_config_apply_is_pending(MDKR_VIDEO_SCOPE_LEVEL));
+    /*
+     * THE DIRECTION THAT MATTERS. A frame boundary must not apply a LEVEL
+     * domain early: that would be precisely the mid-race camera cut the scope
+     * decision exists to prevent, and it would be invisible in play because the
+     * only symptom is a camera that jumps once.
+     */
+    expect("a frame boundary does not apply the camera domain",
+           mdkr_video_config_apply_pending(MDKR_VIDEO_SCOPE_LIVE) == 0 &&
+           s_cameraApplies == 0);
+    /*
+     * ...and while it waits, the live config still reports the policy the
+     * engine is actually running. This is what the settings panel reads to say
+     * "now: Authored", and a staged value copied in early would make it lie.
+     */
+    expect("the live config still holds the running policy",
+           !strcmp(mdkr_video_config_current()
+                       ->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
+                   "observe"));
+    expect("the desired config holds the player's choice",
+           !strcmp(mdkr_video_config_desired()
+                       ->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
+                   "modern"));
+    /* A LEVEL key must not raise the restart notice; that is the whole point. */
+    expect("a staged LEVEL key raises no restart",
+           !mdkr_video_config_restart_pending());
+
+    expect("the level boundary applies the camera domain",
+           mdkr_video_config_apply_pending(MDKR_VIDEO_SCOPE_LEVEL) == 1 &&
+           s_cameraApplies == 1);
+    expect("the applied policy is now the live config",
+           !strcmp(mdkr_video_config_current()
+                       ->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text,
+                   "modern"));
+
+    /* Unregistering returns the domain to the inline path rather than leaving
+     * a value staged for a boundary that no longer exists. */
+    mdkr_video_config_register_apply(MDKR_VIDEO_APPLY_PRESENTATION, NULL);
+    s_presentFrameLimitCalls = 0;
+    expect("an unregistered domain applies inline again",
+           mdkr_video_config_runtime_set(MDKR_VIDEO_FRAME_LIMIT, "90") ==
+               MDKR_VIDEO_RUNTIME_LIVE &&
+           s_presentFrameLimitCalls == 1 &&
+           !strcmp(s_presentFrameLimit, "90"));
+    mdkr_video_config_register_apply(MDKR_VIDEO_APPLY_CAMERA, NULL);
+
+    expect("deferred-apply returned to original cwd", chdir(original) == 0);
+    remove_config_artifacts(temporary);
+    expect("deferred-apply artifacts cleaned", rmdir(temporary) == 0);
+    if (s_failures != 0) {
+        fprintf(stderr, "%d deferred-apply failure(s)\n", s_failures);
+        return 1;
+    }
+    printf("Deferred apply tests passed\n");
     return 0;
 }
 
@@ -999,6 +1224,9 @@ static int run_launcher_session_case(void) {
 }
 
 int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--deferred-apply-case")) {
+        return run_deferred_apply_case();
+    }
     if (argc == 2 && !strcmp(argv[1], "--pure-comfort-case")) {
         return run_pure_comfort_case();
     }

@@ -156,6 +156,7 @@ uint64_t platform_perf_monotonic_ns(void) {
 #include "host_window.h"          /* app-shell window/device handoff */
 #include "app_overlay_hooks.h"    /* in-game overlay event/render hooks */
 #endif
+#include "presentation_snapshot.h" /* live policy apply retires the staged pair */
 #include "fast3d/gfx_pc_dkr.h"   /* gfx_dkr_texload_line_swapped (headless report) */
 #include "fast3d/gfx_level_lighting.h"
 #include "fast3d/gfx_shadow_cascade.h"
@@ -1758,10 +1759,150 @@ static void platform_surface_visibility_update(void) {
 #endif
 }
 
+/* ---- MDKR_TEST_SETTINGS_TOGGLE ------------------------------------------ *
+ *
+ * The headless seam for the live-settings apply path, in the same spirit as
+ * MDKR_TEST_DISPLAY_RATE_SWITCH above: an automated run cannot open the overlay
+ * and click a combo box, but everything downstream of the EDIT can be driven,
+ * because from mdkr_video_config_runtime_set() onward the two are the same
+ * call.
+ *
+ * WHY IT FIRES FROM platform_input_pump AND NOT FROM THE APPLY BOUNDARY. The
+ * point of the arm is that a settings edit arrives at an arbitrary, hostile
+ * moment — the overlay is drawn inside the engine's own frame, and the pump
+ * runs on every present opportunity INCLUDING the presentation subloop's. So
+ * firing here reproduces the real hazard: a smoothing change landing while a
+ * retained display list is mid-replay. Firing at the boundary instead would
+ * test only the half that was never in doubt.
+ *
+ * FORMAT: Key=value@tick[,Key=value@tick]... e.g.
+ *   MDKR_TEST_SETTINGS_TOGGLE=Video.MotionSmoothing=off@400,Video.MotionSmoothing=interpolate@430
+ * Each entry fires once, at the first present opportunity at or after its tick.
+ * Entries are independent, so a soak is just a long list.
+ *
+ * A key pinned by the environment or the command line resolves as LOCKED here
+ * exactly as it would for a player, and the [SETTINGS-TOGGLE] row says so
+ * rather than failing quietly — a gate that drove MDKR_PRESENT_RATE and then
+ * asserted a toggle took effect would otherwise pass by testing nothing.
+ *
+ * Test-only and inert unless set.
+ */
+#define MDKR_TEST_TOGGLE_MAX 64
+
+typedef struct MdkrTestToggle {
+    MdkrVideoKey key;
+    char value[MDKR_VIDEO_NAME_MAX];
+    uint64_t tick;
+    int fired;
+} MdkrTestToggle;
+
+static int s_toggleState = -1;   /* -1 unparsed, 0 disarmed, 1 armed */
+static MdkrTestToggle s_toggles[MDKR_TEST_TOGGLE_MAX];
+static int s_toggleCount;
+
+static void settings_toggle_lazy_init(void) {
+    const char *value;
+    const char *cursor;
+
+    if (s_toggleState >= 0) {
+        return;
+    }
+    s_toggleState = 0;
+    value = getenv("MDKR_TEST_SETTINGS_TOGGLE");
+    if (value == NULL || value[0] == '\0') {
+        return;
+    }
+    cursor = value;
+    while (*cursor != '\0' && s_toggleCount < MDKR_TEST_TOGGLE_MAX) {
+        const char *end = strchr(cursor, ',');
+        const char *entry_end = end != NULL ? end : cursor + strlen(cursor);
+        const char *eq = memchr(cursor, '=', (size_t)(entry_end - cursor));
+        const char *at = NULL;
+        char name[MDKR_VIDEO_NAME_MAX];
+        MdkrVideoKey key;
+        size_t name_len;
+        size_t value_len;
+        char *tail = NULL;
+        unsigned long long tick;
+
+        /* The LAST '@' separates the value from the tick, so a value that ever
+         * contains one still parses. */
+        for (const char *scan = eq != NULL ? eq + 1 : cursor;
+             scan < entry_end; scan++) {
+            if (*scan == '@') at = scan;
+        }
+        if (eq == NULL || at == NULL || at < eq) {
+            fprintf(stderr, "[SETTINGS-TOGGLE] entry \"%.*s\" unrecognized "
+                            "(<Key>=<value>@<tick>); ignored\n",
+                    (int)(entry_end - cursor), cursor);
+            cursor = end != NULL ? end + 1 : entry_end;
+            continue;
+        }
+        name_len = (size_t)(eq - cursor);
+        value_len = (size_t)(at - eq - 1);
+        if (name_len == 0 || name_len >= sizeof(name) ||
+            value_len >= sizeof(s_toggles[0].value)) {
+            fprintf(stderr, "[SETTINGS-TOGGLE] entry \"%.*s\" is out of range; "
+                            "ignored\n", (int)(entry_end - cursor), cursor);
+            cursor = end != NULL ? end + 1 : entry_end;
+            continue;
+        }
+        memcpy(name, cursor, name_len);
+        name[name_len] = '\0';
+        key = mdkr_video_key_from_name(name);
+        tick = strtoull(at + 1, &tail, 10);
+        if (key == MDKR_VIDEO_KEY_COUNT || tail != entry_end) {
+            fprintf(stderr, "[SETTINGS-TOGGLE] entry \"%.*s\" names no setting "
+                            "or no tick; ignored\n",
+                    (int)(entry_end - cursor), cursor);
+            cursor = end != NULL ? end + 1 : entry_end;
+            continue;
+        }
+        s_toggles[s_toggleCount].key = key;
+        memcpy(s_toggles[s_toggleCount].value, eq + 1, value_len);
+        s_toggles[s_toggleCount].value[value_len] = '\0';
+        s_toggles[s_toggleCount].tick = (uint64_t)tick;
+        s_toggles[s_toggleCount].fired = 0;
+        s_toggleCount++;
+        s_toggleState = 1;
+        cursor = end != NULL ? end + 1 : entry_end;
+    }
+}
+
+static void settings_toggle_poll(void) {
+    const uint64_t now = present_sched_ticks();
+
+    settings_toggle_lazy_init();
+    if (s_toggleState != 1) {
+        return;
+    }
+    for (int i = 0; i < s_toggleCount; i++) {
+        const MdkrVideoSchema *schema;
+        MdkrVideoRuntimeResult result;
+        if (s_toggles[i].fired || now < s_toggles[i].tick) {
+            continue;
+        }
+        s_toggles[i].fired = 1;
+        schema = mdkr_video_schema(s_toggles[i].key);
+        result = mdkr_video_config_runtime_set(s_toggles[i].key,
+                                               s_toggles[i].value);
+        fprintf(stderr,
+                "[SETTINGS-TOGGLE] tick=%llu key=%s value=%s result=%d "
+                "applied=%d\n",
+                (unsigned long long)now,
+                schema != NULL ? schema->name : "?",
+                s_toggles[i].value, (int)result,
+                mdkr_video_runtime_result_applied(result) ? 1 : 0);
+        fflush(stderr);
+    }
+}
+
 /* Capture host input transitions. This may run many times between simulation
  * ticks; it never directly replaces the DKR-visible s_pads snapshot. */
 void platform_input_pump(void) {
     const uint64_t target_tick = present_sched_input_target_tick();
+    /* Test-only; one compare in every real run (see settings_toggle_poll). */
+    settings_toggle_poll();
 #ifdef MDKR_APP
     /* Applies deferred shell/window work after the previous present and before
      * any new frame acquires a drawable. No-op without registered app hooks. */
@@ -1861,9 +2002,11 @@ void platform_input_pump(void) {
                      * different refresh. Re-derive the rate and everything
                      * standing on it; the latched policy is untouched. This is
                      * the ONE event SDL2 offers here -- a mode change on the
-                     * SAME display raises nothing, so a player who changes
-                     * their refresh in place still needs a relaunch, which is
-                     * what the pacing keys' SCOPE_RESTART already tells them.
+                     * SAME display raises nothing. A player who changes their
+                     * refresh in place can now re-pick their frame limit to
+                     * force a re-derivation (the pacing keys are SCOPE_LIVE),
+                     * which is a far better answer than the relaunch this
+                     * comment used to have to offer them.
                      */
                     else if (e.window.event ==
                              SDL_WINDOWEVENT_DISPLAY_CHANGED) {
@@ -2954,14 +3097,111 @@ static void present_pace_note_display_changed(void) {
         s_shedDeadlineReady = false;
     }
     /*
-     * Re-rank the present mode. Only the WebGPU backend ranks at surface
-     * configuration; the GL path fixes its swap interval at context adoption
-     * and stays SCOPE_RESTART (see video_config.c's Video.AllowTearing row),
-     * so there is nothing to re-rank there.
+     * Re-rank the present mode. Only the WebGPU backend ranks against the
+     * refresh at surface configuration; the GL swap interval is a function of
+     * the tearing opt-in and the automation flag, neither of which a display
+     * change moves, so there is nothing for GL to re-rank HERE. (A policy or
+     * tearing change does move it, and platform_present_config_apply() re-runs
+     * sdl_apply_gl_present_policy() for exactly that reason.)
      */
 #if defined(MDKR_WEBGPU_BACKEND) && !defined(__EMSCRIPTEN__)
     if (mdkr_render_backend() == MDKR_BACKEND_WEBGPU) {
         gfx_webgpu_request_surface_reconfigure();
+    }
+#endif
+}
+
+/*
+ * The PRESENTATION domain's boundary applier (video_config.h's deferred apply).
+ *
+ * WHERE IT RUNS. stubs_dkr.c's osRecvMesg video-queue branch, at the top,
+ * before platform_present_subloop_fields(). Everything about that point is
+ * load-bearing and none of it is incidental:
+ *
+ *   - The previous authoritative pass has completed (osRecvMesg is only
+ *     reached after fb_update finished it), so no game state is half-written.
+ *   - The previous tick's presentation subloop has fully exited — it is a
+ *     `for(;;)` that only breaks on a due ticket or an exit request, and the
+ *     branch cannot be re-entered until it does. So NO REPLAY WALK IS IN
+ *     FLIGHT, which is the precondition the whole hazard turns on.
+ *   - The next tick's pacing decision has not been made yet, so re-latching the
+ *     policy here is indistinguishable from having booted with it.
+ *
+ * WHAT IT DOES, IN ORDER, AND WHY THAT ORDER.
+ *
+ *  1. gfx_dkr_replay_invalidate() FIRST, unconditionally, in both directions.
+ *     This is the fix for the stale-walk hazard video_config.c's Video.
+ *     FrameLimit row describes: dkr_walk_entry_* (the saved RDP/RSP state and,
+ *     fatally, the saved SEGMENT TABLE) is refreshed by gfx_start_frame only
+ *     while replay is armed, and cleared by nothing else. Retiring it before
+ *     the policy moves means there is no instant at which an armed subloop can
+ *     reach a walk entry captured under the other policy — gfx_dkr_replay_walk
+ *     refuses outright while dkr_walk_entry_valid is false, and the next real
+ *     walk is what makes it true again.
+ *  2. presentation_snapshot_stage_reset(), for the same reason one tick of
+ *     interpolation between two policies would otherwise blend a pair captured
+ *     under different arming decisions.
+ *  3. present_sched_replay_rearm(), so the store's one-shot belongs to the
+ *     policy being switched to.
+ *  4. The policy push. Now, and not earlier: after this line
+ *     present_sched_smoothing_enabled() and present_sched_present_kind()
+ *     answer with the new values, and by construction nothing that could
+ *     misuse them still holds state from the old ones.
+ *  5. The pacer state machine, re-INITIALISED rather than adjusted. s_present-
+ *     Active back to -1 is what makes present_pace_lazy_init() re-resolve the
+ *     whole derivation — kind, effective rate, software-deadline decision, and
+ *     the deadline grid standing on it. A grid is an absolute rational schedule
+ *     anchored at an origin and cannot be reinterpreted at another rate, so it
+ *     is rebuilt, exactly as the display-change path above rebuilds it.
+ *  6. The backend's present mode, which is a function of policy AND tearing
+ *     together and therefore cannot be re-ranked before both are settled.
+ */
+void platform_present_config_apply(void) {
+    const int wasActive = s_presentActive;
+
+    /* 1-2: retire everything the old policy's replay could still be reached
+     * through. Both are cheap no-ops when the features were never armed. */
+    gfx_dkr_replay_invalidate();
+    presentation_snapshot_stage_reset();
+
+    /* 3-4 */
+    present_sched_replay_rearm();
+    mdkr_video_config_push_presentation();
+
+    /* 5. Clear the derived state explicitly rather than trusting lazy_init to
+     * overwrite every field: its ORIGINAL branch returns early, so a policy
+     * change INTO original would otherwise leave a software-deadline flag and a
+     * grid describing the policy that just left. */
+    s_presentActive = -1;
+    s_presentSoftwareDeadline = false;
+    s_presentEffectiveRate = 0u;
+    s_presentSyntheticPhase = 0u;
+    s_occludedDeadlineReady = false;
+    s_shedDeadlineReady = false;
+    s_presentLastHeld = false;
+    present_pace_lazy_init();
+
+    fprintf(stderr,
+            "[PRESENT-POLICY] event=live-apply policy=%s rate=%u smoothing=%d "
+            "tearing=%d subloopWas=%d subloopNow=%d\n",
+            present_sched_present_policy_name(),
+            s_presentEffectiveRate,
+            present_sched_smoothing_enabled() ? 1 : 0,
+            present_sched_allow_tearing() ? 1 : 0,
+            wasActive > 0 ? 1 : 0, s_presentActive > 0 ? 1 : 0);
+    fflush(stderr);
+
+    /* 6. Re-rank the present mode. Each backend re-emits its own [PRESENT-MODE]
+     * row when it does, which is what a gate reads to prove the change reached
+     * the swapchain rather than merely the config. */
+#ifndef __EMSCRIPTEN__
+#ifdef MDKR_WEBGPU_BACKEND
+    if (mdkr_render_backend() == MDKR_BACKEND_WEBGPU) {
+        gfx_webgpu_request_surface_reconfigure();
+    }
+#endif
+    if (s_glReady) {
+        sdl_apply_gl_present_policy();
     }
 #endif
 }

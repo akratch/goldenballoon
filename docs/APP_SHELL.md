@@ -209,23 +209,38 @@ browser uses a compact disclosure to keep its launch card manageable on mobile.
 In both interfaces, **Gameplay cadence** is visually separated because that
 choice changes gameplay and must never look like an ordinary FPS control.
 
-Both settings remain restart-scoped because the host pacer and immutable replay
-resources latch at engine startup. Interpolated replay retains the complete
-authored graphics arena plus external dependencies observed by the renderer,
-and fails closed to an authored hold when adjacent ownership is unavailable.
-Enhanced therefore stays a gameplay-changing compatibility mode rather than a
-frame-rate control.
+Both settings change under the running game. The host pacer and the immutable
+replay resources still latch at engine startup — that has not changed and could
+not safely change — but they are now re-latched as one ordered step at a
+boundary the engine declares, rather than written from the settings panel's own
+call stack. Interpolated replay retains the complete authored graphics arena
+plus external dependencies observed by the renderer, and fails closed to an
+authored hold when adjacent ownership is unavailable. Enhanced remains a
+gameplay-changing compatibility mode rather than a frame-rate control, and
+remains restart-scoped.
 
 Scope is presented honestly:
 
-- **LIVE** keys apply immediately.
-- **RESTART** keys (`Video.FrameLimit`, `Video.MotionSmoothing`,
-  `Gameplay.SimulationCadence`, and others) are badged `restart`, saved, and
-  shown as `Saved for next Play: Y (current: X)`. The Settings page keeps one
-  primary action visible and renames it **Play with Changes** while anything is
-  staged. The UI never implies a restart-scope change took effect. See the
-  long comments in `platform/video_config.c` for why both present-pacing keys
-  latch and why flipping them live is unsafe in *both* directions.
+- **LIVE** keys apply immediately. The four that used to demand a relaunch —
+  `Video.FrameLimit`, `Video.MotionSmoothing`, `Video.AllowTearing` — carry an
+  `applies immediately` note so a returning player can see that the restriction
+  is gone. Their value is written to the config at once and takes effect at the
+  next host-frame boundary: after the previous present has retired and before
+  the next tick's pacing decision, which is the only point at which no replay
+  walk is in flight.
+- **LEVEL** keys (`Camera.Obstruction`) are badged `next track`, saved, and
+  shown as `Set to Y — takes effect the next time a track loads (now: X)`. A
+  camera policy change is a hard cut of the rendered eye and the resolver has no
+  path that fades between two policies, so it is applied where the game already
+  cuts the camera. No relaunch is involved.
+- **RESTART** keys (`Gameplay.SimulationCadence`, `Video.RemasterFX`,
+  `Video.Mipmaps`, and others) are badged `restart`, saved, and shown as
+  `Saved for next Play: Y (current: X)`. The Settings page keeps one primary
+  action visible and renames it **Play with Changes** while anything is staged.
+  The UI never implies a restart-scope change took effect. See the long comments
+  in `platform/video_config.c` for what each key's receiver latches, and
+  `video_config.h`'s deferred-apply note for how the LIVE/LEVEL keys re-latch
+  theirs safely.
 - Keys pinned by an environment variable or the command line are disabled and
   name the layer that owns them, because `mdkr_video_config_runtime_set()` would
   return `LOCKED` for them anyway.
@@ -235,7 +250,9 @@ Scope is presented honestly:
   presentation contract.
 
 Every committed edit routes through `mdkr_video_config_runtime_set()`, which
-validates, persists and then publishes only the LIVE half. Text fields retain
+validates, persists and then publishes only the LIVE half — and, for a key
+whose receiver latches, publishes nothing at all, marking that receiver's
+domain for its own boundary instead. Text fields retain
 their local value through validation/storage failure and commit on Enter or
 blur. Enum and checkbox controls likewise retain the attempted value when a
 write fails. The visible Retry control resubmits that same staged value after

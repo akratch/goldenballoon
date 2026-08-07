@@ -167,6 +167,11 @@ CHECKS = (
     Check("arbitrary_presentation_rates", "check_arbitrary_presentation_rates.py",
           "release", "exact original/30/60/120/144/165/240/uncapped native "
           "presentation with NTSC/PAL state, event, input, and PCM invariance"),
+    Check("live_toggle_settings", "check_live_toggle_settings.py", "release",
+          "mid-run FrameLimit/MotionSmoothing/AllowTearing/Camera.Obstruction "
+          "changes apply at their declared boundary, re-rank the present mode, "
+          "leave the authoritative streams byte-identical, and survive a "
+          "24-flip smoothing soak without reaching retired replay state"),
     Check("presentation_matrix", "check_presentation_matrix.py", "release",
           "presentation rate vs fixed-ticket state/event authority and pixels "
           "(spec 12.2.2)"),
@@ -182,6 +187,14 @@ CHECKS = (
     Check("presentation_lifecycle_asan", "check_presentation_lifecycle.py", "asan",
           "ASan witness for retained replay teardown on 2P pause-to-menu quit",
           ("--only", "pause-quit")),
+    # The release arm proves the toggle applies and stays gameplay-neutral. It
+    # cannot prove the thing the hazard is actually about: a stale segment base
+    # is a read of freed level memory, which a release build dereferences into a
+    # plausible image and reports as success. This lane is the detector.
+    Check("live_toggle_settings_asan", "check_live_toggle_settings.py", "asan",
+          "ASan witness for the 24-flip motion-smoothing toggle soak — the "
+          "stale walk-entry / retired segment-table hazard the live apply closes",
+          ("--soak-only",)),
     Check("state_hash", "check_state_hash.py", "release",
           "authoritative-hash determinism, window/backend invariance, legacy-RNG control"),
     Check("weather_rng_order", "check_weather_rng_order.py", "release",

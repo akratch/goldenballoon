@@ -269,6 +269,26 @@ void mdkr_present_set_allow_tearing(const char *value) {
     s_allow_tearing = present_tearing_value(value);
 }
 
+/*
+ * Re-arm the snapshot-store one-shot for a policy change applied under a
+ * running engine (video_config.h's deferred apply, PRESENTATION domain).
+ *
+ * s_snapshot_forced exists so the store is enabled exactly once, the first time
+ * a run discovers it needs replay. Across a live smoothing/rate change that
+ * "once" belongs to the new policy, not to the old one: an interpolate -> off
+ * -> interpolate sequence must arm the store on the way back in rather than
+ * assume the arming it did before the setting was turned off still stands.
+ *
+ * It re-arms only this one-shot. The resolved policy, smoothing and tearing
+ * values are NOT reset to their unread state, because they are owned by
+ * mdkr_present_set_* above and the applier pushes them immediately after this
+ * call; clearing them here would open a window in which present_sched answered
+ * from the environment instead of from the player's config.
+ */
+void present_sched_replay_rearm(void) {
+    s_snapshot_forced = 0;
+}
+
 bool present_sched_replay_armed(void) {
     if (present_sched_test_replay_walk()) {
         return true;

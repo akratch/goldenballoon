@@ -17,6 +17,7 @@
 #include "camera_obstruction_query.h"
 #include "camera_target_visibility.h"
 #include "camera_obstruction_resolver.h"
+#include "video_config.h"   /* Camera.Obstruction's level-boundary apply */
 
 #include <ultra64.h>
 #include <PRinternal/viint.h>
@@ -538,8 +539,32 @@ static void camera_obstruction_parse_profile_force(void) {
 
 static int sCameraObstructionPolicyFallbackReported;
 
+/*
+ * The policy the last applied Camera.Obstruction change asked for, or NULL when
+ * no change has been applied and the environment is still the only seam.
+ *
+ * WHY A CACHE AND NOT setenv(). The policy resolves per slot per fixed tick, so
+ * a setenv would in fact be observed — this is not present_sched's cached-once
+ * problem. It is a different one: the environment is a PRECEDENCE LAYER in
+ * video_config.h's ranking, above the in-game runtime layer. Writing the
+ * player's in-game choice onto MDKR_CAMERA_OBSTRUCTION would promote it above
+ * itself, so a subsequent settings edit would resolve against a variable this
+ * code had written and would be refused as env-pinned. Keeping the applied
+ * value beside the environment rather than inside it leaves the ranking intact:
+ * a run launched with the variable set still shows the key as locked, and the
+ * setter still refuses to stage anything for it.
+ *
+ * Storage is a small fixed buffer rather than the resolved config pointer
+ * because the values are canonical words the schema has already validated, and
+ * a copy cannot be invalidated by a later settings transaction rewriting the
+ * config underneath a mid-tick read.
+ */
+static char sCameraObstructionAppliedPolicy[32];
+
 static MdkrCameraObstructionRuntimePolicy camera_obstruction_runtime_policy(void) {
-    const char *value = getenv("MDKR_CAMERA_OBSTRUCTION");
+    const char *value = sCameraObstructionAppliedPolicy[0] != '\0'
+        ? sCameraObstructionAppliedPolicy
+        : getenv("MDKR_CAMERA_OBSTRUCTION");
 
     /*
      * OBSERVE is the default: the authored camera is the shipped one, and
@@ -3405,6 +3430,54 @@ void camera_obstruction_runtime_reset(void) {
     sCameraIntentCaptureSerial = 0;
 }
 
+/*
+ * The CAMERA domain's boundary applier (video_config.h's deferred apply).
+ *
+ * WHERE IT RUNS. thread3_main.c, immediately before the
+ * camera_obstruction_runtime_reset() that already precedes every cam_init().
+ * That is not a new boundary — it is the existing one, and using it is the
+ * entire argument for Camera.Obstruction being SCOPE_LEVEL rather than
+ * SCOPE_LIVE (video_config.c's schema row makes the case at length).
+ *
+ * WHAT MAKES IT SAFE. Nothing here invents an invalidation: the reset that
+ * follows this call is the same reset the level boundary has always run, and it
+ * clears exactly the state a policy change makes wrong — every slot's
+ * last_validated_camera / last_validated_exact_guard (the held image the
+ * resolver reuses when its inputs have not moved), the intent records, the
+ * presentation depth, and the viewport-to-slot map. The first tick of the new
+ * level then rebuilds all of it from freshly captured intents under the new
+ * policy, which is the same thing that happens on any level load.
+ *
+ * The policy is swapped BEFORE the reset so no tick can observe the new policy
+ * against pre-change state. Between them there is no tick at all — this runs
+ * inside load_level_game, with the level itself not yet loaded.
+ */
+void camera_obstruction_runtime_apply_config(void) {
+    const MdkrVideoConfig *config = mdkr_video_config_current();
+    const char *value;
+
+    if (config == NULL) {
+        return;
+    }
+    value = config->values[MDKR_VIDEO_CAMERA_OBSTRUCTION].text;
+    /* Empty means the config has no opinion, which is not the same as
+     * "observe": leaving the override clear is what hands the decision back to
+     * MDKR_CAMERA_OBSTRUCTION, including its diagnostic arms. */
+    if (value == NULL || value[0] == '\0') {
+        sCameraObstructionAppliedPolicy[0] = '\0';
+        return;
+    }
+    snprintf(sCameraObstructionAppliedPolicy,
+             sizeof(sCameraObstructionAppliedPolicy), "%s", value);
+    /* A previously-reported typo belongs to the value that was replaced. */
+    sCameraObstructionPolicyFallbackReported = FALSE;
+}
+
+void camera_obstruction_runtime_install_config_apply(void) {
+    mdkr_video_config_register_apply(MDKR_VIDEO_APPLY_CAMERA,
+                                     camera_obstruction_runtime_apply_config);
+}
+
 void camera_obstruction_tick(int update_rate_fields) {
     const uint64_t finalizer_started = camera_obstruction_perf_begin();
     const s32 viewport_count = camera_obstruction_viewport_count();
@@ -3788,6 +3861,9 @@ void camera_obstruction_perf_summary(void) {
 #else
 
 void camera_obstruction_runtime_reset(void) {
+}
+
+void camera_obstruction_runtime_install_config_apply(void) {
 }
 
 void camera_obstruction_tick(int update_rate_fields) {

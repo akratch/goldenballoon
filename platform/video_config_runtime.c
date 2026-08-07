@@ -60,6 +60,187 @@ static MdkrVideoWriteResult mdkr_video_write_config(const MdkrVideoConfig *confi
 static MdkrVideoWriteResult mdkr_video_write_config_unlocked(
     const MdkrVideoConfig *config, int persist_launcher);
 
+/* --------------------------------------------------------------------------
+ *  Deferred apply — see video_config.h's "Deferred apply" note for the why.
+ * ------------------------------------------------------------------------ */
+
+typedef struct MdkrVideoApplyState {
+    void (*apply)(void);
+    /* The boundary this domain is waiting for, or -1 for "not waiting". Held
+     * as the SCOPE rather than as a bool because one domain services exactly
+     * one boundary and the pending record is what tells the engine which. */
+    int pending_scope;
+} MdkrVideoApplyState;
+
+static MdkrVideoApplyState s_apply[MDKR_VIDEO_APPLY_DOMAIN_COUNT];
+
+/*
+ * One staged transition per key, kept ONLY so the boundary can name what it
+ * changed. The authoritative new value is never stored here -- it lives in
+ * s_desired_video, which the setter already updated, and the boundary commits
+ * from there. Two edits before one boundary therefore apply the LATEST choice
+ * rather than the first, without this record having to track supersession.
+ *
+ * `old_text` is what the RUNNING engine had before the FIRST of those edits: it
+ * is captured from s_video at stage time and deliberately not refreshed on a
+ * re-stage, because "what you are looking at now" does not change just because
+ * the player moved the selector twice.
+ *
+ * The buffers are display-sized, not value-sized. Truncating a 1 KB value into
+ * a log row is cosmetic; truncating one into the config would not be, which is
+ * exactly why the config is not read back out of here.
+ */
+typedef struct MdkrVideoApplyRecord {
+    char old_text[MDKR_VIDEO_NAME_MAX];
+    char new_text[MDKR_VIDEO_NAME_MAX];
+    int staged;
+} MdkrVideoApplyRecord;
+
+static MdkrVideoApplyRecord s_apply_record[MDKR_VIDEO_KEY_COUNT];
+
+/*
+ * A domain is deferred only once its owner has registered. Before that -- the
+ * launcher's settings panel before Play, --video-set, every ROM-free test --
+ * there is no boundary to defer to, so publish() writes the value inline
+ * exactly as it always did. Staging for a boundary nobody services would be a
+ * setting that silently never applies, which is the one outcome worse than
+ * requiring a restart.
+ */
+static int mdkr_video_apply_is_deferred(MdkrVideoApplyDomain domain) {
+    if (domain <= MDKR_VIDEO_APPLY_NONE ||
+        domain >= MDKR_VIDEO_APPLY_DOMAIN_COUNT) {
+        return 0;
+    }
+    return s_apply[domain].apply != NULL;
+}
+
+void mdkr_video_config_register_apply(MdkrVideoApplyDomain domain,
+                                      void (*apply)(void)) {
+    if (domain <= MDKR_VIDEO_APPLY_NONE ||
+        domain >= MDKR_VIDEO_APPLY_DOMAIN_COUNT) {
+        return;
+    }
+    s_apply[domain].apply = apply;
+    /* Always, not only on unregister: pending_scope's zero-initialized value is
+     * MDKR_VIDEO_SCOPE_LIVE, so a domain that did not explicitly clear it here
+     * would fire a spurious apply at the first boundary after registration. */
+    s_apply[domain].pending_scope = -1;
+}
+
+int mdkr_video_config_apply_is_pending(MdkrVideoScope boundary) {
+    for (int i = 0; i < MDKR_VIDEO_APPLY_DOMAIN_COUNT; i++) {
+        if (s_apply[i].apply != NULL &&
+            s_apply[i].pending_scope == (int)boundary) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/*
+ * Stage `key` for its domain's boundary. Returns 1 when the value was staged
+ * (so the caller must NOT publish it inline) and 0 when the key has no
+ * deferred owner and should take the ordinary publish path.
+ *
+ * `old_text` is read from s_video BEFORE the caller updates it, and only on the
+ * first stage. Numeric keys are formatted into the same field: every key in a
+ * domain today is a string, but the trace row is a diagnostic contract and
+ * should not acquire a hole the first time a numeric key joins one.
+ */
+static int mdkr_video_apply_stage(MdkrVideoKey key, const char *value) {
+    const MdkrVideoApplyDomain domain = mdkr_video_key_apply_domain(key);
+    const MdkrVideoSchema *schema = mdkr_video_schema(key);
+    MdkrVideoApplyRecord *record;
+
+    if (schema == NULL || !mdkr_video_apply_is_deferred(domain)) {
+        return 0;
+    }
+    record = &s_apply_record[key];
+    if (!record->staged) {
+        if (schema->type == MDKR_VIDEO_TYPE_STRING) {
+            snprintf(record->old_text, sizeof(record->old_text), "%s",
+                     s_video.values[key].text);
+        } else {
+            snprintf(record->old_text, sizeof(record->old_text), "%.9g",
+                     (double)s_video.values[key].number);
+        }
+    }
+    snprintf(record->new_text, sizeof(record->new_text), "%s",
+             value != NULL ? value : "");
+    record->staged = 1;
+    s_apply[domain].pending_scope = (int)schema->scope;
+    return 1;
+}
+
+/*
+ * Commit `domain`'s staged transitions into the live config and announce them.
+ *
+ * COMMIT AND ANNOUNCE ARE THE SAME STEP because they answer the same question.
+ * s_video is "what the running engine has"; the [SETTINGS-APPLY] row is the
+ * externally visible statement that it changed. Doing either without the other
+ * is how a log and a config disagree.
+ *
+ * The row is written BEFORE the domain callback runs. If the apply faults, the
+ * last thing in the log is the change that was being made, which is the only
+ * ordering that helps anyone reading a crash — and it is what lets the toggle
+ * soak attribute a fault to a specific transition rather than to a run.
+ */
+static void mdkr_video_apply_flush(MdkrVideoApplyDomain domain,
+                                   MdkrVideoScope boundary) {
+    static const char *const kDomainNames[MDKR_VIDEO_APPLY_DOMAIN_COUNT] = {
+        "none", "presentation", "camera"
+    };
+    for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; i++) {
+        const MdkrVideoSchema *schema = mdkr_video_schema((MdkrVideoKey)i);
+        if (!s_apply_record[i].staged ||
+            mdkr_video_key_apply_domain((MdkrVideoKey)i) != domain) {
+            continue;
+        }
+        /* Make the LIVE config match the DESIRED one for this key, which is
+         * the whole meaning of "applied". Idempotent for a LIVE key the setter
+         * already copied; load-bearing for a LEVEL key, which the setter
+         * deliberately left alone so that until this moment every reader still
+         * saw the value the engine was running.
+         *
+         * From s_desired_video rather than from the record, so two edits before
+         * one boundary apply the latest -- and so the value that reaches the
+         * config is the one the setter validated, never a display copy of it. A
+         * key pinned above RUNTIME rank cannot reach here: the setter refuses it
+         * as LOCKED, so nothing is staged for it in the first place. */
+        s_video.values[i] = s_desired_video.values[i];
+        fprintf(stderr,
+                "[SETTINGS-APPLY] domain=%s boundary=%s key=%s old=%s new=%s\n",
+                kDomainNames[domain],
+                boundary == MDKR_VIDEO_SCOPE_LEVEL ? "level" : "frame",
+                schema != NULL ? schema->name : "?",
+                s_apply_record[i].old_text, s_apply_record[i].new_text);
+        s_apply_record[i].staged = 0;
+    }
+    fflush(stderr);
+}
+
+int mdkr_video_config_apply_pending(MdkrVideoScope boundary) {
+    int applied = 0;
+
+    /* Domain order is the enum's, and it is the ordering guarantee callers get:
+     * presentation before camera. Presentation is what invalidates the replay
+     * history, so a camera apply in the same pass can never publish a sidecar
+     * pose into a retained task that is about to be thrown away. Today the two
+     * domains service different boundaries and cannot co-occur; the order is
+     * stated anyway so that stops being an accident if a third domain lands. */
+    for (int i = 0; i < MDKR_VIDEO_APPLY_DOMAIN_COUNT; i++) {
+        if (s_apply[i].apply == NULL ||
+            s_apply[i].pending_scope != (int)boundary) {
+            continue;
+        }
+        s_apply[i].pending_scope = -1;
+        mdkr_video_apply_flush((MdkrVideoApplyDomain)i, boundary);
+        s_apply[i].apply();
+        applied++;
+    }
+    return applied;
+}
+
 /*
  * Sources this process owns for the lifetime of ONE invocation: the
  * --pure/--restored/--remastered preset flags, the browser launcher's seeds,
@@ -520,6 +701,28 @@ void mdkr_video_config_publish(void) {
      * `original`. tests/check_presentation_matrix.py's arm B remains the
      * regression for that precedence boundary.
      */
+    if (!mdkr_video_apply_is_deferred(MDKR_VIDEO_APPLY_PRESENTATION)) {
+        mdkr_video_config_push_presentation();
+    }
+}
+
+/*
+ * The pacing keys' half of publish(), split out so exactly one piece of code
+ * decides what present_sched is told, whoever is asking.
+ *
+ * publish() calls this directly while the presentation domain has no
+ * registered applier — boot, --video-set, the launcher before Play, every
+ * ROM-free test. Once the engine has registered one, publish() stops calling
+ * it and the boundary applier does instead, AFTER it has invalidated the
+ * replay history. That ordering is the whole point: pushing a new smoothing
+ * value into present_sched while a retained walk entry from the other policy is
+ * still valid is the stale-segment-table hazard, and it is unreachable when the
+ * only caller that can run under a live engine is the one that invalidates
+ * first.
+ */
+void mdkr_video_config_push_presentation(void) {
+    const MdkrVideoConfig *c = &s_video;
+
     if (c->values[MDKR_VIDEO_FRAME_LIMIT].source != MDKR_VIDEO_SOURCE_DEFAULT) {
         mdkr_present_set_frame_limit(c->values[MDKR_VIDEO_FRAME_LIMIT].text);
     }
@@ -870,7 +1073,21 @@ MdkrVideoRuntimeResult mdkr_video_config_runtime_set_many(
     if (!includes_mode) {
         for (int i = 0; i < change_count; i++) {
             const MdkrVideoSchema *schema = mdkr_video_schema(changes[i].key);
-            if (schema->scope == MDKR_VIDEO_SCOPE_LIVE) {
+            /*
+             * Stage BEFORE the set: mdkr_video_apply_stage reads the outgoing
+             * value out of s_video, and the set below is what destroys it.
+             *
+             * A LEVEL-scoped key is deliberately NOT copied into s_video here.
+             * s_video is "what the running engine has", and until the level
+             * boundary runs the engine still has the old camera policy --
+             * writing it early would make the panel claim the change had landed
+             * and would make mdkr_video_config_report() lie. The level applier
+             * performs that copy itself, at the moment it becomes true.
+             */
+            const int staged =
+                mdkr_video_apply_stage(changes[i].key, changes[i].value);
+            if (schema->scope == MDKR_VIDEO_SCOPE_LIVE ||
+                (schema->scope == MDKR_VIDEO_SCOPE_LEVEL && !staged)) {
                 (void) mdkr_video_config_set(&s_video, changes[i].key,
                                              changes[i].value,
                                              MDKR_VIDEO_SOURCE_RUNTIME);
