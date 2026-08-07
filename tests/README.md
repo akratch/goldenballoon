@@ -3627,6 +3627,15 @@ source it inspects and must reject it. It also derives the release version from
 `CMakeLists.txt`'s `MDKR_VERSION` and requires this file's task list to match
 `tools/run_checks.py`'s manifest.
 
+The exact text it pins lives beside it in `tests/ci_contract_manifest.py`: one
+`Pin` per literal a named file must, or must never, contain, and one `Control`
+per deliberate break of a pin. Reword a workflow step, a refusal message or an
+artifact filename and you edit the pin and its control in the manifest; the
+check itself only holds what it computes — version agreement, the three-way
+frame-limit help comparison, occurrence counts, step ordering, the structural
+regexes over CMake and the packagers' archive manifests, the no-write output
+guards, and this file's coverage sweep.
+
 ### Optimized full-UBSan route gate — `tests/check_full_ubsan.py`
 
 ```bash
