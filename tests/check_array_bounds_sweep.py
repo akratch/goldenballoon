@@ -384,6 +384,107 @@ SHAPE_TRIAGE = {
     # moved the -1 inside DKR_SHL32's masked operand, so the added-constant
     # idiom is gone and the site classifies as INFO var-count. The keyshift
     # reasoning it used to carry lives in docs/open-items/portability.md.
+
+    # =====================================================================
+    # platform/ -- NEW to the enumerator, not new to the tree.
+    # tools/sweep_bug_shapes.py scanned only game/src, so the port's own C had
+    # never been swept for any of these three shapes. That scope gap is what let
+    # mdkr_adventure.c keep an unbounded `0x10000 << doorID` next to a
+    # correctly-bounded twin in the same file. SCAN_DIRS now covers platform/;
+    # every TRIAGE finding it produced is below, each read end to end with its
+    # call sites.
+    # =====================================================================
+    ("bare-pointer", "platform/audi_port_dkr.c", "audio_apply_test_gain:buf"):
+        "BOUNDED BY CALLER CONTRACT: the loop is `i < frameSamples * "
+        "DKR_AUDIO_CHANNELS`. Both call sites take frameSamples from "
+        "dkr_choose_frame_samples()/dkr_catchup_frame_samples(), which clamp to "
+        "amAudioGetMaxSamples() == PORT_MAX_FRAME_SAMPLES before the buffer is "
+        "used, and amAudioSynthFrame allocates each output at "
+        "PORT_MAX_FRAME_SAMPLES * DKR_AUDIO_CHANNELS s16. The clamp lives in the "
+        "shared controller both callers route through.",
+    ("bare-pointer", "platform/audio_ring.c", "mdkr_audio_ring_pull:interleaved"):
+        "BOUNDED BY PARAMETER: `for (i = 0; i < frames; i++)` writing "
+        "interleaved[i*2] / [i*2+1] -- the bound parameter IS the loop bound. "
+        "The SDL callback computes frames = len / DKR_AUDIO_BYTES_PER_FRAME from "
+        "the size of the very buffer it passes.",
+    ("bare-pointer", "platform/audio_volume.c",
+     "mdkr_audio_gain_ramp_apply_s16:samples"):
+        "BOUNDED BY PARAMETER: nested `frame < frames` / `channel < channels`, "
+        "max index frames*channels-1. Both call sites pass the same buf / "
+        "frameSamples pair already bounded above, with channels == "
+        "DKR_AUDIO_CHANNELS matching the buffer's interleaving.",
+    ("bare-pointer", "platform/audio_volume.c",
+     "mdkr_audio_crossfade_from_s16:samples"):
+        "BOUNDED BY PARAMETER: count = min(frames, fade_frames), so writes never "
+        "exceed frames*channels-1 whatever fade_frames is. The sole caller "
+        "forwards frameCount = size / DKR_AUDIO_BYTES_PER_FRAME for the buffer of "
+        "that same size. `from` is a fixed int16_t[2] indexed by channel < 2.",
+    ("bare-pointer", "platform/config_ini.c", "config_ini_trim:s"):
+        "NOT THIS SHAPE: nothing is written past the input's own NUL. Every bound "
+        "comes from strlen() of the string itself, and both the memmove and the "
+        "trailing-whitespace NULs stay inside live content. It needs only a valid "
+        "C string, which all four call sites (a local line[] buffer) provide.",
+    ("bare-pointer", "platform/fast3d/gfx_font_sdf.c", "derive_region:distance"):
+        "BOUNDED BY CONSTRUCTION: writes distance[y*width+x] for y<height, "
+        "x<width of the CLIPPED region. The sole caller runs a pre-pass over "
+        "every region with the same clip_region(), takes the max "
+        "width*height, and allocates `distance` at exactly that before the real "
+        "pass -- so every later call's clipped area is <= the allocation.",
+    ("bare-pointer", "platform/fast3d/gfx_mipgen.c", "preserve_alpha_coverage:rgba"):
+        "BOUNDED BY CONSTRUCTION: `i < width*height` writing rgba[i*4+3]. The "
+        "sole caller (gfx_mip_build_cutout) passes out->level[l] with "
+        "out->width[l]/height[l], and that level was allocated at exactly "
+        "cw*ch*4 with width/height set from the same locals.",
+    ("bare-pointer", "platform/fast3d/gfx_pc_dkr.c", "dkr_clip_near:out"):
+        "BOUNDED BY LITERAL, and now also self-bounded. The clipping path guards "
+        "every write with `count < DKR_CLIP_MAX_VERTS`; the MDKR_NEARCLIP=off "
+        "debug arm copied `n` elements with no clamp of its own and was safe only "
+        "because the one call site passes the literal 3 into a "
+        "LoadedVertex[DKR_CLIP_MAX_VERTS]. That arm now clamps n to "
+        "DKR_CLIP_MAX_VERTS as well, so both arms carry the array's bound.",
+    ("bare-pointer", "platform/fast3d/gfx_shadow_frame.c",
+     "append_triangle:vertex_count"):
+        "BOUNDED BY CONSTRUCTION: required_vertices = *vertex_count + 3 (through "
+        "checked_add_size, which rejects overflow), then grow_array() must "
+        "succeed to at least that capacity or the append is abandoned, BEFORE the "
+        "three writes; *vertex_count is advanced only after they complete. Count "
+        "and capacity are one invariant maintained by this function.",
+    ("bare-pointer", "platform/fs_utf8.c",
+     "mdkr_windows_quote_argument_utf8:output"):
+        "BOUNDED BY PARAMETER: every byte goes through MDKR_QUOTE_EMIT, which "
+        "tests `written + 1 >= capacity` and returns -1 instead of writing. "
+        "Self-enforced against its own capacity argument.",
+    ("bare-pointer", "platform/presentation_snapshot.c",
+     "presentation_snapshot_authored_cameras_copy:out"):
+        "BOUNDED BY PARAMETER: `if (count >= capacity) return 0;` immediately "
+        "precedes every out[count] write, so no caller can push it past capacity. "
+        "The real caller and the tests pass ARRAY_COUNT/sizeof of a real array.",
+    ("bare-pointer", "platform/rom_id.c", "dkr_rom_supported_list:buf"):
+        "BOUNDED BY PARAMETER: all writes are snprintf(buf + used, bufLen - used, "
+        "...) with the return value checked before `used` advances, plus an "
+        "explicit buf[bufLen-1] = 0. Both call sites pass sizeof(buffer).",
+    ("bare-pointer", "platform/rom_id.c", "dkr_rom_normalize_byte_order:data"):
+        "BOUNDED BY PARAMETER: both swap loops are `i + 1 < size` / `i + 3 < "
+        "size`, so the highest index is size-1. The sole caller only reaches it "
+        "after an exact size == DKR_ROM_SIZE_BYTES check on the real buffer.",
+    ("bare-pointer", "platform/save_container.c", "json_parse_string:output"):
+        "BOUNDED BY PARAMETER: every write path tests output_capacity first -- "
+        "the single-byte path, append_utf8's `count > capacity - *length`, and "
+        "the terminating NUL. Self-bounded regardless of caller correctness; all "
+        "eight call sites also pass sizeof(field).",
+    ("bare-pointer", "platform/stubs_dkr.c", "controller_query:data"):
+        "BOUNDED BY LITERAL: `i < MAXCONTROLLERS` writing data[i], and the only "
+        "backing store is joypad.c's OSContStatus gControllerStatus"
+        "[MAXCONTROLLERS] -- loop bound and declaration are the same macro.",
+    ("bare-pointer", "platform/stubs_dkr.c", "osContGetReadData:pad"):
+        "BOUNDED BY LITERAL: same shape -- `i < MAXCONTROLLERS` writing pad[i], "
+        "sole caller passes joypad.c's gControllerCurrData[MAXCONTROLLERS].",
+    ("shift-count", "platform/fast3d/gfx_pc_dkr.c", "dkr_generate_cc:MIPS-MASK-IDIOM"):
+        "NOT UB: the enumerator's added-constant heuristic assumes a 32-bit "
+        "operand, and `cc_id` is a uint64_t parameter. The loop is `i < 2 && (i "
+        "== 0 || is_2cyc)`, so i is 0 or 1 and the shift counts are 25 and 53 -- "
+        "both under 64. The narrowing into a uint32_t afterwards is ordinary "
+        "truncation, not a shift-exponent problem.",
 }
 
 # Ceilings for the INFO population, per class. May fall; may not rise.
@@ -397,8 +498,16 @@ SHAPE_INFO_MAX = {
     # `obj_char_select_batch_texture_index:numCursors == 0` is an early-out on
     # an empty cursor list filled by the MAXCONTROLLERS loop into
     # playerSelectIndices[MAXCONTROLLERS]; it caps nothing.
-    "equality-cap": 32,
-    "shift-count": 141,
+    # +7 from extending SCAN_DIRS to platform/: the informational population in
+    # the port's own C, none of which is a saturation cap on a shared counter
+    # (they are `x == 0` early-outs and single-writer loop indices).
+    "equality-cap": 39,
+    # +116 from platform/. Overwhelmingly `1u << port` / `1u << slot` bit masks
+    # over small fixed domains and `value >> (i * 8)` byte extractions -- the
+    # var-count flavour the enumerator reports without an added constant. The
+    # ceiling's job is to fail on GROWTH, so it is set to the measured
+    # population, not padded.
+    "shift-count": 257,
 }
 
 # Only array-bounds is load-bearing for this class. pointer-overflow is kept

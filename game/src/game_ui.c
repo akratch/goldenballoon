@@ -456,7 +456,7 @@ void hud_init(UNUSED s32 viewportCount) {
 #ifdef NATIVE_PORT
     /* MISC section is punted at load; normalize this LevelHeader_70 blob before
      * func_8007F1E8 reads its count/entry fields (deduped vs. re-swap). */
-    asset_swap_misc_lightdata(D_80127194);
+    asset_swap_misc_lightdata(D_80127194, (u32) get_misc_asset_size(ASSET_MISC_58));
 #endif
     func_8007F1E8(D_80127194);
     sndp_set_group_volume(0, AL_SNDP_GROUP_VOLUME_MAX);

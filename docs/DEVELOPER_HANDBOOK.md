@@ -906,6 +906,11 @@ every production object-model hit),
 `MDKR_SEGMARGIN=<n>` / `MDKR_SEGBOUND=legacy` / `MDKR_COLLCAP=<n>|legacy` (force or
 remove the bounds added by wave "boundsweep" — the boundaries are unreached in play,
 so these are how its controls get there),
+`MDKR_COLLALLOC=1` (lower the collision-candidate ALLOCATION to the effective
+`MDKR_COLLCAP` and arm a canary at index `cap`, reported as `[COLL] canary=`.
+Lowering the cap alone leaves index `cap` inside a full-size 500-entry block, so a
+guard that sits below the store it guards writes a real element and reports
+nothing — the reason this exists),
 `MDKR_BOSS_SLOW=1` (cripple a boss so the human wins — the only way to reach
 `racer_boss_finish()`'s win branch headlessly),
 `MDKR_WATCH_COURSEFLAGS=<levelId>` (one `[BOSSW]` line per change to

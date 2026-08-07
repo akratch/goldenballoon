@@ -252,6 +252,15 @@ static Vec4f sFaithfulCullPlanes[3];
 /* The visibility prepass and rendering need to mask this flag locally, and
  * camera.c exposes only a getter and a clearing setter. */
 extern s8 gCutsceneCameraActive;
+
+#ifdef NATIVE_PORT
+/* MDKR_COLLALLOC boundary control (platform/stubs_dkr.c). Declared here the same
+ * way game/src/hasm/collision.c declares mdkr_coll_cap(): the hook lives on the
+ * platform side and only this translation unit sizes the arrays. */
+extern int  mdkr_coll_alloc_cells(int romCap);
+extern int  mdkr_coll_alloc_canary_slack(void);
+extern void mdkr_coll_canary_arm(void *candidates, void *surfaces, int index);
+#endif
 #endif
 WaterProperties D_8011D128[20];
 WaterProperties *gTrackWaves[20];
@@ -5165,8 +5174,25 @@ void generate_track(s32 modelId) {
     set_texture_colour_tag(COLOUR_TAG_GREEN);
     gTrackModelHeap = mempool_alloc_safe(LEVEL_MODEL_MAX_SIZE, COLOUR_TAG_YELLOW);
     gCurrentLevelModel = gTrackModelHeap;
+#ifdef NATIVE_PORT
+    /* MDKR_COLLALLOC=1 lowers the candidate ALLOCATION to the effective
+     * MDKR_COLLCAP boundary and adds one canary element just past it, so that a
+     * store at index == cap becomes observable. MDKR_COLLCAP on its own only
+     * moves the boundary INSIDE a full-size 500-entry block, which is why it
+     * could not see the facet insert's guard sitting below its own store. See
+     * platform/stubs_dkr.c (MDKR_COLLALLOC). Unset: cells == 500 and slack == 0,
+     * i.e. byte-for-byte the ROM-side allocation. */
+    {
+        s32 cells = mdkr_coll_alloc_cells(MAX_COLLISION_CANDIDATES);
+        s32 slack = mdkr_coll_alloc_canary_slack();
+        gCollisionCandidates = mempool_alloc_safe((cells + slack) * 4, COLOUR_TAG_YELLOW);
+        gCollisionSurfaces = mempool_alloc_safe(cells + slack, COLOUR_TAG_YELLOW);
+        mdkr_coll_canary_arm(gCollisionCandidates, gCollisionSurfaces, cells);
+    }
+#else
     gCollisionCandidates = mempool_alloc_safe(MAX_COLLISION_CANDIDATES * 4, COLOUR_TAG_YELLOW);
     gCollisionSurfaces = mempool_alloc_safe(MAX_COLLISION_CANDIDATES, COLOUR_TAG_YELLOW);
+#endif
     gNumCollisionCandidates = 0;
     gLevelModelTable = (s32 *) asset_table_load(ASSET_LEVEL_MODELS_TABLE);
 
@@ -5502,6 +5528,12 @@ void free_track(void) {
         tex_free(DKR_PTR(TextureHeader, DKR_PTR(TextureInfo, gCurrentLevelModel->textures)[i].texture));
     }
     mempool_free(gTrackModelHeap);
+#ifdef NATIVE_PORT
+    /* Disarm before the blocks go back to the pool: the canary pointers would
+     * otherwise outlive their allocation until the next level load re-arms them.
+     * No-op unless MDKR_COLLALLOC is set. */
+    mdkr_coll_canary_arm(NULL, NULL, -1);
+#endif
     mempool_free(gCollisionCandidates);
     mempool_free(gCollisionSurfaces);
     sprite_free(DKR_PTR(Sprite, gCurrentLevelModel->minimapSpriteIndex));

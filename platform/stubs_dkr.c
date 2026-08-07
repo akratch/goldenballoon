@@ -2391,7 +2391,10 @@ static long s_collTruncations   = 0;
  * cap for the [COLPEAK] line below so a lowered test cap is reflected there
  * too, not just the ROM's 500. */
 int mdkr_coll_cap(int romCap);
+/* Defined just below, with the MDKR_COLLALLOC control it belongs to. */
+static void mdkr_coll_canary_check(void);
 void mdkr_coll_candidates(int count, int truncated) {
+    mdkr_coll_canary_check();
     if (count > s_collMaxCandidates) {
         s_collMaxCandidates = count;
         /* G4 (docs/open-items/collision.md, wave "boundsweep"): boss levels 41
@@ -2424,6 +2427,90 @@ void mdkr_coll_candidates(int count, int truncated) {
 }
 int  mdkr_coll_max_candidates(void) { return s_collMaxCandidates; }
 long mdkr_coll_truncations(void)    { return s_collTruncations; }
+
+/* ======================================================================== *
+ *  MDKR_COLLALLOC=1 -- lower the candidate ALLOCATION with the cap, and arm
+ *  a canary slot at index == cap
+ * ======================================================================== *
+ * MDKR_COLLCAP alone cannot observe the defect it was written for. It moves the
+ * guard boundary DOWN while the allocation stays at 500 entries, so a store at
+ * index == cap still lands inside the block: a check can drive the boundary but
+ * every regression it is supposed to catch is invisible. That is exactly how the
+ * facet insert shipped for a while with its guard sitting BELOW the store it
+ * guards -- the boundary control exercised the path and reported nothing.
+ *
+ * With MDKR_COLLALLOC=1, tracks.c sizes gCollisionCandidates/gCollisionSurfaces
+ * to the effective cap plus ONE canary element, fills the canary with a known
+ * pattern, and arms it here. The canary slot is index == cap: the first slot a
+ * missing or mis-ordered guard writes, and a slot no correct code path can ever
+ * touch. It is inside our own allocation, so the control stays deterministic and
+ * cannot corrupt the arena -- what changes is that the write is now OBSERVABLE.
+ *
+ * "[COLL] canary=" reports it at exit alongside maxCandidates/truncations.
+ * No-op unless MDKR_COLLALLOC is set.
+ */
+static int  s_collAllocLowered = -1;
+static int *s_collCanaryCand;
+static signed char *s_collCanarySurf;
+static long s_collCanaryTrips;
+
+#define MDKR_COLL_CANARY_WORD 0x5AC0DEAD
+#define MDKR_COLL_CANARY_BYTE ((signed char) 0x5A)
+
+static int mdkr_coll_alloc_lowered(void) {
+    if (s_collAllocLowered < 0) {
+        const char *e = getenv("MDKR_COLLALLOC");
+        s_collAllocLowered = (e != NULL && e[0] != '\0' && e[0] != '0');
+    }
+    return s_collAllocLowered;
+}
+
+/* Number of LIVE candidate elements to allocate. Callers must allocate one more
+ * than this for the canary (see mdkr_coll_canary_arm). */
+int mdkr_coll_alloc_cells(int romCap) {
+    int cap;
+    if (!mdkr_coll_alloc_lowered()) {
+        return romCap;
+    }
+    cap = mdkr_coll_cap(romCap);
+    /* MDKR_COLLCAP=legacy returns INT_MAX; there is no boundary to lower to. */
+    return (cap > 0 && cap <= romCap) ? cap : romCap;
+}
+
+/* Extra elements the caller must add for the canary: 1 when armed, 0 otherwise,
+ * so the default build allocates exactly the ROM's 500. */
+int mdkr_coll_alloc_canary_slack(void) {
+    return mdkr_coll_alloc_lowered() ? 1 : 0;
+}
+
+void mdkr_coll_canary_arm(void *candidates, void *surfaces, int index) {
+    s_collCanaryCand = NULL;
+    s_collCanarySurf = NULL;
+    if (!mdkr_coll_alloc_lowered() || candidates == NULL || surfaces == NULL || index < 0) {
+        return;
+    }
+    s_collCanaryCand = &((int *) candidates)[index];
+    s_collCanarySurf = &((signed char *) surfaces)[index];
+    *s_collCanaryCand = MDKR_COLL_CANARY_WORD;
+    *s_collCanarySurf = MDKR_COLL_CANARY_BYTE;
+}
+
+/* Checked once per generate_collision_candidates() call, from
+ * mdkr_coll_candidates() above. Re-arms so one trip does not mask the next. */
+static void mdkr_coll_canary_check(void) {
+    if (s_collCanaryCand == NULL) {
+        return;
+    }
+    if (*s_collCanaryCand != MDKR_COLL_CANARY_WORD ||
+        *s_collCanarySurf != MDKR_COLL_CANARY_BYTE) {
+        s_collCanaryTrips++;
+        *s_collCanaryCand = MDKR_COLL_CANARY_WORD;
+        *s_collCanarySurf = MDKR_COLL_CANARY_BYTE;
+    }
+}
+
+long mdkr_coll_canary_trips(void) { return s_collCanaryTrips; }
+int  mdkr_coll_canary_armed(void) { return s_collCanaryCand != NULL; }
 
 /* ======================================================================== *
  *  Bounded-write high-water marks -- the ONLY instrument for the

@@ -534,10 +534,21 @@ three are no-ops unless set.
 - **`filename_decompress` writes `output[length]`**, so its buffer must be
   `length + 1`. True at every call site today; noted because it is the same
   off-by-one family as the `filename_trim` overrun an earlier wave had to fix.
-- **The allocation is not lowered with `MDKR_COLLCAP`.** The evidence a check
-  needs is the write *index*, which `[COLL] maxCandidates` already reports; making
-  the emulated overrun a real heap write would trade a deterministic assertion for
-  a nondeterministic crash.
+- ~~**The allocation is not lowered with `MDKR_COLLCAP`.**~~ **CLOSED.** The
+  argument was that the write *index* is the evidence, and `[COLL] maxCandidates`
+  already reports it. That is not sufficient: `maxCandidates` is the index the
+  guard PERMITTED, so a guard placed below the store it guards still reports a
+  peak equal to the cap while one element lands at index `cap`. The gap was real
+  — the facet insert carried exactly that mis-ordering. `MDKR_COLLALLOC=1`
+  (`platform/stubs_dkr.c`, sizing in `game/src/tracks.c`) now lowers the
+  allocation to the effective cap and arms a canary element at index `cap`,
+  reported as `[COLL] canary=`. The canary is inside our own allocation, so the
+  original objection — trading a deterministic assertion for a nondeterministic
+  crash — does not apply: the write becomes observable without becoming a heap
+  overrun. Demonstrated both ways on level 41 with `MDKR_COLLCAP=150`: `canary=0`
+  with the guard in place, `canary=1` with the facet guard moved back below its
+  store. `tests/check_collision_headroom.py` also now checks guard ORDER
+  statically, not just guard presence.
 
 ### G4 follow-up: per-level headroom measured and gated, cap NOT raised
 
