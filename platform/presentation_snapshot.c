@@ -41,6 +41,69 @@ void presentation_snapshot_set_enabled(bool enabled) {
     s_enabled = enabled ? 1 : 0;
 }
 
+/* ---- test-only seams ----------------------------------------------------- */
+
+/*
+ * Two negative controls, and nothing else in this file may grow a third
+ * without the same justification.
+ *
+ * A gate that only ever runs green proves that it ran, not that it can fail.
+ * These are the committed code paths that turn two of
+ * tests/check_motion_quality_battery.py's rows red on demand: one restores the
+ * long-way-round angle smear the quarter-turn snap exists to prevent (artifact
+ * class C3), the other restores blending across a spawn/teleport the
+ * discontinuity flag exists to refuse (class C2's object-side sibling).
+ *
+ * Both are presentation-only by construction. They change what a REPLAYED pose
+ * looks like and never touch a captured sample or a live object, so the
+ * authoritative state/event/input streams cannot see either one -- which is
+ * also why the battery can assert stream identity across its own red arms.
+ *
+ * Both sit behind the same versioned internal token present_sched.c gates its
+ * adversarial replay seams with, and both default off: without the token the
+ * arm's own env is inert. The token literal is repeated here rather than
+ * shared through present_sched.h because this translation unit is deliberately
+ * free of every other header -- that property is what lets
+ * tests/test_presentation_snapshot.c link it standalone (cmake/tests.cmake) --
+ * and one strcmp costs less than giving it up.
+ */
+#define PRESENTATION_SNAPSHOT_INTERNAL_TOKEN "mdkr64-presentation-replay-v1"
+
+static int s_internal_test = -1;
+static int s_test_long_arc = -1;
+static int s_test_ignore_discontinuity = -1;
+
+static bool presentation_snapshot_internal_test(void) {
+    if (s_internal_test < 0) {
+        const char *token = getenv("MDKR_INTERNAL_TEST_TOKEN");
+        s_internal_test =
+            token != NULL &&
+            strcmp(token, PRESENTATION_SNAPSHOT_INTERNAL_TOKEN) == 0;
+    }
+    return s_internal_test != 0;
+}
+
+static bool presentation_snapshot_test_flag(const char *name, int *cache) {
+    if (*cache < 0) {
+        const char *value = getenv(name);
+        /* Token first: an env set without it resolves to off and stays off,
+         * so a stray MDKR_TEST_* in a shell profile cannot arm a seam. */
+        *cache = presentation_snapshot_internal_test() && value != NULL &&
+                 value[0] == '1';
+    }
+    return *cache != 0;
+}
+
+static bool presentation_snapshot_test_long_arc(void) {
+    return presentation_snapshot_test_flag("MDKR_TEST_ROTATION_LONG_ARC",
+                                           &s_test_long_arc);
+}
+
+static bool presentation_snapshot_test_ignore_discontinuity(void) {
+    return presentation_snapshot_test_flag("MDKR_TEST_IGNORE_DISCONTINUITY",
+                                           &s_test_ignore_discontinuity);
+}
+
 /* ---- identity registry --------------------------------------------------- */
 
 /*
@@ -777,7 +840,9 @@ static void presentation_snapshot_report(void) {
            "cam4=%llu cam5=%llu cam6=%llu cam7=%llu "
            "caminterp0=%llu caminterp1=%llu caminterp2=%llu "
            "caminterp3=%llu caminterp4=%llu caminterp5=%llu "
-           "caminterp6=%llu caminterp7=%llu\n",
+           "caminterp6=%llu caminterp7=%llu "
+           "rotarccheck=%llu rotarcsnap=%llu rotarcviolation=%llu "
+           "disconthold=%llu discontblend=%llu\n",
            (unsigned long long)s_stats.captures,
            (unsigned long long)s_stats.objects_peak,
            (unsigned long long)s_stats.discontinuities,
@@ -799,7 +864,12 @@ static void presentation_snapshot_report(void) {
            (unsigned long long)s_stats.camera_interpolations[4],
            (unsigned long long)s_stats.camera_interpolations[5],
            (unsigned long long)s_stats.camera_interpolations[6],
-           (unsigned long long)s_stats.camera_interpolations[7]);
+           (unsigned long long)s_stats.camera_interpolations[7],
+           (unsigned long long)s_stats.rotation_arc_checks,
+           (unsigned long long)s_stats.rotation_arc_snaps,
+           (unsigned long long)s_stats.rotation_arc_violations,
+           (unsigned long long)s_stats.discontinuity_holds,
+           (unsigned long long)s_stats.discontinuity_blends);
     fflush(stdout);
 }
 
@@ -878,14 +948,102 @@ int16_t presentation_lerp_angle(int16_t a, int16_t b, uint64_t numerator,
     }
     /* The narrowing to int16_t IS the shortest-arc selection. */
     delta = (int16_t)((uint16_t)((uint16_t)b - (uint16_t)a));
-    if (delta > PRESENTATION_SNAPSHOT_ROTATION_SNAP ||
-        delta < -PRESENTATION_SNAPSHOT_ROTATION_SNAP) {
+    if (presentation_snapshot_test_long_arc()) {
+        /*
+         * Negative control only (see the seam block at the top of this file).
+         * Re-express the same rotation as the LONG way round and smear across
+         * it: the object turns backwards through the rest of the circle to
+         * arrive exactly where the short arc would have taken it. That is
+         * artifact class C3, and the snap below is one of the two things that
+         * prevent it -- so the seam deliberately reaches EVERY delta rather
+         * than only the past-quarter-turn ones. A control that fired only on
+         * rotations this route may not contain would be a control whose red
+         * depends on content, which is the property it exists to not have.
+         */
+        if (delta != 0) {
+            delta = delta > 0 ? delta - 0x10000 : delta + 0x10000;
+        }
+    } else if (delta > PRESENTATION_SNAPSHOT_ROTATION_SNAP ||
+               delta < -PRESENTATION_SNAPSHOT_ROTATION_SNAP) {
         return b; /* beyond a quarter turn: snap, never smear */
     }
     alpha = (double)numerator / (double)denominator;
     stepped = (int32_t)((double)delta * alpha); /* truncates toward zero */
     /* Unsigned addition so the wrap around 0x7FFF/0x8000 is defined. */
     return (int16_t)(uint16_t)((uint16_t)a + (uint16_t)(int16_t)stepped);
+}
+
+/*
+ * Grade one interpolated angle against the arc it was allowed to travel.
+ *
+ * Two clauses, because a reconstruction can be wrong about a rotation in two
+ * unrelated ways and only one of them is about magnitude:
+ *
+ *   - past a quarter turn there is no arc worth smearing across, because the
+ *     shortest path is no longer the one the object took. The only legal
+ *     reconstruction is the authored endpoint itself, and anything else is the
+ *     long-way-round smear of artifact class C3;
+ *   - inside a quarter turn the result must lie ON the shortest arc: same
+ *     direction as `b - a` narrowed to int16_t, and never past its far end. An
+ *     interpolated present lies BETWEEN its endpoints -- the same statement
+ *     check_effect_shell_envelope.py makes about position, in the units
+ *     rotation is measured in.
+ *
+ * Recomputed here from (a, b, out) rather than reported by
+ * presentation_lerp_angle itself, deliberately. A helper that both performs
+ * the arithmetic and grades it can only ever agree with itself, and the
+ * mutation this exists to catch lives inside that arithmetic. It is the same
+ * independence check_camera_snapshot_coverage.py buys by classifying cuts out
+ * of raw poses instead of asking the interpolator what it thought.
+ *
+ * Counters only. No branch above depends on them, so the audit cannot move a
+ * pixel or a hash.
+ */
+static void rotation_arc_audit(int16_t a, int16_t b, int16_t out,
+                               uint64_t numerator, uint64_t denominator) {
+    const int32_t delta = (int16_t)((uint16_t)((uint16_t)b - (uint16_t)a));
+    const int32_t step = (int16_t)((uint16_t)((uint16_t)out - (uint16_t)a));
+
+    s_stats.rotation_arc_checks++;
+    /*
+     * The two exact-endpoint contracts come first, because the interior rules
+     * below are false at the ends. A replay at alpha 0 must reproduce the
+     * authored endpoint bit for bit -- `a`, NOT the snap's `b` -- and the
+     * first draft of this audit graded those presents by the snap clause and
+     * reported one violation per past-quarter-turn alpha-0 resolve on the
+     * three-lap route. The counter was right and the grader was wrong, which
+     * is the more useful of the two ways to learn that at this stage.
+     */
+    if (denominator == 0u || numerator == 0u) {
+        if (out != a) {
+            s_stats.rotation_arc_violations++;
+        }
+        return;
+    }
+    if (numerator >= denominator) {
+        if (out != b) {
+            s_stats.rotation_arc_violations++;
+        }
+        return;
+    }
+    if (delta > PRESENTATION_SNAPSHOT_ROTATION_SNAP ||
+        delta < -PRESENTATION_SNAPSHOT_ROTATION_SNAP) {
+        s_stats.rotation_arc_snaps++;
+        if (out != b) {
+            s_stats.rotation_arc_violations++;
+        }
+        return;
+    }
+    if (step == 0) {
+        return; /* a delta too small to move the fixed point at this alpha */
+    }
+    if ((step < 0) != (delta < 0)) {
+        s_stats.rotation_arc_violations++; /* wrong way round the circle */
+        return;
+    }
+    if (step < 0 ? step < delta : step > delta) {
+        s_stats.rotation_arc_violations++; /* overshot the authored endpoint */
+    }
 }
 
 bool presentation_discrete_use_current(uint64_t numerator,
@@ -927,7 +1085,15 @@ static bool resolve_object_pair(const PresentationSnapshot *current,
 
     object_pose_from_entry(entry, out);
     if (entry->discontinuity) {
-        return true; /* spawn / teleport: current pose, never blended */
+        if (!presentation_snapshot_test_ignore_discontinuity()) {
+            s_stats.discontinuity_holds++;
+            return true; /* spawn / teleport: current pose, never blended */
+        }
+        /* Negative control only (see the seam block at the top of this file):
+         * fall through and blend a respawn, which draws the racer smeared
+         * along the line between where it died and where it came back. The
+         * blend is counted at the bottom of this function so the production
+         * zero is a zero for a reason rather than for want of a witness. */
     }
     if (previous == NULL || !previous->valid ||
         previous->stage_generation != current->stage_generation) {
@@ -957,6 +1123,12 @@ static bool resolve_object_pair(const PresentationSnapshot *current,
     out->rotation_z = presentation_lerp_angle(before->rotation_z,
                                               entry->rotation_z, numerator,
                                               denominator);
+    rotation_arc_audit(before->rotation_y, entry->rotation_y, out->rotation_y,
+                       numerator, denominator);
+    rotation_arc_audit(before->rotation_x, entry->rotation_x, out->rotation_x,
+                       numerator, denominator);
+    rotation_arc_audit(before->rotation_z, entry->rotation_z, out->rotation_z,
+                       numerator, denominator);
     out->opacity = presentation_lerp_u8(
         before->opacity, entry->opacity, numerator, denominator);
 
@@ -968,6 +1140,9 @@ static bool resolve_object_pair(const PresentationSnapshot *current,
         use_current ? entry->animation_frame : before->animation_frame;
     out->model_index = use_current ? entry->model_index : before->model_index;
     out->is_particle = use_current ? entry->is_particle : before->is_particle;
+    if (entry->discontinuity) {
+        s_stats.discontinuity_blends++;
+    }
     out->interpolated = 1u;
     return true;
 }
@@ -1110,7 +1285,15 @@ bool presentation_snapshot_resolve_camera(int viewport_index,
     memcpy(out->viewport, entry->viewport, sizeof(out->viewport));
     out->interpolated = 0u;
 
-    if (entry->discontinuity || previous == NULL || !previous->valid ||
+    if (entry->discontinuity) {
+        if (!presentation_snapshot_test_ignore_discontinuity()) {
+            s_stats.discontinuity_holds++;
+            return true; /* a cut is not motion: never blend across one */
+        }
+        /* Negative control only -- the camera-side twin of the object case
+         * above, and the mechanism artifact class C2 describes. */
+    }
+    if (previous == NULL || !previous->valid ||
         previous->stage_generation != current->stage_generation ||
         (size_t)viewport_index >= previous->camera_count) {
         return true;
@@ -1133,6 +1316,14 @@ bool presentation_snapshot_resolve_camera(int viewport_index,
                                               denominator);
     out->pitch = presentation_lerp_angle(before->pitch, entry->pitch,
                                          numerator, denominator);
+    rotation_arc_audit(before->rotation_x, entry->rotation_x, out->rotation_x,
+                       numerator, denominator);
+    rotation_arc_audit(before->rotation_y, entry->rotation_y, out->rotation_y,
+                       numerator, denominator);
+    rotation_arc_audit(before->rotation_z, entry->rotation_z, out->rotation_z,
+                       numerator, denominator);
+    rotation_arc_audit(before->pitch, entry->pitch, out->pitch,
+                       numerator, denominator);
     out->shake_magnitude = presentation_lerp1(before->shake_magnitude,
                                               entry->shake_magnitude,
                                               numerator, denominator);
@@ -1157,6 +1348,9 @@ bool presentation_snapshot_resolve_camera(int viewport_index,
         presentation_discrete_use_current(numerator, denominator)
             ? entry->apply_shake
             : before->apply_shake;
+    if (entry->discontinuity) {
+        s_stats.discontinuity_blends++;
+    }
     out->interpolated = 1u;
     if (entry->camera_id >= 0 &&
         entry->camera_id < PRESENTATION_SNAPSHOT_MAX_CAMERAS) {

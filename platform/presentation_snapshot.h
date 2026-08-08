@@ -184,6 +184,23 @@ typedef struct PresentationSnapshotStats {
     uint64_t camera_id_mask;  /* exact gCameras[] IDs seen in published frames */
     uint64_t camera_captures[PRESENTATION_SNAPSHOT_MAX_CAMERAS];
     uint64_t camera_interpolations[PRESENTATION_SNAPSHOT_MAX_CAMERAS];
+    /*
+     * The perceptual census tests/check_motion_quality_battery.py reads.
+     *
+     * Counters only: none of these changes a branch, so a build that carries
+     * them resolves byte-identically to one that does not. They exist because
+     * the two motion failures a player names first -- a rotation that smears
+     * the long way round, and a respawn the reconstruction blends across --
+     * are invisible to every pixel control the tree has. Both arms of such a
+     * control put the object somewhere, and a wrong somewhere is as coherent
+     * as a right one (see docs/evidence/smoothing-artifact-repro-2026-08.md
+     * §2.4).
+     */
+    uint64_t rotation_arc_checks;     /* interpolated angle results audited */
+    uint64_t rotation_arc_snaps;      /* of those, deltas past a quarter turn */
+    uint64_t rotation_arc_violations; /* results outside the [prev,curr] arc */
+    uint64_t discontinuity_holds;     /* resolves the cut/spawn flag refused */
+    uint64_t discontinuity_blends;    /* resolves that BLENDED a flagged entry */
 } PresentationSnapshotStats;
 
 /* Interpolated result handed to the renderer. Never written into a live
