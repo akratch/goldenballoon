@@ -815,7 +815,94 @@ void presentation_snapshot_get_stats(PresentationSnapshotStats *out) {
     }
 }
 
+/* ---- authored UV-scroll rates ------------------------------------------- *
+ * See the header for why the authored rate is published instead of a measured
+ * tick-to-tick difference. The store is a flat array walked linearly: a level
+ * drives a few dozen batches at most, the walk touches it once per G_TRIN,
+ * and a flat array of spans is both the cheapest and the only structure that
+ * can answer "which batch contains this address" when a display list splits a
+ * batch into several polygon commands. */
+typedef struct UvScrollAuthoredSpan {
+    const unsigned char *first;
+    const unsigned char *end;
+    PresentationUvScrollAuthored rate;
+    bool ambiguous;
+} UvScrollAuthoredSpan;
+
+static UvScrollAuthoredSpan
+    s_uv_authored[PRESENTATION_UV_SCROLL_AUTHORED_MAX_SPANS];
+static size_t s_uv_authored_count;
+static bool s_uv_authored_wanted;
+
+bool presentation_uv_scroll_authored_wanted(void) {
+    return s_uv_authored_wanted;
+}
+
+void presentation_uv_scroll_authored_set_wanted(bool wanted) {
+    s_uv_authored_wanted = wanted;
+}
+
+void presentation_uv_scroll_authored_reset(void) {
+    s_uv_authored_count = 0u;
+}
+
+void presentation_uv_scroll_authored_register(
+    const void *first, const void *end,
+    const PresentationUvScrollAuthored *rate) {
+    const unsigned char *begin = (const unsigned char *)first;
+    const unsigned char *last = (const unsigned char *)end;
+    size_t index;
+
+    if (begin == NULL || last == NULL || last <= begin || rate == NULL) {
+        return;
+    }
+    for (index = 0u; index < s_uv_authored_count; index++) {
+        UvScrollAuthoredSpan *span = &s_uv_authored[index];
+        if (span->first >= last || span->end <= begin) {
+            continue;
+        }
+        /* Overlap while the table is live. Either two texscroll objects drive
+         * one batch — in which case neither rate describes the surface — or a
+         * tick's walk never consumed the previous registration. Both are
+         * resolved by refusing this span and letting measurement decide. */
+        span->ambiguous = true;
+        return;
+    }
+    if (s_uv_authored_count >= PRESENTATION_UV_SCROLL_AUTHORED_MAX_SPANS) {
+        return;
+    }
+    s_uv_authored[s_uv_authored_count].first = begin;
+    s_uv_authored[s_uv_authored_count].end = last;
+    s_uv_authored[s_uv_authored_count].rate = *rate;
+    s_uv_authored[s_uv_authored_count].ambiguous = false;
+    s_uv_authored_count++;
+}
+
+bool presentation_uv_scroll_authored_lookup(
+    const void *address, PresentationUvScrollAuthored *out) {
+    const unsigned char *probe = (const unsigned char *)address;
+    size_t index;
+
+    if (probe == NULL || out == NULL) {
+        return false;
+    }
+    for (index = 0u; index < s_uv_authored_count; index++) {
+        const UvScrollAuthoredSpan *span = &s_uv_authored[index];
+        if (probe < span->first || probe >= span->end) {
+            continue;
+        }
+        if (span->ambiguous) {
+            return false;
+        }
+        *out = span->rate;
+        return true;
+    }
+    return false;
+}
+
 void presentation_snapshot_shutdown(void) {
+    s_uv_authored_count = 0u;
+    s_uv_authored_wanted = false;
     memset(s_frames, 0, sizeof(s_frames));
     memset(s_camera_history, 0, sizeof(s_camera_history));
     memset(&s_authored_cameras, 0, sizeof(s_authored_cameras));

@@ -893,6 +893,60 @@ and the other 119,081 were never sampled.
   real display, so a physical-vsync component of the owner's complaint is
   neither confirmed nor excluded.
 
+### 5.6 Amendment (2026-08-09): C8's phase holds were a defect after all
+
+§5.2 dispositioned every UV-scroll hold as benign and left per-axis
+confirmation as the one open improvement. The phase-hold half of that
+disposition was **wrong**, and the reason is arithmetic that neither §5.2 nor
+its route A measurement could see.
+
+`obj_loop_texscroll` advances through a two-bit accumulator, so an authored
+rate that is not a multiple of four **alternates its emitted whole-unit step
+by one on every tick, permanently**. Two adjacent ticks can never agree, so
+the confirmation rule refuses on every present the batch is drawn in. Jungle
+Falls could not show this: its waterfall is authored at 32 quarter units a
+tick (16 whole units at `updateRate` 2, exactly constant), which is why it
+confirms 726 of 726 — and both gates that exercised UV scroll ran Jungle Falls
+only. §5.2's claim that "authored scroll speed is a level constant, so a real
+scroller confirms on its second tick" is true of the speed and false of the
+bytes.
+
+**The affected content, enumerated at runtime.** Every level loaded through
+`MDKR_LOAD_TRACK` and dumped at `obj_loop_texscroll`: an *odd* authored rate
+is the affected predicate (at `updateRate` 2 it makes the per-tick advance
+2 mod 4). Levels 0, 3, 8, 9, 13, 15, 17, 19, 20, 28, 35, 36 and 42 carry at
+least one; levels 7, 29 (Jungle Falls), 30, 31, 38 and 46 are multiples of
+four throughout and were never affected.
+
+**The fix is the authored rate, not a weaker rule.** The driver publishes its
+rate and accumulator residue; the replay computes `(phase + rate*alpha)/4`.
+The wrap rule is untouched for every measured scroller, and per-axis
+confirmation — §5.4's open improvement — was not needed and was not made.
+
+**Measured, level 19 (two fractional scrollers, authored V rates 127 and 85),
+3,400 authored ticks at 120 Hz.** The red arm is the same binary with
+`MDKR_TEST_UV_SCROLL_AUTHORED_RATE=off`, and it reproduces the pre-fix build
+exactly:
+
+| | authored rate off (= pre-fix) | authored rate on |
+|---|---|---|
+| `uvscrollholdphase` | 6,417 | **4,170** |
+| `uvscrollauthoredconfirm` | 0 | 2,247 |
+| `uvscrollholdunpub` | 6,246 | 6,246 |
+| `uvscrollholdambig` / `holdshape` | 0 / 0 | 0 / 0 |
+
+The 2,247 recovered lookups equal the authored confirmations exactly, and the
+authored batches now hold **zero** times — `ambiguous` and `shape` are the only
+clauses an authored record can reach, and both are zero. The residual 4,170
+phase holds are the pre-race scene §5.2 already attributed (the same 3,546-plus
+population route A carries), which is a genuine oscillating displacement and
+still refuses, correctly. Jungle Falls is unchanged: 12.71% before and after,
+because its rate was never fractional.
+
+The gate is `check_smoothing_stage_bisection.py` route C, printed as
+`[UV-SCROLL-AUTHORED]`; it fails on a tree without the fix because the green
+arm registers no authored rates at all.
+
 ### 5.5 What did not change, and how that was checked
 
 The three census commits add counters and change no branch. The witness is the

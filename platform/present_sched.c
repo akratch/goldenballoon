@@ -1233,6 +1233,7 @@ void present_sched_trace_summary(void) {
                 "uvscrollcollision=%llu uvscrollhit=%llu uvscrollhold=%llu "
                 "uvscrollholdunpub=%llu uvscrollholdambig=%llu "
                 "uvscrollholdshape=%llu uvscrollholdphase=%llu "
+                "uvscrollauthored=%llu uvscrollauthoredconfirm=%llu "
                 "uvscrolloverride=%llu uvscrollpeak=%zu "
                 "uvscrollbytespeak=%zu\n",
                 (unsigned long long)packet_stats.matrix_registrations,
@@ -1323,6 +1324,10 @@ void present_sched_trace_summary(void) {
                 (unsigned long long)packet_stats.uv_scroll_hold_ambiguous,
                 (unsigned long long)packet_stats.uv_scroll_hold_shape,
                 (unsigned long long)packet_stats.uv_scroll_hold_phase,
+                (unsigned long long)
+                    packet_stats.uv_scroll_authored_registrations,
+                (unsigned long long)
+                    packet_stats.uv_scroll_authored_confirmations,
                 (unsigned long long)packet_stats.uv_scroll_overrides,
                 packet_stats.uv_scroll_peak,
                 packet_stats.uv_scroll_bytes_peak);

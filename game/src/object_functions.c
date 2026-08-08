@@ -28,6 +28,7 @@
 #include "racer.h"
 #include "runtime_contracts.h"
 #ifdef NATIVE_PORT
+#include "presentation_snapshot.h"
 #include "taj_physics.h"
 #include "taj_visual.h"
 #define TAJ_ABSORBS_ATTACK(racer, attack) \
@@ -5936,6 +5937,7 @@ void obj_init_texscroll(Object *obj, LevelObjectEntry_TexScroll *entry, s32 arg2
     }
     texscroll->unk4 = entry->unkA;
     texscroll->unk6 = entry->unkB;
+
     if (arg2 == 0) {
         texscroll->unk8 = 0;
         texscroll->unkA = 0;
@@ -5966,6 +5968,10 @@ void obj_loop_texscroll(Object *obj, s32 updateRate) {
     s32 t1;
     s32 i;
     s32 j;
+#ifdef NATIVE_PORT
+    PresentationUvScrollAuthored authoredRate;
+    bool registerAuthoredRate;
+#endif
 
     texScroll = obj->tex_scroll;
     levelModel = get_current_level_model();
@@ -5982,6 +5988,22 @@ void obj_loop_texscroll(Object *obj, s32 updateRate) {
 
     t0 *= updateRate;
     t1 *= updateRate;
+
+#ifdef NATIVE_PORT
+    /* Presentation-only, and read-only with respect to everything below: the
+     * authored rate this tick advances by, plus the accumulator residue the
+     * triangle bytes ALREADY carry (i.e. before this tick's advance). Those
+     * two numbers let the interpolator reconstruct the true sub-tick texture
+     * position exactly, instead of trying to recover it by differencing two
+     * ticks whose emitted displacement is quantised to whole units by the
+     * two-bit accumulator directly below. See presentation_snapshot.h. */
+    authoredRate.rate_u = t0;
+    authoredRate.rate_v = t1;
+    authoredRate.phase_u = texScroll->unk8 & 3;
+    authoredRate.phase_v = texScroll->unkA & 3;
+    registerAuthoredRate = presentation_uv_scroll_authored_wanted() &&
+                           (t0 != 0 || t1 != 0);
+#endif
 
     texScroll->unk8 += t0;
     texScroll->unkA += t1;
@@ -6000,6 +6022,17 @@ void obj_loop_texscroll(Object *obj, s32 updateRate) {
         curBatch = DKR_PTR(TriangleBatchInfo, curBlock[i].batches);
         for (j = 0; j < curBlock[i].numberOfBatches; j++) {
             if (curBatch[j].textureIndex == texScroll->textureIndex) {
+#ifdef NATIVE_PORT
+                if (registerAuthoredRate &&
+                    curBatch[j + 1].facesOffset > curBatch[j].facesOffset) {
+                    const Triangle *batchTriangles =
+                        DKR_PTR(Triangle, curBlock[i].triangles);
+                    presentation_uv_scroll_authored_register(
+                        &batchTriangles[curBatch[j].facesOffset],
+                        &batchTriangles[curBatch[j + 1].facesOffset],
+                        &authoredRate);
+                }
+#endif
                 for (tri = curBatch[j].facesOffset; tri < curBatch[j + 1].facesOffset; tri++) {
                     curTriangle = &DKR_PTR(Triangle, curBlock[i].triangles)[tri];
                     if (!(curTriangle->flags & TRI_FLAG_80)) {
