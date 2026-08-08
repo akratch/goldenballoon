@@ -511,13 +511,17 @@ production coverage:
   which seam to open first. Two routes, because none fires all seven: Jungle
   Falls in-race with shields forced ranks six, and the battle challenge ranks
   the point-trail particle stage that the first route registers but never
-  interpolates. A stage whose override counter is zero on the route it is
-  ranked from fails the gate as UNEXERCISED, so "never fired" can never be
-  read as "contributes nothing". Every arm must keep the v3 state, event and
-  input streams byte-identical and every authored endpoint frame exact. The
-  same gate carries the uncaptured-external evidence: production must resolve
-  zero, and the token-gated `MDKR_TEST_UNCAPTURED_EXTERNAL` seam must force
-  the interpolated walks to refuse into held authored images rather than read
+  interpolates. Two guards keep a zero readable. Each leave-one-out arm must
+  drive its stage's `[PRESENT-PACKET]` reach counter to exactly zero, so a
+  mistyped env cannot masquerade as a stage that ran and changed nothing; and
+  every stage gets an explicit `fires` / `reached-never-interpolated` /
+  `absent` disposition on both routes, with anything but `fires` failing the
+  gate for a stage it ranks. Every arm must keep the v3 state, event and input
+  streams byte-identical and every authored endpoint frame exact. The same
+  gate carries the uncaptured-external evidence: all eleven production arms
+  must resolve zero — with the stat field's presence required, not defaulted —
+  and the token-gated `MDKR_TEST_UNCAPTURED_EXTERNAL` seam must force the
+  interpolated walks to refuse into held authored images rather than read
   live memory. Results in
   `docs/evidence/smoothing-stage-attribution-2026-08-08.md`.
 - `check_presentation_shadows.py` is the focused Ancient Lake visual regression

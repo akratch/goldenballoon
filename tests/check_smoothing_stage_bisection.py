@@ -45,10 +45,20 @@ What each arm asserts
 * **Authored endpoints are exact.** At 120 Hz every fourth present is the real
   walk's own image. Those frames must be byte-identical across every arm —
   a stage that changes an endpoint has escaped the replay.
+* **The opt-out actually reached the binary.** Each leave-one-out arm must
+  drive the left-out stage's ``[PRESENT-PACKET]`` reach counter to exactly
+  zero. Without this the harness's worst failure is silent: a mistyped env
+  name produces an arm identical to all-on, and its zero pixel difference is
+  indistinguishable from a stage that ran and changed nothing. Real zeros of
+  the second kind exist in this table, so "zero difference" cannot validate
+  itself.
 * **The instrument is not vacuous.** all-off must differ from all-on on at
-  least one intermediate frame, and every stage must show a non-zero
-  ``[PRESENT-PACKET]`` override counter on the route it is ranked from.
-  A stage that never fired is reported as UNEXERCISED, never as innocent.
+  least one intermediate frame, and every ranked stage must both be *reached*
+  and *fire* — a non-zero override — on its route. A stage that is reached but
+  never substitutes anything is reported as ``reached-never-interpolated``, one
+  that is never reached at all as ``absent``; neither is ever silently read as
+  innocence. All seven stages get an explicit ``[STAGE-DISPOSITION]`` row on
+  both routes, ranked or not.
 
 The uncaptured-external arm
 ---------------------------
@@ -56,10 +66,14 @@ The uncaptured-external arm
 The same run shape carries the evidence for the retained-pointer fail-closed
 path. ``dkr_retain_resolved_pointer`` refuses an interpolated walk that
 resolves a non-arena dependency with no retained copy. On a correct tree that
-branch is unreachable, so the production arms assert ``uncapturedext=0`` and
-``MDKR_TEST_UNCAPTURED_EXTERNAL`` (token-gated) forces every external lookup to
-miss and asserts the walks refuse — holding the authored image — rather than
-reading live memory.
+branch is unreachable, so **every** production arm — all-on, all-off and each
+leave-one-out, on both routes — asserts ``uncapturedext=0``, and the assertion
+first requires the stat field to be *present*: a lookup with a default would
+pass silently the day the counter is renamed. The covered arm and replay counts
+are printed as ``[UNCAPTURED-OWNERSHIP]`` rather than summed by hand.
+``MDKR_TEST_UNCAPTURED_EXTERNAL`` (token-gated) then forces every external
+lookup to miss and asserts the walks refuse — holding the authored image —
+rather than reading live memory.
 
 Always muted + headless. Exit 0 = pass.
 """
@@ -117,35 +131,90 @@ ROUTE_B_TRACK = "26"
 # ticks. Kept short so the adversarial seam costs seconds, not half a minute.
 FAILCLOSED_TICKS = 600
 
-# (name, opt-out env, the [PRESENT-PACKET] counter that proves the stage
-# actually fired on a route). The counters are all *override* counts, not
-# registration counts: a registration only proves the walk saw the data, while
-# an override proves the replay substituted an interpolated value for it.
+# (name, opt-out env, disarm counter, fire counter) — both counters are
+# [PRESENT-PACKET] fields and they answer two different questions that a single
+# number cannot separate.
+#
+# `disarm` must be non-zero in the all-on arm and EXACTLY ZERO in that stage's
+# leave-one-out arm. That is the only thing standing between this harness and
+# its worst failure mode: a mistyped env name produces an arm identical to
+# all-on, whose zero pixel difference is indistinguishable from a stage that
+# ran and changed nothing. Measured 30-tick windows already produce genuine
+# zeros here (primitive_alpha), so "zero difference" cannot be self-validating.
+#
+# `fire` is the override count — the replay actually substituting an
+# interpolated value. A stage can be reached without ever firing, and route A's
+# particle stage is exactly that (particledeformhit=20166,
+# particledeformoverride=0), so ranking needs the override and the env check
+# needs the reach.
+#
+# deformation is the one stage whose reach counter is not usable as its disarm
+# witness: `deformhit` is shared with the particle lookup and only falls from
+# 767,829 to 20,166 when the seam is off. Its override is the clean witness.
 STAGES = (
-    ("object", "MDKR_TEST_OBJECT_INTERPOLATION", "matrixoverride"),
-    ("deformation", "MDKR_TEST_DEFORMATION_INTERPOLATION", "deformoverride"),
-    ("vertex_color", "MDKR_TEST_VERTEX_COLOR_INTERPOLATION", "coloroverride"),
+    ("object", "MDKR_TEST_OBJECT_INTERPOLATION",
+     "matrixhit", "matrixoverride"),
+    ("deformation", "MDKR_TEST_DEFORMATION_INTERPOLATION",
+     "deformoverride", "deformoverride"),
+    ("vertex_color", "MDKR_TEST_VERTEX_COLOR_INTERPOLATION",
+     "colorhit", "coloroverride"),
     ("particle", "MDKR_TEST_PARTICLE_INTERPOLATION",
-     "particledeformoverride"),
+     "particledeformhit", "particledeformoverride"),
     ("primitive_alpha", "MDKR_TEST_PRIMITIVE_ALPHA_INTERPOLATION",
-     "primalphaoverride"),
-    ("effect", "MDKR_TEST_EFFECT_INTERPOLATION", "effectoverride"),
-    ("uv_scroll", "MDKR_TEST_UV_SCROLL_INTERPOLATION", "uvscrolloverride"),
+     "primalphahit", "primalphaoverride"),
+    ("effect", "MDKR_TEST_EFFECT_INTERPOLATION",
+     "effecthit", "effectoverride"),
+    ("uv_scroll", "MDKR_TEST_UV_SCROLL_INTERPOLATION",
+     "uvscrollhit", "uvscrolloverride"),
 )
+
+# Fields [REPLAY-SUMMARY] must carry for the ownership assertion below to mean
+# anything. A dict lookup with a default silently passes when a stat is renamed
+# or dropped, which turns the strongest claim this gate makes into a no-op.
+REPLAY_STAT_CONTRACT = ("uncapturedext", "uncapturedrefusals")
 
 # A stage is ranked only from a route that actually fires it. Route A never
 # interpolates a world-space particle mesh -- it registers particle vertices
 # and then holds every one of them -- so ranking `particle` there would report
 # an absent stage as an innocent one, which is the single most misleading thing
 # an attribution table can do.
-ROUTE_A_STAGES = tuple(name for name, _, _ in STAGES if name != "particle")
+ROUTE_A_STAGES = tuple(
+    name for name, _, _, _ in STAGES if name != "particle")
 ROUTE_B_STAGES = ("particle",)
 
 STAGE_OFF = "off"
 
 
 def stage_env(disabled: tuple[str, ...]) -> dict[str, str]:
-    return {env: STAGE_OFF for name, env, _ in STAGES if name in disabled}
+    return {env: STAGE_OFF for name, env, _, _ in STAGES if name in disabled}
+
+
+def replay_ownership(output: str, label: str) -> tuple[list[str], int]:
+    """Assert one arm resolved no uncaptured external. Returns (problems, ext).
+
+    Applied to EVERY arm that runs production interpolated replays, not only
+    the all-on reference: a leave-one-out arm replays just as many times, and
+    an ownership hole that only appears with one stage disabled is exactly the
+    kind a reference-arm-only assertion would miss.
+    """
+
+    problems: list[str] = []
+    replay = parse_last(output, "REPLAY-SUMMARY")
+    missing = [key for key in REPLAY_STAT_CONTRACT if key not in replay]
+    if missing:
+        problems.append(
+            f"{label}: [REPLAY-SUMMARY] carries no {'/'.join(missing)} field. "
+            "That is the uncaptured-external stat contract "
+            "(gfx_dkr_replay_get_uncaptured_stats -> present_sched.c); without "
+            "it this gate's ownership assertion silently passes on every arm")
+        return problems, 0
+    if replay["uncapturedext"] != 0:
+        problems.append(
+            f"{label}: uncapturedext={replay['uncapturedext']} — an "
+            "interpolated walk resolved a non-arena dependency with no "
+            "retained copy. Before the fail-closed change it would have read "
+            "that pointer live")
+    return problems, replay["uncapturedext"]
 
 
 def run(binary: Path, rom: Path, label: str, root: Path, track: str,
@@ -305,6 +374,11 @@ def main() -> int:
     failures: list[str] = []
     notes: list[str] = []
     rows: list[str] = []
+    # Counted rather than asserted from a hand-summed figure: the published
+    # claim about how much production this gate covers has to come from the
+    # run that made it.
+    owned_arms = 0
+    owned_replays = 0
 
     routes = (
         ("A", ROUTE_A_TRACK, ROUTE_A_TICKS,
@@ -339,31 +413,42 @@ def main() -> int:
                         "arm below differences an image nothing produced")
                 # Production ownership: the fail-closed branch must be
                 # unreachable on a correct tree, in every stage configuration.
-                if replay.get("uncapturedext", 0) != 0:
-                    failures.append(
-                        f"route {route}: uncapturedext="
-                        f"{replay['uncapturedext']} — an interpolated walk "
-                        "resolved a non-arena dependency with no retained "
-                        "copy. That is an uncaptured external, and before the "
-                        "fail-closed change it would have been read live")
+                problems, _ = replay_ownership(
+                    base_out, f"route {route} arm all-on")
+                failures.extend(problems)
+                owned_arms += 1
+                owned_replays += summary["interp"]
                 notes.append(
                     f"route {route} all-on: {summary['interp']} interpolated "
                     f"replays over {summary['presents']} presents, "
                     f"{len(base_sim)} authoritative ticks, uncapturedext="
                     f"{replay.get('uncapturedext')}")
 
-                for stage, _, counter in STAGES:
-                    value = packet.get(counter, 0)
+                # Per-stage disposition on THIS route, stated for all seven so
+                # a stage that never fires here is recorded rather than absent
+                # from the output.
+                for stage, _, disarm, fire in STAGES:
+                    reach = packet.get(disarm, 0)
+                    fired = packet.get(fire, 0)
+                    if reach == 0:
+                        disposition = "absent"
+                    elif fired == 0:
+                        disposition = "reached-never-interpolated"
+                    else:
+                        disposition = "fires"
                     rows.append(
-                        f"[STAGE-COVERAGE] route={route} stage={stage} "
-                        f"counter={counter} value={value} "
+                        f"[STAGE-DISPOSITION] route={route} stage={stage} "
+                        f"{disarm}={reach} {fire}={fired} "
+                        f"disposition={disposition} "
                         f"ranked={int(stage in ranked)}")
-                    if stage in ranked and value == 0:
+                    if stage in ranked and disposition != "fires":
                         failures.append(
-                            f"route {route}: stage {stage} is UNEXERCISED — "
-                            f"{counter}=0, so its leave-one-out arm measures "
-                            "an absent stage rather than an innocent one. "
-                            "Rank it from a route that fires it")
+                            f"route {route}: stage {stage} is {disposition} "
+                            f"({disarm}={reach}, {fire}={fired}), so its "
+                            "leave-one-out arm measures a stage that never "
+                            "substituted anything rather than one that "
+                            "substituted and did not show. Rank it from a "
+                            "route that fires it")
 
                 base_frames = load_frames(base_dir)
                 if len(base_frames) != DUMP_FRAMES:
@@ -372,7 +457,7 @@ def main() -> int:
                         f"frames, expected {DUMP_FRAMES}")
 
                 arms: list[tuple[str, tuple[str, ...]]] = [
-                    ("all-off", tuple(name for name, _, _ in STAGES))]
+                    ("all-off", tuple(name for name, _, _, _ in STAGES))]
                 arms += [(stage, (stage,)) for stage in ranked]
                 measured: dict[str, dict[str, float]] = {}
                 # Kept so every leave-one-out arm can be compared against the
@@ -385,6 +470,33 @@ def main() -> int:
                         binary, rom, f"route{route}-{label}-off", root, track,
                         ticks, {**route_env, **stage_env(disabled)},
                         args.timeout, args.verbose, dump=True)
+                    problems, _ = replay_ownership(
+                        out, f"route {route} arm {label}")
+                    failures.extend(problems)
+                    owned_arms += 1
+                    owned_replays += parse_last(
+                        out, "PRESENTSCHED-SUMMARY")["interp"]
+                    # THE ENV-REACHED-THE-BINARY GUARD. Every stage this arm
+                    # switched off must have stopped being reached. A mistyped
+                    # variable, a renamed env, or an opt-out that stopped
+                    # disarming all land here instead of masquerading as a
+                    # stage that ran and changed nothing.
+                    arm_packet = parse_last(out, "PRESENT-PACKET")
+                    for stage, env_name, disarm, _ in STAGES:
+                        if stage not in disabled:
+                            continue
+                        reach = arm_packet.get(disarm, 0)
+                        if packet.get(disarm, 0) == 0:
+                            continue   # absent here; nothing to disarm
+                        if reach != 0:
+                            failures.append(
+                                f"route {route} arm {label}: {env_name}=off "
+                                f"left {disarm}={reach} (all-on: "
+                                f"{packet.get(disarm, 0)}). The opt-out did "
+                                "not disarm the stage, so this arm is not a "
+                                "leave-one-out of it and its frame difference "
+                                "attributes nothing. Check the env name "
+                                "reaches the binary")
                     sim, event, inp = hash_rows(out)
                     for name, left, right in (("[SIMHASH]", base_sim, sim),
                                               ("[EVENTHASH]", base_event,
@@ -435,7 +547,7 @@ def main() -> int:
                 ranking = sorted(
                     ranked, key=lambda name: measured[name]["changedfrac"],
                     reverse=True)
-                counters = {name: counter for name, _, counter in STAGES}
+                counters = {name: fire for name, _, _, fire in STAGES}
                 for position, stage in enumerate(ranking, start=1):
                     share = (measured[stage]["changedfrac"] / ceiling
                              if ceiling else 0.0)
@@ -476,6 +588,16 @@ def main() -> int:
         refuse = parse_last(refuse_out, "REPLAY-SUMMARY")
         refuse_sched = parse_last(refuse_out, "PRESENTSCHED-SUMMARY")
         untokened = parse_last(untokened_out, "REPLAY-SUMMARY")
+        for label, row in (("control", control), ("forced-miss", refuse),
+                           ("untokened", untokened)):
+            missing = [key for key in REPLAY_STAT_CONTRACT if key not in row]
+            if missing:
+                print("check_smoothing_stage_bisection: FAIL\n  - "
+                      f"fail-closed {label}: [REPLAY-SUMMARY] carries no "
+                      f"{'/'.join(missing)} field — the uncaptured-external "
+                      "stat contract is gone and every assertion below it "
+                      "would read a default")
+                return 1
 
         if control["uncapturedrefusals"] != 0 or control["uncapturedext"] != 0:
             failures.append(
@@ -502,6 +624,9 @@ def main() -> int:
                 "fail-closed arm: MDKR_TEST_UNCAPTURED_EXTERNAL armed without "
                 "the versioned token — an adversarial seam must not be "
                 "reachable from a bare environment variable")
+        rows.append(
+            f"[UNCAPTURED-OWNERSHIP] arms={owned_arms} "
+            f"interpolated_replays={owned_replays} uncapturedext=0")
         rows.append(
             f"[UNCAPTURED-EXTERNAL] control_ext={control['uncapturedext']} "
             f"control_interp={control_sched['interp']} "

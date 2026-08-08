@@ -85,21 +85,61 @@ reads as innocent for the wrong reason.
 | — | **all-off (ceiling)** | 0.255066 | 2.434888 | 90 / 90 | 1.0000 |
 | 1 | particle | 0.005591 | 0.028988 | 90 / 90 | 0.0219 |
 
-### Coverage — every ranked stage actually fired
+### Disposition — what each stage did on each route
 
-Taken from the all-on arm's `[PRESENT-PACKET]` row. These are *override*
-counts, not registrations: an override is the replay substituting an
-interpolated value, which is what makes a zero in the table above readable.
+Two counters per stage, from the all-on arm's `[PRESENT-PACKET]` row, because
+one number cannot separate two questions. **Reach** is how many times the
+replay looked the stage's data up; **fire** is how many times it actually
+substituted an interpolated value. A stage can be reached and never fire, and
+one here is.
 
-| Stage | Counter | Route A | Route B |
+| Stage | Reach counter | Route A | Route B | Fire counter | Route A | Route B |
+|---|---|---|---|---|---|---|
+| object | `matrixhit` | 92,094 | 139,608 | `matrixoverride` | 65,424 | 113,589 |
+| deformation | `deformoverride` † | 332,667 | 388,920 | `deformoverride` | 332,667 | 388,920 |
+| vertex_color | `colorhit` | 767,829 | 679,350 | `coloroverride` | 110,337 | 194,583 |
+| particle | `particledeformhit` | 20,166 | 66,576 | `particledeformoverride` | **0** | 33,012 |
+| primitive_alpha | `primalphahit` | 654,816 | 790,161 | `primalphaoverride` | 119,129 | 178,038 |
+| effect | `effecthit` | 708 | **0** | `effectoverride` | 708 | **0** |
+| uv_scroll | `uvscrollhit` | 70,389 | 222,099 | `uvscrolloverride` | 70,389 | 222,099 |
+
+† `deformhit` is shared with the particle lookup and only falls from 767,829 to
+20,166 when the deformation seam is off, so it cannot serve as that stage's
+reach witness; its override is the clean one.
+
+Every stage gets an explicit disposition on both routes, ranked or not:
+
+| Route | Stage | Disposition |
+|---|---|---|
+| A | object, deformation, vertex_color, primitive_alpha, effect, uv_scroll | `fires` — ranked |
+| A | particle | `reached-never-interpolated` — 20,166 lookups, 0 overrides |
+| B | particle | `fires` — ranked |
+| B | object, deformation, vertex_color, primitive_alpha, uv_scroll | `fires` — not ranked here |
+| B | effect | `absent` — never reached |
+
+### The opt-outs demonstrably reach the binary
+
+Every leave-one-out arm must drive its stage's reach counter to **exactly
+zero**, and the all-off arm must zero all seven. Without that check the
+harness's worst failure is silent: a mistyped `MDKR_TEST_*` name produces an
+arm identical to all-on, whose zero pixel difference is indistinguishable from
+a stage that ran and changed nothing — and this table contains a real zero of
+the second kind, so "zero difference" cannot validate itself.
+
+Measured, route A, all-on → that stage's off arm:
+
+| Stage | Reach counter | all-on | stage off |
 |---|---|---|---|
-| object | `matrixoverride` | 65,424 | 113,589 |
-| deformation | `deformoverride` | 332,667 | 388,920 |
-| vertex_color | `coloroverride` | 110,337 | 194,583 |
-| particle | `particledeformoverride` | **0** | 33,012 |
-| primitive_alpha | `primalphaoverride` | 119,129 | 178,038 |
-| effect | `effectoverride` | 708 | **0** |
-| uv_scroll | `uvscrolloverride` | 70,389 | 222,099 |
+| object | `matrixhit` | 92,094 | 0 |
+| deformation | `deformoverride` | 332,667 | 0 |
+| vertex_color | `colorhit` | 767,829 | 0 |
+| particle | `particledeformhit` | 20,166 | 0 |
+| primitive_alpha | `primalphahit` | 654,816 | 0 |
+| effect | `effecthit` | 708 | 0 |
+| uv_scroll | `uvscrollhit` | 70,389 | 0 |
+
+`object`-off additionally zeroes all six other reach counters — the same
+subsumption the pixels show, visible in the packet census independently.
 
 ## What the ranking says
 
@@ -135,16 +175,20 @@ candidate.**
 - **`primitive_alpha`: 119,129 overrides applied, zero pixels changed on this
   window.** The stage ran and substituted interpolated alpha 119 thousand
   times, and not one of those substitutions survived to the backend frame.
-  That is the strongest artifact-innocence signal in the table *for this
-  content*, and it is also a question worth asking on its own: an override that
-  never reaches a pixel is either alpha that was already at its endpoint value,
-  or a fade being flattened downstream. `check_presentation_matrix.py`'s
-  primitive-alpha arm proves it is not always invisible — it runs the battle
-  challenge, where point-trail fades dominate. Read this cell as *innocent on
-  Jungle Falls*, not *inert*.
-- **`particle`: 0 overrides on route A.** Not innocence at all — the stage
-  never fired. Ranked from route B instead, where it contributes 2.2% of the
-  ceiling.
+  The disarm check makes this readable rather than suspicious: the same env
+  takes `primalphahit` from 654,816 to 0, so it unambiguously reached the
+  binary and unambiguously disarmed the stage, and the arm really is a
+  leave-one-out. So the zero is genuine — the strongest artifact-innocence
+  signal in the table *for this content* — and it is also a question worth
+  asking on its own: an override that never reaches a pixel is either alpha
+  already at its endpoint value, or a fade flattened downstream.
+  `check_presentation_matrix.py`'s primitive-alpha arm proves it is not always
+  invisible — it runs the battle challenge, where point-trail fades dominate.
+  Read this cell as *innocent on Jungle Falls*, not *inert*.
+- **`particle` on route A: reached 20,166 times, fired 0.** Not innocence at
+  all, and not absence either — the replay looked the point-trail meshes up on
+  every walk and never found an interpolable pair. Ranked from route B
+  instead, where it fires 33,012 times and contributes 2.2% of the ceiling.
 
 **Route sensitivity is real and the window matters more than the route.** The
 first run of this harness sampled ticks 3270–3300 and reported `uv_scroll` at
@@ -160,13 +204,22 @@ fail-closed change (residual obligation 2 in
 `docs/architecture/presentation-interpolation.md`).
 
 ```
+[UNCAPTURED-OWNERSHIP] arms=11 interpolated_replays=114957 uncapturedext=0
 [UNCAPTURED-EXTERNAL] control_ext=0 control_interp=1791 forced_ext=68817
                       forced_refusals=1779 forced_interp=12 forced_stale=1788
                       untokened_refusals=0
 ```
 
-- **Production resolves zero uncaptured externals.** `uncapturedext=0` on every
-  arm of both routes — 22,577 interpolated replays in total.
+- **Production resolves zero uncaptured externals.** `uncapturedext=0` on all
+  eleven production arms across both routes — every all-on, all-off and
+  leave-one-out arm, **114,957 interpolated replays**. The assertion requires
+  the stat field to be *present* before reading it: a dict lookup with a
+  default would pass silently the day `uncapturedext` is renamed or dropped,
+  which is the one failure mode that would quietly retire this whole claim.
+  The arm and replay counts are emitted by the run rather than summed by hand
+  — an earlier draft of this note said "22,577 replays", which was both an
+  addition slip (the two all-on arms are 9,657 + 12,567 = 22,224) and a
+  coverage overclaim, since only those two arms asserted anything.
 - **The refusal branch is not vacuous.** With `MDKR_TEST_UNCAPTURED_EXTERNAL=1`
   plus the versioned token, every external lookup is forced to miss: 68,817
   uncaptured resolutions, 1,779 of 1,791 interpolated walks refused, and the
