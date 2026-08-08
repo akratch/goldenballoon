@@ -1920,35 +1920,8 @@ static bool wgpu_start_frame(void) {
      * retain the strict nonblocking contract. */
     const bool test_full_admission =
         getenv("MDKR_TEST_RENDER_FULL_ADMISSION") != NULL;
-    /*
-     * A REPLAY MAY WAIT; AN AUTHORED FRAME STILL MAY NOT.
-     *
-     * Admission is nonblocking for ordinary gameplay because a synchronous
-     * device drain on the cooperative game/audio thread can starve the SDL
-     * queue. An interpolated replay is a different case: it runs inside the
-     * presentation subloop, after the tick's own image is already on screen
-     * and before the next tick is due, so there is no game work waiting behind
-     * it -- which is exactly where a bounded drain is affordable.
-     *
-     * Without this, smoothing was very nearly inert on WebGPU. A replay is
-     * admitted at WGPU_FRAME_IN_FLIGHT_MAX - 1, i.e. only with ZERO frames in
-     * flight, and the tick's own frame is still in flight when the subloop
-     * runs; the nonblocking check therefore saw in-flight >= 1 and skipped
-     * almost every interpolated image. Measured on the 120 Hz enhanced route,
-     * production admission, same binary either way: interp 3 -> 598 of 600,
-     * stale 893 -> 2, replaySkips 301 -> 0. The same starvation was costing
-     * AUTHORED frames too, because a skipped replay leaves its own frame in
-     * flight into the next tick: endpointSkips 202 -> 0.
-     *
-     * The wait is the existing bounded one (eight stalls, then give up and
-     * hold), it is only reachable where the backend can block at all -- the
-     * browser keeps the nonblocking path by construction, see
-     * WGPU_COMPAT_QUEUE_CAN_BLOCK -- and it costs 1.47 ms on average per
-     * interpolated image inside an 8.3 ms budget at 120 Hz, with zero
-     * completion failures and an audio service that reported nothing dropped.
-     */
     const bool runtime_admission =
-        !(dump_prepare_due || test_full_admission || replay);
+        !(dump_prepare_due || test_full_admission);
     if (dump_due && getenv("MDKR_FRAME_DUMP_TRACE") != NULL) {
         fprintf(stderr,
                 "[FRAME-DUMP] WebGPU admission frame=%d inFlight=%u "
