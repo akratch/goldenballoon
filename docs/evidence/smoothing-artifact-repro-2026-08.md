@@ -700,15 +700,16 @@ alpha inside that tick repeats the same decision. Both the numerator and the
 denominator therefore scale with presents-per-tick, and the ratio is the same
 at 60 and 120 Hz **by construction**. It was never a load signal.
 
-**Where the holds actually are.** 19 distinct batch keys hold anywhere on the
-route, and **the last hold is at authored tick 3124** — before the countdown
-clears. In the window every other measurement in this note uses, ticks
-3200-3230, there are **90 UV-scroll lookups and 90 confirmations: zero holds**.
+**Where the holds actually are.** 18 of the 19 batch keys the replay ever
+looks up hold at least once, and **the last hold on the route is at authored
+tick 3122** — before the countdown clears. In the window every other
+measurement in this note uses, ticks 3200-3230, there are **90 UV-scroll
+lookups and 90 confirmations: zero holds**.
 The only scroller live during the race, key `0xc8620a650` (ticks 2988-3229),
 confirms **726 of 726**. The 14.56% is a menu-and-lobby number.
 
 **The two clauses, named.** The 3,546 phase holds are four triangle batches in
-a pre-race scene (ticks 268-567) whose per-tick U displacement genuinely
+a pre-race scene (ticks 269-567) whose per-tick U displacement genuinely
 oscillates — successive published ticks report du of -98, +98, +25, -97 S10.5
 units on the same batch, sign included. There is no constant tick displacement
 for the replay to scale by alpha, and interpolating one of those readings would
@@ -754,8 +755,10 @@ and 0 intermediates differ, total absolute difference 0).
 **Its contribution window is elsewhere, and is already gated.** Route B (battle
 challenge, level 26) applies 178,038 overrides of which 151,084 are particle,
 and `check_presentation_matrix.py`'s arm C primitive-alpha control asserts a
-pixel difference there against the alpha-hold arm — it fails if interpolated
-fades stop reaching the backend.
+pixel difference there against the alpha-hold arm: on its own shorter 60 Hz
+window it reports 50,372 changed draws from 97,849 compatible pairs and 35 of
+50 intermediate backend frames moved. That gate fails if interpolated fades
+stop reaching the backend.
 
 **The cost, bounded.** `[PRESENTPERF] section=replay` over 9,681 replays:
 **545,996 ns** mean with the stage on, **538,970 ns** with it off. The stage is
