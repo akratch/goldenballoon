@@ -527,13 +527,15 @@ effect — not only the one the defect was found in.
 
 | Build | ownertickcheck | ownertickmismatch |
 |---|---|---|
-| Pre-fix, route A | 288,873 | **717** |
+| Both defects present, route A | 288,873 | **717** |
+| Anchoring defect only (§4.3 fixed), route A | 288,864 | **708** |
 | Fixed, route A | 288,864 | **0** |
 | Fixed, all 11 bisection arms | 2,404,110 | **0** |
 
-708 of those 717 are the effect stage — exactly the `effecthit` /
-`effectoverride` identity §2.4 records, i.e. every single override on the route,
-as predicted.
+The middle row isolates C1: **708 of 708 effect overrides**, exactly the
+`effecthit == effectoverride == 708` identity §2.4 records — every single
+override on the route, as predicted. The remaining 9 of the first row's 717 are
+the separate instance in §4.3.
 
 ### 4.3 A second instance the witness found by itself
 
@@ -566,7 +568,10 @@ tracker, and no pixel gate would have been pointed at them.
   `tools/run_checks.py`) implements §2.6 conditions (a) and (b) on this route.
   Run against the pre-fix build it fails **90 of 90** interpolated presents;
   against the fixed build it passes with the worst present at 18.68 px inside a
-  21.45 px bound.
+  21.45 px bound. It also asserts the structural witness is non-vacuous —
+  `ownertickcheck` present *and* non-zero — because a recipe that loses its
+  stamp stops being counted rather than being counted as a mismatch, and a zero
+  over zero would read green while asserting nothing.
 - `tests/check_smoothing_stage_bisection.py` asserts `ownertickmismatch=0` over
   a non-zero `ownertickcheck` on every production arm of both routes, with the
   same presence-before-value stat contract its `uncapturedext` assertion uses,

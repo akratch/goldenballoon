@@ -626,6 +626,44 @@ int main(void) {
                stats.projected_shadow_deformation_overrides == 1u,
            "projected shadow interpolation has dedicated telemetry");
 
+    /* An authoring pass that never submits its list. The bindings it left on
+     * the live side describe a list nothing will ever walk, so the next
+     * authoring lifetime drops them -- otherwise they survive into the next
+     * freeze still stamped with the older tick and replay measures their
+     * residual against a newer pose. The frozen side, which belongs to the
+     * last list that WAS walked, must be untouched by the discard. */
+    memset(matrix, 0x44, sizeof(matrix));
+    memset(next_matrix, 0x55, sizeof(next_matrix));
+    owner = make_owner(matrix, 31u);
+    owner.capture_tick = 100u;
+    expect(gfx_presentation_packet_register_matrix(
+               matrix, sizeof(matrix), 0, &owner),
+           "a list that will be walked registers on the live side");
+    gfx_presentation_packet_freeze();
+    expect(gfx_presentation_packet_lookup_matrix(matrix, &binding) &&
+               binding.owner.capture_tick == 100u,
+           "the walked list's binding freezes with its capture tick");
+
+    owner = make_owner(next_matrix, 32u);
+    owner.capture_tick = 101u;
+    expect(gfx_presentation_packet_register_matrix(
+               next_matrix, sizeof(next_matrix), 0, &owner),
+           "an abandoned authoring pass still registers on the live side");
+    owner.matrix_class = GFX_PRESENTATION_MATRIX_PARTICLE_VERTICES;
+    expect(gfx_presentation_packet_register_vertex_identity(
+               particle_vertex, 0, &owner),
+           "the same abandoned pass registers its vertex recipes too");
+    gfx_presentation_packet_discard_live_registrations();
+    expect(gfx_presentation_packet_lookup_matrix(matrix, &binding),
+           "discarding live registrations leaves the frozen packet intact");
+    expect(!gfx_presentation_packet_has_live_vertex(particle_vertex),
+           "discarded live vertex registrations are gone before the freeze");
+    gfx_presentation_packet_freeze();
+    expect(!gfx_presentation_packet_lookup_matrix(next_matrix, &binding) &&
+               !gfx_presentation_packet_lookup_vertex(
+                   particle_vertex, &binding),
+           "an abandoned pass's bindings cannot reach the next frozen packet");
+
     gfx_presentation_packet_invalidate();
     expect(!gfx_presentation_packet_frozen() &&
                !gfx_presentation_packet_lookup_matrix(next_matrix, &binding),

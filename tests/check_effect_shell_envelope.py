@@ -335,6 +335,26 @@ def main() -> int:
             return 1
         # The structural witness for the same defect. Cheap here, and it says
         # which of the two possible reasons a green pixel verdict has.
+        #
+        # Non-vacuity before value, for the same reason presence comes before
+        # both: `mdkr_camera_replay_tick_agreement` returns early WITHOUT
+        # counting when a recipe carries no stamp, and
+        # `presentation_task_authoring_tick()` returns 0 outside an authoring
+        # lifetime. So a stamping regression does not make the mismatch counter
+        # rise -- it makes the whole witness stop counting, and a zero
+        # mismatch over zero checks would read green while asserting nothing.
+        # The effect stage has already been shown to fire above, so recipes
+        # were replayed and this count cannot legitimately be zero.
+        if packet["ownertickcheck"] == 0:
+            print(
+                "FAIL: ownertickcheck=0 over effectoverride="
+                f"{packet['effectoverride']} — recipes were replayed but none "
+                "was checked against its own capture tick, so "
+                "ownertickmismatch=0 says nothing. The capture stamp has gone "
+                "missing (presentation_task_authoring_tick -> "
+                "GfxPresentationMatrixOwner.capture_tick)",
+                file=sys.stderr)
+            return 1
         if packet["ownertickmismatch"] != 0:
             failures.append(
                 f"ownertickmismatch={packet['ownertickmismatch']} of "
@@ -435,12 +455,16 @@ def main() -> int:
             f"condition (a): {len(violations)} of "
             f"{sum(len(v) for v in by_alpha.values())} interpolated presents "
             f"put the shell further from its own tick's authored pose "
-            f"({worst[2]:.2f} px at worst) than that tick's two authored poses "
-            f"are from each other ({bound:.2f} px bound, from a "
-            f"{envelope_max:.2f} px worst authored step). An interpolated "
-            "present lies between its endpoints; this one does not lie between "
-            "anything. See docs/evidence/smoothing-artifact-repro-2026-08.md "
-            "§2.6 condition (a)")
+            f"({worst[2]:.2f} px at worst) than the WHOLE WINDOW's worst "
+            f"authored step moves it ({envelope_max:.2f} px, {bound:.2f} px "
+            f"with tolerance; the window mean is {envelope_mean:.2f} px). The "
+            "bound is deliberately the window maximum rather than each "
+            "present's own tick's step, so this is the loose form of the "
+            "condition and failing it is unambiguous: an interpolated present "
+            "lies between its endpoints, and this one does not lie between "
+            "anything in the window. See "
+            "docs/evidence/smoothing-artifact-repro-2026-08.md §2.6 "
+            "condition (a)")
     else:
         rows.append(
             f"[ENVELOPE-BOUND] violations=0/"
