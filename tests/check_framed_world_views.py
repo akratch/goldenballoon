@@ -162,6 +162,14 @@ SCENES = (
         ROM_SCRIPT,
         "safe-aperture",
         POST_RACE_ENV,
+        # By this capture the wooden frame has finished shrinking and the
+        # authored user-view scissor bounds the live view to the aperture.
+        # Rectangles honour that scissor like the RDP does (issue #25), so a
+        # region fault rescales the framed view inside the safe area but can
+        # no longer paint through the gutters: assert the inset contract --
+        # the fault must move the aperture while both arms leave the
+        # decorative gutters untouched.
+        gutter_bleed=False,
     ),
 )
 
