@@ -42,8 +42,36 @@ a build of `origin/main`. What that leaves open:
   heavily than the outline one. `check_browser_runtime.py` now asserts BOTH
   counts above zero independently, neither of which is vacuous at those
   numbers, and the gate passes on Chromium against the freshly linked wasm.
-- **OPEN: interpolated presents are starved on WebGPU above the display
-  refresh, and no simple admission change fixes it.** A replay is admitted at
+- **RESOLVED AS A HARNESS ARTIFACT (2026-08-08). Read this before acting on the
+  numbers below.** The starvation described here reproduces only under the
+  SYNTHETIC pacer. `check_arbitrary_presentation_rates` sets `MDKR_SYNTH_FIELDS`,
+  which advances presentation accounting without real time passing between
+  presents, so the GPU has genuinely not retired the tick's frame when the
+  subloop asks and admission correctly refuses. Re-measured with the real pacer
+  (`MDKR_PACE_REALTIME=1`, WebGPU, `MDKR_TEST_VISIBLE_HEADLESS=1`, 600 ticks):
+
+  | arm | presents | surfaceupdates | interp | endpointSkips |
+  |---|---|---|---|---|
+  | 120 Hz request on a 60 Hz panel | 1790 | 1195 | **600** | **0** |
+  | 60 Hz request on a 60 Hz panel | 1200 | 1196 | **596** | **0** |
+
+  Under a real clock interpolation happens, authored frames are never dropped,
+  and the 120 Hz arm settles at ~60 surface updates per second — the panel's
+  actual refresh, which is the correct outcome for asking a 60 Hz display for
+  120. There is no production defect here and nothing to fix. The residual
+  `replaySkips` on the 120 Hz arm is the scheduler shedding presents the
+  display could never show.
+
+  What remains true and useful: the smoothing gates that drive 120 Hz cannot
+  run on WebGPU under the SYNTHETIC pacer for this reason, which is why
+  `check_motion_quality_battery` and `check_smoothing_stage_bisection` keep a
+  GL default and a `--renderer webgpu` flag. Re-siting them onto the realtime
+  pacer would give genuine WebGPU coverage and is the real follow-up.
+
+  The original synthetic-pacer investigation is kept below, because the three
+  rejected fixes are worth not repeating.
+
+  A replay is admitted at
   `WGPU_FRAME_IN_FLIGHT_MAX - 1`, i.e. only with zero frames in flight. At a
   60 Hz present rate the subloop opportunity arrives ~16.7 ms after the tick's
   frame was submitted, the GPU has retired, and replays are admitted normally
