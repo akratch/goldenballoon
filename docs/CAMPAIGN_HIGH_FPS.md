@@ -117,9 +117,31 @@ worst exactly on a rocket hit or hard landing, the moment smoothing matters most
 No gate can see it: endpoint exactness holds, and the arc audit grades snapshot
 angles rather than the composed pose.
 
-**Bar:** measure the per-tick *change* in the residual on a route with a forced
-rocket hit; if it exceeds the tick-travel envelope it is a shipping defect. Fix
-by making the residual interpolable rather than constant.
+**MEASURED (2026-08-09), and it downgrades this item.** `MDKR_RESIDUAL_CENSUS=1`
+reports the per-tick change in the residual — which is exactly the size of the
+pop a player receives. On a 592-tick 120 Hz race route:
+
+| | Y (world units) | rotation Z |
+|---|---|---|
+| p50 | 0.000 | 0 |
+| p95 | 0.815 | 70 |
+| p99 | 1.505 | 157 |
+| max | 5.064 | 198 (1.09°) |
+
+233 of 592 ticks carry a nonzero pop, but only 13 exceed one world unit. Against
+a kart travelling tens of units per tick, p95 is a small fraction of a pixel and
+the rare max is around a pixel. **The defect is real and confirmed present; its
+magnitude on ordinary racing content is not what the audit's "largest remaining
+artifact" framing implied.**
+
+**Still open, and the reason this is not closed:** the predicted worst case —
+a rocket hit or a hard plane landing, where `carBob` and the crash lift swing
+tens of units per tick — is *not exercised by this route*. The instrument is
+committed and armed by one env var, so measuring it is now cheap.
+
+**Bar to close:** the same census on a route that forces a rocket hit. If the
+worst case stays sub-pixel, document and close without a code change; if it does
+not, make the residual interpolable rather than constant.
 
 ### P5 · Correctness hygiene
 - Billboard *anchor* lacks the camera-cut check its *matrix* has, so sprite

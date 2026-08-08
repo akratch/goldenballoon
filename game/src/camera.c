@@ -240,6 +240,95 @@ static s32 sShadowRegisterGameplayVp = 0;
 static GfxPresentationMatrixOwner
     sPresentationOwnerStack[CAMERA_MODEL_STACK_SIZE + 1];
 
+/*
+ * RESIDUAL VOLATILITY CENSUS (diagnostic; costs nothing unless armed).
+ *
+ * mdkr_camera_replay_object_world reconstructs a pose as
+ *   pose(alpha) + (owner->source - authored(T))
+ * where the bracketed term is the RENDER-ONLY adjustment measured at tick T --
+ * carBob, the tumble offsets, the crash lift. The T-against-T rule proves both
+ * terms name the same tick, which is correct, and says nothing about the term
+ * being time-varying. It is: the replay holds adjust(T) constant across the
+ * whole interval, so the full adjust(T+1) - adjust(T) difference arrives at the
+ * tick boundary instead of being spread across it. Translation glides while
+ * bounce and spin step.
+ *
+ * No existing gate can see this. Endpoint exactness holds (the replay never
+ * runs at alpha 1 -- the next authored frame does), and rotation_arc_audit
+ * grades the snapshot angles rather than the composed pose.
+ *
+ * This census measures the size of the pop directly: the per-tick CHANGE in
+ * the residual, which is exactly the discontinuity a player receives. Armed by
+ * MDKR_RESIDUAL_CENSUS=1.
+ */
+static int sResidualCensus = -1;
+static f32 sResidualPeakY;
+static f32 sResidualPeakDeltaY;
+static s32 sResidualPeakDeltaRotZ;
+static u64 sResidualCensusTick;
+
+static int mdkr_residual_census_enabled(void) {
+    if (sResidualCensus < 0) {
+        const char *value = getenv("MDKR_RESIDUAL_CENSUS");
+        sResidualCensus = (value != NULL && value[0] == '1');
+    }
+    return sResidualCensus;
+}
+
+static void mdkr_residual_census_note(
+    const ObjectTransform *transform, f32 residualY, s32 residualRotZ) {
+    /* Per-address previous residual, small direct-mapped table: this is a
+     * diagnostic, so a collision costs an understated peak, never a wrong
+     * frame. */
+    static const void *slotAddr[64];
+    static f32 slotY[64];
+    static s32 slotRotZ[64];
+    const uintptr_t hash = ((uintptr_t)transform >> 4) & 63u;
+    f32 deltaY;
+    s32 deltaRotZ;
+
+    if (slotAddr[hash] == transform) {
+        deltaY = residualY - slotY[hash];
+        if (deltaY < 0.0f) {
+            deltaY = -deltaY;
+        }
+        deltaRotZ = (s32)(s16)(residualRotZ - slotRotZ[hash]);
+        if (deltaRotZ < 0) {
+            deltaRotZ = -deltaRotZ;
+        }
+        if (deltaY > sResidualPeakDeltaY) {
+            sResidualPeakDeltaY = deltaY;
+        }
+        if (deltaRotZ > sResidualPeakDeltaRotZ) {
+            sResidualPeakDeltaRotZ = deltaRotZ;
+        }
+    }
+    slotAddr[hash] = transform;
+    slotY[hash] = residualY;
+    slotRotZ[hash] = residualRotZ;
+    if (residualY > sResidualPeakY || -residualY > sResidualPeakY) {
+        sResidualPeakY = residualY < 0.0f ? -residualY : residualY;
+    }
+}
+
+void mdkr_residual_census_report(u64 tick) {
+    if (!mdkr_residual_census_enabled()) {
+        return;
+    }
+    if (tick != sResidualCensusTick) {
+        fprintf(stderr,
+                "[RESIDUAL-CENSUS] tick=%llu peakY=%.3f peakDeltaY=%.3f "
+                "peakDeltaRotZ=%d\n",
+                (unsigned long long)sResidualCensusTick,
+                (double)sResidualPeakY, (double)sResidualPeakDeltaY,
+                (int)sResidualPeakDeltaRotZ);
+        sResidualCensusTick = tick;
+        sResidualPeakY = 0.0f;
+        sResidualPeakDeltaY = 0.0f;
+        sResidualPeakDeltaRotZ = 0;
+    }
+}
+
 static bool mdkr_presentation_owner_root(
     GfxPresentationMatrixOwner *out, const ObjectTransform *transform,
     f32 scaleY, f32 offsetY, const MtxF *parentWorld) {
@@ -272,6 +361,21 @@ static bool mdkr_presentation_owner_root(
     out->offset_y = offsetY;
     memcpy(out->parent_world, parentWorld, sizeof(out->parent_world));
     out->valid = true;
+    if (mdkr_residual_census_enabled()) {
+        /* The captured pose for this same tick is what the replay will use as
+         * `authored`, so source - captured IS the render-only residual the
+         * replay holds constant. Resolving at alpha 0 returns exactly that. */
+        PresentationObjectPose captured;
+        if (presentation_snapshot_resolve_object_generation(
+                out->address, out->generation, 0u, 1u, &captured)) {
+            mdkr_residual_census_note(
+                transform,
+                transform->y_position - captured.position[1],
+                (s32)(s16)(transform->rotation.z_rotation -
+                           captured.rotation_z));
+        }
+        mdkr_residual_census_report(out->capture_tick);
+    }
     return true;
 }
 
