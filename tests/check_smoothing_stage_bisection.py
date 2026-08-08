@@ -72,6 +72,12 @@ What each arm asserts
   hold rate is a visible quantity and its *clauses* are what disposition it.
   Each route's all-on arm asserts the four clause counters account for the
   aggregate exactly, and prints the split as ``[UV-SCROLL-HOLDS]``.
+* **The primitive-alpha magnitude census is arithmetically alive.** An
+  override is a changed alpha byte, so ``primalphadeltasum`` can never be
+  below ``primalphaoverride`` and the peak can never be zero while overrides
+  fire. That identity is what stops the counter whose numbers disposition
+  artifact class C9 from silently accumulating nothing. Printed as
+  ``[PRIM-ALPHA-MAGNITUDE]``.
 
 The uncaptured-external arm
 ---------------------------
@@ -227,6 +233,18 @@ PACKET_STAT_CONTRACT = ("ownertickcheck", "ownertickmismatch")
 UV_HOLD_CLAUSES = ("uvscrollholdunpub", "uvscrollholdambig",
                    "uvscrollholdshape", "uvscrollholdphase")
 
+# The primitive-alpha substitution magnitude, and the arithmetic that makes it
+# a witness rather than a decoration.
+#
+# `primalphadeltasum` is the quantitative basis for reading route A's 119,129
+# overrides as sub-visible rather than as wasted work, and a counter nothing
+# constrains is a counter that can be accumulating zero. Every override moves
+# the alpha byte by at least one step, by the definition of "override", so the
+# sum can never be smaller than the count and the peak can never be zero while
+# the count is not. That identity is what a `+= 0` regression breaks.
+PRIM_ALPHA_STAT_CONTRACT = ("primalphaoverride", "primalphadeltasum",
+                            "primalphadeltapeak")
+
 # A stage is ranked only from a route that actually fires it. Route A never
 # interpolates a world-space particle mesh -- it registers particle vertices
 # and then holds every one of them -- so ranking `particle` there would report
@@ -343,6 +361,40 @@ def uv_scroll_hold_accounting(output: str, label: str) -> tuple[list[str], str]:
     return problems, " ".join(
         f"{key}={packet[key]}"
         for key in ("uvscrollhit", "uvscrollhold", *UV_HOLD_CLAUSES))
+
+
+def primitive_alpha_magnitude(output: str, label: str) -> tuple[list[str], str]:
+    """Assert the primitive-alpha magnitude census is arithmetically alive."""
+
+    problems: list[str] = []
+    packet = parse_last(output, "PRESENT-PACKET")
+    missing = [key for key in PRIM_ALPHA_STAT_CONTRACT if key not in packet]
+    if missing:
+        problems.append(
+            f"{label}: [PRESENT-PACKET] carries no {'/'.join(missing)} field. "
+            "That is the primitive-alpha magnitude contract "
+            "(gfx_presentation_packet_note_primitive_alpha -> "
+            "present_sched.c); without it the substitutions' size cannot be "
+            "read and docs/evidence/smoothing-artifact-repro-2026-08.md "
+            "section 5.3 stops describing this build")
+        return problems, ""
+    overrides = packet["primalphaoverride"]
+    total = packet["primalphadeltasum"]
+    peak = packet["primalphadeltapeak"]
+    if overrides == 0:
+        # Nothing fired here, so nothing is claimed. Route B always fires; a
+        # route that does not is reported by [STAGE-DISPOSITION] already.
+        return problems, f"primalphaoverride=0 primalphadeltasum={total}"
+    if total < overrides or peak == 0:
+        problems.append(
+            f"{label}: primalphaoverride={overrides} but "
+            f"primalphadeltasum={total} and primalphadeltapeak={peak}. An "
+            "override is by definition a changed alpha byte, so the sum "
+            "cannot be below the count and the peak cannot be zero. The "
+            "magnitude census is accumulating nothing")
+    return problems, (f"primalphaoverride={overrides} "
+                      f"primalphadeltasum={total} primalphadeltapeak={peak} "
+                      f"meandelta={total / overrides:.2f}")
 
 
 def run(binary: Path, rom: Path, label: str, root: Path, track: str,
@@ -560,6 +612,12 @@ def main() -> int:
                 failures.extend(problems)
                 if uv_row:
                     rows.append(f"[UV-SCROLL-HOLDS] route={route} {uv_row}")
+                problems, alpha_row = primitive_alpha_magnitude(
+                    base_out, f"route {route} arm all-on")
+                failures.extend(problems)
+                if alpha_row:
+                    rows.append(
+                        f"[PRIM-ALPHA-MAGNITUDE] route={route} {alpha_row}")
                 notes.append(
                     f"route {route} all-on: {summary['interp']} interpolated "
                     f"replays over {summary['presents']} presents, "
