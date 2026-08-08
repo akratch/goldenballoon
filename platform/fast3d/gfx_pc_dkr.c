@@ -240,6 +240,28 @@ static bool dkr_trace_this_frame = false;
  */
 static bool dkr_replay_pass = false;
 static bool dkr_replay_dependency_failed = false;
+/*
+ * True only for a replay drawn at a STRICTLY INTERIOR alpha, i.e. an image the
+ * authoritative simulation never produced. The distinction is the whole reason
+ * dkr_retain_resolved_pointer can fail closed: the alpha-0 endpoint walks (the
+ * zero-delta purity harness and the delayed-endpoint negative control) are
+ * required to reproduce the authored image byte-for-byte, so refusing them on
+ * an uncaptured external would turn a safety property into a regression in the
+ * exactness contract they exist to prove. An interpolated midpoint has no such
+ * obligation — holding the authored image is always a legal outcome for it.
+ */
+static bool dkr_replay_interior_alpha = false;
+/*
+ * Externals the interpolated walk resolved without a retained copy, and the
+ * replays those refusals aborted. Before this counter existed the same event
+ * was invisible: dkr_retain_resolved_pointer returned the LIVE pointer and the
+ * walk read whatever task K+1 had already written there (presentation-
+ * interpolation.md, residual obligation 2). The live-arena poison gate cannot
+ * see it because the poison covers only the arena.
+ */
+static uint64_t dkr_replay_uncaptured_externals = 0;
+static uint64_t dkr_replay_uncaptured_refusals = 0;
+static int dkr_test_uncaptured_external = -1;
 static bool dkr_replay_object_alpha_valid = false;
 static uint64_t dkr_replay_object_alpha_numerator = 0;
 static uint64_t dkr_replay_object_alpha_denominator = 1;
@@ -543,6 +565,29 @@ static bool dkr_test_live_arena_poison_enabled(void) {
             value[0] != '\0' && strcmp(value, "0") != 0;
     }
     return dkr_test_live_arena_poison != 0;
+}
+
+/*
+ * Synthesise the defect this fail-closed path exists for.
+ *
+ * Every external the shipped handlers resolve during a replay is one they also
+ * captured, so on a correct tree the refusal branch is unreachable and a gate
+ * asserting it would be vacuous. With this seam on, the retained-dependency
+ * lookup is forced to miss for the duration of an interpolated walk, which is
+ * exactly the shape of a future handler that reads a mutable non-arena
+ * dependency without a paired gfx_retained_task_capture_dependency. The gate
+ * then observes the refusal rather than a plausible image drawn from live
+ * memory. Token-gated like every other adversarial seam: it must not be
+ * reachable from a bare environment variable.
+ */
+static bool dkr_test_uncaptured_external_enabled(void) {
+    if (dkr_test_uncaptured_external < 0) {
+        const char *value = getenv("MDKR_TEST_UNCAPTURED_EXTERNAL");
+        dkr_test_uncaptured_external =
+            present_sched_internal_replay_test_enabled() && value != NULL &&
+            value[0] != '\0' && strcmp(value, "0") != 0;
+    }
+    return dkr_test_uncaptured_external != 0;
 }
 
 static bool dkr_test_endpoint_vertex_bytes_enabled(void) {
@@ -924,15 +969,59 @@ static inline bool dkr_ptr_plausible(const void *p) {
     return true;
 }
 
+/*
+ * Map a resolved NON-ARENA pointer onto the bytes the real walk copied.
+ *
+ * On a hit the replay reads the private image and owns what it reads. A miss
+ * used to return the live pointer, and that fail-open was the last unproven
+ * corner of the ownership claim: by the time a presentation replay runs, task
+ * K+1 has already been authored into the same storage, so an external that no
+ * handler captured is read AFTER it was rewritten. The arena-poison gate is
+ * blind to it — the poison covers g_dkrArenaBase only.
+ *
+ * So a miss now aborts the walk instead. The caller loses nothing it is
+ * entitled to: an interpolated present that refuses simply holds the authored
+ * image (stubs_dkr.c's `drew == false` path), which is the same outcome the
+ * subloop already takes whenever the retained task or frozen registry is
+ * unavailable. Endpoint walks are deliberately excluded — see
+ * dkr_replay_interior_alpha — because their contract is byte-exact
+ * reproduction of an image the authoritative walk already drew.
+ *
+ * Returning NULL rather than the live pointer matters independently of the
+ * refusal flag: every dkr_resolve consumer null-checks, so even a handler that
+ * ignores the abort cannot dereference live memory on this path.
+ */
 static inline void *dkr_retain_resolved_pointer(void *resolved) {
     const void *retained = NULL;
 
     if (!dkr_ptr_plausible(resolved)) {
         return NULL;
     }
-    if (dkr_replay_pass && gfx_retained_task_lookup_dependency(
-            resolved, 1u, &retained)) {
+    if (!dkr_replay_pass) {
+        return resolved;
+    }
+    /*
+     * Already private. During a replay g_dkrArenaBase IS the retained image,
+     * and gfx_segment_table was restored from the retained task's rebased
+     * bases, so a segment-token resolution hands back an address inside that
+     * image. It is owned by construction and has no external-dependency entry
+     * to find; refusing it would refuse every walk that resolves a segment.
+     */
+    {
+        const uintptr_t up = (uintptr_t)resolved;
+        const uintptr_t base = (uintptr_t)g_dkrArenaBase;
+        if (up >= base && up < base + (uintptr_t)g_dkrArenaSize) {
+            return resolved;
+        }
+    }
+    if (!dkr_test_uncaptured_external_enabled() &&
+        gfx_retained_task_lookup_dependency(resolved, 1u, &retained)) {
         return (void *)retained;
+    }
+    if (dkr_replay_interior_alpha) {
+        dkr_replay_uncaptured_externals++;
+        dkr_replay_dependency_failed = true;
+        return NULL;
     }
     return resolved;
 }
@@ -5105,6 +5194,59 @@ static const float *dkr_replay_uv_scroll_offset(const Triangle *tris,
     return out;
 }
 
+/*
+ * Longest non-arena sub-list this walk will copy. The port's static lists
+ * (dRdpInit, dRspInit, the dRenderSettings* table, the dialogue/transition
+ * lists) are tens of commands; the cap exists so an unterminated or
+ * mis-resolved target costs a bounded scan and a refused replay rather than a
+ * runaway copy.
+ */
+#define DKR_NONARENA_LIST_MAX_COMMANDS 4096u
+
+/*
+ * Copy a sub-list the real walk is about to execute from storage the arena
+ * image does not cover.
+ *
+ * These are the port's authored static display lists, reached through the
+ * gfx_ptr registry rather than an arena token. Nothing rewrites them today, so
+ * this is not a bug fix — it is what makes the replay's ownership claim
+ * complete rather than "complete except for storage we believe is immutable".
+ * dkr_retain_resolved_pointer now refuses an interpolated walk over any
+ * external it cannot find here, so the belief is no longer load-bearing: if a
+ * list ever does become mutable, or a new handler reaches uncaptured storage,
+ * the replay holds the authored image instead of drawing from it.
+ *
+ * `count` is G_DMADL's exact command count; zero means scan to G_ENDDL.
+ */
+static void dkr_capture_nonarena_list(const Gfx *sub, int count) {
+    size_t commands;
+    size_t scan;
+
+    /* Not armed means no capture is staged, so the scan below would be pure
+     * cost on the default path -- Original pacing with smoothing off never
+     * replays anything. */
+    if (dkr_replay_pass || sub == NULL || !present_sched_replay_armed() ||
+        dkr_arena_room(sub) != (size_t)-1) {
+        return;   /* replay pass, unarmed, or arena-backed and already copied */
+    }
+    if (count > 0) {
+        commands = (size_t)count;
+    } else {
+        commands = 0;
+        for (scan = 0; scan < DKR_NONARENA_LIST_MAX_COMMANDS; scan++) {
+            if ((uint8_t)C0(&sub[scan], 24, 8) == (uint8_t)G_ENDDL) {
+                commands = scan + 1;   /* the terminator is part of the span */
+                break;
+            }
+        }
+        if (commands == 0) {
+            return;   /* unterminated: capture nothing, let the replay refuse */
+        }
+    }
+    (void)gfx_retained_task_capture_dependency(
+        sub, sub, commands * sizeof(Gfx));
+}
+
 static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
     const bool census = dkr_dl_census_enabled();
     if (cmd == NULL) {
@@ -5165,6 +5307,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
         case G_DL: {  /* gSPDisplayList (push/call) / gSPBranchList (nopush) */
             uint8_t nopush = (uint8_t)C0(cmd, 16, 8);
             Gfx *sub = (Gfx *)dkr_resolve(cmd->words.w1);
+            dkr_capture_nonarena_list(sub, 0);
             if (nopush == G_DL_NOPUSH) {
                 if (sub == NULL) {
                     /*
@@ -5193,6 +5336,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
         case G_DMADL: {  /* gDkrDmaDisplayList — call, bounded by command count */
             int count = (int)C0(cmd, 16, 8);
             Gfx *sub = (Gfx *)dkr_resolve(cmd->words.w1);
+            dkr_capture_nonarena_list(sub, count);
             DTRACE("G_DMADL count=%d addr=%08x->%p depth=%d", count, cmd->words.w1,
                    (void *)sub, depth);
             if (count <= 0) {
@@ -6644,6 +6788,7 @@ bool gfx_renderer_failed(void) {
 static bool gfx_dkr_replay_walk_impl(
     const GfxShadowReplayViewProjection *overrides, size_t override_count,
     bool object_alpha_valid, uint64_t numerator, uint64_t denominator) {
+    const uint64_t uncaptured_entry = dkr_replay_uncaptured_externals;
     bool completed = false;
     bool retained_entered = false;
     bool live_arena_poisoned = false;
@@ -6666,6 +6811,14 @@ static bool gfx_dkr_replay_walk_impl(
     }
     dkr_replay_pass = true;
     dkr_replay_dependency_failed = false;
+    /*
+     * Strictly interior: alpha 0 is the authored endpoint in both of its forms
+     * (the zero-delta harness passes 0/1, and so does the delayed-endpoint
+     * negative control). Only an image between two authoritative ticks may
+     * refuse; the endpoints must still reproduce their tick exactly.
+     */
+    dkr_replay_interior_alpha =
+        denominator != 0u && numerator != 0u && numerator < denominator;
     dkr_replay_object_alpha_valid =
         object_alpha_valid && dkr_replay_object_interpolation_enabled() &&
         denominator != 0u && numerator < denominator;
@@ -6736,6 +6889,15 @@ replay_cleanup:
     dkr_replay_object_alpha_numerator = 0;
     dkr_replay_object_alpha_denominator = 1;
     dkr_replay_pass = false;
+    if (dkr_replay_interior_alpha && dkr_replay_dependency_failed &&
+        dkr_replay_uncaptured_externals != uncaptured_entry) {
+        /* Attribute the abort to the uncaptured external specifically: the
+         * dependency-failed flag is shared with the stale-matrix and
+         * billboard-binding refusals, and a gate that cannot tell them apart
+         * cannot prove which one it exercised. */
+        dkr_replay_uncaptured_refusals++;
+    }
+    dkr_replay_interior_alpha = false;
     dkr_replay_dependency_failed = false;
     if (completed) {
         dkr_replay_walks++;
@@ -6770,6 +6932,16 @@ uint64_t gfx_dkr_real_walk_count(void) {
 
 uint64_t gfx_dkr_last_walked_authored_tick(void) {
     return dkr_last_walked_authored_tick;
+}
+
+void gfx_dkr_replay_get_uncaptured_stats(uint64_t *externals,
+                                         uint64_t *refusals) {
+    if (externals != NULL) {
+        *externals = dkr_replay_uncaptured_externals;
+    }
+    if (refusals != NULL) {
+        *refusals = dkr_replay_uncaptured_refusals;
+    }
 }
 
 void gfx_dkr_replay_get_stats(

@@ -24,8 +24,10 @@ display-list dependencies from mutable arenas*. The audit's remedy was scope
 reduction — turn the replay off. The remedy on `main` today is different and
 stronger: the replay still runs, but every dependency it reads is one the real
 walk copied. That is a claim about the *arena* and about *explicitly captured*
-externals. It is not yet a proven claim about every non-arena pointer the
-address registry can resolve — see [residual obligation 2](#residual-obligations).
+externals. It is now also a proven claim about every other non-arena pointer
+the address registry can resolve, because an interpolated walk that cannot
+prove ownership of one refuses to draw — see
+[residual obligation 2](#residual-obligations).
 
 ---
 
@@ -200,7 +202,8 @@ smoothing = Interpolated.
 | Camera snapshot / bank endpoints | `gfx_shadow_frame.{h,c}`; `gfx_shadow_camera_endpoint_validate` (`stubs_dkr.c:754`) | `MDKR_TEST_CAMERA_VP_ENDPOINTS` (`gfx_shadow_frame.c:219`) | `tests/check_camera_snapshot_coverage.py` | Current. This is `PRES-002`'s subject and it is production, not diagnostic. |
 | Zero-delta replay harness | `gfx_dkr_replay_walk(NULL, 0)` (`stubs_dkr.c:532`) | `MDKR_TEST_REPLAY_WALK` **and** the versioned token (`present_sched.c:216-241`); `recompose` additionally forces recompose | `tests/check_render_purity.py:194`, `:198`, `:228` — the only gate that sets it | Test seam. Never armed on a shipping path. |
 | Delayed endpoint replay (negative control) | `stubs_dkr.c:756-766` | `MDKR_TEST_DELAYED_ENDPOINT_REPLAY=1` **and** `MDKR_INTERNAL_TEST_TOKEN` | `check_presentation_matrix.py` | Test seam. Restores the pre-fix ordering on purpose. |
-| Live-arena poison gate | `dkr_test_live_arena_poison_enabled` (`gfx_pc_dkr.c:538-546`); replay `:6684-6692`, `:6723-6728` | `MDKR_TEST_RETAINED_ARENA_POISON` **and** the token | `check_presentation_matrix.py` lifetime-safety arm | Test seam. It proves the replay reads no live **arena** byte. It does **not** cover non-arena reads — see [residual obligation 2](#residual-obligations). |
+| Live-arena poison gate | `dkr_test_live_arena_poison_enabled` (`gfx_pc_dkr.c:538-546`); replay `:6684-6692`, `:6723-6728` | `MDKR_TEST_RETAINED_ARENA_POISON` **and** the token | `check_presentation_matrix.py` lifetime-safety arm | Test seam. It proves the replay reads no live **arena** byte. Non-arena reads are covered by the row below instead — see [residual obligation 2](#residual-obligations). |
+| Uncaptured-external fail-closed | `dkr_retain_resolved_pointer` (`gfx_pc_dkr.c`), capture at `dkr_capture_nonarena_list`; stats `gfx_dkr_replay_get_uncaptured_stats` | always on for a strictly interior alpha; `MDKR_TEST_UNCAPTURED_EXTERNAL` **and** the token force every lookup to miss | `tests/check_smoothing_stage_bisection.py` `[UNCAPTURED-EXTERNAL]` row | Current. Production counter is zero; the seam is the only way to reach the refusal branch. |
 | Retained-dependency rewrite gate | `gfx_presentation_packet.c:95` (`MDKR_TEST_RETAINED_DEPENDENCY_REWRITE`) | env | `tests/check_presentation_matrix.py:697`, `:716` — the only gate that sets it. `tests/test_presentation_packet.c` does **not** exercise it (zero occurrences of `rewrite`). | Test seam. |
 | Presentation perf census | `present_perf_*` (`present_sched.c:652`, `MDKR_PRESENT_PERF`) | env | `check_presentation_matrix.py` cost gate | Test/telemetry seam. |
 
@@ -227,7 +230,7 @@ timing argument that closes it **today**.
 
 | Audit row | Disposition | Basis |
 |---|---|---|
-| `PRES-001` (`FPS_UNCAP_RELEASE_AUDIT.md:50`) | **CLOSED — superseded, not by scope reduction** | The row's remedy was disabling the replay. `main` instead re-enabled it on top of an atomic retained-task transaction: whole-arena private image + explicitly copied external dependencies + transactional publish (a failed capture leaves the last complete task intact and the opportunity holds). The row's *hazard statement* remains literally true of any implementation that reads live memory — see §1.1: task K+1 **is** already authored when the subloop runs. It is the reading, not the timing, that changed. **Scope of this closure:** each of the five classes has a verified capture site (above). It is not a proof that no *other* handler reads an uncaptured non-arena dependency — `dkr_retain_resolved_pointer` fails open on a lookup miss (`gfx_pc_dkr.c:937`). See residual obligation 2. |
+| `PRES-001` (`FPS_UNCAP_RELEASE_AUDIT.md:50`) | **CLOSED — superseded, not by scope reduction** | The row's remedy was disabling the replay. `main` instead re-enabled it on top of an atomic retained-task transaction: whole-arena private image + explicitly copied external dependencies + transactional publish (a failed capture leaves the last complete task intact and the opportunity holds). The row's *hazard statement* remains literally true of any implementation that reads live memory — see §1.1: task K+1 **is** already authored when the subloop runs. It is the reading, not the timing, that changed. **Scope of this closure:** each of the five classes has a verified capture site (above). It is no longer a per-handler proof either way: `dkr_retain_resolved_pointer` fails **closed** on a lookup miss during an interpolated walk, so a handler that reads an uncaptured non-arena dependency costs a held authored image rather than a silent misread. See residual obligation 2. |
 | `PRES-002` (`FPS_UNCAP_RELEASE_AUDIT.md:51`) | **CLOSED — its stated precondition is met** | The row permits re-enabling once there is "an immutable `{T,T+1}` ownership model and new endpoint/midpoint evidence." The ownership model is §3's table plus the forward census (`gfx_pc_dkr.c:4673`). The evidence contract is the four layers at `docs/UNCAPPED_PRESENTATION.md:188-226` — authority, endpoint identity, midpoint sensitivity, lifetime safety — with `check_presentation_matrix.py`, `check_camera_snapshot_coverage.py` and the live-arena poison gate (arena reads only — residual obligation 2) as the principal arms. Camera snapshots latch at display-list projection emission, not later from mutable camera globals (`UNCAPPED_PRESENTATION.md:134-139`). |
 
 Both rows carry the audit's own header caveat (`FPS_UNCAP_RELEASE_AUDIT.md:3-10`):
@@ -242,37 +245,48 @@ Not `PRES-001` failures, but the properties any future change must preserve:
    exists because the arena exposes no safe high-water mark or closed pointer
    graph (`UNCAPPED_PRESENTATION.md:161-176`). §1.1 shows the timing argument
    that would justify narrowing it is false.
-2. **Close the uncaptured-external gap — it is not covered by any current gate.**
-   `dkr_retain_resolved_pointer` (`gfx_pc_dkr.c:927-938`) redirects a resolved
+2. **CLOSED — the uncaptured-external gap now fails closed.** *(was: not
+   covered by any current gate)*
+
+   The hazard as recorded: `dkr_retain_resolved_pointer` redirected a resolved
    pointer to private bytes *only if* `gfx_retained_task_lookup_dependency`
-   finds it. On a miss it **returns the live pointer** (`:937`), and the walk
-   reads live memory. That is fail-**open**, and it is the exact shape of the
-   defect `PRES-001` describes: a handler that reads a mutable non-arena
-   dependency without a matching `gfx_retained_task_capture_dependency` call
-   during the real walk would silently read task K+1's bytes.
+   found it, and on a miss it **returned the live pointer**. That is
+   fail-**open**, and the live-arena poison gate cannot see it —
+   `dkr_test_live_arena_poison` memsets **only the arena**, so registry-resolved
+   globals and rodata display lists pass the gate green.
 
-   The live-arena poison gate does not catch it. `dkr_test_live_arena_poison`
-   memsets **only the arena** — `memset(live_arena, 0xa5, live_arena_size)`
-   (`gfx_pc_dkr.c:6690`, bounded by `g_dkrArenaBase`/`g_dkrArenaSize` captured
-   at `:6682-6683`). Registry-resolved globals, rodata display lists, and any
-   other non-arena storage are untouched by the poison, so an uncaptured
-   external read passes the gate green. Nothing else in the acceptance set
-   covers it either: the capture sites in §3 were verified by reading the
-   handlers that *have* them, which cannot demonstrate the absence of a handler
-   that does not.
+   Both halves are now closed, and the second is what makes the first
+   permanent:
 
-   The two mitigation candidates, neither implemented:
-   - a static audit that enumerates every `dkr_resolve` consumer and asserts a
-     paired capture, ideally enforced rather than performed once; or
-   - making `dkr_retain_resolved_pointer` **fail closed** during replay — return
-     `NULL` (or set `dkr_replay_dependency_failed`) on a lookup miss for any
-     pointer outside the retained arena window, so an uncaptured dependency
-     aborts the replay and holds the authored image instead of drawing from
-     mutable memory. This is the stronger option and it is testable: it turns
-     the gap into a visible replay failure rather than a silent misread.
+   - `dkr_retain_resolved_pointer` **fails closed** for a *strictly interior*
+     alpha: on a lookup miss for a pointer outside the retained arena window it
+     sets `dkr_replay_dependency_failed`, returns `NULL`, and counts
+     `uncapturedext`. The walk aborts and the subloop holds the authored image.
+     The exclusion of alpha-0 walks (the zero-delta harness and the
+     delayed-endpoint negative control) is deliberate: their contract is
+     byte-exact reproduction of an image the authoritative walk already drew,
+     so refusing them would break the exactness evidence rather than protect
+     anything.
+   - The real walk now copies non-arena `G_DL`/`G_DMADL` targets
+     (`dkr_capture_nonarena_list`). Instrumenting the miss path on the pre-fix
+     tree found 18 distinct such lists per walk — `dRdpInit`, `dRspInit`, the
+     `dRenderSettings*` table, `dDebugFontSettings`, the dialogue-box and
+     transition-fade lists, `dTextureRectangleModes` — all authored static
+     storage nothing rewrites. That is why the fail-open never produced a
+     visible defect, and exactly why it could not stay: the safety of the
+     replay rested on a belief about which storage is immutable.
 
-   Until one of them lands, "the replay reads nothing live" is true of the arena
-   and of explicitly captured externals, and unproven elsewhere.
+   Evidence: `tests/check_smoothing_stage_bisection.py`'s
+   `[UNCAPTURED-EXTERNAL]` row asserts `uncapturedext=0` across every
+   production arm, forces every lookup to miss under
+   `MDKR_TEST_UNCAPTURED_EXTERNAL` plus the versioned token and requires the
+   walks to refuse into held authored images, and asserts the seam does not arm
+   without the token. Measurements in
+   `docs/evidence/smoothing-stage-attribution-2026-08-08.md`.
+
+   "The replay reads nothing live" is now true of the arena, of explicitly
+   captured externals, **and** of anything else: an uncaptured read is a
+   refused replay, not a misread.
 3. **Keep the live-arena poison gate in the acceptance set** for the coverage it
    does have: it is the only check that fails if a handler reads a live *arena*
    byte during replay.
