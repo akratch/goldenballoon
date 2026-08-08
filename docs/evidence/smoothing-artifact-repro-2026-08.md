@@ -84,13 +84,15 @@ full per-frame rows are in the appendix.
 | C4 | Replay reads storage it does not own | An interpolated walk resolving a non-arena dependency with no retained copy read the live pointer, by which time task K+1 had already been authored into it — a corruption of arbitrary shape. | `uncapturedext=0`, `uncapturedrefusals=0`, `staletenants=0` on all six arms here, and on all eleven bisection arms over 114,957 interpolated replays. | **Addressed (`26526db`).** |
 | C5 | Extra frames in flight at a high refresh | A swap chain deeper than one frame adds latency and lets the pacer's phase estimate drift from what the display shows. | Not measured here — every arm is GL and headless. | **Addressed for WebGPU (`e9fa33a`); unwitnessed on this route.** |
 | C6 | Effect shell drifts off the camera when the stage is *off* | With the effect matrix held, the retained MVP carries the tick-T camera while the camera itself interpolates, so the shell falls back and swells. | `a120-effoff`: centroid **7.3 / 16.2 / 24.5 px** from the authored pose and area **7,193 / 8,093 / 9,319 px** across the alpha grid — a clean ramp, and one that still breaks the 5.25 px envelope. | Reachable only through the test opt-out. This is the artifact C1's stage exists to remove, and it is the contrast arm for §2. |
-| C7 | Residual tick-boundary step | Content no stage covers advances only at the authored tick, so the step into the authored endpoint is larger than the steps inside it. | Camera-only arm: step into the endpoint **12.240** against an interior mean of **10.358** (+18%). Effect-off arm: **11.300** against **9.758** (+16%). At 60 Hz the two steps are **15.643 / 15.431** (1.4% apart) — the grid has no interior to be asymmetric about. | **OPEN — inherent to partial coverage; magnitude now measured.** |
-| C8 | UV-scroll phase holds | Scroll batches that cannot be identity-matched hold their authored phase while the surface around them advances. | `uvscrollhold/uvscrollhit` = **10,248/70,389 at 120 Hz and 3,416/23,463 at 60 Hz — 14.56% in both**. Rate-independent. From the attribution note: 0.4038 ceiling share at ~2.5 per changed byte, i.e. broad and faint. | **OPEN — not diagnosed here.** |
-| C9 | Primitive-alpha overrides that reach no pixel | 119,129 interpolated alpha substitutions changed nothing on this window. | Carried from the attribution note; unexplained there and here. | **OPEN — a question, not a witnessed artifact.** |
+| C7 | **Residual tick-boundary step** | Content no stage covers advances only at the authored tick, so the step into the authored endpoint is larger than the steps inside it. On production that content is the 2D HUD. | Production arm, fixed build: **9.187** into the endpoint against an interior mean of **8.856** — **+3.73%**, and +2.69% at 60 Hz. The +16-18% first recorded here was the effect-off and camera-only arms, which hold what production interpolates. Two HUD boxes are 18.8% of the screen and 52.3% of the excess. §5.1. | **CLOSED — benign; authored partial coverage, bounded at +3.7%.** |
+| C8 | **UV-scroll phase holds** | Scroll batches that cannot be identity-matched hold their authored phase while the surface around them advances. | `uvscrollhold/uvscrollhit` = **10,248/70,389 at both rates — 14.56%**, because confirm-or-hold is decided once per tick and repeated at every alpha, so the ratio is rate-invariant by construction. Split by clause: **6,702 no {T-1} record, 3,546 oscillating displacement, 0 ambiguous, 0 shape**. **Zero holds in-race**: the window's 90 lookups all confirm, and the only race-time scroller confirms 726/726. §5.2. | **CLOSED — benign; the fail-closed refusal the wrap rule exists to make.** |
+| C9 | **Primitive-alpha overrides that reach no pixel** | 119,129 interpolated alpha substitutions changed nothing on this window. | The two numbers describe different presents: **48** of the 119,129 overrides fall inside the 30-tick pixel window (mean substitution 3.75 of 255, no particle, no projected shadow), and the other 119,081 are in scenes it never samples. Route B fires 178,038 and is pixel-gated. Stage cost under **7.0 us per replay** of 546 us. §5.3. | **CLOSED — benign; the zero was the sampling window, not the stage.** |
 
 C1 is the only class in this table that is both a live production defect and
 large enough to match an unprompted "lots of artifacting". Everything else is
-either already addressed on this branch, faint, or rate-independent.
+either already addressed on this branch, faint, or rate-independent. With C7,
+C8 and C9 dispositioned in §5, C5 — a real display's pacing — is the only row
+this note leaves unwitnessed.
 
 ## 2. The effect stage: legitimate motion, or an artifact?
 
@@ -467,11 +469,14 @@ it, which is the size of the problem C1 represents.
   show the step into the authored endpoint ~16–18% larger than the interior
   steps, but no arm attributes that residual to particular content. It is a
   measured magnitude with no named cause.
+  *(Superseded 2026-08-08 — see §5.1. Those two arms are not production, the
+  production figure is +3.73%, and the residual is attributed.)*
 - **Neither proposed gate in §2.6 has been run against a fixed build**, because
   this is a diagnosis task and no production code was changed. They are verified
   only in the direction of rejecting the two builds measured here.
   *(Superseded 2026-08-08 — see §4.)*
 - **C5, C8 and C9 remain unwitnessed or undiagnosed here**, as marked in §1.
+  *(C8 and C9 superseded 2026-08-08 — see §5.2 and §5.3. C5 stands.)*
 
 ## 4. Fixed — measured 2026-08-08
 
@@ -597,8 +602,183 @@ shell as of a displaced one, so it needed no re-pointing.
 - **Greenwood Village is still unrun**, as are non-GL backends and any real
   display. C1's closure does not speak to C5, C7, C8 or C9, and nothing here
   can confirm or exclude a real-display pacing component of the owner's
-  complaint.
+  complaint. *(C7, C8 and C9 are dispositioned in §5 — 2026-08-08.)*
 
+## 5. C7, C8 and C9 — dispositions, measured 2026-08-08
+
+All three are **benign**, and one of the three headline numbers in §1 was
+measuring the wrong thing. Every figure below is from the fixed build
+(`6ac92f7` plus the two census commits this section documents), same route,
+same window, same 640x480 GL dumps.
+
+### 5.1 C7 — the residual tick-boundary step is +3.7%, not +16-18%
+
+**The recorded 16-18% belongs to the contrast arms, not to production.** §3's
+step table reports `a120-effoff` (11.300 into the endpoint against 9.758
+interior, +16%) and `a120-alloff` (12.240 against 10.358, +18%) — and both of
+those arms *hold* content a production build interpolates, so the step into the
+authored endpoint is where everything they disabled catches up at once. That is
+the arms working, not an artifact. Production `a120-allon` on the fixed build:
+
+| Arm | → alpha 0 | → 1/4 | → 2/4 | → 3/4 | boundary vs interior |
+|---|---|---|---|---|---|
+| `a120-allon` (fixed) | **9.187** | 8.838 | 8.881 | 8.850 | **+3.73%** |
+| `a120-alloff` | 12.240 | 10.102 | 10.368 | 10.605 | +18.17% |
+| `a120-uvoff` | 9.203 | 8.835 | 8.877 | 8.846 | +3.90% |
+| `a60-allon` (fixed) | 13.912 | 13.548 | — | — | +2.69% |
+
+Medians tell the same story as the means (9.001 against 8.810 / 8.852 / 8.746),
+so the excess is a shift of the whole distribution and not a few outlier ticks.
+The three interior steps agree to **0.5%**, which is what the rest of this
+section rests on.
+
+**(b) A half-frame phase error is excluded, exactly.** The pacing census
+measures the phase advance between consecutive presents directly:
+`[PRESENTPERF-HIST] series=alpha-delta n=12883 min=250000 p50=p95=p99=253952
+max=1250000 mean=250698 regressions=0 over=0 stalls=0` (parts per million of an
+authored tick, 4096-ppm bins). Every present advances the phase by **exactly
+250,000 ppm — one quarter tick** — the p99 sits in the same bin as the minimum,
+and no present ever regresses. The mean's 698 ppm of excess over the minimum is
+698 x 12,883 = 8.99 ticks, which is exactly the 36 stale holds' half-tick
+advances (36 x 0.25 = 9.0). There is no sub-grid offset anywhere in the run for
+a phase error to hide in, and the three equal interior steps say the same thing
+from the pixel side.
+
+**(c) A hold burst at alpha transitions is excluded in the window.** None of
+the 119 measured steps is zero, so no present in the sampled window repeated
+its predecessor. Run-wide `stale=36` of 12,920 presents — 0.28%, and accounted
+for above.
+
+**(a) Partial coverage is the cause, and it is dominated by the 2D HUD.**
+Decomposing the boundary excess by screen region (full-frame 640x480 boxes,
+mean absolute difference inside each box):
+
+| Region | Box | Share of frame | Boundary | Interior | Excess | Share of frame excess |
+|---|---|---|---|---|---|---|
+| HUD text — position / lap / bananas / time | y 24-104, x 40-600 | 14.58% | 9.297 | 8.247 | **+12.73%** | **46.4%** |
+| HUD radar — minimap disc and blip | y 330-430, x 470-600 | 4.23% | 7.113 | 6.653 | +6.92% | 5.9% |
+| Waterfall sheet (the route's UV scroller) | y 0-300, x 280-470 | 18.55% | 10.051 | 9.709 | +3.52% | 19.2% |
+| Whole frame minus both HUD boxes | — | 81.19% | 9.275 | 9.081 | **+2.14%** | — |
+
+**18.8% of the screen carries 52.3% of the excess, and it is the HUD.** The
+waterfall's share is proportional to its area — it is not anomalous, and the
+`a120-uvoff` row above confirms it: turning UV scroll off moves the boundary
+step by 0.016, so C8's holds contribute nothing measurable to C7 on this route.
+
+The pixel-level version of the same statement: pixels whose mean boundary step
+exceeds 4 while their mean interior step stays under 0.5 — content that moves
+*only* at the authored tick — number **514 of 307,200 (0.167% of the frame)**
+and carry **11.19%** of the excess, inside a bounding box of y 66-369,
+x 504-579. That is the TIME digits and the radar blip, and nothing else.
+
+**Disposition: benign, and inherent.** The HUD is screen-space texrects whose
+content is discrete (digits, a blip position) and whose geometry the
+presentation packet does not cover, by construction — there is no world-space
+pose pair to interpolate and no meaningful intermediate value for a digit. The
+whole-frame effect is a **3.7% step-size ripple at 30 Hz**, against the 12%
+two-big-two-small signature C1 produced before it was fixed. It is measured,
+bounded, and not a candidate for the owner's complaint. **No fix.**
+
+### 5.2 C8 — every UV-scroll hold is a refusal the contract exists to make
+
+`uvscrollhold` now attributes itself to the clause that refused. Route A,
+3,230 authored ticks at 120 Hz:
+
+| Clause | Count | Share of holds |
+|---|---|---|
+| `uvscrollholdunpub` — no `{T-1}` record for this batch | 6,702 | 65.4% |
+| `uvscrollholdphase` — the two published ticks disagree | 3,546 | 34.6% |
+| `uvscrollholdambig` — poisoned key | **0** | — |
+| `uvscrollholdshape` — triangle count moved | **0** | — |
+| total, against 70,389 confirmations | 10,248 | 12.71% of 80,637 lookups |
+
+Route B (battle challenge) splits the same way: 21,930 / 4,698 / 0 / 0.
+
+**The rate independence is arithmetic, not evidence of load.** Confirm-or-hold
+is decided once per (authored tick, batch) from the published table, and every
+alpha inside that tick repeats the same decision. Both the numerator and the
+denominator therefore scale with presents-per-tick, and the ratio is the same
+at 60 and 120 Hz **by construction**. It was never a load signal.
+
+**Where the holds actually are.** 19 distinct batch keys hold anywhere on the
+route, and **the last hold is at authored tick 3124** — before the countdown
+clears. In the window every other measurement in this note uses, ticks
+3200-3230, there are **90 UV-scroll lookups and 90 confirmations: zero holds**.
+The only scroller live during the race, key `0xc8620a650` (ticks 2988-3229),
+confirms **726 of 726**. The 14.56% is a menu-and-lobby number.
+
+**The two clauses, named.** The 3,546 phase holds are four triangle batches in
+a pre-race scene (ticks 268-567) whose per-tick U displacement genuinely
+oscillates — successive published ticks report du of -98, +98, +25, -97 S10.5
+units on the same batch, sign included. There is no constant tick displacement
+for the replay to scale by alpha, and interpolating one of those readings would
+sweep the surface the wrong way for a quarter of a tick. Refusing is the
+contract working exactly as `gfx_pc_dkr.c`'s wrap rule describes. The 6,702
+unpublished holds are dominated by one static 4-triangle sheet
+(`0x104fe0594`: 5,697 holds against **11,415 confirmations on the same key**)
+and a 1-triangle companion (723 against 1,359) — batches that publish
+intermittently rather than every tick, so a third of their own lookups find no
+adjacent pair to confirm against. Each such hold self-clears on the batch's
+next published tick.
+
+**Disposition: benign, fail-closed by design. No fix.** A hold is one authored
+tick of one surface's texture phase, and the alternative — interpolating a
+displacement no second observation corroborates — is the wrap artifact the
+confirmation rule was built to prevent. What was missing was not a fix but the
+attribution, and the unit coverage: `gfx_presentation_packet_capture_uv_scroll`
+and `_lookup_uv_scroll` had **no unit caller at all** before this section (the
+architecture note recorded exactly that gap), and now have one per clause.
+
+### 5.3 C9 — the primitive-alpha zero was the window, not the stage
+
+Route A's 119,129 overrides and the bisection's zero pixel difference are both
+true and they do not describe the same presents. The census now carries the
+substitutions' magnitude, and the run can be differenced against a 3,200-tick
+arm to isolate the 30 ticks the pixels were measured over:
+
+| | whole route (3,230 ticks) | sampled window (ticks 3200-3230) |
+|---|---|---|
+| `primalphahit` | 654,816 | 9,021 |
+| `primalphaoverride` | 119,129 | **48** |
+| `primalphadeltasum` | 1,839,152 | 180 |
+| mean substitution | 15.4 of 255 | 3.75 of 255 |
+| `particleprimalphaoverride` | 101,782 | **0** |
+| `projectedshadowprimalphaoverride` | 8,055 | **0** |
+
+**99.96% of the overrides are outside the window the pixels were counted in**,
+and 85% of them are particle fades. Inside it the stage moves the alpha byte 48
+times by 3.75 steps on average, on no particle and no projected shadow — which
+is why the leave-one-out arm is byte-identical on all 120 frames (0 endpoints
+and 0 intermediates differ, total absolute difference 0).
+
+**Its contribution window is elsewhere, and is already gated.** Route B (battle
+challenge, level 26) applies 178,038 overrides of which 151,084 are particle,
+and `check_presentation_matrix.py`'s arm C primitive-alpha control asserts a
+pixel difference there against the alpha-hold arm — it fails if interpolated
+fades stop reaching the backend.
+
+**The cost, bounded.** `[PRESENTPERF] section=replay` over 9,681 replays:
+**545,996 ns** mean with the stage on, **538,970 ns** with it off. The stage is
+therefore under **7.0 microseconds per replay**, 1.3% of the replay section and
+0.08% of a 120 Hz presentation interval. One sample per arm, so read it as a
+bound rather than a measured delta.
+
+**Disposition: benign. No fix.** The correction is to the claim, not the code:
+§1's C9 row said "119,129 interpolated alpha substitutions changed nothing on
+this window", and the accurate statement is that 48 of them were in that window
+and the other 119,081 were never sampled.
+
+### 5.4 What C7/C8/C9 leave open
+
+- **Still one route, one window.** The C7 region decomposition is Jungle Falls
+  under a chase camera; a HUD-heavy layout (four-player split, a boss lap
+  counter) would redistribute the 52.3% and this note does not say how.
+- **The wave-driven phase holds are named, not fixed by content.** They are a
+  pre-race scene here. A track whose *race* geometry oscillates its UV phase
+  would hold in-race, and no arm in this note exercises one.
+- **C5 is still unwitnessed**, as §4.6 records: nothing here runs against a
+  real display, so a physical-vsync component of the owner's complaint is
+  neither confirmed nor excluded.
 
 ## Appendix A — the shell-track measurement, reproducible
 
