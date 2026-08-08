@@ -91,7 +91,8 @@ def inspect(cli: str, path: str) -> dict:
     return json.loads(result.stdout)
 
 
-def build(cli: str, output_path: str, slot: int, name: str) -> None:
+def build(cli: str, output_path: str, slot: int, name: str,
+          adventure_one: bool = False) -> None:
     with tempfile.TemporaryDirectory(prefix="mdkr_make100_") as tmp:
         work = str(Path(tmp) / "work.eep")
         Path(work).write_bytes(b"\xFF" * 512)
@@ -120,12 +121,18 @@ def build(cli: str, output_path: str, slot: int, name: str) -> None:
         run_cli(cli, "edit-slot-field", work, work, str(slot), "tt-amulet", "4")
         run_cli(cli, "edit-slot-field", work, work, str(slot), "wizpig-amulet", "4")
         run_cli(cli, "edit-slot-field", work, work, str(slot), "keys", "0xFF")
-        run_cli(cli, "edit-slot-field", work, work, str(slot), "cutscenes", str(CUTSCENES_ALL_SEEN))
+        # --adventure-one clears CUTSCENE_ADVENTURE_TWO so the slot is an
+        # ADVENTURE ONE file. That is a real, reachable state -- everything
+        # cleared, Adventure Two unlocked but not yet started -- and it is the
+        # one worth handing a tester, because Adventure Two remaps the courses
+        # and a regression sweep run there is not comparing like with like.
+        # The global unlock stays on either way: it is what 100% completion
+        # earns, and leaving it off is precisely what stranded the earlier
+        # save behind a GAME_SELECT option that was never offered.
+        cutscenes = (CUTSCENES_ALL_SEEN & ~0x4) if adventure_one \
+            else CUTSCENES_ALL_SEEN
+        run_cli(cli, "edit-slot-field", work, work, str(slot), "cutscenes", str(cutscenes))
 
-        # A 100% save has genuinely finished Adventure Two -- that is what
-        # wizpig-amulet=4 and CUTSCENE_ADVENTURE_TWO together mean -- so the
-        # global unlock must agree with the slot, or FILE SELECT parks the
-        # file behind a GAME_SELECT option that was never offered.
         run_cli(cli, "edit-config", work, work, "adventure-two", "1")
         run_cli(cli, "edit-config", work, work, "drumstick", "1")
         run_cli(cli, "edit-config", work, work, "language", "0")
@@ -142,7 +149,15 @@ def build(cli: str, output_path: str, slot: int, name: str) -> None:
         assert all(status == 3 for status in slot_summary["courses"])
         assert slot_summary["ttAmulet"] == 4
         assert slot_summary["wizpigAmulet"] == 4
-        assert slot_summary["cutscenes"] & 0x4, "CUTSCENE_ADVENTURE_TWO must be set for a real 100% save"
+        if adventure_one:
+            assert not (slot_summary["cutscenes"] & 0x4), (
+                "an Adventure One file must NOT carry CUTSCENE_ADVENTURE_TWO, "
+                "or FILE SELECT refuses it under the Adventure One option"
+            )
+        else:
+            assert slot_summary["cutscenes"] & 0x4, (
+                "CUTSCENE_ADVENTURE_TWO must be set for a completed-Adventure-Two save"
+            )
         assert final["config"]["adventureTwo"] == 1, (
             "config.adventure-two must be unlocked to match a save whose "
             "cutsceneFlags claim Adventure Two is complete"
@@ -156,9 +171,12 @@ def main() -> int:
     ap.add_argument("cli", help="path to the mdkr-save CLI binary")
     ap.add_argument("output", help="destination raw .eep (512 bytes)")
     ap.add_argument("--slot", type=int, default=0)
+    ap.add_argument("--adventure-one", action="store_true",
+                    help="produce an Adventure ONE file, entered from the first "
+                         "GAME SELECT option; default is a completed-Adventure-Two file")
     ap.add_argument("--name", default="ACE")
     args = ap.parse_args()
-    build(args.cli, args.output, args.slot, args.name)
+    build(args.cli, args.output, args.slot, args.name, args.adventure_one)
     print(f"wrote {args.output}")
     return 0
 
