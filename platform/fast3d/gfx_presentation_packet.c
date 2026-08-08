@@ -284,16 +284,38 @@ bool gfx_presentation_packet_lookup_uv_scroll(
     /* Confirmation, not just presence. Authored scroll speed is a level
      * constant, so a real scroller reproduces the same displacement every
      * tick. Requiring the previous published tick to agree is what keeps a
-     * single mis-resolved wrap off the screen. */
-    if (previous == NULL || current->ambiguous || previous->ambiguous ||
-        current->scroll.triangle_count != triangle_count ||
-        previous->scroll.triangle_count != triangle_count ||
-        current->scroll.du != previous->scroll.du ||
+     * single mis-resolved wrap off the screen.
+     *
+     * The refusal is attributed to its clause rather than merely counted, so
+     * a hold rate can be read as what it is: see the field comments on
+     * GfxPresentationPacketStats. The clauses are tested in the order they
+     * are cheapest to explain, and each hold lands in exactly one bucket. */
+    if (previous == NULL) {
+        /* This batch had no published {T-1} record, so there is no second
+         * observation to confirm against. Structural, and self-clearing: the
+         * same batch confirms on its next tick if it keeps scrolling. */
+        s_stats.uv_scroll_hold_unpublished++;
+        s_stats.uv_scroll_holds++;
+        return false;
+    }
+    if (current->ambiguous || previous->ambiguous) {
+        s_stats.uv_scroll_hold_ambiguous++;
+        s_stats.uv_scroll_holds++;
+        return false;
+    }
+    if (current->scroll.triangle_count != triangle_count ||
+        previous->scroll.triangle_count != triangle_count) {
+        s_stats.uv_scroll_hold_shape++;
+        s_stats.uv_scroll_holds++;
+        return false;
+    }
+    if (current->scroll.du != previous->scroll.du ||
         current->scroll.dv != previous->scroll.dv ||
         current->scroll.moved_u != previous->scroll.moved_u ||
         current->scroll.moved_v != previous->scroll.moved_v) {
         /* A known scroller whose two published ticks disagree: hold its
          * authored phase for this tick rather than guess. */
+        s_stats.uv_scroll_hold_phase++;
         s_stats.uv_scroll_holds++;
         return false;
     }

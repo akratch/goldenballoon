@@ -137,6 +137,17 @@ typedef struct GfxPresentationPacketStats {
     uint64_t uv_scroll_collisions;
     uint64_t uv_scroll_hits;
     uint64_t uv_scroll_holds;
+    /* Why a known scroller held, split by the confirmation clause that
+     * refused it. One aggregate hold count cannot distinguish a batch the
+     * census never saw at T-1 (a scroller that just came into view, and will
+     * confirm on its next tick) from one whose two published ticks disagree
+     * about the displacement (a wrap the resolver could not undo). The first
+     * is bounded by how often geometry enters the frustum; the second is not,
+     * and only the second is a candidate defect. */
+    uint64_t uv_scroll_hold_unpublished;
+    uint64_t uv_scroll_hold_ambiguous;
+    uint64_t uv_scroll_hold_shape;
+    uint64_t uv_scroll_hold_phase;
     uint64_t uv_scroll_overrides;
     size_t uv_scroll_peak;
     size_t uv_scroll_bytes_peak;

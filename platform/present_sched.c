@@ -1230,6 +1230,8 @@ void present_sched_trace_summary(void) {
                 "deformpeak=%zu "
                 "uvscrollreg=%llu uvscrollconfirm=%llu uvscrollreject=%llu "
                 "uvscrollcollision=%llu uvscrollhit=%llu uvscrollhold=%llu "
+                "uvscrollholdunpub=%llu uvscrollholdambig=%llu "
+                "uvscrollholdshape=%llu uvscrollholdphase=%llu "
                 "uvscrolloverride=%llu uvscrollpeak=%zu "
                 "uvscrollbytespeak=%zu\n",
                 (unsigned long long)packet_stats.matrix_registrations,
@@ -1314,6 +1316,10 @@ void present_sched_trace_summary(void) {
                 (unsigned long long)packet_stats.uv_scroll_collisions,
                 (unsigned long long)packet_stats.uv_scroll_hits,
                 (unsigned long long)packet_stats.uv_scroll_holds,
+                (unsigned long long)packet_stats.uv_scroll_hold_unpublished,
+                (unsigned long long)packet_stats.uv_scroll_hold_ambiguous,
+                (unsigned long long)packet_stats.uv_scroll_hold_shape,
+                (unsigned long long)packet_stats.uv_scroll_hold_phase,
                 (unsigned long long)packet_stats.uv_scroll_overrides,
                 packet_stats.uv_scroll_peak,
                 packet_stats.uv_scroll_bytes_peak);
