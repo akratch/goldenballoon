@@ -59,6 +59,14 @@ What each arm asserts
   that is never reached at all as ``absent``; neither is ever silently read as
   innocence. All seven stages get an explicit ``[STAGE-DISPOSITION]`` row on
   both routes, ranked or not.
+* **Every replayed recipe is anchored to its own tick.** A reconstruction
+  measures its capture-time residual against the alpha-zero pose, and that
+  cancels only if the two describe the same authored tick. Every production arm
+  asserts ``ownertickmismatch=0`` over a non-zero ``ownertickcheck``, for all
+  four recipe classes, and the assertion first requires both fields to be
+  *present*. This is the exact witness for the shield/magnet anchoring defect
+  that shipped in v1.0.1-v1.0.3 and read 708 of 708 violations on route A; the
+  pixel-level backstop is ``check_effect_shell_envelope.py``.
 
 The uncaptured-external arm
 ---------------------------
@@ -173,6 +181,30 @@ STAGES = (
 # or dropped, which turns the strongest claim this gate makes into a no-op.
 REPLAY_STAT_CONTRACT = ("uncapturedext", "uncapturedrefusals")
 
+# The same idea for [PRESENT-PACKET], guarding a different claim.
+#
+# Every replayed recipe -- object root, articulated child, billboard anchor and
+# shield/magnet effect alike -- reconstructs its pose as
+# ``interpolated_pose + (captured_source - alpha_zero_pose)``. That residual is
+# meant to carry the render-only adjustments the snapshot has already restored,
+# and it carries only those when the capture and the alpha-zero pose describe
+# the SAME authored tick. Hand it a capture from the next tick and it silently
+# becomes a constant one-tick offset: the object is coherently, consistently in
+# the wrong place, on every interpolated present, at every alpha.
+#
+# That is not hypothetical. It is what ``mdkr_camera_replay_effect_world``
+# shipped with in v1.0.1-v1.0.3 (708 of 708 effect overrides on route A), and a
+# second instance reached the same wrong answer through abandoned billboard
+# registrations surviving a pass that never submitted its list. Neither was
+# visible to any pixel-difference control, because both arms of such a control
+# put the object somewhere and a wrong somewhere is as coherent as a right one.
+# See docs/evidence/smoothing-artifact-repro-2026-08.md section 2.
+#
+# So it is asserted structurally, on every production arm, for the whole
+# family -- including the classes that obey the rule today and had nothing
+# saying so.
+PACKET_STAT_CONTRACT = ("ownertickcheck", "ownertickmismatch")
+
 # A stage is ranked only from a route that actually fires it. Route A never
 # interpolates a world-space particle mesh -- it registers particle vertices
 # and then holds every one of them -- so ranking `particle` there would report
@@ -215,6 +247,52 @@ def replay_ownership(output: str, label: str) -> tuple[list[str], int]:
             "retained copy. Before the fail-closed change it would have read "
             "that pointer live")
     return problems, replay["uncapturedext"]
+
+
+def replay_tick_agreement(output: str, label: str,
+                          expect_checks: bool) -> tuple[list[str], int]:
+    """Assert one arm anchored every replayed recipe to its own capture tick.
+
+    Applied to every production arm for the same reason ``replay_ownership``
+    is: a leave-one-out arm replays just as often, and an anchoring error that
+    only appears with one stage disabled is exactly what a reference-arm-only
+    assertion would miss.
+    """
+
+    problems: list[str] = []
+    packet = parse_last(output, "PRESENT-PACKET")
+    missing = [key for key in PACKET_STAT_CONTRACT if key not in packet]
+    if missing:
+        problems.append(
+            f"{label}: [PRESENT-PACKET] carries no {'/'.join(missing)} field. "
+            "That is the tick-agreement stat contract "
+            "(gfx_presentation_packet_note_owner_tick -> present_sched.c); "
+            "without it this gate's anchoring assertion silently passes on "
+            "every arm")
+        return problems, 0
+    if packet["ownertickcheck"] == 0:
+        # An arm with MDKR_TEST_OBJECT_INTERPOLATION=off calls none of the
+        # replay transforms, so it has no residual to anchor and a zero here
+        # is the arm working as configured. Every other arm's zero would mean
+        # the stamp itself had gone missing, which reads as green while
+        # asserting nothing -- the exact failure PACKET_STAT_CONTRACT exists
+        # to prevent one level up.
+        if expect_checks:
+            problems.append(
+                f"{label}: ownertickcheck=0 -- no replayed recipe was checked "
+                "at all, so ownertickmismatch=0 says nothing. Either the "
+                "replay did not run or the recipes lost their capture stamp")
+        return problems, 0
+    if packet["ownertickmismatch"] != 0:
+        problems.append(
+            f"{label}: ownertickmismatch={packet['ownertickmismatch']} of "
+            f"{packet['ownertickcheck']} -- a replayed recipe's residual was "
+            "measured against a pose from a different authored tick than the "
+            "recipe itself describes, which adds a whole tick of the owner's "
+            "travel to its reconstructed position AND heading at every alpha. "
+            "See docs/evidence/smoothing-artifact-repro-2026-08.md section "
+            "2.3")
+    return problems, packet["ownertickcheck"]
 
 
 def run(binary: Path, rom: Path, label: str, root: Path, track: str,
@@ -379,6 +457,8 @@ def main() -> int:
     # run that made it.
     owned_arms = 0
     owned_replays = 0
+    anchored_arms = 0
+    anchored_checks = 0
 
     routes = (
         ("A", ROUTE_A_TRACK, ROUTE_A_TICKS,
@@ -416,6 +496,13 @@ def main() -> int:
                 problems, _ = replay_ownership(
                     base_out, f"route {route} arm all-on")
                 failures.extend(problems)
+                # Production anchoring: every replayed recipe measures its
+                # residual against its own tick, in every stage configuration.
+                problems, base_tick_checks = replay_tick_agreement(
+                    base_out, f"route {route} arm all-on", True)
+                failures.extend(problems)
+                anchored_arms += 1
+                anchored_checks += base_tick_checks
                 owned_arms += 1
                 owned_replays += summary["interp"]
                 notes.append(
@@ -473,6 +560,12 @@ def main() -> int:
                     problems, _ = replay_ownership(
                         out, f"route {route} arm {label}")
                     failures.extend(problems)
+                    problems, arm_tick_checks = replay_tick_agreement(
+                        out, f"route {route} arm {label}",
+                        "object" not in disabled)
+                    failures.extend(problems)
+                    anchored_arms += 1
+                    anchored_checks += arm_tick_checks
                     owned_arms += 1
                     owned_replays += parse_last(
                         out, "PRESENTSCHED-SUMMARY")["interp"]
@@ -627,6 +720,9 @@ def main() -> int:
         rows.append(
             f"[UNCAPTURED-OWNERSHIP] arms={owned_arms} "
             f"interpolated_replays={owned_replays} uncapturedext=0")
+        rows.append(
+            f"[TICK-ANCHORING] arms={anchored_arms} "
+            f"recipes_checked={anchored_checks} ownertickmismatch=0")
         rows.append(
             f"[UNCAPTURED-EXTERNAL] control_ext={control['uncapturedext']} "
             f"control_interp={control_sched['interp']} "

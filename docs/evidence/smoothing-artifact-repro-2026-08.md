@@ -78,7 +78,7 @@ full per-frame rows are in the appendix.
 
 | # | Class | Mechanism | Measured witness | Disposition |
 |---|---|---|---|---|
-| C1 | **Effect stage leads the racer by one authored tick** | `mdkr_camera_replay_effect_world` measures the shield's base-root residual against the alpha-zero snapshot while taking the residual's own endpoint from the alpha-one recipe. The two do not cancel; what is left is a full tick of racer travel added to the shell's world position. | Shell centroid sits **50.8 / 51.1 / 50.8 px** from its own tick's authored pose at alpha 1/4, 2/4, 3/4 — flat, not a ramp — against an endpoint-to-endpoint envelope of 5.25 px mean / 18.42 px max, and its area drops from 6,767 px to ~2,340 px on every interpolated frame. §2. | **OPEN — defect. Write-up in §2, no fix here.** |
+| C1 | **Effect stage leads the racer by one authored tick** | `mdkr_camera_replay_effect_world` measures the shield's base-root residual against the alpha-zero snapshot while taking the residual's own endpoint from the alpha-one recipe. The two do not cancel; what is left is a full tick of racer travel added to the shell's world position. | Shell centroid sits **50.8 / 51.1 / 50.8 px** from its own tick's authored pose at alpha 1/4, 2/4, 3/4 — flat, not a ramp — against an endpoint-to-endpoint envelope of 5.25 px mean / 18.42 px max, and its area drops from 6,767 px to ~2,340 px on every interpolated frame. §2. | **CLOSED 2026-08-08 — see §4.** Write-up in §2. |
 | C2 | Camera blends across a cut | Post-race spectate handover, the 3P T.T. spectator cut and camera-mode reframes move the eye outright, all inside the 2,000-unit teleport threshold and inside one camera slot, so nothing in the captured pose said "cut". | Not re-measured here. `0c6cb33` / `48d79d6` / `969bd2e`: 12 blended cuts before, 0 after, pinned by `tests/check_camera_snapshot_coverage.py`'s cut classifier (`6bffbc2`). | **Addressed on this branch.** |
 | C3 | Interpolated angle smears the long way round | A rotation advancing more than half a turn per tick interpolates backwards; one near a quarter turn smears visibly. | Not firing on this route. The shield's yaw is `gShieldSineTime * 0x800` and `gShieldSineTime` advances by `updateRate` (`objects.c:1084`), i.e. 11.25° per field and 22.5° per authored tick — far under the `0x4000` snap. `effectphasehold=0` and `effectmiss=0` on both rate arms. The magnet's phase rate is not established here. | **Addressed (`2dafae2`); not this route's artifact.** |
 | C4 | Replay reads storage it does not own | An interpolated walk resolving a non-arena dependency with no retained copy read the live pointer, by which time task K+1 had already been authored into it — a corruption of arbitrary shape. | `uncapturedext=0`, `uncapturedrefusals=0`, `staletenants=0` on all six arms here, and on all eleven bisection arms over 114,957 interpolated replays. | **Addressed (`26526db`).** |
@@ -470,7 +470,129 @@ it, which is the size of the problem C1 represents.
 - **Neither proposed gate in §2.6 has been run against a fixed build**, because
   this is a diagnosis task and no production code was changed. They are verified
   only in the direction of rejecting the two builds measured here.
+  *(Superseded 2026-08-08 — see §4.)*
 - **C5, C8 and C9 remain unwitnessed or undiagnosed here**, as marked in §1.
+
+## 4. Fixed — measured 2026-08-08
+
+C1 is closed. `mdkr_camera_replay_effect_world` now hands `previous` — the
+tick-T capture — to the base transform, so the residual cancels and `base` is
+the interpolated racer pose with no constant term. Both conditions of §2.6 have
+now been run against a fixed build, in both directions, and the exact witness
+§2.6 asked for exists and is gated.
+
+### 4.1 The pixels
+
+Same route, same window, same measurement, `MDKR_PRESENT_RATE=120`,
+`MDKR_FORCE_SHIELD=12680:600`, 30 authored ticks and 90 interpolated presents.
+The gate re-derives its own envelope from the run rather than carrying this
+note's literals, which is why the envelope row differs slightly from §2.2's
+(5.34 / 19.45 against 5.25 / 18.42): the standing gate takes the largest
+connected component with its own tie-breaks. Both are the same quantity
+measured twice, and the verdict does not turn on the difference.
+
+| Alpha | Before — displacement | After | Before — shell area | After |
+|---|---|---|---|---|
+| 1/4 | **50.77 px** ± 3.57 | **2.19 px** ± 4.17 | 2,359 px | 6,784 px |
+| 2/4 | **51.09 px** ± 3.69 | **3.85 px** ± 4.83 | 2,366 px | 6,792 px |
+| 3/4 | **50.84 px** ± 3.72 | **4.45 px** ± 4.75 | 2,295 px | 6,811 px |
+
+Envelope on this run: **mean 5.34 px, max 19.45 px** over 29 authored pairs.
+
+Read the "after" column the way §2.2 asked the "before" column to be read. The
+flat 50.8 px series is gone; what replaces it is a **ramp** — 2.19 → 3.85 →
+4.45 — whose whole extent sits **inside the 5.34 px the shell travels in one
+authored tick**. The worst single interpolated present is 18.68 px against a
+19.45 px worst authored step, so condition (a) holds even before its 2 px
+segmentation tolerance is applied. And the shell's area comes back from a flat
+~2,340 px to ~6,795 px, against 6,767 px when the game draws it: the recession
+and the kart-body occlusion that cost 65.3% of it were both consequences of the
+displacement, and both are gone.
+
+Condition (b) reports `not-discriminating` on the fixed build, which is the
+outcome §2.6 predicted and asked for: a correctly anchored shell under a chase
+camera is near-flat *and* near-zero, so ordering near-zero noise would decide
+nothing. It fired, correctly, on the defective build — 50.77 against 50.84, a
+ratio of 0.9987 where a genuine ramp reads about a third.
+
+### 4.2 The exact witness
+
+§2.6's primary candidate is now production. `GfxPresentationMatrixOwner` carries
+the authored tick its recipe was copied out at
+(`presentation_task_authoring_tick`), and every replayed recipe compares that
+stamp against the tick the alpha-zero pose resolves to, counting into
+`[PRESENT-PACKET]` as `ownertickcheck` / `ownertickmismatch`. It covers **all
+four recipe classes** — object root, articulated child, billboard anchor and
+effect — not only the one the defect was found in.
+
+| Build | ownertickcheck | ownertickmismatch |
+|---|---|---|
+| Pre-fix, route A | 288,873 | **717** |
+| Fixed, route A | 288,864 | **0** |
+| Fixed, all 11 bisection arms | 2,404,110 | **0** |
+
+708 of those 717 are the effect stage — exactly the `effecthit` /
+`effectoverride` identity §2.4 records, i.e. every single override on the route,
+as predicted.
+
+### 4.3 A second instance the witness found by itself
+
+The other **9** were not the shield. They are `GFX_PRESENTATION_MATRIX_BILLBOARD`
+recipes stamped one tick behind the pose they were measured against, at two
+tick boundaries (1111→1112 and 1269→1270) during a pre-race transition.
+
+Cause: the presentation packet's *live* registration list is emptied by the
+freeze at the end of a display list's real walk. A pass that holds its frame
+(`gDrawFrameTimer`) or elides its catch-up render never submits its list, so it
+is never walked and never freezes — and the game then authors over the same
+buffer. Without intervention the abandoned attempt's bindings survive into the
+next freeze still carrying the older tick, and replay measures their residual
+against a newer alpha-zero pose. Same wrong answer as C1, reached by a
+different route, in a class §2.6 expected to be clean.
+
+`presentation_task_authoring_begin` now discards live registrations when a new
+authoring lifetime opens, which is a no-op on any pass that submitted. The nine
+disappear, and `ownertickcheck` falls by exactly nine (288,873 → 288,864) —
+those bindings are no longer replayed at all, which is correct: they describe a
+list nothing ever walked.
+
+This is the whole argument for preferring a structural witness to a pixel
+threshold. Nine frames in a transition would never have been found by a shell
+tracker, and no pixel gate would have been pointed at them.
+
+### 4.4 Standing gates
+
+- `tests/check_effect_shell_envelope.py` (new, registered in
+  `tools/run_checks.py`) implements §2.6 conditions (a) and (b) on this route.
+  Run against the pre-fix build it fails **90 of 90** interpolated presents;
+  against the fixed build it passes with the worst present at 18.68 px inside a
+  21.45 px bound.
+- `tests/check_smoothing_stage_bisection.py` asserts `ownertickmismatch=0` over
+  a non-zero `ownertickcheck` on every production arm of both routes, with the
+  same presence-before-value stat contract its `uncapturedext` assertion uses,
+  and prints `[TICK-ANCHORING]`.
+
+### 4.5 What did not change
+
+The authoritative streams. `[SIMHASH]`/`[EVENTHASH]`/`[INPUTHASH]` over the
+3,230-tick route are byte-identical between the pre-fix and fixed binaries, at
+`MotionSmoothing=interpolate` + `PRESENT_RATE=120` and at the original-pace
+default, 9,690 rows each. `check_presentation_matrix.py` passes unchanged,
+including arm C's forced-shield control (30/60 intermediate frames differ, all
+alpha-zero frames reproduce the authored endpoint) — that control pinned "the
+stage changes intermediate frames", which is as true of a correctly anchored
+shell as of a displaced one, so it needed no re-pointing.
+
+### 4.6 Still open after the fix
+
+- **The magnet path is still unmeasured as such.** It shares `mtx_shear_push`,
+  the same capture and the same replay function, and the tick-agreement witness
+  now covers it structurally wherever it runs — but no arm in this note or in
+  the gate forces a magnet rather than a shield.
+- **Greenwood Village is still unrun**, as are non-GL backends and any real
+  display. C1's closure does not speak to C5, C7, C8 or C9, and nothing here
+  can confirm or exclude a real-display pacing component of the owner's
+  complaint.
 
 
 ## Appendix A — the shell-track measurement, reproducible

@@ -187,6 +187,10 @@ CHECKS = (
           "per-stage smoothing attribution at the 120 Hz alpha grid: "
           "leave-one-out ranking, authored-endpoint exactness, and the "
           "uncaptured-external fail-closed refusal"),
+    Check("effect_shell_envelope", "check_effect_shell_envelope.py", "release",
+          "the shield/magnet shell's displacement from its own tick's authored "
+          "pose stays inside the endpoint-to-endpoint interpolation envelope "
+          "at the 120 Hz alpha grid"),
     Check("presentation_shadows", "check_presentation_shadows.py", "release",
           "terrain-projected kart-shadow replay stays rigid, exact at authored "
           "endpoints, and measurably reduces the historical vertex-lerp pulse"),
