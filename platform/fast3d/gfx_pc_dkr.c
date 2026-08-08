@@ -313,6 +313,13 @@ static uint64_t dkr_replay_matrix_hits = 0;
 static uint64_t dkr_replay_matrix_misses = 0;
 static uint64_t dkr_replay_object_hits = 0;
 static uint64_t dkr_replay_object_holds = 0;
+/* dkr_replay_object_holds split by cause -- see MdkrReplayHoldClass.
+ * Only the last of these is a defect signal; the others are holds that
+ * are correct and expected. */
+static uint64_t dkr_replay_hold_no_pair = 0;
+static uint64_t dkr_replay_hold_discont = 0;
+static uint64_t dkr_replay_hold_still = 0;
+static uint64_t dkr_replay_hold_moving = 0;
 static uint64_t dkr_replay_billboard_matrix_hits = 0;
 static uint64_t dkr_replay_billboard_matrix_holds = 0;
 static uint64_t dkr_replay_billboard_vertex_hits = 0;
@@ -471,6 +478,9 @@ extern void mdkr_camera_replay_mvp(
 extern bool mdkr_camera_replay_object_world(
     const GfxPresentationMatrixOwner *owner, uint64_t numerator,
     uint64_t denominator, float out_world[4][4]);
+extern int mdkr_camera_replay_object_hold_class(
+    const GfxPresentationMatrixOwner *owner, uint64_t numerator,
+    uint64_t denominator);
 extern bool mdkr_camera_replay_effect_world(
     const GfxPresentationMatrixOwner *previous,
     const GfxPresentationMatrixOwner *current, uint64_t numerator,
@@ -5688,6 +5698,24 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                         dkr_replay_object_hits++;
                     } else {
                         dkr_replay_object_holds++;
+                        switch (mdkr_camera_replay_object_hold_class(
+                                    presentation_owner,
+                                    dkr_replay_object_alpha_numerator,
+                                    dkr_replay_object_alpha_denominator)) {
+                            case MDKR_REPLAY_HOLD_NO_PAIR:
+                                dkr_replay_hold_no_pair++;
+                                break;
+                            case MDKR_REPLAY_HOLD_DISCONTINUOUS_STILL:
+                            case MDKR_REPLAY_HOLD_DISCONTINUOUS_MOVING:
+                                dkr_replay_hold_discont++;
+                                break;
+                            case MDKR_REPLAY_HOLD_PAIRED_MOVING:
+                                dkr_replay_hold_moving++;
+                                break;
+                            default:
+                                dkr_replay_hold_still++;
+                                break;
+                        }
                     }
                 }
             }
@@ -7194,6 +7222,23 @@ void gfx_dkr_replay_get_object_stats(uint64_t *hits, uint64_t *holds) {
     }
     if (holds != NULL) {
         *holds = dkr_replay_object_holds;
+    }
+}
+
+void gfx_dkr_replay_get_object_hold_classes(
+    uint64_t *no_pair, uint64_t *discontinuous, uint64_t *still,
+    uint64_t *moving) {
+    if (no_pair != NULL) {
+        *no_pair = dkr_replay_hold_no_pair;
+    }
+    if (discontinuous != NULL) {
+        *discontinuous = dkr_replay_hold_discont;
+    }
+    if (still != NULL) {
+        *still = dkr_replay_hold_still;
+    }
+    if (moving != NULL) {
+        *moving = dkr_replay_hold_moving;
     }
 }
 

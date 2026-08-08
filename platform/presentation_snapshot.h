@@ -205,6 +205,23 @@ typedef struct PresentationSnapshotStats {
 
 /* Interpolated result handed to the renderer. Never written into a live
  * object (spec §4.5, §14). */
+/*
+ * Why a replayed world matrix held instead of being substituted. Diagnostic
+ * only -- nothing branches on this; it exists so the single "holds" total can
+ * be split into the cases that are correct (a prop that did not move; a spawn
+ * or teleport that must not blend) and the one that is not (a continuous
+ * object that moved and still held, which is drawn with its tick-T world under
+ * a tick-T+alpha camera and therefore slides against the terrain).
+ */
+typedef enum MdkrReplayHoldClass {
+    MDKR_REPLAY_HOLD_NO_OWNER = 0,
+    MDKR_REPLAY_HOLD_NO_PAIR,               /* not in the pair: recycled/uncaptured */
+    MDKR_REPLAY_HOLD_DISCONTINUOUS_STILL,   /* correct: cut, and it did not move */
+    MDKR_REPLAY_HOLD_DISCONTINUOUS_MOVING,  /* correct by design: spawn/teleport */
+    MDKR_REPLAY_HOLD_PAIRED_STILL,          /* correct: paired, but it did not move */
+    MDKR_REPLAY_HOLD_PAIRED_MOVING          /* THE DEFECT SIGNAL */
+} MdkrReplayHoldClass;
+
 typedef struct PresentationObjectPose {
     float position[3];
     float scale;

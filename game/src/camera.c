@@ -455,6 +455,62 @@ bool mdkr_camera_replay_object_world(
     return true;
 }
 
+/*
+ * DIAGNOSTIC ONLY -- why did this owner's world matrix hold?
+ *
+ * dkr_replay_object_holds counts every refusal together, which makes the
+ * number unreadable: a static prop holding its tick-T pose is CORRECT (it did
+ * not move), and a spawning or teleporting object holding is correct by
+ * design. What is not correct is a continuous object that MOVED between the
+ * two authoritative ticks and still got no substitution -- that one is drawn
+ * with its tick-T world under a tick-T+alpha camera, so it slides backwards
+ * against the terrain for the interval and snaps forward at the boundary. The
+ * amplitude scales with camera speed, which is exactly the shape of the
+ * "shimmer when the camera moves fast" report this counter was never able to
+ * confirm or refute.
+ *
+ * Classifying costs two extra endpoint resolves on the HOLD path only, which
+ * is by construction the path that is not drawing anything interpolated.
+ */
+int mdkr_camera_replay_object_hold_class(
+    const GfxPresentationMatrixOwner *owner, u64 numerator, u64 denominator) {
+    PresentationObjectPose first;
+    PresentationObjectPose last;
+    PresentationObjectPose target;
+    f32 dx;
+    f32 dy;
+    f32 dz;
+    int moved;
+
+    if (owner == NULL || !owner->valid) {
+        return MDKR_REPLAY_HOLD_NO_OWNER;
+    }
+    if (!presentation_snapshot_resolve_object_generation(
+            owner->address, owner->generation, 0u, denominator, &first) ||
+        !presentation_snapshot_resolve_object_generation(
+            owner->address, owner->generation, denominator, denominator,
+            &last)) {
+        /* The pair does not contain this object at all: recycled address, a
+         * generation that moved, or an object the walk never captured. */
+        return MDKR_REPLAY_HOLD_NO_PAIR;
+    }
+    dx = last.position[0] - first.position[0];
+    dy = last.position[1] - first.position[1];
+    dz = last.position[2] - first.position[2];
+    /* One hundredth of a world unit squared. Below this the object did not
+     * move in any sense a player could see, so holding it is free. */
+    moved = (dx * dx + dy * dy + dz * dz) > 0.0001f;
+    if (!presentation_snapshot_resolve_object_generation(
+            owner->address, owner->generation, numerator, denominator,
+            &target) ||
+        !target.interpolated) {
+        return moved ? MDKR_REPLAY_HOLD_DISCONTINUOUS_MOVING
+                     : MDKR_REPLAY_HOLD_DISCONTINUOUS_STILL;
+    }
+    return moved ? MDKR_REPLAY_HOLD_PAIRED_MOVING
+                 : MDKR_REPLAY_HOLD_PAIRED_STILL;
+}
+
 static bool mdkr_camera_replay_object_transform(
     const GfxPresentationMatrixOwner *owner, u64 numerator, u64 denominator,
     ObjectTransform *out) {

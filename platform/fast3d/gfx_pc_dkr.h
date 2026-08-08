@@ -316,6 +316,13 @@ uint64_t gfx_dkr_last_walked_authored_tick(void);
  */
 uint64_t gfx_dkr_shadow_stale_tenant_count(void);
 
+/* dkr_replay_object_holds split by cause. Only `moving` -- a continuous
+ * object that moved between the two authoritative ticks and still held -- is a
+ * defect signal; the rest are holds that are correct. */
+void gfx_dkr_replay_get_object_hold_classes(
+    uint64_t *no_pair, uint64_t *discontinuous, uint64_t *still,
+    uint64_t *moving);
+
 void gfx_dkr_replay_get_stats(
     uint64_t *walks, uint64_t *matrix_hits, uint64_t *matrix_misses,
     uint64_t *matrix_rejects, uint64_t *real_walks);
