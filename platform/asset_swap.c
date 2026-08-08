@@ -1172,8 +1172,6 @@ static int lh70_already_swapped(const void *blob) {
     return misc_memo_claim(s_lh70Swapped, &s_lh70SwappedCount, LH70_SWAPPED_MAX, blob);
 }
 
-void asset_swap_misc_lightdata(void *blob) {
-
 /* The bounded core, shared by both views of this blob shape.
  *
  * ASSET_MISC sub-asset 58 is read as a LevelHeader_70 by game_ui.c AND as a

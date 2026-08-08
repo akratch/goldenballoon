@@ -193,7 +193,7 @@ ObjectLight *light_add_from_object_header(Object *obj, ObjectHeader24 *arg1) {
              * the same call game.c and game_ui.c make for the sibling route
              * through LevelHeader.unk74[]. The swapper dedupes on blob identity,
              * so reaching the same sub-asset both ways swaps it exactly once. */
-            asset_swap_misc_lightdata(light->unk44_asset);
+            asset_swap_misc_lightdata(light->unk44_asset, (u32) get_misc_asset_size(arg1->unk6));
 #endif
             light->unk48 = light->unk44_asset->unk0;
             light->unk4A = 0;
