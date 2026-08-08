@@ -286,6 +286,19 @@ def replay_ownership(output: str, label: str) -> tuple[list[str], int]:
             "interpolated walk resolved a non-arena dependency with no "
             "retained copy. Before the fail-closed change it would have read "
             "that pointer live")
+    # A world matrix that HELD while its object moved between the two
+    # authoritative ticks is drawn with the tick-T world under a tick-T+alpha
+    # camera: it slides against the terrain for the interval and snaps forward
+    # at the boundary, with an amplitude that scales with camera speed. Holds
+    # for any other reason are correct -- a prop that did not move, or a spawn
+    # or teleport that must not blend -- which is why the single objhold total
+    # was unreadable and went ungated for so long. Only this class is a defect.
+    if "holdmoving" in replay and replay["holdmoving"] != 0:
+        problems.append(
+            f"{label}: holdmoving={replay['holdmoving']} — a continuous "
+            "object moved between the two authoritative ticks and its world "
+            "matrix was not substituted, so it was drawn at its tick-T pose "
+            "under an interpolated camera")
     return problems, replay["uncapturedext"]
 
 
@@ -575,6 +588,10 @@ def main() -> int:
     # run that made it.
     owned_arms = 0
     owned_replays = 0
+    # The largest uncapturedext any arm reported. replay_ownership
+    # already returns the measured value; the summary used to print a
+    # literal 0 instead of it.
+    owned_uncaptured_max = 0
     anchored_arms = 0
     anchored_checks = 0
 
@@ -611,9 +628,10 @@ def main() -> int:
                         "arm below differences an image nothing produced")
                 # Production ownership: the fail-closed branch must be
                 # unreachable on a correct tree, in every stage configuration.
-                problems, _ = replay_ownership(
+                problems, arm_ext = replay_ownership(
                     base_out, f"route {route} arm all-on")
                 failures.extend(problems)
+                owned_uncaptured_max = max(owned_uncaptured_max, arm_ext)
                 # Production anchoring: every replayed recipe measures its
                 # residual against its own tick, in every stage configuration.
                 problems, base_tick_checks = replay_tick_agreement(
@@ -686,9 +704,10 @@ def main() -> int:
                         binary, rom, f"route{route}-{label}-off", root, track,
                         ticks, {**route_env, **stage_env(disabled)},
                         args.timeout, args.verbose, dump=True)
-                    problems, _ = replay_ownership(
+                    problems, arm_ext = replay_ownership(
                         out, f"route {route} arm {label}")
                     failures.extend(problems)
+                    owned_uncaptured_max = max(owned_uncaptured_max, arm_ext)
                     problems, arm_tick_checks = replay_tick_agreement(
                         out, f"route {route} arm {label}",
                         "object" not in disabled)
@@ -877,9 +896,15 @@ def main() -> int:
                 "fail-closed arm: MDKR_TEST_UNCAPTURED_EXTERNAL armed without "
                 "the versioned token — an adversarial seam must not be "
                 "reachable from a bare environment variable")
+        # Report the MEASURED value, never a literal. The assertion above
+        # already reads the real counter, so a hard-coded "0" here could only
+        # ever disagree with it -- and a published number that is not the
+        # measured number is the precise shape of the last evidence failure
+        # this project had.
         rows.append(
             f"[UNCAPTURED-OWNERSHIP] arms={owned_arms} "
-            f"interpolated_replays={owned_replays} uncapturedext=0")
+            f"interpolated_replays={owned_replays} "
+            f"uncapturedext={owned_uncaptured_max}")
         rows.append(
             f"[TICK-ANCHORING] arms={anchored_arms} "
             f"recipes_checked={anchored_checks} ownertickmismatch=0")

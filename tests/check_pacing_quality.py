@@ -714,6 +714,10 @@ def main() -> int:
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument("--allow-no-baseline", action="store_true",
+                        help="permit a host that cannot obtain a paced "
+                             "session; the banner then states the quality "
+                             "half was not measured")
     parser.add_argument("--skip-realtime", action="store_true",
                         help="synthetic plumbing arms only")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -836,11 +840,30 @@ def main() -> int:
                     # busy attempt does not survive being repeated.
                     failures.extend(quality)
                 if paced == 0:
-                    notes.append(
+                    # A run that obtained no paced session measured NOTHING
+                    # about presentation quality -- and this is the only arm
+                    # anywhere that exercises the alpha-grid projection at
+                    # all, because platform_present_display_quantum_units()
+                    # returns 0 unless the pacer is real and every other
+                    # smoothing gate is headless (s_paceMode =
+                    # g_headlessFrames < 0 ? PACE_REALTIME : PACE_SYNTH).
+                    # Reporting that as a note let the summary below claim
+                    # "displayed phases land on the projected display grid"
+                    # about a run that never projected one. It is a failure.
+                    # A host that genuinely cannot pace must say so out loud
+                    # with --allow-no-baseline, which downgrades the banner
+                    # rather than hiding the gap.
+                    message = (
                         f"realtime arm: NO BASELINE after {REALTIME_ATTEMPTS} "
                         "attempts. The no-tearing and no-underrun assertions "
-                        "still ran; the distributions are not a valid quality "
-                        "measurement and were not published")
+                        "still ran, but the quality distributions -- and the "
+                        "only coverage the alpha-grid projection has anywhere "
+                        "-- were not measured")
+                    if args.allow_no_baseline:
+                        notes.append(message + " (allowed by "
+                                     "--allow-no-baseline)")
+                    else:
+                        failures.append(message)
         except RuntimeError as error:
             failures.append(str(error))
 
@@ -853,6 +876,16 @@ def main() -> int:
         for baseline in baselines:
             print(f"  - measured: {baseline}")
         return 1
+    if not baselines:
+        print("check_pacing_quality: PASS (REALTIME QUALITY NOT MEASURED) -- "
+              "the synthetic arms, no-tearing and no-underrun assertions "
+              "held, but no paced session was obtained, so nothing here "
+              "witnesses the displayed-interval or interpolation-phase "
+              "distributions and the alpha-grid projection was never "
+              "executed")
+        for note in notes:
+            print(f"  - {note}")
+        return 0
     print("check_pacing_quality: PASS -- displayed-interval, interpolation-"
           "phase and present-queue-latency census consistent across every "
           "policy/smoothing arm, with no phase regression and no audio "

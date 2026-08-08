@@ -44,10 +44,25 @@ a build of `origin/main`. What that leaves open:
   numbers, and the gate passes on Chromium against the freshly linked wasm.
 - **RESOLVED AS A HARNESS ARTIFACT (2026-08-08). Read this before acting on the
   numbers below.** The starvation described here reproduces only under the
-  SYNTHETIC pacer. `check_arbitrary_presentation_rates` sets `MDKR_SYNTH_FIELDS`,
-  which advances presentation accounting without real time passing between
-  presents, so the GPU has genuinely not retired the tick's frame when the
-  subloop asks and admission correctly refuses. Re-measured with the real pacer
+  SYNTHETIC pacer.
+
+  **Correction (2026-08-08): the switch is `--headless-ticks`, NOT
+  `MDKR_SYNTH_FIELDS`.** `platform_sdl_min.c` selects
+  `s_paceMode = (g_headlessFrames < 0) ? PACE_REALTIME : PACE_SYNTH`, so every
+  headless run is synthetically paced unless it sets `MDKR_PACE_REALTIME=1`;
+  `MDKR_SYNTH_FIELDS` only pins the field count. This entry originally blamed
+  the field-count variable, which put the fault in the wrong place and is why
+  the lesson did not generalise. The blast radius is far wider than one gate:
+  `platform_present_display_quantum_units()` returns 0 unless the pacer is
+  real, so **the alpha-grid projection is dead code in every headless gate** --
+  `check_motion_quality_battery`, `check_smoothing_stage_bisection` and
+  `check_effect_shell_envelope` included. The only arm that exercises it
+  anywhere is `check_pacing_quality`'s realtime arm, which is now a hard
+  failure when it obtains no paced session rather than a note.
+
+  A synthetic pacer advances presentation accounting without real time passing
+  between presents, so the GPU has genuinely not retired the tick's frame when
+  the subloop asks and admission correctly refuses. Re-measured with the real pacer
   (`MDKR_PACE_REALTIME=1`, WebGPU, `MDKR_TEST_VISIBLE_HEADLESS=1`, 600 ticks):
 
   | arm | presents | surfaceupdates | interp | endpointSkips |
