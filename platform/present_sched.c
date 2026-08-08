@@ -1217,6 +1217,7 @@ void present_sched_trace_summary(void) {
                 "projectedshadowdeformoverride=%llu "
                 "particlecolorhit=%llu particlecoloroverride=%llu "
                 "primalphahit=%llu primalphaoverride=%llu "
+                "primalphadeltasum=%llu primalphadeltapeak=%llu "
                 "projectedshadowprimalphahit=%llu "
                 "projectedshadowprimalphaoverride=%llu "
                 "particleprimalphahit=%llu "
@@ -1287,6 +1288,8 @@ void present_sched_trace_summary(void) {
                 (unsigned long long)packet_stats.particle_color_overrides,
                 (unsigned long long)packet_stats.primitive_alpha_hits,
                 (unsigned long long)packet_stats.primitive_alpha_overrides,
+                (unsigned long long)packet_stats.primitive_alpha_delta_sum,
+                (unsigned long long)packet_stats.primitive_alpha_delta_peak,
                 (unsigned long long)
                     packet_stats.projected_shadow_primitive_alpha_hits,
                 (unsigned long long)

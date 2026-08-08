@@ -107,6 +107,12 @@ typedef struct GfxPresentationPacketStats {
     uint64_t particle_color_overrides;
     uint64_t primitive_alpha_hits;
     uint64_t primitive_alpha_overrides;
+    /* Magnitude of the substitutions, in 0-255 alpha steps. A stage can
+     * override every draw it touches and still be invisible if every step is
+     * one byte on a surface whose blend cannot resolve one byte, and an
+     * override count says nothing about which of those it is doing. */
+    uint64_t primitive_alpha_delta_sum;
+    uint64_t primitive_alpha_delta_peak;
     uint64_t projected_shadow_primitive_alpha_hits;
     uint64_t projected_shadow_primitive_alpha_overrides;
     uint64_t particle_primitive_alpha_hits;
@@ -270,8 +276,12 @@ void gfx_presentation_packet_note_projected_shadow_deformation(
     bool overridden);
 void gfx_presentation_packet_note_deformation_color(bool particle,
                                                     bool overridden);
+/* `authored` is the display list's own G_SETPRIMCOLOR alpha, `applied` what
+ * the replay substituted for it. Passing both rather than a bool lets the
+ * census bound how far the substitution actually moved the byte. */
 void gfx_presentation_packet_note_primitive_alpha(bool particle,
-                                                  bool overridden);
+                                                  uint8_t authored,
+                                                  uint8_t applied);
 void gfx_presentation_packet_note_projected_shadow_primitive_alpha(
     bool overridden);
 void gfx_presentation_packet_note_effect_override(void);

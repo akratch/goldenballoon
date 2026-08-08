@@ -861,7 +861,7 @@ static void dkr_replay_apply_primitive_alpha(void) {
     alpha = presentation_scale_opacity_u8(
         rdp.authored_prim_color.a, source.opacity, target.opacity);
     gfx_presentation_packet_note_primitive_alpha(
-        particle, alpha != rdp.authored_prim_color.a);
+        particle, rdp.authored_prim_color.a, alpha);
     if (projected_shadow) {
         gfx_presentation_packet_note_projected_shadow_primitive_alpha(
             alpha != rdp.authored_prim_color.a);

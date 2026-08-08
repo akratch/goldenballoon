@@ -440,9 +440,9 @@ int main(void) {
     gfx_presentation_packet_note_deformation_color(false, false);
     gfx_presentation_packet_note_deformation_color(false, true);
     gfx_presentation_packet_note_deformation_color(true, true);
-    gfx_presentation_packet_note_primitive_alpha(false, false);
-    gfx_presentation_packet_note_primitive_alpha(false, true);
-    gfx_presentation_packet_note_primitive_alpha(true, true);
+    gfx_presentation_packet_note_primitive_alpha(false, 200u, 200u);
+    gfx_presentation_packet_note_primitive_alpha(false, 200u, 201u);
+    gfx_presentation_packet_note_primitive_alpha(true, 200u, 190u);
     gfx_presentation_packet_note_projected_shadow_primitive_alpha(false);
     gfx_presentation_packet_note_projected_shadow_primitive_alpha(true);
     gfx_presentation_packet_note_phase_hold(false);

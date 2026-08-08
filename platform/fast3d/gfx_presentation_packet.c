@@ -943,14 +943,26 @@ void gfx_presentation_packet_note_deformation_color(bool particle,
 }
 
 void gfx_presentation_packet_note_primitive_alpha(bool particle,
-                                                  bool overridden) {
+                                                  uint8_t authored,
+                                                  uint8_t applied) {
+    /* The substitution's own magnitude, not just that one happened. An
+     * override count alone cannot separate a stage that is reshaping a fade
+     * from one that is moving the alpha byte by a step no framebuffer can
+     * resolve; the peak and the sum are what bound the second reading. */
+    unsigned delta = authored >= applied ? (unsigned)(authored - applied)
+                                         : (unsigned)(applied - authored);
+
     s_stats.primitive_alpha_hits++;
-    if (overridden) {
+    if (delta != 0u) {
         s_stats.primitive_alpha_overrides++;
+        s_stats.primitive_alpha_delta_sum += delta;
+        if (delta > s_stats.primitive_alpha_delta_peak) {
+            s_stats.primitive_alpha_delta_peak = delta;
+        }
     }
     if (particle) {
         s_stats.particle_primitive_alpha_hits++;
-        if (overridden) {
+        if (delta != 0u) {
             s_stats.particle_primitive_alpha_overrides++;
         }
     }
