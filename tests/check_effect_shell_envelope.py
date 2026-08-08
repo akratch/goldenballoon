@@ -133,6 +133,9 @@ PACKET_STAT_CONTRACT = (
     "effecthit", "effectoverride", "ownertickcheck", "ownertickmismatch")
 
 
+
+RENDERER = "webgpu"
+
 def read_ppm(path: Path) -> tuple[int, int, memoryview]:
     """Parse a binary P6 dump into (width, height, RGB bytes)."""
 
@@ -247,7 +250,12 @@ def run(binary: Path, rom: Path, root: Path, timeout: int,
         MDKR_STATE_HASH=HASH_VERSION,
         MDKR_AUTOPILOT="1",
         MDKR_LOAD_TRACK=ROUTE_TRACK,
-        MDKR_RENDERER="gl",
+        # WebGPU is what players run. GL is kept selectable because it is
+        # the diagnostic backend, but the default has to be the renderer
+        # whose picture ships -- an interpolation-quality claim proven
+        # only on GL proves nothing about the shipped one, which is how
+        # the replay-admission starvation stayed invisible.
+        MDKR_RENDERER=RENDERER,
         MDKR_SAVE_DIR=str(save_dir),
         MDKR_TEST_SCRIPT_ONLY_INPUT="1",
         MDKR_PRESENT_RATE=PRESENT_RATE,
@@ -292,9 +300,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
+    parser.add_argument("--renderer", choices=("webgpu", "gl"),
+                        default="webgpu",
+                        help="backend under test (default: the shipped one)")
     parser.add_argument("--timeout", type=int, default=1200)
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
+    global RENDERER
+    RENDERER = args.renderer
 
     binary = Path(os.path.abspath(resolve_binary(args.build)))
     rom = Path(os.path.abspath(args.rom))

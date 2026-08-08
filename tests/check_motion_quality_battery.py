@@ -215,6 +215,9 @@ CROSS_REFERENCES = (
 RELEASE_ROLES = ("release", "native", "rom", "ctest")
 
 
+
+RENDERER = "webgpu"
+
 def run(binary: Path, rom: Path, label: str, root: Path, script: Path,
         track: str, ticks: int, extra_env: dict[str, str], dump: bool,
         timeout: int, verbose: bool) -> tuple[str, Path | None, float]:
@@ -233,7 +236,12 @@ def run(binary: Path, rom: Path, label: str, root: Path, script: Path,
         MDKR_STATE_HASH=HASH_VERSION,
         MDKR_AUTOPILOT="1",
         MDKR_LOAD_TRACK=track,
-        MDKR_RENDERER="gl",
+        # WebGPU is what players run. GL is kept selectable because it is
+        # the diagnostic backend, but the default has to be the renderer
+        # whose picture ships -- an interpolation-quality claim proven
+        # only on GL proves nothing about the shipped one, which is how
+        # the replay-admission starvation stayed invisible.
+        MDKR_RENDERER=RENDERER,
         MDKR_SAVE_DIR=str(save_dir),
         MDKR_TEST_SCRIPT_ONLY_INPUT="1",
         MDKR_PRESENT_RATE=PRESENT_RATE,
@@ -360,9 +368,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
+    parser.add_argument("--renderer", choices=("webgpu", "gl"),
+                        default="webgpu",
+                        help="backend under test (default: the shipped one)")
     parser.add_argument("--timeout", type=int, default=1200)
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
+    global RENDERER
+    RENDERER = args.renderer
 
     binary = Path(os.path.abspath(resolve_binary(args.build)))
     rom = Path(os.path.abspath(args.rom))
