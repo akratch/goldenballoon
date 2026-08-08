@@ -77,6 +77,7 @@
 #include "gfx_texture_cache_key.h"
 #include "gfx_texture_edge.h"
 #include "gfx_font_sdf.h"
+#include "gfx_font_outline.h"
 #include "gfx_level_lighting.h"
 #include "gfx_rl1_experiment.h"
 #include "gfx_render_scale.h"
@@ -114,6 +115,19 @@ enum { DKR_PRESENTATION_PARTICLE_KIND_POINT = 4 };
 static GfxFontRegistry dkr_font_registry;
 
 uint32_t gfx_dkr_font_sdf_uploads;
+uint32_t gfx_dkr_font_outline_uploads;
+
+/*
+ * Which derivation a texture-cache fill actually achieved. Both derivations
+ * fall through to the faithful atlas on a resource failure, so the intent a
+ * bind computed is not proof of what the texture now holds -- and the cache
+ * key and the sampler policy must describe the pixels, not the intent.
+ */
+typedef enum DkrFontDerivation {
+    DKR_FONT_DERIVED_NONE = 0,
+    DKR_FONT_DERIVED_SDF,
+    DKR_FONT_DERIVED_OUTLINE
+} DkrFontDerivation;
 uint32_t gfx_dkr_mipmapped_uploads;
 uint64_t gfx_dkr_mip_levels_uploaded;
 uint32_t gfx_dkr_font_registry_failures;
@@ -142,7 +156,7 @@ static struct {
 static uint64_t dkr_shadow_stage_generation;
 
 bool gfx_dkr_font_texture_register(
-    const void *source, const GfxFontAtlasRegion *regions,
+    const void *source, int face, const GfxFontAtlasRegion *regions,
     size_t region_count) {
     bool registered;
 
@@ -156,7 +170,7 @@ bool gfx_dkr_font_texture_register(
      */
     gfx_dkr_texcache_invalidate_range(source, 1);
     registered = gfx_font_registry_register(
-        &dkr_font_registry, source, regions, region_count);
+        &dkr_font_registry, source, (GfxFontFace)face, regions, region_count);
     if (!registered) {
         gfx_dkr_font_registry_failures++;
     }
@@ -183,6 +197,22 @@ static bool dkr_font_sdf_enabled(void) {
 
     if (enabled < 0) {
         const char *value = getenv("MDKR_FONT_SDF");
+        enabled = !(value != NULL &&
+                    (value[0] == '0' ||
+                     ((value[0] == 'o' || value[0] == 'O') &&
+                      (value[1] == 'f' || value[1] == 'F'))));
+    }
+    return enabled != 0;
+}
+
+/* MDKR_FONT_OUTLINE=0 is a test control, not a user-facing setting: the
+ * player-facing switch is Video.HighResolutionText. This exists so a gate can
+ * hold the mode fixed and vary only the glyph source. */
+static bool dkr_font_outline_enabled(void) {
+    static int enabled = -1;
+
+    if (enabled < 0) {
+        const char *value = getenv("MDKR_FONT_OUTLINE");
         enabled = !(value != NULL &&
                     (value[0] == '0' ||
                      ((value[0] == 'o' || value[0] == 'O') &&
@@ -1634,7 +1664,9 @@ static uint32_t dkr_tile_source_line_bytes(uint8_t td, uint32_t source_size_byte
 }
 
 static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
-                                    uint32_t *out_w, uint32_t *out_h) {
+                                    uint32_t *out_w, uint32_t *out_h,
+                                    DkrFontDerivation *out_derived) {
+    *out_derived = DKR_FONT_DERIVED_NONE;
     if (td >= 8) return false;
     uint8_t fmt = rdp.tile[td].fmt;
     uint8_t siz = rdp.tile[td].siz;
@@ -1768,10 +1800,44 @@ static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
             gfx_font_registry_find(
                 &dkr_font_registry,
                 gfx_retained_task_original_address(src));
-        bool remaster_font =
-            g_pcRemasterFX && dkr_font_sdf_enabled() &&
+        bool is_font_atlas =
             dkr_is_font_text_draw() &&
             font_entry != NULL && font_entry->region_count != 0;
+
+        /*
+         * Outline replacement runs first and covers Restored as well as
+         * Remastered: it is not a look-changing effect, it is the same
+         * lettering carried at a resolution the 11px source never had. Only
+         * the two plain faces classify; DKR's coloured display lettering
+         * reports GFX_FONT_FACE_NONE and falls through to the SDF pass below.
+         */
+        bool outline_font =
+            is_font_atlas && g_pcHiresText && dkr_font_outline_enabled() &&
+            gfx_font_outline_available(font_entry->face);
+        if (outline_font) {
+            size_t output_bytes =
+                gfx_font_outline_output_bytes(width, height, DKR_FONT_UPSCALE);
+            if (output_bytes != 0 &&
+                ensure_font_sdf_buf(output_bytes) &&
+                gfx_font_outline_render_rgba(
+                    font_entry->face, dst, width, height, DKR_FONT_UPSCALE,
+                    font_entry->regions, font_entry->region_count,
+                    font_sdf_buf, font_sdf_cap) &&
+                gfx_rapi->upload_texture(
+                    font_sdf_buf,
+                    (int)(width * DKR_FONT_UPSCALE),
+                    (int)(height * DKR_FONT_UPSCALE))) {
+                gfx_dkr_font_outline_uploads++;
+                *out_derived = DKR_FONT_DERIVED_OUTLINE;
+                *out_w = width;
+                *out_h = height;
+                return true;
+            }
+            /* A resource failure falls through to the faithful source atlas. */
+        }
+
+        bool remaster_font =
+            is_font_atlas && g_pcRemasterFX && dkr_font_sdf_enabled();
         if (remaster_font) {
             size_t output_bytes =
                 gfx_font_sdf_output_bytes(width, height, DKR_FONT_UPSCALE);
@@ -1786,6 +1852,7 @@ static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
                     (int)(width * DKR_FONT_UPSCALE),
                     (int)(height * DKR_FONT_UPSCALE))) {
                 gfx_dkr_font_sdf_uploads++;
+                *out_derived = DKR_FONT_DERIVED_SDF;
                 *out_w = width;
                 *out_h = height;
                 return true;
@@ -2066,10 +2133,15 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
     bool lsw = rdp.loaded_texture[tmem].line_swapped;
     const GfxFontRegistryEntry *font_entry =
         gfx_font_registry_find(&dkr_font_registry, source_identity);
-    bool font_remastered =
-        g_pcRemasterFX && dkr_font_sdf_enabled() &&
+    bool font_atlas_draw =
         dkr_is_font_text_draw() &&
         font_entry != NULL && font_entry->region_count != 0;
+    bool font_outline =
+        font_atlas_draw && g_pcHiresText && dkr_font_outline_enabled() &&
+        gfx_font_outline_available(font_entry->face);
+    bool font_remastered =
+        font_atlas_draw && !font_outline &&
+        g_pcRemasterFX && dkr_font_sdf_enabled();
     const struct DkrTexCacheKey key = {
         .addr = source_identity,
         .source_line_bytes = source_line_bytes,
@@ -2083,6 +2155,7 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         .palette = pal,
         .line_swapped = lsw,
         .font_remastered = font_remastered,
+        .font_outline = font_outline,
         .mipmaps = g_pcMipmaps && gfx_rapi != NULL &&
             gfx_rapi->upload_texture_mipped != NULL,
         .cutout = cutout,
@@ -2119,7 +2192,8 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         }
         gfx_rapi->select_texture(unit, tid);
         uint32_t uw = 0, uh = 0;
-        if (!dkr_upload_tile_texture(td, cutout, &uw, &uh)) {
+        DkrFontDerivation derived = DKR_FONT_DERIVED_NONE;
+        if (!dkr_upload_tile_texture(td, cutout, &uw, &uh, &derived)) {
             /*
              * A failed upload invalidates both a new handle and a reused cache
              * handle: the backend object may now contain partial/new pixels,
@@ -2135,8 +2209,20 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
             dkr_texcache_delete_slot(slot);
             return false;
         }
+        /*
+         * Record what the fill actually produced, not what this bind intended.
+         * A derivation that fell through to the faithful atlas must not be
+         * cached as derived: the entry would be a false hit for every later
+         * bind, so the failure would persist for the life of the slot even
+         * after memory freed up, and the sampler would additionally force
+         * point/clamp/LOD-0 onto pixels that were never redrawn. Storing the
+         * achieved state instead means the next bind misses and retries.
+         */
+        struct DkrTexCacheKey achieved = key;
+        achieved.font_outline = (derived == DKR_FONT_DERIVED_OUTLINE);
+        achieved.font_remastered = (derived == DKR_FONT_DERIVED_SDF);
         tex_cache[slot] = (struct DkrTexCacheEntry){
-            .key = key,
+            .key = achieved,
             .texture_id = tid, .upload_w = uw, .upload_h = uh,
             .src_hash = now_hash, .valid = true };
         hit = slot;
@@ -2160,6 +2246,14 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
     }
     const uint32_t texture_id = tex_cache[hit].texture_id;
     const bool texture_changed = rendering_state.bound_texture_id[unit] != texture_id;
+    /*
+     * Sampler policy follows the resolved entry, never the intent computed at
+     * the top of this function: a derivation that failed and fell back holds
+     * ordinary atlas pixels, and forcing point/clamp/LOD-0 onto those would
+     * make the text look worse than with the feature switched off.
+     */
+    const bool eff_font_outline = tex_cache[hit].key.font_outline;
+    const bool eff_font_remastered = tex_cache[hit].key.font_remastered;
     *w = tex_cache[hit].upload_w;
     *h = tex_cache[hit].upload_h;
 
@@ -2170,7 +2264,7 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
      * 4x prefiltered coverage with point filtering retains its subpixel contour
      * without allowing a hardware bilinear tap to cross into the next cell.
      */
-    if (font_remastered) {
+    if (eff_font_remastered || eff_font_outline) {
         linear = false;
     }
     /*
@@ -2180,11 +2274,11 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
      * and uploaded — the same texture can be used by 3D geometry elsewhere —
      * so this is enforced at the SAMPLER rather than by withholding the mips.
      */
-    bool lod0 = dkr_in_texrect || font_remastered;
-    uint32_t cms =
-        font_remastered ? G_TX_CLAMP : rdp.tile[td].cms;
-    uint32_t cmt =
-        font_remastered ? G_TX_CLAMP : rdp.tile[td].cmt;
+    bool lod0 = dkr_in_texrect || eff_font_remastered || eff_font_outline;
+    uint32_t cms = (eff_font_remastered || eff_font_outline)
+        ? G_TX_CLAMP : rdp.tile[td].cms;
+    uint32_t cmt = (eff_font_remastered || eff_font_outline)
+        ? G_TX_CLAMP : rdp.tile[td].cmt;
     if (texture_changed ||
         rendering_state.bound_texture_linear[unit] != linear ||
         rendering_state.bound_texture_cms[unit] != cms ||
@@ -6525,6 +6619,7 @@ void gfx_shutdown(void) {
     free(font_sdf_buf);
     font_sdf_buf = NULL;
     font_sdf_cap = 0;
+    gfx_font_outline_shutdown();
     free(tex_row_buf);
     tex_row_buf = NULL;
     tex_row_cap = 0;

@@ -96,6 +96,8 @@ typedef enum MdkrVideoKey {
      * because the settings panel groups by category, not by enum order.
      */
     MDKR_VIDEO_CAMERA_COMFORT,
+    /* Appended for the reason stated above. */
+    MDKR_VIDEO_HIRES_TEXT,
     MDKR_VIDEO_KEY_COUNT
 } MdkrVideoKey;
 

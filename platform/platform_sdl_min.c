@@ -158,6 +158,7 @@ uint64_t platform_perf_monotonic_ns(void) {
 #endif
 #include "presentation_snapshot.h" /* live policy apply retires the staged pair */
 #include "fast3d/gfx_pc_dkr.h"   /* gfx_dkr_texload_line_swapped (headless report) */
+#include "fast3d/gfx_font_outline.h" /* gfx_font_outline_clipped_texels */
 #include "fast3d/gfx_level_lighting.h"
 #include "fast3d/gfx_shadow_cascade.h"
 #include "fast3d/gfx_shadow_frame.h"
@@ -3814,9 +3815,12 @@ static void platform_frame_sync_impl(int swap, int count_present) {
             "maxProbe=%u\n",
             gfx_ptr_live, gfx_ptr_high_water, gfx_ptr_ambiguous,
             gfx_ptr_full_fails, gfx_ptr_max_probe);
-        printf("[FONT] sdfUploads=%u registryFailures=%u\n",
+        printf("[FONT] sdfUploads=%u outlineUploads=%u registryFailures=%u "
+               "clippedTexels=%u\n",
                gfx_dkr_font_sdf_uploads,
-               gfx_dkr_font_registry_failures);
+               gfx_dkr_font_outline_uploads,
+               gfx_dkr_font_registry_failures,
+               gfx_font_outline_clipped_texels);
         printf("[MIP] uploads=%u levels=%llu\n",
                gfx_dkr_mipmapped_uploads,
                (unsigned long long) gfx_dkr_mip_levels_uploaded);

@@ -3,7 +3,7 @@
 > One subsystem of the split [open-items index](README.md), which states how these files are kept.
 
 **Currently open** (per [`README.md`](README.md#still-open)'s open/closed
-table): 6 items.
+table): 7 items.
 
 | Item | Where |
 |---|---|
@@ -11,8 +11,49 @@ table): 6 items.
 | Shadow gate trustworthiness: the harness environment (`MDKR_TRACE`) has twice diverged from the shipping build and let a real defect through green gates | [§ OPEN: shadow gate trustworthiness](#open-shadow-gate-trustworthiness--harness-environment-has-diverged-from-the-shipping-build-twice) |
 | M1 residuals deliberately deferred: WebGPU 4x MSAA (IQ-8) and a loader-only, content-free texture-pack path (IQ-11) | [`docs/STATUS.md` § imagequality — mipmaps reach the GPU (M1, in progress)](../STATUS.md#imagequality--mipmaps-reach-the-gpu-m1-in-progress) |
 | **(index-level item)** WGPU-11 external/oracle corpus breadth — local asset, capacity, and fault closeout is DONE (46 native routes, 249M+ strict commands, zero faults); browser complete-corpus/minimum-feature hardware, independent state reference, and external native platforms remain. Absorbs the former M4.5 "open notes" row (below), whose notes are all FIXED/CLOSED | [§ Still open](README.md#still-open), [`check_webgpu_content_census.py`](../../tests/check_webgpu_content_census.py) |
+| High-resolution text covers only the two plain authored faces on non-JP regions; the JP 16-bit charmap path, DKR's coloured display lettering, and words baked into menu/screen textures are all unimproved by design or by scope | [§ OPEN: high-resolution text breadth](#open-high-resolution-text-covers-two-faces-on-non-jp-regions-only) |
 | **(index-level item)** Fidelity architecture / presentation breadth — motion smoothing and frame limit ship off/original by default, so the retained-interpolation machinery is inert on defaults; remaining work is audible/loopback DAC qualification and the rest of the platform/device matrix. No subsystem section exists for this item; it is tracked at the index level | [§ Still open](README.md#still-open) |
 
+
+## OPEN: high-resolution text covers two faces on non-JP regions only
+
+Restored and Remastered redraw `SmallFont` and `SubtitleFont` from embedded OFL
+outline faces fitted per glyph to the ROM ink box (see
+[`HIRES_TEXT.md`](../HIRES_TEXT.md)). Pure is byte-exact and is proven so against
+a build of `origin/main`. What that leaves open:
+
+- **JP is untouched.** `REGION == REGION_JP` bypasses `load_font()` entirely for
+  a 16-bit charmap path (`func_800C6464_C7064`), so no classification, no
+  registration, and no redraw happens there. A JP player sees the source glyphs.
+- **Baked-in words are untouched, and this is not fixable at this seam.** Text
+  rendered into menu and screen textures is not an `ASSET_FONTS` glyph, so the
+  font loader never sees it. Those strings stay at source resolution while the
+  lettering beside them is sharp, which is a visible inconsistency.
+- **The race HUD does not benefit.** Lap, position and countdown draw from
+  `FunFont`, which is DKR's own coloured display lettering and deliberately
+  keeps its ROM pixels. The readability win lands in menus, times, the save
+  screen and dialogue, not in play. A measured in-race capture is byte-identical
+  to baseline.
+- **Browser-side SDF coverage regressed from asserted to unasserted, and the
+  browser arm is unexecuted.** Extending the `[FONT]` line with
+  `outlineUploads` broke `check_browser_runtime.py`'s regex; the fix moved its
+  ">0" assertion from `sdfUploads` to `outlineUploads`, because the outline
+  path took over the atlases that fixture draws. Asserting the *sum* instead
+  would have been worse — a total SDF failure would still pass on outline
+  uploads alone — but the net effect is that nothing in the browser lane now
+  proves the SDF contour pass derives anything. Restoring a browser assertion
+  specific to SDF needs a fixture known to draw DKR's coloured lettering.
+  Separately, no Chromium/Emscripten run has exercised the corrected assertion
+  at all; the native equivalent (`check_font_outline.py`) passes on GL and
+  WebGPU, and the wasm module links.
+- **The derivation state is single-threaded.** `gfx_font_outline.c` keeps the
+  parsed face handles and the glyph scratch buffer in file statics, which is
+  sound for today's renderer but is an unstated precondition rather than an
+  enforced one.
+
+Deliberately not open: `FunFont` and `BigFont` are excluded on purpose, not
+pending. They are the game's identity; replacing them would be a restyle, not a
+resolution increase.
 
 ## FIXED: three effects drew zero pixels, because hand-packed triangles were built in N64 byte order
 

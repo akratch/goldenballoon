@@ -758,6 +758,17 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME font_sdf COMMAND mdkr_font_sdf_test)
 
+    add_executable(mdkr_font_outline_test
+        ${CMAKE_SOURCE_DIR}/tests/test_font_outline.c
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_font_outline.c)
+    target_include_directories(mdkr_font_outline_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/lib/stb)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_font_outline_test PRIVATE m)
+    endif()
+    add_test(NAME font_outline COMMAND mdkr_font_outline_test)
+
     add_executable(mdkr_sha256_test
         ${CMAKE_SOURCE_DIR}/tests/test_sha256.c
         ${CMAKE_SOURCE_DIR}/platform/sha256.c)
