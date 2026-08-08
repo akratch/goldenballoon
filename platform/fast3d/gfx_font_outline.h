@@ -40,24 +40,29 @@ bool gfx_font_outline_available(GfxFontFace face);
 /*
  * Redraw a decoded ROM font atlas from the embedded outline face.
  *
- * `source` is the decoded RGBA8 atlas at its logical N64 dimensions. For each
- * registered region the glyph is fitted to that region's ROM ink box:
+ * `source` is the decoded RGBA8 atlas at its logical N64 dimensions. The face
+ * is drawn with shared metrics -- one size, one baseline and one width for the
+ * whole face -- rather than by fitting each glyph to its own ROM ink box:
  *
- *   - vertical fit is exact, which derives baseline, x-height, cap height and
- *     descender placement from the ROM data itself, per glyph, with no global
- *     metrics to get wrong;
- *   - horizontal fit follows the ROM ink width so the line keeps the ROM's
- *     rhythm, but the stretch is bounded (see WIDTH_STRETCH_LIMIT): at a 7px
- *     cap height the ROM cannot draw a stem thinner than about 2px, so 'l',
- *     'i', 'I' and '1' have ink boxes twice as wide as any outline face's
- *     natural stem, and matching those exactly would produce fat verticals;
+ *   - scale comes from the ROM's cap height (or x-height) mapped onto the same
+ *     metric of the outline face, and the baseline from the ink bottoms of the
+ *     alphanumerics that stand on it. Both are anchored to known characters, so
+ *     every atlas of one face solves to the same numbers even though DKR splits
+ *     a face across textures and each is redrawn on its own;
+ *   - one width factor for the face follows the ROM's ink density, so the line
+ *     keeps the ROM's rhythm under advances that never move, without any
+ *     per-letter stretching;
+ *   - each glyph is then drawn at its own natural proportions, centred on the
+ *     midpoint of the ROM ink it replaces, so the leftover space is divided
+ *     evenly between its two side bearings;
  *   - the result is clamped to the cell, so a glyph is never clipped;
  *   - colour is the region's own alpha-weighted mean, so whatever tint the
  *     ROM glyph carried is preserved and the combiner behaves as before.
  *
  * Any glyph that cannot be rendered falls back to a nearest-neighbour blit of
  * the ROM cell, so a missing outline degrades to today's output rather than to
- * a hole. Pixels outside registered regions stay transparent.
+ * a hole; an atlas that yields no metrics at all is declined, and the renderer
+ * keeps the ROM pixels. Pixels outside registered regions stay transparent.
  */
 bool gfx_font_outline_render_rgba(
     GfxFontFace face, const uint8_t *source, uint32_t width, uint32_t height,

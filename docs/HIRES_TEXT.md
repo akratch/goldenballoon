@@ -51,32 +51,74 @@ cannot move any text, and this module writes nowhere else.
 
 ## The fit
 
-Each glyph is fitted to its own ROM ink box, per glyph:
+Lettering is drawn with **shared metrics**: one size, one baseline and one width
+for the whole face, solved from the atlas as a population, with each glyph then
+taking its own shape and proportions from the typeface.
 
-* **Vertical fit is exact.** This derives baseline, x-height, cap height and
-  descender placement from the ROM data itself, with no global metrics to get
-  wrong and nothing to re-derive per region or per revision.
-* **Horizontal fit follows the ROM ink width**, so the line keeps the ROM's
-  rhythm — but the stretch is bounded to ±15%. At a 7-pixel cap height the ROM
-  cannot draw a stem thinner than about 2 pixels, so `l`, `i`, `I` and `1` have
-  ink boxes more than twice as wide as any outline face's natural stem.
-  Matching those exactly would produce grotesquely fat verticals; measured
-  ratios cluster at 1.04–1.14 with those four as far outliers.
-* **The result is clamped to the cell**, so a glyph is never clipped.
+The first version of this feature fitted every glyph to its own ROM ink box
+instead — an exact vertical fit per letter, plus a bounded horizontal stretch —
+on the reasoning that this needed no global metrics to get wrong. It is the
+wrong model, and it is what the on-device report of bad spacing and height was
+seeing. A ROM font is 7-pixel-tall pixel art whose measured ink boxes disagree
+about everything: round letters carry a row of antialiasing that flat ones do
+not, so `O` measures a pixel taller than `H` although both are cap height. Per
+glyph, that measurement noise becomes real differences in rendered size, and the
+±15% stretch turned every difference between the ROM's proportions and the
+face's into a per-letter distortion — `E` compressed to the limit standing next
+to `I` expanded to it. Anchoring each glyph at the left edge of its ROM ink then
+pushed the whole width difference into the right-hand gap alone.
+
+What is solved once per atlas:
+
+* **Scale**, from the ROM's own cap height (or its x-height, in an atlas holding
+  no caps) mapped onto the same metric of the outline face. Both terms are
+  exact — whole ROM pixels against an outline metric in font units — so the
+  answer carries no rasterisation rounding.
+* **Baseline**, as the median ink bottom of the alphanumerics that stand on it.
+  The ROM face draws no overshoot, so those are whole-pixel evidence.
+* **Width factor**, the median of ROM ink width over the face's natural width.
+  DKR's lettering is squarer than the outline face at the same cap height, and
+  the advances never move, so drawing at natural width left every gap open:
+  measured at 0.90 of the ROM's ink width for `SmallFont`'s caps, which turns a
+  1-pixel ROM letter gap into 1.5. One factor for the whole face is a width
+  instance of the typeface, not a per-letter distortion; it is clamped to
+  0.90–1.25 so an unrepresentative atlas cannot smear the lettering.
+
+Anchoring the scale and the baseline to *known characters* rather than to
+whatever an atlas happens to contain is what keeps a face consistent with
+itself. DKR splits one face across several textures and each is redrawn on its
+own — the copyright line takes its letters from one and its digits from another.
+A plain median over each atlas solved them differently, because the two subsets
+hold different proportions of round-bottomed glyphs: 6.92px tall on a baseline of
+7.75 for the digits against 7.05 on 8.05 for the caps. Anchored, every atlas of
+`SmallFont` solves to a cap height of 7.00px on a baseline of 8.00, exactly.
+
+Then, per glyph:
+
+* it is drawn at the face's scale and width, on the face's baseline, **centred
+  on the horizontal midpoint of the ROM ink it replaces**. The advance and the
+  cell come from `FontData` and never move, so the only freedom is where the ink
+  sits inside the cell, and the ROM's own optical centre divides the leftover
+  space evenly between the two side bearings.
+* **The result is clamped to the cell**, so a glyph is never clipped. A glyph is
+  compressed only when its natural size genuinely does not fit the cell, which
+  is a clipping question rather than a fitting policy; stbtt's integer box does
+  not scale linearly, so that check is made against the box at the final scale.
 * **Colour is the region's alpha-weighted mean**, so any tint the ROM glyph
   carried is preserved and the combiner behaves exactly as before.
 * Any glyph that cannot be rendered falls back to a nearest-neighbour blit of
   the ROM cell, so a missing outline degrades to today's output, never a hole.
+  An atlas that yields no metrics at all is declined outright and keeps its ROM
+  pixels.
 * One authored cell can serve two characters (FunFont draws `a` from the `A`
   cell). Neither replaced face aliases a cell today, but the renderer settles it
   as first-character-wins rather than resting on that measurement, because two
   glyphs in one rectangle would superimpose rather than replace.
 
-The scale is solved against stbtt's box **at the final scale**, not extrapolated
-from a reference measurement: the integer box does not scale linearly, and
-trusting the extrapolation clipped a row from descenders and from the right stem
-of `W`. Measured on the real atlases, that was 32 texels per run before the fix,
-and `clippedTexels` in the `[FONT]` trace now asserts it stays at zero.
+`clippedTexels` in the `[FONT]` trace asserts that nothing was trimmed, and
+`tests/test_font_outline.c` holds the shared-metric properties — one baseline,
+one cap height, one x-height, unmoved by a pixel of ROM ink noise — for both
+replaced faces.
 
 ## Face selection
 
