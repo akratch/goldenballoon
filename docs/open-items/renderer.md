@@ -42,6 +42,45 @@ a build of `origin/main`. What that leaves open:
   heavily than the outline one. `check_browser_runtime.py` now asserts BOTH
   counts above zero independently, neither of which is vacuous at those
   numbers, and the gate passes on Chromium against the freshly linked wasm.
+- **OPEN: interpolated presents are starved on WebGPU above the display
+  refresh, and no simple admission change fixes it.** A replay is admitted at
+  `WGPU_FRAME_IN_FLIGHT_MAX - 1`, i.e. only with zero frames in flight. At a
+  60 Hz present rate the subloop opportunity arrives ~16.7 ms after the tick's
+  frame was submitted, the GPU has retired, and replays are admitted normally
+  — measured `interp=589/600`, `endpointSkips=9`. At 120 Hz the window is
+  8.3 ms, the frame has not retired, and almost every interpolated image is
+  skipped: `interp=3/600`, `stale=893`, `endpointSkips=202`. The isolation is
+  exact — the same binary with `MDKR_TEST_RENDER_FULL_ADMISSION=1` reaches
+  `interp=598/600`, so GPU admission is the whole mechanism and nothing
+  downstream of it is at fault. OpenGL has no such gate, which is why every
+  gate that measured smoothing on GL saw a healthy picture.
+
+  Three fixes were measured and all three were rejected, so this is recorded
+  rather than patched:
+
+  | variant | 120 Hz `interp` | `endpointSkips` | `check_pacing_quality` |
+  |---|---|---|---|
+  | shipped (reserve a slot, never block) | 3 | 202 | PASS |
+  | let a replay take the bounded drain | 598 | 0 | FAIL — interpolation-phase variance 1.2e11 ppm² against a 3e10 bound, `alpha-delta` p95 0.88 tick off the 500000 ppm grid, 35 ms displayed-interval max |
+  | drop the replay's slot reservation | 85 | **515** | not reached — authored frames starve worse than the defect being fixed |
+  | reservation kept, `WGPU_FRAME_IN_FLIGHT_MAX` raised to 3 | 407 | 192 | FAIL — the surface stopped re-ranking its present mode across a 60→120 Hz display change |
+
+  The blocking variant is the instructive one: it fixes the counters exactly
+  and still fails, because the drain is a variable-length wait on the paced
+  thread immediately before a vblank-quantized present, so the very frames it
+  rescues land off the display grid. Jitter is the one cost this path cannot
+  pay, and "more interpolated images" is not the same goal as "evenly spaced
+  ones".
+
+  Whoever picks this up should treat it as a scheduling problem rather than an
+  admission-threshold problem — the replay needs to be submitted early enough
+  that its completion is not being waited on at present time — and must weigh
+  any extra in-flight depth against the one-frame swap-chain latency pin, which
+  exists to reduce exactly the lag more queued work reintroduces. Any candidate
+  has to clear `check_pacing_quality` on the realtime arm AND keep
+  `endpointSkips` no worse than the shipped 202 at 120 Hz, and should be
+  validated on a real 120 Hz panel, since every number above was taken on a
+  60 Hz host where a 120 Hz request is already physically unpresentable.
 - **The derivation state is single-threaded.** `gfx_font_outline.c` keeps the
   parsed face handles and the glyph scratch buffer in file statics, which is
   sound for today's renderer but is an unstated precondition rather than an
