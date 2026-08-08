@@ -104,6 +104,44 @@ than another lap.
 
 ---
 
+## 4b. If the picture shimmers on a VRR handheld — three experiments
+
+Reported on a ROG Ally X: shimmering/blur when the camera moves fast, with
+smoothing on. The Ally X is a 120 Hz FreeSync panel, and there is a specific
+reason to suspect variable refresh rather than the smoothing work itself.
+
+**Why VRR is suspect.** With Match Display + smoothing, the interpolation phase
+is not used raw — `present_sched_alpha` projects it onto a fixed grid one
+display refresh wide (`platform_present_display_quantum_units`). On a fixed
+panel that is a jitter *filter* and is exactly right: the queue retires one
+present per refresh, so rounding recovers the instant the frame is really shown.
+A VRR panel does not refresh on a grid — it scans out when the frame arrives —
+so the same projection becomes a phase *error* of up to half a refresh (±4.2 ms
+at 120 Hz). Nothing in the port detects VRR, and nothing can: SDL reports a flat
+120 Hz whether FreeSync is engaged or not.
+
+**The port already ships the VRR-correct mode.** Frame limit **"Just under
+display"** (refresh − 3 Hz) installs its own software pacing grid, which
+*disables* the projection above, and never blocks the panel because it stays
+below max refresh. That is the same "cap a few Hz under the panel" practice the
+frame-generation ecosystem converged on independently.
+
+Run these in order; each is a couple of minutes and they discriminate between
+three different causes.
+
+| # | Setting | If the shimmer goes away, the cause is |
+|---|---|---|
+| 4b.1 | Smoothing **on**, Frame limit **Just under display** | Our fixed-grid phase projection under VRR. Fixable in code — either recommend this mode with smoothing, or make the projection stand down when presents stop landing on the grid. |
+| 4b.2 | FreeSync **off** in AMD Adrenalin (not just Armoury Crate), fixed 120 Hz, smoothing on Match Display | The panel, not us — VRR overdrive/flicker. The Ally line has a tracked, application-independent VRR flicker issue. Our deliverable is documentation, not code. |
+| 4b.3 | Neither helped | Content-level and already known: texture/mip aliasing under smooth eye pursuit (30 Hz stepping hides it; 120 Hz smooth motion reveals it), and UV-scroll phase holds on waterfall/fence surfaces. Not a defect in the shell/camera work. |
+
+**Capture while you do it.** Launch with `MDKR_PRESENT_PERF=1` and keep the log.
+The `[PRESENTPERF-HIST] series=displayed-interval` p50/p95 rows and the `gridppm`
+row show directly whether presents are landing on an 8.33 ms grid or spreading —
+this would be the first measurement of a VRR display this project has ever had.
+
+---
+
 ## 5. Known and deliberate
 
 Not defects; do not report them.
