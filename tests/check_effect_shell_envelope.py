@@ -83,11 +83,12 @@ ROUTE_TICKS = 3230
 ROUTE_TRACK = "29"
 DUMP_FRAMES = 120
 
-# MDKR_FORCE_SHIELD is expressed in PRESENT indices, not authored ticks. This
-# window brackets the dump so the effect stage is live on every frame measured;
-# a run that presents at a different rate needs it rescaled, and the 2026-08
-# diagnosis lost a whole 60 Hz arm (effectreg=0) to exactly that trap.
-FORCE_SHIELD = "12680:600"
+# MDKR_FORCE_SHIELD is expressed in AUTHORED TICKS. This window brackets the
+# dump so the effect stage is live on every frame measured, and because the
+# hook counts g_simTickCounter it does NOT need rescaling when the present rate
+# changes -- the present-counted form lost a whole 60 Hz arm (effectreg=0) to
+# exactly that trap in the 2026-08 diagnosis.
+FORCE_SHIELD = "3170:150"
 
 # The additive green shell against the level. Fixed thresholds, not adaptive:
 # the shell is drawn additively over whatever is behind it, so a relative

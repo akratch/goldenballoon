@@ -897,7 +897,15 @@ void func_8000B750(Object *racerObj, s32 racerIndex, s32 vehicleIDPrev, s32 boos
  * Zero cost when the variable is unset.
  */
 void dkr_force_boost_hook(Object_Racer *racer) {
-    extern int g_frameCounter;
+    /* AUTHORED TICKS, not presents. This runs inside the authoritative object
+     * update, so the window must be counted in the same units the update
+     * advances in. g_frameCounter counts host PRESENTS; under motion smoothing
+     * a tick emits 2-4 of them, so a frame-counted window here closes 2-4x too
+     * early and the arm it was meant to arm runs with no effect at all (the
+     * 2026-08 effectreg=0 loss). g_simTickCounter (present_sched.c) is the
+     * authoritative index and is identical to g_frameCounter whenever the
+     * presentation subloop is not running. */
+    extern int g_simTickCounter;
     static s32 sStart = -2;
     static s32 sLen = 90;
 
@@ -912,7 +920,8 @@ void dkr_force_boost_hook(Object_Racer *racer) {
             }
         }
     }
-    if (sStart < 0 || g_frameCounter < sStart || g_frameCounter >= sStart + sLen) {
+    if (sStart < 0 || g_simTickCounter < sStart ||
+        g_simTickCounter >= sStart + sLen) {
         return;
     }
     racer->boostTimer = normalise_time(45);
@@ -923,7 +932,8 @@ void dkr_force_boost_hook(Object_Racer *racer) {
  * pixel-comparison arms receive this same authored-tick state; only the replay
  * interpolation test seam differs between them. */
 static void dkr_force_shield_hook(Object_Racer *racer) {
-    extern int g_frameCounter;
+    /* AUTHORED TICKS — see dkr_force_boost_hook. */
+    extern int g_simTickCounter;
     static s32 sStart = -2;
     static s32 sLen = 90;
 
@@ -938,8 +948,8 @@ static void dkr_force_shield_hook(Object_Racer *racer) {
             }
         }
     }
-    if (racer == NULL || sStart < 0 || g_frameCounter < sStart ||
-        g_frameCounter >= sStart + sLen) {
+    if (racer == NULL || sStart < 0 || g_simTickCounter < sStart ||
+        g_simTickCounter >= sStart + sLen) {
         return;
     }
     racer->shieldTimer = normalise_time(90);
@@ -987,7 +997,8 @@ static void dkr_force_shield_hook(Object_Racer *racer) {
  * is the authored one. Both are zero cost when unset.
  */
 void mdkr_zippad_boost_hook(Object *obj, Object_Racer *racer) {
-    extern int g_frameCounter;
+    /* AUTHORED TICKS — see dkr_force_boost_hook. */
+    extern int g_simTickCounter;
     static s32 sFrame = -2;
     static s32 sTicks = 45;
     static s32 sArmed = FALSE;
@@ -1011,13 +1022,13 @@ void mdkr_zippad_boost_hook(Object *obj, Object_Racer *racer) {
     if (racer->playerIndex == PLAYER_COMPUTER || racer->racerIndex != 0) {
         return;
     }
-    if (g_frameCounter < sFrame) {
+    if (g_simTickCounter < sFrame) {
         return;
     }
     sArmed = TRUE;
     racer->boostTimer = normalise_time(sTicks);
     racer->boostType = BOOST_LARGE;
-    mdkr_trace("[BOOSTARM] frame=%d ticks=%d timer=%d", g_frameCounter, sTicks,
+    mdkr_trace("[BOOSTARM] tick=%d ticks=%d timer=%d", g_simTickCounter, sTicks,
                racer->boostTimer);
 }
 

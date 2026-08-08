@@ -130,7 +130,7 @@ CROSS_MODE_VEL_TOL = 0.5
 BOOST_RE = re.compile(
     r"\[BOOST\] frame=(\d+) timer=(-?\d+) type=(-?\d+) vel=(\S+) "
     r"x=(\S+) y=(\S+) z=(\S+) surf=(-?\d+) grounded=(-?\d+) start=(-?\d+)")
-ARM_RE = re.compile(r"\[BOOSTARM\] frame=(\d+) ticks=(-?\d+) timer=(-?\d+)")
+ARM_RE = re.compile(r"\[BOOSTARM\] tick=(\d+) ticks=(-?\d+) timer=(-?\d+)")
 SANITIZER_RE = re.compile(
     r"AddressSanitizer|UndefinedBehaviorSanitizer|MemorySanitizer|"
     r"runtime error:|SUMMARY: .*Sanitizer")

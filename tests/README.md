@@ -1285,7 +1285,7 @@ authored, or a port defect?" (`docs/open-items/gameplay.md`, wave "zippad"). Ans
 It arms the boost rather than driving over a pad, for the reason in the ⚠️ above — no
 committed route can be relied on to keep crossing one particular pad, so a check
 calibrated on one would be measuring the AI, not the boost.
-`MDKR_ZIPPAD_BOOST=<frame>[:<ticks>]` (`objects.c mdkr_zippad_boost_hook`, no-op unless
+`MDKR_ZIPPAD_BOOST=<tick>[:<ticks>]` (`objects.c mdkr_zippad_boost_hook`, no-op unless
 set) arms **player one only, once**, in exactly the state `racer.c:5727` arms it in for
 `SURFACE_ZIP_PAD` on a car: `boostTimer = normalise_time(ticks)` (default 45, the
 authored constant), `boostType = BOOST_LARGE`. Everything downstream is untouched
@@ -3089,9 +3089,9 @@ sips -s format png /tmp/shot/frame_1250.ppm --out /tmp/shot/shot.png
 (sand/palms/character); frame ~2880 of `race_drive_time_trial` is the Ancient Lake
 start line (full-size karts + HUD).
 
-### Boost / exhaust graphics — `MDKR_FORCE_BOOST=<frame>[:<len>]`
+### Boost / exhaust graphics — `MDKR_FORCE_BOOST=<tick>[:<len>]`
 
-`MDKR_FORCE_BOOST` gives every racer, on every frame in `[frame, frame+len)`
+`MDKR_FORCE_BOOST` gives every racer, on every authored tick in `[tick, tick+len)`
 (default `len` 90), exactly the state a `SURFACE_ZIP_PAD` gives it
 (`boostTimer = normalise_time(45)`, `boostType = BOOST_LARGE`), so a dumped frame
 is guaranteed to contain rendered boost flames. It is a no-op unless the variable
