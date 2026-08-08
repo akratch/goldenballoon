@@ -182,6 +182,11 @@ CHECKS = (
     Check("presentation_matrix", "check_presentation_matrix.py", "release",
           "presentation rate vs fixed-ticket state/event authority and pixels "
           "(spec 12.2.2)"),
+    Check("smoothing_stage_bisection", "check_smoothing_stage_bisection.py",
+          "release",
+          "per-stage smoothing attribution at the 120 Hz alpha grid: "
+          "leave-one-out ranking, authored-endpoint exactness, and the "
+          "uncaptured-external fail-closed refusal"),
     Check("presentation_shadows", "check_presentation_shadows.py", "release",
           "terrain-projected kart-shadow replay stays rigid, exact at authored "
           "endpoints, and measurably reduces the historical vertex-lerp pulse"),

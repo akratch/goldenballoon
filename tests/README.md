@@ -502,6 +502,24 @@ production coverage:
   the exact 300-quantum audio schedule in every arm; a one-quantum timing
   perturbation proves the PCM comparator can detect a real mismatch without
   changing gameplay authority.
+- `check_smoothing_stage_bisection.py` is the attribution instrument, not a
+  pass/fail question about any one stage. It renders the same route at
+  `MDKR_PRESENT_RATE=120` — three interpolated presents per authoritative tick
+  — once per stage configuration (all-on, all-off, and leave-one-out for each
+  of the seven `MDKR_TEST_*_INTERPOLATION` opt-outs) and ranks the stages by
+  frame difference against the all-on arm, so a 120 Hz artifact hunt knows
+  which seam to open first. Two routes, because none fires all seven: Jungle
+  Falls in-race with shields forced ranks six, and the battle challenge ranks
+  the point-trail particle stage that the first route registers but never
+  interpolates. A stage whose override counter is zero on the route it is
+  ranked from fails the gate as UNEXERCISED, so "never fired" can never be
+  read as "contributes nothing". Every arm must keep the v3 state, event and
+  input streams byte-identical and every authored endpoint frame exact. The
+  same gate carries the uncaptured-external evidence: production must resolve
+  zero, and the token-gated `MDKR_TEST_UNCAPTURED_EXTERNAL` seam must force
+  the interpolated walks to refuse into held authored images rather than read
+  live memory. Results in
+  `docs/evidence/smoothing-stage-attribution-2026-08-08.md`.
 - `check_presentation_shadows.py` is the focused Ancient Lake visual regression
   for terrain-projected kart decals. It keeps the 3,300-tick v3 state, event,
   and input streams plus every authored endpoint exact, then compares the
