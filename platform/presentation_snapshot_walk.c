@@ -106,6 +106,47 @@ static void capture_object(const Object *object) {
     presentation_snapshot_capture_object(&sample);
 }
 
+/*
+ * One renderer-owned transform (see the registry note in
+ * presentation_snapshot.h). There is no Object behind it, so there is no
+ * modelIndex, no ModelInstance and no opacity to read: the entry carries the
+ * pose and nothing else, which is exactly what a billboard anchor needs. It is
+ * NOT flagged is_particle -- that flag selects the particle-topology
+ * compatibility rule, and these are not particles.
+ */
+static void capture_external_transform(const ObjectTransform *transform) {
+    PresentationObjectEntry sample;
+
+    memset(&sample, 0, sizeof(sample));
+    sample.address = transform;
+    sample.position[0] = transform->x_position;
+    sample.position[1] = transform->y_position;
+    sample.position[2] = transform->z_position;
+    sample.scale = transform->scale;
+    sample.rotation_y = transform->rotation.y_rotation;
+    sample.rotation_x = transform->rotation.x_rotation;
+    sample.rotation_z = transform->rotation.z_rotation;
+    sample.model_index = -1;
+    sample.animation_id = -1;
+    sample.animation_frame = 0;
+    sample.opacity = 255;
+    presentation_snapshot_capture_object(&sample);
+}
+
+static void capture_external_transforms(void) {
+    size_t count = presentation_snapshot_external_transform_count();
+    size_t index;
+
+    for (index = 0u; index < count; index++) {
+        const ObjectTransform *transform =
+            (const ObjectTransform *)
+                presentation_snapshot_external_transform_at(index);
+        if (transform != NULL) {
+            capture_external_transform(transform);
+        }
+    }
+}
+
 static void capture_cameras(uint64_t authored_tick) {
     PresentationCameraEntry cameras[PRESENTATION_SNAPSHOT_MAX_VIEWPORTS];
     s32 cameraCount;
@@ -175,6 +216,7 @@ void presentation_snapshot_capture(uint64_t authored_tick) {
         }
     }
 
+    capture_external_transforms();
     capture_cameras(authored_tick);
     presentation_snapshot_capture_commit();
 }

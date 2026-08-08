@@ -132,9 +132,11 @@ BOUNDARY_SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt
 BOUNDARY_TRACK = "29"
 BOUNDARY_TICKS = 3230
 BOUNDARY_DUMP_FRAMES = 120
-# MDKR_FORCE_SHIELD is expressed in PRESENT indices, not authored ticks; the
-# 2026-08 diagnosis lost a whole 60 Hz arm (effectreg=0) to exactly that trap.
-BOUNDARY_FORCE_SHIELD = "12680:600"
+# MDKR_FORCE_SHIELD is expressed in AUTHORED TICKS; the hook counts
+# g_simTickCounter so the window no longer has to be rescaled per present rate.
+# It used to count presents, and the 2026-08 diagnosis lost a whole 60 Hz arm
+# (effectreg=0) to exactly that trap.
+BOUNDARY_FORCE_SHIELD = "3170:150"
 
 # ---------------------------------------------------------------------------
 # R4 -- the displayed alpha grid, in ppm of one authoritative tick.

@@ -194,6 +194,8 @@ smoothing = Interpolated.
 | Model vertex deformation (XYZ) | `gfx_presentation_packet_capture_deformation`/`_lookup_deformation`; walk `gfx_pc_dkr.c:5619-5680` | `MDKR_TEST_DEFORMATION_INTERPOLATION=off\|0` (`:455-463`) — opt-out | `test_presentation_packet.c`; `check_presentation_matrix.py` model control | Current. |
 | Vertex shade RGBA | `gfx_presentation_packet_note_deformation_color` | `MDKR_TEST_VERTEX_COLOR_INTERPOLATION=off\|0` (`:497-505`) — opt-out | `check_presentation_matrix.py` colour control | Current. |
 | Direct world-space particle meshes (point/line) | `gfx_presentation_packet_register_vertex_identity`, `_note_particle_deformation` | `MDKR_TEST_PARTICLE_INTERPOLATION=off\|0` (`:487-495`) — opt-out | `check_presentation_matrix.py` particle control | Current. |
+| Renderer-owned world vertex batches (snow flakes, rain sheet) | `weather.c weather_register_vertex_batch`; `GfxPresentationMatrixOwner.renderer_owned` / `.max_vertex_delta`; compatibility branch at `gfx_pc_dkr.c dkr_replay_deformation_vertices` | particle-interpolation gate (they register as `PARTICLE_VERTICES`) | `tests/check_weather_presentation_identity.py` — `renderervertexreg`, `renderervertexoverride`, and a non-vacuity assertion on `renderervertexjumphold` | Current, added 2026-08-09. Identity is the flake's PHYSICS slot / the rain LAYER, not the vertex address: `gSnowVerts` double-buffers and `gRainVertexFlip` cycles. Registered per real viewport, unlike particles.c's shared viewport-zero stream, because snow is transformed through each viewport's own camera. |
+| Renderer-owned transforms (rain splashes, lens flare pieces) | `presentation_snapshot_register_external_transform` / `_unregister_`; walk `presentation_snapshot_walk.c capture_external_transforms` | object-interpolation gate (they become ordinary billboard owners) | `check_weather_presentation_identity.py` — `[SNAPSHOT] externalpeak`/`externalcaptures`, plus `overflows=0` and `discontblend=0` | Current, added 2026-08-09. These do not need vertex interpolation: a splash never moves. Their defect was being billboarded against a camera that interpolates while they were pinned to tick T. Registration is at the SPAWN/RETIRE site, so a recycled splash slot gets a fresh generation and cannot blend out of the dead splash's pose. The registry is fixed at 32 entries so the render path cannot push a capture past `PRESENTATION_SNAPSHOT_MAX_OBJECTS`. |
 | Primitive alpha (sprite/model/line-particle) | `gfx_presentation_packet_note_primitive_alpha` | `MDKR_TEST_PRIMITIVE_ALPHA_INTERPOLATION=off\|0` (`:507-516`) — opt-out | `check_presentation_matrix.py` fade control | Current. Note the 8.8-in-signed-field decode the CHANGELOG records is in the shipped path. |
 | Shield/magnet shear (two-lifetime recipe) | `mdkr_camera_replay_effect_world` (`gfx_pc_dkr.c:422-425`); `_note_effect_override` | `MDKR_TEST_EFFECT_INTERPOLATION=off\|0` (`:518-526`) — opt-out | `check_presentation_matrix.py` effect control; `check_effect_shell_envelope.py` (displacement inside the interpolation envelope); the `ownertickmismatch` arm of `check_smoothing_stage_bisection.py` | Current. **It anchored the shell to the WRONG endpoint from `d2808f9` (1.0.1) until 2026-08-08** — see residual obligation 4 and `docs/evidence/smoothing-artifact-repro-2026-08.md` §2, §4. |
 | Authored UV scroll | `GfxPresentationUvScroll` (`gfx_presentation_packet.h:34-56`); capture `gfx_pc_dkr.c:4396-4461`, apply `:5884-5889` | `MDKR_TEST_UV_SCROLL_INTERPOLATION=off\|0` (`:528-536`) — opt-out | `tests/check_presentation_matrix.py:72`, `:799`, plus `tests/test_presentation_packet.c`'s `check_uv_scroll` — capture refusals, tick-exactness of the published table, and one case per confirmation clause. | Current. **Unit-covered since 2026-08-08**; before that the only evidence was an integration arm that needs a ROM. |
@@ -247,6 +249,22 @@ describes 2026-08-01.
 ### Residual obligations
 
 Not `PRES-001` failures, but the properties any future change must preserve:
+
+0. **Content drawn every tick from storage the object walk cannot discover has
+   no owner unless someone gives it one.** `presentation_snapshot_identity_
+   generation()` succeeds only for a real spawned `Object` in `gObjPtrList`, so
+   anything drawn from a static or stack-local `ObjectTransform`, or from a
+   module-static vertex array, is replayed at its tick-T bytes while everything
+   around it glides. Two mechanisms exist for it and both are now used:
+   `presentation_snapshot_identity_ensure_generation()` for a renderer-owned
+   vertex batch, and `presentation_snapshot_register_external_transform()` for a
+   renderer-owned transform. **Still unowned as of 2026-08-09:** the skydome
+   (`tracks.c skydome_render`, which writes the tick-T camera into the dome's
+   transform for the draw and restores it, so its owner's residual is measured
+   against a pose the snapshot never saw) and the wave surfaces (`waves.c`,
+   emitted under a stack-local transform, with the UV side of the same surface
+   already handled — a texture that glides over geometry stepping at 30 Hz).
+
 
 1. **Do not narrow the retained copy on a timing argument.** The full 16 MiB copy
    exists because the arena exposes no safe high-water mark or closed pointer

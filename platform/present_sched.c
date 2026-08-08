@@ -1229,6 +1229,8 @@ void present_sched_trace_summary(void) {
                 "deformincompatible=%llu deformcollision=%llu "
                 "colorhit=%llu coloroverride=%llu "
                 "particledeformhit=%llu particledeformoverride=%llu "
+                "renderervertexreg=%llu renderervertexhit=%llu "
+                "renderervertexoverride=%llu renderervertexjumphold=%llu "
                 "projectedshadowdeformhit=%llu "
                 "projectedshadowdeformoverride=%llu "
                 "particlecolorhit=%llu particlecoloroverride=%llu "
@@ -1297,6 +1299,12 @@ void present_sched_trace_summary(void) {
                     packet_stats.particle_deformation_hits,
                 (unsigned long long)
                     packet_stats.particle_deformation_overrides,
+                (unsigned long long)
+                    packet_stats.renderer_vertex_registrations,
+                (unsigned long long)packet_stats.renderer_vertex_hits,
+                (unsigned long long)packet_stats.renderer_vertex_overrides,
+                (unsigned long long)
+                    packet_stats.renderer_vertex_jump_holds,
                 (unsigned long long)
                     packet_stats.projected_shadow_deformation_hits,
                 (unsigned long long)

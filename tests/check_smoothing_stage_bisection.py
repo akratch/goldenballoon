@@ -132,7 +132,8 @@ INTERNAL_TEST_TOKEN = "mdkr64-presentation-replay-v1"
 # (see check_presentation_matrix.py's deformation witness), so the sampled
 # window is deliberately after it: racers under power, camera swinging, the
 # waterfall sheet and wave-driven water scrolling their authored UV phase.
-# MDKR_FORCE_SHIELD is in PRESENT indices, and its window brackets the dump so
+# MDKR_FORCE_SHIELD is in AUTHORED TICK indices (objects.c reads
+# g_simTickCounter, not g_frameCounter), and its window brackets the dump so
 # the shield shear stage is live for every sampled frame.
 # Route C. The fractional-scroller witness, and the reason it is not route A.
 #
@@ -161,7 +162,7 @@ UV_AUTHORED_CONTRACT = ("uvscrollauthored", "uvscrollauthoredconfirm")
 
 ROUTE_A_TICKS = 3230
 ROUTE_A_TRACK = "29"
-ROUTE_A_SHIELD = "12680:600"
+ROUTE_A_SHIELD = "3170:150"
 
 # Route B. The battle challenge's continuous point trails are the only content
 # in the tree that moves a world-space particle mesh between adjacent authored

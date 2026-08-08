@@ -1285,7 +1285,7 @@ authored, or a port defect?" (`docs/open-items/gameplay.md`, wave "zippad"). Ans
 It arms the boost rather than driving over a pad, for the reason in the ⚠️ above — no
 committed route can be relied on to keep crossing one particular pad, so a check
 calibrated on one would be measuring the AI, not the boost.
-`MDKR_ZIPPAD_BOOST=<frame>[:<ticks>]` (`objects.c mdkr_zippad_boost_hook`, no-op unless
+`MDKR_ZIPPAD_BOOST=<tick>[:<ticks>]` (`objects.c mdkr_zippad_boost_hook`, no-op unless
 set) arms **player one only, once**, in exactly the state `racer.c:5727` arms it in for
 `SURFACE_ZIP_PAD` on a car: `boostTimer = normalise_time(ticks)` (default 45, the
 authored constant), `boostType = BOOST_LARGE`. Everything downstream is untouched
@@ -3089,9 +3089,9 @@ sips -s format png /tmp/shot/frame_1250.ppm --out /tmp/shot/shot.png
 (sand/palms/character); frame ~2880 of `race_drive_time_trial` is the Ancient Lake
 start line (full-size karts + HUD).
 
-### Boost / exhaust graphics — `MDKR_FORCE_BOOST=<frame>[:<len>]`
+### Boost / exhaust graphics — `MDKR_FORCE_BOOST=<tick>[:<len>]`
 
-`MDKR_FORCE_BOOST` gives every racer, on every frame in `[frame, frame+len)`
+`MDKR_FORCE_BOOST` gives every racer, on every authored tick in `[tick, tick+len)`
 (default `len` 90), exactly the state a `SURFACE_ZIP_PAD` gives it
 (`boostTimer = normalise_time(45)`, `boostType = BOOST_LARGE`), so a dumped frame
 is guaranteed to contain rendered boost flames. It is a no-op unless the variable
@@ -3817,6 +3817,51 @@ Wizpig 1 (level 37) is the only normal level route that exercises rain. The gate
 records the raw authoritative state hash plus the seed immediately around every
 splash placement roll and lightning timer reset, and requires presentation
 invariance. Only digests and row counts are stored; no ROM-derived state ships.
+
+### Weather presentation identity — `tests/check_weather_presentation_identity.py`
+
+```bash
+python3 tests/check_weather_presentation_identity.py --build build-rel \
+  --rom baserom.us.v80.z64
+```
+
+Snow (level 13) and rain (level 37) under `MDKR_PRESENT_RATE=120` +
+`MDKR_PRESENT_SMOOTHING=interpolate`, against the same route with smoothing off.
+
+A presentation owner is only minted for a real spawned `Object` in
+`gObjPtrList`. Precipitation is not one: the flakes come out of
+`gSnowVertexData` and the rain sheet out of `gRainVertices`, so before
+`weather_register_vertex_batch()` existed neither carried an identity and an
+interpolated present replayed their tick-T bytes unchanged — held for two to
+four presents, then jumped. Nothing detected that. The authoritative hashes do
+not move (registration is not authoritative), the pixel controls pass (a frozen
+flake is a coherent image), and the aggregate packet counters were already large
+from particles and model deformation.
+
+So the gate reads the counters that name *this* content:
+`renderervertexreg` must be nonzero (the batches have an identity at all),
+`renderervertexoverride` must be nonzero (an interpolated present really did
+substitute a moved vertex, not merely resolve a pair whose endpoints agree), and
+on the snow route `renderervertexjumphold` must be nonzero — the volume-wrap
+guard has to be able to fire, or `max_vertex_delta` is a comment. Both routes'
+`[SIMHASH]` streams must equal the smoothing-off run's, which is the "identity
+must not perturb the authoritative stream" contract.
+
+It also reads `[SNAPSHOT] externalpeak`/`externalcaptures`, which cover the
+other half of the same defect: the rain splashes and the lens flare pieces. Their
+world position barely moves (a splash never moves at all), so no vertex counter
+can see them — what was wrong is that they were billboarded against a camera
+that interpolates while they themselves were drawn from a static array and a
+function-local the snapshot walk could not discover, so they swam against the
+world and snapped back every tick. They are now registered with the snapshot's
+renderer-owned transform registry, at their spawn and retirement sites so a
+recycled splash slot gets a fresh generation. `overflows` must stay zero (the
+registry must never push a capture past `PRESENTATION_SNAPSHOT_MAX_OBJECTS`) and
+`discontblend` must stay zero (nothing blended across a recycled slot).
+
+Measured: snow 167,800 registered batches / 476,187 substitutions / 3,816 guard
+holds and 5 renderer-owned transforms (the lens flare); rain 2,072 / 1,278 / 0
+and 8 renderer-owned transforms (the splash slots).
 
 ### Address-domain narrowing — `tests/check_address_domains.py`
 

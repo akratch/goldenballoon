@@ -154,11 +154,12 @@ DEFORMATION_DUMP_FROM = 6240
 # particle-positive window (10,997 changed batches over the whole arm).
 PARTICLE_TICKS = 4200
 PARTICLE_DUMP_FROM = 8300
-# g_frameCounter counts presents in the =60 arm. Force shields after the race
+# MDKR_FORCE_SHIELD counts AUTHORED TICKS (objects.c reads g_simTickCounter),
+# so this window is present-rate independent. Force shields after the race
 # loads and sample the final 60 presents of the deterministic window.
 EFFECT_TICKS = 4120
 EFFECT_DUMP_FROM = 8180
-EFFECT_FORCE_WINDOW = "6240:2000"
+EFFECT_FORCE_WINDOW = "3120:1000"
 # Jungle Falls (level 29) is the authored-UV-scroll witness: its waterfall sheet
 # is a level-model triangle batch scrolling V by 16 S10.5 units (half a texel) a
 # tick, and its wave-driven water is a ping-pong surface scrolling in both axes.

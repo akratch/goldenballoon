@@ -75,7 +75,10 @@ static s32 taj_test_dash_requested(void) {
     const char *value;
     char *end = NULL;
     long parsed;
-    extern int g_frameCounter;
+    /* AUTHORED TICKS, not host presents: this is queried from the tick-scoped
+     * Taj physics update, and a present-counted trigger fires 2-4 ticks early
+     * (or not at all) once the presentation subloop is running. */
+    extern int g_simTickCounter;
 
     if (triggerFrame == -2) {
         value = getenv("MDKR_TAJ_TEST_DASH_AT");
@@ -88,7 +91,7 @@ static s32 taj_test_dash_requested(void) {
             }
         }
     }
-    return triggerFrame >= 0 && g_frameCounter == triggerFrame;
+    return triggerFrame >= 0 && g_simTickCounter == triggerFrame;
 }
 #endif
 

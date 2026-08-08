@@ -84,6 +84,34 @@ typedef struct GfxPresentationMatrixOwner {
     float effect_scale;
     int16_t effect_rotation[3]; /* y, x, z */
     float effect_shear; /* already multiplied by effect_scale, as authored */
+    /*
+     * RENDERER-OWNED LIFETIME. The identity token is not an Object in
+     * gObjPtrList and never will be: it names a fixed array slot the renderer
+     * itself owns (a snow flake's physics slot, a rain overlay layer). There
+     * is no snapshot object entry to prove continuity from, so the deformation
+     * pair's own evidence stands alone -- gfx_presentation_packet_lookup_
+     * deformation already requires the SAME owner key at BOTH published ticks
+     * with the same count and stride, and the address cannot be recycled
+     * because nothing frees it.
+     *
+     * What that evidence does NOT cover is the slot's CONTENT changing
+     * identity underneath a stable key, which is `max_vertex_delta`'s job.
+     */
+    bool renderer_owned;
+    /*
+     * Hold-instead-of-blend threshold for a renderer-owned vertex batch, in
+     * DKR world/view units of per-tick movement of ONE vertex. Zero disables
+     * the check.
+     *
+     * Snow is the case that needs it. snow_vertices() places a flake at
+     * ((physics - camera) & radius_mask), so a flake that walks off one face
+     * of the volume reappears on the opposite face -- a jump of the FULL
+     * radius in one tick, at a slot index that did not change. Blending that
+     * draws a flake streaking the width of the snow volume. Everything
+     * legitimate -- the flake's own fall, plus the camera's travel and swing
+     * carried in the same view-space number -- is bounded well below it.
+     */
+    float max_vertex_delta;
     bool valid;
 } GfxPresentationMatrixOwner;
 

@@ -217,6 +217,12 @@ typedef struct PresentationSnapshotStats {
      * fails the next commit whole (see note_spawn); nonzero means the identity
      * table ran out of slots, not that anything was mis-blended. */
     uint64_t identity_insert_failures;
+    /* Renderer-owned transforms (rain splashes, lens flare pieces): peak live
+     * registry size, and captures that copied at least one of them. Zero on a
+     * route with rain over water or a visible sun means the content is back to
+     * being drawn with no presentation identity at all. */
+    uint64_t external_peak;
+    uint64_t external_captures;
 } PresentationSnapshotStats;
 
 /* Interpolated result handed to the renderer. Never written into a live
@@ -327,6 +333,37 @@ bool presentation_snapshot_identity_generation(const void *object,
  * discover; normal game objects use the strict lookup above. */
 bool presentation_snapshot_identity_ensure_generation(
     const void *object, uint64_t *generation);
+
+/*
+ * ---- renderer-owned transforms the object walk cannot discover -----------
+ *
+ * The capture walk enumerates gObjPtrList, so anything drawn from a static or
+ * stack-local ObjectTransform is invisible to it: no snapshot entry, no
+ * presentation owner, and an interpolated present replays its tick-T bytes
+ * verbatim while the camera around it moves. The rain splashes are the case
+ * this exists for -- eight module-static RainPosData slots, billboarded every
+ * tick, never spawned as Objects.
+ *
+ * Registering a transform makes the walk copy it exactly as it copies an
+ * Object's, so everything downstream -- billboard anchors, teleport and
+ * missed-tick discontinuity, generation-keyed resolution -- applies to it
+ * unchanged. `transform` is an `ObjectTransform *`; it is typed void here only
+ * to keep this header free of the game's structs (see the file header).
+ *
+ * REGISTER AT THE LIFECYCLE SITE, NOT AT THE DRAW. Registration issues a fresh
+ * generation, which is what stops a recycled slot from blending out of the
+ * previous tenant's last pose. A slot that retires must be unregistered, or
+ * its stale pose stays in the published frame and its next occupant looks
+ * continuous with a splash that is already gone.
+ */
+bool presentation_snapshot_register_external_transform(const void *transform);
+void presentation_snapshot_unregister_external_transform(
+    const void *transform);
+/* Live registered count, and the registry's contents by index. The walk in
+ * presentation_snapshot_walk.c enumerates through these because it is the only
+ * translation unit allowed to know what an ObjectTransform is. */
+size_t presentation_snapshot_external_transform_count(void);
+const void *presentation_snapshot_external_transform_at(size_t index);
 
 /* Level transitions reset snapshot history so interpolation never crosses
  * two unrelated scenes (spec §5). Hooked at game.c's stage boundary, beside

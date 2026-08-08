@@ -5225,11 +5225,21 @@ static DkrRetainedVertexReplay dkr_replay_deformation_vertices(
         retained == NULL || out == NULL || colors == NULL) {
         return DKR_RETAINED_VERTEX_UNAVAILABLE;
     }
-    compatible = particle
-        ? presentation_snapshot_particle_deformation_compatible(
-              owner->address, owner->generation)
-        : presentation_snapshot_deformation_compatible(
-              owner->address, owner->generation);
+    /*
+     * A renderer-owned batch has no snapshot object to prove continuity from,
+     * and needs none: nothing frees its identity token, so the key cannot be
+     * recycled, and the deformation pair is only resolved when the SAME key
+     * published the same shape at both ticks. See GfxPresentationMatrixOwner::
+     * renderer_owned. Content identity under a stable key is checked by the
+     * displacement guard below instead.
+     */
+    compatible = owner->renderer_owned
+        ? true
+        : (particle
+               ? presentation_snapshot_particle_deformation_compatible(
+                     owner->address, owner->generation)
+               : presentation_snapshot_deformation_compatible(
+                     owner->address, owner->generation));
     phase_aligned = presentation_snapshot_replay_target_tick(
         dkr_last_walked_authored_tick, &target_tick);
     if (allow_interpolation && !compatible) {
@@ -5239,6 +5249,39 @@ static DkrRetainedVertexReplay dkr_replay_deformation_vertices(
         gfx_presentation_packet_lookup_deformation(
             owner, viewport, ordinal, target_tick,
             (uint32_t)count, (uint32_t)sizeof(*retained), &deformation);
+    if (interpolate && owner->max_vertex_delta > 0.0f) {
+        /*
+         * The slot is the same; is the THING in it the same? A wrapping snow
+         * flake reappears on the far face of the volume without changing slot,
+         * batch count or stride, so every structural check above passes and
+         * only the magnitude of the move says it is not one movement.
+         */
+        const float limit = owner->max_vertex_delta;
+        for (int index = 0; index < count; index++) {
+            Vertex before;
+            Vertex after;
+            float dx;
+            float dy;
+            float dz;
+            memcpy(&before,
+                   deformation.previous_bytes +
+                       (size_t)index * deformation.stride,
+                   sizeof(before));
+            memcpy(&after,
+                   deformation.current_bytes +
+                       (size_t)index * deformation.stride,
+                   sizeof(after));
+            dx = (float)after.x - (float)before.x;
+            dy = (float)after.y - (float)before.y;
+            dz = (float)after.z - (float)before.z;
+            if (dx > limit || dx < -limit || dy > limit || dy < -limit ||
+                dz > limit || dz < -limit) {
+                interpolate = false;
+                gfx_presentation_packet_note_renderer_vertex_jump();
+                break;
+            }
+        }
+    }
     if (allow_interpolation && compatible && !interpolate) {
         gfx_presentation_packet_note_phase_hold(false);
     }
@@ -5317,6 +5360,9 @@ static DkrRetainedVertexReplay dkr_replay_deformation_vertices(
         gfx_presentation_packet_note_deformation_color(
             particle, color_changed);
         changed = changed || color_changed;
+    }
+    if (owner->renderer_owned) {
+        gfx_presentation_packet_note_renderer_vertex(changed);
     }
     if (particle) {
         gfx_presentation_packet_note_particle_deformation(changed);
