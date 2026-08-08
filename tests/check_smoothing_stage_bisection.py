@@ -691,14 +691,45 @@ def main() -> int:
                     for stage, env_name, disarm, _ in STAGES:
                         if stage not in disabled:
                             continue
-                        reach = arm_packet.get(disarm, 0)
-                        if packet.get(disarm, 0) == 0:
-                            continue   # absent here; nothing to disarm
+                        if disarm not in packet or disarm not in arm_packet:
+                            failures.append(
+                                f"route {route} arm {label}: [PRESENT-PACKET] "
+                                f"carries no {disarm} field. That is this "
+                                f"stage's disarm-reach counter; without it "
+                                "this guard silently passes on every arm "
+                                "instead of asserting the opt-out disarmed "
+                                "the stage. Check the counter name in STAGES "
+                                "against present_sched.c")
+                            continue
+                        all_on_reach = packet[disarm]
+                        if all_on_reach == 0:
+                            if stage in ranked:
+                                # This route's STAGE-DISPOSITION check (above)
+                                # already requires ranked stages to fire, so a
+                                # ranked stage reading 0 here is the real
+                                # vacuity the .get(,0) shortcut used to hide:
+                                # a mistyped/renamed counter that happens to
+                                # collide with the legitimate "route doesn't
+                                # exercise this stage" zero. Fail it by name
+                                # rather than silently skipping the disarm
+                                # check underneath it.
+                                failures.append(
+                                    f"route {route} arm {label}: all-on "
+                                    f"{disarm}=0 for ranked stage {stage} -- "
+                                    "the stage was never reached with "
+                                    "everything armed, so this arm's zero "
+                                    "proves nothing about the opt-out. "
+                                    "Either the counter name is wrong or the "
+                                    "recipe stopped exercising this stage")
+                            # else: legitimately absent on this route (see
+                            # STAGE-DISPOSITION above) -- nothing to disarm.
+                            continue
+                        reach = arm_packet[disarm]
                         if reach != 0:
                             failures.append(
                                 f"route {route} arm {label}: {env_name}=off "
                                 f"left {disarm}={reach} (all-on: "
-                                f"{packet.get(disarm, 0)}). The opt-out did "
+                                f"{all_on_reach}). The opt-out did "
                                 "not disarm the stage, so this arm is not a "
                                 "leave-one-out of it and its frame difference "
                                 "attributes nothing. Check the env name "

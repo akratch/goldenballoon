@@ -192,10 +192,11 @@ static MdkrCameraIntentFamily racer_camera_intent_family(s16 mode) {
  * under the snapshot's teleport threshold, and so invisible to capture.
  *
  * Read here rather than at the assignment sites because the mode is set from
- * three of them (this file's raceFinished/exitObj tests, the spectate handover
- * inside update_camera_finish_race, and the challenge end in objects.c), and
+ * six of them (this file's Taj-wander reset, the raceFinished/exitObj tests,
+ * second_racer_camera_update's transition write, update_camera_finish_race's
+ * no-spectate-object fallback, and the challenge end in objects.c), and
  * only the pose author knows which tick the new rule first ran on. Comparing
- * here catches all three, on exactly that tick.
+ * here catches all six, on exactly that tick.
  *
  * Stale entries across a level change are harmless in both directions: a stale
  * MATCH raises no note, but the level boundary already resets snapshot history

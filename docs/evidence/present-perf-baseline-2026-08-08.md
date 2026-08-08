@@ -1,7 +1,7 @@
 # Present-path cost baseline and occlusion/frame-latency parity
 
 Date: 2026-08-08
-Branch: `codex/v1.0.3-reliability-ux` (worktree `presentation-gold-standard`)
+Branch: `worktree-presentation-gold-standard`
 Host: Apple M3 Max, macOS arm64, 60 Hz display, AppleClang release build (`build-rel`)
 ROM: US v80 Rev 1, validated by the runtime banner
 Binary: `build-rel/mdkr64` at commit e9fa33a
@@ -188,7 +188,7 @@ the numbers must not be compared:
   authored tick, 2.1–2.2 ms in the subloop.
 - On **WebGPU**, `wgpu_end_frame` already presented inside `gfx_end_frame` and
   `platform_sdl_present` is a no-op, so the acquire and present are **not**
-  attributed to these sections at all. The 56–69 us figures are frame-boundary
+  attributed to these sections at all. The 61–69 us figures are frame-boundary
   bookkeeping only.
 
 **Display-gated arm, recorded rather than faked.** Every window this session

@@ -1,7 +1,7 @@
 # What the 120 Hz artifact actually is — named classes and their witnesses
 
 Date: 2026-08-08
-Branch: `codex/v1.0.3-reliability-ux` (worktree `presentation-gold-standard`)
+Branch: `worktree-presentation-gold-standard`
 Host: Apple M3 Max, macOS arm64, AppleClang release build (`build-rel`)
 ROM: US v80 Rev 1, validated by the runtime banner
 Instruments: the frame-dump seam (`--dump-frames` + `MDKR_DUMP_FROM`,

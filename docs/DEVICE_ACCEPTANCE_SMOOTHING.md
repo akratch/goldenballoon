@@ -1,6 +1,6 @@
 # Device acceptance — motion smoothing, re-test after the 2026-08-07 rejection
 
-*Candidate build: this branch (`codex/v1.0.3-reliability-ux`), cross-built from
+*Candidate build: this branch (`worktree-presentation-gold-standard`), cross-built from
 the release tree. Every line below traces to a shipped change or a named,
 still-open gap. Motion smoothing stays opt-in until this session returns a
 verdict — a device pass is necessary before the default can move; the

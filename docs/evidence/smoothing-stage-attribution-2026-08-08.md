@@ -1,7 +1,7 @@
 # Which smoothing stage moves the pixels — 120 Hz stage attribution
 
 Date: 2026-08-08
-Branch: `codex/v1.0.3-reliability-ux` (worktree `presentation-gold-standard`)
+Branch: `worktree-presentation-gold-standard`
 Host: Apple M3 Max, macOS arm64, AppleClang release build (`build-rel`)
 ROM: US v80 Rev 1, validated by the runtime banner
 Instrument: `tests/check_smoothing_stage_bisection.py` (registered as
