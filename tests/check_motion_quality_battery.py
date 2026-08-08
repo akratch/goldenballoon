@@ -159,15 +159,26 @@ GRID_STEP_PPM = ALPHA_SCALE_PPM // PRESENTS_PER_TICK
 # each of the four steps, so the reference is 0% and anything above it is
 # content advancing only at the authored tick.
 #
-# The calibration (note §5.1, same route, same window, 29 complete ticks):
+# The calibration (note §5.1, same route, same window). Note §5.1 reports two
+# forms of this statistic and they are NOT interchangeable: the POOLED form
+# averages all boundary steps against all interior steps in the window, while
+# the PAIRED form uses only ticks that contributed all four of their steps.
+# This gate computes the PAIRED form, because the hold guard below drops
+# contaminated ticks whole and a tick that contributed three interiors but no
+# boundary step would otherwise put a full step next to a mean taken over
+# fewer:
 #
-#   shipped 1.0.1-1.0.3 production, with the C1 anchoring defect   +16.68%
-#   fixed build, production                                         +3.73%
-#   camera-only arm -- what wholly uncovered content looks like    +18.17%
+#   shipped 1.0.1-1.0.3 production, with the C1 anchoring defect   +16.68% pooled
+#   fixed build, production                                         +3.73% pooled
+#   fixed build, production, PAIRED -- what this gate computes      +2.93%
+#   camera-only arm -- what wholly uncovered content looks like    +18.17% pooled
 #
-# 8% is placed in the empty band between the fixed build and the defect: 2.1x
-# above what the build actually measures, and half the margin a C1-class
-# regression reopens. It is a REGRESSION bound, not a quality target -- the
+# Only the fixed build has both forms published, and the pooled figures sit
+# slightly above their paired counterparts, so the historical comparison is
+# indicative rather than exact. It does not have to be exact: 8% is placed in
+# the empty band between the two populations, 2.7x above what the build
+# actually measures and half the margin a C1-class regression reopens. It is a
+# REGRESSION bound, not a quality target -- the
 # residual it permits is dominated by the 2D HUD, which is authored screen-space
 # texrects with no world pose pair to interpolate and reads +10.00% on its own
 # whether every stage is on or every stage is off (§5.1). Tightening it toward
@@ -667,20 +678,64 @@ def main() -> int:
         f"stale={sched['stale']} deferred={deferred} excess={excess}")
 
     # ---- R5 TICK-BOUNDARY STEP -------------------------------------------
-    boundary_steps: list[float] = []
-    interior_steps: list[float] = []
+    #
+    # Steps are grouped into the tick they live inside before any mean is
+    # taken, for two reasons. The comparison is WITHIN a tick -- one boundary
+    # step against that tick's own three interiors -- so a tick contributing
+    # only some of its steps would put a full step next to a mean taken over
+    # fewer, which is not the same quantity. And it is what makes the hold
+    # guard below able to drop a contaminated tick whole.
+    #
+    # THE HOLD GUARD. A held present is not a new image: the backend re-reads
+    # the frame it already showed, so a hold lands in the dump as a step of
+    # exactly zero. That biases R5's ratio in whichever direction it falls --
+    # an interior hold shrinks the interior mean and inflates the excess, a
+    # boundary hold shrinks the boundary mean and hides one. This route holds
+    # 36 of 12,920 presents run-wide (0.28%), so a 120-frame window usually
+    # contains none, and the diagnosis note's §5.1(c) checked exactly that by
+    # hand ("none of the 119 steps in the sampled window is zero"). Usually is
+    # not a property, so the check is made rather than assumed: any tick
+    # carrying a zero step is dropped whole and counted, and the row prints the
+    # count so a green verdict says which population it was taken over.
+    #
+    # The guard is reachable by construction and has been demonstrated: the
+    # same arm at MDKR_PRESENT_SMOOTHING=off repeats each authored image three
+    # times byte for byte at this rate (note §3, `a120-off`: 9,693 stale
+    # presents), which drops every tick in the window and trips the floor
+    # below. A scene static enough to produce a zero step without a hold would
+    # also be dropped, which is the safe direction: R5 measures motion, and a
+    # tick with no motion in it has nothing to say about the shape of motion.
+    by_tick: dict[int, tuple[list[float], list[float]]] = {}
     for (previous_index, previous), (index, current) in zip(indexed, indexed[1:]):
         if index - previous_index != 1:
             continue
         step = mean_abs_step(previous, current)
-        if index % PRESENTS_PER_TICK == 0:
-            boundary_steps.append(step)   # the step INTO an authored endpoint
+        alpha_slot = index % PRESENTS_PER_TICK
+        if alpha_slot == 0:
+            # The step INTO an authored endpoint closes the tick that opened
+            # PRESENTS_PER_TICK frames earlier.
+            tick_start = index - PRESENTS_PER_TICK
+            by_tick.setdefault(tick_start, ([], []))[0].append(step)
         else:
-            interior_steps.append(step)
+            tick_start = index - alpha_slot
+            by_tick.setdefault(tick_start, ([], []))[1].append(step)
+
+    complete = {start: steps for start, steps in by_tick.items()
+                if len(steps[0]) == 1 and len(steps[1]) == PRESENTS_PER_TICK - 1}
+    held = sorted(start for start, (boundary, interior) in complete.items()
+                  if any(step == 0.0 for step in boundary + interior))
+    for start in held:
+        del complete[start]
+
+    boundary_steps = [steps[0][0] for steps in complete.values()]
+    interior_steps = [step for steps in complete.values() for step in steps[1]]
     if len(boundary_steps) < 8 or len(interior_steps) < 24:
         failures.append(
-            f"R5: {len(boundary_steps)} boundary and {len(interior_steps)} "
-            "interior steps in the window, which is too few to compare")
+            f"R5: {len(boundary_steps)} complete ticks survive the window "
+            f"({len(held)} dropped for containing a held present), which is "
+            "too few to compare. A window this contaminated is not measuring "
+            "the shape of motion; move the dump window or the route rather "
+            "than reading the number it would produce")
         excess_ratio = 0.0
     else:
         boundary_mean = sum(boundary_steps) / len(boundary_steps)
@@ -695,14 +750,15 @@ def main() -> int:
                 "bound. On a uniform alpha grid, content every stage covers "
                 "moves the same distance on all four steps, so a boundary "
                 "excess is content advancing only at the authored tick. The "
-                "fixed build measures +3.73% on this exact route and window "
-                "and shipped 1.0.3 measured +16.68%; this is a C1-class "
-                "regression, not noise. See "
+                "fixed build measures +2.93% paired on this exact route and "
+                "window and shipped 1.0.3 measured +16.68% pooled; this is a "
+                "C1-class regression, not noise. See "
                 "docs/evidence/smoothing-artifact-repro-2026-08.md §5.1")
         rows.append(
             f"[R5-TICK-BOUNDARY] boundary={boundary_mean:.3f} "
             f"interior={interior_mean:.3f} n={len(boundary_steps)}/"
-            f"{len(interior_steps)} excess={excess_ratio * 100:+.2f}% "
+            f"{len(interior_steps)} heldticks={len(held)} "
+            f"excess={excess_ratio * 100:+.2f}% "
             f"bound={BOUNDARY_EXCESS_MAX * 100:.0f}% "
             f"verdict={'FAIL' if excess_ratio > BOUNDARY_EXCESS_MAX else 'PASS'}")
 
