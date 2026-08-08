@@ -3911,7 +3911,7 @@ static void dkr_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     ul->color = ll->color = lr->color = ur->color = rdp.prim_color;
     ul->fog = ll->fog = lr->fog = ur->fog = 0;
 
-    struct XYWidthHeight vp_saved = rdp.viewport, sc_saved = rdp.scissor;
+    struct XYWidthHeight vp_saved = rdp.viewport;
     uint32_t gm_saved = rsp.geometry_mode;
     struct XYWidthHeight full = {
         0, 0,
@@ -3922,8 +3922,14 @@ static void dkr_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
             ? gfx_output_dimensions.height
             : gfx_current_dimensions.height)
     };
+    /* Only the viewport is widened for the NDC quad. The RDP scissors
+     * rectangles exactly like triangles, and DKR depends on that: the
+     * Smokey Castle treasure HUD has no raceFinished gate and is hidden on
+     * the results screen purely by the shrunken user-view scissor
+     * (viewport_main's VIEWPORT_EXTRA_BG branch). The full-drawable scissor
+     * this path inherited from the fast3d lineage let every TEXRECT/FILLRECT
+     * escape the authored clip (issue #25). */
     rdp.viewport = full;
-    rdp.scissor = full;
     rdp.viewport_or_scissor_changed = true;
     rsp.geometry_mode = 0;
 
@@ -3941,7 +3947,6 @@ static void dkr_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
 
     rsp.geometry_mode = gm_saved;
     rdp.viewport = vp_saved;
-    rdp.scissor = sc_saved;
     rdp.viewport_or_scissor_changed = true;
 }
 
