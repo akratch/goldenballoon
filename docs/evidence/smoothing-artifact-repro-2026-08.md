@@ -339,10 +339,15 @@ this build violates:
   detecting it, because a constant offset is the only way to fail it while
   passing every endpoint check.
 
-Both conditions also reject the effect-off arm (24.53 px at alpha 3/4 against
-the same 5.25 px envelope), which is correct and deliberate: C6 is an artifact
-too, and a gate that only rejected the production defect would go green the day
-someone "fixed" it by disabling the stage.
+**Condition (a) alone** also rejects the effect-off arm — 24.53 px at alpha 3/4
+against the same 5.25 px envelope, over the 18.42 px worst-tick bound — which is
+correct and deliberate: C6 is an artifact too, and a gate that only rejected the
+production defect would go green the day someone "fixed" it by disabling the
+stage. Condition (b) does **not** reject that arm and is not expected to: its
+displacement ramps 7.32 → 16.19 → 24.53 px and so converges toward zero at
+alpha → 0 exactly as (b) requires. The two conditions catch different failures —
+(a) bounds how far a reconstruction may stray, (b) pins where it must start —
+and only (a) is load-bearing against a held matrix.
 
 **The primary gate candidate is not pixels at all.** The defect is an exact
 lifetime mismatch, so it has an exact witness: carry the capture tick on the
