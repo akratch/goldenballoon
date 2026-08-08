@@ -3847,8 +3847,21 @@ guard has to be able to fire, or `max_vertex_delta` is a comment. Both routes'
 `[SIMHASH]` streams must equal the smoothing-off run's, which is the "identity
 must not perturb the authoritative stream" contract.
 
+It also reads `[SNAPSHOT] externalpeak`/`externalcaptures`, which cover the
+other half of the same defect: the rain splashes and the lens flare pieces. Their
+world position barely moves (a splash never moves at all), so no vertex counter
+can see them — what was wrong is that they were billboarded against a camera
+that interpolates while they themselves were drawn from a static array and a
+function-local the snapshot walk could not discover, so they swam against the
+world and snapped back every tick. They are now registered with the snapshot's
+renderer-owned transform registry, at their spawn and retirement sites so a
+recycled splash slot gets a fresh generation. `overflows` must stay zero (the
+registry must never push a capture past `PRESENTATION_SNAPSHOT_MAX_OBJECTS`) and
+`discontblend` must stay zero (nothing blended across a recycled slot).
+
 Measured: snow 167,800 registered batches / 476,187 substitutions / 3,816 guard
-holds; rain 2,072 / 1,278 / 0.
+holds and 5 renderer-owned transforms (the lens flare); rain 2,072 / 1,278 / 0
+and 8 renderer-owned transforms (the splash slots).
 
 ### Address-domain narrowing — `tests/check_address_domains.py`
 

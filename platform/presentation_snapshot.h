@@ -201,6 +201,12 @@ typedef struct PresentationSnapshotStats {
     uint64_t rotation_arc_violations; /* results outside the [prev,curr] arc */
     uint64_t discontinuity_holds;     /* resolves the cut/spawn flag refused */
     uint64_t discontinuity_blends;    /* resolves that BLENDED a flagged entry */
+    /* Renderer-owned transforms (rain splashes, lens flare pieces): peak live
+     * registry size, and captures that copied at least one of them. Zero on a
+     * route with rain over water or a visible sun means the content is back to
+     * being drawn with no presentation identity at all. */
+    uint64_t external_peak;
+    uint64_t external_captures;
 } PresentationSnapshotStats;
 
 /* Interpolated result handed to the renderer. Never written into a live

@@ -89,8 +89,9 @@ STATE_RE = re.compile(r"\[SIMHASH\]")
 
 
 def run(binary: str, rom: str, root: Path, label: str, track: str, ticks: int,
-        smoothing: bool, timeout: int, verbose: bool) -> tuple[dict, list[str]]:
-    """One headless arm. Returns its last [PRESENT-PACKET] row and hash stream."""
+        smoothing: bool, timeout: int, verbose: bool) -> tuple[dict, dict,
+                                                               list[str]]:
+    """One arm: its last [PRESENT-PACKET] and [SNAPSHOT] rows, and its hashes."""
     run_dir = root / label
     save_dir = run_dir / "save"
     save_dir.mkdir(parents=True)
@@ -105,6 +106,7 @@ def run(binary: str, rom: str, root: Path, label: str, track: str, ticks: int,
         MDKR_SAVE_DIR=str(save_dir),
         MDKR_STATE_HASH=HASH_VERSION,
         MDKR_PRESENT_SCHED_TRACE="1",
+        MDKR_PRESENT_SNAPSHOT="1",
     )
     if smoothing:
         env["MDKR_PRESENT_RATE"] = PRESENT_RATE
@@ -128,10 +130,13 @@ def run(binary: str, rom: str, root: Path, label: str, track: str, ticks: int,
     packet = parse_last(output, "PRESENT-PACKET")
     if not packet:
         raise RuntimeError(f"{label}: no [PRESENT-PACKET] row in the output")
+    snapshot = parse_last(output, "SNAPSHOT")
+    if not snapshot:
+        raise RuntimeError(f"{label}: no [SNAPSHOT] row in the output")
     hashes = [line for line in output.splitlines() if STATE_RE.search(line)]
     if not hashes:
         raise RuntimeError(f"{label}: no [SIMHASH] rows in the output")
-    return packet, hashes
+    return packet, snapshot, hashes
 
 
 def field(packet: dict, name: str, label: str) -> int:
@@ -158,16 +163,16 @@ def main() -> int:
         root = Path(tmp)
         try:
             rom = str(Path(args.rom).resolve())
-            snow, snow_hashes = run(binary, rom, root, "snow-smooth",
+            snow, snow_snap, snow_hashes = run(binary, rom, root, "snow-smooth",
                                     SNOW_TRACK, SNOW_TICKS, True,
                                     args.timeout, args.verbose)
-            snow_off, snow_off_hashes = run(binary, rom, root, "snow-off",
+            snow_off, _, snow_off_hashes = run(binary, rom, root, "snow-off",
                                             SNOW_TRACK, SNOW_TICKS, False,
                                             args.timeout, args.verbose)
-            rain, rain_hashes = run(binary, rom, root, "rain-smooth",
+            rain, rain_snap, rain_hashes = run(binary, rom, root, "rain-smooth",
                                     RAIN_TRACK, RAIN_TICKS, True,
                                     args.timeout, args.verbose)
-            rain_off, rain_off_hashes = run(binary, rom, root, "rain-off",
+            rain_off, _, rain_off_hashes = run(binary, rom, root, "rain-off",
                                             RAIN_TRACK, RAIN_TICKS, False,
                                             args.timeout, args.verbose)
         except (RuntimeError, subprocess.TimeoutExpired) as error:
@@ -193,6 +198,38 @@ def main() -> int:
             notes.append(
                 f"{label}: {registrations} registered batches, {hits} resolved "
                 f"pairs, {overrides} moved substitutions, {holds} guard holds")
+
+        # The renderer-owned TRANSFORM registry -- rain splashes and lens
+        # flare pieces. Their world position barely moves (a splash never moves
+        # at all), so no vertex counter can witness them: their defect was that
+        # they were billboarded against a camera that interpolates while they
+        # themselves were pinned to tick T, and the fix is that the tick-
+        # boundary walk now copies them like an Object's transform.
+        for label, snapshot in (("snow", snow_snap), ("rain", rain_snap)):
+            peak = field(snapshot, "externalpeak", label)
+            captures = field(snapshot, "externalcaptures", label)
+            overflows = field(snapshot, "overflows", label)
+            blends = field(snapshot, "discontblend", label)
+            if peak == 0 or captures == 0:
+                errors.append(
+                    f"{label}: externalpeak={peak} externalcaptures={captures} "
+                    f"— no renderer-owned transform was ever registered or "
+                    f"captured, so the rain splashes and lens flare pieces are "
+                    f"back to being drawn with no presentation identity")
+            if overflows != 0:
+                errors.append(
+                    f"{label}: {overflows} snapshot captures failed whole — "
+                    f"the renderer-owned registry is pushing the walk past "
+                    f"PRESENTATION_SNAPSHOT_MAX_OBJECTS")
+            if blends != 0:
+                errors.append(
+                    f"{label}: {blends} resolves blended an entry flagged "
+                    f"discontinuous — a recycled splash slot is being blended "
+                    f"out of the dead splash's last pose")
+            notes.append(
+                f"{label}: {peak} renderer-owned transforms at peak, "
+                f"{captures} captures copied them, {overflows} overflows, "
+                f"{blends} discontinuity blends")
 
         snow_holds = field(snow, "renderervertexjumphold", "snow")
         if snow_holds == 0:

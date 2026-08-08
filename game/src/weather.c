@@ -96,6 +96,61 @@
  * hand); `identity` is the stable token the retained {T, T+1} pair is keyed
  * by. They are deliberately different -- see the note above.
  */
+/*
+ * PRESENTATION IDENTITY FOR THE LENS FLARE.
+ *
+ * lensflare_render() places every flare piece at
+ * (gLensFlarePos * 256 + camera position) -- the flare is EYE-LOCKED, exactly
+ * like the skydome -- and then billboards it through a transform that was a
+ * function-local. A stack local is not an identity: mdkr_presentation_owner_
+ * root() needs an address the snapshot walk also captured, so no owner was
+ * minted and the flare was replayed at its tick-T bytes while the eye it is
+ * locked to interpolated underneath it. The flare therefore drifted across the
+ * tick and snapped back at every boundary -- structurally the same held-matrix-
+ * under-a-moving-camera artifact this project already measured and fixed for
+ * the shield shell.
+ *
+ * The transform is now a module-static slot per piece, registered with the
+ * snapshot's renderer-owned registry. That is all it takes: the pose written
+ * into it is already the eye-locked one, the tick-boundary walk copies it like
+ * any Object's, and the ordinary billboard anchor path interpolates the pair.
+ * Nothing here needs to know about the camera.
+ *
+ * The slots are retired whenever the flare stops drawing. A slot left
+ * registered would keep publishing the pose of a flare that is off screen, and
+ * when the flare came back its first tick would look continuous with a pose
+ * from before the gap.
+ */
+#define WEATHER_LENS_FLARE_MAX_PIECES 16
+
+static ObjectTransform sLensFlareTransforms[WEATHER_LENS_FLARE_MAX_PIECES];
+static s32 sLensFlareRegistered[WEATHER_LENS_FLARE_MAX_PIECES];
+
+static ObjectTransform *weather_lens_flare_transform(s32 piece) {
+    if (piece < 0 || piece >= WEATHER_LENS_FLARE_MAX_PIECES) {
+        return NULL;
+    }
+    if (!sLensFlareRegistered[piece]) {
+        /* Register once per lifetime, not once per draw: registration issues a
+         * fresh generation, and reissuing it every tick would mark the piece
+         * discontinuous forever and interpolate nothing. */
+        sLensFlareRegistered[piece] =
+            presentation_snapshot_register_external_transform(
+                &sLensFlareTransforms[piece]);
+    }
+    return &sLensFlareTransforms[piece];
+}
+
+static void weather_lens_flare_retire_from(s32 piece) {
+    for (; piece < WEATHER_LENS_FLARE_MAX_PIECES; piece++) {
+        if (sLensFlareRegistered[piece]) {
+            presentation_snapshot_unregister_external_transform(
+                &sLensFlareTransforms[piece]);
+            sLensFlareRegistered[piece] = FALSE;
+        }
+    }
+}
+
 static void weather_register_vertex_batch(const void *key,
                                           const void *identity,
                                           f32 maxVertexDelta) {
@@ -776,8 +831,16 @@ void lensflare_render(Gfx **dList, Mtx **mats, Vertex **verts, Camera *camera) {
     f32 magSquared;
     f32 magSquareSquared;
     LensFlareData *lensFlareData;
+#ifdef NATIVE_PORT
+    /* One stable slot per piece; see weather_lens_flare_transform(). `trans`
+     * is re-pointed at the slot for each piece below, so this initial value is
+     * only a safe default for the paths that never draw. */
+    ObjectTransform *trans = &sLensFlareTransforms[0];
+    s32 piece = 0;
+#else
     ObjectTransform transStorage;
     ObjectTransform *const trans = &transStorage;
+#endif
     Gfx *gfxTemp;
     s32 width;
     LevelObjectEntry_LensFlare *lensFlareEntry;
@@ -815,6 +878,25 @@ void lensflare_render(Gfx **dList, Mtx **mats, Vertex **verts, Camera *camera) {
                     }
                     if (lensFlareData != NULL) {
                         while (lensFlareData->count > 0) {
+#ifdef NATIVE_PORT
+                            ObjectTransform *slot =
+                                weather_lens_flare_transform(piece);
+                            if (slot == NULL) {
+                                /* More pieces than slots: draw the extras
+                                 * unowned rather than aliasing an identity two
+                                 * pieces share, which would poison both. */
+                                slot = &sLensFlareTransforms[
+                                    WEATHER_LENS_FLARE_MAX_PIECES - 1];
+                            }
+                            trans = slot;
+                            piece++;
+                            /* The rotation fields are written once above, into
+                             * what used to be the single local. Each slot now
+                             * needs its own copy. */
+                            trans->rotation.y_rotation = 0;
+                            trans->rotation.x_rotation = 0;
+                            trans->rotation.z_rotation = 0;
+#endif
                             trans->x_position = pos[0].x;
                             trans->y_position = pos[0].y;
                             trans->z_position = pos[0].z;
@@ -865,6 +947,13 @@ void lensflare_render(Gfx **dList, Mtx **mats, Vertex **verts, Camera *camera) {
             }
         }
     }
+#ifdef NATIVE_PORT
+    /* Retire every slot this call did not draw into. `piece` is still zero on
+     * every path that drew nothing at all -- no flare object, flare disabled,
+     * split screen, or the sun behind the camera -- so this one call is also
+     * the "the flare left the screen" case. */
+    weather_lens_flare_retire_from(piece);
+#endif
 }
 
 /**
