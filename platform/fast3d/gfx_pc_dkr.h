@@ -252,8 +252,19 @@ extern uint64_t gfx_dkr_decal_triangles;
 bool gfx_dkr_replay_walk(
     const GfxShadowReplayViewProjection *overrides, size_t override_count);
 
+/* Alpha-0 replay of the authored image with object substitution active — the
+ * delayed-endpoint negative control's entry point. Endpoint walks are exempt
+ * from the uncaptured-external refusal because their contract is byte-exact
+ * reproduction of an image the authoritative walk already drew; declaring that
+ * intent HERE, rather than inferring it from numerator == 0 inside the walk,
+ * is what keeps residual obligation 2's ownership proof independent of the
+ * pacer's ticket accounting. */
+bool gfx_dkr_replay_walk_endpoint(
+    const GfxShadowReplayViewProjection *overrides, size_t override_count);
+
 /* The fixed-clock alpha additionally rebuilds generation-keyed object roots
- * from the immutable presentation snapshot pair. */
+ * from the immutable presentation snapshot pair. This is always a strictly
+ * interior image and always eligible to refuse. */
 bool gfx_dkr_replay_walk_interpolated(
     const GfxShadowReplayViewProjection *overrides, size_t override_count,
     uint64_t numerator, uint64_t denominator);
@@ -340,7 +351,8 @@ void gfx_dkr_replay_get_object_stats(uint64_t *hits, uint64_t *holds);
  * observe, because its poison covers the arena only.
  */
 void gfx_dkr_replay_get_uncaptured_stats(uint64_t *externals,
-                                         uint64_t *refusals);
+                                         uint64_t *refusals,
+                                         uint64_t *zero_alpha_interior);
 void gfx_dkr_replay_get_billboard_stats(
     uint64_t *matrix_hits, uint64_t *matrix_holds,
     uint64_t *vertex_hits, uint64_t *vertex_holds);

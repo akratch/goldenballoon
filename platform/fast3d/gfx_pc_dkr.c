@@ -291,6 +291,8 @@ static bool dkr_replay_interior_alpha = false;
  */
 static uint64_t dkr_replay_uncaptured_externals = 0;
 static uint64_t dkr_replay_uncaptured_refusals = 0;
+/* Interpolated walks that arrived at alpha 0 — see gfx_dkr_replay_walk_impl. */
+static uint64_t dkr_replay_zero_alpha_interior = 0;
 static int dkr_test_uncaptured_external = -1;
 static bool dkr_replay_object_alpha_valid = false;
 static uint64_t dkr_replay_object_alpha_numerator = 0;
@@ -486,7 +488,7 @@ extern bool mdkr_camera_replay_effect_world(
     const GfxPresentationMatrixOwner *current, uint64_t numerator,
     uint64_t denominator, float out_world[4][4]);
 extern bool mdkr_camera_replay_billboard_anchor(
-    const GfxPresentationMatrixOwner *owner, uint64_t numerator,
+    const GfxPresentationMatrixOwner *owner, int viewport, uint64_t numerator,
     uint64_t denominator, float out_position[3]);
 extern bool mdkr_camera_replay_billboard_matrix(
     const GfxPresentationMatrixOwner *owner, int viewport,
@@ -6063,8 +6065,11 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                 packet_binding.owner.matrix_class ==
                     GFX_PRESENTATION_MATRIX_BILLBOARD &&
                 dkr_replay_object_alpha_numerator != 0u) {
+                /* The viewport the binding was authored under: the anchor and
+                 * the local matrix must be gated on the SAME camera, and the
+                 * matrix half at the G_MTX site passes this same field. */
                 if (mdkr_camera_replay_billboard_anchor(
-                        &packet_binding.owner,
+                        &packet_binding.owner, packet_binding.viewport,
                         dkr_replay_object_alpha_numerator,
                         dkr_replay_object_alpha_denominator,
                         position_overrides[0])) {
@@ -7036,7 +7041,8 @@ bool gfx_renderer_failed(void) {
  */
 static bool gfx_dkr_replay_walk_impl(
     const GfxShadowReplayViewProjection *overrides, size_t override_count,
-    bool object_alpha_valid, uint64_t numerator, uint64_t denominator) {
+    bool object_alpha_valid, bool endpoint, uint64_t numerator,
+    uint64_t denominator) {
     const uint64_t uncaptured_entry = dkr_replay_uncaptured_externals;
     bool completed = false;
     bool retained_entered = false;
@@ -7061,13 +7067,34 @@ static bool gfx_dkr_replay_walk_impl(
     dkr_replay_pass = true;
     dkr_replay_dependency_failed = false;
     /*
-     * Strictly interior: alpha 0 is the authored endpoint in both of its forms
-     * (the zero-delta harness passes 0/1, and so does the delayed-endpoint
-     * negative control). Only an image between two authoritative ticks may
-     * refuse; the endpoints must still reproduce their tick exactly.
+     * Strictly interior — from the CALLER'S DECLARED INTENT, not from the
+     * arithmetic.
+     *
+     * `endpoint` is true for exactly the two walks whose contract is byte-exact
+     * reproduction of an image the authoritative walk already drew: the
+     * zero-delta purity harness (gfx_dkr_replay_walk) and the delayed-endpoint
+     * negative control (gfx_dkr_replay_walk_endpoint). Everything else is an
+     * image the simulation never produced and may legally refuse.
+     *
+     * This used to read `numerator != 0u` instead. That inferred endpoint-ness
+     * from a value, and made residual obligation 2's fail-closed ownership
+     * proof rest on the pacer's ticket accounting — the subloop breaks on
+     * `ticks_due != 0` before it can ever present numerator 0 — rather than on
+     * the caller saying what kind of image it wants. A pacer change would have
+     * silently re-opened the fail-open the obligation was written to remove.
      */
     dkr_replay_interior_alpha =
-        denominator != 0u && numerator != 0u && numerator < denominator;
+        !endpoint && denominator != 0u && numerator < denominator;
+    /*
+     * An interpolated walk at alpha 0 is not merely a lost refusal: it draws
+     * the image the authoritative walk just presented, a second time. Nothing
+     * reads this counter — it exists so that a pacer that starts emitting
+     * duplicate presents shows up as a number instead of as "the smoothing
+     * feels like it stutters".
+     */
+    if (!endpoint && numerator == 0u) {
+        dkr_replay_zero_alpha_interior++;
+    }
     dkr_replay_object_alpha_valid =
         object_alpha_valid && dkr_replay_object_interpolation_enabled() &&
         denominator != 0u && numerator < denominator;
@@ -7156,14 +7183,24 @@ replay_cleanup:
 
 bool gfx_dkr_replay_walk(
     const GfxShadowReplayViewProjection *overrides, size_t override_count) {
-    return gfx_dkr_replay_walk_impl(overrides, override_count, false, 0u, 1u);
+    /* Zero-delta purity harness: an endpoint by construction. */
+    return gfx_dkr_replay_walk_impl(overrides, override_count, false, true, 0u,
+                                    1u);
+}
+
+bool gfx_dkr_replay_walk_endpoint(
+    const GfxShadowReplayViewProjection *overrides, size_t override_count) {
+    /* Delayed-endpoint negative control: alpha 0 with object substitution on,
+     * and the ONLY other caller entitled to the endpoint exemption. */
+    return gfx_dkr_replay_walk_impl(overrides, override_count, true, true, 0u,
+                                    1u);
 }
 
 bool gfx_dkr_replay_walk_interpolated(
     const GfxShadowReplayViewProjection *overrides, size_t override_count,
     uint64_t numerator, uint64_t denominator) {
-    return gfx_dkr_replay_walk_impl(overrides, override_count, true, numerator,
-                                    denominator);
+    return gfx_dkr_replay_walk_impl(overrides, override_count, true, false,
+                                    numerator, denominator);
 }
 
 void gfx_dkr_replay_invalidate(void) {
@@ -7184,12 +7221,16 @@ uint64_t gfx_dkr_last_walked_authored_tick(void) {
 }
 
 void gfx_dkr_replay_get_uncaptured_stats(uint64_t *externals,
-                                         uint64_t *refusals) {
+                                         uint64_t *refusals,
+                                         uint64_t *zero_alpha_interior) {
     if (externals != NULL) {
         *externals = dkr_replay_uncaptured_externals;
     }
     if (refusals != NULL) {
         *refusals = dkr_replay_uncaptured_refusals;
+    }
+    if (zero_alpha_interior != NULL) {
+        *zero_alpha_interior = dkr_replay_zero_alpha_interior;
     }
 }
 

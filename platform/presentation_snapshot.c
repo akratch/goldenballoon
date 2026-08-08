@@ -124,6 +124,11 @@ typedef struct SnapIdentity {
 static SnapIdentity s_identity[PRESENTATION_SNAPSHOT_IDENTITY_SLOTS];
 static size_t s_identity_live;
 static uint64_t s_generation_serial;
+/* A lifecycle hook that could not register an identity. Sticky until the next
+ * commit spends it by failing the frame whole — see note_spawn. */
+static bool s_identity_insert_failed;
+
+static PresentationSnapshotStats s_stats;
 
 static size_t hash_address(const void *address, size_t mask) {
     uint64_t hash = (uint64_t)(uintptr_t)address;
@@ -226,7 +231,31 @@ void presentation_snapshot_note_spawn(const void *object) {
     }
     entry = identity_insert(object);
     if (entry == NULL) {
-        return; /* the next capture fails whole and counts the overflow */
+        /*
+         * Fail CLOSED, explicitly.
+         *
+         * The old comment here asserted "the next capture fails whole and
+         * counts the overflow" and then returned silently, leaving nothing
+         * behind that could make that happen. It was true only by an accident
+         * of identity_insert's internals — the table is still full when the
+         * capture runs, so capture_object's own insert also fails. Let enough
+         * frees land between the spawn and the capture and the belief
+         * evaporates, and the direction it fails in is the dangerous one: a
+         * recycled address that still carries a DEAD object's generation,
+         * last_position and last_capture publishes the new object under the
+         * dead one's identity, resolve_object_pair's generation check passes,
+         * and the interpolator blends a new object's first pose into an
+         * unrelated corpse's last pose.
+         *
+         * So state the outcome instead of inferring it. The flag is sticky
+         * across the rest of this tick and spent by the next commit, which
+         * fails whole exactly the way an object-table overflow does. This is
+         * the same direction presentation_snapshot_capture_object already
+         * takes on the identical condition.
+         */
+        s_identity_insert_failed = true;
+        s_stats.identity_insert_failures++;
+        return;
     }
     /* A fresh generation is the whole point: even if this is the exact
      * address a just-freed object occupied, the pair can no longer match. */
@@ -334,16 +363,38 @@ typedef struct SnapCameraHistory {
 
 static SnapCameraHistory s_camera_history[PRESENTATION_SNAPSHOT_MAX_VIEWPORTS];
 
-/* One bit per gCameras[] slot the game has declared cut this tick; consumed
- * by that slot's capture and cleared when the capture completes. */
+/*
+ * One bit per VIEWPORT the game has declared cut; consumed by that viewport's
+ * capture.
+ *
+ * Viewport, not gCameras[] slot, and the distinction is the whole reason this
+ * comment exists. The three note sites (racer.c's camera-mode change and
+ * spectate handoff, tracks.c's 3P time-trial spectate switch) all name a
+ * PLAYER INDEX, which is the viewport index — `camSetProjMtx` takes
+ * `viewport = gActiveCameraID`. The gCameras[] slot it records alongside is a
+ * different number: `gActiveCameraID + (gCutsceneCameraActive ? 4 : 0)`. Keying
+ * this mask on the slot therefore made every note raised while a viewport ran
+ * its cutscene camera land on bit p and be looked for at bit p+4 — a miss, on
+ * exactly the ticks a cut is most likely. Both halves now speak viewport.
+ *
+ * A note is spent only by the capture of the viewport it names. An unconsumed
+ * note is NOT discarded at commit: it is carried, so a note raised on a tick
+ * whose camera capture never ran still applies to the next capture of that
+ * viewport, which is the fail-closed direction. A note that survives the
+ * publish of the very viewport it names is a keying bug by construction, and
+ * `camera_cut_unconsumed` counts it so the next such mismatch is a nonzero
+ * stat instead of a silent blend across a hard cut.
+ */
 static uint32_t s_camera_cut_pending;
 
-void presentation_snapshot_note_camera_cut(int camera_id) {
-    if (camera_id < 0 || camera_id >= PRESENTATION_SNAPSHOT_MAX_CAMERAS ||
+void presentation_snapshot_note_camera_cut(int viewport_index) {
+    if (viewport_index < 0 ||
+        viewport_index >= PRESENTATION_SNAPSHOT_MAX_VIEWPORTS ||
         !presentation_snapshot_enabled()) {
         return;
     }
-    s_camera_cut_pending |= 1u << (unsigned)camera_id;
+    s_camera_cut_pending |= 1u << (unsigned)viewport_index;
+    s_stats.camera_cut_notes++;
 }
 
 /*
@@ -376,8 +427,6 @@ typedef struct AuthoredCameraSet {
 } AuthoredCameraSet;
 
 static AuthoredCameraSet s_authored_cameras;
-
-static PresentationSnapshotStats s_stats;
 
 void presentation_snapshot_authored_cameras_begin(uint64_t authored_tick) {
     memset(&s_authored_cameras, 0, sizeof(s_authored_cameras));
@@ -613,10 +662,15 @@ bool presentation_snapshot_capture_camera(
                     history->last_capture + 1u != s_capture_serial ||
                     history->camera_id != sample->camera_id ||
                     history->last_world_region != sample->world_region;
-    if (sample->camera_id >= 0 &&
-        sample->camera_id < PRESENTATION_SNAPSHOT_MAX_CAMERAS &&
-        (s_camera_cut_pending & (1u << (unsigned)sample->camera_id)) != 0u) {
+    /* Notes are filed per VIEWPORT (see s_camera_cut_pending): the game-side
+     * sites name a player index, and this is the capture of that player's
+     * viewport. Consume the bit here — the note has now been applied to the
+     * capture it was raised for, and commit's unconsumed sweep must not see
+     * it. */
+    if ((s_camera_cut_pending & (1u << (unsigned)viewport)) != 0u) {
         discontinuous = true; /* the game snapped this camera (see the note) */
+        s_camera_cut_pending &= ~(1u << (unsigned)viewport);
+        s_stats.camera_cut_consumed++;
     }
     if (!discontinuous) {
         const float moved =
@@ -642,11 +696,38 @@ void presentation_snapshot_capture_commit(void) {
     }
     s_capturing = false;
     write = &s_frames[s_write];
-    /* Notes belong to the tick that raised them and are spent here, on the
-     * capture that just read them. A capture that fails whole spends them too:
-     * the next published pair is not capture-adjacent, so it is discontinuous
-     * on its own account and needs no carried-over note. */
-    s_camera_cut_pending = 0u;
+
+    /* A lifecycle hook that could not register an identity this tick makes the
+     * whole frame fail, exactly as an in-capture insert failure does. Spent
+     * here so it costs one snapshot, not every later one. */
+    if (s_identity_insert_failed) {
+        s_identity_insert_failed = false;
+        s_write_failed = true;
+    }
+
+    /*
+     * A note is spent by the capture of the viewport it names, in
+     * presentation_snapshot_capture_camera — never here.
+     *
+     * Clearing the whole mask at commit is what turned the old ID-space
+     * mismatch from a miss into a silent loss: a note the consumer failed to
+     * find was destroyed on the same tick, so the cut it described could never
+     * reach any later capture and the camera blended straight through it. A
+     * note for a viewport this tick did not capture is therefore CARRIED.
+     *
+     * A note that survived the publish of its own viewport is impossible while
+     * both sides key on viewport index. Count it (and spend it, so one keying
+     * bug cannot latch a permanent cut) rather than assume it away.
+     */
+    if (!s_write_failed) {
+        for (size_t viewport = 0; viewport < write->camera_count; viewport++) {
+            const uint32_t bit = 1u << (unsigned)viewport;
+            if ((s_camera_cut_pending & bit) != 0u) {
+                s_camera_cut_pending &= ~bit;
+                s_stats.camera_cut_unconsumed++;
+            }
+        }
+    }
 
     if (s_write_failed) {
         /*
@@ -761,6 +842,16 @@ void presentation_snapshot_stage_reset(void) {
     s_write = -1;
     s_capturing = false;
     s_write_failed = false;
+    /* Carried camera-cut notes belong to the stage that raised them. The first
+     * capture of every viewport in the new stage is discontinuous on its own
+     * account (cleared history), so a carried note has nothing left to protect
+     * and would only be consumed as a spurious cut. Dropping it here is not
+     * the unconsumed-note failure the counter watches for — that one is a note
+     * lost while the viewport it names WAS published. */
+    s_camera_cut_pending = 0u;
+    /* The table is empty again, so the refusal that set this has been undone
+     * before any capture could observe it. */
+    s_identity_insert_failed = false;
     s_stage_generation++;
     s_stats.resets++;
 }
@@ -831,6 +922,7 @@ void presentation_snapshot_shutdown(void) {
     s_stage_generation = 0;
     s_generation_serial = 0;
     s_camera_cut_pending = 0u;
+    s_identity_insert_failed = false;
 }
 
 static void presentation_snapshot_report(void) {
@@ -842,7 +934,9 @@ static void presentation_snapshot_report(void) {
            "caminterp3=%llu caminterp4=%llu caminterp5=%llu "
            "caminterp6=%llu caminterp7=%llu "
            "rotarccheck=%llu rotarcsnap=%llu rotarcviolation=%llu "
-           "disconthold=%llu discontblend=%llu\n",
+           "disconthold=%llu discontblend=%llu "
+           "camcutnote=%llu camcutconsumed=%llu camcutunconsumed=%llu "
+           "identityinsertfail=%llu\n",
            (unsigned long long)s_stats.captures,
            (unsigned long long)s_stats.objects_peak,
            (unsigned long long)s_stats.discontinuities,
@@ -869,7 +963,11 @@ static void presentation_snapshot_report(void) {
            (unsigned long long)s_stats.rotation_arc_snaps,
            (unsigned long long)s_stats.rotation_arc_violations,
            (unsigned long long)s_stats.discontinuity_holds,
-           (unsigned long long)s_stats.discontinuity_blends);
+           (unsigned long long)s_stats.discontinuity_blends,
+           (unsigned long long)s_stats.camera_cut_notes,
+           (unsigned long long)s_stats.camera_cut_consumed,
+           (unsigned long long)s_stats.camera_cut_unconsumed,
+           (unsigned long long)s_stats.identity_insert_failures);
     fflush(stdout);
 }
 

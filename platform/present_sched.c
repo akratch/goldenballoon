@@ -1074,8 +1074,8 @@ extern void gfx_dkr_replay_get_object_stats(uint64_t *hits, uint64_t *holds);
 extern void gfx_dkr_replay_get_object_hold_classes(
     uint64_t *no_pair, uint64_t *discontinuous, uint64_t *still,
     uint64_t *moving);
-extern void gfx_dkr_replay_get_uncaptured_stats(uint64_t *externals,
-                                                uint64_t *refusals);
+extern void gfx_dkr_replay_get_uncaptured_stats(
+    uint64_t *externals, uint64_t *refusals, uint64_t *zero_alpha_interior);
 extern void gfx_dkr_replay_get_billboard_stats(
     uint64_t *matrix_hits, uint64_t *matrix_holds,
     uint64_t *vertex_hits, uint64_t *vertex_holds);
@@ -1102,6 +1102,7 @@ void present_sched_trace_summary(void) {
     uint64_t hold_no_pair = 0, hold_discont = 0;
     uint64_t hold_still = 0, hold_moving = 0;
         uint64_t uncaptured_externals = 0, uncaptured_refusals = 0;
+        uint64_t zero_alpha_interior = 0;
         uint64_t billboard_matrix_hits = 0, billboard_matrix_holds = 0;
         uint64_t billboard_vertex_hits = 0, billboard_vertex_holds = 0;
         GfxPresentationOwnerStats owner_stats;
@@ -1121,7 +1122,8 @@ void present_sched_trace_summary(void) {
         gfx_dkr_replay_get_object_hold_classes(
             &hold_no_pair, &hold_discont, &hold_still, &hold_moving);
         gfx_dkr_replay_get_uncaptured_stats(&uncaptured_externals,
-                                            &uncaptured_refusals);
+                                            &uncaptured_refusals,
+                                            &zero_alpha_interior);
         gfx_dkr_replay_get_billboard_stats(
             &billboard_matrix_hits, &billboard_matrix_holds,
             &billboard_vertex_hits, &billboard_vertex_holds);
@@ -1154,7 +1156,7 @@ void present_sched_trace_summary(void) {
                 "objhit=%llu objhold=%llu holdnopair=%llu "
                 "holddiscont=%llu holdstill=%llu holdmoving=%llu "
                 "uncapturedext=%llu "
-                "uncapturedrefusals=%llu\n",
+                "uncapturedrefusals=%llu zeroalphainterior=%llu\n",
                 (unsigned long long)walks, (unsigned long long)real_walks,
                 (unsigned long long)hits, (unsigned long long)misses,
                 (unsigned long long)rejects,
@@ -1172,7 +1174,8 @@ void present_sched_trace_summary(void) {
                 (unsigned long long)hold_still,
                 (unsigned long long)hold_moving,
                 (unsigned long long)uncaptured_externals,
-                (unsigned long long)uncaptured_refusals);
+                (unsigned long long)uncaptured_refusals,
+                (unsigned long long)zero_alpha_interior);
         fprintf(stderr,
                 "[RETAINED-TASK] begins=%llu captures=%llu failures=%llu "
                 "acquires=%llu rejects=%llu arenaBytes=%llu arenaBudget=%zu "

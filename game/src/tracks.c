@@ -2330,8 +2330,12 @@ void ttcam_update(s32 updateRate) {
          * orientation is written outright rather than eased, and its position
          * is written to a different camera object every tick regardless. Two
          * adjacent spectate points on the same track sit far inside the
-         * snapshot's teleport threshold and share camera slot PLAYER_FOUR, so
-         * nothing about the pose says "cut" — this does. */
+         * snapshot's teleport threshold and share one camera slot, so nothing
+         * about the pose says "cut" — this does.
+         *
+         * The argument is the VIEWPORT index; PLAYER_FOUR is this spectator's
+         * viewport, and the gCameras[] slot it records may be that plus four
+         * while a cutscene camera owns the viewport. */
         presentation_snapshot_note_camera_cut(PLAYER_FOUR);
 #endif
     } else if (gTTCamPlayerID != currentRacer->playerIndex) {

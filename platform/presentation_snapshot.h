@@ -201,6 +201,22 @@ typedef struct PresentationSnapshotStats {
     uint64_t rotation_arc_violations; /* results outside the [prev,curr] arc */
     uint64_t discontinuity_holds;     /* resolves the cut/spawn flag refused */
     uint64_t discontinuity_blends;    /* resolves that BLENDED a flagged entry */
+    /*
+     * Camera-cut note accounting. `notes` counts game-side declarations,
+     * `consumed` the captures that applied one. `unconsumed` counts notes
+     * still pending after the publish of the very viewport they name — zero by
+     * construction while the note sites and the capture agree on the viewport
+     * ID space, and the only witness that would fire if they stopped agreeing.
+     * A pose-based classifier cannot see that failure: a cut the pose does not
+     * carry is exactly the cut these notes exist for.
+     */
+    uint64_t camera_cut_notes;
+    uint64_t camera_cut_consumed;
+    uint64_t camera_cut_unconsumed;
+    /* Lifecycle spawn notes that could not register an identity. Each one
+     * fails the next commit whole (see note_spawn); nonzero means the identity
+     * table ran out of slots, not that anything was mis-blended. */
+    uint64_t identity_insert_failures;
 } PresentationSnapshotStats;
 
 /* Interpolated result handed to the renderer. Never written into a live
@@ -266,7 +282,7 @@ void presentation_snapshot_note_spawn(const void *object);
 void presentation_snapshot_note_free(const void *object);
 
 /*
- * Note that this tick's camera pose is a CUT, not motion.
+ * Note that this VIEWPORT's camera pose is a CUT, not motion.
  *
  * Capture already recognises the cuts it can see from the pose alone: a
  * different gCameras[] slot, a change of draw region, a capture gap, or a jump
@@ -278,10 +294,17 @@ void presentation_snapshot_note_free(const void *object);
  *
  * So the sites that SNAP a camera say so here, exactly the way spawn/free are
  * noted at the object lifecycle sites: the note is a fact the game knows and
- * the pose does not carry. It applies to the next capture of `camera_id` and
- * is consumed by it. No-op unless the seam is enabled.
+ * the pose does not carry.
+ *
+ * The argument is the VIEWPORT index (== the player index every note site
+ * already has), not the gCameras[] slot. The recorded slot is
+ * `viewport + (gCutsceneCameraActive ? 4 : 0)`, so a note filed in slot space
+ * from a player index is looked for four bits away on every tick a cutscene
+ * camera owns the viewport. The note applies to the next capture of
+ * `viewport_index` and is consumed by it; it is carried, not discarded, until
+ * that capture happens. No-op unless the seam is enabled.
  */
-void presentation_snapshot_note_camera_cut(int camera_id);
+void presentation_snapshot_note_camera_cut(int viewport_index);
 
 /*
  * Return the generation currently assigned by the lifecycle registry without

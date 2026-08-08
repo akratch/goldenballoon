@@ -673,12 +673,50 @@ bool mdkr_camera_replay_effect_world(
     return true;
 }
 
+/*
+ * The single camera precondition BOTH halves of a replayed billboard share.
+ *
+ * A billboard is drawn from two independent substitutions: an anchor position
+ * (the vertex override) and a local matrix (roll, scale, lens correction).
+ * They must stand or fall together. On a camera discontinuity the resolve
+ * reports the CURRENT (T+1) pose verbatim, and
+ * mdkr_camera_interpolated_view_projections skips that viewport, so the world
+ * is drawn with tick T's authored view-projection. Deriving anything from the
+ * T+1 pose on that frame would work against the very cut the notes exist to
+ * keep clean — so both halves hold the authored value, the same fail-closed
+ * direction the view-projection takes.
+ *
+ * The matrix half carried this check alone from the day it was added; the
+ * anchor half never had it, so for one frame after every camera cut sprite
+ * POSITIONS interpolated while sprite SCALE and TILT held at T — an expanding
+ * explosion that slid smoothly and stepped in size. One function, called by
+ * both, is what keeps them from diverging again.
+ */
+static bool mdkr_camera_replay_billboard_camera(
+    s32 viewport, u64 numerator, u64 denominator,
+    PresentationCameraPose *outCamera) {
+    PresentationCameraPose camera;
+
+    if (viewport < 0 ||
+        !presentation_snapshot_resolve_camera(
+            viewport, numerator, denominator, &camera) ||
+        !camera.interpolated) {
+        return false;
+    }
+    if (outCamera != NULL) {
+        *outCamera = camera;
+    }
+    return true;
+}
+
 bool mdkr_camera_replay_billboard_anchor(
-    const GfxPresentationMatrixOwner *owner, u64 numerator, u64 denominator,
-    f32 outPosition[3]) {
+    const GfxPresentationMatrixOwner *owner, s32 viewport, u64 numerator,
+    u64 denominator, f32 outPosition[3]) {
     ObjectTransform transform;
 
     if (outPosition == NULL ||
+        !mdkr_camera_replay_billboard_camera(
+            viewport, numerator, denominator, NULL) ||
         !mdkr_camera_replay_object_transform(
             owner, numerator, denominator, &transform)) {
         return false;
@@ -698,21 +736,13 @@ bool mdkr_camera_replay_billboard_matrix(
     s16 tilt;
     MdkrBillboardCorrection correction;
 
-    if (outMtx == NULL || viewport < 0 ||
+    /* Same camera precondition as the anchor half, from the same function —
+     * see mdkr_camera_replay_billboard_camera. */
+    if (outMtx == NULL ||
+        !mdkr_camera_replay_billboard_camera(
+            viewport, numerator, denominator, &camera) ||
         !mdkr_camera_replay_object_transform(
-            owner, numerator, denominator, &transform) ||
-        !presentation_snapshot_resolve_camera(
-            viewport, numerator, denominator, &camera)) {
-        return false;
-    }
-    /* On a camera discontinuity the resolve reports the CURRENT (T+1) pose
-     * verbatim, and mdkr_camera_interpolated_view_projections skips the
-     * viewport, so the world is drawn with tick T's authored view-projection.
-     * Deriving the billboard roll and lens correction from the T+1 pose on
-     * that same frame would roll billboards against the very cut the notes
-     * exist to keep clean. Hold the authored billboard matrix instead — the
-     * same fail-closed direction the view-projection takes. */
-    if (!camera.interpolated) {
+            owner, numerator, denominator, &transform)) {
         return false;
     }
     tilt = (s16)(camera.rotation_z + transform.rotation.z_rotation);

@@ -37,9 +37,18 @@ untouched. Do not evaluate this mid-race.
 | 1.2 | Save screen (file select) | The clearest place to see it. Filenames and labels sharp; the wooden furniture and layout unmoved. |
 | 1.3 | Any lap / finish time | Digits crisp; columns still line up exactly as they did. |
 | 1.4 | Character select, world hub signage | DKR's own colourful display lettering must look **exactly as it always has** — that is the game's handwriting and it is not replaced. |
-| 1.5 | Taj / T.T. dialogue boxes | Sharp subtitle text; the box, the breaks and the paging unchanged. |
+| 1.5 | Taj / T.T. dialogue boxes | Sharp text; the box, the breaks and the paging unchanged. Note this is still *SmallFont* — on a US ROM the dialogue boxes draw with it, not with the second replaced face (see below). |
 | 1.6 | Video → **High-resolution text** → Off → restart | Everything returns to the original letters. This is the player's escape hatch; confirm it works. |
 | 1.7 | Video → mode **Original** | Original mode is pixel-exact to the console and must ignore this feature entirely, even though the switch exists. |
+
+**Only one of the two replaced faces can appear on a US ROM.** The feature
+replaces `SmallFont` and `SubtitleFont`. `SubtitleFont` is never loaded on this
+build — the engine's font boot loads FunFont and SmallFont only
+(`game/src/font.c`), and both places that would select it (`game/src/menu.c`)
+sit inside `#if REGION == REGION_JP`, compiling to SmallFont everywhere else.
+So every hi-res glyph you can see is Roboto SemiBold standing in for SmallFont;
+the "MDKR Subtitle" face ships but renders nothing until JP support exists.
+Do not go hunting for a second typeface.
 
 **The failure to watch for is layout movement, not ugliness.** A word wrapping
 differently, a column shifting, or text touching a box edge it never touched is

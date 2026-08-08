@@ -755,8 +755,8 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                     endpoint_views, endpoint_count);
                 if (test_delayed_endpoint_replay() &&
                     present_sched_smoothing_enabled()) {
-                    endpoint_drew = gfx_dkr_replay_walk_interpolated(
-                        endpoint_views, endpoint_count, 0u, 1u);
+                    endpoint_drew = gfx_dkr_replay_walk_endpoint(
+                        endpoint_views, endpoint_count);
                 } else {
                     endpoint_drew = true;
                 }
