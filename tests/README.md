@@ -660,6 +660,7 @@ python3 tests/check_intro_shrub_sprite.py --build build --rom baserom.us.v80.z64
 python3 tests/check_rdp_interpolation.py --build build --rom baserom.us.v80.z64
 python3 tests/check_texture_edge_classification.py --build build --rom baserom.us.v80.z64
 python3 tests/check_font_sdf.py --build build --rom baserom.us.v80.z64
+python3 tests/check_font_outline.py --build build --rom baserom.us.v80.z64
 python3 tests/check_mip_motion.py --build build --rom baserom.us.v80.z64
 python3 tests/check_rl1_vertex_colour_ab.py --build build --rom baserom.us.v80.z64
 ```
@@ -684,7 +685,16 @@ character-select frame where the difference lands and bounds it from both sides,
 so an inert change and an over-broad one both fail.
 `check_font_sdf` runs mode/backend/control arms: Pure and Restored must be
 byte-identical, while Remastered must upload derived fields and change only
-known text regions. `check_mip_motion` measures temporal second-difference energy
+known text regions. `check_font_outline` is its counterpart for the outline
+redraw of the two plain lettering faces: it drives Restored and Remastered on
+both backends, requires the outline path to upload atlases, and requires every
+changed pixel to lie inside the text rectangle -- a redraw that leaked outside
+its glyph cells would move layout, which is the one thing the feature may not
+do. Pure stays pixel-identical even with `MDKR_HIRES_TEXT=1` forced, because
+Pure is denied structurally rather than by preset precedence. `clippedTexels`
+must be zero across all 94 authored glyphs; the control that reverts the
+per-cell fit reports 32 clipped texels on real glyph data, so the assertion is
+not vacuous. `check_mip_motion` measures temporal second-difference energy
 over a fixed 24-frame moving Everfrost Peak window with anisotropy pinned to one.
 `check_rl1_vertex_colour_ab` records the three RL-1 arms on Ancient Lake and
 Fire Mountain and enforces the measured decision to retain baked colour as the
