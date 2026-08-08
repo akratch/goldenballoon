@@ -621,7 +621,7 @@ whole story — as though the boundary step were an artifact of arms that hold
 what production interpolates. It is not. §3's step table measured **shipped
 production** too, and that row is the one that matters:
 
-| Arm (pre-fix, §3) | → alpha 0 | → 1/4 | → 2/4 | → 3/4 | interior mean | boundary excess |
+| Arm (pre-fix, §3) | → alpha 0 | → 1/4 | → 2/4 | → 3/4 | interior mean | boundary excess (pooled) |
 |---|---|---|---|---|---|---|
 | **`a120-allon` — production, v1.0.1-v1.0.3** | **10.810** | 10.509 | 8.658 | 8.626 | 9.264 | **+16.68%** |
 | `a120-effoff` | 11.300 | 9.586 | 9.766 | 9.921 | 9.758 | +15.81% |
@@ -635,7 +635,7 @@ coincidence is what made the earlier misreading easy.
 
 **The C1 anchoring fix is what closed it.** Production on the fixed build:
 
-| Arm | → alpha 0 | → 1/4 | → 2/4 | → 3/4 | boundary excess |
+| Arm | → alpha 0 | → 1/4 | → 2/4 | → 3/4 | boundary excess (pooled) |
 |---|---|---|---|---|---|
 | **`a120-allon` (fixed)** | **9.187** | 8.838 | 8.881 | 8.850 | **+3.73%** |
 | `a120-alloff` | 12.240 | 10.102 | 10.368 | 10.605 | +18.17% |
@@ -675,7 +675,9 @@ and only 20 of 29 ticks are positive.
 The same two boxes read **+10.31%** in the camera-only arm against production's
 **+10.00%**. Turning off all seven interpolation stages moves the HUD's
 boundary excess by 0.3 points — because no stage was ever touching it. The
-regions, and what they contain (full-frame 640x480 boxes):
+two boxes separately, and the route's scroller for contrast (full-frame
+640x480 boxes; these three rows are **pooled** means, so they sit slightly
+above the paired figures above and are not directly comparable to them):
 
 | Region | Box | Share of frame | Boundary | Interior | Excess |
 |---|---|---|---|---|---|
