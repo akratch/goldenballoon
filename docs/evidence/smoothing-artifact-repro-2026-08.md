@@ -84,8 +84,8 @@ full per-frame rows are in the appendix.
 | C4 | Replay reads storage it does not own | An interpolated walk resolving a non-arena dependency with no retained copy read the live pointer, by which time task K+1 had already been authored into it — a corruption of arbitrary shape. | `uncapturedext=0`, `uncapturedrefusals=0`, `staletenants=0` on all six arms here, and on all eleven bisection arms over 114,957 interpolated replays. | **Addressed (`26526db`).** |
 | C5 | Extra frames in flight at a high refresh | A swap chain deeper than one frame adds latency and lets the pacer's phase estimate drift from what the display shows. | Not measured here — every arm is GL and headless. | **Addressed for WebGPU (`e9fa33a`); unwitnessed on this route.** |
 | C6 | Effect shell drifts off the camera when the stage is *off* | With the effect matrix held, the retained MVP carries the tick-T camera while the camera itself interpolates, so the shell falls back and swells. | `a120-effoff`: centroid **7.3 / 16.2 / 24.5 px** from the authored pose and area **7,193 / 8,093 / 9,319 px** across the alpha grid — a clean ramp, and one that still breaks the 5.25 px envelope. | Reachable only through the test opt-out. This is the artifact C1's stage exists to remove, and it is the contrast arm for §2. |
-| C7 | **Residual tick-boundary step** | Content no stage covers advances only at the authored tick, so the step into the authored endpoint is larger than the steps inside it. On production that content is the 2D HUD. | Production arm, fixed build: **9.187** into the endpoint against an interior mean of **8.856** — **+3.73%**, and +2.69% at 60 Hz. The +16-18% first recorded here was the effect-off and camera-only arms, which hold what production interpolates. Two HUD boxes are 18.8% of the screen and 52.3% of the excess. §5.1. | **CLOSED — benign; authored partial coverage, bounded at +3.7%.** |
-| C8 | **UV-scroll phase holds** | Scroll batches that cannot be identity-matched hold their authored phase while the surface around them advances. | `uvscrollhold/uvscrollhit` = **10,248/70,389 at both rates — 14.56%**, because confirm-or-hold is decided once per tick and repeated at every alpha, so the ratio is rate-invariant by construction. Split by clause: **6,702 no {T-1} record, 3,546 oscillating displacement, 0 ambiguous, 0 shape**. **Zero holds in-race**: the window's 90 lookups all confirm, and the only race-time scroller confirms 726/726. §5.2. | **CLOSED — benign; the fail-closed refusal the wrap rule exists to make.** |
+| C7 | **Residual tick-boundary step** | Content no stage covers advances only at the authored tick, so the step into the authored endpoint is larger than the steps inside it — and until 2026-08-08 C1's displaced shell was snapping back on that same step. | **Shipped 1.0.3 production** (`a120-allon`, §3): **10.810** into the endpoint against an interior mean of **9.264** — **+16.68%**. After §4's anchoring fix: **9.187** against **8.856**, **+3.73%** — a factor of 4.5. What remains is significant only in the HUD (+10.00%, t=12.58, 29/29 ticks); the other 81% of the frame reads +1.49% with a 95% CI of −0.30%..+3.29%. §5.1. | **CLOSED — mostly C1, now benign; authored 2D HUD is the measured remainder.** |
+| C8 | **UV-scroll phase holds** | Scroll batches that cannot be identity-matched hold their authored phase while the surface around them advances. | `uvscrollhold/uvscrollhit` = **10,248/70,389 at both rates — 14.56%**, because confirm-or-hold is decided once per tick and repeated at every alpha, so the ratio is rate-invariant by construction. Split by clause: **6,702 no {T-1} record, 3,546 oscillating displacement, 0 ambiguous, 0 shape**. Route A holds only before the race (in-race: 90 lookups, 90 confirms); route B holds **through gameplay at 12.76%** of its sampled window. §5.2. | **CLOSED — benign; the fail-closed refusal the wrap rule exists to make. One named improvement left open (per-axis confirmation).** |
 | C9 | **Primitive-alpha overrides that reach no pixel** | 119,129 interpolated alpha substitutions changed nothing on this window. | The two numbers describe different presents: **48** of the 119,129 overrides fall inside the 30-tick pixel window (mean substitution 3.75 of 255, no particle, no projected shadow), and the other 119,081 are in scenes it never samples. Route B fires 178,038 and is pixel-gated. Stage cost under **7.0 us per replay** of 546 us. §5.3. | **CLOSED — benign; the zero was the sampling window, not the stage.** |
 
 C1 is the only class in this table that is both a live production defect and
@@ -469,8 +469,9 @@ it, which is the size of the problem C1 represents.
   show the step into the authored endpoint ~16–18% larger than the interior
   steps, but no arm attributes that residual to particular content. It is a
   measured magnitude with no named cause.
-  *(Superseded 2026-08-08 — see §5.1. Those two arms are not production, the
-  production figure is +3.73%, and the residual is attributed.)*
+  *(Superseded 2026-08-08 — see §5.1. The production arm in the same table
+  shows +16.68%, most of which was C1; after the fix production reads +3.73%
+  and the significant remainder is the 2D HUD.)*
 - **Neither proposed gate in §2.6 has been run against a fixed build**, because
   this is a diagnosis task and no production code was changed. They are verified
   only in the direction of rejecting the two builds measured here.
@@ -606,78 +607,147 @@ shell as of a displaced one, so it needed no re-pointing.
 
 ## 5. C7, C8 and C9 — dispositions, measured 2026-08-08
 
-All three are **benign**, and one of the three headline numbers in §1 was
-measuring the wrong thing. Every figure below is from the fixed build
-(`6ac92f7` plus the two census commits this section documents), same route,
-same window, same 640x480 GL dumps.
+All three are **benign** — but C7's headline number was real production
+behaviour, and the reason it is benign now is that §4's anchoring fix removed
+most of it. Every figure below is from the fixed build (`6ac92f7` plus the
+census commits this section documents), same route, same window, same 640x480
+GL dumps, with the pre-fix comparisons taken from §3's own table.
 
-### 5.1 C7 — the residual tick-boundary step is +3.7%, not +16-18%
+### 5.1 C7 — the tick-boundary step was real production behaviour, and the C1 fix shrank it 4.5x
 
-**The recorded 16-18% belongs to the contrast arms, not to production.** §3's
-step table reports `a120-effoff` (11.300 into the endpoint against 9.758
-interior, +16%) and `a120-alloff` (12.240 against 10.358, +18%) — and both of
-those arms *hold* content a production build interpolates, so the step into the
-authored endpoint is where everything they disabled catches up at once. That is
-the arms working, not an artifact. Production `a120-allon` on the fixed build:
+**First, a correction this note owes itself.** §1's C7 row cited the effect-off
+and camera-only arms, and an earlier draft of this section read that as the
+whole story — as though the boundary step were an artifact of arms that hold
+what production interpolates. It is not. §3's step table measured **shipped
+production** too, and that row is the one that matters:
 
-| Arm | → alpha 0 | → 1/4 | → 2/4 | → 3/4 | boundary vs interior |
+| Arm (pre-fix, §3) | → alpha 0 | → 1/4 | → 2/4 | → 3/4 | interior mean | boundary excess |
+|---|---|---|---|---|---|---|
+| **`a120-allon` — production, v1.0.1-v1.0.3** | **10.810** | 10.509 | 8.658 | 8.626 | 9.264 | **+16.68%** |
+| `a120-effoff` | 11.300 | 9.586 | 9.766 | 9.921 | 9.758 | +15.81% |
+| `a120-alloff` | 12.240 | 10.102 | 10.368 | 10.605 | 10.358 | +18.17% |
+
+A player on 1.0.3 with smoothing on was seeing a **+16.7%** step into every
+authored endpoint. The three arms agree within a couple of points because they
+were elevated for two different reasons at once — the contrast arms because
+they hold what production interpolates, production because of C1 — and that
+coincidence is what made the earlier misreading easy.
+
+**The C1 anchoring fix is what closed it.** Production on the fixed build:
+
+| Arm | → alpha 0 | → 1/4 | → 2/4 | → 3/4 | boundary excess |
 |---|---|---|---|---|---|
-| `a120-allon` (fixed) | **9.187** | 8.838 | 8.881 | 8.850 | **+3.73%** |
+| **`a120-allon` (fixed)** | **9.187** | 8.838 | 8.881 | 8.850 | **+3.73%** |
 | `a120-alloff` | 12.240 | 10.102 | 10.368 | 10.605 | +18.17% |
 | `a120-uvoff` | 9.203 | 8.835 | 8.877 | 8.846 | +3.90% |
 | `a60-allon` (fixed) | 13.912 | 13.548 | — | — | +2.69% |
 
-Medians tell the same story as the means (9.001 against 8.810 / 8.852 / 8.746),
-so the excess is a shift of the whole distribution and not a few outlier ticks.
-The three interior steps agree to **0.5%**, which is what the rest of this
-section rests on.
+**+16.68% to +3.73% — a factor of 4.5**, with no change to the HUD, the
+content, the route or the grid. The mechanism is the one §3 already named
+without following through: the pre-fix table's *two-big-two-small* shape is the
+displaced shell jumping out of place on the first interpolated present (10.509)
+and snapping back at the endpoint (10.810), with the two interior steps small
+(8.658, 8.626) because the shell was nearly static in between. The boundary
+step was carrying the snap-back. Anchor the shell to its own tick and the four
+steps flatten to 9.187 / 8.838 / 8.881 / 8.850.
 
-**(b) A half-frame phase error is excluded, exactly.** The pacing census
-measures the phase advance between consecutive presents directly:
-`[PRESENTPERF-HIST] series=alpha-delta n=12883 min=250000 p50=p95=p99=253952
-max=1250000 mean=250698 regressions=0 over=0 stalls=0` (parts per million of an
-authored tick, 4096-ppm bins). Every present advances the phase by **exactly
-250,000 ppm — one quarter tick** — the p99 sits in the same bin as the minimum,
-and no present ever regresses. The mean's 698 ppm of excess over the minimum is
-698 x 12,883 = 8.99 ticks, which is exactly the 36 stale holds' half-tick
-advances (36 x 0.25 = 9.0). There is no sub-grid offset anywhere in the run for
-a phase error to hide in, and the three equal interior steps say the same thing
-from the pixel side.
+**What is left, and how much of it is real.** Pooled means hide the per-tick
+pairing, so the residual is measured tick by tick: each authored boundary step
+against **its own tick's** three interior steps, n = 29 complete ticks.
 
-**(c) A hold burst at alpha transitions is excluded in the window.** None of
-the 119 measured steps is zero, so no present in the sampled window repeated
-its predecessor. Run-wide `stale=36` of 12,920 presents — 0.28%, and accounted
-for above.
+| Region | Share of frame | Boundary | Interior | Excess | t | 95% CI | ticks positive |
+|---|---|---|---|---|---|---|---|
+| Whole frame | 100% | 9.187 | 8.925 | **+2.93%** | 3.85 | +1.44% .. +4.42% | 25/29 |
+| HUD boxes (text + radar) | 18.81% | 8.806 | 8.006 | **+10.00%** | 12.58 | +8.44% .. +11.56% | **29/29** |
+| Everything else | 81.19% | 9.275 | 9.139 | **+1.49%** | 1.63 | **-0.30% .. +3.29%** | 20/29 |
 
-**(a) Partial coverage is the cause, and it is dominated by the 2D HUD.**
-Decomposing the boundary excess by screen region (full-frame 640x480 boxes,
-mean absolute difference inside each box):
+**The reference this has to be read against is zero.** On a uniform alpha grid
+every step is the same fraction of a tick, so content every stage covers moves
+the same distance on each of the four steps and its boundary excess is 0. The
+same non-HUD region with every stage switched off reads **+18.58%** (t = 23.29,
+29/29 ticks) — that is what uncovered content looks like at this sample size.
 
-| Region | Box | Share of frame | Boundary | Interior | Excess | Share of frame excess |
-|---|---|---|---|---|---|---|
-| HUD text — position / lap / bananas / time | y 24-104, x 40-600 | 14.58% | 9.297 | 8.247 | **+12.73%** | **46.4%** |
-| HUD radar — minimap disc and blip | y 330-430, x 470-600 | 4.23% | 7.113 | 6.653 | +6.92% | 5.9% |
-| Waterfall sheet (the route's UV scroller) | y 0-300, x 280-470 | 18.55% | 10.051 | 9.709 | +3.52% | 19.2% |
-| Whole frame minus both HUD boxes | — | 81.19% | 9.275 | 9.081 | **+2.14%** | — |
+Against those two poles: **the HUD excess is unambiguous and the rest is not
+distinguishable from zero.** The non-HUD 95% confidence interval includes zero
+and only 20 of 29 ticks are positive.
 
-**18.8% of the screen carries 52.3% of the excess, and it is the HUD.** The
-waterfall's share is proportional to its area — it is not anomalous, and the
-`a120-uvoff` row above confirms it: turning UV scroll off moves the boundary
-step by 0.016, so C8's holds contribute nothing measurable to C7 on this route.
+**The HUD component is stage-independent, which is the proof it is authored.**
+The same two boxes read **+10.31%** in the camera-only arm against production's
+**+10.00%**. Turning off all seven interpolation stages moves the HUD's
+boundary excess by 0.3 points — because no stage was ever touching it. The
+regions, and what they contain (full-frame 640x480 boxes):
 
-The pixel-level version of the same statement: pixels whose mean boundary step
+| Region | Box | Share of frame | Boundary | Interior | Excess |
+|---|---|---|---|---|---|
+| HUD text — position / lap / bananas / time | y 24-104, x 40-600 | 14.58% | 9.297 | 8.247 | +12.73% |
+| HUD radar — minimap disc and blip | y 330-430, x 470-600 | 4.23% | 7.113 | 6.653 | +6.92% |
+| Waterfall sheet (the route's UV scroller) | y 0-300, x 280-470 | 18.55% | 10.051 | 9.709 | +3.52% |
+
+The pixel-level version says the same thing: pixels whose mean boundary step
 exceeds 4 while their mean interior step stays under 0.5 — content that moves
-*only* at the authored tick — number **514 of 307,200 (0.167% of the frame)**
-and carry **11.19%** of the excess, inside a bounding box of y 66-369,
-x 504-579. That is the TIME digits and the radar blip, and nothing else.
+*only* at the authored tick — number **514 of 307,200 (0.167% of the frame)**,
+inside a bounding box of y 66-369, x 504-579. That is the TIME digits and the
+radar blip, and nothing else. UV scroll contributes nothing measurable: the
+`a120-uvoff` arm moves the boundary step by 0.016.
 
-**Disposition: benign, and inherent.** The HUD is screen-space texrects whose
-content is discrete (digits, a blip position) and whose geometry the
-presentation packet does not cover, by construction — there is no world-space
-pose pair to interpolate and no meaningful intermediate value for a digit. The
-whole-frame effect is a **3.7% step-size ripple at 30 Hz**, against the 12%
-two-big-two-small signature C1 produced before it was fixed. It is measured,
-bounded, and not a candidate for the owner's complaint. **No fix.**
+**The non-HUD remainder is diffuse, and named as open.** Tiling the non-HUD
+frame at 32x32: **173 of 300 tiles carry positive excess and 127 carry
+negative**, the top five tiles carry only 27.9%, and the positive mass (78,146)
+exceeds the net (48,363) by 62% — most of it cancels. The largest cluster
+(y 256-383, x 288-383) is the player kart and its forced shield. That is
+consistent with a small real contribution from per-tick discrete content
+(texture-frame animation, sprite spawn and despawn) sitting under sampling
+noise, and this note does **not** claim to have attributed it: 47% of a
+residual that is itself statistically indistinguishable from zero is recorded
+as open in §5.4, not explained.
+
+**The other two candidate causes, against what the data actually supports.**
+
+*(b) A half-frame phase error — excluded, with the census read correctly.* The
+pacing census differences the **monotone phase** (whole ticks plus sub-tick
+alpha, in ppm of a tick) between consecutive **displayed** presents. Held
+presents are not displayed and contribute no sample: `presents=12920`,
+`displayed=12884`, and 12,920 − 12,884 = **36**, the run's stale-hold count
+exactly. Over the 12,883 intervals:
+
+```
+[PRESENTPERF-HIST] series=alpha-delta n=12883 min=250000 p50=253952
+p95=253952 p99=253952 max=1250000 mean=250698 regressions=0 over=0 stalls=0
+```
+
+**No interval is ever shorter than exactly one quarter tick, and at least 99%
+are exactly that** — `min` is 250,000 and p50, p95 and p99 all sit in the
+250,000-254,095 bin. A half-frame phase error puts displayed intervals at
+values that are not multiples of a quarter tick, or moves p50 off the minimum;
+neither happens, so the first interpolated present is on the exact rational
+grid the subloop claims.
+
+The tail to `max=1250000` is **not** a counter-example, and the earlier draft's
+"every present advances exactly one quarter tick" was too strong: a held
+present's quarter tick of advance is not lost, it lands in the *following*
+interval. So the legal values above the minimum are 500,000 (one hold),
+750,000 (two), and 1,250,000 (four consecutive holds) — all exact multiples of
+the grid step. The arithmetic closes: the 36 holds carry 36 x 250,000 =
+**9,000,000 ppm** of deferred advance, and the measured total excess over the
+minimum is (250,698 − 250,000) x 12,883 = **8,992,334 ppm**. Nine ticks against
+nine ticks.
+
+`stalls=0` and `stale=36` are not in conflict either: `stalls` counts two
+**displayed** presents landing on an identical phase — a frame the player could
+not tell from its predecessor — and a stale hold is never displayed, so it is
+outside that census by construction. What this census cannot speak to is the 36
+held presents' own phase, because it does not sample them.
+
+*(c) A hold burst at the alpha transitions — excluded in the measured window.*
+None of the 119 steps in the sampled window is zero, so no present there
+repeated its predecessor. Run-wide the holds are 36 of 12,920 presents (0.28%),
+and (b) accounts for all of them.
+
+**Disposition: benign.** The measured, significant part of the residual is the
+2D HUD — screen-space texrects whose content is discrete (digits, a blip
+position) and which have no world-space pose pair to interpolate. The
+whole-frame effect is a **2.9% step-size ripple**, against the **16.7%** the
+same route showed in shipped 1.0.3. **No fix**; C1's fix was the fix.
 
 ### 5.2 C8 — every UV-scroll hold is a refusal the contract exists to make
 
@@ -692,7 +762,8 @@ bounded, and not a candidate for the owner's complaint. **No fix.**
 | `uvscrollholdshape` — triangle count moved | **0** | — |
 | total, against 70,389 confirmations | 10,248 | 12.71% of 80,637 lookups |
 
-Route B (battle challenge) splits the same way: 21,930 / 4,698 / 0 / 0.
+Route B (battle challenge, 4,200 ticks) splits the same way:
+21,930 / 4,698 / 0 / 0, over 248,727 lookups — 10.71%.
 
 **The rate independence is arithmetic, not evidence of load.** Confirm-or-hold
 is decided once per (authored tick, batch) from the published table, and every
@@ -700,17 +771,27 @@ alpha inside that tick repeats the same decision. Both the numerator and the
 denominator therefore scale with presents-per-tick, and the ratio is the same
 at 60 and 120 Hz **by construction**. It was never a load signal.
 
-**Where the holds actually are.** 18 of the 19 batch keys the replay ever
-looks up hold at least once, and **the last hold on the route is at authored
-tick 3122** — before the countdown clears. In the window every other
-measurement in this note uses, ticks 3200-3230, there are **90 UV-scroll
-lookups and 90 confirmations: zero holds**.
-The only scroller live during the race, key `0xc8620a650` (ticks 2988-3229),
-confirms **726 of 726**. The 14.56% is a menu-and-lobby number.
+**Where the holds are on route A: before the race.** 18 of the 19 batch keys
+the replay ever looks up hold at least once, and **the last hold on this route
+is at authored tick 3122** — before the countdown clears. In the window every
+other measurement in this note uses, ticks 3200-3230, there are **90 UV-scroll
+lookups and 90 confirmations: zero holds**. The only scroller live during the
+race, key `0xc8620a650` (ticks 2988-3229), confirms **726 of 726**. Route A's
+14.56% is a menu-and-lobby number.
 
-**The two clauses, named.** The 3,546 phase holds are four triangle batches in
-a pre-race scene (ticks 269-567) whose per-tick U displacement genuinely
-oscillates — successive published ticks report du of -98, +98, +25, -97 S10.5
+**Where the holds are on route B: throughout, including gameplay.** This does
+not generalise from route A, and route B is the counter-case. Its holds run to
+authored tick 4198, and in the last 30 ticks — the window its own bisection arm
+dumps — there are **3,432 lookups, 2,994 confirmations and 438 holds: 12.76%,
+all `unpublished`, no phase holds**. Per 500-tick band the hold rate on route B
+sits between 5.2% and 11.8% from tick 500 to the end. A battle challenge is
+gameplay, so **UV-scroll holds do reach the screen during play on some
+content** — at roughly one lookup in eight, each costing one authored tick of
+one surface's texture phase.
+
+**The two clauses, named.** Route A's 3,546 phase holds are four triangle
+batches in a pre-race scene (ticks 269-567) whose per-tick U displacement
+genuinely oscillates — successive published ticks report du of -98, +98, +25, -97 S10.5
 units on the same batch, sign included. There is no constant tick displacement
 for the replay to scale by alpha, and interpolating one of those readings would
 sweep the surface the wrong way for a quarter of a tick. Refusing is the
@@ -721,6 +802,19 @@ and a 1-triangle companion (723 against 1,359) — batches that publish
 intermittently rather than every tick, so a third of their own lookups find no
 adjacent pair to confirm against. Each such hold self-clears on the batch's
 next published tick.
+
+**Route B adds a second phase-hold shape, and a named limitation.** Six of its
+ten phase-holding keys are 12-triangle batches whose displacement alternates
+between `du=0, dv=2` and `du=4, dv=2` on adjacent ticks (576 lookups at each
+reading). That is a sub-unit U scroll rate quantised to whole S10.5 units: the
+surface really does advance 4 units every other tick, so **no two consecutive
+ticks can ever agree** and the batch phase-holds on every present it is drawn
+in. Its V axis, meanwhile, is a constant 2 per tick and could be interpolated —
+the confirmation is per record, not per axis, so a disagreement on U refuses V
+with it. A per-axis confirmation is the obvious improvement and it is
+deliberately **not** made here: it widens a fail-closed contract at the end of
+a hardening task, it needs its own red-then-green witness, and the axis it
+would newly interpolate is the one the wrap rule protects. Recorded in §5.4.
 
 **Disposition: benign, fail-closed by design. No fix.** A hold is one authored
 tick of one surface's texture phase, and the alternative — interpolating a
@@ -761,10 +855,11 @@ window it reports 50,372 changed draws from 97,849 compatible pairs and 35 of
 stop reaching the backend.
 
 **The cost, bounded.** `[PRESENTPERF] section=replay` over 9,681 replays:
-**545,996 ns** mean with the stage on, **538,970 ns** with it off. The stage is
-therefore under **7.0 microseconds per replay**, 1.3% of the replay section and
-0.08% of a 120 Hz presentation interval. One sample per arm, so read it as a
-bound rather than a measured delta.
+**545,996 ns** mean with the stage on, **538,970 ns** with it off — a
+difference of **7,026 ns**, so the stage costs **about 7.0 microseconds per
+replay** (under 7.1), 1.3% of the replay section and 0.08% of a 120 Hz
+presentation interval. One sample per arm, so read it as a bound rather than a
+measured delta.
 
 **Disposition: benign. No fix.** The correction is to the claim, not the code:
 §1's C9 row said "119,129 interpolated alpha substitutions changed nothing on
@@ -773,15 +868,60 @@ and the other 119,081 were never sampled.
 
 ### 5.4 What C7/C8/C9 leave open
 
-- **Still one route, one window.** The C7 region decomposition is Jungle Falls
-  under a chase camera; a HUD-heavy layout (four-player split, a boss lap
-  counter) would redistribute the 52.3% and this note does not say how.
-- **The wave-driven phase holds are named, not fixed by content.** They are a
-  pre-race scene here. A track whose *race* geometry oscillates its UV phase
-  would hold in-race, and no arm in this note exercises one.
+- **C7's non-HUD residual is not attributed.** It is +1.49% with a 95%
+  confidence interval of -0.30% .. +3.29% over 29 ticks, so it may be nothing;
+  but it is 47% of the whole-frame excess and 173 of 300 screen tiles carry
+  some of it. A longer sample would say whether it is real, and if it is, the
+  candidates are per-tick discrete content no stage can cover by construction
+  (texture-frame animation, sprite spawn and despawn). This note does not
+  claim to have identified it.
+- **The 36 held presents' own phase is unmeasured.** The alpha-delta census
+  samples displayed frames only, so it can prove the displayed grid is exact
+  and cannot say anything about the phase a held present would have carried.
+- **C7 is one route, one window, one HUD layout.** Jungle Falls under a chase
+  camera. A split-screen or boss layout redistributes the HUD's 52% share and
+  nothing here says how.
+- **UV-scroll holds reach gameplay on route B and the per-axis limitation
+  stands.** 12.76% of lookups hold in its sampled window, and its
+  alternating-`du` batches phase-hold on every present because confirmation is
+  per record rather than per axis. Splitting the confirmation by axis would let
+  the constant V component glide; it is not done here (see §5.2) and remains
+  the one open improvement any of these three classes suggests.
 - **C5 is still unwitnessed**, as §4.6 records: nothing here runs against a
   real display, so a physical-vsync component of the owner's complaint is
   neither confirmed nor excluded.
+
+### 5.5 What did not change, and how that was checked
+
+The three census commits add counters and change no branch. The witness is the
+same one §4.5 uses, re-run against the pre- and post-census binaries on route A
+(3,230 authored ticks, `MDKR_PRESENT_RATE=120`,
+`MDKR_PRESENT_SMOOTHING=interpolate`, `MDKR_FORCE_SHIELD=12680:600`, GL,
+`--window-size 320x240`, autopilot on `nav_to_time_trial_race.txt`):
+
+- `[SIMHASH]`/`[EVENTHASH]`/`[INPUTHASH]`: **9,690 rows, byte-identical**;
+- the 120 dumped presents (`MDKR_DUMP_FROM=12800`): **120 of 120 frames
+  byte-identical**.
+
+The magnitude census is itself gated rather than trusted. Mutating
+`primitive_alpha_delta_sum += delta` to `+= 0u` and the peak comparison to a
+constant, then running the same 900-tick arm:
+
+| Build | `primalphaoverride` | `primalphadeltasum` | `primalphadeltapeak` | Gate |
+|---|---|---|---|---|
+| mutated | 34,780 | **0** | **0** | **FAIL** — "the magnitude census is accumulating nothing" |
+| as committed | 34,780 | 544,082 | 191 | PASS (mean 15.64) |
+
+`check_smoothing_stage_bisection.py` asserts that identity — an override is a
+changed alpha byte, so the sum cannot fall below the count and the peak cannot
+be zero — on both routes' production arm, and prints
+`[PRIM-ALPHA-MAGNITUDE]`. The UV-scroll clause counters are held to their
+aggregate by the same gate and print `[UV-SCROLL-HOLDS]`.
+
+Standing gates, all green on the committed tree: `check_presentation_matrix.py`,
+`check_smoothing_stage_bisection.py`, `check_effect_shell_envelope.py`, and the
+`presentation_packet` unit (which now carries the UV-scroll contract's first
+unit coverage).
 
 ## Appendix A — the shell-track measurement, reproducible
 
