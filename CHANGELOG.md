@@ -12,15 +12,17 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ### Fixed
 
-- **The shield and magnet shell no longer detaches from its racer under
-  Motion smoothing.** With smoothing on, an interpolated shield or magnet
-  shell was placed a full authored tick ahead of the kart it belongs to —
-  visibly a separate object trailing up-track, mostly hidden behind the
-  kart's own body — on every in-between picture the game drew at a high
-  refresh rate. The shell now stays anchored to the racer's own tick, the
-  same fix closes a second, rarer case where a billboard (Taj's portrait and
-  similar) could carry a stale tick stamp across a paused or elided draw, and
-  a standing gate holds both closed.
+- **The shield shell no longer detaches from its racer under Motion
+  smoothing.** With smoothing on, an interpolated shield shell was placed a
+  full authored tick ahead of the kart it belongs to — visibly a separate
+  object trailing up-track, mostly hidden behind the kart's own body — on
+  every in-between picture the game drew at a high refresh rate. The shell
+  now stays anchored to the racer's own tick; the same fix closes a second,
+  rarer case where a billboard (Taj's portrait and similar) could carry a
+  stale tick stamp across a paused or elided draw, and a standing gate holds
+  both closed. The magnet shell goes through this same code path and is
+  fixed by the same change, but has not itself been played back and measured
+  — only the shield was.
 - **A scripted camera cut no longer blends.** The camera handover after a
   race, the third-person time-trial spectator cut, and switching camera
   modes each move the eye outright; Motion smoothing was blending across all
@@ -41,16 +43,17 @@ save formats). Everything below 1.0.0 predates that commitment.
   doesn't own.
 - **The WebGPU picture pipeline holds one fewer frame in flight**, so what's
   on screen is one refresh closer to current, matching a defense the
-  reference decompilation already carries.
+  reference port already carries.
 
 ### Added
 
 - A new automated check plays back six specific things Motion smoothing must
   never do — spin a kart the wrong way round, smear a respawn across the
-  screen, blend through a camera cut, run time backwards, or thump on the
-  authored tick — stated the way a player would notice them, not the way the
-  renderer produces them, so a future regression in any of these fails a
-  build before it reaches a player.
+  screen, blend through a camera cut, let a shield shell escape its racer,
+  run time backwards, or thump on the authored tick — stated the way a
+  player would notice them, not the way the renderer produces them, so a
+  future regression in any of these fails a build before it reaches a
+  player.
 
 ## [1.1.0] — 2026-08-07
 

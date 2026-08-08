@@ -20,9 +20,9 @@ any of these has to break a test, not just look wrong on a TV.
 
 | Class | What it was | Fix | Witness |
 |---|---|---|---|
-| **C1 — effect shell rides one tick ahead** | The shield/magnet shell's position residual was measured against the wrong snapshot, adding a full authored tick of racer travel to its world position. On the diagnosis route the shell sat **50.8 px** from its own tick's authored pose — flat across the alpha grid, not a ramp — against a 5.25 px per-tick travel budget, and lost 65% of its area to recession and kart-body occlusion on every interpolated frame. This is the shipped defect: v1.0.1–v1.0.3 all carried it. | `mdkr_camera_replay_effect_world` now hands the tick-T capture to the base transform so the residual cancels (`b3186a9`, "anchor the effect shell to its own tick"). A second instance — billboard recipes stamped one tick behind at abandoned-pass boundaries — was found by the same structural witness and closed the same way (`presentation_task_authoring_begin` discards live registrations on a new authoring lifetime). | `97cea1d` gates the pixel envelope (`tests/check_effect_shell_envelope.py`); the structural witness `ownertickmismatch` goes from 717 to 0 across 2,404,110 checks on all eleven bisection arms. §4 of the evidence doc. |
+| **C1 — effect shell rides one tick ahead** | The effect shell's position residual was measured against the wrong snapshot, adding a full authored tick of racer travel to its world position. Measured on the shield, on the diagnosis route: the shell sat **50.8 px** from its own tick's authored pose — flat across the alpha grid, not a ramp — against a 5.25 px per-tick travel budget, and lost 65% of its area to recession and kart-body occlusion on every interpolated frame. This is the shipped defect: v1.0.1–v1.0.3 all carried it. The shield is the measured instance; the magnet effect shell goes through the same `mdkr_camera_replay_effect_world` path and the evidence doc states twice that it was never itself run — the fix should apply to it by shared code, unwitnessed. | `mdkr_camera_replay_effect_world` now hands the tick-T capture to the base transform so the residual cancels (`b3186a9`, "anchor the effect shell to its own tick"). A second instance — billboard recipes stamped one tick behind at abandoned-pass boundaries — was found by the same structural witness and closed the same way (`presentation_task_authoring_begin` discards live registrations on a new authoring lifetime). | `97cea1d` gates the pixel envelope (`tests/check_effect_shell_envelope.py`) **on the shield only**; the structural witness `ownertickmismatch` (which does cover both) goes from 717 to 0 across 2,404,110 checks on all eleven bisection arms. §4 of the evidence doc, and "Explicitly open" / §4.6: "the magnet path is unmeasured as such... no arm in this note or in the gate forces a magnet rather than a shield." |
 | **C2/C3-adjacent — camera blends across a cut** (3 classes: post-race spectate handover, 3P T.T. spectator cut, camera-mode reframe) | Each cut moves the eye outright but stayed inside the teleport threshold and camera slot, so nothing told the replay it was a cut — the interpolator blended across it instead of snapping. | `0c6cb33`, `48d79d6`, `969bd2e` — one fix per cut class, each classified and never blended. | `tests/check_camera_snapshot_coverage.py`'s cut classifier (`6bffbc2`): 12 blended cuts before, 0 after. |
-| **C3 — rotation smears past a quarter turn** | An interpolated angle advancing more than a quarter turn per tick would smear the long way round instead of snapping. | `2dafae2`, "snap interpolated angles past a quarter turn per tick." | Not the diagnosis route's artifact (shield/magnet phase rates stay under the snap there), but closed and gated for any content that does cross it. |
+| **C3 — rotation smears past a quarter turn** | An interpolated angle advancing more than a quarter turn per tick would smear the long way round instead of snapping. | `2dafae2`, "snap interpolated angles past a quarter turn per tick." | Not the diagnosis route's artifact (the shield's phase rate stays under the snap there; the magnet's phase rate is not established), but closed and gated for any content that does cross it. |
 | **C4 — replay reads storage it does not own** | 18 non-arena port static display lists (`dRdpInit`, `dRspInit`, the render-settings table, dialogue/transition lists) plus 4 already-owned segment-token resolutions were read live mid-replay with no retained copy — by the time an interpolated walk ran, the next authored tick could already have overwritten them. | The real walk now copies the 18 static lists (`dkr_capture_nonarena_list`); the retain path short-circuits the 4 already-owned resolutions before the dependency lookup; and the replay fails closed on anything still uncaptured — held authored image instead of a live read (`26526db`, "refuse interpolated replay over an uncaptured external"). | `uncapturedext=0` on all eleven production arms, 114,957 interpolated replays; the forced-miss control refuses 1,779 of 1,791 walks and turns them into held frames, proving the refusal path isn't vacuous. §§4.4, "uncaptured-external fail-closed arm" in [`smoothing-stage-attribution-2026-08-08.md`](evidence/smoothing-stage-attribution-2026-08-08.md). |
 | **C5 — WebGPU swap chain one frame deeper than needed** | `desiredMaximumFrameLatency` was unpinned, adding latency and letting the pacer's phase estimate drift from what the display shows. | Pinned to the backend minimum (1) at both configure sites — the engine's own and the app shell's adopted window (`e9fa33a`, "pin the WebGPU swap chain to one frame in flight"). | `[PRESENT-MODE]` reports `frameLatency=1`; `[SURFACE-CONFIG] owner=app-shell` reports `frameLatency=1` for the adopted window; four negative controls (missing row, depth-2 shell, depth-2 engine) confirm the assertion bites. **Real-display pacing feel and end-to-end throughput are unmeasured — see §3.** |
 | **C7 — tick-boundary step** | Content no interpolation stage covers only advances at the authored tick, so the step into the authored endpoint reads larger than the interior steps. Shipped 1.0.3 production measured +16.68%, most of it C1 riding on the same boundary. | No separate fix — C1's anchoring fix removed most of the step. | After the fix: +3.73%, a 4.5x reduction. What remains is significant only in the 2D HUD (+10.00%, 29/29 ticks); the other 81% of the frame is not statistically distinguishable from zero (95% CI −0.30%..+3.29%). Dispositioned benign; §5.1 of the evidence doc. |
@@ -48,18 +48,25 @@ rejection happened on.
 1. **Diagnosis route (required): Jungle Falls, level 29, 3-lap, with shield
    pickups.** This is the exact route the artifact repro used, and the one
    most likely to reproduce anything still present. Pick up and hold at least
-   one shield or magnet per lap, at speed, so the effect shell is live on
-   screen for sustained stretches — not just a single tap-and-release.
+   one shield per lap, at speed, so the effect shell is live on screen for
+   sustained stretches — not just a single tap-and-release. **Also pick up and
+   hold a magnet at least once, on this route or your own play** — the fix
+   only measured the shield; the magnet shell goes through the identical code
+   path but has never itself been watched, and this session is the first
+   chance for a human eye to close that gap (see §3).
 2. **Your own free choice of track(s) and vehicle(s).** Whatever you'd
    naturally play. This branch's diagnosis only drove one route under
    autopilot; nothing here rules out a different one showing something new.
 
 **What to look for, mapped to what's now fixed:**
 
-- **Shield/magnet shell riding ahead of the kart, or a washed-out halo
-  behind/above it instead of over it** — this was C1, the shipped defect.
-  Should be gone: the shell should sit on the kart, not detached up-track,
-  through pickup, hold and release.
+- **Shield shell riding ahead of the kart, or a washed-out halo behind/above
+  it instead of over it** — this was C1, the shipped defect, measured and
+  fixed on the shield. Should be gone: the shell should sit on the kart, not
+  detached up-track, through pickup, hold and release. **Magnet shell: same
+  check, but this is the first time anyone has looked** — the magnet takes
+  the same fix through the same code path, unmeasured until now; report what
+  you see either way.
 - **The camera popping or snapping unnaturally at a scripted cut** — post-race
   spectate handover, the 3P time-trial spectator cut, any camera-mode
   reframe. These now hard-cut instead of blending; if you see a pop, that is
@@ -83,6 +90,13 @@ that this branch's host could not obtain (every command-launched window on
 that host reports occluded to the Metal backend). This session is the first
 chance to close them:
 
+- **The magnet shell, unmeasured.** C1's fix is shared code between the
+  shield and the magnet, but only the shield was ever run through the
+  diagnosis or the pixel gate — the evidence doc says so twice ("the magnet
+  path is unmeasured", "no arm... forces a magnet rather than a shield").
+  Picking up a magnet during this session and watching whether its shell
+  stays anchored is a direct, human-eyes close of that gap; nothing headless
+  has done it.
 - **C5's real-display pacing feel.** The swap-chain depth pin is landed and
   gated structurally (`frameLatency=1` on both configure sites), but no run
   here has measured whether it feels right, or costs anything, on an actual
