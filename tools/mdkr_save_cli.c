@@ -41,8 +41,37 @@ static void usage(const char *program) {
             "  %s export INPUT OUTPUT.mdkr-save\n"
             "  %s export-raw INPUT OUTPUT.eep\n"
             "  %s import INPUT DESTINATION.eep [--recover-corrupt]\n"
-            "  %s recover INPUT OUTPUT.eep\n",
-            program, program, program, program, program);
+            "  %s recover INPUT OUTPUT.eep\n"
+            "  %s edit-slot-state INPUT OUTPUT SLOT create|erase\n"
+            "  %s edit-slot-name INPUT OUTPUT SLOT NAME\n"
+            "  %s edit-slot-field INPUT OUTPUT SLOT FIELD VALUE\n"
+            "      FIELD: taj-flags|trophies|bosses|tt-amulet|wizpig-amulet|"
+            "keys|cutscenes\n"
+            "  %s edit-course INPUT OUTPUT SLOT COURSE STATUS\n"
+            "  %s edit-course-all INPUT OUTPUT SLOT STATUS\n"
+            "  %s edit-balloon INPUT OUTPUT SLOT WORLD COUNT\n"
+            "  %s edit-balloon-all INPUT OUTPUT SLOT COUNT\n"
+            "  %s edit-world-flags INPUT OUTPUT SLOT WORLD FLAGS\n"
+            "  %s edit-world-flags-all INPUT OUTPUT SLOT FLAGS\n"
+            "  %s edit-config INPUT OUTPUT FIELD VALUE\n"
+            "      FIELD: adventure-two|drumstick|language|tt-courses|"
+            "default|subtitles\n"
+            "  %s reset-records INPUT OUTPUT MASK\n"
+            "\n"
+            "The edit-* commands read and validate INPUT, apply exactly one\n"
+            "field write through the engine's own save codec (platform/"
+            "save_codec.c),\n"
+            "and atomically install the result at OUTPUT (which may equal "
+            "INPUT).\n"
+            "COURSE/WORLD counts and field widths are the codec's compile-"
+            "time\n"
+            "constants (MDKR_SAVE_COURSE_COUNT / MDKR_SAVE_WORLD_COUNT), "
+            "never a\n"
+            "caller-supplied guess -- run `inspect` on a fresh slot to see "
+            "them.\n",
+            program, program, program, program, program, program, program,
+            program, program, program, program, program, program, program,
+            program, program);
 }
 
 static int read_input_file(const char *path, InputFile *out) {
@@ -449,6 +478,360 @@ static int command_import(const char *input_path, const char *output_path,
     return write_atomic(output_path, payload, sizeof(payload), 1) ? 0 : 1;
 }
 
+/* Shared tail for every edit-* command: validate the freshly-patched image
+   decodes cleanly (apply_patch() inside save_tools_core already guarantees
+   this, but a corrupt INPUT can still slip an unrelated block through
+   unchanged) and install it atomically. Editing in place (OUTPUT == INPUT) is
+   supported the same way import/recover already support it. */
+static int install_edit(const uint8_t payload[MDKR_SAVE_IMAGE_SIZE],
+                        const char *output_path) {
+    return write_atomic(output_path, payload, MDKR_SAVE_IMAGE_SIZE, 1) ? 0 : 1;
+}
+
+static int parse_unsigned(const char *text, unsigned long *out) {
+    char *end = NULL;
+    unsigned long value;
+    if (text == NULL || text[0] == '\0') return 0;
+    errno = 0;
+    value = strtoul(text, &end, 0);
+    if (errno != 0 || end == NULL || *end != '\0') return 0;
+    *out = value;
+    return 1;
+}
+
+static int command_edit_slot_state(const char *input_path,
+                                   const char *output_path,
+                                   const char *slot_text, const char *mode) {
+    uint8_t payload[MDKR_SAVE_IMAGE_SIZE];
+    uint8_t edited[MDKR_SAVE_IMAGE_SIZE];
+    unsigned long slot;
+    int create = strcmp(mode, "create") == 0;
+    int erase = strcmp(mode, "erase") == 0;
+    MdkrSaveToolResult result;
+    if (!create && !erase) {
+        fprintf(stderr, "mdkr-save: edit-slot-state mode must be create or erase\n");
+        return 1;
+    }
+    if (!parse_unsigned(slot_text, &slot)) {
+        fprintf(stderr, "mdkr-save: invalid SLOT '%s'\n", slot_text);
+        return 1;
+    }
+    if (!decode_input(input_path, payload)) return 1;
+    result = mdkr_save_edit_slot_state(payload, (unsigned) slot, create, erase,
+                                       edited);
+    if (result != MDKR_SAVE_TOOL_OK) {
+        fprintf(stderr, "mdkr-save: edit-slot-state failed: %s\n",
+                mdkr_save_tool_result_string(result));
+        return 1;
+    }
+    return install_edit(edited, output_path);
+}
+
+static int command_edit_slot_name(const char *input_path,
+                                  const char *output_path,
+                                  const char *slot_text, const char *name) {
+    uint8_t payload[MDKR_SAVE_IMAGE_SIZE];
+    uint8_t edited[MDKR_SAVE_IMAGE_SIZE];
+    unsigned long slot;
+    MdkrSaveToolResult result;
+    if (!parse_unsigned(slot_text, &slot)) {
+        fprintf(stderr, "mdkr-save: invalid SLOT '%s'\n", slot_text);
+        return 1;
+    }
+    if (!decode_input(input_path, payload)) return 1;
+    result = mdkr_save_edit_slot_name(payload, (unsigned) slot, name, edited);
+    if (result != MDKR_SAVE_TOOL_OK) {
+        fprintf(stderr, "mdkr-save: edit-slot-name failed: %s\n",
+                mdkr_save_tool_result_string(result));
+        return 1;
+    }
+    return install_edit(edited, output_path);
+}
+
+static int slot_field_from_name(const char *name, MdkrSaveSlotField *out) {
+    static const struct { const char *name; MdkrSaveSlotField field; } table[] = {
+        { "taj-flags", MDKR_SAVE_SLOT_FIELD_TAJ_FLAGS },
+        { "trophies", MDKR_SAVE_SLOT_FIELD_TROPHIES },
+        { "bosses", MDKR_SAVE_SLOT_FIELD_BOSSES },
+        { "tt-amulet", MDKR_SAVE_SLOT_FIELD_TT_AMULET },
+        { "wizpig-amulet", MDKR_SAVE_SLOT_FIELD_WIZPIG_AMULET },
+        { "keys", MDKR_SAVE_SLOT_FIELD_KEYS },
+        { "cutscenes", MDKR_SAVE_SLOT_FIELD_CUTSCENES },
+    };
+    size_t i;
+    for (i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
+        if (strcmp(name, table[i].name) == 0) {
+            *out = table[i].field;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int command_edit_slot_field(const char *input_path,
+                                   const char *output_path,
+                                   const char *slot_text,
+                                   const char *field_text,
+                                   const char *value_text) {
+    uint8_t payload[MDKR_SAVE_IMAGE_SIZE];
+    uint8_t edited[MDKR_SAVE_IMAGE_SIZE];
+    unsigned long slot;
+    unsigned long value;
+    MdkrSaveSlotField field;
+    MdkrSaveToolResult result;
+    if (!parse_unsigned(slot_text, &slot) || !parse_unsigned(value_text, &value)) {
+        fprintf(stderr, "mdkr-save: invalid SLOT or VALUE\n");
+        return 1;
+    }
+    if (!slot_field_from_name(field_text, &field)) {
+        fprintf(stderr, "mdkr-save: unknown slot field '%s'\n", field_text);
+        return 1;
+    }
+    if (!decode_input(input_path, payload)) return 1;
+    result = mdkr_save_edit_slot_field(payload, (unsigned) slot, field,
+                                       (uint32_t) value, edited);
+    if (result != MDKR_SAVE_TOOL_OK) {
+        fprintf(stderr, "mdkr-save: edit-slot-field failed: %s\n",
+                mdkr_save_tool_result_string(result));
+        return 1;
+    }
+    return install_edit(edited, output_path);
+}
+
+static int command_edit_course(const char *input_path, const char *output_path,
+                               const char *slot_text, const char *course_text,
+                               const char *status_text) {
+    uint8_t payload[MDKR_SAVE_IMAGE_SIZE];
+    uint8_t edited[MDKR_SAVE_IMAGE_SIZE];
+    unsigned long slot, course, status;
+    MdkrSaveToolResult result;
+    if (!parse_unsigned(slot_text, &slot) ||
+        !parse_unsigned(course_text, &course) ||
+        !parse_unsigned(status_text, &status)) {
+        fprintf(stderr, "mdkr-save: invalid SLOT, COURSE or STATUS\n");
+        return 1;
+    }
+    if (!decode_input(input_path, payload)) return 1;
+    result = mdkr_save_edit_course(payload, (unsigned) slot, (unsigned) course,
+                                   (unsigned) status, edited);
+    if (result != MDKR_SAVE_TOOL_OK) {
+        fprintf(stderr, "mdkr-save: edit-course failed: %s\n",
+                mdkr_save_tool_result_string(result));
+        return 1;
+    }
+    return install_edit(edited, output_path);
+}
+
+/* Sets every course in SLOT to STATUS in one pass. The course count comes
+   from MDKR_SAVE_COURSE_COUNT (platform/save_codec.h), the codec's own
+   compile-time constant derived from the ROM's level table -- never a
+   caller-supplied guess, which is the whole point: a hardcoded course count
+   here is exactly the bug class this tool exists to remove. */
+static int command_edit_course_all(const char *input_path,
+                                   const char *output_path,
+                                   const char *slot_text,
+                                   const char *status_text) {
+    uint8_t payload[MDKR_SAVE_IMAGE_SIZE];
+    uint8_t edited[MDKR_SAVE_IMAGE_SIZE];
+    unsigned long slot, status;
+    unsigned course;
+    MdkrSaveToolResult result;
+    if (!parse_unsigned(slot_text, &slot) ||
+        !parse_unsigned(status_text, &status)) {
+        fprintf(stderr, "mdkr-save: invalid SLOT or STATUS\n");
+        return 1;
+    }
+    if (!decode_input(input_path, payload)) return 1;
+    for (course = 0; course < MDKR_SAVE_COURSE_COUNT; course++) {
+        result = mdkr_save_edit_course(payload, (unsigned) slot, course,
+                                       (unsigned) status, edited);
+        if (result != MDKR_SAVE_TOOL_OK) {
+            fprintf(stderr, "mdkr-save: edit-course-all failed at course %u: %s\n",
+                    course, mdkr_save_tool_result_string(result));
+            return 1;
+        }
+        memcpy(payload, edited, MDKR_SAVE_IMAGE_SIZE);
+    }
+    return install_edit(payload, output_path);
+}
+
+static int command_edit_balloon(const char *input_path, const char *output_path,
+                                const char *slot_text, const char *world_text,
+                                const char *count_text) {
+    uint8_t payload[MDKR_SAVE_IMAGE_SIZE];
+    uint8_t edited[MDKR_SAVE_IMAGE_SIZE];
+    unsigned long slot, world, count;
+    MdkrSaveToolResult result;
+    if (!parse_unsigned(slot_text, &slot) ||
+        !parse_unsigned(world_text, &world) ||
+        !parse_unsigned(count_text, &count)) {
+        fprintf(stderr, "mdkr-save: invalid SLOT, WORLD or COUNT\n");
+        return 1;
+    }
+    if (!decode_input(input_path, payload)) return 1;
+    result = mdkr_save_edit_balloon(payload, (unsigned) slot, (unsigned) world,
+                                    (unsigned) count, edited);
+    if (result != MDKR_SAVE_TOOL_OK) {
+        fprintf(stderr, "mdkr-save: edit-balloon failed: %s\n",
+                mdkr_save_tool_result_string(result));
+        return 1;
+    }
+    return install_edit(edited, output_path);
+}
+
+/* Same shape as edit-course-all: MDKR_SAVE_WORLD_COUNT is the codec's own
+   compile-time constant, so a save built with this can never diverge from
+   whatever gNumberOfWorlds the engine derives from the ROM at runtime. */
+static int command_edit_balloon_all(const char *input_path,
+                                    const char *output_path,
+                                    const char *slot_text,
+                                    const char *count_text) {
+    uint8_t payload[MDKR_SAVE_IMAGE_SIZE];
+    uint8_t edited[MDKR_SAVE_IMAGE_SIZE];
+    unsigned long slot, count;
+    unsigned world;
+    MdkrSaveToolResult result;
+    if (!parse_unsigned(slot_text, &slot) ||
+        !parse_unsigned(count_text, &count)) {
+        fprintf(stderr, "mdkr-save: invalid SLOT or COUNT\n");
+        return 1;
+    }
+    if (!decode_input(input_path, payload)) return 1;
+    for (world = 0; world < MDKR_SAVE_WORLD_COUNT; world++) {
+        result = mdkr_save_edit_balloon(payload, (unsigned) slot, world,
+                                        (unsigned) count, edited);
+        if (result != MDKR_SAVE_TOOL_OK) {
+            fprintf(stderr, "mdkr-save: edit-balloon-all failed at world %u: %s\n",
+                    world, mdkr_save_tool_result_string(result));
+            return 1;
+        }
+        memcpy(payload, edited, MDKR_SAVE_IMAGE_SIZE);
+    }
+    return install_edit(payload, output_path);
+}
+
+static int command_edit_world_flags(const char *input_path,
+                                    const char *output_path,
+                                    const char *slot_text,
+                                    const char *world_text,
+                                    const char *flags_text) {
+    uint8_t payload[MDKR_SAVE_IMAGE_SIZE];
+    uint8_t edited[MDKR_SAVE_IMAGE_SIZE];
+    unsigned long slot, world, flags;
+    MdkrSaveToolResult result;
+    if (!parse_unsigned(slot_text, &slot) ||
+        !parse_unsigned(world_text, &world) ||
+        !parse_unsigned(flags_text, &flags)) {
+        fprintf(stderr, "mdkr-save: invalid SLOT, WORLD or FLAGS\n");
+        return 1;
+    }
+    if (!decode_input(input_path, payload)) return 1;
+    result = mdkr_save_edit_world_flags(payload, (unsigned) slot,
+                                        (unsigned) world, (unsigned) flags,
+                                        edited);
+    if (result != MDKR_SAVE_TOOL_OK) {
+        fprintf(stderr, "mdkr-save: edit-world-flags failed: %s\n",
+                mdkr_save_tool_result_string(result));
+        return 1;
+    }
+    return install_edit(edited, output_path);
+}
+
+static int command_edit_world_flags_all(const char *input_path,
+                                        const char *output_path,
+                                        const char *slot_text,
+                                        const char *flags_text) {
+    uint8_t payload[MDKR_SAVE_IMAGE_SIZE];
+    uint8_t edited[MDKR_SAVE_IMAGE_SIZE];
+    unsigned long slot, flags;
+    unsigned world;
+    MdkrSaveToolResult result;
+    if (!parse_unsigned(slot_text, &slot) ||
+        !parse_unsigned(flags_text, &flags)) {
+        fprintf(stderr, "mdkr-save: invalid SLOT or FLAGS\n");
+        return 1;
+    }
+    if (!decode_input(input_path, payload)) return 1;
+    for (world = 0; world < MDKR_SAVE_WORLD_COUNT; world++) {
+        result = mdkr_save_edit_world_flags(payload, (unsigned) slot, world,
+                                            (unsigned) flags, edited);
+        if (result != MDKR_SAVE_TOOL_OK) {
+            fprintf(stderr,
+                    "mdkr-save: edit-world-flags-all failed at world %u: %s\n",
+                    world, mdkr_save_tool_result_string(result));
+            return 1;
+        }
+        memcpy(payload, edited, MDKR_SAVE_IMAGE_SIZE);
+    }
+    return install_edit(payload, output_path);
+}
+
+static int config_field_from_name(const char *name, MdkrSaveConfigField *out) {
+    static const struct { const char *name; MdkrSaveConfigField field; } table[] = {
+        { "adventure-two", MDKR_SAVE_CONFIG_FIELD_ADVENTURE_TWO },
+        { "drumstick", MDKR_SAVE_CONFIG_FIELD_DRUMSTICK },
+        { "language", MDKR_SAVE_CONFIG_FIELD_LANGUAGE },
+        { "tt-courses", MDKR_SAVE_CONFIG_FIELD_TT_COURSES },
+        { "default", MDKR_SAVE_CONFIG_FIELD_DEFAULT },
+        { "subtitles", MDKR_SAVE_CONFIG_FIELD_SUBTITLES },
+    };
+    size_t i;
+    for (i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
+        if (strcmp(name, table[i].name) == 0) {
+            *out = table[i].field;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int command_edit_config(const char *input_path, const char *output_path,
+                                const char *field_text,
+                                const char *value_text) {
+    uint8_t payload[MDKR_SAVE_IMAGE_SIZE];
+    uint8_t edited[MDKR_SAVE_IMAGE_SIZE];
+    unsigned long value;
+    MdkrSaveConfigField field;
+    MdkrSaveToolResult result;
+    if (!parse_unsigned(value_text, &value)) {
+        fprintf(stderr, "mdkr-save: invalid VALUE '%s'\n", value_text);
+        return 1;
+    }
+    if (!config_field_from_name(field_text, &field)) {
+        fprintf(stderr, "mdkr-save: unknown config field '%s'\n", field_text);
+        return 1;
+    }
+    if (!decode_input(input_path, payload)) return 1;
+    result = mdkr_save_edit_config(payload, field, (uint32_t) value, edited);
+    if (result != MDKR_SAVE_TOOL_OK) {
+        fprintf(stderr, "mdkr-save: edit-config failed: %s\n",
+                mdkr_save_tool_result_string(result));
+        return 1;
+    }
+    return install_edit(edited, output_path);
+}
+
+static int command_reset_records(const char *input_path,
+                                  const char *output_path,
+                                  const char *mask_text) {
+    uint8_t payload[MDKR_SAVE_IMAGE_SIZE];
+    uint8_t edited[MDKR_SAVE_IMAGE_SIZE];
+    unsigned long mask;
+    MdkrSaveToolResult result;
+    if (!parse_unsigned(mask_text, &mask)) {
+        fprintf(stderr, "mdkr-save: invalid MASK '%s'\n", mask_text);
+        return 1;
+    }
+    if (!decode_input(input_path, payload)) return 1;
+    result = mdkr_save_reset_records(payload, (unsigned) mask, edited);
+    if (result != MDKR_SAVE_TOOL_OK) {
+        fprintf(stderr, "mdkr-save: reset-records failed: %s\n",
+                mdkr_save_tool_result_string(result));
+        return 1;
+    }
+    return install_edit(edited, output_path);
+}
+
 static int command_recover(const char *input_path, const char *output_path) {
     uint8_t payload[MDKR_SAVE_IMAGE_SIZE];
     uint8_t repaired[MDKR_SAVE_IMAGE_SIZE];
@@ -487,6 +870,41 @@ int main(int argc, char **argv) {
     }
     if (argc == 4 && strcmp(argv[1], "recover") == 0) {
         return command_recover(argv[2], argv[3]);
+    }
+    if (argc == 6 && strcmp(argv[1], "edit-slot-state") == 0) {
+        return command_edit_slot_state(argv[2], argv[3], argv[4], argv[5]);
+    }
+    if (argc == 6 && strcmp(argv[1], "edit-slot-name") == 0) {
+        return command_edit_slot_name(argv[2], argv[3], argv[4], argv[5]);
+    }
+    if (argc == 7 && strcmp(argv[1], "edit-slot-field") == 0) {
+        return command_edit_slot_field(argv[2], argv[3], argv[4], argv[5],
+                                       argv[6]);
+    }
+    if (argc == 7 && strcmp(argv[1], "edit-course") == 0) {
+        return command_edit_course(argv[2], argv[3], argv[4], argv[5], argv[6]);
+    }
+    if (argc == 6 && strcmp(argv[1], "edit-course-all") == 0) {
+        return command_edit_course_all(argv[2], argv[3], argv[4], argv[5]);
+    }
+    if (argc == 7 && strcmp(argv[1], "edit-balloon") == 0) {
+        return command_edit_balloon(argv[2], argv[3], argv[4], argv[5], argv[6]);
+    }
+    if (argc == 6 && strcmp(argv[1], "edit-balloon-all") == 0) {
+        return command_edit_balloon_all(argv[2], argv[3], argv[4], argv[5]);
+    }
+    if (argc == 7 && strcmp(argv[1], "edit-world-flags") == 0) {
+        return command_edit_world_flags(argv[2], argv[3], argv[4], argv[5],
+                                        argv[6]);
+    }
+    if (argc == 6 && strcmp(argv[1], "edit-world-flags-all") == 0) {
+        return command_edit_world_flags_all(argv[2], argv[3], argv[4], argv[5]);
+    }
+    if (argc == 6 && strcmp(argv[1], "edit-config") == 0) {
+        return command_edit_config(argv[2], argv[3], argv[4], argv[5]);
+    }
+    if (argc == 5 && strcmp(argv[1], "reset-records") == 0) {
+        return command_reset_records(argv[2], argv[3], argv[4]);
     }
     usage(argv[0]);
     return 2;
