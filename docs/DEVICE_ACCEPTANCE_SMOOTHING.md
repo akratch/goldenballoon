@@ -117,6 +117,14 @@ chance to close them:
   rows, on a live present.** They're witnessed at configure time; nobody has
   watched them hold across resize, present-mode re-rank, or a surface
   recovery on a real window in front of a real user.
+- **`uncapturedext=0` and `uncapturedrefusals=0` outside gameplay, on a
+  displayed session.** The fail-closed refusal's cost is silent loss of
+  smoothing — a held authored frame with no on-screen signal — and §1's
+  eleven arms covered racing routes only. With smoothing on, pass through
+  the menus, the adventure hub, a cutscene and a level transition, then
+  check both counters are still zero on the `[PRESENT-PACKET]` row. A
+  nonzero count means some display-list path reaches storage the capture
+  set misses and those screens are quietly running unsmoothed.
 
 None of these are reasons to expect a different verdict on the artifact
 question — they're separate, narrower gaps that this branch's evidence

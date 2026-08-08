@@ -649,6 +649,16 @@ bool mdkr_camera_replay_billboard_matrix(
             viewport, numerator, denominator, &camera)) {
         return false;
     }
+    /* On a camera discontinuity the resolve reports the CURRENT (T+1) pose
+     * verbatim, and mdkr_camera_interpolated_view_projections skips the
+     * viewport, so the world is drawn with tick T's authored view-projection.
+     * Deriving the billboard roll and lens correction from the T+1 pose on
+     * that same frame would roll billboards against the very cut the notes
+     * exist to keep clean. Hold the authored billboard matrix instead — the
+     * same fail-closed direction the view-projection takes. */
+    if (!camera.interpolated) {
+        return false;
+    }
     tilt = (s16)(camera.rotation_z + transform.rotation.z_rotation);
     mtxf_billboard(&billboard, tilt, transform.scale, gVideoAspectRatio);
     correction = mdkr_display_calculate_billboard_correction(
