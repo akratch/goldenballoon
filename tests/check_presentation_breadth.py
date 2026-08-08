@@ -70,6 +70,7 @@ Always muted + headless. Exit 0 = pass.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import os
 import re
 import subprocess
@@ -810,10 +811,17 @@ def main() -> int:
     parser.add_argument("--roms", default="build/roms",
                         help="directory searched for the pal.v80 release")
     parser.add_argument("--timeout", type=int, default=1800)
+    # Arms are independent engine processes (see the pool below). Four keeps
+    # the machine responsive and leaves headroom for the per-arm timeout on a
+    # loaded host; the sequential behaviour is still available with --jobs 1.
+    parser.add_argument("--jobs", type=int, default=4,
+                        help="arms to run concurrently (1 = sequential)")
     parser.add_argument("--only", default=None,
                         help="comma-separated arm names (iteration only)")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
+    if args.jobs < 1:
+        parser.error("--jobs must be at least 1")
 
     binary = Path(os.path.abspath(resolve_binary(args.build)))
     rom = Path(os.path.abspath(args.rom))
@@ -849,16 +857,36 @@ def main() -> int:
     notes: list[str] = []
     with tempfile.TemporaryDirectory(prefix="mdkr-present-breadth-") as tmp:
         root = Path(tmp)
-        for arm in arms:
-            arm_rom = Path(arm.rom) if arm.rom else rom
-            try:
-                arm_failures, arm_notes = check_arm(
-                    binary, arm_rom, root, arm, args.timeout, args.verbose)
-            except RuntimeError as error:
-                failures.append(str(error))
+        # Arms are independent processes: each run() already gets its own
+        # run_dir and its own save_dir under it, the gate is GL-only, and it
+        # dumps no frames, so nothing here is perturbed by a concurrent arm.
+        # The suite runner's sequential rule is about the SHARED save
+        # directory between tasks; it does not constrain what one task does
+        # inside its own scratch tree. Every comparison this gate makes is
+        # between the two runs of the SAME arm, and the simulation is
+        # fixed-tick and deterministic, so no cross-arm timing can reach a
+        # verdict. Results are collected by index so output order stays
+        # identical to the sequential run.
+        ordered: list[tuple[list[str], list[str]] | None] = [None] * len(arms)
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=args.jobs) as pool:
+            pending = {
+                pool.submit(check_arm, binary,
+                            Path(arm.rom) if arm.rom else rom,
+                            root, arm, args.timeout, args.verbose): index
+                for index, arm in enumerate(arms)
+            }
+            for future in concurrent.futures.as_completed(pending):
+                index = pending[future]
+                try:
+                    ordered[index] = future.result()
+                except RuntimeError as error:
+                    ordered[index] = ([str(error)], [])
+        for result in ordered:
+            if result is None:      # unreachable; a future always resolves
                 continue
-            failures.extend(arm_failures)
-            notes.extend(arm_notes)
+            failures.extend(result[0])
+            notes.extend(result[1])
         if not args.only or "tenancy-control" in args.only:
             try:
                 control_failures, control_notes = check_tenancy_control(
