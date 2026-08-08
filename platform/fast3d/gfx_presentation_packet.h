@@ -53,6 +53,25 @@ typedef struct GfxPresentationUvScroll {
     uint32_t triangle_count;
     uint16_t moved_u;   /* bit i: triangle i's U advanced by du this tick */
     uint16_t moved_v;
+    /*
+     * AUTHORED RATE. Set when the batch is driven by a texscroll object, which
+     * publishes its rate directly instead of leaving presentation to recover
+     * it by differencing. `rate_*` is the tick's advance and `phase_*` the
+     * accumulator residue the authored bytes already owe, both in QUARTER UV
+     * units; the interpolated displacement is (phase + rate * alpha) / 4.
+     *
+     * An authored record needs no second observation, so it does not go
+     * through the confirm-or-hold rule below. That rule exists to stop a
+     * mis-resolved texture WRAP reaching the screen as a reverse smear, and a
+     * rate that was never measured cannot be a mis-resolved wrap — nothing
+     * about it is inferred from the bytes. Measured records are unaffected and
+     * still require the previous tick to agree.
+     */
+    bool authored;
+    int32_t rate_u;
+    int32_t rate_v;
+    int32_t phase_u;
+    int32_t phase_v;
 } GfxPresentationUvScroll;
 
 typedef struct GfxPresentationPacketBinding {
@@ -154,6 +173,13 @@ typedef struct GfxPresentationPacketStats {
     uint64_t uv_scroll_hold_ambiguous;
     uint64_t uv_scroll_hold_shape;
     uint64_t uv_scroll_hold_phase;
+    /* Registrations and confirmations that carried an AUTHORED rate rather
+     * than a measured difference. A gate that drives a scroller whose rate is
+     * not a whole number of units per tick reads these to prove the authored
+     * path is the one it is measuring: with the rate absent, that content
+     * cannot confirm at all and holds on every present. */
+    uint64_t uv_scroll_authored_registrations;
+    uint64_t uv_scroll_authored_confirmations;
     uint64_t uv_scroll_overrides;
     size_t uv_scroll_peak;
     size_t uv_scroll_bytes_peak;

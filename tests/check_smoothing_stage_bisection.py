@@ -134,6 +134,31 @@ INTERNAL_TEST_TOKEN = "mdkr64-presentation-replay-v1"
 # waterfall sheet and wave-driven water scrolling their authored UV phase.
 # MDKR_FORCE_SHIELD is in PRESENT indices, and its window brackets the dump so
 # the shield shear stage is live for every sampled frame.
+# Route C. The fractional-scroller witness, and the reason it is not route A.
+#
+# obj_loop_texscroll advances a level texture through a TWO-BIT accumulator:
+# it adds the authored rate (quarter-units a tick) to a residue, emits the
+# whole units that completes and keeps the rest. An authored rate that is a
+# multiple of four therefore emits the same whole-unit step every tick, and a
+# rate that is not alternates its step by one, forever.
+#
+# Jungle Falls' waterfall is the first kind -- 32 quarter-units a tick at
+# updateRate 2, so 16 whole units every tick, and it confirms on every
+# lookup. Both existing arms that exercise UV scroll run Jungle Falls ONLY,
+# so neither has ever driven the second kind. Level 19 is the second kind
+# twice over (authored V rates 127 and 85, both odd), which is what makes it
+# the arm that can fail: with the authored rate absent, no two of its ticks
+# can agree, the confirm-or-hold rule refuses every one of them, and its
+# water holds its texture phase on every interpolated present while the world
+# glides past it. That is the shimmer, and it is measured here red and green.
+ROUTE_C_TICKS = 3400
+ROUTE_C_TRACK = "19"
+
+# The counters the arm reads. Registrations and confirmations that carried an
+# authored rate; a lookup with a default would pass silently the day either is
+# renamed, so presence is asserted before value.
+UV_AUTHORED_CONTRACT = ("uvscrollauthored", "uvscrollauthoredconfirm")
+
 ROUTE_A_TICKS = 3230
 ROUTE_A_TRACK = "29"
 ROUTE_A_SHIELD = "12680:600"
@@ -565,6 +590,98 @@ def attribute(baseline: dict[int, bytes], arm: dict[int, bytes],
     }, problems)
 
 
+def fractional_scroller(green: str, red: str) -> tuple[list[str], str]:
+    """Assert the authored-rate path is what carries a fractional scroller.
+
+    Two arms of one route: production, and the same route with the authored
+    rate opted out so the batch has to be recovered by differencing its own
+    result. The comparison is the whole point -- a green arm alone cannot
+    distinguish "this content interpolates" from "this content was never
+    hard", and the content that was never hard is exactly what the two
+    existing UV-scroll arms run.
+    """
+
+    problems: list[str] = []
+    on = parse_last(green, "PRESENT-PACKET")
+    off = parse_last(red, "PRESENT-PACKET")
+    missing = [key for key in (*UV_AUTHORED_CONTRACT, *UV_HOLD_CLAUSES)
+               if key not in on or key not in off]
+    if missing:
+        problems.append(
+            f"route C: [PRESENT-PACKET] carries no {'/'.join(missing)} field. "
+            "That is the authored-UV-scroll contract "
+            "(gfx_presentation_packet_lookup_uv_scroll -> present_sched.c); "
+            "without it this arm cannot tell an authored confirmation from a "
+            "measured one and every assertion below reads a default")
+        return problems, ""
+
+    # The seam actually reached the binary. Without this the arm's worst
+    # failure is silent: a mistyped env name produces a red arm identical to
+    # the green one, and "the numbers match" would read as a pass.
+    if off["uvscrollauthored"] != 0:
+        problems.append(
+            "route C red arm: MDKR_TEST_UV_SCROLL_AUTHORED_RATE=off still "
+            f"registered {off['uvscrollauthored']} authored rates, so the "
+            "opt-out never reached the binary and the two arms below are the "
+            "same arm")
+    if on["uvscrollauthored"] == 0 or on["uvscrollauthoredconfirm"] == 0:
+        problems.append(
+            "route C green arm: the authored-rate path registered "
+            f"{on['uvscrollauthored']} rates and confirmed "
+            f"{on['uvscrollauthoredconfirm']} of them. This route carries two "
+            "fractional scrollers; a zero here means the path is not reached "
+            "at all and the level's water is interpolating by accident or "
+            "not at all")
+
+    # An authored record can only be refused by the two clauses that say it
+    # does not describe this batch -- never by the confirmation rule, which it
+    # does not go through. Both are zero on this route in both arms, so every
+    # authored lookup confirmed: the fractional scrollers' hold rate is zero.
+    for label, row in (("green", on), ("red", off)):
+        for clause in ("uvscrollholdambig", "uvscrollholdshape"):
+            if row[clause] != 0:
+                problems.append(
+                    f"route C {label} arm: {clause}={row[clause]}. An authored "
+                    "record is refused by nothing else, so a non-zero here "
+                    "means this arm can no longer claim the fractional "
+                    "scrollers never hold")
+
+    # The defect, red. Removing the authored rate must push exactly the batches
+    # it was carrying back into the phase clause -- the fail-closed refusal of a
+    # displacement that alternates by one and therefore never repeats. The
+    # bound is 90% rather than an identity because a batch's first published
+    # tick lands in the unpublished clause in both arms.
+    recovered = off["uvscrollholdphase"] - on["uvscrollholdphase"]
+    if recovered < 0.9 * on["uvscrollauthoredconfirm"]:
+        problems.append(
+            f"route C: opting the authored rate out moved {recovered} lookups "
+            f"into the phase clause against {on['uvscrollauthoredconfirm']} "
+            "authored confirmations. The two should track each other: if they "
+            "do not, the authored path is not what is carrying this route's "
+            "fractional scrollers and this arm is measuring something else. "
+            "See docs/evidence/smoothing-artifact-repro-2026-08.md section 5.2")
+
+    # And it costs nothing elsewhere. The unpublished clause is a batch that
+    # was not drawn on the previous tick, which the authored rate does not
+    # speak to either way, so it must be untouched between the arms.
+    if on["uvscrollholdunpub"] != off["uvscrollholdunpub"]:
+        problems.append(
+            "route C: the unpublished clause moved from "
+            f"{off['uvscrollholdunpub']} to {on['uvscrollholdunpub']} between "
+            "the arms. The authored rate says nothing about whether a batch "
+            "was drawn last tick, so a change here is a side effect nothing "
+            "asked for")
+
+    return problems, (
+        f"authored={on['uvscrollauthored']} "
+        f"authoredconfirm={on['uvscrollauthoredconfirm']} "
+        f"phasehold_on={on['uvscrollholdphase']} "
+        f"phasehold_off={off['uvscrollholdphase']} "
+        f"recovered={recovered} "
+        f"unpub_on={on['uvscrollholdunpub']} "
+        f"unpub_off={off['uvscrollholdunpub']}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
@@ -851,6 +968,15 @@ def main() -> int:
                 FAILCLOSED_TICKS,
                 {"MDKR_TEST_UNCAPTURED_EXTERNAL": "1"},
                 args.timeout, args.verbose, dump=False)
+            # ---- the fractional-scroller arm ------------------------------
+            fractional_on, _ = run(
+                binary, rom, "routeC-authored-on", root, ROUTE_C_TRACK,
+                ROUTE_C_TICKS, {}, args.timeout, args.verbose, dump=False)
+            fractional_off, _ = run(
+                binary, rom, "routeC-authored-off", root, ROUTE_C_TRACK,
+                ROUTE_C_TICKS,
+                {"MDKR_TEST_UV_SCROLL_AUTHORED_RATE": "off"},
+                args.timeout, args.verbose, dump=False)
         except RuntimeError as error:
             print(f"check_smoothing_stage_bisection: FAIL\n  - {error}")
             return 1
@@ -896,6 +1022,11 @@ def main() -> int:
                 "fail-closed arm: MDKR_TEST_UNCAPTURED_EXTERNAL armed without "
                 "the versioned token — an adversarial seam must not be "
                 "reachable from a bare environment variable")
+        problems, fractional_row = fractional_scroller(
+            fractional_on, fractional_off)
+        failures.extend(problems)
+        if fractional_row:
+            rows.append(f"[UV-SCROLL-AUTHORED] route=C {fractional_row}")
         # Report the MEASURED value, never a literal. The assertion above
         # already reads the real counter, so a hard-coded "0" here could only
         # ever disagree with it -- and a published number that is not the

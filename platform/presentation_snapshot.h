@@ -495,6 +495,80 @@ bool presentation_snapshot_resolve_camera(int viewport_index,
                                           uint64_t denominator,
                                           PresentationCameraPose *out);
 
+/* ---- authored UV-scroll rates ------------------------------------------- *
+ *
+ * WHY THIS EXISTS. obj_loop_texscroll advances a level texture through a
+ * TWO-BIT accumulator: it adds the authored rate (quarter-units per tick) to
+ * `unk8`, emits `unk8 >> 2` whole units into the triangle UVs and keeps
+ * `unk8 & 3` as the residue. An authored rate that is not a multiple of four
+ * therefore emits ZERO units on some ticks and N on others, even though the
+ * surface is scrolling at a perfectly constant speed.
+ *
+ * A presentation stage that recovers the speed by DIFFERENCING two authored
+ * ticks cannot see through that quantisation. It reads 0 then N, and either
+ * publishes nothing (a zero difference is not a scroll) or publishes two
+ * disagreeing displacements — so the confirm-or-hold rule refuses, on every
+ * present, forever. The surface keeps its 30 Hz texture cadence beside a
+ * world drawn at the host rate, which is the shimmer the owner reported on
+ * waterfalls, rivers and lava.
+ *
+ * The game does not have to be measured: it KNOWS the rate. This registry is
+ * how it says so. Per authored tick, obj_loop_texscroll registers the address
+ * span of every triangle batch it drives together with
+ *
+ *   rate  — the tick's authored advance in QUARTER units (rate * updateRate)
+ *   phase — the accumulator residue BELONGING TO THE BYTES THE SPAN NOW HOLDS,
+ *           i.e. `unk8` as it stood BEFORE this tick's advance
+ *
+ * from which presentation reconstructs the true sub-tick position exactly:
+ *
+ *   offset(alpha) = (phase + rate * alpha) / 4      [whole UV units]
+ *
+ * At alpha 1 that equals the emitted whole units plus the NEXT tick's phase,
+ * so consecutive ticks join without a step: the quantisation cancels instead
+ * of beating against the present rate. One observation is enough, so no
+ * second tick has to confirm anything and the wrap rule that
+ * gfx_presentation_packet_lookup_uv_scroll enforces for MEASURED scrollers is
+ * left exactly as strict as it was.
+ *
+ * SCOPE. Only the texscroll driver registers. Every other UV mover (waves,
+ * rain, the skydome, the texture animator's flipbooks) is untouched and still
+ * goes through measurement and confirmation — a flipbook can never be
+ * mistaken for a scroll here because it never appears in this table.
+ *
+ * LIFETIME. The table is filled during a game tick and consumed by the
+ * following future-task walk, which clears it. A span registered twice while
+ * the table is live is ambiguous (two scrollers driving one batch, or a tick
+ * whose walk never ran) and is refused, falling back to measurement.
+ */
+#define PRESENTATION_UV_SCROLL_AUTHORED_MAX_SPANS 512
+
+typedef struct PresentationUvScrollAuthored {
+    int32_t rate_u;    /* quarter UV units advanced this authored tick */
+    int32_t rate_v;
+    int32_t phase_u;   /* quarter-unit residue already owed by these bytes */
+    int32_t phase_v;
+} PresentationUvScrollAuthored;
+
+/* True only while a future-task walk is armed to consume the table. Game code
+ * checks this before doing any per-batch work, so the seam costs one
+ * load-and-branch per texscroll object when smoothing is off. */
+bool presentation_uv_scroll_authored_wanted(void);
+void presentation_uv_scroll_authored_set_wanted(bool wanted);
+
+/* Drop every registration. Called by the walk that just consumed them. */
+void presentation_uv_scroll_authored_reset(void);
+
+/* `first`/`end` bound one triangle batch, end-exclusive. */
+void presentation_uv_scroll_authored_register(
+    const void *first, const void *end,
+    const PresentationUvScrollAuthored *rate);
+
+/* Resolve the batch containing `address`. False when no texscroll drives it,
+ * or when the span was registered more than once. */
+bool presentation_uv_scroll_authored_lookup(
+    const void *address, PresentationUvScrollAuthored *out);
+
 #ifdef __cplusplus
 }
 #endif

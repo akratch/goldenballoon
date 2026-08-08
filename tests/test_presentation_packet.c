@@ -206,6 +206,127 @@ static void check_uv_scroll(void) {
     gfx_presentation_packet_shutdown();
 }
 
+/*
+ * The authored-rate path, and the reason it exists.
+ *
+ * obj_loop_texscroll advances a level texture through a two-bit accumulator,
+ * so an authored rate below four quarter-units a tick emits ZERO whole units
+ * on some ticks and N on others. Measured against its own result that scroller
+ * can never confirm: half its ticks publish nothing at all and the other half
+ * disagree with their neighbour. It holds on every present, forever, and the
+ * texture keeps a 30 Hz cadence beside a world drawn at the host rate.
+ *
+ * A record that carries the rate ITSELF is not subject to any of that, and
+ * this is where that is asserted -- including the part that is easy to get
+ * wrong: the record must survive a tick whose emitted displacement is zero.
+ */
+static void check_uv_scroll_authored(void) {
+    static const unsigned char slow_batch[4] = { 0, 0, 0, 0 };
+    static const unsigned char measured_batch[4] = { 0, 0, 0, 0 };
+    GfxPresentationUvScroll authored;
+    GfxPresentationUvScroll measured = make_scroll(4, 0, 2u, 0x3u, 0u);
+    GfxPresentationUvScroll out;
+    GfxPresentationPacketStats stats;
+
+    gfx_presentation_packet_shutdown();
+
+    /* Rate 2 quarter-units a tick: the accumulator emits 0, 1, 0, 1 ... */
+    memset(&authored, 0, sizeof(authored));
+    authored.triangle_count = 2u;
+    authored.moved_u = 0x3u;
+    authored.authored = true;
+    authored.rate_u = 2;
+    authored.phase_u = 0;
+    authored.du = 0;              /* this tick emits nothing at all */
+
+    /* The table's own adjacency guard is separate from the confirmation rule
+     * and is NOT relaxed: the empty tick 19 is what makes 20 the successor of
+     * a published tick, exactly as the measured case needs. */
+    publish_uv_tick(19u, NULL, NULL, NULL, NULL);
+    publish_uv_tick(20u, slow_batch, &authored, NULL, NULL);
+    memset(&out, 0, sizeof(out));
+    expect(gfx_presentation_packet_lookup_uv_scroll(slow_batch, 20u, 2u,
+                                                    &out) &&
+               out.authored && out.rate_u == 2 && out.phase_u == 0,
+           "an authored rate confirms on its FIRST published tick");
+    memset(&stats, 0, sizeof(stats));
+    gfx_presentation_packet_get_stats(&stats);
+    expect(stats.uv_scroll_holds == 0u,
+           "an authored rate needs no second observation, so it never holds "
+           "for want of one");
+
+    /* The next tick carries the residue forward and still emits nothing. A
+     * measured record with du=0 is static geometry and is rightly refused;
+     * an authored one is a scroller mid-quarter and must not be. */
+    authored.phase_u = 2;
+    publish_uv_tick(21u, slow_batch, &authored, NULL, NULL);
+    memset(&out, 0, sizeof(out));
+    expect(gfx_presentation_packet_lookup_uv_scroll(slow_batch, 21u, 2u,
+                                                    &out) &&
+               out.phase_u == 2,
+           "a zero-displacement authored tick is published, not dropped");
+
+    /* Consecutive authored ticks disagree by construction -- that is what a
+     * sub-unit rate DOES -- and the disagreement must not refuse them. */
+    authored.phase_u = 0;
+    authored.du = 1;
+    publish_uv_tick(22u, slow_batch, &authored, NULL, NULL);
+    memset(&stats, 0, sizeof(stats));
+    gfx_presentation_packet_get_stats(&stats);
+    expect(gfx_presentation_packet_lookup_uv_scroll(slow_batch, 22u, 2u,
+                                                    &out) &&
+               stats.uv_scroll_hold_phase == 0u,
+           "an authored rate is not refused for disagreeing with its own "
+           "previous tick");
+
+    /* What the authored path does NOT relax. Shape and ambiguity still refuse:
+     * they say the record does not describe this batch, which is a different
+     * question from whether the displacement can be trusted. */
+    expect(!gfx_presentation_packet_lookup_uv_scroll(slow_batch, 22u, 3u,
+                                                     &out),
+           "an authored record still refuses a batch of another shape");
+    gfx_presentation_packet_capture_begin(23u);
+    expect(gfx_presentation_packet_capture_uv_scroll(slow_batch, &authored),
+           "the first authored observation of a key registers");
+    {
+        GfxPresentationUvScroll other = authored;
+        other.rate_u = 6;
+        expect(!gfx_presentation_packet_capture_uv_scroll(slow_batch, &other),
+               "two authored rates at one address are refused");
+    }
+    gfx_presentation_packet_freeze();
+    gfx_presentation_packet_publish_uv_scroll(23u);
+    expect(!gfx_presentation_packet_lookup_uv_scroll(slow_batch, 23u, 2u,
+                                                     &out),
+           "an authored record on a poisoned key still holds");
+
+    /* And the measured contract is untouched: a measured batch alongside an
+     * authored one still needs its previous tick to agree. */
+    gfx_presentation_packet_shutdown();
+    publish_uv_tick(29u, NULL, NULL, NULL, NULL);
+    publish_uv_tick(30u, measured_batch, &measured, NULL, NULL);
+    expect(!gfx_presentation_packet_lookup_uv_scroll(measured_batch, 30u, 2u,
+                                                     &out),
+           "a measured scroller still does not confirm on one tick");
+    publish_uv_tick(31u, measured_batch, &measured, NULL, NULL);
+    expect(gfx_presentation_packet_lookup_uv_scroll(measured_batch, 31u, 2u,
+                                                    &out) &&
+               !out.authored && out.du == 4,
+           "a measured scroller still confirms on an agreeing pair");
+    {
+        GfxPresentationUvScroll still;
+        memset(&still, 0, sizeof(still));
+        still.triangle_count = 2u;
+        still.moved_u = 0x3u;
+        gfx_presentation_packet_capture_begin(32u);
+        expect(!gfx_presentation_packet_capture_uv_scroll(measured_batch,
+                                                          &still),
+               "a measured batch that did not move is still refused");
+        gfx_presentation_packet_capture_abort();
+    }
+    gfx_presentation_packet_shutdown();
+}
+
 int main(void) {
     unsigned char matrix[64];
     unsigned char vertex[10];
@@ -854,6 +975,7 @@ int main(void) {
            "shutdown releases storage and resets ownership telemetry");
 
     check_uv_scroll();
+    check_uv_scroll_authored();
 
     if (failures != 0) {
         fprintf(stderr, "presentation_packet: %d failure(s)\n", failures);

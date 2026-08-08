@@ -222,8 +222,20 @@ bool gfx_presentation_packet_capture_uv_scroll(
     if (!s_deform_capture_active || s_deform_capture_failed || key == NULL ||
         scroll == NULL || scroll->triangle_count == 0u ||
         scroll->triangle_count > GFX_PRESENTATION_UV_SCROLL_MAX_TRIANGLES ||
-        (scroll->du == 0 && scroll->dv == 0) ||
         (scroll->moved_u == 0u && scroll->moved_v == 0u)) {
+        s_stats.uv_scroll_rejects++;
+        return false;
+    }
+    /* A measured record whose two ticks are identical is static geometry and
+     * has nothing to interpolate. An AUTHORED record with a zero emitted
+     * displacement is the opposite case and the whole point of the authored
+     * path: a scroller slower than one unit per tick emits nothing on this
+     * tick and still has a real sub-unit position to carry. */
+    if (!scroll->authored && scroll->du == 0 && scroll->dv == 0) {
+        s_stats.uv_scroll_rejects++;
+        return false;
+    }
+    if (scroll->authored && scroll->rate_u == 0 && scroll->rate_v == 0) {
         s_stats.uv_scroll_rejects++;
         return false;
     }
@@ -240,7 +252,12 @@ bool gfx_presentation_packet_capture_uv_scroll(
             candidate->scroll.dv == scroll->dv &&
             candidate->scroll.triangle_count == scroll->triangle_count &&
             candidate->scroll.moved_u == scroll->moved_u &&
-            candidate->scroll.moved_v == scroll->moved_v) {
+            candidate->scroll.moved_v == scroll->moved_v &&
+            candidate->scroll.authored == scroll->authored &&
+            candidate->scroll.rate_u == scroll->rate_u &&
+            candidate->scroll.rate_v == scroll->rate_v &&
+            candidate->scroll.phase_u == scroll->phase_u &&
+            candidate->scroll.phase_v == scroll->phase_v) {
             return true;
         }
         candidate->ambiguous = true;
@@ -256,6 +273,9 @@ bool gfx_presentation_packet_capture_uv_scroll(
     entry->key = key;
     entry->scroll = *scroll;
     s_stats.uv_scroll_registrations++;
+    if (scroll->authored) {
+        s_stats.uv_scroll_authored_registrations++;
+    }
     if (s_uv_live.count > s_stats.uv_scroll_peak) {
         s_stats.uv_scroll_peak = s_uv_live.count;
         s_stats.uv_scroll_bytes_peak = s_uv_live.count * sizeof(*entry);
@@ -280,6 +300,28 @@ bool gfx_presentation_packet_lookup_uv_scroll(
          * not a hold -- there is nothing to interpolate. */
         return false;
     }
+    if (current->ambiguous) {
+        s_stats.uv_scroll_hold_ambiguous++;
+        s_stats.uv_scroll_holds++;
+        return false;
+    }
+    if (current->scroll.triangle_count != triangle_count) {
+        s_stats.uv_scroll_hold_shape++;
+        s_stats.uv_scroll_holds++;
+        return false;
+    }
+    if (current->scroll.authored) {
+        /* The rate came from the driver that produces the motion, not from
+         * reading its result, so there is nothing for a second observation to
+         * corroborate and no wrap to mis-resolve. Shape and ambiguity are
+         * still checked above — those say the record describes THIS batch,
+         * which is a separate question from whether the displacement is
+         * trustworthy. */
+        *out = current->scroll;
+        s_stats.uv_scroll_confirmations++;
+        s_stats.uv_scroll_authored_confirmations++;
+        return true;
+    }
     previous = uv_scroll_find(&s_uv_previous, key);
     /* Confirmation, not just presence. Authored scroll speed is a level
      * constant, so a real scroller reproduces the same displacement every
@@ -298,13 +340,12 @@ bool gfx_presentation_packet_lookup_uv_scroll(
         s_stats.uv_scroll_holds++;
         return false;
     }
-    if (current->ambiguous || previous->ambiguous) {
+    if (previous->ambiguous) {
         s_stats.uv_scroll_hold_ambiguous++;
         s_stats.uv_scroll_holds++;
         return false;
     }
-    if (current->scroll.triangle_count != triangle_count ||
-        previous->scroll.triangle_count != triangle_count) {
+    if (previous->scroll.triangle_count != triangle_count) {
         s_stats.uv_scroll_hold_shape++;
         s_stats.uv_scroll_holds++;
         return false;

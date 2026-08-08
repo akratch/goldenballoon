@@ -197,6 +197,7 @@ smoothing = Interpolated.
 | Primitive alpha (sprite/model/line-particle) | `gfx_presentation_packet_note_primitive_alpha` | `MDKR_TEST_PRIMITIVE_ALPHA_INTERPOLATION=off\|0` (`:507-516`) — opt-out | `check_presentation_matrix.py` fade control | Current. Note the 8.8-in-signed-field decode the CHANGELOG records is in the shipped path. |
 | Shield/magnet shear (two-lifetime recipe) | `mdkr_camera_replay_effect_world` (`gfx_pc_dkr.c:422-425`); `_note_effect_override` | `MDKR_TEST_EFFECT_INTERPOLATION=off\|0` (`:518-526`) — opt-out | `check_presentation_matrix.py` effect control; `check_effect_shell_envelope.py` (displacement inside the interpolation envelope); the `ownertickmismatch` arm of `check_smoothing_stage_bisection.py` | Current. **It anchored the shell to the WRONG endpoint from `d2808f9` (1.0.1) until 2026-08-08** — see residual obligation 4 and `docs/evidence/smoothing-artifact-repro-2026-08.md` §2, §4. |
 | Authored UV scroll | `GfxPresentationUvScroll` (`gfx_presentation_packet.h:34-56`); capture `gfx_pc_dkr.c:4396-4461`, apply `:5884-5889` | `MDKR_TEST_UV_SCROLL_INTERPOLATION=off\|0` (`:528-536`) — opt-out | `tests/check_presentation_matrix.py:72`, `:799`, plus `tests/test_presentation_packet.c`'s `check_uv_scroll` — capture refusals, tick-exactness of the published table, and one case per confirmation clause. | Current. **Unit-covered since 2026-08-08**; before that the only evidence was an integration arm that needs a ROM. |
+| Authored UV scroll — authored rate | `GfxPresentationUvScroll.authored/rate_*/phase_*`; the rate registry in `presentation_snapshot.h`, filled by `obj_loop_texscroll` and read by `dkr_capture_uv_scroll_endpoints` | `MDKR_TEST_UV_SCROLL_AUTHORED_RATE=off\|0` — opt-out, and the red arm of the gate below | `tests/check_smoothing_stage_bisection.py`'s route C (`[UV-SCROLL-AUTHORED]`), plus `check_uv_scroll_authored` in `tests/test_presentation_packet.c`. | Current. |
 | Projected shadow deformation | `gfx_presentation_packet_register_projected_shadow_vertex`, `_note_projected_shadow_deformation` | `MDKR_TEST_PROJECTED_SHADOW_INTERPOLATION` requires the versioned token to turn **off** (`:465-474`); `MDKR_TEST_PROJECTED_SHADOW_VERTEX_LERP` requires it to turn **on** (`:476-485`) | `tests/check_presentation_shadows.py:155`, `:157` — the only gate that sets either variable; `check_presentation_matrix.py` does **not**. Registration itself is unit-covered at `tests/test_presentation_packet.c:170-190`. | Current. Asymmetric gating is deliberate: the production behaviour is unreachable from a bare env var in either direction. |
 | Forward `{T+1}` structural census | `gfx_dkr_capture_future_deformations` (`gfx_pc_dkr.c:4673`), scanner `dkr_scan_future_deformations` (`:4477`) | armed only; requires `presentation_snapshot_replay_target_tick` agreement (`:4695-4701`) | `test_presentation_packet.c` forward-packet cases | Current. Read-only: flow control, segment/billboard state, owner matrices, `G_VTX`, `G_TRIN` only. |
 | Camera snapshot / bank endpoints | `gfx_shadow_frame.{h,c}`; `gfx_shadow_camera_endpoint_validate` (`stubs_dkr.c:754`) | `MDKR_TEST_CAMERA_VP_ENDPOINTS` (`gfx_shadow_frame.c:219`) | `tests/check_camera_snapshot_coverage.py` | Current. This is `PRES-002`'s subject and it is production, not diagnostic. |
@@ -333,6 +334,37 @@ Not `PRES-001` failures, but the properties any future change must preserve:
 ## Corrections to inherited descriptions
 
 Recorded so later readers do not re-derive them:
+
+### Why a texscroll batch publishes its rate instead of its result
+
+`obj_loop_texscroll` advances a level texture through a **two-bit
+accumulator**: it adds the authored rate (quarter units per authored tick) to
+a residue, emits the whole units that completes into the triangle UVs, and
+keeps `residue & 3` for next time. The surface moves at a perfectly constant
+speed; the bytes do not. An authored rate that is not a multiple of four
+alternates its emitted whole-unit step by one, forever — 127 quarter units at
+`updateRate` 2 emits 63 units on one tick and 64 on the next.
+
+Recovering that speed by differencing two authored ticks cannot work, and not
+because the differencing is weak: **there is no constant difference to find**.
+The two readings genuinely disagree, the confirm-or-hold rule refuses (it is
+right to: an unrepeated displacement is exactly the mis-resolved wrap it
+exists to catch), and the batch holds its texture phase on every interpolated
+present. The surface keeps its 30 Hz cadence while the world around it glides,
+which is what reads as shimmer on water and lava.
+
+So the driver publishes the rate itself, together with the residue the bytes
+already owe, and the replay reconstructs the position from first principles:
+
+    offset(alpha) = (phase + rate * alpha) / 4        [whole UV units]
+
+At `alpha` 1 that is the emitted whole units plus the *next* tick's residue,
+which is where the next record starts from its own advanced bytes — so the
+quantisation cancels across the tick boundary instead of beating against the
+present rate. One observation suffices, nothing is inferred from the bytes,
+and **the confirmation rule is unchanged for every measured scroller**: waves,
+rain, the skydome and the texture animator's flipbooks never enter the
+registry and still have to agree with their previous tick.
 
 - **"Production interpolation scope is camera + UV-scroll only" is wrong.**
   `gfx_dkr_replay_walk_interpolated` passes `object_alpha_valid = true`

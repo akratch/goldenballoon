@@ -306,6 +306,7 @@ static int dkr_replay_vertex_color_interpolation = -1;
 static int dkr_replay_primitive_alpha_interpolation = -1;
 static int dkr_replay_effect_interpolation = -1;
 static int dkr_replay_uv_scroll_interpolation = -1;
+static int dkr_uv_scroll_authored_rate = -1;
 static int dkr_test_live_arena_poison = -1;
 static int dkr_test_endpoint_vertex_bytes = -1;
 static Gfx *dkr_last_walked_dl = NULL;
@@ -597,6 +598,29 @@ static bool dkr_replay_uv_scroll_interpolation_enabled(void) {
               (strcmp(value, "off") == 0 || strcmp(value, "0") == 0));
     }
     return dkr_replay_uv_scroll_interpolation != 0;
+}
+
+/*
+ * The authored-rate path's opt-out, and the reason it is a committed seam.
+ *
+ * Every scroller the ROM ships advances by 12 quarter-units a tick or more, so
+ * none of them ever emits a zero displacement -- but an authored rate that is
+ * not a multiple of four alternates its EMITTED whole-unit step by one (127
+ * quarter-units emits 31 units on one tick and 32 on the next, forever). Two
+ * adjacent ticks therefore never agree, the confirm-or-hold rule refuses, and
+ * the surface holds its texture phase on every present. Turning this seam off
+ * restores exactly that behaviour, which is what lets the gate arm show the
+ * defect red before showing it green: a fix whose only witness is the content
+ * that already passed proves nothing.
+ */
+static bool dkr_uv_scroll_authored_rate_enabled(void) {
+    if (dkr_uv_scroll_authored_rate < 0) {
+        const char *value = getenv("MDKR_TEST_UV_SCROLL_AUTHORED_RATE");
+        dkr_uv_scroll_authored_rate =
+            !(value != NULL &&
+              (strcmp(value, "off") == 0 || strcmp(value, "0") == 0));
+    }
+    return dkr_uv_scroll_authored_rate != 0;
 }
 
 static bool dkr_test_live_arena_poison_enabled(void) {
@@ -4717,6 +4741,49 @@ static void dkr_capture_uv_scroll_endpoints(const Triangle *next,
             return;
         }
     }
+    /*
+     * AUTHORED RATE FIRST. A texscroll-driven batch does not need to be
+     * measured at all: obj_loop_texscroll registered this address span with
+     * the exact rate it advances by and the accumulator residue the bytes
+     * already owe. Publishing that is strictly better than differencing, and
+     * for any authored rate below four quarter-units a tick it is the only
+     * thing that works — the two-bit accumulator emits zero units on some
+     * ticks, so the difference is 0 then N and no pair of ticks ever agrees.
+     *
+     * Nothing is inferred from the triangle bytes here except which triangles
+     * the driver skips (TRI_FLAG_80), so there is no wrap to mis-resolve and
+     * no retained {T} copy to require.
+     */
+    if (dkr_uv_scroll_authored_rate_enabled()) {
+        PresentationUvScrollAuthored authored;
+        if (presentation_uv_scroll_authored_lookup(next, &authored)) {
+            uint16_t moved = 0u;
+            for (i = 0; i < num_tris; i++) {
+                if ((next[i].flags & TRI_FLAG_80) == 0u) {
+                    moved |= (uint16_t)(1u << i);
+                }
+            }
+            if (moved != 0u) {
+                (void)dkr_paired_triangle_alias(next, &previous_address, &key);
+                memset(&scroll, 0, sizeof(scroll));
+                scroll.triangle_count = (uint32_t)num_tris;
+                scroll.authored = true;
+                scroll.rate_u = authored.rate_u;
+                scroll.rate_v = authored.rate_v;
+                scroll.phase_u = authored.phase_u;
+                scroll.phase_v = authored.phase_v;
+                /* The whole units this tick actually emitted, so a measured
+                 * record on an adjacent tick still compares against a like
+                 * quantity if the driver ever stops registering. */
+                scroll.du = (authored.phase_u + authored.rate_u) >> 2;
+                scroll.dv = (authored.phase_v + authored.rate_v) >> 2;
+                scroll.moved_u = authored.rate_u != 0 ? moved : 0u;
+                scroll.moved_v = authored.rate_v != 0 ? moved : 0u;
+                (void)gfx_presentation_packet_capture_uv_scroll(key, &scroll);
+                return;
+            }
+        }
+    }
     /* A game-declared ping-pong surface holds {T} in its OTHER buffer, and the
      * replay walk will hand us that other address. Both phases key off the
      * pair's even-phase address so the two ticks of one surface agree. */
@@ -5039,6 +5106,16 @@ bool gfx_dkr_capture_future_deformations(const Gfx *begin, const Gfx *end,
     gfx_presentation_packet_capture_begin(authored_tick);
     scanned = dkr_scan_future_deformations(
         (Gfx *)begin, 0, (int)command_count);
+    /* The authored-rate table is filled by the game tick that built the task
+     * this walk just read, and is consumed only by that walk. Clearing it here
+     * bounds a registration's life to one tick: a tick whose walk never runs
+     * cannot leave a stale rate behind, it can only leave the batch to be
+     * measured. Arming happens on the same edge so the game does no per-batch
+     * work at all until a walk has proved it will be consumed. */
+    presentation_uv_scroll_authored_reset();
+    presentation_uv_scroll_authored_set_wanted(
+        dkr_replay_uv_scroll_interpolation_enabled() &&
+        dkr_uv_scroll_authored_rate_enabled());
     memcpy(gfx_segment_table, saved_segments, sizeof(saved_segments));
     rsp.active_slot = saved_active_slot;
     rsp.billboard = saved_billboard;
@@ -5388,12 +5465,37 @@ static const float *dkr_replay_uv_scroll_offset(const Triangle *tris,
             original, target_tick, (uint32_t)num_tris, &scroll)) {
         return NULL;
     }
-    out[0] = presentation_lerp1(
-        0.0f, (float)scroll.du, dkr_replay_object_alpha_numerator,
-        dkr_replay_object_alpha_denominator);
-    out[1] = presentation_lerp1(
-        0.0f, (float)scroll.dv, dkr_replay_object_alpha_numerator,
-        dkr_replay_object_alpha_denominator);
+    if (scroll.authored) {
+        /*
+         * The authored bytes sit at position P, but the driver's true
+         * continuous position is P + phase/4: the two-bit accumulator has
+         * already earned that fraction of a unit and is holding it back until
+         * it completes. Carrying it is what makes consecutive ticks JOIN --
+         *
+         *   offset(1) = (phase + rate) / 4 = emitted + next_phase / 4
+         *
+         * which is exactly where the next tick's own offset(0) starts from its
+         * own advanced bytes. Drop the phase term and a slow scroller still
+         * steps once per authored tick, only with a ramp inside each step.
+         */
+        out[0] = ((float)scroll.phase_u +
+                  presentation_lerp1(0.0f, (float)scroll.rate_u,
+                                     dkr_replay_object_alpha_numerator,
+                                     dkr_replay_object_alpha_denominator)) *
+                 0.25f;
+        out[1] = ((float)scroll.phase_v +
+                  presentation_lerp1(0.0f, (float)scroll.rate_v,
+                                     dkr_replay_object_alpha_numerator,
+                                     dkr_replay_object_alpha_denominator)) *
+                 0.25f;
+    } else {
+        out[0] = presentation_lerp1(
+            0.0f, (float)scroll.du, dkr_replay_object_alpha_numerator,
+            dkr_replay_object_alpha_denominator);
+        out[1] = presentation_lerp1(
+            0.0f, (float)scroll.dv, dkr_replay_object_alpha_numerator,
+            dkr_replay_object_alpha_denominator);
+    }
     if (out[0] == 0.0f && out[1] == 0.0f) {
         /* Sub-unit alpha on a slow scroller: the authored phase already IS
          * this frame's nearest presentation phase. Not a fail-closed hold --
