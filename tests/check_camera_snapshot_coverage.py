@@ -103,21 +103,30 @@ class Arm:
     # Cut class -> witnesses this route must produce. A route that stops
     # driving its class would otherwise pass by having nothing to check.
     min_cuts: dict[str, int]
+    # Game-side camera-cut NOTES this route must get consumed. Distinct from
+    # min_cuts, which classifies cuts from the poses: a note is the class of
+    # cut the poses cannot show. Only routes that actually drive a camera-mode
+    # change or a spectate handoff can carry a floor here.
+    min_cut_notes: int
 
 
 ARMS = (
     # DKR's two-player layout is horizontal: camera 1 owns the lower half.
     # Two viewport entries (the 1P frontend camera and camera 1 arriving with
     # the split) and the frontend's cutscene-bank switches.
+    # Measured: this route raises no camera-cut note at all — its camera-mode
+    # never changes and it has no spectator — so the unconsumed-note zero below
+    # is structural here and the non-vacuity floor lives on the arms that do.
     Arm("2p-camera1", 1, SCRIPT_2P, 1, (0.03, 0.97, 0.53, 0.97),
         500, 1000,
-        {"viewport-entry": 4, "camera-jump": 2}),   # measured 6 and 3
+        {"viewport-entry": 4, "camera-jump": 2}, 0),   # measured 6 and 3
     # The production CRIGHT edge switches the lower-right quadrant from the
     # minimap to camera 3's TT spectator. Camera 3 both ARRIVES mid-race (a
     # viewport entry) and re-aims by snapping between spectate points.
     Arm("3p-tt-camera3", 2, SCRIPT_3P_TT, 3,
         (0.53, 0.97, 0.53, 0.97), 250, 500,
-        {"viewport-entry": 6, "camera-jump": 5}),   # measured 8 and 7
+        {"viewport-entry": 6, "camera-jump": 5},   # measured 8 and 7
+        1),
 )
 
 
@@ -371,6 +380,37 @@ def check_arm(output: str, frame_dir: Path, arm: Arm) -> tuple[list[str], str]:
     if snapshot.get("overflows") != 0:
         failures.append(
             f"{arm.name}: snapshot overflows={snapshot.get('overflows')}")
+
+    # Camera-cut notes must be filed and consumed in ONE id space.
+    #
+    # The note sites (racer.c's camera-mode change and spectate handoff,
+    # tracks.c's 3P TT spectate switch) all name a player index, which is the
+    # viewport; the capture records the gCameras[] slot, which is that index
+    # plus four whenever the viewport's cutscene camera is active. Keyed on the
+    # slot, notes raised on those ticks missed and were then destroyed at
+    # commit, and the camera blended across a hard cut.
+    #
+    # No pose-based classifier below can witness that: a cut invisible from the
+    # pose is invisible to a classifier built from poses, which is the entire
+    # reason these notes exist. The counters are the witness. Both arms drive a
+    # cutscene-bank switch AND a spectate/mode change, so `camcutconsumed` is
+    # the non-vacuity proof that notes were raised at all, and
+    # `camcutunconsumed` is nonzero exactly when the two id spaces disagree.
+    if snapshot.get("camcutunconsumed", -1) != 0:
+        failures.append(
+            f"{arm.name}: {snapshot.get('camcutunconsumed')} camera-cut notes "
+            "survived the publish of the viewport they name — the note and "
+            "the capture are keyed in different id spaces, and those cuts "
+            "were blended across")
+    if snapshot.get("camcutconsumed", 0) < arm.min_cut_notes:
+        failures.append(
+            f"{arm.name}: only {snapshot.get('camcutconsumed')} camera-cut "
+            f"notes were consumed (raised={snapshot.get('camcutnote')}), want "
+            f">= {arm.min_cut_notes}; without one the zero above is vacuous")
+    if snapshot.get("identityinsertfail", -1) != 0:
+        failures.append(
+            f"{arm.name}: {snapshot.get('identityinsertfail')} spawns could "
+            "not be registered in the identity table")
     if (camera_vp.get("alpha0checks", 0) <= 0 or
             camera_vp.get("alpha0mismatch", -1) != 0 or
             camera_vp.get("alpha0expected", 0) == 0 or
@@ -457,7 +497,10 @@ def check_arm(output: str, frame_dir: Path, arm: Arm) -> tuple[list[str], str]:
         f"{control_moved}/{control_candidates}; "
         f"{camera_vp.get('alpha0checks', 0)} exact "
         f"alpha-zero and {camera_vp.get('nextchecks', 0)} chained alpha-one "
-        f"endpoint checks; {cut_note}")
+        f"endpoint checks; cut notes "
+        f"{snapshot.get('camcutconsumed')}/{snapshot.get('camcutnote')} "
+        f"consumed, {snapshot.get('camcutunconsumed')} unconsumed; "
+        f"{cut_note}")
     return failures, note
 
 
@@ -529,6 +572,14 @@ def check_cutscene_arm(output: str, frame_dir: Path) -> tuple[list[str], str]:
         failures.append(
             f"cutscene-camera4: camera_mask={snapshot.get('camera_mask')} "
             "omits the authored cutscene bank")
+    # Bank 4 is precisely where the note/capture id spaces used to diverge:
+    # the note names viewport 0, the capture records slot 0+4. Nothing may be
+    # left pending after this arm publishes that viewport.
+    if snapshot.get("camcutunconsumed", -1) != 0:
+        failures.append(
+            f"cutscene-camera4: {snapshot.get('camcutunconsumed')} camera-cut "
+            "notes survived the publish of the viewport they name while the "
+            "cutscene bank was active")
     if captures < 500 or interpolations < 500:
         failures.append(
             "cutscene-camera4: insufficient authored bank-4 activity "
@@ -652,6 +703,30 @@ def check_adventure_arm(output: str) -> tuple[list[str], str]:
         return failures + [f"{name}: {error}"], ""
     if snapshot.get("overflows") != 0:
         failures.append(f"{name}: snapshot overflows={snapshot.get('overflows')}")
+    #
+    # The camera-cut note witness lives here because this is the only fixture
+    # that drives BOTH halves of the id space in one run: a cutscene-bank
+    # switch (so a viewport records slot p+4) and the post-race camera changing
+    # spectate point and mode (so racer.c raises notes naming viewport p).
+    # Keyed on the slot, those notes missed by four bits and were destroyed at
+    # the same commit; the camera then blended across the cut, which no
+    # pose-based classifier below can see, because a cut the pose does not
+    # carry is exactly what a note is for.
+    #
+    if snapshot.get("camcutunconsumed", -1) != 0:
+        failures.append(
+            f"{name}: {snapshot.get('camcutunconsumed')} camera-cut notes "
+            "survived the publish of the viewport they name — the note sites "
+            "and the capture are keyed in different id spaces")
+    if snapshot.get("camcutconsumed", 0) <= 0:
+        failures.append(
+            f"{name}: no camera-cut note was consumed "
+            f"(raised={snapshot.get('camcutnote')}); the zero above is vacuous "
+            "and this route is the one that drives post-race spectate cuts")
+    if snapshot.get("identityinsertfail", -1) != 0:
+        failures.append(
+            f"{name}: {snapshot.get('identityinsertfail')} spawns could not "
+            "be registered in the identity table")
     # Measured on this route: 9 viewport entries (three of them the door
     # transitions), one in-place cutscene-bank switch, and 20 jumps, all but
     # three of which are the post-race camera changing spectate point. The
@@ -660,7 +735,10 @@ def check_adventure_arm(output: str) -> tuple[list[str], str]:
         name, output,
         {"viewport-entry": 6, "camera-bank-switch": 1, "camera-jump": 12})
     failures.extend(cut_failures)
-    return failures, f"{name}: levels {sorted(loaded)} entered; {cut_note}"
+    return failures, (
+        f"{name}: levels {sorted(loaded)} entered; cut notes "
+        f"{snapshot.get('camcutconsumed')}/{snapshot.get('camcutnote')} "
+        f"consumed, {snapshot.get('camcutunconsumed')} unconsumed; {cut_note}")
 
 
 def main() -> int:

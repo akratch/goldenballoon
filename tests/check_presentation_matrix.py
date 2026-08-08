@@ -588,6 +588,17 @@ def main() -> int:
                     f"arm B: production {backend_label} replay walks="
                     f"{backend_replay.get('walks')} do not match successful "
                     f"interpolated images={backend_sched.get('interp')}")
+            # Endpoint-ness is declared by the caller, not inferred from
+            # numerator == 0 (which only held because the pacer breaks the
+            # subloop on ticks_due != 0 first). An interpolated walk that still
+            # arrives at alpha 0 is both a lost fail-closed refusal and a
+            # duplicated image, so it is counted rather than assumed away.
+            if backend_replay.get("zeroalphainterior", -1) != 0:
+                failures.append(
+                    f"arm B: production {backend_label} ran "
+                    f"{backend_replay.get('zeroalphainterior')} interpolated "
+                    "walks at alpha 0; those images duplicate the authored "
+                    "frame and skip the uncaptured-external refusal")
             if backend_sched.get("replayendpoints", -1) != 0:
                 failures.append(
                     f"arm B: production {backend_label} redrew "

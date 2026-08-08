@@ -697,6 +697,130 @@ static void test_camera_fast_pan_snaps(void) {
            "camera fast pan: fov still blends across the same tick");
 }
 
+/*
+ * A game-side camera cut is filed in VIEWPORT space, and it must still be
+ * found when that viewport is drawing its CUTSCENE-bank camera.
+ *
+ * This is the exact shape the shipped defect had: the note sites all pass a
+ * player index (== the viewport), while camSetProjMtx records the gCameras[]
+ * slot `viewport + (gCutsceneCameraActive ? 4 : 0)`. Keyed on the slot, a note
+ * raised as bit 0 was looked for at bit 4 on every tick a cutscene camera owned
+ * viewport 0 — it missed, and the old commit then destroyed it unconditionally,
+ * so the camera blended straight across a hard cut. Nothing about the pose says
+ * "cut" here on purpose: the move is 300 units, well inside the 2000-unit
+ * teleport threshold, exactly like two adjacent spectate points.
+ */
+static void test_camera_cut_note_viewport_space(void) {
+    PresentationCameraPose camera;
+    PresentationCameraEntry camera_sample;
+    PresentationSnapshotStats stats;
+
+    begin();
+
+    /* Viewport 0 on the cutscene bank (slot 4), two adjacent settled ticks. */
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(4, 0.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(4, 100.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &camera) &&
+               camera.interpolated == 1 && camera.position[0] == 50.0f,
+           "cut note: an unflagged cutscene-bank pair still interpolates");
+
+    /* Now the game snaps the shot. The note names the VIEWPORT. */
+    presentation_snapshot_note_camera_cut(0);
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(4, 400.0f, 0.0f, 0.0f); /* 300 units: motion */
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &camera) &&
+               camera.interpolated == 0 && camera.position[0] == 400.0f,
+           "cut note: a viewport note is found while that viewport draws the "
+           "cutscene bank, and holds the authored pose");
+
+    presentation_snapshot_get_stats(&stats);
+    expect(stats.camera_cut_notes == 1 && stats.camera_cut_consumed == 1 &&
+               stats.camera_cut_unconsumed == 0,
+           "cut note: the note was raised once and consumed by the capture "
+           "of the viewport it names");
+
+    /*
+     * Carry, not destroy. A note raised on a tick whose camera capture never
+     * ran survives to the next capture of that viewport. The old code cleared
+     * the whole mask at every commit, so this note simply vanished.
+     */
+    presentation_snapshot_note_camera_cut(0);
+    presentation_snapshot_capture_begin();   /* no camera captured this tick */
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_get_stats(&stats);
+    expect(stats.camera_cut_consumed == 1 && stats.camera_cut_unconsumed == 0,
+           "cut note: a tick that captures no camera neither consumes nor "
+           "discards the note");
+
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(4, 800.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_get_stats(&stats);
+    expect(stats.camera_cut_notes == 2 && stats.camera_cut_consumed == 2 &&
+               stats.camera_cut_unconsumed == 0,
+           "cut note: the carried note is spent by the next capture of that "
+           "viewport, and nothing is left unconsumed");
+}
+
+/*
+ * A lifecycle spawn the identity table cannot register fails the NEXT commit
+ * whole instead of returning silently.
+ *
+ * The silent return left a recycled address carrying a dead object's
+ * generation, last_position and last_capture, so the following capture skipped
+ * the fresh-generation branch and published a new object under the dead one's
+ * identity — a pair the generation check happily blends. Failing the frame is
+ * the same direction presentation_snapshot_capture_object already takes on the
+ * identical condition.
+ */
+static void test_identity_insert_failure_fails_closed(void) {
+    /* Half load is identity_insert's probing budget, so the table refuses at
+     * SLOTS/2 live entries. One address past that is the failure. */
+    static char fill[PRESENTATION_SNAPSHOT_IDENTITY_SLOTS / 2 + 1];
+    PresentationSnapshotStats stats;
+    size_t index;
+
+    begin();
+    for (index = 0; index < PRESENTATION_SNAPSHOT_IDENTITY_SLOTS / 2; index++) {
+        presentation_snapshot_note_spawn(&fill[index]);
+    }
+    presentation_snapshot_get_stats(&stats);
+    expect(stats.identity_insert_failures == 0,
+           "identity overflow: a table at exactly half load still registers");
+
+    presentation_snapshot_note_spawn(
+        &fill[PRESENTATION_SNAPSHOT_IDENTITY_SLOTS / 2]);
+    presentation_snapshot_get_stats(&stats);
+    expect(stats.identity_insert_failures == 1,
+           "identity overflow: the refused spawn is counted, not swallowed");
+
+    presentation_snapshot_capture_begin();
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_get_stats(&stats);
+    expect(stats.captures == 0 && stats.overflows == 1,
+           "identity overflow: the next commit fails whole rather than "
+           "publishing an object whose identity was never issued");
+
+    presentation_snapshot_capture_begin();
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_get_stats(&stats);
+    expect(stats.captures == 1 && stats.overflows == 1,
+           "identity overflow: the flag is spent by one frame, not sticky "
+           "for the rest of the run");
+}
+
 static void test_authored_camera_latch(void) {
     PresentationCameraEntry cameras[4];
     PresentationCameraEntry camera0 = make_camera(4, 10.0f, 20.0f, 30.0f);
@@ -1073,6 +1197,8 @@ int main(void) {
     test_discontinuity();
     test_resolved_fields();
     test_camera_fast_pan_snaps();
+    test_camera_cut_note_viewport_space();
+    test_identity_insert_failure_fails_closed();
     test_authored_camera_latch();
     test_authored_tick_pair();
     test_deformation_compatibility();
