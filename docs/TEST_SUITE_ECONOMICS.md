@@ -655,6 +655,17 @@ run at the intended concurrency producing identical per-arm verdicts, since
 these arms compare pixels and concurrent WebGPU contexts are the obvious risk;
 (b) a bound on concurrency that keeps each arm inside its own 300s timeout.
 
+**LANDED (2026-08-08).** `--jobs` (default 4) pools the 72 ordinary arms; the
+fixed/unsafe pair a verdict compares is resolved inside one work item, so no
+comparison spans the pool, and results are collected in submission order.
+Evidence, one tree, same host: **518s → 245s**; two consecutive four-way
+verbose runs produced **byte-identical per-arm lines** (68 arms, 46 carrying
+measured percentages); and a sequential `--jobs 1` sample of three scenes —
+`post-race-framed`, `track-select-zoom`, `post-race-transition`, twelve arms —
+reproduced the parallel run's percentages **exactly** (39.2%, 58.9%, 80.0%,
+88.3%, 77.5%, 86.9%). Concurrent WebGPU contexts do not move a pixel here.
+The PAL, interpolated-boundary, scroll and leak arms stay sequential.
+
 `--scene NAME` and `--interpolated-only` already exist as subset flags.
 
 ### 6.3 `presentation_breadth` (6m31s) and `presentation_matrix` (3m05s)

@@ -21,6 +21,7 @@ wide aspect recipes for one frame.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import os
 import re
 import shlex
@@ -1095,6 +1096,11 @@ def main() -> int:
              "optional and this gate fails rather than skipping it",
     )
     parser.add_argument("--timeout", type=int, default=300)
+    # Only the 72 ordinary arms are pooled. Each still owns its own 300s
+    # timeout, so the bound has to keep an arm from starving: four concurrent
+    # engine processes on this corpus finish well inside it.
+    parser.add_argument("--jobs", type=int, default=4,
+                        help="ordinary arms to run concurrently (1 = sequential)")
     parser.add_argument("--interpolated-only", action="store_true")
     parser.add_argument(
         "--scene",
@@ -1105,6 +1111,8 @@ def main() -> int:
     )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
+    if args.jobs < 1:
+        parser.error("--jobs must be at least 1")
     binary = Path(resolve_binary(args.build)).resolve()
     rom = Path(args.rom).resolve()
     if not binary.is_file() or not rom.is_file():
@@ -1146,24 +1154,37 @@ def main() -> int:
                     )
             if args.interpolated_only:
                 ordinary_scenes = ()
-            for scene in ordinary_scenes:
-                for backend, sizes in (
-                    ("webgpu", WEBGPU_SIZES),
-                    ("gl", ("1260x540",)),
-                ):
-                    for size in sizes:
-                        fixed = run_arm(
-                            binary, rom, scene, backend, size, False, work,
-                            args.timeout, args.verbose,
-                        )
-                        unsafe = run_arm(
-                            binary, rom, scene, backend, size, True, work,
-                            args.timeout, args.verbose,
-                        )
-                        summaries.append(
-                            f"{scene.name}/{backend}/{size}: "
-                            f"{validate_pair(scene, fixed, unsafe)}"
-                        )
+            # The 72 ordinary arms are the bulk of this gate's cost and are
+            # independent processes: run_arm gives every arm its own
+            # run_dir/save_dir (the label carries scene, backend, size and
+            # fixed/unsafe), and the fixed/unsafe pair a verdict compares is
+            # resolved inside ONE work item, so no comparison spans the pool.
+            # Rendering is deterministic, so a concurrent context cannot move a
+            # pixel; the evidence for that claim is two four-way runs whose
+            # logs are byte-identical to the sequential one (see
+            # docs/TEST_SUITE_ECONOMICS.md 6.2). Results are collected by index
+            # so the printed order never depends on completion order.
+            work_items = [
+                (scene, backend, size)
+                for scene in ordinary_scenes
+                for backend, sizes in (("webgpu", WEBGPU_SIZES),
+                                       ("gl", ("1260x540",)))
+                for size in sizes
+            ]
+
+            def run_pair(item):
+                scene, backend, size = item
+                fixed = run_arm(binary, rom, scene, backend, size, False, work,
+                                args.timeout, args.verbose)
+                unsafe = run_arm(binary, rom, scene, backend, size, True, work,
+                                 args.timeout, args.verbose)
+                return (f"{scene.name}/{backend}/{size}: "
+                        f"{validate_pair(scene, fixed, unsafe)}")
+
+            if work_items:
+                with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=args.jobs) as pool:
+                    summaries.extend(pool.map(run_pair, work_items))
             boundary_scenes = (
                 INTERPOLATED_BOUNDARY_SCENES
                 if not args.scene else ()
