@@ -161,8 +161,20 @@ substrate rather than as a candidate.
 The two leaders are the same size by area and nothing alike by magnitude.
 Shield shear carries a meanabs of 3.07 against a 4.27 ceiling on 7.0% of the
 frame — mean magnitude 44 per changed byte, a hard displacement of a small
-region, which is what a two-lifetime recipe reconstruction around each racer
-should look like. UV scroll covers 5.1% of the frame at meanabs 0.129 — mean
+region.
+
+> **Correction (2026-08-08).** This paragraph originally continued "…which is
+> what a two-lifetime recipe reconstruction around each racer should look
+> like", reading the magnitude as evidence of a healthy stage. It was measuring
+> a defect. `docs/evidence/smoothing-artifact-repro-2026-08.md` §2 shows the
+> stage places the shell one whole authored tick ahead of its racer on every
+> interpolated frame — 50.8 px from the authored pose against a 5.25 px
+> per-tick envelope, flat across the alpha grid. The ranking above is unchanged
+> and was right to put `effect` first; only the inference that its size was
+> innocent was wrong. Nothing in this note distinguishes a large correct
+> displacement from a large wrong one, and it should not have implied it did.
+
+UV scroll covers 5.1% of the frame at meanabs 0.129 — mean
 magnitude 2.5, a scrolling texture phase nudging many texels by a fraction of
 a shade.
 Those two are where a 120 Hz artifact hunt should look first, and they fail in

@@ -21,9 +21,10 @@ grid, gives each one a measured witness or says it is unwitnessed, and then
 spends most of its length on the one that turned out to be a real defect: the
 **shield/magnet effect stage places its shell one whole authored tick ahead of
 the racer it belongs to, on every interpolated frame**. That is not a subtle
-sub-pixel complaint. The shell leaves the kart, moves 32 px up-track on a
-640x480 frame, and the kart's own body then occludes the half of it that should
-be drawn in front — on 75% of presented frames at 120 Hz and 50% at 60 Hz.
+sub-pixel complaint. The shell leaves the kart and moves **51 px** up-track on a
+640x480 frame — against the 5.25 px the shell travels in a whole authored tick —
+and the kart's own body then occludes the half of it that should be drawn in
+front, on 75% of presented frames at 120 Hz and 50% at 60 Hz.
 
 ## Method
 
@@ -53,21 +54,36 @@ recipes as the 120 Hz one.
 Two supporting measurements are used throughout. **Step profile** is the mean
 absolute difference between consecutive presented frames, grouped by the alpha
 slot the step lands on; uniform motion makes the four steps inside a tick
-equal. **Shield track** segments the additive green shell by colour
-(`G > R+45 && G > B+45 && G > 110`) inside the player box — x∈[200,520],
-y∈[250,460] of the 640x480 dump, which excludes the HUD band and the rival
-shields on the left — and reports its coverage and centroid per present.
+equal.
+
+**Shell track** segments the additive green shell by colour
+(`G > R+45 && G > B+45 && G > 110`), restricts the mask to the window
+y∈[150,480), x∈[120,600) — whose top edge clears the HUD band and the rival
+shells — takes the **largest connected component**, and reports that
+component's area, centroid and bounding box. **All coordinates in this note are
+full-frame pixels of the 640x480 dump, origin top-left**, not window-relative.
+
+The window is a measurement hazard, because the defect under investigation
+moves the shell, and a shell that leaves the crop would produce a smaller area
+and a biased centroid that could be mistaken for the defect's own signature. So
+containment is asserted rather than assumed: the shell component's bounding box
+is checked against all four window edges on every frame of every arm, and
+**touches none of them on any of the 300 frames measured**. An earlier draft of
+this note used a tighter window (y∈[250,460), x∈[200,520)) whose top edge the
+displaced shell did cross; every figure in §2.2 is from the containing window,
+and the tight-window figures it replaces were biased low. The script and the
+full per-frame rows are in the appendix.
 
 ## 1. The artifact classes at 120 Hz
 
 | # | Class | Mechanism | Measured witness | Disposition |
 |---|---|---|---|---|
-| C1 | **Effect stage leads the racer by one authored tick** | `mdkr_camera_replay_effect_world` measures the shield's base-root residual against the alpha-zero snapshot while taking the residual's own endpoint from the alpha-one recipe. The two do not cancel; what is left is a full tick of racer travel added to the shell's world position. | Shield centroid sits **32.1 / 32.7 / 33.3 px** from its own tick's authored pose at alpha 1/4, 2/4, 3/4 — flat, not a ramp — and its coverage drops from 6,960 px to 3,563 px on every interpolated frame. §2. | **OPEN — defect. Write-up in §2, no fix here.** |
+| C1 | **Effect stage leads the racer by one authored tick** | `mdkr_camera_replay_effect_world` measures the shield's base-root residual against the alpha-zero snapshot while taking the residual's own endpoint from the alpha-one recipe. The two do not cancel; what is left is a full tick of racer travel added to the shell's world position. | Shell centroid sits **50.8 / 51.1 / 50.8 px** from its own tick's authored pose at alpha 1/4, 2/4, 3/4 — flat, not a ramp — against an endpoint-to-endpoint envelope of 5.25 px mean / 18.42 px max, and its area drops from 6,767 px to ~2,340 px on every interpolated frame. §2. | **OPEN — defect. Write-up in §2, no fix here.** |
 | C2 | Camera blends across a cut | Post-race spectate handover, the 3P T.T. spectator cut and camera-mode reframes move the eye outright, all inside the 2,000-unit teleport threshold and inside one camera slot, so nothing in the captured pose said "cut". | Not re-measured here. `0c6cb33` / `48d79d6` / `969bd2e`: 12 blended cuts before, 0 after, pinned by `tests/check_camera_snapshot_coverage.py`'s cut classifier (`6bffbc2`). | **Addressed on this branch.** |
 | C3 | Interpolated angle smears the long way round | A rotation advancing more than half a turn per tick interpolates backwards; one near a quarter turn smears visibly. | Not firing on this route. The shield's yaw is `gShieldSineTime * 0x800` and `gShieldSineTime` advances by `updateRate` (`objects.c:1084`), i.e. 11.25° per field and 22.5° per authored tick — far under the `0x4000` snap. `effectphasehold=0` and `effectmiss=0` on both rate arms. The magnet's phase rate is not established here. | **Addressed (`2dafae2`); not this route's artifact.** |
 | C4 | Replay reads storage it does not own | An interpolated walk resolving a non-arena dependency with no retained copy read the live pointer, by which time task K+1 had already been authored into it — a corruption of arbitrary shape. | `uncapturedext=0`, `uncapturedrefusals=0`, `staletenants=0` on all six arms here, and on all eleven bisection arms over 114,957 interpolated replays. | **Addressed (`26526db`).** |
 | C5 | Extra frames in flight at a high refresh | A swap chain deeper than one frame adds latency and lets the pacer's phase estimate drift from what the display shows. | Not measured here — every arm is GL and headless. | **Addressed for WebGPU (`e9fa33a`); unwitnessed on this route.** |
-| C6 | Effect shell drifts off the camera when the stage is *off* | With the effect matrix held, the retained MVP carries the tick-T camera while the camera itself interpolates, so the shell falls back and swells. | `a120-effoff`: centroid **7.1 / 15.3 / 23.6 px** from the authored pose and coverage **7,516 / 8,225 / 9,344 px** across the alpha grid — a clean ramp. | Reachable only through the test opt-out. This is the artifact C1's stage exists to remove, and it is the contrast arm for §2. |
+| C6 | Effect shell drifts off the camera when the stage is *off* | With the effect matrix held, the retained MVP carries the tick-T camera while the camera itself interpolates, so the shell falls back and swells. | `a120-effoff`: centroid **7.3 / 16.2 / 24.5 px** from the authored pose and area **7,193 / 8,093 / 9,319 px** across the alpha grid — a clean ramp, and one that still breaks the 5.25 px envelope. | Reachable only through the test opt-out. This is the artifact C1's stage exists to remove, and it is the contrast arm for §2. |
 | C7 | Residual tick-boundary step | Content no stage covers advances only at the authored tick, so the step into the authored endpoint is larger than the steps inside it. | Camera-only arm: step into the endpoint **12.240** against an interior mean of **10.358** (+18%). Effect-off arm: **11.300** against **9.758** (+16%). At 60 Hz the two steps are **15.643 / 15.431** (1.4% apart) — the grid has no interior to be asymmetric about. | **OPEN — inherent to partial coverage; magnitude now measured.** |
 | C8 | UV-scroll phase holds | Scroll batches that cannot be identity-matched hold their authored phase while the surface around them advances. | `uvscrollhold/uvscrollhit` = **10,248/70,389 at 120 Hz and 3,416/23,463 at 60 Hz — 14.56% in both**. Rate-independent. From the attribution note: 0.4038 ceiling share at ~2.5 per changed byte, i.e. broad and faint. | **OPEN — not diagnosed here.** |
 | C9 | Primitive-alpha overrides that reach no pixel | 119,129 interpolated alpha substitutions changed nothing on this window. | Carried from the attribution note; unexplained there and here. | **OPEN — a question, not a witnessed artifact.** |
@@ -114,42 +130,64 @@ somewhere is just as coherent as a right one. Tracking the shell itself against
 
 Thirty ticks, `a120-allon`:
 
-| Alpha | Shell coverage (px) | Centroid (x, y) | Distance from the same tick's authored pose |
+| Alpha | Shell area (px) | Centroid (x, y) | Distance from the same tick's authored pose |
 |---|---|---|---|
-| 0 (authored) | 6,959.6 | (133.80, 70.76) | 0 |
-| 1/4 | 3,563.1 | (150.44, 45.11) | **32.08 px** ± 5.65 |
-| 2/4 | 3,553.9 | (151.11, 45.02) | **32.71 px** ± 5.86 |
-| 3/4 | 3,562.5 | (151.70, 44.94) | **33.28 px** ± 6.04 |
+| 0 (authored) | 6,766.8 ± 1,304.9 | (333.76, 319.64) | 0 |
+| 1/4 | 2,358.9 ± 377.4 | (368.08, 292.87) | **50.79 px** ± 3.35 |
+| 2/4 | 2,366.4 ± 376.5 | (368.29, 292.75) | **51.08 px** ± 3.47 |
+| 3/4 | 2,295.2 ± 441.1 | (373.70, 293.02) | **50.82 px** ± 3.60 |
 
 The same measurement on `a120-effoff`, where the effect matrix is held:
 
-| Alpha | Shell coverage (px) | Centroid (x, y) | Distance from the authored pose |
+| Alpha | Shell area (px) | Centroid (x, y) | Distance from the authored pose |
 |---|---|---|---|
-| 1/4 | 7,516.0 | (129.93, 76.40) | 7.12 px ± 1.35 |
-| 2/4 | 8,224.6 | (125.49, 82.89) | 15.26 px ± 2.70 |
-| 3/4 | 9,343.9 | (121.02, 89.63) | 23.64 px ± 3.92 |
+| 1/4 | 7,193.3 ± 1,586.3 | (329.87, 324.59) | 7.32 px ± 1.92 |
+| 2/4 | 8,092.6 ± 1,208.7 | (325.49, 332.89) | 16.19 px ± 4.68 |
+| 3/4 | 9,318.7 ± 1,018.7 | (321.02, 339.63) | 24.53 px ± 5.52 |
 
-**Read the two tables against each other.** The held arm ramps — 7.1, 15.3,
-23.6 — in the ratio 1 : 2.14 : 3.32, which is what a quantity that drifts
-across a tick does. The production arm is **flat**: 32.08, 32.71, 33.28, a 3.7%
-spread across a fourfold change in alpha, and it is already at full magnitude
-at the first interpolated frame.
+And the scale everything above has to be read against — how far the shell moves
+between two *authored* images, i.e. the entire budget one tick of interpolation
+has to spend:
+
+**Endpoint-to-endpoint envelope: mean 5.25 px, sd 5.16, max 18.42 px** over the
+29 adjacent authored pairs.
+
+**Read the three together.** The held arm ramps — 7.3, 16.2, 24.5 — in the
+ratio 1 : 2.21 : 3.35, which is what a quantity drifting across a tick does.
+The production arm is **flat**: 50.79, 51.08, 50.82, a **0.6% spread across a
+fourfold change in alpha**, already at full magnitude on the first interpolated
+frame. And both are far outside the 5.25 px the shell actually travels in a
+whole authored tick — the production arm by a factor of **9.7 on the mean and
+2.8 on the worst single tick**.
 
 An interpolated quantity cannot be flat in alpha. A constant offset can. The
-production shell is not being interpolated to the wrong place — it is being
-placed at a fixed displacement from where it belongs, and the interpolation
-riding on top of that offset contributes the 1.2 px of drift between alpha 1/4
-and alpha 3/4.
+production shell is not being interpolated to the wrong place; it is placed at a
+fixed displacement from where it belongs, and the interpolation riding on top of
+that offset contributes the 0.3 px of variation across the whole alpha grid.
 
-Coverage says the same thing twice over. The shell holds 6,960 px when the game
-draws it and **3,563 / 3,554 / 3,563 px** when the replay does — flat again,
-and **48.8% smaller**. The loss is not scale: it is occlusion. The offset is
-directed up-track, so the shell is pushed away from the chase camera and behind
-the kart's own depth, and the kart then hides the half of the shell that should
-be drawn in front of it. Frame-by-frame inspection of ticks 3200–3201 shows
-exactly that — at the authored frame the green shell washes over the kart body,
-and at every interpolated frame the kart is drawn clean and unoccluded with the
-shell as a halo behind and above it.
+Area says the same thing twice over. The shell holds 6,767 px when the game
+draws it and **2,359 / 2,366 / 2,295 px** when the replay does — flat again, and
+**65.3% smaller**. Two mechanisms contribute and this measurement does not
+separate them: the offset is directed up-track, so the shell both recedes from
+the chase camera (smaller) and falls behind the kart's own depth (occluded).
+Frame inspection of ticks 3200–3201 settles the depth question if not the split
+— at the authored frame the green shell washes over the kart body, and at every
+interpolated frame the kart is drawn clean and unoccluded with the shell as a
+halo behind and above it. Clipping is *not* a contributor: the shell component's
+bounding box touches no window edge on any of the 300 frames measured.
+
+**A corroboration, and a coincidence that was not one.** Extrapolating the
+held arm's ramp to alpha 1 — 7.32/0.25, 16.19/0.50, 24.53/0.75 give slopes of
+29.3, 32.4, 32.7 — puts a shell held for a whole tick about **32.7 px** from the
+authored pose. That is the screen motion of a world-static point over one tick,
+so it independently confirms that "one tick of travel" is a displacement of this
+order, which is what the mechanism in §2.3 predicts. It is *not* equal to the
+production arm's 50.8 px and should not be presented as a match: the two are
+different projections of one tick of travel — a static point receding from the
+camera in one case, a point pushed forward along the track from near the camera
+axis in the other. The tight-window draft of this note reported 32.1 px for the
+production offset, which did coincide with the extrapolation; that agreement was
+an artifact of the crop, not evidence.
 
 ### 2.3 The mechanism
 
@@ -206,6 +244,28 @@ still drawn at T. The offset is the same at every alpha, which is precisely the
 flatness the pixels report, and it scales with speed, which is why it is
 invisible while the racers are stationary and obvious under power.
 
+**Position is not the only field carried.** The same helper applies the same
+uncancelled residual to rotation and scale:
+
+```c
+out->rotation.y_rotation = (s16)(
+    target.rotation_y + (s16)(owner->source_rotation[0] - authored.rotation_y));
+...
+out->scale = target.scale * (owner->source_scale / authored.scale);
+```
+
+so the shell is also *oriented* to the racer's next-tick heading. Scale does not
+reach the output — `mdkr_camera_effect_world_from_transforms` consumes the base
+transform's rotation and position only — but the rotation does, and on a corner
+it adds a yaw error to the translation error rather than merely displacing the
+shell rigidly. This note measures the combined result in screen space and does
+not separate the two contributions.
+
+**This shipped.** The path is production on `main` and has been since
+`d2808f9` (Golden Balloon 1.0.1); it is present in v1.0.1, v1.0.2 and v1.0.3.
+Motion smoothing is off by default, so it reaches only players who turned it on
+— which is exactly the population the owner sampled.
+
 Nothing else in the reconstruction is wrong. The local recipe is faithful:
 `mdkr_camera_effect_world_from_transforms` (`camera.c:466`) reproduces
 `mtx_shear_push`'s expression order term for term, including the detail that
@@ -241,12 +301,67 @@ share address, generation, secondary address and secondary generation, and
 `mdkr_camera_replay_object_transform` re-checks `owner->valid`, so the swap
 needs no new validation.
 
-The accompanying gate should assert the property this note measured rather than
-the one the current controls measure: **the effect stage's contribution must
-ramp with alpha.** A leave-one-out difference that is flat across the alpha grid
-is a constant displacement whatever its magnitude, and that is a cheap,
-content-independent invariant — the tables in §2.2 separate 1 : 2.14 : 3.32
-from 1 : 1.02 : 1.04 without knowing anything about shields.
+### 2.6 What the accompanying gate must assert — and what it must not
+
+An earlier draft of this section proposed "the effect stage's contribution must
+ramp with alpha". **That gate is wrong in both directions and must not be
+built.**
+
+- It **passes the defective build.** The leave-one-out contribution — the
+  per-frame distance between the production and effect-off shell centroids — is
+  **57.02 ± 4.57, 65.50 ± 5.62, 72.98 ± 8.47 px** at alpha 1/4, 2/4, 3/4 on the
+  build measured here. It ramps, monotonically, on every arm-pair. It ramps
+  because the *contrast* arm ramps (§2.2), not because the production arm does,
+  and a difference between the two inherits that.
+- It **fails a correct build.** Under a chase camera the shell is very nearly
+  camera-static: the whole authored tick moves it 5.25 px on average. A
+  correctly anchored shell is therefore near-flat *and* near-zero, which is what
+  a "must ramp" gate would reject. The defect reads flat for the opposite
+  reason — a large constant — and no gate keyed on flatness alone can tell a
+  large constant from a small correct one.
+
+The discriminating property is displacement **from the shell's own tick's
+authored pose**, which has two things a correct reconstruction must satisfy and
+this build violates:
+
+- **(a) Bounded by the interpolation envelope.** An interpolated present lies
+  between its two authored endpoints, so its displacement from the tick-T pose
+  can never exceed the tick-T-to-tick-T+1 displacement. Measured: envelope mean
+  **5.25 px**, max **18.42 px** over 29 pairs; production displacement
+  **50.79 / 51.08 / 50.82 px**. Fails by 9.7x on the mean and 2.8x against the
+  single worst authored tick in the window — a margin no tolerance choice has to
+  adjudicate.
+- **(b) Converges to zero as alpha → 0.** The alpha-zero contract is byte-exact
+  reproduction of the retained list's authored endpoint, so displacement must
+  fall toward zero at the bottom of the grid. Measured: 50.79 px at alpha 1/4,
+  the *smallest* of the three and statistically indistinguishable from the
+  largest. This is the condition that names the defect rather than merely
+  detecting it, because a constant offset is the only way to fail it while
+  passing every endpoint check.
+
+Both conditions also reject the effect-off arm (24.53 px at alpha 3/4 against
+the same 5.25 px envelope), which is correct and deliberate: C6 is an artifact
+too, and a gate that only rejected the production defect would go green the day
+someone "fixed" it by disabling the stage.
+
+**The primary gate candidate is not pixels at all.** The defect is an exact
+lifetime mismatch, so it has an exact witness: carry the capture tick on the
+recipe endpoints and assert, on every effect override, that the endpoint handed
+to `mdkr_camera_replay_object_transform` was captured at the same tick the
+helper resolves `authored` at (numerator 0). With the fix that equality holds by
+construction and costs one comparison and one counter in `[PRESENT-PACKET]`;
+without it, it is non-zero on every single override — 708 of 708 on this route.
+An exact structural assertion is worth more than any pixel threshold here, and
+it generalises to the object and child classes, which obey the same rule today
+but have no gate saying so. The pixel conditions (a) and (b) are the
+content-level backstop that would catch a future stage getting the same pairing
+wrong in a different way.
+
+**Neither condition has been run against a fixed build.** This is a diagnosis
+task and no production code was changed; (a) and (b) are stated as a design
+whose pass criterion follows from what a correct reconstruction implies, and
+verified only in the direction that the defective and effect-off builds both
+fail them by large measured margins.
 
 ## 3. The honest 60-versus-120 Hz comparison
 
@@ -278,9 +393,14 @@ What changes is how long that wrong image is on screen:
 | 60 Hz | 3,227 | 3,219 | **50%** |
 | 120 Hz | 3,227 | 9,657 | **75%** |
 
-The per-frame magnitude is identical — `a60-allon` puts the shell **32.71 px**
-from the authored pose at coverage **3,553.9 px**, matching the 120 Hz alpha-2/4
-row to three figures, because it is the same alpha and the same constant offset.
+The per-frame magnitude is identical, and not merely to within a metric: every
+one of `a60-allon`'s 60 dumped frames is **byte-identical** to the `a120-allon`
+frame at the same alpha (60 of 60 matched, 0 differed). The 60 Hz arm puts the
+shell **51.08 px ± 3.47** from the authored pose at area **2,366.4 px**, the
+120 Hz alpha-2/4 row exactly, because it *is* that image. Changing the
+presentation rate changes which alphas get sampled and nothing about what any of
+them looks like.
+
 At 60 Hz the shell alternates correct/wrong every frame; at 120 Hz it shows one
 correct frame and then holds the wrong pose for three. Both are a 30 Hz strobe,
 but at 120 Hz the wrong pose owns three quarters of the light the display emits
@@ -338,4 +458,327 @@ it, which is the size of the problem C1 represents.
   units.** The stated mechanism predicts the offset equals one tick of racer
   travel; the pixel measurement is consistent with that and does not
   independently confirm the world-space magnitude.
+- **C7's rank ordering is unresolved.** The camera-only and effect-off arms both
+  show the step into the authored endpoint ~16–18% larger than the interior
+  steps, but no arm attributes that residual to particular content. It is a
+  measured magnitude with no named cause.
+- **Neither proposed gate in §2.6 has been run against a fixed build**, because
+  this is a diagnosis task and no production code was changed. They are verified
+  only in the direction of rejecting the two builds measured here.
 - **C5, C8 and C9 remain unwitnessed or undiagnosed here**, as marked in §1.
+
+
+## Appendix A — the shell-track measurement, reproducible
+
+This is a one-off analysis, not a standing gate, so it lives here rather than in
+`tests/`. It reads the PPM frame dumps the arms in §Method produce and needs
+only numpy.
+
+```python
+import numpy as np
+
+Y0, Y1, X0, X1 = 150, 480, 120, 600   # full-frame window; HUD band excluded
+
+def components(mask):
+    """8-connected component sizes and bounding boxes, largest first."""
+    h, w = mask.shape
+    seen = np.zeros((h, w), bool)
+    sizes, boxes = [], []
+    for y0, x0 in zip(*np.nonzero(mask)):
+        if seen[y0, x0]:
+            continue
+        stack, size = [(y0, x0)], 0
+        seen[y0, x0] = True
+        miny = maxy = y0
+        minx = maxx = x0
+        while stack:
+            y, x = stack.pop()
+            size += 1
+            miny, maxy = min(miny, y), max(maxy, y)
+            minx, maxx = min(minx, x), max(maxx, x)
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    ny, nx = y + dy, x + dx
+                    if (0 <= ny < h and 0 <= nx < w
+                            and mask[ny, nx] and not seen[ny, nx]):
+                        seen[ny, nx] = True
+                        stack.append((ny, nx))
+        sizes.append(size)
+        boxes.append((miny, minx, maxy, maxx))
+    order = np.argsort(sizes)[::-1]
+    return [sizes[i] for i in order], [boxes[i] for i in order]
+
+def shell(img):
+    """(area, cx, cy, bbox) of the additive green shell, FULL-FRAME pixels."""
+    r, g, b = img[..., 0], img[..., 1], img[..., 2]
+    m = (g > r + 45) & (g > b + 45) & (g > 110)
+    w = np.zeros_like(m)
+    w[Y0:Y1, X0:X1] = m[Y0:Y1, X0:X1]
+    if w.sum() < 200:
+        return None
+    sizes, boxes = components(w)
+    y0, x0, y1, x1 = boxes[0]
+    lab = np.zeros_like(w)
+    lab[y0:y1 + 1, x0:x1 + 1] = w[y0:y1 + 1, x0:x1 + 1]
+    ys, xs = np.nonzero(lab)
+    # CONTAINMENT: this must never touch a window edge, or the area and the
+    # centroid are both measuring the crop instead of the shell.
+    assert y0 > Y0 and x0 > X0 and y1 < Y1 - 1 and x1 < X1 - 1
+    return sizes[0], float(xs.mean()), float(ys.mean()), (y0, x0, y1, x1)
+```
+
+`disp_from_own_tick_authored` is the euclidean distance from the centroid of the
+authored present that opens the same tick (the frame at `frame - alpha`). The
+endpoint-to-endpoint envelope is the same distance between consecutive authored
+presents.
+
+## Appendix B — raw per-frame rows
+
+240 rows: 120 presents each for `a120-allon` and `a120-effoff`, authored ticks
+3200–3230 at `MDKR_PRESENT_RATE=120`. `a60-allon`'s 60 rows are omitted because
+every one of its frames is byte-identical to the `a120-allon` frame at the same
+alpha (§3).
+
+```csv
+frame,arm,alpha,area,cx,cy,disp_from_own_tick_authored
+12800,a120-allon,0,8530,321.07,318.06,0.00
+12801,a120-allon,1,2789,366.77,298.80,49.60
+12802,a120-allon,2,2836,367.67,299.11,50.30
+12803,a120-allon,3,2818,368.29,298.81,50.99
+12804,a120-allon,0,7700,327.53,318.94,0.00
+12805,a120-allon,1,2687,368.94,297.96,46.42
+12806,a120-allon,2,2639,369.09,297.52,46.75
+12807,a120-allon,3,2524,368.94,296.72,46.99
+12808,a120-allon,0,7500,324.69,319.32,0.00
+12809,a120-allon,1,2620,370.89,295.60,51.93
+12810,a120-allon,2,2692,371.86,295.30,52.93
+12811,a120-allon,3,2821,371.87,294.71,53.21
+12812,a120-allon,0,7714,330.33,319.40,0.00
+12813,a120-allon,1,2814,371.13,293.27,48.45
+12814,a120-allon,2,2857,370.88,292.92,48.43
+12815,a120-allon,3,2958,371.45,293.10,48.81
+12816,a120-allon,0,7466,331.37,321.07,0.00
+12817,a120-allon,1,3069,373.40,293.34,50.36
+12818,a120-allon,2,3106,374.22,292.85,51.31
+12819,a120-allon,3,3131,374.91,292.77,51.93
+12820,a120-allon,0,6946,335.88,319.93,0.00
+12821,a120-allon,1,2745,374.99,291.81,48.17
+12822,a120-allon,2,2679,376.17,292.01,49.02
+12823,a120-allon,3,2579,377.48,292.28,49.95
+12824,a120-allon,0,6616,333.56,322.94,0.00
+12825,a120-allon,1,2360,379.00,292.45,54.72
+12826,a120-allon,2,2301,379.80,292.66,55.28
+12827,a120-allon,3,2297,379.76,292.73,55.20
+12828,a120-allon,0,6318,336.85,324.74,0.00
+12829,a120-allon,1,2427,379.57,294.54,52.32
+12830,a120-allon,2,2388,380.53,296.29,52.14
+12831,a120-allon,3,2369,380.98,297.88,51.66
+12832,a120-allon,0,6190,336.31,328.44,0.00
+12833,a120-allon,1,2372,380.92,297.51,54.29
+12834,a120-allon,2,2308,381.36,297.27,54.79
+12835,a120-allon,3,2257,382.22,297.93,55.13
+12836,a120-allon,0,5716,336.03,328.52,0.00
+12837,a120-allon,1,2192,382.44,300.04,54.45
+12838,a120-allon,2,2100,382.64,301.11,54.07
+12839,a120-allon,3,1670,385.48,309.40,53.02
+12840,a120-allon,0,5516,334.52,329.28,0.00
+12841,a120-allon,1,1864,384.67,300.69,57.72
+12842,a120-allon,2,1672,384.79,298.59,58.89
+12843,a120-allon,3,1785,386.09,301.34,58.65
+12844,a120-allon,0,5453,335.49,326.20,0.00
+12845,a120-allon,1,1845,386.32,302.51,56.09
+12846,a120-allon,2,1987,386.76,302.11,56.65
+12847,a120-allon,3,2091,386.82,300.97,57.20
+12848,a120-allon,0,5488,340.06,324.83,0.00
+12849,a120-allon,1,2179,385.07,298.97,51.90
+12850,a120-allon,2,2323,384.95,298.11,52.24
+12851,a120-allon,3,2243,384.55,296.58,52.70
+12852,a120-allon,0,5784,337.38,322.42,0.00
+12853,a120-allon,1,2025,384.69,298.62,52.96
+12854,a120-allon,2,2027,385.58,298.92,53.62
+12855,a120-allon,3,1463,382.55,292.97,53.92
+12856,a120-allon,0,5903,338.40,322.70,0.00
+12857,a120-allon,1,2027,385.45,298.30,53.00
+12858,a120-allon,2,2021,386.01,298.32,53.48
+12859,a120-allon,3,2029,386.23,298.46,53.63
+12860,a120-allon,0,3266,336.45,304.38,0.00
+12861,a120-allon,1,1914,384.57,298.86,48.44
+12862,a120-allon,2,2073,385.76,299.78,49.52
+12863,a120-allon,3,2154,386.56,299.97,50.30
+12864,a120-allon,0,5751,342.55,320.67,0.00
+12865,a120-allon,1,2152,384.68,299.08,47.35
+12866,a120-allon,2,2106,385.17,298.89,47.87
+12867,a120-allon,3,2169,385.71,298.49,48.53
+12868,a120-allon,0,3374,340.67,302.62,0.00
+12869,a120-allon,1,2050,383.60,296.33,43.39
+12870,a120-allon,2,2036,383.88,295.74,43.76
+12871,a120-allon,3,1333,382.06,283.02,45.80
+12872,a120-allon,0,6474,341.30,319.34,0.00
+12873,a120-allon,1,1391,380.67,281.27,54.77
+12874,a120-allon,2,1478,379.96,280.76,54.61
+12875,a120-allon,3,1582,378.94,280.74,53.91
+12876,a120-allon,0,7258,341.18,317.49,0.00
+12877,a120-allon,1,2491,378.84,289.64,46.83
+12878,a120-allon,2,2532,377.79,289.45,46.11
+12879,a120-allon,3,2641,378.01,289.85,46.05
+12880,a120-allon,0,7335,340.49,319.82,0.00
+12881,a120-allon,1,2814,378.14,290.20,47.90
+12882,a120-allon,2,2922,378.95,289.71,48.85
+12883,a120-allon,3,3105,379.24,289.50,49.20
+12884,a120-allon,0,7563,341.02,316.06,0.00
+12885,a120-allon,1,3074,376.94,288.11,45.51
+12886,a120-allon,2,3030,376.16,287.06,45.56
+12887,a120-allon,3,2628,374.11,282.52,47.12
+12888,a120-allon,0,7575,335.86,317.17,0.00
+12889,a120-allon,1,2733,375.01,286.15,49.94
+12890,a120-allon,2,2660,374.99,285.97,50.05
+12891,a120-allon,3,2561,375.56,285.55,50.75
+12892,a120-allon,0,7491,334.44,319.16,0.00
+12893,a120-allon,1,2269,374.79,284.35,53.29
+12894,a120-allon,2,2321,373.50,284.47,52.25
+12895,a120-allon,3,2258,371.72,283.15,51.83
+12896,a120-allon,0,7855,333.48,319.77,0.00
+12897,a120-allon,1,2421,370.63,287.60,49.14
+12898,a120-allon,2,2347,370.90,289.15,48.36
+12899,a120-allon,3,2367,370.37,290.58,47.05
+12900,a120-allon,0,8154,330.64,321.16,0.00
+12901,a120-allon,1,2381,368.97,290.70,48.96
+12902,a120-allon,2,2377,368.48,289.96,49.04
+12903,a120-allon,3,2271,368.01,289.22,49.16
+12904,a120-allon,0,8334,327.38,319.11,0.00
+12905,a120-allon,1,2233,366.82,291.38,48.21
+12906,a120-allon,2,2262,366.93,292.79,47.50
+12907,a120-allon,3,2213,366.87,294.15,46.72
+12908,a120-allon,0,8071,323.72,318.59,0.00
+12909,a120-allon,1,2294,283.38,286.81,51.35
+12910,a120-allon,2,2231,282.81,284.74,53.09
+12911,a120-allon,3,1968,365.27,293.45,48.56
+12912,a120-allon,0,7661,322.01,314.49,0.00
+12913,a120-allon,1,2098,280.09,280.48,53.98
+12914,a120-allon,2,2144,279.86,280.20,54.33
+12915,a120-allon,3,2257,280.45,280.15,53.91
+12916,a120-allon,0,8002,322.16,312.57,0.00
+12917,a120-allon,1,2438,280.92,280.74,52.09
+12918,a120-allon,2,2537,281.30,280.87,51.71
+12919,a120-allon,3,2313,360.36,293.56,42.67
+12800,a120-effoff,0,8530,321.07,318.06,0.00
+12801,a120-effoff,1,9217,317.80,323.32,6.19
+12802,a120-effoff,2,10105,314.37,330.16,13.83
+12803,a120-effoff,3,11323,310.44,336.60,21.37
+12804,a120-effoff,0,7700,327.53,318.94,0.00
+12805,a120-effoff,1,8374,324.24,324.00,6.03
+12806,a120-effoff,2,9166,319.51,330.78,14.30
+12807,a120-effoff,3,10409,315.57,338.08,22.57
+12808,a120-effoff,0,7500,324.69,319.32,0.00
+12809,a120-effoff,1,8167,320.94,324.74,6.59
+12810,a120-effoff,2,9139,316.38,331.85,15.03
+12811,a120-effoff,3,10210,311.83,338.70,23.27
+12812,a120-effoff,0,7714,330.33,319.40,0.00
+12813,a120-effoff,1,8031,326.63,325.26,6.93
+12814,a120-effoff,2,8991,321.70,332.25,15.48
+12815,a120-effoff,3,10227,316.27,339.07,24.18
+12816,a120-effoff,0,7466,331.37,321.07,0.00
+12817,a120-effoff,1,7915,326.81,327.22,7.66
+12818,a120-effoff,2,8678,321.41,334.19,16.46
+12819,a120-effoff,3,10144,317.26,340.91,24.35
+12820,a120-effoff,0,6946,335.88,319.93,0.00
+12821,a120-effoff,1,7537,329.60,325.86,8.64
+12822,a120-effoff,2,8089,323.57,332.71,17.75
+12823,a120-effoff,3,9131,318.26,339.40,26.26
+12824,a120-effoff,0,6616,333.56,322.94,0.00
+12825,a120-effoff,1,7119,328.50,329.02,7.91
+12826,a120-effoff,2,7745,321.96,335.75,17.28
+12827,a120-effoff,3,8701,314.60,342.65,27.35
+12828,a120-effoff,0,6318,336.85,324.74,0.00
+12829,a120-effoff,1,6857,331.66,330.98,8.12
+12830,a120-effoff,2,7567,324.86,338.40,18.17
+12831,a120-effoff,3,8845,316.87,345.22,28.61
+12832,a120-effoff,0,6190,336.31,328.44,0.00
+12833,a120-effoff,1,6639,330.85,334.92,8.47
+12834,a120-effoff,2,7405,324.16,341.95,18.17
+12835,a120-effoff,3,8962,316.98,348.81,28.08
+12836,a120-effoff,0,5716,336.03,328.52,0.00
+12837,a120-effoff,1,5904,329.19,334.45,9.05
+12838,a120-effoff,2,7393,322.51,341.64,18.84
+12839,a120-effoff,3,8600,314.46,348.29,29.26
+12840,a120-effoff,0,5516,334.52,329.28,0.00
+12841,a120-effoff,1,5559,327.86,335.49,9.12
+12842,a120-effoff,2,6532,320.66,342.07,18.86
+12843,a120-effoff,3,8243,313.96,348.64,28.24
+12844,a120-effoff,0,5453,335.49,326.20,0.00
+12845,a120-effoff,1,5944,329.44,332.26,8.56
+12846,a120-effoff,2,6794,322.52,338.54,17.90
+12847,a120-effoff,3,7736,314.81,345.41,28.23
+12848,a120-effoff,0,5488,340.06,324.83,0.00
+12849,a120-effoff,1,6073,334.54,331.20,8.43
+12850,a120-effoff,2,5896,328.31,338.11,17.73
+12851,a120-effoff,3,7277,320.14,345.26,28.53
+12852,a120-effoff,0,5784,337.38,322.42,0.00
+12853,a120-effoff,1,6107,331.29,328.89,8.89
+12854,a120-effoff,2,6443,324.59,335.87,18.55
+12855,a120-effoff,3,7446,317.40,343.02,28.69
+12856,a120-effoff,0,5903,338.40,322.70,0.00
+12857,a120-effoff,1,6115,331.33,328.31,9.02
+12858,a120-effoff,2,6644,323.64,334.66,19.00
+12859,a120-effoff,3,7867,319.14,341.44,26.88
+12860,a120-effoff,0,3266,336.45,304.38,0.00
+12861,a120-effoff,1,3579,328.49,309.00,9.21
+12862,a120-effoff,2,6636,324.01,331.72,30.04
+12863,a120-effoff,3,8559,317.85,338.53,38.88
+12864,a120-effoff,0,5751,342.55,320.67,0.00
+12865,a120-effoff,1,3456,337.01,307.18,14.59
+12866,a120-effoff,2,6904,330.21,332.64,17.19
+12867,a120-effoff,3,8294,324.32,339.50,26.20
+12868,a120-effoff,0,3374,340.67,302.62,0.00
+12869,a120-effoff,1,3656,335.96,306.75,6.26
+12870,a120-effoff,2,5555,329.87,331.84,31.15
+12871,a120-effoff,3,8598,324.04,338.63,39.66
+12872,a120-effoff,0,6474,341.30,319.34,0.00
+12873,a120-effoff,1,7120,336.71,324.31,6.76
+12874,a120-effoff,2,7809,330.91,330.87,15.52
+12875,a120-effoff,3,8919,326.66,337.76,23.53
+12876,a120-effoff,0,7258,341.18,317.49,0.00
+12877,a120-effoff,1,7580,337.83,323.14,6.57
+12878,a120-effoff,2,8218,334.21,329.82,14.17
+12879,a120-effoff,3,9522,329.11,336.50,22.52
+12880,a120-effoff,0,7335,340.49,319.82,0.00
+12881,a120-effoff,1,8032,336.72,325.19,6.56
+12882,a120-effoff,2,8706,332.46,331.13,13.88
+12883,a120-effoff,3,9831,329.05,337.85,21.35
+12884,a120-effoff,0,7563,341.02,316.06,0.00
+12885,a120-effoff,1,8251,337.69,321.34,6.24
+12886,a120-effoff,2,8876,333.68,327.28,13.41
+12887,a120-effoff,3,9699,329.47,333.35,20.80
+12888,a120-effoff,0,7575,335.86,317.17,0.00
+12889,a120-effoff,1,8193,333.94,322.10,5.29
+12890,a120-effoff,2,8809,331.16,327.84,11.66
+12891,a120-effoff,3,9495,327.68,334.42,19.09
+12892,a120-effoff,0,7491,334.44,319.16,0.00
+12893,a120-effoff,1,7975,332.96,324.56,5.60
+12894,a120-effoff,2,8800,331.08,330.42,11.74
+12895,a120-effoff,3,9925,328.79,336.90,18.61
+12896,a120-effoff,0,7855,333.48,319.77,0.00
+12897,a120-effoff,1,8595,331.83,325.60,6.06
+12898,a120-effoff,2,9180,330.60,331.21,11.79
+12899,a120-effoff,3,10131,329.14,337.98,18.71
+12900,a120-effoff,0,8154,330.64,321.16,0.00
+12901,a120-effoff,1,8823,330.02,326.54,5.42
+12902,a120-effoff,2,9220,328.61,332.82,11.84
+12903,a120-effoff,3,10459,327.55,339.61,18.71
+12904,a120-effoff,0,8334,327.38,319.11,0.00
+12905,a120-effoff,1,9171,327.09,324.53,5.42
+12906,a120-effoff,2,9722,326.42,330.63,11.56
+12907,a120-effoff,3,10628,326.49,337.45,18.36
+12908,a120-effoff,0,8071,323.72,318.59,0.00
+12909,a120-effoff,1,8919,323.83,324.25,5.66
+12910,a120-effoff,2,9384,323.90,330.26,11.67
+12911,a120-effoff,3,10378,323.46,336.95,18.36
+12912,a120-effoff,0,7661,322.01,314.49,0.00
+12913,a120-effoff,1,8345,322.43,320.00,5.53
+12914,a120-effoff,2,9105,322.81,326.11,11.65
+12915,a120-effoff,3,9916,323.13,332.52,18.06
+12916,a120-effoff,0,8002,322.16,312.57,0.00
+12917,a120-effoff,1,8546,323.03,317.35,4.86
+12918,a120-effoff,2,9268,324.55,323.30,10.99
+12919,a120-effoff,3,10086,325.87,329.46,17.30
+```
