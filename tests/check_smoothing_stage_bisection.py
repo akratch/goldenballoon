@@ -67,6 +67,11 @@ What each arm asserts
   *present*. This is the exact witness for the shield/magnet anchoring defect
   that shipped in v1.0.1-v1.0.3 and read 708 of 708 violations on route A; the
   pixel-level backstop is ``check_effect_shell_envelope.py``.
+* **Every UV-scroll hold is attributed.** A held scroll batch steps its texture
+  phase at the authored tick rate while the surface around it glides, so the
+  hold rate is a visible quantity and its *clauses* are what disposition it.
+  Each route's all-on arm asserts the four clause counters account for the
+  aggregate exactly, and prints the split as ``[UV-SCROLL-HOLDS]``.
 
 The uncaptured-external arm
 ---------------------------
@@ -205,6 +210,23 @@ REPLAY_STAT_CONTRACT = ("uncapturedext", "uncapturedrefusals")
 # saying so.
 PACKET_STAT_CONTRACT = ("ownertickcheck", "ownertickmismatch")
 
+# The UV-scroll hold clauses, and the aggregate they must account for.
+#
+# A held scroll batch is a surface stepping its texture phase at the authored
+# tick rate while everything around it glides, so the hold RATE is a visible
+# quantity -- 14.56% of lookups on both routes. The rate alone cannot be
+# dispositioned, because the clauses mean opposite things: a batch with no
+# published {T-1} record is structural and self-clearing, while two published
+# ticks that disagree about the displacement is the wrap the resolver could not
+# undo. What is asserted here is the accounting, not the content: every hold
+# lands in exactly one bucket. A future clause added without a counter would
+# otherwise vanish into the aggregate, and the disposition in
+# docs/evidence/smoothing-artifact-repro-2026-08.md section 5.2 would quietly
+# stop describing the build. The per-clause VALUES are content -- a poisoned
+# key is a deliberate outcome, not a defect -- so they are printed, not bounded.
+UV_HOLD_CLAUSES = ("uvscrollholdunpub", "uvscrollholdambig",
+                   "uvscrollholdshape", "uvscrollholdphase")
+
 # A stage is ranked only from a route that actually fires it. Route A never
 # interpolates a world-space particle mesh -- it registers particle vertices
 # and then holds every one of them -- so ranking `particle` there would report
@@ -293,6 +315,34 @@ def replay_tick_agreement(output: str, label: str,
             "See docs/evidence/smoothing-artifact-repro-2026-08.md section "
             "2.3")
     return problems, packet["ownertickcheck"]
+
+
+def uv_scroll_hold_accounting(output: str, label: str) -> tuple[list[str], str]:
+    """Assert the UV-scroll hold clauses account for every hold on one arm."""
+
+    problems: list[str] = []
+    packet = parse_last(output, "PRESENT-PACKET")
+    missing = [key for key in (*UV_HOLD_CLAUSES, "uvscrollhold")
+               if key not in packet]
+    if missing:
+        problems.append(
+            f"{label}: [PRESENT-PACKET] carries no {'/'.join(missing)} field. "
+            "That is the UV-scroll hold-clause contract "
+            "(gfx_presentation_packet_lookup_uv_scroll -> present_sched.c); "
+            "without it a hold rate cannot be attributed to the refusal that "
+            "produced it")
+        return problems, ""
+    total = sum(packet[key] for key in UV_HOLD_CLAUSES)
+    if total != packet["uvscrollhold"]:
+        problems.append(
+            f"{label}: the UV-scroll hold clauses sum to {total} against "
+            f"uvscrollhold={packet['uvscrollhold']}. A refusal reached the "
+            "aggregate without landing in a bucket, so the hold rate can no "
+            "longer be attributed. See "
+            "docs/evidence/smoothing-artifact-repro-2026-08.md section 5.2")
+    return problems, " ".join(
+        f"{key}={packet[key]}"
+        for key in ("uvscrollhit", "uvscrollhold", *UV_HOLD_CLAUSES))
 
 
 def run(binary: Path, rom: Path, label: str, root: Path, track: str,
@@ -505,6 +555,11 @@ def main() -> int:
                 anchored_checks += base_tick_checks
                 owned_arms += 1
                 owned_replays += summary["interp"]
+                problems, uv_row = uv_scroll_hold_accounting(
+                    base_out, f"route {route} arm all-on")
+                failures.extend(problems)
+                if uv_row:
+                    rows.append(f"[UV-SCROLL-HOLDS] route={route} {uv_row}")
                 notes.append(
                     f"route {route} all-on: {summary['interp']} interpolated "
                     f"replays over {summary['presents']} presents, "
