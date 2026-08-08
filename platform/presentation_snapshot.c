@@ -293,6 +293,68 @@ bool presentation_snapshot_identity_ensure_generation(
     return true;
 }
 
+/* ---- renderer-owned transform registry ----------------------------------- */
+
+/*
+ * Small and fixed on purpose. The only members today are the eight rain-splash
+ * slots; a registry that could grow without bound would be a way for the
+ * render path to push the capture over PRESENTATION_SNAPSHOT_MAX_OBJECTS and
+ * fail every snapshot whole.
+ */
+#define PRESENTATION_SNAPSHOT_MAX_EXTERNALS 32u
+
+static const void *s_externals[PRESENTATION_SNAPSHOT_MAX_EXTERNALS];
+static size_t s_external_count;
+
+bool presentation_snapshot_register_external_transform(const void *transform) {
+    size_t index;
+
+    if (transform == NULL || !presentation_snapshot_enabled()) {
+        return false;
+    }
+    for (index = 0u; index < s_external_count; index++) {
+        if (s_externals[index] == transform) {
+            /* Already live. Re-registering is a fresh lifetime -- the caller
+             * reused the slot -- so reissue the generation but do not add a
+             * second entry, which would publish the pose twice. */
+            presentation_snapshot_note_spawn(transform);
+            return true;
+        }
+    }
+    if (s_external_count >= PRESENTATION_SNAPSHOT_MAX_EXTERNALS) {
+        return false;
+    }
+    s_externals[s_external_count++] = transform;
+    presentation_snapshot_note_spawn(transform);
+    return true;
+}
+
+void presentation_snapshot_unregister_external_transform(
+    const void *transform) {
+    size_t index;
+
+    if (transform == NULL) {
+        return;
+    }
+    for (index = 0u; index < s_external_count; index++) {
+        if (s_externals[index] != transform) {
+            continue;
+        }
+        s_externals[index] = s_externals[--s_external_count];
+        s_externals[s_external_count] = NULL;
+        presentation_snapshot_note_free(transform);
+        return;
+    }
+}
+
+size_t presentation_snapshot_external_transform_count(void) {
+    return s_external_count;
+}
+
+const void *presentation_snapshot_external_transform_at(size_t index) {
+    return index < s_external_count ? s_externals[index] : NULL;
+}
+
 /* ---- publish ring -------------------------------------------------------- */
 
 /*
@@ -756,6 +818,12 @@ void presentation_snapshot_stage_reset(void) {
     memset(s_camera_history, 0, sizeof(s_camera_history));
     memset(&s_authored_cameras, 0, sizeof(s_authored_cameras));
     identity_reset();
+    /* The registry names storage the renderer owns, but a stage boundary
+     * retires every identity, and a member that survives the transition must
+     * re-register so it is issued a generation from the new epoch rather than
+     * carrying a retired one. */
+    memset(s_externals, 0, sizeof(s_externals));
+    s_external_count = 0u;
     s_current = -1;
     s_previous = -1;
     s_write = -1;

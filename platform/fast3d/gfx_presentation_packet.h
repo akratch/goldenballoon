@@ -101,6 +101,22 @@ typedef struct GfxPresentationPacketStats {
     uint64_t deformation_color_overrides;
     uint64_t particle_deformation_hits;
     uint64_t particle_deformation_overrides;
+    /*
+     * Renderer-owned world content (weather): batches whose identity token is
+     * a fixed renderer-owned slot rather than a spawned Object.
+     *
+     * `registrations` is the non-vacuity witness -- it says the content was
+     * given a presentation identity at all, which is the whole defect class
+     * these three count. `hits`/`overrides` say the replay actually resolved a
+     * pair for it and that the pair MOVED, i.e. the substitution changed
+     * pixels rather than re-drawing tick T. `jump_holds` counts the guard in
+     * GfxPresentationMatrixOwner::max_vertex_delta refusing a pair whose
+     * displacement is a slot reuse or a volume wrap, not a movement.
+     */
+    uint64_t renderer_vertex_registrations;
+    uint64_t renderer_vertex_hits;
+    uint64_t renderer_vertex_overrides;
+    uint64_t renderer_vertex_jump_holds;
     uint64_t projected_shadow_deformation_hits;
     uint64_t projected_shadow_deformation_overrides;
     uint64_t particle_color_hits;
@@ -272,6 +288,11 @@ void gfx_presentation_packet_note_deformation_incompatible(void);
 void gfx_presentation_packet_note_phase_hold(bool effect);
 void gfx_presentation_packet_note_deformation_override(void);
 void gfx_presentation_packet_note_particle_deformation(bool overridden);
+/* One renderer-owned vertex batch resolved a pair; `overridden` says the two
+ * endpoints differed, so the substitution moved something. */
+void gfx_presentation_packet_note_renderer_vertex(bool overridden);
+/* The displacement guard refused a structurally valid pair. */
+void gfx_presentation_packet_note_renderer_vertex_jump(void);
 void gfx_presentation_packet_note_projected_shadow_deformation(
     bool overridden);
 void gfx_presentation_packet_note_deformation_color(bool particle,

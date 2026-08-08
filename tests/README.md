@@ -3818,6 +3818,38 @@ records the raw authoritative state hash plus the seed immediately around every
 splash placement roll and lightning timer reset, and requires presentation
 invariance. Only digests and row counts are stored; no ROM-derived state ships.
 
+### Weather presentation identity — `tests/check_weather_presentation_identity.py`
+
+```bash
+python3 tests/check_weather_presentation_identity.py --build build-rel \
+  --rom baserom.us.v80.z64
+```
+
+Snow (level 13) and rain (level 37) under `MDKR_PRESENT_RATE=120` +
+`MDKR_PRESENT_SMOOTHING=interpolate`, against the same route with smoothing off.
+
+A presentation owner is only minted for a real spawned `Object` in
+`gObjPtrList`. Precipitation is not one: the flakes come out of
+`gSnowVertexData` and the rain sheet out of `gRainVertices`, so before
+`weather_register_vertex_batch()` existed neither carried an identity and an
+interpolated present replayed their tick-T bytes unchanged — held for two to
+four presents, then jumped. Nothing detected that. The authoritative hashes do
+not move (registration is not authoritative), the pixel controls pass (a frozen
+flake is a coherent image), and the aggregate packet counters were already large
+from particles and model deformation.
+
+So the gate reads the counters that name *this* content:
+`renderervertexreg` must be nonzero (the batches have an identity at all),
+`renderervertexoverride` must be nonzero (an interpolated present really did
+substitute a moved vertex, not merely resolve a pair whose endpoints agree), and
+on the snow route `renderervertexjumphold` must be nonzero — the volume-wrap
+guard has to be able to fire, or `max_vertex_delta` is a comment. Both routes'
+`[SIMHASH]` streams must equal the smoothing-off run's, which is the "identity
+must not perturb the authoritative stream" contract.
+
+Measured: snow 167,800 registered batches / 476,187 substitutions / 3,816 guard
+holds; rain 2,072 / 1,278 / 0.
+
 ### Address-domain narrowing — `tests/check_address_domains.py`
 
 ```bash

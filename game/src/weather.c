@@ -18,11 +18,107 @@
 #ifdef NATIVE_PORT
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
+#include "fast3d/gfx_presentation_packet.h"
 #include "present_sched.h"
+#include "presentation_snapshot.h"
+#include "rcp_dkr.h"
 #endif
 
 #define WEATHER_OVERRIDE_COUNT 16
+
+#ifdef NATIVE_PORT
+/*
+ * PRESENTATION IDENTITY FOR PRECIPITATION.
+ *
+ * Snow flakes and the rain sheet are emitted straight from module-static
+ * vertex arrays. No Object is spawned for them, so the tick-boundary snapshot
+ * walk -- which enumerates gObjPtrList -- cannot see them, no presentation
+ * owner was ever minted, and an interpolated present replayed their tick-T
+ * bytes verbatim. Everything around them glided while the precipitation held
+ * still for two to four presents and then jumped, which reads as strobing
+ * rather than as falling, and precipitation has the largest per-tick screen
+ * displacement in the scene.
+ *
+ * The fix is the mechanism particles.c already uses for direct world-space
+ * point/line meshes: register the batch with
+ * gfx_presentation_packet_register_vertex_identity() under a
+ * PARTICLE_VERTICES-class owner, so the real walk retains {T}, the forward
+ * census retains {T+1}, and the replay substitutes interpolated XYZ.
+ *
+ * Two things differ from particles.c and both are load-bearing.
+ *
+ * IDENTITY IS NOT THE VERTEX ADDRESS. gSnowVerts double-buffers through
+ * gSnowVertexData[gSnowVertexFlip] and a flake's SLOT in it is recomputed
+ * every tick from whichever flakes happen to be inside the clip band, so
+ * neither the address nor the slot index survives a tick. The identity token
+ * is the flake's PHYSICS slot &gSnowPhysics[i] instead -- a fixed array
+ * element for the level's lifetime -- recovered from gSnowTriIndices, which
+ * snow_vertices() already writes for exactly this "which flake is in this
+ * slot" question. Likewise the rain sheet is keyed by its layer &gRainGfx[i]
+ * rather than by gRainVertices + gRainVertexFlip, which cycles.
+ *
+ * THE VIEWPORT IS REAL. particles.c collapses every viewport onto viewport
+ * zero because a world-space point mesh submits identical bytes to all of
+ * them. Snow does not: snow_vertices() transforms each flake through THAT
+ * viewport's camera, so two viewports hold genuinely different bytes for the
+ * same flake and sharing a key would poison it as a collision. Both register
+ * under get_current_viewport().
+ */
+
+/*
+ * Hold-instead-of-blend threshold for one snow flake's per-tick view-space
+ * movement, in world units.
+ *
+ * snow_vertices() places a flake at ((physics - camera) & gSnowGfx.radius*),
+ * so a flake that leaves one face of the volume reappears on the opposite
+ * face in the same physics slot: same identity, same batch shape, same
+ * everything the structural checks can see, and a jump of the FULL volume
+ * width. The authored radius masks are 0x03FFFFFF in 16.16, i.e. a 1024-unit
+ * span, so a wrap is a ~1024-unit step. Legitimate movement is the flake's
+ * own drift plus the camera's travel and swing, all carried in the same
+ * view-space number: a boosted racer covers well under 60 units a tick and
+ * the snow volume is only ~512 units deep, so a quarter of the span is more
+ * than 4x any real motion and less than a quarter of any wrap.
+ */
+#define WEATHER_SNOW_WRAP_GUARD 256.0f
+
+/* The rain sheet is an ortho quad rotated by the camera's roll about a fixed
+ * origin; its corners live at +/-200 units and cannot travel further than the
+ * quad is wide in one tick. */
+#define WEATHER_RAIN_SHEET_GUARD 200.0f
+
+/*
+ * Give one renderer-owned vertex batch a presentation identity.
+ *
+ * `key` is the address the display list names (what the HLE walk has in
+ * hand); `identity` is the stable token the retained {T, T+1} pair is keyed
+ * by. They are deliberately different -- see the note above.
+ */
+static void weather_register_vertex_batch(const void *key,
+                                          const void *identity,
+                                          f32 maxVertexDelta) {
+    GfxPresentationMatrixOwner owner;
+    uint64_t generation = 0u;
+
+    if (key == NULL || identity == NULL ||
+        !presentation_snapshot_identity_ensure_generation(identity,
+                                                          &generation)) {
+        return;
+    }
+    memset(&owner, 0, sizeof(owner));
+    owner.address = identity;
+    owner.generation = generation;
+    owner.matrix_class = GFX_PRESENTATION_MATRIX_PARTICLE_VERTICES;
+    owner.renderer_owned = true;
+    owner.max_vertex_delta = maxVertexDelta;
+    owner.capture_tick = presentation_task_authoring_tick();
+    owner.valid = true;
+    (void) gfx_presentation_packet_register_vertex_identity(
+        key, get_current_viewport(), &owner);
+}
+#endif
 
 /************ .data ************/
 
@@ -553,11 +649,25 @@ void snow_render(void) {
             material_set_no_tex_offset(&gCurrWeatherDisplayList, gSnowGfx.texture, RENDER_Z_COMPARE);
             while (i + gSnowVertOffset < gSnowVertCount) {
                 vtx = &gSnowVerts[i];
+#ifdef NATIVE_PORT
+                /* One batch is one flake (gSnowVertOffset == 4), and
+                 * gSnowTriIndices[i >> 2] is the physics slot snow_vertices()
+                 * drew it from — the only per-flake identity that survives a
+                 * tick. */
+                weather_register_vertex_batch(
+                    vtx, &gSnowPhysics[gSnowTriIndices[i >> 2]],
+                    WEATHER_SNOW_WRAP_GUARD);
+#endif
                 gSPVertexDKR(gCurrWeatherDisplayList++, OS_K0_TO_PHYSICAL(vtx), gSnowVertOffset, 0);
                 gSPPolygon(gCurrWeatherDisplayList++, OS_K0_TO_PHYSICAL(gSnowTriangles), gSnowTriCount, 1);
                 i += gSnowVertOffset;
             }
             vtx = &gSnowVerts[i];
+#ifdef NATIVE_PORT
+            weather_register_vertex_batch(
+                vtx, &gSnowPhysics[gSnowTriIndices[i >> 2]],
+                WEATHER_SNOW_WRAP_GUARD);
+#endif
             gSPVertexDKR(gCurrWeatherDisplayList++, OS_K0_TO_PHYSICAL(vtx), (gSnowVertCount - i), 0);
             gSPPolygon(gCurrWeatherDisplayList++, OS_K0_TO_PHYSICAL(gSnowTriangles), ((s32) (gSnowVertCount - i) >> 1),
                        1);
@@ -1199,6 +1309,18 @@ static void rain_splash_tick(s32 updateRate) {
                             gRainSplashSegments[firstIndexWithoutFlags].trans.flags = OBJ_FLAGS_UNK_0001;
                             gRainSplashSegments[firstIndexWithoutFlags].opacity =
                                 rand_range(128, (temp_t0 >> 10) + 191);
+                            /* A splash slot is a lifetime, and this is its
+                             * spawn. Registering here rather than at the draw
+                             * is what makes a RECYCLED slot discontinuous:
+                             * the fresh generation stops the new splash from
+                             * being blended out of the dead one's last pose,
+                             * exactly as spawn_object does for a real Object.
+                             * Read-only with respect to authoritative state,
+                             * so it cannot move the RNG stream this function
+                             * is otherwise built around. */
+                            presentation_snapshot_register_external_transform(
+                                &gRainSplashSegments[firstIndexWithoutFlags]
+                                     .trans);
                             splashAccepted = TRUE;
                             gRainSplashDelay = (gRainSplashDelay - (temp_t0 >> 10)) + 64;
                             if (gRainSplashDelay < 0) {
@@ -1222,6 +1344,12 @@ static void rain_splash_tick(s32 updateRate) {
             gRainSplashSegments[i].animFrame += updateRate * 16;
             if (gRainSplashSegments[i].animFrame > 255) {
                 gRainSplashSegments[i].trans.flags = 0;
+                /* Retire the presentation lifetime with the slot. Leaving it
+                 * registered would keep publishing a pose for a splash that is
+                 * no longer drawn, and the next occupant would then look
+                 * continuous with it. */
+                presentation_snapshot_unregister_external_transform(
+                    &gRainSplashSegments[i].trans);
             }
         }
     }
@@ -1435,6 +1563,14 @@ void rain_render(RainGfxData *rainGfx, s32 time) {
                        COLOUR_RGBA32(rainGfx->environmentRed, rainGfx->environmentGreen, rainGfx->environmentBlue, 0));
     gDkrDmaDisplayList(curDL++, OS_K0_TOKEN_TO_PHYSICAL(tex->cmd),
                        tex->numberOfCommands);
+#ifdef NATIVE_PORT
+    /* gRainVertexFlip cycles the sheet through four slots of gRainVertices and
+     * advances once per DRAW, so the slot a layer lands in is a function of how
+     * many draws have happened, not of the layer. Key the retained pair by the
+     * layer itself. */
+    weather_register_vertex_batch(gRainVertices + gRainVertexFlip, rainGfx,
+                                  WEATHER_RAIN_SHEET_GUARD);
+#endif
     gSPVertexDKR(curDL++, OS_K0_TO_PHYSICAL(gRainVertices + gRainVertexFlip), 4, 0);
     gSPPolygon(curDL++, OS_K0_TO_PHYSICAL(gCurrWeatherTriList), 2, 1);
     gDPPipeSync(curDL++);

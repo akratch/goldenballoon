@@ -231,6 +231,11 @@ CHECKS = (
           "authoritative-hash determinism, window/backend invariance, legacy-RNG control"),
     Check("weather_rng_order", "check_weather_rng_order.py", "release",
           "weather-enabled authored object/weather/HUD RNG order and presentation invariance"),
+    Check("weather_presentation_identity",
+          "check_weather_presentation_identity.py", "release",
+          "snow/rain vertex batches carry a presentation identity and are "
+          "actually substituted under smoothing, with a non-vacuous "
+          "volume-wrap guard and per-route determinism"),
     Check("viewport_route_isolation", "check_viewport_route_isolation.py", "release",
           "2P/4P per-viewport object pass, opacity, shadow/water, and pixel isolation"),
     Check("authored_rng_compat", "check_authored_rng_compat.py", "native",

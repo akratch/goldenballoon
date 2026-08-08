@@ -416,6 +416,9 @@ bool gfx_presentation_packet_register_vertex_identity(
     }
     s_stats.vertex_registrations++;
     s_stats.particle_vertex_registrations++;
+    if (owner->renderer_owned) {
+        s_stats.renderer_vertex_registrations++;
+    }
     if (s_live_vertices.count > s_stats.vertex_peak) {
         s_stats.vertex_peak = s_live_vertices.count;
     }
@@ -918,6 +921,17 @@ void gfx_presentation_packet_note_particle_deformation(bool overridden) {
     if (overridden) {
         s_stats.particle_deformation_overrides++;
     }
+}
+
+void gfx_presentation_packet_note_renderer_vertex(bool overridden) {
+    s_stats.renderer_vertex_hits++;
+    if (overridden) {
+        s_stats.renderer_vertex_overrides++;
+    }
+}
+
+void gfx_presentation_packet_note_renderer_vertex_jump(void) {
+    s_stats.renderer_vertex_jump_holds++;
 }
 
 void gfx_presentation_packet_note_projected_shadow_deformation(
