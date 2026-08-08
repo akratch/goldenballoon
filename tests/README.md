@@ -3681,6 +3681,34 @@ reach MENU_TITLE at frame 1134. If you see a race load early in an *idle* boot, 
 is the ordinary title attract demo (`levelId=18` @~5132, `levelId=28` @~6632,
 `numPlayers=0 cutscene=100`), which exits on START.
 
+## 100%-save entry — `tests/check_save_100_entry.py`
+
+```bash
+python3 tests/check_save_100_entry.py --build build-rel   # ~2 min
+```
+
+Owns one defect class the fail-safe check above structurally cannot see: a save
+that decodes, inspects and *renders* correctly but that FILE SELECT refuses to
+enter. The 100%-complete file shipped beside the RC did exactly that — pressing
+A on the slot played a buzzer and nothing else.
+
+The cause was not packing. `tools/mdkr_save_make100.py` set every defined
+cutscene bit, `CUTSCENE_ADVENTURE_TWO` among them, while leaving the global
+"Adventure Two unlocked" config bit clear. `fileselect_input_root()` in
+`game/src/menu.c` (case 0) silently refuses a slot whose `isAdventure2` marker
+disagrees with the GAME SELECT option in effect, and GAME SELECT never offers
+the Adventure Two option unless the config bit is set — so the slot was
+unreachable from either option.
+
+| arm | image | asserts |
+|---|---|---|
+| good | `mdkr_save_make100.py` output, driven through GAME SELECT's Adventure Two option | a `level_load` past FILE SELECT — the slot is actually entered, not merely drawn |
+| broken (positive control) | same cutscene flags, global AT2 config bit cleared | FILE SELECT is reached and entry is then refused, reproducing the shipped defect |
+
+The positive control is the point: `mdkr-save inspect` and a headless boot both
+pass on the broken image, because each only decodes the slot and neither drives
+the input gate. Only the entry route separates the two.
+
 ## Checks whose detail lives with their source
 
 The gates below are registered in `tools/run_checks.py` and run by the complete

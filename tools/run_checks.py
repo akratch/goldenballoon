@@ -400,6 +400,9 @@ CHECKS = (
           "perturbed-boost-constant positive controls"),
     Check("save_failsafe", "check_save_failsafe.py", "native",
           "EEPROM recovery and persistence"),
+    Check("save_100_entry", "check_save_100_entry.py", "native",
+          "a 100%-complete save is actually enterable through the FILE_SELECT "
+          "input gate, with the AT2-config-bit defect as a positive control"),
     Check("boss_win_verdict", "check_boss_win_verdict.py", "native",
           "boss win/lose state contract"),
     Check("bluey2_rematch", "check_bluey2_rematch.py", "native",
