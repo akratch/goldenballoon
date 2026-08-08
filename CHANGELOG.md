@@ -8,6 +8,50 @@ From 1.0.0 onward this project follows semantic versioning for the platform
 layer's public seams (config keys, environment variables, command-line flags and
 save formats). Everything below 1.0.0 predates that commitment.
 
+## [Unreleased]
+
+### Fixed
+
+- **The shield and magnet shell no longer detaches from its racer under
+  Motion smoothing.** With smoothing on, an interpolated shield or magnet
+  shell was placed a full authored tick ahead of the kart it belongs to —
+  visibly a separate object trailing up-track, mostly hidden behind the
+  kart's own body — on every in-between picture the game drew at a high
+  refresh rate. The shell now stays anchored to the racer's own tick, the
+  same fix closes a second, rarer case where a billboard (Taj's portrait and
+  similar) could carry a stale tick stamp across a paused or elided draw, and
+  a standing gate holds both closed.
+- **A scripted camera cut no longer blends.** The camera handover after a
+  race, the third-person time-trial spectator cut, and switching camera
+  modes each move the eye outright; Motion smoothing was blending across all
+  three instead of snapping, because none of them crossed the distance
+  threshold the interpolator used to detect a cut. All three are now
+  recognized and hard-cut, with no picture blended across them.
+- **A fast rotation under Motion smoothing no longer smears the long way
+  round.** An interpolated angle that turns more than a quarter turn in one
+  tick now snaps to its authored endpoint instead of interpolating backwards
+  through the short arc.
+- **Motion smoothing no longer reads memory it doesn't own.** A handful of
+  the game's own built-in draw lists — render setup, the debug font, dialogue
+  and transition lists — were read directly out of live memory while building
+  an in-between picture, with no guarantee that memory still held what the
+  picture needed by the time the read happened. Those lists are now copied
+  before they're needed, and if anything is ever found to have been missed,
+  the game holds the last complete picture instead of drawing from memory it
+  doesn't own.
+- **The WebGPU picture pipeline holds one fewer frame in flight**, so what's
+  on screen is one refresh closer to current, matching a defense the
+  reference decompilation already carries.
+
+### Added
+
+- A new automated check plays back six specific things Motion smoothing must
+  never do — spin a kart the wrong way round, smear a respawn across the
+  screen, blend through a camera cut, run time backwards, or thump on the
+  authored tick — stated the way a player would notice them, not the way the
+  renderer produces them, so a future regression in any of these fails a
+  build before it reaches a player.
+
 ## [1.1.0] — 2026-08-07
 
 ### Added
