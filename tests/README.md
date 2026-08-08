@@ -524,6 +524,28 @@ production coverage:
   interpolated walks to refuse into held authored images rather than read
   live memory. Results in
   `docs/evidence/smoothing-stage-attribution-2026-08-08.md`.
+- `check_effect_shell_envelope.py` holds the shield/magnet effect shell inside
+  the distance a single authored tick can move it. On the diagnosis route it
+  measures, at every interpolated present, how far the shell sits from the
+  authored pose of the tick its own recipe was copied from, and requires that
+  displacement to stay inside the tick's own travel envelope rather than
+  merely being small. That is the shape the shipped 1.0.1-1.0.3 defect
+  violated: the shell rode a whole tick ahead of its racer at a flat ~51 px on
+  a 640x480 frame, which no endpoint check, hash stream or does-this-stage-
+  change-pixels control could see, because a wrong pose is as coherent as a
+  right one. The gate also requires the shell's drawn area to recover to the
+  area the game itself draws, so a shell that vanished instead of leading
+  cannot pass.
+- `check_motion_quality_battery.py` states six things Motion smoothing must
+  never do, one row each, in the words a player would use: spin a kart the
+  long way round (R1), smear a spawn or respawn across the screen (R2), blend
+  through a camera cut (R3), let an effect shell escape its racer (R4), run
+  the presentation clock backwards or thump on the authored tick boundary
+  (R5), and drop a registration role it had been carrying (R6). Each row
+  carries a committed, token-gated negative control that reintroduces exactly
+  that defect, so a green row is a measurement rather than an absence. Every
+  arm additionally keeps the v3 state, event and input streams byte-identical
+  with smoothing on and off, so no row can be bought with gameplay divergence.
 - `check_presentation_shadows.py` is the focused Ancient Lake visual regression
   for terrain-projected kart decals. It keeps the 3,300-tick v3 state, event,
   and input streams plus every authored endpoint exact, then compares the

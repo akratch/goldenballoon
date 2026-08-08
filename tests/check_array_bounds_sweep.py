@@ -511,7 +511,25 @@ SHAPE_INFO_MAX = {
     # var-count flavour the enumerator reports without an added constant. The
     # ceiling's job is to fail on GROWTH, so it is set to the measured
     # population, not padded.
-    "shift-count": 257,
+    #
+    # 257 -> 262. Five entries were added since the ceiling was measured at
+    # aaf7486; each was read and each is bounded by construction, so the
+    # population grew without the class changing:
+    #   * object_functions.c obj_loop_door / obj_loop_scenery -- both shift
+    #     through DKR_SHL32, which is the port's masking idiom and exists
+    #     precisely to make a wide count defined.
+    #   * gfx_pc_dkr.c dkr_check_alpha_compare (x2) and dkr_textlut_fmt -- the
+    #     count is the G_MDSFT_* #define, a compile-time constant; the
+    #     enumerator reports var-count for anything that is not a numeric
+    #     literal in the expression.
+    #   * gfx_pc_dkr.c dkr_dp_load_tile (x2) -- `shift` is assigned 0, 1 or 2
+    #     by a switch over G_IM_SIZ_* immediately above the use.
+    #   * presentation_snapshot.c camera-cut journal (x2) -- `1u << camera_id`
+    #     into a uint32_t, guarded at both sites by
+    #     `camera_id < PRESENTATION_SNAPSHOT_MAX_CAMERAS` (8).
+    # (Nine appear as additions against aaf7486; four older entries moved or
+    # were rewritten, so the net is five.)
+    "shift-count": 262,
 }
 
 # Only array-bounds is load-bearing for this class. pointer-overflow is kept
