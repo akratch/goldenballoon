@@ -18,16 +18,19 @@
  * core of the letter rather than its halo. */
 #define INK_THRESHOLD 96
 
-/* How far a glyph may be stretched or compressed horizontally away from its
- * natural width in order to match the ROM's ink width. See the header. */
-#define WIDTH_STRETCH_LIMIT 1.15f
-
-/* Reference pixel height used to measure a glyph's natural proportions before
+/* Reference pixel height used to measure the face's natural proportions before
  * solving for the real scale. Large enough that the integer box from
- * stbtt_GetGlyphBitmapBox has negligible quantisation error at this step; the
- * box is re-solved at the real scale further down, because the extrapolation
- * is not exact. */
+ * stbtt_GetGlyphBitmapBox has negligible quantisation error at this step; every
+ * box that positions a glyph is re-solved at the real scale further down. */
 #define MEASURE_PIXELS 256.0f
+
+/* A glyph contributes to the face's scale and baseline estimate only when its
+ * ROM ink is at least this fraction of the tallest ink in the same atlas. A
+ * hyphen's ink box is one texel tall: its height ratio carries almost no
+ * information about the face's scale, and including it would let quantisation
+ * noise into a population statistic. Caps, x-height letters and digits all
+ * clear this bar; separators and accents do not. */
+#define METRIC_HEIGHT_FLOOR 0.5f
 
 typedef struct FaceState {
     stbtt_fontinfo info;
@@ -235,112 +238,429 @@ static void blit_region_nearest(const uint8_t *source, uint32_t width,
     }
 }
 
+/*
+ * One scale and one baseline for a whole face, in output-texel units.
+ *
+ * Type has shared metrics: every letter of a face is drawn at one size, sits on
+ * one baseline, and gets its width from its own design rather than from its
+ * neighbours. Deriving those per glyph from each cell's ROM ink box -- which is
+ * what this module did first -- re-invents them 94 times from 7-pixel-tall
+ * evidence, and the disagreements are exactly what reads as bad spacing and
+ * inconsistent height. So they are solved once, from the atlas as a population.
+ */
+typedef struct FaceFit {
+    float scale_x;    /* stbtt scale factor, output-texel space */
+    float scale_y;
+    float baseline;   /* output texels below the top of a region */
+} FaceFit;
+
+/*
+ * Bounds on the face's width factor (see solve_face_fit). The factor is one
+ * number for the whole face, so it is a width instance of the typeface rather
+ * than a per-letter distortion, and at this range it reads as the face being
+ * drawn slightly wide or slightly narrow. The clamp exists so that an atlas
+ * whose ink measurement is unrepresentative -- a handful of narrow separators,
+ * say -- cannot smear the lettering.
+ */
+#define WIDTH_FACTOR_MIN 0.90f
+#define WIDTH_FACTOR_MAX 1.25f
+
+/* A glyph whose ROM ink is this narrow says more about the ROM's minimum stem
+ * weight than about the face's width: at a 7px cap height 'I' and '1' cannot be
+ * drawn thinner than 2px, so their ink is nearly twice any outline stem. They
+ * are kept out of the width estimate for that reason. */
+#define WIDTH_SAMPLE_MIN_INK 3u
+
+/* Per-glyph evidence gathered for the population solve. */
+typedef struct GlyphSample {
+    int glyph;
+    int codepoint;
+    uint32_t ink_w;   /* ROM ink width, source pixels */
+    uint32_t ink_h;   /* ROM ink height, source pixels */
+    uint32_t ink_y1;  /* ROM ink bottom, region-local source pixels */
+    int box_w;        /* the face's own box at MEASURE_PIXELS */
+    int box_h;
+} GlyphSample;
+
+/*
+ * Characters whose ROM ink height is the face's cap height, and characters
+ * whose ROM ink height is its x-height.
+ *
+ * DKR splits one face across several atlas textures, and each is redrawn on its
+ * own: the copyright line takes its letters from one and its digits from
+ * another. Both must therefore solve to the *same* scale and baseline, or a
+ * year renders a quarter-pixel above the words beside it. Measured on
+ * SmallFont, a plain median over whatever glyphs an atlas happened to contain
+ * did exactly that -- 6.92px tall on a baseline of 7.75 for the digits against
+ * 7.05 on 8.05 for the caps -- because the two subsets carry different
+ * proportions of round-bottomed letters, whose overshoot the ROM's pixel
+ * lettering does not draw but the outline face does.
+ *
+ * Anchoring to characters known to share one height removes the dependency on
+ * which subset arrived: the ROM's ink heights are whole pixels and the face's
+ * reference is an exact outline metric, so every atlas of a face solves to the
+ * same numbers.
+ */
+static bool is_cap_height_char(int codepoint) {
+    return (codepoint >= 'A' && codepoint <= 'Z') ||
+           (codepoint >= '0' && codepoint <= '9');
+}
+
+static bool is_x_height_char(int codepoint) {
+    return strchr("acemnorsuvwxz", codepoint) != NULL && codepoint != 0;
+}
+
+/* Letters and digits that stand on the baseline: everything alphanumeric except
+ * the five descenders. Their ROM ink bottom is the baseline itself, to the
+ * pixel, because the ROM face draws no overshoot. */
+static bool is_baseline_sitting_char(int codepoint) {
+    if (strchr("gjpqy", codepoint) != NULL && codepoint != 0) {
+        return false;
+    }
+    return is_cap_height_char(codepoint) ||
+           (codepoint >= 'a' && codepoint <= 'z');
+}
+
+/* Top of a reference glyph in font units -- the face's cap height or x-height,
+ * exactly, with no rasterisation rounding and no overshoot from a round letter
+ * because both references are flat-topped. */
+static bool reference_top_units(stbtt_fontinfo *info, int codepoint,
+                                int *out_units) {
+    int glyph = stbtt_FindGlyphIndex(info, codepoint);
+    int x0, y0, x1, y1;
+
+    if (glyph == 0 || !stbtt_GetGlyphBox(info, glyph, &x0, &y0, &x1, &y1) ||
+        y1 <= 0) {
+        return false;
+    }
+    *out_units = y1;
+    return true;
+}
+
+static int compare_float(const void *left, const void *right) {
+    float a = *(const float *)left;
+    float b = *(const float *)right;
+
+    return (a > b) - (a < b);
+}
+
+static float median_of(float *values, size_t count) {
+    qsort(values, count, sizeof(*values), compare_float);
+    if ((count & 1u) != 0) {
+        return values[count / 2];
+    }
+    return 0.5f * (values[count / 2 - 1] + values[count / 2]);
+}
+
+static int round_to_int(float value) {
+    return (int)(value < 0.0f ? value - 0.5f : value + 0.5f);
+}
+
+/*
+ * Solve the face's scale and baseline from every glyph in this atlas.
+ *
+ * Scale: each sample offers one estimate, its ROM ink height over the height
+ * the face's own outline would have at a known reference size. Taking the
+ * median rather than any single reference glyph means the answer does not
+ * depend on 'H' or 'x' being present in this particular atlas -- DKR splits a
+ * face across textures, so an atlas can be all digits, all caps or all
+ * lowercase -- and one mismeasured cell cannot move it.
+ *
+ * Baseline: each sample places the baseline at its ROM ink bottom minus the
+ * distance its own outline descends below the baseline at the solved scale.
+ * A glyph that sits on the baseline reports its ink bottom; 'g' and ',' correct
+ * themselves by their own descent. The median again makes the estimate a
+ * property of the face rather than of whichever glyph was asked.
+ */
+static bool solve_face_fit(stbtt_fontinfo *info, const uint8_t *source,
+                           uint32_t width, uint32_t height, uint32_t upscale,
+                           const GfxFontAtlasRegion *regions,
+                           size_t region_count, FaceFit *out) {
+    GlyphSample samples[GFX_FONT_REGIONS_PER_ATLAS];
+    float estimates[GFX_FONT_REGIONS_PER_ATLAS];
+    float measure = stbtt_ScaleForPixelHeight(info, MEASURE_PIXELS);
+    size_t limit = region_count < (size_t)GFX_FONT_REGIONS_PER_ATLAS
+                       ? region_count
+                       : (size_t)GFX_FONT_REGIONS_PER_ATLAS;
+    size_t sample_count = 0;
+    size_t estimate_count = 0;
+    uint32_t tallest = 0;
+    float floor_h;
+
+    for (size_t index = 0; index < limit; index++) {
+        const GfxFontAtlasRegion *region = &regions[index];
+        uint32_t x0, y0, x1, y1;
+        int codepoint, glyph, mx0, my0, mx1, my1;
+
+        if (region->width == 0 || region->height == 0 ||
+            (uint32_t)region->x >= width || (uint32_t)region->y >= height) {
+            continue;
+        }
+        codepoint = 0x20 + (int)region->character;
+        if (codepoint < 0x21 || codepoint > 0x7E) {
+            continue;
+        }
+        glyph = stbtt_FindGlyphIndex(info, codepoint);
+        if (glyph == 0) {
+            continue;
+        }
+        if (!region_ink_box(source, width, height, region, &x0, &y0, &x1,
+                            &y1)) {
+            continue;
+        }
+        stbtt_GetGlyphBitmapBox(info, glyph, measure, measure, &mx0, &my0,
+                                &mx1, &my1);
+        if (mx1 - mx0 <= 0 || my1 - my0 <= 0) {
+            continue;
+        }
+        samples[sample_count].glyph = glyph;
+        samples[sample_count].codepoint = codepoint;
+        samples[sample_count].ink_w = x1 - x0;
+        samples[sample_count].ink_h = y1 - y0;
+        samples[sample_count].ink_y1 = y1;
+        samples[sample_count].box_w = mx1 - mx0;
+        samples[sample_count].box_h = my1 - my0;
+        if (y1 - y0 > tallest) {
+            tallest = y1 - y0;
+        }
+        sample_count++;
+    }
+    if (sample_count == 0 || tallest == 0) {
+        return false;
+    }
+
+    floor_h = (float)tallest * METRIC_HEIGHT_FLOOR;
+
+    /*
+     * Scale: the ROM's own cap height (or, in an atlas with no caps, its
+     * x-height) mapped onto the same metric of the outline face. Both terms are
+     * exact -- whole ROM pixels against an outline metric in font units -- so
+     * the result carries no rasterisation rounding and does not depend on which
+     * characters this atlas happens to hold.
+     */
+    out->scale_y = 0.0f;
+    for (int stage = 0; stage < 2 && out->scale_y <= 0.0f; stage++) {
+        int reference_units = 0;
+
+        if (!reference_top_units(info, stage == 0 ? 'H' : 'x',
+                                 &reference_units)) {
+            continue;
+        }
+        estimate_count = 0;
+        for (size_t index = 0; index < sample_count; index++) {
+            bool matches = stage == 0
+                               ? is_cap_height_char(samples[index].codepoint)
+                               : is_x_height_char(samples[index].codepoint);
+            if (matches) {
+                estimates[estimate_count++] = (float)samples[index].ink_h;
+            }
+        }
+        if (estimate_count != 0) {
+            out->scale_y = median_of(estimates, estimate_count) *
+                           (float)upscale / (float)reference_units;
+        }
+    }
+    if (out->scale_y <= 0.0f) {
+        /*
+         * No anchor character in this atlas -- a texture of nothing but
+         * separators. Fall back to the population of ink heights against the
+         * face's own boxes. Consistency with a sibling atlas is not reachable
+         * here, but neither is any visible inconsistency: text does not mix a
+         * separator-only atlas with lettering at the same size without also
+         * pulling in an anchor.
+         */
+        estimate_count = 0;
+        for (size_t index = 0; index < sample_count; index++) {
+            if ((float)samples[index].ink_h < floor_h) {
+                continue;
+            }
+            estimates[estimate_count++] =
+                measure * (float)(samples[index].ink_h * upscale) /
+                (float)samples[index].box_h;
+        }
+        if (estimate_count == 0) {
+            return false;
+        }
+        out->scale_y = median_of(estimates, estimate_count);
+    }
+    if (!(out->scale_y > 0.0f)) {
+        return false;
+    }
+
+    /*
+     * One width factor for the face, from the same population.
+     *
+     * The advances never move, so the width of the ink decides how much air is
+     * left between letters. DKR's own lettering is squarer than the outline
+     * face at the same cap height, and drawing the face at its natural width
+     * against the ROM's advances leaves every gap noticeably open -- measured
+     * at ROM ink width times 0.90 for SmallFont's caps, which turns a 1px ROM
+     * letter gap into 1.5px. Matching the median restores the ROM's density
+     * with a single number applied to every glyph, so the letters keep their
+     * own relative proportions.
+     */
+    estimate_count = 0;
+    for (size_t index = 0; index < sample_count; index++) {
+        float natural;
+
+        if ((float)samples[index].ink_h < floor_h ||
+            samples[index].ink_w < WIDTH_SAMPLE_MIN_INK) {
+            continue;
+        }
+        natural = out->scale_y * (float)samples[index].box_w / measure;
+        if (!(natural > 0.0f)) {
+            continue;
+        }
+        estimates[estimate_count++] =
+            (float)(samples[index].ink_w * upscale) / natural;
+    }
+    out->scale_x = out->scale_y;
+    if (estimate_count != 0) {
+        float factor = median_of(estimates, estimate_count);
+        if (factor < WIDTH_FACTOR_MIN) {
+            factor = WIDTH_FACTOR_MIN;
+        } else if (factor > WIDTH_FACTOR_MAX) {
+            factor = WIDTH_FACTOR_MAX;
+        }
+        out->scale_x = out->scale_y * factor;
+    }
+
+    /*
+     * Baseline: where the ROM stands its letters. Every alphanumeric that is
+     * not a descender rests its ink bottom exactly on it, so the estimate is a
+     * median over whole-pixel evidence and lands on the same texel row in every
+     * atlas of the face.
+     */
+    estimate_count = 0;
+    for (size_t index = 0; index < sample_count; index++) {
+        if (is_baseline_sitting_char(samples[index].codepoint)) {
+            estimates[estimate_count++] =
+                (float)(samples[index].ink_y1 * upscale);
+        }
+    }
+    if (estimate_count == 0) {
+        /* Separators only. Each one places the baseline by subtracting its own
+         * outline's descent from its ROM ink bottom, which is the best a cell
+         * with no letter in it can say. */
+        for (size_t index = 0; index < sample_count; index++) {
+            int fx0, fy0, fx1, fy1;
+
+            if ((float)samples[index].ink_h < floor_h) {
+                continue;
+            }
+            stbtt_GetGlyphBitmapBox(info, samples[index].glyph, out->scale_x,
+                                    out->scale_y, &fx0, &fy0, &fx1, &fy1);
+            estimates[estimate_count++] =
+                (float)(samples[index].ink_y1 * upscale) - (float)fy1;
+        }
+    }
+    if (estimate_count == 0) {
+        return false;
+    }
+    out->baseline = median_of(estimates, estimate_count);
+    return true;
+}
+
+/*
+ * Draw one glyph at the face's scale, on the face's baseline, at its own
+ * natural width, centred on the horizontal midpoint of the ROM ink it replaces.
+ *
+ * Centring on the ROM ink's midpoint is what keeps the line's rhythm: the
+ * advance and the cell come from FontData and never move, so the only freedom
+ * here is where the ink sits inside the cell, and putting it where the ROM put
+ * its own optical centre divides the leftover space evenly between the two side
+ * bearings. Anchoring the left edge instead -- the earlier behaviour -- pushes
+ * every width difference into the right-hand gap alone, which is what made
+ * "COPYRIGHT" open up after the P and close up before the R.
+ *
+ * The glyph is compressed only if its natural width or height genuinely does
+ * not fit the cell, which is a clipping question rather than a fitting policy.
+ */
 static bool render_glyph(stbtt_fontinfo *info, int codepoint,
                          const GfxFontAtlasRegion *region, uint32_t upscale,
                          uint32_t ink_x0, uint32_t ink_y0, uint32_t ink_x1,
-                         uint32_t ink_y1, const uint8_t rgb[3],
-                         uint8_t *output, uint32_t out_w, uint32_t out_h) {
+                         uint32_t ink_y1, const FaceFit *fit,
+                         const uint8_t rgb[3], uint8_t *output,
+                         uint32_t out_w, uint32_t out_h) {
     int glyph = stbtt_FindGlyphIndex(info, codepoint);
-    float measure, scale_x, scale_y, natural_w, want_w;
-    int mx0, my0, mx1, my1;
-    int box_w, box_h;
-    uint32_t target_w = (ink_x1 - ink_x0) * upscale;
-    uint32_t target_h = (ink_y1 - ink_y0) * upscale;
-    /* The glyph is laid down starting at the ROM ink's left inset, so the width
-     * still available to it is what remains of the cell from there -- not the
-     * whole cell. Clamping to the whole cell would let a wide glyph in an inset
-     * cell run past the right edge, where the write loop's cell guard would
-     * silently trim it. */
-    uint32_t cell_limit = ((uint32_t)region->width - ink_x0) * upscale;
-    uint32_t dst_w, origin_x, origin_y;
+    float scale_x = fit->scale_x;
+    float scale_y = fit->scale_y;
+    uint32_t cell_w = (uint32_t)region->width * upscale;
+    uint32_t cell_h = (uint32_t)region->height * upscale;
+    int fx0 = 0, fy0 = 0, fx1 = 0, fy1 = 0;
+    int dst_w = 0, dst_h = 0;
+    int origin_x, origin_y;
 
-    if (glyph == 0 || target_w == 0 || target_h == 0) {
+    (void)ink_y0;
+    if (glyph == 0 || ink_x1 <= ink_x0 || ink_y1 <= ink_y0 || cell_w == 0 ||
+        cell_h == 0) {
         return false;
     }
-
-    measure = stbtt_ScaleForPixelHeight(info, MEASURE_PIXELS);
-    stbtt_GetGlyphBitmapBox(info, glyph, measure, measure, &mx0, &my0, &mx1,
-                            &my1);
-    box_w = mx1 - mx0;
-    box_h = my1 - my0;
-    if (box_w <= 0 || box_h <= 0) {
-        return false;
-    }
-
-    /* Height fit is exact; width follows the ROM within the stretch bound. */
-    scale_y = measure * (float)target_h / (float)box_h;
-    natural_w = (float)box_w * (float)target_h / (float)box_h;
-    want_w = (float)target_w;
-    if (want_w > natural_w * WIDTH_STRETCH_LIMIT) {
-        want_w = natural_w * WIDTH_STRETCH_LIMIT;
-    } else if (want_w < natural_w / WIDTH_STRETCH_LIMIT) {
-        want_w = natural_w / WIDTH_STRETCH_LIMIT;
-    }
-    if (want_w > (float)cell_limit) {
-        want_w = (float)cell_limit;      /* never clip against the cell */
-    }
-    dst_w = (uint32_t)(want_w + 0.5f);
-    if (dst_w == 0) {
-        dst_w = 1;
-    }
-    scale_x = measure * want_w / (float)box_w;
 
     /*
-     * The box above was measured at MEASURE_PIXELS and extrapolated linearly,
-     * but stbtt's integer box at the final scale is not the linearly scaled
-     * box -- it can round to one more row or column. Rendering that into a
-     * bitmap sized from the extrapolation lets the rasteriser drop the extra
-     * row: the foot of a descender, or the right stem of 'W'.
-     *
-     * Growing the bitmap instead is not an option, because the glyph is
-     * anchored at its ink origin and a taller bitmap would run past the bottom
-     * of the cell. So solve the other way: shrink the scale until the box at
-     * that scale really does fit the target. Undershooting by a pixel leaves a
-     * transparent edge, which is invisible; overshooting truncates the letter.
-     * The ratio step is always <= 1, so this converges immediately in practice.
+     * stbtt's box at a given scale is the rounded-out integer box, so it is not
+     * the linearly scaled box and a glyph can land one texel over the cell.
+     * Shrink until it really fits: an undershoot leaves an invisible
+     * transparent edge, an overshoot truncates the letter. Both ratios are <= 1
+     * so this converges immediately, and for ordinary lettering the first pass
+     * already fits and nothing is scaled at all.
      */
     for (int pass = 0; pass < 4; pass++) {
-        int fx0, fy0, fx1, fy1;
-        int fit_w, fit_h;
-
         stbtt_GetGlyphBitmapBox(info, glyph, scale_x, scale_y, &fx0, &fy0,
                                 &fx1, &fy1);
-        fit_w = fx1 - fx0;
-        fit_h = fy1 - fy0;
-        if (fit_w <= (int)dst_w && fit_h <= (int)target_h) {
+        dst_w = fx1 - fx0;
+        dst_h = fy1 - fy0;
+        if (dst_w <= 0 || dst_h <= 0) {
+            return false;
+        }
+        if (dst_w <= (int)cell_w && dst_h <= (int)cell_h) {
             break;
         }
-        if (fit_w > (int)dst_w) {
-            scale_x *= (float)dst_w / (float)fit_w;
+        if (dst_w > (int)cell_w) {
+            scale_x *= (float)cell_w / (float)dst_w;
         }
-        if (fit_h > (int)target_h) {
-            scale_y *= (float)target_h / (float)fit_h;
+        if (dst_h > (int)cell_h) {
+            scale_y *= (float)cell_h / (float)dst_h;
         }
     }
-
-    if (!ensure_glyph_buf((size_t)dst_w * target_h)) {
+    if (dst_w <= 0 || dst_h <= 0 || dst_w > (int)cell_w ||
+        dst_h > (int)cell_h) {
         return false;
     }
-    memset(g_glyph_buf, 0, (size_t)dst_w * target_h);
-    stbtt_MakeGlyphBitmap(info, g_glyph_buf, (int)dst_w, (int)target_h,
-                          (int)dst_w, scale_x, scale_y, glyph);
 
-    /* Centre the fitted glyph in the ROM's ink box: left-aligning a narrower
-     * face piles all the slack on one side and the line goes ragged. */
-    origin_x = ((uint32_t)region->x + ink_x0) * upscale;
-    if (target_w > dst_w) {
-        origin_x += (target_w - dst_w) / 2u;
+    if (!ensure_glyph_buf((size_t)dst_w * (size_t)dst_h)) {
+        return false;
     }
-    origin_y = ((uint32_t)region->y + ink_y0) * upscale;
+    memset(g_glyph_buf, 0, (size_t)dst_w * (size_t)dst_h);
+    stbtt_MakeGlyphBitmap(info, g_glyph_buf, dst_w, dst_h, dst_w, scale_x,
+                          scale_y, glyph);
 
-    for (uint32_t y = 0; y < target_h; y++) {
-        uint32_t dy = origin_y + y;
+    origin_x = round_to_int(0.5f * (float)((ink_x0 + ink_x1) * upscale) -
+                            0.5f * (float)dst_w);
+    origin_y = round_to_int(fit->baseline) + fy0;
+    /* The cell is the hard boundary; the fit above guarantees the glyph is no
+     * larger than it, so clamping only ever moves a glyph, never trims one. */
+    if (origin_x < 0) {
+        origin_x = 0;
+    } else if (origin_x + dst_w > (int)cell_w) {
+        origin_x = (int)cell_w - dst_w;
+    }
+    if (origin_y < 0) {
+        origin_y = 0;
+    } else if (origin_y + dst_h > (int)cell_h) {
+        origin_y = (int)cell_h - dst_h;
+    }
+    origin_x += (int)((uint32_t)region->x * upscale);
+    origin_y += (int)((uint32_t)region->y * upscale);
+
+    for (uint32_t y = 0; y < (uint32_t)dst_h; y++) {
+        uint32_t dy = (uint32_t)origin_y + y;
         if (dy >= out_h) {
             break;
         }
-        for (uint32_t x = 0; x < dst_w; x++) {
-            uint32_t dx = origin_x + x;
-            uint8_t coverage = g_glyph_buf[(size_t)y * dst_w + x];
+        for (uint32_t x = 0; x < (uint32_t)dst_w; x++) {
+            uint32_t dx = (uint32_t)origin_x + x;
+            uint8_t coverage = g_glyph_buf[(size_t)y * (size_t)dst_w + x];
             uint8_t *dstpx;
             if (dx >= out_w) {
                 break;
@@ -381,9 +701,17 @@ bool gfx_font_outline_render_rgba(
     size_t needed = gfx_font_outline_output_bytes(width, height, upscale);
     uint32_t out_w = width * upscale;
     uint32_t out_h = height * upscale;
+    FaceFit fit;
 
     if (info == NULL || source == NULL || output == NULL || needed == 0 ||
         output_size < needed || regions == NULL || region_count == 0) {
+        return false;
+    }
+    /* Without shared metrics there is no honest way to draw this atlas, and a
+     * per-glyph guess is what this replaced. Decline, and the renderer keeps
+     * the ROM pixels. */
+    if (!solve_face_fit(info, source, width, height, upscale, regions,
+                        region_count, &fit)) {
         return false;
     }
 
@@ -430,7 +758,7 @@ bool gfx_font_outline_render_rgba(
         codepoint = 0x20 + (int)region->character;
         if (codepoint < 0x20 || codepoint > 0x7E ||
             !render_glyph(info, codepoint, region, upscale, x0, y0, x1, y1,
-                          rgb, output, out_w, out_h)) {
+                          &fit, rgb, output, out_w, out_h)) {
             blit_region_nearest(source, width, height, upscale, region, output,
                                 out_w);
         }

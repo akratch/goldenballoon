@@ -7,6 +7,7 @@
  */
 #include "fast3d/gfx_font_outline.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -316,14 +317,11 @@ static void test_output_is_a_real_rasterisation(void) {
 }
 
 /*
- * A wide glyph in a cell whose ROM ink is inset must be fitted to the width
- * that actually remains from the ink's left edge, not to the whole cell. If it
- * is fitted to the whole cell the write loop's cell guard trims the overhang
- * and the glyph is silently clipped, which the "never clip" rule forbids.
- *
- * The check: rendered ink may not start left of the ROM ink's left edge, and
- * may not reach the cell's right edge when the ROM ink was inset from it by
- * more than the fit is allowed to expand.
+ * A wide glyph in a cell whose ROM ink is inset must still end up inside the
+ * cell. The glyph is centred on the ROM ink it replaces and then clamped to the
+ * cell, so a letter wider than the ink it stands in spreads into the cell's own
+ * margin rather than running off the edge, where the write loop's guard would
+ * trim it -- and a trimmed letter is what the "never clip" rule forbids.
  */
 static void test_inset_ink_is_not_clipped(void) {
     uint32_t atlas_w = 40u;
@@ -366,9 +364,11 @@ static void test_inset_ink_is_not_clipped(void) {
         }
     }
     expect_true("inset cell produced ink", max_x >= 0);
-    expect_true("ink does not start left of the ROM ink",
-                max_x < 0 || min_x >= (int)(((uint32_t)region.x + ink_x0) *
-                                            UPSCALE));
+    expect_true("ink stays inside the cell",
+                max_x < 0 ||
+                    (min_x >= (int)((uint32_t)region.x * UPSCALE) &&
+                     max_x < (int)(((uint32_t)region.x + region.width) *
+                                   UPSCALE)));
     /*
      * Asserting the ink stays inside the cell would only re-certify the write
      * loop's backstop, which holds even when it is busy trimming a glyph. The
@@ -378,6 +378,169 @@ static void test_inset_ink_is_not_clipped(void) {
      */
     expect_true("the cell backstop discarded no coverage",
                 gfx_font_outline_clipped_texels == 0);
+    free(src);
+    free(out);
+}
+
+/*
+ * Shared face metrics: the property the whole look rests on.
+ *
+ * A ROM font is 7-pixel-tall pixel art, and its cells do not agree about
+ * anything. Round letters carry a row of antialiasing the flat ones do not, so
+ * measured ink boxes for glyphs that are the same size on screen differ by a
+ * whole pixel -- an eighth of the cap height. Fitting each glyph to its own ink
+ * box turns that measurement noise into real differences in rendered size, and
+ * a line of text made of individually-sized letters is what "the spacing and
+ * height are awful" describes.
+ *
+ * The fixture below is that noise, made explicit: two cap-height letters whose
+ * ROM ink differs by a pixel, two x-height letters whose ROM ink differs by a
+ * pixel, and a descender. The assertions say the rendering ignores the noise --
+ * one baseline, one cap height, one x-height -- and that the baseline is a real
+ * metric rather than the bottom of a box, which is what lets the descender hang
+ * below it.
+ *
+ * Run for both replaced faces, because each solves its own metrics.
+ */
+#define METRIC_ATLAS_W 96u
+#define METRIC_ATLAS_H 24u
+#define METRIC_CELL_W 12u
+#define METRIC_CELL_H 20u
+
+typedef struct MetricCell {
+    char character;
+    uint32_t x0, y0, x1, y1;         /* ROM ink box, cell-local */
+} MetricCell;
+
+/* Baseline row 14, cap top 6, x-height top 9, descender foot 18 -- with 'O' and
+ * 'z' each carrying one extra pixel of ROM ink, the way a real atlas does. */
+static const MetricCell kMetricCells[] = {
+    { 'H', 1, 6, 11, 14 },
+    { 'E', 1, 6,  9, 14 },
+    { 'O', 1, 5, 11, 15 },
+    { 'x', 1, 9, 10, 14 },
+    { 'z', 1, 8, 10, 14 },
+    { 'p', 1, 9, 10, 18 },
+};
+#define METRIC_CELL_COUNT (sizeof(kMetricCells) / sizeof(kMetricCells[0]))
+
+static int metric_ink(const uint8_t *out, uint32_t out_w, size_t index,
+                      int *top, int *bottom, int *left, int *right) {
+    uint32_t cell_x = (2u + (uint32_t)index * 13u) * UPSCALE;
+    uint32_t cell_y = 2u * UPSCALE;
+    int found = 0;
+
+    *top = *left = INT32_MAX;
+    *bottom = *right = -1;
+    for (uint32_t y = 0; y < METRIC_CELL_H * UPSCALE; y++) {
+        for (uint32_t x = 0; x < METRIC_CELL_W * UPSCALE; x++) {
+            uint32_t dx = cell_x + x;
+            uint32_t dy = cell_y + y;
+            if (out[((size_t)dy * out_w + dx) * 4u + 3u] < 128) {
+                continue;
+            }
+            found = 1;
+            if ((int)y < *top) {
+                *top = (int)y;
+            }
+            if ((int)y > *bottom) {
+                *bottom = (int)y;
+            }
+            if ((int)x < *left) {
+                *left = (int)x;
+            }
+            if ((int)x > *right) {
+                *right = (int)x;
+            }
+        }
+    }
+    return found;
+}
+
+static void test_face_metrics_are_shared(GfxFontFace face, const char *label) {
+    size_t size = gfx_font_outline_output_bytes(METRIC_ATLAS_W, METRIC_ATLAS_H,
+                                                UPSCALE);
+    uint8_t *src = (uint8_t *)calloc((size_t)METRIC_ATLAS_W * METRIC_ATLAS_H *
+                                     4u, 1);
+    uint8_t *out = (uint8_t *)malloc(size);
+    uint32_t out_w = METRIC_ATLAS_W * UPSCALE;
+    GfxFontAtlasRegion regions[METRIC_CELL_COUNT];
+    int top[METRIC_CELL_COUNT], bottom[METRIC_CELL_COUNT];
+    int left[METRIC_CELL_COUNT], right[METRIC_CELL_COUNT];
+    char name[128];
+    int all_found = 1;
+
+    gfx_font_outline_clipped_texels = 0;
+    for (size_t i = 0; i < METRIC_CELL_COUNT; i++) {
+        const MetricCell *cell = &kMetricCells[i];
+        regions[i].x = (uint16_t)(2u + i * 13u);
+        regions[i].y = 2;
+        regions[i].width = (uint16_t)METRIC_CELL_W;
+        regions[i].height = (uint16_t)METRIC_CELL_H;
+        regions[i].character = (uint8_t)(cell->character - 32);
+        for (uint32_t y = cell->y0; y < cell->y1; y++) {
+            for (uint32_t x = cell->x0; x < cell->x1; x++) {
+                uint8_t *px = &src[(((size_t)regions[i].y + y) *
+                                    METRIC_ATLAS_W + regions[i].x + x) * 4u];
+                px[0] = px[1] = px[2] = px[3] = 255;
+            }
+        }
+    }
+
+    snprintf(name, sizeof(name), "%s: metric render succeeds", label);
+    expect_true(name, gfx_font_outline_render_rgba(
+                          face, src, METRIC_ATLAS_W, METRIC_ATLAS_H, UPSCALE,
+                          regions, METRIC_CELL_COUNT, out, size));
+    for (size_t i = 0; i < METRIC_CELL_COUNT; i++) {
+        if (!metric_ink(out, out_w, i, &top[i], &bottom[i], &left[i],
+                        &right[i])) {
+            all_found = 0;
+        }
+    }
+    snprintf(name, sizeof(name), "%s: every cell drew a glyph", label);
+    expect_true(name, all_found);
+    if (!all_found) {
+        free(src);
+        free(out);
+        return;
+    }
+
+    /* 'H' and 'E' are flat top and bottom in both faces and their ROM ink
+     * agrees, so they must land on exactly the same rows. */
+    snprintf(name, sizeof(name), "%s: flat caps share a baseline", label);
+    expect_true(name, bottom[0] == bottom[1]);
+    snprintf(name, sizeof(name), "%s: flat caps share a cap height", label);
+    expect_true(name, top[0] == top[1]);
+
+    /*
+     * The discriminating pair. 'O' has a pixel more ROM ink than 'H' at both
+     * ends and 'z' a pixel more than 'x': fitting each glyph to its own box
+     * reproduces that as a four-texel difference in rendered size, which is
+     * the defect. Shared metrics leave only the face's own overshoot, which is
+     * a texel.
+     */
+    snprintf(name, sizeof(name),
+             "%s: a taller ROM ink box does not make a taller cap", label);
+    expect_true(name, bottom[2] - bottom[0] <= 1 && top[0] - top[2] <= 1);
+    snprintf(name, sizeof(name),
+             "%s: x-height letters share one height despite ROM ink noise",
+             label);
+    expect_true(name,
+                (bottom[3] - top[3]) - (bottom[4] - top[4]) <= 1 &&
+                    (bottom[4] - top[4]) - (bottom[3] - top[3]) <= 1);
+    snprintf(name, sizeof(name), "%s: x-height sits on the cap baseline",
+             label);
+    expect_true(name, bottom[3] - bottom[0] <= 1 && bottom[0] - bottom[3] <= 1);
+
+    /* The baseline is a font metric, not the bottom of a box: 'p' hangs below
+     * the row every other letter stands on. */
+    snprintf(name, sizeof(name), "%s: the descender hangs below the baseline",
+             label);
+    expect_true(name, bottom[5] > bottom[0] + 1);
+
+    snprintf(name, sizeof(name), "%s: nothing was clipped", label);
+    expect_true(name, gfx_font_outline_clipped_texels == 0);
+
     free(src);
     free(out);
 }
@@ -393,6 +556,8 @@ int main(void) {
     test_populated_cells_receive_ink();
     test_colour_follows_the_source();
     test_render_is_deterministic();
+    test_face_metrics_are_shared(GFX_FONT_FACE_SMALL, "small");
+    test_face_metrics_are_shared(GFX_FONT_FACE_SUBTITLE, "subtitle");
     gfx_font_outline_shutdown();
 
     expect_true("no glyph was clipped anywhere in the suite",
