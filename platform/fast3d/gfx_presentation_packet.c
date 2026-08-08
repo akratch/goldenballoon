@@ -946,6 +946,13 @@ void gfx_presentation_packet_note_effect_override(void) {
     s_stats.effect_overrides++;
 }
 
+void gfx_presentation_packet_note_owner_tick(bool agreed) {
+    s_stats.owner_tick_checks++;
+    if (!agreed) {
+        s_stats.owner_tick_mismatches++;
+    }
+}
+
 void gfx_presentation_packet_note_endpoint_semantic(
     const void *expected, const void *actual, size_t size) {
     if (expected == NULL || actual == NULL || size == 0u) {
@@ -963,6 +970,11 @@ void gfx_presentation_packet_note_endpoint_semantic(
     if (memcmp(expected, actual, size) != 0) {
         s_stats.endpoint_vertex_mismatches++;
     }
+}
+
+void gfx_presentation_packet_discard_live_registrations(void) {
+    s_live_matrices.count = 0u;
+    s_live_vertices.count = 0u;
 }
 
 void gfx_presentation_packet_invalidate(void) {

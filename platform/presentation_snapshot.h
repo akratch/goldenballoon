@@ -317,6 +317,11 @@ const PresentationSnapshot *presentation_snapshot_previous(void);
  * must target this tick; otherwise replay holds the task's current bytes. */
 bool presentation_snapshot_replay_target_tick(
     uint64_t authored_task_tick, uint64_t *target_tick);
+/* The authored tick a resolve at numerator 0 returns the pose of -- i.e. the
+ * tick every capture-time residual in the replay is measured against. Succeeds
+ * only when a published pair exists, because without one no resolve
+ * interpolates and there is no residual to check. */
+bool presentation_snapshot_authored_endpoint_tick(uint64_t *authored_tick);
 void presentation_snapshot_get_stats(PresentationSnapshotStats *out);
 void presentation_snapshot_shutdown(void);
 

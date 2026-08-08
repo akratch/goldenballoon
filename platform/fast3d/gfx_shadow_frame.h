@@ -58,6 +58,13 @@ typedef struct GfxPresentationMatrixOwner {
     const void *secondary_address; /* identity token only */
     uint64_t secondary_generation;
     GfxPresentationMatrixClass matrix_class;
+    /* The authored tick the game was building THIS display list at when the
+     * recipe was copied out. Replay's residual (source_* minus the alpha-zero
+     * pose) cancels only when the two describe the same tick, so this is what
+     * makes that pairing checkable instead of assumed -- see
+     * mdkr_camera_replay_tick_agreement in camera.c. Never a key: two
+     * endpoints of one interpolation are supposed to disagree about it. */
+    uint64_t capture_tick;
     /* Direct vertex recipes use this to reject a same-sized batch whose
      * connectivity/material identity changed between authored ticks. */
     uint64_t geometry_signature;

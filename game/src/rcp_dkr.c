@@ -1,6 +1,7 @@
 #include "rcp_dkr.h"
 #ifdef NATIVE_PORT
 #include "address_domains.h"
+#include "fast3d/gfx_presentation_packet.h"
 #include "present_sched.h"
 #include "presentation_snapshot.h"
 #endif
@@ -42,6 +43,12 @@ static s32 sPresentationAuthoredValid;
 extern Gfx *gCurrDisplayList;
 
 void presentation_task_authoring_begin(Gfx *cursor) {
+    /* A pass that held its frame or elided its catch-up render authored into
+     * this same buffer and never submitted it, so its presentation bindings
+     * describe a list nothing will ever walk. Drop them here rather than let
+     * them survive into the next freeze stamped with the older tick -- see
+     * gfx_presentation_packet_discard_live_registrations. */
+    gfx_presentation_packet_discard_live_registrations();
     sPresentationAuthoredCursor = cursor;
     sPresentationAuthoredTick = (u64)g_simTickCounter;
     sPresentationAuthoredValid = TRUE;
@@ -63,6 +70,10 @@ s32 presentation_task_peek_authored(const Gfx **begin, const Gfx **end,
     *end = gCurrDisplayList;
     *authoredTick = sPresentationAuthoredTick;
     return true;
+}
+
+u64 presentation_task_authoring_tick(void) {
+    return sPresentationAuthoredValid ? sPresentationAuthoredTick : 0u;
 }
 
 static u64 presentation_task_take_authored_tick(Gfx *begin, Gfx *end) {

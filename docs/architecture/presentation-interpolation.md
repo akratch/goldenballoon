@@ -195,7 +195,7 @@ smoothing = Interpolated.
 | Vertex shade RGBA | `gfx_presentation_packet_note_deformation_color` | `MDKR_TEST_VERTEX_COLOR_INTERPOLATION=off\|0` (`:497-505`) — opt-out | `check_presentation_matrix.py` colour control | Current. |
 | Direct world-space particle meshes (point/line) | `gfx_presentation_packet_register_vertex_identity`, `_note_particle_deformation` | `MDKR_TEST_PARTICLE_INTERPOLATION=off\|0` (`:487-495`) — opt-out | `check_presentation_matrix.py` particle control | Current. |
 | Primitive alpha (sprite/model/line-particle) | `gfx_presentation_packet_note_primitive_alpha` | `MDKR_TEST_PRIMITIVE_ALPHA_INTERPOLATION=off\|0` (`:507-516`) — opt-out | `check_presentation_matrix.py` fade control | Current. Note the 8.8-in-signed-field decode the CHANGELOG records is in the shipped path. |
-| Shield/magnet shear (two-lifetime recipe) | `mdkr_camera_replay_effect_world` (`gfx_pc_dkr.c:422-425`); `_note_effect_override` | `MDKR_TEST_EFFECT_INTERPOLATION=off\|0` (`:518-526`) — opt-out | `check_presentation_matrix.py` effect control | Current. |
+| Shield/magnet shear (two-lifetime recipe) | `mdkr_camera_replay_effect_world` (`gfx_pc_dkr.c:422-425`); `_note_effect_override` | `MDKR_TEST_EFFECT_INTERPOLATION=off\|0` (`:518-526`) — opt-out | `check_presentation_matrix.py` effect control; `check_effect_shell_envelope.py` (displacement inside the interpolation envelope); the `ownertickmismatch` arm of `check_smoothing_stage_bisection.py` | Current. **It anchored the shell to the WRONG endpoint from `d2808f9` (1.0.1) until 2026-08-08** — see residual obligation 4 and `docs/evidence/smoothing-artifact-repro-2026-08.md` §2, §4. |
 | Authored UV scroll | `GfxPresentationUvScroll` (`gfx_presentation_packet.h:34-56`); capture `gfx_pc_dkr.c:4396-4461`, apply `:5884-5889` | `MDKR_TEST_UV_SCROLL_INTERPOLATION=off\|0` (`:528-536`) — opt-out | `tests/check_presentation_matrix.py:72`, `:799` — **the only test in the tree that exercises it.** `tests/test_presentation_packet.c` contains no UV-scroll coverage (zero occurrences of `uv` or `scroll`); `gfx_presentation_packet_capture_uv_scroll` and `_lookup_uv_scroll` have no unit caller at all. | Current, but **unit-uncovered**: the only evidence is an integration arm that needs a ROM. |
 | Projected shadow deformation | `gfx_presentation_packet_register_projected_shadow_vertex`, `_note_projected_shadow_deformation` | `MDKR_TEST_PROJECTED_SHADOW_INTERPOLATION` requires the versioned token to turn **off** (`:465-474`); `MDKR_TEST_PROJECTED_SHADOW_VERTEX_LERP` requires it to turn **on** (`:476-485`) | `tests/check_presentation_shadows.py:155`, `:157` — the only gate that sets either variable; `check_presentation_matrix.py` does **not**. Registration itself is unit-covered at `tests/test_presentation_packet.c:170-190`. | Current. Asymmetric gating is deliberate: the production behaviour is unreachable from a bare env var in either direction. |
 | Forward `{T+1}` structural census | `gfx_dkr_capture_future_deformations` (`gfx_pc_dkr.c:4673`), scanner `dkr_scan_future_deformations` (`:4477`) | armed only; requires `presentation_snapshot_replay_target_tick` agreement (`:4695-4701`) | `test_presentation_packet.c` forward-packet cases | Current. Read-only: flow control, segment/billboard state, owner matrices, `G_VTX`, `G_TRIN` only. |
@@ -290,7 +290,23 @@ Not `PRES-001` failures, but the properties any future change must preserve:
 3. **Keep the live-arena poison gate in the acceptance set** for the coverage it
    does have: it is the only check that fails if a handler reads a live *arena*
    byte during replay.
-4. **Keep `MDKR_VIDEO_SCOPE_LIVE` apply at a single call site.** The safety of
+4. **A replayed recipe must be measured against its own tick.** Every class
+   that reconstructs a pose does it as
+   `interpolated_pose + (captured_source - alpha_zero_pose)`, and that residual
+   carries only the render-only adjustments it is meant to carry when both
+   terms describe the same authored tick. Hand it a capture from a different
+   tick and it becomes a constant offset of one tick of the owner's travel, in
+   position *and* heading, at every alpha — invisible to endpoint exactness, to
+   the authoritative hashes, and to every "does this stage change pixels"
+   control, because a wrong pose is as coherent as a right one. Two instances
+   shipped: `mdkr_camera_replay_effect_world` passing the `{T+1}` recipe
+   (v1.0.1–v1.0.3), and billboard registrations from a pass that never
+   submitted its list surviving into the next freeze. Both are now witnessed
+   structurally: `GfxPresentationMatrixOwner.capture_tick` is stamped at
+   authoring time and compared on every replayed recipe, counted as
+   `ownertickcheck`/`ownertickmismatch` in `[PRESENT-PACKET]` and asserted zero
+   on every production arm of `check_smoothing_stage_bisection.py`.
+5. **Keep `MDKR_VIDEO_SCOPE_LIVE` apply at a single call site.** The safety of
    the presentation domain is a property of `stubs_dkr.c:640` being the only
    place it runs (`video_config.c:106-146`).
 

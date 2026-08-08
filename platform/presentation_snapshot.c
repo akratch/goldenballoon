@@ -733,6 +733,19 @@ bool presentation_snapshot_replay_target_tick(
     return true;
 }
 
+bool presentation_snapshot_authored_endpoint_tick(uint64_t *authored_tick) {
+    const PresentationSnapshot *current = presentation_snapshot_current();
+    const PresentationSnapshot *previous = presentation_snapshot_previous();
+
+    if (authored_tick == NULL || current == NULL || previous == NULL ||
+        !current->valid || !previous->valid ||
+        current->stage_generation != previous->stage_generation) {
+        return false;
+    }
+    *authored_tick = previous->authored_tick;
+    return true;
+}
+
 void presentation_snapshot_get_stats(PresentationSnapshotStats *out) {
     if (out != NULL) {
         *out = s_stats;

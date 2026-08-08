@@ -1221,6 +1221,7 @@ void present_sched_trace_summary(void) {
                 "projectedshadowprimalphaoverride=%llu "
                 "particleprimalphahit=%llu "
                 "particleprimalphaoverride=%llu "
+                "ownertickcheck=%llu ownertickmismatch=%llu "
                 "effectreg=%llu effecthit=%llu effectoverride=%llu "
                 "effectphasehold=%llu effectmiss=%llu effectcollision=%llu "
                 "futurecaptures=%llu futurefailures=%llu "
@@ -1292,6 +1293,8 @@ void present_sched_trace_summary(void) {
                     packet_stats.particle_primitive_alpha_hits,
                 (unsigned long long)
                     packet_stats.particle_primitive_alpha_overrides,
+                (unsigned long long)packet_stats.owner_tick_checks,
+                (unsigned long long)packet_stats.owner_tick_mismatches,
                 (unsigned long long)packet_stats.effect_registrations,
                 (unsigned long long)packet_stats.effect_hits,
                 (unsigned long long)packet_stats.effect_overrides,
