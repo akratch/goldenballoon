@@ -34,18 +34,14 @@ a build of `origin/main`. What that leaves open:
   keeps its ROM pixels. The readability win lands in menus, times, the save
   screen and dialogue, not in play. A measured in-race capture is byte-identical
   to baseline.
-- **Browser-side SDF coverage regressed from asserted to unasserted, and the
-  browser arm is unexecuted.** Extending the `[FONT]` line with
-  `outlineUploads` broke `check_browser_runtime.py`'s regex; the fix moved its
-  ">0" assertion from `sdfUploads` to `outlineUploads`, because the outline
-  path took over the atlases that fixture draws. Asserting the *sum* instead
-  would have been worse — a total SDF failure would still pass on outline
-  uploads alone — but the net effect is that nothing in the browser lane now
-  proves the SDF contour pass derives anything. Restoring a browser assertion
-  specific to SDF needs a fixture known to draw DKR's coloured lettering.
-  Separately, no Chromium/Emscripten run has exercised the corrected assertion
-  at all; the native equivalent (`check_font_outline.py`) passes on GL and
-  WebGPU, and the wasm module links.
+- **CLOSED (integration, 2026-08-08).** This entry recorded that browser-side
+  SDF coverage had regressed to unasserted and that the browser arm was
+  unexecuted. Running the arm settled both. The premise was wrong: the outline
+  path did *not* take over the atlases this fixture draws — the run reports
+  `font SDF 58 + outline 2 uploads`, so the SDF pass is exercised far more
+  heavily than the outline one. `check_browser_runtime.py` now asserts BOTH
+  counts above zero independently, neither of which is vacuous at those
+  numbers, and the gate passes on Chromium against the freshly linked wasm.
 - **The derivation state is single-threaded.** `gfx_font_outline.c` keeps the
   parsed face handles and the glyph scratch buffer in file statics, which is
   sound for today's renderer but is an unstated precondition rather than an

@@ -2576,21 +2576,19 @@ def run_check(args: argparse.Namespace) -> None:
                 for line in cdp.console
                 if (match := FONT_RE.search(line))
             ]
-            # Remastered now derives text two ways: SDF contours for DKR's own
-            # coloured lettering, and an outline redraw for the two plain
-            # faces. The outline path took over the atlases this fixture draws,
-            # so it carries the ">0" role the SDF count used to hold. Asserting
-            # only the SUM would be a real loss of coverage: a regression that
-            # stopped SDF deriving entirely would still pass on outline uploads
-            # alone. Assert the path this screen actually exercises instead.
+            # Remastered derives text two ways on this route: SDF contours for
+            # DKR's own coloured lettering, and an outline redraw for the two
+            # plain faces. BOTH are asserted independently. Asserting only the
+            # sum would let a regression that stopped one path entirely pass on
+            # the other's uploads, and this fixture measurably exercises both --
+            # 58 SDF and 2 outline uploads on the run that established these
+            # numbers, so neither assertion is vacuous.
             #
             # The fourth field must be zero: no glyph may be clipped by the
             # per-cell backstop.
-            #
-            # Browser-side SDF-specific coverage is not re-established here and
-            # is tracked in docs/open-items/renderer.md.
             require(
                 len(font_rows) == 1
+                and int(font_rows[0][0]) > 0
                 and int(font_rows[0][1]) > 0
                 and int(font_rows[0][2]) == 0
                 and int(font_rows[0][3]) == 0,
