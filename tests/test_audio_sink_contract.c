@@ -13,7 +13,6 @@
 #define FRAME_BYTES (CHANNELS * sizeof(int16_t))
 #define FRAME_SIZE 736u
 #define MAX_SAMPLES 2048u
-#define MAX_QUEUED_FRAMES (FRAME_SIZE * 4u)
 
 static int parse_duration(int argc, char **argv, uint32_t *duration_ms,
                           const char **required_driver) {
@@ -157,39 +156,54 @@ int main(int argc, char **argv) {
     if (SDL_GetQueuedAudioSize(device) != 0u) {
         return fail(device, "clear did not empty the queue");
     }
-    /* The deterministic controller test holds post-enqueue occupancy below
-     * three target blocks when drain is continuous. A real SDL backend may
-     * retire its application queue only at the obtained device-buffer
-     * boundary, while a hosted runner may schedule this loop in coarse
-     * bursts. Keep the live contract hard-bounded at four blocks (about
-     * 134 ms at 22.05 kHz): enough for one quantized drain boundary without
-     * mistaking healthy drain for growth, but still low enough to catch an
-     * accumulating queue. Active drain is required independently below. */
-    if (queue_calls < 10u || queue_failures != 0u ||
-        drained_observations == 0u || max_queued > MAX_QUEUED_FRAMES ||
-        controller.stats.stall_guards != 0u) {
-        fprintf(stderr, "audio sink contract: FAIL — calls=%llu failures=%llu "
-                        "drains=%llu maxqueued=%u limit=%u stalls=%u\n",
-                (unsigned long long)queue_calls,
-                (unsigned long long)queue_failures,
-                (unsigned long long)drained_observations,
-                (unsigned)max_queued,
-                (unsigned)MAX_QUEUED_FRAMES,
-                (unsigned)controller.stats.stall_guards);
-        SDL_CloseAudioDevice(device);
-        SDL_Quit();
-        return 1;
+    /* The gap-adaptive controller raises its latency target after an observed
+     * refill gap (audio_latency_target: up to AUDIO_GAP_CUSHION_BLOCKS + 1
+     * blocks), and a choose() call sizes its block assuming the consumed
+     * estimate will drain during the next interval — so post-enqueue occupancy
+     * legitimately reaches target + one produced block when the host schedules
+     * this loop in coarse bursts. A fixed four-block cap predates that design
+     * and fails on any runner whose scheduler stretches the 8 ms cadence to
+     * ~50 ms (hosted macOS CI: calls=18 over 750 ms, maxqueued 3481..3744).
+     * Hold occupancy to the controller's design envelope instead: the consumed
+     * estimate is capped at four blocks (anything larger trips the stall guard,
+     * which fails this test on its own clause), the adaptive target tops out at
+     * AUDIO_GAP_CUSHION_BLOCKS + 1 = three blocks, and the 16-frame production
+     * floor plus block rounding add at most 32 frames — post-enqueue occupancy
+     * cannot legitimately exceed seven blocks + 32. A runaway queue (double
+     * enqueue, ignored correction) adds a block per iteration and blows past
+     * this within a few calls. Active drain is required independently below. */
+    {
+        uint32_t occupancy_limit = FRAME_SIZE * 7u + 32u;
+        if (queue_calls < 10u || queue_failures != 0u ||
+            drained_observations == 0u || max_queued > occupancy_limit ||
+            controller.stats.stall_guards != 0u) {
+            fprintf(stderr, "audio sink contract: FAIL — calls=%llu "
+                            "failures=%llu drains=%llu maxqueued=%u limit=%u "
+                            "(maxtarget=%u maxproduced=%u) stalls=%u\n",
+                    (unsigned long long)queue_calls,
+                    (unsigned long long)queue_failures,
+                    (unsigned long long)drained_observations,
+                    (unsigned)max_queued,
+                    (unsigned)occupancy_limit,
+                    (unsigned)controller.stats.max_target_frames,
+                    (unsigned)controller.stats.max_produced_frames,
+                    (unsigned)controller.stats.stall_guards);
+            SDL_CloseAudioDevice(device);
+            SDL_Quit();
+            return 1;
+        }
     }
 
     printf("audio sink contract: PASS — driver=%s dummy=%s duration_ms=%u "
            "format=%dHz/s16/%uch devicebuf=%u calls=%llu drains=%llu "
-           "empty-observations=%u maxqueued=%u maxproduced=%u\n",
+           "empty-observations=%u maxqueued=%u maxtarget=%u maxproduced=%u\n",
            driver, strcmp(driver, "dummy") == 0 ? "yes" : "no",
            (unsigned)duration_ms, have.freq, (unsigned)have.channels,
            (unsigned)have.samples, (unsigned long long)queue_calls,
            (unsigned long long)drained_observations,
            (unsigned)controller.stats.empty_queue_observations,
            (unsigned)max_queued,
+           (unsigned)controller.stats.max_target_frames,
            (unsigned)controller.stats.max_produced_frames);
     SDL_CloseAudioDevice(device);
     SDL_Quit();

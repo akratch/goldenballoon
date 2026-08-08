@@ -1537,7 +1537,7 @@ the corrected build is the one whose inputs are in-bounds.
 
 ## OPEN: campaign completeness — silver coins, later boss rematches, both Wizpig races, and the credits path are ungated, not unimplemented
 
-Disclosed to players at [`README.md`](../../README.md#current-limitations)
+Disclosed to players at [`README.md`](../../README.md#known-limitations)
 ("the complete start-to-credits campaign is not automated or claimed
 complete") and in [`ROADMAP.md`](../../ROADMAP.md), which calls this "the
 largest single piece of deferred work in the project, and the one most likely
