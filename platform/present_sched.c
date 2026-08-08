@@ -1071,6 +1071,8 @@ extern void gfx_dkr_replay_get_stats(
     uint64_t *walks, uint64_t *matrix_hits, uint64_t *matrix_misses,
     uint64_t *matrix_rejects, uint64_t *real_walks);
 extern void gfx_dkr_replay_get_object_stats(uint64_t *hits, uint64_t *holds);
+extern void gfx_dkr_replay_get_uncaptured_stats(uint64_t *externals,
+                                                uint64_t *refusals);
 extern void gfx_dkr_replay_get_billboard_stats(
     uint64_t *matrix_hits, uint64_t *matrix_holds,
     uint64_t *vertex_hits, uint64_t *vertex_holds);
@@ -1094,6 +1096,7 @@ void present_sched_trace_summary(void) {
         uint64_t restore_failures = 0;
         uint64_t tolerant = 0, tolerant_worst = 0, reject_least = 0;
         uint64_t object_hits = 0, object_holds = 0;
+        uint64_t uncaptured_externals = 0, uncaptured_refusals = 0;
         uint64_t billboard_matrix_hits = 0, billboard_matrix_holds = 0;
         uint64_t billboard_vertex_hits = 0, billboard_vertex_holds = 0;
         GfxPresentationOwnerStats owner_stats;
@@ -1110,6 +1113,8 @@ void present_sched_trace_summary(void) {
         gfx_dkr_replay_get_reject_stats(&tolerant, &tolerant_worst,
                                         &reject_least, &reject_least_valid);
         gfx_dkr_replay_get_object_stats(&object_hits, &object_holds);
+        gfx_dkr_replay_get_uncaptured_stats(&uncaptured_externals,
+                                            &uncaptured_refusals);
         gfx_dkr_replay_get_billboard_stats(
             &billboard_matrix_hits, &billboard_matrix_holds,
             &billboard_vertex_hits, &billboard_vertex_holds);
@@ -1139,7 +1144,8 @@ void present_sched_trace_summary(void) {
                 "mtxmiss=%llu mtxreject=%llu mtxtol=%llu mtxtolworst=%llu "
                 "mtxrejectleast=%lld staletenants=%llu freezes=%llu "
                 "restores=%llu freezefail=%llu restorefail=%llu "
-                "objhit=%llu objhold=%llu\n",
+                "objhit=%llu objhold=%llu uncapturedext=%llu "
+                "uncapturedrefusals=%llu\n",
                 (unsigned long long)walks, (unsigned long long)real_walks,
                 (unsigned long long)hits, (unsigned long long)misses,
                 (unsigned long long)rejects,
@@ -1151,7 +1157,9 @@ void present_sched_trace_summary(void) {
                 (unsigned long long)failures,
                 (unsigned long long)restore_failures,
                 (unsigned long long)object_hits,
-                (unsigned long long)object_holds);
+                (unsigned long long)object_holds,
+                (unsigned long long)uncaptured_externals,
+                (unsigned long long)uncaptured_refusals);
         fprintf(stderr,
                 "[RETAINED-TASK] begins=%llu captures=%llu failures=%llu "
                 "acquires=%llu rejects=%llu arenaBytes=%llu arenaBudget=%zu "
@@ -1209,10 +1217,12 @@ void present_sched_trace_summary(void) {
                 "projectedshadowdeformoverride=%llu "
                 "particlecolorhit=%llu particlecoloroverride=%llu "
                 "primalphahit=%llu primalphaoverride=%llu "
+                "primalphadeltasum=%llu primalphadeltapeak=%llu "
                 "projectedshadowprimalphahit=%llu "
                 "projectedshadowprimalphaoverride=%llu "
                 "particleprimalphahit=%llu "
                 "particleprimalphaoverride=%llu "
+                "ownertickcheck=%llu ownertickmismatch=%llu "
                 "effectreg=%llu effecthit=%llu effectoverride=%llu "
                 "effectphasehold=%llu effectmiss=%llu effectcollision=%llu "
                 "futurecaptures=%llu futurefailures=%llu "
@@ -1221,6 +1231,8 @@ void present_sched_trace_summary(void) {
                 "deformpeak=%zu "
                 "uvscrollreg=%llu uvscrollconfirm=%llu uvscrollreject=%llu "
                 "uvscrollcollision=%llu uvscrollhit=%llu uvscrollhold=%llu "
+                "uvscrollholdunpub=%llu uvscrollholdambig=%llu "
+                "uvscrollholdshape=%llu uvscrollholdphase=%llu "
                 "uvscrolloverride=%llu uvscrollpeak=%zu "
                 "uvscrollbytespeak=%zu\n",
                 (unsigned long long)packet_stats.matrix_registrations,
@@ -1276,6 +1288,8 @@ void present_sched_trace_summary(void) {
                 (unsigned long long)packet_stats.particle_color_overrides,
                 (unsigned long long)packet_stats.primitive_alpha_hits,
                 (unsigned long long)packet_stats.primitive_alpha_overrides,
+                (unsigned long long)packet_stats.primitive_alpha_delta_sum,
+                (unsigned long long)packet_stats.primitive_alpha_delta_peak,
                 (unsigned long long)
                     packet_stats.projected_shadow_primitive_alpha_hits,
                 (unsigned long long)
@@ -1284,6 +1298,8 @@ void present_sched_trace_summary(void) {
                     packet_stats.particle_primitive_alpha_hits,
                 (unsigned long long)
                     packet_stats.particle_primitive_alpha_overrides,
+                (unsigned long long)packet_stats.owner_tick_checks,
+                (unsigned long long)packet_stats.owner_tick_mismatches,
                 (unsigned long long)packet_stats.effect_registrations,
                 (unsigned long long)packet_stats.effect_hits,
                 (unsigned long long)packet_stats.effect_overrides,
@@ -1303,6 +1319,10 @@ void present_sched_trace_summary(void) {
                 (unsigned long long)packet_stats.uv_scroll_collisions,
                 (unsigned long long)packet_stats.uv_scroll_hits,
                 (unsigned long long)packet_stats.uv_scroll_holds,
+                (unsigned long long)packet_stats.uv_scroll_hold_unpublished,
+                (unsigned long long)packet_stats.uv_scroll_hold_ambiguous,
+                (unsigned long long)packet_stats.uv_scroll_hold_shape,
+                (unsigned long long)packet_stats.uv_scroll_hold_phase,
                 (unsigned long long)packet_stats.uv_scroll_overrides,
                 packet_stats.uv_scroll_peak,
                 packet_stats.uv_scroll_bytes_peak);

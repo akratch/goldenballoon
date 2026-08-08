@@ -502,6 +502,28 @@ production coverage:
   the exact 300-quantum audio schedule in every arm; a one-quantum timing
   perturbation proves the PCM comparator can detect a real mismatch without
   changing gameplay authority.
+- `check_smoothing_stage_bisection.py` is the attribution instrument, not a
+  pass/fail question about any one stage. It renders the same route at
+  `MDKR_PRESENT_RATE=120` — three interpolated presents per authoritative tick
+  — once per stage configuration (all-on, all-off, and leave-one-out for each
+  of the seven `MDKR_TEST_*_INTERPOLATION` opt-outs) and ranks the stages by
+  frame difference against the all-on arm, so a 120 Hz artifact hunt knows
+  which seam to open first. Two routes, because none fires all seven: Jungle
+  Falls in-race with shields forced ranks six, and the battle challenge ranks
+  the point-trail particle stage that the first route registers but never
+  interpolates. Two guards keep a zero readable. Each leave-one-out arm must
+  drive its stage's `[PRESENT-PACKET]` reach counter to exactly zero, so a
+  mistyped env cannot masquerade as a stage that ran and changed nothing; and
+  every stage gets an explicit `fires` / `reached-never-interpolated` /
+  `absent` disposition on both routes, with anything but `fires` failing the
+  gate for a stage it ranks. Every arm must keep the v3 state, event and input
+  streams byte-identical and every authored endpoint frame exact. The same
+  gate carries the uncaptured-external evidence: all eleven production arms
+  must resolve zero — with the stat field's presence required, not defaulted —
+  and the token-gated `MDKR_TEST_UNCAPTURED_EXTERNAL` seam must force the
+  interpolated walks to refuse into held authored images rather than read
+  live memory. Results in
+  `docs/evidence/smoothing-stage-attribution-2026-08-08.md`.
 - `check_presentation_shadows.py` is the focused Ancient Lake visual regression
   for terrain-projected kart decals. It keeps the 3,300-tick v3 state, event,
   and input streams plus every authored endpoint exact, then compares the

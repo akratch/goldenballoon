@@ -2325,6 +2325,15 @@ void ttcam_update(s32 updateRate) {
     camObj = spectate_object(spectateIndex);
     if (gTTCamID != spectateIndex) {
         gTTCamSmoothTimer = 0;
+#ifdef NATIVE_PORT
+        /* The zeroed smooth timer IS the snap: below, the spectator's
+         * orientation is written outright rather than eased, and its position
+         * is written to a different camera object every tick regardless. Two
+         * adjacent spectate points on the same track sit far inside the
+         * snapshot's teleport threshold and share camera slot PLAYER_FOUR, so
+         * nothing about the pose says "cut" — this does. */
+        presentation_snapshot_note_camera_cut(PLAYER_FOUR);
+#endif
     } else if (gTTCamPlayerID != currentRacer->playerIndex) {
         gTTCamSmoothTimer = 180;
         gTTCamPlayerID = currentRacer->playerIndex;

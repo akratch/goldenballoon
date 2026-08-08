@@ -50,6 +50,7 @@
 #include "mdkr_adventure.h"
 #include "gameplay_event_trace.h"
 #include "present_sched.h"
+#include "presentation_snapshot.h"
 #include <stdio.h>  /* fprintf — loud non-finite-position assert below */
 #include <stdlib.h> /* abort */
 #include <string.h> /* memset — native intent sidecar capture */
@@ -175,6 +176,46 @@ static MdkrCameraIntentFamily racer_camera_intent_family(s16 mode) {
         case CAMERA_FINISH_CHALLENGE: return MDKR_CAMERA_INTENT_FAMILY_FINISH_CHALLENGE;
         case CAMERA_FINISH_RACE: return MDKR_CAMERA_INTENT_FAMILY_FINISH_RACE;
         default: return MDKR_CAMERA_INTENT_FAMILY_UNKNOWN;
+    }
+}
+
+/*
+ * The camera mode each viewport's camera was in the last time it authored a
+ * pose, so a change of mode can be recognised as the reframe it is.
+ *
+ * Every mode owns a different rule for where the eye goes, and each one
+ * WRITES that position rather than travelling to it: the finish camera to a
+ * trackside spectate object, the door camera to wherever the following camera
+ * happened to be standing, the challenge camera onto a 150-unit boom orbiting
+ * the racer. The first tick under a new rule therefore reframes the shot, and
+ * the distances involved are usually a few hundred units — motion-sized, well
+ * under the snapshot's teleport threshold, and so invisible to capture.
+ *
+ * Read here rather than at the assignment sites because the mode is set from
+ * six of them (this file's Taj-wander reset, the raceFinished/exitObj tests,
+ * second_racer_camera_update's transition write, update_camera_finish_race's
+ * no-spectate-object fallback, and the challenge end in objects.c), and
+ * only the pose author knows which tick the new rule first ran on. Comparing
+ * here catches all six, on exactly that tick.
+ *
+ * Stale entries across a level change are harmless in both directions: a stale
+ * MATCH raises no note, but the level boundary already resets snapshot history
+ * so that pair cannot be blended anyway, and a stale mismatch costs one
+ * un-interpolated frame.
+ */
+static s16 sRacerCameraAuthoredMode[PLAYER_FOUR + 1] = { -1, -1, -1, -1 };
+
+static void racer_camera_note_mode_cut(Object_Racer *racer) {
+    s16 previous;
+
+    if (gCameraObject == NULL || racer->playerIndex < PLAYER_ONE ||
+        racer->playerIndex > PLAYER_FOUR) {
+        return;
+    }
+    previous = sRacerCameraAuthoredMode[racer->playerIndex];
+    sRacerCameraAuthoredMode[racer->playerIndex] = gCameraObject->mode;
+    if (previous >= 0 && previous != gCameraObject->mode) {
+        presentation_snapshot_note_camera_cut(racer->playerIndex);
     }
 }
 
@@ -8482,6 +8523,9 @@ void update_player_camera(Object *obj, Object_Racer *racer, f32 updateRateF) {
     if (racer->exitObj) {
         gCameraObject->mode = CAMERA_FIXED;
     }
+#ifdef NATIVE_PORT
+    racer_camera_note_mode_cut(racer);
+#endif
     // Set the camera behaviour based on current mode.
     switch (gCameraObject->mode) {
         default:
@@ -8841,9 +8885,26 @@ void update_camera_finish_race(UNUSED f32 updateRate, Object *obj, Object_Racer 
     cameraID = racer->spectateCamID;
     cam = spectate_nearest(obj, &cameraID);
     if (cam == NULL) {
+        /* A track with no spectate objects at all: hand the shot to the
+         * challenge camera. Nothing is authored this tick — the early return
+         * leaves the pose alone — and the jump onto the challenge camera's
+         * boom orbit lands on the NEXT tick, where racer_camera_note_mode_cut
+         * sees the mode it authored under change and notes it. Noting it here
+         * would flag a tick the camera never moved on. */
         gCameraObject->mode = CAMERA_FINISH_CHALLENGE;
         return;
     }
+#ifdef NATIVE_PORT
+    if (cameraID != racer->spectateCamID) {
+        /* spectate_nearest has handed the shot to a different trackside
+         * camera object. The camera does not travel there — it is simply
+         * written to the new object's position on this tick — and adjacent
+         * spectate points are typically a few hundred units apart, well
+         * inside the teleport threshold. This is the cut the threshold
+         * cannot see. */
+        presentation_snapshot_note_camera_cut(racer->playerIndex);
+    }
+#endif
     racer->spectateCamID = cameraID;
     gCameraObject->trans.x_position = cam->trans.x_position;
     gCameraObject->trans.y_position = cam->trans.y_position;

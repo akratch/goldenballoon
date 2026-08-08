@@ -189,6 +189,22 @@ CHECKS = (
     Check("presentation_matrix", "check_presentation_matrix.py", "release",
           "presentation rate vs fixed-ticket state/event authority and pixels "
           "(spec 12.2.2)"),
+    Check("smoothing_stage_bisection", "check_smoothing_stage_bisection.py",
+          "release",
+          "per-stage smoothing attribution at the 120 Hz alpha grid: "
+          "leave-one-out ranking, authored-endpoint exactness, and the "
+          "uncaptured-external fail-closed refusal"),
+    Check("effect_shell_envelope", "check_effect_shell_envelope.py", "release",
+          "the shield/magnet shell's displacement from its own tick's authored "
+          "pose stays inside the endpoint-to-endpoint interpolation envelope "
+          "at the 120 Hz alpha grid"),
+    Check("motion_quality_battery", "check_motion_quality_battery.py",
+          "release",
+          "the perceptual motion battery: fast-rotation shortest-arc and snap, "
+          "no blended frame across a teleport, monotonic displayed alpha on "
+          "the grid, the tick-boundary step bound, and the camera-cut and "
+          "effect-envelope cross-references — each row with a committed "
+          "negative control"),
     Check("presentation_shadows", "check_presentation_shadows.py", "release",
           "terrain-projected kart-shadow replay stays rigid, exact at authored "
           "endpoints, and measurably reduces the historical vertex-lerp pulse"),

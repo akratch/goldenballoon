@@ -27,6 +27,185 @@ static GfxPresentationMatrixOwner make_owner(const void *address,
     return owner;
 }
 
+static GfxPresentationUvScroll make_scroll(int32_t du, int32_t dv,
+                                           uint32_t count, uint16_t moved_u,
+                                           uint16_t moved_v) {
+    GfxPresentationUvScroll scroll;
+    memset(&scroll, 0, sizeof(scroll));
+    scroll.du = du;
+    scroll.dv = dv;
+    scroll.triangle_count = count;
+    scroll.moved_u = moved_u;
+    scroll.moved_v = moved_v;
+    return scroll;
+}
+
+/* Stage one authored tick's census: open a capture, offer the batches, publish
+ * the table under `tick`, and take the freeze the lookup path requires. This is
+ * the order gfx_dkr_capture_future_deformations runs in, condensed. */
+static void publish_uv_tick(uint64_t tick, const void *key_a,
+                            const GfxPresentationUvScroll *a,
+                            const void *key_b,
+                            const GfxPresentationUvScroll *b) {
+    gfx_presentation_packet_capture_begin(tick);
+    if (a != NULL) {
+        (void)gfx_presentation_packet_capture_uv_scroll(key_a, a);
+    }
+    if (b != NULL) {
+        (void)gfx_presentation_packet_capture_uv_scroll(key_b, b);
+    }
+    gfx_presentation_packet_freeze();
+    gfx_presentation_packet_publish_uv_scroll(tick);
+}
+
+/*
+ * The authored UV-scroll contract, which until now had no unit caller at all:
+ * the architecture note recorded a ROM-driven integration arm as its only
+ * evidence. Everything asserted here is a decision the replay makes for every
+ * scrolling surface on every interpolated present, and every refusal it makes
+ * is a surface that visibly steps at the tick rate while its neighbours glide
+ * -- so which clause refused, and how often, is the whole disposition of
+ * artifact class C8.
+ */
+static void check_uv_scroll(void) {
+    static const unsigned char batch_a[4] = { 0, 0, 0, 0 };
+    static const unsigned char batch_b[4] = { 0, 0, 0, 0 };
+    GfxPresentationUvScroll scroll = make_scroll(4, 0, 2u, 0x3u, 0u);
+    GfxPresentationUvScroll faster = make_scroll(8, 0, 2u, 0x3u, 0u);
+    GfxPresentationUvScroll wider = make_scroll(4, 0, 3u, 0x7u, 0u);
+    GfxPresentationUvScroll out;
+    GfxPresentationPacketStats stats;
+
+    gfx_presentation_packet_shutdown();
+
+    /* Capture is a census-only operation. Outside one there is no tick to
+     * stage against, and offering a batch anyway must be refused rather than
+     * land in whatever table happens to be live. */
+    expect(!gfx_presentation_packet_capture_uv_scroll(batch_a, &scroll),
+           "UV scroll refuses capture outside an authoring census");
+
+    gfx_presentation_packet_capture_begin(10u);
+    expect(!gfx_presentation_packet_capture_uv_scroll(NULL, &scroll) &&
+               !gfx_presentation_packet_capture_uv_scroll(batch_a, NULL),
+           "UV scroll refuses a null key or record");
+    expect(!gfx_presentation_packet_capture_uv_scroll(
+               batch_a, &(GfxPresentationUvScroll){ 0 }),
+           "UV scroll refuses a batch that did not move");
+    {
+        GfxPresentationUvScroll huge = make_scroll(
+            4, 0, GFX_PRESENTATION_UV_SCROLL_MAX_TRIANGLES + 1u, 0x1u, 0u);
+        expect(!gfx_presentation_packet_capture_uv_scroll(batch_a, &huge),
+               "UV scroll refuses more triangles than a G_TRIN batch holds");
+    }
+    gfx_presentation_packet_capture_abort();
+
+    /* One published tick is not a confirmation. The first present that draws
+     * a scroller therefore holds its authored phase, and says which clause
+     * held it: nothing has been seen at T-1 yet. The empty tick 10 exists so
+     * the pair IS adjacent -- a non-adjacent pair is refused by the table's
+     * own guard before any clause runs, and would prove nothing about them. */
+    publish_uv_tick(10u, NULL, NULL, NULL, NULL);
+    publish_uv_tick(11u, batch_a, &scroll, NULL, NULL);
+    expect(!gfx_presentation_packet_lookup_uv_scroll(batch_a, 11u, 2u, &out),
+           "a scroller's first published tick does not confirm");
+    memset(&stats, 0, sizeof(stats));
+    gfx_presentation_packet_get_stats(&stats);
+    expect(stats.uv_scroll_hold_unpublished == 1u &&
+               stats.uv_scroll_holds == 1u,
+           "the unconfirmed first tick is attributed to the missing {T-1}");
+
+    /* Two adjacent ticks agreeing is the confirmation, and it is the only
+     * thing that reaches the screen. */
+    publish_uv_tick(12u, batch_a, &scroll, NULL, NULL);
+    memset(&out, 0, sizeof(out));
+    expect(gfx_presentation_packet_lookup_uv_scroll(batch_a, 12u, 2u, &out) &&
+               out.du == 4 && out.dv == 0 && out.moved_u == 0x3u,
+           "two adjacent ticks agreeing confirm the displacement");
+
+    /* The published table is tick-exact in both directions: a replay that
+     * asks for any tick but the one on the table gets nothing, and that
+     * refusal is not a scroller's hold. */
+    expect(!gfx_presentation_packet_lookup_uv_scroll(batch_a, 11u, 2u, &out) &&
+               !gfx_presentation_packet_lookup_uv_scroll(
+                   batch_a, 13u, 2u, &out) &&
+               !gfx_presentation_packet_lookup_uv_scroll(batch_a, 0u, 2u,
+                                                         &out),
+           "UV scroll refuses any tick but the published current one");
+
+    /* A batch the census never saw is not a scroller. Its authored bytes are
+     * already exact, so refusing it must not be counted as a hold. */
+    memset(&stats, 0, sizeof(stats));
+    gfx_presentation_packet_get_stats(&stats);
+    {
+        const uint64_t before = stats.uv_scroll_holds;
+        expect(!gfx_presentation_packet_lookup_uv_scroll(
+                   batch_b, 12u, 2u, &out),
+               "an unregistered batch is not a scroller");
+        memset(&stats, 0, sizeof(stats));
+        gfx_presentation_packet_get_stats(&stats);
+        expect(stats.uv_scroll_holds == before,
+               "a non-scroller's refusal is not counted as a phase hold");
+    }
+
+    /* The triangle count the replay has in hand has to be the count the
+     * census measured, or the correspondence is between different geometry. */
+    expect(!gfx_presentation_packet_lookup_uv_scroll(batch_a, 12u, 3u, &out),
+           "a batch whose triangle count moved cannot confirm");
+    memset(&stats, 0, sizeof(stats));
+    gfx_presentation_packet_get_stats(&stats);
+    expect(stats.uv_scroll_hold_shape == 1u,
+           "a topology disagreement is attributed to the shape clause");
+
+    /* Two ticks that disagree about the displacement is the wrap the resolver
+     * could not undo. Holding is the fail-closed answer and the phase clause
+     * is what names it. */
+    publish_uv_tick(13u, batch_a, &faster, NULL, NULL);
+    expect(!gfx_presentation_packet_lookup_uv_scroll(batch_a, 13u, 2u, &out),
+           "a displacement that changed between ticks holds");
+    memset(&stats, 0, sizeof(stats));
+    gfx_presentation_packet_get_stats(&stats);
+    expect(stats.uv_scroll_hold_phase == 1u,
+           "a displacement disagreement is attributed to the phase clause");
+
+    /* Two different batches at one address inside a single census: the replay
+     * cannot tell them apart, so the key is poisoned rather than letting the
+     * later one decide the earlier one's phase. */
+    gfx_presentation_packet_capture_begin(14u);
+    expect(gfx_presentation_packet_capture_uv_scroll(batch_a, &faster),
+           "the first observation of a key in a census registers");
+    expect(gfx_presentation_packet_capture_uv_scroll(batch_a, &faster),
+           "an identical repeat observation is idempotent");
+    expect(!gfx_presentation_packet_capture_uv_scroll(batch_a, &wider),
+           "a second, different batch at the same address is refused");
+    gfx_presentation_packet_freeze();
+    gfx_presentation_packet_publish_uv_scroll(14u);
+    expect(!gfx_presentation_packet_lookup_uv_scroll(batch_a, 14u, 2u, &out),
+           "a poisoned key holds even when both ticks agree");
+    memset(&stats, 0, sizeof(stats));
+    gfx_presentation_packet_get_stats(&stats);
+    expect(stats.uv_scroll_hold_ambiguous == 1u &&
+               stats.uv_scroll_collisions == 1u,
+           "an ambiguous key is attributed to the collision clause");
+
+    /* A census that publishes nothing discards its staged table rather than
+     * leaving the previous tick to masquerade as this one. */
+    publish_uv_tick(15u, batch_a, &scroll, NULL, NULL);
+    publish_uv_tick(16u, batch_a, &scroll, NULL, NULL);
+    expect(gfx_presentation_packet_lookup_uv_scroll(batch_a, 16u, 2u, &out),
+           "a fresh adjacent pair confirms again after a poisoned tick");
+    gfx_presentation_packet_capture_begin(17u);
+    (void)gfx_presentation_packet_capture_uv_scroll(batch_a, &scroll);
+    gfx_presentation_packet_freeze();
+    gfx_presentation_packet_publish_uv_scroll(0u);
+    expect(gfx_presentation_packet_lookup_uv_scroll(batch_a, 16u, 2u, &out),
+           "a discarded census leaves the last published pair in place");
+
+    gfx_presentation_packet_invalidate();
+    expect(!gfx_presentation_packet_lookup_uv_scroll(batch_a, 16u, 2u, &out),
+           "stage invalidation drops every published UV-scroll table");
+    gfx_presentation_packet_shutdown();
+}
+
 int main(void) {
     unsigned char matrix[64];
     unsigned char vertex[10];
@@ -261,9 +440,9 @@ int main(void) {
     gfx_presentation_packet_note_deformation_color(false, false);
     gfx_presentation_packet_note_deformation_color(false, true);
     gfx_presentation_packet_note_deformation_color(true, true);
-    gfx_presentation_packet_note_primitive_alpha(false, false);
-    gfx_presentation_packet_note_primitive_alpha(false, true);
-    gfx_presentation_packet_note_primitive_alpha(true, true);
+    gfx_presentation_packet_note_primitive_alpha(false, 200u, 200u);
+    gfx_presentation_packet_note_primitive_alpha(false, 200u, 201u);
+    gfx_presentation_packet_note_primitive_alpha(true, 200u, 190u);
     gfx_presentation_packet_note_projected_shadow_primitive_alpha(false);
     gfx_presentation_packet_note_projected_shadow_primitive_alpha(true);
     gfx_presentation_packet_note_phase_hold(false);
@@ -626,6 +805,44 @@ int main(void) {
                stats.projected_shadow_deformation_overrides == 1u,
            "projected shadow interpolation has dedicated telemetry");
 
+    /* An authoring pass that never submits its list. The bindings it left on
+     * the live side describe a list nothing will ever walk, so the next
+     * authoring lifetime drops them -- otherwise they survive into the next
+     * freeze still stamped with the older tick and replay measures their
+     * residual against a newer pose. The frozen side, which belongs to the
+     * last list that WAS walked, must be untouched by the discard. */
+    memset(matrix, 0x44, sizeof(matrix));
+    memset(next_matrix, 0x55, sizeof(next_matrix));
+    owner = make_owner(matrix, 31u);
+    owner.capture_tick = 100u;
+    expect(gfx_presentation_packet_register_matrix(
+               matrix, sizeof(matrix), 0, &owner),
+           "a list that will be walked registers on the live side");
+    gfx_presentation_packet_freeze();
+    expect(gfx_presentation_packet_lookup_matrix(matrix, &binding) &&
+               binding.owner.capture_tick == 100u,
+           "the walked list's binding freezes with its capture tick");
+
+    owner = make_owner(next_matrix, 32u);
+    owner.capture_tick = 101u;
+    expect(gfx_presentation_packet_register_matrix(
+               next_matrix, sizeof(next_matrix), 0, &owner),
+           "an abandoned authoring pass still registers on the live side");
+    owner.matrix_class = GFX_PRESENTATION_MATRIX_PARTICLE_VERTICES;
+    expect(gfx_presentation_packet_register_vertex_identity(
+               particle_vertex, 0, &owner),
+           "the same abandoned pass registers its vertex recipes too");
+    gfx_presentation_packet_discard_live_registrations();
+    expect(gfx_presentation_packet_lookup_matrix(matrix, &binding),
+           "discarding live registrations leaves the frozen packet intact");
+    expect(!gfx_presentation_packet_has_live_vertex(particle_vertex),
+           "discarded live vertex registrations are gone before the freeze");
+    gfx_presentation_packet_freeze();
+    expect(!gfx_presentation_packet_lookup_matrix(next_matrix, &binding) &&
+               !gfx_presentation_packet_lookup_vertex(
+                   particle_vertex, &binding),
+           "an abandoned pass's bindings cannot reach the next frozen packet");
+
     gfx_presentation_packet_invalidate();
     expect(!gfx_presentation_packet_frozen() &&
                !gfx_presentation_packet_lookup_matrix(next_matrix, &binding),
@@ -635,6 +852,8 @@ int main(void) {
     gfx_presentation_packet_get_stats(&stats);
     expect(stats.matrix_registrations == 0u && stats.freezes == 0u,
            "shutdown releases storage and resets ownership telemetry");
+
+    check_uv_scroll();
 
     if (failures != 0) {
         fprintf(stderr, "presentation_packet: %d failure(s)\n", failures);

@@ -107,10 +107,23 @@ typedef struct GfxPresentationPacketStats {
     uint64_t particle_color_overrides;
     uint64_t primitive_alpha_hits;
     uint64_t primitive_alpha_overrides;
+    /* Magnitude of the substitutions, in 0-255 alpha steps. A stage can
+     * override every draw it touches and still be invisible if every step is
+     * one byte on a surface whose blend cannot resolve one byte, and an
+     * override count says nothing about which of those it is doing. */
+    uint64_t primitive_alpha_delta_sum;
+    uint64_t primitive_alpha_delta_peak;
     uint64_t projected_shadow_primitive_alpha_hits;
     uint64_t projected_shadow_primitive_alpha_overrides;
     uint64_t particle_primitive_alpha_hits;
     uint64_t particle_primitive_alpha_overrides;
+    /* Tick agreement between a replayed recipe and the alpha-zero pose its
+     * residual is measured against, counted over EVERY class that carries a
+     * residual (root, child, billboard, effect). Mismatches are zero by
+     * construction on a correct tree and were 708 of 708 effect overrides on
+     * the build that shipped in v1.0.1-v1.0.3. */
+    uint64_t owner_tick_checks;
+    uint64_t owner_tick_mismatches;
     uint64_t effect_registrations;
     uint64_t effect_hits;
     uint64_t effect_overrides;
@@ -130,6 +143,17 @@ typedef struct GfxPresentationPacketStats {
     uint64_t uv_scroll_collisions;
     uint64_t uv_scroll_hits;
     uint64_t uv_scroll_holds;
+    /* Why a known scroller held, split by the confirmation clause that
+     * refused it. One aggregate hold count cannot distinguish a batch the
+     * census never saw at T-1 (a scroller that just came into view, and will
+     * confirm on its next tick) from one whose two published ticks disagree
+     * about the displacement (a wrap the resolver could not undo). The first
+     * is bounded by how often geometry enters the frustum; the second is not,
+     * and only the second is a candidate defect. */
+    uint64_t uv_scroll_hold_unpublished;
+    uint64_t uv_scroll_hold_ambiguous;
+    uint64_t uv_scroll_hold_shape;
+    uint64_t uv_scroll_hold_phase;
     uint64_t uv_scroll_overrides;
     size_t uv_scroll_peak;
     size_t uv_scroll_bytes_peak;
@@ -252,11 +276,21 @@ void gfx_presentation_packet_note_projected_shadow_deformation(
     bool overridden);
 void gfx_presentation_packet_note_deformation_color(bool particle,
                                                     bool overridden);
+/* `authored` is the display list's own G_SETPRIMCOLOR alpha, `applied` what
+ * the replay substituted for it. Passing both rather than a bool lets the
+ * census bound how far the substitution actually moved the byte. */
 void gfx_presentation_packet_note_primitive_alpha(bool particle,
-                                                  bool overridden);
+                                                  uint8_t authored,
+                                                  uint8_t applied);
 void gfx_presentation_packet_note_projected_shadow_primitive_alpha(
     bool overridden);
 void gfx_presentation_packet_note_effect_override(void);
+/* One replayed recipe's residual: did the recipe's capture tick match the tick
+ * the alpha-zero pose came from? Counting rather than refusing is deliberate.
+ * A refusal here would be a behaviour change wearing an assertion's clothes,
+ * and the equality is structural after the anchoring fix -- the counter exists
+ * so a future regression is caught by a gate rather than by a player. */
+void gfx_presentation_packet_note_owner_tick(bool agreed);
 void gfx_presentation_packet_note_endpoint_semantic(
     const void *expected, const void *actual, size_t size);
 
@@ -284,6 +318,19 @@ bool gfx_presentation_packet_lookup_live_vertex(
 bool gfx_presentation_packet_has_live_vertex(const void *key);
 bool gfx_presentation_packet_has_frozen_vertex(const void *key);
 
+/*
+ * Drop registrations belonging to a display list that is about to be authored
+ * over. The live side is normally emptied by the freeze at the end of that
+ * list's real walk, so on a pass that submits its list this is a no-op. On a
+ * pass that does NOT submit -- a frame-timer hold or an elided catch-up render
+ * -- the game re-authors the same buffer, and without this the previous
+ * attempt's bindings survive into the next freeze carrying the previous tick's
+ * recipe. Replay would then measure that recipe's residual against a newer
+ * alpha-zero pose, which is the same off-by-one-tick anchoring error the
+ * effect stage shipped with (docs/evidence/smoothing-artifact-repro-2026-08.md
+ * §2.3), reached by a different route.
+ */
+void gfx_presentation_packet_discard_live_registrations(void);
 void gfx_presentation_packet_invalidate(void);
 void gfx_presentation_packet_get_stats(GfxPresentationPacketStats *out);
 void gfx_presentation_packet_shutdown(void);

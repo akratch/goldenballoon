@@ -73,6 +73,10 @@ void presentation_task_authoring_begin(Gfx *cursor);
  * executes the game render tree or consumes the authoring lifetime. */
 s32 presentation_task_peek_authored(const Gfx **begin, const Gfx **end,
                                     u64 *authoredTick);
+/* The tick the main list currently being authored belongs to, or 0 when no
+ * authoring lifetime is open. Recipes copied out during list build stamp
+ * themselves with it so replay can prove which tick they describe. */
+u64 presentation_task_authoring_tick(void);
 #endif
 void gfxtask_init(OSSched *sc);
 void bgdraw_texture_init(TextureHeader *tex1, TextureHeader *tex2, u32 shiftX);

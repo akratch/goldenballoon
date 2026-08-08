@@ -314,6 +314,20 @@ void gfx_dkr_replay_get_stats(
     uint64_t *walks, uint64_t *matrix_hits, uint64_t *matrix_misses,
     uint64_t *matrix_rejects, uint64_t *real_walks);
 void gfx_dkr_replay_get_object_stats(uint64_t *hits, uint64_t *holds);
+
+/**
+ * Uncaptured-external fail-closed evidence.
+ *
+ * `externals` counts non-arena pointers an INTERPOLATED walk resolved without a
+ * retained copy; `refusals` counts the walks those aborted. Both are expected
+ * to be zero on a correct tree — every shipped handler that reads a non-arena
+ * dependency also captures it — so a non-zero reading is the signature of a
+ * handler that reads mutable memory the replay does not own. That is the exact
+ * hazard `PRES-001` describes and the one the live-arena poison gate cannot
+ * observe, because its poison covers the arena only.
+ */
+void gfx_dkr_replay_get_uncaptured_stats(uint64_t *externals,
+                                         uint64_t *refusals);
 void gfx_dkr_replay_get_billboard_stats(
     uint64_t *matrix_hits, uint64_t *matrix_holds,
     uint64_t *vertex_hits, uint64_t *vertex_holds);

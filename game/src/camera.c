@@ -18,6 +18,7 @@
 #include "fast3d/gfx_presentation_packet.h"
 #include "fast3d/gfx_shadow_frame.h"
 #include "presentation_snapshot.h"
+#include "rcp_dkr.h"
 #include "thread3_main.h"
 #include <math.h>
 #include <stdio.h>  /* fprintf — the NULL-sprite assert below */
@@ -255,6 +256,11 @@ static bool mdkr_presentation_owner_root(
     out->address = transform;
     out->generation = generation;
     out->matrix_class = GFX_PRESENTATION_MATRIX_ROOT;
+    /* Stamp the lifetime this recipe describes. Every owner in the tree is
+     * either built here or copied from one that was (see
+     * mdkr_presentation_owner_child), so this is the single site that decides
+     * what "the tick this recipe belongs to" means. */
+    out->capture_tick = presentation_task_authoring_tick();
     out->source_position[0] = transform->x_position;
     out->source_position[1] = transform->y_position;
     out->source_position[2] = transform->z_position;
@@ -348,6 +354,38 @@ void mdkr_camera_replay_mvp(
  * alpha one extrapolates every moving object backward at alpha zero instead of
  * reproducing the retained list's authored endpoint.
  */
+/*
+ * The T-against-T rule, made checkable.
+ *
+ * Every residual below is `owner->source_* - authored.*`, where `authored` is
+ * the pose a resolve at numerator 0 returns. That difference is meant to carry
+ * the render-only adjustments the snapshot has already restored -- tumble, bob,
+ * model scale -- and nothing else. It carries nothing else only when the two
+ * terms describe the SAME authored tick. Hand it a recipe from tick T+1 and it
+ * silently becomes `pose(alpha) + (pose(T+1) - pose(T))`: one whole tick of
+ * travel added at every alpha, which is a constant offset, which no endpoint
+ * check and no "did this stage change pixels" control can see.
+ *
+ * So the equality is counted on every replayed recipe rather than believed.
+ * It costs one comparison and holds by construction on a correct tree; it read
+ * 708 of 708 violations on the shield path that shipped in v1.0.1-v1.0.3
+ * (docs/evidence/smoothing-artifact-repro-2026-08.md §2.3).
+ */
+static void mdkr_camera_replay_tick_agreement(
+    const GfxPresentationMatrixOwner *owner) {
+    u64 authoredTick = 0u;
+
+    /* A recipe with no stamp predates the capture path or came from a build
+     * lifetime this snapshot pair cannot name; either way there is no claim to
+     * check, and counting it as agreement would be inventing evidence. */
+    if (owner == NULL || owner->capture_tick == 0u ||
+        !presentation_snapshot_authored_endpoint_tick(&authoredTick)) {
+        return;
+    }
+    gfx_presentation_packet_note_owner_tick(
+        owner->capture_tick == authoredTick);
+}
+
 bool mdkr_camera_replay_object_world(
     const GfxPresentationMatrixOwner *owner, u64 numerator, u64 denominator,
     f32 outWorld[4][4]) {
@@ -371,6 +409,7 @@ bool mdkr_camera_replay_object_world(
         !target.interpolated) {
         return false;
     }
+    mdkr_camera_replay_tick_agreement(owner);
 
     memset(&transform, 0, sizeof(transform));
     transform.x_position =
@@ -432,6 +471,7 @@ static bool mdkr_camera_replay_object_transform(
         !target.interpolated) {
         return false;
     }
+    mdkr_camera_replay_tick_agreement(owner);
     memset(out, 0, sizeof(*out));
     out->x_position =
         target.position[0] +
@@ -536,8 +576,22 @@ bool mdkr_camera_replay_effect_world(
         previous->secondary_address != current->secondary_address ||
         previous->secondary_generation == 0u ||
         previous->secondary_generation != current->secondary_generation ||
+        /* `previous`, NOT `current`. The base transform's residual is measured
+         * against the alpha-zero pose (numerator 0 = tick T), so the recipe it
+         * subtracts has to be the tick-T capture -- which is `previous`, the
+         * same lifetime as the retained display list being walked. Passing
+         * `current` makes the residual evaluate to
+         * pose(alpha) + (pose(T+1) - pose(T)): a whole authored tick of racer
+         * travel added to the shell's world position AND its heading, at every
+         * alpha, so the shell rides one tick ahead of the kart it belongs to
+         * on every interpolated present. That shipped in v1.0.1-v1.0.3 and is
+         * measured at 50.8 px on a 640x480 frame against a 5.25 px per-tick
+         * budget in docs/evidence/smoothing-artifact-repro-2026-08.md §2.
+         * The guards above already prove `previous` and `current` agree on
+         * address, generation and both secondary fields, and the helper
+         * re-checks `valid`, so this needs no further validation. */
         !mdkr_camera_replay_object_transform(
-            current, numerator, denominator, &base)) {
+            previous, numerator, denominator, &base)) {
         return false;
     }
     memset(&effect, 0, sizeof(effect));
