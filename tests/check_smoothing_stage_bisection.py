@@ -413,7 +413,10 @@ def run(binary: Path, rom: Path, label: str, root: Path, track: str,
         MDKR_STATE_HASH=HASH_VERSION,
         MDKR_AUTOPILOT="1",
         MDKR_LOAD_TRACK=track,
-        MDKR_RENDERER="gl",
+        # The stage ranking must reflect the shipped renderer: WebGPU is
+        # where the picture players see is produced, and GL cannot
+        # observe an admission-gated stage at all.
+        MDKR_RENDERER="webgpu",
         MDKR_SAVE_DIR=str(save_dir),
         MDKR_TEST_SCRIPT_ONLY_INPUT="1",
         MDKR_PRESENT_RATE=PRESENT_RATE,
