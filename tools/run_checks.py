@@ -191,6 +191,13 @@ CHECKS = (
           "the shield/magnet shell's displacement from its own tick's authored "
           "pose stays inside the endpoint-to-endpoint interpolation envelope "
           "at the 120 Hz alpha grid"),
+    Check("motion_quality_battery", "check_motion_quality_battery.py",
+          "release",
+          "the perceptual motion battery: fast-rotation shortest-arc and snap, "
+          "no blended frame across a teleport, monotonic displayed alpha on "
+          "the grid, the tick-boundary step bound, and the camera-cut and "
+          "effect-envelope cross-references — each row with a committed "
+          "negative control"),
     Check("presentation_shadows", "check_presentation_shadows.py", "release",
           "terrain-projected kart-shadow replay stays rigid, exact at authored "
           "endpoints, and measurably reduces the historical vertex-lerp pulse"),
