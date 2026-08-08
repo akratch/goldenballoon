@@ -42,6 +42,7 @@ float g_pcVideoContrast   = 1.0f;
 float g_pcVideoBrightness = 0.0f;
 int   g_pcOutputDither    = 0;
 int   g_pcMipmaps         = 0;   /* mdkr-specific; owned by video_config.c */
+int   g_pcHiresText       = 0;   /* mdkr-specific; owned by video_config.c */
 int   g_gfxSamplerLod0Only = 0;  /* mdkr-specific; set per-draw by gfx_pc_dkr.c */
 float g_pcVignette        = 0.0f;
 

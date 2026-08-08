@@ -343,6 +343,7 @@ target_include_directories(${MDKR_TARGET} PRIVATE
     ${CMAKE_SOURCE_DIR}/platform/fast3d
     ${CMAKE_SOURCE_DIR}/platform/fast3d_shim
     ${CMAKE_SOURCE_DIR}/lib/glad/include
+    ${CMAKE_SOURCE_DIR}/lib/stb
     ${SDL2_INCLUDE_DIRS}
 )
 

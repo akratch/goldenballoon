@@ -17,7 +17,7 @@ unchanged.
 
 | File | Covers |
 |---|---|
-| [`renderer.md`](renderer.md) | Renderer and visual fidelity — 27 entries |
+| [`renderer.md`](renderer.md) | Renderer and visual fidelity — 28 entries |
 | [`audio.md`](audio.md) | Audio — 7 entries |
 | [`save.md`](save.md) | Saves and progression — 2 entries |
 | [`collision.md`](collision.md) | Collision — 3 entries |
@@ -33,7 +33,7 @@ unchanged.
 
 ### Still open
 
-17 entries below are genuinely open (the former M4.5 WebGPU backend "open
+18 entries below are genuinely open (the former M4.5 WebGPU backend "open
 notes" row was merged into the WGPU-11 row below it — every one of its notes
 already carried its own FIXED/CLOSED strikethrough, and the only live thread
 was the same external-platform validation WGPU-11 already tracks — and four

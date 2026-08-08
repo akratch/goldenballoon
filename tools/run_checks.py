@@ -128,6 +128,8 @@ CHECKS = (
           "authored cutout-vs-blend render-mode A/B on GL and WebGPU"),
     Check("font_sdf", "check_font_sdf.py", "native",
           "runtime-derived text mode isolation, lifecycle, bleed, GL/WebGPU"),
+    Check("font_outline", "check_font_outline.py", "native",
+          "outline text redraw: Pure exact, Restored/Remastered on, no bleed"),
     Check("native_ui_resolution", "check_native_ui_resolution.py", "native",
           "output-resolution HUD/text, scene isolation, ordering, GL/WebGPU"),
     Check("mip_motion", "check_mip_motion.py", "native",

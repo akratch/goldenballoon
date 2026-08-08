@@ -8,6 +8,21 @@ From 1.0.0 onward this project follows semantic versioning for the platform
 layer's public seams (config keys, environment variables, command-line flags and
 save formats). Everything below 1.0.0 predates that commitment.
 
+## [Unreleased]
+
+### Added
+
+- **High-resolution text.** The game's plain lettering — menus, lap and finish
+  times, the save screen, dialogue — is now drawn from real typefaces instead of
+  being magnified from small pictures of letters, so it stays crisp however
+  large your display is. Nothing moves: the same words break in the same places,
+  in the same positions, at the same widths. Diddy Kong Racing's own colourful
+  lettering is untouched; that is the game's handwriting and it stays exactly as
+  it was drawn. On in Restored and Remastered, and there is a **High-resolution
+  text** switch under Video if you would rather have the original letters back.
+  Original mode is unaffected and always will be — it reproduces the console
+  picture exactly, down to the pixel.
+
 ## [1.1.0] — 2026-08-07
 
 ### Added

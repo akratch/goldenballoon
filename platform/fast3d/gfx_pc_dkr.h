@@ -167,11 +167,15 @@ void gfx_dkr_forget_paired_triangle_buffers(const void *base);
 
 /*
  * Identify decoded texture payloads owned by ASSET_FONTS, with the glyph cells
- * that may be sampled from each atlas. Remastered mode derives only registered
- * atlases; Pure and Restored never enter the derivation path.
+ * that may be sampled from each atlas and which authored face they belong to.
+ *
+ * `face` is a GfxFontFace, passed as int so game code need not include the
+ * registry header. Pure never enters any derivation path; Restored and
+ * Remastered redraw the two plain faces from outline fonts, and Remastered
+ * additionally derives SDF contours for the stylized ones.
  */
 bool gfx_dkr_font_texture_register(
-    const void *source, const GfxFontAtlasRegion *regions,
+    const void *source, int face, const GfxFontAtlasRegion *regions,
     size_t region_count);
 bool gfx_dkr_font_texture_unregister(const void *source);
 
@@ -198,6 +202,8 @@ extern uint32_t gfx_dkr_texload_line_swapped;
 
 /** Runtime font-derivation telemetry used by the mode/backend/browser gates. */
 extern uint32_t gfx_dkr_font_sdf_uploads;
+/** Atlases redrawn from an embedded outline face (Restored and Remastered). */
+extern uint32_t gfx_dkr_font_outline_uploads;
 extern uint32_t gfx_dkr_font_registry_failures;
 
 /**

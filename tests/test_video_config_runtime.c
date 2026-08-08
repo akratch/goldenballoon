@@ -36,6 +36,7 @@ float g_pcRenderScale;
 int g_pcMsaaSamples;
 int g_pcTextureAnisotropy;
 int g_pcMipmaps;
+int g_pcHiresText;
 int g_pcRemasterFX;
 int g_pcGradePresets;
 int g_pcTonemap;

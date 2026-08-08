@@ -13,6 +13,7 @@
 
 #include "display_config.h"
 #include "fast3d/gfx_mipgen.h"
+#include "fast3d/gfx_font_outline.h"
 #include "fast3d/gfx_uniforms.h"
 #include "present_sched.h"
 #include "user_paths.h"
@@ -667,6 +668,16 @@ void mdkr_video_config_publish(void) {
     g_pcMsaaSamples       = (int) c->values[MDKR_VIDEO_MSAA].number;
     g_pcTextureAnisotropy = (int) c->values[MDKR_VIDEO_ANISOTROPY].number;
     g_pcMipmaps           = (int) c->values[MDKR_VIDEO_MIPMAPS].number;
+    /*
+     * Pure is the byte-exact reference and must never redraw a glyph. The
+     * preset default already resolves to 0 there, but a preset default is only
+     * a default: an ini value, MDKR_HIRES_TEXT, or a CLI pair all outrank it
+     * (see test_video_config.c "Env beats the preset"). Byte-exactness cannot
+     * rest on precedence, so Pure is denied structurally here. Selecting
+     * Restored, Remastered or Custom is how a player opts in.
+     */
+    g_pcHiresText         = (c->mode != MDKR_VIDEO_MODE_PURE) &&
+        (int) c->values[MDKR_VIDEO_HIRES_TEXT].number;
 
     /*
      * Widescreen and aspect are display_config's state, not ours. We are the

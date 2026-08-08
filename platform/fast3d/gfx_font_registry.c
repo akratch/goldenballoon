@@ -6,7 +6,8 @@
 static bool region_equal(const GfxFontAtlasRegion *left,
                          const GfxFontAtlasRegion *right) {
     return left->x == right->x && left->y == right->y &&
-           left->width == right->width && left->height == right->height;
+           left->width == right->width && left->height == right->height &&
+           left->character == right->character;
 }
 
 static bool region_valid(const GfxFontAtlasRegion *region) {
@@ -58,6 +59,7 @@ const GfxFontRegistryEntry *gfx_font_registry_find(
 }
 
 bool gfx_font_registry_register(GfxFontRegistry *registry, const void *source,
+                                GfxFontFace face,
                                 const GfxFontAtlasRegion *regions,
                                 size_t region_count) {
     const uint8_t *bytes = (const uint8_t *)source;
@@ -101,6 +103,11 @@ bool gfx_font_registry_register(GfxFontRegistry *registry, const void *source,
     if (entry->references == 0) {
         entry->source = bytes;
         entry->region_count = 0;
+        entry->face = face;
+    } else if (entry->face != face) {
+        /* Two fonts disagree about what this atlas is. Neither claim can be
+         * trusted, so fall back to the ROM pixels for the shared source. */
+        entry->face = GFX_FONT_FACE_NONE;
     }
     for (size_t index = 0; index < region_count; index++) {
         if (region_valid(&regions[index]) &&
