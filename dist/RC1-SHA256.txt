@@ -1,0 +1,2 @@
+11d7e79c29b9a130d57a273ca78dea2b4c159278a71ca5a94b4d6ca6a3f1aaee  dist/Golden-Balloon-1.1.1-RC1-windows-x64.zip
+dc59aacf527c2dfb499f7d211b86a7d1648f94c376649fa246f840c7e606ce22  dist/Golden-Balloon-1.1.1-RC1-macos-arm64-unsigned.dmg

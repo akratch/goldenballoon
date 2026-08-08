@@ -128,7 +128,17 @@ def configure_and_build(
         str(ROOT),
         "-B",
         str(align_build),
-        "-DCMAKE_BUILD_TYPE=Debug",
+        # RelWithDebInfo, not Debug. This tree re-runs fourteen whole checks
+        # against the alignment binary, and at -O0 that matrix cost 4.7x what
+        # the same fourteen cost against build-rel -- almost entirely the
+        # optimisation level, since -fsanitize=alignment is cheap
+        # instrumentation and the build itself is ~22s of a ~37min task
+        # (docs/TEST_SUITE_ECONOMICS.md 6.1). check_full_ubsan already runs its
+        # heavier sanitizer at RelWithDebInfo for the same reason. The gate
+        # proves the instrumentation still bites at this level on every run:
+        # the three --legacy-mem0* controls below must each still be REJECTED,
+        # and they are misaligned loads the sanitizer has to catch.
+        "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
         "-DMDKR_EXTRA_C_FLAGS=-fsanitize=alignment -fno-omit-frame-pointer",
         "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=alignment",
     ]

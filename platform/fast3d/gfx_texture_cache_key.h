@@ -15,6 +15,7 @@ struct DkrTexCacheKey {
     uint8_t fmt, siz, palette;  /* RDP decode format */
     bool line_swapped;          /* LOADBLOCK dxt row layout */
     bool font_remastered;       /* source atlas versus derived SDF */
+    bool font_outline;          /* source atlas versus outline redraw */
     bool mipmaps;               /* single level versus complete chain */
     bool cutout;                /* plain versus coverage-preserving mips */
 };
@@ -32,6 +33,7 @@ static inline bool dkr_texcache_key_equal(
         left->palette == right->palette &&
         left->line_swapped == right->line_swapped &&
         left->font_remastered == right->font_remastered &&
+        left->font_outline == right->font_outline &&
         left->mipmaps == right->mipmaps && left->cutout == right->cutout;
 }
 

@@ -5,7 +5,8 @@ For GL and WebGPU this check captures one stable copyright-text frame in six
 arms: Pure/Restored/Remastered, each with the production path and with
 ``MDKR_FONT_SDF=0``. It proves:
 
-* Pure and Restored perform zero derivation and are pixel-identical to control;
+* Pure and Restored perform zero SDF derivation and are pixel-identical to
+  control (the outline path is pinned off here; see check_font_outline.py);
 * Remastered uploads derived atlases and differs materially from control;
 * every changed pixel stays inside the known text rectangle (atlas-bleed guard);
 * font registry operations and texture-cache verification report zero failures;
@@ -30,7 +31,9 @@ from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, fatal_re,
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_game_select.txt"
-FONT_RE = re.compile(r"\[FONT\] sdfUploads=(\d+) registryFailures=(\d+)")
+FONT_RE = re.compile(
+    r"\[FONT\] sdfUploads=(\d+) outlineUploads=(\d+) registryFailures=(\d+) "
+    r"clippedTexels=(\d+)")
 CACHE_RE = re.compile(r"\[TEXCACHE\] staleHits=(\d+)")
 FATAL_RE = fatal_re(*ASSERT_MARKERS, *FX_MARKERS)
 
@@ -56,7 +59,9 @@ class Arm:
     mode: str
     disabled: bool
     uploads: int
+    outline_uploads: int
     registry_failures: int
+    clipped_texels: int
     stale_hits: int
     pace: tuple[str, ...]
     image: Image
@@ -92,6 +97,11 @@ def environment(backend: str, disabled: bool) -> dict[str, str]:
         MDKR_DUMP_EVERY="999",
         MDKR64_HIDDEN="1",
         LC_ALL="C",
+        # This gate measures the SDF contour pass on its own. The outline
+        # redraw claims the same two plain-font atlases and would otherwise
+        # leave this fixture -- one copyright line in SmallFont -- with no SDF
+        # work left to observe. check_font_outline.py owns that path.
+        MDKR_HIRES_TEXT="0",
     )
     if disabled:
         env["MDKR_FONT_SDF"] = "0"
@@ -157,7 +167,9 @@ def run_arm(
         mode=mode,
         disabled=disabled,
         uploads=int(font.group(1)),
-        registry_failures=int(font.group(2)),
+        outline_uploads=int(font.group(2)),
+        registry_failures=int(font.group(3)),
+        clipped_texels=int(font.group(4)),
         stale_hits=int(cache_matches[0].group(1)),
         pace=pace,
         image=read_ppm(dumps[0]),
@@ -245,6 +257,17 @@ def main() -> int:
             )
         if arm.pace != pace_baseline:
             failures.append(f"{label}: [PACE] diverged")
+        # The pin is a premise of this whole gate: if MDKR_HIRES_TEXT stops
+        # being honoured the outline path takes the two plain-font atlases and
+        # the SDF counts below change for a reason that has nothing to do with
+        # the SDF path. State the premise rather than assuming it.
+        if arm.outline_uploads != 0:
+            failures.append(
+                f"{label}: outline path was not pinned off "
+                f"({arm.outline_uploads} upload(s))")
+        if arm.clipped_texels != 0:
+            failures.append(
+                f"{label}: {arm.clipped_texels} glyph texel(s) clipped")
         colours, sigma = frame_metrics(arm.image)
         if colours < MIN_FRAME_COLOURS or sigma < MIN_FRAME_SIGMA:
             failures.append(

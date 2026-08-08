@@ -1,8 +1,10 @@
 # Test suite economics
 
-The complete suite is 135 tasks and takes between 2¼ and 3¼ hours. This document
-measures where that time goes, names the overlaps that could be collapsed, and
-records what evidence a future implementer must produce before collapsing them.
+The complete suite is 141 tasks. It took between 2¼ and 3¼ hours when this
+document was written; the `native_layout` change recorded in §6.1 has since
+removed about 27 minutes of that. This document measures where the time goes,
+names the overlaps that could be collapsed, and records what evidence a future
+implementer must produce before collapsing them.
 
 **Nothing here removes or weakens a gate.** No task was deprecated, merged, or
 subsetted in the pass that produced this document. Every verdict below is a
@@ -599,6 +601,14 @@ not.
    sub-checks must still pass, none of which is the documented build-type-
    sensitive check (`key_cutscene_once` is, and is not in this matrix);
    (c) a measured before/after on one tree.
+
+   **LANDED (2026-08-08).** All three pieces of evidence were produced on one
+   tree, same host, same fourteen-check matrix: **36m23s → 9m40s**, PASS, every
+   fixed arm clean and every legacy control still rejected — MEM-02 reported
+   four alignment findings and MEM-03 two at `RelWithDebInfo`, so the
+   instrumentation is intact rather than optimised away. That removes roughly
+   27 minutes from every future complete run, and `native_layout` is no longer
+   the suite's long pole.
 2. **Prune `track_sweep` from the matrix** — §4.7. ~3m today.
 3. **Parallelise the matrix.** The fourteen sub-checks run in a plain sequential
    loop with no `-j`, no pool. But several of them write EEPROM
@@ -645,6 +655,17 @@ run at the intended concurrency producing identical per-arm verdicts, since
 these arms compare pixels and concurrent WebGPU contexts are the obvious risk;
 (b) a bound on concurrency that keeps each arm inside its own 300s timeout.
 
+**LANDED (2026-08-08).** `--jobs` (default 4) pools the 72 ordinary arms; the
+fixed/unsafe pair a verdict compares is resolved inside one work item, so no
+comparison spans the pool, and results are collected in submission order.
+Evidence, one tree, same host: **518s → 245s**; two consecutive four-way
+verbose runs produced **byte-identical per-arm lines** (68 arms, 46 carrying
+measured percentages); and a sequential `--jobs 1` sample of three scenes —
+`post-race-framed`, `track-select-zoom`, `post-race-transition`, twelve arms —
+reproduced the parallel run's percentages **exactly** (39.2%, 58.9%, 80.0%,
+88.3%, 77.5%, 86.9%). Concurrent WebGPU contexts do not move a pixel here.
+The PAL, interpolated-boundary, scroll and leak arms stay sequential.
+
 `--scene NAME` and `--interpolated-only` already exist as subset flags.
 
 ### 6.3 `presentation_breadth` (6m31s) and `presentation_matrix` (3m05s)
@@ -663,7 +684,14 @@ in a plain `for` loop.
 `presentation_breadth` is the cleanest parallelism candidate in the entire
 suite: 36 independent spawns, each with its own `run_dir` and its own
 `run_dir/save`, GL-only, no pixel comparison to be perturbed by a concurrent GPU
-context. `presentation_matrix` is the same lever with the pixel caveat from
+context.
+
+**LANDED (2026-08-08).** `--jobs` (default 4) runs the arms through a thread
+pool and collects results by index, so the printed order is unchanged. Evidence
+produced on one tree, same host: sequential **499s**, two consecutive four-way
+runs **220s and 220s**, and both parallel logs are **byte-identical to the
+sequential log** — same verdict, same per-arm notes, same order. `--jobs 1`
+restores the old behaviour. `presentation_matrix` is the same lever with the pixel caveat from
 §6.2.
 
 Neither should be reduced by dropping arms. Breadth exists because the matrix

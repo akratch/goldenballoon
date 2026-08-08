@@ -117,8 +117,12 @@ static void test_angle_shortest_arc(void) {
            "angle: 0 -> 0xC000 takes the short negative arc");
     expect(presentation_lerp_angle((int16_t)0xC000, 0, 1, 2) == -8192,
            "angle: 0xC000 -> 0 takes the short positive arc");
-    expect(presentation_lerp_angle(0, (int16_t)0x8000, 1, 2) == -16384,
-           "angle: exact half turn resolves negative, deterministically");
+    /* The ambiguous half turn (delta == INT16_MIN, both arcs equal) is past
+     * the rotation snap threshold (see test_rotation_snap): it now snaps to
+     * current rather than picking an arbitrary blend arc. */
+    expect(presentation_lerp_angle(0, (int16_t)0x8000, 1, 2) ==
+               (int16_t)0x8000,
+           "angle: exact half turn snaps instead of picking an arc");
 
     /* Wrap through 0 the short way: 0xFF00 -> 0x0100 is +512, not -65024. */
     expect(presentation_lerp_angle((int16_t)0xFF00, 0x0100, 1, 2) == 0,
@@ -133,6 +137,30 @@ static void test_angle_shortest_arc(void) {
            "angle: alpha > 1 clamps to current");
     expect(presentation_lerp_angle(1234, -4321, 1, 0) == 1234,
            "angle: zero denominator is previous");
+}
+
+static void test_rotation_snap(void) {
+    /* > 0x4000 shortest-arc delta: any intermediate alpha snaps to current.
+     * Calibrated to Ghostship's proven threshold: a quarter turn per tick is
+     * beyond any legitimate smooth motion; blending across it draws the
+     * model swinging through poses the simulation never held. */
+    expect(presentation_lerp_angle(0, 0x4001, 1, 2) == 0x4001,
+           "delta just past a quarter turn snaps to current");
+    expect(presentation_lerp_angle(0, 0x4000, 1, 2) == 0x2000,
+           "exactly a quarter turn still blends");
+    /* The ambiguous half turn (delta == INT16_MIN) now snaps too. */
+    expect(presentation_lerp_angle(0, (int16_t)0x8000, 1, 2) ==
+               (int16_t)0x8000,
+           "ambiguous half turn snaps instead of picking an arc");
+    /* Wrap case: 0x7000 -> 0x9000 is a +0x2000 shortest arc; still blends. */
+    expect(presentation_lerp_angle((int16_t)0x7000, (int16_t)0x9000, 1, 2) ==
+               (int16_t)0x8000,
+           "wrap-crossing small delta still blends");
+    /* Endpoint exactness is untouched by the snap. */
+    expect(presentation_lerp_angle(0, 0x4001, 0, 2) == 0,
+           "alpha 0 returns previous even past the snap threshold");
+    expect(presentation_lerp_angle(0, 0x4001, 2, 2) == 0x4001,
+           "alpha 1 returns current");
 }
 
 /* ---- 3. exact rational alpha endpoints ----------------------------------- */
@@ -638,6 +666,37 @@ static void test_resolved_fields(void) {
            "is held exactly");
 }
 
+/* A quarter-turn-plus camera pan in one tick is a cut or a whip; task 1.1's
+ * rotation snap must apply to the camera path exactly like the object path.
+ * The snap is per-field, not per-camera: fov and position still blend while
+ * rotation_y jumps straight to current. */
+static void test_camera_fast_pan_snaps(void) {
+    PresentationCameraPose pose;
+    PresentationCameraEntry camera_sample;
+
+    begin();
+
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 0.0f, 0.0f, 0.0f);
+    camera_sample.rotation_y = 0;
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 0.0f, 0.0f, 0.0f);
+    camera_sample.rotation_y = 0x5000; /* > 0x4000 shortest-arc delta */
+    camera_sample.fov = 70.0f;
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &pose),
+           "camera fast pan: viewport 0 resolves");
+    expect(pose.rotation_y == 0x5000,
+           "camera fast pan: rotation snaps to current instead of blending");
+    expect(pose.fov > 60.0f && pose.fov < 70.0f,
+           "camera fast pan: fov still blends across the same tick");
+}
+
 static void test_authored_camera_latch(void) {
     PresentationCameraEntry cameras[4];
     PresentationCameraEntry camera0 = make_camera(4, 10.0f, 20.0f, 30.0f);
@@ -1006,12 +1065,14 @@ static void test_disabled_seam(void) {
 
 int main(void) {
     test_angle_shortest_arc();
+    test_rotation_snap();
     test_exact_endpoints();
     test_discrete_rule();
     test_identity_generation_reuse();
     test_identity_ensure_generation();
     test_discontinuity();
     test_resolved_fields();
+    test_camera_fast_pan_snaps();
     test_authored_camera_latch();
     test_authored_tick_pair();
     test_deformation_compatibility();

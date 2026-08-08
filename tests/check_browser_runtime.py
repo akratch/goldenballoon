@@ -95,7 +95,9 @@ EVTQ_DROP_RE = re.compile(
 RAW16_ACTIVE_RE = re.compile(
     r"\[AUDIO\] raw16 active mode=(fixed|legacy) loads=(\d+) bytes=(\d+)"
 )
-FONT_RE = re.compile(r"\[FONT\] sdfUploads=(\d+) registryFailures=(\d+)")
+FONT_RE = re.compile(
+    r"\[FONT\] sdfUploads=(\d+) outlineUploads=(\d+) registryFailures=(\d+) "
+    r"clippedTexels=(\d+)")
 MIP_RE = re.compile(r"\[MIP\] uploads=(\d+) levels=(\d+)")
 DISPLAY_RE = re.compile(
     r"\[DISPLAY\] output=(\d+)x(\d+) render=(\d+)x(\d+) "
@@ -2574,10 +2576,22 @@ def run_check(args: argparse.Namespace) -> None:
                 for line in cdp.console
                 if (match := FONT_RE.search(line))
             ]
+            # Remastered derives text two ways on this route: SDF contours for
+            # DKR's own coloured lettering, and an outline redraw for the two
+            # plain faces. BOTH are asserted independently. Asserting only the
+            # sum would let a regression that stopped one path entirely pass on
+            # the other's uploads, and this fixture measurably exercises both --
+            # 58 SDF and 2 outline uploads on the run that established these
+            # numbers, so neither assertion is vacuous.
+            #
+            # The fourth field must be zero: no glyph may be clipped by the
+            # per-cell backstop.
             require(
                 len(font_rows) == 1
                 and int(font_rows[0][0]) > 0
-                and int(font_rows[0][1]) == 0,
+                and int(font_rows[0][1]) > 0
+                and int(font_rows[0][2]) == 0
+                and int(font_rows[0][3]) == 0,
                 "browser Remastered font path did not derive cleanly: "
                 f"{font_rows}",
             )
@@ -3550,7 +3564,8 @@ def run_check(args: argparse.Namespace) -> None:
                 f"{visual_summary}; exact EEPROM+ROM reload; "
                 f"AudioWorklet posted {audio['posted']} frames; RAW16 fixed "
                 f"{raw16_rows[0][1]} loads/{raw16_rows[0][2]} bytes at first "
-                f"active block; font SDF {font_rows[0][0]} uploads; "
+                f"active block; font SDF {font_rows[0][0]} + outline "
+                f"{font_rows[0][1]} uploads; "
                 f"mips {mip_rows[0][0]}/{mip_rows[0][1]} levels; "
                 f"lighting {light_rows[0][4]}/{light_rows[0][5]} "
                 "racer/character tris; event queues "

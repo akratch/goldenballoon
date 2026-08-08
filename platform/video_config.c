@@ -68,6 +68,18 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "Requires a restart so already-uploaded textures cannot retain stale chains.",
         MDKR_VIDEO_CAT_FIDELITY
     },
+    [MDKR_VIDEO_HIRES_TEXT] = {
+        "Video.HighResolutionText", "MDKR_HIRES_TEXT",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 1.0f,
+        "High-resolution text",
+        "Redraw the game's two plain lettering faces from built-in outline fonts "
+        "instead of their 11- and 14-pixel source images. Layout, spacing and "
+        "line breaks are unchanged; only the letter shapes gain resolution. "
+        "DKR's coloured display lettering is never affected. Ignored in Pure, "
+        "which stays byte-exact. "
+        "Requires a restart because uploaded glyph atlases own this choice.",
+        MDKR_VIDEO_CAT_FIDELITY
+    },
     [MDKR_VIDEO_TEXTURE_PACK] = {
         "Video.TexturePack", "MDKR_TEXTURE_PACK",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
@@ -668,6 +680,11 @@ static const float s_preset[MDKR_VIDEO_KEY_COUNT][3] = {
     [MDKR_VIDEO_MSAA]         = {      0.0f,     0.0f,       0.0f },
     [MDKR_VIDEO_ANISOTROPY]   = {      1.0f,     8.0f,      16.0f },
     [MDKR_VIDEO_MIPMAPS]      = {      0.0f,     1.0f,       1.0f },
+    /* Pure is byte-exact and never redraws a glyph. Restored and Remastered
+     * both get it: unlike the SDF contour pass this is not a look-changing
+     * effect, it is the same lettering at a resolution the 11px source could
+     * not carry. */
+    [MDKR_VIDEO_HIRES_TEXT]   = {      0.0f,     1.0f,       1.0f },
     [MDKR_VIDEO_TEXTURE_PACK] = {      0.0f,     0.0f,       0.0f }, /* string; see below */
     [MDKR_VIDEO_GAMEPLAY_FOV] = {       0.0f,     0.0f,       0.0f }, /* string; see below */
     [MDKR_VIDEO_SIMULATION_CADENCE] = { 0.0f,     0.0f,       0.0f }, /* string; see below */

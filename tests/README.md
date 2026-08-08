@@ -502,6 +502,50 @@ production coverage:
   the exact 300-quantum audio schedule in every arm; a one-quantum timing
   perturbation proves the PCM comparator can detect a real mismatch without
   changing gameplay authority.
+- `check_smoothing_stage_bisection.py` is the attribution instrument, not a
+  pass/fail question about any one stage. It renders the same route at
+  `MDKR_PRESENT_RATE=120` — three interpolated presents per authoritative tick
+  — once per stage configuration (all-on, all-off, and leave-one-out for each
+  of the seven `MDKR_TEST_*_INTERPOLATION` opt-outs) and ranks the stages by
+  frame difference against the all-on arm, so a 120 Hz artifact hunt knows
+  which seam to open first. Two routes, because none fires all seven: Jungle
+  Falls in-race with shields forced ranks six, and the battle challenge ranks
+  the point-trail particle stage that the first route registers but never
+  interpolates. Two guards keep a zero readable. Each leave-one-out arm must
+  drive its stage's `[PRESENT-PACKET]` reach counter to exactly zero, so a
+  mistyped env cannot masquerade as a stage that ran and changed nothing; and
+  every stage gets an explicit `fires` / `reached-never-interpolated` /
+  `absent` disposition on both routes, with anything but `fires` failing the
+  gate for a stage it ranks. Every arm must keep the v3 state, event and input
+  streams byte-identical and every authored endpoint frame exact. The same
+  gate carries the uncaptured-external evidence: all eleven production arms
+  must resolve zero — with the stat field's presence required, not defaulted —
+  and the token-gated `MDKR_TEST_UNCAPTURED_EXTERNAL` seam must force the
+  interpolated walks to refuse into held authored images rather than read
+  live memory. Results in
+  `docs/evidence/smoothing-stage-attribution-2026-08-08.md`.
+- `check_effect_shell_envelope.py` holds the shield/magnet effect shell inside
+  the distance a single authored tick can move it. On the diagnosis route it
+  measures, at every interpolated present, how far the shell sits from the
+  authored pose of the tick its own recipe was copied from, and requires that
+  displacement to stay inside the tick's own travel envelope rather than
+  merely being small. That is the shape the shipped 1.0.1-1.0.3 defect
+  violated: the shell rode a whole tick ahead of its racer at a flat ~51 px on
+  a 640x480 frame, which no endpoint check, hash stream or does-this-stage-
+  change-pixels control could see, because a wrong pose is as coherent as a
+  right one. The gate also requires the shell's drawn area to recover to the
+  area the game itself draws, so a shell that vanished instead of leading
+  cannot pass.
+- `check_motion_quality_battery.py` states six things Motion smoothing must
+  never do, one row each, in the words a player would use: spin a kart the
+  long way round (R1), smear a spawn or respawn across the screen (R2), blend
+  through a camera cut (R3), let an effect shell escape its racer (R4), run
+  the presentation clock backwards or thump on the authored tick boundary
+  (R5), and drop a registration role it had been carrying (R6). Each row
+  carries a committed, token-gated negative control that reintroduces exactly
+  that defect, so a green row is a measurement rather than an absence. Every
+  arm additionally keeps the v3 state, event and input streams byte-identical
+  with smoothing on and off, so no row can be bought with gameplay divergence.
 - `check_presentation_shadows.py` is the focused Ancient Lake visual regression
   for terrain-projected kart decals. It keeps the 3,300-tick v3 state, event,
   and input streams plus every authored endpoint exact, then compares the
@@ -616,6 +660,7 @@ python3 tests/check_intro_shrub_sprite.py --build build --rom baserom.us.v80.z64
 python3 tests/check_rdp_interpolation.py --build build --rom baserom.us.v80.z64
 python3 tests/check_texture_edge_classification.py --build build --rom baserom.us.v80.z64
 python3 tests/check_font_sdf.py --build build --rom baserom.us.v80.z64
+python3 tests/check_font_outline.py --build build --rom baserom.us.v80.z64
 python3 tests/check_mip_motion.py --build build --rom baserom.us.v80.z64
 python3 tests/check_rl1_vertex_colour_ab.py --build build --rom baserom.us.v80.z64
 ```
@@ -640,7 +685,16 @@ character-select frame where the difference lands and bounds it from both sides,
 so an inert change and an over-broad one both fail.
 `check_font_sdf` runs mode/backend/control arms: Pure and Restored must be
 byte-identical, while Remastered must upload derived fields and change only
-known text regions. `check_mip_motion` measures temporal second-difference energy
+known text regions. `check_font_outline` is its counterpart for the outline
+redraw of the two plain lettering faces: it drives Restored and Remastered on
+both backends, requires the outline path to upload atlases, and requires every
+changed pixel to lie inside the text rectangle -- a redraw that leaked outside
+its glyph cells would move layout, which is the one thing the feature may not
+do. Pure stays pixel-identical even with `MDKR_HIRES_TEXT=1` forced, because
+Pure is denied structurally rather than by preset precedence. `clippedTexels`
+must be zero across all 94 authored glyphs; the control that reverts the
+per-cell fit reports 32 clipped texels on real glyph data, so the assertion is
+not vacuous. `check_mip_motion` measures temporal second-difference energy
 over a fixed 24-frame moving Everfrost Peak window with anisotropy pinned to one.
 `check_rl1_vertex_colour_ab` records the three RL-1 arms on Ancient Lake and
 Fire Mountain and enforces the measured decision to retain baked colour as the

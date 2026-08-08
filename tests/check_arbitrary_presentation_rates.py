@@ -27,7 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from harness_utils import (completed_tick_conservation, DEFAULT_BUILD_DIR,
-                           parse_last, resolve_binary, tear_free_presentation)
+                           parse_last, present_mode_rows, resolve_binary,
+                           tear_free_presentation)
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
@@ -54,6 +55,7 @@ class Result:
     packet: dict[str, int]
     retained: dict[str, int]
     pressure: dict[str, int]
+    mode: dict[str, str]
     tearing: list[str]
 
 
@@ -146,6 +148,7 @@ def run(binary: Path, rom: Path, root: Path, label: str,
         parse_last(output, "RETAINED-TASK"),
         (parse_last(output, "WGPU-BACKPRESSURE")
          if renderer == "webgpu" else {}),
+        (present_mode_rows(output) or [{}])[-1],
         tear_free_presentation(output, label),
     )
 
@@ -216,9 +219,28 @@ def compare_arm(label: str, result: Result, baseline: Result,
                 f"{label}: {key}={summary.get(key)}, expected {value}")
     replay_expected = rate > tick_rate
     if replay_expected and summary.get("interp", 0) <= 0:
-        failures.append(
-            f"{label}: rate {rate} produced no interpolated images above the "
-            f"{tick_rate} Hz simulation cadence")
+        # A vsync-locked surface cannot present a rate above the panel's own.
+        # When Mailbox is unsupported the policy falls back to FIFO, the host
+        # blocks on the display, and GPU admission skips the in-between work
+        # the panel could never show -- reported as replaySkips on the
+        # backpressure row. That shortfall must still be ACCOUNTED FOR: an
+        # interpolation path that silently produced nothing reports neither an
+        # image nor a skip, and still fails here.
+        # present_mode_rows keeps every value as text (that is how it retains
+        # `effective=fifo`), so the display rate is converted here rather than
+        # compared as a string.
+        display_hz = result.mode.get("displayHz", "")
+        display_hz = int(display_hz) if display_hz.isdigit() else 0
+        vsync_capped = (result.mode.get("effective") == "fifo" and
+                        0 < display_hz < rate)
+        skipped = result.pressure.get("replaySkips", 0)
+        if not vsync_capped or skipped <= 0:
+            failures.append(
+                f"{label}: rate {rate} produced no interpolated images above "
+                f"the {tick_rate} Hz simulation cadence "
+                f"(effective={result.mode.get('effective')} "
+                f"displayHz={display_hz} "
+                f"replaySkips={skipped})")
     if not replay_expected and summary.get("interp", -1) != 0:
         failures.append(
             f"{label}: rate {rate} performed interpolation at/below the "

@@ -10,6 +10,7 @@
 #include "fast3d/gfx_pc_dkr.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #endif
 
 /************ .data ************/
@@ -231,11 +232,49 @@ static size_t font_atlas_regions(const FontData *fontData, s32 textureIndex,
         if (glyph->textureID == textureIndex &&
             glyph->lrx != 0 && glyph->lry != 0) {
             regions[count++] = (GfxFontAtlasRegion){
-                glyph->s, glyph->t, glyph->lrx, glyph->lry
+                glyph->s, glyph->t, glyph->lrx, glyph->lry, (u8) character
             };
         }
     }
     return count;
+}
+
+/* The authored face name occupies the first 32 bytes of the record. FontData
+ * splits that span into `s32 unk0` + `char name[28]`, which is how the decomp
+ * models it and is not something to churn here, so read it from the base. */
+static bool font_name_is(const FontData *fontData, const char *name) {
+    const char *bytes = (const char *) fontData;
+    size_t length = strlen(name);
+
+    if (length >= 32) {
+        return FALSE;
+    }
+    return strncmp(bytes, name, length) == 0 && bytes[length] == '\0';
+}
+
+/*
+ * Classify a font for the renderer.
+ *
+ * Two of the four authored faces are plain lettering that carries no DKR
+ * identity, and only those get an outline replacement:
+ *
+ *   SmallFont     IA8, 11px cell, all 94 printable glyphs -- menus, HUD, times
+ *   SubtitleFont  IA8, 14px cell -- a chunky display face
+ *
+ * FunFont and BigFont are RGBA32 multicolour display lettering and stay on the
+ * ROM pixels. The asset id decides, but the authored name has to agree: if a
+ * future revision renumbers ASSET_FONTS the mismatch degrades to NONE, which
+ * simply keeps today's behaviour.
+ */
+static int font_face_class(s32 fontID, const FontData *fontData) {
+    if (fontID == ASSET_FONTS_SMALLFONT && font_name_is(fontData, "SmallFont")) {
+        return GFX_FONT_FACE_SMALL;
+    }
+    if (fontID == ASSET_FONTS_SUBTITLEFONT &&
+        font_name_is(fontData, "SubtitleFont")) {
+        return GFX_FONT_FACE_SUBTITLE;
+    }
+    return GFX_FONT_FACE_NONE;
 }
 #endif
 
@@ -267,7 +306,8 @@ void load_font(s32 fontID) {
                     size_t regionCount =
                         font_atlas_regions(fontData, i, regions);
                     gfx_dkr_font_texture_register(
-                        texture + 1, regions, regionCount);
+                        texture + 1, font_face_class(fontID, fontData),
+                        regions, regionCount);
                 }
 #endif
                 i++;

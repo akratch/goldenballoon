@@ -77,6 +77,7 @@
 #include "gfx_texture_cache_key.h"
 #include "gfx_texture_edge.h"
 #include "gfx_font_sdf.h"
+#include "gfx_font_outline.h"
 #include "gfx_level_lighting.h"
 #include "gfx_rl1_experiment.h"
 #include "gfx_render_scale.h"
@@ -114,6 +115,19 @@ enum { DKR_PRESENTATION_PARTICLE_KIND_POINT = 4 };
 static GfxFontRegistry dkr_font_registry;
 
 uint32_t gfx_dkr_font_sdf_uploads;
+uint32_t gfx_dkr_font_outline_uploads;
+
+/*
+ * Which derivation a texture-cache fill actually achieved. Both derivations
+ * fall through to the faithful atlas on a resource failure, so the intent a
+ * bind computed is not proof of what the texture now holds -- and the cache
+ * key and the sampler policy must describe the pixels, not the intent.
+ */
+typedef enum DkrFontDerivation {
+    DKR_FONT_DERIVED_NONE = 0,
+    DKR_FONT_DERIVED_SDF,
+    DKR_FONT_DERIVED_OUTLINE
+} DkrFontDerivation;
 uint32_t gfx_dkr_mipmapped_uploads;
 uint64_t gfx_dkr_mip_levels_uploaded;
 uint32_t gfx_dkr_font_registry_failures;
@@ -142,7 +156,7 @@ static struct {
 static uint64_t dkr_shadow_stage_generation;
 
 bool gfx_dkr_font_texture_register(
-    const void *source, const GfxFontAtlasRegion *regions,
+    const void *source, int face, const GfxFontAtlasRegion *regions,
     size_t region_count) {
     bool registered;
 
@@ -156,7 +170,7 @@ bool gfx_dkr_font_texture_register(
      */
     gfx_dkr_texcache_invalidate_range(source, 1);
     registered = gfx_font_registry_register(
-        &dkr_font_registry, source, regions, region_count);
+        &dkr_font_registry, source, (GfxFontFace)face, regions, region_count);
     if (!registered) {
         gfx_dkr_font_registry_failures++;
     }
@@ -183,6 +197,22 @@ static bool dkr_font_sdf_enabled(void) {
 
     if (enabled < 0) {
         const char *value = getenv("MDKR_FONT_SDF");
+        enabled = !(value != NULL &&
+                    (value[0] == '0' ||
+                     ((value[0] == 'o' || value[0] == 'O') &&
+                      (value[1] == 'f' || value[1] == 'F'))));
+    }
+    return enabled != 0;
+}
+
+/* MDKR_FONT_OUTLINE=0 is a test control, not a user-facing setting: the
+ * player-facing switch is Video.HighResolutionText. This exists so a gate can
+ * hold the mode fixed and vary only the glyph source. */
+static bool dkr_font_outline_enabled(void) {
+    static int enabled = -1;
+
+    if (enabled < 0) {
+        const char *value = getenv("MDKR_FONT_OUTLINE");
         enabled = !(value != NULL &&
                     (value[0] == '0' ||
                      ((value[0] == 'o' || value[0] == 'O') &&
@@ -240,6 +270,28 @@ static bool dkr_trace_this_frame = false;
  */
 static bool dkr_replay_pass = false;
 static bool dkr_replay_dependency_failed = false;
+/*
+ * True only for a replay drawn at a STRICTLY INTERIOR alpha, i.e. an image the
+ * authoritative simulation never produced. The distinction is the whole reason
+ * dkr_retain_resolved_pointer can fail closed: the alpha-0 endpoint walks (the
+ * zero-delta purity harness and the delayed-endpoint negative control) are
+ * required to reproduce the authored image byte-for-byte, so refusing them on
+ * an uncaptured external would turn a safety property into a regression in the
+ * exactness contract they exist to prove. An interpolated midpoint has no such
+ * obligation — holding the authored image is always a legal outcome for it.
+ */
+static bool dkr_replay_interior_alpha = false;
+/*
+ * Externals the interpolated walk resolved without a retained copy, and the
+ * replays those refusals aborted. Before this counter existed the same event
+ * was invisible: dkr_retain_resolved_pointer returned the LIVE pointer and the
+ * walk read whatever task K+1 had already written there (presentation-
+ * interpolation.md, residual obligation 2). The live-arena poison gate cannot
+ * see it because the poison covers only the arena.
+ */
+static uint64_t dkr_replay_uncaptured_externals = 0;
+static uint64_t dkr_replay_uncaptured_refusals = 0;
+static int dkr_test_uncaptured_external = -1;
 static bool dkr_replay_object_alpha_valid = false;
 static uint64_t dkr_replay_object_alpha_numerator = 0;
 static uint64_t dkr_replay_object_alpha_denominator = 1;
@@ -545,6 +597,29 @@ static bool dkr_test_live_arena_poison_enabled(void) {
     return dkr_test_live_arena_poison != 0;
 }
 
+/*
+ * Synthesise the defect this fail-closed path exists for.
+ *
+ * Every external the shipped handlers resolve during a replay is one they also
+ * captured, so on a correct tree the refusal branch is unreachable and a gate
+ * asserting it would be vacuous. With this seam on, the retained-dependency
+ * lookup is forced to miss for the duration of an interpolated walk, which is
+ * exactly the shape of a future handler that reads a mutable non-arena
+ * dependency without a paired gfx_retained_task_capture_dependency. The gate
+ * then observes the refusal rather than a plausible image drawn from live
+ * memory. Token-gated like every other adversarial seam: it must not be
+ * reachable from a bare environment variable.
+ */
+static bool dkr_test_uncaptured_external_enabled(void) {
+    if (dkr_test_uncaptured_external < 0) {
+        const char *value = getenv("MDKR_TEST_UNCAPTURED_EXTERNAL");
+        dkr_test_uncaptured_external =
+            present_sched_internal_replay_test_enabled() && value != NULL &&
+            value[0] != '\0' && strcmp(value, "0") != 0;
+    }
+    return dkr_test_uncaptured_external != 0;
+}
+
 static bool dkr_test_endpoint_vertex_bytes_enabled(void) {
     if (dkr_test_endpoint_vertex_bytes < 0) {
         const char *value = getenv("MDKR_TEST_ENDPOINT_VERTEX_BYTES");
@@ -818,7 +893,7 @@ static void dkr_replay_apply_primitive_alpha(void) {
     alpha = presentation_scale_opacity_u8(
         rdp.authored_prim_color.a, source.opacity, target.opacity);
     gfx_presentation_packet_note_primitive_alpha(
-        particle, alpha != rdp.authored_prim_color.a);
+        particle, rdp.authored_prim_color.a, alpha);
     if (projected_shadow) {
         gfx_presentation_packet_note_projected_shadow_primitive_alpha(
             alpha != rdp.authored_prim_color.a);
@@ -926,15 +1001,59 @@ static inline bool dkr_ptr_plausible(const void *p) {
     return true;
 }
 
+/*
+ * Map a resolved NON-ARENA pointer onto the bytes the real walk copied.
+ *
+ * On a hit the replay reads the private image and owns what it reads. A miss
+ * used to return the live pointer, and that fail-open was the last unproven
+ * corner of the ownership claim: by the time a presentation replay runs, task
+ * K+1 has already been authored into the same storage, so an external that no
+ * handler captured is read AFTER it was rewritten. The arena-poison gate is
+ * blind to it — the poison covers g_dkrArenaBase only.
+ *
+ * So a miss now aborts the walk instead. The caller loses nothing it is
+ * entitled to: an interpolated present that refuses simply holds the authored
+ * image (stubs_dkr.c's `drew == false` path), which is the same outcome the
+ * subloop already takes whenever the retained task or frozen registry is
+ * unavailable. Endpoint walks are deliberately excluded — see
+ * dkr_replay_interior_alpha — because their contract is byte-exact
+ * reproduction of an image the authoritative walk already drew.
+ *
+ * Returning NULL rather than the live pointer matters independently of the
+ * refusal flag: every dkr_resolve consumer null-checks, so even a handler that
+ * ignores the abort cannot dereference live memory on this path.
+ */
 static inline void *dkr_retain_resolved_pointer(void *resolved) {
     const void *retained = NULL;
 
     if (!dkr_ptr_plausible(resolved)) {
         return NULL;
     }
-    if (dkr_replay_pass && gfx_retained_task_lookup_dependency(
-            resolved, 1u, &retained)) {
+    if (!dkr_replay_pass) {
+        return resolved;
+    }
+    /*
+     * Already private. During a replay g_dkrArenaBase IS the retained image,
+     * and gfx_segment_table was restored from the retained task's rebased
+     * bases, so a segment-token resolution hands back an address inside that
+     * image. It is owned by construction and has no external-dependency entry
+     * to find; refusing it would refuse every walk that resolves a segment.
+     */
+    {
+        const uintptr_t up = (uintptr_t)resolved;
+        const uintptr_t base = (uintptr_t)g_dkrArenaBase;
+        if (up >= base && up < base + (uintptr_t)g_dkrArenaSize) {
+            return resolved;
+        }
+    }
+    if (!dkr_test_uncaptured_external_enabled() &&
+        gfx_retained_task_lookup_dependency(resolved, 1u, &retained)) {
         return (void *)retained;
+    }
+    if (dkr_replay_interior_alpha) {
+        dkr_replay_uncaptured_externals++;
+        dkr_replay_dependency_failed = true;
+        return NULL;
     }
     return resolved;
 }
@@ -1545,7 +1664,9 @@ static uint32_t dkr_tile_source_line_bytes(uint8_t td, uint32_t source_size_byte
 }
 
 static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
-                                    uint32_t *out_w, uint32_t *out_h) {
+                                    uint32_t *out_w, uint32_t *out_h,
+                                    DkrFontDerivation *out_derived) {
+    *out_derived = DKR_FONT_DERIVED_NONE;
     if (td >= 8) return false;
     uint8_t fmt = rdp.tile[td].fmt;
     uint8_t siz = rdp.tile[td].siz;
@@ -1679,10 +1800,44 @@ static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
             gfx_font_registry_find(
                 &dkr_font_registry,
                 gfx_retained_task_original_address(src));
-        bool remaster_font =
-            g_pcRemasterFX && dkr_font_sdf_enabled() &&
+        bool is_font_atlas =
             dkr_is_font_text_draw() &&
             font_entry != NULL && font_entry->region_count != 0;
+
+        /*
+         * Outline replacement runs first and covers Restored as well as
+         * Remastered: it is not a look-changing effect, it is the same
+         * lettering carried at a resolution the 11px source never had. Only
+         * the two plain faces classify; DKR's coloured display lettering
+         * reports GFX_FONT_FACE_NONE and falls through to the SDF pass below.
+         */
+        bool outline_font =
+            is_font_atlas && g_pcHiresText && dkr_font_outline_enabled() &&
+            gfx_font_outline_available(font_entry->face);
+        if (outline_font) {
+            size_t output_bytes =
+                gfx_font_outline_output_bytes(width, height, DKR_FONT_UPSCALE);
+            if (output_bytes != 0 &&
+                ensure_font_sdf_buf(output_bytes) &&
+                gfx_font_outline_render_rgba(
+                    font_entry->face, dst, width, height, DKR_FONT_UPSCALE,
+                    font_entry->regions, font_entry->region_count,
+                    font_sdf_buf, font_sdf_cap) &&
+                gfx_rapi->upload_texture(
+                    font_sdf_buf,
+                    (int)(width * DKR_FONT_UPSCALE),
+                    (int)(height * DKR_FONT_UPSCALE))) {
+                gfx_dkr_font_outline_uploads++;
+                *out_derived = DKR_FONT_DERIVED_OUTLINE;
+                *out_w = width;
+                *out_h = height;
+                return true;
+            }
+            /* A resource failure falls through to the faithful source atlas. */
+        }
+
+        bool remaster_font =
+            is_font_atlas && g_pcRemasterFX && dkr_font_sdf_enabled();
         if (remaster_font) {
             size_t output_bytes =
                 gfx_font_sdf_output_bytes(width, height, DKR_FONT_UPSCALE);
@@ -1697,6 +1852,7 @@ static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
                     (int)(width * DKR_FONT_UPSCALE),
                     (int)(height * DKR_FONT_UPSCALE))) {
                 gfx_dkr_font_sdf_uploads++;
+                *out_derived = DKR_FONT_DERIVED_SDF;
                 *out_w = width;
                 *out_h = height;
                 return true;
@@ -1977,10 +2133,15 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
     bool lsw = rdp.loaded_texture[tmem].line_swapped;
     const GfxFontRegistryEntry *font_entry =
         gfx_font_registry_find(&dkr_font_registry, source_identity);
-    bool font_remastered =
-        g_pcRemasterFX && dkr_font_sdf_enabled() &&
+    bool font_atlas_draw =
         dkr_is_font_text_draw() &&
         font_entry != NULL && font_entry->region_count != 0;
+    bool font_outline =
+        font_atlas_draw && g_pcHiresText && dkr_font_outline_enabled() &&
+        gfx_font_outline_available(font_entry->face);
+    bool font_remastered =
+        font_atlas_draw && !font_outline &&
+        g_pcRemasterFX && dkr_font_sdf_enabled();
     const struct DkrTexCacheKey key = {
         .addr = source_identity,
         .source_line_bytes = source_line_bytes,
@@ -1994,6 +2155,7 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         .palette = pal,
         .line_swapped = lsw,
         .font_remastered = font_remastered,
+        .font_outline = font_outline,
         .mipmaps = g_pcMipmaps && gfx_rapi != NULL &&
             gfx_rapi->upload_texture_mipped != NULL,
         .cutout = cutout,
@@ -2030,7 +2192,8 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         }
         gfx_rapi->select_texture(unit, tid);
         uint32_t uw = 0, uh = 0;
-        if (!dkr_upload_tile_texture(td, cutout, &uw, &uh)) {
+        DkrFontDerivation derived = DKR_FONT_DERIVED_NONE;
+        if (!dkr_upload_tile_texture(td, cutout, &uw, &uh, &derived)) {
             /*
              * A failed upload invalidates both a new handle and a reused cache
              * handle: the backend object may now contain partial/new pixels,
@@ -2046,8 +2209,20 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
             dkr_texcache_delete_slot(slot);
             return false;
         }
+        /*
+         * Record what the fill actually produced, not what this bind intended.
+         * A derivation that fell through to the faithful atlas must not be
+         * cached as derived: the entry would be a false hit for every later
+         * bind, so the failure would persist for the life of the slot even
+         * after memory freed up, and the sampler would additionally force
+         * point/clamp/LOD-0 onto pixels that were never redrawn. Storing the
+         * achieved state instead means the next bind misses and retries.
+         */
+        struct DkrTexCacheKey achieved = key;
+        achieved.font_outline = (derived == DKR_FONT_DERIVED_OUTLINE);
+        achieved.font_remastered = (derived == DKR_FONT_DERIVED_SDF);
         tex_cache[slot] = (struct DkrTexCacheEntry){
-            .key = key,
+            .key = achieved,
             .texture_id = tid, .upload_w = uw, .upload_h = uh,
             .src_hash = now_hash, .valid = true };
         hit = slot;
@@ -2071,6 +2246,14 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
     }
     const uint32_t texture_id = tex_cache[hit].texture_id;
     const bool texture_changed = rendering_state.bound_texture_id[unit] != texture_id;
+    /*
+     * Sampler policy follows the resolved entry, never the intent computed at
+     * the top of this function: a derivation that failed and fell back holds
+     * ordinary atlas pixels, and forcing point/clamp/LOD-0 onto those would
+     * make the text look worse than with the feature switched off.
+     */
+    const bool eff_font_outline = tex_cache[hit].key.font_outline;
+    const bool eff_font_remastered = tex_cache[hit].key.font_remastered;
     *w = tex_cache[hit].upload_w;
     *h = tex_cache[hit].upload_h;
 
@@ -2081,7 +2264,7 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
      * 4x prefiltered coverage with point filtering retains its subpixel contour
      * without allowing a hardware bilinear tap to cross into the next cell.
      */
-    if (font_remastered) {
+    if (eff_font_remastered || eff_font_outline) {
         linear = false;
     }
     /*
@@ -2091,11 +2274,11 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
      * and uploaded — the same texture can be used by 3D geometry elsewhere —
      * so this is enforced at the SAMPLER rather than by withholding the mips.
      */
-    bool lod0 = dkr_in_texrect || font_remastered;
-    uint32_t cms =
-        font_remastered ? G_TX_CLAMP : rdp.tile[td].cms;
-    uint32_t cmt =
-        font_remastered ? G_TX_CLAMP : rdp.tile[td].cmt;
+    bool lod0 = dkr_in_texrect || eff_font_remastered || eff_font_outline;
+    uint32_t cms = (eff_font_remastered || eff_font_outline)
+        ? G_TX_CLAMP : rdp.tile[td].cms;
+    uint32_t cmt = (eff_font_remastered || eff_font_outline)
+        ? G_TX_CLAMP : rdp.tile[td].cmt;
     if (texture_changed ||
         rendering_state.bound_texture_linear[unit] != linear ||
         rendering_state.bound_texture_cms[unit] != cms ||
@@ -5211,6 +5394,70 @@ static const float *dkr_replay_uv_scroll_offset(const Triangle *tris,
     return out;
 }
 
+/*
+ * Longest non-arena sub-list this walk will copy. The port's static lists
+ * (dRdpInit, dRspInit, the dRenderSettings* table, the dialogue/transition
+ * lists) are tens of commands; the cap exists so an unterminated or
+ * mis-resolved target costs a bounded scan and a refused replay rather than a
+ * runaway copy.
+ */
+#define DKR_NONARENA_LIST_MAX_COMMANDS 4096u
+
+/*
+ * Copy a sub-list the real walk is about to execute from storage the arena
+ * image does not cover.
+ *
+ * These are the port's authored static display lists, reached through the
+ * gfx_ptr registry rather than an arena token. Nothing rewrites them today, so
+ * this is not a bug fix — it is what makes the replay's ownership claim
+ * complete rather than "complete except for storage we believe is immutable".
+ * dkr_retain_resolved_pointer now refuses an interpolated walk over any
+ * external it cannot find here, so the belief is no longer load-bearing: if a
+ * list ever does become mutable, or a new handler reaches uncaptured storage,
+ * the replay holds the authored image instead of drawing from it.
+ *
+ * `count` is G_DMADL's exact command count; zero means scan to G_ENDDL.
+ */
+static void dkr_capture_nonarena_list(const Gfx *sub, int count) {
+    size_t commands;
+    size_t scan;
+
+    /* Not armed means no capture is staged, so the scan below would be pure
+     * cost on the default path -- Original pacing with smoothing off never
+     * replays anything. */
+    if (dkr_replay_pass || sub == NULL || !present_sched_replay_armed() ||
+        dkr_arena_room(sub) != (size_t)-1) {
+        return;   /* replay pass, unarmed, or arena-backed and already copied */
+    }
+    if (count > 0) {
+        commands = (size_t)count;
+    } else {
+        commands = 0;
+        for (scan = 0; scan < DKR_NONARENA_LIST_MAX_COMMANDS; scan++) {
+            uint8_t opcode = (uint8_t)C0(&sub[scan], 24, 8);
+            if (opcode == (uint8_t)G_ENDDL) {
+                commands = scan + 1;   /* the terminator is part of the span */
+                break;
+            }
+            /* A no-push branch also ends this object: control transfers and
+             * never returns, so the storage after it belongs to something
+             * else. Scanning past it walks off the end of a branch-terminated
+             * list — and this scan runs on the REAL walk path when armed, so
+             * a page-boundary overrun here faults production, not replay. */
+            if (opcode == (uint8_t)G_DL &&
+                (uint8_t)C0(&sub[scan], 16, 8) == (uint8_t)G_DL_NOPUSH) {
+                commands = scan + 1;   /* branch is the span's last command */
+                break;
+            }
+        }
+        if (commands == 0) {
+            return;   /* unterminated: capture nothing, let the replay refuse */
+        }
+    }
+    (void)gfx_retained_task_capture_dependency(
+        sub, sub, commands * sizeof(Gfx));
+}
+
 static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
     const bool census = dkr_dl_census_enabled();
     if (cmd == NULL) {
@@ -5271,6 +5518,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
         case G_DL: {  /* gSPDisplayList (push/call) / gSPBranchList (nopush) */
             uint8_t nopush = (uint8_t)C0(cmd, 16, 8);
             Gfx *sub = (Gfx *)dkr_resolve(cmd->words.w1);
+            dkr_capture_nonarena_list(sub, 0);
             if (nopush == G_DL_NOPUSH) {
                 if (sub == NULL) {
                     /*
@@ -5299,6 +5547,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
         case G_DMADL: {  /* gDkrDmaDisplayList — call, bounded by command count */
             int count = (int)C0(cmd, 16, 8);
             Gfx *sub = (Gfx *)dkr_resolve(cmd->words.w1);
+            dkr_capture_nonarena_list(sub, count);
             DTRACE("G_DMADL count=%d addr=%08x->%p depth=%d", count, cmd->words.w1,
                    (void *)sub, depth);
             if (count <= 0) {
@@ -6370,6 +6619,7 @@ void gfx_shutdown(void) {
     free(font_sdf_buf);
     font_sdf_buf = NULL;
     font_sdf_cap = 0;
+    gfx_font_outline_shutdown();
     free(tex_row_buf);
     tex_row_buf = NULL;
     tex_row_cap = 0;
@@ -6759,6 +7009,7 @@ bool gfx_renderer_failed(void) {
 static bool gfx_dkr_replay_walk_impl(
     const GfxShadowReplayViewProjection *overrides, size_t override_count,
     bool object_alpha_valid, uint64_t numerator, uint64_t denominator) {
+    const uint64_t uncaptured_entry = dkr_replay_uncaptured_externals;
     bool completed = false;
     bool retained_entered = false;
     bool live_arena_poisoned = false;
@@ -6781,6 +7032,14 @@ static bool gfx_dkr_replay_walk_impl(
     }
     dkr_replay_pass = true;
     dkr_replay_dependency_failed = false;
+    /*
+     * Strictly interior: alpha 0 is the authored endpoint in both of its forms
+     * (the zero-delta harness passes 0/1, and so does the delayed-endpoint
+     * negative control). Only an image between two authoritative ticks may
+     * refuse; the endpoints must still reproduce their tick exactly.
+     */
+    dkr_replay_interior_alpha =
+        denominator != 0u && numerator != 0u && numerator < denominator;
     dkr_replay_object_alpha_valid =
         object_alpha_valid && dkr_replay_object_interpolation_enabled() &&
         denominator != 0u && numerator < denominator;
@@ -6851,6 +7110,15 @@ replay_cleanup:
     dkr_replay_object_alpha_numerator = 0;
     dkr_replay_object_alpha_denominator = 1;
     dkr_replay_pass = false;
+    if (dkr_replay_interior_alpha && dkr_replay_dependency_failed &&
+        dkr_replay_uncaptured_externals != uncaptured_entry) {
+        /* Attribute the abort to the uncaptured external specifically: the
+         * dependency-failed flag is shared with the stale-matrix and
+         * billboard-binding refusals, and a gate that cannot tell them apart
+         * cannot prove which one it exercised. */
+        dkr_replay_uncaptured_refusals++;
+    }
+    dkr_replay_interior_alpha = false;
     dkr_replay_dependency_failed = false;
     if (completed) {
         dkr_replay_walks++;
@@ -6885,6 +7153,16 @@ uint64_t gfx_dkr_real_walk_count(void) {
 
 uint64_t gfx_dkr_last_walked_authored_tick(void) {
     return dkr_last_walked_authored_tick;
+}
+
+void gfx_dkr_replay_get_uncaptured_stats(uint64_t *externals,
+                                         uint64_t *refusals) {
+    if (externals != NULL) {
+        *externals = dkr_replay_uncaptured_externals;
+    }
+    if (refusals != NULL) {
+        *refusals = dkr_replay_uncaptured_refusals;
+    }
 }
 
 void gfx_dkr_replay_get_stats(

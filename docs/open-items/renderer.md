@@ -3,7 +3,7 @@
 > One subsystem of the split [open-items index](README.md), which states how these files are kept.
 
 **Currently open** (per [`README.md`](README.md#still-open)'s open/closed
-table): 6 items.
+table): 7 items.
 
 | Item | Where |
 |---|---|
@@ -11,8 +11,112 @@ table): 6 items.
 | Shadow gate trustworthiness: the harness environment (`MDKR_TRACE`) has twice diverged from the shipping build and let a real defect through green gates | [§ OPEN: shadow gate trustworthiness](#open-shadow-gate-trustworthiness--harness-environment-has-diverged-from-the-shipping-build-twice) |
 | M1 residuals deliberately deferred: WebGPU 4x MSAA (IQ-8) and a loader-only, content-free texture-pack path (IQ-11) | [`docs/STATUS.md` § imagequality — mipmaps reach the GPU (M1, in progress)](../STATUS.md#imagequality--mipmaps-reach-the-gpu-m1-in-progress) |
 | **(index-level item)** WGPU-11 external/oracle corpus breadth — local asset, capacity, and fault closeout is DONE (46 native routes, 249M+ strict commands, zero faults); browser complete-corpus/minimum-feature hardware, independent state reference, and external native platforms remain. Absorbs the former M4.5 "open notes" row (below), whose notes are all FIXED/CLOSED | [§ Still open](README.md#still-open), [`check_webgpu_content_census.py`](../../tests/check_webgpu_content_census.py) |
+| High-resolution text covers only the two plain authored faces on non-JP regions; the JP 16-bit charmap path, DKR's coloured display lettering, and words baked into menu/screen textures are all unimproved by design or by scope | [§ OPEN: high-resolution text breadth](#open-high-resolution-text-covers-two-faces-on-non-jp-regions-only) |
 | **(index-level item)** Fidelity architecture / presentation breadth — motion smoothing and frame limit ship off/original by default, so the retained-interpolation machinery is inert on defaults; remaining work is audible/loopback DAC qualification and the rest of the platform/device matrix. No subsystem section exists for this item; it is tracked at the index level | [§ Still open](README.md#still-open) |
 
+
+## OPEN: high-resolution text covers two faces on non-JP regions only
+
+Restored and Remastered redraw `SmallFont` and `SubtitleFont` from embedded OFL
+outline faces fitted per glyph to the ROM ink box (see
+[`HIRES_TEXT.md`](../HIRES_TEXT.md)). Pure is byte-exact and is proven so against
+a build of `origin/main`. What that leaves open:
+
+- **JP is untouched.** `REGION == REGION_JP` bypasses `load_font()` entirely for
+  a 16-bit charmap path (`func_800C6464_C7064`), so no classification, no
+  registration, and no redraw happens there. A JP player sees the source glyphs.
+- **Baked-in words are untouched, and this is not fixable at this seam.** Text
+  rendered into menu and screen textures is not an `ASSET_FONTS` glyph, so the
+  font loader never sees it. Those strings stay at source resolution while the
+  lettering beside them is sharp, which is a visible inconsistency.
+- **The race HUD does not benefit.** Lap, position and countdown draw from
+  `FunFont`, which is DKR's own coloured display lettering and deliberately
+  keeps its ROM pixels. The readability win lands in menus, times, the save
+  screen and dialogue, not in play. A measured in-race capture is byte-identical
+  to baseline.
+- **CLOSED (integration, 2026-08-08).** This entry recorded that browser-side
+  SDF coverage had regressed to unasserted and that the browser arm was
+  unexecuted. Running the arm settled both. The premise was wrong: the outline
+  path did *not* take over the atlases this fixture draws — the run reports
+  `font SDF 58 + outline 2 uploads`, so the SDF pass is exercised far more
+  heavily than the outline one. `check_browser_runtime.py` now asserts BOTH
+  counts above zero independently, neither of which is vacuous at those
+  numbers, and the gate passes on Chromium against the freshly linked wasm.
+- **RESOLVED AS A HARNESS ARTIFACT (2026-08-08). Read this before acting on the
+  numbers below.** The starvation described here reproduces only under the
+  SYNTHETIC pacer. `check_arbitrary_presentation_rates` sets `MDKR_SYNTH_FIELDS`,
+  which advances presentation accounting without real time passing between
+  presents, so the GPU has genuinely not retired the tick's frame when the
+  subloop asks and admission correctly refuses. Re-measured with the real pacer
+  (`MDKR_PACE_REALTIME=1`, WebGPU, `MDKR_TEST_VISIBLE_HEADLESS=1`, 600 ticks):
+
+  | arm | presents | surfaceupdates | interp | endpointSkips |
+  |---|---|---|---|---|
+  | 120 Hz request on a 60 Hz panel | 1790 | 1195 | **600** | **0** |
+  | 60 Hz request on a 60 Hz panel | 1200 | 1196 | **596** | **0** |
+
+  Under a real clock interpolation happens, authored frames are never dropped,
+  and the 120 Hz arm settles at ~60 surface updates per second — the panel's
+  actual refresh, which is the correct outcome for asking a 60 Hz display for
+  120. There is no production defect here and nothing to fix. The residual
+  `replaySkips` on the 120 Hz arm is the scheduler shedding presents the
+  display could never show.
+
+  What remains true and useful: the smoothing gates that drive 120 Hz cannot
+  run on WebGPU under the SYNTHETIC pacer for this reason, which is why
+  `check_motion_quality_battery` and `check_smoothing_stage_bisection` keep a
+  GL default and a `--renderer webgpu` flag. Re-siting them onto the realtime
+  pacer would give genuine WebGPU coverage and is the real follow-up.
+
+  The original synthetic-pacer investigation is kept below, because the three
+  rejected fixes are worth not repeating.
+
+  A replay is admitted at
+  `WGPU_FRAME_IN_FLIGHT_MAX - 1`, i.e. only with zero frames in flight. At a
+  60 Hz present rate the subloop opportunity arrives ~16.7 ms after the tick's
+  frame was submitted, the GPU has retired, and replays are admitted normally
+  — measured `interp=589/600`, `endpointSkips=9`. At 120 Hz the window is
+  8.3 ms, the frame has not retired, and almost every interpolated image is
+  skipped: `interp=3/600`, `stale=893`, `endpointSkips=202`. The isolation is
+  exact — the same binary with `MDKR_TEST_RENDER_FULL_ADMISSION=1` reaches
+  `interp=598/600`, so GPU admission is the whole mechanism and nothing
+  downstream of it is at fault. OpenGL has no such gate, which is why every
+  gate that measured smoothing on GL saw a healthy picture.
+
+  Three fixes were measured and all three were rejected, so this is recorded
+  rather than patched:
+
+  | variant | 120 Hz `interp` | `endpointSkips` | `check_pacing_quality` |
+  |---|---|---|---|
+  | shipped (reserve a slot, never block) | 3 | 202 | PASS |
+  | let a replay take the bounded drain | 598 | 0 | FAIL — interpolation-phase variance 1.2e11 ppm² against a 3e10 bound, `alpha-delta` p95 0.88 tick off the 500000 ppm grid, 35 ms displayed-interval max |
+  | drop the replay's slot reservation | 85 | **515** | not reached — authored frames starve worse than the defect being fixed |
+  | reservation kept, `WGPU_FRAME_IN_FLIGHT_MAX` raised to 3 | 407 | 192 | FAIL — the surface stopped re-ranking its present mode across a 60→120 Hz display change |
+
+  The blocking variant is the instructive one: it fixes the counters exactly
+  and still fails, because the drain is a variable-length wait on the paced
+  thread immediately before a vblank-quantized present, so the very frames it
+  rescues land off the display grid. Jitter is the one cost this path cannot
+  pay, and "more interpolated images" is not the same goal as "evenly spaced
+  ones".
+
+  Whoever picks this up should treat it as a scheduling problem rather than an
+  admission-threshold problem — the replay needs to be submitted early enough
+  that its completion is not being waited on at present time — and must weigh
+  any extra in-flight depth against the one-frame swap-chain latency pin, which
+  exists to reduce exactly the lag more queued work reintroduces. Any candidate
+  has to clear `check_pacing_quality` on the realtime arm AND keep
+  `endpointSkips` no worse than the shipped 202 at 120 Hz, and should be
+  validated on a real 120 Hz panel, since every number above was taken on a
+  60 Hz host where a 120 Hz request is already physically unpresentable.
+- **The derivation state is single-threaded.** `gfx_font_outline.c` keeps the
+  parsed face handles and the glyph scratch buffer in file statics, which is
+  sound for today's renderer but is an unstated precondition rather than an
+  enforced one.
+
+Deliberately not open: `FunFont` and `BigFont` are excluded on purpose, not
+pending. They are the game's identity; replacing them would be a restyle, not a
+resolution increase.
 
 ## FIXED: three effects drew zero pixels, because hand-packed triangles were built in N64 byte order
 

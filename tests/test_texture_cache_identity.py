@@ -157,7 +157,38 @@ class TextureCacheIdentityTests(unittest.TestCase):
         self.assertIn(
             "dkr_texcache_key_equal(&tex_cache[i].key, &key)", body
         )
-        self.assertRegex(body, r"\.key\s*=\s*key")
+        # The entry records the derivation the upload ACHIEVED, not the one
+        # this bind intended: a derivation that failed and fell back to the
+        # faithful atlas must not be cached as derived, or the entry becomes a
+        # false hit that never retries. `achieved` is still the complete key --
+        # a copy of it with only the two font-derivation fields corrected.
+        self.assertRegex(body, r"struct DkrTexCacheKey achieved\s*=\s*key\s*;")
+        self.assertRegex(body, r"achieved\.font_outline\s*=[^;]*derived")
+        self.assertRegex(body, r"achieved\.font_remastered\s*=[^;]*derived")
+        self.assertRegex(body, r"\.key\s*=\s*achieved")
+
+    def test_sampler_policy_follows_the_stored_entry(self) -> None:
+        """Point/clamp/LOD-0 is only correct for pixels that were derived.
+
+        A derivation that fell back holds ordinary atlas pixels, and forcing
+        that sampler policy onto them makes the text look worse than with the
+        feature switched off. The policy must therefore read the resolved cache
+        entry, never the intent computed at the top of the function.
+        """
+        body = function_body(self.source, "dkr_bind_tile")
+        self.assertRegex(
+            body,
+            r"eff_font_outline\s*=\s*tex_cache\[hit\]\.key\.font_outline")
+        self.assertRegex(
+            body,
+            r"eff_font_remastered\s*=\s*tex_cache\[hit\]\.key\.font_remastered")
+        self.assertRegex(
+            body,
+            r"bool lod0\s*=[^;]*eff_font_remastered[^;]*eff_font_outline")
+        self.assertRegex(
+            body, r"cms\s*=\s*\(eff_font_remastered\s*\|\|\s*eff_font_outline\)")
+        self.assertRegex(
+            body, r"cmt\s*=\s*\(eff_font_remastered\s*\|\|\s*eff_font_outline\)")
 
     def test_decoder_and_key_share_pitch_resolution(self) -> None:
         upload = function_body(self.source, "dkr_upload_tile_texture")

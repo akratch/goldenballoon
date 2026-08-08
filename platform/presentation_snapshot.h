@@ -89,6 +89,21 @@ extern "C" {
  */
 #define PRESENTATION_SNAPSHOT_TELEPORT_UNITS 2000.0f
 
+/*
+ * Rotation snap threshold, in DKR fixed angle units of per-tick shortest-arc
+ * delta (0x10000 == one turn).
+ *
+ * Calibration: blending is only honest when the simulation could plausibly
+ * have passed through the intermediate orientations. A quarter turn per
+ * authored tick (90 deg / 33 ms == 2700 deg/s) is beyond any steered racer
+ * rotation; deltas past it are spin-outs, snap turns and animation pops,
+ * where a blend draws orientations the tick never held ("paper" smearing).
+ * Ghostship ships the same 0x4000 boundary and it is the single heuristic
+ * most responsible for its clean fast-motion feel. The ambiguous half turn
+ * (delta == -0x8000, both arcs equal) also snaps: either arc is a guess.
+ */
+#define PRESENTATION_SNAPSHOT_ROTATION_SNAP 0x4000
+
 /* One captured object pose. Native-only; no original struct is embedded. */
 typedef struct PresentationObjectEntry {
     const void *address;      /* Object * — identity half one */
@@ -169,6 +184,23 @@ typedef struct PresentationSnapshotStats {
     uint64_t camera_id_mask;  /* exact gCameras[] IDs seen in published frames */
     uint64_t camera_captures[PRESENTATION_SNAPSHOT_MAX_CAMERAS];
     uint64_t camera_interpolations[PRESENTATION_SNAPSHOT_MAX_CAMERAS];
+    /*
+     * The perceptual census tests/check_motion_quality_battery.py reads.
+     *
+     * Counters only: none of these changes a branch, so a build that carries
+     * them resolves byte-identically to one that does not. They exist because
+     * the two motion failures a player names first -- a rotation that smears
+     * the long way round, and a respawn the reconstruction blends across --
+     * are invisible to every pixel control the tree has. Both arms of such a
+     * control put the object somewhere, and a wrong somewhere is as coherent
+     * as a right one (see docs/evidence/smoothing-artifact-repro-2026-08.md
+     * §2.4).
+     */
+    uint64_t rotation_arc_checks;     /* interpolated angle results audited */
+    uint64_t rotation_arc_snaps;      /* of those, deltas past a quarter turn */
+    uint64_t rotation_arc_violations; /* results outside the [prev,curr] arc */
+    uint64_t discontinuity_holds;     /* resolves the cut/spawn flag refused */
+    uint64_t discontinuity_blends;    /* resolves that BLENDED a flagged entry */
 } PresentationSnapshotStats;
 
 /* Interpolated result handed to the renderer. Never written into a live
@@ -215,6 +247,24 @@ void presentation_snapshot_set_enabled(bool enabled);
 
 void presentation_snapshot_note_spawn(const void *object);
 void presentation_snapshot_note_free(const void *object);
+
+/*
+ * Note that this tick's camera pose is a CUT, not motion.
+ *
+ * Capture already recognises the cuts it can see from the pose alone: a
+ * different gCameras[] slot, a change of draw region, a capture gap, or a jump
+ * past PRESENTATION_SNAPSHOT_TELEPORT_UNITS. A game-side cut that clears none
+ * of those bars is invisible to it — the spectate cameras are the case that
+ * matters, because two adjacent trackside camera objects usually sit well
+ * under the teleport threshold and both belong to the same camera slot. Blend
+ * that and the camera flies between two shots inside one authoritative tick.
+ *
+ * So the sites that SNAP a camera say so here, exactly the way spawn/free are
+ * noted at the object lifecycle sites: the note is a fact the game knows and
+ * the pose does not carry. It applies to the next capture of `camera_id` and
+ * is consumed by it. No-op unless the seam is enabled.
+ */
+void presentation_snapshot_note_camera_cut(int camera_id);
 
 /*
  * Return the generation currently assigned by the lifecycle registry without
@@ -284,6 +334,11 @@ const PresentationSnapshot *presentation_snapshot_previous(void);
  * must target this tick; otherwise replay holds the task's current bytes. */
 bool presentation_snapshot_replay_target_tick(
     uint64_t authored_task_tick, uint64_t *target_tick);
+/* The authored tick a resolve at numerator 0 returns the pose of -- i.e. the
+ * tick every capture-time residual in the replay is measured against. Succeeds
+ * only when a published pair exists, because without one no resolve
+ * interpolates and there is no residual to check. */
+bool presentation_snapshot_authored_endpoint_tick(uint64_t *authored_tick);
 void presentation_snapshot_get_stats(PresentationSnapshotStats *out);
 void presentation_snapshot_shutdown(void);
 
