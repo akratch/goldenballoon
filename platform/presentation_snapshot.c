@@ -359,12 +359,12 @@ void presentation_snapshot_note_camera_cut(int camera_id) {
 static int s_cut_trace = -1;
 
 static bool camera_cut_trace_enabled(void) {
-    if (s_cut_trace < 0) {
-        const char *value = getenv("MDKR_TEST_CAMERA_CUT_TRACE");
-        s_cut_trace = value != NULL && value[0] != '\0' &&
-                      strcmp(value, "0") != 0;
-    }
-    return s_cut_trace != 0;
+    /* Token-gated like every other seam in this file: a bare
+     * MDKR_TEST_CAMERA_CUT_TRACE in a shell profile must not inject
+     * [CAMERA-CUT] rows into the stdout stream the determinism gates and
+     * presentation_snapshot_report parsers consume. */
+    return presentation_snapshot_test_flag("MDKR_TEST_CAMERA_CUT_TRACE",
+                                           &s_cut_trace);
 }
 
 typedef struct AuthoredCameraSet {

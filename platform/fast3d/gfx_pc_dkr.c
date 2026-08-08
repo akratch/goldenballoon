@@ -5340,8 +5340,19 @@ static void dkr_capture_nonarena_list(const Gfx *sub, int count) {
     } else {
         commands = 0;
         for (scan = 0; scan < DKR_NONARENA_LIST_MAX_COMMANDS; scan++) {
-            if ((uint8_t)C0(&sub[scan], 24, 8) == (uint8_t)G_ENDDL) {
+            uint8_t opcode = (uint8_t)C0(&sub[scan], 24, 8);
+            if (opcode == (uint8_t)G_ENDDL) {
                 commands = scan + 1;   /* the terminator is part of the span */
+                break;
+            }
+            /* A no-push branch also ends this object: control transfers and
+             * never returns, so the storage after it belongs to something
+             * else. Scanning past it walks off the end of a branch-terminated
+             * list — and this scan runs on the REAL walk path when armed, so
+             * a page-boundary overrun here faults production, not replay. */
+            if (opcode == (uint8_t)G_DL &&
+                (uint8_t)C0(&sub[scan], 16, 8) == (uint8_t)G_DL_NOPUSH) {
+                commands = scan + 1;   /* branch is the span's last command */
                 break;
             }
         }
