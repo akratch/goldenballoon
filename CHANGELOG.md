@@ -12,6 +12,13 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ### Fixed
 
+- **Smokey Castle's results screen no longer shows floating character
+  portraits.** When the match ended, the status portraits along the top of the
+  screen stayed where they were, hanging over the shrinking wooden frame,
+  while every other challenge cleared them away. Smokey Castle is the one mode
+  that relies on the frame itself to hide them, and the picture the frame cut
+  out was not being applied to those portraits. It is now, exactly as the
+  original hardware does it.
 - **The shield shell no longer detaches from its racer under Motion
   smoothing.** With smoothing on, an interpolated shield shell was placed a
   full authored tick ahead of the kart it belongs to — visibly a separate
