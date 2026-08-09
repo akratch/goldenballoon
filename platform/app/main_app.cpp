@@ -369,6 +369,16 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     const char *smokePresentationPace =
         std::getenv("MDKR_APP_SMOKE_SELECT_PRESENTATION_PACE");
     bool smokePaceClickQueued = false;
+    /*
+     * The scripted accessibility walk: hold Tab down through the launcher and
+     * let the shared row helper announce whatever the keyboard lands on.
+     *
+     * It drives the SAME synthetic-keyboard route as the Frame limit script --
+     * SDL event -> ImGui backend -> the production widget -- because a walk
+     * that called the panel's draw functions directly would prove the rows can
+     * speak, not that a player pressing Tab ever reaches them.
+     */
+    const bool smokeA11yWalk = AppUi_a11yWalkArmed();
     const char *smokeUiScale =
         std::getenv("MDKR_APP_SMOKE_UI_SCALE_DRAG");
     const char *smokeTouchScroll =
@@ -399,6 +409,9 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     }
     if ((smokeUiScaleDrag && smokeFrameLimit) ||
         (smokePresentationPace && (smokeUiScaleDrag || smokeFrameLimit)) ||
+        (smokeA11yWalk && (smokeUiScaleDrag || smokeFrameLimit ||
+                           smokePresentationPace || smokeTouch ||
+                           smokeNavigation)) ||
         (smokeTouch && (smokeUiScaleDrag || smokeFrameLimit ||
                         smokePresentationPace || smokeNavigation))) {
         std::fprintf(stderr,
@@ -418,6 +431,10 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     if (smokePresentationPace && frames < 8) frames = 8;
     if (smokeUiScaleDrag && frames < 11) frames = 11;
     if (smokeTouch && frames < 10) frames = 10;
+    /* One keystroke per frame, and the walk has to get all the way round the
+     * panel with room to spare -- an early stop would report controls as
+     * silent that the keyboard simply never reached. */
+    if (smokeA11yWalk && frames < 24) frames = 24;
     const int smokeFrameLimitSteps = smokeFrameLimit
         ? Settings_smokeFrameLimitDownSteps("original", smokeFrameLimit)
         : 0;
@@ -701,6 +718,32 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                              "[app-ui-test] presentation-pace click queued "
                              "pace=%s at %d,%d\n",
                              smokePresentationPace, x, y);
+            }
+        }
+
+        if (smokeA11yWalk) {
+            /*
+             * Two phases, not one interleaved stream. Tab is a linear walk of
+             * the panel and is what carries the coverage claim, so it gets a
+             * clean run at it; mixing arrow presses into that walk made the
+             * sequence periodic and left the same nine rows unvisited on every
+             * lap. The arrow keys are the other way a player moves, and a row
+             * that answers only to Tab is still a row somebody cannot reach, so
+             * the remainder of the run drives Down and Up over the same panel.
+             * The boundary is printed because it is what lets the gate insist
+             * the arrow phase spoke too, rather than counting the Tab phase's
+             * utterances twice.
+             */
+            const int tabFrames = frames - frames / 4;
+            if (i < tabFrames) {
+                host.queueKeyPressForSmoke(SDLK_TAB);
+            } else {
+                if (i == tabFrames) {
+                    std::printf("[app-a11y-walk] tab phase complete frame=%d\n", i);
+                    std::fflush(stdout);
+                }
+                host.queueKeyPressForSmoke(
+                    ((i - tabFrames) % 8) < 6 ? SDLK_DOWN : SDLK_UP);
             }
         }
 

@@ -134,6 +134,15 @@ CHECKS = (
     Check("enh_draw_distance", "check_enh_draw_distance.py", "rom",
           "draw distance and LOD bias extend what is drawn without changing "
           "which objects exist, proving both are render culls"),
+    Check("rom_checker_page", "check_rom_checker_page.py", "rom",
+          "the hosted ROM checker uploads nothing and reaches the same verdict "
+          "as the native binary, character for character, on every ROM present"),
+    Check("rom_text_indices", "check_rom_text_indices.py", "rom",
+          "no driven route resolves a GAME_TEXT index at or above 259, the "
+          "count the 1.0 revisions carry"),
+    Check("a11y_shell", "check_a11y_shell.py", "rom",
+          "every focusable control in the launcher, settings and overlay speaks "
+          "its name and value, enumerated from the schema rather than a list"),
     Check("future_fun_land", "check_future_fun_land.py", "rom",
           "a full trophy set plus the Wizpig 1 bit opens the lighthouse, and "
           "one trophy short does not"),

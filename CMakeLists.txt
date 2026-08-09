@@ -210,6 +210,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/dev_command.c      # console command parsing
     ${CMAKE_SOURCE_DIR}/platform/video_config.c     # presentation modes (pure core)
     ${CMAKE_SOURCE_DIR}/platform/video_config_runtime.c  # ini/env/argv + g_pc* publication
+    ${CMAKE_SOURCE_DIR}/platform/a11y_model.c       # what the shell would say, as text
     ${CMAKE_SOURCE_DIR}/platform/user_paths.c       # immutable bundle vs mutable user-data policy
     ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c          # UTF-8/long-path OS filesystem boundary
     ${CMAKE_SOURCE_DIR}/platform/pacing_policy.c    # original/enhanced simulation cadence

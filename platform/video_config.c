@@ -598,6 +598,42 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "reduced.",
         MDKR_VIDEO_CAT_PRESENTATION
     },
+    /*
+     * Speech. Appended, never inserted -- the enum index IS this table's row.
+     * Every one of these is LIVE: a player who is turning speech on cannot be
+     * asked to restart the game to hear whether it helped.
+     */
+    [MDKR_A11Y_SPEECH] = {
+        "Accessibility.Speech", "MDKR_A11Y_SPEECH",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 1.0f,
+        "Speak menus",
+        "Read out the control you are on, its setting, and what it does.",
+        MDKR_VIDEO_CAT_INTERFACE
+    },
+    [MDKR_A11Y_SPEECH_RATE] = {
+        "Accessibility.SpeechRate", "MDKR_A11Y_SPEECH_RATE",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 50.0f, 300.0f,
+        "Speech speed",
+        "How fast the voice talks, as a percentage of its normal speed. 100 is "
+        "normal; higher is quicker.",
+        MDKR_VIDEO_CAT_INTERFACE
+    },
+    [MDKR_A11Y_SPEECH_VOLUME] = {
+        "Accessibility.SpeechVolume", "MDKR_A11Y_SPEECH_VOLUME",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 100.0f,
+        "Speech volume",
+        "How loud the voice is. This is separate from the game's own volume "
+        "levels, so you can hear it over a race.",
+        MDKR_VIDEO_CAT_INTERFACE
+    },
+    [MDKR_A11Y_SPEECH_RACE] = {
+        "Accessibility.SpeechRace", "MDKR_A11Y_SPEECH_RACE",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 1.0f,
+        "Speak race events",
+        "Also call out your position, your lap, and what happens during a "
+        "race. Turn this off to keep the voice to menus only.",
+        MDKR_VIDEO_CAT_INTERFACE
+    },
 };
 
 const char *mdkr_video_category_name(MdkrVideoCategory category) {
@@ -659,6 +695,10 @@ int mdkr_video_key_is_enhancement(MdkrVideoKey key) {
            key == MDKR_ENH_LOD_BIAS || key == MDKR_ENH_AI_DIFFICULTY;
 }
 
+int mdkr_video_key_is_accessibility(MdkrVideoKey key) {
+    return key >= MDKR_A11Y_FIRST_KEY && key <= MDKR_A11Y_LAST_KEY;
+}
+
 int mdkr_video_key_is_player_comfort(MdkrVideoKey key) {
     /*
      * Content and enhancement keys join audio, input and window mode here for
@@ -669,10 +709,17 @@ int mdkr_video_key_is_player_comfort(MdkrVideoKey key) {
      * undo it. Without this exemption every preset switch would re-pin them to
      * the preset table's zero row, which for Enhancements.DrawDistance is not
      * even inside its own 100..400 range.
+     *
+     * The speech keys join them for a stronger version of the same reason: an
+     * accessibility choice is not art direction, and a player who switched the
+     * voice on must not lose it by comparing two looks. It also keeps the four
+     * of them adjustable during an explicit --pure reference session, where
+     * every presentation key is deliberately read-only.
      */
     return mdkr_video_key_is_audio(key) || mdkr_video_key_is_input(key) ||
            mdkr_video_key_is_content(key) ||
            mdkr_video_key_is_enhancement(key) ||
+           mdkr_video_key_is_accessibility(key) ||
            key == MDKR_WINDOW_MODE;
 }
 
@@ -767,6 +814,18 @@ static const float s_preset[MDKR_VIDEO_KEY_COUNT][3] = {
     [MDKR_AUDIO_EFFECTS_VOLUME] = {   100.0f,   100.0f,     100.0f },
     [MDKR_VIDEO_MENU_LANGUAGES] = {     0.0f,     0.0f,       0.0f }, /* string; see below */
     [MDKR_VIDEO_CAMERA_COMFORT] = {     0.0f,     0.0f,       0.0f }, /* string; see below */
+    /*
+     * Speech. The three columns are identical because no art-direction preset
+     * has an opinion about accessibility; the row exists so
+     * mdkr_video_config_defaults() seeds the shipped value, and
+     * mdkr_video_key_is_player_comfort() keeps a preset switch from writing it
+     * back. Speech off, ordinary speed, full speech volume, race calls on for
+     * whoever does turn speech on.
+     */
+    [MDKR_A11Y_SPEECH]        = {      0.0f,     0.0f,       0.0f },
+    [MDKR_A11Y_SPEECH_RATE]   = {    100.0f,   100.0f,     100.0f },
+    [MDKR_A11Y_SPEECH_VOLUME] = {    100.0f,   100.0f,     100.0f },
+    [MDKR_A11Y_SPEECH_RACE]   = {      1.0f,     1.0f,       1.0f },
 };
 
 /*

@@ -21,7 +21,7 @@ happens and nothing is logged — that is the ordinary case.
 
 ## What a pack is
 
-A directory containing `pack.ini`, plus the files it replaces:
+A directory — or a `.zip` — containing `pack.ini`, plus the files it replaces:
 
 ```
 mods/
@@ -30,7 +30,15 @@ mods/
     textures/
       cc0b49dda797881dadb42914e932a9b6.png
       3f1a2b9c04d7e6558a1cbe07d2f43910.png
+    music/
+      35.wav
+  aurora-skies.zip          ; the same layout, zipped
 ```
+
+Both kinds go through the same reader and the same path validation, so a zipped
+pack behaves identically to the unzipped one — that equivalence is asserted by a
+gate rather than assumed. A zip that will not open is skipped with a reason,
+like any other broken pack.
 
 ### `pack.ini`
 
@@ -113,6 +121,22 @@ decided to upload it.
 **The digest is a published contract.** If it ever has to change, the version
 constant is bumped, the old path keeps working, and this page says so.
 
+## Replacing music
+
+Put `music/<sequence id>.wav` in the pack and that track plays instead of the
+sequenced original — starting, stopping and looping where the original would.
+The Music volume slider governs it exactly as it governs the game's own music,
+including the pause duck and any authored fade.
+
+Any sample rate and channel count is accepted; it is resampled once when the
+track loads, to the mixer's own rate. A file over 64 MiB is refused with a
+logged reason rather than loaded.
+
+The original sequence keeps running underneath, silently. That is deliberate:
+the game's music drives timing and events that gameplay reads, so the sequence
+is muted rather than skipped, and a pack cannot change how the game behaves by
+replacing a track.
+
 ## Turning packs on and off
 
 - **`Tab`** switches every override off and back on while you play, so you can
@@ -157,10 +181,7 @@ game never saw — check the directory location above.
 
 Stated plainly so you do not spend an evening on it:
 
-- **Zip packs.** The reader exists and is tested, but the pack scanner still
-  only finds directories. Use a directory.
-- **Custom music**, **custom models** and **custom characters**. Not
-  implemented.
+- **Custom models** and **custom characters**. Not implemented.
 
 The scope and order of the remaining work is in
 [`sprints/S1-content-pipeline.md`](sprints/S1-content-pipeline.md).

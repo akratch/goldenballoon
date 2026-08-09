@@ -75,7 +75,14 @@ bool drawSettingsSectionHeader(const char *label,
     ImGui::PushStyleColor(ImGuiCol_Header, AppTheme::hex(0x29292C));
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, AppTheme::hex(0x38383C));
     ImGui::PushStyleColor(ImGuiCol_HeaderActive, AppTheme::hex(0x424247));
+    // The scripted accessibility walk cannot reach a row inside a collapsed
+    // section, because a collapsed section does not draw one.
+    if (AppUi_a11yWalkArmed()) flags |= ImGuiTreeNodeFlags_DefaultOpen;
     const bool open = ImGui::CollapsingHeader(label, flags);
+    // Landing on a header IS moving between sections; this is the one place
+    // the settings panel says so. Only one header can hold focus, and
+    // ui::SpeakSection drops the repeat on every subsequent frame.
+    if (ImGui::IsItemFocused()) ui::SpeakSection(label);
     ImGui::PopStyleColor(3);
     if (open) {
         const ImVec2 min = ImGui::GetItemRectMin();
@@ -430,6 +437,34 @@ const char *optionLabel(MdkrVideoKey key, const char *value) {
     return value;
 }
 
+/*
+ * The value in the player's own words, for anything that has to SAY it rather
+ * than draw it. A voice reading "Frame limit, original" or "Rumble, 1" is
+ * reading the config file aloud; the control on screen says "Original
+ * (recommended)" and shows a tick, and the two must not disagree.
+ *
+ * Settings_dumpSchemaContract() and the row announcement both call this, so
+ * the gate's expectation and the utterance are produced by one function.
+ */
+void displayValue(MdkrVideoKey key, const MdkrVideoSchema *s,
+                  const MdkrVideoValue *v, char *out, size_t cap) {
+    char raw[MDKR_VIDEO_STRING_MAX];
+    formatValue(key, s, v, raw, sizeof(raw));
+    Options options;
+    if (optionsFor(key, options) || key == MDKR_VIDEO_MODE) {
+        std::snprintf(out, cap, "%s", optionLabel(key, raw));
+        return;
+    }
+    // A checkbox row. "on"/"off" is what the player sees and what a voice can
+    // act on; "1" is neither.
+    if (s->type == MDKR_VIDEO_TYPE_INT && s->min == 0.0f && s->max == 1.0f) {
+        std::snprintf(out, cap, "%s",
+                      v != nullptr && v->number != 0.0f ? "on" : "off");
+        return;
+    }
+    std::snprintf(out, cap, "%s", raw);
+}
+
 // --- Enhancement help ------------------------------------------------------
 // Every enhancement row ends with its AUTHORITY CLASS in the player's words.
 // The class is asserted and gated in platform/enhancement_registry.c, so that
@@ -506,6 +541,10 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
         k == MDKR_INPUT_RUMBLE_PROFILE && rumbleEnabled != nullptr &&
         rumbleEnabled->number == 0.0f;
     bool changed = false;
+    // While an open combo is being browsed, "the last item" is the option under
+    // the cursor rather than this row. Announcing the row's CURRENT value then
+    // would tell the player the opposite of what they are about to choose.
+    bool comboBrowsing = false;
     EditState &editState = g_edits[static_cast<size_t>(k)];
 
     ImGui::PushID((int)k);
@@ -612,6 +651,7 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
                 if (selected) ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();
+            comboBrowsing = true;
         }
     } else if (s->type == MDKR_VIDEO_TYPE_STRING) {
         // Open domain (aspect expressions, or "authored" / a FOV number).
@@ -683,6 +723,21 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
                           static_cast<double>(editState.number));
             changed = commitEdit(window, k, s, editState, buf);
         }
+    }
+
+    /*
+     * THE announcement. Every settings row in the product passes through here
+     * -- the launcher panel, the in-game overlay, the Enhancements and Content
+     * sections all call drawKey() -- so a row added later speaks without
+     * anybody remembering to make it, and a row can only be silent by being
+     * hand-rolled somewhere else. It sits immediately after the widget on
+     * purpose: ui::SpeakFocusedItem reads ImGui's last-submitted item, and the
+     * error text, badges and help paragraph below would take that place.
+     */
+    if (!comboBrowsing) {
+        char spoken[MDKR_VIDEO_STRING_MAX];
+        displayValue(k, s, d, spoken, sizeof(spoken));
+        ui::SpeakFocusedItem(s->label, spoken, helpFor(k, s));
     }
 
     if (!editState.error.empty()) {
@@ -1310,6 +1365,40 @@ void Settings_dumpSchemaContract() {
         "caveat=\"%s\"\n",
         kOriginalFrameLimitLabel, kModernFrameLimitGroup,
         kFrameLimitHelp);
+
+    /*
+     * The control inventory, one row per schema key: the name a voice would
+     * say, the value it would say, and whether the product offers the setting
+     * at all.
+     *
+     * tests/check_a11y_shell.py grades the walk against THIS, rather than
+     * against a list kept in the test, which is the whole point: a setting
+     * added tomorrow gets a row here the moment it has a schema entry, and the
+     * gate then demands an utterance for it without anybody remembering to
+     * extend the test. The label and value come from the same displayValue()
+     * the announcement uses, so the expectation and the utterance cannot drift
+     * apart while both still look right.
+     *
+     * Visibility is reported for the qualified WebGPU renderer with widescreen
+     * engaged -- the shipped configuration. A diagnostic OpenGL session offers
+     * one setting MORE (MSAA), which can only ever add an utterance the gate
+     * did not require, never remove one it did.
+     */
+    const MdkrVideoConfig *config = mdkr_video_config_desired();
+    for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
+        const MdkrVideoKey     key = static_cast<MdkrVideoKey>(i);
+        const MdkrVideoSchema *s   = mdkr_video_schema(key);
+        if (s == nullptr) continue;
+        char value[MDKR_VIDEO_STRING_MAX];
+        displayValue(key, s, config != nullptr ? &config->values[i] : nullptr,
+                     value, sizeof(value));
+        std::printf(
+            "[app-a11y] control key=%s visible=%d label=\"%s\" value=\"%s\"\n",
+            s->name,
+            AppUi_videoSettingVisible(key, /*webGpuRenderer=*/true,
+                                      /*legacyStretchActive=*/false) ? 1 : 0,
+            s->label, value);
+    }
 }
 
 bool Settings_restartPending() {
@@ -1403,6 +1492,16 @@ bool Settings_draw(SDL_Window *window, bool compact) {
         ui::Gap(ui::kGapM);
     }
 
+    const bool webGpuRenderer =
+        mdkr_render_backend() == MDKR_BACKEND_WEBGPU;
+    /* Video.Widescreen is normally hidden because no preset ever selects its
+     * 0 branch (see AppUi_videoSettingVisible). A config that already resolved
+     * to 0 is the exception: the player is looking at the pre-widescreen
+     * stretch and needs a control to leave it. */
+    const bool legacyStretchActive =
+        mdkr_video_config_current()
+            ->values[MDKR_VIDEO_WIDESCREEN].number == 0.0f;
+
     const ImGuiTreeNodeFlags interfaceFlags =
         (controllerSettingsSmoke || selectingFrameLimit)
         ? ImGuiTreeNodeFlags_None : ImGuiTreeNodeFlags_DefaultOpen;
@@ -1484,17 +1583,34 @@ bool Settings_draw(SDL_Window *window, bool compact) {
                 "Supported range: 0.75x to 2.00x. For touch, use 1.25x or larger.");
         }
         ui::Gap(ui::kGapS);
+        /*
+         * Every other Interface-category setting, through the same row helper
+         * as the rest of the panel.
+         *
+         * This section is hand-written rather than produced by the category
+         * loop below, because it owns UI scale -- an app preference with no
+         * schema row. That is precisely how Check for updates and Developer
+         * tools ended up with a schema row, a category, an environment
+         * variable and no control anywhere in the product: Interface is not in
+         * `categoryOrder`, so nothing drew them. Enumerating the category here
+         * closes that hole for the speech settings and for whatever is added
+         * to Interface next.
+         */
+        for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
+            const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
+            if (key == MDKR_WINDOW_MODE) continue;  // drawn at the top
+            const MdkrVideoSchema *schema = mdkr_video_schema(key);
+            if (schema == nullptr ||
+                schema->category != MDKR_VIDEO_CAT_INTERFACE) continue;
+            if (!AppUi_videoSettingVisible(key, webGpuRenderer,
+                                           legacyStretchActive)) continue;
+            // Drawn by its own section further down, as in the loop below.
+            if (AppUi_settingsSection(key) !=
+                AppUiSettingsSection::Category) continue;
+            changed |= drawKey(window, key, compact);
+        }
     }
 
-    const bool webGpuRenderer =
-        mdkr_render_backend() == MDKR_BACKEND_WEBGPU;
-    /* Video.Widescreen is normally hidden because no preset ever selects its
-     * 0 branch (see AppUi_videoSettingVisible). A config that already resolved
-     * to 0 is the exception: the player is looking at the pre-widescreen
-     * stretch and needs a control to leave it. */
-    const bool legacyStretchActive =
-        mdkr_video_config_current()
-            ->values[MDKR_VIDEO_WIDESCREEN].number == 0.0f;
     for (MdkrVideoCategory category : categoryOrder) {
         const int c = static_cast<int>(category);
         const char *catName = category == MDKR_VIDEO_CAT_PACING

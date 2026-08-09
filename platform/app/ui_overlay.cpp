@@ -82,6 +82,11 @@ struct OverlayState {
     bool testEscapeCloseQueued = false;
     bool testFpsOnly = false;
     bool testFpsRenderReported = false;
+    // Scripted accessibility walk. Simulation is stopped while the overlay is
+    // open, so this counts RENDER callbacks: a schedule hung off the
+    // authoritative tick would never advance past the frame that paused it.
+    bool testA11yWalk = false;
+    long testA11yRenderFrame = 0;
 
     uint64_t fpsLastSurfaceFrame = 0;
     uint64_t fpsLastCounter = 0;
@@ -291,11 +296,50 @@ void overlayTestFrameTick() {
             ? std::strtol(escapeOpen, nullptr, 10) : -1;
         g_overlay.testEscapeCloseFrame = escapeClose
             ? std::strtol(escapeClose, nullptr, 10) : -1;
+        g_overlay.testA11yWalk =
+            std::getenv("MDKR_TEST_OVERLAY_A11Y_WALK") != nullptr;
     }
     if (g_overlay.testOpenFrame < 0 &&
         g_overlay.testEscapeOpenFrame < 0) return;
 
     g_overlay.testFrame = g_simTickCounter;
+
+    /*
+     * The overlay half of the accessibility walk. It opens the Settings
+     * sub-panel and then holds down Tab, one press per rendered overlay frame,
+     * so the rows the overlay draws -- the very same drawKey() rows the
+     * launcher draws -- are proven to speak over a running race and not only
+     * in the launcher. Tab is counted in RENDERED frames rather than
+     * authoritative ticks because the overlay stops the simulation clock the
+     * moment it opens.
+     *
+     * It lets go of Settings once the scripted close is due: Escape walks the
+     * back-stack one level at a time, so a run that kept re-opening Settings
+     * would spend its single scripted Escape leaving the sub-panel and never
+     * close the overlay at all.
+     */
+    const bool closeDue = g_overlay.testEscapeCloseFrame >= 0 &&
+                          g_overlay.testFrame >= g_overlay.testEscapeCloseFrame;
+    if (g_overlay.testA11yWalk && g_overlay.open) {
+        g_overlay.showSettings = !closeDue;
+        if (!closeDue) {
+            SDL_Event tab{};
+            const bool press = (g_overlay.testA11yRenderFrame % 2) == 0;
+            tab.type = press ? SDL_KEYDOWN : SDL_KEYUP;
+            tab.key.state = press ? SDL_PRESSED : SDL_RELEASED;
+            tab.key.keysym.sym = SDLK_TAB;
+            tab.key.keysym.scancode = SDL_SCANCODE_TAB;
+            tab.key.keysym.mod = KMOD_NONE;
+            // The window id is load-bearing, unlike in the Escape hooks above:
+            // those are read by this file's own handler, while Tab has to be
+            // accepted by the ImGui SDL2 backend, which drops any key event
+            // whose window it does not recognise.
+            tab.key.timestamp = SDL_GetTicks();
+            tab.key.windowID = SDL_GetWindowID(g_overlay.window);
+            (void)SDL_PushEvent(&tab);
+            ++g_overlay.testA11yRenderFrame;
+        }
+    }
     if (!g_overlay.testEscapeOpenQueued &&
         g_overlay.testEscapeOpenFrame >= 0 &&
         !g_overlay.open &&
@@ -591,7 +635,14 @@ void drawOverlayMenu(float uiScale) {
 
     if (g_overlay.showSettings) {
         ui::Gap(ui::kGapS);
-        ImGui::BeginChild("##ovsettings", ImVec2(0, 340 * uiScale), true);
+        // NavFlattened only under the scripted walk, for the reason given on
+        // AppUi_a11yWalkArmed(): Tab does not leave a child window's focus
+        // scope, so without it the walk can never step off the overlay's
+        // buttons and onto the settings rows it is there to check.
+        ImGui::BeginChild(
+            "##ovsettings", ImVec2(0, 340 * uiScale),
+            ImGuiChildFlags_Borders |
+                (AppUi_a11yWalkArmed() ? ImGuiChildFlags_NavFlattened : 0));
         // Compact: the per-key help paragraphs belong in the launcher, not
         // over a running race. Each edit is already atomic in the config
         // layer, so there is no Apply/Cancel to stage here.

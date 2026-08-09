@@ -78,9 +78,12 @@ crash.
 | S4 T3 | `adapter_policy` | `adapter_policy` |
 | S5 T1 | `sweep_subentry_access.py` | exits 1 on any unchecked site |
 | S5 T2 | `mdkr_asset_subentry()`, `get_misc_asset` aborts | `asset_subentry`, `check_subentry_bounds.py` |
+| S5 T3 | hosted ROM checker page | `check_rom_checker_page.py` |
+| S5 T4 | exhaustive game-text index census | `check_rom_text_indices.py` |
 | S6 T1 | hosted CI status corrected | run `31248954626` |
 | S6 T4 | `update_check` | `update_check` |
 | S8 T1 | `a11y_model` | `a11y_model` |
+| S8 T2 | shell self-voicing | `check_a11y_shell.py` |
 | S9 T1 | roadmap reconciled | — |
 | S9 T2 | `tests/route_plan.py` waypoint follower | its own self-test, 8 assertions |
 | S9 T3 | lobby rematch door, driven | `check_campaign_progression.py` driven arm |

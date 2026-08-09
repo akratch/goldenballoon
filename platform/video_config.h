@@ -121,11 +121,26 @@ typedef enum MdkrVideoKey {
     /* Developer tools. Off by default; every registered tool is asserted
      * unable to move authoritative state by check_dev_tools_purity.py. */
     MDKR_TOOLS_ENABLED,
+    /*
+     * Speech. Appended for the reason above. Off by default, so a player who
+     * does not use it hears nothing and pays nothing; and, like the other
+     * accessibility choices, never pinned by a presentation preset -- see the
+     * accessibility clause in mdkr_video_key_is_player_comfort().
+     */
+    MDKR_A11Y_SPEECH,
+    MDKR_A11Y_SPEECH_RATE,
+    MDKR_A11Y_SPEECH_VOLUME,
+    MDKR_A11Y_SPEECH_RACE,
     MDKR_VIDEO_KEY_COUNT
 } MdkrVideoKey;
 
 #define MDKR_INPUT_FIRST_KEY MDKR_INPUT_RUMBLE_ENABLED
 #define MDKR_INPUT_LAST_KEY  MDKR_INPUT_CONTROLLER_RIGHT_STICK_RIGHT
+
+/* The speech block, bounded by its ends rather than by being last, for the
+ * reason the input block above is: a later key may follow it. */
+#define MDKR_A11Y_FIRST_KEY MDKR_A11Y_SPEECH
+#define MDKR_A11Y_LAST_KEY  MDKR_A11Y_SPEECH_RACE
 
 typedef enum MdkrVideoType {
     MDKR_VIDEO_TYPE_INT = 0,
@@ -273,6 +288,7 @@ int mdkr_video_key_is_audio(MdkrVideoKey key);
 int mdkr_video_key_is_input(MdkrVideoKey key);
 int mdkr_video_key_is_content(MdkrVideoKey key);
 int mdkr_video_key_is_enhancement(MdkrVideoKey key);
+int mdkr_video_key_is_accessibility(MdkrVideoKey key);
 int mdkr_video_key_is_player_comfort(MdkrVideoKey key);
 
 /* Canonical string domains used by both validation and generated controls. */

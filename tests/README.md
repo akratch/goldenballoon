@@ -25,8 +25,8 @@ python3 tools/run_checks.py \
   --wasm build-web/mdkr64_web.wasm
 ```
 
-The manifest registers 122 of the 126 `tests/check_*.py` scripts and expands to
-135 tasks. The four it does not name directly
+The manifest registers 145 of the 149 `tests/check_*.py` scripts and expands to
+158 tasks. The four it does not name directly
 (`check_controller_settings_persistence.py`, `check_host_input_focus.py`,
 `check_launcher_tabs.py`, `check_overlay_input_handoff.py`) are CTest companions that `rom_free_units` owns, so
 every check script still runs exactly once in a default pass. That task also
@@ -2834,6 +2834,36 @@ its four cleared races, its balloons, the four world keys and the world-arrival
 cutscene flag are constructed, because this check does not drive to that world.
 The door into it is gated separately, below.
 
+## Shell self-voicing — `tests/check_a11y_shell.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_a11y_shell.py --build build
+```
+
+Walks `Tab` and the arrows through the launcher, every settings section and the
+in-game overlay, and requires **every focusable control** to have produced a
+`[SPEAK]` utterance carrying its name and current value. The expected set is
+enumerated from the app's own schema dump, not from a list here, so a setting
+added and never voiced fails this gate with no test edit.
+
+**It found three real defects on its first run**, which is the argument for
+enumerating rather than listing:
+
+1. `App.UpdateCheck` and `Tools.Enabled` had **no control at all** — both carry
+   the Interface category, but that section was hand-written and drew only two
+   rows, so they were reachable by ini and env only. `test_app_ui_policy.cpp`
+   asserted they were *visible*, which is a statement about policy, not about
+   anything actually being drawn.
+2. The three settings with the longest help said **nothing whatsoever** —
+   `mdkr_a11y_focus()` correctly refuses over-long text whole rather than
+   truncating mid-word, and those paragraphs exceed the buffer. Fixed at the
+   emission point by keeping as many whole sentences as fit.
+3. The ImGui SDL2 backend drops key events carrying an unrecognised window id.
+
+The positive control has two arms: removing the emission entirely fails naming
+all 52 controls, and skipping a single key fails naming that one — so the gate
+isolates rather than only detecting all-or-nothing.
+
 ## Future Fun Land unlock — `tests/check_future_fun_land.py`
 
 ```bash
@@ -3727,21 +3757,6 @@ choices the bias actually *changed* after clamping, so a route that stops
 exercising the ladder fails rather than passing on an incidentally different
 frame.
 
-## Future Fun Land unlock — `tests/check_future_fun_land.py`
-
-```bash
-MDKR_AUDIO=0 python3 tests/check_future_fun_land.py --build build
-```
-
-`trophies & 0xFF == 0xFF` together with the Wizpig 1 bit opens the lighthouse
-(`game/src/thread3_main.c:1895-1899`). **Both arms, or it proves nothing**: one
-trophy short must *not* unlock. A one-armed version would pass against code that
-unlocks unconditionally.
-
-The save it runs on is produced by the campaign chain rather than asserted as a
-premise, which is what makes the unlock a witnessed consequence of winning the
-trophies instead of a statement about a hand-written EEPROM.
-
 ## Pack music — `tests/check_mod_music_override.py`
 
 ```bash
@@ -3910,6 +3925,91 @@ ROM count rather than the index echoed back.
 The companion `asset_subentry` CTest covers the accessor itself with no ROM:
 each aborting case runs in a forked child and asserts both the signal and the
 message text.
+
+## Hosted ROM checker — `tests/check_rom_checker_page.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_rom_checker_page.py --build build
+```
+
+`dist/web/rom-check.html` asks a player to hand a 12 MB cartridge dump to a web
+page, and this is what makes that a reasonable thing to ask.
+
+**Nothing leaves the machine.** The page's text must contain no `fetch(`, no
+`XMLHttpRequest`, no `WebSocket`, no `<form action`, no `sendBeacon`, no
+`EventSource`, no `importScripts` and no `@import`; separately, every
+URL-bearing attribute and every CSS `url()` in the file is *parsed* and required
+to be same-directory relative, which is the general guarantee the literal list
+only names mechanisms for. Every local file it does reference must ship beside
+it.
+
+**It answers what the engine answers.** The page loads `dist/web/rom-id.js`
+rather than copying it — asserted with `check_rom_revision.py`'s own row parser,
+so "carries its own revision table" means exactly what that check means by it.
+Its verdict logic sits in one DOM-free block between two markers, which this
+gate lifts out, loads under `node` beside `rom-id.js`, and runs over every
+cartridge dump under `build/roms/`. The sentence it produces must equal the
+`[ROM]` line the native binary prints for the same file, character for character
+— both sides are handed the same display name, so the whole sentence is compared
+and not a suffix of it. A synthesised `.v64` and `.n64` must identify as the
+same release and hash to the same whole-image SHA-256 as the `.z64`; without
+normalisation before hashing, every byteswapped dump would read as damaged.
+
+`node` absent skips the two runtime assertions with a printed reason; the text
+assertions always run.
+
+Verified non-vacuous in three directions: a `fetch(` inserted into the page
+fails the first assertion, a suffix appended to the verdict sentence fails the
+comparison on all five dumps, and hashing before normalisation instead of after
+fails the byte-order assertion on both `.v64` and `.n64`.
+
+## Game-text index census — `tests/check_rom_text_indices.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_rom_text_indices.py --build build
+MDKR_AUDIO=0 python3 tests/check_rom_text_indices.py --only nav,hub   # subset
+```
+
+Before a US 1.0 or European 1.0 ROM can be accepted, the port has to be shown
+not to ask it for a text entry it does not have: `us.v77`'s `GAME_TEXT` holds
+259 entries where `us.v80` holds 343 (`docs/ROM_REVISIONS.md` §5).
+
+`set_current_text()` range-tests the id it is *given* and then adds the language
+offset (`+85` German, `+170` French, `+255` Japanese) **afterwards**, so the
+resolved index is never re-tested. That resolved index is what this gate bounds.
+`game/src/game_text.c` gained one `NATIVE_PORT` census site at exactly that
+point, emitting `[TEXTIDX] section=GAME_TEXT index=… requested=… language=…
+count=…`. It is off unless `MDKR_TEXTIDX` is set; `MDKR_TEXTIDX=1` writes to
+stderr, and any other value is a **file path** the census is appended to.
+
+The path form is what lets the gate drive the real route gates unmodified — the
+nine `nav_*` fixtures, the 20-track sweep, the hub tour, the campaign seams and
+the trophy series — by pointing each at a shim named `mdkr64` that execs the real
+binary with its own census file. Those gates parse the engine's stderr, so a
+second stream interleaved into it would change what they read. Nothing in them
+is modified, so the routes driven here cannot drift from the ones the suite runs.
+
+Fails if any observed index reaches 259, printing the index and the route; fails
+if any route group launched no engine at all, or if no index was observed
+anywhere, because an enumeration over nothing proves nothing. The **coverage is
+printed rather than implied** — distinct ids reached, the fraction of the
+section they are, and the languages seen — and the docstring states plainly that
+the claim is "these routes never resolve an index at or above 259", not "the port
+never does". One of the three text-bearing asset sections is instrumented;
+`MENU_TEXT` and `LEVEL_NAMES` are not.
+
+**Recorded baseline** (us.v80, 60 engine runs across the five route groups):
+maximum resolved index **81**, on `adventure_resume_race.txt @9000 frames
+track=54`; 26 distinct ids of the 340 the ROM addresses (7.6%) over 40 accesses;
+every access in English. The `nav_*` fixtures and all 20 tracks of the sweep
+contribute **zero** — `load_game_text_table()` runs on level entry and a race
+triggers no dialogue, so the whole census comes from the hub, the campaign seams
+and the trophy cabinet. The printed projection notes that the same ids under
+French (+170) reach 251, still in range, and under Japanese (+255) would reach
+336, which is why a JP build needs its own enumeration and not this one.
+
+Verified non-vacuous by lowering the ceiling below an observed index: the gate
+then failed naming index 50 and the hub route that produced it.
 
 ## Enhancement authority — `tests/check_enhancement_authority.py`
 

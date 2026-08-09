@@ -86,14 +86,23 @@ enum class AppUiSmokeInputMode { Disabled, Keyboard, Gamepad, Invalid };
 // contract. Partial or stale environment combinations are invalid, so an
 // inherited variable can never attach a virtual controller to normal gameplay.
 //
-// `selection` is the scripted Frame limit value and `pace` the scripted
-// Presentation pace choice. EXACTLY ONE must be present: they are two pointer
-// scripts for two controls, and a run claiming both would be driving neither
-// deterministically.
+// `selection` is the scripted Frame limit value, `pace` the scripted
+// Presentation pace choice, and `walk` the accessibility keyboard walk.
+// EXACTLY ONE must be present: they are three scripts for three different
+// jobs, and a run claiming two would be driving neither deterministically.
 AppUiSmokeInputMode AppUi_validateSmokeInput(
     const char *frames, const char *selection, const char *input,
-    const char *token, const char *pace);
+    const char *token, const char *pace, const char *walk = nullptr);
 AppUiSmokeInputMode AppUi_smokeInputMode();
+
+// True while the scripted accessibility walk is armed. The walk needs two
+// things ordinary use does not -- every settings section already expanded, and
+// nav able to cross from the launcher shell into its scrolling panel child --
+// because a collapsed section draws no rows and Tab does not leave a window's
+// focus scope. Both are test scaffolding for reaching the controls, not a
+// change to what any control says: the announcements themselves are the
+// ordinary production ones.
+bool AppUi_a11yWalkArmed();
 
 // Reserved config keys remain parseable for forward compatibility, but the
 // launcher must not advertise settings that the running product cannot apply.
