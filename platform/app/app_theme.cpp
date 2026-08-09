@@ -25,6 +25,11 @@ static void buildFonts(float fbScale) {
         RobotoMedium_compressed_data_base85, 17.0f * fbScale);
     g_fonts.title = io.Fonts->AddFontFromMemoryCompressedBase85TTF(
         RobotoMedium_compressed_data_base85, 24.0f * fbScale);
+    // One step between title and body. A settings page has three levels of
+    // heading — page, group, setting — and two font sizes could only spell two
+    // of them, which is why every group used to look like another page title.
+    g_fonts.section = io.Fonts->AddFontFromMemoryCompressedBase85TTF(
+        RobotoMedium_compressed_data_base85, 19.0f * fbScale);
     g_fonts.small = io.Fonts->AddFontFromMemoryCompressedBase85TTF(
         RobotoMedium_compressed_data_base85, 13.0f * fbScale);
     io.FontDefault = g_fonts.body;
@@ -48,6 +53,10 @@ ImVec4 surface() { return hex(0x2C2C2E); }  // Graphite
 ImVec4 subtle()  { return hex(0xB0B0B6); }
 ImVec4 good()    { return hex(0x5CC08A); }  // green
 ImVec4 bad()     { return hex(0xE5675E); }  // red
+ImVec4 warn()    { return hex(0xEE9A3C); }  // orange — changes gameplay
+ImVec4 line()    { return ImVec4(1, 1, 1, 0.08f); }
+ImVec4 raised()  { return hex(0x1E1E22); }
+ImVec4 field()   { return hex(0x27272C); }
 
 const AppFonts &fonts() { return g_fonts; }
 
@@ -65,27 +74,45 @@ static void applyStyle() {
     s.CellPadding       = ImVec2(8, 6);
     s.TouchExtraPadding = ImVec2(4, 4);
     s.IndentSpacing     = 18;
+    // Both stay at 20 * uiScale. They look heavier than a desktop app needs,
+    // and the first pass of this theme slimmed them to 16/18 -- which the
+    // handheld touch gate correctly rejected: main_app.cpp's touch contract
+    // requires a 20 px scrollbar and grab so a finger can hit them, and
+    // TouchScrollCurrentWindow sizes its gesture-exclusion strip from
+    // ScrollbarSize. Making the scrollbar look lighter is a job for the grab
+    // COLOUR, not for its width.
     s.ScrollbarSize     = 20;
     s.GrabMinSize       = 20;
     s.WindowBorderSize  = 1;
     s.ChildBorderSize   = 1;
-    s.FrameBorderSize   = 0;
-    s.WindowRounding    = 9;
-    s.ChildRounding     = 9;
-    s.FrameRounding     = 6;
-    s.PopupRounding     = 6;
-    s.GrabRounding      = 6;
-    s.ScrollbarRounding = 8;
-    s.TabRounding       = 6;
+    // A hairline on every frame is what separates "a control" from "a coloured
+    // rectangle" on a dark ground. It costs no layout height: ImGui draws the
+    // border inside the frame rect.
+    s.FrameBorderSize   = 1;
+    s.PopupBorderSize   = 1;
+    s.WindowRounding    = 10;
+    s.ChildRounding     = 12;
+    s.FrameRounding     = 8;
+    s.PopupRounding     = 10;
+    s.GrabRounding      = 8;
+    s.ScrollbarRounding = 10;
+    s.TabRounding       = 8;
+    s.DisabledAlpha     = 0.45f;
+    s.SeparatorTextBorderSize = 1.0f;
+    s.SeparatorTextAlign = ImVec2(0.0f, 0.5f);
+    s.SeparatorTextPadding = ImVec2(0.0f, 10.0f);
     s.WindowTitleAlign  = ImVec2(0.0f, 0.5f);
 
     ImVec4 *c = s.Colors;
-    const ImVec4 bg      = hex(0x161618);  // window background (below charcoal)
-    const ImVec4 panel   = hex(0x1C1C1E);  // charcoal
-    const ImVec4 card    = hex(0x2C2C2E);  // graphite
-    const ImVec4 cardHi  = hex(0x3A3A3D);
-    const ImVec4 text    = hex(0xECECEE);
-    const ImVec4 border  = ImVec4(1, 1, 1, 0.06f);
+    // Four levels of elevation instead of two. The page sits on `bg`, a panel
+    // on `panel`, a settings group on `raised`, and a control on `card`. Every
+    // step is small on purpose — the hairline does the separating, not contrast.
+    const ImVec4 bg      = hex(0x121215);
+    const ImVec4 panel   = hex(0x18181B);
+    const ImVec4 card    = field();       // 0x27272C — control surface
+    const ImVec4 cardHi  = hex(0x323238);
+    const ImVec4 text    = hex(0xEDEDF0);
+    const ImVec4 border  = line();
     const ImVec4 pri     = primary();
     const ImVec4 acc     = accent();
 
@@ -93,7 +120,7 @@ static void applyStyle() {
     c[ImGuiCol_TextDisabled]         = subtle();
     c[ImGuiCol_WindowBg]             = bg;
     c[ImGuiCol_ChildBg]              = panel;
-    c[ImGuiCol_PopupBg]              = hex(0x202022);
+    c[ImGuiCol_PopupBg]              = hex(0x1E1E22);
     c[ImGuiCol_Border]               = border;
     c[ImGuiCol_BorderShadow]         = ImVec4(0, 0, 0, 0);
     c[ImGuiCol_FrameBg]              = card;
@@ -110,7 +137,9 @@ static void applyStyle() {
     c[ImGuiCol_CheckMark]            = acc;
     c[ImGuiCol_SliderGrab]           = pri;
     c[ImGuiCol_SliderGrabActive]     = acc;
-    c[ImGuiCol_Button]               = card;
+    // A shade above the control surface: a button is pressable, a combo's
+    // background is not, and at identical values the eye cannot tell them apart.
+    c[ImGuiCol_Button]               = hex(0x2E2E35);
     c[ImGuiCol_ButtonHovered]        = cardHi;
     c[ImGuiCol_ButtonActive]         = ImVec4(pri.x, pri.y, pri.z, 0.85f);
     c[ImGuiCol_Header]               = ImVec4(pri.x, pri.y, pri.z, 0.30f);

@@ -59,6 +59,46 @@ bool BrandPrimaryButton(const char *label, const ImVec2 &size = ImVec2(0, 0));
 bool CardBegin(const char *id, const ImVec4 &borderColor, float height);
 void CardEnd();
 
+// --- Settings composition ---------------------------------------------------
+//
+// A settings page has three levels of heading — page, group, setting — and a
+// per-setting explanation that has to be readable without being a wall. These
+// four primitives are that shape, so every group is built the same way instead
+// of each one inventing its own spacing.
+
+// Filled pill. `color` supplies both the text and, at low alpha, the fill.
+// Non-interactive; it is a label, not a control.
+void Chip(const char *text, const ImVec4 &color);
+// The persistent marker for a setting that changes how the game plays. One
+// spelling, one colour, everywhere — a player learns it once.
+void GameplayChip();
+// A small "?" that reveals a longer explanation on hover or focus. Use it only
+// where a sentence genuinely cannot carry the answer.
+void HelpMarker(const char *text);
+
+// Group heading: section-font title, optional one-line subtitle, hairline.
+void GroupHeader(const char *title, const char *subtitle);
+
+// One setting's label row: name in body, optional chips, then a one-line
+// description in the small font. `gameplay` draws the persistent marker and a
+// warm left rule down the row so the marker survives scrolling past the chip.
+struct RowStyle {
+    bool gameplay = false;   // changes how the game plays
+    bool restart = false;    // takes effect at the next launch
+    bool experimental = false;
+    const char *badge = nullptr;   // extra free-form chip, e.g. "next race"
+    // Longer explanation, revealed from a marker on the LABEL line. It belongs
+    // in the row style rather than after the call so it lands beside the name
+    // instead of after a wrapped description, where nobody looks for it.
+    const char *tooltip = nullptr;
+};
+void SettingLabel(const char *label, const char *description,
+                  const RowStyle &style = RowStyle{});
+
+// Warm-toned callout for a live gameplay caveat. Wider than a tooltip because
+// the player needs to see it without hunting for it.
+void CautionBox(const char *title, const char *body);
+
 }  // namespace ui
 
 #endif  // MDKR64_UI_COMMON_H

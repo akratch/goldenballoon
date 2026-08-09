@@ -204,6 +204,119 @@ bool BrandPrimaryButton(const char *label, const ImVec2 &size) {
     return clicked;
 }
 
+void Chip(const char *text, const ImVec4 &color) {
+    if (text == nullptr || text[0] == '\0') return;
+    const float scale = AppTheme::uiScale();
+    ImGui::PushFont(AppTheme::fonts().small);
+    const ImVec2 textSize = ImGui::CalcTextSize(text);
+    const float padX = 7.0f * scale;
+    const float padY = 2.0f * scale;
+    const ImVec2 size(textSize.x + padX * 2.0f, textSize.y + padY * 2.0f);
+    const ImVec2 min = ImGui::GetCursorScreenPos();
+    // Reserve the pill, then paint it. Dummy keeps it in the layout flow, so a
+    // chip can sit on a SameLine row without any manual cursor arithmetic.
+    ImGui::Dummy(size);
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    ImVec4 fill = color;
+    fill.w = 0.16f;
+    draw->AddRectFilled(min, ImVec2(min.x + size.x, min.y + size.y),
+                        ImGui::GetColorU32(fill), size.y * 0.5f);
+    ImVec4 stroke = color;
+    stroke.w = 0.38f;
+    draw->AddRect(min, ImVec2(min.x + size.x, min.y + size.y),
+                  ImGui::GetColorU32(stroke), size.y * 0.5f);
+    draw->AddText(ImVec2(min.x + padX, min.y + padY),
+                  ImGui::GetColorU32(color), text);
+    ImGui::PopFont();
+}
+
+void GameplayChip() { Chip("Changes gameplay", AppTheme::warn()); }
+
+void HelpMarker(const char *text) {
+    if (text == nullptr || text[0] == '\0') return;
+    ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::subtle());
+    ImGui::TextUnformatted("(?)");
+    ImGui::PopStyleColor();
+    if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) return;
+    ImGui::BeginTooltip();
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 26.0f);
+    ImGui::TextUnformatted(text);
+    ImGui::PopTextWrapPos();
+    ImGui::EndTooltip();
+}
+
+void GroupHeader(const char *title, const char *subtitle) {
+    ImGui::PushFont(AppTheme::fonts().section);
+    ImGui::TextUnformatted(title != nullptr ? title : "");
+    ImGui::PopFont();
+    if (subtitle != nullptr && subtitle[0] != '\0') {
+        ImGui::PushFont(AppTheme::fonts().small);
+        TextSubtleUnformattedWrapped(subtitle);
+        ImGui::PopFont();
+    }
+    Gap(kGapXS);
+    ImGui::Separator();
+    Gap(kGapS);
+}
+
+void SettingLabel(const char *label, const char *description,
+                  const RowStyle &style) {
+    const float scale = AppTheme::uiScale();
+    const ImVec2 rowTop = ImGui::GetCursorScreenPos();
+
+    ImGui::TextUnformatted(label != nullptr ? label : "");
+    if (style.gameplay) {
+        ImGui::SameLine(0.0f, 8.0f * scale);
+        GameplayChip();
+    }
+    if (style.experimental) {
+        ImGui::SameLine(0.0f, 6.0f * scale);
+        Chip("Experimental", AppTheme::brandSky());
+    }
+    if (style.restart) {
+        ImGui::SameLine(0.0f, 6.0f * scale);
+        Chip("Next launch", AppTheme::accent());
+    }
+    if (style.badge != nullptr && style.badge[0] != '\0') {
+        ImGui::SameLine(0.0f, 6.0f * scale);
+        Chip(style.badge, AppTheme::subtle());
+    }
+    if (style.tooltip != nullptr && style.tooltip[0] != '\0') {
+        ImGui::SameLine(0.0f, 8.0f * scale);
+        HelpMarker(style.tooltip);
+    }
+    if (description != nullptr && description[0] != '\0') {
+        ImGui::PushFont(AppTheme::fonts().small);
+        TextSubtleUnformattedWrapped(description);
+        ImGui::PopFont();
+    }
+    if (!style.gameplay) return;
+    // The chip scrolls away with the label; the rule does not. Draw it down the
+    // whole label block so a player scanning the left edge can see which rows
+    // touch gameplay without reading a word.
+    const float bottom = ImGui::GetItemRectMax().y;
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        ImVec2(rowTop.x - 10.0f * scale, rowTop.y),
+        ImVec2(rowTop.x - 10.0f * scale + 3.0f * scale, bottom),
+        ImGui::GetColorU32(AppTheme::warn()), 1.5f * scale);
+}
+
+void CautionBox(const char *title, const char *body) {
+    if (!CardBegin("##caution", AppTheme::warn(), 0.0f)) {
+        CardEnd();
+        return;
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::warn());
+    ImGui::TextUnformatted(title != nullptr ? title : "");
+    ImGui::PopStyleColor();
+    if (body != nullptr && body[0] != '\0') {
+        ImGui::PushFont(AppTheme::fonts().small);
+        TextSubtleUnformattedWrapped(body);
+        ImGui::PopFont();
+    }
+    CardEnd();
+}
+
 bool CardBegin(const char *id, const ImVec4 &borderColor, float height) {
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(borderColor.x, borderColor.y, borderColor.z, 0.55f));
     const ImGuiChildFlags flags = height > 0.0f

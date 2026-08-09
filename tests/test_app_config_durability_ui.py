@@ -33,8 +33,14 @@ def main() -> int:
             "both UI-scale save paths must accept visible unconfirmed writes")
     require(SETTINGS.count("PersistResult::DurabilityUnconfirmed") >= 2,
             "both UI-scale save paths must distinguish durability uncertainty")
-    require("UI scale applied, but was not confirmed written to disk" in SETTINGS,
-            "UI-scale warning must say the committed scale was applied")
+    # Pin the CLAIM, not the sentence. This assertion used to pin exact prose,
+    # which is why improving one string was a multi-file change and why the
+    # slop survived (docs/CAMPAIGN_FAITHFUL_ENHANCED.md section 4). What must
+    # be true is that the warning says the scale WAS applied and that the write
+    # was NOT confirmed -- both halves, in whatever words.
+    for fragment in ("UI scale applied", "could not confirm"):
+        require(fragment in SETTINGS,
+                f"UI-scale warning must still say {fragment!r}")
 
     # A freshly validated replacement and Forget both act on a path only once
     # it was applied. Retry deliberately re-enters that same validation and

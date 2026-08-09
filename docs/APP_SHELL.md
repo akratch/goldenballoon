@@ -189,11 +189,19 @@ gained a `category` field (`Interface` / `Audio` / `Controller` /
 new key therefore cannot be added without deciding where a player would look
 for it.
 
-The launcher opens **Interface** with persistent window mode and UI scale.
-**Presentation** leads the graphics choices and marks Restored as the
-recommended default, followed by **Frame Rate & Motion**. **Audio** provides
-master, music, and effects volume without starting the game. **Controller**
-exposes rumble enablement and
+The schema's category answers "which subsystem owns this key". The settings
+page groups by what a player came to do, which is not always the same answer:
+**Picture**, **Frame rate**, **Gameplay**, **Camera**, **Sound**,
+**Controller**, **Advanced graphics**, **App window**. Camera and Menu
+languages are `Presentation` keys that a player looks for under Camera and
+Gameplay; Simulation cadence is a `Pacing` key that must not sit beside Frame
+limit. A visible key that no group claims is rendered under **Other settings**
+at the bottom, so the schema stays the source of truth and no key can be lost
+by omission.
+
+**Picture** leads and marks Restored as the recommended default. **Audio**
+provides master, music, and effects volume without starting the game.
+**Controller** exposes rumble enablement and
 Light/Balanced/Strong profiles plus source-oriented remapping from SDL's
 normalized buttons, D-pad, triggers, clicks, and right-stick directions to N64
 actions or None. The left stick remains analog steering and a single atomic
@@ -204,7 +212,9 @@ cadence; the adjacent **Motion smoothing** control decides what fills them:
 Off holds the latest authored image, Interpolated draws unique
 presentation-only in-between images. The browser
 explains that its ceiling is the display's `requestAnimationFrame` cadence.
-The native launcher keeps both presentation controls directly visible. The
+The native launcher keeps the Presentation pace quick choice directly visible
+and the two keys it writes one disclosure below it, opened automatically when
+they already spell a pair no quick choice names. The
 browser uses a compact disclosure to keep its launch card manageable on mobile.
 In both interfaces, **Gameplay cadence** is visually separated because that
 choice changes gameplay and must never look like an ordinary FPS control.
