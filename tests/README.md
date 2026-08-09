@@ -3903,6 +3903,73 @@ the two-cast spelling such as `(u32)(uintptr_t)pointer`, which suppresses the
 diagnostic while still discarding the high half. Matching-only `!NATIVE_PORT`
 branches are excluded.
 
+### Player-facing prose — `tests/check_player_prose.py`
+
+```bash
+python3 tests/check_player_prose.py
+```
+
+Source gate banning AI-slop vocabulary (*seamlessly, leverage, ensure,
+robust, "enhance your experience", comprehensive, "authored presentation
+states", "safe frame boundary", "durable storage", "compatibility mode", and
+the same pattern extended) from what a player or a reviewer actually reads:
+string literals in `platform/app/*.cpp`/`*.h` (the launcher UI), plus
+`README.md` and `RELEASE_NOTES.md`. It tokenizes C/C++ source so only string
+literal contents are scanned, never comments or code — engineering prose
+legitimately uses this vocabulary precisely, and a gate that flagged it would
+be disabled within a week. Positive control: a seeded `"seamlessly"` string
+must be rejected; a same-text code comment must not be.
+
+### Cadence mode gating — `tests/check_cadence_gating.py`
+
+```bash
+python3 tests/check_cadence_gating.py
+```
+
+Source gate rejecting `updateRate == 1`, `updateRate == 2`, `updateRate != 1`,
+`updateRate != 2` (either operand order) anywhere under `game/src` or
+`platform`. Code that behaves differently under the Enhanced simulation
+cadence must gate on the launch-time `platform_sim_cadence_is_enhanced()`
+(`platform/platform_os.h`, `platform/platform_sdl_min.c`), never on the
+per-tick `updateRate`: under Original a lagging tick legitimately arrives with
+`updateRate` 3 or more, and the authored code must handle that
+byte-identically, so a mode test keyed on `updateRate`'s value would change
+Original's own output on exactly the frames the determinism contract cares
+about most. `mdkr_boss_cadence_clamp` (`game/src/racer.c`) and
+`menu_stick_delay_amount` (`game/src/menu.c`) are the two correct examples;
+ordinary arithmetic uses of `updateRate` as a scale factor are unaffected.
+Positive control: a seeded `updateRate == 2` mode test must be rejected.
+
+### Delta inventory — `tests/check_delta_inventory.py`
+
+```bash
+python3 tests/check_delta_inventory.py
+```
+
+Source gate for the M0 classification inventory (`docs/CAMPAIGN_FAITHFUL_
+ENHANCED.md`). `//!@Delta` marks a per-tick constant authored for the 30 Hz
+tick that does not scale with the Enhanced 60 Hz simulation cadence -- the
+defect class behind issue #26 (boss racers unbeatable at 60 Hz) and the
+measured 2x menu auto-repeat. Marking a site is only half the job: M1's fix
+shape depends on which of four kinds of per-tick operation it is, so the gate
+requires every marker to carry one right there in the comment --
+`//!@Delta CONTINUOUS`, `DISCRETE`, `THRESHOLD`, or `INERT`, optionally
+followed by `: <rationale>` -- and fails a bare, unclassified `//!@Delta`.
+It is ROM-free and holds no opinion on whether a classification is correct,
+only that one is present. 66 markers are classified today: 43 CONTINUOUS
+(scale by `updateRateF * 0.5` or `k ** (updateRate / 2)`), 10 THRESHOLD
+(scale the compared bound, leave the counter alone -- the landed example is
+`menu_stick_delay_amount()` in `game/src/menu.c`), 13 INERT (equilibrium-
+governed or already scaled on the same path, each with its proof in the
+comment), and 0 DISCRETE (this per-tick-constant family did not happen to
+produce a pure gated-event site; `check_cadence_gating.py` covers the
+discrete-gating half of the M3 split separately). One line
+(`game/src/racer.c:7372`) mentions the marker family in prose rather than
+being a marker itself and is excluded by exact line content, so a real new
+marker landing on that exact line cannot be silently swallowed. Positive
+control: a seeded bare `//!@Delta` must be rejected; a negative control
+proves a properly classified marker is accepted.
+
 ### CI contract — `tests/check_ci_contract.py`
 
 ```bash

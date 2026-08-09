@@ -128,21 +128,21 @@ void reportResult(MdkrVideoRuntimeResult r, const MdkrVideoSchema *s) {
             break;
         case MDKR_VIDEO_RUNTIME_SAVE_UNCONFIRMED:
             std::snprintf(buf, sizeof(buf),
-                          "%s applied, but the operating system could not confirm durable "
-                          "storage. It may need to be selected again after an unexpected "
-                          "shutdown.",
+                          "%s applied, but the operating system could not confirm it "
+                          "was written to disk. It may need to be selected again "
+                          "after an unexpected shutdown.",
                           s->label);
             setStatus(buf, AppTheme::accent());
             break;
         case MDKR_VIDEO_RUNTIME_PENDING:
             std::snprintf(buf, sizeof(buf),
-                          "%s will apply at the next safe frame boundary.",
+                          "%s will apply on the next frame.",
                           s->label);
             setStatus(buf, AppTheme::accent());
             break;
         case MDKR_VIDEO_RUNTIME_SUPERSEDED:
             std::snprintf(buf, sizeof(buf),
-                          "%s will apply at the next safe frame boundary — this "
+                          "%s will apply on the next frame — this "
                           "replaces the choice that was still waiting.",
                           s->label);
             setStatus(buf, AppTheme::accent());
@@ -188,7 +188,7 @@ bool commitEdit(SDL_Window *window, MdkrVideoKey key,
         ? AppWindow_requestMode(window, value)
         : mdkr_video_config_runtime_set(key, value);
     reportResult(result, schema);
-    /* Both spellings of "queued for the next safe frame boundary" leave the
+    /* Both spellings of "queued for the next frame" leave the
      * widget dirty and error-free; the completion resynchronizes it later. */
     if (result == MDKR_VIDEO_RUNTIME_PENDING ||
         result == MDKR_VIDEO_RUNTIME_SUPERSEDED) {
@@ -432,13 +432,12 @@ const char *helpFor(MdkrVideoKey key, const MdkrVideoSchema *schema) {
     switch (key) {
         case MDKR_VIDEO_SIMULATION_CADENCE:
             return "Original preserves retail physics, AI, timers, and input "
-                   "timing. Enhanced is a compatibility mode for older port "
-                   "configurations and changes gameplay speed. It is not an "
-                   "FPS setting.";
+                   "timing. Enhanced runs the game logic itself faster, which "
+                   "changes gameplay speed and feel. It is not an FPS setting.";
         case MDKR_VIDEO_FRAME_LIMIT:
             return kFrameLimitHelp;
         case MDKR_VIDEO_MOTION_SMOOTHING:
-            return "Interpolated blends adjacent authored presentation states "
+            return "Interpolated blends adjacent authored images "
                    "at the display's exact fractional time. Simulation, input, "
                    "audio, timers, and saves still advance only on Original "
                    "gameplay ticks. Off shows authored images only.";
@@ -1120,7 +1119,7 @@ bool Settings_draw(SDL_Window *window, bool compact) {
                 g_uiScaleError.clear();
                 setStatus(
                     persist == AppConfig::PersistResult::DurabilityUnconfirmed
-                        ? "UI scale applied, but durable storage was not confirmed. "
+                        ? "UI scale applied, but was not confirmed written to disk. "
                           "It may need to be selected again after an unexpected shutdown."
                         : "UI scale saved.",
                     persist == AppConfig::PersistResult::DurabilityUnconfirmed
@@ -1150,7 +1149,7 @@ bool Settings_draw(SDL_Window *window, bool compact) {
                     g_uiScaleError.clear();
                     setStatus(
                         persist == AppConfig::PersistResult::DurabilityUnconfirmed
-                            ? "UI scale applied, but durable storage was not confirmed. "
+                            ? "UI scale applied, but was not confirmed written to disk. "
                               "It may need to be selected again after an unexpected shutdown."
                             : "UI scale saved.",
                         persist == AppConfig::PersistResult::DurabilityUnconfirmed

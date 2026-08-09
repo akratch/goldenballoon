@@ -384,7 +384,7 @@ static void applySelectionResult(LauncherState &s,
     if (persist == AppConfig::PersistResult::DurabilityUnconfirmed) {
         std::snprintf(
             s.romPersistenceWarning, sizeof(s.romPersistenceWarning),
-            "ROM path applied, but durable storage was not confirmed. You may "
+            "ROM path applied, but was not confirmed written to disk. You may "
             "need to choose it again after an unexpected shutdown.");
     } else {
         s.romPersistenceWarning[0] = '\0';

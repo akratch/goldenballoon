@@ -278,6 +278,14 @@ CHECKS = (
           "candidate staged-web source-commit and clean-provenance fixtures"),
     Check("address_domains", "check_address_domains.py", "source",
           "raw pointer/token narrowing confined to typed boundary helpers"),
+    Check("delta_inventory", "check_delta_inventory.py", "source",
+          "every //!@Delta simulation-cadence site carries an M0 classification"),
+    Check("player_prose", "check_player_prose.py", "source",
+          "banned AI-slop vocabulary in launcher UI strings, README.md and "
+          "RELEASE_NOTES.md"),
+    Check("cadence_gating", "check_cadence_gating.py", "source",
+          "no updateRate ==/!= 1/2 mode test outside "
+          "platform_sim_cadence_is_enhanced()"),
     Check("camera_track_occlusion_cache", "check_camera_track_occlusion_cache.py", "source",
           "native static visual-triangle camera cache lifecycle and provenance"),
     Check("camera_object_occlusion_cache", "check_camera_object_occlusion_cache.py", "source",

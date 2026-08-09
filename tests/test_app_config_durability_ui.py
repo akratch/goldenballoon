@@ -33,7 +33,7 @@ def main() -> int:
             "both UI-scale save paths must accept visible unconfirmed writes")
     require(SETTINGS.count("PersistResult::DurabilityUnconfirmed") >= 2,
             "both UI-scale save paths must distinguish durability uncertainty")
-    require("UI scale applied, but durable storage was not confirmed" in SETTINGS,
+    require("UI scale applied, but was not confirmed written to disk" in SETTINGS,
             "UI-scale warning must say the committed scale was applied")
 
     # A freshly validated replacement and Forget both act on a path only once
@@ -51,7 +51,7 @@ def main() -> int:
             "requestValidation(s, ValidationPurpose::Selection, candidatePath);" in ROM,
             "a retained replacement must be revalidated before Retry can "
             "persist or promote it")
-    require("ROM path applied, but durable storage was not confirmed" in ROM,
+    require("ROM path applied, but was not confirmed written to disk" in ROM,
             "ROM replacement must surface durability uncertainty after activation")
     require("ROM path forgotten for this session, but storage durability was not " in ROM,
             "Forget must acknowledge its visible result when durability is uncertain")
