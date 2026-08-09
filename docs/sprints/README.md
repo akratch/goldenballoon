@@ -64,6 +64,7 @@ crash.
 | S4 T1 | `gpu_diagnostics` | `gpu_diagnostics` |
 | S4 T3 | `adapter_policy` | `adapter_policy` |
 | S5 T1 | `sweep_subentry_access.py` | exits 1 on any unchecked site |
+| S5 T2 | `mdkr_asset_subentry()`, `get_misc_asset` aborts | `asset_subentry`, `check_subentry_bounds.py` |
 | S6 T1 | hosted CI status corrected | run `31248954626` |
 | S6 T4 | `update_check` | `update_check` |
 | S8 T1 | `a11y_model` | `a11y_model` |
@@ -208,17 +209,40 @@ the class population across every commit since the ceiling was last set. That is
 worth doing and is not this change; the ceiling comment says so rather than
 letting 261 read as one coherent batch.
 
-### One defect surfaced, not yet fixed
+### The defect the sweep surfaced — now partly fixed
 
-`tools/sweep_subentry_access.py` reports 276 sub-entry sites: 129 checked, 65
-unchecked, 82 unknown. Beyond the count, three concrete findings:
-`particles.c:739,757,758` (guards live in both callers, not in
-`emitter_init_with_pos` itself), `objects.c:1474,4382` (no comparison at all),
-and — the one that matters most — **all 75 `get_misc_asset()` sites read as
-checked while the accessor returns the section base *silently* on an
-out-of-range index**. A bounds check whose failure mode is plausible wrong data
-is barely better than none. That is what S5 T2's `mdkr_asset_subentry()` has to
-replace.
+`get_misc_asset()` compared its index against the table length and then returned
+the **section base silently** when it failed, turning an out-of-range read into
+a confidently wrong one. That is fixed: it aborts, naming the section, index and
+count, and the abort is proven reachable against the real loaded section rather
+than only in a unit test.
+
+Fixing it turned up **four more bugs the sweep had not named**, two of them
+live:
+
+- `emitter_init()` does not guard `particleID` at all. This index previously
+  said "both its callers guard" — measurement corrected it. One caller clamps,
+  the other passes straight through to a dereference.
+- `particles_init()` leaves slot `[count]` of its pointer array uninitialised,
+  and `mempool_alloc_safe` does not zero. Reachable through the gap above, it
+  dereferenced uninitialised memory as a `ParticleDescriptor *`. It mirrors the
+  N64 shape, so not a port regression — but silent and live.
+- `obj_id_valid()` indexes with the unvalidated id *before* testing it: a
+  validator that reads out of range first.
+- `get_misc_asset_size()`'s old guard read as if it protected the `[index + 1]`
+  access but was arithmetically identical to `index >= length`.
+
+Sweep 276 → 273, CHECKED 129 → 133. **Still open**, and the reasons are
+structural rather than effort: 38 compile-time indices are unbounded *by
+construction* — that is the v80-constant-on-a-v77-ROM shape itself, which S5
+task 4's enumeration answers and no per-site guard can — 20 terminator-walks are
+bounded by a byte pattern rather than a count, and 81 sites remain unprovable.
+
+One cheap site is deliberately left unguarded: `game_ui.c:4774`. Its input
+domain spans every HUD sprite id across battle, challenge, boss and adventure
+levels, and the regression routes do not reach them all. An abort added there
+without enumerating that domain risks firing on a supported ROM, which is the
+one outcome this work must not produce.
 
 ## Recommended order
 
