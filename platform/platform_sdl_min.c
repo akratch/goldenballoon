@@ -1,6 +1,7 @@
 /**
  * platform_sdl_min.c — the SDL2 host layer: window/context lifecycle, controller
- * and keyboard input, the cooperative frame boundary, and VI pacing.
+ * and keyboard input, content-pack discovery, the cooperative frame boundary,
+ * and VI pacing.
  *
  * Responsibilities:
  *   - Create the window for whichever backend is active (GL 3.3 core via glad,
@@ -9,6 +10,9 @@
  *     never switch renderers inside the live process.
  *   - Open game controllers, load SDL mappings, and drive the deterministic
  *     input-script fixtures the regression checks replay.
+ *   - Scan the player's mods/ directory and hold the pack registry the renderer's
+ *     texture override store borrows, including the Tab key that switches those
+ *     overrides off and back on mid-race.
  *   - Own the frame boundary. The collapsed single-threaded game loop blocks in
  *     osRecvMesg on the video queue; that block calls in here to poll input,
  *     present, and advance the headless frame counter.
@@ -150,6 +154,8 @@ uint64_t platform_perf_monotonic_ns(void) {
 #include "input_consumption_trace.h"
 #include "controller_mapping.h"
 #include "video_config.h"
+#include "mod_registry.h"
+#include "mod_texture_store.h"
 #include "mdkr_bounds.h"
 #include "gfx_ptr.h"
 #ifdef MDKR_APP
@@ -1313,6 +1319,190 @@ static void platform_dump_frame(void) {
     free(pix);
 }
 
+/* ---- Content packs (see platform_os.h) ---------------------------------- *
+ *
+ * The registry is a plain value owned here for the life of the process, because
+ * the texture store BORROWS it (mod_texture_store.h) and must not outlive it.
+ * Storing it beside the store's own init/shutdown pair is what keeps that
+ * lifetime a local fact rather than an ordering rule spread across files.
+ *
+ * s_contentPacksActive is the answer to "did the player install anything?", and
+ * it is deliberately NOT mdkr_mod_texture_store_active(): that one goes false
+ * the moment the player switches overrides off, which is exactly when the
+ * toggle still has to work to switch them back on.
+ */
+static MdkrModRegistry s_contentPacks;
+static int s_contentPacksActive;   /* enabled packs the scan actually kept */
+
+/* One entry of Content.PackDisabled. The list is comma-separated, entries are
+ * trimmed of surrounding blanks, and the comparison is ASCII case-insensitive
+ * for the same reason the registry's tie-break is: a player who types a pack's
+ * name back with different capitalisation means the same pack, and the answer
+ * must not depend on their locale. */
+static int content_pack_name_disabled(const char *list, const char *name) {
+    size_t name_length;
+
+    if (list == NULL || list[0] == '\0' || name == NULL || name[0] == '\0') {
+        return 0;
+    }
+    name_length = strlen(name);
+    while (*list != '\0') {
+        const char *entry_end;
+        size_t entry_length;
+
+        while (*list == ',' || *list == ' ' || *list == '\t') list++;
+        entry_end = strchr(list, ',');
+        if (entry_end == NULL) entry_end = list + strlen(list);
+        entry_length = (size_t)(entry_end - list);
+        while (entry_length > 0 &&
+               (list[entry_length - 1] == ' ' ||
+                list[entry_length - 1] == '\t')) {
+            entry_length--;
+        }
+        if (entry_length == name_length) {
+            size_t index = 0;
+            while (index < entry_length) {
+                unsigned char a = (unsigned char)list[index];
+                unsigned char b = (unsigned char)name[index];
+                if (a >= 'A' && a <= 'Z') a = (unsigned char)(a + ('a' - 'A'));
+                if (b >= 'A' && b <= 'Z') b = (unsigned char)(b + ('a' - 'A'));
+                if (a != b) break;
+                index++;
+            }
+            if (index == entry_length) return 1;
+        }
+        list = entry_end;
+        if (*list == ',') list++;
+    }
+    return 0;
+}
+
+void platform_content_packs_init(void) {
+    const MdkrVideoConfig *config = mdkr_video_config_current();
+    const char *disabled_list =
+        config != NULL ? config->values[MDKR_CONTENT_PACK_DISABLED].text : "";
+    const int packs_enabled =
+        config == NULL ||
+        config->values[MDKR_CONTENT_PACKS_ENABLED].number != 0.0f;
+    char mods_dir[MDKR_MOD_PATH_MAX];
+    int registry_skipped;
+    int player_disabled = 0;
+    int authored_off = 0;
+    int count;
+    int index;
+
+    s_contentPacksActive = 0;
+    if (!mdkr_user_mods_directory(mods_dir, sizeof mods_dir)) {
+        /* Only reachable when the packaged preference directory could not be
+         * prepared, which mdkr_user_paths_init() has already reported. Content
+         * packs are not worth a second complaint about the same failure. */
+        mdkr_mod_registry_shutdown(&s_contentPacks);
+        mdkr_mod_texture_store_init(NULL);
+        mdkr_mod_texture_set_enabled(packs_enabled);
+        return;
+    }
+    (void)mdkr_mod_registry_init(&s_contentPacks, mods_dir);
+
+    /*
+     * Content.PackDisabled is applied HERE, to the registry, rather than in the
+     * texture store. Three reasons, in order of weight:
+     *
+     *  - It is a statement about which packs are installed, not about textures.
+     *    Clearing an entry's `enabled` bit is the same lever a pack's own
+     *    pack.ini pulls, so one rule governs both and mdkr_mod_registry_resolve()
+     *    honours it for every asset kind a later milestone adds -- a store-side
+     *    filter would cover textures and silently miss the rest.
+     *  - The store's public surface has no name in it. It is keyed by content
+     *    digest by design, and threading pack names through it would give the
+     *    hot lookup path a string compare it exists to avoid.
+     *  - A disabled pack has to appear in the summary below with a reason, and
+     *    the summary is written from the registry.
+     */
+    count = mdkr_mod_registry_count(&s_contentPacks);
+    for (index = 0; index < count; index++) {
+        MdkrModEntry *entry = &s_contentPacks.entries[index];
+        if (!entry->manifest.enabled) {
+            authored_off++;
+        } else if (content_pack_name_disabled(disabled_list,
+                                              entry->manifest.name)) {
+            entry->manifest.enabled = 0;
+            player_disabled++;
+        } else {
+            s_contentPacksActive++;
+        }
+    }
+
+    mdkr_mod_texture_store_init(&s_contentPacks);
+    mdkr_mod_texture_set_enabled(packs_enabled);
+
+    registry_skipped = mdkr_mod_registry_skipped(&s_contentPacks);
+    if (count == 0 && registry_skipped == 0) {
+        /* The overwhelmingly common install. Nothing was asked for and nothing
+         * happened, so say nothing: a line here would be in every log forever. */
+        return;
+    }
+
+    /* A pack that is quietly ignored looks exactly like a pack that loaded and
+     * did nothing, so every pack the scan saw is accounted for on one of the
+     * lines below, with a reason a player can act on. On stderr, which is where
+     * mod_texture_store.c already reports an unusable pack texture: all of a
+     * player's [MODS] evidence has to survive the same redirection.  */
+    fprintf(stderr, "[MODS] %d pack(s) active, %d skipped%s\n",
+            s_contentPacksActive,
+            registry_skipped + player_disabled + authored_off,
+            packs_enabled ? "" : "; overrides are switched off in settings");
+    for (index = 0; index < count; index++) {
+        const MdkrModEntry *entry = mdkr_mod_registry_entry(&s_contentPacks,
+                                                            index);
+        if (entry == NULL) continue;
+        if (entry->manifest.enabled) {
+            /* Only `name` is mandatory in a pack.ini, so the optional fields
+             * are appended rather than formatted in: a pack that declared
+             * neither must not print as "Name  by  (priority 100)". */
+            char credit[MDKR_MOD_VERSION_MAX + MDKR_MOD_AUTHOR_MAX + 8];
+            credit[0] = '\0';
+            snprintf(credit, sizeof credit, "%s%s%s%s",
+                     entry->manifest.version[0] != '\0' ? " " : "",
+                     entry->manifest.version,
+                     entry->manifest.author[0] != '\0' ? " by " : "",
+                     entry->manifest.author);
+            fprintf(stderr, "[MODS]   active: %s%s (priority %d)\n",
+                    entry->manifest.name, credit, entry->manifest.priority);
+        } else if (content_pack_name_disabled(disabled_list,
+                                              entry->manifest.name)) {
+            fprintf(stderr,
+                    "[MODS]   skipped: %s - listed in Content.PackDisabled\n",
+                    entry->manifest.name);
+        } else {
+            fprintf(stderr,
+                    "[MODS]   skipped: %s - its pack.ini sets enabled = 0\n",
+                    entry->manifest.name);
+        }
+    }
+    for (index = 0; index < registry_skipped; index++) {
+        /* mod_registry.h publishes an accessor for the reason but not for the
+         * name it belongs to; the skip table itself is public, so read it. */
+        fprintf(stderr, "[MODS]   skipped: %s - %s\n",
+                s_contentPacks.skip_name[index],
+                mdkr_mod_registry_skip_reason(&s_contentPacks, index));
+    }
+}
+
+void platform_content_packs_shutdown(void) {
+    /* Store first: it borrows the registry, so unbinding it before the registry
+     * is cleared is the only order in which no lookup can see a dead scan. */
+    mdkr_mod_texture_store_shutdown();
+    mdkr_mod_registry_shutdown(&s_contentPacks);
+    s_contentPacksActive = 0;
+}
+
+void platform_content_packs_toggle(void) {
+    if (s_contentPacksActive == 0) return;
+    mdkr_mod_texture_set_enabled(!mdkr_mod_texture_enabled());
+    fprintf(stderr, "[MODS] content pack textures %s\n",
+            mdkr_mod_texture_enabled() ? "on" : "off");
+}
+
 /* ---- Game controller open/close ----------------------------------------- */
 static void gc_try_open(int deviceIndex) {
     if (!SDL_IsGameController(deviceIndex)) return;
@@ -2010,6 +2200,21 @@ void platform_input_pump(void) {
                         e.key.keysym.scancode < SDL_NUM_SCANCODES) {
                         s_keyboardDown[e.key.keysym.scancode] = 1;
                         input_changed = 1;
+                    }
+                    /*
+                     * Tab: content-pack overrides off and back on, live, so a
+                     * pack can be compared against the original without a
+                     * restart. Deliberately handled HERE and not next to the
+                     * overlay's own F1/F10 bindings: everything above this
+                     * switch already dropped the event when the overlay was
+                     * capturing input, which is the one notion of "the menu has
+                     * the keyboard" this port has. Tab therefore still walks the
+                     * settings UI's fields while the menu is up, without a
+                     * second focus test that could disagree with the first.
+                     * `repeat` is filtered so holding the key does not strobe.
+                     */
+                    if (!e.key.repeat && e.key.keysym.sym == SDLK_TAB) {
+                        platform_content_packs_toggle();
                     }
 #ifndef MDKR_APP
                     if (e.key.keysym.sym == SDLK_ESCAPE && g_headlessFrames < 0)

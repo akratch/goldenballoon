@@ -260,6 +260,25 @@ int platform_frame_dump_due(void);
  * nonblocking opportunities each A/B arm happened to obtain. */
 int platform_frame_dump_prepare_due(void);
 
+/* ===== Content packs (platform_sdl_min.c) =============================== *
+ * Host-side ownership of the pack registry (platform/mod_registry.h) and the
+ * decoded override textures the renderer reads through
+ * platform/mod_texture_store.h. It lives beside the event pump because the
+ * player's live A/B toggle is a key in that pump, and the "is anything even
+ * installed" fact that makes the toggle a no-op has to be the same fact the
+ * scan produced.
+ *
+ * A missing mods/ directory is the ordinary case: init resolves the path,
+ * finds nothing, logs nothing, and leaves the store inactive so the renderer
+ * never pays for a digest. */
+void platform_content_packs_init(void);
+void platform_content_packs_shutdown(void);
+/* Flip the texture override layer for a live before/after comparison. Deliberately
+ * does NOT write Content.PacksEnabled back: a momentary A/B is not a settings
+ * change, and persisting each keystroke would rewrite the config file mid-race.
+ * No-op, and silent, when no pack is installed. */
+void platform_content_packs_toggle(void);
+
 /* ===== Input (platform_sdl_min.c) ======================================= *
  * Host events are captured on presentation opportunities, but DKR-visible pad
  * state is published only when the host driver issues a fixed-step ticket.

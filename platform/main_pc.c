@@ -408,6 +408,21 @@ int main(int argc, char **argv) {
     dkr_audio_out_init();
     audioInitialized = true;
 
+    /*
+     * Content packs: scan mods/ and bind the texture override layer.
+     *
+     * Here, and not earlier, for two reasons. The resolved video config is
+     * already published (Content.PacksEnabled and Content.PackDisabled are read
+     * during the scan), and mdkr_user_paths_init() has already run in the app
+     * shell, so the packaged writable root is known. Here, and not later,
+     * because Phase 4 is where the first texture is bound and the store has to
+     * be answering by then.
+     *
+     * No pack installed is the ordinary case: this resolves a path, finds no
+     * directory, prints nothing, and leaves the store inactive.
+     */
+    platform_content_packs_init();
+
     /* Phase 3: renderer front-end (F3DDKR HLE) on the selected backend
      * (MDKR_RENDERER; default WebGPU, GL selectable). gfx_init creates the
      * backend's GPU resources, so it needs the backend window/context from Phase 2
@@ -518,6 +533,10 @@ shutdown:
      * rather than as noise. */
     mdkr_camera_dynamic_occlusion_shutdown();
     gfx_shutdown();
+    /* After the renderer, because the renderer is the only thing that ever asks
+     * the store for pixels. Safe on the early-failure paths above, where the
+     * scan never ran. */
+    platform_content_packs_shutdown();
     mdkr_memory_shutdown();
     dkr_arena_shutdown();
     platform_rom_shutdown();
