@@ -12,6 +12,7 @@
 #include "memory.h"
 #include "menu.h"
 #include "video.h"
+#include "platform_os.h"
 
 #include "asset_enums.h"
 #include "asset_loading.h"
@@ -7362,6 +7363,85 @@ void update_car_velocity_ground(Object *obj, Object_Racer *racer, s32 updateRate
 }
 
 // Related to ground collision?
+#ifdef NATIVE_PORT
+/*
+ * Issue #26 containment: hold a boss to its own authored speed ceiling when the
+ * player selected the Enhanced simulation cadence.
+ *
+ * update_car_velocity_ground() integrates thrust and drag as per-TICK
+ * constants (the //!@Delta sites), which is normally self-cancelling: at
+ * equilibrium thrust equals drag and top speed comes out tick-rate
+ * independent, whatever the cadence. What breaks that equilibrium is that
+ * drag is sampled from wheel 0 ALONE (see the traction accumulation in that
+ * function). When wheel 0 lifts while another wheel still touches, the boss
+ * keeps full thrust with zero drag and velocity integrates linearly, with
+ * nothing to bound it. At one field per tick the unscaled pitch and suspension
+ * terms enter that state far more often, so the boss runs away.
+ *
+ * Ordinary CPU racers cannot reach it: onscreen_ai_racer_physics() probes a
+ * single point and, on contact, marks all four wheels grounded on the same
+ * surface -- so they always have traction whenever they have thrust. Measured,
+ * they are cadence-neutral to within 0.2%, which is why this clamp is scoped
+ * to bosses and touches nothing else.
+ *
+ * The bound is the game's OWN governor, not an invented number:
+ * handle_racer_top_speed() caps the AI's virtual bananas at 20 and
+ * get_racer_speed_multiplier() turns that into sqrt(((n * 0.025) + 0.561) /
+ * 0.004). Under Original a boss sits exactly on that ceiling and never
+ * exceeds it; this only stops Enhanced from leaving it.
+ *
+ * Gated on the launch-time cadence, never on updateRate: under Original a lag
+ * tick legitimately arrives with updateRate 3+, and the authored code must
+ * handle it byte-identically -- a boss slowing on a lag frame is authored N64
+ * behaviour. Under Original this function returns before touching anything, so
+ * the authored path executes the same instructions it always did.
+ *
+ * MDKR_BOSS_CADENCE_COMPAT=0 disables it, which is how the gate reproduces the
+ * runaway as a positive control.
+ */
+#define MDKR_BOSS_BANANA_CAP 20.0f
+#define MDKR_BOSS_BOOST_CEILING 22.4f  /* sqrt(2.0 / 0.004), the boost allowance */
+
+void mdkr_boss_cadence_clamp(Object_Racer *racer) {
+    static s32 sEnabled = -1;
+    f32 ceiling;
+    f32 bananas;
+
+    if (racer == NULL || racer->playerIndex != PLAYER_COMPUTER ||
+        racer->vehicleID < VEHICLE_BOSSES) {
+        return;
+    }
+    if (!platform_sim_cadence_is_enhanced()) {
+        return;
+    }
+    if (sEnabled < 0) {
+        const char *value = getenv("MDKR_BOSS_CADENCE_COMPAT");
+        sEnabled = (value != NULL && value[0] == '0') ? 0 : 1;
+    }
+    if (!sEnabled) {
+        return;
+    }
+
+    bananas = racer->unk124;
+    if (bananas > MDKR_BOSS_BANANA_CAP) {
+        bananas = MDKR_BOSS_BANANA_CAP;
+    }
+    if (bananas < -MDKR_BOSS_BANANA_CAP) {
+        bananas = -MDKR_BOSS_BANANA_CAP;
+    }
+    ceiling = sqrtf(((bananas * 0.025f) + 0.561f) / 0.004f);
+    if (racer->boostTimer > 0 && ceiling < MDKR_BOSS_BOOST_CEILING) {
+        /* A boost is authored headroom above the governor; do not cancel it. */
+        ceiling = MDKR_BOSS_BOOST_CEILING;
+    }
+    if (racer->velocity > ceiling) {
+        racer->velocity = ceiling;
+    } else if (racer->velocity < -ceiling) {
+        racer->velocity = -ceiling;
+    }
+}
+#endif
+
 void func_80054FD0(Object *racerObj, Object_Racer *racer, s32 updateRate) {
     s32 pad[3];
     s32 numCollisions;
@@ -7595,6 +7675,9 @@ void func_80054FD0(Object *racerObj, Object_Racer *racer, s32 updateRate) {
         CLAMP(racer->x_rotation_vel, -0x3400, 0x3400);
         CLAMP(racerObj->trans.rotation.x_rotation, -0x3400, 0x3400);
     }
+#ifdef NATIVE_PORT
+    mdkr_boss_cadence_clamp(racer);
+#endif
 }
 
 /**

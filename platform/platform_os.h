@@ -13,6 +13,7 @@
 #ifndef MDKR64_PLATFORM_OS_H
 #define MDKR64_PLATFORM_OS_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
 #include "mdkr_trace.h"
@@ -163,6 +164,14 @@ unsigned platform_present_display_rate(void);
  * handler); the latched POLICY is not.
  */
 uint64_t platform_present_display_quantum_units(void);
+
+/* True when the player selected the Enhanced simulation cadence (1 field per
+ * authored tick, 60 Hz) rather than Original (2 fields, the authored 30 Hz).
+ * Resolved once at launch. Gameplay code that compensates for the faster tick
+ * must gate on this and NOT on the per-tick updateRate: under Original a lag
+ * tick legitimately arrives with updateRate 3+, and the authored code must
+ * handle that byte-identically. */
+bool platform_sim_cadence_is_enhanced(void);
 /* Pace one present; returns exact clock units (one source field == 1e9). */
 uint64_t platform_vi_present_pace_units(void);
 /* Commit one fixed ticket to the synthetic COUNTER at the tick boundary. */

@@ -123,6 +123,11 @@ class RaceResult:
     max_checkpoint: int
     max_lap: int
     mean_speed: float
+    # Peak world-space speed reached by the boss. The authored governor caps
+    # this at sqrt(((20 * 0.025) + 0.561) / 0.004) ~= 16.3, and Original sits
+    # exactly on it; a runaway shows up here long before it shows up in the
+    # finish clock.
+    max_velocity: float
     countdown_max: int
     go_frame: int
     update_rates: frozenset[int]
@@ -249,6 +254,7 @@ def analyse_race(label: str, output: str, audio: bytes | None) -> RaceResult:
         max_checkpoint=max(row.checkpoint for row in race_rows),
         max_lap=max(row.lap for row in race_rows),
         mean_speed=sum(speeds) / len(speeds),
+        max_velocity=max(speeds) if speeds else 0.0,
         countdown_max=max(row.start_timer for row in bluey),
         go_frame=go_frame,
         update_rates=frozenset(row.update_rate for row in race_rows),
@@ -344,6 +350,11 @@ def invoke(
         return analyse_race(label, output, audio)
 
 
+# The authored ceiling is sqrt(((20 * 0.025) + 0.561) / 0.004) ~= 16.3, plus
+# headroom for boost and for the sampling granularity of the oracle rows.
+BOSS_VELOCITY_CEILING = 23.0
+
+
 def cadence_failures(original: RaceResult, enhanced: RaceResult) -> list[str]:
     failures: list[str] = []
     for result, expected_rate in ((original, 2), (enhanced, 1)):
@@ -369,19 +380,37 @@ def cadence_failures(original: RaceResult, enhanced: RaceResult) -> list[str]:
         failures.append(
             f"Original: finish clock {original.finish_clock} outside 3350..3650"
         )
-    if not 2920 <= enhanced.finish_clock <= 3120:
+    # THESE BOUNDS WERE INVERTED UNTIL 2026-08-09, and the inversion is worth
+    # remembering: this gate used to REQUIRE the Enhanced arm to finish in
+    # 2920..3120 and to be at least 1.10x faster than Original. It was
+    # asserting the defect. Two players independently reported the boss races
+    # as unbeatable under Enhanced (issue #26) while this gate sat green,
+    # because a faster boss was exactly what it was written to expect.
+    #
+    # Enhanced now has to land in the Original band. The cause was never the
+    # tick rate as such: update_car_velocity_ground() integrates thrust and
+    # drag as per-tick constants, which is self-cancelling at equilibrium, but
+    # it samples drag from wheel 0 ALONE -- so whenever wheel 0 lifts while
+    # another wheel still touches, the boss keeps full thrust with no drag at
+    # all. Ordinary racers cannot reach that state and measure cadence-neutral
+    # to within 0.2%.
+    if not 3350 <= enhanced.finish_clock <= 3650:
         failures.append(
-            f"Enhanced control: finish clock {enhanced.finish_clock} outside 2920..3120"
-        )
-    if original.finish_clock - enhanced.finish_clock < 350:
-        failures.append(
-            "Enhanced control no longer reproduces a materially faster boss "
-            f"({original.finish_clock} vs {enhanced.finish_clock})"
+            f"Enhanced: finish clock {enhanced.finish_clock} outside the "
+            "Original band 3350..3650 -- the boss is not racing at its "
+            "authored pace"
         )
     speed_ratio = enhanced.mean_speed / original.mean_speed
-    if speed_ratio < 1.10:
+    if speed_ratio > 1.05:
         failures.append(
-            f"Enhanced control speed ratio {speed_ratio:.4f} is below 1.10"
+            f"Enhanced speed ratio {speed_ratio:.4f} exceeds 1.05; the boss is "
+            "running faster than its authored pace again"
+        )
+    if enhanced.max_velocity > BOSS_VELOCITY_CEILING:
+        failures.append(
+            f"Enhanced peak |velocity| {enhanced.max_velocity:.2f} exceeds the "
+            f"authored governor ceiling {BOSS_VELOCITY_CEILING} -- measured "
+            "36.65 unclamped, 18.28 clamped, 16.91 on Original"
         )
     return failures
 

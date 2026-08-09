@@ -2628,6 +2628,24 @@ static void pace_lazy_init(void) {
                s_fieldHz, platform_source_field_hz());
 }
 
+/*
+ * The cadence the player selected, resolved once at launch.
+ *
+ * Gameplay code that must behave differently under Enhanced has to ask THIS,
+ * never the per-tick updateRate. Under Original a lag tick legitimately
+ * arrives with updateRate 3 or more, and the authored code must handle it
+ * byte-identically -- bosses slowing down on a lag frame is authored N64
+ * behaviour. Keying off updateRate would therefore change Original's output on
+ * exactly the frames the determinism contract cares about most.
+ */
+bool platform_sim_cadence_is_enhanced(void) {
+    /* s_minFields is resolved by present_pace_init() during startup, long
+     * before any racer update runs, and defaults to 2 (Original) -- so an
+     * unexpectedly early call reports Original and leaves the authored path
+     * untouched, which is the fail-safe direction. */
+    return s_minFields == 1;
+}
+
 #if defined(_WIN32) && !defined(__EMSCRIPTEN__)
 /* ---- Windows wait precision (M3 slice 4) --------------------------------- *
  *
