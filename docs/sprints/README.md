@@ -59,9 +59,11 @@ crash.
 | S1 T10 | clean-room section 8, `mods/` ignored | `check_clean_room.sh` |
 | S2 T1 | `enhancement_registry` | `enhancement_registry` |
 | S2 T2 | the generated authority gate | `check_enhancement_authority.py` |
+| S2 T3 | speedometer | `check_enh_speedometer.py` |
 | S2 T6 | `save_state` container | `save_state_container` |
 | S3 T1 | dev-tools host, six slots, purity gate | `check_dev_tools_purity.py` |
 | S3 T3 | `dev_command` | `dev_command` |
+| S3 T4 | console + diagnostics windows | `check_dev_tools_purity.py` (2 live callbacks) |
 | S4 T1 | `gpu_diagnostics` | `gpu_diagnostics` |
 | S4 T3 | `adapter_policy` | `adapter_policy` |
 | S5 T1 | `sweep_subentry_access.py` | exits 1 on any unchecked site |
