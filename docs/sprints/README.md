@@ -76,6 +76,7 @@ crash.
 | S3 T7 | performance window | `check_dev_tools_purity.py` (6 of 6) |
 | S4 T1 | `gpu_diagnostics` | `gpu_diagnostics` |
 | S4 T3 | `adapter_policy` | `adapter_policy` |
+| S4 T5 | controller hotplug, virtual-device seam | `check_input_hotplug.py` (8 assertions) |
 | S5 T1 | `sweep_subentry_access.py` | exits 1 on any unchecked site |
 | S5 T2 | `mdkr_asset_subentry()`, `get_misc_asset` aborts | `asset_subentry`, `check_subentry_bounds.py` |
 | S5 T3 | hosted ROM checker page | `check_rom_checker_page.py` |
@@ -84,6 +85,9 @@ crash.
 | S6 T4 | `update_check` | `update_check` |
 | S8 T1 | `a11y_model` | `a11y_model` |
 | S8 T2 | shell self-voicing | `check_a11y_shell.py` |
+| S8 T3 | speech backends, one per platform | `check_a11y_shell.py` (`[SPEAK]` route) |
+| S8 T4 | race announcements | `check_a11y_race.py` (3 arms) |
+| S8 T5 | Accessibility section, rows enumerated from policy | `app_ui_policy`, `check_a11y_shell.py` |
 | S9 T1 | roadmap reconciled | — |
 | S9 T2 | `tests/route_plan.py` waypoint follower | its own self-test, 8 assertions |
 | S9 T3 | lobby rematch door, driven | `check_campaign_progression.py` driven arm |
@@ -116,6 +120,26 @@ These are recorded because the plans were wrong, not merely incomplete.
    leaving and returning — which is what reverse-and-retry does and what a
    steady traversal never does. Its own self-test caught it on the very first
    assertion.
+5. **S8 T5's Accessibility section broke three unrelated gates, and none of them
+   said so.** It shipped `DefaultOpen` unconditionally and drawn above the
+   settings category loop, which pushed Frame limit roughly 660pt below an 800pt
+   panel and the UI-scale slider below a 700pt one. The scripted gates drive
+   real widgets at coordinates captured on the previous frame; a widget scrolled
+   past the bottom is *still submitted*, so the rect stays valid, the queued
+   click lands on clipped geometry, and the failure surfaces as
+   `frame-limit requested=240 actual=original` — a persistence verdict, for a
+   layout fault. The plan named the target section for each new row and never
+   said that adding a section is a change to every coordinate below it. Sections
+   above the loop now collapse for whichever gate is armed, exempting the one
+   holding that gate's own target, and both widgets report being off-screen by
+   name so the next occurrence reads in one line.
+6. **S8 T3's plan specified a threading discipline the code does not have.** It
+   told the implementer that the worker pops while the UI pushes. `a11y_model.c`
+   writes `s_head` in the push drop-oldest arm as well as in the pop, so it is
+   not SPSC-safe and that split would have been a data race. The agent refused
+   the instruction with the correct reason and pumps on the pushing thread into
+   a mutex-guarded ring instead. An earlier commit message of mine asserted the
+   SPSC discipline as fact; it was wrong.
 
 ### A deliberate duplication, with the extraction already designed
 
