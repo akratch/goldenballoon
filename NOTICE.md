@@ -156,8 +156,16 @@ redistributed under the terms of that project.
 
 `lib/` contains third-party sources and data vendored per their own licenses and
 compiled into or shipped alongside the app: Dear ImGui for the native app shell,
-`glad` for GL loading, and the SDL game-controller database. Each retains its
-upstream license.
+`glad` for GL loading, `stb_image` for PNG decoding, and the SDL
+game-controller database. Each retains its upstream license.
+
+`lib/stb/stb_image.h` is stb_image v2.30 by Sean Barrett, vendored from
+`nothings/stb` at commit `f58f558c120e9b32c217290b80bad1a0729fbb2c`; the
+vendored file's SHA-256 is
+`594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3`. It is dual
+MIT / public-domain, and both texts travel with the file. It decodes the PNG
+textures in a player's own content packs and is built with only its PNG decoder
+enabled. No image is shipped with this repository for it to read.
 
 ## Full provenance table
 

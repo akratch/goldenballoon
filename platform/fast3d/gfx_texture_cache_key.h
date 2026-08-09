@@ -17,6 +17,7 @@ struct DkrTexCacheKey {
     bool font_remastered;       /* source atlas versus derived SDF */
     bool mipmaps;               /* single level versus complete chain */
     bool cutout;                /* plain versus coverage-preserving mips */
+    uint32_t override_generation; /* bumped when pack overrides toggle */
 };
 
 static inline bool dkr_texcache_key_equal(
@@ -32,7 +33,8 @@ static inline bool dkr_texcache_key_equal(
         left->palette == right->palette &&
         left->line_swapped == right->line_swapped &&
         left->font_remastered == right->font_remastered &&
-        left->mipmaps == right->mipmaps && left->cutout == right->cutout;
+        left->mipmaps == right->mipmaps && left->cutout == right->cutout &&
+        left->override_generation == right->override_generation;
 }
 
 #endif /* MDKR64_GFX_TEXTURE_CACHE_KEY_H */

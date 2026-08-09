@@ -190,6 +190,13 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/config_ini.c       # INI engine (game-agnostic)
     ${CMAKE_SOURCE_DIR}/platform/taj_mod_state.c    # versioned global Taj unlock sidecar
     ${CMAKE_SOURCE_DIR}/platform/taj_mod_state_file.c # atomic desktop/Web state backend
+    # Content packs: a read-only override layer in front of the ROM asset path.
+    # No pack content is shipped, hosted or tracked; these only read what a
+    # player put in mods/ themselves.
+    ${CMAKE_SOURCE_DIR}/platform/mod_manifest.c     # one pack's pack.ini
+    ${CMAKE_SOURCE_DIR}/platform/mod_registry.c     # ordered set of installed packs
+    ${CMAKE_SOURCE_DIR}/platform/mod_texture_key.c  # published texture content digest
+    ${CMAKE_SOURCE_DIR}/platform/mod_texture_store.c # decoded override textures (stb PNG)
     ${CMAKE_SOURCE_DIR}/platform/video_config.c     # presentation modes (pure core)
     ${CMAKE_SOURCE_DIR}/platform/video_config_runtime.c  # ini/env/argv + g_pc* publication
     ${CMAKE_SOURCE_DIR}/platform/user_paths.c       # immutable bundle vs mutable user-data policy
@@ -312,6 +319,12 @@ else()
     set(GLAD_SOURCES "")
 endif()
 
+# stb_image, instantiated in its own TU so third-party source can be compiled
+# with warnings off without weakening the strict baseline PLATFORM_SOURCES is
+# held to. Every platform builds it: content-pack PNG decode is not
+# desktop-only. See lib/stb/stb_image_impl.c for the decoder configuration.
+set(STB_SOURCES ${CMAKE_SOURCE_DIR}/lib/stb/stb_image_impl.c)
+
 # --- Target name ----------------------------------------------------------
 # Native binary is `mdkr64`; the wasm engine is `mdkr64_web` (emits
 # mdkr64_web.js + mdkr64_web.wasm, loaded by dist/web/index.html).
@@ -326,6 +339,7 @@ add_executable(${MDKR_TARGET}
     ${PLATFORM_SOURCES}
     ${FAST3D_SOURCES}
     ${GLAD_SOURCES}
+    ${STB_SOURCES}
 )
 
 # Include layout mirrors the DKR Makefile (-I . -I include -I include/libc
@@ -343,6 +357,7 @@ target_include_directories(${MDKR_TARGET} PRIVATE
     ${CMAKE_SOURCE_DIR}/platform/fast3d
     ${CMAKE_SOURCE_DIR}/platform/fast3d_shim
     ${CMAKE_SOURCE_DIR}/lib/glad/include
+    ${CMAKE_SOURCE_DIR}/lib/stb          # stb_image.h, taken by mod_texture_store.c
     ${SDL2_INCLUDE_DIRS}
 )
 
@@ -394,6 +409,15 @@ elseif(CMAKE_C_COMPILER_ID MATCHES "Clang" OR
        CMAKE_C_COMPILER_ID STREQUAL "GNU" OR EMSCRIPTEN)
     set_source_files_properties(${PLATFORM_SOURCES} PROPERTIES
         COMPILE_OPTIONS "-Wall;-Wextra;-Werror")
+endif()
+# Vendored third-party source does not survive this project's warning baseline,
+# and it is not this project's to fix. Suppress warnings for that FILE rather
+# than relaxing the flags any first-party file is held to — the whole reason
+# stb_image is instantiated in its own TU is to make this a one-file exemption.
+if(MSVC)
+    set_source_files_properties(${STB_SOURCES} PROPERTIES COMPILE_OPTIONS "/w")
+else()
+    set_source_files_properties(${STB_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
 endif()
 target_compile_options(${MDKR_TARGET} PRIVATE
     -fno-strict-aliasing

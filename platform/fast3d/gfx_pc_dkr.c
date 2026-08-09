@@ -86,6 +86,8 @@
 #include "gfx_shadow_frame.h"
 #include "presentation_snapshot.h"
 #include "present_sched.h"   /* presentation-replay arming seam */
+#include "mod_texture_key.h"     /* the digest a pack author names a texture by */
+#include "mod_texture_store.h"   /* the override layer in front of the ROM path */
 #include "gfx_uniforms.h"
 #include "gfx_pc_dkr.h"
 #ifdef MDKR_WEBGPU_BACKEND
@@ -1997,6 +1999,7 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         .mipmaps = g_pcMipmaps && gfx_rapi != NULL &&
             gfx_rapi->upload_texture_mipped != NULL,
         .cutout = cutout,
+        .override_generation = mdkr_mod_texture_generation(),
     };
 
     int hit = -1;
@@ -2030,7 +2033,41 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         }
         gfx_rapi->select_texture(unit, tid);
         uint32_t uw = 0, uh = 0;
-        if (!dkr_upload_tile_texture(td, cutout, &uw, &uh)) {
+        /* The override layer sits IN FRONT of the ROM path, never inside it:
+         * when no pack answers, the call below is the same call, with the same
+         * arguments, that has always run here.
+         *
+         * The digest is taken over the raw source texels (`addr`), not over
+         * `source_identity` — that is a retained-task alias used to keep cache
+         * identity stable, not the pixel source. The span is clamped exactly
+         * the way dkr_src_hash() and dkr_upload_tile_texture() clamp it:
+         * source_size_bytes can name more bytes than `addr` actually owns at
+         * the arena edge, and the decode drops those rows rather than reading
+         * them. Hashing further than the decoder reads would read off the end
+         * of the arena for the sake of a name. */
+        MdkrModTexture over = { NULL, 0, 0 };
+        bool over_used = false;
+        if (mdkr_mod_texture_store_active()) {
+            char digest[33];
+            size_t digest_room = dkr_arena_room(addr);
+            uint32_t digest_bytes = source_size_bytes;
+            if (digest_room != (size_t)-1 && digest_bytes > digest_room) {
+                digest_bytes = (uint32_t)digest_room;
+            }
+            mdkr_mod_texture_digest(&key, addr, digest_bytes, digest);
+            over_used = mdkr_mod_texture_lookup(digest, &over) != 0;
+        }
+        const bool uploaded =
+            over_used ? gfx_rapi->upload_texture(over.rgba, over.width,
+                                                 over.height)
+                      : dkr_upload_tile_texture(td, cutout, &uw, &uh);
+        if (over_used) {
+            /* UVs are normalised against the uploaded size, so a pack texture
+             * at a different resolution addresses the same logical tile. */
+            uw = (uint32_t) over.width;
+            uh = (uint32_t) over.height;
+        }
+        if (!uploaded) {
             /*
              * A failed upload invalidates both a new handle and a reused cache
              * handle: the backend object may now contain partial/new pixels,
