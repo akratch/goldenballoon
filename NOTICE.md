@@ -156,8 +156,9 @@ redistributed under the terms of that project.
 
 `lib/` contains third-party sources and data vendored per their own licenses and
 compiled into or shipped alongside the app: Dear ImGui for the native app shell,
-`glad` for GL loading, `stb_image` for PNG decoding, and the SDL
-game-controller database. Each retains its upstream license.
+`glad` for GL loading, `stb_image` for PNG decoding, `miniz` for reading zipped
+content packs, and the SDL game-controller database. Each retains its upstream
+license.
 
 `lib/stb/stb_image.h` is stb_image v2.30 by Sean Barrett, vendored from
 `nothings/stb` at commit `f58f558c120e9b32c217290b80bad1a0729fbb2c`; the
@@ -166,6 +167,20 @@ vendored file's SHA-256 is
 MIT / public-domain, and both texts travel with the file. It decodes the PNG
 textures in a player's own content packs and is built with only its PNG decoder
 enabled. No image is shipped with this repository for it to read.
+
+`lib/miniz/miniz.h` and `lib/miniz/miniz.c` are miniz 3.0.2 by Rich Geldreich
+and contributors, vendored from the pinned upstream release archive
+`https://github.com/richgel999/miniz/releases/download/3.0.2/miniz-3.0.2.zip`;
+the vendored files' SHA-256s are
+`295d1a0041aea09609598c0f1f35c1977ca05ad662acbadcfdaac44c140af37b` (`miniz.h`)
+and `0fcdc9888cb3a29ca8f176bac087e5fe6c7258a6ab06b1c271c1e109a11d3740`
+(`miniz.c`). It is MIT licensed — Copyright 2013-2014 RAD Game Tools and Valve
+Software, Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC — and
+that text travels at the top of `miniz.c`. `miniz.h`'s banner comment still
+carries an out-of-date "public domain" line from before miniz relicensed to MIT
+at 2.0; the MIT terms are the ones that apply. It reads the zipped content packs
+a player installs themselves. No archive is shipped with this repository for it
+to read, and nothing in this port asks it to write one.
 
 ## Full provenance table
 

@@ -386,6 +386,31 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME adapter_policy COMMAND mdkr_adapter_policy_test)
 
+    # One read interface over a directory pack and a zip pack. The property
+    # worth the test is that both go through ONE path validator: mutating the
+    # zip arm alone fails only the directory assertions, which is exactly the
+    # "fixed one caller, missed the other" shape a single funnel prevents.
+    # miniz is third-party and does not survive the project's warning baseline
+    # under GCC/mingw, so that one file is compiled with warnings off.
+    add_executable(mdkr_mod_source_zip_test
+        ${CMAKE_SOURCE_DIR}/tests/test_mod_source_zip.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_source.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c)
+    target_include_directories(mdkr_mod_source_zip_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/lib/miniz)
+    if(MSVC)
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c
+            PROPERTIES COMPILE_OPTIONS "/w")
+    else()
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c
+            PROPERTIES COMPILE_OPTIONS "-w")
+        target_link_libraries(mdkr_mod_source_zip_test PRIVATE m)
+    endif()
+    add_test(NAME mod_source_zip COMMAND mdkr_mod_source_zip_test
+             ${CMAKE_CURRENT_BINARY_DIR}/mod_source_scratch)
+
     add_executable(mdkr_vehicle_audio_contract_test
         ${CMAKE_SOURCE_DIR}/tests/test_vehicle_audio_contract.c
         ${CMAKE_SOURCE_DIR}/platform/asset_swap.c)

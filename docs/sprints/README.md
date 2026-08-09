@@ -54,6 +54,8 @@ crash.
 | S1 T2 | `mod_registry` | `mod_registry` |
 | S1 T3 | `mod_texture_key` | `mod_texture_key` |
 | S1 T4 | `mod_texture_store` + the `dkr_bind_tile()` hook, stb_image vendored | inertness: `check_texture_lineswap`, `check_determinism`, `check_race_drive` unchanged |
+| S1 T5 | startup wiring + `Tab` toggle | positive control: pack-on and Tab-off frame hashes |
+| S1 T6 | `mod_source` zip containers, miniz vendored | `mod_source_zip` |
 | S1 T10 | clean-room section 8, `mods/` ignored | `check_clean_room.sh` |
 | S2 T1 | `enhancement_registry` | `enhancement_registry` |
 | S2 T6 | `save_state` container | `save_state_container` |

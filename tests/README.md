@@ -3627,14 +3627,14 @@ reach MENU_TITLE at frame 1134. If you see a race load early in an *idle* boot, 
 is the ordinary title attract demo (`levelId=18` @~5132, `levelId=28` @~6632,
 `numPlayers=0 cutscene=100`), which exits on START.
 
-## Sprint ROM-free units — ten new CTests
+## Sprint ROM-free units — eleven new CTests
 
 ```bash
 ctest --test-dir build --output-on-failure \
-  -R '^(mod_manifest|mod_registry|mod_texture_key|dev_command|enhancement_registry|a11y_model|save_state_container|update_check|gpu_diagnostics|adapter_policy)$'
+  -R '^(mod_manifest|mod_registry|mod_source_zip|mod_texture_key|dev_command|enhancement_registry|a11y_model|save_state_container|update_check|gpu_diagnostics|adapter_policy)$'
 ```
 
-Ten CTest units added by the [`docs/sprints/`](../docs/sprints/README.md)
+Eleven CTest units added by the [`docs/sprints/`](../docs/sprints/README.md)
 work. All are ROM-free and window-free, all run in milliseconds, and
 `rom_free_units` carries them into every lane. They are registered in
 `cmake/tests.cmake`; `tools/run_checks.py` does not name them individually
@@ -3644,6 +3644,7 @@ because its manifest cross-check covers `tests/test_*.py`, and these are C.
 |---|---|---|
 | `mod_manifest` | One `pack.ini`, parsed and validated | Over-long name/author/version is **rejected**, not truncated |
 | `mod_registry` | Pack discovery, load order, path resolution | Traversal rejected against a bait file that genuinely exists; equal-priority tie-break pinned to an explicit ASCII case fold, so load order cannot shift with locale |
+| `mod_source_zip` | One read interface over directory and zip packs | Both kinds go through **one** path validator — mutating only the zip arm fails only the *directory* assertions; and every traversal bait file genuinely exists, so an unguarded implementation would return it |
 | `mod_texture_key` | The published texture digest | An exact pinned value, plus a `0xaa`-filled union proving padding bytes are not hashed |
 | `dev_command` | Console command parsing | `set` refuses any key outside the schema, so a console cannot become an arbitrary-write primitive |
 | `enhancement_registry` | The enhancement table and its authority classes | The table and `mdkr_video_key_is_enhancement()` describe exactly the same set |
