@@ -134,7 +134,15 @@ lesson does not have to be re-learned.
 4. **A root cause is not closed until its class is swept.** #25 and #27 were the
    same function failing to save borrowed state; sweeping that class found two
    more defects nobody had reported.
-5. **A measurement is not believed until its subject is confirmed.**
+5. **Parallel work is scoped by INVARIANT, not by file.** Two agents were
+   given disjoint file scopes — `racer.c` versus `vehicle_*.c` — and still
+   collided, because the boss countdowns read `gRaceStartTimer`, which
+   `racer.c` owns, and because both were graded by the same gate. Disjoint
+   files are not disjoint state. Before parallelising, ask what shared
+   invariant the pieces are both standing on; if they share one, serialise
+   them. Corollary already paid for: never run the suite while anything is
+   editing the tree it measures.
+6. **A measurement is not believed until its subject is confirmed.**
    `MDKR_LOAD_TRACK` only binds once the route reaches track select; a short run
    silently races a default level. Confirm via `[TRACE] level_light: level=N`.
    This cost three wrong measurements in one day.
