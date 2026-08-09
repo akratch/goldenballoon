@@ -133,29 +133,45 @@ mipmapped ROM texture gets no mip chain even though its cache key says
 `mipmaps = true`. That is what the plan specified, and it will read as aliasing
 at distance once packs exist.
 
-### One verification gap in this work
+### Verification state
 
-`STB_SOURCES` is added to the target unconditionally, so the wasm build compiles
-`stb_image` too, and `platform/mod_*.c` are all in `PLATFORM_SOURCES` for every
-platform. **The web build has not been rebuilt since.** The native and ROM
-suite roles pass; the `wasm`, `browser` and `browser_save` roles were not run,
-and neither was `tools/web/build_web.sh`. Nothing here is expected to break
-under emscripten — stb_image is ordinary portable C and the mod layer touches
-no platform API beyond `fs_utf8` — but *expected not to break* is not a
-measurement, and the browser build is a shipped artifact.
+**The web build was rebuilt and links.** `STB_SOURCES` is added to the target
+unconditionally and every `platform/mod_*.c` is in `PLATFORM_SOURCES`, so the
+wasm target compiles all of it. `tools/web/build_web.sh` completes with exit 0
+and stages `mdkr64_web.wasm`, `mdkr64_web.js` and the rest of `dist/web`.
 
-Run before this branch is merged:
+Still not run: the `browser` and `browser_save` roles, which drive a real
+Chromium profile. Nothing suggests they would fail — the mod layer touches no
+platform API beyond `fs_utf8`, and the browser has no writable `mods/`, so the
+store should simply stay inactive — but that is an inference, not an
+observation.
 
 ```bash
-tools/web/build_web.sh
-MDKR_AUDIO=0 python3 tools/run_checks.py --role wasm,browser,browser_save
+MDKR_AUDIO=0 python3 tools/run_checks.py --role browser,browser_save
 ```
 
-There is also a live question the wasm build will answer: the pack directory
-resolves relative to the working directory on non-packaged builds, and the
-browser has no writable `mods/`. The store should simply stay inactive there,
-which is the correct behaviour, but it is currently an inference rather than an
-observation.
+**One check fails here for a documented environment reason, not a regression.**
+`check_app_adopted_pacing`'s FPS-only WebGPU overlay arm reports
+`presented=0 unavailable=1424` — the surface never produced a drawable, because
+this shell has no active window-server session.
+[`../DEFINITION_OF_DONE.md`](../DEFINITION_OF_DONE.md) already records that arm,
+and the realtime pacing baseline, as requiring one. Nothing in this work touches
+presentation. It needs re-running on a machine with a display before the branch
+is called green.
+
+**Suite coverage actually run** (in slices, because the runner's wall time
+exceeds the tool's per-command ceiling): `state_hash`, `determinism`,
+`race_drive`, `race_finish_time`, `race_2p_split`, `texture_lineswap`,
+`mip_motion`, `texture_edge_classification`, `sprite_layout`,
+`rdp_interpolation`, `font_sdf`, `collision_gridmask`, `collision_untextured`,
+`door_blocks`, `boss_win_verdict`, `adventure_hub`, `array_bounds_sweep`,
+`runtime_safety`, `native_ui_resolution`, `save_failsafe`, `rom_revision`,
+`asset_swap_invariants`, `audio_output`, `raw16_audio`, `audio_options_persistence`,
+`camera_obstruction_runtime`, `simulation_cadence`, `math_rotpy`, `math_tables`,
+`restart_apply`, `shell_dropfile`, `overlay_pause`, `overlay_pause_cutscene`,
+`app_capture`, `app_ui_input`, `ci_contract`, plus `ctest` at 134/134. All pass.
+That is well short of the manifest's 146 tasks — the long matrix, ghost, trophy,
+campaign, webgpu-census and browser lanes were not run.
 
 ### A gate that was already failing on `main`
 
