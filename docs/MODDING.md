@@ -139,11 +139,25 @@ replacing a track.
 
 ## Turning packs on and off
 
-- **`Tab`** switches every override off and back on while you play, so you can
-  compare a pack against the original on the same corner. It does not change
-  your settings; it is a momentary A/B.
-- **Settings → `Content.PacksEnabled`** is the durable switch. It currently
-  takes effect the next time you launch.
+- **`Tab`** switches replaced **textures** off and back on while you play, so
+  you can compare a pack against the original on the same corner. It does not
+  change your settings; it is a momentary A/B. Replacement music keeps playing
+  either way: a track cannot be swapped part-way through without leaving a gap
+  where the music should be, so music follows the setting below and not this
+  key.
+- **Settings → `Content.PacksEnabled`** is the durable switch, and it takes
+  effect straight away — textures change on the next frame, no relaunch. If you
+  had pressed `Tab` to look at the original, changing this setting ends that
+  comparison and shows you what the setting says; press `Tab` again if you want
+  it back.
+
+  Music is the one thing that waits: a replacement track that is already
+  playing plays out, and the switch applies from the next piece of music
+  onwards. Cutting a track off mid-play would leave silence rather than the
+  game's own music.
+
+  Adding or removing a pack in the `mods` folder still needs a relaunch — that
+  is the folder being read, not this switch.
 - **`Content.PackDisabled`** is a comma-separated list of pack names to leave
   uninstalled. Matching ignores case and surrounding spaces.
 

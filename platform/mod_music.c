@@ -43,6 +43,7 @@ static int      s_absent_id = -1;  /* last id proven to have no usable track */
 static int      s_active;
 static int      s_gain_q15 = 32768;
 static int      s_reports;
+static int      s_enabled = 1;   /* Content.PacksEnabled; see mod_music.h */
 
 static void report_rejection(int sequence_id, const char *reason) {
     if (s_reports >= MDKR_MOD_MUSIC_REPORT_MAX) return;
@@ -296,9 +297,18 @@ void mdkr_mod_music_shutdown(void) {
     s_registry = NULL;
     s_rate = 0;
     s_channels = 0;
-    /* s_gain_q15 and s_reports deliberately survive: the gain belongs to the
-     * player's volume setting, not to the registry, and a report budget that
-     * reset on every rescan would let the same broken pack fill the log again. */
+    /* s_gain_q15, s_reports and s_enabled deliberately survive: the gain and the
+     * switch belong to the player's settings, not to the registry, and a report
+     * budget that reset on every rescan would let the same broken pack fill the
+     * log again. Same rule mod_texture_store.c states for its own s_enabled. */
+}
+
+void mdkr_mod_music_set_enabled(int enabled) {
+    s_enabled = enabled != 0;
+}
+
+int mdkr_mod_music_enabled(void) {
+    return s_enabled;
 }
 
 int mdkr_mod_music_begin(int sequence_id) {
@@ -312,6 +322,12 @@ int mdkr_mod_music_begin(int sequence_id) {
 
     s_active = 0;
     s_position = 0;
+    /* Custom content off: this track is the game's own, and the sequence player
+     * must not be muted for it. Checked before the cache below so a pack track
+     * that is already decoded is still declined -- the decoded pixels-equivalent
+     * is kept for the same reason the texture store keeps its own, so switching
+     * back on costs the next track start and nothing more. */
+    if (!s_enabled) return 0;
     if (s_registry == NULL || s_rate <= 0 || s_channels <= 0) return 0;
     if (sequence_id < 0) return 0;
 

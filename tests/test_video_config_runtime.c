@@ -9,6 +9,8 @@
 #include "display_config.h"
 #include "audio_volume.h"
 #include "config_ini.h"
+#include "mod_music.h"
+#include "mod_texture_store.h"
 #include "present_sched.h"
 #include "test_platform_compat.h"
 #include "video_config.h"
@@ -122,6 +124,36 @@ void mdkr_present_set_allow_tearing(const char *value) {
     if (value != NULL) {
         snprintf(s_presentTearing, sizeof(s_presentTearing), "%s", value);
     }
+}
+
+/*
+ * Content.PacksEnabled's two receivers. mod_texture_store.c and mod_music.c are
+ * not linked here for the same reason display_config.c and present_sched.c are
+ * not -- one drags stb_image, mod_registry and mod_source in, the other dr_wav
+ * -- so these stand in, and the real headers are included above so a signature
+ * that drifts fails to compile rather than silently going unpublished.
+ *
+ * They start at 1, which is what the real modules default to, so a publish()
+ * that never touched them would leave the observation below unchanged and the
+ * "packs off" assertion would fail rather than pass by accident.
+ */
+static int s_modTexturesEnabled = 1;
+static int s_modMusicEnabled = 1;
+
+void mdkr_mod_texture_set_enabled(bool enabled) {
+    s_modTexturesEnabled = enabled ? 1 : 0;
+}
+
+bool mdkr_mod_texture_enabled(void) {
+    return s_modTexturesEnabled != 0;
+}
+
+void mdkr_mod_music_set_enabled(int enabled) {
+    s_modMusicEnabled = enabled != 0;
+}
+
+int mdkr_mod_music_enabled(void) {
+    return s_modMusicEnabled;
 }
 
 static void expect(const char *name, int condition) {
@@ -445,6 +477,27 @@ static int run_primary_case(void) {
            !strcmp(mdkr_video_config_desired()
                        ->values[MDKR_VIDEO_MOTION_SMOOTHING].text,
                    "interpolate"));
+
+    /*
+     * Content.PacksEnabled is SCOPE_LIVE for the same reason the three above
+     * are: publish() carries it to a receiver. Before it did, the key was
+     * declared live and reached nobody, so the checkbox did nothing until the
+     * next launch. BOTH directions are asserted -- an implementation that only
+     * published "off" would leave a player unable to switch their packs back
+     * on without relaunching, which is the worse half of the same defect.
+     */
+    expect("custom content switches off live",
+           mdkr_video_config_runtime_set(MDKR_CONTENT_PACKS_ENABLED, "0") ==
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("switching custom content off reached textures and music",
+           !mdkr_mod_texture_enabled() && !mdkr_mod_music_enabled());
+    expect("custom content switches back on live",
+           mdkr_video_config_runtime_set(MDKR_CONTENT_PACKS_ENABLED, "1") ==
+               MDKR_VIDEO_RUNTIME_LIVE);
+    expect("switching custom content on reached textures and music",
+           mdkr_mod_texture_enabled() && mdkr_mod_music_enabled());
+    expect("switching custom content raises no restart",
+           !mdkr_video_config_restart_pending());
 
     /*
      * The presentation-pace quick choice: ONE call that must move BOTH keys.

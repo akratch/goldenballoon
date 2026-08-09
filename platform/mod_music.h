@@ -65,6 +65,24 @@ void mdkr_mod_music_init(const struct MdkrModRegistry *registry,
  * safe to call when init never ran. */
 void mdkr_mod_music_shutdown(void);
 
+/* Whether pack music may stand in for the sequence at all -- the music half of
+ * the player's "Custom content" setting (Content.PacksEnabled), pushed here by
+ * mdkr_video_config_publish() the same way the texture half is pushed to
+ * mdkr_mod_texture_set_enabled(). Enabled by default, so a build that never
+ * publishes anything behaves exactly as it did before this switch existed.
+ *
+ * It is read at mdkr_mod_music_begin() and NOWHERE ELSE, which makes it a
+ * decision taken once per track rather than a gate on the mix. That is not an
+ * economy, it is the only reversible place to put it: the sequence player is
+ * muted by having its volume redirected here and set to zero, and nothing
+ * short of the game's next volume change gives it back. Silencing a
+ * replacement mid-track would therefore leave the original silent too, and the
+ * player would hear a hole rather than the game's own music. Switching custom
+ * content off is honoured from the next piece of music onwards; what is
+ * already playing plays out. */
+void mdkr_mod_music_set_enabled(int enabled);
+int  mdkr_mod_music_enabled(void);
+
 /* Asks for `music/<sequence_id>.wav`. Returns 1 when an enabled pack supplies a
  * usable track, which is the caller's signal to mute the sequence player; 0
  * when it does not, which changes nothing at all. Playback starts at the

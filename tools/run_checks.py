@@ -155,6 +155,10 @@ CHECKS = (
     Check("mod_music_override", "check_mod_music_override.py", "rom",
           "a pack's music replaces the sequenced original, obeys the music "
           "volume, works from a zip, and moves no authoritative state"),
+    Check("mod_texture_override", "check_mod_texture_override.py", "rom",
+          "a pack's textures replace the ROM's, and the Custom content setting "
+          "switches them off and back on mid-run through the settings route, "
+          "off being byte-identical to having no pack installed"),
     Check("enh_ai_difficulty", "check_enh_ai_difficulty.py", "rom",
           "opponent skill leaves the authored arm bit-identical to a build "
           "without the enhancement compiled in, and the harder arms measurably "

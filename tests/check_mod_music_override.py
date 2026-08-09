@@ -35,7 +35,7 @@ sample 66,240 (three seconds in) and holds it for the rest of the capture, which
 is the earliest music the game reaches and therefore the cheapest to gate on.
 320 frames is 235,520 sample-frames, of which ~170,000 are music.
 
-Six arms, ~0.6 s each:
+Seven arms, ~0.6 s each:
 
     A  no pack            Music 100    [SIMHASH] v3
     B  directory pack     Music 100    [SIMHASH] v3
@@ -44,6 +44,7 @@ Six arms, ~0.6 s each:
     D  directory pack     Music 0
     E  no pack            Music 0
     F  directory pack     Music 50
+    G  directory pack     Music 100    Content.PacksEnabled=0    [SIMHASH] v3
 
 Effects volume is 0 in every arm. That is not cosmetic: with the sound-effect bus
 silent and the sequence player muted, the music window contains the replacement
@@ -83,6 +84,23 @@ What is asserted (measured values are from the reference run, US v80)
     byte-identical to arm B's. Discovery, manifest parsing and content reads all
     go through `platform/mod_source.c`, and this is the assertion that keeps the
     two source kinds honest about it.
+
+ 7. "CUSTOM CONTENT" GOVERNS MUSIC TOO. Arm G installs the same pack with
+    Content.PacksEnabled=0 at launcher rank, which is where a player's saved
+    setting sits. The pack is still found and still reported active, and the
+    replacement is never claimed: the capture is byte-identical to arm A's, so
+    a player who switches custom content off hears the game's own sequence and
+    not the pack's WAV. The arm exists because the setting used to reach the
+    texture layer alone -- a checkbox called "Custom content" that silently
+    left the music replaced was the same class of lie as the one the settings
+    checkbox told before it was published live at all.
+
+    What arm G does NOT claim is that the switch cuts a replacement off
+    mid-track. It does not, deliberately: mod_music.h reads it at
+    mdkr_mod_music_begin(), because muting the sequence player is a one-way
+    redirection and stopping a replacement partway would leave silence where
+    the game's own music should be. Live coverage of the setting's texture half
+    is tests/check_mod_texture_override.py.
 
 Self-validation — this check is proven to be able to fail
 ---------------------------------------------------------
@@ -238,11 +256,14 @@ def install_pack(run_dir: Path, kind: str) -> None:
 # capture
 # ==========================================================================
 class Arm:
-    def __init__(self, label, kind, music, hashes):
+    def __init__(self, label, kind, music, hashes, packs=None):
         self.label = label
         self.kind = kind
         self.music = music
         self.hashes = hashes
+        # None leaves Content.PacksEnabled at its default; "0" switches custom
+        # content off the way a player's saved setting does, at LAUNCHER rank.
+        self.packs = packs
         self.samples = array.array("h")
         self.digest = ""
         self.rows: list[str] = []
@@ -283,6 +304,8 @@ def run_arm(binary: Path, rom: Path, root: Path, arm: Arm, frames: int,
         env["MDKR_STATE_HASH"] = "3"
 
     command = [str(binary), "--headless-frames", str(frames), "--rom", str(rom)]
+    if arm.packs is not None:
+        command += ["--video-launch-set", f"Content.PacksEnabled={arm.packs}"]
     if verbose:
         print(f"$ ({arm.label}) {' '.join(command)}", flush=True)
     process = subprocess.run(
@@ -404,9 +427,10 @@ def main() -> int:
         "pack-muted": Arm("pack-muted", "dir", 0, False),
         "baseline-muted": Arm("baseline-muted", "none", 0, False),
         "pack-half": Arm("pack-half", "dir", 50, False),
+        "pack-off": Arm("pack-off", "dir", 100, True, packs="0"),
     }
 
-    print("1. six headless captures, no device, no pack content in the repo")
+    print("1. seven headless captures, no device, no pack content in the repo")
     with tempfile.TemporaryDirectory(prefix="mdkr_mod_music_") as tmp:
         root = Path(tmp)
         for arm in arms.values():
@@ -432,6 +456,10 @@ def main() -> int:
                 "\n".join(arms[label].mods))
     require(not arms["baseline"].mods,
             "the baseline arm found content packs; its mods/ is not empty")
+    require(any("1 pack(s) active" in line for line in arms["pack-off"].mods),
+            "the pack-off arm did not even find the pack, so assertion 7 "
+            "would be measuring an empty mods/ directory\n"
+            + "\n".join(arms["pack-off"].mods))
     print(f"   ok  {frames_captured} frames each; sequence {SEQUENCE_ID} "
           f"reached; replacement reported in 3 arms")
 
@@ -522,6 +550,21 @@ def main() -> int:
             "the zipped pack was not discovered as an active pack\n" +
             "\n".join(arms["zipped"].mods))
     print(f"   ok  zip == directory, sha256 {arms['pack'].digest[:16]}")
+
+    print("7. Custom content off means the game's own music, not the pack's")
+    needle = f"[MODS] music/{SEQUENCE_ID}.wav replaces sequence {SEQUENCE_ID}"
+    require(not any(needle in line for line in arms["pack-off"].mods),
+            "with Content.PacksEnabled=0 the engine still claimed the "
+            "replacement\n" + "\n".join(arms["pack-off"].mods))
+    require(arms["pack-off"].digest == arms["baseline"].digest,
+            "with Content.PacksEnabled=0 an installed pack still changes the "
+            "output: the capture is not byte-identical to the same run with no "
+            f"pack at all ({arms['pack-off'].digest[:16]} vs "
+            f"{arms['baseline'].digest[:16]})")
+    require(arms["pack-off"].rows == baseline_rows,
+            "pack-off: the [SIMHASH] v3 stream differs from the baseline's")
+    print(f"   ok  pack installed, switch off -> the baseline's own bytes, "
+          f"sha256 {arms['baseline'].digest[:16]}")
 
     print("check_mod_music_override: PASS")
     return 0

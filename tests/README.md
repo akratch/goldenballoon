@@ -3835,7 +3835,7 @@ frame.
 MDKR_AUDIO=0 python3 tests/check_mod_music_override.py --build build
 ```
 
-Six headless captures, no audio device, and **no ROM audio anywhere** — the
+Seven headless captures, no audio device, and **no ROM audio anywhere** — the
 pack's WAV is a 440 Hz sine the test synthesises, exactly 440 cycles in one
 second at 22050 Hz so the loop seam is continuous.
 
@@ -3853,9 +3853,84 @@ waveform must fit the capture to 0.006%. Arm C installs the same pack as a
 `.zip` with no directory present and requires byte-identical output — which is
 what proves the registry now discovers archives.
 
+Arm G is the music half of the **Custom content** setting. It installs the same
+pack with `Content.PacksEnabled=0` at launcher rank — where a player's saved
+setting sits — and requires the capture to be byte-identical to arm A's: the
+pack is found and reported active, and the replacement is never claimed. The
+setting used to reach the texture layer alone, so a checkbox named "Custom
+content" quietly left the music replaced. What arm G deliberately does *not*
+claim is a mid-track cut: the switch is read at `mdkr_mod_music_begin()`,
+because muting the sequence player is a one-way redirection and stopping a
+replacement partway would leave silence where the game's own music should be.
+Its positive control removes that read; arm 7 fails with `with
+Content.PacksEnabled=0 the engine still claimed the replacement`.
+
 The positive control stubs the begin hook to return 0; assertions 1–4 all fail.
 Assertion 6 keeps passing under that stub, honestly, because it then compares
 two equally unmodded arms — recorded in the docstring rather than papered over.
+
+## Pack textures and the live switch — `tests/check_mod_texture_override.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_mod_texture_override.py --build build
+```
+
+Four headless 380-frame boots at 320×240 on GL, each in its own throwaway
+directory. The first runs with `MDKR_MOD_TEXTURE_DUMP` and dumps the
+digest-named corpus a pack author starts from; the pack the other runs install
+is built from that corpus, so the digest contract is exercised end to end
+rather than pinned to a constant that could rot. Every one of those digests is
+overridden with a single 4×4 magenta PNG the check encodes itself — overriding
+*everything* is what lets whole-frame hashes answer "did any pack pixel
+survive" at any frame, and the size mismatch exercises the same UV
+normalisation a higher-resolution pack takes.
+
+The gate this file owns is the **live** one. `Content.PacksEnabled` is declared
+`SCOPE_LIVE`, and until `mdkr_video_config_publish()` carried it to
+`mdkr_mod_texture_set_enabled()` / `mdkr_mod_music_set_enabled()` that
+declaration was a promise nothing kept: the key was read once at boot, so the
+settings checkbox took effect next launch while `Tab` moved the identical lever
+immediately. The fourth run drives
+`MDKR_TEST_SETTINGS_TOGGLE=Content.PacksEnabled=0@150,Content.PacksEnabled=1@320`,
+which fires `mdkr_video_config_runtime_set()` — the exact call the settings
+panel makes, not a rewritten ini and a relaunch — and frames are sampled at
+120, 240 and 360, one per state and each ≥30 frames clear of a transition.
+
+**Byte-identical is the assertion that matters.** Frame 240, after the setting
+was switched off at runtime, must equal the *no-pack baseline* exactly. Merely
+"different" would also be produced by a store that stopped answering while the
+texture cache kept serving pack pixels it had already uploaded; only an exact
+match proves `override_generation` retired those entries and re-uploaded the
+ROM's texels. Frame 360 must equal the pack run again, which is also the
+observation that **off→on needs no restart**: the registry is scanned and the
+store bound unconditionally by `platform_content_packs_init()`, so the setting
+only decides whether the store answers.
+
+Assertion 5 requires the `[SIMHASH]` v3 stream to be byte-identical across all
+three comparison arms. `Content.PacksEnabled` is content class and toggling it
+mid-run must not move one bit of authoritative state.
+
+There is **no `Tab` arm**, and the docstring says so rather than implying
+coverage: `Tab` is an SDL keyboard event, a headless run has no keyboard, and
+the input-script fixture format carries controller tokens only. Tab and the
+setting call the same lever; the rule between them — an explicit settings
+change wins and sets the lever to the setting's value, ending any momentary
+comparison — lives as a comment at the publication point and is asserted in
+both directions by the ROM-free `video_config_runtime` unit test.
+
+Music differs deliberately and the header says why: the switch is read at
+`mdkr_mod_music_begin()`, so it is honoured from the next piece of music
+onwards. Muting the sequence player is a one-way redirection, so cutting a
+replacement off mid-track would leave silence where the game's own music
+should be.
+
+The positive control comments out the two receiver calls in
+`mdkr_video_config_publish()`, restoring the original defect exactly — the key
+still reports LIVE and the seam still logs `applied=1`. Assertion 3 fails with
+`frame 240: … the frame is not the no-pack baseline …; it is still the pack's
+image`, and assertion 4 fails for the mirrored reason. Assertions 1, 2 and 5
+keep passing, honestly, because a setting that does nothing moves no state
+either.
 
 ## Opponent skill — `tests/check_enh_ai_difficulty.py`
 

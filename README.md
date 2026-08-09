@@ -92,7 +92,7 @@ You can replace the game's textures and music with your own. Put a folder or a
 `.zip` in `mods/` — next to your save data on macOS and Windows, next to the
 game on a portable build — with a small `pack.ini` naming the pack, plus a
 `textures/` or `music/` folder inside it. The game picks it up at launch, and
-**Tab** switches every replacement off and back on while you play, so you can
+**Tab** switches replaced textures off and back on while you play, so you can
 see both versions of the same corner. Settings → Content lists what loaded, and
 names anything it skipped and why.
 
