@@ -850,6 +850,60 @@ struct DkrTile {
     uint32_t line_size_bytes;    /* row pitch, from SETTILE line*8         */
 };
 
+/*
+ * The view state: every field describing WHERE on the drawable a primitive
+ * lands -- the viewport and scissor rectangles, the logical rectangles they are
+ * remapped from, the mirrored-viewport sign latch, and the RSP clip-ratio
+ * emulation derived from all of the above.
+ *
+ * These are one struct rather than fourteen loose members because they are
+ * saved and restored as a unit. Several paths -- dkr_draw_rectangle above all
+ * -- must retarget the view for the primitives they emit and then hand the
+ * previous view back untouched. Doing that field by field is exactly what
+ * shipped issues #25 and #27: the scissor was forced to the full drawable and
+ * never restored, so every TEXRECT/FILLRECT escaped the authored clip; and
+ * viewport_flip_x was mutated while only viewport was saved, so every glyph in
+ * an Adventure Two race came out mirrored about the screen centre. Both are the
+ * same shape -- a field that did not participate in a hand-written restore.
+ *
+ * ADDING A FIELD: put it here, and DkrViewScope saves and restores it with no
+ * further edit at any call site. That is the whole point of the grouping -- a
+ * new view field cannot be forgotten by a distant call site, because no call
+ * site enumerates these fields at all. Conversely, do not put non-view state
+ * here: it would then be reverted by every scope.
+ */
+struct DkrViewState {
+    struct XYWidthHeight viewport, scissor;
+    /* Source rectangles in the game's 320x240 coordinate space, stored in
+     * bottom-left coordinates.  A later tagged matrix can change draw space
+     * after G_MOVEMEM/G_SETSCISSOR, so retain and remap instead of baking the
+     * policy at command arrival time. */
+    struct FloatXYWidthHeight logical_viewport, logical_scissor;
+    bool logical_viewport_valid, logical_scissor_valid;
+    bool viewport_flip_x;
+    /* RSP clip-ratio emulation (see dkr_update_clip_expansion): the rectangle
+     * actually handed to the backend, plus the clip-space scale/bias that keeps
+     * the NDC->window map identical to the authored viewport's. Identity
+     * whenever the authored viewport already covers the authored scissor. */
+    struct XYWidthHeight clip_viewport;
+    float clip_scale_x, clip_scale_y, clip_bias_x, clip_bias_y;
+    bool clip_expanded;
+    bool viewport_or_scissor_changed;
+};
+
+/*
+ * Save/restore guard for the view state.
+ *
+ * C has no scope guard, so the pairing is by convention -- but the convention
+ * is now one line each and carries no field list, which is the property that
+ * closes the defect class. dkr_view_scope_enter() captures the whole view;
+ * dkr_view_scope_leave() puts the whole view back. Neither mentions a field
+ * name, so neither can omit one.
+ */
+typedef struct DkrViewScope {
+    struct DkrViewState saved;
+} DkrViewScope;
+
 /* ---- RDP-side state ---- */
 static struct {
     struct DkrTile tile[8];
@@ -877,22 +931,9 @@ static struct {
         fill_color, blend_color;
     uint8_t prim_lod_fraction;
 
-    struct XYWidthHeight viewport, scissor;
-    /* Source rectangles in the game's 320x240 coordinate space, stored in
-     * bottom-left coordinates.  A later tagged matrix can change draw space
-     * after G_MOVEMEM/G_SETSCISSOR, so retain and remap instead of baking the
-     * policy at command arrival time. */
-    struct FloatXYWidthHeight logical_viewport, logical_scissor;
-    bool logical_viewport_valid, logical_scissor_valid;
-    bool viewport_flip_x;
-    /* RSP clip-ratio emulation (see dkr_update_clip_expansion): the rectangle
-     * actually handed to the backend, plus the clip-space scale/bias that keeps
-     * the NDC->window map identical to the authored viewport's. Identity
-     * whenever the authored viewport already covers the authored scissor. */
-    struct XYWidthHeight clip_viewport;
-    float clip_scale_x, clip_scale_y, clip_bias_x, clip_bias_y;
-    bool clip_expanded;
-    bool viewport_or_scissor_changed;
+    /* Viewport/scissor/clip. Grouped so it can be saved and restored as a unit;
+     * see struct DkrViewState for why, and add new view fields THERE. */
+    struct DkrViewState view;
     const void *z_buf_address;
     const void *color_image_address;
     /* Raw SETCIMG/SETZIMG tokens (the DL w1 values, before dkr_resolve). The
@@ -904,6 +945,24 @@ static struct {
     uint32_t z_buf_token;
     uint32_t color_image_token;
 } rdp;
+
+/*
+ * Capture the live view. Pair with dkr_view_scope_leave() on EVERY exit path of
+ * the guarded region -- including early returns.
+ */
+static inline void dkr_view_scope_enter(DkrViewScope *scope) {
+    scope->saved = rdp.view;
+}
+
+/*
+ * Put the captured view back, whole. Callers that deliberately retarget the
+ * viewport must still publish the change afterwards
+ * (rdp.view.viewport_or_scissor_changed = true) so dkr_setup_draw_state
+ * re-derives the clip expansion for the restored rectangle.
+ */
+static inline void dkr_view_scope_leave(const DkrViewScope *scope) {
+    rdp.view = scope->saved;
+}
 
 static void dkr_replay_apply_primitive_alpha(void) {
     PresentationObjectPose source;
@@ -993,7 +1052,7 @@ static struct {
     uint8_t depth_mode;
     enum GfxBlendMode blend_mode;
     /* viewport here is the EFFECTIVE (clip-expanded) rectangle the backend was
-     * given, not rdp.viewport; the clip factors travel with it because the VBO
+     * given, not rdp.view.viewport; the clip factors travel with it because the VBO
      * contents depend on them. */
     struct XYWidthHeight viewport, scissor;
     float clip_scale_x, clip_scale_y, clip_bias_x, clip_bias_y;
@@ -2521,15 +2580,15 @@ static void dkr_apply_tile_uv(float *u, float *v, const struct DkrTile *t) {
  * byte-identical.
  */
 static void dkr_update_clip_expansion(void) {
-    const struct XYWidthHeight vp = rdp.viewport;
-    const struct XYWidthHeight sc = rdp.scissor;
+    const struct XYWidthHeight vp = rdp.view.viewport;
+    const struct XYWidthHeight sc = rdp.view.scissor;
 
-    rdp.clip_viewport = vp;
-    rdp.clip_scale_x = 1.0f;
-    rdp.clip_scale_y = 1.0f;
-    rdp.clip_bias_x = 0.0f;
-    rdp.clip_bias_y = 0.0f;
-    rdp.clip_expanded = false;
+    rdp.view.clip_viewport = vp;
+    rdp.view.clip_scale_x = 1.0f;
+    rdp.view.clip_scale_y = 1.0f;
+    rdp.view.clip_bias_x = 0.0f;
+    rdp.view.clip_bias_y = 0.0f;
+    rdp.view.clip_expanded = false;
     if (vp.width <= 0 || vp.height <= 0) return;
 
     /*
@@ -2542,10 +2601,10 @@ static void dkr_update_clip_expansion(void) {
      * mapped viewport lands half an authored pixel inside its scissor on NTSC
      * as well -- would be nudged, changing US output for nothing.
      */
-    float unit_x = (rdp.logical_viewport_valid && rdp.logical_viewport.width > 0.0f)
-        ? (float)vp.width / rdp.logical_viewport.width : 1.0f;
-    float unit_y = (rdp.logical_viewport_valid && rdp.logical_viewport.height > 0.0f)
-        ? (float)vp.height / rdp.logical_viewport.height : 1.0f;
+    float unit_x = (rdp.view.logical_viewport_valid && rdp.view.logical_viewport.width > 0.0f)
+        ? (float)vp.width / rdp.view.logical_viewport.width : 1.0f;
+    float unit_y = (rdp.view.logical_viewport_valid && rdp.view.logical_viewport.height > 0.0f)
+        ? (float)vp.height / rdp.view.logical_viewport.height : 1.0f;
     if (!(unit_x >= 1.0f)) unit_x = 1.0f;
     if (!(unit_y >= 1.0f)) unit_y = 1.0f;
 
@@ -2577,15 +2636,15 @@ static void dkr_update_clip_expansion(void) {
     float eh = (float)(y1 - y0);
     if (!(ew > 0.0f) || !(eh > 0.0f)) return;
 
-    rdp.clip_viewport.x = x0;
-    rdp.clip_viewport.y = y0;
-    rdp.clip_viewport.width = x1 - x0;
-    rdp.clip_viewport.height = y1 - y0;
-    rdp.clip_scale_x = (float)vp.width / ew;
-    rdp.clip_scale_y = (float)vp.height / eh;
-    rdp.clip_bias_x = (2.0f * (float)(vp.x - x0) + (float)vp.width - ew) / ew;
-    rdp.clip_bias_y = (2.0f * (float)(vp.y - y0) + (float)vp.height - eh) / eh;
-    rdp.clip_expanded = true;
+    rdp.view.clip_viewport.x = x0;
+    rdp.view.clip_viewport.y = y0;
+    rdp.view.clip_viewport.width = x1 - x0;
+    rdp.view.clip_viewport.height = y1 - y0;
+    rdp.view.clip_scale_x = (float)vp.width / ew;
+    rdp.view.clip_scale_y = (float)vp.height / eh;
+    rdp.view.clip_bias_x = (2.0f * (float)(vp.x - x0) + (float)vp.width - ew) / ew;
+    rdp.view.clip_bias_y = (2.0f * (float)(vp.y - y0) + (float)vp.height - eh) / eh;
+    rdp.view.clip_expanded = true;
 }
 
 /* Set up every GPU state required for the current material, and cache the
@@ -2629,10 +2688,10 @@ static bool dkr_setup_draw_state(bool poly_tex_enabled) {
         rsp.draw_space == G_MTX_DKR_SPACE_WORLD &&
         !rsp.billboard && !dkr_in_texrect) {
         const float viewport[4] = {
-            rdp.logical_viewport.x,
-            rdp.logical_viewport.y,
-            rdp.logical_viewport.width,
-            rdp.logical_viewport.height,
+            rdp.view.logical_viewport.x,
+            rdp.view.logical_viewport.y,
+            rdp.view.logical_viewport.width,
+            rdp.view.logical_viewport.height,
         };
         shadow_view = gfx_shadow_previous_view_index(viewport);
         shadow_receiver =
@@ -2760,39 +2819,39 @@ static bool dkr_setup_draw_state(bool poly_tex_enabled) {
     }
 
     /* Viewport / scissor. */
-    if (rdp.viewport_or_scissor_changed) {
+    if (rdp.view.viewport_or_scissor_changed) {
         dkr_update_clip_expansion();
         /* Buffered triangles carry the clip factors that were live when they
          * were emitted, so a change in either the effective rectangle or those
          * factors has to flush first. */
         bool viewport_changed =
-            memcmp(&rdp.clip_viewport, &rendering_state.viewport,
-                   sizeof(rdp.clip_viewport)) != 0;
+            memcmp(&rdp.view.clip_viewport, &rendering_state.viewport,
+                   sizeof(rdp.view.clip_viewport)) != 0;
         bool clip_changed =
-            rdp.clip_scale_x != rendering_state.clip_scale_x ||
-            rdp.clip_scale_y != rendering_state.clip_scale_y ||
-            rdp.clip_bias_x != rendering_state.clip_bias_x ||
-            rdp.clip_bias_y != rendering_state.clip_bias_y;
+            rdp.view.clip_scale_x != rendering_state.clip_scale_x ||
+            rdp.view.clip_scale_y != rendering_state.clip_scale_y ||
+            rdp.view.clip_bias_x != rendering_state.clip_bias_x ||
+            rdp.view.clip_bias_y != rendering_state.clip_bias_y;
         if (viewport_changed || clip_changed) {
             gfx_flush();
             if (viewport_changed) {
-                gfx_rapi->set_viewport(rdp.clip_viewport.x, rdp.clip_viewport.y,
-                                       rdp.clip_viewport.width,
-                                       rdp.clip_viewport.height);
-                rendering_state.viewport = rdp.clip_viewport;
+                gfx_rapi->set_viewport(rdp.view.clip_viewport.x, rdp.view.clip_viewport.y,
+                                       rdp.view.clip_viewport.width,
+                                       rdp.view.clip_viewport.height);
+                rendering_state.viewport = rdp.view.clip_viewport;
             }
-            rendering_state.clip_scale_x = rdp.clip_scale_x;
-            rendering_state.clip_scale_y = rdp.clip_scale_y;
-            rendering_state.clip_bias_x = rdp.clip_bias_x;
-            rendering_state.clip_bias_y = rdp.clip_bias_y;
+            rendering_state.clip_scale_x = rdp.view.clip_scale_x;
+            rendering_state.clip_scale_y = rdp.view.clip_scale_y;
+            rendering_state.clip_bias_x = rdp.view.clip_bias_x;
+            rendering_state.clip_bias_y = rdp.view.clip_bias_y;
         }
-        if (memcmp(&rdp.scissor, &rendering_state.scissor, sizeof(rdp.scissor)) != 0) {
+        if (memcmp(&rdp.view.scissor, &rendering_state.scissor, sizeof(rdp.view.scissor)) != 0) {
             gfx_flush();
-            gfx_rapi->set_scissor(rdp.scissor.x, rdp.scissor.y,
-                                  rdp.scissor.width, rdp.scissor.height);
-            rendering_state.scissor = rdp.scissor;
+            gfx_rapi->set_scissor(rdp.view.scissor.x, rdp.view.scissor.y,
+                                  rdp.view.scissor.width, rdp.view.scissor.height);
+            rendering_state.scissor = rdp.view.scissor;
         }
-        rdp.viewport_or_scissor_changed = false;
+        rdp.view.viewport_or_scissor_changed = false;
     }
 
     if (blend_mode != rendering_state.blend_mode) {
@@ -2913,16 +2972,16 @@ static void dkr_emit_tri(const struct LoadedVertex *v0,
          * the same display list later installs a positive viewport for its
          * safe-4:3 HUD.
          */
-        float clip_x = rdp.viewport_flip_x ? -vt->x : vt->x;
+        float clip_x = rdp.view.viewport_flip_x ? -vt->x : vt->x;
         float clip_y = vt->y;
-        if (rdp.clip_expanded) {
+        if (rdp.view.clip_expanded) {
             /* The backend viewport was widened to the scissor to stand in for
              * the RSP's clip ratio (dkr_update_clip_expansion). Re-express the
              * same NDC in the wider rectangle so the picture does not move;
              * skipped outright when the expansion is the identity, which keeps
              * every unexpanded frame bit-identical. */
-            clip_x = clip_x * rdp.clip_scale_x + vt->w * rdp.clip_bias_x;
-            clip_y = clip_y * rdp.clip_scale_y + vt->w * rdp.clip_bias_y;
+            clip_x = clip_x * rdp.view.clip_scale_x + vt->w * rdp.view.clip_bias_x;
+            clip_y = clip_y * rdp.view.clip_scale_y + vt->w * rdp.view.clip_bias_y;
         }
         buf_vbo[buf_vbo_len++] = clip_x;
         buf_vbo[buf_vbo_len++] = clip_y;
@@ -3331,10 +3390,10 @@ static void dkr_sp_polygon(const Triangle *tris, int num_tris, bool tex_enabled,
     if (g_pcRemasterFX && g_pcSunShadow &&
         gfx_shadow_projected_range_contains(tris)) {
         const float viewport[4] = {
-            rdp.logical_viewport.x,
-            rdp.logical_viewport.y,
-            rdp.logical_viewport.width,
-            rdp.logical_viewport.height,
+            rdp.view.logical_viewport.x,
+            rdp.view.logical_viewport.y,
+            rdp.view.logical_viewport.width,
+            rdp.view.logical_viewport.height,
         };
         int view_index = gfx_shadow_previous_view_index(viewport);
         if (view_index >= 0 &&
@@ -3447,10 +3506,10 @@ static void dkr_sp_polygon(const Triangle *tris, int num_tris, bool tex_enabled,
             bool alpha_blend =
                 rendering_state.blend_mode == GFX_BLEND_ALPHA;
             float viewport[4] = {
-                rdp.logical_viewport.x,
-                rdp.logical_viewport.y,
-                rdp.logical_viewport.width,
-                rdp.logical_viewport.height,
+                rdp.view.logical_viewport.x,
+                rdp.view.logical_viewport.y,
+                rdp.view.logical_viewport.width,
+                rdp.view.logical_viewport.height,
             };
             if (!alpha_blend || texture_edge) {
                 float positions[9] = {
@@ -3536,7 +3595,7 @@ static void dkr_sp_polygon(const Triangle *tris, int num_tris, bool tex_enabled,
              * decided from real on-screen geometry instead of being skipped.
              *
              * The cull SENSE is deliberately independent of both
-             * rsp.geometry_mode's G_CULL_FRONT bit and rdp.viewport_flip_x, and
+             * rsp.geometry_mode's G_CULL_FRONT bit and rdp.view.viewport_flip_x, and
              * that is only correct because the two always move together.
              * On hardware the RSP culls in SCREEN space, after the viewport
              * transform, so a negative vscale[0] inverts every winding; the
@@ -3807,13 +3866,13 @@ static void dkr_map_logical_rect(const struct FloatXYWidthHeight *logical,
 }
 
 static void dkr_remap_viewport_and_scissor(void) {
-    if (rdp.logical_viewport_valid) {
-        dkr_map_logical_rect(&rdp.logical_viewport, rsp.draw_space, false, &rdp.viewport);
+    if (rdp.view.logical_viewport_valid) {
+        dkr_map_logical_rect(&rdp.view.logical_viewport, rsp.draw_space, false, &rdp.view.viewport);
     }
-    if (rdp.logical_scissor_valid) {
-        dkr_map_logical_rect(&rdp.logical_scissor, rsp.draw_space, true, &rdp.scissor);
+    if (rdp.view.logical_scissor_valid) {
+        dkr_map_logical_rect(&rdp.view.logical_scissor, rsp.draw_space, true, &rdp.view.scissor);
     }
-    rdp.viewport_or_scissor_changed = true;
+    rdp.view.viewport_or_scissor_changed = true;
 }
 
 static void dkr_set_draw_space(uint8_t draw_space) {
@@ -3886,9 +3945,9 @@ static void dkr_calc_viewport(const Vp_t *vp) {
      * SAFE_2D/FULLBLEED, while a subsequent model matrix inherits the tag.
      */
     rsp.draw_space = G_MTX_DKR_SPACE_WORLD;
-    rdp.viewport_flip_x = width < 0.0f;
+    rdp.view.viewport_flip_x = width < 0.0f;
 #ifdef NATIVE_PORT
-    if (rdp.viewport_flip_x && mdkr_trace_enabled()) {
+    if (rdp.view.viewport_flip_x && mdkr_trace_enabled()) {
         static bool reported_mirrored_viewport;
         if (!reported_mirrored_viewport) {
             mdkr_trace("adventure_viewport: n64Width=%.1f clipXFlip=1 hostWidth=%.1f",
@@ -3897,13 +3956,13 @@ static void dkr_calc_viewport(const Vp_t *vp) {
         }
     }
 #endif
-    rdp.logical_viewport.x =
+    rdp.view.logical_viewport.x =
         (vp->vtrans[0] / 4.0f) - viewport_width / 2.0f;
-    rdp.logical_viewport.y =
+    rdp.view.logical_viewport.y =
         lh - ((vp->vtrans[1] / 4.0f) + height / 2.0f);
-    rdp.logical_viewport.width = viewport_width;
-    rdp.logical_viewport.height = height;
-    rdp.logical_viewport_valid = true;
+    rdp.view.logical_viewport.width = viewport_width;
+    rdp.view.logical_viewport.height = height;
+    rdp.view.logical_viewport_valid = true;
     dkr_remap_viewport_and_scissor();
 }
 
@@ -4090,13 +4149,13 @@ static void dkr_dp_set_scissor(uint32_t ulx, uint32_t uly, uint32_t lrx, uint32_
     float y_top = uly / 4.0f;
     float width = ((int32_t)lrx - (int32_t)ulx) / 4.0f;
     float height = ((int32_t)lry - (int32_t)uly) / 4.0f;
-    rdp.logical_scissor.x = x;
-    rdp.logical_scissor.y = dkr_logical_height - (y_top + height);
-    rdp.logical_scissor.width = width;
-    rdp.logical_scissor.height = height;
-    rdp.logical_scissor_valid = true;
-    dkr_map_logical_rect(&rdp.logical_scissor, rsp.draw_space, true, &rdp.scissor);
-    rdp.viewport_or_scissor_changed = true;
+    rdp.view.logical_scissor.x = x;
+    rdp.view.logical_scissor.y = dkr_logical_height - (y_top + height);
+    rdp.view.logical_scissor.width = width;
+    rdp.view.logical_scissor.height = height;
+    rdp.view.logical_scissor_valid = true;
+    dkr_map_logical_rect(&rdp.view.logical_scissor, rsp.draw_space, true, &rdp.view.scissor);
+    rdp.view.viewport_or_scissor_changed = true;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -4140,7 +4199,12 @@ static void dkr_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     ul->color = ll->color = lr->color = ur->color = rdp.prim_color;
     ul->fog = ll->fog = lr->fog = ur->fog = 0;
 
-    struct XYWidthHeight vp_saved = rdp.viewport;
+    /* Retarget the view for this quad and hand the previous one back on the way
+     * out. The scope captures the WHOLE view, so the retargeting below can grow
+     * -- or a new view field can appear -- without a restore having to be
+     * updated to match. Issues #25 and #27 were both a restore that did not. */
+    DkrViewScope view_scope;
+    dkr_view_scope_enter(&view_scope);
     uint32_t gm_saved = rsp.geometry_mode;
     struct XYWidthHeight full = {
         0, 0,
@@ -4158,15 +4222,15 @@ static void dkr_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
      * (viewport_main's VIEWPORT_EXTRA_BG branch). The full-drawable scissor
      * this path inherited from the fast3d lineage let every TEXRECT/FILLRECT
      * escape the authored clip (issue #25). */
-    rdp.viewport = full;
-    rdp.viewport_or_scissor_changed = true;
+    rdp.view.viewport = full;
+    rdp.view.viewport_or_scissor_changed = true;
     rsp.geometry_mode = 0;
     /*
      * A rectangle is an RDP screen-space primitive. The RSP viewport cannot
      * reach it on hardware -- and neither can the SIGN of that viewport, which
      * is the only part of it this port has to carry by hand: GL and WebGPU
      * reject a negative viewport width, so dkr_calc_viewport latches
-     * `width < 0` into rdp.viewport_flip_x and dkr_emit_tri negates x for every
+     * `width < 0` into rdp.view.viewport_flip_x and dkr_emit_tri negates x for every
      * vertex while it is set.
      *
      * Adventure Two draws its races through a mirrored viewport
@@ -4184,8 +4248,7 @@ static void dkr_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
      * invariant pairs viewport_flip_x with G_CULL_FRONT, and rectangles bypass
      * culling entirely (geometry_mode = 0, just above).
      */
-    const bool flip_saved = rdp.viewport_flip_x;
-    if (flip_saved) {
+    if (rdp.view.viewport_flip_x) {
         /* Counts rectangles this fix rescued: every one of these was being
          * reflected about the screen centre before. Reported in the
          * [MIRROR-RECT] row so a gate can assert the arm is non-vacuous --
@@ -4193,7 +4256,7 @@ static void dkr_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
          * reached the mirrored content, not that the bug is gone. */
         dkr_mirrored_rects_cleared++;
     }
-    rdp.viewport_flip_x = false;
+    rdp.view.viewport_flip_x = false;
 
     dkr_in_texrect = textured;   /* absolute texel coords: skip NOPERSP *0.5 */
     dkr_in_rectangle = true;
@@ -4210,9 +4273,11 @@ static void dkr_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     dkr_in_rectangle = false;
 
     rsp.geometry_mode = gm_saved;
-    rdp.viewport_flip_x = flip_saved;
-    rdp.viewport = vp_saved;
-    rdp.viewport_or_scissor_changed = true;
+    dkr_view_scope_leave(&view_scope);
+    /* The restored viewport still has to be published: dkr_setup_draw_state
+     * re-derives the clip expansion only when this is set, and the values it
+     * left behind describe the full-drawable rectangle used above. */
+    rdp.view.viewport_or_scissor_changed = true;
 }
 
 /* Resolve the flat colour a FILL_RECTANGLE takes when the RDP is NOT in
@@ -6494,7 +6559,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                 DTRACE("G_MOVEMEM VIEWPORT scale=[%d %d %d] trans=[%d %d %d] -> vp{x=%d y=%d w=%d h=%d}",
                        vp->vscale[0], vp->vscale[1], vp->vscale[2],
                        vp->vtrans[0], vp->vtrans[1], vp->vtrans[2],
-                       rdp.viewport.x, rdp.viewport.y, rdp.viewport.width, rdp.viewport.height);
+                       rdp.view.viewport.x, rdp.view.viewport.y, rdp.view.viewport.width, rdp.view.viewport.height);
             } else {
                 dkr_dl_fault("unsupported or unresolved G_MOVEMEM", cmd,
                              depth);
@@ -6692,8 +6757,8 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             break;
         case G_SETSCISSOR:
             dkr_dp_set_scissor(C0(cmd,12,12), C0(cmd,0,12), C1(cmd,12,12), C1(cmd,0,12));
-            DTRACE("G_SETSCISSOR -> {x=%d y=%d w=%d h=%d}", rdp.scissor.x, rdp.scissor.y,
-                   rdp.scissor.width, rdp.scissor.height);
+            DTRACE("G_SETSCISSOR -> {x=%d y=%d w=%d h=%d}", rdp.view.scissor.x, rdp.view.scissor.y,
+                   rdp.view.scissor.width, rdp.view.scissor.height);
             break;
         case G_TEXRECT:
         case G_TEXRECTFLIP: {
@@ -7129,11 +7194,11 @@ void gfx_dkr_reset_interpreter_state(void) {
     rdp.combine_mode = (uint64_t)color_comb(0, 0, 0, G_CCMUX_SHADE) |
                        ((uint64_t)alpha_comb(0, 0, 0, G_ACMUX_SHADE) << 16);
 
-    rdp.logical_viewport =
+    rdp.view.logical_viewport =
         (struct FloatXYWidthHeight){ 0.0f, 0.0f, DESIRED_SCREEN_WIDTH, DESIRED_SCREEN_HEIGHT };
-    rdp.logical_scissor = rdp.logical_viewport;
-    rdp.logical_viewport_valid = true;
-    rdp.logical_scissor_valid = true;
+    rdp.view.logical_scissor = rdp.view.logical_viewport;
+    rdp.view.logical_viewport_valid = true;
+    rdp.view.logical_scissor_valid = true;
     /* The viewport RECTANGLE is reseeded above; its SIGN has to be reseeded
      * too. dkr_calc_viewport latches `width < 0` here (Adventure Two draws
      * through a mirrored viewport), and without this a triangle emitted before
@@ -7141,7 +7206,7 @@ void gfx_dkr_reset_interpreter_state(void) {
      * mirror. A no-op on every frame that sets a viewport before drawing,
      * which is all of them today -- this closes the window rather than relying
      * on that staying true. */
-    rdp.viewport_flip_x = false;
+    rdp.view.viewport_flip_x = false;
     dkr_remap_viewport_and_scissor();
 
     /* Invalidate cached backend state so it is re-applied this frame. */
