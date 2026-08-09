@@ -3659,6 +3659,34 @@ deliberately broken and the suite confirmed to fail — because several of them
 guard a silent failure rather than a crash, and a check that passes both with
 and without the fix is not a check.
 
+## Enhancement authority — `tests/check_enhancement_authority.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_enhancement_authority.py --build build
+```
+
+Every enhancement in `platform/enhancement_registry.c` declares an authority
+class. This gate tests that claim **in both directions**: a `presentation` row
+must leave the `[SIMHASH]` v3 stream byte-identical when flipped to its probe
+value, and a `gameplay` row must change it. One direction alone would let a
+gameplay-changing setting be mislabelled cosmetic, or a setting that does
+nothing be labelled as though it did.
+
+The row list and each row's probe value are parsed from `[ENHTABLE]` lines the
+**running binary** emits under `MDKR_ENH_DUMP_TABLE=1`, never from a list in the
+test — a second list drifts, and a drifted one still prints PASS while silently
+covering one fewer setting. `tests/test_enhancement_registry.c` fails a row that
+declares no probe value, so adding an enhancement forces you to say how to
+exercise it.
+
+**Parsing zero rows is a failure**, checked before anything else. With every
+effect currently unimplemented that is the likeliest way this gate could go
+vacuous, and a mutant that drops every parsed row exits 1 on it.
+
+`EXPECTED_INERT` names the rows whose effect is not built yet, each with the
+task that closes it. The gate **fails if a listed row starts moving the
+stream** — an expectation that has silently become wrong is worse than none.
+
 ## Checks whose detail lives with their source
 
 The gates below are registered in `tools/run_checks.py` and run by the complete

@@ -58,6 +58,7 @@ crash.
 | S1 T6 | `mod_source` zip containers, miniz vendored | `mod_source_zip` |
 | S1 T10 | clean-room section 8, `mods/` ignored | `check_clean_room.sh` |
 | S2 T1 | `enhancement_registry` | `enhancement_registry` |
+| S2 T2 | the generated authority gate | `check_enhancement_authority.py` |
 | S2 T6 | `save_state` container | `save_state_container` |
 | S3 T3 | `dev_command` | `dev_command` |
 | S4 T1 | `gpu_diagnostics` | `gpu_diagnostics` |
