@@ -169,9 +169,16 @@ exceeds the tool's per-command ceiling): `state_hash`, `determinism`,
 `asset_swap_invariants`, `audio_output`, `raw16_audio`, `audio_options_persistence`,
 `camera_obstruction_runtime`, `simulation_cadence`, `math_rotpy`, `math_tables`,
 `restart_apply`, `shell_dropfile`, `overlay_pause`, `overlay_pause_cutscene`,
-`app_capture`, `app_ui_input`, `ci_contract`, plus `ctest` at 134/134. All pass.
-That is well short of the manifest's 146 tasks — the long matrix, ghost, trophy,
-campaign, webgpu-census and browser lanes were not run.
+`app_capture`, `app_ui_input`, `ci_contract`, `track_sweep`, `vehicle_sweep`,
+`world_shadows`, `world_fx_capture`, `shadow_stage_reset`, plus `ctest` at
+134/134. **41 checks, all pass.**
+
+That is still short of the manifest's 146 tasks. Not run: the ghost, trophy and
+campaign lanes, the WebGPU content census and fault matrix, the sanitizer and
+alignment configurations, the oracle routes, and everything browser-side. The
+list above says what was covered so that breadth is not inferred from it —
+`track_sweep` (all levels) and `vehicle_sweep` (47 combinations) are the two
+that most directly exercise the asset path the override layer sits in front of.
 
 ### A gate that was already failing on `main`
 
