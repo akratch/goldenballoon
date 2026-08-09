@@ -128,8 +128,15 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "App.UpdateCheck", "MDKR_UPDATE_CHECK",
         MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 1.0f,
         "Check for updates",
-        "Look once a day for a newer release and show a notice in the "
-        "launcher. Nothing is downloaded or installed.",
+        /* Says what it does, which is currently nothing. The comparator in
+         * platform/update_check.c is real and tested; the part that fetches a
+         * release feed is not written, so the previous wording promised a daily
+         * notice that cannot arrive and left the box unticking nothing. Whether
+         * to hide the control, change its default, or finish the fetch is a
+         * product call; describing it accurately is not. */
+        "Not active yet — nothing checks for updates in this build. Your "
+        "choice is remembered for when it does. Nothing is ever downloaded "
+        "or installed.",
         MDKR_VIDEO_CAT_INTERFACE
     },
     [MDKR_ENH_AI_DIFFICULTY] = {
