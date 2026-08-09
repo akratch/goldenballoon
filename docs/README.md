@@ -56,6 +56,10 @@ behind nearly every hard defect in this port, several of them completely silent.
 
 ## Subsystem guides
 
+- **[`MODDING.md`](MODDING.md)** — content packs: where they go, what
+  `pack.ini` holds, how a texture is named by its content digest, and the four
+  things that do not work yet. No content ships with this project and none is
+  hosted; packs read files a player put on their own machine.
 - **[`SAVE_MANAGEMENT.md`](SAVE_MANAGEMENT.md)** — backup, import, inspection,
   editing and recovery of progress, in the browser and from the native CLI.
 - **[`VIRTUAL_CONTROLLER_PAK.md`](VIRTUAL_CONTROLLER_PAK.md)** — the four virtual

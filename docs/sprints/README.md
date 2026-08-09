@@ -104,23 +104,34 @@ These are recorded because the plans were wrong, not merely incomplete.
 - **The campaign was gated and ghosts were 46/47**, not ungated and 1/47. See
   S9 T1.
 
-### What S1 still needs before a player sees anything
+### Where S1 actually stands
 
-`mod_texture_store` is built and linked, and the renderer consults it, but
-**nothing calls `mdkr_mod_texture_store_init()`**. Startup wiring lives in
-`main_pc.c` / `platform_sdl_min.c`, which S1 T4 did not scope. The store is
-therefore permanently inactive in the shipped binary — which is why inertness
-is currently trivially true, and why the feature is not done. The follow-up is
-small and specific: resolve `mods/` through `user_paths`, call
-`mdkr_mod_registry_init()`, then `mdkr_mod_texture_store_init()`. After that,
-T5 (the `Tab` toggle), T7 (Settings → Content) and the end-to-end gate become
-reachable.
+**A directory pack works end to end.** Drop `mods/<name>/pack.ini` plus
+`textures/<digest>.png` next to the executable, launch, and the pack's textures
+replace the ROM's; `Tab` switches them off and back on mid-race. Verified by
+frame hash, including that the Tab-off frame is byte-identical to the no-pack
+baseline — which is what proves `override_generation` re-uploads the ROM texels
+rather than leaving packed pixels bound.
 
-One consequence worth recording now: override uploads go through
+**Four things S1 still owes**, none of them hidden:
+
+1. **Zip packs are readable but not discoverable.** `mod_source` handles both
+   kinds, but `mod_registry` and `mod_texture_store` have not been retargeted
+   onto it (T6 step 5), so the registry still only finds directories.
+2. **`Content.PacksEnabled` is honoured at init only.** The key is declared
+   `SCOPE_LIVE` but nothing publishes it, so the Settings checkbox takes effect
+   next launch while `Tab` flips the same lever immediately. Closing it means a
+   live-apply hook in the video-config publish path.
+3. **No authoring tool** (T9) and **no Settings → Content list** (T7), so an
+   author has no supported way to learn a digest and a player has no way to see
+   which packs loaded except the `[MODS]` log lines.
+4. **Custom music** (T8) and **`docs/MODDING.md`** (T11) are untouched.
+
+One consequence worth recording: override uploads go through
 `gfx_rapi->upload_texture`, which is level 0 only. A pack texture replacing a
 mipmapped ROM texture gets no mip chain even though its cache key says
 `mipmaps = true`. That is what the plan specified, and it will read as aliasing
-at distance if pack textures ever ship.
+at distance once packs exist.
 
 ### One defect surfaced, not yet fixed
 
