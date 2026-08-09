@@ -1,9 +1,24 @@
-# Device acceptance — 1.1.1-RC2
+# Device acceptance — 1.1.1-RC3
 
-**Candidate:** `Golden-Balloon-1.1.1-RC2-windows-x64.zip` / `-macos-arm64-unsigned.dmg`
-**Commit:** `d0f2a4d`, branch `land/rc2` (merge of `integrate/presentation-gold-standard` onto main)
-**Save:** a 100%-complete file ships beside the Windows build at
-`GoldenBalloon\save\eeprom.bin` — everything below is reachable immediately, no unlocking.
+**Candidate:** `Golden-Balloon-1.1.1-RC3-windows-x64.zip`
+**Commit:** `fcf9e76`, branch `land/rc2`
+**Save:** a 100%-complete file ships beside the Windows build. Copy `eeprom.bin`
+to `GoldenBalloon\save\eeprom.bin`, then **choose ADVENTURE TWO on GAME SELECT** —
+the slot is a completed Adventure Two file, and the file-select gate refuses a
+slot whose adventure marker disagrees with the option you are under. That
+refusal is exactly why RC2's save "showed up but could not be clicked into";
+under the Adventure Two option it enters normally, and
+`tests/check_save_100_entry.py` now drives that route on every suite run.
+
+**macOS:** no DMG in RC3. Its verifier needs a launcher pixel capture and so an
+active display session, which the build host does not have. RC2's DMG remains
+valid for everything except the save fix and the presentation fixes below.
+
+**New in RC3 beyond RC2:** rain, snow, lens flare and rain splashes now carry a
+presentation identity, so they move with the picture under smoothing instead of
+stepping; camera-cut notes are filed and consumed in one viewport ID space, so a
+hard cut during a cutscene camera cuts rather than blends; UV-scroll surfaces
+(waterfalls, fences) hold correctly on odd authored scroll rates.
 
 This supersedes nothing: [`DEVICE_ACCEPTANCE_SMOOTHING.md`](DEVICE_ACCEPTANCE_SMOOTHING.md)
 remains the protocol for the smoothing verdict specifically, and §2 below is its
@@ -71,6 +86,10 @@ classes are in [`DEVICE_ACCEPTANCE_SMOOTHING.md`](DEVICE_ACCEPTANCE_SMOOTHING.md
 | 2.5 | At each cut, watch trees and signs | Billboards must not roll or pop against the cut. (Found by review, fixed on top of the branch.) |
 | 2.6 | Spin out / take a hairpin hard | The kart turns the short way round, never smearing the long way. |
 | 2.7 | Menus → hub → a cutscene → a level transition, then read the log's `[PRESENT-PACKET]` row | `uncapturedext=0 uncapturedrefusals=0`. Non-zero means those screens are quietly running unsmoothed — the failure has **no on-screen signal**, which is why it is a log check. |
+
+| 2.8 | A snowy track (Snowball Valley, Frosty Village) and a rainy one, smoothing on | Falling snow and rain move smoothly with the scene. Before RC3 they stepped at the authored rate while everything around them glided — precipitation has the largest per-tick screen displacement in the scene, so this is the most visible of the RC3 fixes. |
+| 2.9 | A sun/lens flare in view, and rain landing on water | The flare and the splash sprites track the camera rather than lagging it by a tick. |
+| 2.10 | A cutscene camera that hard-cuts (race intro fly-in, boss intro) | The cut is instant. RC2 could blend across it, because the cut note was filed under a different ID than the one the capture read. |
 
 **Verdict rule.** Smoothing stays opt-in regardless of the outcome. Accepting it
 does not flip a default; that is a separate decision.
