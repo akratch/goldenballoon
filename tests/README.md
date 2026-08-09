@@ -3659,6 +3659,28 @@ deliberately broken and the suite confirmed to fail — because several of them
 guard a silent failure rather than a crash, and a check that passes both with
 and without the fix is not a check.
 
+## Speed readout — `tests/check_enh_speedometer.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_enh_speedometer.py --build build
+```
+
+Four arms — baseline, `=0`, `=1` (mph), `=2` (kph) — capturing the same race
+frame. `=0` is byte-identical to baseline. `=1` changes pixels **only inside the
+readout box**, and the check walks every row outside that box asserting no
+differing byte: the weapon panel ends at 88% height and the box starts at 90%,
+so "outside the box" is the rest of the interface and the whole world.
+
+The value assertion is not merely monotonic. A frozen sampler is
+non-decreasing, so the window must also **start at rest and actually climb** —
+the positive control (`return 6.0f`) fails on both halves of that.
+
+Assertion 6 is the one that makes the authority claim real for this row: all
+four arms run under `MDKR_STATE_HASH=3` on a route that *reaches a race with the
+readout on screen*, and all 3,200 rows must be identical.
+`check_enhancement_authority.py`'s own fixture never leaves the menus, so it
+cannot observe this — it names this file in `EFFECT_GATES` instead.
+
 ## Developer-tool purity — `tests/check_dev_tools_purity.py`
 
 ```bash

@@ -18,6 +18,8 @@
 //     key, opening a window would change the race.
 #include "dev_tools.h"
 
+#include "tool_console.h"
+#include "tool_diagnostics.h"
 #include "video_config.h"
 
 #include "imgui.h"
@@ -128,6 +130,22 @@ void ensureEnvOverrides() {
     }
     std::fflush(stdout);
 }
+
+// The tools that have landed. Registered at static-init rather than from the
+// first DevTools_draw() for one reason that matters: --dump-tool-table returns
+// before the engine starts, and check_dev_tools_purity.py reads `registered=`
+// from that dump. A lazily-registered tool would report registered=0 there and
+// the gate would generate an arm believing the slot was still empty.
+//
+// g_tools above is constant-initialised (a POD aggregate of literals), so it is
+// already the final table before any constructor in this translation unit runs.
+struct RegisterLandedTools {
+    RegisterLandedTools() {
+        DevTools_register(MDKR_TOOL_DIAGNOSTICS, &ToolDiagnostics_draw);
+        DevTools_register(MDKR_TOOL_CONSOLE, &ToolConsole_draw);
+    }
+};
+RegisterLandedTools g_registerLandedTools;
 
 // Printed at exit rather than per frame so the count is one line instead of a
 // race's worth. Only speaks when the surface was actually used, which is what

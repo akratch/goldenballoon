@@ -128,6 +128,9 @@ CHECKS = (
     Check("dev_tools_purity", "check_dev_tools_purity.py", "rom",
           "every registered developer tool leaves the authoritative state "
           "stream byte-identical when opened"),
+    Check("enh_speedometer", "check_enh_speedometer.py", "rom",
+          "the speed readout draws, tracks a standing start, changes nothing "
+          "outside its own box, and moves no authoritative state"),
     Check("sprite_layout", "check_sprite_layout.py", "native",
           "independent ROM sprite census and display-list allocation controls"),
     Check("rdp_interpolation", "check_rdp_interpolation.py", "native",

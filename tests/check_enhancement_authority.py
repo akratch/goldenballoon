@@ -32,13 +32,20 @@ number is visible.
 A zero-row parse is a FAILURE, not an empty pass. That is the specific way this
 gate could go vacuous, and it is checked first.
 
-What is deliberately not proven yet
------------------------------------
-See EXPECTED_INERT below. Enhancements whose effect is not implemented cannot
-move the stream, so their `gameplay` claim cannot yet be true. They are listed
-by name with the task that closes them rather than being quietly excluded, and
-the gate FAILS if a name on that list starts working — an expectation that has
-silently become wrong is worse than no expectation.
+What a pass here does NOT mean
+-----------------------------
+For a `presentation` row, passing means "it did not move authoritative state".
+It does **not** mean the enhancement works: one that does nothing at all passes
+identically. Proving the effect exists belongs to a per-enhancement gate, and
+EFFECT_GATES below names it per row so the gap is visible instead of assumed. A
+row with no named gate prints EFFECT UNPROVEN.
+
+That distinction was learned the hard way. EXPECTED_INERT originally listed
+presentation rows as "effect not built yet" — an assertion this gate can never
+falsify, because for a correct presentation row not-built and working-correctly
+are the same observation. The speedometer's effect landing is what exposed it:
+the entry could not have fired either way. EXPECTED_INERT is now only meaningful
+for `gameplay` rows, where an unimplemented effect genuinely is distinguishable.
 """
 
 from __future__ import annotations
@@ -56,15 +63,38 @@ SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
 FRAMES = 900
 HASH_VERSION = "3"
 
-# Rows whose effect is not built yet, so their declared class cannot be
-# measured. Each names the task that closes it. The gate fails if one of these
-# turns out to move the stream after all, because then the note is the stale
-# thing rather than the code.
+# Rows whose effect is not built yet.
+#
+# ONLY MEANINGFUL FOR `gameplay` ROWS. This started out listing presentation
+# rows too, and that was a mistake worth recording: a presentation row is
+# *required* to leave the state stream identical, so "not built yet" and
+# "working correctly" are the same observation to this gate. Listing one here
+# asserted something unfalsifiable. The speedometer's effect landing is what
+# exposed it — the entry could never have fired.
+#
+# A gameplay row is different: it must MOVE the stream, so an unimplemented one
+# is genuinely distinguishable and worth flagging until its effect exists.
+#
+# The gate fails if a listed row starts moving the stream, so the note cannot
+# quietly become the stale thing.
 EXPECTED_INERT = {
-    "Enhancements.Speedometer":  "S2 task 3",
-    "Enhancements.DrawDistance": "S2 task 4",
-    "Enhancements.LodBias":      "S2 task 4",
     "Enhancements.AIDifficulty": "S2 task 5",
+}
+
+# What this gate does NOT prove, and who does.
+#
+# A `presentation` row passing here means "it did not move authoritative
+# state". It does NOT mean the enhancement works — an enhancement that does
+# nothing at all passes identically. Proving the effect exists is the job of a
+# per-enhancement gate, named here so the gap is visible rather than assumed.
+#
+# A presentation row with no named effect gate is reported as UNPROVEN. That is
+# not a failure: an enhancement can legitimately land before its pixel gate
+# does. It is a statement that this gate's pass covers half the claim.
+EFFECT_GATES = {
+    "Enhancements.Speedometer":  "check_enh_speedometer.py",
+    "Enhancements.DrawDistance": None,   # S2 task 4
+    "Enhancements.LodBias":      None,   # S2 task 4
 }
 
 
@@ -158,6 +188,7 @@ def main() -> int:
         return 1
 
     failures: list[str] = []
+    unproven: list[str] = []
     with tempfile.TemporaryDirectory(prefix="enh_authority_") as tmp:
         work = Path(tmp)
 
@@ -207,6 +238,15 @@ def main() -> int:
                 failures.append(
                     f"{key}: declared gameplay, but setting it to '{probe}' "
                     f"left the state stream byte-identical. It does nothing.")
+            elif authority == "presentation":
+                gate = EFFECT_GATES.get(key)
+                if gate:
+                    print(f"  {key:32s} {authority:12s} ok "
+                          f"(effect proven by {gate})")
+                else:
+                    unproven.append(key)
+                    print(f"  {key:32s} {authority:12s} ok, EFFECT UNPROVEN "
+                          f"— no gate shows this does anything")
             else:
                 print(f"  {key:32s} {authority:12s} ok")
 
@@ -215,8 +255,14 @@ def main() -> int:
         for f in failures:
             print(f"  {f}")
         return 1
-    print(f"check_enhancement_authority: PASS — {len(table)} row(s) verified, "
-          f"{len(EXPECTED_INERT)} awaiting their effect")
+    summary = (f"check_enhancement_authority: PASS — {len(table)} row(s) "
+               f"verified, {len(EXPECTED_INERT)} awaiting their effect")
+    if unproven:
+        summary += (f"\n  NOTE: {len(unproven)} presentation row(s) have no "
+                    f"gate proving the effect exists: "
+                    f"{', '.join(unproven)}. This gate only shows they do not "
+                    f"move authoritative state.")
+    print(summary)
     return 0
 
 
