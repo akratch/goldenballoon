@@ -417,6 +417,58 @@ void waves_init(LevelModel *model, LevelHeader *header, s32 playerCount) {
         sineVar1 += sineStep1;
         sineVar2 += sineStep2;
     };
+#ifdef NATIVE_PORT
+    /* MDKR_WAVE_SEED_CENSUS=1 -- is the height ring CONTINUOUS at its wrap?
+     *
+     * waves_tick() advances each index by updateRate and wraps it modulo
+     * seedSize, so a vertex samples this table as a ring. Whether that wrap is
+     * a discontinuity decides whether presentation interpolation of the wave
+     * surface needs a max_vertex_delta guard (as snow does, where a flake
+     * leaving the volume reappears on the opposite face in the same slot) or
+     * needs none at all.
+     *
+     * The table is a sum of two sines sampled with
+     * sineStep = (sineStep << 16) / seedSize per entry, and sins_f takes an
+     * s16 angle, so one revolution is exactly 65536. Over the whole table the
+     * angle advances by seedSize * floor((sineStep << 16) / seedSize), which
+     * differs from a whole number of revolutions by at most seedSize - 1 out
+     * of 65536 -- i.e. by at most about one ordinary sample step. The ring
+     * should therefore be continuous to within one step, and this row is the
+     * measurement that says so rather than the argument. */
+    {
+        static s32 sSeedCensusEnabled = -1;
+        if (sSeedCensusEnabled < 0) {
+            const char *v = getenv("MDKR_WAVE_SEED_CENSUS");
+            sSeedCensusEnabled = (v != NULL && v[0] == '1') ? 1 : 0;
+        }
+        if (sSeedCensusEnabled && gWaveController.seedSize > 1) {
+            f32 maxStep = 0.0f;
+            f32 wrapStep;
+            s32 n;
+
+            for (n = 0; n + 1 < gWaveController.seedSize; n++) {
+                f32 d = gWaveHeightTable[n + 1] - gWaveHeightTable[n];
+                if (d < 0.0f) {
+                    d = -d;
+                }
+                if (d > maxStep) {
+                    maxStep = d;
+                }
+            }
+            wrapStep = gWaveHeightTable[0] -
+                       gWaveHeightTable[gWaveController.seedSize - 1];
+            if (wrapStep < 0.0f) {
+                wrapStep = -wrapStep;
+            }
+            fprintf(stderr,
+                    "[WAVE-SEED] seedSize=%d mag=%.4f span=%.4f "
+                    "maxinteriorstep=%.6f wrapstep=%.6f ratio=%.3f\n",
+                    gWaveController.seedSize, gWaveController.magnitude,
+                    gWaveUpperY - gWaveLowerY, maxStep, wrapStep,
+                    maxStep > 0.0f ? (wrapStep / maxStep) : 0.0f);
+        }
+    }
+#endif
     save_rng_seed();
     /* Implementation-defined multi-character literals are not portable. */
     set_rng_seed(0x57415646);

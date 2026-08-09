@@ -160,15 +160,45 @@ in the `[PRESENT-PACKET]` row, so **`deformcollisions == 0` is the assertion
 that proves the token scheme is right**, and a mistake costs a hold rather than
 a corruption. This makes the case safe to implement and cheap to falsify.
 
-Remaining unknown, to settle with measurement rather than argument: the value
-of `max_vertex_delta`. Wave X/Z are fixed grid positions and never move; only Y
+**`max_vertex_delta` — MEASURED 2026-08-09, and the answer is that waves need
+no guard at all.** Wave X/Z are fixed grid positions and never move; only Y
 changes, as `(gWaveHeightTable[i0] + gWaveHeightTable[i1]) *
 gWaveController.magnitude` scaled per vertex. Ordinary motion advances each
-index by `updateRate` (one table entry); a seed wrap in `waves_tick` jumps the
-index by `-seedSize` and so samples an arbitrary phase. Derive the limit from
-the table's own maximum adjacent-entry slope times `magnitude`, with a safety
-factor, and confirm against measured per-tick deltas — do not pick a round
-number.
+index by `updateRate`; `waves_tick` wraps it modulo `seedSize`, so a vertex
+samples the table as a **ring** and the question is whether that ring is
+continuous at the seam.
+
+It is, and it is so by construction. `waves_init` fills the table with a sum of
+two sines stepped by `sineStep = (initSine[k].sineStep << 16) / seedSize` per
+entry, and `sins_f` takes an **s16** angle, so one revolution is exactly 65536.
+Across the whole table the angle advances by
+`seedSize * floor((sineStep << 16) / seedSize)`, which differs from a whole
+number of revolutions by at most `seedSize - 1` out of 65536 — smaller than a
+single sample step. The seam is therefore an ordinary step plus a bounded
+truncation residual, not a discontinuity.
+
+Measured with `MDKR_WAVE_SEED_CENSUS=1` (instrument in `waves_init`), on every
+wave-bearing level found:
+
+| level | seedSize | span | max interior step | wrap step | ratio |
+|---|---|---|---|---|---|
+| 19 | 120 | 23.19 | 0.950824 | 0.977276 | 1.028 |
+| 20 | 120 | 15.59 | 0.627365 | 0.644806 | 1.028 |
+| 23 | 120 | 30.88 | 2.142994 | 2.203224 | 1.028 |
+| 25 | 120 | 16.00 | 0.418579 | 0.429932 | 1.027 |
+| 34 | 130 | 19.91 | 0.868713 | 0.895004 | 1.030 |
+
+The wrap step exceeds the largest ordinary step by under 3% everywhere, exactly
+as the residual bound predicts. **So `max_vertex_delta` should be 0 for waves:
+there is no wrap to catch.** This is the opposite of snow, where a flake leaving
+the volume genuinely teleports to the far face in the same slot, and it is why
+that guard must not be copied over by analogy.
+
+Method note: `MDKR_LOAD_TRACK` only takes effect once the route reaches track
+select. A short run silently races the same default level every time — a first
+pass at this measurement produced five identical rows for five different tracks
+before `[TRACE] level_light` was checked to confirm which level actually
+loaded. Confirm the level, not the flag.
 
 **Bar for the wave case:** a water route (Crescent Island) and a lava route
 (Hot Top Volcano) arm on the weather gate, each asserting registered batches
