@@ -65,8 +65,9 @@ crash.
 | S6 T4 | `update_check` | `update_check` |
 | S8 T1 | `a11y_model` | `a11y_model` |
 | S9 T1 | roadmap reconciled | — |
+| S9 T2 | `tests/route_plan.py` waypoint follower | its own self-test, 8 assertions |
 
-### Three spec defects the execution found
+### Four defects the execution found in its own design
 
 These are recorded because the plans were wrong, not merely incomplete.
 
@@ -81,7 +82,17 @@ These are recorded because the plans were wrong, not merely incomplete.
    case is paired with an identical normal one.
 3. **S1 T4's renderer hook was written from inference.** Rewritten against
    `dkr_bind_tile()` with the real key initialiser, the real miss-path call, and
-   which bytes to hash.
+   which bytes to hash. Implementation then found a hazard the plan had not
+   considered: `source_size_bytes` can name more bytes than `addr` owns at the
+   arena edge, so hashing it unclamped would read off the end of the arena for
+   the sake of computing a name. Both `dkr_src_hash()` and the upload path
+   already clamp with `dkr_arena_room()` for exactly that reason.
+4. **S9 T2's oscillation detector counted the wrong thing.** The first version
+   counted frames spent in a grid cell, so a genuine approach crossing one
+   48-unit cell at 1 unit/frame read as stuck. It counts cell *entries* now —
+   leaving and returning — which is what reverse-and-retry does and what a
+   steady traversal never does. Its own self-test caught it on the very first
+   assertion.
 
 ### Two roadmap claims that were already stale
 
