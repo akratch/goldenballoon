@@ -5,6 +5,7 @@
 #include "app_theme.h"
 #include "app_ui_policy.h"
 #include "app_window.h"
+#include "crash_screen.h"
 #include "engine_entry.h"
 
 #include "imgui.h"
@@ -117,14 +118,23 @@ bool AppHost::init(const char *title, int width, int height) {
 #endif
     }
 
+    bool ready;
 #ifdef MDKR_WEBGPU_BACKEND
     // WebGPU is the qualified native default; MDKR_RENDERER=gl selects the GL
     // diagnostic path end to end. Either way both halves stay on one device.
     if (useWebGpu_) {
-        return initWebGpu(title, width, height);
-    }
+        ready = initWebGpu(title, width, height);
+    } else
 #endif
-    return initGL(title, width, height);
+    {
+        ready = initGL(title, width, height);
+    }
+    /* The crash screen can only show a player anything if a window exists, and
+     * this is the only place in the process that knows one does. Registering
+     * on success (and clearing in shutdown()) is what makes "headless does not
+     * present" structural rather than a flag: automation never gets here. */
+    if (ready) CrashScreen_setWindow(window_);
+    return ready;
 }
 
 bool AppHost::initGL(const char *title, int width, int height) {
@@ -1396,6 +1406,9 @@ std::string AppHost::takeDroppedFile() {
 void AppHost::shutdown() {
     if (!active_) return;
     active_ = false;
+    /* Before anything is released: a fault during teardown must print its
+     * report rather than try to present into a window that is going away. */
+    CrashScreen_setWindow(nullptr);
     /* Both the launcher and an adopted engine submit through these host roots.
      * The engine has returned before normal shutdown; wait for the remaining UI
      * work before releasing any resource it may reference. */

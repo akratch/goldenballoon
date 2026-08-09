@@ -101,6 +101,25 @@ These are recorded because the plans were wrong, not merely incomplete.
    steady traversal never does. Its own self-test caught it on the very first
    assertion.
 
+### A deliberate duplication, with the extraction already designed
+
+`platform/app/tool_diagnostics.cpp` and `platform/app/crash_screen.cpp` now
+duplicate five things: the `extern "C"` block reaching `level_id()`/
+`level_name()` and its explanation of why the app shell cannot include
+`game/src/game.h`, the `g_simTickCounter > 0` guard before trusting the map id,
+and three player-visible sentinels the crash-screen gate has now pinned
+(`"not in a level yet"`, `"not written on this platform"`, and the version line).
+
+It is duplicated **on purpose**, and a straight extraction would be wrong:
+`tool_diagnostics.cpp` returns `std::string`, while the crash screen runs inside
+a signal handler and must not allocate. The shared layer therefore has to be the
+allocation-free `const char *` form — an `app_state_facts.h` exposing
+`AppState_trackId()`, `AppState_trackName(int)`, `AppState_logPath()`,
+`AppState_versionLine()` — with the diagnostics window wrapping *those* in
+`std::string`, not the reverse.
+
+Two callers is arguable; three is not. Fold it in when a third appears.
+
 ### Two roadmap claims that were already stale
 
 - **Hosted CI had run green** — run `31248954626` on `main` at `080c4c4`,

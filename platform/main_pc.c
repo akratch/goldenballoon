@@ -65,6 +65,19 @@
 #ifndef __EMSCRIPTEN__
 int g_diagLogRealErrFd = -1;
 int g_diagLogFileFd    = -1;
+
+/*
+ * Crash-screen presentation hook (platform/app/crash_screen.cpp), published the
+ * same way and for the same reason as the two descriptors above: the C engine
+ * must not know about the C++ shell, so the shell registers itself here.
+ *
+ * Called by mdkr_crash_handler below AFTER the `[CRASH]` marker and the
+ * backtrace have been written and flushed, and before the disposition is
+ * restored. That ordering is the contract: every harness in tests/ greps for
+ * that marker, so the player-facing screen is strictly additive output that
+ * follows it. NULL on every CLI invocation, where nothing registers.
+ */
+void (*g_mdkrCrashScreenHook)(int signo) = NULL;
 #endif
 
 #ifndef __EMSCRIPTEN__
@@ -110,6 +123,13 @@ static void mdkr_crash_handler(int sig) {
     fprintf(stderr, "\n[CRASH] signal %d - backtrace (%d frames):\n", sig, n);
     backtrace_symbols_fd(bt, n, 2);
 #endif
+    /* The marker is out. Only now may anything else speak: the crash screen is
+     * additive, and a screen that printed first would reorder the one line the
+     * whole test suite keys on. */
+    fflush(stderr);
+    if (g_mdkrCrashScreenHook != NULL) {
+        g_mdkrCrashScreenHook(sig);
+    }
     signal(sig, SIG_DFL);
     raise(sig);
 }

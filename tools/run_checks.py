@@ -131,6 +131,13 @@ CHECKS = (
     Check("enh_speedometer", "check_enh_speedometer.py", "rom",
           "the speed readout draws, tracks a standing start, changes nothing "
           "outside its own box, and moves no authoritative state"),
+    Check("enh_draw_distance", "check_enh_draw_distance.py", "rom",
+          "draw distance and LOD bias extend what is drawn without changing "
+          "which objects exist, proving both are render culls"),
+    Check("crash_screen", "check_crash_screen.py", "rom",
+          "a fatal run still prints its [CRASH]/[FATAL] marker first, exits "
+          "with the same disposition, and adds a report naming the fault, "
+          "tick, track, renderer and log path"),
     Check("sprite_layout", "check_sprite_layout.py", "native",
           "independent ROM sprite census and display-list allocation controls"),
     Check("rdp_interpolation", "check_rdp_interpolation.py", "native",

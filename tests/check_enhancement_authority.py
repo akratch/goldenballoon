@@ -93,8 +93,8 @@ EXPECTED_INERT = {
 # does. It is a statement that this gate's pass covers half the claim.
 EFFECT_GATES = {
     "Enhancements.Speedometer":  "check_enh_speedometer.py",
-    "Enhancements.DrawDistance": None,   # S2 task 4
-    "Enhancements.LodBias":      None,   # S2 task 4
+    "Enhancements.DrawDistance": "check_enh_draw_distance.py",
+    "Enhancements.LodBias":      "check_enh_draw_distance.py",
 }
 
 

@@ -14,6 +14,7 @@
 #include "taj_visual.h"
 #include "presentation_snapshot.h"
 #include "camera_dynamic_occlusion.h"
+#include "enh_draw_distance.h"
 #include "gameplay_event_trace.h"
 #include "fast3d/gfx_level_lighting.h"
 #endif
@@ -511,7 +512,8 @@ static Vertex *gObjectSavedCurVertData;
 static Object *gObjectSavedCurVertFor;
 static s32 object_render_model_index(const Object *obj);
 static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
-                                      f32 viewDistance, f32 *outScale);
+                                      f32 viewDistance, f32 *outScale,
+                                      s32 allowLodBias);
 static s32 obj_door_batch_texture_offset(const ObjectModel *model,
                                          const Object *obj,
                                          s32 batchIndex, s32 *outOffset,
@@ -4962,7 +4964,7 @@ void obj_authoritative_texture_tick(Object *obj, s32 updateRate, f32 viewDistanc
     if (obj->header->behaviorId == BHV_RACER && obj->racer != NULL) {
         f32 unusedScale;
         modelIndex = racer_model_index_for_view(
-            obj, obj->racer, viewDistance, &unusedScale);
+            obj, obj->racer, viewDistance, &unusedScale, FALSE);
     }
     /* modelInstances holds header->numberOfModelIds slots; obj->modelIndex is
      * behaviour-owned and racer_model_index_for_view() picks an LOD from the
@@ -6046,16 +6048,56 @@ static s32 object_render_model_index(const Object *obj) {
     return obj->modelIndex;
 }
 
+/* The authored level-of-detail ladder, exactly as it was written inline in
+ * set_temp_model_transforms: `scaledDistance` is the view distance shifted down
+ * three places and multiplied by the character's scale, and `thresholds` is the
+ * five-byte band table for this vehicle and viewport layout. Lifted into its own
+ * function so the draw can ask it the same question twice -- once at the real
+ * distance and once at the biased one -- and tell whether the answer changed. */
+static s32 racer_lod_index_for_scaled(s32 scaledDistance, const u8 *thresholds) {
+    if (scaledDistance < -50) {
+        return 5;
+    }
+    scaledDistance >>= 1;
+    if (scaledDistance < 0) {
+        scaledDistance = 0;
+    }
+    if (scaledDistance < thresholds[0]) {
+        return 0;
+    }
+    if (scaledDistance < thresholds[1]) {
+        return 1;
+    }
+    if (scaledDistance < thresholds[2]) {
+        return 2;
+    }
+    if (scaledDistance < thresholds[3]) {
+        return 3;
+    }
+    if (scaledDistance < thresholds[4]) {
+        return 4;
+    }
+    return 5;
+}
+
 /* Pure racer LOD selection. The caller supplies the viewport's private
  * distance and owns whether the result is committed to simulation (tick) or
- * retained as a draw-local override (render). */
+ * retained as a draw-local override (render).
+ *
+ * `allowLodBias` is that same ownership question asked once more, because
+ * Enhancements.LodBias is declared MDKR_ENH_PRESENTATION and obj->modelIndex is
+ * hashed by the [SIMHASH] v3 stream. obj_lod_tick() passes FALSE and gets the
+ * authored ladder; only set_temp_model_transforms(), whose result never leaves
+ * the display list, passes TRUE. */
 static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
-                                      f32 distance, f32 *scaleMultiplier) {
+                                      f32 distance, f32 *scaleMultiplier,
+                                      s32 allowLodBias) {
     s32 assetIndex;
     s32 firstModel;
     s32 lastModel;
     s32 modelIndex;
     s32 scaledDistance;
+    s32 fromDistanceLadder = FALSE;
     u8 *thresholds;
 
     *scaleMultiplier = 1.0f;
@@ -6082,27 +6124,8 @@ static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
         *scaleMultiplier = (distance / 2700.0f) + 1.0f;
         scaledDistance *=
             ((f32 *)get_misc_asset(ASSET_MISC_4))[racer->characterId];
-        if (scaledDistance < -50) {
-            modelIndex = 5;
-        } else {
-            scaledDistance >>= 1;
-            if (scaledDistance < 0) {
-                scaledDistance = 0;
-            }
-            if (scaledDistance < thresholds[0]) {
-                modelIndex = 0;
-            } else if (scaledDistance < thresholds[1]) {
-                modelIndex = 1;
-            } else if (scaledDistance < thresholds[2]) {
-                modelIndex = 2;
-            } else if (scaledDistance < thresholds[3]) {
-                modelIndex = 3;
-            } else if (scaledDistance < thresholds[4]) {
-                modelIndex = 4;
-            } else {
-                modelIndex = 5;
-            }
-        }
+        modelIndex = racer_lod_index_for_scaled(scaledDistance, thresholds);
+        fromDistanceLadder = TRUE;
     }
 
     firstModel = 0;
@@ -6116,6 +6139,23 @@ static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
     }
     if (firstModel > lastModel) {
         return obj->modelIndex;
+    }
+    /* Enhancements.LodBias, and only on the draw: obj->modelIndex is hashed by
+     * the [SIMHASH] v3 stream, so obj_lod_tick() and
+     * obj_authoritative_texture_tick() pass allowLodBias == FALSE and never
+     * reach this.
+     *
+     * Only the distance ladder's own choice is biased. The two branches above
+     * pick a different MODEL rather than a level of detail -- index 1 is the
+     * time-trial ghost's own model and index 0 is the finished-racer pose -- so
+     * holding "higher detail" over either would swap the car, not sharpen it.
+     *
+     * Applied here, after the model range is known, because a bias onto a slot
+     * this racer does not carry has to resolve to the model the authored index
+     * would have picked anyway -- and because that is the only point at which
+     * the setting can honestly report whether it changed anything. */
+    if (allowLodBias && fromDistanceLadder) {
+        modelIndex = mdkr_enh_lod_bias_apply(modelIndex, firstModel, lastModel);
     }
     if (modelIndex < firstModel) {
         modelIndex = firstModel;
@@ -6190,7 +6230,7 @@ void obj_lod_tick(void) {
         }
         racer = obj->racer;
         obj->modelIndex = racer_model_index_for_view(
-            obj, racer, obj->distanceToCamera, &unusedScale);
+            obj, racer, obj->distanceToCamera, &unusedScale, FALSE);
         lightFlags = racer->lightFlags;
         racer_light_tick(obj, &lightFlags);
         racer->lightFlags = lightFlags;
@@ -6246,7 +6286,7 @@ void set_temp_model_transforms(Object *obj) {
             var_f0 = gSceneDrawDistanceValid ? gSceneDrawDistance
                                              : obj->distanceToCamera;
             modelIndex = racer_model_index_for_view(
-                obj, objRacer, var_f0, &lodScale);
+                obj, objRacer, var_f0, &lodScale, TRUE);
             obj->trans.scale *= lodScale;
             gObjectRenderModelFor = obj;
             gObjectRenderModelIndex = modelIndex;

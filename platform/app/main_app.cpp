@@ -14,6 +14,7 @@
 #include "app_ui_policy.h"
 #include "app_version.h"
 #include "arg_triage.h"
+#include "crash_screen.h"
 #include "dev_tools.h"
 #include "diag_log.h"
 #include "file_dialog.h"
@@ -1390,6 +1391,14 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
 } // namespace
 
 int main(int argc, char **argv) {
+    /* Arm the crash surface first, and deliberately ABOVE every dispatch below.
+     * The automation branch hands control straight to the engine's own main()
+     * body and never comes back, so a later install site would leave exactly
+     * the invocation shape CI runs -- and the one this sprint's gate drives --
+     * uncovered. Installing here costs three signal() calls and reads nothing:
+     * every field the report names is collected at fault time. */
+    CrashScreen_install();
+
     /* Exact informational invocations neither consume nor create user data.
      * In particular, release verification runs the executable from a checkout
      * that can contain legacy mdkr64.ini/save files: initializing packaged

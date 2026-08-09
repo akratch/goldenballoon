@@ -3659,6 +3659,61 @@ deliberately broken and the suite confirmed to fail — because several of them
 guard a silent failure rather than a crash, and a check that passes both with
 and without the fix is not a check.
 
+## Draw distance and model detail — `tests/check_enh_draw_distance.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_enh_draw_distance.py --build build
+```
+
+The assertion that matters is **not** "the frame changed" — it is that the
+**live object count per tick is identical** between 100% and 400%. That is what
+separates a render cull from an update cull, and it is checked *before* the
+hash comparison so a divergence is named rather than merely detected: *"changing
+how far the game draws changed which objects exist. The hook is in the wrong
+place."*
+
+The sprint warned this could go wrong, and it nearly did. Under `NATIVE_PORT`,
+`check_if_in_draw_range()` has **two callers, both authoritative** — they write
+`obj->opacity`, which `[SIMHASH]` v3 hashes — and **none in the render path**:
+`render_level_geometry_and_objects()` replays the tick's per-viewport decision
+out of the route cache instead. Widening that threshold anywhere inside the
+function would have been an update-side edit. The setting therefore goes through
+a separate read-only predicate that writes nothing and only *adds* draws.
+
+`MDKR_DRAWDIST_TRACE=1` tallies drawn objects per frame, split authored versus
+extended. The gate also requires the **authored** count to be identical on every
+frame, proving the setting extends rather than re-decides.
+
+The LOD arms run on a 4-player split, not Time Trial: a Time Trial has one
+racer already at model 0, so the bias has nothing to hold. The census counts
+choices the bias actually *changed* after clamping, so a route that stops
+exercising the ladder fails rather than passing on an incidentally different
+frame.
+
+## Crash report — `tests/check_crash_screen.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_crash_screen.py --build build
+```
+
+The crash screen is **strictly additive**. Every harness here greps
+`[CRASH]`/`[FATAL]`, so the gate's first job is proving those markers still
+arrive **first and unchanged**, by line index, in both a SIGABRT and a SIGSEGV
+arm. It also asserts the exit disposition is the exact value the pre-change
+binary produced (`-6` and `-11`), so CI classification cannot shift underneath
+the suite.
+
+Two arms rather than one, because a single one would be vacuous: the abort path
+fires during asset init with `tick=0` and `track=-1` frozen, so a hard-coded
+constant would pass it. The gate therefore requires the two arms to **disagree**
+on tick and track, requires `track-name` to be consistent with `track` in both,
+and requires `renderer=` and `version=` to follow the real environment.
+
+The report deliberately never spells a fault `SIGABRT` or `SIGSEGV` — those
+strings are in `harness_utils.ABORT_MARKERS`, and the gate fails if any of them
+appears inside the report line. `MDKR_NO_CRASH_HANDLER=1` suppresses the whole
+surface, which the ~9 harnesses that defer to ASan rely on.
+
 ## Speed readout — `tests/check_enh_speedometer.py`
 
 ```bash
