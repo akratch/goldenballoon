@@ -14,7 +14,7 @@ table): 8 items.
 | AI stuck-recovery cooldown `unk215` only decays while reversing (believed authored; hardware/ares verification still open) | [§ OPEN, believed authored: AI stuck-recovery cooldown](#open-believed-authored-hardware-unverified-ai-stuck-recovery-cooldown-unk215-only-decays-while-reversing--the-hot-top-volcano-crater-wedge) |
 | Campaign completeness (silver coins, later boss rematches, both Wizpig races, credits) is ungated, not unimplemented — disclosed in README/ROADMAP but no automated or recorded manual witness of a full start-to-credits pass | [§ OPEN: campaign completeness](#open-campaign-completeness--silver-coins-later-boss-rematches-both-wizpig-races-and-the-credits-path-are-ungated-not-unimplemented) |
 | Taj Time Trial records no best time and stores no ghost, silently — deliberate containment, not itemized outside `taj-playable-mod.md` | [§ OPEN, deliberately deferred: Taj Time Trial](#open-deliberately-deferred-taj-time-trial-records-no-best-time-and-stores-no-ghost) |
-| Ghost read/write coverage is one (track, vehicle) pair of 47 legal combinations; the same function already shipped a stack-buffer-overflow once | [§ OPEN: ghost coverage](#open-ghost-coverage-is-one-track-vehicle-pair-of-47) |
+| Ghost read/write coverage — corrected 2026-08-07: `check_ghost_matrix` round-trips 46 of the 47 legal (track, vehicle) pairs through a fresh process, so what is left open is the 47th, an asserted autopilot non-producer whose ghost round trip nothing drives | [§ OPEN: ghost coverage](#open-ghost-coverage-is-one-track-vehicle-pair-of-47) |
 
 ## OPEN: gameplay cameras can enter terrain and object geometry
 
@@ -1974,9 +1974,14 @@ slots are untested, as is a *trophy* race finish, which takes the
 
 #### OPEN: ghost coverage is one (track, vehicle) pair of 47
 
-`timetrial_ghost_read()` — the same function root cause 3 above found a
-stack-buffer-overflow in — is exercised end to end (write, then fresh-process
-read) by exactly one test on one (track, vehicle) pair:
+**Corrected 2026-08-07 — the coverage is 46 of 47, not 1 of 47.** The heading is
+left as written so the index links in [`README.md`](README.md) keep resolving;
+retitling it and the two index rows that point at it is a follow-up that has to
+move both files at once.
+
+**The gap as reported.** `timetrial_ghost_read()` — the same function root cause
+3 above found a stack-buffer-overflow in — was exercised end to end (write, then
+fresh-process read) by exactly one test on one (track, vehicle) pair:
 `tests/check_race_finish_time.py` on Ancient Lake / car
 ([`tests/README.md`](../../tests/README.md)). `check_vehicle_sweep.py` and
 `check_track_sweep.py` cover all 47 legal (track, vehicle) combinations for
@@ -1985,11 +1990,35 @@ Time Trial finish, so they never reach the ghost write/read path at all. This
 is a save-format path: ghost payloads are persisted to the same Controller
 Pak / EEPROM records ordinary saves use, and this exact path already shipped
 a stack-buffer-overflow that "aborted with nothing at all on stderr" (root
-cause 3 above) before it was caught. Extending the vehicle/track sweeps to
-also drive and verify a ghost round-trip on each of the 47 pairs is the gap;
-any such extension must not alter the serialized ghost layout to make the
-sweep pass, since existing Controller Pak / EEPROM saves have to keep
-reading correctly afterward.
+cause 3 above) before it was caught.
+
+**What closed it.** `tests/check_ghost_matrix.py` drives the other 46 pairs,
+three runs each in a private `MDKR_SAVE_DIR` because 47 ghosts do not fit in the
+pak's 6 slots: measure the frame at which the post-race OPTIONS stage offers SAVE
+GHOST, write the ghost from a fresh save directory on an identical re-drive, then
+read it back **in a separate process** and assert the same pair, node count,
+character and time come out and that playback runs from a player bank. The
+written header is located in the pak image by its measured contents rather than a
+hardcoded offset, so a layout or byte-order regression in the serialiser fails
+here instead of sliding past an offset-keyed probe, and the read run asserts the
+pak is byte-identical afterward — an identical re-drive cannot beat its own time
+and must not rewrite player data. The constraint this entry set was met: the
+serialized ghost layout was not altered to make the sweep pass. Reference run
+(us.v80, `build-rel`): 46 pairs round-tripped through a fresh process, 1
+documented non-producer, 15.4 min, with three pairs needing the fallback cadence
+(19 hovercraft, 30 plane, 33 hovercraft). See
+[`tests/README.md`](../../tests/README.md), "Ghost matrix".
+
+**What is still not driven — the 47th pair.** Spaceport Alpha (15) in the car
+completes no lap on either simulation cadence: its autopilot racing line
+dead-ends at `courseCheckpoint` 10, and DKR records a ghost only for a course
+time under 10,800 frames (`objects.c`, `race_finish_time_trial`). The pair is
+legal — the ROM's `available_vehicles` mask offers the car — so it is asserted to
+behave exactly that way rather than skipped, and the check fails if it ever
+starts finishing or if it starts aborting. That first failure is the promotion
+trigger. Until then nothing drives that pair's ghost round trip, and no claim
+here says otherwise: what is proven for it is that it produces no ghost, not that
+its ghost survives a save and a reload.
 
 ### Part D — the Adventure trophy championship is DONE (wave "trophyseries")
 

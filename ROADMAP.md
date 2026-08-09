@@ -73,16 +73,61 @@ Both are recorded with their measurements in
 
 ### Campaign completeness
 
-The Adventure loop is closed end to end — hub, balloons, lobby, three-lap race,
-trophies, the legal first boss, both Adventure One and Two — but the campaign is
-not finished in the sense a player means it. Silver-coin challenges, the world
-1–4 boss rematches, both Wizpig races, the credits sequence, and the remainder of
-the legal door/key graph are not driven by any gate. This is the largest single
-piece of deferred work in the project, and the one most likely to matter to
-someone playing rather than reading.
+**Where it stands.** This entry used to call the late campaign the largest
+single piece of deferred work in the project. It is not, and has not been since
+the closure campaign of 2026-08-07 —
+[`docs/DEFINITION_OF_DONE.md`](docs/DEFINITION_OF_DONE.md) is the current record.
+`check_campaign_progression.py` gates each late progression **seam** with a save
+fixture entering it and an assertion on what production writes leaving it:
+silver-coin collection by the game's own coin objects and its EEPROM round-trip
+read back by a second process; all four boss rematches won, each on the EEPROM
+the previous one persisted, with `wizpigAmulet` climbing 1, 2, 3, 4; the Wizpig 1
+unlock in both directions (four amulet pieces redirect the hub to the mouth
+sequence, three do not) followed by Wizpig 1 raced and won; and the Wizpig 2 win
+that sets and persists `bosses & 0x20`, the single value `menu_credits_init`
+reads to choose the true ending. The trophy championships have their own gate,
+`check_trophy_series.py`, across all 16 authored rounds.
 
-The exit condition is a single deterministic start→credits gate, not a
-collection of partial routes.
+**What remains.** Three residuals, listed with their measured obstacles in
+[`tests/fixtures/README.md`](tests/fixtures/README.md#residual-manual-acceptance).
+Each is a headless-driving obstacle rather than a missing feature, and each is a
+step a manual acceptance pass still performs:
+
+1. **The lobby's boss-rematch door, driven rather than retargeted.** The rematch
+   seam enters by `MDKR_LOAD_TRACK`. Measured in the Dino Domain lobby with all
+   door bits open, the kart stalls at (-1295, 685) — 1,240 units short of the
+   boss exit at (-777, 1812) — and the drive hook's reverse-and-retry oscillates
+   there indefinitely. What is unwitnessed is the **approach**, not the gate: the
+   gate is `balloonsPtr[worldId] == 8`, and the silver-coin seam proves silver
+   clears are what produce that number.
+2. **The T.T. amulet and the trophy championships, chained in.** `ttAmulet` is
+   written by the four T.T. challenge levels (`game/src/objects.c:9256-9268`) and
+   `trophies` by the trophy-race rankings screen. Neither is chained into the
+   campaign check, so its last fixture states both as premises, and the Future
+   Fun Land unlock they feed (`trophies & 0xFF == 0xFF` plus Wizpig 1,
+   `game/src/thread3_main.c:1895-1899`) is unwitnessed for the same reason.
+3. **The credits screen reached from a won Wizpig 2.** The gate proves the
+   campaign sets and persists the true-ending bit; it does not reach the screen.
+   After the win the game pushes a stack of cutscene levels and pops them on
+   either an A press with `func_8006C300()` non-zero or the scene ending itself
+   (`game/src/thread3_main.c:894-919`); measured, the run reaches
+   `ASSET_LEVEL_WIZPIG2ANIM` (level 62) and stays there for 25,000 further frames
+   with A tapped every 200 frames, so the animation does not run itself out
+   headlessly. The cheat contrast arm reaching `MENU_CREDITS` from a save that
+   was never started is what keeps "reached credits" from being evidence about
+   the campaign by itself.
+
+**Condition to take it up.** Residual 1 needs route memory the drive hook does
+not have: a waypoint follower that fails loudly against a per-waypoint frame
+budget instead of oscillating. Residual 2 needs no new capability — the trophy
+drive already exists, it is simply not exposed as a fixture another check can
+import, so this is chaining work plus a negative control showing a challenge run
+from an unqualified save awards no amulet piece. Residual 3 needs the cutscene
+stack advanced headlessly, and the first question is unmeasured: whether
+`func_8006C300()` is ever non-zero across those 25,000 frames. If it never is,
+the tapping cadence is irrelevant and whatever gates that return is the real
+obstacle. None of the three is a suspected defect, and none is weakened into a
+vacuous assertion in the gate to keep it green.
 
 ### Camera obstruction correction — ships opt-in; default-on rejected on device
 
@@ -307,11 +352,18 @@ unsupported revisions.
   checks are real, but the first hosted run is still owed, and repository branch
   protection depends on it. Until then, every claim in this repository rests on
   local runs.
-- **Mode-coverage stragglers.** Ghost save and load are gated for one
-  (track, vehicle) pair rather than across the set — see
-  [`docs/open-items/gameplay.md`](docs/open-items/gameplay.md#open-ghost-coverage-is-one-track-vehicle-pair-of-47)
-  for the mechanism and why it matters (this exact path already shipped a
-  silent stack overflow once). Magic-code entry is now
+- **Mode-coverage stragglers.** Ghost save and load are no longer one of them.
+  `check_ghost_matrix.py` drives 46 of the 47 legal (track, vehicle) pairs
+  through a record, a save, and a read-back in a **fresh process**, each pair in
+  its own save directory; the 47th, Spaceport Alpha in the car, is an asserted
+  autopilot non-producer rather than a skip — its racing line dead-ends at
+  `courseCheckpoint` 10, and DKR records a ghost only for a course time under
+  10,800 frames — and the check fails if that pair ever starts finishing, which
+  is how it would be promoted. So the residual is one pair whose round trip
+  nothing drives, not 46. Why the breadth was worth buying is in
+  [`docs/open-items/gameplay.md`](docs/open-items/gameplay.md#open-ghost-coverage-is-one-track-vehicle-pair-of-47):
+  this exact path already shipped a stack overflow that aborted with nothing at
+  all on stderr. What is still narrow is magic-code entry, and it is now partly
   covered — `nav_to_magic_codes` submits valid `ARNOLD` and invalid `ARNOLE`
   through the onscreen keyboard, and `check_taj_p2_adventure.py` enters retail
   `JOINTVENTURE` and races the two-player Adventure it unlocks — but only for
