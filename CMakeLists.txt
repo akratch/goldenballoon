@@ -211,6 +211,8 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/video_config.c     # presentation modes (pure core)
     ${CMAKE_SOURCE_DIR}/platform/video_config_runtime.c  # ini/env/argv + g_pc* publication
     ${CMAKE_SOURCE_DIR}/platform/a11y_model.c       # what the shell would say, as text
+    ${CMAKE_SOURCE_DIR}/platform/a11y_race.c        # race events -> the same text stream
+    ${CMAKE_SOURCE_DIR}/platform/a11y_speech_worker.c # drain thread: says it, off the render thread
     ${CMAKE_SOURCE_DIR}/platform/user_paths.c       # immutable bundle vs mutable user-data policy
     ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c          # UTF-8/long-path OS filesystem boundary
     ${CMAKE_SOURCE_DIR}/platform/pacing_policy.c    # original/enhanced simulation cadence
@@ -276,6 +278,33 @@ else()
     # M8: the AudioWorklet output backend (web-only; empty TU on native).
     list(APPEND PLATFORM_SOURCES
         ${CMAKE_SOURCE_DIR}/platform/web_audio_worklet.c)
+endif()
+
+# The accessibility voice, one implementation per platform — the same
+# arrangement, for the same reason, as platform/app/file_dialog_* below: the
+# interface in platform/a11y_speech.h is shared, exactly one backend compiles,
+# and the drain worker above never learns which one it got. A platform with no
+# engine gets the null backend and degrades to text-only with a stated reason
+# rather than failing to link.
+if(EMSCRIPTEN)
+    list(APPEND PLATFORM_SOURCES
+        ${CMAKE_SOURCE_DIR}/platform/a11y_speech_web.c)     # Web Speech API
+elseif(APPLE)
+    # OBJCXX here as well as in the app-shell block below: this backend is
+    # compiled into the ENGINE (a11y_model.c is), and a -DMDKR_APP=OFF build
+    # still has to be able to speak.
+    enable_language(OBJCXX)
+    list(APPEND PLATFORM_SOURCES
+        ${CMAKE_SOURCE_DIR}/platform/a11y_speech_mac.mm)    # AVSpeechSynthesizer
+elseif(WIN32)
+    list(APPEND PLATFORM_SOURCES
+        ${CMAKE_SOURCE_DIR}/platform/a11y_speech_win.cpp)   # SAPI 5 / ISpVoice
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND PLATFORM_SOURCES
+        ${CMAKE_SOURCE_DIR}/platform/a11y_speech_linux.c)   # speech-dispatcher, dlopen'd
+else()
+    list(APPEND PLATFORM_SOURCES
+        ${CMAKE_SOURCE_DIR}/platform/a11y_speech_null.c)    # text-only, and says so
 endif()
 
 # Renderer front-end + backends (platform/fast3d/). gfx_pc_dkr.c (the F3DDKR
@@ -536,9 +565,20 @@ if(NOT EMSCRIPTEN)
         target_link_libraries(${MDKR_TARGET} PRIVATE m)
     endif()
     if(APPLE)
-        target_link_libraries(${MDKR_TARGET} PRIVATE ${OPENGL_LIB})
+        # AVFoundation: AVSpeechSynthesizer, behind platform/a11y_speech_mac.mm.
+        target_link_libraries(${MDKR_TARGET} PRIVATE ${OPENGL_LIB}
+            "-framework AVFoundation" "-framework Foundation")
     else()
+        # CMAKE_DL_LIBS also carries the dlopen that platform/a11y_speech_linux.c
+        # loads speech-dispatcher through — deliberately at runtime, so a tarball
+        # still starts on a machine that does not have it.
         target_link_libraries(${MDKR_TARGET} PRIVATE OpenGL::GL ${CMAKE_DL_LIBS})
+    endif()
+    if(WIN32)
+        # ole32: CoCreateInstance for SAPI's ISpVoice
+        # (platform/a11y_speech_win.cpp). A stock Windows system DLL, already on
+        # the import allowlist in tools/check_windows_imports.sh.
+        target_link_libraries(${MDKR_TARGET} PRIVATE ole32)
     endif()
     # WebGPU backend: gate the code + link the pinned wgpu-native prebuilt. GL +
     # WebGPU stay compiled together so MDKR_RENDERER switches at runtime.

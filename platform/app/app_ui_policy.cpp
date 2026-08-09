@@ -206,9 +206,31 @@ AppUiSettingsSection AppUi_settingsSection(MdkrVideoKey key) {
         case MDKR_CONTENT_PACKS_ENABLED:
         case MDKR_CONTENT_PACK_DISABLED:
             return AppUiSettingsSection::Content;
+        // Every accessibility option in the product, in one place. The speech
+        // keys declare the Interface category and Camera.Comfort declares a
+        // camera one, which is correct for what they configure and wrong for
+        // who is looking for them.
+        case MDKR_A11Y_SPEECH:
+        case MDKR_A11Y_SPEECH_RATE:
+        case MDKR_A11Y_SPEECH_VOLUME:
+        case MDKR_A11Y_SPEECH_RACE:
+        case MDKR_VIDEO_CAMERA_COMFORT:
+            return AppUiSettingsSection::Accessibility;
         default:
             return AppUiSettingsSection::Category;
     }
+}
+
+AppUiSettingsSection AppUi_shellPreferenceSection(AppUiShellPreference key) {
+    switch (key) {
+        // Text size belongs with the other access needs, not with the window
+        // mode. It is also the one setting a player may have to change before
+        // they can read anything else, so it sits in the section they will be
+        // told to look for.
+        case AppUiShellPreference::UiScale:
+            return AppUiSettingsSection::Accessibility;
+    }
+    return AppUiSettingsSection::Category;
 }
 
 bool AppUi_enhancementResetIncludes(MdkrVideoKey key) {

@@ -9429,12 +9429,14 @@ void race_check_finish(s32 updateRate) {
          * their trace coverage, but use the same stable controller mapping. */
         if (gNumRacers > 0 && gRacersByPort != NULL &&
             gRacersByPort[PLAYER_ONE] != NULL) {
-            extern void mdkr_pace_probe_finish(int, int, int, int, int);
+            extern void mdkr_pace_probe_finish(int, int, int, int, int, int, int, int, int, int);
             Object_Racer *humanRacer = gRacersByPort[PLAYER_ONE]->racer;
             mdkr_pace_probe_finish(
                 humanRacer->lap, humanRacer->raceFinished,
                 humanRacer->finishPosition, humanRacer->racerIndex,
-                humanRacer->playerIndex);
+                humanRacer->playerIndex, humanRacer->racePosition,
+                gNumRacers, currentLevelHeader->laps,
+                humanRacer->balloon_quantity, humanRacer->balloon_type);
         }
 #endif
         return;
@@ -9547,12 +9549,14 @@ void race_check_finish(s32 updateRate) {
      */
     if (gNumRacers > 0 && gRacersByPort != NULL &&
         gRacersByPort[PLAYER_ONE] != NULL) {
-        extern void mdkr_pace_probe_finish(int, int, int, int, int);
+        extern void mdkr_pace_probe_finish(int, int, int, int, int, int, int, int, int, int);
         Object_Racer *humanRacer = gRacersByPort[PLAYER_ONE]->racer;
         mdkr_pace_probe_finish(
             humanRacer->lap, humanRacer->raceFinished,
             humanRacer->finishPosition, humanRacer->racerIndex,
-            humanRacer->playerIndex);
+            humanRacer->playerIndex, humanRacer->racePosition,
+            gNumRacers, currentLevelHeader->laps,
+            humanRacer->balloon_quantity, humanRacer->balloon_type);
     }
 #endif
 

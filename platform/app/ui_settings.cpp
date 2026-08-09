@@ -601,6 +601,29 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
             g_frameLimitRectMin = ImGui::GetItemRectMin();
             g_frameLimitRectMax = ImGui::GetItemRectMax();
             g_frameLimitRectValid = true;
+            /* The scripted pacing gates click this widget at coordinates
+             * captured on the previous frame, which only works while the panel
+             * is actually showing it. Scrolled out of view it is still
+             * submitted -- so the rect stays valid, the click lands on clipped
+             * geometry, and the gate reports "the verdict did not match",
+             * which reads like a persistence bug. Name the real cause once.
+             * Armed only for the gates: a player scrolling past this row is
+             * the same observation and means nothing. */
+            static const bool pacingGateArmed =
+                std::getenv("MDKR_APP_SMOKE_SELECT_FRAME_LIMIT") != nullptr ||
+                std::getenv("MDKR_APP_SMOKE_SELECT_PRESENTATION_PACE") != nullptr;
+            static bool offscreenReported = false;
+            if (pacingGateArmed && !offscreenReported &&
+                !ImGui::IsItemVisible()) {
+                offscreenReported = true;
+                std::fprintf(stderr,
+                             "[app-ui-test] frame-limit combo is scrolled out "
+                             "of the panel (rect y=%.0f..%.0f, panel height "
+                             "%.0f): a settings section drawn above it is open "
+                             "and pushed it past the bottom\n",
+                             g_frameLimitRectMin.y, g_frameLimitRectMax.y,
+                             ImGui::GetIO().DisplaySize.y);
+            }
             if (std::getenv("MDKR_APP_UI_INPUT_TRACE")) {
                 static int smokeFrame = 0;
                 const ImVec2 mouse = ImGui::GetIO().MousePos;
@@ -1140,6 +1163,159 @@ bool drawEnhancementsSection(SDL_Window *window, bool compact,
     return changed;
 }
 
+// --- UI scale --------------------------------------------------------------
+//
+// The one settings control with no schema key: it is a launcher preference, so
+// nothing in MdkrVideoKey can route it. Which section draws it is therefore a
+// policy question (AppUi_shellPreferenceSection), asked at both candidate
+// sections so that exactly one of them ever answers yes. Hand-placing the
+// widget instead is how a control ends up drawn twice, with two independent
+// copies of the commit path underneath it.
+bool drawUiScale(bool compact) {
+    bool changed = false;
+    if (!g_uiScaleInitialized) {
+        g_uiScaleEdit = AppTheme::uiScale();
+        g_uiScaleInitialized = true;
+    }
+    ImGui::TextUnformatted("UI scale");
+    ImGui::SetNextItemWidth(ui::kControlWidth());
+    const bool scalePreviewChanged = ImGui::SliderFloat(
+        "##ui-scale", &g_uiScaleEdit, 0.75f, 2.0f, "%.2fx",
+        ImGuiSliderFlags_AlwaysClamp);
+    g_uiScaleRectMin = ImGui::GetItemRectMin();
+    g_uiScaleRectMax = ImGui::GetItemRectMax();
+    g_uiScaleRectValid = true;
+    /* Same reason as the frame-limit combo: the drag gate grabs this slider at
+     * last frame's coordinates, and a slider scrolled past the bottom of the
+     * panel still reports a valid rect. Say which failure this is. */
+    {
+        static const bool dragGateArmed =
+            std::getenv("MDKR_APP_SMOKE_UI_SCALE_DRAG") != nullptr;
+        static bool offscreenReported = false;
+        if (dragGateArmed && !offscreenReported && !ImGui::IsItemVisible()) {
+            offscreenReported = true;
+            std::fprintf(stderr,
+                         "[app-ui-test] UI-scale slider is scrolled out of the "
+                         "panel (rect y=%.0f..%.0f, panel height %.0f): a "
+                         "settings section drawn above it is open and pushed "
+                         "it past the bottom\n",
+                         g_uiScaleRectMin.y, g_uiScaleRectMax.y,
+                         ImGui::GetIO().DisplaySize.y);
+        }
+    }
+    // Spoken here for the same reason drawKey() speaks its rows: this widget
+    // is hand-rolled, so the shared helper cannot reach it, and a silent text
+    // size control is the one a player who cannot read the panel needs most.
+    {
+        char value[32];
+        std::snprintf(value, sizeof(value), "%.2fx",
+                      static_cast<double>(g_uiScaleEdit));
+        ui::SpeakFocusedItem(
+            "UI scale", value,
+            "Scales text and controls together after you release the slider.");
+    }
+    if (AppUi_deferredCommit(scalePreviewChanged,
+                             ImGui::IsItemDeactivatedAfterEdit(),
+                             &g_uiScaleDirty)) {
+        // Applying while held changes every widget's geometry underneath
+        // the pointer. That feedback loop made the slider oscillate and
+        // the whole launcher flash. Commit once, on release, and let the
+        // host apply the new metrics at the next safe frame boundary.
+        AppTheme::requestUiScale(g_uiScaleEdit);
+        char value[32];
+        std::snprintf(value, sizeof(value), "%.2f",
+                      static_cast<double>(g_uiScaleEdit));
+        const AppConfig::PersistResult persist =
+            AppConfig::setAndSave("ui_scale", value);
+        if (AppConfig::persistResultApplied(persist)) {
+            g_uiScaleDirty = false;
+            g_uiScaleError.clear();
+            setStatus(
+                persist == AppConfig::PersistResult::DurabilityUnconfirmed
+                    ? "UI scale applied, but durable storage was not confirmed. "
+                      "It may need to be selected again after an unexpected shutdown."
+                    : "UI scale saved.",
+                persist == AppConfig::PersistResult::DurabilityUnconfirmed
+                    ? AppTheme::accent() : AppTheme::good());
+            changed = true;
+        } else {
+            g_uiScaleError =
+                "UI scale could not be saved. It remains active for this session; "
+                "retry after restoring write access.";
+            setStatus(g_uiScaleError.c_str(), AppTheme::bad());
+        }
+    }
+    if (!g_uiScaleError.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+        ImGui::TextWrapped("%s", g_uiScaleError.c_str());
+        ImGui::PopStyleColor();
+        if (ImGui::Button(
+                "Retry UI Scale Save",
+                ImVec2(0.0f, ui::kBtnSecondary().y))) {
+            char value[32];
+            std::snprintf(value, sizeof(value), "%.2f",
+                          static_cast<double>(g_uiScaleEdit));
+            const AppConfig::PersistResult persist =
+                AppConfig::setAndSave("ui_scale", value);
+            if (AppConfig::persistResultApplied(persist)) {
+                g_uiScaleDirty = false;
+                g_uiScaleError.clear();
+                setStatus(
+                    persist == AppConfig::PersistResult::DurabilityUnconfirmed
+                        ? "UI scale applied, but durable storage was not confirmed. "
+                          "It may need to be selected again after an unexpected shutdown."
+                        : "UI scale saved.",
+                    persist == AppConfig::PersistResult::DurabilityUnconfirmed
+                        ? AppTheme::accent() : AppTheme::good());
+                changed = true;
+            }
+        }
+    }
+    if (!compact) {
+        ui::TextSubtleWrapped(
+            "Scales text and controls together after you release the slider. "
+            "Supported range: 0.75x to 2.00x. For touch, use 1.25x or larger.");
+    }
+    ui::Gap(ui::kGapS);
+    return changed;
+}
+
+// --- Accessibility ---------------------------------------------------------
+//
+// One place for every option a player might need before they can use the rest
+// of the panel. The rows are ENUMERATED from AppUi_settingsSection rather than
+// listed here, so an accessibility option added later appears the moment it is
+// routed -- and so this section and the sections the keys came from cannot
+// disagree about which of them draws a row.
+bool drawAccessibilitySection(SDL_Window *window, bool compact,
+                              bool webGpuRenderer, bool legacyStretchActive) {
+    bool changed = false;
+    ui::Gap(ui::kGapS);
+    if (!compact) {
+        ui::TextSubtleWrapped(
+            "How the game presents itself to you: how big it reads, how much "
+            "the camera moves, and whether it speaks. None of these changes "
+            "how the game plays.");
+    }
+    ui::Gap(ui::kGapS);
+    ImGui::Indent(ui::kGapM);
+    if (AppUi_shellPreferenceSection(AppUiShellPreference::UiScale) ==
+        AppUiSettingsSection::Accessibility) {
+        changed |= drawUiScale(compact);
+    }
+    for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
+        const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
+        if (AppUi_settingsSection(key) !=
+            AppUiSettingsSection::Accessibility) continue;
+        if (!AppUi_videoSettingVisible(key, webGpuRenderer,
+                                       legacyStretchActive)) continue;
+        changed |= drawKey(window, key, compact);
+    }
+    ImGui::Unindent(ui::kGapM);
+    ui::Gap(ui::kGapS);
+    return changed;
+}
+
 // --- Content packs ---------------------------------------------------------
 // The read-only list below exists for one failure: a pack that is quietly
 // ignored looks to the player exactly like a pack that loaded and did nothing.
@@ -1502,99 +1678,53 @@ bool Settings_draw(SDL_Window *window, bool compact) {
         mdkr_video_config_current()
             ->values[MDKR_VIDEO_WIDESCREEN].number == 0.0f;
 
+    const bool draggingUiScale =
+        std::getenv("MDKR_APP_SMOKE_UI_SCALE_DRAG") != nullptr;
+    /* Every scripted gate drives a real widget at coordinates captured on the
+     * previous frame, which only works while the panel is actually showing it.
+     * A widget scrolled past the bottom is still submitted, so the coordinates
+     * stay valid and the queued click lands on clipped geometry -- the gate
+     * then fails with a verdict mismatch that says nothing about layout.
+     *
+     * So: collapse every section drawn ABOVE the category loop except the one
+     * holding the gate's own target. Which section that is comes from the
+     * routing policy rather than a hand-written list, so moving UI scale
+     * between sections moves the exemption with it.
+     *
+     * This is not hypothetical. The Accessibility section arrived with an
+     * unconditional DefaultOpen and pushed Frame limit ~660pt below an 800pt
+     * panel; taking UI scale with it pushed that slider below a 700pt one. */
+    const AppUiSettingsSection uiScaleSection =
+        AppUi_shellPreferenceSection(AppUiShellPreference::UiScale);
+    const bool scriptedGateArmed =
+        controllerSettingsSmoke || selectingFrameLimit || draggingUiScale;
+    const bool gateTargetsInterface =
+        draggingUiScale && uiScaleSection == AppUiSettingsSection::Category;
+    const bool gateTargetsAccessibility =
+        draggingUiScale && uiScaleSection == AppUiSettingsSection::Accessibility;
     const ImGuiTreeNodeFlags interfaceFlags =
-        (controllerSettingsSmoke || selectingFrameLimit)
+        (scriptedGateArmed && !gateTargetsInterface)
+        ? ImGuiTreeNodeFlags_None : ImGuiTreeNodeFlags_DefaultOpen;
+    const ImGuiTreeNodeFlags accessibilityFlags =
+        (scriptedGateArmed && !gateTargetsAccessibility)
         ? ImGuiTreeNodeFlags_None : ImGuiTreeNodeFlags_DefaultOpen;
     if (drawSettingsSectionHeader("Interface", interfaceFlags)) {
-        if (!g_uiScaleInitialized) {
-            g_uiScaleEdit = AppTheme::uiScale();
-            g_uiScaleInitialized = true;
-        }
         ui::Gap(ui::kGapS);
         changed |= drawKey(window, MDKR_WINDOW_MODE, compact);
-        ImGui::TextUnformatted("UI scale");
-        ImGui::SetNextItemWidth(ui::kControlWidth());
-        const bool scalePreviewChanged = ImGui::SliderFloat(
-            "##ui-scale", &g_uiScaleEdit, 0.75f, 2.0f, "%.2fx",
-            ImGuiSliderFlags_AlwaysClamp);
-        g_uiScaleRectMin = ImGui::GetItemRectMin();
-        g_uiScaleRectMax = ImGui::GetItemRectMax();
-        g_uiScaleRectValid = true;
-        if (AppUi_deferredCommit(scalePreviewChanged,
-                                 ImGui::IsItemDeactivatedAfterEdit(),
-                                 &g_uiScaleDirty)) {
-            // Applying while held changes every widget's geometry underneath
-            // the pointer. That feedback loop made the slider oscillate and
-            // the whole launcher flash. Commit once, on release, and let the
-            // host apply the new metrics at the next safe frame boundary.
-            AppTheme::requestUiScale(g_uiScaleEdit);
-            char value[32];
-            std::snprintf(value, sizeof(value), "%.2f",
-                          static_cast<double>(g_uiScaleEdit));
-            const AppConfig::PersistResult persist =
-                AppConfig::setAndSave("ui_scale", value);
-            if (AppConfig::persistResultApplied(persist)) {
-                g_uiScaleDirty = false;
-                g_uiScaleError.clear();
-                setStatus(
-                    persist == AppConfig::PersistResult::DurabilityUnconfirmed
-                        ? "UI scale applied, but durable storage was not confirmed. "
-                          "It may need to be selected again after an unexpected shutdown."
-                        : "UI scale saved.",
-                    persist == AppConfig::PersistResult::DurabilityUnconfirmed
-                        ? AppTheme::accent() : AppTheme::good());
-                changed = true;
-            } else {
-                g_uiScaleError =
-                    "UI scale could not be saved. It remains active for this session; "
-                    "retry after restoring write access.";
-                setStatus(g_uiScaleError.c_str(), AppTheme::bad());
-            }
+        if (AppUi_shellPreferenceSection(AppUiShellPreference::UiScale) ==
+            AppUiSettingsSection::Category) {
+            changed |= drawUiScale(compact);
         }
-        if (!g_uiScaleError.empty()) {
-            ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
-            ImGui::TextWrapped("%s", g_uiScaleError.c_str());
-            ImGui::PopStyleColor();
-            if (ImGui::Button(
-                    "Retry UI Scale Save",
-                    ImVec2(0.0f, ui::kBtnSecondary().y))) {
-                char value[32];
-                std::snprintf(value, sizeof(value), "%.2f",
-                              static_cast<double>(g_uiScaleEdit));
-                const AppConfig::PersistResult persist =
-                    AppConfig::setAndSave("ui_scale", value);
-                if (AppConfig::persistResultApplied(persist)) {
-                    g_uiScaleDirty = false;
-                    g_uiScaleError.clear();
-                    setStatus(
-                        persist == AppConfig::PersistResult::DurabilityUnconfirmed
-                            ? "UI scale applied, but durable storage was not confirmed. "
-                              "It may need to be selected again after an unexpected shutdown."
-                            : "UI scale saved.",
-                        persist == AppConfig::PersistResult::DurabilityUnconfirmed
-                            ? AppTheme::accent() : AppTheme::good());
-                    changed = true;
-                }
-            }
-        }
-        if (!compact) {
-            ui::TextSubtleWrapped(
-                "Scales text and controls together after you release the slider. "
-                "Supported range: 0.75x to 2.00x. For touch, use 1.25x or larger.");
-        }
-        ui::Gap(ui::kGapS);
         /*
          * Every other Interface-category setting, through the same row helper
          * as the rest of the panel.
          *
          * This section is hand-written rather than produced by the category
-         * loop below, because it owns UI scale -- an app preference with no
-         * schema row. That is precisely how Check for updates and Developer
-         * tools ended up with a schema row, a category, an environment
-         * variable and no control anywhere in the product: Interface is not in
-         * `categoryOrder`, so nothing drew them. Enumerating the category here
-         * closes that hole for the speech settings and for whatever is added
-         * to Interface next.
+         * loop below, because Interface is not in `categoryOrder`. That is
+         * precisely how Check for updates and Developer tools ended up with a
+         * schema row, a category, an environment variable and no control
+         * anywhere in the product: nothing drew them. Enumerating the category
+         * here closes that hole for whatever is added to Interface next.
          */
         for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
             const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
@@ -1609,6 +1739,13 @@ bool Settings_draw(SDL_Window *window, bool compact) {
                 AppUiSettingsSection::Category) continue;
             changed |= drawKey(window, key, compact);
         }
+    }
+
+    // Second, and high up, because a player who needs it needs it before they
+    // can use anything below it.
+    if (drawSettingsSectionHeader("Accessibility", accessibilityFlags)) {
+        changed |= drawAccessibilitySection(window, compact, webGpuRenderer,
+                                            legacyStretchActive);
     }
 
     for (MdkrVideoCategory category : categoryOrder) {

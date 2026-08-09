@@ -2834,6 +2834,35 @@ its four cleared races, its balloons, the four world keys and the world-arrival
 cutscene flag are constructed, because this check does not drive to that world.
 The door into it is gated separately, below.
 
+## Controller hotplug — `tests/check_input_hotplug.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_input_hotplug.py --build build
+```
+
+Drives real device add and remove through `SDL_JoystickAttachVirtual`, so it
+needs no hardware. Eight independently scored assertions over two arms, watching
+`[PAD-CHANNEL]` rows emitted from the same three accessors `osContGetReadData`
+reads — so the trace cannot agree with SDL while disagreeing with the game.
+
+**It found a real defect on its first run.** A pad connected *before launch* was
+bound to two channels: `SDL_Init` queues a `CONTROLLERDEVICEADDED` for each
+existing device, `platform_input_init()` enumerated while that event was still
+queued, and `SDL_GameControllerOpen()` is reference-counted — so the second open
+stored the same pointer in the next free slot. The game saw a controller in P2
+that nobody was holding, the next real pad went to P3, and P2's rumble buzzed
+P1's pad. See [`open-items/multiplayer.md`](../docs/open-items/multiplayer.md).
+
+The **boot arm is the point**: mid-run hotplug produces one ADDED event and no
+enumeration, so every existing gate missed this. Tick `0` of the test schedule
+fires from inside `platform_input_init()` *before* its startup enumeration,
+which is the only way to reproduce a pad that was already plugged in.
+
+Negative control: the fix gated behind a runtime flag makes the gate exit 1 with
+exactly four failures. Three of those are downstream of the one root cause — the
+disconnect fail-safe and the padless-rumble guard were already correct, which
+the overflow arm's independent passes show.
+
 ## Shell self-voicing — `tests/check_a11y_shell.py`
 
 ```bash
@@ -2863,6 +2892,49 @@ enumerating rather than listing:
 The positive control has two arms: removing the emission entirely fails naming
 all 52 controls, and skipping a single key fails naming that one — so the gate
 isolates rather than only detecting all-or-nothing.
+
+## Race announcements — `tests/check_a11y_race.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_a11y_race.py --build build --rom baserom.us.v80.z64
+```
+
+Drives a full autopiloted race and requires the `[SPEAK]` stream to carry the
+five things a player who cannot see the screen needs in order to follow one: the
+start, at least one change of position, the laps, the final lap, and the result.
+Lap calls must match `Lap N of M` — a bare "Lap 2" does not say how much race is
+left — and the finish must be spoken at `critical` priority, because it is the
+one line no later utterance may cut off.
+
+Three arms, each answering a question the others cannot:
+
+| Arm | Asks | Passes when |
+|---|---|---|
+| full race | is a race followable by ear? | all five moments spoken, laps named `Lap N of M`, the result `critical` |
+| purity | did listening change the race? | `[SIMHASH]` v3 rows byte-identical with announcements on and off — 5400 rows on the current route |
+| categories | does each switch own its own category? | silencing `race_event`, `race_lap` or `race_position` leaves the other two intact |
+
+The purity arm is the authority proof: announcements are
+`MDKR_ENH_PRESENTATION`, so the byte-identical hash stream is what makes that
+classification a measured fact rather than an intention.
+
+**The coalescing assertion is the one with teeth.** Position changes in a
+mid-pack scrap land about three authoritative ticks apart, and a stream that
+spoke all of them would cut every line off with the next one — audible as noise,
+not as information. `MDKR_A11Y_RACE_POSITION_MIN_TICKS` (60 ticks,
+`platform/a11y_race.h`) debounces them, and the gate measures the tightest gap
+between consecutive `cat=race_position` utterances against the `[PACE]` clock,
+failing under 50 frames. Asserting 50 rather than 60 leaves the tick-to-frame
+mapping a frame or two of slack at the edges while staying an order of magnitude
+above what an uncoalesced stream produces. The arm refuses to score itself
+vacuous: fewer than two timestamped position calls is a failure naming that
+cause, so "the race had no overtaking" and "the spacing was never tested" cannot
+be mistaken for a pass.
+
+The route runs under `MDKR_SYNTH_FIELDS=1` for determinism. That is sound here
+and would not be for a pacing measurement — the synthetic pacer's presentation
+and GPU counters are meaningless, but authoritative ticks, the hash stream and
+utterance ordering are not.
 
 ## Future Fun Land unlock — `tests/check_future_fun_land.py`
 

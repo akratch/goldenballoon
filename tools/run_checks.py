@@ -134,6 +134,12 @@ CHECKS = (
     Check("enh_draw_distance", "check_enh_draw_distance.py", "rom",
           "draw distance and LOD bias extend what is drawn without changing "
           "which objects exist, proving both are render culls"),
+    Check("a11y_race", "check_a11y_race.py", "rom",
+          "race announcements fire, coalesce, toggle per category, and leave "
+          "the authoritative state stream byte-identical"),
+    Check("input_hotplug", "check_input_hotplug.py", "rom",
+          "a pad joining or leaving mid-run reaches the right channel, leaves "
+          "exact neutral on removal, and never binds one device to two ports"),
     Check("rom_checker_page", "check_rom_checker_page.py", "rom",
           "the hosted ROM checker uploads nothing and reaches the same verdict "
           "as the native binary, character for character, on every ROM present"),

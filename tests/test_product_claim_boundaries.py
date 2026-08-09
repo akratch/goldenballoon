@@ -10,8 +10,17 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def require_contains(path: str, text: str) -> None:
+    """Assert a document still makes a claim, however the prose is wrapped.
+
+    These needles are sentences, not lines. Comparing raw text made the gate
+    fail on a markdown reflow that moved one word of the screen-reader
+    disclaimer onto the next line -- the claim was intact and the gate said it
+    had been dropped. Collapsing whitespace on both sides keeps the assertion
+    about what the document states and not about where it wraps; a deleted or
+    reworded claim still fails, which the suite proves by mutation.
+    """
     source = (ROOT / path).read_text(encoding="utf-8")
-    if text not in source:
+    if " ".join(text.split()) not in " ".join(source.split()):
         raise AssertionError(f"{path} no longer states: {text!r}")
 
 

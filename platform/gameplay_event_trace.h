@@ -26,6 +26,30 @@ typedef enum GameplayEventKind {
 
 bool gameplay_event_trace_enabled(void);
 
+/*
+ * A second reader of the same ordered stream.
+ *
+ * The hash stream answers "did these two runs do the same things"; an observer
+ * answers "what just happened", which is what a presentation layer such as the
+ * race announcer needs. Both read the events the port already publishes, so a
+ * feature that reacts to race events costs no new observation point inside the
+ * race code -- which is the whole reason this hook exists rather than a second
+ * set of calls scattered through game/src.
+ *
+ * Installing an observer arms the emission sites (so the events actually reach
+ * it) but changes nothing about the hash: `[EVENTHASH]` rows are still printed
+ * only when MDKR_EVENT_HASH is set, and their bytes are unaffected by whether
+ * anybody is observing. At most one observer; NULL removes it. The pointer must
+ * outlive the process -- pass a file-scope constant, not a stack value.
+ */
+typedef struct GameplayEventObserver {
+    void (*event)(GameplayEventKind kind, int32_t a, int32_t b, int32_t c,
+                  int32_t d);
+    void (*tick)(uint64_t tick);
+} GameplayEventObserver;
+
+void gameplay_event_trace_set_observer(const GameplayEventObserver *observer);
+
 /* Arguments are stable scalar identities only; never pass host pointers. */
 void gameplay_event_trace_emit(
     GameplayEventKind kind, int32_t a, int32_t b, int32_t c, int32_t d);

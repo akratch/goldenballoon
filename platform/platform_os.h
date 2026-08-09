@@ -185,10 +185,21 @@ void mdkr_pace_probe_progress(int playerIndex, int checkpoint, int lap);
 /* Published from race_check_finish() -- outside update_player_racer, which stops
  * for a racer as soon as it finishes and so cannot observe the finish itself.
  * The identity fields prove that the probe follows controller port 1 rather
- * than whichever racer happened to occupy starting-grid slot zero. */
+ * than whichever racer happened to occupy starting-grid slot zero.
+ *
+ * The trailing five are the rest of what race_check_finish() has already
+ * decided about the same racer, carried on the SAME call rather than on a
+ * second one. They exist for the race announcer (platform/a11y_race.c), which
+ * needs the live position, the field size, the lap total and the item the
+ * player is holding, and which must not become a second place that observes the
+ * race. They are not hashed and not printed: the [PACE] line and the
+ * GAMEPLAY_EVENT_RACE_RESULT payload it publishes are byte-identical to what
+ * they were before the announcer existed. */
 void mdkr_pace_probe_finish(
     int lap, int raceFinished, int finishPosition,
-    int racerIndex, int playerIndex);
+    int racerIndex, int playerIndex,
+    int racePosition, int racerCount, int lapCount, int itemQuantity,
+    int itemType);
 /* Time-trial ghost playback: counts interpolated ghost frames and records the
  * source bank (0/1 = the player's own ghost, 2 = staff). Lets a check assert that
  * its route really reaches timetrial_ghost_read() rather than assuming it. */

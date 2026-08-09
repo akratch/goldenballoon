@@ -116,19 +116,40 @@ bool AppUi_videoSettingVisible(MdkrVideoKey key, bool webGpuRenderer,
 // Which settings section draws a key.
 //
 // Nearly every key is drawn under the header its schema category names, and
-// Category says exactly that. Two families cut across those categories and are
-// drawn in their own section instead: the enhancements are spread over
-// Interface, Advanced Graphics and Frame Rate & Motion, and the content-pack
-// keys sit in Advanced Graphics beside render scale and filtering. A player
-// looking for "the extras I switched on" or "the packs I installed" looks for
-// one list, not for four rows scattered through three headers.
+// Category says exactly that. Three families cut across those categories and
+// are drawn in their own section instead: the enhancements are spread over
+// Interface, Advanced Graphics and Frame Rate & Motion, the content-pack keys
+// sit in Advanced Graphics beside render scale and filtering, and the
+// accessibility options are split between Interface (the speech settings) and
+// the camera group (reduced motion). A player looking for "the extras I
+// switched on", "the packs I installed" or "the options that make this playable
+// for me" looks for one list, not for rows scattered through three headers.
+//
+// Accessibility is the case where scattering costs the most. Someone who needs
+// reduced motion, larger text and a voice needs all three before they can use
+// the product at all, and asking them to find each one under a different header
+// asks them to explore the very interface they cannot yet use.
 //
 // This is a ROUTING decision and never a visibility one:
 // AppUi_videoSettingVisible stays true for every key below, because none of
 // them is hidden — they are drawn somewhere else.
-enum class AppUiSettingsSection { Category, Enhancements, Content };
+enum class AppUiSettingsSection {
+    Category, Enhancements, Content, Accessibility
+};
 
 AppUiSettingsSection AppUi_settingsSection(MdkrVideoKey key);
+
+// The same routing question for the shell preferences that have no schema key
+// and so cannot answer it through AppUi_settingsSection.
+//
+// UI scale is the only one: it is stored in the launcher's own preferences
+// rather than the video config, so nothing in MdkrVideoKey can say where it is
+// drawn. Routing it here rather than hand-placing the widget is what makes "it
+// is drawn in exactly one section" a property a test can read, instead of one
+// that holds until somebody copies the slider into a second header.
+enum class AppUiShellPreference { UiScale };
+
+AppUiSettingsSection AppUi_shellPreferenceSection(AppUiShellPreference key);
 
 // True for exactly the keys "Reset enhancements" restores to their schema
 // defaults. The scoping is the whole point of the action: a player resetting

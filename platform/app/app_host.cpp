@@ -1,5 +1,6 @@
 // app_host.cpp — see app_host.h.
 #include "app_host.h"
+#include "a11y_speech.h"
 #include "fs_utf8.h"
 #include "app_activation.h"
 #include "app_theme.h"
@@ -1210,6 +1211,13 @@ bool AppHost::pumpAndShouldQuit() {
     /* Settings drawn by the previous frame may have queued a fullscreen
      * transition. Apply it before ImGui/WebGPU begins another frame. */
     AppWindow_servicePending();
+
+    /* Hand the previous frame's announcements to the speech worker. Here, at
+     * the top of the launcher's frame, because this is the thread that pushed
+     * them: a11y_model.c is single-owner and the pop has to happen on the same
+     * side as the push (see platform/a11y_speech.h). Costs a config read and a
+     * return unless the player has switched speech on. */
+    mdkr_a11y_speech_service_pump();
 
     // SDL_DROPFILE is a platform-reserved event. In particular, sdl2-compat
     // cannot round-trip an application-built SDL2 DropEvent through SDL3: the

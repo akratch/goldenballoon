@@ -220,6 +220,86 @@ int main() {
                    AppUiSettingsSection::Category,
            "an ordinary setting is still drawn under its schema category");
 
+    // --- The Accessibility section -----------------------------------------
+    // The membership claim the section exists to make: everything a player with
+    // an access need has to find is in ONE list. These keys declare two
+    // different schema categories between them -- the four speech settings are
+    // Interface and reduced motion is Presentation -- so without this routing
+    // "Camera motion" sits between Motion smoothing and Allow tearing while the
+    // speech settings sit four headers away, and a player who needs both has to
+    // already know the panel to find either.
+    const MdkrVideoKey accessibilityKeys[] = {
+        MDKR_A11Y_SPEECH, MDKR_A11Y_SPEECH_RATE, MDKR_A11Y_SPEECH_VOLUME,
+        MDKR_A11Y_SPEECH_RACE, MDKR_VIDEO_CAMERA_COMFORT,
+    };
+    for (MdkrVideoKey key : accessibilityKeys) {
+        expect(AppUi_settingsSection(key) ==
+                   AppUiSettingsSection::Accessibility,
+               "every accessibility key is drawn in the Accessibility section");
+        // Routing, not hiding -- the same trap the enhancement block names. The
+        // cheap way to stop a row appearing twice is to hide it, and hiding an
+        // accessibility control takes it away from the player who needs it.
+        expect(AppUi_videoSettingVisible(key, true) &&
+                   AppUi_videoSettingVisible(key, false),
+               "an accessibility key moved to its own section is still visible");
+    }
+    // THE NO-DUPLICATION CLAIM. Section membership is exclusive by
+    // construction: one key, one answer. So asserting that every accessibility
+    // key answers Accessibility is the same as asserting that none of them is
+    // still routed to the schema category its old section enumerated -- the
+    // Interface block and the category loop both draw a key only when it
+    // answers Category. The converse direction is asserted too, so a key that
+    // is not an accessibility option cannot be swept into the section.
+    int accessibilitySectionKeys = 0;
+    for (int key = 0; key < MDKR_VIDEO_KEY_COUNT; ++key) {
+        const MdkrVideoKey typed = static_cast<MdkrVideoKey>(key);
+        bool isAccessibility = false;
+        for (MdkrVideoKey member : accessibilityKeys) {
+            if (member == typed) isAccessibility = true;
+        }
+        expect(isAccessibility ==
+                   (AppUi_settingsSection(typed) ==
+                    AppUiSettingsSection::Accessibility),
+               "no key outside the accessibility table claims the "
+               "Accessibility section");
+        if (AppUi_settingsSection(typed) ==
+            AppUiSettingsSection::Accessibility) {
+            ++accessibilitySectionKeys;
+        }
+    }
+    expect(accessibilitySectionKeys ==
+               static_cast<int>(std::size(accessibilityKeys)),
+           "the Accessibility section holds exactly the accessibility keys");
+    // Reduced motion left the camera group and the speech settings left
+    // Interface. Name the neighbours they used to sit beside and require those
+    // to have stayed put, so a future edit cannot drag half of Presentation
+    // into the accessibility list along with Camera.Comfort.
+    expect(AppUi_settingsSection(MDKR_VIDEO_CAMERA_OBSTRUCTION) ==
+                   AppUiSettingsSection::Category &&
+               AppUi_settingsSection(MDKR_WINDOW_MODE) ==
+                   AppUiSettingsSection::Category &&
+               AppUi_settingsSection(MDKR_APP_UPDATE_CHECK) ==
+                   AppUiSettingsSection::Category &&
+               AppUi_settingsSection(MDKR_TOOLS_ENABLED) ==
+                   AppUiSettingsSection::Category,
+           "the rows the accessibility keys sat beside stay in their category");
+    // UI scale has no schema key, so nothing above can route it. It is the one
+    // control that was hand-placed in Interface, and the whole reason a second
+    // routing function exists: the panel asks this question at both candidate
+    // sections, so exactly one of them draws the slider.
+    expect(AppUi_shellPreferenceSection(AppUiShellPreference::UiScale) ==
+               AppUiSettingsSection::Accessibility,
+           "UI scale is drawn in the Accessibility section");
+    expect(AppUi_shellPreferenceSection(AppUiShellPreference::UiScale) !=
+               AppUiSettingsSection::Category,
+           "UI scale is no longer drawn under Interface as well");
+    // An accessibility choice is not one of "the extras", so the reset beside
+    // the enhancements must not switch a player's voice or reduced motion off.
+    for (MdkrVideoKey key : accessibilityKeys) {
+        expect(!AppUi_enhancementResetIncludes(key),
+               "Reset enhancements leaves the accessibility options untouched");
+    }
+
     // --- Reset enhancements ------------------------------------------------
     // The scoping IS the action. A reset button beside a list of extras that
     // also threw away the frame limit, the volume levels and a remapped

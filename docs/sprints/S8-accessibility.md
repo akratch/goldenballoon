@@ -108,6 +108,17 @@ announcements are proven presentation-only by a `[SIMHASH]` v3 comparison.
 (`Camera.Comfort`), contrast, and UI scale, and every option in it is itself
 reachable and spoken.
 
+**Correction, 2026-08-09: there is no contrast setting.** This milestone and the
+project's own README both describe one, but no contrast key exists anywhere in
+`MdkrVideoKey`, `AppConfig` or `AppTheme` — it was assumed into the plan and
+never verified. The section ships as the four speech keys plus `Camera.Comfort`
+and UI scale. Adding contrast means adding the key and a receiver first, which
+is its own piece of work.
+
+UI scale has no schema key either, so a second policy answers for it
+(`AppUi_shellPreferenceSection`), asked at both candidate sections so exactly
+one draws the slider.
+
 ### M6 — Verified with a real screen reader
 
 **Done when:** the route in `docs/ACCESSIBILITY.md` has been executed with

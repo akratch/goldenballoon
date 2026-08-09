@@ -18,6 +18,7 @@
 //     no rebinding widget and nothing here writes those keys back: editing the
 //     file is currently the only way to change them.
 #include "ui_overlay.h"
+#include "a11y_speech.h"    // the drain worker's per-frame pump
 #include "app_brand.h"
 #include "app_config.h"
 #include "app_theme.h"
@@ -271,6 +272,16 @@ static int onWantsInput(void) { return g_overlay.open ? 1 : 0; }
 // to forbid.
 static int onWantsRender(void) {
     return (g_overlay.open || g_overlay.showFps || DevTools_wantsFrame()) ? 1 : 0;
+}
+
+// The engine's per-frame service call, which during a race is the ONLY place
+// the shell still runs on the main thread. The launcher pumps the speech worker
+// from AppHost::pumpAndShouldQuit(); once the engine has the window that loop is
+// gone, and without this line the overlay would announce rows that were never
+// spoken. Same thread, same single-owner rule: see platform/a11y_speech.h.
+static void onService(void) {
+    AppWindow_servicePending();
+    mdkr_a11y_speech_service_pump();
 }
 
 }  // extern "C"
@@ -758,7 +769,7 @@ void Overlay_install(SDL_Window *window) {
     }
     static AppOverlayHooks hooks;
     hooks.process_event = onProcessEvent;
-    hooks.service       = AppWindow_servicePending;
+    hooks.service       = onService;
     hooks.wants_input   = onWantsInput;
     hooks.wants_render  = onWantsRender;
     hooks.render        = onRender;
