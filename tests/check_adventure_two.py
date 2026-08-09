@@ -413,6 +413,114 @@ def validate_visual_pair(
     return failures, metrics
 
 
+MIRROR_RECT_RE = re.compile(r"\[MIRROR-RECT\] cleared=(\d+)")
+
+
+def announcement_rect_arm(binary: str, rom: str) -> list[tuple[str, str]]:
+    """Issue #27: rectangles must not inherit the mirrored viewport's sign.
+
+    A TEXRECT is an RDP screen-space primitive, so the RSP viewport cannot
+    reach it on hardware. In Adventure Two the trophy-round announcement draws
+    text straight over the race loaded as its backdrop -- with no mtx_ortho()
+    in between, unlike the HUD -- so every glyph was reflected about the screen
+    centre until dkr_draw_rectangle started saving rdp.viewport_flip_x.
+
+    This arm drives the trophy cabinet in both adventures and reads the
+    `[MIRROR-RECT] cleared` counter, which reports rectangles issued while that
+    latch was live:
+
+      * Adventure Two must be > 0. This is the NON-VACUITY witness and it is
+        not optional: an arm that merely drives an Adventure Two *race* reports
+        zero, correctly, because in-race text is ortho-protected. Without this
+        assertion a broken route would pass silently while testing nothing.
+      * Adventure One must be exactly 0, which is what proves the change is
+        inert outside Adventure Two.
+
+    Reaching the cabinet inside Adventure Two takes the trophy gate's own
+    navigation plus a single `DOWN` at GAME SELECT to move from Adventure One
+    to Adventure Two -- the same option gate check_save_100_entry exists for.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "trophy_series", os.path.join(os.path.dirname(__file__),
+                                      "check_trophy_series.py"))
+    trophy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(trophy)
+
+    frames = 6000
+    results: list[tuple[str, str]] = []
+    counts: dict[str, int] = {}
+    for adventure_two in (True, False):
+        label = "AT2" if adventure_two else "AT1"
+        with tempfile.TemporaryDirectory(prefix="mdkr_adv2_rect_") as run_dir:
+            root = Path(run_dir)
+            (root / "save").mkdir()
+            image = bytearray(trophy.eeprom_image())
+            image[CONFIG_OFFSET:CONFIG_OFFSET + 8] = config_block()
+            if adventure_two:
+                slot = bytearray(image[:SLOT_BYTES])
+                bits = "".join(f"{byte:08b}" for byte in slot)
+                bits = (bits[:CUTSCENE_BIT_OFFSET]
+                        + f"{CUTSCENE_ADVENTURE_TWO:032b}"
+                        + bits[CUTSCENE_BIT_OFFSET + 32:])
+                slot = bytearray(int(bits[i:i + 8], 2)
+                                 for i in range(0, len(bits), 8))
+                image[:SLOT_BYTES] = seal_slot(slot)
+            (root / "save/eeprom.bin").write_bytes(bytes(image))
+
+            script = root / "trophy_input.txt"
+            trophy.write_input_script(script, frames, "full")
+            if adventure_two:
+                lines = script.read_text().splitlines()
+                lines.insert(5, "1840 DOWN 4")
+                script.write_text("\n".join(lines) + "\n")
+
+            env = clean_env()
+            env.update(
+                MDKR_AUDIO="0", MDKR_SIMULATION_CADENCE="enhanced",
+                MDKR_SYNTH_FIELDS="1", MDKR_TRACE="1", MDKR_AUTOPILOT="1",
+                MDKR_DRIVE_ROUTE=trophy.ROUTE,
+                MDKR_TROPHY_COMPLETE_AFTER="600",
+                MDKR_TROPHY_ORDER=trophy.TIE_ORDER,
+            )
+            command = [binary, "--remastered", "--headless-frames",
+                       str(frames), "--input-script", str(script),
+                       "--rom", os.path.abspath(rom)]
+            try:
+                proc = subprocess.run(
+                    command, cwd=run_dir, env=env, stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, timeout=1800)
+                output = proc.stdout.decode("utf-8", "replace")
+            except subprocess.TimeoutExpired as exc:
+                results.append((f"{label}: run timed out", ""))
+                continue
+            match = MIRROR_RECT_RE.search(output)
+            if match is None:
+                results.append(
+                    (f"{label}: no [MIRROR-RECT] row -- the run did not reach "
+                     "renderer teardown", ""))
+                continue
+            counts[label] = int(match.group(1))
+
+    if "AT2" in counts and counts["AT2"] <= 0:
+        results.append(
+            ("Adventure Two reached the trophy cabinet but issued no "
+             "rectangle under the mirrored viewport (cleared=0). The route no "
+             "longer exercises the defect, so this arm proves nothing -- fix "
+             "the route, do not relax this bound", ""))
+    if "AT1" in counts and counts["AT1"] != 0:
+        results.append(
+            (f"Adventure One issued {counts['AT1']} rectangle(s) under a "
+             "mirrored viewport; outside Adventure Two the latch must never "
+             "be set", ""))
+    if not results and len(counts) == 2:
+        results.append(
+            ("", f"AT2 rescued {counts['AT2']} rect(s) at the trophy round, "
+                 f"AT1 {counts['AT1']}"))
+    return results
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
@@ -501,6 +609,12 @@ def main() -> int:
                   f"same MAD={same:.3f}, reflected MAD={flipped:.3f}")
     else:
         print("  visual mirror: skipped (track 5 not selected)")
+
+    for problem, detail in announcement_rect_arm(binary, args.rom):
+        if problem:
+            failures.append(f"announcement rects: {problem}")
+        else:
+            print(f"  announcement rects: {detail}")
 
     if failures:
         print(f"FAIL: Adventure Two check ({len(failures)} issue(s))")
