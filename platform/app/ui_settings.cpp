@@ -505,12 +505,12 @@ const Copy *copyFor(MdkrVideoKey key) {
         "Gameplay tick rate",
         "DKR's physics and AI were written for 30 updates a second. Enhanced "
         "runs them at 60.",
-        "Enhanced is how you get 60 FPS gameplay rather than 60 FPS "
-        "presentation. Parts of the authored physics assume the 30 Hz tick, so "
-        "some boss races run unfairly fast under it. A fix is in progress. "
-        "Frame limit and Motion smoothing raise the frame rate without "
-        "touching any of this.",
-        true, false};
+        "Enhanced is experimental. It gives you 60 FPS gameplay rather than "
+        "60 FPS presentation, but parts of the authored physics are written "
+        "around the 30 Hz tick, so boss races still run measurably off pace. "
+        "Original is the accurate setting. Frame limit and Motion smoothing "
+        "raise the frame rate without touching any of this.",
+        true, true};
     static const Copy kFrameLimitCopy = {
         "Frame limit", "How often the app draws to your screen.",
         kFrameLimitHelp, false, false};
@@ -1395,14 +1395,16 @@ bool Settings_draw(SDL_Window *window, bool compact) {
                 cadence != nullptr &&
                 std::strcmp(cadence->text, "enhanced") == 0;
             ui::CautionBox(
-                enhanced ? "Enhanced is on, and boss races are unfair"
-                         : "Enhanced changes how the game plays",
+                enhanced ? "Enhanced is on — experimental, and races run off pace"
+                         : "Enhanced is experimental and changes how the game plays",
                 "Enhanced runs DKR's logic at 60 Hz instead of the 30 Hz it "
-                "was written for. Parts of the authored physics assume the "
-                "30 Hz tick, so the Bluey and Bubbler rematches run unfairly "
-                "fast. A fix is in progress. Original is the accurate setting, "
-                "and Frame rate above raises the frame rate without touching "
-                "any of this.");
+                "was written for. The boss rematches are winnable, but they "
+                "still finish measurably off the pace the game intends, "
+                "because the original physics is written around the 30 Hz "
+                "step rather than derived from it. Original is exact — "
+                "bit for bit the game as it shipped. Frame rate above gives "
+                "you a smooth 60 FPS picture without changing the game at "
+                "all, and is the recommended way to get one.");
             ui::Gap(ui::kGapS);
         }
         row(MDKR_VIDEO_SIMULATION_CADENCE);
