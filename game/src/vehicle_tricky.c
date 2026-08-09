@@ -99,7 +99,7 @@ void update_tricky(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
     tempStartTimer = *startTimer;
     if (racer->playerIndex == PLAYER_COMPUTER) {
         if (*startTimer != 100) {
-            *startTimer -= 15;
+            *startTimer -= 15; //!@Delta THRESHOLD: race-start boost decision countdown, unmarked instance of the same defect shape as issue #26; see vehicle_bubbler.c for the full note.
             if (*startTimer < 0) {
                 if (gTrickyStartBoost == FALSE) {
                     play_random_boss_sound(BOSS_SOUND_POSITIVE);

@@ -79,7 +79,7 @@ void update_bubbler(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *
         gBubblerCutsceneTimer = 0;
     }
     if (racer->playerIndex == PLAYER_COMPUTER && *startTimer != 100) {
-        *startTimer -= 30;
+        *startTimer -= 30; //!@Delta THRESHOLD: race-start boost decision countdown, unmarked instance of the same defect shape as issue #26 -- fires the discrete boost/A_BUTTON decision twice as soon in wall-clock time under Enhanced. Fix shape: scale the per-tick decrement inversely with cadence (or equivalently double the implicit tick-count threshold), leaving the discrete boost trigger itself untouched.
         if (*startTimer < 0) {
             if (gBubblerStartBoost == FALSE) {
                 play_random_boss_sound(BOSS_SOUND_POSITIVE);

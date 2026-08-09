@@ -532,7 +532,7 @@ void racer_sound_hovercraft(Object *obj, UNUSED u32 buttonsPressed, u32 buttonsH
     // Apply pitch bonus from collected bananas: +0.05 per banana.
     // Only applies when speed is above 10, i.e. near maximum.
     // Otherwise, the bonus fades out gradually.
-    //!@Delta: This entire block is not timing correct.
+    //!@Delta CONTINUOUS: This entire block is not timing correct. bananaPitch ramps toward a target and decays with no use of tickDelta, unlike the thrustPitch ramp/decay a few lines above in this same function which does multiply by tickDelta.
     if (speed != 0.0 && gSoundRacerObj->bananas != 0) {
         if (gSoundRacerObj->bananas <= 10) {
             bananas = gSoundRacerObj->bananas;

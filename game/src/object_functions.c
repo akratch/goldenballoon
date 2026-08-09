@@ -321,7 +321,7 @@ void obj_loop_fireball_octoweapon(Object *obj, s32 updateRate) {
                 obj_spawn_effect(obj->trans.x_position, obj->trans.y_position, obj->trans.z_position,
                                  ASSET_OBJECT_ID_BOMBEXPLOSION, SOUND_EXPLOSION, 1.0f, 1);
             }
-            obj->trans.scale *= 0.9; //!@Delta
+            obj->trans.scale *= 0.9; //!@Delta CONTINUOUS: shrink-to-despawn ramp; sibling timer math in this same function (line 317) already scales by updateRate, this line does not.
             if (obj->trans.scale < 0.5) {
                 free_object(obj);
             }
@@ -4787,9 +4787,9 @@ void obj_loop_banana(Object *obj, s32 updateRate) {
             obj->trans.z_position = targetPos.f[2];
             // Bananas dropped by planes will not have gravity.
             if (banana->droppedVehicleID != VEHICLE_PLANE) {
-                obj->y_velocity -= 1.0;  //!@Delta
-                obj->x_velocity *= 0.95; //!@Delta
-                obj->z_velocity *= 0.95; //!@Delta
+                obj->y_velocity -= 1.0;  //!@Delta CONTINUOUS: gravity accumulation on a dropped banana; unscaled while the position integration two lines above already uses updateRateF.
+                obj->x_velocity *= 0.95; //!@Delta CONTINUOUS: air drag decay, same integrator.
+                obj->z_velocity *= 0.95; //!@Delta CONTINUOUS: air drag decay, same integrator.
             } else {
                 obj->x_velocity = 0.0f;
                 obj->y_velocity = 0.0f;

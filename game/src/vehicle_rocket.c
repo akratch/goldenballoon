@@ -77,7 +77,7 @@ void update_rocket(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
     racer->zipperDirCorrection = FALSE;
     if (racer->playerIndex == PLAYER_COMPUTER) {
         if (*startTimer != 100) {
-            *startTimer -= 30;
+            *startTimer -= 30; //!@Delta THRESHOLD: race-start boost decision countdown, unmarked instance of the same defect shape as issue #26; see vehicle_bubbler.c for the full note.
             if (*startTimer < 0) {
                 if (gRocketStartBoost == FALSE) {
                     play_random_boss_sound(BOSS_SOUND_POSITIVE);

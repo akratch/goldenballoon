@@ -86,7 +86,7 @@ void update_smokey(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
         gSmokeyCutsceneTimer = 0;
     }
     if (racer->playerIndex == PLAYER_COMPUTER && *startTimer != 100) {
-        *startTimer -= 60;
+        *startTimer -= 60; //!@Delta THRESHOLD: race-start boost decision countdown, unmarked instance of the same defect shape as issue #26; see vehicle_bubbler.c for the full note.
         if (*startTimer < 0) {
             if (gSmokeyStartBoost == FALSE) {
                 play_random_boss_sound(BOSS_SOUND_POSITIVE);

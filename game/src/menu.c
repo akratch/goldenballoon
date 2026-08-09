@@ -6200,11 +6200,11 @@ void savemenu_move(s32 updateRate) {
     while (updateRate > 0) {
         if (gSaveMenuOptionCountUpper > 0) {
             lerpUpper = optUpper - gSaveMenuScrollSource;
-            gSaveMenuScrollSource += 0.1f * lerpUpper; //!@Delta
+            gSaveMenuScrollSource += 0.1f * lerpUpper; //!@Delta INERT: this while(updateRate) loop already iterates once per elapsed field and the scroll state persists across calls, so total lerp steps per wall-clock second is identical under Original (one call, 2 iterations) and Enhanced (two calls, 1 iteration each) -- already scaled on the same path.
         }
         if (gMenuStage > SAVEMENU_ENTER && gSaveMenuOptionCountLower > 0) {
             lerpLower = optLower - gSaveMenuScrollDest;
-            gSaveMenuScrollDest += 0.1f * lerpLower; //!@Delta
+            gSaveMenuScrollDest += 0.1f * lerpLower; //!@Delta INERT: same while(updateRate) per-field loop as gSaveMenuScrollSource above; already scaled on the same path.
         }
         updateRate--;
     }
@@ -15798,9 +15798,9 @@ void update_controller_sticks(void) {
 
         gControllersYAxis[i] = YClamp;
         if (gControllersYAxis[i] < -STICK_DEADZONE) {
-            gControllersYAxisDelay[i]++; //!@Delta
+            gControllersYAxisDelay[i]++; //!@Delta THRESHOLD: per-tick counter compared against STICK_DELAY_LIMIT below. Already fixed by scaling the bound (menu_stick_delay_amount(), commit 7e2996e); the counter itself is deliberately left unscaled, which is the correct THRESHOLD fix shape.
         } else if (gControllersYAxis[i] > STICK_DEADZONE) {
-            gControllersYAxisDelay[i]++; //!@Delta
+            gControllersYAxisDelay[i]++; //!@Delta THRESHOLD: same counter, other direction; see menu_stick_delay_amount() above.
         } else {
             gControllersYAxisDelay[i] = 0;
         }
@@ -15812,9 +15812,9 @@ void update_controller_sticks(void) {
 
         gControllersXAxis[i] = XClamp;
         if (gControllersXAxis[i] < -STICK_DEADZONE) {
-            gControllersXAxisDelay[i]++; //!@Delta
+            gControllersXAxisDelay[i]++; //!@Delta THRESHOLD: per-tick counter compared against STICK_DELAY_LIMIT below; see menu_stick_delay_amount() above.
         } else if (gControllersXAxis[i] > STICK_DEADZONE) {
-            gControllersXAxisDelay[i]++; //!@Delta
+            gControllersXAxisDelay[i]++; //!@Delta THRESHOLD: same counter, other direction; see menu_stick_delay_amount() above.
         } else {
             gControllersXAxisDelay[i] = 0;
         }

@@ -2830,8 +2830,8 @@ void update_camera_hovercraft(f32 updateRate, Object *obj, Object_Racer *racer) 
         gCameraObject->boomLength = phi_f14;
         gCameraObject->cam_unk_20 = phi_f18;
     }
-    gCameraObject->boomLength += (phi_f14 - gCameraObject->boomLength) * 0.125; //!@Delta
-    gCameraObject->cam_unk_20 += (phi_f18 - gCameraObject->cam_unk_20) * 0.125; //!@Delta
+    gCameraObject->boomLength += (phi_f14 - gCameraObject->boomLength) * 0.125; //!@Delta CONTINUOUS: camera boom-length exponential lerp toward target; update_camera_hovercraft has no per-field loop, called once per tick.
+    gCameraObject->cam_unk_20 += (phi_f18 - gCameraObject->cam_unk_20) * 0.125; //!@Delta CONTINUOUS: paired vertical-boom lerp, same function/shape as line 2833.
     sp34 = sins_f(gCameraObject->trans.rotation.x_rotation - sp24);
     phi_f18 = coss_f(gCameraObject->trans.rotation.x_rotation - sp24);
     phi_f18 = (gCameraObject->boomLength * sp34) + (gCameraObject->cam_unk_20 * phi_f18);
@@ -3882,7 +3882,7 @@ void apply_plane_tilt_anim(s32 updateRate, Object *obj, Object_Racer *racer) {
                 animAdd = animDiff;
             }
         }
-        obj->animFrame += animAdd; //!@Delta
+        obj->animFrame += animAdd; //!@Delta INERT: animAdd = updateRate * 3 (lines above) already carries the field-count scale factor -- already scaled on the same path.
     }
 }
 
@@ -4809,7 +4809,7 @@ void update_player_racer(Object *obj, s32 updateRate) {
         }
         set_active_camera(tempRacer->playerIndex);
         gCameraObject = cam_get_active_camera_no_cutscenes();
-        tempRacer->miscAnimCounter++; //!@Delta
+        tempRacer->miscAnimCounter++; //!@Delta CONTINUOUS: animation phase counter read only through bitmasks (&7, &0x1F, etc.) elsewhere in this file to drive misc/idle animation timing; the campaign doc's own taxonomy names animation phase CONTINUOUS. Fix must handle the integer-quantization caveat (same family as the doc's stated x_rotation fixed-point residue) rather than a naive float scale.
         gCurrentPlayerIndex = tempRacer->playerIndex;
         if (tempRacer->raceFinished == TRUE || context == GAMEMODE_MENU) {
             tempRacer->unk1CA = 1;
@@ -4943,12 +4943,12 @@ void update_player_racer(Object *obj, s32 updateRate) {
         }
         if (tempRacer->bubbleTrapTimer > 0) {
             tempRacer->bubbleTrapTimer -= updateRate;
-            tempRacer->velocity *= 0.9f; //!@Delta
-            obj->x_velocity *= 0.87f;    //!@Delta
+            tempRacer->velocity *= 0.9f; //!@Delta CONTINUOUS: bubble-trap velocity decay, unscaled multiplicative constant.
+            obj->x_velocity *= 0.87f;    //!@Delta CONTINUOUS: bubble-trap lateral drag decay, same block as 4946.
             if (obj->y_velocity > 2.0f) {
                 obj->y_velocity = 2.0f;
             }
-            obj->z_velocity *= 0.87f; //!@Delta
+            obj->z_velocity *= 0.87f; //!@Delta CONTINUOUS: bubble-trap vertical drag decay, same block as 4946.
         }
         if (tempRacer->unk206 > 0) {
             tempRacer->unk18A = tempRacer->unk206;
@@ -5826,6 +5826,12 @@ void apply_vehicle_rotation_offset(Object_Racer *obj, s32 max, s16 yRotation, s1
     }
 }
 
+#ifdef NATIVE_PORT
+/* Defined below, next to the boss physics it bounds; both velocity paths call
+ * it, so it is declared here for the earlier one. */
+void mdkr_boss_cadence_clamp(Object_Racer *racer);
+#endif
+
 void func_80050A28(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateRateF) {
     UNUSED s32 pad0;
     s32 i;
@@ -6129,7 +6135,7 @@ void func_80050A28(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
     // Degrade lateral velocity
     if (gCurrentPlayerIndex != PLAYER_COMPUTER) {
         if (!(racer->velocity > -2.0) && racer->drift_direction == 0 && !racer->raceFinished) {
-            racer->lateral_velocity += (racer->velocity * gCurrentStickX) / miscAsset[racer->characterId]; //!@Delta
+            racer->lateral_velocity += (racer->velocity * gCurrentStickX) / miscAsset[racer->characterId]; //!@Delta CONTINUOUS: stick-driven lateral force added straight into the velocity accumulator with no updateRateF, in func_80050A28 (structural twin of update_car_velocity_ground).
             if (racer->playerIndex == PLAYER_COMPUTER) {
                 racer->lateral_velocity *= 0.9;
             }
@@ -6173,9 +6179,9 @@ void func_80050A28(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
     }
     // Slow down gradually when not acellerating and almost at a standstill
     if (velSquare < 1.0f && !(gCurrentRacerInput & A_BUTTON)) {
-        racer->velocity -= racer->velocity * traction * 8.0f; //!@Delta
+        racer->velocity -= racer->velocity * traction * 8.0f; //!@Delta CONTINUOUS: drag term subtracted from velocity every call with no updateRateF; func_80050A28 is the same thrust/drag shape update_car_velocity_ground has (see the mdkr_boss_cadence_clamp comment near line 7365), reached by boss vehicles via func_8004F7F4.
     } else {
-        racer->velocity -= velSquare * traction; //!@Delta
+        racer->velocity -= velSquare * traction; //!@Delta CONTINUOUS: drag term, else-branch of the same standstill/moving split as 6176.
     }
     if (sp60) {
         if (racer->unk1EE <= 15) {
@@ -6255,7 +6261,7 @@ void func_80050A28(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
             if (racer->vehicleIDPrev >= 5) {
                 tempVel *= 0.3;
             }
-            racer->velocity += tempVel; //!@Delta
+            racer->velocity += tempVel; //!@Delta CONTINUOUS: reverse-assist velocity nudge, additive integrator term with no updateRateF; mirrors the marked reverseVel add in update_car_velocity_ground (line 7334).
             racer->brake = 0.0f;
         }
     }
@@ -6297,7 +6303,7 @@ void func_80050A28(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
         }
         racer->velocity += traction * (racer->pitch / (4.0f - velocityDiff)) * updateRateF;
     }
-    racer->forwardVel -= (racer->forwardVel + (racer->velocity * 0.05)) * 0.125; //!@Delta
+    racer->forwardVel -= (racer->forwardVel + (racer->velocity * 0.05)) * 0.125; //!@Delta CONTINUOUS: forwardVel exponential lerp toward a body-lean target, same >>3/0.125-family shape as the camera boom smoothing.
     racer->unk1E8 = racer->steerAngle;
     racer->unk110 = gCurrentCarSteerVel;
     if (racer->trickType != 0) {
@@ -6309,6 +6315,23 @@ void func_80050A28(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
             }
         }
     }
+#ifdef NATIVE_PORT
+    /*
+     * The SECOND velocity path, and it needs the same ceiling as the first.
+     *
+     * func_80050A28 is a structural twin of update_car_velocity_ground -- same
+     * unscaled thrust/drag shape -- and vehicle_bluey.c, vehicle_bubbler.c and
+     * vehicle_tricky.c all reach it through func_8004F7F4. Clamping only at
+     * the end of func_80054FD0 left this path free to raise velocity again
+     * after the ceiling had been applied, within the same tick.
+     *
+     * Found by the M0 per-tick classification sweep rather than by a bug
+     * report, which is the campaign's "a root cause is not closed until its
+     * class is swept" rule doing its job: issue #26 was one instance of this
+     * shape and this was the other.
+     */
+    mdkr_boss_cadence_clamp(racer);
+#endif
 }
 
 /**
@@ -6380,7 +6403,7 @@ void handle_racer_head_turning(Object *obj, Object_Racer *racer, UNUSED s32 upda
  * The character's head will start to face forward.
  */
 void slowly_reset_head_angle(Object_Racer *racer) {
-    racer->headAngleTarget -= racer->headAngleTarget >> 3; //!@Delta
+    racer->headAngleTarget -= racer->headAngleTarget >> 3; //!@Delta CONTINUOUS: headAngleTarget bit-shift exponential decay toward zero in slowly_reset_head_angle(), called once per field with no scaling.
     if (racer->headAngleTarget > -10 && racer->headAngleTarget < 10) {
         racer->headAngleTarget = 0;
     }
@@ -6558,7 +6581,7 @@ void func_80052988(Object *obj, Object_Racer *racer, s32 action, s32 arg3, s32 d
     } else if (obj->animationID == action) {
         if (flags & 2) {
             if (racer->unk1F3 & 0x80) {
-                obj->animFrame -= arg5; //!@Delta
+                obj->animFrame -= arg5; //!@Delta INERT: arg5 *= arg7 (arg7 is always the caller's updateRate) two lines above in func_80052988 already scales this term -- already scaled on the same path.
                 if (obj->animFrame <= 0) {
                     obj->animationID = 0;
                     racer->unk1F2 = 0;
@@ -6566,7 +6589,7 @@ void func_80052988(Object *obj, Object_Racer *racer, s32 action, s32 arg3, s32 d
                     racer->unk1F3 = 0;
                 }
             } else {
-                obj->animFrame += arg5; //!@Delta
+                obj->animFrame += arg5; //!@Delta INERT: same pre-scaling as 6561: arg5 already carries the updateRate factor.
                 if (obj->animFrame >= duration) {
                     obj->animFrame = duration - 1;
                     if (!(flags & 4)) {
@@ -6575,7 +6598,7 @@ void func_80052988(Object *obj, Object_Racer *racer, s32 action, s32 arg3, s32 d
                 }
             }
         } else {
-            obj->animFrame += arg5; //!@Delta
+            obj->animFrame += arg5; //!@Delta INERT: same pre-scaling as 6561: arg5 already carries the updateRate factor.
             if (obj->animFrame >= duration) {
                 obj->animationID = 0;
                 racer->unk1F2 = 0;
@@ -6596,7 +6619,7 @@ void func_80052988(Object *obj, Object_Racer *racer, s32 action, s32 arg3, s32 d
 void racer_spinout_car(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateRateF) {
     s32 angleVel;
 
-    racer->velocity *= 0.97; //!@Delta: Reduces 3% of speed per frame, not accounting for game speed.
+    racer->velocity *= 0.97; //!@Delta CONTINUOUS: spin velocity decay in racer_spinout_car(); author's own comment already flags it as 'not accounting for game speed'.: Reduces 3% of speed per frame, not accounting for game speed.
     racer->lateral_velocity = 0.0f;
     if (racer->raceFinished == FALSE) {
         rumble_set(racer->playerIndex, RUMBLE_TYPE_0);
@@ -6617,7 +6640,7 @@ void racer_spinout_car(Object *obj, Object_Racer *racer, s32 updateRate, f32 upd
     if (racer->spinout_timer > 0) {
         racer->y_rotation_vel += updateRate * 0x500;
         if (racer->y_rotation_vel > 0 && angleVel < 0) {
-            racer->spinout_timer--; //!@Delta
+            racer->spinout_timer--; //!@Delta INERT: spinout_timer only steps on a zero-crossing of y_rotation_vel, whose growth (two lines above) is itself updateRate-scaled, so the crossing -- and this step -- occurs at a fixed real-time rate regardless of cadence.
             if (gCurrentStickX > 50 && racer->spinout_timer == 1) {
                 racer->spinout_timer = 0;
             }
@@ -6625,7 +6648,7 @@ void racer_spinout_car(Object *obj, Object_Racer *racer, s32 updateRate, f32 upd
     } else if (racer->spinout_timer < 0) {
         racer->y_rotation_vel -= updateRate * 0x500;
         if (racer->y_rotation_vel < 0 && angleVel > 0) {
-            racer->spinout_timer++; //!@Delta
+            racer->spinout_timer++; //!@Delta INERT: mirror of 6620: gated by the zero-crossing of the already-scaled y_rotation_vel growth two lines above.
             if (gCurrentStickX < -50 && racer->spinout_timer == -1) {
                 racer->spinout_timer = 0;
             }
@@ -6661,7 +6684,7 @@ void update_car_velocity_offground(Object *obj, Object_Racer *racer, s32 updateR
         racer->steerVisualRotation -= (u16) ((steerAngle * 6 * updateRate) >> 1);
         angle = -(u16) racer->x_rotation_vel;
         WRAP(angle, -0x8000, 0x8000);
-        racer->x_rotation_vel += (angle >> 3); //!@Delta
+        racer->x_rotation_vel += (angle >> 3); //!@Delta CONTINUOUS: x_rotation_vel >>3 bit-shift exponential decay in update_car_velocity_offground, unscaled.
     }
     if (racer->unk18) {
         sndp_stop((SoundHandle) (uintptr_t) racer->unk18); // type cast required to match
@@ -6684,15 +6707,15 @@ void update_car_velocity_offground(Object *obj, Object_Racer *racer, s32 updateR
         }
         racer->unk1E8 = racer->steerAngle;
         if (gCurrentRacerInput & A_BUTTON) {
-            racer->velocity -= 0.5; //!@Delta
+            racer->velocity -= 0.5; //!@Delta CONTINUOUS: water-thrust velocity accumulation while A held, unscaled additive term.
         }
         if (gCurrentRacerInput & B_BUTTON && gCurrentStickY < -25) {
-            racer->velocity += 0.5; //!@Delta
+            racer->velocity += 0.5; //!@Delta CONTINUOUS: water-reverse velocity accumulation while B held, unscaled additive term.
         }
         canSteer = TRUE;
-        racer->lateral_velocity *= 0.87; //!@Delta
-        racer->velocity *= 0.87;         //!@Delta
-        obj->y_velocity *= 0.9;          //!@Delta
+        racer->lateral_velocity *= 0.87; //!@Delta CONTINUOUS: water lateral drag decay, unscaled multiplicative constant.
+        racer->velocity *= 0.87;         //!@Delta CONTINUOUS: water forward drag decay, unscaled multiplicative constant.
+        obj->y_velocity *= 0.9;          //!@Delta CONTINUOUS: water buoyancy damping decay, unscaled multiplicative constant.
         rotate_racer_in_water(obj, racer, &gCurrentRacerWaterPos, gRacerWaveType, updateRate, gCurrentStickX, 6.0f);
     }
     if (racer->playerIndex == PLAYER_COMPUTER) {
@@ -6712,7 +6735,7 @@ void update_car_velocity_offground(Object *obj, Object_Racer *racer, s32 updateR
     gCurrentCarSteerVel = racer->unk110;
     if (racer->boostTimer) {
         if (racer->velocity > -20.0) {
-            racer->velocity -= 1.6; //!@Delta
+            racer->velocity -= 1.6; //!@Delta CONTINUOUS: airborne boost-drag deceleration, unscaled additive term.
         }
     }
     yStick = gCurrentStickY;
@@ -6727,13 +6750,13 @@ void update_car_velocity_offground(Object *obj, Object_Racer *racer, s32 updateR
         racer->x_rotation_offset += 0x600 * updateRate;
     }
     if (racer->unk1FE == 1 || racer->unk1FE == 3) {
-        racer->lateral_velocity *= 0.97; //!@Delta
-        racer->velocity *= 0.97;         //!@Delta
+        racer->lateral_velocity *= 0.97; //!@Delta CONTINUOUS: terrain-state lateral drag decay, unscaled multiplicative constant.
+        racer->velocity *= 0.97;         //!@Delta CONTINUOUS: terrain-state forward drag decay, unscaled multiplicative constant.
         if (yStick > 50) {
-            racer->velocity -= 0.2; //!@Delta
+            racer->velocity -= 0.2; //!@Delta CONTINUOUS: terrain-state stick-driven velocity perturbation, unscaled additive term.
         }
         if (yStick < -50) {
-            racer->velocity += 0.2; //!@Delta
+            racer->velocity += 0.2; //!@Delta CONTINUOUS: terrain-state stick-driven velocity perturbation, unscaled additive term (opposite sign of 6733).
         }
         canSteer = TRUE;
     }
@@ -6760,7 +6783,7 @@ void update_car_velocity_offground(Object *obj, Object_Racer *racer, s32 updateR
     angle = yStick - ((u16) obj->trans.rotation.x_rotation);
     angle = angle > 0x8000 ? angle - 0xFFFF : angle;
     angle = angle < -0x8000 ? angle + 0xFFFF : angle;
-    obj->trans.rotation.x_rotation += (angle >> 3); //!@Delta
+    obj->trans.rotation.x_rotation += (angle >> 3); //!@Delta CONTINUOUS: x_rotation >>3 bit-shift exponential pitch lerp toward target, same shape as 6664, unscaled.
     obj->y_velocity -= weight * updateRateF;
     if (racer->buoyancy == 0.0) {
         steerAngle = -obj->y_velocity * 20.0;
@@ -6827,7 +6850,7 @@ void func_800535C4(Object *obj, Object_Racer *racer) {
  */
 void handle_car_velocity_control(Object_Racer *racer) {
     if (racer->throttle > 0.0) {
-        racer->throttle -= 0.1; //!@Delta
+        racer->throttle -= 0.1; //!@Delta CONTINUOUS: throttle release ramp, unscaled additive term; sibling ramps elsewhere in this file (e.g. lines 2047, 3142) correctly multiply by updateRateF.
     }
 
     if (gCurrentRacerInput & A_BUTTON) {
@@ -6836,12 +6859,12 @@ void handle_car_velocity_control(Object_Racer *racer) {
 
     if (gCurrentRacerInput & B_BUTTON) {
         if (racer->brake < 1.0) {
-            racer->brake += 0.2; //!@Delta
+            racer->brake += 0.2; //!@Delta CONTINUOUS: brake engagement ramp, unscaled additive term, same sibling evidence as 6830.
         }
     } else {
         //! @bug Will cause a negative brake value resulting in higher velocity
         if (racer->brake > 0.05) {
-            racer->brake -= 0.1; //!@Delta
+            racer->brake -= 0.1; //!@Delta CONTINUOUS: brake release ramp, unscaled additive term, same sibling evidence as 6830.
         }
     }
 }
@@ -7192,18 +7215,18 @@ void update_onscreen_AI_racer(Object *obj, Object_Racer *racer, s32 updateRate, 
     } else {
         tempVel = racer->velocity - yVel;
         if (tempVel > 0.5) {
-            racer->velocity -= tempVel - 0.5; //!@Delta
+            racer->velocity -= tempVel - 0.5; //!@Delta INERT: velocity -= (tempVel - 0.5), tempVel = velocity - yVel, reduces algebraically to velocity = yVel + 0.5: a hard snap fully determined by yVel, not by the prior velocity value. yVel is itself already time-corrected (position delta * 1/updateRateF at line 7174-7176) -- already scaled on the same path, and the snap target is identical regardless of how often the snap runs.
         }
         if (tempVel < -0.5) {
-            racer->velocity -= tempVel + 0.5; //!@Delta
+            racer->velocity -= tempVel + 0.5; //!@Delta INERT: same snap-to-target algebra as 7195, opposite sign: velocity -= (tempVel + 0.5) reduces to velocity = yVel - 0.5.
         }
         tempVel = racer->lateral_velocity - hVel;
         if (tempVel && tempVel) {}
         if (tempVel > 0.5) {
-            racer->lateral_velocity -= tempVel - 0.5; //!@Delta
+            racer->lateral_velocity -= tempVel - 0.5; //!@Delta INERT: lateral counterpart of 7195: lateral_velocity = hVel + 0.5, hVel likewise already time-corrected via the same 1/updateRateF transform.
         }
         if (tempVel < -0.5) {
-            racer->lateral_velocity -= tempVel + 0.5; //!@Delta
+            racer->lateral_velocity -= tempVel + 0.5; //!@Delta INERT: lateral counterpart of 7198: lateral_velocity = hVel - 0.5.
         }
     }
 }
@@ -7261,9 +7284,9 @@ void update_car_velocity_ground(Object *obj, Object_Racer *racer, s32 updateRate
     xStick *= updateRate;
     temp = (s32) ((xStick >> 1) * gCurrentRacerHandlingStat);
     temp2 = temp;
-    racer->steerVisualRotation -= temp2; //!@Delta
+    racer->steerVisualRotation -= temp2; //!@Delta INERT: temp2 is derived from xStick, which line 7261 (xStick *= updateRate;) already scales by the field count -- already scaled on the same path, three lines above.
     handle_car_steering(racer);
-    racer->lateral_velocity *= 0.9; //!@Delta
+    racer->lateral_velocity *= 0.9; //!@Delta CONTINUOUS: post-steering lateral velocity decay, unscaled multiplicative constant, no pre-scaling on this path.
     surfaceType = SURFACE_DEFAULT;
     traction = 0.0f;
     if (racer->wheel_surfaces[0] != SURFACE_NONE) {
@@ -7286,7 +7309,7 @@ void update_car_velocity_ground(Object *obj, Object_Racer *racer, s32 updateRate
         racer->boostTimer = normalise_time(45);
         racer->boostType = BOOST_UNK3;
     }
-    racer->velocity -= velSquare * traction; //!@Delta
+    racer->velocity -= velSquare * traction; //!@Delta CONTINUOUS: drag term of update_car_velocity_ground's thrust/drag pair (see the mdkr_boss_cadence_clamp comment two functions below); normally equilibrium-governed for ordinary racers (measured cadence-neutral to within 0.2%), but the correct engineering fix is still to scale this term -- that is what makes the wheel-0 traction hole (M2) safe rather than merely clamped (M1).
     if (sp38) {
         if (racer->unk1EE < 16) {
             racer->unk1EE++;
@@ -7331,21 +7354,21 @@ void update_car_velocity_ground(Object *obj, Object_Racer *racer, s32 updateRate
         f32 reverseVel = (3.0 - racer->velocity) * 0.15;
         if (gCurrentStickY < -25 && !(gCurrentRacerInput & A_BUTTON) && gCurrentRacerInput & B_BUTTON) {
             racer->brake = 0.0f;
-            racer->velocity += reverseVel; //!@Delta
+            racer->velocity += reverseVel; //!@Delta CONTINUOUS: reverseVel accumulation while braked near standstill, unscaled additive term.
         }
     }
-    forwardVel = (vel * racer->brake) * 0.32; //!@Delta
-    racer->velocity -= vel * racer->throttle; //!@Delta
+    forwardVel = (vel * racer->brake) * 0.32; //!@Delta CONTINUOUS: forwardVel (effective brake force magnitude) computed from unscaled vel/brake product; feeds the integrator at 7343/7348.
+    racer->velocity -= vel * racer->throttle; //!@Delta CONTINUOUS: thrust term of the same thrust/drag pair as 7289 -- see that line's note; vel carries no updateRate factor.
     if (racer->velocity > -0.04 && racer->velocity < 0.04) {
         racer->velocity = 0.0f;
     }
     if (racer->velocity < 0.0f) {
-        racer->velocity += forwardVel; //!@Delta
+        racer->velocity += forwardVel; //!@Delta CONTINUOUS: brake-force application to velocity, reverse-direction branch, unscaled additive term.
         if (racer->velocity > 0.0f) {
             racer->velocity = 0.0f;
         }
     } else {
-        racer->velocity -= forwardVel; //!@Delta
+        racer->velocity -= forwardVel; //!@Delta CONTINUOUS: brake-force application to velocity, forward-direction branch, unscaled additive term.
         if (racer->velocity < 0.0f) {
             racer->velocity = 0.0f;
         }
@@ -7369,7 +7392,8 @@ void update_car_velocity_ground(Object *obj, Object_Racer *racer, s32 updateRate
  * player selected the Enhanced simulation cadence.
  *
  * update_car_velocity_ground() integrates thrust and drag as per-TICK
- * constants (the //!@Delta sites), which is normally self-cancelling: at
+ * constants (the per-tick sites M0 classifies), which is normally
+ * self-cancelling: at
  * equilibrium thrust equals drag and top speed comes out tick-rate
  * independent, whatever the cadence. What breaks that equilibrium is that
  * drag is sampled from wheel 0 ALONE (see the traction accumulation in that
@@ -9785,7 +9809,7 @@ void update_AI_racer(Object *obj, Object_Racer *racer, s32 updateRate, f32 updat
         }
     }
 
-    racer->miscAnimCounter++; //!@Delta
+    racer->miscAnimCounter++; //!@Delta CONTINUOUS: miscAnimCounter animation phase counter, same field and same shape as 4812.
 
     if (is_taj_challenge() || func_80023568() || racer->vehicleID == VEHICLE_LOOPDELOOP || D_8011D544 > 120.0f ||
         gRaceStartTimer != 0 || levelHeader->race_type & RACETYPE_CHALLENGE_BATTLE) {
@@ -9818,7 +9842,7 @@ void update_AI_racer(Object *obj, Object_Racer *racer, s32 updateRate, f32 updat
     }
     if (racer->bubbleTrapTimer > 0) {
         racer->bubbleTrapTimer -= updateRate;
-        racer->velocity *= 0.8f; //!@Delta
+        racer->velocity *= 0.8f; //!@Delta CONTINUOUS: bubble-trap velocity decay while bubbleTrapTimer counts down, unscaled multiplicative constant.
     }
     if (racer->unk206 > 0) {
         racer->unk18A = racer->unk206;
@@ -9935,7 +9959,7 @@ void update_AI_racer(Object *obj, Object_Racer *racer, s32 updateRate, f32 updat
         }
         if (checkpoint->unk36[racer->unk1CA] == 4) {
             if (racer->velocity < -4.0) {
-                racer->velocity *= 0.9; //!@Delta
+                racer->velocity *= 0.9; //!@Delta CONTINUOUS: reverse-velocity decay entering a special checkpoint zone, unscaled multiplicative constant.
             }
         }
         if (var_t2 == 0) {
