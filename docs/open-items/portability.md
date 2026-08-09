@@ -3,12 +3,76 @@
 > One subsystem of the split [open-items index](README.md), which states how these files are kept.
 
 **Currently open** (per [`README.md`](README.md#still-open)'s open/closed
-table): 1 item.
+table): 2 items.
 
 | Item | Where |
 |---|---|
 | Decomp arrays split across two C objects and indexed across the boundary: 3 fixed, most of the rest measured latent — one, `get_inside_segment_count_xz()`, is recorded unmeasured rather than latent, since it writes through a bare pointer neither instrument can see; `check_array_bounds_sweep.py` catches new indexed-array cases | [§ SWEPT: decomp arrays split into two C objects — wave "splitsweep"](#swept-decomp-arrays-split-into-two-c-objects-and-indexed-across-the-boundary-wave-splitsweep) |
+| Asset **sub-entry** indices are unbounded: 276 sites swept, 129 checked, 65 unchecked, 82 unprovable — and the 75 that read as checked go through an accessor that returns the section base *silently* out of range. Not reachable today only because unsupported ROM revisions are refused before engine boot | [§ OPEN: asset sub-entry indices are unbounded — wave "subentry"](#open-asset-sub-entry-indices-are-unbounded-and-the-one-bounds-check-that-exists-fails-silently--wave-subentry) |
 
+
+## OPEN: asset sub-entry indices are unbounded, and the one bounds check that exists fails silently — wave "subentry"
+
+**Mechanism.** The master asset lookup table's *section* index is bounds-checked
+(`asset_section_bounds()` in `game/src/asset_loading.c`). The index of an entry
+*within* a section is not. This build is compiled for `us.v80` data and asks for
+`us.v80` indices; `us.v77`'s `GAME_TEXT` has 259 entries where `us.v80` has 343
+(`docs/ROM_REVISIONS.md` §5–6), so a `v80`-only index against a `v77` section is
+an out-of-range read with no guard and no diagnostic — the silent shape, not a
+crash.
+
+**Measured evidence.** `tools/sweep_subentry_access.py`, built as the instrument
+for this class before any fix, over `game/src` and `platform`:
+
+```
+276 site(s) in 22 file(s); 31 section table symbol(s), 18 with a derivable entry count
+  by kind:    misc-accessor 75, section-offset 36, table-index 145, terminator-walk 20
+  by verdict: CHECKED 129, UNCHECKED 65, UNKNOWN 82
+```
+
+`UNKNOWN` is reported as its own verdict rather than folded into `CHECKED`: it
+means the classifier could not prove a bound, and under-reporting a hazard is
+the failure mode this project punishes. The tool's own blind spots are recorded
+in its docstring — no dominance analysis, no cross-function provenance, no
+aliased tables — and the aliased-table case is the one that can cause an
+*under*-count.
+
+Three findings stand out:
+
+- **`game/src/particles.c:739,757,758`** — `emitter_init_with_pos()` indexes both
+  `gParticleBehavioursAssetTable` and `gParticlesAssetTable` with entirely
+  unguarded parameters, while both of its callers guard. The check is on the
+  wrong side of the call boundary, which is exactly the shape a per-function
+  reading misses.
+- **`game/src/objects.c:1474,4382`** — `gAssetsObjectHeadersTable[index]` and
+  `gAssetsLvlObjTranslationTable[arg0]`, with no comparison anywhere in the
+  function.
+- **The 75 `get_misc_asset()` / `get_misc_asset_size()` sites read as CHECKED,
+  and that reading is generous.** The accessor *does* compare against
+  `gAssetsMiscTableLength` — and on an out-of-range index returns the **section
+  base**, silently. A bounds check whose failure mode is plausible wrong data
+  rather than a diagnostic is barely better than no check: it converts an
+  out-of-range read into a confidently wrong one. This is the specific behaviour
+  `mdkr_asset_subentry()` is specified to replace.
+
+**Measured reachability: not reachable today.** Unsupported revisions are
+classified from their header CRC pair and refused by name before engine boot
+(`platform/rom_id.c:265-302,332-342`), the refusal message cites this exact gap
+as its reason, and no override exists for that verdict —
+`MDKR_ROM_ALLOW_MODIFIED` only covers a damaged dump of an already-supported
+revision. On a supported ROM every index the port asks for is in range by
+construction.
+
+**Fix: not yet applied.** It is
+[S5 task 2](../sprints/S5-rom-region-breadth.md#task-2-bounds-check-the-sub-entry-accessors),
+and the ordering there is a safety property rather than a preference: the bounds
+check must land *before* the supported ROM set widens, because widening the
+accept path is what makes this reachable.
+
+**Verification.** `python3 tools/sweep_subentry_access.py` exits 1 while any
+site is unchecked and 0 only when every site is checked, so it can become a gate
+the moment the fix lands. Its stderr is empty on this tree — no anchor missed,
+no parse shortfall.
 
 ## FIXED: tagged macOS artifact exposed a stale magic-code endian failure
 
