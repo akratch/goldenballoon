@@ -78,6 +78,26 @@ def main() -> int:
         raise AssertionError(
             "the current release notes must distinguish interpolated images from authored holds"
         )
+    # There is no contrast control anywhere in the product -- not in
+    # MdkrVideoKey, not in AppConfig, not in AppTheme. It was listed as a
+    # supported accessibility capability in three places for several releases
+    # before anyone checked. Scoped to the CURRENT release section and the
+    # README rather than the whole file: the older sections record what was
+    # claimed at the time, and rewriting them would erase that this happened.
+    #
+    # The needle is the list form, not the bare word: the shell's visual design
+    # genuinely is high-contrast, and docs/APP_SHELL.md says so accurately.
+    # What may not return is contrast sitting in a list of things a player can
+    # adjust, beside scaling and reduced motion, which really are settings.
+    for label, haystack in (("the current release notes", release_notes_words),
+                            ("README.md", " ".join(
+                                (ROOT / "README.md").read_text(
+                                    encoding="utf-8").split()))):
+        if "scaling, contrast, and reduced motion" in haystack:
+            raise AssertionError(
+                f"{label} lists a contrast setting among the accessibility "
+                "capabilities; the product has never had one"
+            )
     require_contains(
         "dist/web/index.html",
         "Qualified browser path:</strong>\n                WebGPU with Restored presentation.",

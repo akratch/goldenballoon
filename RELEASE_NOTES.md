@@ -110,7 +110,8 @@ Motion smoothing **Off** is untouched.
   the ones around them, so fast-moving parts of the screen can show artifacts
   in them; that is why **Off** is the default, and Off is unaffected.
 - The desktop app supports keyboard and gamepad navigation, visible focus,
-  scaling, contrast, and reduced motion. Screen readers are not supported yet.
+  scaling, and reduced motion. There is no contrast setting — earlier notes listed
+  one; there was never a control for it. Screen readers are not supported yet.
 - On Linux, load a ROM by drag and drop or by typing its path; there is no
   native file picker yet.
 - The macOS app is not notarized. If macOS shows an unidentified-developer
