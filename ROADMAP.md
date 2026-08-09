@@ -88,46 +88,37 @@ that sets and persists `bosses & 0x20`, the single value `menu_credits_init`
 reads to choose the true ending. The trophy championships have their own gate,
 `check_trophy_series.py`, across all 16 authored rounds.
 
-**What remains.** Three residuals, listed with their measured obstacles in
-[`tests/fixtures/README.md`](tests/fixtures/README.md#residual-manual-acceptance).
-Each is a headless-driving obstacle rather than a missing feature, and each is a
-step a manual acceptance pass still performs:
+**All three residuals are closed** (2026-08-09). Each was a headless-driving
+obstacle rather than a missing feature, and each is now driven:
 
-1. **The lobby's boss-rematch door, driven rather than retargeted.** The rematch
-   seam enters by `MDKR_LOAD_TRACK`. Measured in the Dino Domain lobby with all
-   door bits open, the kart stalls at (-1295, 685) — 1,240 units short of the
-   boss exit at (-777, 1812) — and the drive hook's reverse-and-retry oscillates
-   there indefinitely. What is unwitnessed is the **approach**, not the gate: the
-   gate is `balloonsPtr[worldId] == 8`, and the silver-coin seam proves silver
-   clears are what produce that number.
-2. **The T.T. amulet and the trophy championships, chained in.** `ttAmulet` is
-   written by the four T.T. challenge levels (`game/src/objects.c:9256-9268`) and
-   `trophies` by the trophy-race rankings screen. Neither is chained into the
-   campaign check, so its last fixture states both as premises, and the Future
-   Fun Land unlock they feed (`trophies & 0xFF == 0xFF` plus Wizpig 1,
-   `game/src/thread3_main.c:1895-1899`) is unwitnessed for the same reason.
-3. **The credits screen reached from a won Wizpig 2.** The gate proves the
-   campaign sets and persists the true-ending bit; it does not reach the screen.
-   After the win the game pushes a stack of cutscene levels and pops them on
-   either an A press with `func_8006C300()` non-zero or the scene ending itself
-   (`game/src/thread3_main.c:894-919`); measured, the run reaches
-   `ASSET_LEVEL_WIZPIG2ANIM` (level 62) and stays there for 25,000 further frames
-   with A tapped every 200 frames, so the animation does not run itself out
-   headlessly. The cheat contrast arm reaching `MENU_CREDITS` from a save that
-   was never started is what keeps "reached credits" from being evidence about
-   the campaign by itself.
+1. **The lobby's boss-rematch door is driven**, not retargeted. The recorded
+   stall at (-1295, 685) reproduces; a waypoint east of the wall at (-300, 700)
+   takes the exit at frame ~3124. Both arms are kept — the `MDKR_LOAD_TRACK`
+   retarget remains the fast path, the driven arm is the completeness proof.
+   `tests/route_plan.py` supplies the route memory the drive hook lacked: it
+   fails loudly on oscillation, on a stalled closest approach, and on a
+   per-waypoint frame budget, instead of retrying forever.
+2. **Trophies and the T.T. amulet are chained**, not premised. `trophies` climbs
+   0x3→0xf→0x3f→0xff and `ttAmulet` 1→2→3→4 across separate processes on one
+   another's EEPROMs, and `check_future_fun_land.py` witnesses the lighthouse
+   unlock on the save the chain produced — with the negative arms that a silver,
+   or a missing Wizpig 1 bit, does not open it.
+3. **The credits screen is reached**, and the recorded obstacle turned out to be
+   a symptom. `func_8006C300()` is never non-zero — zero on all 29,929 sampled
+   frames, and structurally so, because `game_load_level` zeroes its backing
+   global on every load and the only writer is the redirect branch for a repeat
+   Wizpig entry. The A presses could never have popped anything. The real cause
+   was that all 159 of the level's animation objects sat deactivated: every
+   Future Fun Land header is `RACETYPE_HUBWORLD`, so the world-arrival branch
+   ran on a cutscene level and overwrote `gCutsceneID`, because the fixture did
+   not carry the "arrived in Future Fun Land" flag. That is a fixture defect, not
+   a game defect — a player cannot reach Wizpig 2 without entering that hub — so
+   the fix is in the fixture and no `game/` behaviour changed.
 
-**Condition to take it up.** Residual 1 needs route memory the drive hook does
-not have: a waypoint follower that fails loudly against a per-waypoint frame
-budget instead of oscillating. Residual 2 needs no new capability — the trophy
-drive already exists, it is simply not exposed as a fixture another check can
-import, so this is chaining work plus a negative control showing a challenge run
-from an unqualified save awards no amulet piece. Residual 3 needs the cutscene
-stack advanced headlessly, and the first question is unmeasured: whether
-`func_8006C300()` is ever non-zero across those 25,000 frames. If it never is,
-the tapping cadence is irrelevant and whatever gates that return is the real
-obstacle. None of the three is a suspected defect, and none is weakened into a
-vacuous assertion in the gate to keep it green.
+**What is still not claimed.** There is deliberately no single continuous
+start-to-credits run. The campaign check's own reasoning stands: it would take
+hours and fail as one opaque blob, and composing witnessed seams is the better
+design. Future Fun Land's own internal state also remains outside these gates.
 
 ### Camera obstruction correction — ships opt-in; default-on rejected on device
 
