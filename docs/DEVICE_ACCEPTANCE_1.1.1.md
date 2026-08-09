@@ -108,6 +108,20 @@ than another lap.
 - **The launcher's FPS overlay, foregrounded for a minute.** One arm of
   `check_app_adopted_pacing` has never run to completion anywhere, because it
   needs an un-occluded foreground window.
+- **Two gates need an active display session and cannot be run from an
+  automated one.** `check_app_adopted_pacing` (the FPS-overlay arm above) and
+  `check_pacing_quality` (its realtime arm) both require the window server to
+  hand back drawables; without one, every present returns `unavailable` and the
+  arms measure nothing. Both now say exactly that instead of blaming a missing
+  marker. Run them from a logged-in, unlocked session:
+
+  ```bash
+  python3 tests/check_app_adopted_pacing.py --build build-rel --rom baserom.us.v80.z64
+  python3 tests/check_pacing_quality.py     --build build-rel --rom baserom.us.v80.z64
+  ```
+
+  The realtime arm is the only coverage the alpha-grid projection has anywhere,
+  so "it passed on a headless host" is not a substitute.
 - **`frameLatency=1` across a resize.** Resize the window and confirm the
   `[SURFACE-CONFIG]` / `[PRESENT-MODE]` rows still report it.
 
