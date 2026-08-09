@@ -349,6 +349,43 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME save_state_container COMMAND mdkr_save_state_container_test)
 
+    # Version comparison and the update-check interval. The clock is a
+    # parameter, so this needs no real time and no network -- which is the
+    # whole reason the policy is a separate translation unit from the fetch.
+    add_executable(mdkr_update_check_test
+        ${CMAKE_SOURCE_DIR}/tests/test_update_check.c
+        ${CMAKE_SOURCE_DIR}/platform/update_check.c)
+    target_include_directories(mdkr_update_check_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_update_check_test PRIVATE m)
+    endif()
+    add_test(NAME update_check COMMAND mdkr_update_check_test)
+
+    # The [GPUINFO] record and the adapter choice over it. Both are pure and
+    # need no GPU, which is the point: the selection policy is exhaustively
+    # testable on a one-GPU machine and in hosted CI with none.
+    add_executable(mdkr_gpu_diagnostics_test
+        ${CMAKE_SOURCE_DIR}/tests/test_gpu_diagnostics.c
+        ${CMAKE_SOURCE_DIR}/platform/gpu_diagnostics.c)
+    target_include_directories(mdkr_gpu_diagnostics_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_gpu_diagnostics_test PRIVATE m)
+    endif()
+    add_test(NAME gpu_diagnostics COMMAND mdkr_gpu_diagnostics_test)
+
+    add_executable(mdkr_adapter_policy_test
+        ${CMAKE_SOURCE_DIR}/tests/test_adapter_policy.c
+        ${CMAKE_SOURCE_DIR}/platform/adapter_policy.c
+        ${CMAKE_SOURCE_DIR}/platform/gpu_diagnostics.c)
+    target_include_directories(mdkr_adapter_policy_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_adapter_policy_test PRIVATE m)
+    endif()
+    add_test(NAME adapter_policy COMMAND mdkr_adapter_policy_test)
+
     add_executable(mdkr_vehicle_audio_contract_test
         ${CMAKE_SOURCE_DIR}/tests/test_vehicle_audio_contract.c
         ${CMAKE_SOURCE_DIR}/platform/asset_swap.c)

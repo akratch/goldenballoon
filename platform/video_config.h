@@ -115,6 +115,9 @@ typedef enum MdkrVideoKey {
     MDKR_ENH_DRAW_DISTANCE,
     MDKR_ENH_LOD_BIAS,
     MDKR_ENH_AI_DIFFICULTY,
+    /* Shell behaviour, appended for the reason above. Not presentation, not
+     * gameplay: whether the launcher looks for a newer release. */
+    MDKR_APP_UPDATE_CHECK,
     MDKR_VIDEO_KEY_COUNT
 } MdkrVideoKey;
 

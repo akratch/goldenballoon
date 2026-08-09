@@ -116,6 +116,14 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "models further out. Changes only how the game looks.",
         MDKR_VIDEO_CAT_FIDELITY
     },
+    [MDKR_APP_UPDATE_CHECK] = {
+        "App.UpdateCheck", "MDKR_UPDATE_CHECK",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 1.0f,
+        "Check for updates",
+        "Look once a day for a newer release and show a notice in the "
+        "launcher. Nothing is downloaded or installed.",
+        MDKR_VIDEO_CAT_INTERFACE
+    },
     [MDKR_ENH_AI_DIFFICULTY] = {
         "Enhancements.AIDifficulty", "MDKR_ENH_AI_DIFFICULTY",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
@@ -916,6 +924,15 @@ void mdkr_video_config_defaults(MdkrVideoConfig *config) {
      * never heard of packs.
      */
     config->values[MDKR_CONTENT_PACKS_ENABLED].number = 1.0f;
+
+    /*
+     * Looking for a newer release defaults to ON, but the notice it produces
+     * is a single line in the launcher and nothing is ever downloaded or
+     * installed. A player who does not want the request makes at all sets this
+     * to 0, and then no request is made -- not a request whose result is
+     * discarded.
+     */
+    config->values[MDKR_APP_UPDATE_CHECK].number = 1.0f;
 
     /*
      * Enhancements default to the authored game. DrawDistance is seeded
