@@ -411,6 +411,21 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME mod_source_zip COMMAND mdkr_mod_source_zip_test
              ${CMAKE_CURRENT_BINARY_DIR}/mod_source_scratch)
 
+    # Bounds-checked access to an entry INSIDE an asset section. Each aborting
+    # case runs in a forked child and asserts WTERMSIG == SIGABRT plus the
+    # message text, so a segfault fails rather than passing as "it died".
+    add_executable(mdkr_asset_subentry_test
+        ${CMAKE_SOURCE_DIR}/tests/test_asset_subentry.c
+        ${CMAKE_SOURCE_DIR}/platform/asset_subentry.c)
+    target_include_directories(mdkr_asset_subentry_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/game/include)
+    target_compile_definitions(mdkr_asset_subentry_test PRIVATE NATIVE_PORT=1)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_asset_subentry_test PRIVATE m)
+    endif()
+    add_test(NAME asset_subentry COMMAND mdkr_asset_subentry_test)
+
     add_executable(mdkr_vehicle_audio_contract_test
         ${CMAKE_SOURCE_DIR}/tests/test_vehicle_audio_contract.c
         ${CMAKE_SOURCE_DIR}/platform/asset_swap.c)

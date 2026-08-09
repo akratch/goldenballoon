@@ -19,7 +19,15 @@
  * materialized asset section by its AssetSectionsEnum type. */
 #include "asset_swap.h"
 #include "address_domains.h"
+#include "asset_subentry.h"
 #include "platform_os.h" /* MDKR_TRACE */
+
+/* The master LUT is an array of 4-byte ROM offsets: word 0 is the section count
+ * and words 1 .. count + 1 are the section starts plus the end terminator (see
+ * asset_section_bounds). Every size downstream is a difference of two adjacent
+ * words, and platform/asset_subentry.c makes the same assumption one level down
+ * for the per-section offset tables. */
+_Static_assert(sizeof(u32) == 4, "asset lookup table words are 4 bytes wide");
 #endif
 
 /************ .bss ************/
@@ -157,6 +165,11 @@ void pi_init(void) {
     /* Master asset LUT: array of BE u32 ROM offsets. Normalize so every size
      * computed as (LUT[i+1] - LUT[i]) downstream is native-endian. */
     asset_swap_lut(gAssetsLookupTable, assetTableSize);
+    /* Negative control for tests/check_subentry_bounds.py, placed at the
+     * asset-loading boundary because that is the layer whose SECTION index has
+     * always been checked and whose SUB-ENTRY index has not. No-op unless
+     * MDKR_SUBENTRY_TEST_INDEX is set, so a normal run never enters it. */
+    mdkr_asset_subentry_env_selftest();
 #endif
 }
 

@@ -122,6 +122,12 @@ CHECKS = (
     Check("enhancement_authority", "check_enhancement_authority.py", "rom",
           "every enhancement's declared authority class matches its measured "
           "effect on the authoritative state stream, in both directions"),
+    Check("subentry_bounds", "check_subentry_bounds.py", "rom",
+          "an out-of-range asset sub-entry index aborts loudly with the "
+          "section, index and count, instead of resolving to the section base"),
+    Check("dev_tools_purity", "check_dev_tools_purity.py", "rom",
+          "every registered developer tool leaves the authoritative state "
+          "stream byte-identical when opened"),
     Check("sprite_layout", "check_sprite_layout.py", "native",
           "independent ROM sprite census and display-list allocation controls"),
     Check("rdp_interpolation", "check_rdp_interpolation.py", "native",

@@ -41,12 +41,27 @@ Three findings stand out:
 
 - **`game/src/particles.c:739,757,758`** — `emitter_init_with_pos()` indexes both
   `gParticleBehavioursAssetTable` and `gParticlesAssetTable` with entirely
-  unguarded parameters, while both of its callers guard. The check is on the
-  wrong side of the call boundary, which is exactly the shape a per-function
-  reading misses.
+  unguarded parameters. This entry first said "both of its callers guard";
+  **that was wrong, and measurement corrected it.** `emitter_change_settings()`
+  clamps both IDs, but `emitter_init()` (`particles.c:724`) tests only
+  `behaviourID` and passes `particleID` straight through unchecked. The check
+  was on the wrong side of the call boundary *and* missing from one caller —
+  which is the shape a per-function reading misses twice over.
+- **A live latent crash sat behind that gap.** `particles_init()` allocates
+  `count + 1` pointer slots and fills `for (i = 0; i < count; i++)`, so slot
+  `[count]` is never written and `mempool_alloc_safe` does not zero. With
+  `emitter_init()` not guarding `particleID`, `particleID == count`
+  dereferenced uninitialised memory as a `ParticleDescriptor *`. It mirrors the
+  N64 shape — there the slot holds an unconverted raw offset — so it is not a
+  port regression, but it was reachable and silent. The guard now converts it
+  into a named abort.
 - **`game/src/objects.c:1474,4382`** — `gAssetsObjectHeadersTable[index]` and
   `gAssetsLvlObjTranslationTable[arg0]`, with no comparison anywhere in the
-  function.
+  function. The second is `obj_id_valid()` — a function whose only job is to
+  validate an object ID, indexing with the unvalidated value before testing
+  anything. `UNUSED`, so latent, but a booby trap for its first caller. Its
+  guard uses `>` rather than `>=`: the trailing-zero trim leaves the last live
+  index, not a one-past-the-end count.
 - **The 75 `get_misc_asset()` / `get_misc_asset_size()` sites read as CHECKED,
   and that reading is generous.** The accessor *does* compare against
   `gAssetsMiscTableLength` — and on an out-of-range index returns the **section
@@ -63,16 +78,50 @@ as its reason, and no override exists for that verdict —
 revision. On a supported ROM every index the port asks for is in range by
 construction.
 
-**Fix: not yet applied.** It is
-[S5 task 2](../sprints/S5-rom-region-breadth.md#task-2-bounds-check-the-sub-entry-accessors),
-and the ordering there is a safety property rather than a preference: the bounds
-check must land *before* the supported ROM set widens, because widening the
-accept path is what makes this reachable.
+**Fix: PARTIALLY APPLIED.** `platform/asset_subentry.c` provides
+`mdkr_asset_subentry()`, which aborts with the section name, the requested index
+and the actual count. `get_misc_asset()` and `get_misc_asset_size()` now go
+through it, so the silent section-base fallback is gone from the arm this build
+compiles; the `#else` N64 arm is byte-for-byte unchanged. The five named
+unguarded sites are routed or guarded. Sweep moved 276 → 273 sites, CHECKED
+129 → 133, UNCHECKED 65 → 59, and every row of that delta is accounted for.
+
+The abort is proven reachable on the live path, not only in a unit test:
+`MDKR_SUBENTRY_TEST_MISC_INDEX=100000` produces
+`[FATAL] asset sub-entry index out of range: section=ASSET_MISC index=100000
+count=71`, where 71 is us.v80's actual entry count read from the ROM at runtime.
+
+**It is still open**, on three grounds:
+
+1. **38 compile-time indices** (`ASSET_MISC_23`, `gWeatherAssetTable[3]`) are
+   unbounded *by construction*. This is the v80-constant-on-a-v77-ROM shape
+   itself, and no per-site guard fixes it — the answer is the exhaustive
+   enumeration in S5 task 4, not a check.
+2. **20 terminator-walks** are bounded by a byte pattern rather than a count.
+3. **81 sites remain UNKNOWN** — no derivable count, or an index reaching
+   through a pointer the classifier does not follow.
+
+One cheap site is deliberately left: `game/src/game_ui.c:4774`,
+`gAssetHudElementIds[spriteID]` with `spriteID` straight from level data. A
+count exists (`gAssetHudElementIdsCount`) so it is a six-line fix in the same
+shape, but its input domain spans every HUD sprite id in battle, challenge, boss
+and adventure levels, and the regression routes do not reach all of them. An
+abort added there without enumerating that domain risks firing on a supported
+ROM, which is the one thing this work must not do.
 
 **Verification.** `python3 tools/sweep_subentry_access.py` exits 1 while any
-site is unchecked and 0 only when every site is checked, so it can become a gate
-the moment the fix lands. Its stderr is empty on this tree — no anchor missed,
-no parse shortfall.
+site is unchecked. The guard is invisible on us.v80: over a 3,600-row
+`[SIMHASH]` v3 Time Trial capture, a binary relinked from pre-change objects and
+the patched binary hash **bit-identically**
+(`4424ce1559125e2fe947681e69025e35c3140bd992cbf1ecdf6b92a147a19ec2`).
+`tests/check_subentry_bounds.py` is the negative control.
+
+**Known staleness in the instrument:** `sweep_misc()`
+(`tools/sweep_subentry_access.py`) hardcodes the note "out of range returns the
+section base SILENTLY" for all 76 misc-accessor rows. That string is now
+factually wrong for the arm the sweep scans. The verdict it reports is still
+right, but it is asserted as a literal rather than derived, and it needs
+updating.
 
 ## FIXED: tagged macOS artifact exposed a stale magic-code endian failure
 

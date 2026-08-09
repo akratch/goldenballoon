@@ -3659,6 +3659,50 @@ deliberately broken and the suite confirmed to fail — because several of them
 guard a silent failure rather than a crash, and a check that passes both with
 and without the fix is not a check.
 
+## Developer-tool purity — `tests/check_dev_tools_purity.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_dev_tools_purity.py --build build
+```
+
+Registering a tool in `platform/app/dev_tools.cpp` is a **claim**: that opening
+its window cannot move authoritative state. This gate enumerates the table from
+the running binary's `[TOOLTABLE]` dump and tests that claim for every entry, so
+a tool added later is born gated with no edit here.
+
+For each tool it runs two headless races under `MDKR_STATE_HASH=3` — one with
+`Tools.Enabled=0`, one with the tool forced open — and requires the `[SIMHASH]`
+streams to be byte-identical. Frame count and race outcome are compared too, so
+a tool that merely slows the frame loop enough to shift pacing is also caught.
+
+**Parsing zero rows is a failure.** Every tool is an observer with no body until
+its own task lands, so an empty table would otherwise sail through.
+
+## Asset sub-entry bounds — `tests/check_subentry_bounds.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_subentry_bounds.py --build build
+```
+
+The negative control for `mdkr_asset_subentry()`. Section indices were always
+bounds-checked; indices *within* a section were not, and the one accessor that
+did compare — `get_misc_asset()` — returned the **section base silently** when
+the index was out of range, converting an out-of-bounds read into a confidently
+wrong one. That is the failure this gate exists to keep closed.
+
+Five arms. A positive control with no hook must exit 0 with no diagnostic, so
+the check cannot pass merely because everything aborts. Two synthetic indices
+(1 and `UINT32_MAX`) go through `MDKR_SUBENTRY_TEST_INDEX`, and two live ones
+(`100000` and `-1`) go through `MDKR_SUBENTRY_TEST_MISC_INDEX` into the real
+`get_misc_asset()` against the real loaded section. Each aborting arm asserts
+`returncode == -SIGABRT` **specifically** — a segfault would pass a
+merely-non-zero test — and regex-checks that the reported count is a plausible
+ROM count rather than the index echoed back.
+
+The companion `asset_subentry` CTest covers the accessor itself with no ROM:
+each aborting case runs in a forked child and asserts both the signal and the
+message text.
+
 ## Enhancement authority — `tests/check_enhancement_authority.py`
 
 ```bash

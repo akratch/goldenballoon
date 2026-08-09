@@ -4,6 +4,7 @@
 #include "asset_enums.h"
 #include "asset_loading.h"
 #ifdef NATIVE_PORT
+#include "asset_subentry.h"
 #include "mdkr_adventure.h"
 #include "asset_swap.h"
 #include "mdkr_challenge.h"
@@ -1264,6 +1265,28 @@ void allocate_object_pools(void) {
     /* Normalize the big-endian ASSET_MISC sub-assets exactly once, here, while the
      * section pointer is fresh. See dkr_misc_normalize_tables(). */
     dkr_misc_normalize_tables();
+    /* Negative control for tests/check_subentry_bounds.py. Drives a deliberately
+     * out-of-range index through the REAL get_misc_asset() with the REAL section
+     * loaded, so the gate proves the live accessor aborts rather than only the
+     * synthetic descriptor in mdkr_asset_subentry_env_selftest(). No-op unless
+     * the variable is set, so a normal run never reaches the accessor here. */
+    {
+        const char *subentryTest = getenv("MDKR_SUBENTRY_TEST_MISC_INDEX");
+
+        if (subentryTest != NULL && subentryTest[0] != '\0') {
+            long long requested = strtoll(subentryTest, NULL, 0);
+
+            fprintf(stderr,
+                    "[SUBENTRY] selftest driving misc index %lld (count=%d)\n",
+                    requested, gAssetsMiscTableLength);
+            fflush(stderr);
+            (void) get_misc_asset((s32) requested);
+            fprintf(stderr,
+                    "[SUBENTRY] selftest misc index %lld resolved without aborting\n",
+                    requested);
+            fflush(stderr);
+        }
+    }
 #endif
     decrypt_magic_codes(
         &gAssetsMiscSection[gAssetsMiscTable[ASSET_MISC_MAGIC_CODES]],
@@ -1453,6 +1476,18 @@ ObjectHeader *load_object_header(s32 index) {
     s32 size;
     ObjectHeader *address;
 
+#ifdef NATIVE_PORT
+    /* `index` reaches gAssetsObjectHeadersTable[index] and [index + 1] below,
+     * plus the two parallel arrays sized from the same count, with no comparison
+     * anywhere in the function on either side of the call boundary
+     * (tools/sweep_subentry_access.py, objects.c:1474). The count is the walk to
+     * the table's -1 terminator, less one, in allocate_object_pools. */
+    if (index < 0 || index >= gAssetsObjectHeadersTableLength) {
+        mdkr_asset_subentry_out_of_range("ASSET_OBJECT_HEADERS_TABLE", index,
+                                         gAssetsObjectHeadersTableLength,
+                                         "load_object_header");
+    }
+#endif
     if ((*gObjectHeaderReferences)[index] != 0) {
 #ifdef NATIVE_PORT
         /* Invariant: refcount != 0 implies a live header pointer. If this ever
@@ -4379,6 +4414,18 @@ UNUSED s32 obj_table_ids(void) {
  * Return true if the object ID is not higher than the header table length.
  */
 UNUSED s32 obj_id_valid(s32 arg0) {
+#ifdef NATIVE_PORT
+    /* The function name promises a validity test and then indexes the
+     * translation table with the very value it is meant to validate, unbounded
+     * (tools/sweep_subentry_access.py, objects.c:4382). The count is the
+     * trailing-zero trim in allocate_object_pools, which leaves the LAST live index
+     * rather than a one-past-the-end count — hence `>` and not `>=`. */
+    if (arg0 < 0 || arg0 > gAssetsLvlObjTranslationTableLength) {
+        mdkr_asset_subentry_out_of_range("ASSET_LEVEL_OBJECT_TRANSLATION_TABLE",
+                                         arg0, gAssetsLvlObjTranslationTableLength,
+                                         "obj_id_valid");
+    }
+#endif
     return (gAssetsLvlObjTranslationTable[arg0] < gAssetsObjectHeadersTableLength);
 }
 
@@ -11365,16 +11412,58 @@ UNUSED void set_racer_position_and_angle(s16 player, s16 *x, s16 *y, s16 *z, s16
     }
 }
 
+#ifdef NATIVE_PORT
+/* ASSET_MISC described for the bounds-checked accessor.
+ *
+ * gAssetsMiscTable holds s32 WORD offsets into gAssetsMiscSection, not byte
+ * offsets, which is why offset_scale is sizeof(s32) — see get_misc_asset below
+ * and dkr_misc_subasset(). The table is walked to its -1 terminator at load
+ * (allocate_object_pools), so entries 0 .. gAssetsMiscTableLength - 1 are real and
+ * slot [gAssetsMiscTableLength] is the terminator that bounds the last entry. */
+_Static_assert(sizeof(s32) == sizeof(u32),
+               "gAssetsMiscTable is handed to mdkr_asset_subentry() as u32 offsets");
+_Static_assert(sizeof(s32) == 4,
+               "ASSET_MISC offsets are s32 WORD offsets; offset_scale assumes 4 bytes");
+
+static void misc_asset_section(MdkrAssetSection *out) {
+    out->name = "ASSET_MISC";
+    out->base = (const u8 *) gAssetsMiscSection;
+    out->entry_count = gAssetsMiscTableLength > 0 ? (u32) gAssetsMiscTableLength : 0u;
+    out->offsets = (const u32 *) gAssetsMiscTable;
+    out->offset_scale = (u32) sizeof(s32);
+}
+#endif
+
 /**
  * Returns a pointer to the asset in the misc. section. If index is out of range, then this
  * function just returns the pointer to gAssetsMiscSection.
  * Official name: objGetTable
+ *
+ * NATIVE_PORT: that fallback is exactly the failure mode this port refuses to
+ * keep. The comparison against gAssetsMiscTableLength is real, but returning the
+ * SECTION BASE on failure turns an out-of-range read into plausible wrong data
+ * with no diagnostic — strictly worse than a crash, because nothing reports it.
+ * The native arm makes the same comparison inside mdkr_asset_subentry(), which
+ * aborts naming the section, the requested index and the actual entry count.
+ * Every index us.v80 asks for is in range by construction (75 call sites, swept
+ * by tools/sweep_subentry_access.py), so this cannot fire on a supported
+ * revision; it exists for the moment the supported set widens. The N64 arm below
+ * is unchanged.
  */
 s32 *get_misc_asset(s32 index) {
+#ifdef NATIVE_PORT
+    MdkrAssetSection section;
+
+    misc_asset_section(&section);
+    /* A negative index converts to a huge u32 and is rejected by the same
+     * bound; the accessor never returns NULL and never returns the base. */
+    return (s32 *) (void *) (uintptr_t) mdkr_asset_subentry(&section, (u32) index, NULL);
+#else
     if (index < 0 || index >= gAssetsMiscTableLength) {
         return gAssetsMiscSection;
     }
     return (s32 *) &gAssetsMiscSection[gAssetsMiscTable[index]];
+#endif
 }
 
 #ifdef NATIVE_PORT
@@ -11382,21 +11471,23 @@ s32 *get_misc_asset(s32 index) {
  * Byte length of an ASSET_MISC sub-asset. gAssetsMiscTable entries are s32-WORD
  * offsets into gAssetsMiscSection (see get_misc_asset), so the byte length of
  * sub-asset `index` is (table[index + 1] - table[index]) * sizeof(s32).
- * Returns 0 when the index is out of range, mirroring get_misc_asset's
- * defensive contract. Used by the on-demand asset_swap_misc_* converters to
- * bound their walk to the blob instead of trusting a count field.
+ * An out-of-range index used to return 0, mirroring get_misc_asset's silent
+ * fallback; it now aborts through the same accessor, for the same reason. A
+ * length of 0 still means "the next offset is the terminator or does not
+ * advance" — that is a real answer for the last usable entry, not an error.
+ * Used by the on-demand asset_swap_misc_* converters to bound their walk to the
+ * blob instead of trusting a count field.
  */
 s32 get_misc_asset_size(s32 index) {
-    s32 words;
+    MdkrAssetSection section;
+    u32 size = 0;
 
-    if (index < 0 || index + 1 > gAssetsMiscTableLength) {
+    misc_asset_section(&section);
+    (void) mdkr_asset_subentry(&section, (u32) index, &size);
+    if (size > (u32) INT32_MAX) {
         return 0;
     }
-    words = gAssetsMiscTable[index + 1] - gAssetsMiscTable[index];
-    if (words <= 0) {
-        return 0;
-    }
-    return words * (s32) sizeof(s32);
+    return (s32) size;
 }
 #endif
 

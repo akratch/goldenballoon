@@ -198,6 +198,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/mod_texture_key.c  # published texture content digest
     ${CMAKE_SOURCE_DIR}/platform/mod_texture_store.c # decoded override textures (stb PNG)
     ${CMAKE_SOURCE_DIR}/platform/enhancement_registry.c # enhancements + authority class
+    ${CMAKE_SOURCE_DIR}/platform/asset_subentry.c   # bounds-checked asset sub-entry access
     ${CMAKE_SOURCE_DIR}/platform/video_config.c     # presentation modes (pure core)
     ${CMAKE_SOURCE_DIR}/platform/video_config_runtime.c  # ini/env/argv + g_pc* publication
     ${CMAKE_SOURCE_DIR}/platform/user_paths.c       # immutable bundle vs mutable user-data policy
@@ -559,6 +560,7 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/app_ui_policy.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/app_window.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/arg_triage.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/dev_tools.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/diag_log.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/engine_boot.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/main_app.cpp
