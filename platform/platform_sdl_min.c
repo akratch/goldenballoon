@@ -1333,13 +1333,14 @@ static void platform_dump_frame(void) {
  */
 static MdkrModRegistry s_contentPacks;
 static int s_contentPacksActive;   /* enabled packs the scan actually kept */
+static int s_contentPacksScanned;  /* init has run at least once this process */
 
 /* One entry of Content.PackDisabled. The list is comma-separated, entries are
  * trimmed of surrounding blanks, and the comparison is ASCII case-insensitive
  * for the same reason the registry's tie-break is: a player who types a pack's
  * name back with different capitalisation means the same pack, and the answer
  * must not depend on their locale. */
-static int content_pack_name_disabled(const char *list, const char *name) {
+int platform_content_pack_name_disabled(const char *list, const char *name) {
     size_t name_length;
 
     if (list == NULL || list[0] == '\0' || name == NULL || name[0] == '\0') {
@@ -1392,6 +1393,7 @@ void platform_content_packs_init(void) {
     int index;
 
     s_contentPacksActive = 0;
+    s_contentPacksScanned = 1;
     if (!mdkr_user_mods_directory(mods_dir, sizeof mods_dir)) {
         /* Only reachable when the packaged preference directory could not be
          * prepared, which mdkr_user_paths_init() has already reported. Content
@@ -1423,8 +1425,8 @@ void platform_content_packs_init(void) {
         MdkrModEntry *entry = &s_contentPacks.entries[index];
         if (!entry->manifest.enabled) {
             authored_off++;
-        } else if (content_pack_name_disabled(disabled_list,
-                                              entry->manifest.name)) {
+        } else if (platform_content_pack_name_disabled(
+                       disabled_list, entry->manifest.name)) {
             entry->manifest.enabled = 0;
             player_disabled++;
         } else {
@@ -1468,8 +1470,8 @@ void platform_content_packs_init(void) {
                      entry->manifest.author);
             fprintf(stderr, "[MODS]   active: %s%s (priority %d)\n",
                     entry->manifest.name, credit, entry->manifest.priority);
-        } else if (content_pack_name_disabled(disabled_list,
-                                              entry->manifest.name)) {
+        } else if (platform_content_pack_name_disabled(
+                       disabled_list, entry->manifest.name)) {
             fprintf(stderr,
                     "[MODS]   skipped: %s - listed in Content.PackDisabled\n",
                     entry->manifest.name);
@@ -1488,12 +1490,26 @@ void platform_content_packs_init(void) {
     }
 }
 
+const MdkrModRegistry *platform_content_packs_registry(void) {
+    /* The launcher draws Settings before anything calls init. Scanning here is
+     * the same scan, at the same path, reading the same two config keys -- and
+     * the engine's own call re-runs it, so the value the renderer binds to is
+     * still produced after the launcher -> engine handoff has resolved the
+     * config, never inherited from whatever the settings panel happened to see
+     * first. */
+    if (!s_contentPacksScanned) platform_content_packs_init();
+    return &s_contentPacks;
+}
+
 void platform_content_packs_shutdown(void) {
     /* Store first: it borrows the registry, so unbinding it before the registry
      * is cleared is the only order in which no lookup can see a dead scan. */
     mdkr_mod_texture_store_shutdown();
     mdkr_mod_registry_shutdown(&s_contentPacks);
     s_contentPacksActive = 0;
+    /* Deliberately not clearing s_contentPacksScanned: a settings panel drawn
+     * during shutdown must read the empty registry it was just handed, not
+     * rescan the disk on the way out. */
 }
 
 void platform_content_packs_toggle(void) {

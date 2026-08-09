@@ -279,6 +279,24 @@ void platform_content_packs_shutdown(void);
  * No-op, and silent, when no pack is installed. */
 void platform_content_packs_toggle(void);
 
+/* The scan's result, for a read-only list in the settings panel. Never NULL.
+ *
+ * Scans on first use if platform_content_packs_init() has not run yet, which is
+ * the launcher: the engine calls init before any frame exists, but a player can
+ * open Settings -> Content before ever pressing Play, and a list that is empty
+ * only because the engine has not started would be the exact silent-loss
+ * failure the skip table exists to prevent.
+ *
+ * Include mod_registry.h to read the returned value; it is forward-declared
+ * here so platform_os.h does not grow a dependency for one accessor. */
+const struct MdkrModRegistry *platform_content_packs_registry(void);
+
+/* True when `name` appears in a Content.PackDisabled list: comma-separated,
+ * entries trimmed of surrounding blanks, ASCII case-insensitive. Public so the
+ * settings list names the reason a pack was skipped using the same rule the
+ * scan applied, rather than a second matcher that can disagree with it. */
+int platform_content_pack_name_disabled(const char *list, const char *name);
+
 /* ===== Input (platform_sdl_min.c) ======================================= *
  * Host events are captured on presentation opportunities, but DKR-visible pad
  * state is published only when the host driver issues a fixed-step ticket.

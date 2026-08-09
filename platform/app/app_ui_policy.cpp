@@ -166,3 +166,34 @@ bool AppUi_videoSettingVisible(MdkrVideoKey key, bool webGpuRenderer,
         default: return true;
     }
 }
+
+AppUiSettingsSection AppUi_settingsSection(MdkrVideoKey key) {
+    // Written out rather than derived, because the two functions that could
+    // derive it -- mdkr_video_key_is_enhancement() and
+    // mdkr_video_key_is_content(), both in platform/video_config.c -- live in a
+    // translation unit this policy is deliberately not linked against: these
+    // policies are pure so the contract test can run without the config layer,
+    // a ROM, a window, or a GPU. Keep the two lists in step; the settings panel
+    // reads THIS one, so a key added there and forgotten here is drawn under
+    // its category header rather than lost.
+    switch (key) {
+        case MDKR_ENH_SPEEDOMETER:
+        case MDKR_ENH_DRAW_DISTANCE:
+        case MDKR_ENH_LOD_BIAS:
+        case MDKR_ENH_AI_DIFFICULTY:
+            return AppUiSettingsSection::Enhancements;
+        case MDKR_CONTENT_PACKS_ENABLED:
+        case MDKR_CONTENT_PACK_DISABLED:
+            return AppUiSettingsSection::Content;
+        default:
+            return AppUiSettingsSection::Category;
+    }
+}
+
+bool AppUi_enhancementResetIncludes(MdkrVideoKey key) {
+    // Exactly the rows the Enhancements section draws, and nothing else. In
+    // particular NOT the content keys: they share the section's "things you
+    // opted into" character but a pack is installed content, and silently
+    // switching it off is not what "reset the extras" offers to do.
+    return AppUi_settingsSection(key) == AppUiSettingsSection::Enhancements;
+}

@@ -104,4 +104,27 @@ AppUiSmokeInputMode AppUi_smokeInputMode();
 bool AppUi_videoSettingVisible(MdkrVideoKey key, bool webGpuRenderer,
                                bool legacyStretchActive = false);
 
+// Which settings section draws a key.
+//
+// Nearly every key is drawn under the header its schema category names, and
+// Category says exactly that. Two families cut across those categories and are
+// drawn in their own section instead: the enhancements are spread over
+// Interface, Advanced Graphics and Frame Rate & Motion, and the content-pack
+// keys sit in Advanced Graphics beside render scale and filtering. A player
+// looking for "the extras I switched on" or "the packs I installed" looks for
+// one list, not for four rows scattered through three headers.
+//
+// This is a ROUTING decision and never a visibility one:
+// AppUi_videoSettingVisible stays true for every key below, because none of
+// them is hidden — they are drawn somewhere else.
+enum class AppUiSettingsSection { Category, Enhancements, Content };
+
+AppUiSettingsSection AppUi_settingsSection(MdkrVideoKey key);
+
+// True for exactly the keys "Reset enhancements" restores to their schema
+// defaults. The scoping is the whole point of the action: a player resetting
+// the extras must keep the presentation, audio and controller preferences they
+// set for comfort, and the content packs they deliberately installed.
+bool AppUi_enhancementResetIncludes(MdkrVideoKey key);
+
 #endif  // MDKR64_APP_UI_POLICY_H

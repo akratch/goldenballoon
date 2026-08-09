@@ -168,6 +168,17 @@ MIT / public-domain, and both texts travel with the file. It decodes the PNG
 textures in a player's own content packs and is built with only its PNG decoder
 enabled. No image is shipped with this repository for it to read.
 
+`lib/stb/stb_image_write.h` is stb_image_write v1.16 by Sean Barrett, vendored
+from `nothings/stb` at the same commit, `f58f558c120e9b32c217290b80bad1a0729fbb2c`;
+the vendored file's SHA-256 is
+`cbd5f0ad7a9cf4468affb36354a1d2338034f2c12473cf1a8e32053cb6914a05`. It is dual
+MIT / public-domain, and both texts travel with the file. It encodes the PNG
+corpus `tools/mod_texture_dump.py` writes for pack authors
+(`MDKR_MOD_TEXTURE_DUMP`, a debug/authoring path that is inert unless that
+environment variable is set) and is built without its own file I/O, writing
+through the port's own UTF-8-safe file access instead. No image is shipped
+with this repository for it to write.
+
 `lib/miniz/miniz.h` and `lib/miniz/miniz.c` are miniz 3.0.2 by Rich Geldreich
 and contributors, vendored from the pinned upstream release archive
 `https://github.com/richgel999/miniz/releases/download/3.0.2/miniz-3.0.2.zip`;

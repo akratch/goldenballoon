@@ -47,6 +47,7 @@
 
 #ifdef NATIVE_PORT
 #include "camera_obstruction_runtime.h"
+#include "enh_ai_difficulty.h"
 #include "mdkr_adventure.h"
 #include "gameplay_event_trace.h"
 #include "present_sched.h"
@@ -8337,6 +8338,28 @@ f32 handle_racer_top_speed(Object *obj, Object_Racer *racer) {
         bananas = -cap;
     }
     speedMultiplier += (bananas * 0.025f);
+    /*
+     * Opponent skill (Enhancements.AIDifficulty) -- the port's ONE gameplay
+     * enhancement, and its only game-code edit. This is the site because this
+     * function is the single answer to "how fast may this racer go" (its own
+     * comment above says so), and because the expression immediately above IS
+     * DKR's AI rubber band: for a CPU racer `bananas` is `racer->unk124`, which
+     * func_80042D20() recomputes every tick from the AI behaviour table and the
+     * racer's place in the field.
+     *
+     * The helper returns `speedMultiplier` unchanged, by an early return, at
+     * the authored default and for every human -- so the authored game is this
+     * function's own value, not that value put through arithmetic. See
+     * platform/enh_ai_difficulty.h.
+     *
+     * MDKR_ENH_AI_DIFFICULTY_OMIT compiles the enhancement out of the
+     * simulation entirely. It exists for one caller: the purity arm of
+     * tests/check_enh_ai_difficulty.py builds with it defined and requires the
+     * resulting [SIMHASH] v3 stream to be byte-identical to the default arm's.
+     */
+#if defined(NATIVE_PORT) && !defined(MDKR_ENH_AI_DIFFICULTY_OMIT)
+    speedMultiplier = mdkr_enh_ai_difficulty_top_speed(speedMultiplier, racer);
+#endif
     return speedMultiplier;
 }
 

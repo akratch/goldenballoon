@@ -18,8 +18,12 @@
 //     key, opening a window would change the race.
 #include "dev_tools.h"
 
+#include "tool_collision.h"
 #include "tool_console.h"
 #include "tool_diagnostics.h"
+#include "tool_freecam.h"
+#include "tool_objects.h"
+#include "tool_performance.h"
 #include "video_config.h"
 
 #include "imgui.h"
@@ -143,6 +147,10 @@ struct RegisterLandedTools {
     RegisterLandedTools() {
         DevTools_register(MDKR_TOOL_DIAGNOSTICS, &ToolDiagnostics_draw);
         DevTools_register(MDKR_TOOL_CONSOLE, &ToolConsole_draw);
+        DevTools_register(MDKR_TOOL_FREECAM, &ToolFreecam_draw);
+        DevTools_register(MDKR_TOOL_COLLISION, &ToolCollision_draw);
+        DevTools_register(MDKR_TOOL_OBJECTS, &ToolObjects_draw);
+        DevTools_register(MDKR_TOOL_PERFORMANCE, &ToolPerformance_draw);
     }
 };
 RegisterLandedTools g_registerLandedTools;

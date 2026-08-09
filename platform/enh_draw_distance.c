@@ -52,6 +52,30 @@ void mdkr_enh_draw_distance_begin_frame(void) {
     int percent;
     int bias;
 
+    /*
+     * The presentation-depth tool hook rides this call, and only this call,
+     * because of WHERE the call is: tracks.c invokes begin_frame() at the top
+     * of render_scene(), immediately after camera_obstruction_presentation_
+     * begin() opens the presentation scope and before any viewport authors a
+     * lens from the record the fixed-tick finalizer just latched. Nothing else
+     * in platform/ is called in that window, and a tool that substitutes
+     * outside it either has its substitution overwritten by the next tick's
+     * latch (anything before the tick) or arrives after the display list has
+     * already been walked (anything at swap time).
+     *
+     * Declared locally rather than by including app_overlay_hooks.h -- that
+     * header pulls the app-shell seam header in for AppOverlayHooks, and this
+     * file needs one void(void) symbol. game/src/thread3_main.c extern's
+     * mdkr_render_census_pre() at its call site for the same reason.
+     *
+     * Nothing is registered on any CLI invocation, so this is one null compare
+     * per drawn frame there.
+     */
+    {
+        extern void platformPresentationHook(void);
+        platformPresentationHook();
+    }
+
     if (drawdist_trace_armed() &&
         (s_authoredDraws != 0 || s_extendedDraws != 0)) {
         printf("[DRAWDIST] frame=%d scale=%.2f lodBias=%d authored=%d "

@@ -23,6 +23,14 @@
  *   treated as absent. Re-reporting it would put a line in the log every frame
  *   the texture is bound.
  *
+ * A separate, additive concern lives here too: with MDKR_MOD_TEXTURE_DUMP set,
+ * mdkr_mod_texture_dump_observe() writes the digest-named PNG corpus
+ * tools/mod_texture_dump.py's whole job depends on. It answers "what did the
+ * game just draw", not "does a pack cover this", which is why it is a
+ * question the renderer asks in addition to a lookup rather than a mode this
+ * store's lookup path enters -- see mdkr_mod_texture_dump_active() below for
+ * why it does not fold into mdkr_mod_texture_store_active().
+ *
  * Single-threaded by standing decision (docs/ARCHITECTURE_DECISIONS.md §1: the
  * port is cooperative, with no real threads). There is deliberately no lock and
  * no atomic here; if that decision is ever revisited, this module is one of the
@@ -79,6 +87,33 @@ bool     mdkr_mod_texture_enabled(void);
  * rather than one entry that gets mutated under a live binding. Called once per
  * texture bind, so it is a plain read and nothing more. */
 uint32_t mdkr_mod_texture_generation(void);
+
+/* ---------------------------------------------- author dump (Task 9) ---- */
+
+/* True when MDKR_MOD_TEXTURE_DUMP names a directory. Independent of
+ * mdkr_mod_texture_store_active(): a pack author dumping the digest corpus
+ * has no pack installed, so "could an override be found" is false while "the
+ * renderer should still resolve a digest and hand it to the store" is true.
+ * The renderer ORs the two at its one call site rather than folding this into
+ * mdkr_mod_texture_store_active() itself, because that function's contract --
+ * "an override could be found" -- is relied on elsewhere (the Content
+ * diagnostics line) as a proxy for "is a pack installed", and dump mode alone
+ * must not flip that answer. */
+bool mdkr_mod_texture_dump_active(void);
+
+/* Records the texture the renderer just resolved for `digest_hex`, for
+ * tools/mod_texture_dump.py. `rgba` (tightly packed, `width * height * 4`
+ * bytes) must be the pixels the renderer is about to upload for this bind --
+ * an installed pack's override when one applied, the ROM decode otherwise --
+ * so the dumped PNG is what the game actually displays, not a re-decode this
+ * module invents on its own. Writes <dir>/<digest_hex>.png and
+ * <digest_hex>.txt (width, height, fmt, siz, first_seen) the first time this
+ * digest is observed in the process, and is a no-op on every call after.
+ * Unconditionally a no-op unless MDKR_MOD_TEXTURE_DUMP is set: that is the
+ * only cost this feature may impose when the variable is absent. */
+void mdkr_mod_texture_dump_observe(const char *digest_hex, const uint8_t *rgba,
+                                   int width, int height, uint8_t fmt,
+                                   uint8_t siz, const char *first_seen);
 
 #ifdef __cplusplus
 }

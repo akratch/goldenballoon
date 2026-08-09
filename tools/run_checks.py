@@ -134,6 +134,13 @@ CHECKS = (
     Check("enh_draw_distance", "check_enh_draw_distance.py", "rom",
           "draw distance and LOD bias extend what is drawn without changing "
           "which objects exist, proving both are render culls"),
+    Check("enh_ai_difficulty", "check_enh_ai_difficulty.py", "rom",
+          "opponent skill leaves the authored arm bit-identical to a build "
+          "without the enhancement compiled in, and the harder arms measurably "
+          "beat it without wedging an opponent"),
+    Check("tool_freecam", "check_tool_freecam.py", "rom",
+          "detaching and re-attaching the free camera leaves the authoritative "
+          "state stream and the re-attached frame byte-identical"),
     Check("crash_screen", "check_crash_screen.py", "rom",
           "a fatal run still prints its [CRASH]/[FATAL] marker first, exits "
           "with the same disposition, and adds a report naming the fault, "

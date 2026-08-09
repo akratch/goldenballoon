@@ -7,6 +7,8 @@
 #include "ui_common.h"
 
 #include "controller_mapping.h"
+#include "enhancement_registry.h"
+#include "mod_registry.h"
 #include "video_config.h"
 #include "platform_os.h"
 
@@ -428,7 +430,47 @@ const char *optionLabel(MdkrVideoKey key, const char *value) {
     return value;
 }
 
+// --- Enhancement help ------------------------------------------------------
+// Every enhancement row ends with its AUTHORITY CLASS in the player's words.
+// The class is asserted and gated in platform/enhancement_registry.c, so that
+// is where this reads it from — never from the enum name, which says nothing to
+// a player, and never from a second list kept here.
+constexpr const char *kEnhancementGameplayNote = "Changes how the game plays.";
+constexpr const char *kEnhancementLooksNote =
+    "Changes only how the game looks.";
+
+// Composed once per key; drawn every frame.
+std::array<std::string, MDKR_VIDEO_KEY_COUNT> g_enhancementHelp;
+
+const char *enhancementHelp(MdkrVideoKey key,
+                            const MdkrEnhancement *enhancement,
+                            const MdkrVideoSchema *schema) {
+    std::string &text = g_enhancementHelp[static_cast<size_t>(key)];
+    if (!text.empty()) return text.c_str();
+    const char *note = enhancement->authority == MDKR_ENH_GAMEPLAY
+        ? kEnhancementGameplayNote : kEnhancementLooksNote;
+    // The schema paragraph, because it is the one that explains what the
+    // values mean; the registry's own sentence is the shorter summary the
+    // enhancement table carries.
+    text = schema->help != nullptr ? schema->help : enhancement->help;
+    // Appended only when the paragraph does not already end with it. Most were
+    // written with the sentence in place, and printing it twice reads as a
+    // stutter rather than as emphasis — while a new row whose author forgot it
+    // still gets the class stated, which is the part that must not be optional.
+    const size_t noteLength = std::strlen(note);
+    if (text.size() < noteLength ||
+        text.compare(text.size() - noteLength, noteLength, note) != 0) {
+        if (!text.empty()) text += ' ';
+        text += note;
+    }
+    return text.c_str();
+}
+
 const char *helpFor(MdkrVideoKey key, const MdkrVideoSchema *schema) {
+    const MdkrEnhancement *enhancement = mdkr_enhancement_for_key(key);
+    if (enhancement != nullptr) {
+        return enhancementHelp(key, enhancement, schema);
+    }
     switch (key) {
         case MDKR_VIDEO_SIMULATION_CADENCE:
             return "Original preserves retail physics, AI, timers, and input "
@@ -897,6 +939,283 @@ bool restoreControllerDefaults() {
     return true;
 }
 
+// --- Enhancements ----------------------------------------------------------
+// The rows are enumerated from platform/enhancement_registry.c rather than
+// listed here, for the reason that table exists: a panel carrying its own copy
+// of the list keeps looking complete after somebody adds a row and forgets it.
+// Grouping is the registry's category, and a category with no rows draws no
+// header — COSMETIC is declared and still empty.
+struct EnhancementGroup {
+    MdkrEnhCategory category;
+    const char *label;
+};
+const EnhancementGroup kEnhancementGroups[] = {
+    {MDKR_ENH_CAT_DISPLAY,    "On screen"},
+    {MDKR_ENH_CAT_DIFFICULTY, "Difficulty"},
+    {MDKR_ENH_CAT_COSMETIC,   "Appearance"},
+};
+
+// Restores the enhancement keys, and only those, to their schema defaults.
+//
+// The scoping is the action. "Reset" next to a list of extras must not be a
+// trap that also throws away the frame limit, the volume levels, and a
+// remapped controller, so the key set comes from AppUi_enhancementResetIncludes
+// and one transaction writes exactly it — the same shape as the controller
+// restore above, so a partial write is not a state either can land in.
+bool resetEnhancements() {
+    MdkrVideoConfig defaults;
+    std::array<std::string, MDKR_VIDEO_KEY_COUNT> values;
+    std::array<MdkrVideoRuntimeChange, MDKR_VIDEO_KEY_COUNT> changes;
+    int count = 0;
+
+    mdkr_video_config_defaults(&defaults);
+    for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
+        const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
+        if (!AppUi_enhancementResetIncludes(key)) continue;
+        const MdkrVideoSchema *schema = mdkr_video_schema(key);
+        if (schema == nullptr) return false;
+        if (schema->type == MDKR_VIDEO_TYPE_STRING) {
+            values[static_cast<size_t>(count)] = defaults.values[key].text;
+        } else if (schema->type == MDKR_VIDEO_TYPE_INT) {
+            values[static_cast<size_t>(count)] = std::to_string(
+                static_cast<int>(defaults.values[key].number));
+        } else {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%.2f",
+                          static_cast<double>(defaults.values[key].number));
+            values[static_cast<size_t>(count)] = buf;
+        }
+        // `values` is a fixed array, so no element ever moves and the pointer
+        // handed to the transaction stays valid until it returns.
+        changes[static_cast<size_t>(count)] =
+            {key, values[static_cast<size_t>(count)].c_str()};
+        ++count;
+    }
+    if (count == 0) return false;
+
+    const MdkrVideoRuntimeResult result =
+        mdkr_video_config_runtime_set_many(changes.data(), count);
+    if (!resultSucceeded(result)) {
+        // One pinned row refuses the whole transaction, so name the row that
+        // refused it rather than whichever one happened to be written first:
+        // "Speedometer is fixed by ..." is not an answer for a player whose
+        // Opponent skill is the pinned one.
+        MdkrVideoKey blamed = changes[0].key;
+        for (int i = 0; i < count; ++i) {
+            const MdkrVideoKey key = changes[static_cast<size_t>(i)].key;
+            if (mdkr_video_config_runtime_locked(key) != 0) {
+                blamed = key;
+                break;
+            }
+        }
+        reportResult(result, mdkr_video_schema(blamed));
+        return false;
+    }
+    for (int i = 0; i < count; ++i) {
+        g_edits[static_cast<size_t>(changes[static_cast<size_t>(i)].key)] =
+            EditState{};
+    }
+    setStatus("Enhancements are back to the way the game shipped. Your "
+              "picture, sound, controller and content-pack settings were left "
+              "as they were.",
+              AppTheme::good());
+    return true;
+}
+
+int enhancementsInGroup(MdkrEnhCategory category, bool webGpuRenderer,
+                        bool legacyStretchActive) {
+    int rows = 0;
+    for (int i = 0; i < mdkr_enhancement_count(); ++i) {
+        const MdkrEnhancement *enhancement = mdkr_enhancement_at(i);
+        if (enhancement == nullptr || enhancement->category != category) {
+            continue;
+        }
+        if (!AppUi_videoSettingVisible(enhancement->key, webGpuRenderer,
+                                       legacyStretchActive)) {
+            continue;
+        }
+        ++rows;
+    }
+    return rows;
+}
+
+bool drawEnhancementsSection(SDL_Window *window, bool compact,
+                             bool webGpuRenderer, bool legacyStretchActive) {
+    bool changed = false;
+    ui::Gap(ui::kGapS);
+    if (!compact) {
+        ui::TextSubtleWrapped(
+            "Extras that stay off until you switch them on. Each one says "
+            "whether it changes how the game plays or only how it looks.");
+    }
+    ui::Gap(ui::kGapS);
+    ImGui::Indent(ui::kGapM);
+    for (const EnhancementGroup &group : kEnhancementGroups) {
+        if (enhancementsInGroup(group.category, webGpuRenderer,
+                                legacyStretchActive) == 0) {
+            continue;
+        }
+        ImGui::SeparatorText(group.label);
+        ui::Gap(ui::kGapXS);
+        for (int i = 0; i < mdkr_enhancement_count(); ++i) {
+            const MdkrEnhancement *enhancement = mdkr_enhancement_at(i);
+            if (enhancement == nullptr ||
+                enhancement->category != group.category) {
+                continue;
+            }
+            if (!AppUi_videoSettingVisible(enhancement->key, webGpuRenderer,
+                                           legacyStretchActive)) {
+                continue;
+            }
+            changed |= drawKey(window, enhancement->key, compact);
+        }
+    }
+    ui::Gap(ui::kGapS);
+    if (ImGui::Button("Reset enhancements", ui::kBtnWide())) {
+        changed |= resetEnhancements();
+    }
+    if (!compact) {
+        ui::TextSubtleWrapped(
+            "Puts every extra above back to the way the game shipped. Your "
+            "picture, sound, controller and content-pack settings are not "
+            "touched.");
+    }
+    ImGui::Unindent(ui::kGapM);
+    ui::Gap(ui::kGapS);
+    return changed;
+}
+
+// --- Content packs ---------------------------------------------------------
+// The read-only list below exists for one failure: a pack that is quietly
+// ignored looks to the player exactly like a pack that loaded and did nothing.
+// Every directory the scan saw is accounted for here — installed, or skipped
+// with a reason — which is the same accounting the startup log prints and the
+// single commonest question a pack author is asked.
+
+// Only `name` is mandatory in a pack.ini, so the optional parts are appended
+// rather than formatted in: a pack that declared neither must not read as
+// "Name  by  (priority 100)".
+std::string packSummary(const MdkrModEntry *entry) {
+    std::string text = entry->manifest.name;
+    if (entry->manifest.version[0] != '\0') {
+        text += "  ";
+        text += entry->manifest.version;
+    }
+    if (entry->manifest.author[0] != '\0') {
+        text += "  by ";
+        text += entry->manifest.author;
+    }
+    char priority[48];
+    std::snprintf(priority, sizeof(priority), "  (priority %d)",
+                  entry->manifest.priority);
+    text += priority;
+    return text;
+}
+
+// Why a disabled entry is disabled. The registry records the state but not the
+// cause, so the cause is re-derived from the list the scan itself read, through
+// the scan's own matcher rather than a second one that could disagree with it.
+const char *packSkipReason(const MdkrModEntry *entry,
+                           const char *disabledList) {
+    return platform_content_pack_name_disabled(disabledList,
+                                               entry->manifest.name)
+        ? "you listed it under Skipped packs"
+        : "its own pack.ini switches it off";
+}
+
+// One row per pack, once per process, so a gate can read what the panel drew
+// without depending on whether the section happens to be expanded.
+void traceContentPacks(const MdkrModRegistry *packs, const char *disabledList) {
+    if (std::getenv("MDKR_APP_UI_TRACE") == nullptr) return;
+    static bool traced = false;
+    if (traced) return;
+    traced = true;
+    const int count = mdkr_mod_registry_count(packs);
+    const int skipped = mdkr_mod_registry_skipped(packs);
+    std::fprintf(stderr, "[app-ui] content-list found=%d unreadable=%d\n",
+                 count, skipped);
+    for (int i = 0; i < count; ++i) {
+        const MdkrModEntry *entry = mdkr_mod_registry_entry(packs, i);
+        if (entry == nullptr) continue;
+        std::fprintf(
+            stderr,
+            "[app-ui] content-pack name=\"%s\" version=\"%s\" author=\"%s\" "
+            "priority=%d state=%s reason=\"%s\"\n",
+            entry->manifest.name, entry->manifest.version,
+            entry->manifest.author, entry->manifest.priority,
+            entry->manifest.enabled ? "installed" : "skipped",
+            entry->manifest.enabled ? "" : packSkipReason(entry, disabledList));
+    }
+    for (int i = 0; i < skipped; ++i) {
+        const char *reason = mdkr_mod_registry_skip_reason(packs, i);
+        std::fprintf(stderr,
+                     "[app-ui] content-pack name=\"%s\" state=skipped "
+                     "reason=\"%s\"\n",
+                     packs->skip_name[i], reason != nullptr ? reason : "");
+    }
+}
+
+bool drawContentSection(SDL_Window *window, bool compact,
+                        const MdkrModRegistry *packs,
+                        const char *disabledList) {
+    bool changed = false;
+    const int count = mdkr_mod_registry_count(packs);
+    const int unreadable = mdkr_mod_registry_skipped(packs);
+
+    ui::Gap(ui::kGapS);
+    if (!compact) {
+        ui::TextSubtleWrapped(
+            "A content pack replaces some of the game's artwork with a pack "
+            "author's own. Put the pack's folder in the mods folder beside "
+            "your saves; everything found there is listed below.");
+    }
+    ui::Gap(ui::kGapS);
+    ImGui::Indent(ui::kGapM);
+    changed |= drawKey(window, MDKR_CONTENT_PACKS_ENABLED, compact);
+    changed |= drawKey(window, MDKR_CONTENT_PACK_DISABLED, compact);
+
+    ImGui::SeparatorText("Installed");
+    ui::Gap(ui::kGapXS);
+    int installed = 0;
+    for (int i = 0; i < count; ++i) {
+        const MdkrModEntry *entry = mdkr_mod_registry_entry(packs, i);
+        if (entry == nullptr || !entry->manifest.enabled) continue;
+        ImGui::BulletText("%s", packSummary(entry).c_str());
+        ++installed;
+    }
+    if (installed == 0) {
+        ui::TextSubtleWrapped(
+            count == 0 && unreadable == 0
+                ? "Nothing yet. A pack is a folder with a pack.ini file in it."
+                : "None of the packs found are in use. Every one of them is "
+                  "listed below with the reason.");
+    } else if (!compact) {
+        ui::TextSubtleWrapped(
+            "Where two packs supply the same artwork, the higher priority "
+            "wins.");
+    }
+
+    if (count - installed + unreadable > 0) {
+        ImGui::SeparatorText("Skipped");
+        ui::Gap(ui::kGapXS);
+        for (int i = 0; i < count; ++i) {
+            const MdkrModEntry *entry = mdkr_mod_registry_entry(packs, i);
+            if (entry == nullptr || entry->manifest.enabled) continue;
+            ImGui::BulletText("%s — %s", entry->manifest.name,
+                              packSkipReason(entry, disabledList));
+        }
+        for (int i = 0; i < unreadable; ++i) {
+            const char *reason = mdkr_mod_registry_skip_reason(packs, i);
+            ImGui::BulletText("%s — %s", packs->skip_name[i],
+                              reason != nullptr && reason[0] != '\0'
+                                  ? reason : "it could not be read");
+        }
+    }
+    ImGui::Unindent(ui::kGapM);
+    ui::Gap(ui::kGapS);
+    return changed;
+}
+
 }  // namespace
 
 void Settings_cancelAudioPreview() {
@@ -1191,6 +1510,8 @@ bool Settings_draw(SDL_Window *window, bool compact) {
             const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
             if (!AppUi_videoSettingVisible(key, webGpuRenderer,
                                           legacyStretchActive)) continue;
+            if (AppUi_settingsSection(key) !=
+                AppUiSettingsSection::Category) continue;
             const MdkrVideoSchema *s = mdkr_video_schema(key);
             if (s && (int)s->category == c) ++inCat;
         }
@@ -1271,6 +1592,10 @@ bool Settings_draw(SDL_Window *window, bool compact) {
                 const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
                 if (!AppUi_videoSettingVisible(key, webGpuRenderer,
                                               legacyStretchActive)) continue;
+                // Visible, but drawn by its own section further down rather
+                // than under the category header its schema names.
+                if (AppUi_settingsSection(key) !=
+                    AppUiSettingsSection::Category) continue;
                 const MdkrVideoSchema *s = mdkr_video_schema(key);
                 if (!s || (int)s->category != c) continue;
                 if (key == MDKR_VIDEO_MODE) continue;
@@ -1337,6 +1662,33 @@ bool Settings_draw(SDL_Window *window, bool compact) {
             }
             ImGui::Unindent(ui::kGapM);
         }
+    }
+
+    // Two sections that are not a schema category. Both gather keys the
+    // categories would otherwise scatter -- see AppUi_settingsSection -- and
+    // both add something no generated row can: the enhancements get one action
+    // that resets them and nothing else, and the content packs get the list of
+    // what the scan actually found.
+    if (drawSettingsSectionHeader("Enhancements", ImGuiTreeNodeFlags_None)) {
+        changed |= drawEnhancementsSection(window, compact, webGpuRenderer,
+                                           legacyStretchActive);
+    }
+
+    const MdkrModRegistry *packs = platform_content_packs_registry();
+    const MdkrVideoConfig *liveConfig = mdkr_video_config_current();
+    const char *disabledList = liveConfig != nullptr
+        ? liveConfig->values[MDKR_CONTENT_PACK_DISABLED].text : "";
+    traceContentPacks(packs, disabledList);
+    // Open when the scan found anything at all, including something it could
+    // not read. A player who installed a pack has a question this section
+    // answers; a player who has never installed one does not, and a collapsed
+    // header keeps the panel that player's size.
+    const bool anyPacks = mdkr_mod_registry_count(packs) > 0 ||
+                          mdkr_mod_registry_skipped(packs) > 0;
+    if (drawSettingsSectionHeader(
+            "Content", anyPacks ? ImGuiTreeNodeFlags_DefaultOpen
+                                : ImGuiTreeNodeFlags_None)) {
+        changed |= drawContentSection(window, compact, packs, disabledList);
     }
 
     if (controllerSettingsSmoke) {

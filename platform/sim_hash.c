@@ -215,6 +215,9 @@
 #include "textures_sprites.h"
 #include "thread3_main.h"
 
+/* The read-only object view this file publishes for the in-game viewer. */
+#include "sim_hash_view.h"
+
 #define SIM_HASH_VERSION_V1 1u
 #define SIM_HASH_VERSION_V2 2u
 #define SIM_HASH_VERSION_V3 3u
@@ -1995,6 +1998,28 @@ void mdkr_render_census_post(void) {
     uint64_t post;
     SimHashV3Parts post_parts;
 
+    /*
+     * The closing half of the presentation-depth tool scope; see
+     * platform/app_overlay_hooks.h for what it is for and why it has to exist.
+     *
+     * It rides this function because this function IS the boundary: it is the
+     * statement immediately after render_scene() returns, at both of
+     * thread3_main.c's call sites, and it is the last thing in the frame before
+     * the next fixed tick's obj_visibility_tick reads the lens globals the
+     * drawn frame left behind. Deliberately BEFORE the census's own early-out:
+     * a tool's substitution must be closed whether or not MDKR_RENDER_CENSUS is
+     * on, and gating the close on a diagnostic would make the diagnostic change
+     * the run.
+     *
+     * Declared locally, the way thread3_main.c declares this function itself.
+     * Nothing is registered on any CLI invocation, so this is one null compare
+     * per drawn frame there.
+     */
+    {
+        extern void platformPresentationEndHook(void);
+        platformPresentationEndHook();
+    }
+
     if (!render_census_enabled()) {
         return;
     }
@@ -2051,4 +2076,73 @@ void mdkr_render_census_post(void) {
                    s_census_v3_model_timer, s_census_v3_racer_head);
         }
     }
+}
+
+/* ======================================================================== *
+ *  Read-only object view -- see platform/sim_hash_view.h
+ * ======================================================================== *
+ * These are here, and not in the app shell, so the in-game object viewer and
+ * the [SIMHASH] v3 stream can never disagree about what is live: they walk the
+ * same objGetObjList() array, in the same order, through the same
+ * sim_hash_object_is_presentation() filter, and count the population with the
+ * same sim_hash_authoritative_count(). A viewer that re-derived any of that
+ * could agree with itself while disagreeing with the authority.
+ *
+ * Pure reads. No allocation, no caching, no writes to any Object.
+ */
+int mdkr_sim_object_count(void) {
+    s32 first = 0;
+    s32 count = 0;
+
+    return objGetObjList(&first, &count) != NULL ? (int)count : 0;
+}
+
+int mdkr_sim_object_authoritative_count(void) {
+    s32 first = 0;
+    s32 count = 0;
+    Object **objects = objGetObjList(&first, &count);
+
+    return objects != NULL ? (int)sim_hash_authoritative_count(objects, count) : 0;
+}
+
+bool mdkr_sim_object_view(int index, MdkrSimObjectView *out) {
+    s32 first = 0;
+    s32 count = 0;
+    Object **objects = objGetObjList(&first, &count);
+    const Object *object;
+
+    if (out == NULL || objects == NULL || index < 0 || index >= (int)count) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    out->index = (int32_t)index;
+    out->behaviour_id = -1;
+
+    object = objects[index];
+    if (object == NULL) {
+        /* A successful read of an empty slot. The v3 walk mixes exactly this
+         * distinction (index + a presence byte) before it looks at anything
+         * else, so the viewer shows it rather than compacting the list. */
+        return true;
+    }
+    out->live = 1u;
+    out->hashed = (uint8_t)(sim_hash_object_is_presentation(object) ? 0 : 1);
+    /* The shared Object/Particle prefix: these members name the same bytes in
+     * both layouts (see sim_hash_compute_object_particle_v2's own note), so
+     * they are safe to read before the layouts part company. */
+    out->flags = (int32_t)object->trans.flags;
+    out->position[0] = object->trans.x_position;
+    out->position[1] = object->trans.y_position;
+    out->position[2] = object->trans.z_position;
+    out->active_emitters = (int32_t)object->numActiveEmitters;
+    if (object->trans.flags & OBJ_FLAGS_PARTICLE) {
+        /* Past the prefix a particle is a Particle, and behaviorId /
+         * particleEmittersEnabled would be the wrong members. The hash's
+         * particle arm skips them for the same reason. */
+        out->is_particle = 1u;
+        return true;
+    }
+    out->behaviour_id = (int32_t)object->behaviorId;
+    out->emitters_on = (uint8_t)(object->particleEmittersEnabled != 0);
+    return true;
 }

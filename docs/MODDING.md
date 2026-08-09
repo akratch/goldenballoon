@@ -72,14 +72,29 @@ a 16×16 original works; the game addresses the same logical tile either way.
 
 ### Finding a digest
 
-**There is no supported tool for this yet.** `tools/mod_texture_dump.py` is
-planned — see task 9 in
-[`sprints/S1-content-pipeline.md`](sprints/S1-content-pipeline.md) — and until
-it lands, authoring a pack means reading
-[`platform/mod_texture_key.h`](../platform/mod_texture_key.c) and computing the
-digest yourself. That header is written to be sufficient on its own: the field
-list, their order, and their encoding are all stated there, and the digest has
-been independently reproduced from that text alone by a second implementation.
+```bash
+MDKR_AUDIO=0 python3 tools/mod_texture_dump.py \
+  --input-script tests/input_scripts/nav_to_track_select.txt \
+  --frames 900 --out ~/dkr-textures
+```
+
+Every texture the game binds during that run is written as
+`<digest>.png` — the exact filename a pack must use — alongside a `<digest>.txt`
+recording its width, height, format and the frame it was first seen on. Each
+digest is written once, however many times it is drawn. Drive whatever route
+covers the textures you want; the menus, a track, a particular character.
+
+**Never point `--out` inside this repository.** The output is decoded game data;
+`mod-texture-dump/` is git-ignored for that reason, and the clean-room guard
+fails closed if any of it is ever tracked.
+
+The dump path is inert when the tool is not running: with the environment
+variable unset the digest is not computed and no directory is created.
+
+If you would rather compute names yourself, the digest is fully specified in
+[`platform/mod_texture_key.h`](../platform/mod_texture_key.h) — the field list,
+their order and their encoding — and has been independently reproduced from that
+text alone by a second implementation.
 
 The digest covers, in this exact order:
 
@@ -110,7 +125,12 @@ constant is bumped, the old path keeps working, and this page says so.
 
 ## Seeing what loaded
 
-When any pack is present the game logs a summary at startup:
+**Settings → Content** lists every pack the game found: name, version, author
+and priority for the ones that loaded, and every pack it skipped *with the
+reason* — whether you disabled it, its own `pack.ini` switched it off, its
+manifest was unreadable, or the manifest was missing a name.
+
+The same summary is logged at startup when any pack is present:
 
 ```
 [MODS] 1 pack(s) active, 3 skipped
@@ -141,8 +161,6 @@ Stated plainly so you do not spend an evening on it:
   only finds directories. Use a directory.
 - **Custom music**, **custom models** and **custom characters**. Not
   implemented.
-- **A Settings list of installed packs.** The `[MODS]` log lines above are the
-  only view.
 
 The scope and order of the remaining work is in
 [`sprints/S1-content-pipeline.md`](sprints/S1-content-pipeline.md).

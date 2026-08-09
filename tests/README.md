@@ -3690,6 +3690,57 @@ choices the bias actually *changed* after clamping, so a route that stops
 exercising the ladder fails rather than passing on an incidentally different
 frame.
 
+## Opponent skill — `tests/check_enh_ai_difficulty.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_enh_ai_difficulty.py --build build
+```
+
+The only gameplay-class enhancement, so it is the only one required to *move*
+the state stream. Six races per arm on Ancient Lake, and the route is chosen
+deliberately: the autopiloted player **wins** there at `authored`, so mean
+opponent finish has headroom. On Hot Top Volcano the same fixture finishes the
+player last, pinning the metric at 4.0 and making the assertion unfalsifiable —
+recorded in the docstring so nobody "simplifies" the route later.
+
+The purity arm is the strong form: the gate builds a binary with the
+enhancement **compiled out entirely** (`MDKR_ENH_AI_DIFFICULTY_OMIT`) and
+requires 12,000 `[SIMHASH]` v3 rows byte-identical to the `authored` arm across
+two seeds. `authored` returns by an early return before any float reaches an
+ALU — never a multiply by 1.0f.
+
+The wedge assertion is imported from `check_ai_unstick_opponents.py`, not
+restated, and the lap-time floor is derived from the authored best lap and the
+scale the binary itself reports rather than hard-coded.
+
+## Free camera — `tests/check_tool_freecam.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_tool_freecam.py --build build
+```
+
+Detach at a tick, move, re-attach, and require **both** that the `[SIMHASH]` v3
+stream is byte-identical to an un-detached run and that the frame after
+re-attaching is byte-identical too — with the frames *during* detachment
+differing, so the gate is not vacuous.
+
+**This gate has already earned itself.** The free camera substitutes the latched
+projection record, which is presentation-scoped and unhashed — but the globals
+`cam_rebuild_native_projection()` derives from it are not, and the *next* tick's
+visibility pass rebuilds its cull planes from them without refreshing. That
+visibility answer gates AI RNG. The first run diverged at tick 2232, 232 ticks
+after detaching at 2000. The fix went in the tool, not the gate: a closing hook
+re-derives the authored lens through `cam_set_fov()` — the game's own rebuild,
+not a saved copy.
+
+Its positive control is three variants of "re-attach by restoring a saved record
+instead of ceasing to substitute". Two of them **pass**, which is itself
+informative: the port's own `camera_obstruction_projection_matches_render()`
+handshake rejects a stale generation and falls back to the authored matrix, so a
+naive re-apply is caught by existing machinery. The third — live identity with a
+stale lens spliced in, which is what a re-apply would have to do to get past
+validation — fails on exactly the intended assertion.
+
 ## Crash report — `tests/check_crash_screen.py`
 
 ```bash

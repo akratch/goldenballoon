@@ -200,6 +200,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/enhancement_registry.c # enhancements + authority class
     ${CMAKE_SOURCE_DIR}/platform/enh_speedometer.c  # speed readout (presentation only)
     ${CMAKE_SOURCE_DIR}/platform/enh_draw_distance.c # draw distance + LOD bias (presentation only)
+    ${CMAKE_SOURCE_DIR}/platform/enh_ai_difficulty.c # opponent skill (gameplay; authored by default)
     ${CMAKE_SOURCE_DIR}/platform/asset_subentry.c   # bounds-checked asset sub-entry access
     # The console command parser. It was reachable only from cmake/tests.cmake
     # until the console shipped -- a unit-tested island the engine never linked.
@@ -567,8 +568,12 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/arg_triage.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/crash_screen.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/dev_tools.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/tool_collision.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/tool_console.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/tool_diagnostics.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/tool_freecam.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/tool_objects.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/tool_performance.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/diag_log.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/engine_boot.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/main_app.cpp

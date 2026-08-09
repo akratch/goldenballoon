@@ -60,7 +60,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BUILD = ROOT / "build" / "mdkr64"
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
-FRAMES = 900
+
+# 3500, not 900, and the reason is the same defect found twice.
+#
+# At 900 this route never leaves the menus. The speedometer's own gate measured
+# `speedoRows=0` over that budget; the AI-difficulty work then measured 0
+# `[ORACLE]` racer rows and no resolve line at all, with the first divergence
+# only at tick 2858. So for two separate enhancements this gate was comparing
+# two identical menu sequences and reporting a verdict about a race.
+#
+# A gate whose fixture cannot reach the behaviour it judges will pass whatever
+# it is given. Any future change to this number must keep it past the point the
+# route actually enters a race.
+FRAMES = 3500
 HASH_VERSION = "3"
 
 # Rows whose effect is not built yet.
@@ -77,8 +89,9 @@ HASH_VERSION = "3"
 #
 # The gate fails if a listed row starts moving the stream, so the note cannot
 # quietly become the stale thing.
-EXPECTED_INERT = {
-    "Enhancements.AIDifficulty": "S2 task 5",
+EXPECTED_INERT: dict[str, str] = {
+    # Empty: every enhancement's effect is now built. A gameplay row added
+    # without one belongs here, with the task that closes it.
 }
 
 # What this gate does NOT prove, and who does.

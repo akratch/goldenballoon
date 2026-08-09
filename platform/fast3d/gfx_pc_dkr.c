@@ -2047,14 +2047,24 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
          * of the arena for the sake of a name. */
         MdkrModTexture over = { NULL, 0, 0 };
         bool over_used = false;
-        if (mdkr_mod_texture_store_active()) {
-            char digest[33];
+        char digest[33];
+        bool digest_known = false;
+        /* Dumping (tools/mod_texture_dump.py, MDKR_MOD_TEXTURE_DUMP) has to see
+         * every digest even with no pack installed, which is exactly the case
+         * an author dumping a fresh corpus is in -- mdkr_mod_texture_store_active()
+         * alone is false there, since it means "an override could be found".
+         * OR-ing in mdkr_mod_texture_dump_active() is the only change this call
+         * site needs: mdkr_mod_texture_lookup() already returns 0 without a
+         * pack, so over_used still comes out false and the ROM path below still
+         * runs unchanged. */
+        if (mdkr_mod_texture_store_active() || mdkr_mod_texture_dump_active()) {
             size_t digest_room = dkr_arena_room(addr);
             uint32_t digest_bytes = source_size_bytes;
             if (digest_room != (size_t)-1 && digest_bytes > digest_room) {
                 digest_bytes = (uint32_t)digest_room;
             }
             mdkr_mod_texture_digest(&key, addr, digest_bytes, digest);
+            digest_known = true;
             over_used = mdkr_mod_texture_lookup(digest, &over) != 0;
         }
         const bool uploaded =
@@ -2082,6 +2092,20 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
             }
             dkr_texcache_delete_slot(slot);
             return false;
+        }
+        if (digest_known) {
+            /* over.rgba when an override applied, tex_decode_buf (this file's
+             * decode scratch buffer, still holding the plain base-level RGBA8
+             * dkr_upload_tile_texture() just produced) otherwise -- whichever
+             * pixels actually reached gfx_rapi->upload_texture() above, so the
+             * dumped PNG is what the game displays rather than a re-decode this
+             * module would otherwise have to invent and keep in sync by hand. */
+            char origin[64];
+            snprintf(origin, sizeof origin, "frame %d, texture unit %d",
+                     dkr_frame_index, unit);
+            mdkr_mod_texture_dump_observe(
+                digest, over_used ? over.rgba : tex_decode_buf,
+                (int)uw, (int)uh, fmt, siz, origin);
         }
         tex_cache[slot] = (struct DkrTexCacheEntry){
             .key = key,

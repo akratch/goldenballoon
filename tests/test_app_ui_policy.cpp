@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <initializer_list>
+#include <iterator>
 
 namespace {
 int failures = 0;
@@ -167,6 +168,91 @@ int main() {
         expect(AppUi_videoSettingVisible(static_cast<MdkrVideoKey>(key), true),
                "implemented video setting remains visible");
     }
+
+    // --- Settings sections -------------------------------------------------
+    // Routing, not visibility: an enhancement is drawn in its own section and
+    // is still a visible setting, so the loop above must keep passing for
+    // every one of these keys. Assert that explicitly, because the cheap way
+    // to stop a row appearing twice is to hide it, and hiding it would take a
+    // setting away from the player instead of moving it.
+    const MdkrVideoKey enhancementKeys[] = {
+        MDKR_ENH_SPEEDOMETER, MDKR_ENH_DRAW_DISTANCE, MDKR_ENH_LOD_BIAS,
+        MDKR_ENH_AI_DIFFICULTY,
+    };
+    for (MdkrVideoKey key : enhancementKeys) {
+        expect(AppUi_settingsSection(key) == AppUiSettingsSection::Enhancements,
+               "every enhancement key is drawn in the Enhancements section");
+        expect(AppUi_videoSettingVisible(key, true) &&
+                   AppUi_videoSettingVisible(key, false),
+               "an enhancement moved to its own section is still visible");
+    }
+    // The leak the section exists to prevent. These four keys declare three
+    // different schema categories between them — Interface, Advanced Graphics
+    // and Frame Rate & Motion — so without the routing above, "Opponent skill"
+    // sits between Frame limit and Allow Tearing and the speedometer is not
+    // reachable at all.
+    for (int key = 0; key < MDKR_VIDEO_KEY_COUNT; ++key) {
+        const MdkrVideoKey typed = static_cast<MdkrVideoKey>(key);
+        bool isEnhancement = false;
+        for (MdkrVideoKey enhancement : enhancementKeys) {
+            if (enhancement == typed) isEnhancement = true;
+        }
+        expect(isEnhancement ==
+                   (AppUi_settingsSection(typed) ==
+                    AppUiSettingsSection::Enhancements),
+               "no key outside the enhancement table claims the Enhancements "
+               "section");
+        if (isEnhancement) continue;
+        expect(AppUi_settingsSection(typed) !=
+                   AppUiSettingsSection::Enhancements,
+               "no enhancement key leaks into Presentation or Fidelity");
+    }
+    expect(AppUi_settingsSection(MDKR_CONTENT_PACKS_ENABLED) ==
+                   AppUiSettingsSection::Content &&
+               AppUi_settingsSection(MDKR_CONTENT_PACK_DISABLED) ==
+                   AppUiSettingsSection::Content,
+           "both content-pack keys are drawn in the Content section");
+    expect(AppUi_settingsSection(MDKR_VIDEO_RENDER_SCALE) ==
+                   AppUiSettingsSection::Category &&
+               AppUi_settingsSection(MDKR_VIDEO_MODE) ==
+                   AppUiSettingsSection::Category &&
+               AppUi_settingsSection(MDKR_AUDIO_MASTER_VOLUME) ==
+                   AppUiSettingsSection::Category,
+           "an ordinary setting is still drawn under its schema category");
+
+    // --- Reset enhancements ------------------------------------------------
+    // The scoping IS the action. A reset button beside a list of extras that
+    // also threw away the frame limit, the volume levels and a remapped
+    // controller would be a trap, so name one key from each of those families
+    // and require it to survive.
+    for (MdkrVideoKey key : enhancementKeys) {
+        expect(AppUi_enhancementResetIncludes(key),
+               "Reset enhancements restores every enhancement key");
+    }
+    expect(!AppUi_enhancementResetIncludes(MDKR_VIDEO_FRAME_LIMIT),
+           "Reset enhancements leaves the presentation pacing key untouched");
+    expect(!AppUi_enhancementResetIncludes(MDKR_VIDEO_MODE),
+           "Reset enhancements leaves the presentation mode untouched");
+    expect(!AppUi_enhancementResetIncludes(MDKR_AUDIO_MASTER_VOLUME),
+           "Reset enhancements leaves the audio levels untouched");
+    expect(!AppUi_enhancementResetIncludes(MDKR_INPUT_CONTROLLER_A),
+           "Reset enhancements leaves a remapped controller untouched");
+    expect(!AppUi_enhancementResetIncludes(MDKR_INPUT_RUMBLE_PROFILE),
+           "Reset enhancements leaves the rumble strength untouched");
+    // Installed content is not an enhancement setting: a pack is content the
+    // player put on disk, and switching it off is not what "reset the extras"
+    // offers to do.
+    expect(!AppUi_enhancementResetIncludes(MDKR_CONTENT_PACKS_ENABLED) &&
+               !AppUi_enhancementResetIncludes(MDKR_CONTENT_PACK_DISABLED),
+           "Reset enhancements leaves installed content packs untouched");
+    int resetKeys = 0;
+    for (int key = 0; key < MDKR_VIDEO_KEY_COUNT; ++key) {
+        if (AppUi_enhancementResetIncludes(static_cast<MdkrVideoKey>(key))) {
+            ++resetKeys;
+        }
+    }
+    expect(resetKeys == static_cast<int>(std::size(enhancementKeys)),
+           "Reset enhancements touches only enhancement keys");
 
     AppUiDpiState dpi;
     expect(!AppUi_applyDpiTransition(&dpi, 1.0f), "same-DPI frame is a no-op");

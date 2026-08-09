@@ -52,6 +52,16 @@
 #define STBI_NO_STDIO
 #include "stb_image.h"
 
+/* stb_image_write, same arrangement: instantiated once, in the same TU as the
+ * decoder, and taken here as declarations only. STBI_WRITE_NO_STDIO removes
+ * the header's own fopen()-based entry points, which is what makes the *_to_func
+ * callback the only way to reach the encoder from this file -- the same reason
+ * STBI_NO_STDIO is set above, so the dump path writes through the port's own
+ * UTF-8-safe fopen (mdkr_fopen_utf8 on Windows) rather than a second, narrower
+ * one the header would otherwise carry. */
+#define STBI_WRITE_NO_STDIO
+#include "stb_image_write.h"
+
 /* Total decoded pixels held at once. A 4K RGBA texture is 64 MiB, so this is
  * eight of them — generous for a pack that replaces the HUD and a few tracks,
  * and a hard stop for one that replaces everything at 4K. */
@@ -249,9 +259,15 @@ static int evict_for(size_t incoming) {
 static FILE *store_open_read(const char *path) {
     return mdkr_fopen_utf8(path, "rb");
 }
+static FILE *store_open_write(const char *path) {
+    return mdkr_fopen_utf8(path, "wb");
+}
 #else
 static FILE *store_open_read(const char *path) {
     return fopen(path, "rb");
+}
+static FILE *store_open_write(const char *path) {
+    return fopen(path, "wb");
 }
 #endif
 
@@ -479,4 +495,173 @@ bool mdkr_mod_texture_enabled(void) {
 
 uint32_t mdkr_mod_texture_generation(void) {
     return s_generation;
+}
+
+/* ---------------------------------------------- author dump (Task 9) ---- */
+
+/* Read once and cached: every miss-path texture bind would otherwise pay a
+ * getenv() call for a variable that is either absent for the entire process
+ * or present for the entire process. NULL means "not set" or "set empty",
+ * which this store treats the same. */
+static const char *dump_directory(void) {
+    static int         resolved;
+    static const char *directory;
+
+    if (!resolved) {
+        const char *env = getenv("MDKR_MOD_TEXTURE_DUMP");
+        directory = (env != NULL && env[0] != '\0') ? env : NULL;
+        resolved = 1;
+    }
+    return directory;
+}
+
+bool mdkr_mod_texture_dump_active(void) {
+    return dump_directory() != NULL;
+}
+
+/* Digests already written this process. A flat array with a linear scan, not
+ * a hash table: dump mode is off by default, is never the hot path even when
+ * on (the texture cache's own miss rate bounds how often a digest is ever
+ * offered here), and a session's distinct texture count is a few thousand at
+ * most -- nowhere near where the scan would be felt.
+ *
+ * Deliberately NOT cleared by mdkr_mod_texture_store_shutdown(), for the same
+ * reason s_enabled and s_generation are not: it answers a question about the
+ * process's lifetime ("has this digest reached disk yet"), not the
+ * registry's, and a settings-triggered store reinit must not put the same PNG
+ * on disk twice. */
+static char (*s_dump_seen)[MDKR_MOD_TEXTURE_DIGEST_CHARS + 1];
+static size_t s_dump_seen_count;
+static size_t s_dump_seen_capacity;
+
+/* Records `digest` as seen and returns true the first time it is asked
+ * about; false on every later call for the same digest. Returns true (never
+ * blocks the write) when the array cannot grow -- a failed allocation here
+ * should risk a duplicate write, not a lost one. */
+static bool dump_mark_seen(const char *digest) {
+    size_t index;
+
+    for (index = 0; index < s_dump_seen_count; index++) {
+        if (strcmp(s_dump_seen[index], digest) == 0) return false;
+    }
+    if (s_dump_seen_count == s_dump_seen_capacity) {
+        size_t next = s_dump_seen_capacity == 0 ? 64u : s_dump_seen_capacity * 2u;
+        void  *grown = realloc(s_dump_seen, next * sizeof(*s_dump_seen));
+        if (grown == NULL) return true;
+        s_dump_seen = (char (*)[MDKR_MOD_TEXTURE_DIGEST_CHARS + 1])grown;
+        s_dump_seen_capacity = next;
+    }
+    memcpy(s_dump_seen[s_dump_seen_count], digest, strlen(digest) + 1);
+    s_dump_seen_count++;
+    return true;
+}
+
+/* Distinct dump failures written to stderr before it stops listing them. A
+ * counter separate from report_rejection()'s budget: a broken dump directory
+ * and a broken pack PNG are unrelated failures, and one filling its budget
+ * must not silence the other. */
+#define MDKR_MOD_TEXTURE_DUMP_REPORT_MAX 8
+static int s_dump_reports;
+
+static void report_dump_failure(const char *digest, const char *path,
+                                const char *reason) {
+    if (s_dump_reports >= MDKR_MOD_TEXTURE_DUMP_REPORT_MAX) return;
+    s_dump_reports++;
+    fprintf(stderr, "[MODS] dump %s -> %s: %s\n", digest, path, reason);
+    if (s_dump_reports == MDKR_MOD_TEXTURE_DUMP_REPORT_MAX) {
+        fprintf(stderr, "[MODS] further dump failures will not be listed\n");
+    }
+}
+
+static bool dump_write_bytes(const char *path, const void *bytes, size_t length) {
+    FILE  *file = store_open_write(path);
+    size_t written;
+
+    if (file == NULL) return false;
+    written = fwrite(bytes, 1, length, file);
+    fclose(file);
+    return written == length;
+}
+
+/* Accumulates stbi_write_png_to_func()'s callback chunks into one buffer, so
+ * the encoded PNG can be handed to dump_write_bytes() -- the same UTF-8-safe
+ * fopen path read_whole_file() uses to read a pack -- instead of the header's
+ * own file-writing entry points, which STBI_WRITE_NO_STDIO above removes for
+ * exactly this reason. */
+typedef struct DumpPngBuffer {
+    uint8_t *data;
+    size_t   size;
+    size_t   capacity;
+    bool     failed;
+} DumpPngBuffer;
+
+static void dump_png_write_cb(void *context, void *chunk, int size) {
+    DumpPngBuffer *buffer = (DumpPngBuffer *)context;
+    size_t         needed;
+
+    if (buffer->failed || size <= 0) return;
+    needed = buffer->size + (size_t)size;
+    if (needed > buffer->capacity) {
+        size_t   next = buffer->capacity == 0 ? 65536u : buffer->capacity;
+        uint8_t *grown;
+        while (next < needed) next *= 2u;
+        grown = (uint8_t *)realloc(buffer->data, next);
+        if (grown == NULL) {
+            buffer->failed = true;
+            return;
+        }
+        buffer->data = grown;
+        buffer->capacity = next;
+    }
+    memcpy(buffer->data + buffer->size, chunk, (size_t)size);
+    buffer->size += (size_t)size;
+}
+
+void mdkr_mod_texture_dump_observe(const char *digest_hex, const uint8_t *rgba,
+                                   int width, int height, uint8_t fmt,
+                                   uint8_t siz, const char *first_seen) {
+    const char   *dir = dump_directory();
+    char          png_path[MDKR_MOD_PATH_MAX];
+    char          txt_path[MDKR_MOD_PATH_MAX];
+    char          txt_body[256];
+    int           txt_length;
+    DumpPngBuffer png = { NULL, 0, 0, false };
+
+    if (dir == NULL) return;
+    if (digest_hex == NULL || rgba == NULL) return;
+    if (width <= 0 || height <= 0) return;
+    if (strlen(digest_hex) != MDKR_MOD_TEXTURE_DIGEST_CHARS) return;
+    if (!dump_mark_seen(digest_hex)) return; /* already written this run */
+
+    if (snprintf(png_path, sizeof png_path, "%s/%s.png", dir, digest_hex) >=
+            (int)sizeof png_path ||
+        snprintf(txt_path, sizeof txt_path, "%s/%s.txt", dir, digest_hex) >=
+            (int)sizeof txt_path) {
+        report_dump_failure(digest_hex, dir, "the dump path is too long");
+        return;
+    }
+
+    if (!stbi_write_png_to_func(dump_png_write_cb, &png, width, height, 4,
+                                rgba, width * 4) ||
+        png.failed || png.data == NULL) {
+        free(png.data);
+        report_dump_failure(digest_hex, png_path, "the PNG could not be encoded");
+        return;
+    }
+    if (!dump_write_bytes(png_path, png.data, png.size)) {
+        free(png.data);
+        report_dump_failure(digest_hex, png_path, "the file could not be written");
+        return;
+    }
+    free(png.data);
+
+    txt_length = snprintf(txt_body, sizeof txt_body,
+                          "width=%d\nheight=%d\nfmt=%u\nsiz=%u\nfirst_seen=%s\n",
+                          width, height, (unsigned)fmt, (unsigned)siz,
+                          first_seen != NULL ? first_seen : "");
+    if (txt_length < 0) return;
+    if ((size_t)txt_length >= sizeof txt_body) txt_length = (int)sizeof(txt_body) - 1;
+    if (!dump_write_bytes(txt_path, txt_body, (size_t)txt_length)) {
+        report_dump_failure(digest_hex, txt_path, "the file could not be written");
+    }
 }

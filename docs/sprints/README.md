@@ -56,14 +56,23 @@ crash.
 | S1 T4 | `mod_texture_store` + the `dkr_bind_tile()` hook, stb_image vendored | inertness: `check_texture_lineswap`, `check_determinism`, `check_race_drive` unchanged |
 | S1 T5 | startup wiring + `Tab` toggle | positive control: pack-on and Tab-off frame hashes |
 | S1 T6 | `mod_source` zip containers, miniz vendored | `mod_source_zip` |
+| S1 T7 | Settings → Content, with the skip list | `app_ui_policy` |
+| S1 T9 | `tools/mod_texture_dump.py`, stb_image_write vendored | round-trip: dumped digest overrides |
 | S1 T10 | clean-room section 8, `mods/` ignored | `check_clean_room.sh` |
+| S1 T11 | `docs/MODDING.md` + README section | `check_markdown_links.py` |
 | S2 T1 | `enhancement_registry` | `enhancement_registry` |
 | S2 T2 | the generated authority gate | `check_enhancement_authority.py` |
 | S2 T3 | speedometer | `check_enh_speedometer.py` |
+| S2 T4 | draw distance + model detail | `check_enh_draw_distance.py` |
 | S2 T6 | `save_state` container | `save_state_container` |
+| S2 T8 | Enhancements section + scoped reset | `app_ui_policy` |
 | S3 T1 | dev-tools host, six slots, purity gate | `check_dev_tools_purity.py` |
+| S3 T2 | crash report | `check_crash_screen.py` |
 | S3 T3 | `dev_command` | `dev_command` |
 | S3 T4 | console + diagnostics windows | `check_dev_tools_purity.py` (2 live callbacks) |
+| S3 T5 | free camera | `check_tool_freecam.py` |
+| S3 T6 | collision + object viewers | `check_dev_tools_purity.py` (6 of 6) |
+| S3 T7 | performance window | `check_dev_tools_purity.py` (6 of 6) |
 | S4 T1 | `gpu_diagnostics` | `gpu_diagnostics` |
 | S4 T3 | `adapter_policy` | `adapter_policy` |
 | S5 T1 | `sweep_subentry_access.py` | exits 1 on any unchecked site |
@@ -137,7 +146,16 @@ frame hash, including that the Tab-off frame is byte-identical to the no-pack
 baseline — which is what proves `override_generation` re-uploads the ROM texels
 rather than leaving packed pixels bound.
 
-**Four things S1 still owes**, none of them hidden:
+**Authoring works end to end.** `tools/mod_texture_dump.py` writes every bound
+texture as `<digest>.png` — the exact filename a pack needs — and the round trip
+is proven, not assumed: digest `794c3b7a424fbe63824fac04e5816fce` dumped from a
+race, replaced with solid magenta, dropped into a pack, and the frame at 3800
+changes (`e3852944…` → `040eeef5…`) while the frame at 3700, before that
+texture's first bind, stays byte-identical. A confirming run re-dumped the
+digest with the pack installed and read back pure `(255,0,255,255)`, so it is
+the pack's bytes reaching `upload_texture`, not the ROM's.
+
+**Three things S1 still owes**, none of them hidden:
 
 1. **Zip packs are readable but not discoverable.** `mod_source` handles both
    kinds, but `mod_registry` and `mod_texture_store` have not been retargeted
@@ -146,10 +164,7 @@ rather than leaving packed pixels bound.
    `SCOPE_LIVE` but nothing publishes it, so the Settings checkbox takes effect
    next launch while `Tab` flips the same lever immediately. Closing it means a
    live-apply hook in the video-config publish path.
-3. **No authoring tool** (T9) and **no Settings → Content list** (T7), so an
-   author has no supported way to learn a digest and a player has no way to see
-   which packs loaded except the `[MODS]` log lines.
-4. **Custom music** (T8) and **`docs/MODDING.md`** (T11) are untouched.
+3. **Custom music** (T8) is untouched.
 
 One consequence worth recording: override uploads go through
 `gfx_rapi->upload_texture`, which is level 0 only. A pack texture replacing a
