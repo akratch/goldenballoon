@@ -109,6 +109,56 @@ per-tick screen displacement in the scene.
 **Bar:** substitution counters nonzero on a route with weather and a visible sky;
 `check_state_hash` and `check_render_purity` unmoved after every case.
 
+**DONE (2026-08-09):** rain, snow, lens flare and rain splashes. Snow route
+167,800 registered batches / 476,187 moved substitutions / 3,816 wrap-guard
+holds; rain 2,072 / 1,278 / 0; 8 renderer-owned transforms live at peak with
+1,339 captures copying them; zero snapshot overflows, zero discontinuity
+blends; authoritative rows byte-identical with and without smoothing on both
+routes. Gate: `tests/check_weather_presentation_identity.py`.
+
+**REMAINING: wave geometry (water and lava), analysed, not implemented.**
+Residual obligation is 0 — the geometry holds at the authored pose rather than
+moving wrongly, so this is added smoothness and not a defect repair. What the
+source establishes:
+
+* `gWaveVertices[4]` / `gWaveTriangles[4]` come from `mempool_alloc_safe`
+  (`waves_alloc`), so they are **arena** memory and the retained whole-arena
+  copy already contains them at both endpoints. Unlike the lens flare and the
+  splashes, no external-transform registration is needed.
+* `waves_update` opens with `gWaveVertexFlip = 1 - gWaveVertexFlip`. The mesh is
+  already double-buffered, so the previous tick's vertices are live in the other
+  slot — both endpoints of the pair are resident by construction.
+* All wave motion is in the vertices. The `mtx_cam_push` bracket in
+  `waves_render` carries only the tile origin, which is why the **texture**
+  glides (animated-texture path) while the **geometry** steps.
+
+Why address identity cannot pair the endpoints: the flip makes snapshot T point
+at `gWaveVertices[flip]` and T+1 at `gWaveVertices[1-flip]`, so the addresses
+differ every tick, forever. This is the snow/rain shape and wants the same
+logical batch identity — keyed on `(gWaveBlockIDs[i], sub-tile, subdivision
+row)`, which is stable across the flip.
+
+**The open design question, and why this was not started blind.**
+`gfx_presentation_packet_lookup_deformation` keys on `(owner, viewport,
+ordinal)`, but `gfx_presentation_packet_register_vertex_identity` takes no
+`ordinal` — only `register_projected_shadow_vertex` does, and it exists
+precisely because that class also has one owner emitting several batches whose
+addresses alternate. A wave tile emits one `gSPVertexDKR` per subdivision row
+under a single logical owner, so it is the same shape: either each row gets its
+own identity token, or the identity API grows an ordinal the way the shadow
+path did. Choosing wrong collides two rows' deformation entries, which would
+blend one row's vertices out of another's — a worse artifact than the step this
+removes. Settle that before writing code.
+
+**Bar for the wave case:** a water route (Crescent Island) and a lava route
+(Hot Top Volcano) arm on the weather gate, each asserting registered batches
+> 0, moved substitutions > 0, and authoritative rows byte-identical with and
+without smoothing. The wrap guard needs its own evidence here rather than
+inheritance: `waves_tick` wraps `gWaveHeightIndices` at
+`gWaveController.seedSize`, and the wrap is in the *index*, not the vertex, so
+measure the emitted vertex delta at a wrap before assuming `max_vertex_delta`
+fires on it.
+
 ### P4 · Render-only residuals are frozen for the whole interval
 `carBob`, tumble offsets and crash lift are added *inside* a bracket restored
 before the snapshot, so the replay adds a constant tick-T adjustment at every
