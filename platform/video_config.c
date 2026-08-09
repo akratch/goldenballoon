@@ -72,9 +72,57 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "Video.TexturePack", "MDKR_TEXTURE_PACK",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
         "Texture pack",
-        "Reserved for a future user-supplied HD texture pack. This setting has "
-        "no runtime effect yet; stock textures are always used.",
+        "Superseded by Content.PacksEnabled and the mods folder. Kept so an "
+        "existing settings file still parses; it has no runtime effect.",
         MDKR_VIDEO_CAT_FIDELITY
+    },
+    [MDKR_CONTENT_PACKS_ENABLED] = {
+        "Content.PacksEnabled", "MDKR_CONTENT_PACKS",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 1.0f,
+        "Custom content",
+        "Apply installed content packs. Tab switches them off and back on "
+        "while you play, so you can compare against the original.",
+        MDKR_VIDEO_CAT_FIDELITY
+    },
+    [MDKR_CONTENT_PACK_DISABLED] = {
+        "Content.PackDisabled", "MDKR_CONTENT_PACK_DISABLED",
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
+        "Skipped packs",
+        "Comma-separated pack names to leave uninstalled. Set from the "
+        "Content list rather than typed.",
+        MDKR_VIDEO_CAT_FIDELITY
+    },
+    [MDKR_ENH_SPEEDOMETER] = {
+        "Enhancements.Speedometer", "MDKR_ENH_SPEEDOMETER",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 2.0f,
+        "Speedometer",
+        "Show your current speed. 0 off, 1 miles per hour, 2 kilometres per "
+        "hour. Changes only how the game looks.",
+        MDKR_VIDEO_CAT_INTERFACE
+    },
+    [MDKR_ENH_DRAW_DISTANCE] = {
+        "Enhancements.DrawDistance", "MDKR_ENH_DRAW_DISTANCE",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 100.0f, 400.0f,
+        "Draw distance",
+        "How far ahead scenery is drawn, as a percentage of the authored "
+        "distance. Changes only how the game looks.",
+        MDKR_VIDEO_CAT_FIDELITY
+    },
+    [MDKR_ENH_LOD_BIAS] = {
+        "Enhancements.LodBias", "MDKR_ENH_LOD_BIAS",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 2.0f,
+        "Model detail",
+        "0 keeps the authored detail switching. 1 and 2 hold higher-detail "
+        "models further out. Changes only how the game looks.",
+        MDKR_VIDEO_CAT_FIDELITY
+    },
+    [MDKR_ENH_AI_DIFFICULTY] = {
+        "Enhancements.AIDifficulty", "MDKR_ENH_AI_DIFFICULTY",
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
+        "Opponent skill",
+        "authored races the opponents as they were written. hard and brutal "
+        "make them faster. Changes how the game plays.",
+        MDKR_VIDEO_CAT_PACING
     },
     [MDKR_VIDEO_GAMEPLAY_FOV] = {
         "Video.GameplayFOV", "MDKR_FOV",
@@ -585,8 +633,30 @@ int mdkr_video_key_is_input(MdkrVideoKey key) {
     return key >= MDKR_INPUT_FIRST_KEY && key <= MDKR_INPUT_LAST_KEY;
 }
 
+int mdkr_video_key_is_content(MdkrVideoKey key) {
+    return key == MDKR_CONTENT_PACKS_ENABLED ||
+           key == MDKR_CONTENT_PACK_DISABLED;
+}
+
+int mdkr_video_key_is_enhancement(MdkrVideoKey key) {
+    return key == MDKR_ENH_SPEEDOMETER || key == MDKR_ENH_DRAW_DISTANCE ||
+           key == MDKR_ENH_LOD_BIAS || key == MDKR_ENH_AI_DIFFICULTY;
+}
+
 int mdkr_video_key_is_player_comfort(MdkrVideoKey key) {
+    /*
+     * Content and enhancement keys join audio, input and window mode here for
+     * the same reason those three are exempt: Pure/Restored/Remastered are
+     * art-direction presets, and none of these is art direction. A player who
+     * installed a pack or turned the speedometer on chose that deliberately,
+     * and switching presentation mode to compare two looks must not silently
+     * undo it. Without this exemption every preset switch would re-pin them to
+     * the preset table's zero row, which for Enhancements.DrawDistance is not
+     * even inside its own 100..400 range.
+     */
     return mdkr_video_key_is_audio(key) || mdkr_video_key_is_input(key) ||
+           mdkr_video_key_is_content(key) ||
+           mdkr_video_key_is_enhancement(key) ||
            key == MDKR_WINDOW_MODE;
 }
 
@@ -836,6 +906,31 @@ void mdkr_video_config_defaults(MdkrVideoConfig *config) {
         config->values[MDKR_VIDEO_MENU_LANGUAGES].text,
         sizeof(config->values[MDKR_VIDEO_MENU_LANGUAGES].text),
         "%s", "all");
+
+    /*
+     * Content packs apply when they are installed. The default is ON rather
+     * than off because installing a pack IS the opt-in -- an installed pack
+     * that silently does nothing until a second setting is found is the most
+     * common modding support question there is. With no mods directory the
+     * whole path is inert, so this default costs nothing to a player who has
+     * never heard of packs.
+     */
+    config->values[MDKR_CONTENT_PACKS_ENABLED].number = 1.0f;
+
+    /*
+     * Enhancements default to the authored game. DrawDistance is seeded
+     * explicitly because its 100..400 range does not contain the zero the
+     * preset table would otherwise leave here, and a value outside its own
+     * schema range is exactly the kind of quiet invalid state that survives
+     * until something far away divides by it.
+     */
+    config->values[MDKR_ENH_SPEEDOMETER].number = 0.0f;
+    config->values[MDKR_ENH_DRAW_DISTANCE].number = 100.0f;
+    config->values[MDKR_ENH_LOD_BIAS].number = 0.0f;
+    snprintf(
+        config->values[MDKR_ENH_AI_DIFFICULTY].text,
+        sizeof(config->values[MDKR_ENH_AI_DIFFICULTY].text),
+        "%s", "authored");
 
     /* Window/input choices are player comfort, not presentation-mode state.
      * These defaults exactly preserve the pre-remapping SDL behavior, including

@@ -96,6 +96,25 @@ typedef enum MdkrVideoKey {
      * because the settings panel groups by category, not by enum order.
      */
     MDKR_VIDEO_CAMERA_COMFORT,
+    /*
+     * Content packs. Appended for the reason above. These are not presentation
+     * presets and are deliberately never pinned by Pure/Restored/Remastered:
+     * a player who installed a pack did so on purpose, and a preset switch
+     * must not silently uninstall it.
+     */
+    MDKR_CONTENT_PACKS_ENABLED,
+    MDKR_CONTENT_PACK_DISABLED,
+    /*
+     * Enhancements. Each one also carries an AUTHORITY CLASS in
+     * platform/enhancement_registry.c, and that class — not this enum — is what
+     * decides whether the key is allowed to move authoritative state. Adding a
+     * key here without a registry row leaves it ungated, which
+     * check_enhancement_authority.py is written to catch.
+     */
+    MDKR_ENH_SPEEDOMETER,
+    MDKR_ENH_DRAW_DISTANCE,
+    MDKR_ENH_LOD_BIAS,
+    MDKR_ENH_AI_DIFFICULTY,
     MDKR_VIDEO_KEY_COUNT
 } MdkrVideoKey;
 
@@ -246,6 +265,8 @@ MdkrVideoApplyDomain mdkr_video_key_apply_domain(MdkrVideoKey key);
 
 int mdkr_video_key_is_audio(MdkrVideoKey key);
 int mdkr_video_key_is_input(MdkrVideoKey key);
+int mdkr_video_key_is_content(MdkrVideoKey key);
+int mdkr_video_key_is_enhancement(MdkrVideoKey key);
 int mdkr_video_key_is_player_comfort(MdkrVideoKey key);
 
 /* Canonical string domains used by both validation and generated controls. */
