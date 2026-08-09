@@ -304,6 +304,37 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME enhancement_registry COMMAND mdkr_enhancement_registry_test)
 
+    # Pack discovery, load order and path resolution. fs_utf8.c is a real link
+    # dependency, not decoration: path access goes through mdkr_fopen_utf8 and
+    # mdkr_path_query_utf8 so the Windows arm inherits the existing UTF-8
+    # boundary instead of growing a second conversion.
+    add_executable(mdkr_mod_registry_test
+        ${CMAKE_SOURCE_DIR}/tests/test_mod_registry.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_registry.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/config_ini.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c)
+    target_include_directories(mdkr_mod_registry_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_mod_registry_test PRIVATE m)
+    endif()
+    add_test(NAME mod_registry COMMAND mdkr_mod_registry_test
+             ${CMAKE_CURRENT_BINARY_DIR}/mod_registry_scratch)
+
+    # The accessibility semantic model. ImGui exposes no accessibility tree, so
+    # this module is the tree: it emits text, which is why the whole behaviour
+    # is gateable in CI with no audio device and no window.
+    add_executable(mdkr_a11y_model_test
+        ${CMAKE_SOURCE_DIR}/tests/test_a11y_model.c
+        ${CMAKE_SOURCE_DIR}/platform/a11y_model.c)
+    target_include_directories(mdkr_a11y_model_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_a11y_model_test PRIVATE m)
+    endif()
+    add_test(NAME a11y_model COMMAND mdkr_a11y_model_test)
+
     add_executable(mdkr_vehicle_audio_contract_test
         ${CMAKE_SOURCE_DIR}/tests/test_vehicle_audio_contract.c
         ${CMAKE_SOURCE_DIR}/platform/asset_swap.c)
