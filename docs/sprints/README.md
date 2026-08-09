@@ -60,6 +60,7 @@ crash.
 | S2 T1 | `enhancement_registry` | `enhancement_registry` |
 | S2 T2 | the generated authority gate | `check_enhancement_authority.py` |
 | S2 T6 | `save_state` container | `save_state_container` |
+| S3 T1 | dev-tools host, six slots, purity gate | `check_dev_tools_purity.py` |
 | S3 T3 | `dev_command` | `dev_command` |
 | S4 T1 | `gpu_diagnostics` | `gpu_diagnostics` |
 | S4 T3 | `adapter_policy` | `adapter_policy` |
