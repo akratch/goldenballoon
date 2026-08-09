@@ -567,6 +567,23 @@ SHAPE_INFO_MAX = {
     # little-endian field encoder in the published texture digest. index runs
     # 0..3 over a 4-byte local, so the shift count is 0, 8, 16 or 24 and the
     # value is a u32; it cannot reach the width.
+    #
+    # MERGE HAZARD, recorded 2026-08-09. The release line (`land/rc2`) moved
+    # these same two constants independently and by different amounts:
+    # equality-cap 39 -> 45 and shift-count 262 -> 265 there, for
+    # gfx_font_outline.c's solve_face_fit counters and three presentation shift
+    # sites. Both branches therefore touch these lines and will conflict
+    # textually.
+    #
+    # RESOLVING IT BY SUMMING THE NUMBERS IS WRONG. The tool reports the
+    # informational population *after* excluding the enumerated TRIAGE entries,
+    # and the two branches enumerate different sites -- so the combined ceiling
+    # is not 261 + (265 - 262), and it is not the larger of the two either. Take
+    # both triage blocks (that part is genuinely additive), then RE-MEASURE the
+    # combined population on the merged tree and set each ceiling to what the
+    # tool actually reports. The ceiling is a measured population, never a
+    # proof, and a summed guess would silently re-open exactly the growth this
+    # gate exists to catch.
     "shift-count": 261,
 }
 
