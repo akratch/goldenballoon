@@ -186,16 +186,24 @@ texture's first bind, stays byte-identical. A confirming run re-dumped the
 digest with the pack installed and read back pure `(255,0,255,255)`, so it is
 the pack's bytes reaching `upload_texture`, not the ROM's.
 
-**Three things S1 still owes**, none of them hidden:
+**One thing S1 still owes.** This list had three entries; two have since been
+closed and the entries are struck rather than deleted, because which of them
+turned out to be real is part of what this record is for.
 
-1. **Zip packs are readable but not discoverable.** `mod_source` handles both
-   kinds, but `mod_registry` and `mod_texture_store` have not been retargeted
-   onto it (T6 step 5), so the registry still only finds directories.
+1. ~~Zip packs are readable but not discoverable.~~ **Closed.** `mod_registry`
+   and `mod_texture_store` are retargeted onto `mod_source` (T6 step 5);
+   `name_is_zip()` / `open_pack_root()` in `platform/mod_registry.c` discover
+   `.zip` packs, and a file merely *named* `.zip` fails at open rather than
+   being skipped silently.
 2. **`Content.PacksEnabled` is honoured at init only.** The key is declared
-   `SCOPE_LIVE` but nothing publishes it, so the Settings checkbox takes effect
-   next launch while `Tab` flips the same lever immediately. Closing it means a
-   live-apply hook in the video-config publish path.
-3. **Custom music** (T8) is untouched.
+   `SCOPE_LIVE` but nothing publishes it: it is read once, in
+   `platform_content_packs_init()`. So the Settings checkbox takes effect next
+   launch while `Tab` flips what looks like the same lever immediately. Closing
+   it means a live-apply hook in the video-config publish path — and first
+   answering whether the registry is even scanned when packs start disabled,
+   because if it is not, there is nothing for off→on to enable.
+3. ~~Custom music (T8) is untouched.~~ **Closed.** `platform/mod_music.c`, gated
+   by `check_mod_music_override.py`.
 
 One consequence worth recording: override uploads go through
 `gfx_rapi->upload_texture`, which is level 0 only. A pack texture replacing a
@@ -220,14 +228,16 @@ observation.
 MDKR_AUDIO=0 python3 tools/run_checks.py --role browser,browser_save
 ```
 
-**One check fails here for a documented environment reason, not a regression.**
-`check_app_adopted_pacing`'s FPS-only WebGPU overlay arm reports
-`presented=0 unavailable=1424` — the surface never produced a drawable, because
-this shell has no active window-server session.
-[`../DEFINITION_OF_DONE.md`](../DEFINITION_OF_DONE.md) already records that arm,
-and the realtime pacing baseline, as requiring one. Nothing in this work touches
-presentation. It needs re-running on a machine with a display before the branch
-is called green.
+**The adopted-pacing gate has since been run with a display, and passes.**
+`check_app_adopted_pacing` reported `presented=0 unavailable=1424` when this
+section was first written — the FPS-only WebGPU overlay arm never got a
+drawable, because that shell had no window-server session, which
+[`../DEFINITION_OF_DONE.md`](../DEFINITION_OF_DONE.md) records as a requirement
+of the arm rather than a defect. Re-run from a session that has one, it passes
+both the WebGPU-default and explicit-GL launcher handoffs at numeric and
+uncapped rates with fully drained GPU work. The earlier note is kept because
+"fails without a display" is a property of the gate worth knowing before anyone
+reads a red result as a regression.
 
 **Suite coverage actually run** (in slices, because the runner's wall time
 exceeds the tool's per-command ceiling): `state_hash`, `determinism`,

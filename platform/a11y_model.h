@@ -16,8 +16,18 @@
  * blocks, or knows what a speech engine is.
  *
  * Ownership: single-threaded, like the rest of the port (see
- * docs/ARCHITECTURE_DECISIONS.md). One caller pushes, one caller pops, and
- * neither is synchronised here.
+ * docs/ARCHITECTURE_DECISIONS.md). Nothing here is synchronised.
+ *
+ * "One pushes, one pops" is NOT a licence to put the pusher and the popper on
+ * different threads. This is not a single-producer/single-consumer ring: the
+ * push writes the head index too, in its drop-oldest arm, the same index the
+ * pop advances (`s_head`, platform/a11y_model.c). Split them across threads and
+ * two writers race the same variable. A speech backend that wants to talk on a
+ * worker must therefore drain on the thread that pushed and hand the text over
+ * afterwards -- which is what platform/a11y_speech_worker.c does, and why
+ * mdkr_a11y_speech_service_pump() is called from the frame loop rather than
+ * from the worker. A plan for this file once specified the opposite; it was
+ * wrong, and this paragraph exists so it is not specified again.
  */
 #ifndef MDKR64_A11Y_MODEL_H
 #define MDKR64_A11Y_MODEL_H
