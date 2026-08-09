@@ -313,9 +313,17 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform/mod_registry.c
         ${CMAKE_SOURCE_DIR}/platform/mod_manifest.c
         ${CMAKE_SOURCE_DIR}/platform/config_ini.c
-        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c)
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        # mod_source.c (and miniz under it) are here because the registry no
+        # longer has a path validator or a file reader of its own: it discovers
+        # and reads both pack kinds through that one interface. The link
+        # dependency is the point -- it is what makes "there is only one
+        # validator" a fact the linker enforces rather than a comment.
+        ${CMAKE_SOURCE_DIR}/platform/mod_source.c
+        ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c)
     target_include_directories(mdkr_mod_registry_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/platform)
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/lib/miniz)
     if(NOT MSVC)
         target_link_libraries(mdkr_mod_registry_test PRIVATE m)
     endif()

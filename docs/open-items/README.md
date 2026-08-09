@@ -19,7 +19,7 @@ unchanged.
 |---|---|
 | [`renderer.md`](renderer.md) | Renderer and visual fidelity — 27 entries |
 | [`audio.md`](audio.md) | Audio — 7 entries |
-| [`save.md`](save.md) | Saves and progression — 2 entries |
+| [`save.md`](save.md) | Saves and progression — 3 entries |
 | [`collision.md`](collision.md) | Collision — 3 entries |
 | [`allocator.md`](allocator.md) | Allocator and native memory layout — 2 entries |
 | [`web.md`](web.md) | Browser (wasm) build — 3 entries |
@@ -33,7 +33,7 @@ unchanged.
 
 ### Still open
 
-16 entries below are genuinely open. Two rows in this table are struck through
+17 entries below are genuinely open. Two rows in this table are struck through
 and kept in place rather than moved: **ghost coverage** closed when
 `check_ghost_matrix.py` reached 46 of 47 pairs with the 47th asserted as a
 non-producer, and **campaign completeness** largely closed with the
@@ -74,6 +74,7 @@ their own table.
 | ~~**Ghost read/write coverage is one (track, vehicle) pair of 47.**~~ — **CLOSED.** `check_ghost_matrix.py` drives 46 of the 47 legal pairs through a record, a save, and a read-back in a **fresh process**, each in its own save directory. The 47th, Spaceport Alpha in the car, is an asserted autopilot non-producer rather than a skip: its racing line dead-ends at `courseCheckpoint` 10 and DKR records a ghost only under 10,800 frames, so the check fails if it ever starts finishing. The serialized ghost layout is untouched. Retained here because the underlying trap is worth the warning — this exact function once shipped a stack-buffer-overflow that aborted with nothing on stderr | [gameplay record](gameplay.md#open-ghost-coverage-is-one-track-vehicle-pair-of-47) |
 | **Shadow gate trustworthiness: the harness environment has twice diverged from the shipping build and let a real defect through green gates.** Wave "shadowplay"'s four root causes were found only by manual playthrough while `check_world_shadows.py` and its siblings passed throughout; wave "shadowdeep" R1 found that every registered shadow gate set `MDKR_TRACE=1`, which is why none of them saw a shipping-build-only static-caster-cache leak. Both underlying bugs are fixed. **Deliberately deferred:** what remains is a gate-infrastructure change — auditing every gate that exports a diagnostic env var the shipping build does not set, and adding a shipping-configuration arm to the shadow gates — not a rendering fix, and it touches the whole renderer suite rather than one file | [renderer record](renderer.md#open-shadow-gate-trustworthiness--harness-environment-has-diverged-from-the-shipping-build-twice) |
 | **446 vendored decomp symbols are still spelled as ROM addresses.** 154 `func_` and 292 `D_` across 2550 sites in `game/`; 84 of them now carry evidence-backed readable aliases in `game/include/decomp_names.h`, covering 63 of the 64 the port actually exercises. The rest is archaeology, and the rule is **never blind-rename**: a name without a citation is worse than the address, and the audit that opened this wave got two of its own examples backwards. Renaming in vendored text is also permanent merge-conflict surface, so names are aliases, never in-place edits | [misc record](misc.md#not-a-defect-but-a-standing-readability-hazard-446-vendored-symbols-are-still-spelled-as-rom-addresses--wave-decompnames) |
+| **Save states are blocked on payload scope, not on pointers.** A raw arena snapshot restores correctly at a different host base address across five ASLR bases, so the 32-bit-token argument holds; but the sufficient payload is the arena plus every externally-linked writable global defined by a `game/src` TU — 1,686 symbols, 808,964 bytes — and neither an enumerated list nor a link-order-derived region is an invariant this project has paid for. The container ships and is unit-tested; nothing captures or restores, and `F5`/`F7` are unbound | [open save-state record](save.md#open-save-state-capture-is-blocked-by-payload-scope-not-by-pointer-tokens--wave-savestate) |
 
 
 ### Closed, kept as a record
@@ -138,6 +139,7 @@ what was done and what proves it.
 - [SWEPT: three shapes no instrument could see — wave "boundsweep"](collision.md#swept-three-shapes-no-instrument-could-see--wave-boundsweep)
 - [Hand-asm transcription audit — wave "hasmaudit"](portability.md#hand-asm-transcription-audit--wave-hasmaudit)
 - [FIXED: racers fall through Tricky's volcano — the collision grid mask never filtered in Z (wave "gridmask")](collision.md#fixed-racers-fall-through-trickys-volcano--the-collision-grid-mask-never-filtered-in-z-wave-gridmask)
+- [OPEN: save-state capture is blocked by payload scope, not by pointer tokens — wave "savestate"](save.md#open-save-state-capture-is-blocked-by-payload-scope-not-by-pointer-tokens--wave-savestate)
 - [Save-file fail-safe and browser save recovery — wave "savefailsafe"](save.md#save-file-fail-safe-and-browser-save-recovery--wave-savefailsafe)
 - [P3.6 two-player split-screen — wave "splitscreen" (WORKS)](multiplayer.md#p36-two-player-split-screen--wave-splitscreen-works)
 - [P3.5 Adventure — the hub is drivable and the trophy series is covered](gameplay.md#p35-adventure--the-hub-is-drivable-and-the-trophy-series-is-covered)

@@ -194,13 +194,16 @@ set(PLATFORM_SOURCES
     # No pack content is shipped, hosted or tracked; these only read what a
     # player put in mods/ themselves.
     ${CMAKE_SOURCE_DIR}/platform/mod_manifest.c     # one pack's pack.ini
+    ${CMAKE_SOURCE_DIR}/platform/mod_source.c       # directory/zip pack byte source
     ${CMAKE_SOURCE_DIR}/platform/mod_registry.c     # ordered set of installed packs
     ${CMAKE_SOURCE_DIR}/platform/mod_texture_key.c  # published texture content digest
     ${CMAKE_SOURCE_DIR}/platform/mod_texture_store.c # decoded override textures (stb PNG)
+    ${CMAKE_SOURCE_DIR}/platform/mod_music.c        # decoded override music (dr_wav)
     ${CMAKE_SOURCE_DIR}/platform/enhancement_registry.c # enhancements + authority class
     ${CMAKE_SOURCE_DIR}/platform/enh_speedometer.c  # speed readout (presentation only)
     ${CMAKE_SOURCE_DIR}/platform/enh_draw_distance.c # draw distance + LOD bias (presentation only)
     ${CMAKE_SOURCE_DIR}/platform/enh_ai_difficulty.c # opponent skill (gameplay; authored by default)
+    ${CMAKE_SOURCE_DIR}/platform/save_state.c       # practice save states (NOT the progress save)
     ${CMAKE_SOURCE_DIR}/platform/asset_subentry.c   # bounds-checked asset sub-entry access
     # The console command parser. It was reachable only from cmake/tests.cmake
     # until the console shipped -- a unit-tested island the engine never linked.
@@ -333,6 +336,17 @@ endif()
 # desktop-only. See lib/stb/stb_image_impl.c for the decoder configuration.
 set(STB_SOURCES ${CMAKE_SOURCE_DIR}/lib/stb/stb_image_impl.c)
 
+# miniz, the zip reader behind platform/mod_source.c's archive arm. Third-party
+# and, like stb_image, compiled with warnings off in its own TU rather than
+# relaxing the baseline every first-party file is held to.
+set(MINIZ_SOURCES ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c)
+
+# dr_wav, the WAV decoder behind platform/mod_music.c. Same arrangement as the
+# two above: header-only third-party source instantiated in one TU of its own
+# so it can be compiled with warnings off without relaxing anything a
+# first-party file is held to. See lib/dr_libs/dr_wav_impl.c.
+set(DR_LIBS_SOURCES ${CMAKE_SOURCE_DIR}/lib/dr_libs/dr_wav_impl.c)
+
 # --- Target name ----------------------------------------------------------
 # Native binary is `mdkr64`; the wasm engine is `mdkr64_web` (emits
 # mdkr64_web.js + mdkr64_web.wasm, loaded by dist/web/index.html).
@@ -348,6 +362,8 @@ add_executable(${MDKR_TARGET}
     ${FAST3D_SOURCES}
     ${GLAD_SOURCES}
     ${STB_SOURCES}
+    ${MINIZ_SOURCES}
+    ${DR_LIBS_SOURCES}
 )
 
 # Include layout mirrors the DKR Makefile (-I . -I include -I include/libc
@@ -366,6 +382,8 @@ target_include_directories(${MDKR_TARGET} PRIVATE
     ${CMAKE_SOURCE_DIR}/platform/fast3d_shim
     ${CMAKE_SOURCE_DIR}/lib/glad/include
     ${CMAKE_SOURCE_DIR}/lib/stb          # stb_image.h, taken by mod_texture_store.c
+    ${CMAKE_SOURCE_DIR}/lib/miniz        # miniz.h, taken by mod_source.c
+    ${CMAKE_SOURCE_DIR}/lib/dr_libs      # dr_wav.h, taken by mod_music.c
     ${SDL2_INCLUDE_DIRS}
 )
 
@@ -423,9 +441,11 @@ endif()
 # than relaxing the flags any first-party file is held to — the whole reason
 # stb_image is instantiated in its own TU is to make this a one-file exemption.
 if(MSVC)
-    set_source_files_properties(${STB_SOURCES} PROPERTIES COMPILE_OPTIONS "/w")
+    set_source_files_properties(${STB_SOURCES} ${MINIZ_SOURCES}
+        ${DR_LIBS_SOURCES} PROPERTIES COMPILE_OPTIONS "/w")
 else()
-    set_source_files_properties(${STB_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
+    set_source_files_properties(${STB_SOURCES} ${MINIZ_SOURCES}
+        ${DR_LIBS_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
 endif()
 target_compile_options(${MDKR_TARGET} PRIVATE
     -fno-strict-aliasing

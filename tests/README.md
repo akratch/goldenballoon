@@ -2764,7 +2764,7 @@ clear, while the amulet piece belongs to the second boss.
 ## Campaign progression — `tests/check_campaign_progression.py`
 
 ```bash
-MDKR_AUDIO=0 python3 tests/check_campaign_progression.py -v          # ~5 min
+MDKR_AUDIO=0 python3 tests/check_campaign_progression.py -v          # ~11 min
 MDKR_AUDIO=0 python3 tests/check_campaign_progression.py --quick     # ~50 s
 MDKR_AUDIO=0 python3 tests/check_campaign_progression.py --quick --break-invariant  # must FAIL
 ```
@@ -2786,14 +2786,27 @@ they disagree, and a fixture that guesses silently exercises nothing.
 | A | Ancient Lake entered through the real hub and lobby, all eight silver coins collected by the game's own coin objects | `RACE_CLEARED_SILVER_COINS` written once, status 2 -> 3 in EEPROM, `balloons` (6,4) -> (7,5), reloaded by a second process, no amulet |
 | B | all four worlds' second boss races, won, each on the EEPROM the previous one persisted | the world's `1 << (world + 6)` bit, `wizpigAmulet` +1 exactly (1, 2, 3, 4 across the chain), one amulet cutscene, boss course cleared, and no carried bit dropped |
 | B control | the same race and the same win from a save whose first boss was never beaten | the FIRST-boss bit, **no** rematch bit, **no** amulet, no amulet cutscene |
+| B driven | the Dino Domain rematch entered by driving the human through the lobby's own boss door, not by `MDKR_LOAD_TRACK` | the same state as the retarget arm, plus `WARP_BOSS_REMATCH` live at eight world balloons with `WARP_BOSS_FIRST` disabled, and the lobby's exit actually taken |
 | C | the carried four-piece save loaded into Timber's Island, then Wizpig 1 raced | the hub redirected to `WIZPIGMOUTHSEQUENCE` with `CUTSCENE_WIZPIG_FACE` latched and persisted; then Wizpig 1's central-area boss bit and cleared course |
 | C control | the same hub load one rematch earlier, at three pieces | **no** redirect and **no** `CUTSCENE_WIZPIG_FACE` |
-| E | Wizpig 2, won | `bosses & 0x20` live and persisted — the one value `menu_credits_init` reads to choose "TO BE CONTINUED …" over "THE END?" |
+| T | all four trophy championships, chained on one another's saves through `check_trophy_series.py`'s own driver | `trophies` 0x3 → 0xf → 0x3f → 0xff, each step matching production's own `trophyaward:` line, and nothing else in the save moved |
+| T.T. | the four challenge courses won in four separate processes on one another's saves | `ttAmulet` 1, 2, 3, 4, one `TTAMULETSEQUENCE` each, each course cleared |
+| T.T. control | the FIRST challenge replayed on the save it produced | **no** piece and **no** cutscene — the award is gated on the course not already being cleared |
+| E | Wizpig 2, won, and the post-win cutscene stack driven to the credits | `bosses & 0x20` live and persisted, `MENU_CREDITS` reached, and `menu_credits_init` choosing "TO BE CONTINUED …" + `SEQUENCE_CRESCENT_ISLAND` with `gViewingCreditsFromCheat` zero |
 
-Seams B, C and E run on **carried** saves: `Slot.from_save()` reads a real
-persisted EEPROM back and the next seam runs on it, overriding only the fields a
-later gate needs. So `wizpigAmulet == 4` is something production wrote four
-times, not something a fixture asserted.
+Seams B, C, T, T.T. and E run on **carried** saves: `Slot.from_save()` reads a
+real persisted EEPROM back and the next seam runs on it, overriding only the
+fields a later gate needs. So `wizpigAmulet == 4`, `trophies == 0xFF` and
+`ttAmulet == 4` are each something production wrote four times, not something a
+fixture asserted.
+
+The driven seam-B arm's lobby approach is watched by
+[`tests/route_plan.py`](route_plan.py) against the run's own `[PACE]` position
+stream, so a route that stops closing reports the waypoint, the closest approach
+and whether it oscillated, was held off, or ran out of budget — instead of
+looping to the frame limit and reporting only that the boss never loaded. It is
+not a slow arm: measured, the lobby is entered at frame ~2947 and the rematch at
+~3124.
 
 Seam C's redirect is invisible in the level-load stream and needs the
 `wizpigface:` trace: `game_load_level` logs the level it was *asked* for, then
@@ -2814,13 +2827,37 @@ The contrast arm runs `credits_via_cheat.txt` and confirms it reaches
 `MENU_CREDITS` from a save file that was never started — which is why arriving at
 credits is not by itself evidence about the campaign.
 
-**What this deliberately does not prove**, with the measured obstacle for each,
-is in [`tests/fixtures/README.md`](fixtures/README.md): the lobby boss-rematch
-door driven rather than retargeted, the T.T. amulet challenges and the trophy
-championships (the latter gated separately by `check_trophy_series.py`) and the
-Future Fun Land unlock they feed, and the credits screen reached by finishing
-Wizpig 2. Those remain the manual acceptance steps in
-`docs/RELEASE_CANDIDATE_TEST_GUIDE.md`.
+**What this deliberately does not prove** is in
+[`tests/fixtures/README.md`](fixtures/README.md), which also keeps the measured
+obstacle behind every route here. What is left is Future Fun Land's own state —
+its four cleared races, its balloons, the four world keys and the world-arrival
+cutscene flag are constructed, because this check does not drive to that world.
+The door into it is gated separately, below.
+
+## Future Fun Land unlock — `tests/check_future_fun_land.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_future_fun_land.py -v               # ~4 min
+```
+
+Four gold trophies plus a beaten Wizpig 1 open the lighthouse rocket
+(`begin_lighthouse_rocket_cutscene`, `game/src/thread3_main.c`), which is the only
+way into the last world. The trophies are **produced**, not stated: the check
+imports `check_trophy_series.py`'s championship driver and chains four of them.
+
+Three arms, because a refusal writes nothing at all — no bit, no level load, no
+trace — so a single arm would pass with the whole unlock deleted:
+
+| Arm | Save | Must happen |
+|---|---|---|
+| unlock | four production golds, Wizpig 1 beaten | `ASSET_LEVEL_ROCKETSEQUENCE` once, `ASSET_LEVEL_FUTUREFUNLANDHUB` reached, `CUTSCENE_LIGHTHOUSE_ROCKET` persisted |
+| one short | worlds 1–3 gold, world 4 driven to second place (a production **silver**) | the signpost triggered and **nothing** else |
+| no Wizpig 1 | the four-gold save with `bosses & 1` cleared | the signpost triggered and **nothing** else |
+
+Every arm asserts the `rocketsign: trigger` line, which is emitted at the
+honk/collision and *before* the gate is evaluated. That is what separates "the
+route never reached the signpost" from "the signpost read the save and said no",
+and it is the only thing that makes the two negative arms mean anything.
 
 ## Hand-asm transcription checks (RUN THESE AFTER ANY CHANGE UNDER `game/src/hasm*`)
 
@@ -3689,6 +3726,49 @@ racer already at model 0, so the bias has nothing to hold. The census counts
 choices the bias actually *changed* after clamping, so a route that stops
 exercising the ladder fails rather than passing on an incidentally different
 frame.
+
+## Future Fun Land unlock — `tests/check_future_fun_land.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_future_fun_land.py --build build
+```
+
+`trophies & 0xFF == 0xFF` together with the Wizpig 1 bit opens the lighthouse
+(`game/src/thread3_main.c:1895-1899`). **Both arms, or it proves nothing**: one
+trophy short must *not* unlock. A one-armed version would pass against code that
+unlocks unconditionally.
+
+The save it runs on is produced by the campaign chain rather than asserted as a
+premise, which is what makes the unlock a witnessed consequence of winning the
+trophies instead of a statement about a hand-written EEPROM.
+
+## Pack music — `tests/check_mod_music_override.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_mod_music_override.py --build build
+```
+
+Six headless captures, no audio device, and **no ROM audio anywhere** — the
+pack's WAV is a 440 Hz sine the test synthesises, exactly 440 cycles in one
+second at 22050 Hz so the loop seam is continuous.
+
+The design constraint the gate exists to hold: the replacement is
+**presentation-only**. The sequence player is not skipped — it still posts its
+play event and the CSP runs unchanged; the single state change is the player's
+volume field, the same one the music slider writes. Skipping instead of muting
+would sound identical and break determinism silently, so assertion 5 requires
+the `[SIMHASH]` v3 rows *and* the sequence trace to be identical across all
+three arms.
+
+Assertion 2 measures a **residual**, not a resemblance: with effects volume at
+zero the bus holds nothing but the replacement, so the pack's own synthesised
+waveform must fit the capture to 0.006%. Arm C installs the same pack as a
+`.zip` with no directory present and requires byte-identical output — which is
+what proves the registry now discovers archives.
+
+The positive control stubs the begin hook to return 0; assertions 1–4 all fail.
+Assertion 6 keeps passing under that stub, honestly, because it then compares
+two equally unmodded arms — recorded in the docstring rather than papered over.
 
 ## Opponent skill — `tests/check_enh_ai_difficulty.py`
 

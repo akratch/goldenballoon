@@ -55,7 +55,8 @@ crash.
 | S1 T3 | `mod_texture_key` | `mod_texture_key` |
 | S1 T4 | `mod_texture_store` + the `dkr_bind_tile()` hook, stb_image vendored | inertness: `check_texture_lineswap`, `check_determinism`, `check_race_drive` unchanged |
 | S1 T5 | startup wiring + `Tab` toggle | positive control: pack-on and Tab-off frame hashes |
-| S1 T6 | `mod_source` zip containers, miniz vendored | `mod_source_zip` |
+| S1 T6 | `mod_source` zip containers, miniz vendored; registry/store retargeted, one validator | `mod_source_zip`, `check_mod_music_override.py` arm C |
+| S1 T8 | custom music, dr_wav vendored | `check_mod_music_override.py` |
 | S1 T7 | Settings → Content, with the skip list | `app_ui_policy` |
 | S1 T9 | `tools/mod_texture_dump.py`, stb_image_write vendored | round-trip: dumped digest overrides |
 | S1 T10 | clean-room section 8, `mods/` ignored | `check_clean_room.sh` |
@@ -82,6 +83,9 @@ crash.
 | S8 T1 | `a11y_model` | `a11y_model` |
 | S9 T1 | roadmap reconciled | — |
 | S9 T2 | `tests/route_plan.py` waypoint follower | its own self-test, 8 assertions |
+| S9 T3 | lobby rematch door, driven | `check_campaign_progression.py` driven arm |
+| S9 T4 | trophy + T.T.-amulet chaining, Future Fun Land | `check_campaign_progression.py`, `check_future_fun_land.py` |
+| S9 T5 | credits screen from a won Wizpig 2 | `check_campaign_progression.py` seam E |
 
 ### Four defects the execution found in its own design
 
@@ -218,6 +222,61 @@ alignment configurations, the oracle routes, and everything browser-side. The
 list above says what was covered so that breadth is not inferred from it —
 `track_sweep` (all levels) and `vehicle_sweep` (47 combinations) are the two
 that most directly exercise the asset path the override layer sits in front of.
+
+### One task stopped at its own gate, which is a result
+
+**S2 T7 (save-state capture) is not built**, and the reason is measured rather
+than estimated. Its plan carried a stop-or-go step: prove a raw arena snapshot
+is restorable before writing the feature.
+
+The pointer-token half of the argument **held** — segment A came back
+byte-identical across six different ASLR arena bases, with no fix-ups. The half
+that failed was payload *scope*. This plan claimed `segment_consts.c` plus the
+`[SIMHASH]` v3 field list were "the existing inventory of authoritative state";
+they yield about 20 globals. Measured by diffing the process image's writable
+sections over a 600-tick window, the sufficient payload is the arena plus
+**1,686 externally-linked globals, ~809 KB**. Arena-only does not diverge, it
+segfaults — a host global outside the arena still describing the post-restore
+world.
+
+Only two payload definitions are both complete and implementable, and both are
+new invariants the project has not paid for: 1,686 hand-declared untyped decomp
+externs, or a contiguous region whose bounds are a link-order artifact of one
+toolchain. A list fitted to the 142 symbols one route touched would pass a
+three-track gate and corrupt on the first unmeasured route.
+
+Recorded in [`../open-items/save.md`](../open-items/save.md) with the unblocking
+path. Stopping here was the instruction and the correct call; the container from
+T6 remains shipped and gated.
+
+### The campaign residuals are closed, and the last one was a fixture defect
+
+S9's three residuals are all driven now. The third is worth recording in full,
+because the recorded obstacle turned out to describe a symptom rather than a
+cause.
+
+The note said the cutscene stack held at `ASSET_LEVEL_WIZPIG2ANIM` for 25,000
+frames with A tapped every 200. The first measurement answered why:
+**`func_8006C300()` is never non-zero** — zero on all 29,929 sampled frames, and
+structurally so, because `game_load_level` zeroes its backing global on every
+load and the only writer is the redirect branch for a *repeat* Wizpig entry. The
+A-press arm was unreachable. The 113 presses could never have popped anything;
+the tapping cadence was never the variable.
+
+Following that down: all 159 of the level's animation objects sat deactivated
+because `gCutsceneID` was 5 rather than the channel the level pushed. Every
+Future Fun Land header is `RACETYPE_HUBWORLD`, so the world-arrival branch ran
+on a cutscene level and overwrote the channel — because the fixture did not
+carry the "arrived in Future Fun Land" flag.
+
+**That makes it a fixture defect, not a game defect**, and the reasoning is what
+matters: a player cannot reach Wizpig 2 without entering the Future Fun Land
+hub, and entering it with the balloons and amulet the door demands is exactly
+what latches that flag. A fixture without it is a state the campaign cannot
+produce. The fix is in the fixture; no `game/` behaviour changed and nothing was
+skipped. The two `game/` additions are read-only `NATIVE_PORT` traces, because
+`menu_credits_init` writes only display strings, a music sequence and a scroll
+table — none of which a headless run can see, so there was nothing to assert on.
 
 ### A gate that was already failing on `main`
 

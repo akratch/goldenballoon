@@ -134,6 +134,12 @@ CHECKS = (
     Check("enh_draw_distance", "check_enh_draw_distance.py", "rom",
           "draw distance and LOD bias extend what is drawn without changing "
           "which objects exist, proving both are render culls"),
+    Check("future_fun_land", "check_future_fun_land.py", "rom",
+          "a full trophy set plus the Wizpig 1 bit opens the lighthouse, and "
+          "one trophy short does not"),
+    Check("mod_music_override", "check_mod_music_override.py", "rom",
+          "a pack's music replaces the sequenced original, obeys the music "
+          "volume, works from a zip, and moves no authoritative state"),
     Check("enh_ai_difficulty", "check_enh_ai_difficulty.py", "rom",
           "opponent skill leaves the authored arm bit-identical to a build "
           "without the enhancement compiled in, and the harder arms measurably "

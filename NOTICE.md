@@ -157,8 +157,8 @@ redistributed under the terms of that project.
 `lib/` contains third-party sources and data vendored per their own licenses and
 compiled into or shipped alongside the app: Dear ImGui for the native app shell,
 `glad` for GL loading, `stb_image` for PNG decoding, `miniz` for reading zipped
-content packs, and the SDL game-controller database. Each retains its upstream
-license.
+content packs, `dr_wav` for decoding the music inside them, and the SDL
+game-controller database. Each retains its upstream license.
 
 `lib/stb/stb_image.h` is stb_image v2.30 by Sean Barrett, vendored from
 `nothings/stb` at commit `f58f558c120e9b32c217290b80bad1a0729fbb2c`; the
@@ -192,6 +192,17 @@ carries an out-of-date "public domain" line from before miniz relicensed to MIT
 at 2.0; the MIT terms are the ones that apply. It reads the zipped content packs
 a player installs themselves. No archive is shipped with this repository for it
 to read, and nothing in this port asks it to write one.
+
+`lib/dr_libs/dr_wav.h` is dr_wav v0.14.6 by David Reid, vendored from
+`mackron/dr_libs` at commit `955edd32b4b9206448c2ee6eed0b289c47d49ed3`; the
+vendored file's SHA-256 is
+`87aa06757b93b41fa6e67ba6b4da48d9ccee5ac49142b215d7e3ceaf0d9901b6`. It is
+available as a choice of public domain (Unlicense) or MIT-0 — Copyright 2023
+David Reid — and both texts travel with the file. It decodes the music a player
+puts in their own content pack, once per track at load, and is built without its
+own file I/O: a pack may be a zip, so every byte reaches the decoder through the
+port's own validated pack reader instead. No audio is shipped with this
+repository for it to read, and nothing in this port asks it to write any.
 
 ## Full provenance table
 

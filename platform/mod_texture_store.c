@@ -36,11 +36,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Pack content is read through mod_source, never through a path this file
+ * opens itself. That is what makes a zipped pack and an unpacked one the same
+ * pack here: this module asks the registry for whichever one holds the digest
+ * and reads bytes back, with no branch on which kind answered. It also keeps
+ * the Windows UTF-8/long-path boundary in exactly one place (fs_utf8, reached
+ * through mod_source) rather than giving this file a second one.
+ *
+ * The author-dump path below still writes files, and that is the only reason
+ * fs_utf8 is included here at all. */
+#include "mod_source.h"
 #if defined(_WIN32)
-/* Paths reach this module from the registry, which built them out of directory
- * names the OS gave it, so they can contain anything a filesystem allows. The
- * narrow CRT would read them in the active code page and stop at MAX_PATH;
- * fs_utf8 already owns that boundary for the whole port. */
 #include "fs_utf8.h"
 #endif
 
@@ -256,98 +262,70 @@ static int evict_for(size_t incoming) {
 /* ------------------------------------------------------------ file access */
 
 #if defined(_WIN32)
-static FILE *store_open_read(const char *path) {
-    return mdkr_fopen_utf8(path, "rb");
-}
 static FILE *store_open_write(const char *path) {
     return mdkr_fopen_utf8(path, "wb");
 }
 #else
-static FILE *store_open_read(const char *path) {
-    return fopen(path, "rb");
-}
 static FILE *store_open_write(const char *path) {
     return fopen(path, "wb");
 }
 #endif
 
-/* Reads the whole file. Returns NULL on any failure, including a file past the
- * size cap — a caller cannot distinguish those and does not need to, since both
- * end the same way: this digest has no usable override. */
-static unsigned char *read_whole_file(const char *path, size_t *out_size,
+/* Reads the whole of `file`'s entry into a fresh buffer. Returns NULL on any
+ * failure, with a player-readable reason — including a file past this store's
+ * own ceiling, which is well under mod_source's, because a PNG that big is not
+ * a texture whatever the container is willing to hand over.
+ *
+ * The size is asked for first and the buffer sized from the answer, which is
+ * safe only because mod_source has already bounded that answer: it refuses any
+ * entry over MDKR_MOD_SOURCE_ENTRY_MAX before reporting a size at all, and the
+ * read below refuses to write anything unless the whole entry fits. A declared
+ * length is never allocated from on this path. */
+static unsigned char *read_pack_entry(MdkrModFile *file, size_t *out_size,
                                       const char **out_reason) {
-    FILE          *file;
     unsigned char *buffer;
-    size_t         capacity = 0;
-    size_t         filled = 0;
+    size_t         size = 0;
+    int            result;
 
     *out_size = 0;
     *out_reason = NULL;
 
-    file = store_open_read(path);
-    if (file == NULL) {
-        *out_reason = "the file could not be opened";
+    result = mdkr_mod_source_read(file->source, file->relative, NULL, 0, &size);
+    if (result != MDKR_MOD_SOURCE_BUFFER_TOO_SMALL &&
+        result != MDKR_MOD_SOURCE_OK) {
+        *out_reason = mdkr_mod_source_result_text(result);
         return NULL;
     }
-
-    /* Read incrementally rather than trusting a seek-derived length: the size
-     * cap has to hold even if the file grows, or is a pipe, or reports a length
-     * it does not have. */
-    buffer = NULL;
-    for (;;) {
-        size_t want;
-        size_t got;
-
-        if (filled == capacity) {
-            unsigned char *grown;
-            size_t next = capacity == 0 ? 65536u : capacity * 2u;
-            if (next > MDKR_MOD_TEXTURE_FILE_BYTES_MAX) {
-                next = MDKR_MOD_TEXTURE_FILE_BYTES_MAX;
-            }
-            if (next == capacity) {
-                *out_reason = "the file is too large to load";
-                goto failed;
-            }
-            grown = (unsigned char *)realloc(buffer, next);
-            if (grown == NULL) {
-                *out_reason = "there was not enough memory to load it";
-                goto failed;
-            }
-            buffer = grown;
-            capacity = next;
-        }
-        want = capacity - filled;
-        got = fread(buffer + filled, 1, want, file);
-        filled += got;
-        if (got < want) {
-            if (ferror(file)) {
-                *out_reason = "the file could not be read";
-                goto failed;
-            }
-            break; /* end of file */
-        }
-    }
-
-    fclose(file);
-    if (filled == 0) {
-        free(buffer);
+    if (size == 0) {
         *out_reason = "the file is empty";
         return NULL;
     }
-    *out_size = filled;
-    return buffer;
+    if (size > MDKR_MOD_TEXTURE_FILE_BYTES_MAX) {
+        *out_reason = "the file is too large to load";
+        return NULL;
+    }
 
-failed:
-    fclose(file);
-    free(buffer);
-    return NULL;
+    buffer = (unsigned char *)malloc(size);
+    if (buffer == NULL) {
+        *out_reason = "there was not enough memory to load it";
+        return NULL;
+    }
+    result = mdkr_mod_source_read(file->source, file->relative, buffer, size,
+                                  &size);
+    if (result != MDKR_MOD_SOURCE_OK) {
+        free(buffer);
+        *out_reason = mdkr_mod_source_result_text(result);
+        return NULL;
+    }
+    *out_size = size;
+    return buffer;
 }
 
 /* ------------------------------------------------------------- resolution */
 
 static void slot_resolve(StoreSlot *slot) {
     char           relative[MDKR_MOD_TEXTURE_DIGEST_CHARS + 32];
-    char           path[MDKR_MOD_PATH_MAX];
+    MdkrModFile    file;
     const char    *reason = NULL;
     unsigned char *file_bytes;
     size_t         file_size = 0;
@@ -358,12 +336,15 @@ static void slot_resolve(StoreSlot *slot) {
     size_t         decoded;
 
     snprintf(relative, sizeof relative, "textures/%s.png", slot->digest);
-    if (!mdkr_mod_registry_resolve(s_registry, relative, path, sizeof path)) {
+    /* Directory pack or zip pack — the store cannot tell and must not care.
+     * One open per newly resolved digest, and a slot resolves once. */
+    if (!mdkr_mod_registry_open_file(s_registry, relative, &file)) {
         slot->state = SLOT_ABSENT;
         return;
     }
 
-    file_bytes = read_whole_file(path, &file_size, &reason);
+    file_bytes = read_pack_entry(&file, &file_size, &reason);
+    mdkr_mod_registry_close_file(&file);
     if (file_bytes == NULL) {
         slot->state = SLOT_REJECTED;
         report_rejection(slot->digest, reason);

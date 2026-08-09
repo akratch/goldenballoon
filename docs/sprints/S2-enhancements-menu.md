@@ -95,9 +95,29 @@ default to off/authored, and pass the M1 authority gate as `PRESENTATION`.
 declaration, and a race at `authored` is proven byte-identical to a race with the
 enhancement compiled in but unset.
 
-### M4 — Save states
+### M4 — Save states — **BLOCKED at the step-1 gate, 2026-08-09**
 
-**Done when:**
+The container (Task 6) is shipped and gated. **Capture and restore are not
+built**, because Task 7's own feasibility gate refuted this plan's premise. The
+full measurement is in
+[`../open-items/save.md`](../open-items/save.md#open-save-state-capture-is-blocked-by-payload-scope-not-by-pointer-tokens--wave-savestate).
+
+In short: the pointer-token argument **holds** — a raw arena snapshot restores
+correctly across six different ASLR bases, byte-identical, with no fix-ups. What
+fails is payload *scope*. This plan asserted that `segment_consts.c` and the
+`[SIMHASH]` v3 field list were "the existing inventory of authoritative state".
+They yield about 20 globals. Measured by diffing the process image's writable
+sections across a 600-tick window, the sufficient payload is the arena plus
+**1,686 externally-linked globals, ~809 KB**. Arena-only does not diverge — it
+segfaults, dereferencing a host global that still describes the post-restore
+world.
+
+The task was stopped rather than completed with a list fitted to the 142 symbols
+one route happened to touch, which would pass a three-track gate and corrupt on
+the first unmeasured route. The unblocking path — a per-TU span registry, 42 of
+64 `game/src` TUs — is recorded in the open item.
+
+**Was to be done when:**
 - `F5` writes and `F7` reads a state; `Shift+F5`/`Shift+F7` select a slot 1–8.
 - A save/load round trip inside a race produces a `[SIMHASH]` v3 stream
   identical to the un-interrupted run from the same tick forward.
