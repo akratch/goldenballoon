@@ -157,6 +157,33 @@ browser has no writable `mods/`. The store should simply stay inactive there,
 which is the correct behaviour, but it is currently an inference rather than an
 observation.
 
+### A gate that was already failing on `main`
+
+`check_array_bounds_sweep` failed when this work first ran it, and only one of
+the two reasons was this work's fault.
+
+- **Four new bare-pointer sites needed triage** — `mod_registry`, `mod_source`,
+  `gpu_diagnostics`, `adapter_policy`. All four are genuinely bounded by the
+  size parameter travelling with the buffer, and each now carries an entry
+  saying *how*, in the terms the class asks for: what sets the count, what the
+  capacity is, and whether the counter can pass the test without equalling it.
+- **The shift-count ceiling was already breached before this branch existed.**
+  Measured on `origin/main` at `080c4c4`, the informational population is
+  **260** against a recorded ceiling of **257**. This work added exactly one
+  more (the digest's little-endian field encoder), taking it to 261.
+
+The second point is the one worth keeping. `array_bounds_sweep` is a `rom`-role
+check: hosted CI cannot run it, because no ROM may exist on a runner. So it is
+visible only to a local full-suite run — and a subset run does not see it
+either. A gate silently red on `main` for an unknown number of commits is
+exactly the failure mode that argues for running the complete suite per release
+rather than the batteries that look relevant.
+
+The three pre-existing findings are **not** identified. Doing so means bisecting
+the class population across every commit since the ceiling was last set. That is
+worth doing and is not this change; the ceiling comment says so rather than
+letting 261 read as one coherent batch.
+
 ### One defect surfaced, not yet fixed
 
 `tools/sweep_subentry_access.py` reports 276 sub-entry sites: 129 checked, 65
