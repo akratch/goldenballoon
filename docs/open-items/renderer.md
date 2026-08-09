@@ -2494,3 +2494,48 @@ failed bind drew with the previous batch's texture. That is no longer true:
 `dkr_setup_draw_state()` returns `bind_ok[0] && bind_ok[1]`, and both callers act
 on it — `dkr_sp_polygon()` returns early and the texture-rectangle path skips the
 whole emit-and-flush block. No change needed.
+
+## Issue #27 follow-up — the gate arm needs a route nobody has yet
+
+The fix (rectangles no longer inherit the mirrored viewport's sign) is landed
+and regression-covered. What is NOT yet covered is a gate arm that proves it on
+the screen the player reported: the trophy-round announcement inside Adventure
+Two.
+
+**The non-vacuity witness already exists.** `[MIRROR-RECT] cleared=N` counts
+rectangles issued while the mirrored-viewport latch was live — exactly the ones
+the fix rescues. Any candidate route is only a valid arm once it reports
+**> 0**. That turns writing this gate into a mechanical search with an
+unambiguous success signal, rather than a guess about what the screen looks
+like.
+
+**Measured, so nobody repeats it.** An ordinary Adventure Two race reports
+`cleared=0` on tracks 5 and 32. That is correct, not a broken probe: in-race
+text goes through the HUD, which calls `mtx_ortho()` (a positive viewport)
+before drawing and so clears the latch. The defect is specific to
+`trophyround_render()`, which draws text straight over the race loaded as a
+menu backdrop with no ortho in between. **A gate arm that only drives an AT2
+race will pass vacuously.**
+
+**Three routes tried, none reaches it**, all producing level sequences
+byte-identical to Adventure One with `cleared=0`:
+
+1. `check_trophy_series`' cabinet route with `CUTSCENE_ADVENTURE_TWO` set in
+   the slot.
+2. The same, plus Adventure Two unlocked in the global config block.
+3. The same, with `check_adventure_two`'s Adventure Two menu script swapped in
+   for the trophy gate's own input script.
+
+The reason is the one `check_save_100_entry` documents: Adventure Two is
+entered through the GAME SELECT option, and the slot's marker must match
+whichever option is selected. The trophy gate's navigation is written for
+Adventure One, and the Adventure Two navigation stops at a race rather than
+continuing to the cabinet.
+
+**What the arm needs:** an input script that selects Adventure Two at GAME
+SELECT, enters the file, and then drives to the Dino Domain trophy cabinet —
+i.e. the Adventure Two menu prefix followed by the trophy gate's
+`MDKR_DRIVE_ROUTE`. Assert AT1/AT2 text-band identity (the text is screen-space
+on hardware, so it must be identical in both) while the world band between the
+bands still satisfies the existing reflection relation, and require
+`cleared > 0` so the arm cannot pass without reaching mirrored content.
