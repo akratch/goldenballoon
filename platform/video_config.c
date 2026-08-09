@@ -116,6 +116,14 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "models further out. Changes only how the game looks.",
         MDKR_VIDEO_CAT_FIDELITY
     },
+    [MDKR_TOOLS_ENABLED] = {
+        "Tools.Enabled", "MDKR_TOOLS",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 1.0f,
+        "Developer tools",
+        "Show the diagnostic windows. Off by default, and they never change "
+        "how the game plays.",
+        MDKR_VIDEO_CAT_INTERFACE
+    },
     [MDKR_APP_UPDATE_CHECK] = {
         "App.UpdateCheck", "MDKR_UPDATE_CHECK",
         MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 1.0f,

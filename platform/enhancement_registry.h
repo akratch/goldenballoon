@@ -35,12 +35,30 @@ typedef struct MdkrEnhancement {
     const char      *help;      /* one sentence, player-facing */
     MdkrEnhAuthority authority;
     MdkrEnhCategory  category;
+    /* A non-default value the authority gate flips this row to.
+     *
+     * Declared here rather than in the gate on purpose. A list of test values
+     * living in the test is a second list that drifts: add a row, forget the
+     * list, and the gate silently exercises one fewer enhancement while still
+     * reporting a pass. Keeping it in the row means adding an enhancement
+     * forces you to say how to exercise it, and the row-completeness test
+     * fails if you do not. */
+    const char      *probe_value;
 } MdkrEnhancement;
 
 int                     mdkr_enhancement_count(void);
 const MdkrEnhancement  *mdkr_enhancement_at(int index);
 /* NULL when `key` is not an enhancement. */
 const MdkrEnhancement  *mdkr_enhancement_for_key(MdkrVideoKey key);
+
+/* Emits one `[ENHTABLE] key=... authority=... category=...` line per row.
+ *
+ * This exists so check_enhancement_authority.py enumerates the table the
+ * RUNNING BINARY has, not a copy of it kept in the test. A test carrying its
+ * own list of enhancements would keep passing after someone adds a row and
+ * forgets the gate, which is the exact drift the authority class is meant to
+ * make impossible. Driven by MDKR_ENH_DUMP_TABLE=1 at startup. */
+void                    mdkr_enhancement_dump_table(void);
 
 #ifdef __cplusplus
 }

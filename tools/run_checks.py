@@ -119,6 +119,9 @@ CHECKS = (
     Check("simulation_cadence", "check_simulation_cadence.py", "native",
           "NTSC/PAL source clocks, original/enhanced pacing mechanism, and "
           "explicit oracle policy"),
+    Check("enhancement_authority", "check_enhancement_authority.py", "rom",
+          "every enhancement's declared authority class matches its measured "
+          "effect on the authoritative state stream, in both directions"),
     Check("sprite_layout", "check_sprite_layout.py", "native",
           "independent ROM sprite census and display-list allocation controls"),
     Check("rdp_interpolation", "check_rdp_interpolation.py", "native",

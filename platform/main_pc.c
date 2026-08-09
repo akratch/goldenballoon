@@ -43,6 +43,7 @@
 #include "platform_os.h"
 #include "display_config.h"
 #include "video_config.h"
+#include "enhancement_registry.h"
 #include "present_sched.h"
 #include "gameplay_event_trace.h"
 #include "input_consumption_trace.h"
@@ -422,6 +423,18 @@ int main(int argc, char **argv) {
      * directory, prints nothing, and leaves the store inactive.
      */
     platform_content_packs_init();
+
+    /* The enhancement table, on request, for check_enhancement_authority.py.
+     * Emitted from the running binary rather than kept as a copy in the test:
+     * a test carrying its own list of enhancements keeps passing after someone
+     * adds a row and forgets the gate, which is precisely the drift the
+     * authority class exists to make impossible. */
+    {
+        const char *dump = getenv("MDKR_ENH_DUMP_TABLE");
+        if (dump != NULL && dump[0] == '1') {
+            mdkr_enhancement_dump_table();
+        }
+    }
 
     /* Phase 3: renderer front-end (F3DDKR HLE) on the selected backend
      * (MDKR_RENDERER; default WebGPU, GL selectable). gfx_init creates the

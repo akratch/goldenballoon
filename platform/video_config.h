@@ -118,6 +118,9 @@ typedef enum MdkrVideoKey {
     /* Shell behaviour, appended for the reason above. Not presentation, not
      * gameplay: whether the launcher looks for a newer release. */
     MDKR_APP_UPDATE_CHECK,
+    /* Developer tools. Off by default; every registered tool is asserted
+     * unable to move authoritative state by check_dev_tools_purity.py. */
+    MDKR_TOOLS_ENABLED,
     MDKR_VIDEO_KEY_COUNT
 } MdkrVideoKey;
 

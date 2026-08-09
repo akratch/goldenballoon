@@ -18,6 +18,11 @@ static void test_every_row_is_complete(void) {
         snprintf(what, sizeof what, "row %d declares an authority class", i);
         expect(e->authority == MDKR_ENH_PRESENTATION ||
                e->authority == MDKR_ENH_GAMEPLAY, what);
+        /* The authority gate flips each row to this value. A row without one
+         * would be silently skipped by the gate while it still reported a
+         * pass, so an absent probe is a table defect, not a test detail. */
+        snprintf(what, sizeof what, "row %d declares a probe value", i);
+        expect(e->probe_value != NULL && e->probe_value[0] != '\0', what);
     }
 }
 
