@@ -10,9 +10,10 @@
 #include "imgui.h"
 
 struct AppFonts {
-    ImFont *body  = nullptr;  // default UI text
-    ImFont *title = nullptr;  // section headers / brand
-    ImFont *small = nullptr;  // captions, secondary
+    ImFont *body    = nullptr;  // default UI text
+    ImFont *title   = nullptr;  // page title / brand
+    ImFont *section = nullptr;  // group heading, between title and body
+    ImFont *small   = nullptr;  // captions, secondary, chips
 };
 
 namespace AppTheme {
@@ -56,6 +57,16 @@ ImVec4 surface();     // graphite card
 ImVec4 subtle();      // secondary text
 ImVec4 good();        // success/valid
 ImVec4 bad();         // error/invalid
+
+// Semantic additions for the settings redesign. `warn` is deliberately NOT the
+// brand gold: gold already means "staged, needs a restart", and a player has to
+// be able to tell "this will look different next launch" from "this changes how
+// the game plays". `line` is the hairline used for rules and control borders;
+// `raised` is the elevated surface a settings group sits on.
+ImVec4 warn();        // orange — changes gameplay
+ImVec4 line();        // hairline border
+ImVec4 raised();      // elevated group surface
+ImVec4 field();       // control background
 
 // Convert a 0xRRGGBB literal (+ alpha) to an ImVec4.
 ImVec4 hex(unsigned rgb, float a = 1.0f);

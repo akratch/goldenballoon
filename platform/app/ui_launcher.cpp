@@ -609,17 +609,17 @@ void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
     // extreme and wasted scarce height on 7-inch handhelds.
     ImGui::BeginChild("##settingsscroll", ImVec2(0, 0), false);
     ui::SectionHeader("Settings",
-                      "Changes save automatically. Items marked “restart required” "
-                      "apply when you next press Play.");
+                      "Everything saves as you change it. Anything marked "
+                      "“Next launch” waits for Play.");
 
     const bool restartPending = Settings_restartPending();
     if (restartPending) {
         ui::CardBegin("##settingsready", AppTheme::accent(), 0.0f);
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
-        ImGui::TextUnformatted("Changes Ready");
+        ImGui::TextUnformatted("Ready for next launch");
         ImGui::PopStyleColor();
         ui::TextSubtle(
-            "Saved. Press Play with Changes to start with these settings.");
+            "Press Play with Changes to start with these settings.");
         ui::CardEnd();
         ui::Gap(ui::kGapM);
     }
