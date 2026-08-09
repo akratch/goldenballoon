@@ -321,6 +321,12 @@ static uint64_t dkr_replay_object_holds = 0;
  * are correct and expected. */
 /* Rectangles issued while the mirrored-viewport latch was live (issue #27).
  * Nonzero exactly on an Adventure Two race; zero everywhere else. */
+/* True while dkr_draw_rectangle emits its quad. Distinct from dkr_in_texrect,
+ * which is false for an untextured FILL_RECTANGLE and therefore cannot stand in
+ * for "this draw is a rectangle" -- the gap that let fills reach the per-pixel
+ * lighting path with no normals (see the SHADER_OPT_DFDX_LIGHT gate). */
+static bool dkr_in_rectangle = false;
+
 static uint64_t dkr_mirrored_rects_cleared = 0;
 
 static uint64_t dkr_replay_hold_no_pair = 0;
@@ -2664,8 +2670,7 @@ static bool dkr_setup_draw_state(bool poly_tex_enabled) {
         rsp.remaster_light_class != 0 &&
         rsp.smooth_normals != NULL &&
         rsp.draw_space == G_MTX_DKR_SPACE_WORLD &&
-        (rsp.geometry_mode & G_ZBUFFER) != 0 &&
-        !rsp.billboard && !dkr_in_texrect) {
+        !rsp.billboard && !dkr_in_texrect && !dkr_in_rectangle) {
         cc_options |= SHADER_OPT_DFDX_LIGHT;
     }
     cc_options |= gfx_rdp_interpolation_options(
@@ -4191,6 +4196,7 @@ static void dkr_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     rdp.viewport_flip_x = false;
 
     dkr_in_texrect = textured;   /* absolute texel coords: skip NOPERSP *0.5 */
+    dkr_in_rectangle = true;
     /* Same rule as dkr_sp_polygon: a rectangle whose texture failed to bind
      * would show the previous draw's image at full screen-space size. Restore
      * the saved RSP/RDP state below either way. */
@@ -4201,6 +4207,7 @@ static void dkr_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
         gfx_flush();
     }
     dkr_in_texrect = false;
+    dkr_in_rectangle = false;
 
     rsp.geometry_mode = gm_saved;
     rdp.viewport_flip_x = flip_saved;
