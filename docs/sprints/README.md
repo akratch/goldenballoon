@@ -94,7 +94,7 @@ crash.
 | S9 T4 | trophy + T.T.-amulet chaining, Future Fun Land | `check_campaign_progression.py`, `check_future_fun_land.py` |
 | S9 T5 | credits screen from a won Wizpig 2 | `check_campaign_progression.py` seam E |
 
-### Four defects the execution found in its own design
+### Six defects the execution found in its own design
 
 These are recorded because the plans were wrong, not merely incomplete.
 
@@ -186,22 +186,34 @@ texture's first bind, stays byte-identical. A confirming run re-dumped the
 digest with the pack installed and read back pure `(255,0,255,255)`, so it is
 the pack's bytes reaching `upload_texture`, not the ROM's.
 
-**One thing S1 still owes.** This list had three entries; two have since been
-closed and the entries are struck rather than deleted, because which of them
-turned out to be real is part of what this record is for.
+**What S1 owed, and no longer does.** This list had three entries; all three
+are now closed and the entries are struck rather than deleted, because which of
+them turned out to be real is part of what this record is for.
 
 1. ~~Zip packs are readable but not discoverable.~~ **Closed.** `mod_registry`
    and `mod_texture_store` are retargeted onto `mod_source` (T6 step 5);
    `name_is_zip()` / `open_pack_root()` in `platform/mod_registry.c` discover
    `.zip` packs, and a file merely *named* `.zip` fails at open rather than
    being skipped silently.
-2. **`Content.PacksEnabled` is honoured at init only.** The key is declared
-   `SCOPE_LIVE` but nothing publishes it: it is read once, in
-   `platform_content_packs_init()`. So the Settings checkbox takes effect next
-   launch while `Tab` flips what looks like the same lever immediately. Closing
-   it means a live-apply hook in the video-config publish path — and first
-   answering whether the registry is even scanned when packs start disabled,
-   because if it is not, there is nothing for off→on to enable.
+2. ~~`Content.PacksEnabled` is honoured at init only.~~ **Closed.**
+   `mdkr_video_config_publish()` now carries the key to
+   `mdkr_mod_texture_set_enabled()` and to a matching switch in
+   `platform/mod_music.c`, so the Settings checkbox and `Tab` move the same
+   lever at the same speed. The open question resolved in the easy direction:
+   `platform_content_packs_init()` scans `mods/` and binds the texture store
+   **unconditionally** (`platform/platform_sdl_min.c` — the scan at line 1407
+   and the store bind at 1438 are both above the one place the setting is read,
+   line 1439), so the setting only ever decided whether the store answers.
+   off→on therefore needed no rescan and no restart. Gated by
+   `check_mod_texture_override.py`, whose central assertion is that the frame
+   after switching off is *byte-identical* to a run with no pack installed.
+
+   Two things are deliberately not live, and both say so where a player reads
+   them: installing or removing a pack (that is the scan, not the switch), and
+   a replacement music track that is already playing — the sequence player's
+   mute is a one-way redirection, so cutting the track off mid-play would leave
+   silence instead of the game's own music. The music switch is therefore read
+   at `mdkr_mod_music_begin()` and applies from the next track.
 3. ~~Custom music (T8) is untouched.~~ **Closed.** `platform/mod_music.c`, gated
    by `check_mod_music_override.py`.
 
