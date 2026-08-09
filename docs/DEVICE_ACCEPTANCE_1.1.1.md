@@ -127,20 +127,27 @@ than another lap.
 - **The launcher's FPS overlay, foregrounded for a minute.** One arm of
   `check_app_adopted_pacing` has never run to completion anywhere, because it
   needs an un-occluded foreground window.
-- **Two gates need an active display session and cannot be run from an
-  automated one.** `check_app_adopted_pacing` (the FPS-overlay arm above) and
-  `check_pacing_quality` (its realtime arm) both require the window server to
-  hand back drawables; without one, every present returns `unavailable` and the
-  arms measure nothing. Both now say exactly that instead of blaming a missing
-  marker. Run them from a logged-in, unlocked session:
+- **Two gates need an unlocked screen — both have now been run, and both pass.**
+  `check_app_adopted_pacing` (including the FPS-overlay arm, which had never
+  completed anywhere before) and `check_pacing_quality` (its realtime arm, the
+  only coverage the alpha-grid projection has anywhere) both require the window
+  server to hand back drawables. While `CGSSessionScreenIsLocked` is `Yes` every
+  present returns `unavailable` and the arms measure nothing; both now name that
+  cause instead of blaming a missing marker. Re-run them with:
 
   ```bash
   python3 tests/check_app_adopted_pacing.py --build build-rel --rom baserom.us.v80.z64
   python3 tests/check_pacing_quality.py     --build build-rel --rom baserom.us.v80.z64
   ```
 
-  The realtime arm is the only coverage the alpha-grid projection has anywhere,
-  so "it passed on a headless host" is not a substitute.
+  **Do not run `check_pacing_quality` in the first minute after unlocking.** It
+  measures displayed-interval and interpolation-phase variance, and a machine
+  waking from lock contributes a single ~1.0 s stall that dominates both: run
+  immediately after unlock it reported `max=1010751us`, variance
+  `550873710us^2` and failed the phase bound on all three retries. On a settled
+  session the same build gives `max=32994us` and variance `1115832us^2` — a
+  500x drop — and passes. The gate is behaving correctly in both cases; the
+  first is a real measurement of a real stall that simply is not ours.
 - **`frameLatency=1` across a resize.** Resize the window and confirm the
   `[SURFACE-CONFIG]` / `[PRESENT-MODE]` rows still report it.
 
