@@ -12,7 +12,7 @@ supported-ROM policy are in [`../README.md`](../README.md).
 | **Fixing a bug** | [`DEVELOPER_HANDBOOK.md`](DEVELOPER_HANDBOOK.md) — especially §3 · [`open-items/`](open-items/README.md) — is it already known? · [`../tests/README.md`](../tests/README.md) — the check that must catch it |
 | **Contributing a change** | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) — build, the hard audio-safety rule, and what a fix must ship with |
 | **Working on one subsystem** | [`architecture/`](architecture/README.md) — input, WebGPU, audio, race, web |
-| **Looking for something to do** | [`../ROADMAP.md`](../ROADMAP.md) — the deferred work, honestly scoped |
+| **Looking for something to do** | [`../ROADMAP.md`](../ROADMAP.md) — the deferred work, honestly scoped · [`sprints/`](sprints/README.md) — the feature-gap backlog, scoped into executable sprints |
 | **Cutting a release** | [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) — the clean-room and artifact gates |
 | **Checking the legal position** | [`../DISCLAIMER.md`](../DISCLAIMER.md), [`../NOTICE.md`](../NOTICE.md), [`../LICENSE`](../LICENSE) |
 
@@ -83,6 +83,12 @@ behind nearly every hard defect in this port, several of them completely silent.
   how it was verified. **Nothing is deleted when it is fixed**: read the entry for
   a subsystem before changing it, because most of these defects were silent.
   ([`OPEN_ITEMS.md`](OPEN_ITEMS.md) is the pointer left behind by the split.)
+- **[`sprints/`](sprints/README.md)** — nine scoped sprints closing the
+  feature-surface gap against the comparable native-port family: content packs,
+  enhancements, in-app tools, platform and region breadth, release engineering,
+  documentation, accessibility, and the campaign residuals. Each carries
+  milestones, acceptance criteria, user stories and task-level detail. Scope
+  documents, not promises — the same standing as `ROADMAP.md`.
 - **[`../ROADMAP.md`](../ROADMAP.md)** — what is deferred and why, with the
   condition under which each item would be taken up.
 - **[`STATUS.md`](STATUS.md)** — the long-form per-milestone engineering log.
