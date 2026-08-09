@@ -138,17 +138,37 @@ differ every tick, forever. This is the snow/rain shape and wants the same
 logical batch identity — keyed on `(gWaveBlockIDs[i], sub-tile, subdivision
 row)`, which is stable across the flip.
 
-**The open design question, and why this was not started blind.**
-`gfx_presentation_packet_lookup_deformation` keys on `(owner, viewport,
-ordinal)`, but `gfx_presentation_packet_register_vertex_identity` takes no
-`ordinal` — only `register_projected_shadow_vertex` does, and it exists
-precisely because that class also has one owner emitting several batches whose
-addresses alternate. A wave tile emits one `gSPVertexDKR` per subdivision row
-under a single logical owner, so it is the same shape: either each row gets its
-own identity token, or the identity API grows an ordinal the way the shadow
-path did. Choosing wrong collides two rows' deformation entries, which would
-blend one row's vertices out of another's — a worse artifact than the step this
-removes. Settle that before writing code.
+**The design question — RESOLVED 2026-08-09 by source read, no API change
+needed.** `gfx_presentation_packet_lookup_deformation` keys on `(owner,
+viewport, ordinal)` while `register_vertex_identity` takes no ordinal, which
+looked like it forced a choice between per-row tokens and growing the API. The
+capture side settles it: in `gfx_pc_dkr.c`'s `G_VTX` case, a
+`PARTICLE_VERTICES`-class binding captures with **ordinal hardcoded `0u`**;
+only `PROJECTED_SHADOW_VERTICES` passes `packet_binding.ordinal`, and the
+generic matrix-owned path draws from `dkr_deformation_next_ordinal()`. So for
+the identity class waves would use, ordinal is always 0 and **the identity
+token must be unique per emitted batch** — one token per `(block, sub-tile,
+subdivision row)`. That is the same rule snow and rain already follow (one
+token per flake physics slot, one per rain layer); waves are not a new case.
+
+**And the wrong choice is fail-closed, not a wrong blend.** If two batches did
+share a key, `deformation_capture` does not let the later one overwrite the
+earlier: it marks the entry `ambiguous`, increments `deformation_collisions`
+and returns false, so the batch holds. The feared artifact — row A's vertices
+blended out of row B's — cannot occur. `deformcollisions` is already reported
+in the `[PRESENT-PACKET]` row, so **`deformcollisions == 0` is the assertion
+that proves the token scheme is right**, and a mistake costs a hold rather than
+a corruption. This makes the case safe to implement and cheap to falsify.
+
+Remaining unknown, to settle with measurement rather than argument: the value
+of `max_vertex_delta`. Wave X/Z are fixed grid positions and never move; only Y
+changes, as `(gWaveHeightTable[i0] + gWaveHeightTable[i1]) *
+gWaveController.magnitude` scaled per vertex. Ordinary motion advances each
+index by `updateRate` (one table entry); a seed wrap in `waves_tick` jumps the
+index by `-seedSize` and so samples an arbitrary phase. Derive the limit from
+the table's own maximum adjacent-entry slope times `magnitude`, with a safety
+factor, and confirm against measured per-tick deltas — do not pick a round
+number.
 
 **Bar for the wave case:** a water route (Crescent Island) and a lava route
 (Hot Top Volcano) arm on the weather gate, each asserting registered batches
