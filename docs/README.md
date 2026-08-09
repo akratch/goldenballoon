@@ -56,6 +56,12 @@ behind nearly every hard defect in this port, several of them completely silent.
 
 ## Subsystem guides
 
+- **[`PLATFORM_ACCEPTANCE.md`](PLATFORM_ACCEPTANCE.md)** — the numbered manual
+  routes for everything that needs hardware this project's machines lack:
+  Wayland and X11, Windows hybrid graphics and Windows on Arm, Intel macOS,
+  controller hotplug, and the audible-output matrix. Every route carries exact
+  expected observations, requires a `[GPUINFO]` capture, and is currently marked
+  *not executed*.
 - **[`MODDING.md`](MODDING.md)** — content packs: where they go, what
   `pack.ini` holds, how a texture is named by its content digest, and the four
   things that do not work yet. No content ships with this project and none is

@@ -46,7 +46,14 @@ end — nothing is omitted.*
 
 These are the only known claims resting on code review or a single environment
 rather than a machine check here — each is recorded in its gate's docstring or
-the roadmap:
+the roadmap.
+
+**Each now has a numbered route** in
+[`PLATFORM_ACCEPTANCE.md`](PLATFORM_ACCEPTANCE.md), with exact expected
+observations and a result field, so that when the hardware appears the pass is a
+checklist rather than an improvisation. Every route is currently marked *not
+executed*, which is the honest state — and the file's own rule is that executed
+means executed, not that a build succeeded or a review looked fine.
 
 - Windows: the high-resolution timer path (MinGW cross-compiled, unmeasured),
   adaptive-vsync fallback, real-pad confirmation of the overlay input fix.
