@@ -78,6 +78,22 @@ commit and checksum it was built from.
 - Other ROM revisions (JP, US 1.0, EU 1.0) are recognized and refused by
   name; only US 1.1 and EU 1.1 are supported.
 
+## Custom content
+
+You can replace the game's textures with your own. Put a folder in `mods/` —
+next to your save data on macOS and Windows, next to the game on a portable
+build — with a small `pack.ini` naming the pack and a `textures/` folder inside
+it. The game picks it up at launch, and **Tab** switches every replacement off
+and back on while you play, so you can see both versions of the same corner.
+
+Nothing is included and nothing is hosted here: a pack is files you or someone
+else made, on your own machine. Replacement music, models and characters are
+not supported yet, and packs currently have to be plain folders rather than
+zips.
+
+[docs/MODDING.md](docs/MODDING.md) has the details, including how a texture
+file gets its name.
+
 ## No game data is included
 
 No ROM, textures, audio, music, models, or level data are distributed here or
