@@ -271,6 +271,23 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME mod_texture_key COMMAND mdkr_mod_texture_key_test)
 
+    # The console command parser. Its load-bearing property is that `set`
+    # resolves through mdkr_video_key_from_name and refuses anything the schema
+    # does not name -- without that, an in-game console is an arbitrary-write
+    # primitive. Tested with no window and no ROM.
+    add_executable(mdkr_dev_command_test
+        ${CMAKE_SOURCE_DIR}/tests/test_dev_command.c
+        ${CMAKE_SOURCE_DIR}/platform/dev_command.c
+        ${CMAKE_SOURCE_DIR}/platform/video_config.c
+        ${CMAKE_SOURCE_DIR}/platform/config_ini.c
+        ${CMAKE_SOURCE_DIR}/platform/pacing_policy.c)
+    target_include_directories(mdkr_dev_command_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_dev_command_test PRIVATE m)
+    endif()
+    add_test(NAME dev_command COMMAND mdkr_dev_command_test)
+
     add_executable(mdkr_vehicle_audio_contract_test
         ${CMAKE_SOURCE_DIR}/tests/test_vehicle_audio_contract.c
         ${CMAKE_SOURCE_DIR}/platform/asset_swap.c)
