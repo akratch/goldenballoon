@@ -56,6 +56,10 @@ behind nearly every hard defect in this port, several of them completely silent.
 
 ## Subsystem guides
 
+- **[`CI.md`](CI.md)** — the five hosted workflows: what each one proves and,
+  more importantly, what it does not. Includes the Windows evidence boundary
+  (hosted CI covers the binary, imports, package and extracted startup; not
+  rendered gameplay) and the current branch-protection gap.
 - **[`PLATFORM_ACCEPTANCE.md`](PLATFORM_ACCEPTANCE.md)** — the numbered manual
   routes for everything that needs hardware this project's machines lack:
   Wayland and X11, Windows hybrid graphics and Windows on Arm, Intel macOS,
