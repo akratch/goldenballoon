@@ -61,7 +61,14 @@ SILVER_CLEARED = 3
 RACE_VISITED = 1
 
 ORIGINAL_FRAMES = 4100
-ENHANCED_FRAMES = 5650
+# 5650 -> 7200. The old budget was sized around a boss that finished the race
+# roughly 15% early, because the runaway (issue #26) was the behaviour this
+# gate was written to expect. With the boss held to its authored pace the race
+# legitimately runs longer in frames, so the old budget cut it off before the
+# finish and the arm reported no verdict at all. Raising it restores the
+# measurement; it does not relax an assertion -- the bounds below are stricter
+# than the ones it replaced.
+ENHANCED_FRAMES = 7200
 DRIVE_ROUTE = (
     "0:200,500:-1004,946:-1858,1099:B10:-3381,1946:-3948,2180:E12;12:E5"
 )
