@@ -91,6 +91,28 @@ def main() -> int:
             return 1
 
     out_dir = Path(args.out).expanduser().resolve()
+    # Every file this writes is decoded ROM pixels. Inside the working tree they
+    # are untracked, un-ignored and innocuously named, so the next `git add -A`
+    # commits ROM-derived data -- the one thing this project guarantees it never
+    # does. Refuse rather than warn: there is no reason to dump into the source
+    # tree, and the cost of being wrong is a published repository that has to be
+    # rewritten. `mod-texture-dump/` is the exception because .gitignore covers
+    # it by name.
+    allowed_inside = ROOT / "mod-texture-dump"
+    if out_dir == ROOT or (
+        ROOT in out_dir.parents
+        and allowed_inside != out_dir
+        and allowed_inside not in out_dir.parents
+    ):
+        print(
+            f"FAIL: --out {out_dir} is inside the source tree ({ROOT}).\n"
+            "      This writes ROM-derived pixels; committing them would break "
+            "the clean-room guarantee.\n"
+            "      Use a path outside the repository, or "
+            f"{allowed_inside} (which .gitignore covers).",
+            file=sys.stderr,
+        )
+        return 1
     out_dir.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="mdkr_mod_texture_dump_") as run_dir_s:
