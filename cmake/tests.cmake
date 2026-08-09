@@ -241,6 +241,36 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME endian_utils COMMAND mdkr_endian_utils_test)
 
+    # Content packs. Both are deliberately ROM-free and window-free: a pack
+    # manifest is text, and a texture digest is a hash over bytes the caller
+    # supplies, so neither needs the game to boot.
+    add_executable(mdkr_mod_manifest_test
+        ${CMAKE_SOURCE_DIR}/tests/test_mod_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/config_ini.c)
+    target_include_directories(mdkr_mod_manifest_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_mod_manifest_test PRIVATE m)
+    endif()
+    add_test(NAME mod_manifest COMMAND mdkr_mod_manifest_test)
+
+    # The digest is a published contract -- every pack in existence names its
+    # files by it -- so this test pins an exact value and proves the hash does
+    # not read struct padding. It needs the fast3d include dir for
+    # gfx_texture_cache_key.h.
+    add_executable(mdkr_mod_texture_key_test
+        ${CMAKE_SOURCE_DIR}/tests/test_mod_texture_key.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_texture_key.c
+        ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+    target_include_directories(mdkr_mod_texture_key_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/platform/fast3d)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_mod_texture_key_test PRIVATE m)
+    endif()
+    add_test(NAME mod_texture_key COMMAND mdkr_mod_texture_key_test)
+
     add_executable(mdkr_vehicle_audio_contract_test
         ${CMAKE_SOURCE_DIR}/tests/test_vehicle_audio_contract.c
         ${CMAKE_SOURCE_DIR}/platform/asset_swap.c)
