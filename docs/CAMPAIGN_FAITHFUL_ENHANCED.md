@@ -90,14 +90,58 @@ transients and the measured 3–8% AI lap delta.
 Enhanced/Original lap-time parity within tolerance on a non-boss track.
 **Positive control:** `MDKR_BOSS_CADENCE_COMPAT=0` still reproduces the runaway.
 
-### M2 — Wheel-0 traction hole
-`update_car_velocity_ground()` samples drag from `wheel_surfaces[0]` alone,
-while the human path `func_80050A28()` averages all contacting wheels. Under
-Enhanced only, use the averaging form when wheel 0 has lifted. This makes the
-#26 clamp a backstop rather than the mechanism.
+### M2 — Occupancy, not traction — THE PREMISE HERE WAS WRONG
 
-**Gate:** boss peak `|velocity|` at or under the authored governor with the
-clamp *disabled* — i.e. the physics is right without the safety net.
+**This milestone was specified on a false premise and is rewritten.** It
+originally said: close the wheel-0 traction hole, because
+`update_car_velocity_ground()` samples drag from `wheel_surfaces[0]` alone
+while the human path averages all contacting wheels, so a boss with wheel 0
+lifted keeps full thrust with zero drag. The stated gate was "boss peak
+|velocity| at or under the authored governor with the clamp disabled", on the
+claim that "Original sits exactly on that ceiling and never exceeds it".
+
+**That claim is measurably false, and the data to refute it was already in
+hand when the claim was written.** Measured peaks against a governor ceiling of
+16.29: Bubbler 16.20, Bluey 2 **16.91** on a time-trial route and **19.09** on
+the adventure route. Tracing the Original boss through its peak shows velocity
+climbing at +0.6171/tick across frames with `groundedWheels` between 1 and 3 —
+no drag term at all — then decaying once all four regain contact. **The
+authored boss's pace USES the drag-free episode.** The wheel-0 hole is not a
+bug the boss suffers; it is a mechanism the boss's speed depends on.
+
+So closing the hole makes the boss too slow, and it was measured doing exactly
+that: the traction fix took the boss from 7.0% slow to 9.4% slow and handed the
+player the win. It was reverted.
+
+**What is actually wrong under Enhanced is the OCCUPANCY of that state, not the
+state itself.** Ticks spent at partial contact (1–3 wheels), Bluey 2:
+
+| | Original | Enhanced |
+|---|---|---|
+| boss | 11.8% | **20.2%** (1.7x) |
+| human | 15.4% | 26.9% |
+| fully airborne | 10.2% | 9.8% (unchanged) |
+
+Airtime is unchanged, so this is contact and attitude dynamics, not flight. The
+boss is taking roughly twice the authored dose of drag-free thrust. No value of
+the traction term fixes that: any partial drag puts the peak back over the
+ceiling, and zero drag is what Original does. **Peak ≤ 16.3 and "boss pace =
+Original" are mutually exclusive while occupancy is 2x** — which is why the old
+gate over-constrained and could not be satisfied honestly.
+
+**The real fix is M1-shaped:** scale the per-tick attitude and suspension terms
+that put the boss into partial contact twice as often. Several carry no
+`//!@Delta` marker at all — `y_rotation += temp_s16 >> 2`,
+`unk10C = (unk10C * 7) >> 3`, `y_rotation_vel = (y_rotation_vel * 7) >> 3`, and
+`y_rotation_vel += (gCurrentCarSteerVel - y_rotation_vel) >> 3`. The
+lateral-loop rule applies: a source/sink pair must be scaled as a whole or not
+at all.
+
+**Revised gate:** partial-contact occupancy under Enhanced within tolerance of
+Original on both bosses, and boss finish inside the Original band with the
+clamp disabled. Occupancy is the invariant that was actually violated, so it is
+what the gate should measure. **Positive control:** `MDKR_BOSS_CADENCE_COMPAT=0`
+on an unfixed build still reproduces the runaway.
 
 ### M3 — The discrete/continuous split
 Gate discrete call sites to authored boundaries. Large but mechanical once M0
