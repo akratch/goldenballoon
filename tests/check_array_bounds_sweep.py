@@ -505,7 +505,24 @@ SHAPE_INFO_MAX = {
     # +7 from extending SCAN_DIRS to platform/: the informational population in
     # the port's own C, none of which is a saturation cap on a shared counter
     # (they are `x == 0` early-outs and single-writer loop indices).
-    "equality-cap": 39,
+    #
+    # 39 -> 45. Six entries, all in the one function the outline-font work
+    # added, gfx_font_outline.c solve_face_fit(). Both counters are bounded by
+    # the array they index and cannot reach it:
+    #   * `sample_count` fills GlyphSample samples[GFX_FONT_REGIONS_PER_ATLAS]
+    #     from `for (index = 0; index < limit; index++)` with a single
+    #     `sample_count++` per iteration, where `limit` is explicitly
+    #     `min(region_count, GFX_FONT_REGIONS_PER_ATLAS)`. The loop bound IS
+    #     the capacity, and iterations may `continue` without writing, so the
+    #     count is <= limit <= capacity.
+    #   * `estimate_count` fills float estimates[GFX_FONT_REGIONS_PER_ATLAS]
+    #     across four passes, each reset to 0 and each a
+    #     `for (index = 0; index < sample_count; index++)` loop pushing at most
+    #     one element per iteration, so it is <= sample_count <= capacity.
+    # The `== 0` / `!= 0` comparisons the enumerator sees are empty-set
+    # early-outs before a median is taken, not saturation caps on a shared
+    # counter.
+    "equality-cap": 45,
     # +116 from platform/. Overwhelmingly `1u << port` / `1u << slot` bit masks
     # over small fixed domains and `value >> (i * 8)` byte extractions -- the
     # var-count flavour the enumerator reports without an added constant. The
@@ -529,7 +546,23 @@ SHAPE_INFO_MAX = {
     #     `camera_id < PRESENTATION_SNAPSHOT_MAX_CAMERAS` (8).
     # (Nine appear as additions against aaf7486; four older entries moved or
     # were rewritten, so the net is five.)
-    "shift-count": 262,
+    #
+    # 262 -> 265. Three sites from the presentation work, each read and each
+    # bounded by an explicit guard rather than by convention:
+    #   * gfx_pc_dkr.c dkr_capture_uv_scroll_endpoints -- `moved |= 1u << i`
+    #     over `i < num_tris`, and the function returns early unless
+    #     `num_tris <= GFX_PRESENTATION_UV_SCROLL_MAX_TRIANGLES` (16). The
+    #     accumulator is a uint16_t, so the domain and the type match exactly.
+    #   * presentation_snapshot.c presentation_snapshot_capture_camera (x2) --
+    #     `1u << viewport` where `viewport = write->camera_count` immediately
+    #     after `if (write->camera_count >= PRESENTATION_SNAPSHOT_MAX_VIEWPORTS)
+    #     return`.
+    #   * presentation_snapshot.c presentation_snapshot_capture_commit -- the
+    #     unconsumed-note sweep shifts by a loop index bounded by
+    #     `write->camera_count`, which the guard above caps; the sibling
+    #     `1ull << entry->camera_id` is fenced by an explicit
+    #     `camera_id >= 0 && camera_id < PRESENTATION_SNAPSHOT_MAX_CAMERAS`.
+    "shift-count": 265,
 }
 
 # Only array-bounds is load-bearing for this class. pointer-overflow is kept

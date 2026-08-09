@@ -1099,6 +1099,16 @@ def run_fps_only_overlay(binary: Path, rom: Path, timeout: int,
             "[overlay-test] FPS-only WebGPU pass rendered",
             "[WGPU-SHUTDOWN] roots=borrowed",
         )
+        # Ask the drawable question FIRST. "[overlay-test] FPS-only WebGPU
+        # pass rendered" is emitted from inside the render pass, so a session
+        # with no window server loses that marker as a CONSEQUENCE of having no
+        # drawable. Reporting the missing marker sends debugging into the
+        # overlay code, which is the wrong place and is the exact mistake
+        # explain_headless_window_server() was written to prevent -- it was
+        # simply consulted too late to cover this arm.
+        starved = explain_headless_window_server(output)
+        if starved:
+            raise RuntimeError(f"FPS-only WebGPU overlay: {starved}")
         for marker in required:
             if marker not in output:
                 raise RuntimeError(
@@ -1148,6 +1158,12 @@ def run_native_overlay_fault(binary: Path, rom: Path, point: str,
             "[webgpu] ImGui overlay rendering failed",
             "[WGPU-SHUTDOWN] roots=borrowed",
         )
+        # Same ordering as the FPS-only arm: this arm's markers also come from
+        # inside a render pass, so name a drawable-starved session before
+        # blaming the fault-injection path.
+        starved = explain_headless_window_server(output)
+        if starved:
+            raise RuntimeError(f"{point}: {starved}")
         for marker in required:
             if marker not in output:
                 raise RuntimeError(
