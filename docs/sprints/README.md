@@ -133,6 +133,30 @@ mipmapped ROM texture gets no mip chain even though its cache key says
 `mipmaps = true`. That is what the plan specified, and it will read as aliasing
 at distance once packs exist.
 
+### One verification gap in this work
+
+`STB_SOURCES` is added to the target unconditionally, so the wasm build compiles
+`stb_image` too, and `platform/mod_*.c` are all in `PLATFORM_SOURCES` for every
+platform. **The web build has not been rebuilt since.** The native and ROM
+suite roles pass; the `wasm`, `browser` and `browser_save` roles were not run,
+and neither was `tools/web/build_web.sh`. Nothing here is expected to break
+under emscripten — stb_image is ordinary portable C and the mod layer touches
+no platform API beyond `fs_utf8` — but *expected not to break* is not a
+measurement, and the browser build is a shipped artifact.
+
+Run before this branch is merged:
+
+```bash
+tools/web/build_web.sh
+MDKR_AUDIO=0 python3 tools/run_checks.py --role wasm,browser,browser_save
+```
+
+There is also a live question the wasm build will answer: the pack directory
+resolves relative to the working directory on non-packaged builds, and the
+browser has no writable `mods/`. The store should simply stay inactive there,
+which is the correct behaviour, but it is currently an inference rather than an
+observation.
+
 ### One defect surfaced, not yet fixed
 
 `tools/sweep_subentry_access.py` reports 276 sub-entry sites: 129 checked, 65
