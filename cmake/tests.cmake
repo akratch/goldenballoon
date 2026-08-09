@@ -335,6 +335,20 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME a11y_model COMMAND mdkr_a11y_model_test)
 
+    # The save-state container. Deliberately links NOTHING from save_container.c
+    # or save_codec.c: a save state is not the progress save, and the two must
+    # not be able to become each other. The truncation sweep writes and re-reads
+    # a real file at every offset, so it needs no ROM and no window.
+    add_executable(mdkr_save_state_container_test
+        ${CMAKE_SOURCE_DIR}/tests/test_save_state_container.c
+        ${CMAKE_SOURCE_DIR}/platform/save_state.c)
+    target_include_directories(mdkr_save_state_container_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_save_state_container_test PRIVATE m)
+    endif()
+    add_test(NAME save_state_container COMMAND mdkr_save_state_container_test)
+
     add_executable(mdkr_vehicle_audio_contract_test
         ${CMAKE_SOURCE_DIR}/tests/test_vehicle_audio_contract.c
         ${CMAKE_SOURCE_DIR}/platform/asset_swap.c)

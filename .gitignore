@@ -93,3 +93,15 @@ build-*.log
 # (platform/video_config_runtime.c). A test or a launch from the repo root drops
 # one here; it is per-machine state, never source.
 mdkr64.ini
+
+# Player-installed content packs (platform/mod_registry.c). This directory holds
+# whatever a player or pack author put in it, which is exactly the class of thing
+# this repository must never carry: a pack can legitimately contain textures and
+# audio derived from the game. It is user data on a user's machine and never
+# source. check_clean_room.sh section 8 fails closed if anything under it is
+# tracked, so the ignore and the guard back each other up.
+mods/
+
+# Digest-named PNG corpus written by tools/mod_texture_dump.py. Every file in it
+# is decoded ROM texture data.
+mod-texture-dump/

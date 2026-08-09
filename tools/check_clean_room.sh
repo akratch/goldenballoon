@@ -108,7 +108,8 @@ echo "== 6. .gitignore covers ROMs, ROM ARCHIVES, saves and captures =="
 # match it and check_no_rom.sh scans for an N64 header, which a compressed member
 # does not present. Five DKR revisions once sat in the project root as .zip,
 # untracked but NOT ignored -- one `git add -A` from being committed.
-for pat in '*.z64' '*.n64' '*.v64' '*.zip' '*.7z' '*.rar' 'save/' '*.ppm'; do
+for pat in '*.z64' '*.n64' '*.v64' '*.zip' '*.7z' '*.rar' 'save/' '*.ppm' \
+           'mods/' 'mod-texture-dump/'; do
     if grep -qxF "$pat" .gitignore; then
         note ok ".gitignore has $pat"
     else
@@ -131,6 +132,22 @@ if [[ -n "$big_untracked" ]]; then
     fail=1
 else
     note ok "no un-ignored file over 4 MiB (a stray ROM/archive could not slip in)"
+fi
+
+echo "== 8. no content-pack payload tracked or in history =="
+# Content packs (platform/mod_registry.c) are user data. A pack legitimately
+# contains textures and audio derived from the player's own ROM, so a tracked
+# pack is ROM-derived data by another name -- and it would arrive under an
+# innocuous extension (.png, .wav, .ini), which sections 1-4 do not look for and
+# section 7's 4 MiB threshold would not notice. The ignore rule in .gitignore and
+# this check back each other up: the ignore stops the accident, this catches a
+# force-add and anything already in history.
+if git ls-files -- 'mods/*' 'mods' 'mod-texture-dump/*' | grep . ; then
+    note FAIL "content-pack files are tracked (above) -- packs are user data, never source"; fail=1
+elif git log --all --diff-filter=A --name-only --pretty=format: -- 'mods/*' 'mod-texture-dump/*' 2>/dev/null | grep . ; then
+    note FAIL "a content-pack path was added somewhere in history (above)"; fail=1
+else
+    note ok "no content-pack payload tracked, and none ever added in history"
 fi
 
 echo
