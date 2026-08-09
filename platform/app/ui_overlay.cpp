@@ -23,6 +23,7 @@
 #include "app_theme.h"
 #include "app_ui_policy.h"
 #include "app_window.h"
+#include "dev_tools.h"      // DevTools_draw: the in-game diagnostic surface
 #include "engine_entry.h"   // AppOverlayHooks, platformSetOverlayHooks
 #include "ui_common.h"
 #include "ui_settings.h"
@@ -258,7 +259,14 @@ static int onProcessEvent(const void *ev) {
 // The input-swallowing contract: while the overlay is up, the engine's pump
 // drops input events instead of feeding them to the pad.
 static int onWantsInput(void) { return g_overlay.open ? 1 : 0; }
-static int onWantsRender(void) { return (g_overlay.open || g_overlay.showFps) ? 1 : 0; }
+// Tools.Enabled joins the render predicate but NOT the input one. The overlay
+// swallows the pad because it is a menu the player is operating; a diagnostic
+// window is an observer, and a surface that took input away from the game would
+// be changing the race by being visible -- exactly what the purity gate exists
+// to forbid.
+static int onWantsRender(void) {
+    return (g_overlay.open || g_overlay.showFps || DevTools_wantsFrame()) ? 1 : 0;
+}
 
 }  // extern "C"
 
@@ -638,8 +646,11 @@ static int onRender(void) {
     overlayTestFrameTick();
 
     // Nothing to draw: skip the whole ImGui frame rather than building and
-    // discarding one every frame of every race.
-    if (!g_overlay.open && !g_overlay.showFps) {
+    // discarding one every frame of every race. Tools.Enabled joins this
+    // condition rather than "is a tool open", because the hotkey that opens a
+    // tool is dispatched from inside DevTools_draw() -- a frame built only once
+    // something is open could never see the key that opens it.
+    if (!g_overlay.open && !g_overlay.showFps && !DevTools_wantsFrame()) {
         // ImGui::NewFrame() is the only consumer of the event queue that
         // onProcessEvent keeps filling, and the only thing that releases a key
         // ImGui still believes is held. Neither runs while the overlay is
@@ -665,6 +676,10 @@ static int onRender(void) {
     beginImGuiFrame();
     if (g_overlay.showFps) drawFpsReadout();
     if (g_overlay.open) drawOverlay();
+    // After the overlay, so a diagnostic window never draws over the menu the
+    // player is operating. Self-gating on Tools.Enabled: this call is a no-op
+    // and costs one comparison in every normal session.
+    DevTools_draw();
     return endImGuiFrame() ? 1 : 0;
 }
 

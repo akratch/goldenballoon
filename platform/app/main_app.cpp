@@ -14,6 +14,7 @@
 #include "app_ui_policy.h"
 #include "app_version.h"
 #include "arg_triage.h"
+#include "dev_tools.h"
 #include "diag_log.h"
 #include "file_dialog.h"
 #include "fs_utf8.h"
@@ -223,6 +224,27 @@ int dumpSchema() {
                 live, level, restart);
     Settings_dumpSchemaContract();
     return 0;
+}
+
+// Non-interactive developer-tool registry dump, the same shape and the same
+// pre-window position as the schema self-check above. This is how
+// tests/check_dev_tools_purity.py learns which tools exist: the gate does not
+// carry its own list, it enumerates the table, so a tool added later is born
+// covered instead of waiting for someone to extend the test.
+//
+// Deliberately touches no config, no ROM and no GPU. An argument rather than an
+// environment variable because it selects a whole mode of the process, and the
+// interception has to sit above mdkr_is_automation_invocation() -- which classes
+// any argument at all as "run the engine" -- for the flag to be seen.
+bool argvRequestsToolTableDump(int argc, char **argv) {
+    if (argv == nullptr) return false;
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i] != nullptr &&
+            std::strcmp(argv[i], "--dump-tool-table") == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 int applyAutoplayVideoSetting() {
@@ -1436,6 +1458,14 @@ int main(int argc, char **argv) {
     // Non-interactive schema self-check, before any window or tee.
     if (std::getenv("MDKR_APP_DUMP_SCHEMA")) {
         return dumpSchema();
+    }
+
+    // Non-interactive tool-registry dump, on the same path and for the same
+    // reason. Above the automation dispatch below, which would otherwise hand
+    // the flag to the engine as an unrecognised argument and start a game.
+    if (argvRequestsToolTableDump(argc, argv)) {
+        DevTools_dumpTable();
+        return 0;
     }
 
     // Exercise the native picker through the same live-window activation state
