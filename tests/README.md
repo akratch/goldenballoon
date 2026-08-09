@@ -3627,14 +3627,14 @@ reach MENU_TITLE at frame 1134. If you see a race load early in an *idle* boot, 
 is the ordinary title attract demo (`levelId=18` @~5132, `levelId=28` @~6632,
 `numPlayers=0 cutscene=100`), which exits on START.
 
-## Sprint ROM-free units — `mod_manifest`, `mod_registry`, `mod_texture_key`, `dev_command`, `enhancement_registry`, `a11y_model`, `save_state_container`
+## Sprint ROM-free units — ten new CTests
 
 ```bash
 ctest --test-dir build --output-on-failure \
-  -R '^(mod_manifest|mod_registry|mod_texture_key|dev_command|enhancement_registry|a11y_model|save_state_container)$'
+  -R '^(mod_manifest|mod_registry|mod_texture_key|dev_command|enhancement_registry|a11y_model|save_state_container|update_check|gpu_diagnostics|adapter_policy)$'
 ```
 
-Seven CTest units added by the [`docs/sprints/`](../docs/sprints/README.md)
+Ten CTest units added by the [`docs/sprints/`](../docs/sprints/README.md)
 work. All are ROM-free and window-free, all run in milliseconds, and
 `rom_free_units` carries them into every lane. They are registered in
 `cmake/tests.cmake`; `tools/run_checks.py` does not name them individually
@@ -3649,6 +3649,9 @@ because its manifest cross-check covers `tests/test_*.py`, and these are C.
 | `enhancement_registry` | The enhancement table and its authority classes | The table and `mdkr_video_key_is_enhancement()` describe exactly the same set |
 | `a11y_model` | The accessibility utterance stream | Coalescing is per category, interruption is per priority, and each CRITICAL case is paired with an identical NORMAL case so the exemption is the only difference |
 | `save_state_container` | Save-state file format and validation | Truncation refused at all 88 offsets; a header declaring a payload the file does not contain is refused in both directions |
+| `update_check` | Version comparison and the once-a-day interval | `1.10.0` beats `1.9.0` — numeric, not lexicographic; a release supersedes the nightly it came from, and a nightly never supersedes a release |
+| `gpu_diagnostics` | The `[GPUINFO]` adapter record | Every candidate carries a non-empty reason, and an adapter name containing control characters or quotes cannot forge a line in the block |
+| `adapter_policy` | Choosing an adapter and backend | A preference matching nothing falls back and names the string that missed, rather than failing to start; UNKNOWN class ranks between discrete and integrated in both directions |
 
 Each of these was mutation-checked when it landed — the implementation was
 deliberately broken and the suite confirmed to fail — because several of them
