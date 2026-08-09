@@ -348,10 +348,21 @@ unsupported revisions.
 
 ## Project infrastructure
 
-- **Hosted CI has never run green.** The workflow matrix is written and the
-  checks are real, but the first hosted run is still owed, and repository branch
-  protection depends on it. Until then, every claim in this repository rests on
-  local runs.
+- **Hosted CI is green; branch protection is not yet on.** This entry used to
+  say the first hosted run was still owed. It is not: run `31248954626` of the
+  `correctness` workflow completed **success** on `main` at
+  `080c4c4e6480eef86afe1f964766d27d2e618fda`, 2026-08-08, with all six jobs
+  green — policy and source contracts, Linux ROM-free ASan + UBSan, native Linux
+  OpenGL-only, native Linux WebGPU, native macOS WebGPU warnings, and linked
+  wasm plus browser save custody. Claims in this repository no longer rest on
+  local runs alone.
+
+  What is still owed is the consequence: `main` does not yet *require* those
+  jobs, so nothing stops a direct push that has not passed them.
+  `tools/check_github_branch_protection.py` exists to assert the configuration
+  and has not been run green against the live repository. Enabling protection is
+  a repository-settings change rather than a source change, which is why it sits
+  here rather than in a commit.
 - **Mode-coverage stragglers.** Ghost save and load are no longer one of them.
   `check_ghost_matrix.py` drives 46 of the 47 legal (track, vehicle) pairs
   through a record, a save, and a read-back in a **fresh process**, each pair in

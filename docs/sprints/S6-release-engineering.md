@@ -66,11 +66,20 @@ untested, so that I know what I am choosing.
 
 ## Milestones and acceptance criteria
 
-### M1 — First green hosted run
+### M1 — First green hosted run — **ALREADY MET, 2026-08-09**
 
-**Done when:** the `correctness` workflow has completed green on `main`, every
-job included, with the run URL recorded in `docs/DEFINITION_OF_DONE.md`. Not "the
-workflow is fixed" — completed, green, linked.
+**Was:** the `correctness` workflow completed green on `main`, every job
+included, with the run recorded in `docs/DEFINITION_OF_DONE.md`.
+
+**Found already true.** `ROADMAP.md` claimed hosted CI had never run green; it
+had. Run `31248954626` completed **success** on `main` at
+`080c4c4e6480eef86afe1f964766d27d2e618fda` on 2026-08-08, all six jobs green.
+Recorded in `docs/DEFINITION_OF_DONE.md` and corrected in `ROADMAP.md`.
+
+Task 1 below is therefore **not** "make it green" — it is "keep it green and
+find out what is flaky". The run history shows `correctness` failing on
+several feature branches in the same period, so the workflow is not uniformly
+green and the failures are worth classifying before protection is turned on.
 
 ### M2 — Branch protection
 

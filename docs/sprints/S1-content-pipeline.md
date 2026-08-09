@@ -873,23 +873,54 @@ Implementation notes that the gate depends on:
 
 - [ ] **Step 6: Hook the renderer**
 
-In `platform/fast3d/gfx_pc_dkr.c`, at the point where a texture is about to be
-uploaded, compute the digest and consult the store:
+The hook site is `dkr_bind_tile()` in `platform/fast3d/gfx_pc_dkr.c` (around
+line 1962: *"Bind the render tile's texture to a sampler unit; import+cache on
+miss"*). It already assembles a `const struct DkrTexCacheKey key = { … }`, scans
+`tex_cache` with `dkr_texcache_key_equal()`, and on a miss calls
+`dkr_upload_tile_texture(td, cutout, &uw, &uh)`. Two edits, both local:
+
+**a. Add the generation to the key initialiser**, so the two variants of a
+texture are distinct cache entries and toggling neither mutates a live entry nor
+leaks the old one:
 
 ```c
-    key.override_generation = mdkr_mod_texture_generation();
-    /* ... existing cache lookup on `key` ... */
-
-    /* Miss: decide the source before decoding ROM texels. */
-    char digest[33];
-    mdkr_mod_texture_digest(&key, source_texels, source_size_bytes, digest);
-    MdkrModTexture over;
-    if (mdkr_mod_texture_lookup(digest, &over)) {
-        upload_rgba8(over.rgba, over.width, over.height);
-    } else {
-        /* existing ROM decode + upload path, unchanged */
-    }
+        .cutout = cutout,
+        .override_generation = mdkr_mod_texture_generation(),
+    };
 ```
+
+**b. Wrap only the miss-path upload call.** Leave everything around it — slot
+acquisition, `new_texture()`, `select_texture()`, the failure teardown — exactly
+as it is:
+
+```c
+        uint32_t uw = 0, uh = 0;
+        char digest[33];
+        mdkr_mod_texture_digest(&key, addr, source_size_bytes, digest);
+        MdkrModTexture over;
+        bool uploaded = mdkr_mod_texture_lookup(digest, &over)
+            ? gfx_rapi->upload_texture(over.rgba, over.width, over.height)
+            : dkr_upload_tile_texture(td, cutout, &uw, &uh);
+        if (over_used) { uw = (uint32_t) over.width; uh = (uint32_t) over.height; }
+        if (!uploaded) {
+            /* existing failure teardown, unchanged */
+```
+
+Hoist the lookup result into a `bool over_used` so the dimension assignment is
+explicit rather than inferred from `uw == 0`.
+
+**Note on which bytes are hashed.** `dkr_bind_tile()` has `addr` (the raw N64
+source texels for this tile) and `source_size_bytes` in hand *before* any decode,
+and `mdkr_mod_texture_digest()`'s payload parameter is format-agnostic — the key
+fields already carry `fmt`, `siz`, `width` and `height`, so the source payload
+identifies the picture exactly as well as a decoded one would and is cheaper to
+reach. Pass the **source** bytes, not decoded RGBA. The existing
+`dkr_src_hash(addr, source_size_bytes)` used by `MDKR_TEXCACHE_VERIFY` hashes the
+same span, which is corroboration that the span is the right one.
+
+Use `source_identity` rather than `addr` **only** for the cache key's `.addr`
+field, as the existing code already does — the digest must use `addr`, because
+`source_identity` is a retained-task alias, not the pixel source.
 
 Keep the ROM path byte-for-byte unchanged in the miss case. If the diff shows
 the original path being restructured rather than wrapped, revert and re-do it —
