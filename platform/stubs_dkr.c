@@ -931,6 +931,23 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
             s_audioRebasePending = false;
             dkr_audio_service_tick();
 
+            /* THE LAST MOMENT INPUT CAN STILL REACH THIS TICK.
+             *
+             * The subloop above exited because an authored tick came due, and
+             * it exited straight out of the pacing wait -- there is no present
+             * opportunity, and therefore no input pump, between that wait and
+             * the commit below. So the freshest host sample any ticket can
+             * carry was taken one present interval ago, and a whole authored
+             * quantum ago whenever the presentation rate equals the tick rate.
+             *
+             * Sampling here closes exactly that gap and nothing else. It adds
+             * host captures, which the bounded queue already coalesces and
+             * already accepts in unbounded number per tick; it does not add a
+             * ticket, a consume, or a controller read, so the game still sees
+             * one published pad sample per authored tick. Inert unless armed.
+             */
+            platform_input_sample_late();
+
             const bool exit_requested = platform_exit_requested();
             bool ticket_issued = false;
             if (!exit_requested && oracle_variable_ticket) {

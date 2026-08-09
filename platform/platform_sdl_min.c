@@ -145,6 +145,7 @@ uint64_t platform_perf_monotonic_ns(void) {
 #include "user_paths.h"
 #include "pacing_policy.h"
 #include "present_sched.h"
+#include "input_latency_census.h"
 #include "gameplay_event_trace.h"
 #include "input_tick_queue.h"
 #include "input_consumption_trace.h"
@@ -377,6 +378,10 @@ static struct pad_state s_browserTouchSource;
 #endif
 
 static void input_capture_live(uint64_t target_tick);
+/* The pacer's host clock, defined with the rest of the pacing state below. The
+ * input latency census timestamps against it so every term in the budget is on
+ * the same clock the pacer itself schedules on. */
+static uint64_t pace_host_ns(void);
 
 static SDL_GameController *s_gc[DKR_MAXPADS] = { NULL, NULL, NULL, NULL };
 /* DKR's current motor request per port. Kept separate from the user mute/profile
@@ -1697,6 +1702,37 @@ static void input_capture_live(uint64_t target_tick) {
         mdkr_input_tick_queue_capture(
             &s_inputQueue, (unsigned)port, target_tick, sample);
     }
+    if (input_latency_census_enabled()) {
+        input_latency_census_note_capture(pace_host_ns());
+    }
+}
+
+/*
+ * JUST-IN-TIME INPUT SAMPLING.
+ *
+ * Off unless MDKR_INPUT_JIT is set to something other than 0, latched once so
+ * no tick can observe the setting changing under it. Deliberately NOT keyed on
+ * the simulation cadence: sampling the pad later in wall-clock time changes
+ * nothing about how the sample is processed, so it is correct under Original
+ * and Enhanced alike and has no business asking which one is running.
+ *
+ * What it buys, and why the term exists at all: host capture runs from the
+ * input pump, and the pump runs on presentation opportunities. The last
+ * opportunity before an authored tick becomes due is one present interval
+ * before the commit that publishes the ticket -- and when the presentation rate
+ * equals the tick rate, that is the whole authored quantum. The sample is taken
+ * and then simply waits. This runs the same capture again at the last moment
+ * it can still reach the ticket about to be issued.
+ */
+static int s_inputJitSampling = -1;
+
+static int input_jit_sampling_enabled(void) {
+    if (s_inputJitSampling < 0) {
+        const char *value = getenv("MDKR_INPUT_JIT");
+        s_inputJitSampling =
+            (value != NULL && value[0] != '\0' && value[0] != '0');
+    }
+    return s_inputJitSampling;
 }
 
 /* The pacer's live display-rate re-derivation, called from the SDL event pump
@@ -1937,22 +1973,16 @@ static void settings_toggle_poll(void) {
     }
 }
 
-/* Capture host input transitions. This may run many times between simulation
- * ticks; it never directly replaces the DKR-visible s_pads snapshot. */
-void platform_input_pump(void) {
-    const uint64_t target_tick = present_sched_input_target_tick();
-    /* Test-only; one compare in every real run (see settings_toggle_poll). */
-    settings_toggle_poll();
-#ifdef MDKR_APP
-    /* Applies deferred shell/window work after the previous present and before
-     * any new frame acquires a drawable. No-op without registered app hooks. */
-    platformOverlayService();
-    /* The overlay may have opened or closed from the render callback since the
-     * last pump -- the Resume button and the scripted schedule both do -- so
-     * reconcile before any event is dispatched rather than waiting for an edge
-     * that dispatch will never observe. */
-    overlay_capture_sync(target_tick);
-#endif
+/* Drain and dispatch the SDL event queue into the latched host sources, then
+ * capture each change into the fixed-tick input queue.
+ *
+ * Factored out of platform_input_pump so the just-in-time sampler can run the
+ * SAME dispatch immediately before a ticket is committed. That sharing is the
+ * point: the overlay's swallow contract, the focus-loss retirement and the
+ * device add/remove handling all live in this loop, and a second drain that
+ * did not honour them would steal events from the shell rather than shorten
+ * anyone's input latency. */
+static void input_dispatch_events(uint64_t target_tick) {
     if (s_sdlReady) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -2086,10 +2116,50 @@ void platform_input_pump(void) {
                     break;
             }
             if (input_changed) {
+                if (input_latency_census_enabled()) {
+                    switch (e.type) {
+                        case SDL_KEYDOWN:
+                        case SDL_KEYUP:
+                        case SDL_CONTROLLERBUTTONDOWN:
+                        case SDL_CONTROLLERBUTTONUP:
+                        case SDL_CONTROLLERAXISMOTION: {
+                            /* SDL2 stamps events from its own millisecond
+                             * clock, so this term is reported at millisecond
+                             * resolution and no better. */
+                            const Uint32 now_ms = SDL_GetTicks();
+                            const Uint32 stamp = e.common.timestamp;
+                            input_latency_census_note_event(
+                                now_ms >= stamp ? (unsigned)(now_ms - stamp)
+                                                : 0u);
+                            break;
+                        }
+                        default:
+                            break;
+                    }
+                }
                 input_capture_live(target_tick);
             }
         }
     }
+}
+
+/* Capture host input transitions. This may run many times between simulation
+ * ticks; it never directly replaces the DKR-visible s_pads snapshot. */
+void platform_input_pump(void) {
+    const uint64_t target_tick = present_sched_input_target_tick();
+    /* Test-only; one compare in every real run (see settings_toggle_poll). */
+    settings_toggle_poll();
+#ifdef MDKR_APP
+    /* Applies deferred shell/window work after the previous present and before
+     * any new frame acquires a drawable. No-op without registered app hooks. */
+    platformOverlayService();
+    /* The overlay may have opened or closed from the render callback since the
+     * last pump -- the Resume button and the scripted schedule both do -- so
+     * reconcile before any event is dispatched rather than waiting for an edge
+     * that dispatch will never observe. */
+    overlay_capture_sync(target_tick);
+#endif
+    input_dispatch_events(target_tick);
     platform_surface_visibility_update();
 #ifdef __EMSCRIPTEN__
     /* JS pointer callbacks append bounded snapshots without re-entering wasm.
@@ -2109,11 +2179,60 @@ void platform_input_pump(void) {
     }
 }
 
+/*
+ * Sample the host one last time, as late as the ticket allows.
+ *
+ * Called from the tick boundary in stubs_dkr.c immediately before
+ * platform_input_commit_tick. It resolves its target from
+ * present_sched_input_target_tick() -- the same accessor the pump uses -- so it
+ * cannot file a sample against a different ticket than the pump would have,
+ * and mdkr_input_tick_queue_capture's own monotonic clamp keeps the target
+ * non-decreasing regardless.
+ *
+ * What this deliberately does NOT do, and why:
+ *
+ *   settings_toggle_poll / platform_surface_visibility_update -- frame-boundary
+ *   services, not input. They stay on the pump, once per opportunity, exactly
+ *   as before.
+ *
+ *   platform_request_exit on a quit -- s_quitRequested is latched here and
+ *   acted on by the next pump, at most one present interval later. Acting on it
+ *   here would let a quit arriving in the last few milliseconds of a tick
+ *   suppress a ticket that would otherwise have been issued, which is a
+ *   scheduling change and not a latency improvement.
+ *
+ * The DKR-visible contract is unchanged: this adds host captures, which are
+ * already unbounded per tick and coalesced by the queue, and adds no ticket, no
+ * consume, and no controller read. osContGetReadData still sees exactly one
+ * published sample per authored tick.
+ */
+void platform_input_sample_late(void) {
+    uint64_t target_tick;
+    if (!input_jit_sampling_enabled() || !s_inputQueueReady) {
+        return;
+    }
+    target_tick = present_sched_input_target_tick();
+#ifdef MDKR_APP
+    overlay_capture_sync(target_tick);
+#endif
+    input_dispatch_events(target_tick);
+#ifdef __EMSCRIPTEN__
+    while (browser_touch_pop(&s_browserTouchSource)) {
+        input_capture_live(target_tick);
+    }
+    browser_touch_read_current(&s_browserTouchSource);
+#endif
+    input_capture_live(target_tick);
+}
+
 void platform_input_commit_tick(uint64_t ticket) {
     MdkrInputSample published[MDKR_INPUT_PORTS];
     unsigned port;
     if (!s_inputQueueReady) {
         return;
+    }
+    if (input_latency_census_enabled()) {
+        input_latency_census_note_commit(pace_host_ns());
     }
     mdkr_input_tick_queue_consume(&s_inputQueue, ticket, published);
     for (port = 0; port < DKR_MAXPADS; port++) {
@@ -2130,6 +2249,26 @@ void platform_input_commit_tick(uint64_t ticket) {
      * simulation sample and is traced at N+1. Presentation count still cannot
      * move an edge. */
     script_apply(s_pads, g_simTickCounter > 0 ? g_simTickCounter - 1 : 0);
+}
+
+/* Publishes the pacing configuration the budget was taken under, then the
+ * budget. Gathered here rather than in the census because the swap interval and
+ * the latched present policy are this file's state. */
+void platform_input_latency_summary(void) {
+    int swap_interval = -1;
+    if (!input_latency_census_enabled()) {
+        return;
+    }
+#ifndef __EMSCRIPTEN__
+    if (s_glReady) {
+        swap_interval = SDL_GL_GetSwapInterval();
+    }
+#endif
+    input_latency_census_note_config(
+        present_sched_present_policy_name(), present_sched_present_rate(),
+        present_sched_tick_fields(), swap_interval,
+        present_sched_smoothing_enabled(), input_jit_sampling_enabled() != 0);
+    input_latency_census_summary();
 }
 
 void platform_input_queue_summary(void) {
@@ -3743,6 +3882,11 @@ static void platform_frame_sync_impl(int swap, int count_present) {
         platform_dump_frame();   /* read the rendered backbuffer before the swap */
         if (swap) {
             platform_sdl_present();
+            /* After the swap returns, so the block the presentation queue
+             * imposes is inside the measured term rather than after it. */
+            if (input_latency_census_enabled()) {
+                input_latency_census_note_present(pace_host_ns());
+            }
         }
     }
     /* Publish a resize before the game builds its next display list. Camera FOV,
