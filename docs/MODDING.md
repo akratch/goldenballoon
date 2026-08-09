@@ -73,8 +73,9 @@ a 16×16 original works; the game addresses the same logical tile either way.
 ### Finding a digest
 
 **There is no supported tool for this yet.** `tools/mod_texture_dump.py` is
-planned ([S1 task 9](sprints/S1-content-pipeline.md#task-9-author-tooling--toolsmod_texture_dumppy))
-and until it lands, authoring a pack means reading
+planned — see task 9 in
+[`sprints/S1-content-pipeline.md`](sprints/S1-content-pipeline.md) — and until
+it lands, authoring a pack means reading
 [`platform/mod_texture_key.h`](../platform/mod_texture_key.c) and computing the
 digest yourself. That header is written to be sufficient on its own: the field
 list, their order, and their encoding are all stated there, and the digest has
