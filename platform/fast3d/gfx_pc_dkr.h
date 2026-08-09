@@ -334,6 +334,12 @@ void gfx_dkr_replay_get_object_hold_classes(
     uint64_t *no_pair, uint64_t *discontinuous, uint64_t *still,
     uint64_t *moving);
 
+/* Rectangles that were issued while the mirrored-viewport latch was live and
+ * so would have been reflected about the screen centre before issue #27 was
+ * fixed. Nonzero exactly on an Adventure Two race; a gate asserting the fix
+ * needs this to prove its route actually reached mirrored content. */
+uint64_t gfx_dkr_get_mirrored_rects_cleared(void);
+
 void gfx_dkr_replay_get_stats(
     uint64_t *walks, uint64_t *matrix_hits, uint64_t *matrix_misses,
     uint64_t *matrix_rejects, uint64_t *real_walks);

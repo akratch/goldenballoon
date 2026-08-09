@@ -319,6 +319,10 @@ static uint64_t dkr_replay_object_holds = 0;
 /* dkr_replay_object_holds split by cause -- see MdkrReplayHoldClass.
  * Only the last of these is a defect signal; the others are holds that
  * are correct and expected. */
+/* Rectangles issued while the mirrored-viewport latch was live (issue #27).
+ * Nonzero exactly on an Adventure Two race; zero everywhere else. */
+static uint64_t dkr_mirrored_rects_cleared = 0;
+
 static uint64_t dkr_replay_hold_no_pair = 0;
 static uint64_t dkr_replay_hold_discont = 0;
 static uint64_t dkr_replay_hold_still = 0;
@@ -4151,6 +4155,39 @@ static void dkr_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     rdp.viewport = full;
     rdp.viewport_or_scissor_changed = true;
     rsp.geometry_mode = 0;
+    /*
+     * A rectangle is an RDP screen-space primitive. The RSP viewport cannot
+     * reach it on hardware -- and neither can the SIGN of that viewport, which
+     * is the only part of it this port has to carry by hand: GL and WebGPU
+     * reject a negative viewport width, so dkr_calc_viewport latches
+     * `width < 0` into rdp.viewport_flip_x and dkr_emit_tri negates x for every
+     * vertex while it is set.
+     *
+     * Adventure Two draws its races through a mirrored viewport
+     * (camera.c viewport_rsp_set negates vscale[0] under
+     * CHEAT_MIRRORED_TRACKS), so any TEXRECT or FILLRECT issued while that
+     * latch is live was reflected about the screen centre. Every glyph DKR
+     * draws is a TEXRECT, which is why the trophy-round announcement came out
+     * mirrored: trophyround_render() draws text straight over the race loaded
+     * as its backdrop, with no mtx_ortho() in between to re-establish a
+     * positive viewport the way the HUD does (issue #27).
+     *
+     * Clearing it here fixes the whole class rather than one screen, and it is
+     * inert everywhere the latch is not set -- which is everywhere outside an
+     * Adventure Two race. The polygon path keeps the latch: its cull-sense
+     * invariant pairs viewport_flip_x with G_CULL_FRONT, and rectangles bypass
+     * culling entirely (geometry_mode = 0, just above).
+     */
+    const bool flip_saved = rdp.viewport_flip_x;
+    if (flip_saved) {
+        /* Counts rectangles this fix rescued: every one of these was being
+         * reflected about the screen centre before. Reported in the
+         * [MIRROR-RECT] row so a gate can assert the arm is non-vacuous --
+         * zero here on an Adventure Two race would mean the route never
+         * reached the mirrored content, not that the bug is gone. */
+        dkr_mirrored_rects_cleared++;
+    }
+    rdp.viewport_flip_x = false;
 
     dkr_in_texrect = textured;   /* absolute texel coords: skip NOPERSP *0.5 */
     /* Same rule as dkr_sp_polygon: a rectangle whose texture failed to bind
@@ -4165,6 +4202,7 @@ static void dkr_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     dkr_in_texrect = false;
 
     rsp.geometry_mode = gm_saved;
+    rdp.viewport_flip_x = flip_saved;
     rdp.viewport = vp_saved;
     rdp.viewport_or_scissor_changed = true;
 }
@@ -6827,6 +6865,26 @@ void gfx_shutdown(void) {
                                  tex_row_cap + tex_mip_cap));
 }
 
+/*
+ * Issue #27. Zero on every route that never enters an Adventure Two race;
+ * nonzero is the count of screen-space rectangles -- glyphs, dialogue
+ * backgrounds, fades -- that the RSP viewport sign would have reflected.
+ *
+ * Reported from a destructor rather than from gfx_shutdown() because the
+ * routes that matter here are exactly the ones that end on a frame budget and
+ * never run the renderer's own teardown: check_adventure_two's arms exit with
+ * rc=1 and print no [GFX-SHUTDOWN] row at all, so a counter reported there
+ * would read as absent on the only runs that can prove the fix non-vacuous.
+ */
+__attribute__((destructor))
+static void dkr_mirror_rect_report(void) {
+    const char *trace = getenv("MDKR_TRACE");
+    if (trace != NULL && trace[0] != '\0' && trace[0] != '0') {
+        fprintf(stderr, "[MIRROR-RECT] cleared=%llu\n",
+                (unsigned long long)dkr_mirrored_rects_cleared);
+    }
+}
+
 void gfx_reset_renderer_caches(void) {
     /*
      * Texture ids and ShaderProgram pointers are backend-owned. A replacement
@@ -7412,6 +7470,10 @@ void gfx_dkr_replay_get_object_stats(uint64_t *hits, uint64_t *holds) {
     if (holds != NULL) {
         *holds = dkr_replay_object_holds;
     }
+}
+
+uint64_t gfx_dkr_get_mirrored_rects_cleared(void) {
+    return dkr_mirrored_rects_cleared;
 }
 
 void gfx_dkr_replay_get_object_hold_classes(
