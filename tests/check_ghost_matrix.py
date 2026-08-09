@@ -87,6 +87,7 @@ tests/README.md. Exit 0 = every pair round-tripped its ghost.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import hashlib
 import os
 import re
@@ -637,6 +638,12 @@ def main() -> int:
     parser.add_argument("--re-entry-pair", default="5:0",
                         help="the pair that additionally runs the repeat-read case")
     parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument(
+        "--jobs", type=int, default=4,
+        help="pairs to run concurrently (1 = sequential). Each pair already "
+             "owns its save directory, its input scripts and its child "
+             "environment, so pairs do not share state; --jobs 1 is kept for "
+             "reproducing a pooled result sequentially.")
     args = parser.parse_args()
 
     binary = resolve_binary(args.build)
@@ -676,9 +683,29 @@ def main() -> int:
     workdir = tempfile.mkdtemp(prefix="mdkr64-ghost-matrix-")
     started = time.time()
     try:
-        for level, vehicle in combos:
-            problems, detail, seconds = check_pair(
-                binary, args.rom, level, vehicle, workdir, args.verbose)
+        # Pairs are independent: each owns its save directory (save_env per
+        # child), its generated input scripts (named by tag inside workdir) and
+        # its own child environment, and none of them writes anything shared.
+        # Running them concurrently therefore changes wall-clock time and
+        # nothing else -- results are collected and REPORTED IN MATRIX ORDER
+        # below, so the output is byte-identical to a sequential run and a
+        # reviewer can diff the two. `--jobs 1` reproduces that sequentially.
+        jobs = max(1, args.jobs)
+        if jobs == 1:
+            outcomes = [
+                check_pair(binary, args.rom, level, vehicle, workdir,
+                           args.verbose)
+                for level, vehicle in combos
+            ]
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+                outcomes = list(pool.map(
+                    lambda combo: check_pair(binary, args.rom, combo[0],
+                                             combo[1], workdir, args.verbose),
+                    combos))
+
+        for (level, vehicle), (problems, detail, seconds) in zip(combos,
+                                                                 outcomes):
             tag = "ok" if not problems else "FAIL"
             print("  level %-3d %-11s %-6s %5.1fs  %s"
                   % (level, VEHICLE_NAMES[vehicle], tag, seconds,

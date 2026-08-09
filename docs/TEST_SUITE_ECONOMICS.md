@@ -694,6 +694,34 @@ sequential log** — same verdict, same per-arm notes, same order. `--jobs 1`
 restores the old behaviour. `presentation_matrix` is the same lever with the pixel caveat from
 §6.2.
 
+### `ghost_matrix` — LANDED (2026-08-09), the largest single task in the suite
+
+At 16.3 min `ghost_matrix` was the most expensive task in the run, ahead of
+`native_layout` (9.1) and `full_ubsan` (7.5). It is 47 independent
+(track, vehicle) pairs, each recording a ghost, saving it, and reloading it in
+a fresh process. The isolation pooling needs already existed: every pair owns
+its save directory (`save_env` per child), its generated input scripts (named
+by tag inside the shared `workdir`), and its own child environment, and no pair
+writes anything shared.
+
+**LANDED.** `--jobs` (default 4) runs the pairs through a thread pool; results
+are collected and printed **in matrix order**, so the output is diffable
+against a sequential run. Evidence on one tree, same host:
+
+| run | wall clock |
+|---|---|
+| sequential (`--jobs 1`) | **16.8 min** |
+| four-way, run A | **4:38** |
+| four-way, run B | **4:37** |
+
+All 47 per-pair rows are **identical across all three runs** — same verdict,
+same detail text, same order — compared with the timing column removed, since
+that is the one field concurrency is expected to move. `--jobs 1` restores the
+old behaviour.
+
+That is ~11.7 min off the complete suite, taking it from roughly 140 min to
+roughly 128.
+
 Neither should be reduced by dropping arms. Breadth exists because the matrix
 gate is *"necessary evidence but not sufficient breadth by itself"* — its
 docstring says so, and the arms it adds (hovercraft, plane, three bosses, four
