@@ -111,3 +111,31 @@ sampled across one healthy cycle and must fail the bounded-period assertion.
 See
 `tests/README.md`'s "Character-select dancer motion" section for the measured
 numbers and threshold rationale.
+
+## OPEN: the settings panel's scripted gates depend on a hand-written list of section names — wave "gaterects"
+
+`Settings_draw()` collapses the sections above the category loop for whichever
+scripted gate is armed, so a queued click lands on the widget rather than on
+whatever the panel had scrolled under it. That works, and it is the wrong layer.
+
+`scriptedGateArmed` is a hand-written disjunction of three env vars, and the two
+sections above the loop each carry their own flag. Add a fourth gate, or a third
+section, and the trap re-arms silently -- which is exactly how it fired the first
+time: the Accessibility section arrived `DefaultOpen`, pushed the Frame limit
+combo about 660pt below an 800pt panel, and the failure surfaced as
+`frame-limit requested=240 actual=original`, a persistence verdict for a layout
+fault. Diagnosing that cost hours.
+
+The root cause is one line, twice. `g_frameLimitRectValid` and
+`g_uiScaleRectValid` are sticky latches: set true the first time the widget is
+submitted and never cleared, so the harness happily reads a rect captured on
+some earlier frame and clicks geometry the panel is currently clipping. Setting
+them from `ImGui::IsItemVisible()` each frame instead makes an off-screen target
+fail as "not on screen", which is what it is, and demotes the section-collapse
+block from a correctness dependency to a convenience.
+
+Not done here because it changes the gate whose diagnosis this entry describes,
+and it wants its own mutation pass on a quiet machine rather than a confident
+edit at the end of a long session. The off-screen diagnostics added alongside
+the collapse block already name the fault when it recurs, so the next occurrence
+costs a line of output rather than an afternoon.

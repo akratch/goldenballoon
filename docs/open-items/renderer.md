@@ -2375,3 +2375,33 @@ failed bind drew with the previous batch's texture. That is no longer true:
 `dkr_setup_draw_state()` returns `bind_ok[0] && bind_ok[1]`, and both callers act
 on it — `dkr_sp_polygon()` returns early and the texture-rectangle path skips the
 whole emit-and-flush block. No change needed.
+
+## OPEN: three content-pack defects found by peer review, none of them fixed — wave "packreview"
+
+Found by a review on the 1.1.1 release line against this branch's content-pack
+work, verified by reading rather than by running, and left open deliberately:
+the machine was held by another session's suite and an unverified fix to a gate
+that took hours to diagnose is worse than a recorded defect.
+
+**A pack PNG is decoded before the cache cap is consulted.** The load path calls
+`stbi_load_from_memory()` and only then `evict_for()`, so the cap bounds what is
+*retained*, never what is *allocated*. A ~200 KiB PNG declaring 20000x20000
+decodes to roughly 1.6 GiB before anything asks whether it fits. That is a
+malformed-pack denial of service on a machine with less RAM than the decode
+wants, and packs are files a player downloads from strangers. The fix is
+`stbi_info_from_memory()` first, rejecting on the declared dimensions against
+the cap, before any decode.
+
+**`registry_add_skip()` overwrites the last slot's reason but not its name.**
+Once the skip list is full, the UI shows one pack's name against a different
+pack's explanation. Settings -> Content exists precisely so a player can find
+out why a pack did not load, and this makes it lie in the one case where the
+most has gone wrong.
+
+**Packs override textures in Original mode.** `dkr_bind_tile()` applies the
+override with no reference to presentation mode, so a session launched
+`--pure` renders pack textures while every report still says Original, and
+byte-exactness to the console picture no longer holds. Installing a pack is
+arguably itself the opt-in, and that is a defensible answer -- but it has to be
+a stated decision in `docs/MODDING.md` and the notes, not an omission nobody
+wrote down.

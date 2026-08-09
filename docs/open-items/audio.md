@@ -560,3 +560,35 @@ band cannot quietly become a rubber ruler.
   sample-accurate route (single deterministic tap, no multi-screen menu drift) so the
   per-band comparison stops carrying alignment noise and the spectral tilt above can be
   attributed rather than merely observed.
+
+## OPEN: barge-in can still play the line it just cancelled — wave "bargein"
+
+`backlog_purge()` (platform/a11y_speech_worker.c) empties the backlog under the
+mutex and then calls `mdkr_a11y_speech_stop()` with it released. Its comment
+says that order "means the worker cannot pick up one more stale line in
+between". That is true of lines still in the backlog and false of the line
+already out of it.
+
+The worker pops into a local `text`, sets `s_speaking`, unlocks, and only then
+calls `apply_voice()` and `mdkr_a11y_speech_speak(text)`. A purge landing in
+that window finds an empty queue, calls `stop()` on an engine that is not
+speaking yet, and the worker then speaks the cancelled line to completion. The
+player hears the utterance they barged in on, in full, after the thing that was
+supposed to cancel it. Descheduling between the unlock and the `speak()` is all
+it takes, and the whole point of barge-in is that it happens under load.
+
+The comment is the more dangerous half: it states the race is closed, so the
+next reader has no reason to look.
+
+The fix is a sequence stamp rather than a flag. `backlog_purge()` bumps a
+generation under the mutex; the worker captures it at pop and re-checks it
+before speaking, skipping a line whose generation has moved. That closes the
+described window. It does not close the residual one between the re-check and
+`speak()` itself -- doing that properly means the backend's `stop()` recording a
+cancelled generation that `speak()` tests and clears, because the mutex cannot
+be held across a call that blocks for the length of a sentence without
+deadlocking the pump that pushes.
+
+Not attempted here: it is threaded code, the fix has two plausible shapes, and
+it wants a test that can actually provoke the interleaving rather than a
+confident edit.
