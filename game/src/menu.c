@@ -15742,6 +15742,30 @@ void reset_controller_sticks(void) {
 #define STICK_DEADZONE 35
 #define STICK_DELAY_AMOUNT 15
 
+#ifdef NATIVE_PORT
+/*
+ * Menu stick auto-repeat is a per-tick counter compared against a constant, so
+ * under the Enhanced simulation cadence (60 ticks/s instead of the authored 30)
+ * every held-direction menu scrolls twice as fast: measured 0.27 s per step
+ * against Original's 0.53 s. Players feel it in track, character and file
+ * select, where a held stick overshoots what they aimed at.
+ *
+ * Scaling the THRESHOLD rather than the increment keeps the counter itself
+ * untouched, and gating on the launch-time cadence keeps Original byte-exact:
+ * under Original this returns the authored constant and the comparison is
+ * literally the one that always ran. Deliberately not keyed on updateRate --
+ * an Original lag tick arrives with updateRate 3+ and must not change the
+ * threshold.
+ */
+static s32 menu_stick_delay_amount(void) {
+    return platform_sim_cadence_is_enhanced() ? (STICK_DELAY_AMOUNT * 2)
+                                              : STICK_DELAY_AMOUNT;
+}
+#define STICK_DELAY_LIMIT menu_stick_delay_amount()
+#else
+#define STICK_DELAY_LIMIT STICK_DELAY_AMOUNT
+#endif
+
 /**
  * Reads the stick inputs, then with the aid of a maximum range and a deadzone, writes it to the menu inputs.
  * Stick input delay is not time corrected, meaning holding the stick is slower at lower framerates.
@@ -15781,7 +15805,7 @@ void update_controller_sticks(void) {
             gControllersYAxisDelay[i] = 0;
         }
 
-        if (gControllersYAxisDelay[i] > STICK_DELAY_AMOUNT) {
+        if (gControllersYAxisDelay[i] > STICK_DELAY_LIMIT) {
             gControllersYAxis[i] = 0;
             gControllersYAxisDelay[i] = 0;
         }
@@ -15795,7 +15819,7 @@ void update_controller_sticks(void) {
             gControllersXAxisDelay[i] = 0;
         }
 
-        if (gControllersXAxisDelay[i] > STICK_DELAY_AMOUNT) {
+        if (gControllersXAxisDelay[i] > STICK_DELAY_LIMIT) {
             gControllersXAxis[i] = 0;
             gControllersXAxisDelay[i] = 0;
         }

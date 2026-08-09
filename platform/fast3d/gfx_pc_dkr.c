@@ -2664,6 +2664,7 @@ static bool dkr_setup_draw_state(bool poly_tex_enabled) {
         rsp.remaster_light_class != 0 &&
         rsp.smooth_normals != NULL &&
         rsp.draw_space == G_MTX_DKR_SPACE_WORLD &&
+        (rsp.geometry_mode & G_ZBUFFER) != 0 &&
         !rsp.billboard && !dkr_in_texrect) {
         cc_options |= SHADER_OPT_DFDX_LIGHT;
     }
@@ -7126,6 +7127,14 @@ void gfx_dkr_reset_interpreter_state(void) {
     rdp.logical_scissor = rdp.logical_viewport;
     rdp.logical_viewport_valid = true;
     rdp.logical_scissor_valid = true;
+    /* The viewport RECTANGLE is reseeded above; its SIGN has to be reseeded
+     * too. dkr_calc_viewport latches `width < 0` here (Adventure Two draws
+     * through a mirrored viewport), and without this a triangle emitted before
+     * the next frame's first gSPViewport would inherit the previous frame's
+     * mirror. A no-op on every frame that sets a viewport before drawing,
+     * which is all of them today -- this closes the window rather than relying
+     * on that staying true. */
+    rdp.viewport_flip_x = false;
     dkr_remap_viewport_and_scissor();
 
     /* Invalidate cached backend state so it is re-applied this frame. */
