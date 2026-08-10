@@ -571,12 +571,34 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
 
         if (smokeUiScaleDrag) {
             int currentRect[4] = {0, 0, 0, 0};
+            // Through frame 8 the real SDL button is held or its release is
+            // being consumed by ImGui: this arm is driving the slider, so the
+            // slider not being on screen is a failure to drive it.
+            const bool dragUnderway = i <= 8;
             if (!Settings_smokeUiScaleRect(
                     &currentRect[0], &currentRect[1],
                     &currentRect[2], &currentRect[3])) {
-                std::fprintf(stderr,
-                             "[app-ui-test] UI-scale slider was not rendered\n");
-                renderOk = false;
+                /* Afterwards the slider legitimately may leave the panel:
+                 * applying 2.00x re-lays the whole panel out at double size and
+                 * pushes this row below the fold of the 700pt window this arm
+                 * uses. Settings_smokeUiScaleRect() reports that truthfully now
+                 * rather than latching the last rectangle it ever saw, so say
+                 * it and move on -- the transaction the arm actually claims
+                 * (one application, stable while held, persisted) is decided
+                 * after the loop and never reads this rectangle. */
+                if (dragUnderway) {
+                    std::fprintf(
+                        stderr,
+                        "[app-ui-test] UI-scale slider was not rendered\n");
+                    renderOk = false;
+                } else {
+                    std::fprintf(
+                        stderr,
+                        "[app-ui-test] ui-scale drag frame=%d slider off screen "
+                        "after the applied scale re-laid the panel out; the "
+                        "drag transaction was already complete\n",
+                        i);
+                }
             } else if (!scaleRectCaptured && i >= 1) {
                 // Give the launcher's responsive layout one complete warm-up
                 // frame before taking the invariant rectangle. This separates
@@ -596,10 +618,9 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                     static_cast<double>(scaleAtDragStart),
                     scaleRect[0], scaleRect[1], scaleRect[2], scaleRect[3]);
             } else if (scaleRectCaptured) {
-                // Through frame 8 the real SDL button is held or its release
-                // is being consumed by ImGui. Neither the applied scale nor
-                // the slider geometry may move during that interval.
-                if (i <= 8) {
+                // Neither the applied scale nor the slider geometry may move
+                // while the button is held (see dragUnderway above).
+                if (dragUnderway) {
                     scaleStableWhileHeld = scaleStableWhileHeld &&
                         std::fabs(AppTheme::uiScale() - scaleAtDragStart) < 0.001f &&
                         AppTheme::uiScaleApplicationCount() ==

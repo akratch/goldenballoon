@@ -42,6 +42,22 @@ bool g_uiScaleInitialized = false;
 bool g_uiScaleDirty = false;
 float g_uiScaleEdit = 1.0f;
 std::string g_uiScaleError;
+/*
+ * Widget rectangles the scripted gates drive, and one flag each.
+ *
+ * The flag answers ONE question: is the panel showing this widget right now?
+ * Not "was it ever submitted" -- a widget scrolled past the bottom of the
+ * panel, or sitting in a collapsed section, is still submitted by ImGui, and a
+ * flag that only records submission hands a queued click coordinates the panel
+ * is currently clipping. The gate then fails on whatever it was really
+ * measuring (a saved value, an applied scale) and says nothing about layout.
+ * That mis-attribution cost hours once; see docs/open-items/misc.md.
+ *
+ * So each flag is assigned from ImGui::IsItemVisible() where the rect is read,
+ * and every flag is cleared at the top of Settings_draw() for the frames the
+ * widget is not submitted at all. Both halves are required: IsItemVisible()
+ * cannot speak for a widget whose section never drew it.
+ */
 bool g_frameLimitRectValid = false;
 ImVec2 g_frameLimitRectMin;
 ImVec2 g_frameLimitRectMax;
@@ -598,29 +614,45 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
         editState.active = comboOpen;
         if (k == MDKR_VIDEO_FRAME_LIMIT) {
             g_frameLimitPopupOpen = comboOpen;
-            g_frameLimitRectMin = ImGui::GetItemRectMin();
-            g_frameLimitRectMax = ImGui::GetItemRectMax();
-            g_frameLimitRectValid = true;
-            /* The scripted pacing gates click this widget at coordinates
-             * captured on the previous frame, which only works while the panel
-             * is actually showing it. Scrolled out of view it is still
-             * submitted -- so the rect stays valid, the click lands on clipped
-             * geometry, and the gate reports "the verdict did not match",
-             * which reads like a persistence bug. Name the real cause once.
-             * Armed only for the gates: a player scrolling past this row is
-             * the same observation and means nothing. */
+            /* Sample only while the popup is closed. BeginCombo() returning
+             * true means it has ALREADY begun the popup window, and Begin()
+             * reassigns ImGui's last-item data to that window's title bar --
+             * so on open frames GetItemRectMin/Max describe the popup (a
+             * zero-height rect wherever it was placed) and IsItemVisible()
+             * answers for the popup too. Reading them there overwrote the
+             * combo's rect with popup geometry and made the off-screen
+             * diagnostic below fire on a perfectly visible combo. */
+            if (!comboOpen) {
+                g_frameLimitRectMin = ImGui::GetItemRectMin();
+                g_frameLimitRectMax = ImGui::GetItemRectMax();
+                /* The one source of truth for "the panel is showing this
+                 * widget right now": ImGui clears the visible bit for an item
+                 * whose rectangle misses the current clip rect, whether it was
+                 * scrolled past the bottom or squeezed off any other edge. The
+                 * scripted pacing gates click these coordinates on the next
+                 * frame, and Settings_smokeFrameLimitCenter() refuses to hand
+                 * them over unless this says the widget is on screen. */
+                g_frameLimitRectValid = ImGui::IsItemVisible();
+            }
+            /* Same fact, said out loud, because a gate that simply cannot find
+             * its target reports "was not rendered" and leaves the reader to
+             * guess which of the two it is. Read from the flag above so the
+             * diagnostic and the refusal can never disagree. Armed only for
+             * the gates: a player scrolling past this row is the same
+             * observation and means nothing. */
             static const bool pacingGateArmed =
                 std::getenv("MDKR_APP_SMOKE_SELECT_FRAME_LIMIT") != nullptr ||
                 std::getenv("MDKR_APP_SMOKE_SELECT_PRESENTATION_PACE") != nullptr;
             static bool offscreenReported = false;
-            if (pacingGateArmed && !offscreenReported &&
-                !ImGui::IsItemVisible()) {
+            if (pacingGateArmed && !offscreenReported && !comboOpen &&
+                !g_frameLimitRectValid) {
                 offscreenReported = true;
                 std::fprintf(stderr,
                              "[app-ui-test] frame-limit combo is scrolled out "
                              "of the panel (rect y=%.0f..%.0f, panel height "
-                             "%.0f): a settings section drawn above it is open "
-                             "and pushed it past the bottom\n",
+                             "%.0f): something drawn above it -- an open "
+                             "section, or a larger UI scale -- pushed it past "
+                             "the bottom\n",
                              g_frameLimitRectMin.y, g_frameLimitRectMax.y,
                              ImGui::GetIO().DisplaySize.y);
             }
@@ -772,7 +804,9 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
         if (editState.dirty && k == MDKR_VIDEO_FRAME_LIMIT) {
             g_frameLimitRetryRectMin = ImGui::GetItemRectMin();
             g_frameLimitRetryRectMax = ImGui::GetItemRectMax();
-            g_frameLimitRetryRectValid = true;
+            // Submitted is not the same as on screen; the same-process Retry
+            // gate clicks these coordinates. See the flag block up top.
+            g_frameLimitRetryRectValid = ImGui::IsItemVisible();
         }
         if (retryPressed) {
             if (k == MDKR_VIDEO_FRAME_LIMIT) {
@@ -913,7 +947,9 @@ bool drawPresentationPace(bool compact) {
         const int slot = static_cast<int>(choice.pace);
         g_paceRectMin[slot] = ImGui::GetItemRectMin();
         g_paceRectMax[slot] = ImGui::GetItemRectMax();
-        g_paceRectValid[slot] = true;
+        // The quick-choice gate presses one of these radios at last frame's
+        // coordinates, so the flag has to mean "on screen", not "submitted".
+        g_paceRectValid[slot] = ImGui::IsItemVisible();
         if (!pressed) continue;
         const MdkrVideoRuntimeResult result =
             mdkr_video_config_runtime_set_presentation_pace(choice.pace);
@@ -1184,21 +1220,25 @@ bool drawUiScale(bool compact) {
         ImGuiSliderFlags_AlwaysClamp);
     g_uiScaleRectMin = ImGui::GetItemRectMin();
     g_uiScaleRectMax = ImGui::GetItemRectMax();
-    g_uiScaleRectValid = true;
-    /* Same reason as the frame-limit combo: the drag gate grabs this slider at
-     * last frame's coordinates, and a slider scrolled past the bottom of the
-     * panel still reports a valid rect. Say which failure this is. */
+    /* Same rule as the frame-limit combo: the drag gate grabs this slider at
+     * last frame's coordinates, so the flag has to mean "the panel is showing
+     * it", not "it was submitted". A slider is its own last item -- there is no
+     * popup to displace it -- so IsItemVisible() reads directly here. */
+    g_uiScaleRectValid = ImGui::IsItemVisible();
+    /* Say which failure this is, from the flag above rather than a second read,
+     * so the diagnostic cannot contradict the refusal. */
     {
         static const bool dragGateArmed =
             std::getenv("MDKR_APP_SMOKE_UI_SCALE_DRAG") != nullptr;
         static bool offscreenReported = false;
-        if (dragGateArmed && !offscreenReported && !ImGui::IsItemVisible()) {
+        if (dragGateArmed && !offscreenReported && !g_uiScaleRectValid) {
             offscreenReported = true;
             std::fprintf(stderr,
                          "[app-ui-test] UI-scale slider is scrolled out of the "
-                         "panel (rect y=%.0f..%.0f, panel height %.0f): a "
-                         "settings section drawn above it is open and pushed "
-                         "it past the bottom\n",
+                         "panel (rect y=%.0f..%.0f, panel height %.0f): "
+                         "something drawn above it -- an open section, or the "
+                         "scale this very slider just applied -- pushed it "
+                         "past the bottom\n",
                          g_uiScaleRectMin.y, g_uiScaleRectMax.y,
                          ImGui::GetIO().DisplaySize.y);
         }
@@ -1613,7 +1653,24 @@ bool Settings_draw(SDL_Window *window, bool compact) {
     bool changed = false;
     g_frameLimitPopupOpen = false;
     g_frameLimitFocusedIndex = -1;
+    /*
+     * Every widget-rect flag starts each frame false, and only the widget's own
+     * submission can raise it again. This is the half IsItemVisible() cannot
+     * cover: a collapsed section returns from here without ever reaching the
+     * widget, so nothing would run to lower a flag left true by an earlier
+     * frame -- which is precisely the stale latch this panel used to have. The
+     * whole set is cleared in one place so a rect added later is either listed
+     * here or is not per-frame, rather than being quietly sticky.
+     *
+     * Limit worth knowing: this is per Settings_draw() call, so it says nothing
+     * about frames where the panel is not drawn at all (another launcher tab,
+     * or the overlay with settings hidden). Every scripted gate pins
+     * MDKR_APP_PANEL=Settings, so for them "drawn" and "this frame" coincide.
+     */
+    g_frameLimitRectValid = false;
     g_frameLimitRetryRectValid = false;
+    g_uiScaleRectValid = false;
+    for (bool &paceValid : g_paceRectValid) paceValid = false;
     MdkrVideoRuntimeResult windowResult = MDKR_VIDEO_RUNTIME_INVALID;
     bool windowResultFresh = false;
     if (AppWindow_consumeCompleted(&windowResult, &windowResultFresh)) {
@@ -1680,20 +1737,28 @@ bool Settings_draw(SDL_Window *window, bool compact) {
 
     const bool draggingUiScale =
         std::getenv("MDKR_APP_SMOKE_UI_SCALE_DRAG") != nullptr;
-    /* Every scripted gate drives a real widget at coordinates captured on the
+    /* A convenience, no longer a correctness dependency.
+     *
+     * Every scripted gate drives a real widget at coordinates captured on the
      * previous frame, which only works while the panel is actually showing it.
-     * A widget scrolled past the bottom is still submitted, so the coordinates
-     * stay valid and the queued click lands on clipped geometry -- the gate
-     * then fails with a verdict mismatch that says nothing about layout.
+     * Collapsing every section drawn ABOVE the category loop except the one
+     * holding the gate's own target keeps the target in view without scrolling,
+     * which keeps the gates short and deterministic. Which section to exempt
+     * comes from the routing policy rather than a hand-written list, so moving
+     * UI scale between sections moves the exemption with it.
      *
-     * So: collapse every section drawn ABOVE the category loop except the one
-     * holding the gate's own target. Which section that is comes from the
-     * routing policy rather than a hand-written list, so moving UI scale
-     * between sections moves the exemption with it.
-     *
-     * This is not hypothetical. The Accessibility section arrived with an
-     * unconditional DefaultOpen and pushed Frame limit ~660pt below an 800pt
-     * panel; taking UI scale with it pushed that slider below a 700pt one. */
+     * It used to be the only thing standing between a gate and a click on
+     * clipped geometry, because the widget-rect flags recorded submission
+     * rather than visibility. They no longer do: each is assigned from
+     * ImGui::IsItemVisible() at its capture site and cleared at the top of this
+     * function. So if a section added later forgets this block and pushes a
+     * target off the bottom, Settings_smoke*Center() returns false, the gate
+     * fails at once on "was not rendered", and the capture site prints
+     * "[app-ui-test] ... is scrolled out of the panel" naming the layout fault.
+     * What it can no longer do is pass the gate a stale rectangle and let it
+     * fail as a persistence mismatch -- which is how the Accessibility section
+     * arriving unconditionally DefaultOpen, pushing Frame limit ~660pt below an
+     * 800pt panel, cost an afternoon to diagnose. */
     const AppUiSettingsSection uiScaleSection =
         AppUi_shellPreferenceSection(AppUiShellPreference::UiScale);
     const bool scriptedGateArmed =

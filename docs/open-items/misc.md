@@ -112,7 +112,46 @@ See
 `tests/README.md`'s "Character-select dancer motion" section for the measured
 numbers and threshold rationale.
 
-## OPEN: the settings panel's scripted gates depend on a hand-written list of section names — wave "gaterects"
+## FIXED: the settings panel's scripted gates depended on a hand-written list of section names — wave "gaterects"
+
+**Done.** `g_frameLimitRectValid`, `g_uiScaleRectValid`, the Retry-save flag and
+`g_paceRectValid[]` are all driven from `ImGui::IsItemVisible()` now, and all
+four are cleared at the top of `Settings_draw()` — the one place that runs
+before any section decides whether to submit its widgets, which is the case
+`IsItemVisible()` cannot cover on its own because nothing runs to lower a flag
+for a widget that is never submitted. A gate whose target is collapsed or
+scrolled off now fails as "was not rendered" instead of clicking clipped
+geometry. The section-collapse block stays, demoted in its own comment from a
+correctness dependency to a convenience.
+
+Two things fell out of doing it, both worth more than the original entry.
+
+**The off-screen diagnostic added alongside the collapse block was itself
+wrong, and was firing falsely.** `BeginCombo()` returning true means it has
+already begun the popup window, and ImGui's `Begin()` reassigns last-item data
+to that window's title bar — so on popup-open frames `GetItemRectMin/Max`
+described the *popup*, not the combo. The diagnostic duly announced
+`frame-limit combo is scrolled out of the panel (rect y=614..614)` about a combo
+sitting visibly at y=596..633. A zero-height rect at the popup's position. Fixed
+with a `!comboOpen` guard, and both diagnostics now read the flag they set
+rather than calling `IsItemVisible()` a second time, so the refusal and the
+explanation cannot disagree. Adding a diagnostic to make the next occurrence
+cheap to read is only worth it if the diagnostic is right; this one would have
+sent the next reader after a layout fault that did not exist.
+
+**At 2.00x the UI-scale slider genuinely does leave the 700pt panel** the drag
+arm uses, and the latch had been hiding it. Applying 2.00x re-lays the panel out
+at double size and pushes that row below the fold; a control run at 900x1200
+passes with the flag true throughout, so the flag tracks reality and the 700pt
+case is a true layout fact rather than a regression. The per-frame "slider must
+be readable" assertion in `main_app.cpp` was therefore vacuous, not satisfied,
+for the tail frames — it is now scoped to the frames the arm actually holds the
+button, the same `i <= 8` window the stability check already used. That is a
+harness assertion narrowed, not a gate weakened: the arm's verdict
+(`scaleRectCaptured && scaleDragQueued && scaleStableWhileHeld &&
+applications == 1 && actual == target && persisted`) still requires the slider
+to have been visible *during* the drag, so an arm that never found it still
+fails.
 
 `Settings_draw()` collapses the sections above the category loop for whichever
 scripted gate is armed, so a queued click lands on the widget rather than on
