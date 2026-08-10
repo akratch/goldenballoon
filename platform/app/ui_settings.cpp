@@ -739,16 +739,15 @@ const char *helpFor(MdkrVideoKey key, const MdkrVideoSchema *schema) {
     switch (key) {
         case MDKR_VIDEO_SIMULATION_CADENCE:
             return "Original preserves retail physics, AI, timers, and input "
-                   "timing. Enhanced is a compatibility mode for older port "
-                   "configurations and changes gameplay speed. It is not an "
-                   "FPS setting.";
+                   "timing. Enhanced runs the game's logic at 60 Hz and "
+                   "changes gameplay speed. It is not an FPS setting.";
         case MDKR_VIDEO_FRAME_LIMIT:
             return kFrameLimitHelp;
         case MDKR_VIDEO_MOTION_SMOOTHING:
-            return "Interpolated blends adjacent authored presentation states "
-                   "at the display's exact fractional time. Simulation, input, "
+            return "Interpolated blends the game's own adjacent pictures at "
+                   "the display's exact fractional time. Simulation, input, "
                    "audio, timers, and saves still advance only on Original "
-                   "gameplay ticks. Off shows authored images only.";
+                   "gameplay ticks. Off shows the game's own pictures only.";
         case MDKR_VIDEO_MODE:
             // The section introduction directly above this control explains the
             // three modes; repeating the schema paragraph creates a text wall.
@@ -1019,9 +1018,12 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
     if (!comboBrowsing) {
         char spoken[MDKR_VIDEO_STRING_MAX];
         displayValue(k, s, d, spoken, sizeof(spoken));
-        // The drawn label, not the schema label: the voice and the screen
-        // must not disagree (see displayValue's contract).
-        ui::SpeakFocusedItem(rowLabel, spoken, helpFor(k, s));
+        // The drawn label and the drawn help, not the schema's: the voice
+        // and the screen must not disagree (see displayValue's contract).
+        const char *spokenHelp = copy != nullptr
+            ? (copy->tooltip != nullptr ? copy->tooltip : copy->description)
+            : helpFor(k, s);
+        ui::SpeakFocusedItem(rowLabel, spoken, spokenHelp);
     }
 
     if (!editState.error.empty()) {

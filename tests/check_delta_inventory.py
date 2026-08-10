@@ -53,8 +53,9 @@ CLASSIFIED_RE = re.compile(
 # line content, so a real new marker landing on this line cannot be swallowed
 # silently -- if the text ever changes, the assertion below catches it.
 EXCLUDED_MENTIONS: dict[tuple[Path, int], str] = {
-    (Path("game/src/racer.c"), 7372):
-        " * constants (the //!@Delta sites), which is normally self-cancelling: at",
+    # (Empty since 2026-08-10: the one excluded prose mention in racer.c was
+    # rewritten away on the release line; the merged tree has no prose line
+    # containing the sigil. The mechanism stays for the next one.)
 }
 
 

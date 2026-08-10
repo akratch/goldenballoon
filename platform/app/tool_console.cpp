@@ -114,7 +114,7 @@ const char *runtimeResultText(MdkrVideoRuntimeResult result) {
         case MDKR_VIDEO_RUNTIME_SAVE_UNCONFIRMED:
             return "applied, but the settings file may not survive a power loss";
         case MDKR_VIDEO_RUNTIME_PENDING:
-            return "queued for the next safe frame boundary";
+            return "queued; it applies with the next picture";
         case MDKR_VIDEO_RUNTIME_APPLY_FAILED:
             return "refused: the system would not make that change";
         case MDKR_VIDEO_RUNTIME_ROLLBACK_FAILED:
