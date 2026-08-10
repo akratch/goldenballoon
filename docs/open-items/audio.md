@@ -561,34 +561,77 @@ band cannot quietly become a rubber ruler.
   per-band comparison stops carrying alignment noise and the spectral tilt above can be
   attributed rather than merely observed.
 
-## OPEN: barge-in can still play the line it just cancelled — wave "bargein"
+## NARROWED: barge-in could play the line it just cancelled — wave "bargein"
 
-`backlog_purge()` (platform/a11y_speech_worker.c) empties the backlog under the
-mutex and then calls `mdkr_a11y_speech_stop()` with it released. Its comment
-says that order "means the worker cannot pick up one more stale line in
-between". That is true of lines still in the backlog and false of the line
+`backlog_purge()` (platform/a11y_speech_worker.c) emptied the backlog under the
+mutex and then called `mdkr_a11y_speech_stop()` with it released. Its comment
+said that order "means the worker cannot pick up one more stale line in
+between". That was true of lines still in the backlog and false of the line
 already out of it.
 
-The worker pops into a local `text`, sets `s_speaking`, unlocks, and only then
-calls `apply_voice()` and `mdkr_a11y_speech_speak(text)`. A purge landing in
-that window finds an empty queue, calls `stop()` on an engine that is not
-speaking yet, and the worker then speaks the cancelled line to completion. The
-player hears the utterance they barged in on, in full, after the thing that was
-supposed to cancel it. Descheduling between the unlock and the `speak()` is all
-it takes, and the whole point of barge-in is that it happens under load.
+The worker popped into a local `text`, set `s_speaking`, unlocked, and only then
+called `apply_voice()` and `mdkr_a11y_speech_speak(text)`. A purge landing in
+that window found an empty queue, called `stop()` on an engine that was not
+speaking yet, and the worker then spoke the cancelled line to completion. The
+player heard the utterance they barged in on, in full, after the thing that was
+supposed to cancel it. Descheduling between the unlock and the `speak()` was all
+it took, and the whole point of barge-in is that it happens under load.
 
-The comment is the more dangerous half: it states the race is closed, so the
-next reader has no reason to look.
+The comment was the more dangerous half: it stated the race was closed, so the
+next reader had no reason to look.
 
-The fix is a sequence stamp rather than a flag. `backlog_purge()` bumps a
-generation under the mutex; the worker captures it at pop and re-checks it
-before speaking, skipping a line whose generation has moved. That closes the
-described window. It does not close the residual one between the re-check and
-`speak()` itself -- doing that properly means the backend's `stop()` recording a
-cancelled generation that `speak()` tests and clears, because the mutex cannot
-be held across a call that blocks for the length of a sentence without
-deadlocking the pump that pushes.
+**Fixed, worker-side, with a generation stamp rather than a flag.**
+`backlog_purge()` bumps a counter under the same mutex that empties the queue;
+the worker captures it at the pop and re-reads it, under the mutex, immediately
+before it speaks, discarding a line whose generation has moved. The re-check
+sits *after* `apply_voice()`, not before, so it is as close to `speak()` as a
+mutex that cannot be held across `speak()` can get: `apply_voice()` is two calls
+into the backend and on Linux is `spd_set_rate`/`spd_set_volume` over the
+speech-dispatcher socket, which is the part of the old window with real
+duration.
 
-Not attempted here: it is threaded code, the fix has two plausible shapes, and
-it wants a test that can actually provoke the interleaving rather than a
-confident edit.
+`reap_worker()` bumps the same counter, which closes a second instance of the
+same defect found while sweeping for it: a worker parked in that window during
+teardown would otherwise speak a line nobody will ever hear, and the join would
+wait out the whole sentence.
+
+**The residual, precisely.** The re-check and `mdkr_a11y_speech_speak()` are not
+one atomic step and cannot be made one from this file: the mutex cannot be held
+across `speak()`, which blocks for the length of a sentence, without the pump
+that pushes — on the render thread — blocking behind it every frame. A purge
+landing between the re-check's unlock and the engine actually taking the
+utterance still finds an idle engine, still gets a no-op `stop()`, and still
+lets that one line through. The window is now a handful of instructions with no
+call in it, instead of one containing two backend round-trips.
+
+**What would close it, and why that was not done.** The arbitration has to move
+to where `speak()` and `stop()` actually meet, which is inside the backend:
+`stop()` recording the generation it cancelled and `speak()` testing it at the
+instant it commits the utterance. That is a change to the `a11y_speech.h`
+contract and to all five backends, each with its own synchronisation — and by
+that header's own verification table three of them (Linux, Windows, browser)
+have never been run by anyone, while the fourth (macOS) cannot be exercised at
+all under this project's `MDKR_AUDIO=0` rule. New synchronisation in code nobody
+can run is worse than a narrowed race that is written down, so the residual is
+stated in `backlog_purge()`, in the `mdkr_a11y_speech_stop()` contract in
+`a11y_speech.h`, and here — rather than papered over the way the old comment
+papered over the whole thing.
+
+**Gate:** `tests/test_a11y_speech_worker.c`, ctest `a11y_speech_worker`. The
+worker carries one hook between the pop's unlock and `speak()`, compiled in only
+under `MDKR_A11Y_SPEECH_TESTING`, which exactly one test target defines; without
+it the site preprocesses to `((void)0)` and neither the shipped object nor the
+shipped binary contains the symbol. The test parks the worker in that hook with
+a semaphore, runs the barge-in on the pump's own thread while it is held there,
+and only then releases it, so the interleaving is forced rather than raced —
+no sleeps and no retries anywhere in it. Four cases: the defect; a purge on
+silence *not* eating the line that follows it (which is what the obvious wrong
+fix, a sticky cancel flag, would do); the ordinary no-barge-in path, in order;
+and teardown. It links its own fake backend, which is also why a real one cannot
+be linked in by accident — seven duplicate symbols.
+
+**Mutation control.** With the re-check reading its own captured stamp instead
+of the live one — behaviourally the pre-fix worker — the test fails 25 runs out
+of 25 with `FAIL the cancelled line was spoken anyway` /
+`first utterance : "the line the player barged in on"`, while the two
+non-vacuity cases stay green. Fixed, it passes 25 out of 25.

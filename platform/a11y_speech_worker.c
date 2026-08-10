@@ -53,6 +53,41 @@ static char s_text[BACKLOG_MAX][MDKR_A11Y_TEXT_MAX];
 static int  s_head;
 static int  s_count;
 static bool s_speaking;   /* the worker is inside mdkr_a11y_speech_speak() */
+/* Bumped, under the same mutex, every time the backlog is thrown away. The
+ * worker stamps each line with it at the pop and re-reads it before speaking,
+ * which is how a line that left the queue before the purge arrived still gets
+ * cancelled. See backlog_purge() for what that does and does not close. */
+static unsigned s_generation;
+
+/* --- the test seam --------------------------------------------------------
+ *
+ * The window the generation stamp exists to close is between the worker's pop
+ * and its mdkr_a11y_speech_speak(), and a test that cannot park the worker
+ * inside that window can only reproduce the defect by luck. So the worker calls
+ * one hook there and the test that owns it runs a barge-in at exactly that
+ * point, with no sleeps and no retries.
+ *
+ * INERT IN PRODUCTION, and not merely cheap in it. MDKR_A11Y_SPEECH_TESTING is
+ * defined by exactly one target — mdkr_a11y_speech_worker_test in
+ * cmake/tests.cmake — and by nothing that ships. Without it this translation
+ * unit contains no pointer, no load, no branch and no call: the hook site
+ * preprocesses to (void)0 before the optimiser is ever asked an opinion, so
+ * there is nothing for a release build to fold away and nothing that could
+ * change its timing.
+ */
+#ifdef MDKR_A11Y_SPEECH_TESTING
+/* Set by the test before it queues the line it wants parked, i.e. before the
+ * backlog_push() whose mutex release is what publishes it to the worker. */
+void (*mdkr_a11y_speech_test_prespeak)(void);
+#define SPEECH_TEST_PRESPEAK()                            \
+    do {                                                  \
+        if (mdkr_a11y_speech_test_prespeak != NULL) {     \
+            mdkr_a11y_speech_test_prespeak();             \
+        }                                                 \
+    } while (0)
+#else
+#define SPEECH_TEST_PRESPEAK() ((void)0)
+#endif
 
 #ifndef __EMSCRIPTEN__
 static bool        s_quit;
@@ -130,14 +165,63 @@ static bool backlog_idle(void) {
     return idle;
 }
 
-/* Barge-in. Throw the queue away first, then cut the engine off: doing it in
- * this order means the worker cannot pick up one more stale line in between.
+/* Empties the backlog AND stamps the emptying. Caller holds the mutex, or is
+ * the only thread that exists yet.
+ *
+ * The stamp is not decoration. Unsigned wrap is the intended arithmetic: the
+ * worker compares generations for inequality and never for order, so the only
+ * line this counter could ever betray is one that sat between its pop and its
+ * speak across exactly 2^32 barge-ins. */
+static void backlog_discard(void) {
+    s_head = 0;
+    s_count = 0;
+    s_generation++;
+}
+
+/* Barge-in. Throw the queue away, stamp the throw, then cut the engine off.
+ *
+ * THE STAMP IS THE POINT, and the order alone is not enough. Emptying the queue
+ * first does stop the worker picking up another line, but it says nothing about
+ * the line already OUT of the queue: the worker pops under this mutex and only
+ * calls _speak() after releasing it, so a purge landing in that gap finds
+ * nothing to throw away and calls _stop() on an engine that has not started
+ * talking yet. Both halves report success and the cancelled line is then spoken
+ * in full, after the barge-in that was supposed to kill it. This comment used
+ * to claim that ordering closed the window; it did not, and a wrong claim here
+ * is worse than none because it tells the next reader not to look.
+ *
+ * WHAT THE STAMP CLOSES. The worker captures s_generation at the pop and
+ * re-reads it, under the mutex, immediately before it speaks. A line whose
+ * generation has moved is discarded rather than said. That covers the whole
+ * pop-to-speak window including apply_voice(), which is two calls into the
+ * backend and on at least one platform socket I/O to a daemon (see
+ * a11y_speech_linux.c) — the widest and likeliest part of it.
+ *
+ * WHAT IT DOES NOT CLOSE, precisely. The worker's re-check and its _speak() are
+ * not one atomic step. The mutex cannot be held across _speak(): that call
+ * blocks for the length of a sentence, and the pump that pushes runs on the
+ * render thread and would block behind it every frame. So a purge that lands
+ * between the re-check's unlock and the engine actually taking the utterance
+ * still finds an idle engine, still gets a no-op _stop(), and still lets that
+ * one line through. The window is now a handful of instructions with no call in
+ * it rather than one containing two backend round-trips, but it is not empty
+ * and this file does not pretend otherwise.
+ *
+ * Closing it entirely means moving the arbitration to where _speak() and
+ * _stop() actually meet, which is inside the backend: _stop() records the
+ * generation it cancelled and _speak() tests it at the instant it commits the
+ * utterance. That is a change to the a11y_speech.h contract and to five
+ * backends, three of which have never been run by anyone (see the verification
+ * table in that header) and a fourth of which cannot be exercised at all under
+ * this project's MDKR_AUDIO=0 rule. It is deliberately not attempted here: a
+ * narrowed race that is written down beats a wider one described as closed, and
+ * it also beats new synchronisation in code nobody can run.
+ *
  * _stop() is called with the mutex released — it may have to wait on a
  * synthesiser, and the worker needs the mutex to notice it has been cut off. */
 static void backlog_purge(void) {
     lock_backlog();
-    s_head = 0;
-    s_count = 0;
+    backlog_discard();
     unlock_backlog();
     mdkr_a11y_speech_stop();
 }
@@ -208,7 +292,9 @@ static int worker_main(void *unused) {
     }
 
     for (;;) {
-        char text[MDKR_A11Y_TEXT_MAX];
+        char     text[MDKR_A11Y_TEXT_MAX];
+        unsigned generation;
+        bool     cancelled;
 
         SDL_LockMutex(s_lock);
         while (s_count == 0 && !s_quit) {
@@ -222,9 +308,39 @@ static int worker_main(void *unused) {
         s_head = (s_head + 1) % BACKLOG_MAX;
         s_count--;
         s_speaking = true;
+        /* Stamped here, while the line and the counter are still one thing. */
+        generation = s_generation;
         SDL_UnlockMutex(s_lock);
 
+        SPEECH_TEST_PRESPEAK();
+
+        /* Voice settings BEFORE the re-check, not after, so the re-check sits
+         * as close to _speak() as a mutex that cannot be held across it can
+         * get. apply_voice() calls into the backend twice and is the part of
+         * this window with real duration; a barge-in that lands inside it is
+         * the case worth catching, and one that lands after the check is the
+         * residual backlog_purge() describes. Settings applied to a line that
+         * is then discarded cost nothing: they are for the next utterance
+         * either way. */
         apply_voice();
+
+        SDL_LockMutex(s_lock);
+        cancelled = s_generation != generation;
+        if (cancelled) {
+            /* Barged in on after the pop had already taken it out of the
+             * backlog: the purge found nothing to throw away and its _stop()
+             * hit an engine that had not started this line yet. Counted as a
+             * drop rather than dropped silently, for the same reason the ring's
+             * overflow is counted — a designed loss that leaves no trace cannot
+             * be told apart from a bug. */
+            s_speaking = false;
+            s_dropped++;
+        }
+        SDL_UnlockMutex(s_lock);
+        if (cancelled) {
+            continue;
+        }
+
         mdkr_a11y_speech_speak(text);  /* blocks for the length of the line */
 
         SDL_LockMutex(s_lock);
@@ -286,8 +402,10 @@ static bool service_start(void) {
         return false;
     }
 
-    s_head = 0;
-    s_count = 0;
+    /* The one discard that needs no mutex: no worker exists yet. The counter is
+     * monotonic for the life of the process and is never reset here, so a
+     * restarted service cannot hand out a generation an older one used. */
+    backlog_discard();
     s_speaking = false;
     /* Force the first utterance to publish both settings to the backend rather
      * than assuming whatever the engine happened to default to. */
@@ -344,8 +462,12 @@ static bool service_start(void) {
 static void reap_worker(bool cutSpeechOff) {
     SDL_LockMutex(s_lock);
     s_quit = true;
-    s_head = 0;
-    s_count = 0;
+    /* Stamped, not just emptied, and for a reason of its own: a worker parked
+     * between its pop and its _speak() is not looking at s_quit yet, so without
+     * the stamp it would go on to say a line nobody will ever hear and the join
+     * below would wait out the whole sentence. Same defect as barge-in, felt as
+     * a hang on the way out rather than as a wrong utterance. */
+    backlog_discard();
     SDL_UnlockMutex(s_lock);
     if (cutSpeechOff) {
         /* Cut the engine off before waiting: the worker may be several seconds
@@ -404,8 +526,7 @@ static void service_stop(void) {
     }
 #else
     s_state = SERVICE_OFF;
-    s_head = 0;
-    s_count = 0;
+    backlog_discard();
     mdkr_a11y_speech_stop();
 #endif
     s_speaking = false;
@@ -509,6 +630,16 @@ unsigned mdkr_a11y_speech_service_spoken(void) {
     return spoken;
 }
 
+/* Under the mutex, like _spoken() and unlike this function before the barge-in
+ * stamp existed. Both ends of s_dropped used to be the pump's own thread — the
+ * overflow arm of backlog_push() — so an unlocked read of it was a read of a
+ * value only the reader wrote. The worker now increments it too, for the line a
+ * barge-in cancels between the pop and the speak, so the read is a genuine
+ * cross-thread one and needs the same lock the count is written under. */
 unsigned mdkr_a11y_speech_service_dropped(void) {
-    return s_dropped;
+    unsigned dropped;
+    lock_backlog();
+    dropped = s_dropped;
+    unlock_backlog();
+    return dropped;
 }

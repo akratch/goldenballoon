@@ -111,7 +111,17 @@ void mdkr_a11y_speech_speak(const char *text);
 /* Cuts off whatever is being said, now, discarding the rest of it. Callable
  * from ANY thread, including while _speak() is blocked in the worker: barge-in
  * is requested by the UI thread the instant the model reports the in-flight
- * utterance superseded. */
+ * utterance superseded.
+ *
+ * WHAT IT CANNOT CANCEL. An utterance the worker has committed to but has not
+ * yet handed to the engine. A _stop() that lands there is a no-op on an idle
+ * engine, and the line is spoken afterwards. a11y_speech_worker.c narrows that
+ * window to the few instructions between its generation re-check and this
+ * call — see backlog_purge() there for what is and is not closed. Closing the
+ * remainder is a change to THIS interface: _stop() would have to record the
+ * generation it cancelled and _speak() test it at the instant it commits the
+ * utterance, in every backend, each with its own synchronisation. That has not
+ * been done, and a backend author should not assume it has. */
 void mdkr_a11y_speech_stop(void);
 
 /* Releases the engine. After it, _available() is false until a new _init(). */
@@ -148,10 +158,12 @@ void mdkr_a11y_speech_service_shutdown(void);
 const char *mdkr_a11y_speech_service_reason(void);
 
 /* Utterances the worker has finished speaking, and utterances it dropped
- * because the engine was slower than the player. Diagnostic only — dropping is
- * the designed behaviour, not a fault, which is exactly why it needs to be
- * countable from outside: a designed loss that leaves no trace cannot be told
- * apart from a bug. */
+ * because the engine was slower than the player — the handoff queue overflowing
+ * and, since the barge-in stamp, a line cancelled after the worker popped it
+ * and before the engine started it. Diagnostic only — dropping is the designed
+ * behaviour, not a fault, which is exactly why it needs to be countable from
+ * outside: a designed loss that leaves no trace cannot be told apart from a
+ * bug. */
 unsigned mdkr_a11y_speech_service_spoken(void);
 unsigned mdkr_a11y_speech_service_dropped(void);
 

@@ -386,6 +386,43 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME a11y_model COMMAND mdkr_a11y_model_test)
 
+    # The drain worker's barge-in stamp. A different KIND of test from the one
+    # above: the model is single-threaded and decidable on its text, this is two
+    # real threads and the assertion is about WHICH utterance reaches a backend.
+    #
+    # MDKR_A11Y_SPEECH_TESTING is defined HERE AND NOWHERE ELSE. It compiles one
+    # hook call into a11y_speech_worker.c at the instruction the barge-in race
+    # needs, so the test can park the worker there instead of racing at it;
+    # without the define the hook site preprocesses away entirely and no shipped
+    # build contains a pointer, a branch or a call for it.
+    #
+    # Links no speech backend. The test file supplies the whole of the
+    # a11y_speech.h interface itself, which is also what makes it impossible to
+    # link a real one in by accident -- seven duplicate symbols. SDL is here for
+    # its threads and semaphores and is never initialised, so this opens no
+    # device and needs no driver, exactly like the audio ring tests below.
+    add_executable(mdkr_a11y_speech_worker_test
+        ${CMAKE_SOURCE_DIR}/tests/test_a11y_speech_worker.c
+        ${CMAKE_SOURCE_DIR}/platform/a11y_speech_worker.c)
+    target_include_directories(mdkr_a11y_speech_worker_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${SDL2_INCLUDE_DIRS})
+    target_link_directories(mdkr_a11y_speech_worker_test PRIVATE
+        ${SDL2_LIBRARY_DIRS})
+    target_compile_definitions(mdkr_a11y_speech_worker_test PRIVATE
+        SDL_MAIN_HANDLED MDKR_A11Y_SPEECH_TESTING)
+    target_link_libraries(mdkr_a11y_speech_worker_test PRIVATE ${SDL2_LIBRARIES})
+    if(MSVC)
+        target_compile_options(mdkr_a11y_speech_worker_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_a11y_speech_worker_test PRIVATE
+            -Wall -Wextra -Werror)
+    endif()
+    add_test(NAME a11y_speech_worker COMMAND mdkr_a11y_speech_worker_test)
+    # Every wait in it is bounded and short; this is the backstop for a genuine
+    # deadlock, which must fail the suite rather than hang it.
+    set_tests_properties(a11y_speech_worker PROPERTIES TIMEOUT 120)
+
     # The save-state container. Deliberately links NOTHING from save_container.c
     # or save_codec.c: a save state is not the progress save, and the two must
     # not be able to become each other. The truncation sweep writes and re-reads
