@@ -357,6 +357,8 @@ static uint64_t s_stage_generation;
 typedef struct SnapCameraHistory {
     int32_t camera_id;
     float last_position[3];
+    int16_t last_rotation_y;
+    float last_fov;
     uint8_t last_world_region;
     uint64_t last_capture;
 } SnapCameraHistory;
@@ -754,6 +756,43 @@ bool presentation_snapshot_capture_camera(
             discontinuous = true;
         }
     }
+    /*
+     * Angle and FOV cut clauses (presentation-safety plan Task 4).
+     *
+     * Position can stay well under PRESENTATION_SNAPSHOT_TELEPORT_UNITS while
+     * a re-aim is still a cut: the TT-cam spectate switch and the post-race
+     * spectator handoff both swap to a camera object a few hundred units from
+     * the last one but pointed somewhere else entirely. Left to the distance
+     * clause alone, that reaches resolve_camera_pair as ordinary motion, which
+     * blends position and FOV across the cut while only the yaw axis, once it
+     * crosses PRESENTATION_SNAPSHOT_ROTATION_SNAP, gets forced to its
+     * endpoint -- one axis snapping ahead of a pair the rest of the frame
+     * still thinks is continuous. mdkr_yaw_delta_deg is the exact shortest-arc
+     * helper resolve_camera_pair's own audit uses, reused rather than
+     * re-derived so the two can never disagree about what a degree is.
+     *
+     * Filed the same way the distance clause is: setting `discontinuous`
+     * here is what makes this the SAME atomic cut the position clause
+     * produces -- one flag, consumed whole by resolve_camera_pair, so a
+     * cut on any one of these clauses holds the entire camera pose for
+     * this tick rather than letting position, rotation and FOV disagree
+     * about whether the pair still exists.
+     */
+    if (!discontinuous) {
+        const float yaw_delta_deg = mdkr_yaw_delta_deg(
+            (uint16_t)history->last_rotation_y, (uint16_t)sample->rotation_y);
+        if (yaw_delta_deg > MDKR_CUT_YAW_DEG ||
+            yaw_delta_deg < -MDKR_CUT_YAW_DEG) {
+            discontinuous = true;
+        }
+    }
+    if (!discontinuous) {
+        const float fov_delta_deg = sample->fov - history->last_fov;
+        if (fov_delta_deg > MDKR_CUT_FOV_DEG ||
+            fov_delta_deg < -MDKR_CUT_FOV_DEG) {
+            discontinuous = true;
+        }
+    }
 
     entry = &write->cameras[write->camera_count++];
     *entry = *sample;
@@ -867,6 +906,8 @@ void presentation_snapshot_capture_commit(void) {
         history->last_position[0] = entry->position[0];
         history->last_position[1] = entry->position[1];
         history->last_position[2] = entry->position[2];
+        history->last_rotation_y = entry->rotation_y;
+        history->last_fov = entry->fov;
         history->last_world_region = entry->world_region;
         history->last_capture = s_capture_serial;
         if (entry->discontinuity) {

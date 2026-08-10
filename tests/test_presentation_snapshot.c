@@ -670,6 +670,21 @@ static void test_resolved_fields(void) {
  * rotation snap must apply to the camera path exactly like the object path.
  * The snap is per-field, not per-camera: fov and position still blend while
  * rotation_y jumps straight to current. */
+/*
+ * Before Task 6, a fast yaw pan past PRESENTATION_SNAPSHOT_ROTATION_SNAP
+ * (0x4000, a quarter turn) was invisible to capture: the position clause saw
+ * nothing to catch (position did not move), so the pair still reached
+ * resolve_camera_pair as ordinary motion. Only the per-axis rotation-arc
+ * snap inside presentation_lerp_angle forced yaw to its endpoint; FOV, on a
+ * different axis, kept right on blending across the same "cut" -- a shear
+ * where two axes of the very same camera disagreed about whether the tick
+ * was continuous (docs/evidence/smoothing-artifact-repro-2026-08.md §2.1).
+ *
+ * 0x5000 (112.5 deg) is past both PRESENTATION_SNAPSHOT_ROTATION_SNAP (90
+ * deg) and the new MDKR_CUT_YAW_DEG (67.5 deg), so Task 6's capture-time
+ * yaw clause now catches this before any per-axis blending decision is
+ * made: the whole camera holds, FOV included.
+ */
 static void test_camera_fast_pan_snaps(void) {
     PresentationCameraPose pose;
     PresentationCameraEntry camera_sample;
@@ -691,10 +706,141 @@ static void test_camera_fast_pan_snaps(void) {
 
     expect(presentation_snapshot_resolve_camera(0, 1, 2, &pose),
            "camera fast pan: viewport 0 resolves");
+    expect(pose.interpolated == 0,
+           "camera fast pan: the yaw-delta cut clause holds the whole "
+           "camera instead of letting resolve_camera_pair blend it");
     expect(pose.rotation_y == 0x5000,
-           "camera fast pan: rotation snaps to current instead of blending");
+           "camera fast pan: rotation holds at the authored endpoint");
+    expect(pose.fov == 70.0f,
+           "camera fast pan: fov holds too now -- Task 6 closes the shear "
+           "where fov kept blending while only rotation snapped");
+}
+
+/*
+ * The per-axis 0x4000 rotation snap is a backstop Task 6 must not remove:
+ * pitch, rotation_x and rotation_z are not covered by MDKR_CUT_YAW_DEG (it
+ * grades yaw only, via mdkr_yaw_delta_deg), so a hard pitch snap with yaw and
+ * FOV both quiet must still take the OLD per-axis path -- capture does not
+ * flag a cut, resolve_camera_pair blends, and only the pitch axis snaps to
+ * its endpoint while position and FOV keep blending across the same tick.
+ */
+static void test_camera_pitch_axis_snap_still_backstops(void) {
+    PresentationCameraPose pose;
+    PresentationCameraEntry camera_sample;
+
+    begin();
+
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 0.0f, 0.0f, 0.0f);
+    camera_sample.pitch = 0;
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 0.0f, 0.0f, 0.0f);
+    camera_sample.pitch = 0x5000; /* > 0x4000: pitch-only snap */
+    camera_sample.fov = 70.0f;
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &pose),
+           "camera pitch snap: viewport 0 resolves");
+    expect(pose.interpolated == 1,
+           "camera pitch snap: no capture-time clause fires for pitch, so "
+           "the pair still blends");
+    expect(pose.pitch == 0x5000,
+           "camera pitch snap: pitch still snaps to its endpoint via the "
+           "per-axis backstop");
     expect(pose.fov > 60.0f && pose.fov < 70.0f,
-           "camera fast pan: fov still blends across the same tick");
+           "camera pitch snap: fov still blends -- this axis is untouched "
+           "by Task 6's yaw/FOV clauses");
+}
+
+/*
+ * Task 6: camera-cut clauses for angle and FOV.
+ *
+ * The position clause only catches a cut that MOVES the camera. The TT-cam
+ * spectate switch and the post-race spectator handoff both swap to a camera
+ * a few units from the last one but pointed somewhere else, or with a
+ * different authored FOV -- exactly what these two clauses exist to catch
+ * at capture time, before resolve_camera_pair ever decides to blend.
+ */
+static void test_camera_cut_angle_and_fov(void) {
+    PresentationCameraPose pose;
+    PresentationCameraEntry camera_sample;
+    PresentationSnapshotStats before_stats;
+    PresentationSnapshotStats after_stats;
+
+    /* ---- yaw cut: position barely moves, yaw jumps past MDKR_CUT_YAW_DEG */
+    begin();
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 0.0f, 0.0f, 0.0f);
+    camera_sample.rotation_y = 0;
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+
+    presentation_snapshot_get_stats(&before_stats);
+
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 1.0f, 0.0f, 0.0f); /* 1 unit: not a
+                                                         * teleport */
+    camera_sample.rotation_y = 20000; /* ~109.9 deg: past MDKR_CUT_YAW_DEG */
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &pose) &&
+               pose.interpolated == 0 && pose.rotation_y == 20000 &&
+               pose.position[0] == 1.0f,
+           "camera cut: a yaw jump past MDKR_CUT_YAW_DEG holds the whole "
+           "camera even though position barely moved");
+
+    presentation_snapshot_get_stats(&after_stats);
+    expect(after_stats.rotation_arc_checks == before_stats.rotation_arc_checks &&
+               after_stats.rotation_arc_snaps == before_stats.rotation_arc_snaps,
+           "camera cut: the yaw cut fires at capture, before "
+           "rotation_arc_audit ever runs for this tick");
+
+    /* Negative control: a yaw delta safely under threshold still blends. */
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 2.0f, 0.0f, 0.0f);
+    camera_sample.rotation_y = 20000 + 4000; /* ~22 more degrees: well under
+                                               * MDKR_CUT_YAW_DEG */
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &pose) &&
+               pose.interpolated == 1,
+           "camera cut: an ordinary pan under MDKR_CUT_YAW_DEG still blends");
+
+    /* ---- FOV cut: position and yaw hold, FOV jumps past MDKR_CUT_FOV_DEG */
+    begin();
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 0.0f, 0.0f, 0.0f); /* fov 60 */
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 0.0f, 0.0f, 0.0f);
+    camera_sample.fov = 90.0f; /* +30: past MDKR_CUT_FOV_DEG */
+    camera_sample.vertical_fov = 90.0f;
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &pose) &&
+               pose.interpolated == 0 && pose.fov == 90.0f,
+           "camera cut: an FOV jump past MDKR_CUT_FOV_DEG holds the whole "
+           "camera even though position and yaw did not move");
+
+    /* Negative control: an ordinary FOV kick under threshold still blends. */
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 0.0f, 0.0f, 0.0f);
+    camera_sample.fov = 95.0f; /* +5 from 90: well under MDKR_CUT_FOV_DEG */
+    camera_sample.vertical_fov = 95.0f;
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &pose) &&
+               pose.interpolated == 1,
+           "camera cut: an ordinary FOV change under MDKR_CUT_FOV_DEG still "
+           "blends");
 }
 
 /*
@@ -1197,6 +1343,8 @@ int main(void) {
     test_discontinuity();
     test_resolved_fields();
     test_camera_fast_pan_snaps();
+    test_camera_pitch_axis_snap_still_backstops();
+    test_camera_cut_angle_and_fov();
     test_camera_cut_note_viewport_space();
     test_identity_insert_failure_fails_closed();
     test_authored_camera_latch();

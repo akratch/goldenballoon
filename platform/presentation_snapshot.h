@@ -104,6 +104,34 @@ extern "C" {
  */
 #define PRESENTATION_SNAPSHOT_ROTATION_SNAP 0x4000
 
+/*
+ * Camera-cut clauses for angle and FOV, in degrees of per-tick delta.
+ *
+ * The position clause above (PRESENTATION_SNAPSHOT_TELEPORT_UNITS) only
+ * catches a cut that MOVES the camera. A pure re-aim -- the TT-cam spectate
+ * switch handing the shot to a trackside camera a few units from the last
+ * one, or a post-race spectator swap -- can leave position and even FOV
+ * almost untouched while yaw snaps more than a quarter turn. Left
+ * undetected at capture, that jump still reaches resolve_camera_pair's
+ * per-axis interpolation, which blends position and FOV across the cut
+ * while ONLY the yaw axis hits PRESENTATION_SNAPSHOT_ROTATION_SNAP and gets
+ * forced to its endpoint -- a shear where one axis jumps ahead of the pair
+ * it is supposedly paired with (evidence file's docs/evidence/
+ * smoothing-artifact-repro-2026-08.md, section 2.1).
+ *
+ * DKR-R's measured values, adopted here as starting points and tuned only
+ * against this tree's own fixtures: 67.5 deg/tick for yaw (three quarters
+ * of PRESENTATION_SNAPSHOT_ROTATION_SNAP's 90 deg/tick, comfortably above
+ * any camera-follow pan and comfortably below a snap turn) and 20.0 deg/tick
+ * for FOV (an ordinary FOV kick -- boost pads, drafting -- stays well under
+ * this; only a full recompose reads like this in one tick).
+ *
+ * Neither clause replaces the position clause or the per-axis rotation
+ * snap: both stay as backstops for the cuts these two do not name.
+ */
+#define MDKR_CUT_YAW_DEG 67.5f
+#define MDKR_CUT_FOV_DEG 20.0f
+
 /* One captured object pose. Native-only; no original struct is embedded. */
 typedef struct PresentationObjectEntry {
     const void *address;      /* Object * — identity half one */
@@ -291,12 +319,14 @@ void presentation_snapshot_note_free(const void *object);
  * Note that this VIEWPORT's camera pose is a CUT, not motion.
  *
  * Capture already recognises the cuts it can see from the pose alone: a
- * different gCameras[] slot, a change of draw region, a capture gap, or a jump
- * past PRESENTATION_SNAPSHOT_TELEPORT_UNITS. A game-side cut that clears none
- * of those bars is invisible to it — the spectate cameras are the case that
- * matters, because two adjacent trackside camera objects usually sit well
- * under the teleport threshold and both belong to the same camera slot. Blend
- * that and the camera flies between two shots inside one authoritative tick.
+ * different gCameras[] slot, a change of draw region, a capture gap, a jump
+ * past PRESENTATION_SNAPSHOT_TELEPORT_UNITS, a yaw delta past MDKR_CUT_YAW_DEG,
+ * or an FOV delta past MDKR_CUT_FOV_DEG. A game-side cut that clears none of
+ * those bars is invisible to it — a spectate handoff between two trackside
+ * cameras that sit close together, look the same direction, and share an FOV
+ * is the case that matters, because it clears none of the automatic bars and
+ * both belong to the same camera slot. Blend that and the camera flies
+ * between two shots inside one authoritative tick.
  *
  * So the sites that SNAP a camera say so here, exactly the way spawn/free are
  * noted at the object lifecycle sites: the note is a fact the game knows and
