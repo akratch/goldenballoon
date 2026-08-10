@@ -103,6 +103,16 @@ def environment(
         MDKR_NO_CRASH_HANDLER="1",
         MDKR64_HIDDEN="1",
         MDKR_SAVE_DIR=str(save_dir),
+        # This gate compares world pixels byte-for-byte across five separate
+        # webgpu processes. WebGPU's nonblocking frame admission skips frames
+        # as a function of live GPU occupancy, and the dither seed advances
+        # per ADMITTED frame -- so under host load two arms land on different
+        # seeds and scattered world pixels differ. Full admission pins the
+        # admitted-frame count, exactly as the five sibling pixel gates do.
+        # It does not weaken the assertion; it stops grading host load.
+        # (2026-08-10: one in-suite red with this exact signature passed
+        # standalone on a quiet machine.)
+        MDKR_TEST_RENDER_FULL_ADMISSION="1",
         LC_ALL="C",
     )
     if not finish_enabled:
