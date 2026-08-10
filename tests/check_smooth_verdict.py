@@ -58,17 +58,44 @@ TRACK = "29"                # Jungle Falls: waterfall scroll + ping-pong water
 # produced a WORLD_SCROLL row in most trials and none in one; 20,000 produced
 # one in every trial measured (n=3) with margin (blend+snap already >= 14).
 FRAMES = 20000
+# The --pan-demote arm needs its own, larger budget than FRAMES: it is not
+# enough for a WORLD_SCROLL row to exist (FRAMES above already guarantees
+# that with margin) -- it needs at least one CONFIRMED scroller tick to also
+# be a tick this route's camera is panning on, and -- per this file's own
+# "not perfectly reproducible run to run even headless" note above -- which
+# ticks land a confirmed interpolated replay walk at all is itself noisy, so
+# that joint event needs real margin. 40,000 frames measured 30-60% failure
+# across repeated trials; 100,000 measured WORLD_SCROLL pandemoted > 0 in
+# 5/5 trials (1 to 65 demotions each), with OBJECT_ROOT pandemoted == 0 in
+# every trial. One of those five also dropped the WATER_WAVE row entirely --
+# a pre-existing large-frame-count flake in this same fixture unrelated to
+# pan demotion (WATER_WAVE's count does not depend on the demotion clause at
+# all) -- so this is the same kind of statistical margin FRAMES/20000 above
+# carries for the base arm, not a stronger guarantee.
+PAN_DEMOTE_FRAMES = 100000
+# Test-only override of the production 22.5 deg/tick threshold (see
+# MDKR_TEST_PAN_DEMOTE_YAW_DEG_PER_TICK in gfx_pc_dkr.c): Jungle Falls'
+# autopilot route pans hard enough to spike past 22.5 deg/tick only a
+# handful of times over an entire 3-lap race (measured max ~150 deg/tick),
+# and essentially never exactly on the same tick a confirmed WORLD_SCROLL
+# batch also draws. 0.05 deg/tick demotes on ordinary camera-follow motion
+# instead of requiring a genuine hard pan, which proves the SAME choke-point
+# clause (dkr_replay_resolve_alpha's demotion branch, the class filter, and
+# the census wiring) without needing a dedicated hard-pan fixture this tree
+# does not have. The production default is untouched by this override --
+# it only takes effect once MDKR_SMOOTH_PAN_DEMOTE=1 has already been set.
+PAN_DEMOTE_TEST_THRESHOLD_DEG = "0.05"
 FATAL_RE = fatal_re(r"\[FX BUG\]", "Assertion", "Validation Error")
 
 ROW_RE = re.compile(
     r"\[SMOOTH-VERDICT\] class=(\S+) blend=(\d+) snap=(\d+) "
-    r"top_reason=(\S+)"
+    r"top_reason=(\S+) pandemoted=(\d+)"
 )
 
 REQUIRED_CLASSES = ("WATER_WAVE", "OBJECT_ROOT", "WORLD_SCROLL")
 
 
-def environment(save_dir: Path) -> dict[str, str]:
+def environment(save_dir: Path, pan_demote: bool) -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
@@ -93,18 +120,29 @@ def environment(save_dir: Path) -> dict[str, str]:
         MDKR_NO_CRASH_HANDLER="1",
         MDKR64_HIDDEN="1",
     )
+    if pan_demote:
+        # Task 4's optional pan-rate demotion (default OFF; this is the one
+        # arm that opts in). Jungle Falls is the same fixture
+        # check_presentation_matrix.py already established as this tree's
+        # UV-scroll/wave witness -- autopilot cornering through it is what
+        # drives the camera's per-tick yaw rate. See
+        # PAN_DEMOTE_TEST_THRESHOLD_DEG above for why this arm also lowers
+        # the demotion threshold via the test-only override.
+        env["MDKR_SMOOTH_PAN_DEMOTE"] = "1"
+        env["MDKR_TEST_PAN_DEMOTE_YAW_DEG_PER_TICK"] = PAN_DEMOTE_TEST_THRESHOLD_DEG
     return env
 
 
 def run(binary: Path, rom: Path, work: Path, timeout: int,
-        verbose: bool) -> str:
+        verbose: bool, pan_demote: bool) -> str:
     import subprocess
 
     save_dir = work / "save"
     save_dir.mkdir(parents=True)
+    frames = PAN_DEMOTE_FRAMES if pan_demote else FRAMES
     command = [
         str(binary),
-        "--headless-frames", str(FRAMES),
+        "--headless-frames", str(frames),
         "--input-script", str(SCRIPT),
         "--rom", str(rom),
     ]
@@ -114,7 +152,7 @@ def run(binary: Path, rom: Path, work: Path, timeout: int,
         proc = subprocess.run(
             command,
             cwd=work,
-            env=environment(save_dir),
+            env=environment(save_dir, pan_demote),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -149,6 +187,17 @@ def main() -> int:
             "geometry has a real presentation owner (Task 7)"
         ),
     )
+    parser.add_argument(
+        "--pan-demote", action="store_true",
+        help=(
+            "Task 4: arm MDKR_SMOOTH_PAN_DEMOTE=1 over the same Jungle Falls "
+            "route and prove WORLD_SCROLL sees PAN_RATE_DEMOTED rows while "
+            "OBJECT_ROOT still blends (objects are never in the demotable "
+            "set). With this flag omitted (the default), the env stays "
+            "unset and every observed class must show pandemoted=0 -- the "
+            "default-off proof."
+        ),
+    )
     args = parser.parse_args()
 
     binary = Path(resolve_binary(args.build)).resolve()
@@ -157,22 +206,23 @@ def main() -> int:
 
     try:
         with tempfile.TemporaryDirectory(prefix="mdkr_smooth_verdict_") as temp:
-            output = run(binary, rom, Path(temp), args.timeout, args.verbose)
+            output = run(binary, rom, Path(temp), args.timeout, args.verbose,
+                         args.pan_demote)
     except (OSError, RuntimeError) as exc:
         print(f"check_smooth_verdict: FAIL — {exc}", file=sys.stderr)
         return 1
 
-    rows: dict[str, tuple[int, int, str]] = {}
+    rows: dict[str, tuple[int, int, str, int]] = {}
     for match in ROW_RE.finditer(output):
-        cls, blend_s, snap_s, top_reason = match.groups()
-        blend, snap = int(blend_s), int(snap_s)
+        cls, blend_s, snap_s, top_reason, pandemoted_s = match.groups()
+        blend, snap, pandemoted = int(blend_s), int(snap_s), int(pandemoted_s)
         # Multiple rows for the same class would mean [SMOOTH-VERDICT] fired
         # more than once per process, which the flush contract (once, at
         # present_sched_trace_summary) forbids.
         if cls in rows:
             failures.append(f"class={cls} printed more than one row")
             continue
-        rows[cls] = (blend, snap, top_reason)
+        rows[cls] = (blend, snap, top_reason, pandemoted)
 
     if not rows:
         failures.append("no [SMOOTH-VERDICT] rows at all")
@@ -181,7 +231,7 @@ def main() -> int:
         if cls not in rows:
             failures.append(f"no [SMOOTH-VERDICT] row for class={cls}")
             continue
-        blend, snap, top_reason = rows[cls]
+        blend, snap, top_reason, pandemoted = rows[cls]
         n = blend + snap
         if n <= 0:
             failures.append(f"class={cls}: blend+snap={n} is not positive")
@@ -208,6 +258,36 @@ def main() -> int:
                         f"--expect-water-owned flipped as its new default."
                     )
 
+    if args.pan_demote:
+        # Positive proof: with the env armed, the demotable WORLD_SCROLL
+        # class actually sees PAN_RATE_DEMOTED rows on this hard-cornering
+        # route, while OBJECT_ROOT -- never in
+        # dkr_replay_surface_class_pan_demotable's set -- must NOT be
+        # demoted at all. Object pairing (ownership) is proven by the
+        # existing REQUIRED_CLASSES/n>0 checks above; this only adds the
+        # zero-demotion assertion on top of that already-proven pairing.
+        if "WORLD_SCROLL" in rows and rows["WORLD_SCROLL"][3] <= 0:
+            failures.append(
+                "class=WORLD_SCROLL: MDKR_SMOOTH_PAN_DEMOTE=1 but "
+                "pandemoted=0 -- the armed route never crossed "
+                "MDKR_PAN_DEMOTE_YAW_DEG_PER_TICK"
+            )
+        if "OBJECT_ROOT" in rows and rows["OBJECT_ROOT"][3] != 0:
+            failures.append(
+                f"class=OBJECT_ROOT: pandemoted="
+                f"{rows['OBJECT_ROOT'][3]} but OBJECT_ROOT is not in the "
+                "demotable surface-class set and must never be demoted"
+            )
+    else:
+        # Default-off proof (Step 3): with the env unset, the choke point's
+        # demotion clause can never fire, for ANY class.
+        for cls, (blend, snap, top_reason, pandemoted) in rows.items():
+            if pandemoted != 0:
+                failures.append(
+                    f"class={cls}: MDKR_SMOOTH_PAN_DEMOTE is unset but "
+                    f"pandemoted={pandemoted} -- default-off is violated"
+                )
+
     if failures:
         print("check_smooth_verdict: FAIL", file=sys.stderr)
         for failure in failures:
@@ -217,7 +297,7 @@ def main() -> int:
 
     summary = "; ".join(
         f"{cls} blend={rows[cls][0]} snap={rows[cls][1]} "
-        f"top_reason={rows[cls][2]}"
+        f"top_reason={rows[cls][2]} pandemoted={rows[cls][3]}"
         for cls in REQUIRED_CLASSES
     )
     print(f"check_smooth_verdict: PASS — {summary}")

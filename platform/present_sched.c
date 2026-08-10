@@ -1399,11 +1399,23 @@ void present_sched_trace_summary(void) {
                         top_reason = reason;
                     }
                 }
+                /*
+                 * pandemoted breaks out MDKR_VERDICT_PAN_RATE_DEMOTED from the
+                 * reason breakdown explicitly, alongside top_reason rather
+                 * than folded into it: Task 4's pan-rate demotion (default
+                 * off) is expected to touch only a minority of a route's
+                 * ticks even when armed -- the surface still blends on every
+                 * ordinary-speed pan -- so a witness that only ever sees the
+                 * MODAL reason would never confirm demotion fired at all on a
+                 * route where it is legitimately rare.
+                 */
                 fprintf(stderr,
                         "[SMOOTH-VERDICT] class=%s blend=%u snap=%u "
-                        "top_reason=%s\n",
+                        "top_reason=%s pandemoted=%u\n",
                         surface_class_names[cls], (unsigned)blend,
-                        (unsigned)snap, verdict_reason_names[top_reason]);
+                        (unsigned)snap, verdict_reason_names[top_reason],
+                        (unsigned)packet_stats
+                            .verdict_reason[cls][MDKR_VERDICT_PAN_RATE_DEMOTED]);
             }
             gfx_presentation_packet_reset_verdict_stats();
         }

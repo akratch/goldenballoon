@@ -300,6 +300,18 @@ static int dkr_test_uncaptured_external = -1;
 static bool dkr_replay_object_alpha_valid = false;
 static uint64_t dkr_replay_object_alpha_numerator = 0;
 static uint64_t dkr_replay_object_alpha_denominator = 1;
+/*
+ * This walk's primary-viewport camera pan rate, latched once in
+ * gfx_dkr_replay_walk_impl (see presentation_snapshot_camera_pan_rate_deg)
+ * and read by every per-primitive DkrReplayAlphaRequest built during the
+ * walk it belongs to -- the same "compute once, fan out to every call site"
+ * shape dkr_replay_object_alpha_numerator/denominator already use above.
+ * Multi-viewport splitscreen is not distinguished: viewport 0 is the one
+ * pan-rate demotion is scoped to for this release, same as every other
+ * single-viewport-scoped replay quantity in this file.
+ */
+static bool dkr_replay_pan_yaw_delta_valid = false;
+static float dkr_replay_pan_yaw_delta_deg = 0.0f;
 static int dkr_replay_object_interpolation = -1;
 static int dkr_replay_deformation_interpolation = -1;
 static int dkr_replay_projected_shadow_interpolation = -1;
@@ -614,6 +626,75 @@ static bool dkr_replay_uv_scroll_interpolation_enabled(void) {
 }
 
 /*
+ * Pan-rate demotion (presentation-safety plan Task 4), default OFF this
+ * release: with MDKR_SMOOTH_PAN_DEMOTE unset, dkr_replay_resolve_alpha's
+ * demotion clause below can never fire, so the choke point is bit-identical
+ * to before this feature existed. Flipping the default is an owner decision
+ * made after device time, same shape as every other public opt gate here.
+ */
+static int dkr_replay_pan_demote = -1;
+static bool dkr_replay_pan_demote_enabled(void) {
+    if (dkr_replay_pan_demote < 0) {
+        const char *value = getenv("MDKR_SMOOTH_PAN_DEMOTE");
+        dkr_replay_pan_demote = value != NULL && value[0] == '1';
+    }
+    return dkr_replay_pan_demote != 0;
+}
+
+/*
+ * Above this per-tick camera yaw rate, WATER_WAVE/WORLD_SCROLL/SKYDOME are
+ * unproven-correspondence surfaces (none of the three carries a real
+ * presentation owner today -- see gfx_presentation_packet.h's MdkrSurfaceClass
+ * doc): the blend the choke point would otherwise draw is texture-space
+ * shimmer, not a proven in-between pose, and a hard camera pan is exactly
+ * when that shimmer reads as wrong rather than as smoothing. 22.5 deg/tick is
+ * a quarter of PRESENTATION_SNAPSHOT_ROTATION_SNAP (0x4000 = 90 deg/tick):
+ * comfortably above ordinary camera-follow panning, comfortably below the
+ * point the rotation interpolator itself refuses to smear.
+ */
+#define MDKR_PAN_DEMOTE_YAW_DEG_PER_TICK 22.5f
+
+/*
+ * The production threshold above, with one test-only override: mutation
+ * testing this clause (raise the threshold until the gate that proved it
+ * fires can no longer observe a single demotion) has to reach a value no
+ * real route will ever cross without recompiling, and re-flashing a whole
+ * binary per mutation value is what every OTHER numeric mutation in this
+ * tree avoids by threading the value through, not hardcoding it twice.
+ * Unset, this returns exactly MDKR_PAN_DEMOTE_YAW_DEG_PER_TICK -- the
+ * override can only ever be reached by a caller that already opted in with
+ * MDKR_SMOOTH_PAN_DEMOTE=1, so it changes no default-off behaviour.
+ */
+static float dkr_replay_pan_demote_threshold_deg(void) {
+    static bool computed = false;
+    static float threshold = MDKR_PAN_DEMOTE_YAW_DEG_PER_TICK;
+
+    if (!computed) {
+        const char *value = getenv("MDKR_TEST_PAN_DEMOTE_YAW_DEG_PER_TICK");
+        if (value != NULL && value[0] != '\0') {
+            char *end = NULL;
+            float parsed = strtof(value, &end);
+            if (end != value && parsed > 0.0f) {
+                threshold = parsed;
+            }
+        }
+        computed = true;
+    }
+    return threshold;
+}
+
+static bool dkr_replay_surface_class_pan_demotable(MdkrSurfaceClass surface_class) {
+    switch (surface_class) {
+        case MDKR_SURF_WATER_WAVE:
+        case MDKR_SURF_WORLD_SCROLL:
+        case MDKR_SURF_SKYDOME:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/*
  * dkr_replay_resolve_alpha() is the single choke point every replay stage
  * asks "is this class allowed to blend right now, and at what fraction."
  * Each per-stage MDKR_TEST_*_INTERPOLATION switch above still guards exactly
@@ -643,7 +724,27 @@ typedef struct DkrReplayAlphaRequest {
     bool discontinuity; /* the stage's own jump/topology guard tripped */
     uint64_t numerator;
     uint64_t denominator;
+    /* This walk's primary-viewport camera pan rate (see
+     * dkr_replay_pan_yaw_delta_deg above) -- a dynamic per-tick measurement,
+     * not a memoized env flag, so it travels through the request like
+     * numerator/denominator rather than being read as a bare global inside
+     * the choke point. pan_rate_known is false whenever
+     * presentation_snapshot_camera_pan_rate_deg refused (no published pair,
+     * a cut, mismatched viewport/camera) -- an unknown rate never demotes. */
+    bool pan_rate_known;
+    float pan_yaw_delta_deg;
 } DkrReplayAlphaRequest;
+
+/* Every DkrReplayAlphaRequest site fills its pan-rate fields from this
+ * walk's single latched measurement (dkr_replay_pan_yaw_delta_deg/_valid,
+ * set once in gfx_dkr_replay_walk_impl) the same way, so the fan-out lives
+ * here once instead of seven times. Harmless for the classes the choke point
+ * never demotes -- dkr_replay_surface_class_pan_demotable gates that, not
+ * this. */
+static void dkr_replay_alpha_req_set_pan_rate(DkrReplayAlphaRequest *req) {
+    req->pan_rate_known = dkr_replay_pan_yaw_delta_valid;
+    req->pan_yaw_delta_deg = dkr_replay_pan_yaw_delta_deg;
+}
 
 static bool dkr_replay_surface_class_gate_enabled(MdkrSurfaceClass surface_class) {
     switch (surface_class) {
@@ -669,7 +770,10 @@ static bool dkr_replay_surface_class_gate_enabled(MdkrSurfaceClass surface_class
 }
 
 /*
- * Pure: no global read besides the class's own env-gate memo, no write.
+ * Pure: no global read besides the class's own env-gate memo (and, for pan
+ * demotion, dkr_replay_pan_demote_enabled's/dkr_replay_pan_demote_threshold_deg's
+ * identically-shaped memos -- the dynamic per-tick rate itself still arrives
+ * only through `req`), no write.
  * On every path except MDKR_VERDICT_BLEND, alpha is the newest authored
  * value (0.0f -- the un-advanced pose), never a scaled-up guess, so a caller
  * that forgets to check `*out_reason` still gets a snap, not an
@@ -682,7 +786,6 @@ static float dkr_replay_resolve_alpha(MdkrSurfaceClass surface_class,
     MdkrVerdictReason reason = MDKR_VERDICT_NO_OWNER;
     float alpha = 0.0f;
 
-    (void)surface_class;
     if (req != NULL && req->owner_present) {
         if (!req->gate_enabled) {
             reason = MDKR_VERDICT_DEPENDENCY_MISS;
@@ -692,6 +795,17 @@ static float dkr_replay_resolve_alpha(MdkrSurfaceClass surface_class,
             reason = MDKR_VERDICT_DISCONTINUITY;
         } else if (req->denominator == 0u || req->numerator >= req->denominator) {
             reason = MDKR_VERDICT_TICK_MISMATCH;
+        } else if (dkr_replay_pan_demote_enabled() &&
+                   dkr_replay_surface_class_pan_demotable(surface_class) &&
+                   req->pan_rate_known &&
+                   fabsf(req->pan_yaw_delta_deg) >
+                       dkr_replay_pan_demote_threshold_deg()) {
+            /* Would otherwise BLEND -- every earlier clause already passed --
+             * but this class's correspondence is unproven and the camera is
+             * panning hard enough that the blend would read as shimmer, not
+             * smoothing. Demote to the newest authored value, same as every
+             * other refusal above. */
+            reason = MDKR_VERDICT_PAN_RATE_DEMOTED;
         } else {
             alpha = (float)req->numerator / (float)req->denominator;
             reason = MDKR_VERDICT_BLEND;
@@ -1077,6 +1191,7 @@ static void dkr_replay_apply_primitive_alpha(void) {
     alpha_req.tick_paired = true;
     alpha_req.numerator = dkr_replay_object_alpha_numerator;
     alpha_req.denominator = dkr_replay_object_alpha_denominator;
+    dkr_replay_alpha_req_set_pan_rate(&alpha_req);
     (void)dkr_replay_resolve_alpha(
         rsp.opacity_owner.surface_class, &alpha_req, &alpha_reason);
     if (!dkr_replay_pass || !dkr_replay_object_alpha_valid ||
@@ -5767,7 +5882,8 @@ static bool dkr_replay_effect_world(
 static const float *dkr_replay_uv_scroll_offset(const Triangle *tris,
                                                 int num_tris, float out[2],
                                                 uint16_t *out_mask_u,
-                                                uint16_t *out_mask_v) {
+                                                uint16_t *out_mask_v,
+                                                bool pan_demoted) {
     GfxPresentationUvScroll scroll;
     const void *original;
     uint64_t target_tick;
@@ -5799,8 +5915,10 @@ static const float *dkr_replay_uv_scroll_offset(const Triangle *tris,
      * Everything else that reaches this function and turns out to be a real
      * scroller (current != NULL inside the lookup below) is graded
      * WORLD_SCROLL from the confirm-or-hold outcome the lookup already
-     * computed; non-scrollers (most triangle batches) are not scroll content
-     * at all and are not graded here.
+     * computed -- PAN_RATE_DEMOTED instead of BLEND when the choke point's
+     * demotion clause already decided this call may not apply an offset
+     * (`pan_demoted`); non-scrollers (most triangle batches) are not scroll
+     * content at all and are not graded here.
      */
     wave_region = dkr_paired_triangle_alias(original, NULL, &original);
     gfx_presentation_packet_get_uv_scroll_hold_stats(
@@ -5812,8 +5930,9 @@ static const float *dkr_replay_uv_scroll_offset(const Triangle *tris,
         gfx_presentation_packet_note_verdict(MDKR_SURF_WATER_WAVE,
                                              MDKR_VERDICT_NO_OWNER);
     } else if (confirmed) {
-        gfx_presentation_packet_note_verdict(MDKR_SURF_WORLD_SCROLL,
-                                             MDKR_VERDICT_BLEND);
+        gfx_presentation_packet_note_verdict(
+            MDKR_SURF_WORLD_SCROLL,
+            pan_demoted ? MDKR_VERDICT_PAN_RATE_DEMOTED : MDKR_VERDICT_BLEND);
     } else {
         uint64_t hold_unpub_after = 0u, hold_ambig_after = 0u;
         uint64_t hold_shape_after = 0u, hold_phase_after = 0u;
@@ -5836,6 +5955,13 @@ static const float *dkr_replay_uv_scroll_offset(const Triangle *tris,
          * nothing is graded. */
     }
     if (!confirmed) {
+        return NULL;
+    }
+    if (pan_demoted) {
+        /* Graded PAN_RATE_DEMOTED above; the caller's choke-point call
+         * already decided this tick may not blend, so this stays a snap to
+         * the authored UV bytes -- no offset, same as every other refusal
+         * this function can return NULL for. */
         return NULL;
     }
     if (scroll.authored) {
@@ -6168,6 +6294,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                     effect_alpha_req.tick_paired = true;
                     effect_alpha_req.numerator = dkr_replay_object_alpha_numerator;
                     effect_alpha_req.denominator = dkr_replay_object_alpha_denominator;
+                    dkr_replay_alpha_req_set_pan_rate(&effect_alpha_req);
                     (void)dkr_replay_resolve_alpha(
                         MDKR_SURF_EFFECT_SHELL, &effect_alpha_req,
                         &effect_alpha_reason);
@@ -6623,6 +6750,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                     particle_alpha_req.tick_paired = true;
                     particle_alpha_req.numerator = dkr_replay_object_alpha_numerator;
                     particle_alpha_req.denominator = dkr_replay_object_alpha_denominator;
+                    dkr_replay_alpha_req_set_pan_rate(&particle_alpha_req);
                     (void)dkr_replay_resolve_alpha(
                         MDKR_SURF_PARTICLE, &particle_alpha_req,
                         &particle_alpha_reason);
@@ -6680,6 +6808,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                     shadow_alpha_req.tick_paired = true;
                     shadow_alpha_req.numerator = dkr_replay_object_alpha_numerator;
                     shadow_alpha_req.denominator = dkr_replay_object_alpha_denominator;
+                    dkr_replay_alpha_req_set_pan_rate(&shadow_alpha_req);
                     (void)dkr_replay_resolve_alpha(
                         MDKR_SURF_PROJECTED_SHADOW, &shadow_alpha_req,
                         &shadow_alpha_reason);
@@ -6749,6 +6878,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                         dkr_replay_object_alpha_numerator;
                     world_static_alpha_req.denominator =
                         dkr_replay_object_alpha_denominator;
+                    dkr_replay_alpha_req_set_pan_rate(&world_static_alpha_req);
                     (void)dkr_replay_resolve_alpha(
                         MDKR_SURF_WORLD_STATIC, &world_static_alpha_req,
                         &world_static_alpha_reason);
@@ -6822,12 +6952,26 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                     uv_scroll_alpha_req.tick_paired = true;
                     uv_scroll_alpha_req.numerator = dkr_replay_object_alpha_numerator;
                     uv_scroll_alpha_req.denominator = dkr_replay_object_alpha_denominator;
+                    dkr_replay_alpha_req_set_pan_rate(&uv_scroll_alpha_req);
                     (void)dkr_replay_resolve_alpha(
                         MDKR_SURF_WORLD_SCROLL, &uv_scroll_alpha_req,
                         &uv_scroll_alpha_reason);
                     if (uv_scroll_alpha_reason == MDKR_VERDICT_BLEND) {
                         uv_offset_ptr = dkr_replay_uv_scroll_offset(
-                            t, num_tris, uv_offset, &uv_mask_u, &uv_mask_v);
+                            t, num_tris, uv_offset, &uv_mask_u, &uv_mask_v,
+                            false);
+                    } else if (uv_scroll_alpha_reason ==
+                               MDKR_VERDICT_PAN_RATE_DEMOTED) {
+                        /* Would otherwise have blended -- only reachable with
+                         * MDKR_SMOOTH_PAN_DEMOTE=1 -- so the census still
+                         * needs this batch's real wave/scroll identity, which
+                         * only dkr_replay_uv_scroll_offset's own lookup
+                         * knows. Grades PAN_RATE_DEMOTED for a confirmed
+                         * scroller and always returns NULL: no offset is
+                         * ever applied on this path. */
+                        (void)dkr_replay_uv_scroll_offset(
+                            t, num_tris, uv_offset, &uv_mask_u, &uv_mask_v,
+                            true);
                     }
                 }
                 dkr_begin_primitive(
@@ -7678,6 +7822,16 @@ static bool gfx_dkr_replay_walk_impl(
     if (!endpoint && numerator == 0u) {
         dkr_replay_zero_alpha_interior++;
     }
+    /*
+     * Latch this walk's pan rate once, from the primary viewport's exact
+     * capture-pair pose (not this call's `overrides`, which carry matrices,
+     * not the N64 angle units the wrap needs). Every DkrReplayAlphaRequest
+     * built for the rest of this walk reads the latch through
+     * dkr_replay_alpha_req_set_pan_rate rather than re-querying the
+     * snapshot, same as numerator/denominator above.
+     */
+    dkr_replay_pan_yaw_delta_valid = presentation_snapshot_camera_pan_rate_deg(
+        0, &dkr_replay_pan_yaw_delta_deg);
     {
         DkrReplayAlphaRequest object_alpha_req;
         MdkrVerdictReason object_alpha_reason;
@@ -7687,6 +7841,7 @@ static bool gfx_dkr_replay_walk_impl(
         object_alpha_req.tick_paired = true;
         object_alpha_req.numerator = numerator;
         object_alpha_req.denominator = denominator;
+        dkr_replay_alpha_req_set_pan_rate(&object_alpha_req);
         (void)dkr_replay_resolve_alpha(
             MDKR_SURF_OBJECT_ROOT, &object_alpha_req, &object_alpha_reason);
         dkr_replay_object_alpha_valid = object_alpha_reason == MDKR_VERDICT_BLEND;
@@ -7757,6 +7912,8 @@ replay_cleanup:
     dkr_replay_object_alpha_valid = false;
     dkr_replay_object_alpha_numerator = 0;
     dkr_replay_object_alpha_denominator = 1;
+    dkr_replay_pan_yaw_delta_valid = false;
+    dkr_replay_pan_yaw_delta_deg = 0.0f;
     dkr_replay_pass = false;
     if (dkr_replay_interior_alpha && dkr_replay_dependency_failed &&
         dkr_replay_uncaptured_externals != uncaptured_entry) {

@@ -1241,6 +1241,18 @@ int16_t presentation_lerp_angle(int16_t a, int16_t b, uint64_t numerator,
     return (int16_t)(uint16_t)((uint16_t)a + (uint16_t)(int16_t)stepped);
 }
 
+float mdkr_yaw_delta_deg(uint16_t a, uint16_t b) {
+    /* (a - b), not (b - a): this is the plan's specified contract (Task 4
+     * brief step 2), and Task 6 reuses this exact helper, so the sign
+     * convention has to match what both call sites were written against
+     * rather than presentation_lerp_angle's own (b - a) delta above. The
+     * wrap itself is the same trick: narrowing the unsigned difference to
+     * int16_t IS the shortest-arc selection, before this converts the raw
+     * N64 angle unit to degrees. */
+    const int16_t delta = (int16_t)(uint16_t)(a - b);
+    return (float)delta * (360.0f / 65536.0f);
+}
+
 /*
  * Grade one interpolated angle against the arc it was allowed to travel.
  *
@@ -1624,5 +1636,37 @@ bool presentation_snapshot_resolve_camera(int viewport_index,
         entry->camera_id < PRESENTATION_SNAPSHOT_MAX_CAMERAS) {
         s_stats.camera_interpolations[entry->camera_id]++;
     }
+    return true;
+}
+
+bool presentation_snapshot_camera_pan_rate_deg(int viewport_index,
+                                               float *out_yaw_delta_deg) {
+    const PresentationSnapshot *current = presentation_snapshot_current();
+    const PresentationSnapshot *previous = presentation_snapshot_previous();
+    const PresentationCameraEntry *entry;
+    const PresentationCameraEntry *before;
+
+    if (out_yaw_delta_deg == NULL || current == NULL || !current->valid ||
+        viewport_index < 0 ||
+        (size_t)viewport_index >= current->camera_count) {
+        return false;
+    }
+    entry = &current->cameras[viewport_index];
+    /* Same refusal resolve_camera makes: a cut is not motion, so it has no
+     * pan rate -- not "a very high one". */
+    if (entry->discontinuity) {
+        return false;
+    }
+    if (previous == NULL || !previous->valid ||
+        previous->stage_generation != current->stage_generation ||
+        (size_t)viewport_index >= previous->camera_count) {
+        return false;
+    }
+    before = &previous->cameras[viewport_index];
+    if (before->camera_id != entry->camera_id) {
+        return false;
+    }
+    *out_yaw_delta_deg = mdkr_yaw_delta_deg((uint16_t)before->rotation_y,
+                                            (uint16_t)entry->rotation_y);
     return true;
 }

@@ -468,6 +468,20 @@ int16_t presentation_lerp_angle(int16_t a, int16_t b, uint64_t numerator,
                                 uint64_t denominator);
 
 /*
+ * Wraparound-correct yaw delta, in degrees, from N64 angle `a` to `b`.
+ *
+ * Same wrap `presentation_lerp_angle` uses for its shortest-arc selection
+ * (the `(int16_t)` narrowing of the unsigned difference), scaled to degrees
+ * and left UNCLAMPED to any snap threshold: this is a rate measurement, not
+ * a pose reconstruction, so the caller decides what a large delta means.
+ * Range is (-180, 180]. Exported here (Task 4's pan-rate demotion) because
+ * Task 6 needs the identical wrap for its own per-tick yaw measurement, and
+ * two independently written copies of a wraparound cast are exactly the kind
+ * of arithmetic this tree does not trust itself to duplicate correctly.
+ */
+float mdkr_yaw_delta_deg(uint16_t a, uint16_t b);
+
+/*
  * Discrete state selection rule (spec §7 "a documented current/previous
  * selection rule, never a numeric blend").
  *
@@ -531,6 +545,23 @@ bool presentation_snapshot_resolve_camera(int viewport_index,
                                           uint64_t numerator,
                                           uint64_t denominator,
                                           PresentationCameraPose *out);
+
+/*
+ * Per-tick camera yaw rate for `viewport_index`, in degrees, from the exact
+ * same authored pose pair `presentation_snapshot_resolve_camera` blends
+ * (this tick's entry and the immediately preceding published one) -- the
+ * cut-detection pairing, not a resolved/interpolated pose. Fails closed
+ * (returns false, `*out_yaw_delta_deg` left unwritten) under every condition
+ * `resolve_camera` itself would refuse to blend across: no published pair,
+ * mismatched stage generation, a viewport absent from either snapshot, a
+ * camera-bank change, or this tick's own capture flagged as a cut. A caller
+ * that ignores the return value and reads a stale/garbage float would be
+ * exactly the C2 mechanism-artifact class the discontinuity flag exists to
+ * prevent, so there is no fallback value -- only success or "do not use
+ * this".
+ */
+bool presentation_snapshot_camera_pan_rate_deg(int viewport_index,
+                                               float *out_yaw_delta_deg);
 
 /* ---- authored UV-scroll rates ------------------------------------------- *
  *
