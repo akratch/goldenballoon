@@ -1100,23 +1100,6 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
      * label. A paragraph underneath is read after the choice has already been
      * made, which is exactly backwards, and it was the single largest source of
      * text on the page. */
-    if (k == MDKR_VIDEO_FRAME_LIMIT &&
-        std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
-        static bool tracedFrameLimit = false;
-        if (!tracedFrameLimit) {
-            std::fprintf(stderr,
-                         "[app-ui] frame-limit value=%s label=%s restartPending=%d\n",
-                         d->text, optionLabel(k, d->text),
-                         Settings_restartPending() ? 1 : 0);
-            std::fprintf(
-                stderr,
-                "[app-ui] frame-limit-contract recommended=\"%s\" "
-                "group=\"%s\" caveat=\"%s\"\n",
-                kOriginalFrameLimitLabel, kModernFrameLimitGroup,
-                kFrameLimitHelp);
-            tracedFrameLimit = true;
-        }
-    }
 
     ui::Gap(ui::kGapS);
     ImGui::PopID();
@@ -1996,6 +1979,31 @@ bool Settings_draw(SDL_Window *window, bool compact) {
     const auto flagsFor = [](bool open) {
         return open ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_None;
     };
+
+    /* The packaged-default proof. verify_unsigned_release greps this exact
+     * row, and check_app_ui_input's recovery arm reads it after a reload. It
+     * reports the DESIRED value from the config, deliberately not the drawn
+     * row: the frame-limit control lives inside a collapsed-by-default tree,
+     * and a proof of the shipped default must not depend on whether a player
+     * (or a passive smoke) happened to open it. */
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        static bool tracedFrameLimit = false;
+        const MdkrVideoValue *frameLimit = desired(MDKR_VIDEO_FRAME_LIMIT);
+        if (!tracedFrameLimit && frameLimit != nullptr) {
+            std::fprintf(stderr,
+                         "[app-ui] frame-limit value=%s label=%s restartPending=%d\n",
+                         frameLimit->text,
+                         optionLabel(MDKR_VIDEO_FRAME_LIMIT, frameLimit->text),
+                         Settings_restartPending() ? 1 : 0);
+            std::fprintf(
+                stderr,
+                "[app-ui] frame-limit-contract recommended=\"%s\" "
+                "group=\"%s\" caveat=\"%s\"\n",
+                kOriginalFrameLimitLabel, kModernFrameLimitGroup,
+                kFrameLimitHelp);
+            tracedFrameLimit = true;
+        }
+    }
 
     if (mdkr_video_config_is_readonly()) {
         // Explicit --pure locks this session's resolved values. Timing and
