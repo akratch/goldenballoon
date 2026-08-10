@@ -286,12 +286,17 @@ std::string frameLimitLine() {
     // native numeric cap, and printing 0/s beside them reads like a fault.
     const unsigned rate = present_sched_present_rate();
     char buffer[160];
+    /* %.48s: both fields are policy names a few characters long; the
+     * precision states that fact to the compiler, whose format-truncation
+     * analysis otherwise assumes the config value's full 1024-byte type. */
     if (rate > 0u) {
-        std::snprintf(buffer, sizeof buffer, "%s (running as %s, capped at %u/s)",
+        std::snprintf(buffer, sizeof buffer,
+                      "%.48s (running as %.48s, capped at %u/s)",
                       chosen != nullptr && chosen[0] != '\0' ? chosen : "default",
                       resolved != nullptr ? resolved : "unknown", rate);
     } else {
-        std::snprintf(buffer, sizeof buffer, "%s (running as %s, no native cap)",
+        std::snprintf(buffer, sizeof buffer,
+                      "%.48s (running as %.48s, no native cap)",
                       chosen != nullptr && chosen[0] != '\0' ? chosen : "default",
                       resolved != nullptr ? resolved : "unknown");
     }

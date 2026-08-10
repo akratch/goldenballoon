@@ -83,7 +83,10 @@ struct LauncherState {
     // A failed engine attempt is carried across the deliberate clean-process
     // relaunch and shown inline. The user's ROM/settings remain intact and the
     // Diagnostics panel is one action away.
-    char    bootError[768] = {0};
+    /* Holds a composed sentence AROUND a full ROM-validation verdict, which
+     * is itself 1024 bytes (rom_validate.h); sized so the frame never
+     * re-truncates what the verdict buffers were widened to carry. */
+    char    bootError[1280] = {0};
     bool    bootErrorVisible = false;
 };
 
