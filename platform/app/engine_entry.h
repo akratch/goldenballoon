@@ -62,6 +62,18 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg);
 extern int g_diagLogRealErrFd;
 extern int g_diagLogFileFd;
 
+// --- Crash-screen presentation hook ----------------------------------------
+// platform/main_pc.c's SIGSEGV/SIGBUS handler calls this AFTER it has written
+// and flushed `[CRASH]` and the backtrace, and before it restores the default
+// disposition and re-raises. The app shell registers
+// platform/app/crash_screen.cpp here; NULL (every CLI invocation) means the
+// handler behaves exactly as it did before the crash screen existed.
+//
+// Declared here rather than duplicated ad hoc for the reason this header
+// exists: the engine defines it, the shell assigns it, and neither carries its
+// own copy of the type. Defined in platform/main_pc.c.
+extern void (*g_mdkrCrashScreenHook)(int signo);
+
 // --- In-game overlay hooks (platform/app_overlay_hooks.c) ------------------
 // The app registers these before boot; the engine's event pump and frame-end
 // call them. Keeps the C engine free of any ImGui/C++ dependency.

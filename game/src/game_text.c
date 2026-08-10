@@ -12,6 +12,9 @@
 #include "thread3_main.h"
 
 #ifdef NATIVE_PORT
+#include <stdio.h>
+#include <stdlib.h>
+
 /* Byte length of one message buffer. load_game_text_table() carves two of these
  * out of the 0x800 table allocation starting at &entries[32] (byte 128), and
  * init_dialogue_text() splits its own 0x780 block into two halves of the same
@@ -21,6 +24,36 @@
  * everything before &entries[32], which load_game_text_table() hands to the two
  * message buffers (see the static assertions in game_text.h). */
 #define DKR_GAME_TEXT_SCRATCH_WORDS 32
+
+/* MDKR_TEXTIDX — where the [TEXTIDX] index census goes, if anywhere.
+ *
+ *   unset, empty, or starting with '0'  off. A normal run pays one getenv.
+ *   "1"                                 stderr, which is what a hand run wants.
+ *   anything else                       a FILE PATH the census is appended to.
+ *
+ * The path form exists because the route gates this census is driven through
+ * parse the engine's own stderr; interleaving a second stream into it would
+ * change what they read. A harness therefore points each run at its own file.
+ * A path that cannot be opened turns the census off and leaves the game alone.
+ *
+ * Resolved once, on the first access. Nothing here reads or writes game state. */
+static FILE *game_text_index_trace_sink(void) {
+    static s32 initialized;
+    static FILE *sink;
+
+    if (!initialized) {
+        const char *value = getenv("MDKR_TEXTIDX");
+        initialized = TRUE;
+        if (value == NULL || value[0] == '\0' || value[0] == '0') {
+            sink = NULL;
+        } else if (value[0] == '1' && value[1] == '\0') {
+            sink = stderr;
+        } else {
+            sink = fopen(value, "a");
+        }
+    }
+    return sink;
+}
 #endif
 
 /************ .data ************/
@@ -389,6 +422,7 @@ void set_delayed_text(s32 textID, f32 delay) {
 void set_current_text(s32 textID) {
 #ifdef NATIVE_PORT
     u32 *entries; /* 4-byte ROM words, not pointers — see game_text.h */
+    s32 requestedTextID = textID;
 #else
     char **entries;
 #endif
@@ -410,6 +444,35 @@ void set_current_text(s32 textID) {
                 textID += 255;
                 break;
         }
+
+#ifdef NATIVE_PORT
+        /* [TEXTIDX] — the one place a GAME_TEXT entry index is formed.
+         *
+         * `textID` is the RESOLVED index, and it is the number worth recording:
+         * the range test ran against the value BEFORE the language offset, so
+         * the +85/+170/+255 just applied lands on an already-approved id and is
+         * never re-checked. On us.v80 the section addresses 340 ids (85 strings
+         * x 4 languages); us.v77 holds 259 GAME_TEXT entries against us.v80's 343
+         * (docs/ROM_REVISIONS.md Sec 5), so the resolved index is exactly what has
+         * to stay below 259 before a 1.0 ROM can be accepted.
+         *
+         * Read-only, and emitted only for a request that reaches the table read.
+         * An id outside [0, gTextTableEntries) is refused by the test above
+         * before anything is indexed -- menu.c passes 10000 deliberately to mean
+         * "no text" -- so those are not accesses and are not counted.
+         *
+         * tests/check_rom_text_indices.py drives the route corpus with this on. */
+        {
+            FILE *textIndexSink = game_text_index_trace_sink();
+            if (textIndexSink != NULL) {
+                fprintf(textIndexSink,
+                        "[TEXTIDX] section=GAME_TEXT index=%d requested=%d language=%d count=%d\n",
+                        (int) textID, (int) requestedTextID, (int) language,
+                        (int) gTextTableEntries);
+                fflush(textIndexSink);
+            }
+        }
+#endif
 
         asset_load(ASSET_GAME_TEXT_TABLE, (uintptr_t)(*gGameTextTable)->entries, (textID & (~1)) << 2, 16);
 

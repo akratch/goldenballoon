@@ -241,6 +241,279 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME endian_utils COMMAND mdkr_endian_utils_test)
 
+    # Content packs. Both are deliberately ROM-free and window-free: a pack
+    # manifest is text, and a texture digest is a hash over bytes the caller
+    # supplies, so neither needs the game to boot.
+    add_executable(mdkr_mod_manifest_test
+        ${CMAKE_SOURCE_DIR}/tests/test_mod_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/config_ini.c)
+    target_include_directories(mdkr_mod_manifest_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_mod_manifest_test PRIVATE m)
+    endif()
+    add_test(NAME mod_manifest COMMAND mdkr_mod_manifest_test)
+
+    # The digest is a published contract -- every pack in existence names its
+    # files by it -- so this test pins an exact value and proves the hash does
+    # not read struct padding. It needs the fast3d include dir for
+    # gfx_texture_cache_key.h.
+    add_executable(mdkr_mod_texture_key_test
+        ${CMAKE_SOURCE_DIR}/tests/test_mod_texture_key.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_texture_key.c
+        ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+    target_include_directories(mdkr_mod_texture_key_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/platform/fast3d)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_mod_texture_key_test PRIVATE m)
+    endif()
+    add_test(NAME mod_texture_key COMMAND mdkr_mod_texture_key_test)
+
+    # The console command parser. Its load-bearing property is that `set`
+    # resolves through mdkr_video_key_from_name and refuses anything the schema
+    # does not name -- without that, an in-game console is an arbitrary-write
+    # primitive. Tested with no window and no ROM.
+    add_executable(mdkr_dev_command_test
+        ${CMAKE_SOURCE_DIR}/tests/test_dev_command.c
+        ${CMAKE_SOURCE_DIR}/platform/dev_command.c
+        ${CMAKE_SOURCE_DIR}/platform/video_config.c
+        ${CMAKE_SOURCE_DIR}/platform/config_ini.c
+        ${CMAKE_SOURCE_DIR}/platform/pacing_policy.c)
+    target_include_directories(mdkr_dev_command_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_dev_command_test PRIVATE m)
+    endif()
+    add_test(NAME dev_command COMMAND mdkr_dev_command_test)
+
+    # The enhancement table and its authority classes. Group 4 asserts this
+    # table and mdkr_video_key_is_enhancement() describe the same set, so the
+    # two independent lists cannot drift apart silently.
+    add_executable(mdkr_enhancement_registry_test
+        ${CMAKE_SOURCE_DIR}/tests/test_enhancement_registry.c
+        ${CMAKE_SOURCE_DIR}/platform/enhancement_registry.c
+        ${CMAKE_SOURCE_DIR}/platform/video_config.c
+        ${CMAKE_SOURCE_DIR}/platform/config_ini.c
+        ${CMAKE_SOURCE_DIR}/platform/pacing_policy.c)
+    target_include_directories(mdkr_enhancement_registry_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_enhancement_registry_test PRIVATE m)
+    endif()
+    add_test(NAME enhancement_registry COMMAND mdkr_enhancement_registry_test)
+
+    # Pack discovery, load order and path resolution. fs_utf8.c is a real link
+    # dependency, not decoration: path access goes through mdkr_fopen_utf8 and
+    # mdkr_path_query_utf8 so the Windows arm inherits the existing UTF-8
+    # boundary instead of growing a second conversion.
+    add_executable(mdkr_mod_registry_test
+        ${CMAKE_SOURCE_DIR}/tests/test_mod_registry.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_registry.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/config_ini.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        # mod_source.c (and miniz under it) are here because the registry no
+        # longer has a path validator or a file reader of its own: it discovers
+        # and reads both pack kinds through that one interface. The link
+        # dependency is the point -- it is what makes "there is only one
+        # validator" a fact the linker enforces rather than a comment.
+        ${CMAKE_SOURCE_DIR}/platform/mod_source.c
+        ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c)
+    target_include_directories(mdkr_mod_registry_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/lib/miniz)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_mod_registry_test PRIVATE m)
+    endif()
+    add_test(NAME mod_registry COMMAND mdkr_mod_registry_test
+             ${CMAKE_CURRENT_BINARY_DIR}/mod_registry_scratch)
+
+    # When a pack PNG is refused, relative to when it is decoded. A pack is a
+    # file a player downloaded from a stranger, so the cache cap is only a
+    # defence if it is consulted before the decoder is handed the bytes --
+    # applied afterwards it bounds what is retained, never what is allocated,
+    # and the allocation is the damage.
+    #
+    # tests/mod_texture_store_probe.c takes lib/stb/stb_image_impl.c's place
+    # here, and that substitution is the test: it is the same stb_image,
+    # configured identically, with the decode entry point and the decoder's
+    # allocator each behind a counter. Nothing the store RETURNS distinguishes
+    # "refused before decoding" from "decoded, then refused", so without that
+    # seam the case could only assert the weaker claim, which held before the
+    # fix as well.
+    add_executable(mdkr_mod_texture_store_test
+        ${CMAKE_SOURCE_DIR}/tests/test_mod_texture_store.c
+        ${CMAKE_SOURCE_DIR}/tests/mod_texture_store_probe.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_texture_store.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_registry.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/config_ini.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_source.c
+        ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c)
+    target_include_directories(mdkr_mod_texture_store_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/lib/stb
+        ${CMAKE_SOURCE_DIR}/lib/miniz)
+    # The probe instantiates stb_image, which is third-party and does not
+    # survive this project's warning baseline -- the same one-file exemption
+    # lib/stb/stb_image_impl.c and lib/miniz/miniz.c already have.
+    if(MSVC)
+        set_source_files_properties(
+            ${CMAKE_SOURCE_DIR}/tests/mod_texture_store_probe.c
+            PROPERTIES COMPILE_OPTIONS "/w")
+    else()
+        set_source_files_properties(
+            ${CMAKE_SOURCE_DIR}/tests/mod_texture_store_probe.c
+            PROPERTIES COMPILE_OPTIONS "-w")
+        target_link_libraries(mdkr_mod_texture_store_test PRIVATE m)
+    endif()
+    add_test(NAME mod_texture_store COMMAND mdkr_mod_texture_store_test
+             ${CMAKE_CURRENT_BINARY_DIR}/mod_texture_store_scratch)
+
+    # The accessibility semantic model. ImGui exposes no accessibility tree, so
+    # this module is the tree: it emits text, which is why the whole behaviour
+    # is gateable in CI with no audio device and no window.
+    add_executable(mdkr_a11y_model_test
+        ${CMAKE_SOURCE_DIR}/tests/test_a11y_model.c
+        ${CMAKE_SOURCE_DIR}/platform/a11y_model.c)
+    target_include_directories(mdkr_a11y_model_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_a11y_model_test PRIVATE m)
+    endif()
+    add_test(NAME a11y_model COMMAND mdkr_a11y_model_test)
+
+    # The drain worker's barge-in stamp. A different KIND of test from the one
+    # above: the model is single-threaded and decidable on its text, this is two
+    # real threads and the assertion is about WHICH utterance reaches a backend.
+    #
+    # MDKR_A11Y_SPEECH_TESTING is defined HERE AND NOWHERE ELSE. It compiles one
+    # hook call into a11y_speech_worker.c at the instruction the barge-in race
+    # needs, so the test can park the worker there instead of racing at it;
+    # without the define the hook site preprocesses away entirely and no shipped
+    # build contains a pointer, a branch or a call for it.
+    #
+    # Links no speech backend. The test file supplies the whole of the
+    # a11y_speech.h interface itself, which is also what makes it impossible to
+    # link a real one in by accident -- seven duplicate symbols. SDL is here for
+    # its threads and semaphores and is never initialised, so this opens no
+    # device and needs no driver, exactly like the audio ring tests below.
+    add_executable(mdkr_a11y_speech_worker_test
+        ${CMAKE_SOURCE_DIR}/tests/test_a11y_speech_worker.c
+        ${CMAKE_SOURCE_DIR}/platform/a11y_speech_worker.c)
+    target_include_directories(mdkr_a11y_speech_worker_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${SDL2_INCLUDE_DIRS})
+    target_link_directories(mdkr_a11y_speech_worker_test PRIVATE
+        ${SDL2_LIBRARY_DIRS})
+    target_compile_definitions(mdkr_a11y_speech_worker_test PRIVATE
+        SDL_MAIN_HANDLED MDKR_A11Y_SPEECH_TESTING)
+    target_link_libraries(mdkr_a11y_speech_worker_test PRIVATE ${SDL2_LIBRARIES})
+    if(MSVC)
+        target_compile_options(mdkr_a11y_speech_worker_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_a11y_speech_worker_test PRIVATE
+            -Wall -Wextra -Werror)
+    endif()
+    add_test(NAME a11y_speech_worker COMMAND mdkr_a11y_speech_worker_test)
+    # Every wait in it is bounded and short; this is the backstop for a genuine
+    # deadlock, which must fail the suite rather than hang it.
+    set_tests_properties(a11y_speech_worker PROPERTIES TIMEOUT 120)
+
+    # The save-state container. Deliberately links NOTHING from save_container.c
+    # or save_codec.c: a save state is not the progress save, and the two must
+    # not be able to become each other. The truncation sweep writes and re-reads
+    # a real file at every offset, so it needs no ROM and no window.
+    add_executable(mdkr_save_state_container_test
+        ${CMAKE_SOURCE_DIR}/tests/test_save_state_container.c
+        ${CMAKE_SOURCE_DIR}/platform/save_state.c)
+    target_include_directories(mdkr_save_state_container_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_save_state_container_test PRIVATE m)
+    endif()
+    add_test(NAME save_state_container COMMAND mdkr_save_state_container_test)
+
+    # Version comparison and the update-check interval. The clock is a
+    # parameter, so this needs no real time and no network -- which is the
+    # whole reason the policy is a separate translation unit from the fetch.
+    add_executable(mdkr_update_check_test
+        ${CMAKE_SOURCE_DIR}/tests/test_update_check.c
+        ${CMAKE_SOURCE_DIR}/platform/update_check.c)
+    target_include_directories(mdkr_update_check_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_update_check_test PRIVATE m)
+    endif()
+    add_test(NAME update_check COMMAND mdkr_update_check_test)
+
+    # The [GPUINFO] record and the adapter choice over it. Both are pure and
+    # need no GPU, which is the point: the selection policy is exhaustively
+    # testable on a one-GPU machine and in hosted CI with none.
+    add_executable(mdkr_gpu_diagnostics_test
+        ${CMAKE_SOURCE_DIR}/tests/test_gpu_diagnostics.c
+        ${CMAKE_SOURCE_DIR}/platform/gpu_diagnostics.c)
+    target_include_directories(mdkr_gpu_diagnostics_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_gpu_diagnostics_test PRIVATE m)
+    endif()
+    add_test(NAME gpu_diagnostics COMMAND mdkr_gpu_diagnostics_test)
+
+    add_executable(mdkr_adapter_policy_test
+        ${CMAKE_SOURCE_DIR}/tests/test_adapter_policy.c
+        ${CMAKE_SOURCE_DIR}/platform/adapter_policy.c
+        ${CMAKE_SOURCE_DIR}/platform/gpu_diagnostics.c)
+    target_include_directories(mdkr_adapter_policy_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_adapter_policy_test PRIVATE m)
+    endif()
+    add_test(NAME adapter_policy COMMAND mdkr_adapter_policy_test)
+
+    # One read interface over a directory pack and a zip pack. The property
+    # worth the test is that both go through ONE path validator: mutating the
+    # zip arm alone fails only the directory assertions, which is exactly the
+    # "fixed one caller, missed the other" shape a single funnel prevents.
+    # miniz is third-party and does not survive the project's warning baseline
+    # under GCC/mingw, so that one file is compiled with warnings off.
+    add_executable(mdkr_mod_source_zip_test
+        ${CMAKE_SOURCE_DIR}/tests/test_mod_source_zip.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_source.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c)
+    target_include_directories(mdkr_mod_source_zip_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/lib/miniz)
+    if(MSVC)
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c
+            PROPERTIES COMPILE_OPTIONS "/w")
+    else()
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c
+            PROPERTIES COMPILE_OPTIONS "-w")
+        target_link_libraries(mdkr_mod_source_zip_test PRIVATE m)
+    endif()
+    add_test(NAME mod_source_zip COMMAND mdkr_mod_source_zip_test
+             ${CMAKE_CURRENT_BINARY_DIR}/mod_source_scratch)
+
+    # Bounds-checked access to an entry INSIDE an asset section. Each aborting
+    # case runs in a forked child and asserts WTERMSIG == SIGABRT plus the
+    # message text, so a segfault fails rather than passing as "it died".
+    add_executable(mdkr_asset_subentry_test
+        ${CMAKE_SOURCE_DIR}/tests/test_asset_subentry.c
+        ${CMAKE_SOURCE_DIR}/platform/asset_subentry.c)
+    target_include_directories(mdkr_asset_subentry_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/game/include)
+    target_compile_definitions(mdkr_asset_subentry_test PRIVATE NATIVE_PORT=1)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_asset_subentry_test PRIVATE m)
+    endif()
+    add_test(NAME asset_subentry COMMAND mdkr_asset_subentry_test)
+
     add_executable(mdkr_vehicle_audio_contract_test
         ${CMAKE_SOURCE_DIR}/tests/test_vehicle_audio_contract.c
         ${CMAKE_SOURCE_DIR}/platform/asset_swap.c)

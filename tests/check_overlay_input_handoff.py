@@ -142,11 +142,36 @@ def check_every_close_shares_one_routine() -> None:
 
 def check_hidden_overlay_holds_no_input() -> None:
     body = function_body(OVERLAY, "static int onRender(void)")
+    # The guard accumulates a term per surface that can want a frame -- the
+    # overlay itself, the FPS readout, and now the developer tools -- so the
+    # pattern allows further `&& !…` terms rather than pinning the exact two it
+    # had when this was written. What must not change is what the block DOES,
+    # which every assertion below still checks.
     hidden = re.search(
-        r"if \(!g_overlay\.open && !g_overlay\.showFps\)\s*\{(?P<body>.*?)\n    \}",
+        r"if \(!g_overlay\.open && !g_overlay\.showFps"
+        r"(?P<extra>(?: && ![A-Za-z_][A-Za-z0-9_:.()]*)*)\)"
+        r"\s*\{(?P<body>.*?)\n    \}",
         body, re.DOTALL)
     require(hidden is not None,
             "onRender no longer has a distinct not-drawing path")
+
+    # And the two must agree. onWantsRender() decides whether a frame is built
+    # at all; onRender()'s guard decides whether this one draws. If a surface is
+    # added to one and not the other, either a frame is built that nobody draws
+    # into, or -- the harmful direction -- the drain below stops running on a
+    # frame that really is hidden, and a race's worth of keystrokes survives
+    # into the menu. Compare the term sets rather than the text, since one is
+    # written positively and the other negatively.
+    wants = function_body(OVERLAY, "static int onWantsRender(void)")
+    wants_terms = set(re.findall(r"(?:g_overlay\.\w+|\w+\([^)]*\))", wants))
+    hidden_terms = set(re.findall(r"!(g_overlay\.\w+|\w+\([^)]*\))",
+                                  hidden.group(0).split("{", 1)[0]))
+    require(wants_terms == hidden_terms,
+            "onWantsRender() and onRender()'s hidden guard disagree about what "
+            "counts as wanting a frame: "
+            f"{sorted(wants_terms ^ hidden_terms)}. A surface added to one and "
+            "not the other either builds a frame nobody draws into, or skips "
+            "the input drain on a frame that really is hidden")
     drain = hidden.group("body")
     # ImGui::NewFrame() is the only consumer of the queue that the overlay's
     # event handler keeps filling, and the only thing that releases a key ImGui

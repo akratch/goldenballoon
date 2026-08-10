@@ -73,16 +73,52 @@ Both are recorded with their measurements in
 
 ### Campaign completeness
 
-The Adventure loop is closed end to end — hub, balloons, lobby, three-lap race,
-trophies, the legal first boss, both Adventure One and Two — but the campaign is
-not finished in the sense a player means it. Silver-coin challenges, the world
-1–4 boss rematches, both Wizpig races, the credits sequence, and the remainder of
-the legal door/key graph are not driven by any gate. This is the largest single
-piece of deferred work in the project, and the one most likely to matter to
-someone playing rather than reading.
+**Where it stands.** This entry used to call the late campaign the largest
+single piece of deferred work in the project. It is not, and has not been since
+the closure campaign of 2026-08-07 —
+[`docs/DEFINITION_OF_DONE.md`](docs/DEFINITION_OF_DONE.md) is the current record.
+`check_campaign_progression.py` gates each late progression **seam** with a save
+fixture entering it and an assertion on what production writes leaving it:
+silver-coin collection by the game's own coin objects and its EEPROM round-trip
+read back by a second process; all four boss rematches won, each on the EEPROM
+the previous one persisted, with `wizpigAmulet` climbing 1, 2, 3, 4; the Wizpig 1
+unlock in both directions (four amulet pieces redirect the hub to the mouth
+sequence, three do not) followed by Wizpig 1 raced and won; and the Wizpig 2 win
+that sets and persists `bosses & 0x20`, the single value `menu_credits_init`
+reads to choose the true ending. The trophy championships have their own gate,
+`check_trophy_series.py`, across all 16 authored rounds.
 
-The exit condition is a single deterministic start→credits gate, not a
-collection of partial routes.
+**All three residuals are closed** (2026-08-09). Each was a headless-driving
+obstacle rather than a missing feature, and each is now driven:
+
+1. **The lobby's boss-rematch door is driven**, not retargeted. The recorded
+   stall at (-1295, 685) reproduces; a waypoint east of the wall at (-300, 700)
+   takes the exit at frame ~3124. Both arms are kept — the `MDKR_LOAD_TRACK`
+   retarget remains the fast path, the driven arm is the completeness proof.
+   `tests/route_plan.py` supplies the route memory the drive hook lacked: it
+   fails loudly on oscillation, on a stalled closest approach, and on a
+   per-waypoint frame budget, instead of retrying forever.
+2. **Trophies and the T.T. amulet are chained**, not premised. `trophies` climbs
+   0x3→0xf→0x3f→0xff and `ttAmulet` 1→2→3→4 across separate processes on one
+   another's EEPROMs, and `check_future_fun_land.py` witnesses the lighthouse
+   unlock on the save the chain produced — with the negative arms that a silver,
+   or a missing Wizpig 1 bit, does not open it.
+3. **The credits screen is reached**, and the recorded obstacle turned out to be
+   a symptom. `func_8006C300()` is never non-zero — zero on all 29,929 sampled
+   frames, and structurally so, because `game_load_level` zeroes its backing
+   global on every load and the only writer is the redirect branch for a repeat
+   Wizpig entry. The A presses could never have popped anything. The real cause
+   was that all 159 of the level's animation objects sat deactivated: every
+   Future Fun Land header is `RACETYPE_HUBWORLD`, so the world-arrival branch
+   ran on a cutscene level and overwrote `gCutsceneID`, because the fixture did
+   not carry the "arrived in Future Fun Land" flag. That is a fixture defect, not
+   a game defect — a player cannot reach Wizpig 2 without entering that hub — so
+   the fix is in the fixture and no `game/` behaviour changed.
+
+**What is still not claimed.** There is deliberately no single continuous
+start-to-credits run. The campaign check's own reasoning stands: it would take
+hours and fail as one opaque blob, and composing witnessed seams is the better
+design. Future Fun Land's own internal state also remains outside these gates.
 
 ### Camera obstruction correction — ships opt-in; default-on rejected on device
 
@@ -303,15 +339,33 @@ unsupported revisions.
 
 ## Project infrastructure
 
-- **Hosted CI has never run green.** The workflow matrix is written and the
-  checks are real, but the first hosted run is still owed, and repository branch
-  protection depends on it. Until then, every claim in this repository rests on
-  local runs.
-- **Mode-coverage stragglers.** Ghost save and load are gated for one
-  (track, vehicle) pair rather than across the set — see
-  [`docs/open-items/gameplay.md`](docs/open-items/gameplay.md#open-ghost-coverage-is-one-track-vehicle-pair-of-47)
-  for the mechanism and why it matters (this exact path already shipped a
-  silent stack overflow once). Magic-code entry is now
+- **Hosted CI is green; branch protection is not yet on.** This entry used to
+  say the first hosted run was still owed. It is not: run `31248954626` of the
+  `correctness` workflow completed **success** on `main` at
+  `080c4c4e6480eef86afe1f964766d27d2e618fda`, 2026-08-08, with all six jobs
+  green — policy and source contracts, Linux ROM-free ASan + UBSan, native Linux
+  OpenGL-only, native Linux WebGPU, native macOS WebGPU warnings, and linked
+  wasm plus browser save custody. Claims in this repository no longer rest on
+  local runs alone.
+
+  What is still owed is the consequence: `main` does not yet *require* those
+  jobs, so nothing stops a direct push that has not passed them.
+  `tools/check_github_branch_protection.py` exists to assert the configuration
+  and has not been run green against the live repository. Enabling protection is
+  a repository-settings change rather than a source change, which is why it sits
+  here rather than in a commit.
+- **Mode-coverage stragglers.** Ghost save and load are no longer one of them.
+  `check_ghost_matrix.py` drives 46 of the 47 legal (track, vehicle) pairs
+  through a record, a save, and a read-back in a **fresh process**, each pair in
+  its own save directory; the 47th, Spaceport Alpha in the car, is an asserted
+  autopilot non-producer rather than a skip — its racing line dead-ends at
+  `courseCheckpoint` 10, and DKR records a ghost only for a course time under
+  10,800 frames — and the check fails if that pair ever starts finishing, which
+  is how it would be promoted. So the residual is one pair whose round trip
+  nothing drives, not 46. Why the breadth was worth buying is in
+  [`docs/open-items/gameplay.md`](docs/open-items/gameplay.md#open-ghost-coverage-is-one-track-vehicle-pair-of-47):
+  this exact path already shipped a stack overflow that aborted with nothing at
+  all on stderr. What is still narrow is magic-code entry, and it is now partly
   covered — `nav_to_magic_codes` submits valid `ARNOLD` and invalid `ARNOLE`
   through the onscreen keyboard, and `check_taj_p2_adventure.py` enters retail
   `JOINTVENTURE` and races the two-player Adventure it unlocks — but only for

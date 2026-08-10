@@ -99,6 +99,33 @@ void SettingLabel(const char *label, const char *description,
 // the player needs to see it without hunting for it.
 void CautionBox(const char *title, const char *body);
 
+// --- Self-voicing ----------------------------------------------------------
+// ImGui exposes no accessibility tree, so the shell says out loud what it has
+// put the keyboard on. THE TWO Speak FUNCTIONS BELOW ARE THE ONLY PLACE IN THE
+// APP THAT HAPPENS.
+//
+// Every settings row goes through drawKey(); every panel and collapsible goes
+// through a section header. Announcing inside those shared helpers means a row
+// added later is voiced the day it is added, and a row can only fall silent by
+// being hand-rolled outside them -- which is exactly what
+// tests/check_a11y_shell.py enumerates the schema to catch. Per-call-site
+// announcements are how one control ends up mute and nobody notices.
+//
+// Both are a no-op unless Accessibility.Speech is on, so a player who does not
+// use speech pays a pointer dereference per row and nothing else.
+
+// Announces the item submitted immediately before this call, but only while
+// that item holds keyboard/gamepad focus, and only when what it would say has
+// changed. Call it directly after the widget: any text drawn in between
+// becomes "the last item" and the focus test then reads the wrong thing.
+void SpeakFocusedItem(const char *name, const char *value, const char *help);
+// "You are now in <name>." Repeats are dropped, so calling it every frame from
+// a header that draws every frame is correct and silent.
+void SpeakSection(const char *name);
+// Whether Accessibility.Speech is on. Exposed for callers that would otherwise
+// build the value string for nothing.
+bool SpeechEnabled();
+
 }  // namespace ui
 
 #endif  // MDKR64_UI_COMMON_H

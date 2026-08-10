@@ -15280,6 +15280,25 @@ void menu_credits_init(void) {
 #endif
     music_voicelimit_set(24);
     gCreditsControlData[130] = CREDITS_END; // DONT show developer times
+#ifdef NATIVE_PORT
+    /* NATIVE_PORT, read-only: this is where DKR's three endings are chosen, and
+     * the choice leaves nothing behind to assert on -- it writes only display
+     * strings, a music sequence and a scroll table, all of which a headless run
+     * cannot see. The two inputs are gViewingCreditsFromCheat and
+     * settings->bosses & 0x20, so reporting them together with the branch that
+     * was actually taken is what lets a gate distinguish "reached credits" from
+     * "reached the ENDING a finished campaign earns".
+     * tests/check_campaign_progression.py's seam E consumes this. */
+    mdkr_trace("credits: cheat=%d bosses=0x%x ending=%s sequence=%d",
+               (int) gViewingCreditsFromCheat, (unsigned) settings->bosses,
+               gViewingCreditsFromCheat
+                   ? "THE_END"
+                   : ((settings->bosses & 0x20) ? "TO_BE_CONTINUED" : "THE_END_Q"),
+               gViewingCreditsFromCheat
+                   ? (int) SEQUENCE_DARKMOON_CAVERNS
+                   : ((settings->bosses & 0x20) ? (int) SEQUENCE_CRESCENT_ISLAND
+                                                : (int) SEQUENCE_DARKMOON_CAVERNS));
+#endif
     if (gViewingCreditsFromCheat) {
         music_play(SEQUENCE_DARKMOON_CAVERNS);
         gCreditsArray[84] = gCreditsLastMessageArray[2]; // "THE END"

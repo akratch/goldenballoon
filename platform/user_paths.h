@@ -31,6 +31,13 @@ const char *mdkr_user_paths_last_error(void);
 int mdkr_user_paths_is_packaged(void);
 int mdkr_user_video_config_path(char *output, size_t output_size);
 int mdkr_user_save_directory(char *output, size_t output_size);
+/* The content-pack root (`mods/`). Same policy as the save directory and for
+ * the same reason: a signed bundle cannot host player-installed content, so a
+ * packaged app looks beside its writable save directory, and a command-line
+ * build stays CWD-relative so a test run cannot pick up a developer's packs.
+ * Unlike saves and config there is no environment override, because nothing
+ * needs to relocate the folder a player is told to drop packs into. */
+int mdkr_user_mods_directory(char *output, size_t output_size);
 int mdkr_user_resource_path(const char *relative_path,
                             char *output, size_t output_size);
 

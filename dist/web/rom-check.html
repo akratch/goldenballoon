@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Check your ROM — Golden Balloon</title>
+<!--
+  rom-check.html — WHICH Diddy Kong Racing cartridge is this dump, and will
+  Golden Balloon run it? Answered before the player downloads anything.
+
+  NOTHING LEAVES THE MACHINE. This page makes no network request of any kind.
+  The file is read with FileReader, converted to big-endian .z64 order in memory
+  if it is a byteswapped dump, identified from its header, and hashed with
+  crypto.subtle. No upload, no beacon, no third-party asset — the only thing it
+  loads is rom-id.js from this same directory. tests/check_rom_checker_page.py
+  fails the build if that stops being true, because "we do not upload your ROM"
+  has to be checkable rather than promised.
+
+  ONE SOURCE OF TRUTH. The classification lives in dist/web/rom-id.js, which is
+  the browser mirror of platform/rom_id.c; tests/check_rom_revision.py compares
+  the two tables row by row and compares their verdict SENTENCES character for
+  character over real dumps. This page deliberately loads that same file instead
+  of carrying a copy, so the sentence a player reads here is the sentence the
+  game itself would print. Everything this page adds is additional: the
+  whole-image hash, and — for a revision that is refused — what would have to
+  change before it is not.
+-->
+<style>
+  :root {
+    --gold:      #ffc42e;
+    --sky:       #71bef9;
+    --navy:      #0a2447;
+    --navy-2:    #061529;
+    --panel:     #0d2b52;
+    --line:      rgba(133, 178, 235, .22);
+    --ink:       #eaf2ff;
+    --ink-dim:   #a2b8d6;
+    --ok:        #57e08a;
+    --err:       #ff8189;
+    --warn:      #ffc42e;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--navy-2);
+    color: var(--ink);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 46rem; margin: 0 auto; padding: clamp(1.2rem, 4vw, 2.6rem); }
+  header { border-bottom: 3px solid var(--gold); padding-bottom: 1rem; }
+  h1 {
+    font-size: clamp(1.5rem, 5vw, 2.1rem);
+    font-style: italic; text-transform: uppercase; letter-spacing: .02em;
+    margin: 0 0 .3rem;
+  }
+  h2 {
+    font-size: 1rem; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--sky); margin: 2rem 0 .6rem;
+  }
+  p { margin: .7rem 0; }
+  .lede { color: var(--ink-dim); margin: 0; }
+  #drop {
+    margin-top: 1.6rem; padding: clamp(1.4rem, 6vw, 2.8rem) 1.2rem;
+    border: 2px dashed var(--line); background: var(--navy);
+    text-align: center; cursor: pointer;
+  }
+  #drop:focus-visible { outline: 3px solid var(--gold); outline-offset: 2px; }
+  #drop.over { border-color: var(--gold); background: var(--panel); }
+  #drop b { display: block; font-size: 1.1rem; margin-bottom: .35rem; }
+  #drop span { color: var(--ink-dim); font-size: .92rem; }
+  input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  #result { margin-top: 1.6rem; }
+  .card {
+    background: var(--panel); border-left: 6px solid var(--line);
+    padding: 1.1rem 1.2rem;
+  }
+  .card.ok   { border-left-color: var(--ok); }
+  .card.no   { border-left-color: var(--err); }
+  .card.warn { border-left-color: var(--warn); }
+  .card h3 {
+    margin: 0 0 .5rem; font-size: 1.15rem;
+    font-style: italic; text-transform: uppercase; letter-spacing: .02em;
+  }
+  .card.ok   h3 { color: var(--ok); }
+  .card.no   h3 { color: var(--err); }
+  .card.warn h3 { color: var(--warn); }
+  .verdict { margin: 0 0 .8rem; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: .25rem .9rem;
+       margin: .9rem 0 0; font-size: .9rem; }
+  dt { color: var(--ink-dim); }
+  dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular,
+       Menlo, Consolas, monospace; }
+  ul { margin: .4rem 0 0; padding-left: 1.2rem; }
+  li { margin: .3rem 0; }
+  footer { margin-top: 2.4rem; border-top: 1px solid var(--line);
+           padding-top: 1rem; color: var(--ink-dim); font-size: .88rem; }
+  a { color: var(--gold); }
+  .quiet { color: var(--ink-dim); font-size: .9rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Check your ROM</h1>
+  <p class="lede">Drop your Diddy Kong Racing cartridge dump below and this page
+  will tell you exactly which release it is, and whether Golden Balloon can run
+  it.</p>
+</header>
+
+<p><strong>Your file never leaves this device.</strong> It is read in the page
+and examined in memory. There is no upload, and this page contacts nothing —
+you can turn your network off first and it will work exactly the same.</p>
+
+<div id="drop" tabindex="0" role="button"
+     aria-describedby="drop-help" aria-controls="result">
+  <b>Drop a ROM here</b>
+  <span id="drop-help">or press Enter to choose a file &middot; .z64, .v64 or .n64, 12&nbsp;MB</span>
+</div>
+<!-- The drop zone above is the control; this input is what it opens. It is kept
+     out of the tab order so there is not a second, invisible stop. -->
+<input type="file" id="file" tabindex="-1" accept=".z64,.v64,.n64,.rom,.bin"
+       aria-label="Choose a Diddy Kong Racing ROM file">
+
+<div id="result" aria-live="polite"></div>
+
+<h2>What this checks</h2>
+<p class="quiet">The cartridge header identifies the release, and the checksum
+pair in it covers the whole cartridge, so a renamed or re-headered file is still
+recognised for what it is. A byteswapped <code>.v64</code> or <code>.n64</code>
+dump is converted to plain big-endian <code>.z64</code> order first — the same
+conversion the game does when it loads — so all three forms give the same
+answer. The full-image SHA-256 is then compared against the reference dump for
+supported releases, which is what catches a copy that is subtly damaged.</p>
+
+<footer>
+  <p>Golden Balloon reads the game from a copy you own. No game data is included
+  here or in any release. <a href="index.html">Back to the browser version</a>.</p>
+</footer>
+
+</div>
+
+<script src="rom-id.js"></script>
+<script>
+// ==== rom-check verdict logic (BEGIN) ====
+// Everything between these two markers is extracted verbatim by
+// tests/check_rom_checker_page.py, loaded under node beside dist/web/rom-id.js,
+// and run over every real cartridge dump on the machine; its verdict sentence
+// must equal the native binary's character for character. So keep this block
+// free of any DOM reference — the page's DOM wiring lives in the script below.
+"use strict";
+
+// What would have to change before a refused release is not refused. Keyed by
+// the decomp build id in rom-id.js's revision table.
+//
+// This is the "and say what would have to change" half of the refusal. The
+// SENTENCE above it is the engine's own, mirrored exactly; this list is the
+// page's addition, and it is deliberately specific — a player who is told only
+// "unsupported" cannot tell a permanent no from a not-yet.
+const DKR_CHECKER_REQUIREMENTS = {
+  "us.v77": [
+    "Every game-text index this build asks for has to be proven in range on " +
+    "US 1.0's text: it holds 259 entries where 1.1 holds 343.",
+    "A recorded picture-accuracy run and a sound comparison for this release, " +
+    "to the same standard the supported pair already meets.",
+  ],
+  "pal.v77": [
+    "Every game-text index this build asks for has to be proven in range on " +
+    "European 1.0's text: it holds 259 entries where 1.1 holds 343.",
+    "A recorded picture-accuracy run and a sound comparison for this release, " +
+    "to the same standard the supported pair already meets.",
+  ],
+  "jpn.v79": [
+    "A separate Japanese build. The Japanese cartridge changes how glyphs are " +
+    "drawn, how game text is laid out, and how saves are stored, and this " +
+    "build is compiled for the non-Japanese layout.",
+    "A recorded picture-accuracy run and a sound comparison for the Japanese " +
+    "release.",
+  ],
+};
+
+// The reasoning is recorded per release in docs/ROM_REVISIONS.md in the
+// project's source, which the refusal sentence itself points at.
+function dkrCheckerRequirements(id) {
+  if (!id || !id.decompBuild) return [];
+  return DKR_CHECKER_REQUIREMENTS[id.decompBuild] || [];
+}
+
+function dkrCheckerHex(buffer) {
+  return Array.from(new Uint8Array(buffer),
+                    (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+/* Identify `bytes` and describe the outcome. `bytes` is MUTATED into .z64 order
+ * when it is a byteswapped image — deliberately, and before the hash is taken:
+ * .v64 and .n64 dumps of the same cartridge must produce the same identity as
+ * the .z64, or every byteswapped dump would be reported as unknown. That is
+ * what platform/rom_io.c does on load, and what rom-id.js's normaliser is for.
+ *
+ * Returns:
+ *   sentence   the verdict, WORD FOR WORD as the game itself would print it
+ *   status     "supported" | "refused" | "damaged" | "rejected"
+ *   heading    a short label for the sentence
+ *   order      "z64" | "v64" | "n64", or null when the file is not a ROM image
+ *   sha256     the whole-image hash of the .z64-ordered bytes, or null
+ *   shaState   "verified" | "mismatch" | "no-reference" | null
+ *   changes    what would have to change, for a recognised-but-refused release
+ */
+async function dkrCheckerReport(bytes, name) {
+  const shown = name || "That file";
+  const result = dkrValidateRom(bytes, shown);
+  const id = result.id;
+  const report = {
+    sentence: result.error || dkrDescribeRom(dkrIdentifyRom(bytes), shown),
+    status: result.error ? "rejected" : "supported",
+    heading: result.error ? "Not usable" : "Supported",
+    order: result.order || null,
+    revisionName: (id && id.revisionName) || null,
+    decompBuild: (id && id.decompBuild) || null,
+    crc1: id ? id.crc1 : 0,
+    crc2: id ? id.crc2 : 0,
+    sha256: null,
+    shaState: null,
+    changes: [],
+  };
+
+  if (id && id.verdict === "other-revision") {
+    report.status = "refused";
+    report.heading = "Recognised, but not supported yet";
+    report.changes = dkrCheckerRequirements(id);
+  } else if (id && id.verdict === "unknown-revision") {
+    report.heading = "Diddy Kong Racing, but an unrecognised release";
+  } else if (id && id.verdict === "not-dkr") {
+    report.heading = "Not Diddy Kong Racing";
+  } else if (id && id.verdict === "supported" && !id.matchedByCrc) {
+    // A supported revision's header on a body that is not that revision.
+    report.status = "damaged";
+    report.heading = "Modified or imperfect dump";
+  }
+
+  // The hash only means something once the bytes are in canonical order, so it
+  // is taken after normalisation and skipped entirely when there was none.
+  if (report.order && typeof globalThis.crypto === "object" &&
+      globalThis.crypto && globalThis.crypto.subtle) {
+    try {
+      report.sha256 = dkrCheckerHex(
+        await globalThis.crypto.subtle.digest("SHA-256", bytes));
+    } catch (error) {
+      report.sha256 = null;
+    }
+  }
+  const expected = dkrReferenceSha256(report.decompBuild);
+  if (report.sha256 && expected) {
+    report.shaState = report.sha256 === expected ? "verified" : "mismatch";
+  } else if (report.sha256) {
+    report.shaState = "no-reference";
+  }
+
+  // A supported revision whose body does not hash to the reference image is a
+  // modified or damaged dump, and the game refuses it. Say what the game says:
+  // this sentence mirrors dkr_rom_validate_image() in platform/rom_validation.c.
+  if (report.status === "supported" && report.shaState === "mismatch") {
+    report.status = "damaged";
+    report.heading = "Damaged or modified copy";
+    report.sentence = shown + " identifies as " + report.revisionName +
+      ", but its complete SHA-256 does not match the supported reference " +
+      "image. The dump is modified or damaged; choose a clean copy of your " +
+      "cartridge.";
+  }
+  return report;
+}
+// ==== rom-check verdict logic (END) ====
+</script>
+<script>
+// ---- the page itself ------------------------------------------------------
+// Reading the dropped file and rendering the report above. Nothing here decides
+// anything: every judgement comes from the block above, which is the part under
+// test.
+"use strict";
+(function () {
+  const drop = document.getElementById("drop");
+  const picker = document.getElementById("file");
+  const panel = document.getElementById("result");
+
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function note(className, heading, text) {
+    const card = el("div", "card " + className);
+    card.appendChild(el("h3", null, heading));
+    card.appendChild(el("p", "verdict", text));
+    panel.replaceChildren(card);
+  }
+
+  function hex8(value) {
+    return (value >>> 0).toString(16).toUpperCase().padStart(8, "0");
+  }
+
+  function render(report, file) {
+    const tone = report.status === "supported" ? "ok"
+               : report.status === "refused" ? "warn" : "no";
+    const card = el("div", "card " + tone);
+    card.appendChild(el("h3", null, report.heading));
+    card.appendChild(el("p", "verdict", report.sentence));
+
+    if (report.changes.length) {
+      card.appendChild(el("p", "quiet", "What would have to change:"));
+      const list = el("ul");
+      for (const item of report.changes) list.appendChild(el("li", null, item));
+      card.appendChild(list);
+    }
+    if (report.status === "supported") {
+      card.appendChild(el("p", "quiet",
+        "Download a build and point it at this file."));
+    }
+
+    const facts = el("dl");
+    function fact(term, value) {
+      facts.appendChild(el("dt", null, term));
+      facts.appendChild(el("dd", null, value));
+    }
+    fact("File", file.name);
+    fact("Size", file.size.toLocaleString() + " bytes");
+    if (report.order) {
+      fact("Byte order", report.order === "z64"
+        ? ".z64 (big-endian, as read)"
+        : "." + report.order + " — converted to .z64 order before checking");
+    }
+    if (report.revisionName) {
+      fact("Release", report.revisionName + " (" + report.decompBuild + ")");
+      fact("Header CRC", "0x" + hex8(report.crc1) + " / 0x" + hex8(report.crc2));
+    }
+    if (report.sha256) {
+      fact("SHA-256", report.sha256 + (
+        report.shaState === "verified" ? "  — matches the reference dump"
+        : report.shaState === "mismatch" ? "  — does NOT match the reference dump"
+        : ""));
+    }
+    card.appendChild(facts);
+    panel.replaceChildren(card);
+  }
+
+  function read(file) {
+    if (typeof dkrValidateRom !== "function") {
+      note("no", "Cannot check",
+           "rom-id.js did not load, so this page cannot identify anything. " +
+           "Reload the page.");
+      return;
+    }
+    note("warn", "Checking…", "Reading " + file.name + " — 12 MB takes a moment.");
+    const reader = new FileReader();
+    reader.onerror = function () {
+      note("no", "Could not read the file",
+           "The browser could not read " + file.name + ".");
+    };
+    reader.onload = function () {
+      const bytes = new Uint8Array(reader.result);
+      dkrCheckerReport(bytes, file.name).then(function (report) {
+        render(report, file);
+      }, function (error) {
+        note("no", "Could not check the file",
+             "Something went wrong while checking " + file.name + " (" +
+             (error && error.message ? error.message : String(error)) + ").");
+      });
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  drop.addEventListener("click", function () { picker.click(); });
+  drop.addEventListener("keydown", function (event) {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      picker.click();
+    }
+  });
+  picker.addEventListener("change", function () {
+    if (picker.files && picker.files[0]) read(picker.files[0]);
+  });
+  for (const name of ["dragenter", "dragover"]) {
+    drop.addEventListener(name, function (event) {
+      event.preventDefault();
+      drop.classList.add("over");
+    });
+  }
+  for (const name of ["dragleave", "dragend"]) {
+    drop.addEventListener(name, function () { drop.classList.remove("over"); });
+  }
+  drop.addEventListener("drop", function (event) {
+    event.preventDefault();
+    drop.classList.remove("over");
+    const files = event.dataTransfer && event.dataTransfer.files;
+    if (files && files[0]) read(files[0]);
+  });
+  // A file dropped anywhere else would otherwise navigate the page to it.
+  window.addEventListener("dragover", function (event) { event.preventDefault(); });
+  window.addEventListener("drop", function (event) { event.preventDefault(); });
+})();
+</script>
+</body>
+</html>

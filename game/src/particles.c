@@ -9,6 +9,7 @@
 #include "tracks.h"
 #include <ultra64.h>
 #ifdef NATIVE_PORT
+#include "asset_subentry.h"
 #include "fast3d/gfx_presentation_packet.h"
 #include "mdkr_trace.h"
 #include "presentation_snapshot.h"
@@ -736,6 +737,26 @@ void emitter_init(ParticleEmitter *emitter, s32 behaviourID, s32 particleID) {
 void emitter_init_with_pos(ParticleEmitter *emitter, s32 behaviourID, s32 particleID, s16 posX, s16 posY, s16 posZ) {
     ParticleBehaviour *behaviour;
 
+#ifdef NATIVE_PORT
+    /* Both tables are indexed here with entirely unguarded parameters while both
+     * callers guard — emitter_change_settings() clamps, emitter_init() tests
+     * behaviourID only. The check therefore sat on the wrong side of the call
+     * boundary: a third caller, or emitter_init()'s unguarded particleID, indexes
+     * past either table with no diagnostic (tools/sweep_subentry_access.py,
+     * particles.c:739,757,758). Both counts come from the terminator walk in
+     * particles_init(), which leaves the count one BELOW the terminator slot, so
+     * valid indices are [0, count). */
+    if (behaviourID < 0 || behaviourID >= gParticleBehavioursAssetTableCount) {
+        mdkr_asset_subentry_out_of_range("ASSET_PARTICLE_BEHAVIORS_TABLE", behaviourID,
+                                         gParticleBehavioursAssetTableCount,
+                                         "emitter_init_with_pos");
+    }
+    if (particleID < 0 || particleID >= gParticlesAssetTableCount) {
+        mdkr_asset_subentry_out_of_range("ASSET_PARTICLES_TABLE", particleID,
+                                         gParticlesAssetTableCount,
+                                         "emitter_init_with_pos");
+    }
+#endif
     behaviour = gParticleBehavioursAssetTable[behaviourID];
     emitter->descriptorID = particleID;
     emitter->behaviour = behaviour;

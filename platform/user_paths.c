@@ -843,6 +843,19 @@ int mdkr_user_save_directory(char *output, size_t output_size) {
 #endif
 }
 
+int mdkr_user_mods_directory(char *output, size_t output_size) {
+#ifdef __EMSCRIPTEN__
+    /* The browser build ships no writable content root; the path resolves so
+     * the caller has one code path, and the scan finds nothing. */
+    return path_copy(output, output_size, "/mods");
+#else
+    if (s_packaged) {
+        return s_pref_ready && path_join(output, output_size, s_pref_dir, "mods");
+    }
+    return path_copy(output, output_size, "mods");
+#endif
+}
+
 int mdkr_user_resource_path(const char *relative_path,
                             char *output, size_t output_size) {
     if (relative_path == NULL || relative_path[0] == '\0') {

@@ -98,11 +98,51 @@ typedef enum MdkrVideoKey {
     MDKR_VIDEO_CAMERA_COMFORT,
     /* Appended for the reason stated above. */
     MDKR_VIDEO_HIRES_TEXT,
+    /*
+     * Content packs. Appended for the reason above. These are not presentation
+     * presets and are deliberately never pinned by Pure/Restored/Remastered:
+     * a player who installed a pack did so on purpose, and a preset switch
+     * must not silently uninstall it.
+     */
+    MDKR_CONTENT_PACKS_ENABLED,
+    MDKR_CONTENT_PACK_DISABLED,
+    /*
+     * Enhancements. Each one also carries an AUTHORITY CLASS in
+     * platform/enhancement_registry.c, and that class — not this enum — is what
+     * decides whether the key is allowed to move authoritative state. Adding a
+     * key here without a registry row leaves it ungated, which
+     * check_enhancement_authority.py is written to catch.
+     */
+    MDKR_ENH_SPEEDOMETER,
+    MDKR_ENH_DRAW_DISTANCE,
+    MDKR_ENH_LOD_BIAS,
+    MDKR_ENH_AI_DIFFICULTY,
+    /* Shell behaviour, appended for the reason above. Not presentation, not
+     * gameplay: whether the launcher looks for a newer release. */
+    MDKR_APP_UPDATE_CHECK,
+    /* Developer tools. Off by default; every registered tool is asserted
+     * unable to move authoritative state by check_dev_tools_purity.py. */
+    MDKR_TOOLS_ENABLED,
+    /*
+     * Speech. Appended for the reason above. Off by default, so a player who
+     * does not use it hears nothing and pays nothing; and, like the other
+     * accessibility choices, never pinned by a presentation preset -- see the
+     * accessibility clause in mdkr_video_key_is_player_comfort().
+     */
+    MDKR_A11Y_SPEECH,
+    MDKR_A11Y_SPEECH_RATE,
+    MDKR_A11Y_SPEECH_VOLUME,
+    MDKR_A11Y_SPEECH_RACE,
     MDKR_VIDEO_KEY_COUNT
 } MdkrVideoKey;
 
 #define MDKR_INPUT_FIRST_KEY MDKR_INPUT_RUMBLE_ENABLED
 #define MDKR_INPUT_LAST_KEY  MDKR_INPUT_CONTROLLER_RIGHT_STICK_RIGHT
+
+/* The speech block, bounded by its ends rather than by being last, for the
+ * reason the input block above is: a later key may follow it. */
+#define MDKR_A11Y_FIRST_KEY MDKR_A11Y_SPEECH
+#define MDKR_A11Y_LAST_KEY  MDKR_A11Y_SPEECH_RACE
 
 typedef enum MdkrVideoType {
     MDKR_VIDEO_TYPE_INT = 0,
@@ -248,6 +288,9 @@ MdkrVideoApplyDomain mdkr_video_key_apply_domain(MdkrVideoKey key);
 
 int mdkr_video_key_is_audio(MdkrVideoKey key);
 int mdkr_video_key_is_input(MdkrVideoKey key);
+int mdkr_video_key_is_content(MdkrVideoKey key);
+int mdkr_video_key_is_enhancement(MdkrVideoKey key);
+int mdkr_video_key_is_accessibility(MdkrVideoKey key);
 int mdkr_video_key_is_player_comfort(MdkrVideoKey key);
 
 /* Canonical string domains used by both validation and generated controls. */

@@ -3,8 +3,144 @@
 > One subsystem of the split [open-items index](README.md), which states how these files are kept.
 
 **Currently open** (per [`README.md`](README.md#still-open)'s open/closed
-table): none — every entry below is closed or resolved; kept as the
-append-only historical record.
+table): 1 item — save states (below). Every other entry is closed or resolved;
+kept as the append-only historical record.
+
+| Item | Where |
+|---|---|
+| Save states are blocked on payload scope, not on pointers. A raw arena snapshot restores correctly at a different host base address — the 32-bit-token argument holds — but ~800 KB of authoritative state lives in host globals outside the arena, and no enumeration expressible in this codebase covers it | [§ OPEN: save-state capture is blocked by payload scope — wave "savestate"](#open-save-state-capture-is-blocked-by-payload-scope-not-by-pointer-tokens--wave-savestate) |
+
+
+## OPEN: save-state capture is blocked by payload scope, not by pointer tokens — wave "savestate"
+
+**Status.** S2 Task 7 (save-state capture and restore) stopped at its own step-1
+feasibility gate. `platform/save_state.c`'s container — header, versioning,
+truncation and checksum refusal — is shipped and unit-tested
+(`ctest -R save_state_container`). Nothing captures or restores, and `F5`/`F7`
+are unbound.
+
+**What the plan assumed.** That this engine stores intra-structure pointers as
+32-bit arena tokens (`mdkr_arena_token_from_host`, `dkr_lo32_to_ptr` in
+`platform/stubs_dkr.c`), so a raw arena snapshot plus a short list of globals —
+enumerated from `platform/segment_consts.c` and the `[SIMHASH]` v3 field list in
+`platform/sim_hash.c` — would be restorable. Half of that is true. The half that
+is not is the half the payload is made of.
+
+**Measured. The pointer-token argument holds.** All arms below run the same
+route (`tests/input_scripts/nav_to_time_trial_race.txt`, `MDKR_AUTOPILOT=1`,
+`MDKR_LOAD_TRACK=5`, `MDKR_STATE_HASH=3`, `MDKR_AUDIO=0`, `--headless-frames
+4200`): capture at tick 2800, run to 3400, restore, run to 4000, and compare the
+two 600-row `[SIMHASH]` v3 segments. Because macOS re-bases the 16 MiB arena on
+every launch, the six runs behind this table landed at six different arena bases
+(`0x442000000`, `0x5d5000000`, `0xb28000000`, `0xb5a000000`, `0xbb6000000`,
+`0xce8000000`) and produced the *same* pre-restore segment hash every time.
+Restoring a snapshot into a differently-based arena is not the problem.
+
+| Payload | Segment A (2801-3400) | Segment B (3401-4000) |
+|---|---|---|
+| arena only | `cfcbaab7…b98fc2fc` | *(none — SIGSEGV)* |
+| arena + game-owned globals | `cfcbaab7…b98fc2fc` | `3a2889d2…620b7fcc` (diverges at the first tick) |
+| arena + game-owned globals + 4 platform globals | `cfcbaab7…b98fc2fc` | `cfcbaab7…b98fc2fc` |
+
+(Full digests: `cfcbaab79ff737adfbb66403b3efb02f8a3ad1253cb40e042c8404e1b98fc2fc`,
+`3a2889d260cc2a45d112e76b5094efce9efd65d6ba2529be6e61a300620b7fcc`, over the
+concatenated `h=` fields of the 600 rows in each segment.)
+
+**Mechanism, arm 1.** Rewinding the arena alone does not diverge — it faults, at
+the restore boundary itself, before the next `[SIMHASH]` row is emitted:
+
+```
+EXC_BAD_ACCESS (code=1, address=0x10)
+  frame #0: sndp_handle_event(...) at game/src/audiosfx.c:328
+      sound = soundState->sound;
+```
+
+`soundState` reached that dereference from an event queue rooted in host globals
+(`gSoundPlayer`, `gSoundStateLists`, `game/src/audiosfx.c`), which still describe
+the post-restore world while the arena they point into has been rewound 600 ticks.
+This is the general shape, not an audio quirk: on this port the memory *pool*
+lives in the arena (`mempool_init((MemoryPoolSlot *)arena, …)`,
+`game/src/memory.c:203`) but every *root* into it — `gObjPtrList`, `gObjectCount`,
+`gSettingsPtr`, `gMemoryPools`, the sound-state lists — is an ordinary host global
+in the game's own `.bss`/`.data`. Rewinding one side of that pair without the
+other is what crashes.
+
+**Mechanism, arm 2 — the four platform globals.** With the game's globals added,
+the run survives but diverges on the *first* tick after the restore. Two causes,
+both outside the arena and both genuinely authoritative:
+
+- `gCurrentRNGSeed` / `gPrevRNGSeed` (`platform/math_util_native.c:258-259`) — the
+  gameplay RNG, which is literally the second value `sim_hash_compute()` folds in.
+- the synthetic N64 COUNTER: `osGetCount`'s guard and the simulated field
+  accumulator behind `platform_sim_field_count()` (`platform/stubs_dkr.c`). The
+  game's `audioPrevCount` is a game global and *is* rewound, so a COUNTER that is
+  not rewound makes `music_animation_fraction()` integrate a 600-tick delta in one
+  step, which reaches hashed model `animFrame` state.
+
+Neither is a pointer fix-up; both are machine state a save state ought to carry.
+Adding them is what turns arm 2 into arm 3.
+
+**Why this still stops.** The blocker is the *scope* of "the globals outside the
+arena", not any of the three arms above. Measured over one 600-tick window on one
+route, by diffing the process image's `__DATA` `__data`/`__bss`/`__common`
+sections across the window and resolving every changed byte-range to a symbol:
+
+```
+__data    30 bytes changed over   33,088    __bss  8,945 over 3,206,864
+__common 1,890 bytes over 1,938,184        223 distinct symbols
+  of which game-owned: 142 symbols, 2,965 bytes (29 of them file-scope static)
+```
+
+The two inventories the plan names plausibly yield about twenty globals. The
+sufficient payload — measured, not estimated — is the arena plus **every
+externally-linked writable global defined by a `game/src` translation unit**:
+1,686 symbols, 808,964 bytes. That arm reproduces the stream byte-for-byte
+(row 3 above). Two narrower shapes were tested or considered and rejected:
+
+- **File-scope statics are not needed.** Arm 3 leaves ~9 KB un-restored — game and
+  platform file-scope statics, plus renderer caches — and is still byte-identical,
+  so `sBoostTable`, `sSceneDrawOrder`, `sFaithfulCullPlanes` and the rest are
+  per-tick scratch. That is the one piece of good news: the payload does not have
+  to reach inside a translation unit.
+- **A hand-written list fitted to this measurement is worse than nothing.** The
+  142 game symbols that moved are the symbols that moved *on this route, in this
+  window*. A payload built from them would pass a three-track gate and silently
+  produce a corrupt state on the first route nobody measured — a green gate over
+  an incomplete payload, which is the failure mode this ledger exists to prevent.
+
+**Why it was not built anyway.** Only two payload definitions are both complete
+and implementable, and each is a new invariant this project has not paid for:
+
+1. **1,686 enumerated symbols.** Most are decomp `D_8011xxxx` externs with no
+   declared type in any header. The table is neither writable by hand nor
+   reviewable, and it falls behind silently the first time a game global is added.
+2. **A contiguous region.** Game-owned globals *do* happen to occupy four
+   contiguous runs at the front of each `__DATA` section on this link
+   (`__data` 24,848 B, `__bss` 195,664 B, `__common` 689,360 B + 95,008 B, 1,004,880
+   B total), and snapshotting those four runs also reproduces the stream exactly.
+   But that layout is a link-order artifact of one toolchain. Depending on it would
+   assert, silently and on every platform this port targets, that no platform TU's
+   data ever lands between two game TUs' data. That is a far larger unpaid
+   invariant than the pointer fix-ups the plan already ruled out — and getting it
+   wrong restores host handles and freed pointers rather than merely producing a
+   wrong hash.
+
+**What would unblock it.** A first-class boundary rather than a list: each
+translation unit that owns authoritative state outside the arena publishes its own
+span (`#ifdef NATIVE_PORT`, one accessor per TU, `_Static_assert`-checked), and
+capture walks the registry. 42 of the 64 `game/src` translation units define
+externally-linked writable data and would need one accessor each; the completeness
+claim would then be per-TU and local rather than global and fitted. That is a real
+piece of work with a real payoff — it is also the registry a deterministic replay
+or a network rollback would need — but it is not something to smuggle in under a
+save-state task.
+
+**What is already in the tree.** The container and its unit test
+(`platform/save_state.[ch]`, `tests/test_save_state_container.c`, CTest
+`save_state_container`) are complete and passing, and `platform/save_state.c` is
+now linked into the engine. `tests/check_save_state_roundtrip.py` does not exist:
+there is nothing yet for it to gate. `platform/save_container.c` and the progress
+EEPROM path were never touched, and `check_save_failsafe.py` passes unchanged.
 
 
 ## FIXED: save progression and persistence isolation

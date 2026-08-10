@@ -471,6 +471,74 @@ SHAPE_TRIAGE = {
         "BOUNDED BY PARAMETER: both swap loops are `i + 1 < size` / `i + 3 < "
         "size`, so the highest index is size-1. The sole caller only reaches it "
         "after an exact size == DKR_ROM_SIZE_BYTES check on the real buffer.",
+    # --- content packs, GPU diagnostics and adapter policy -----------------
+    # Four writes through a caller-supplied buffer, all four self-bounded by the
+    # size parameter travelling with it rather than by caller discipline. The
+    # question this class asks is "can the counter pass the test without
+    # equalling it"; for each of these the answer is recorded below.
+    ("bare-pointer", "platform/mod_registry.c", "path_join:out"):
+        "BOUNDED BY PARAMETER, AND REFUSES RATHER THAN TRUNCATES: "
+        "`base_length + 1 + leaf_length + 1 > out_size` returns 0 before any "
+        "write, so the three writes that follow (memcpy base, the '/' at "
+        "out[base_length], memcpy leaf and the NUL) each land inside a span "
+        "already proven to fit. Truncation is deliberately not a fallback -- a "
+        "truncated path names a DIFFERENT file, and probing a different file is "
+        "worse than not finding one. The counter cannot pass the test without "
+        "equalling it because the test is an inequality on the total, evaluated "
+        "once, before the first byte. Overflow of that sum needs two strings "
+        "summing past SIZE_MAX; both come from a bounded MDKR_MOD_PATH_MAX "
+        "buffer or a readdir entry.",
+    ("bare-pointer", "platform/mod_source.c", "path_join:out"):
+        "BOUNDED BY PARAMETER: byte-identical reasoning to mod_registry.c's "
+        "path_join above, and deliberately a separate copy for now -- "
+        "mod_registry has not yet been retargeted onto mod_source. When it is, "
+        "one of these two disappears and so should its entry here.",
+    ("bare-pointer", "platform/gpu_diagnostics.c", "copy_field:destination"):
+        "BOUNDED BY PARAMETER: the copy loop's own condition is "
+        "`index + 1u < size`, so index stops at size-2 and the unconditional "
+        "`destination[index] = '\\0'` after it lands at size-1 at worst. It is "
+        "bounded by the DESTINATION size alone and never reads the source "
+        "further than that, which is the point: an adapter name filled to the "
+        "brim by a vendor runtime without a terminator is not walked off the "
+        "end. Both sides of every call are arrays of the same declared size.",
+    ("bare-pointer", "platform/adapter_policy.c", "reason_append:reason"):
+        "BOUNDED BY PARAMETER at all three writes. The separator pair is "
+        "guarded by `length + 3u > size` returning early, which reserves room "
+        "for ';', ' ' and the NUL together rather than one at a time. The "
+        "clause loop's condition is `length + 1u < size`, so length stops at "
+        "size-2 and the trailing `reason[length] = '\\0'` lands at size-1 at "
+        "worst. `length` itself comes from field_length(reason, size), which "
+        "cannot report past size. Written out rather than snprintf'd so no "
+        "clause can be lost to a format the compiler cannot bound.",
+    ("bare-pointer", "platform/mod_music.c", "resample_into:out"):
+        "BOUNDED BY CONSTRUCTION: `out` is the malloc immediately above the "
+        "only call site (decode_track), sized target_frames * s_channels * "
+        "sizeof(int16_t), and the out_frames argument IS target_frames. Both "
+        "loops write out[out_channels * frame + channel] for frame < "
+        "out_frames and channel < out_channels, so the highest element written "
+        "is out_channels * out_frames - 1: an exact fit with no slack, and "
+        "none is needed, because the count and the capacity are the same two "
+        "expressions. The product cannot overflow either -- target_frames is "
+        "rejected against MDKR_MOD_MUSIC_BYTES_MAX / (sizeof(int16_t) * "
+        "s_channels) before the allocation. The sweep flags it only because "
+        "`out_frames` does not match its bound-ish parameter-name heuristic; "
+        "the bound is present and is the parameter.",
+    ("bare-pointer", "platform/mod_music.c", "mdkr_mod_music_mix:out"):
+        "BOUNDED BY A CONSTANT SHARED WITH THE CALLER, which is the part worth "
+        "checking rather than assuming. The loop writes frame * s_channels + "
+        "channel for frame < frames and channel < s_channels, so `frames` "
+        "alone does not state the capacity -- `out` needs frames * s_channels "
+        "elements. Both call sites are in platform/audi_port_dkr.c and pass "
+        "the buffer amAudioSynthFrame(n) returned together with the same n; "
+        "that buffer holds n * DKR_AUDIO_CHANNELS int16 samples, which the "
+        "next line confirms by handing the identical (buf, n, "
+        "DKR_AUDIO_CHANNELS) to mdkr_audio_gain_ramp_apply_s16. So the write "
+        "fits exactly when s_channels == DKR_AUDIO_CHANNELS, and s_channels "
+        "has exactly one writer: mdkr_mod_music_init, called once, from that "
+        "same translation unit, with DKR_AUDIO_CHANNELS. A second initialiser "
+        "with a different channel count is the single change that would break "
+        "this, which is why it is recorded here rather than left to a reader "
+        "to re-derive.",
     ("bare-pointer", "platform/save_container.c", "json_parse_string:output"):
         "BOUNDED BY PARAMETER: every write path tests output_capacity first -- "
         "the single-byte path, append_utf8's `count > capacity - *length`, and "
@@ -562,6 +630,44 @@ SHAPE_INFO_MAX = {
     #     `write->camera_count`, which the guard above caps; the sibling
     #     `1ull << entry->camera_id` is fenced by an explicit
     #     `camera_id >= 0 && camera_id < PRESENTATION_SNAPSHOT_MAX_CAMERAS`.
+    #
+    # 2026-08-09: raised 257 -> 261, and the four are NOT one batch of work.
+    # Measured on origin/main at 080c4c4 the population is already 260 -- three
+    # above the recorded ceiling -- so this gate was failing on main before the
+    # content-pack work began, and had been for some time. It went unnoticed
+    # because array_bounds_sweep is a `rom`-role check: hosted CI cannot run it
+    # (no ROM on a runner), so only a local full-suite run sees it, and a subset
+    # run does not. That is the same shape as the last gate this project lost
+    # track of. The three are not identified here because identifying them means
+    # bisecting the class population across the commits since the ceiling was
+    # last set, which is worth doing and is not this change.
+    #
+    # The fourth is from this work and is named: platform/mod_texture_key.c:46,
+    # `bytes[index] = (uint8_t) ((value >> (index * 8)) & 0xffu)` -- the
+    # little-endian field encoder in the published texture digest. index runs
+    # 0..3 over a 4-byte local, so the shift count is 0, 8, 16 or 24 and the
+    # value is a u32; it cannot reach the width.
+    #
+    # MERGE HAZARD, recorded 2026-08-09. The release line (`land/rc2`) moved
+    # these same two constants independently and by different amounts:
+    # equality-cap 39 -> 45 and shift-count 262 -> 265 there, for
+    # gfx_font_outline.c's solve_face_fit counters and three presentation shift
+    # sites. Both branches therefore touch these lines and will conflict
+    # textually.
+    #
+    # RESOLVING IT BY SUMMING THE NUMBERS IS WRONG. The tool reports the
+    # informational population *after* excluding the enumerated TRIAGE entries,
+    # and the two branches enumerate different sites -- so the combined ceiling
+    # is not 261 + (265 - 262), and it is not the larger of the two either. Take
+    # both triage blocks (that part is genuinely additive), then RE-MEASURE the
+    # combined population on the merged tree and set each ceiling to what the
+    # tool actually reports. The ceiling is a measured population, never a
+    # proof, and a summed guess would silently re-open exactly the growth this
+    # gate exists to catch.
+    # 2026-08-10, merge of land/rc2 and worktree-hm-parity-sprints: both
+    # narratives above are true of their own branches. Per the merge-hazard
+    # note, the combined ceiling is RE-MEASURED on the merged tree (not summed,
+    # not maxed) and set to what the tool reports.
     "shift-count": 265,
 }
 

@@ -156,8 +156,53 @@ redistributed under the terms of that project.
 
 `lib/` contains third-party sources and data vendored per their own licenses and
 compiled into or shipped alongside the app: Dear ImGui for the native app shell,
-`glad` for GL loading, and the SDL game-controller database. Each retains its
-upstream license.
+`glad` for GL loading, `stb_image` for PNG decoding, `miniz` for reading zipped
+content packs, `dr_wav` for decoding the music inside them, and the SDL
+game-controller database. Each retains its upstream license.
+
+`lib/stb/stb_image.h` is stb_image v2.30 by Sean Barrett, vendored from
+`nothings/stb` at commit `f58f558c120e9b32c217290b80bad1a0729fbb2c`; the
+vendored file's SHA-256 is
+`594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3`. It is dual
+MIT / public-domain, and both texts travel with the file. It decodes the PNG
+textures in a player's own content packs and is built with only its PNG decoder
+enabled. No image is shipped with this repository for it to read.
+
+`lib/stb/stb_image_write.h` is stb_image_write v1.16 by Sean Barrett, vendored
+from `nothings/stb` at the same commit, `f58f558c120e9b32c217290b80bad1a0729fbb2c`;
+the vendored file's SHA-256 is
+`cbd5f0ad7a9cf4468affb36354a1d2338034f2c12473cf1a8e32053cb6914a05`. It is dual
+MIT / public-domain, and both texts travel with the file. It encodes the PNG
+corpus `tools/mod_texture_dump.py` writes for pack authors
+(`MDKR_MOD_TEXTURE_DUMP`, a debug/authoring path that is inert unless that
+environment variable is set) and is built without its own file I/O, writing
+through the port's own UTF-8-safe file access instead. No image is shipped
+with this repository for it to write.
+
+`lib/miniz/miniz.h` and `lib/miniz/miniz.c` are miniz 3.0.2 by Rich Geldreich
+and contributors, vendored from the pinned upstream release archive
+`https://github.com/richgel999/miniz/releases/download/3.0.2/miniz-3.0.2.zip`;
+the vendored files' SHA-256s are
+`295d1a0041aea09609598c0f1f35c1977ca05ad662acbadcfdaac44c140af37b` (`miniz.h`)
+and `0fcdc9888cb3a29ca8f176bac087e5fe6c7258a6ab06b1c271c1e109a11d3740`
+(`miniz.c`). It is MIT licensed — Copyright 2013-2014 RAD Game Tools and Valve
+Software, Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC — and
+that text travels at the top of `miniz.c`. `miniz.h`'s banner comment still
+carries an out-of-date "public domain" line from before miniz relicensed to MIT
+at 2.0; the MIT terms are the ones that apply. It reads the zipped content packs
+a player installs themselves. No archive is shipped with this repository for it
+to read, and nothing in this port asks it to write one.
+
+`lib/dr_libs/dr_wav.h` is dr_wav v0.14.6 by David Reid, vendored from
+`mackron/dr_libs` at commit `955edd32b4b9206448c2ee6eed0b289c47d49ed3`; the
+vendored file's SHA-256 is
+`87aa06757b93b41fa6e67ba6b4da48d9ccee5ac49142b215d7e3ceaf0d9901b6`. It is
+available as a choice of public domain (Unlicense) or MIT-0 — Copyright 2023
+David Reid — and both texts travel with the file. It decodes the music a player
+puts in their own content pack, once per track at load, and is built without its
+own file I/O: a pack may be a zip, so every byte reaches the decoder through the
+port's own validated pack reader instead. No audio is shipped with this
+repository for it to read, and nothing in this port asks it to write any.
 
 ## Full provenance table
 

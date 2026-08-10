@@ -25,8 +25,8 @@ python3 tools/run_checks.py \
   --wasm build-web/mdkr64_web.wasm
 ```
 
-The manifest registers 122 of the 126 `tests/check_*.py` scripts and expands to
-135 tasks. The four it does not name directly
+The manifest registers 145 of the 149 `tests/check_*.py` scripts and expands to
+158 tasks. The four it does not name directly
 (`check_controller_settings_persistence.py`, `check_host_input_focus.py`,
 `check_launcher_tabs.py`, `check_overlay_input_handoff.py`) are CTest companions that `rom_free_units` owns, so
 every check script still runs exactly once in a default pass. That task also
@@ -768,6 +768,52 @@ recovery callers, initialized plane/item state, exclusive sound bounds, and
 both special-vehicle mappings. It deletes every required fragment in memory and
 must reject each mutation, so its source assertions have executable failure
 directions.
+
+## Two ways a gate lies — read this before adding a check or a diagnostic
+
+Gates fail in two distinct ways here, and only one of them is loud.
+
+**Shape brittleness** is a check that greps for the *form* of the code rather
+than the property it cares about. `check_overlay_input_handoff.py` reads
+`platform_input_pump`'s body for `SDL_PollEvent`; a refactor moving that into a
+helper turned it red with behaviour untouched. Loud, annoying, cheap. The
+counter-intuitive part: making such a check **more precise makes it more
+brittle, not safer**. Pinning "exactly these two guard terms" breaks the moment
+a third surface appears. Loosen *what the text must look like*, keep *what the
+code must do* — or better, assert structurally: inline the callee before
+searching, allow an open-ended term list, count events rather than matching
+prose.
+
+**Assertion vacuity** is a check that cannot fail for the reason it claims. It
+is quiet, and it is far worse, because it converts "unchecked" into "checked and
+fine". Four found in one night:
+
+- `g_frameLimitRectValid` was a sticky latch, so a per-frame "the widget is on
+  screen" assertion was never evaluated against a visible widget.
+- `check_a11y_shell`'s in-game overlay arm walks whatever it reaches — three
+  passing runs covered 14, 8 and 6 rows. The real assertion is "more than zero".
+- "a header declaring more than the cache holds is refused" **still passed with
+  the guard it tested disabled**; only counting decoder entries and allocator
+  high-water could distinguish refused-before-decoding from refused-after.
+- `check_bluey2_rematch` asserted the very defect it existed to catch.
+
+The test is simple: **ask what would have to break for this to go red.** If the
+answer is not the property named, the assertion is decorative. Prove it by
+mutation — and when a mutation leaves one assertion green while others fail,
+that green one is worthless; say which survived rather than accepting the
+aggregate red.
+
+**A diagnostic can lie too, and confidently.** The off-screen helper added to
+the settings panel announced `frame-limit combo is scrolled out of the panel
+(rect y=614..614)` about a combo sitting visibly at y=596..633 — `BeginCombo()`
+returning true has already begun the popup window, and ImGui's `Begin()`
+reassigns last-item data to that window's title bar. A diagnostic exists to make
+the next failure cheap to read; one that points at a fault which is not there is
+worse than the silence it replaced. Same shape as a `grep -q` inside a pipeline
+under `set -o pipefail`, which SIGPIPEs its producer and reports **"ok" exactly
+when it finds a violation**. Verify a new diagnostic against a known-good case
+before trusting it, and never use `grep -q` in a pipeline under `pipefail` —
+drain with `grep .` or capture to a variable first.
 
 ## Open loop vs closed loop — read this before adding or editing a fixture
 
@@ -2818,7 +2864,7 @@ clear, while the amulet piece belongs to the second boss.
 ## Campaign progression — `tests/check_campaign_progression.py`
 
 ```bash
-MDKR_AUDIO=0 python3 tests/check_campaign_progression.py -v          # ~5 min
+MDKR_AUDIO=0 python3 tests/check_campaign_progression.py -v          # ~11 min
 MDKR_AUDIO=0 python3 tests/check_campaign_progression.py --quick     # ~50 s
 MDKR_AUDIO=0 python3 tests/check_campaign_progression.py --quick --break-invariant  # must FAIL
 ```
@@ -2840,14 +2886,27 @@ they disagree, and a fixture that guesses silently exercises nothing.
 | A | Ancient Lake entered through the real hub and lobby, all eight silver coins collected by the game's own coin objects | `RACE_CLEARED_SILVER_COINS` written once, status 2 -> 3 in EEPROM, `balloons` (6,4) -> (7,5), reloaded by a second process, no amulet |
 | B | all four worlds' second boss races, won, each on the EEPROM the previous one persisted | the world's `1 << (world + 6)` bit, `wizpigAmulet` +1 exactly (1, 2, 3, 4 across the chain), one amulet cutscene, boss course cleared, and no carried bit dropped |
 | B control | the same race and the same win from a save whose first boss was never beaten | the FIRST-boss bit, **no** rematch bit, **no** amulet, no amulet cutscene |
+| B driven | the Dino Domain rematch entered by driving the human through the lobby's own boss door, not by `MDKR_LOAD_TRACK` | the same state as the retarget arm, plus `WARP_BOSS_REMATCH` live at eight world balloons with `WARP_BOSS_FIRST` disabled, and the lobby's exit actually taken |
 | C | the carried four-piece save loaded into Timber's Island, then Wizpig 1 raced | the hub redirected to `WIZPIGMOUTHSEQUENCE` with `CUTSCENE_WIZPIG_FACE` latched and persisted; then Wizpig 1's central-area boss bit and cleared course |
 | C control | the same hub load one rematch earlier, at three pieces | **no** redirect and **no** `CUTSCENE_WIZPIG_FACE` |
-| E | Wizpig 2, won | `bosses & 0x20` live and persisted — the one value `menu_credits_init` reads to choose "TO BE CONTINUED …" over "THE END?" |
+| T | all four trophy championships, chained on one another's saves through `check_trophy_series.py`'s own driver | `trophies` 0x3 → 0xf → 0x3f → 0xff, each step matching production's own `trophyaward:` line, and nothing else in the save moved |
+| T.T. | the four challenge courses won in four separate processes on one another's saves | `ttAmulet` 1, 2, 3, 4, one `TTAMULETSEQUENCE` each, each course cleared |
+| T.T. control | the FIRST challenge replayed on the save it produced | **no** piece and **no** cutscene — the award is gated on the course not already being cleared |
+| E | Wizpig 2, won, and the post-win cutscene stack driven to the credits | `bosses & 0x20` live and persisted, `MENU_CREDITS` reached, and `menu_credits_init` choosing "TO BE CONTINUED …" + `SEQUENCE_CRESCENT_ISLAND` with `gViewingCreditsFromCheat` zero |
 
-Seams B, C and E run on **carried** saves: `Slot.from_save()` reads a real
-persisted EEPROM back and the next seam runs on it, overriding only the fields a
-later gate needs. So `wizpigAmulet == 4` is something production wrote four
-times, not something a fixture asserted.
+Seams B, C, T, T.T. and E run on **carried** saves: `Slot.from_save()` reads a
+real persisted EEPROM back and the next seam runs on it, overriding only the
+fields a later gate needs. So `wizpigAmulet == 4`, `trophies == 0xFF` and
+`ttAmulet == 4` are each something production wrote four times, not something a
+fixture asserted.
+
+The driven seam-B arm's lobby approach is watched by
+[`tests/route_plan.py`](route_plan.py) against the run's own `[PACE]` position
+stream, so a route that stops closing reports the waypoint, the closest approach
+and whether it oscillated, was held off, or ran out of budget — instead of
+looping to the frame limit and reporting only that the boss never loaded. It is
+not a slow arm: measured, the lobby is entered at frame ~2947 and the rematch at
+~3124.
 
 Seam C's redirect is invisible in the level-load stream and needs the
 `wizpigface:` trace: `game_load_level` logs the level it was *asked* for, then
@@ -2868,13 +2927,139 @@ The contrast arm runs `credits_via_cheat.txt` and confirms it reaches
 `MENU_CREDITS` from a save file that was never started — which is why arriving at
 credits is not by itself evidence about the campaign.
 
-**What this deliberately does not prove**, with the measured obstacle for each,
-is in [`tests/fixtures/README.md`](fixtures/README.md): the lobby boss-rematch
-door driven rather than retargeted, the T.T. amulet challenges and the trophy
-championships (the latter gated separately by `check_trophy_series.py`) and the
-Future Fun Land unlock they feed, and the credits screen reached by finishing
-Wizpig 2. Those remain the manual acceptance steps in
-`docs/RELEASE_CANDIDATE_TEST_GUIDE.md`.
+**What this deliberately does not prove** is in
+[`tests/fixtures/README.md`](fixtures/README.md), which also keeps the measured
+obstacle behind every route here. What is left is Future Fun Land's own state —
+its four cleared races, its balloons, the four world keys and the world-arrival
+cutscene flag are constructed, because this check does not drive to that world.
+The door into it is gated separately, below.
+
+## Controller hotplug — `tests/check_input_hotplug.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_input_hotplug.py --build build
+```
+
+Drives real device add and remove through `SDL_JoystickAttachVirtual`, so it
+needs no hardware. Eight independently scored assertions over two arms, watching
+`[PAD-CHANNEL]` rows emitted from the same three accessors `osContGetReadData`
+reads — so the trace cannot agree with SDL while disagreeing with the game.
+
+**It found a real defect on its first run.** A pad connected *before launch* was
+bound to two channels: `SDL_Init` queues a `CONTROLLERDEVICEADDED` for each
+existing device, `platform_input_init()` enumerated while that event was still
+queued, and `SDL_GameControllerOpen()` is reference-counted — so the second open
+stored the same pointer in the next free slot. The game saw a controller in P2
+that nobody was holding, the next real pad went to P3, and P2's rumble buzzed
+P1's pad. See [`open-items/multiplayer.md`](../docs/open-items/multiplayer.md).
+
+The **boot arm is the point**: mid-run hotplug produces one ADDED event and no
+enumeration, so every existing gate missed this. Tick `0` of the test schedule
+fires from inside `platform_input_init()` *before* its startup enumeration,
+which is the only way to reproduce a pad that was already plugged in.
+
+Negative control: the fix gated behind a runtime flag makes the gate exit 1 with
+exactly four failures. Three of those are downstream of the one root cause — the
+disconnect fail-safe and the padless-rumble guard were already correct, which
+the overflow arm's independent passes show.
+
+## Shell self-voicing — `tests/check_a11y_shell.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_a11y_shell.py --build build
+```
+
+Walks `Tab` and the arrows through the launcher, every settings section and the
+in-game overlay, and requires **every focusable control** to have produced a
+`[SPEAK]` utterance carrying its name and current value. The expected set is
+enumerated from the app's own schema dump, not from a list here, so a setting
+added and never voiced fails this gate with no test edit.
+
+**It found three real defects on its first run**, which is the argument for
+enumerating rather than listing:
+
+1. `App.UpdateCheck` and `Tools.Enabled` had **no control at all** — both carry
+   the Interface category, but that section was hand-written and drew only two
+   rows, so they were reachable by ini and env only. `test_app_ui_policy.cpp`
+   asserted they were *visible*, which is a statement about policy, not about
+   anything actually being drawn.
+2. The three settings with the longest help said **nothing whatsoever** —
+   `mdkr_a11y_focus()` correctly refuses over-long text whole rather than
+   truncating mid-word, and those paragraphs exceed the buffer. Fixed at the
+   emission point by keeping as many whole sentences as fit.
+3. The ImGui SDL2 backend drops key events carrying an unrecognised window id.
+
+The positive control has two arms: removing the emission entirely fails naming
+all 52 controls, and skipping a single key fails naming that one — so the gate
+isolates rather than only detecting all-or-nothing.
+
+## Race announcements — `tests/check_a11y_race.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_a11y_race.py --build build --rom baserom.us.v80.z64
+```
+
+Drives a full autopiloted race and requires the `[SPEAK]` stream to carry the
+five things a player who cannot see the screen needs in order to follow one: the
+start, at least one change of position, the laps, the final lap, and the result.
+Lap calls must match `Lap N of M` — a bare "Lap 2" does not say how much race is
+left — and the finish must be spoken at `critical` priority, because it is the
+one line no later utterance may cut off.
+
+Three arms, each answering a question the others cannot:
+
+| Arm | Asks | Passes when |
+|---|---|---|
+| full race | is a race followable by ear? | all five moments spoken, laps named `Lap N of M`, the result `critical` |
+| purity | did listening change the race? | `[SIMHASH]` v3 rows byte-identical with announcements on and off — 5400 rows on the current route |
+| categories | does each switch own its own category? | silencing `race_event`, `race_lap` or `race_position` leaves the other two intact |
+
+The purity arm is the authority proof: announcements are
+`MDKR_ENH_PRESENTATION`, so the byte-identical hash stream is what makes that
+classification a measured fact rather than an intention.
+
+**The coalescing assertion is the one with teeth.** Position changes in a
+mid-pack scrap land about three authoritative ticks apart, and a stream that
+spoke all of them would cut every line off with the next one — audible as noise,
+not as information. `MDKR_A11Y_RACE_POSITION_MIN_TICKS` (60 ticks,
+`platform/a11y_race.h`) debounces them, and the gate measures the tightest gap
+between consecutive `cat=race_position` utterances against the `[PACE]` clock,
+failing under 50 frames. Asserting 50 rather than 60 leaves the tick-to-frame
+mapping a frame or two of slack at the edges while staying an order of magnitude
+above what an uncoalesced stream produces. The arm refuses to score itself
+vacuous: fewer than two timestamped position calls is a failure naming that
+cause, so "the race had no overtaking" and "the spacing was never tested" cannot
+be mistaken for a pass.
+
+The route runs under `MDKR_SYNTH_FIELDS=1` for determinism. That is sound here
+and would not be for a pacing measurement — the synthetic pacer's presentation
+and GPU counters are meaningless, but authoritative ticks, the hash stream and
+utterance ordering are not.
+
+## Future Fun Land unlock — `tests/check_future_fun_land.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_future_fun_land.py -v               # ~4 min
+```
+
+Four gold trophies plus a beaten Wizpig 1 open the lighthouse rocket
+(`begin_lighthouse_rocket_cutscene`, `game/src/thread3_main.c`), which is the only
+way into the last world. The trophies are **produced**, not stated: the check
+imports `check_trophy_series.py`'s championship driver and chains four of them.
+
+Three arms, because a refusal writes nothing at all — no bit, no level load, no
+trace — so a single arm would pass with the whole unlock deleted:
+
+| Arm | Save | Must happen |
+|---|---|---|
+| unlock | four production golds, Wizpig 1 beaten | `ASSET_LEVEL_ROCKETSEQUENCE` once, `ASSET_LEVEL_FUTUREFUNLANDHUB` reached, `CUTSCENE_LIGHTHOUSE_ROCKET` persisted |
+| one short | worlds 1–3 gold, world 4 driven to second place (a production **silver**) | the signpost triggered and **nothing** else |
+| no Wizpig 1 | the four-gold save with `bosses & 1` cleared | the signpost triggered and **nothing** else |
+
+Every arm asserts the `rocketsign: trigger` line, which is emitted at the
+honk/collision and *before* the gate is evaluated. That is what separates "the
+route never reached the signpost" from "the signpost read the save and said no",
+and it is the only thing that makes the two negative arms mean anything.
 
 ## Hand-asm transcription checks (RUN THESE AFTER ANY CHANGE UNDER `game/src/hasm*`)
 
@@ -3708,6 +3893,426 @@ unreachable from either option.
 The positive control is the point: `mdkr-save inspect` and a headless boot both
 pass on the broken image, because each only decodes the slot and neither drives
 the input gate. Only the entry route separates the two.
+
+## Sprint ROM-free units — eleven new CTests
+
+```bash
+ctest --test-dir build --output-on-failure \
+  -R '^(mod_manifest|mod_registry|mod_source_zip|mod_texture_key|dev_command|enhancement_registry|a11y_model|save_state_container|update_check|gpu_diagnostics|adapter_policy)$'
+```
+
+Eleven CTest units added by the [`docs/sprints/`](../docs/sprints/README.md)
+work. All are ROM-free and window-free, all run in milliseconds, and
+`rom_free_units` carries them into every lane. They are registered in
+`cmake/tests.cmake`; `tools/run_checks.py` does not name them individually
+because its manifest cross-check covers `tests/test_*.py`, and these are C.
+
+| Unit | What it owns | The assertion that would otherwise rot |
+|---|---|---|
+| `mod_manifest` | One `pack.ini`, parsed and validated | Over-long name/author/version is **rejected**, not truncated |
+| `mod_registry` | Pack discovery, load order, path resolution | Traversal rejected against a bait file that genuinely exists; equal-priority tie-break pinned to an explicit ASCII case fold, so load order cannot shift with locale |
+| `mod_source_zip` | One read interface over directory and zip packs | Both kinds go through **one** path validator — mutating only the zip arm fails only the *directory* assertions; and every traversal bait file genuinely exists, so an unguarded implementation would return it |
+| `mod_texture_key` | The published texture digest | An exact pinned value, plus a `0xaa`-filled union proving padding bytes are not hashed |
+| `dev_command` | Console command parsing | `set` refuses any key outside the schema, so a console cannot become an arbitrary-write primitive |
+| `enhancement_registry` | The enhancement table and its authority classes | The table and `mdkr_video_key_is_enhancement()` describe exactly the same set |
+| `a11y_model` | The accessibility utterance stream | Coalescing is per category, interruption is per priority, and each CRITICAL case is paired with an identical NORMAL case so the exemption is the only difference |
+| `save_state_container` | Save-state file format and validation | Truncation refused at all 88 offsets; a header declaring a payload the file does not contain is refused in both directions |
+| `update_check` | Version comparison and the once-a-day interval | `1.10.0` beats `1.9.0` — numeric, not lexicographic; a release supersedes the nightly it came from, and a nightly never supersedes a release |
+| `gpu_diagnostics` | The `[GPUINFO]` adapter record | Every candidate carries a non-empty reason, and an adapter name containing control characters or quotes cannot forge a line in the block |
+| `adapter_policy` | Choosing an adapter and backend | A preference matching nothing falls back and names the string that missed, rather than failing to start; UNKNOWN class ranks between discrete and integrated in both directions |
+
+Each of these was mutation-checked when it landed — the implementation was
+deliberately broken and the suite confirmed to fail — because several of them
+guard a silent failure rather than a crash, and a check that passes both with
+and without the fix is not a check.
+
+## Draw distance and model detail — `tests/check_enh_draw_distance.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_enh_draw_distance.py --build build
+```
+
+The assertion that matters is **not** "the frame changed" — it is that the
+**live object count per tick is identical** between 100% and 400%. That is what
+separates a render cull from an update cull, and it is checked *before* the
+hash comparison so a divergence is named rather than merely detected: *"changing
+how far the game draws changed which objects exist. The hook is in the wrong
+place."*
+
+The sprint warned this could go wrong, and it nearly did. Under `NATIVE_PORT`,
+`check_if_in_draw_range()` has **two callers, both authoritative** — they write
+`obj->opacity`, which `[SIMHASH]` v3 hashes — and **none in the render path**:
+`render_level_geometry_and_objects()` replays the tick's per-viewport decision
+out of the route cache instead. Widening that threshold anywhere inside the
+function would have been an update-side edit. The setting therefore goes through
+a separate read-only predicate that writes nothing and only *adds* draws.
+
+`MDKR_DRAWDIST_TRACE=1` tallies drawn objects per frame, split authored versus
+extended. The gate also requires the **authored** count to be identical on every
+frame, proving the setting extends rather than re-decides.
+
+The LOD arms run on a 4-player split, not Time Trial: a Time Trial has one
+racer already at model 0, so the bias has nothing to hold. The census counts
+choices the bias actually *changed* after clamping, so a route that stops
+exercising the ladder fails rather than passing on an incidentally different
+frame.
+
+## Pack music — `tests/check_mod_music_override.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_mod_music_override.py --build build
+```
+
+Seven headless captures, no audio device, and **no ROM audio anywhere** — the
+pack's WAV is a 440 Hz sine the test synthesises, exactly 440 cycles in one
+second at 22050 Hz so the loop seam is continuous.
+
+The design constraint the gate exists to hold: the replacement is
+**presentation-only**. The sequence player is not skipped — it still posts its
+play event and the CSP runs unchanged; the single state change is the player's
+volume field, the same one the music slider writes. Skipping instead of muting
+would sound identical and break determinism silently, so assertion 5 requires
+the `[SIMHASH]` v3 rows *and* the sequence trace to be identical across all
+three arms.
+
+Assertion 2 measures a **residual**, not a resemblance: with effects volume at
+zero the bus holds nothing but the replacement, so the pack's own synthesised
+waveform must fit the capture to 0.006%. Arm C installs the same pack as a
+`.zip` with no directory present and requires byte-identical output — which is
+what proves the registry now discovers archives.
+
+Arm G is the music half of the **Custom content** setting. It installs the same
+pack with `Content.PacksEnabled=0` at launcher rank — where a player's saved
+setting sits — and requires the capture to be byte-identical to arm A's: the
+pack is found and reported active, and the replacement is never claimed. The
+setting used to reach the texture layer alone, so a checkbox named "Custom
+content" quietly left the music replaced. What arm G deliberately does *not*
+claim is a mid-track cut: the switch is read at `mdkr_mod_music_begin()`,
+because muting the sequence player is a one-way redirection and stopping a
+replacement partway would leave silence where the game's own music should be.
+Its positive control removes that read; arm 7 fails with `with
+Content.PacksEnabled=0 the engine still claimed the replacement`.
+
+The positive control stubs the begin hook to return 0; assertions 1–4 all fail.
+Assertion 6 keeps passing under that stub, honestly, because it then compares
+two equally unmodded arms — recorded in the docstring rather than papered over.
+
+## Pack textures and the live switch — `tests/check_mod_texture_override.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_mod_texture_override.py --build build
+```
+
+Four headless 380-frame boots at 320×240 on GL, each in its own throwaway
+directory. The first runs with `MDKR_MOD_TEXTURE_DUMP` and dumps the
+digest-named corpus a pack author starts from; the pack the other runs install
+is built from that corpus, so the digest contract is exercised end to end
+rather than pinned to a constant that could rot. Every one of those digests is
+overridden with a single 4×4 magenta PNG the check encodes itself — overriding
+*everything* is what lets whole-frame hashes answer "did any pack pixel
+survive" at any frame, and the size mismatch exercises the same UV
+normalisation a higher-resolution pack takes.
+
+The gate this file owns is the **live** one. `Content.PacksEnabled` is declared
+`SCOPE_LIVE`, and until `mdkr_video_config_publish()` carried it to
+`mdkr_mod_texture_set_enabled()` / `mdkr_mod_music_set_enabled()` that
+declaration was a promise nothing kept: the key was read once at boot, so the
+settings checkbox took effect next launch while `Tab` moved the identical lever
+immediately. The fourth run drives
+`MDKR_TEST_SETTINGS_TOGGLE=Content.PacksEnabled=0@150,Content.PacksEnabled=1@320`,
+which fires `mdkr_video_config_runtime_set()` — the exact call the settings
+panel makes, not a rewritten ini and a relaunch — and frames are sampled at
+120, 240 and 360, one per state and each ≥30 frames clear of a transition.
+
+**Byte-identical is the assertion that matters.** Frame 240, after the setting
+was switched off at runtime, must equal the *no-pack baseline* exactly. Merely
+"different" would also be produced by a store that stopped answering while the
+texture cache kept serving pack pixels it had already uploaded; only an exact
+match proves `override_generation` retired those entries and re-uploaded the
+ROM's texels. Frame 360 must equal the pack run again, which is also the
+observation that **off→on needs no restart**: the registry is scanned and the
+store bound unconditionally by `platform_content_packs_init()`, so the setting
+only decides whether the store answers.
+
+Assertion 5 requires the `[SIMHASH]` v3 stream to be byte-identical across all
+three comparison arms. `Content.PacksEnabled` is content class and toggling it
+mid-run must not move one bit of authoritative state.
+
+There is **no `Tab` arm**, and the docstring says so rather than implying
+coverage: `Tab` is an SDL keyboard event, a headless run has no keyboard, and
+the input-script fixture format carries controller tokens only. Tab and the
+setting call the same lever; the rule between them — an explicit settings
+change wins and sets the lever to the setting's value, ending any momentary
+comparison — lives as a comment at the publication point and is asserted in
+both directions by the ROM-free `video_config_runtime` unit test.
+
+Music differs deliberately and the header says why: the switch is read at
+`mdkr_mod_music_begin()`, so it is honoured from the next piece of music
+onwards. Muting the sequence player is a one-way redirection, so cutting a
+replacement off mid-track would leave silence where the game's own music
+should be.
+
+The positive control comments out the two receiver calls in
+`mdkr_video_config_publish()`, restoring the original defect exactly — the key
+still reports LIVE and the seam still logs `applied=1`. Assertion 3 fails with
+`frame 240: … the frame is not the no-pack baseline …; it is still the pack's
+image`, and assertion 4 fails for the mirrored reason. Assertions 1, 2 and 5
+keep passing, honestly, because a setting that does nothing moves no state
+either.
+
+## Opponent skill — `tests/check_enh_ai_difficulty.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_enh_ai_difficulty.py --build build
+```
+
+The only gameplay-class enhancement, so it is the only one required to *move*
+the state stream. Six races per arm on Ancient Lake, and the route is chosen
+deliberately: the autopiloted player **wins** there at `authored`, so mean
+opponent finish has headroom. On Hot Top Volcano the same fixture finishes the
+player last, pinning the metric at 4.0 and making the assertion unfalsifiable —
+recorded in the docstring so nobody "simplifies" the route later.
+
+The purity arm is the strong form: the gate builds a binary with the
+enhancement **compiled out entirely** (`MDKR_ENH_AI_DIFFICULTY_OMIT`) and
+requires 12,000 `[SIMHASH]` v3 rows byte-identical to the `authored` arm across
+two seeds. `authored` returns by an early return before any float reaches an
+ALU — never a multiply by 1.0f.
+
+The wedge assertion is imported from `check_ai_unstick_opponents.py`, not
+restated, and the lap-time floor is derived from the authored best lap and the
+scale the binary itself reports rather than hard-coded.
+
+## Free camera — `tests/check_tool_freecam.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_tool_freecam.py --build build
+```
+
+Detach at a tick, move, re-attach, and require **both** that the `[SIMHASH]` v3
+stream is byte-identical to an un-detached run and that the frame after
+re-attaching is byte-identical too — with the frames *during* detachment
+differing, so the gate is not vacuous.
+
+**This gate has already earned itself.** The free camera substitutes the latched
+projection record, which is presentation-scoped and unhashed — but the globals
+`cam_rebuild_native_projection()` derives from it are not, and the *next* tick's
+visibility pass rebuilds its cull planes from them without refreshing. That
+visibility answer gates AI RNG. The first run diverged at tick 2232, 232 ticks
+after detaching at 2000. The fix went in the tool, not the gate: a closing hook
+re-derives the authored lens through `cam_set_fov()` — the game's own rebuild,
+not a saved copy.
+
+Its positive control is three variants of "re-attach by restoring a saved record
+instead of ceasing to substitute". Two of them **pass**, which is itself
+informative: the port's own `camera_obstruction_projection_matches_render()`
+handshake rejects a stale generation and falls back to the authored matrix, so a
+naive re-apply is caught by existing machinery. The third — live identity with a
+stale lens spliced in, which is what a re-apply would have to do to get past
+validation — fails on exactly the intended assertion.
+
+## Crash report — `tests/check_crash_screen.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_crash_screen.py --build build
+```
+
+The crash screen is **strictly additive**. Every harness here greps
+`[CRASH]`/`[FATAL]`, so the gate's first job is proving those markers still
+arrive **first and unchanged**, by line index, in both a SIGABRT and a SIGSEGV
+arm. It also asserts the exit disposition is the exact value the pre-change
+binary produced (`-6` and `-11`), so CI classification cannot shift underneath
+the suite.
+
+Two arms rather than one, because a single one would be vacuous: the abort path
+fires during asset init with `tick=0` and `track=-1` frozen, so a hard-coded
+constant would pass it. The gate therefore requires the two arms to **disagree**
+on tick and track, requires `track-name` to be consistent with `track` in both,
+and requires `renderer=` and `version=` to follow the real environment.
+
+The report deliberately never spells a fault `SIGABRT` or `SIGSEGV` — those
+strings are in `harness_utils.ABORT_MARKERS`, and the gate fails if any of them
+appears inside the report line. `MDKR_NO_CRASH_HANDLER=1` suppresses the whole
+surface, which the ~9 harnesses that defer to ASan rely on.
+
+## Speed readout — `tests/check_enh_speedometer.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_enh_speedometer.py --build build
+```
+
+Four arms — baseline, `=0`, `=1` (mph), `=2` (kph) — capturing the same race
+frame. `=0` is byte-identical to baseline. `=1` changes pixels **only inside the
+readout box**, and the check walks every row outside that box asserting no
+differing byte: the weapon panel ends at 88% height and the box starts at 90%,
+so "outside the box" is the rest of the interface and the whole world.
+
+The value assertion is not merely monotonic. A frozen sampler is
+non-decreasing, so the window must also **start at rest and actually climb** —
+the positive control (`return 6.0f`) fails on both halves of that.
+
+Assertion 6 is the one that makes the authority claim real for this row: all
+four arms run under `MDKR_STATE_HASH=3` on a route that *reaches a race with the
+readout on screen*, and all 3,200 rows must be identical.
+`check_enhancement_authority.py`'s own fixture never leaves the menus, so it
+cannot observe this — it names this file in `EFFECT_GATES` instead.
+
+## Developer-tool purity — `tests/check_dev_tools_purity.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_dev_tools_purity.py --build build
+```
+
+Registering a tool in `platform/app/dev_tools.cpp` is a **claim**: that opening
+its window cannot move authoritative state. This gate enumerates the table from
+the running binary's `[TOOLTABLE]` dump and tests that claim for every entry, so
+a tool added later is born gated with no edit here.
+
+For each tool it runs two headless races under `MDKR_STATE_HASH=3` — one with
+`Tools.Enabled=0`, one with the tool forced open — and requires the `[SIMHASH]`
+streams to be byte-identical. Frame count and race outcome are compared too, so
+a tool that merely slows the frame loop enough to shift pacing is also caught.
+
+**Parsing zero rows is a failure.** Every tool is an observer with no body until
+its own task lands, so an empty table would otherwise sail through.
+
+## Asset sub-entry bounds — `tests/check_subentry_bounds.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_subentry_bounds.py --build build
+```
+
+The negative control for `mdkr_asset_subentry()`. Section indices were always
+bounds-checked; indices *within* a section were not, and the one accessor that
+did compare — `get_misc_asset()` — returned the **section base silently** when
+the index was out of range, converting an out-of-bounds read into a confidently
+wrong one. That is the failure this gate exists to keep closed.
+
+Five arms. A positive control with no hook must exit 0 with no diagnostic, so
+the check cannot pass merely because everything aborts. Two synthetic indices
+(1 and `UINT32_MAX`) go through `MDKR_SUBENTRY_TEST_INDEX`, and two live ones
+(`100000` and `-1`) go through `MDKR_SUBENTRY_TEST_MISC_INDEX` into the real
+`get_misc_asset()` against the real loaded section. Each aborting arm asserts
+`returncode == -SIGABRT` **specifically** — a segfault would pass a
+merely-non-zero test — and regex-checks that the reported count is a plausible
+ROM count rather than the index echoed back.
+
+The companion `asset_subentry` CTest covers the accessor itself with no ROM:
+each aborting case runs in a forked child and asserts both the signal and the
+message text.
+
+## Hosted ROM checker — `tests/check_rom_checker_page.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_rom_checker_page.py --build build
+```
+
+`dist/web/rom-check.html` asks a player to hand a 12 MB cartridge dump to a web
+page, and this is what makes that a reasonable thing to ask.
+
+**Nothing leaves the machine.** The page's text must contain no `fetch(`, no
+`XMLHttpRequest`, no `WebSocket`, no `<form action`, no `sendBeacon`, no
+`EventSource`, no `importScripts` and no `@import`; separately, every
+URL-bearing attribute and every CSS `url()` in the file is *parsed* and required
+to be same-directory relative, which is the general guarantee the literal list
+only names mechanisms for. Every local file it does reference must ship beside
+it.
+
+**It answers what the engine answers.** The page loads `dist/web/rom-id.js`
+rather than copying it — asserted with `check_rom_revision.py`'s own row parser,
+so "carries its own revision table" means exactly what that check means by it.
+Its verdict logic sits in one DOM-free block between two markers, which this
+gate lifts out, loads under `node` beside `rom-id.js`, and runs over every
+cartridge dump under `build/roms/`. The sentence it produces must equal the
+`[ROM]` line the native binary prints for the same file, character for character
+— both sides are handed the same display name, so the whole sentence is compared
+and not a suffix of it. A synthesised `.v64` and `.n64` must identify as the
+same release and hash to the same whole-image SHA-256 as the `.z64`; without
+normalisation before hashing, every byteswapped dump would read as damaged.
+
+`node` absent skips the two runtime assertions with a printed reason; the text
+assertions always run.
+
+Verified non-vacuous in three directions: a `fetch(` inserted into the page
+fails the first assertion, a suffix appended to the verdict sentence fails the
+comparison on all five dumps, and hashing before normalisation instead of after
+fails the byte-order assertion on both `.v64` and `.n64`.
+
+## Game-text index census — `tests/check_rom_text_indices.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_rom_text_indices.py --build build
+MDKR_AUDIO=0 python3 tests/check_rom_text_indices.py --only nav,hub   # subset
+```
+
+Before a US 1.0 or European 1.0 ROM can be accepted, the port has to be shown
+not to ask it for a text entry it does not have: `us.v77`'s `GAME_TEXT` holds
+259 entries where `us.v80` holds 343 (`docs/ROM_REVISIONS.md` §5).
+
+`set_current_text()` range-tests the id it is *given* and then adds the language
+offset (`+85` German, `+170` French, `+255` Japanese) **afterwards**, so the
+resolved index is never re-tested. That resolved index is what this gate bounds.
+`game/src/game_text.c` gained one `NATIVE_PORT` census site at exactly that
+point, emitting `[TEXTIDX] section=GAME_TEXT index=… requested=… language=…
+count=…`. It is off unless `MDKR_TEXTIDX` is set; `MDKR_TEXTIDX=1` writes to
+stderr, and any other value is a **file path** the census is appended to.
+
+The path form is what lets the gate drive the real route gates unmodified — the
+nine `nav_*` fixtures, the 20-track sweep, the hub tour, the campaign seams and
+the trophy series — by pointing each at a shim named `mdkr64` that execs the real
+binary with its own census file. Those gates parse the engine's stderr, so a
+second stream interleaved into it would change what they read. Nothing in them
+is modified, so the routes driven here cannot drift from the ones the suite runs.
+
+Fails if any observed index reaches 259, printing the index and the route; fails
+if any route group launched no engine at all, or if no index was observed
+anywhere, because an enumeration over nothing proves nothing. The **coverage is
+printed rather than implied** — distinct ids reached, the fraction of the
+section they are, and the languages seen — and the docstring states plainly that
+the claim is "these routes never resolve an index at or above 259", not "the port
+never does". One of the three text-bearing asset sections is instrumented;
+`MENU_TEXT` and `LEVEL_NAMES` are not.
+
+**Recorded baseline** (us.v80, 60 engine runs across the five route groups):
+maximum resolved index **81**, on `adventure_resume_race.txt @9000 frames
+track=54`; 26 distinct ids of the 340 the ROM addresses (7.6%) over 40 accesses;
+every access in English. The `nav_*` fixtures and all 20 tracks of the sweep
+contribute **zero** — `load_game_text_table()` runs on level entry and a race
+triggers no dialogue, so the whole census comes from the hub, the campaign seams
+and the trophy cabinet. The printed projection notes that the same ids under
+French (+170) reach 251, still in range, and under Japanese (+255) would reach
+336, which is why a JP build needs its own enumeration and not this one.
+
+Verified non-vacuous by lowering the ceiling below an observed index: the gate
+then failed naming index 50 and the hub route that produced it.
+
+## Enhancement authority — `tests/check_enhancement_authority.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_enhancement_authority.py --build build
+```
+
+Every enhancement in `platform/enhancement_registry.c` declares an authority
+class. This gate tests that claim **in both directions**: a `presentation` row
+must leave the `[SIMHASH]` v3 stream byte-identical when flipped to its probe
+value, and a `gameplay` row must change it. One direction alone would let a
+gameplay-changing setting be mislabelled cosmetic, or a setting that does
+nothing be labelled as though it did.
+
+The row list and each row's probe value are parsed from `[ENHTABLE]` lines the
+**running binary** emits under `MDKR_ENH_DUMP_TABLE=1`, never from a list in the
+test — a second list drifts, and a drifted one still prints PASS while silently
+covering one fewer setting. `tests/test_enhancement_registry.c` fails a row that
+declares no probe value, so adding an enhancement forces you to say how to
+exercise it.
+
+**Parsing zero rows is a failure**, checked before anything else. With every
+effect currently unimplemented that is the likeliest way this gate could go
+vacuous, and a mutant that drops every parsed row exits 1 on it.
+
+`EXPECTED_INERT` names the rows whose effect is not built yet, each with the
+task that closes it. The gate **fails if a listed row starts moving the
+stream** — an expectation that has silently become wrong is worse than none.
 
 ## Checks whose detail lives with their source
 

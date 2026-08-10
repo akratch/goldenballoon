@@ -47,3 +47,28 @@ int platformOverlayWantsRender(void) {
 int platformOverlayRender(void) {
     return (g_haveHooks && g_hooks.render) ? g_hooks.render() : 1;
 }
+
+/* Deliberately a separate slot rather than a sixth AppOverlayHooks member: the
+ * overlay hook set is registered once when the shell adopts the window, and it
+ * is the ENGINE that decides whether an overlay exists. This one is claimed by
+ * whichever tool is currently substituting at presentation depth, so it has to
+ * be settable and clearable independently of the overlay's lifetime. */
+static AppPresentationHookFn g_presentationHook = NULL;
+
+void platformSetPresentationHook(AppPresentationHookFn hook) {
+    g_presentationHook = hook;
+}
+
+void platformPresentationHook(void) {
+    if (g_presentationHook != NULL) g_presentationHook();
+}
+
+static AppPresentationHookFn g_presentationEndHook = NULL;
+
+void platformSetPresentationEndHook(AppPresentationHookFn hook) {
+    g_presentationEndHook = hook;
+}
+
+void platformPresentationEndHook(void) {
+    if (g_presentationEndHook != NULL) g_presentationEndHook();
+}

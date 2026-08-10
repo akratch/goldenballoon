@@ -194,10 +194,21 @@ void mdkr_pace_probe_progress(int playerIndex, int checkpoint, int lap);
 /* Published from race_check_finish() -- outside update_player_racer, which stops
  * for a racer as soon as it finishes and so cannot observe the finish itself.
  * The identity fields prove that the probe follows controller port 1 rather
- * than whichever racer happened to occupy starting-grid slot zero. */
+ * than whichever racer happened to occupy starting-grid slot zero.
+ *
+ * The trailing five are the rest of what race_check_finish() has already
+ * decided about the same racer, carried on the SAME call rather than on a
+ * second one. They exist for the race announcer (platform/a11y_race.c), which
+ * needs the live position, the field size, the lap total and the item the
+ * player is holding, and which must not become a second place that observes the
+ * race. They are not hashed and not printed: the [PACE] line and the
+ * GAMEPLAY_EVENT_RACE_RESULT payload it publishes are byte-identical to what
+ * they were before the announcer existed. */
 void mdkr_pace_probe_finish(
     int lap, int raceFinished, int finishPosition,
-    int racerIndex, int playerIndex);
+    int racerIndex, int playerIndex,
+    int racePosition, int racerCount, int lapCount, int itemQuantity,
+    int itemType);
 /* Time-trial ghost playback: counts interpolated ghost frames and records the
  * source bank (0/1 = the player's own ghost, 2 = staff). Lets a check assert that
  * its route really reaches timetrial_ghost_read() rather than assuming it. */
@@ -268,6 +279,43 @@ int platform_frame_dump_due(void);
  * frame so renderer-only temporal state cannot depend on how many earlier
  * nonblocking opportunities each A/B arm happened to obtain. */
 int platform_frame_dump_prepare_due(void);
+
+/* ===== Content packs (platform_sdl_min.c) =============================== *
+ * Host-side ownership of the pack registry (platform/mod_registry.h) and the
+ * decoded override textures the renderer reads through
+ * platform/mod_texture_store.h. It lives beside the event pump because the
+ * player's live A/B toggle is a key in that pump, and the "is anything even
+ * installed" fact that makes the toggle a no-op has to be the same fact the
+ * scan produced.
+ *
+ * A missing mods/ directory is the ordinary case: init resolves the path,
+ * finds nothing, logs nothing, and leaves the store inactive so the renderer
+ * never pays for a digest. */
+void platform_content_packs_init(void);
+void platform_content_packs_shutdown(void);
+/* Flip the texture override layer for a live before/after comparison. Deliberately
+ * does NOT write Content.PacksEnabled back: a momentary A/B is not a settings
+ * change, and persisting each keystroke would rewrite the config file mid-race.
+ * No-op, and silent, when no pack is installed. */
+void platform_content_packs_toggle(void);
+
+/* The scan's result, for a read-only list in the settings panel. Never NULL.
+ *
+ * Scans on first use if platform_content_packs_init() has not run yet, which is
+ * the launcher: the engine calls init before any frame exists, but a player can
+ * open Settings -> Content before ever pressing Play, and a list that is empty
+ * only because the engine has not started would be the exact silent-loss
+ * failure the skip table exists to prevent.
+ *
+ * Include mod_registry.h to read the returned value; it is forward-declared
+ * here so platform_os.h does not grow a dependency for one accessor. */
+const struct MdkrModRegistry *platform_content_packs_registry(void);
+
+/* True when `name` appears in a Content.PackDisabled list: comma-separated,
+ * entries trimmed of surrounding blanks, ASCII case-insensitive. Public so the
+ * settings list names the reason a pack was skipped using the same rule the
+ * scan applied, rather than a second matcher that can disagree with it. */
+int platform_content_pack_name_disabled(const char *list, const char *name);
 
 /* ===== Input (platform_sdl_min.c) ======================================= *
  * Host events are captured on presentation opportunities, but DKR-visible pad

@@ -10,6 +10,7 @@
 #include "camera_obstruction_runtime.h"
 #include "camera_obstruction.h"
 #include "camera_obstruction_query.h"
+#include "enh_draw_distance.h"
 #include "fast3d/gfx_presentation_packet.h"
 #include "gfx_shadow_frame.h"
 #include "mdkr_bounds.h"
@@ -1234,6 +1235,11 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
 #ifdef NATIVE_PORT
     s32 savedCutsceneCamera;
     camera_obstruction_presentation_begin();
+    /* Latch Enhancements.DrawDistance and Enhancements.LodBias for this whole
+     * drawn frame. Reading them once here, rather than per object, is what
+     * stops a setting changed mid-frame from culling half the scene at one
+     * radius and half at another. */
+    mdkr_enh_draw_distance_begin_frame();
 #endif
 
     gTrackDL = *dList;
@@ -3251,9 +3257,13 @@ static void scene_render_opacity_end(const Object *obj) {
     }
 }
 
-static s32 scene_camera_obstruction_opacity(const Object *obj) {
+/* The camera's emergency fade on the racer it is pushing through, applied to
+ * whichever opacity the caller has. Split out from the reader below so the
+ * widened-draw-distance path can re-apply it to an opacity it recomputed:
+ * that enhancement widens the DISTANCE fade and must not un-fade a racer the
+ * camera is inside. */
+static s32 scene_camera_obstruction_clamp(const Object *obj, s32 opacity) {
     const s32 viewport = get_current_viewport();
-    s32 opacity = obj->opacity;
 
     if (obj->behaviorId == BHV_RACER &&
         obj == get_racer_object_by_port(viewport)) {
@@ -3264,6 +3274,10 @@ static s32 scene_camera_obstruction_opacity(const Object *obj) {
         }
     }
     return opacity;
+}
+
+static s32 scene_camera_obstruction_opacity(const Object *obj) {
+    return scene_camera_obstruction_clamp(obj, obj->opacity);
 }
 
 static void scene_viewport_route_store(
@@ -3570,6 +3584,128 @@ void scene_authoritative_render_tick(s32 updateRate) {
     set_active_camera(savedCamera);
 }
 
+/* Defined with check_if_in_draw_range below, next to the predicate it wraps. */
+static s32 scene_object_wide_draw_range(Object *obj, s32 *outOpacity,
+                                        s32 *outAuthoredOpacity,
+                                        s32 *outAuthored);
+
+/* Enhancements.DrawDistance, applied where it belongs: to the DRAW.
+ *
+ * `routeAdmitted`, `*visible` and `*renderOpacity` arrive holding whatever the
+ * fixed tick's route table said. At the authored setting they are returned
+ * untouched without the predicate being evaluated at all, so a default frame is
+ * the frame this port drew before the enhancement existed.
+ *
+ * Above the authored setting, two read-only things happen:
+ *
+ *   - an object the tick ROUTED keeps its route, and therefore its pass, its
+ *     ordering and its per-viewport identity. Only its opacity is revisited,
+ *     and only if the widened fade band actually changes it -- which happens
+ *     exactly for the ring of objects that were fading out at the authored
+ *     radius, and is the pop-in the setting exists to remove. The camera
+ *     obstruction fade the route was carrying is re-applied on top.
+ *
+ *   - an object the tick did NOT route because the authored distance rejected
+ *     it has this pass's admission re-derived: the same three conditions
+ *     render_level_geometry_and_objects applies, against the same per-viewport
+ *     segment table. An object the authored distance ADMITS is never added
+ *     here, so nothing can be drawn twice and the route table is never
+ *     second-guessed -- only extended.
+ *
+ * Nothing in here writes to an Object, to obj->opacity or to the route cache,
+ * and it calls no *_tick. That is the whole claim: the set of objects that
+ * EXIST, and every value the simulation reads back, are identical at 100% and
+ * at 400%; only the set that is DRAWN moves.
+ */
+static s32 scene_wide_draw_route(Object *obj, MdkrViewportRoutePass pass,
+                                 const u8 *segmentVisible, s32 visibleFlags,
+                                 s32 routeAdmitted, s32 *visible,
+                                 s32 *renderOpacity) {
+    s32 extended = FALSE;
+    s32 wideOpacity;
+    s32 authoredOpacity;
+    s32 authored;
+    s32 objFlags;
+    s32 wideVisible;
+
+    /* Particles are exempt from the authored distance test entirely
+     * (check_if_in_draw_range_impl's OBJ_FLAGS_PARTICLE guard), so there is no
+     * threshold here for the setting to widen. */
+    if (obj == NULL || mdkr_enh_draw_distance_scale() == 1.0f ||
+        (obj->trans.flags & OBJ_FLAGS_PARTICLE)) {
+        goto tally;
+    }
+    if (!scene_object_wide_draw_range(obj, &wideOpacity, &authoredOpacity,
+                                      &authored)) {
+        /* Outside even the widened radius, or outside the frustum. A routed
+         * object cannot reach here: the widened radius contains the authored
+         * one and the frustum test is the same one the tick applied. */
+        goto tally;
+    }
+    if (routeAdmitted) {
+        if (wideOpacity != authoredOpacity) {
+            *renderOpacity = scene_camera_obstruction_clamp(obj, wideOpacity);
+        }
+        goto tally;
+    }
+    if (authored) {
+        goto tally;
+    }
+
+    objFlags = obj->trans.flags;
+    switch (pass) {
+        case MDKR_VIEWPORT_ROUTE_OPAQUE:
+            if (objFlags & OBJ_FLAGS_UNK_0080) {
+                wideVisible = 0;
+            } else {
+                wideVisible = wideOpacity;
+            }
+            if (objFlags & visibleFlags) {
+                wideVisible = 0;
+            }
+            if (wideVisible != 255 ||
+                !(segmentVisible[obj->segmentID + 1] || obj->unk34 > 1000.0)) {
+                goto tally;
+            }
+            break;
+        case MDKR_VIEWPORT_ROUTE_SPECIAL:
+            if ((objFlags & visibleFlags) || !(objFlags & OBJ_FLAGS_UNK_0100) ||
+                !segmentVisible[obj->segmentID + 1]) {
+                goto tally;
+            }
+            wideVisible = TRUE;
+            break;
+        default: /* MDKR_VIEWPORT_ROUTE_BLEND */
+            if (objFlags & OBJ_FLAGS_UNK_0080) {
+                wideVisible = 1;
+            } else {
+                wideVisible = wideOpacity;
+            }
+            if (objFlags & visibleFlags) {
+                wideVisible = 0;
+            }
+            if (obj->behaviorId == BHV_RACER && wideVisible >= 255) {
+                wideVisible = 0;
+            }
+            if (wideVisible >= 255 || !segmentVisible[obj->segmentID + 1]) {
+                goto tally;
+            }
+            break;
+    }
+    *visible = wideVisible;
+    *renderOpacity = scene_camera_obstruction_clamp(obj, wideOpacity);
+    routeAdmitted = TRUE;
+    extended = TRUE;
+
+tally:
+    /* Silent unless MDKR_DRAWDIST_TRACE=1, and tallied at the authored setting
+     * too, so a test has a baseline drawn-count to compare the widened one
+     * against. */
+    if (routeAdmitted) {
+        mdkr_enh_draw_distance_count(extended ? 0 : 1, extended ? 1 : 0);
+    }
+    return routeAdmitted;
+}
 #endif
 
 void render_level_geometry_and_objects(void) {
@@ -3677,6 +3813,9 @@ void render_level_geometry_and_objects(void) {
             visible = route.visible;
             renderOpacity = route.opacity;
         }
+        routeAdmitted = scene_wide_draw_route(
+            obj, MDKR_VIEWPORT_ROUTE_OPAQUE, objectsVisible, visibleFlags,
+            routeAdmitted, &visible, &renderOpacity);
 #else
         visible = 255;
         objFlags = obj->trans.flags;
@@ -3741,6 +3880,9 @@ void render_level_geometry_and_objects(void) {
             visible = route.visible;
             renderOpacity = route.opacity;
         }
+        routeAdmitted = scene_wide_draw_route(
+            obj, MDKR_VIEWPORT_ROUTE_SPECIAL, objectsVisible, visibleFlags,
+            routeAdmitted, &visible, &renderOpacity);
 #else
         objFlags = obj->trans.flags;
         if (objFlags & visibleFlags) {
@@ -3817,6 +3959,9 @@ void render_level_geometry_and_objects(void) {
             visible = route.visible;
             renderOpacity = route.opacity;
         }
+        routeAdmitted = scene_wide_draw_route(
+            obj, MDKR_VIEWPORT_ROUTE_BLEND, objectsVisible, visibleFlags,
+            routeAdmitted, &visible, &renderOpacity);
 #else
         visible = 255;
         objFlags = obj->trans.flags;
@@ -4555,7 +4700,11 @@ s32 block_visible(LevelModelSegmentBoundingBox *bb) {
  * At the edge of its view distance, it will set its alpha based on distance, giving it a fade in or out effect.
  * Objects in range return true, objects out of range return false.
  */
+#ifdef NATIVE_PORT
+static s32 check_if_in_draw_range_impl(Object *obj, s32 *outOpacity, f32 distanceScale) {
+#else
 static s32 check_if_in_draw_range_impl(Object *obj, s32 *outOpacity) {
+#endif
     f32 w;
     f32 y;
     f32 fadeDist;
@@ -4577,6 +4726,22 @@ static s32 check_if_in_draw_range_impl(Object *obj, s32 *outOpacity) {
             if (gScenePlayerViewports == 3) {
                 viewDistance *= 0.5;
             }
+#ifdef NATIVE_PORT
+            /* The player's Draw distance setting, and the ONLY thing it
+             * touches. The fixed tick passes 1.0f and takes neither the branch
+             * nor the multiply, so the authoritative arithmetic below is the
+             * authored arithmetic instruction for instruction. Only the draw
+             * passes anything else, and only through
+             * scene_object_wide_draw_range(), which writes nothing back.
+             *
+             * Scaling viewDistance here rather than the comparison keeps the
+             * fade band (viewDistance * 0.8) proportional, so the enhancement
+             * moves the whole fade outward instead of leaving a ring of
+             * half-faded scenery at the authored radius. */
+            if (distanceScale != 1.0f) {
+                viewDistance = (s32) ((f32) viewDistance * distanceScale);
+            }
+#endif
 
             dist = get_distance_to_active_camera(obj->trans.x_position, obj->trans.y_position, obj->trans.z_position);
 
@@ -4653,14 +4818,44 @@ static s32 check_if_in_draw_range_impl(Object *obj, s32 *outOpacity) {
     return TRUE;
 }
 
+/* The AUTHORITATIVE admission test: it writes obj->opacity, which the [SIMHASH]
+ * v3 stream hashes. It always asks at the authored distance -- the player's
+ * Draw distance setting must not reach anything that writes back here, or "how
+ * far you can see" becomes a simulation input. */
 s32 check_if_in_draw_range(Object *obj) {
     s32 opacity = obj->opacity;
+#ifdef NATIVE_PORT
+    s32 admitted = check_if_in_draw_range_impl(obj, &opacity, 1.0f);
+#else
     s32 admitted = check_if_in_draw_range_impl(obj, &opacity);
+#endif
     if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE)) {
         obj->opacity = opacity;
     }
     return admitted;
 }
+
+#ifdef NATIVE_PORT
+/* The same predicate at the player's widened distance, WITHOUT the write-back
+ * above. Read-only over every Object field; the opacity it computes is handed
+ * back by value for the draw to use and is never committed.
+ *
+ * Objects the AUTHORED distance already admits are reported through
+ * `*outAuthored` rather than rejected, because the two callers want opposite
+ * things from them: an object the tick routed needs its widened opacity (the
+ * fade band moved outward with the cull radius, so it must not still be fading
+ * at the old radius), while an object the tick did not route is a genuinely new
+ * draw and needs a route invented for it. */
+static s32 scene_object_wide_draw_range(Object *obj, s32 *outOpacity,
+                                        s32 *outAuthoredOpacity,
+                                        s32 *outAuthored) {
+    *outAuthoredOpacity = obj->opacity;
+    *outAuthored = check_if_in_draw_range_impl(obj, outAuthoredOpacity, 1.0f);
+    *outOpacity = obj->opacity;
+    return check_if_in_draw_range_impl(obj, outOpacity,
+                                       mdkr_enh_draw_distance_scale());
+}
+#endif
 
 UNUSED void func_8002AC00(s32 arg0, s32 arg1, s32 arg2) {
     s32 index;

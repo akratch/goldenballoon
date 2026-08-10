@@ -34,6 +34,7 @@ end — nothing is omitted.*
 
 | Claim | Evidence |
 |---|---|
+| Correctness is proven off this machine | `correctness` run `31248954626`, `main` at `080c4c4e6480eef86afe1f964766d27d2e618fda`, 2026-08-08: all six jobs green — policy and source contracts, Linux ROM-free ASan + UBSan, native Linux OpenGL-only, native Linux WebGPU, native macOS WebGPU warnings, linked wasm plus browser save custody. **Residual:** `main` does not yet *require* these jobs, so the run proves the tree passes rather than that a failing tree cannot land. Branch protection is a repository-settings change and is tracked in `ROADMAP.md`. |
 | The vendored decomp is current and untouched | Synced to the upstream's 100%-matching head; both carried exceptions retired; vendored text byte-identical (alias layer carries the readable names; `nm`-verified raw exports). |
 | Raw-symbol residue is named or registered | 84 evidence-based aliases for everything port code touches; the archaeology remainder (154 func_, 292 D_) is a tracked open-items wave with a never-blind-rename rule; deliberate keeps (GLOBAL_ASM markers, UNUSED idiom, symbol references) carry written rationales. |
 | No dead code known | GLES ifdefs kept-with-evidence (live sibling convergence), retired replay alias deleted with git archaeology, hash tiers named without moving a byte, orphan env vars deleted or documented, Metal backend removed. |
@@ -45,7 +46,14 @@ end — nothing is omitted.*
 
 These are the only known claims resting on code review or a single environment
 rather than a machine check here — each is recorded in its gate's docstring or
-the roadmap:
+the roadmap.
+
+**Each now has a numbered route** in
+[`PLATFORM_ACCEPTANCE.md`](PLATFORM_ACCEPTANCE.md), with exact expected
+observations and a result field, so that when the hardware appears the pass is a
+checklist rather than an improvisation. Every route is currently marked *not
+executed*, which is the honest state — and the file's own rule is that executed
+means executed, not that a build succeeded or a review looked fine.
 
 - Windows: the high-resolution timer path (MinGW cross-compiled, unmeasured),
   adaptive-vsync fallback, real-pad confirmation of the overlay input fix.

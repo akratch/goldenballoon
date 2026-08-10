@@ -8,6 +8,63 @@
 
 #include "audio_compat_internal.h"
 
+#include "mod_music.h"
+
+/*
+ * Content-pack music (platform/mod_music.h) attaches here, and nowhere else in
+ * the engine.
+ *
+ * The rule the whole feature rests on is that a replaced track MUTES this
+ * player and never skips it. Everything below therefore leaves the sequence
+ * running: alCSPPlay still posts AL_SEQP_PLAY_EVT, the CSP still reads its
+ * MIDI stream, still posts its events, still walks its tempo. The single state
+ * change is that seqp->vol becomes 0, which is the same field music_volume_set()
+ * writes and the only input __vsVol() needs to return 0 for every voice this
+ * player owns. Voices are still mapped, still allocated in the synth and still
+ * updated; they just carry no gain.
+ *
+ * Two game globals are read by declaration rather than by including
+ * game/src/audio.h, exactly as platform/audi_port_dkr.c reads the music
+ * accessors: this is platform code, and pulling the game's audio header in here
+ * would re-include the mixer chain audio_compat_internal.h is arranged to avoid.
+ *
+ *   gMusicPlayer     tells the music player apart from the jingle player. Only
+ *                    music is replaceable; a jingle is a one-shot stinger and
+ *                    there is one decoded track, not two.
+ *   gMusicNextSeqID  is the id music_sequence_init() is starting. It is read at
+ *                    alCSPPlay() time because gCurrentSequenceID is not assigned
+ *                    until several statements later in that same function --
+ *                    the id exists, it is just not in the field that will
+ *                    eventually publish it.
+ */
+extern ALCSPlayer *gMusicPlayer;
+extern u8          gMusicNextSeqID;
+
+/*
+ * seqp->vol at full scale: the music slider's 0..256 times AL_VOL_FULL, which
+ * is what audio.c's music_volume_set() multiplies out before it gets here. The
+ * replacement is scaled by the same number the sequence would have been, so a
+ * Music slider at 0 silences it identically and every authored fade carries.
+ */
+#define NATIVE_MOD_MUSIC_VOL_FULL (256 * AL_VOL_FULL)
+
+static int native_mod_music_is_music_player(const ALCSPlayer *seqp)
+{
+    return seqp != NULL && seqp == gMusicPlayer;
+}
+
+static void native_mod_music_publish_gain(s16 vol)
+{
+    s32 gain = ((s32)vol * 32768) / NATIVE_MOD_MUSIC_VOL_FULL;
+
+    if (gain < 0) {
+        gain = 0;
+    } else if (gain > 32768) {
+        gain = 32768;
+    }
+    mdkr_mod_music_set_gain_q15((int)gain);
+}
+
 static void native_seqp_remove_event_for_voice(ALSeqPlayer *seqp, ALVoice *voice,
                                                s16 event_type)
 {
@@ -506,6 +563,24 @@ void alCSPPlay(ALCSPlayer *seqp)
 
     event.type = AL_SEQP_PLAY_EVT;
     alEvtqPostEvent(&seqp->evtq, &event, 0);
+
+    /*
+     * The sequence has been posted to play and WILL play, whatever happens
+     * next. If a pack supplies music/<id>.wav, the only consequence is that
+     * this player's gain goes to zero from here until the track stops.
+     *
+     * Zeroing seqp->vol here rather than waiting for the music_volume_set()
+     * that follows in music_sequence_init() closes a window that is empty
+     * today and would be a bug the day the caller reorders: no voice can be
+     * mapped before the next audio service tick, but "no voice yet" is a
+     * property of the caller, and this player must be muted the instant the
+     * replacement is committed to.
+     */
+    if (native_mod_music_is_music_player(seqp) &&
+        mdkr_mod_music_begin((int)gMusicNextSeqID)) {
+        native_mod_music_publish_gain(seqp->vol);
+        seqp->vol = 0;
+    }
 }
 
 void alCSPSetSeq(ALCSPlayer *seqp, ALCSeq *seq)
@@ -527,6 +602,19 @@ void alCSPSetVol(ALCSPlayer *seqp, s16 vol)
 
     if (seqp == NULL) {
         return;
+    }
+
+    /*
+     * Every music-volume change in the game funnels through here: the user's
+     * slider, the per-sequence authored volume, the overlay-pause duck and the
+     * fade lanes. Redirecting it while a replacement plays is what makes the
+     * replacement obey all four without any of them knowing it exists -- and,
+     * because the redirected value still ends with seqp->vol at 0, it is also
+     * what keeps the sequence muted after any of them fires.
+     */
+    if (native_mod_music_is_music_player(seqp) && mdkr_mod_music_active()) {
+        native_mod_music_publish_gain(vol);
+        vol = 0;
     }
 
     seqp->vol = vol;
@@ -567,4 +655,11 @@ void alCSPStop(ALCSPlayer *seqp)
     seqp->nextDelta =
         seqp->frameTime > 0 ? seqp->frameTime : AL_USEC_PER_FRAME;
     seqp->nextEvent.type = AL_SEQP_API_EVT;
+
+    /* The sequence is over, so its replacement is too. The decoded samples are
+     * kept: music_sequence_start() stops before it starts, so every restart of
+     * the same track would otherwise decode it again. */
+    if (native_mod_music_is_music_player(seqp)) {
+        mdkr_mod_music_stop();
+    }
 }

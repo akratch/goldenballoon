@@ -111,3 +111,98 @@ sampled across one healthy cycle and must fail the bounded-period assertion.
 See
 `tests/README.md`'s "Character-select dancer motion" section for the measured
 numbers and threshold rationale.
+
+## FIXED: the settings panel's scripted gates depended on a hand-written list of section names — wave "gaterects"
+
+**Done.** `g_frameLimitRectValid`, `g_uiScaleRectValid`, the Retry-save flag and
+`g_paceRectValid[]` are all driven from `ImGui::IsItemVisible()` now, and all
+four are cleared at the top of `Settings_draw()` — the one place that runs
+before any section decides whether to submit its widgets, which is the case
+`IsItemVisible()` cannot cover on its own because nothing runs to lower a flag
+for a widget that is never submitted. A gate whose target is collapsed or
+scrolled off now fails as "was not rendered" instead of clicking clipped
+geometry. The section-collapse block stays, demoted in its own comment from a
+correctness dependency to a convenience.
+
+Two things fell out of doing it, both worth more than the original entry.
+
+**The off-screen diagnostic added alongside the collapse block was itself
+wrong, and was firing falsely.** `BeginCombo()` returning true means it has
+already begun the popup window, and ImGui's `Begin()` reassigns last-item data
+to that window's title bar — so on popup-open frames `GetItemRectMin/Max`
+described the *popup*, not the combo. The diagnostic duly announced
+`frame-limit combo is scrolled out of the panel (rect y=614..614)` about a combo
+sitting visibly at y=596..633. A zero-height rect at the popup's position. Fixed
+with a `!comboOpen` guard, and both diagnostics now read the flag they set
+rather than calling `IsItemVisible()` a second time, so the refusal and the
+explanation cannot disagree. Adding a diagnostic to make the next occurrence
+cheap to read is only worth it if the diagnostic is right; this one would have
+sent the next reader after a layout fault that did not exist.
+
+**At 2.00x the UI-scale slider genuinely does leave the 700pt panel** the drag
+arm uses, and the latch had been hiding it. Applying 2.00x re-lays the panel out
+at double size and pushes that row below the fold; a control run at 900x1200
+passes with the flag true throughout, so the flag tracks reality and the 700pt
+case is a true layout fact rather than a regression. The per-frame "slider must
+be readable" assertion in `main_app.cpp` was therefore vacuous, not satisfied,
+for the tail frames — it is now scoped to the frames the arm actually holds the
+button, the same `i <= 8` window the stability check already used. That is a
+harness assertion narrowed, not a gate weakened: the arm's verdict
+(`scaleRectCaptured && scaleDragQueued && scaleStableWhileHeld &&
+applications == 1 && actual == target && persisted`) still requires the slider
+to have been visible *during* the drag, so an arm that never found it still
+fails.
+
+`Settings_draw()` collapses the sections above the category loop for whichever
+scripted gate is armed, so a queued click lands on the widget rather than on
+whatever the panel had scrolled under it. That works, and it is the wrong layer.
+
+`scriptedGateArmed` is a hand-written disjunction of three env vars, and the two
+sections above the loop each carry their own flag. Add a fourth gate, or a third
+section, and the trap re-arms silently -- which is exactly how it fired the first
+time: the Accessibility section arrived `DefaultOpen`, pushed the Frame limit
+combo about 660pt below an 800pt panel, and the failure surfaced as
+`frame-limit requested=240 actual=original`, a persistence verdict for a layout
+fault. Diagnosing that cost hours.
+
+The root cause is one line, twice. `g_frameLimitRectValid` and
+`g_uiScaleRectValid` are sticky latches: set true the first time the widget is
+submitted and never cleared, so the harness happily reads a rect captured on
+some earlier frame and clicks geometry the panel is currently clipping. Setting
+them from `ImGui::IsItemVisible()` each frame instead makes an off-screen target
+fail as "not on screen", which is what it is, and demotes the section-collapse
+block from a correctness dependency to a convenience.
+
+Not done here because it changes the gate whose diagnosis this entry describes,
+and it wants its own mutation pass on a quiet machine rather than a confident
+edit at the end of a long session. The off-screen diagnostics added alongside
+the collapse block already name the fault when it recurs, so the next occurrence
+costs a line of output rather than an afternoon.
+
+## OPEN: check_a11y_shell's in-game overlay arm covers a different number of rows every run — wave "shellwalk"
+
+Three consecutive passing runs of `tests/check_a11y_shell.py` on 2026-08-10
+reported `in-game overlay: 15 focus utterances over 14 settings rows`, then
+`8 focus utterances over 8 settings rows`, then `6 focus utterances over 6
+settings rows`. The gate passed all three times.
+
+The launcher half of this gate is its strength: the expected control set is
+enumerated from the app's own schema dump, so a setting added and never voiced
+fails it with no test edit, and that is what found three real defects on its
+first run. **The in-game overlay half has no such enumeration.** It walks
+whatever the scripted overlay pass happens to reach, and asserts about what it
+found — so for that portion the effective assertion is "more than zero rows were
+voiced", not "every row was".
+
+That means the overlay arm cannot currently be relied on to catch a row that
+stops speaking: a regression affecting rows 7 through 14 would pass silently in
+any run that only reached 6. The variance is in the walk, not in the speech path
+— the counts move with how far the overlay scroll gets, and the worker never
+starts under `MDKR_AUDIO=0`.
+
+Closing it means the overlay arm enumerating its expected rows the way the
+launcher arm already does, and failing on the ones it did not reach rather than
+scoring only what it did. Until then, read a green overlay count as evidence
+about the rows named in that run and nothing more.
+
+Noticed while verifying the barge-in fix, not caused by it.

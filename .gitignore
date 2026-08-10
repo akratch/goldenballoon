@@ -93,3 +93,24 @@ build-*.log
 # (platform/video_config_runtime.c). A test or a launch from the repo root drops
 # one here; it is per-machine state, never source.
 mdkr64.ini
+
+# Player-installed content packs (platform/mod_registry.c). This directory holds
+# whatever a player or pack author put in it, which is exactly the class of thing
+# this repository must never carry: a pack can legitimately contain textures and
+# audio derived from the game. It is user data on a user's machine and never
+# source. check_clean_room.sh section 8 fails closed if anything under it is
+# tracked, so the ignore and the guard back each other up.
+mods/
+
+# Digest-named PNG corpus written by tools/mod_texture_dump.py. Every file in it
+# is decoded ROM texture data.
+mod-texture-dump/
+
+# Dumped texture pictures: `<32-hex digest>.png` plus a `.txt` sidecar, written
+# by tools/mod_texture_dump.py and by MDKR_MOD_TEXTURE_DUMP in the engine. These
+# are decoded ROM pixels. The digest filename shape IS the marker, so ignore the
+# shape wherever it lands rather than only the directory the tool suggests -- the
+# env var takes any path, including the repo root, and section 8 of
+# tools/check_clean_room.sh checks the same shape for anything already committed.
+[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].png
+[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].txt

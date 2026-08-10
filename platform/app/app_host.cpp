@@ -1,10 +1,12 @@
 // app_host.cpp — see app_host.h.
 #include "app_host.h"
+#include "a11y_speech.h"
 #include "fs_utf8.h"
 #include "app_activation.h"
 #include "app_theme.h"
 #include "app_ui_policy.h"
 #include "app_window.h"
+#include "crash_screen.h"
 #include "engine_entry.h"
 
 #include "imgui.h"
@@ -117,14 +119,23 @@ bool AppHost::init(const char *title, int width, int height) {
 #endif
     }
 
+    bool ready;
 #ifdef MDKR_WEBGPU_BACKEND
     // WebGPU is the qualified native default; MDKR_RENDERER=gl selects the GL
     // diagnostic path end to end. Either way both halves stay on one device.
     if (useWebGpu_) {
-        return initWebGpu(title, width, height);
-    }
+        ready = initWebGpu(title, width, height);
+    } else
 #endif
-    return initGL(title, width, height);
+    {
+        ready = initGL(title, width, height);
+    }
+    /* The crash screen can only show a player anything if a window exists, and
+     * this is the only place in the process that knows one does. Registering
+     * on success (and clearing in shutdown()) is what makes "headless does not
+     * present" structural rather than a flag: automation never gets here. */
+    if (ready) CrashScreen_setWindow(window_);
+    return ready;
 }
 
 bool AppHost::initGL(const char *title, int width, int height) {
@@ -1226,6 +1237,13 @@ bool AppHost::pumpAndShouldQuit() {
      * transition. Apply it before ImGui/WebGPU begins another frame. */
     AppWindow_servicePending();
 
+    /* Hand the previous frame's announcements to the speech worker. Here, at
+     * the top of the launcher's frame, because this is the thread that pushed
+     * them: a11y_model.c is single-owner and the pop has to happen on the same
+     * side as the push (see platform/a11y_speech.h). Costs a config read and a
+     * return unless the player has switched speech on. */
+    mdkr_a11y_speech_service_pump();
+
     // SDL_DROPFILE is a platform-reserved event. In particular, sdl2-compat
     // cannot round-trip an application-built SDL2 DropEvent through SDL3: the
     // SDL2 `file` pointer and SDL3 `data` pointer occupy different layouts.
@@ -1421,6 +1439,9 @@ std::string AppHost::takeDroppedFile() {
 void AppHost::shutdown() {
     if (!active_) return;
     active_ = false;
+    /* Before anything is released: a fault during teardown must print its
+     * report rather than try to present into a window that is going away. */
+    CrashScreen_setWindow(nullptr);
     /* Both the launcher and an adopted engine submit through these host roots.
      * The engine has returned before normal shutdown; wait for the remaining UI
      * work before releasing any resource it may reference. */

@@ -18,11 +18,13 @@
 //     no rebinding widget and nothing here writes those keys back: editing the
 //     file is currently the only way to change them.
 #include "ui_overlay.h"
+#include "a11y_speech.h"    // the drain worker's per-frame pump
 #include "app_brand.h"
 #include "app_config.h"
 #include "app_theme.h"
 #include "app_ui_policy.h"
 #include "app_window.h"
+#include "dev_tools.h"      // DevTools_draw: the in-game diagnostic surface
 #include "engine_entry.h"   // AppOverlayHooks, platformSetOverlayHooks
 #include "ui_common.h"
 #include "ui_settings.h"
@@ -81,6 +83,11 @@ struct OverlayState {
     bool testEscapeCloseQueued = false;
     bool testFpsOnly = false;
     bool testFpsRenderReported = false;
+    // Scripted accessibility walk. Simulation is stopped while the overlay is
+    // open, so this counts RENDER callbacks: a schedule hung off the
+    // authoritative tick would never advance past the frame that paused it.
+    bool testA11yWalk = false;
+    long testA11yRenderFrame = 0;
 
     uint64_t fpsLastSurfaceFrame = 0;
     uint64_t fpsLastCounter = 0;
@@ -258,7 +265,24 @@ static int onProcessEvent(const void *ev) {
 // The input-swallowing contract: while the overlay is up, the engine's pump
 // drops input events instead of feeding them to the pad.
 static int onWantsInput(void) { return g_overlay.open ? 1 : 0; }
-static int onWantsRender(void) { return (g_overlay.open || g_overlay.showFps) ? 1 : 0; }
+// Tools.Enabled joins the render predicate but NOT the input one. The overlay
+// swallows the pad because it is a menu the player is operating; a diagnostic
+// window is an observer, and a surface that took input away from the game would
+// be changing the race by being visible -- exactly what the purity gate exists
+// to forbid.
+static int onWantsRender(void) {
+    return (g_overlay.open || g_overlay.showFps || DevTools_wantsFrame()) ? 1 : 0;
+}
+
+// The engine's per-frame service call, which during a race is the ONLY place
+// the shell still runs on the main thread. The launcher pumps the speech worker
+// from AppHost::pumpAndShouldQuit(); once the engine has the window that loop is
+// gone, and without this line the overlay would announce rows that were never
+// spoken. Same thread, same single-owner rule: see platform/a11y_speech.h.
+static void onService(void) {
+    AppWindow_servicePending();
+    mdkr_a11y_speech_service_pump();
+}
 
 }  // extern "C"
 
@@ -283,11 +307,50 @@ void overlayTestFrameTick() {
             ? std::strtol(escapeOpen, nullptr, 10) : -1;
         g_overlay.testEscapeCloseFrame = escapeClose
             ? std::strtol(escapeClose, nullptr, 10) : -1;
+        g_overlay.testA11yWalk =
+            std::getenv("MDKR_TEST_OVERLAY_A11Y_WALK") != nullptr;
     }
     if (g_overlay.testOpenFrame < 0 &&
         g_overlay.testEscapeOpenFrame < 0) return;
 
     g_overlay.testFrame = g_simTickCounter;
+
+    /*
+     * The overlay half of the accessibility walk. It opens the Settings
+     * sub-panel and then holds down Tab, one press per rendered overlay frame,
+     * so the rows the overlay draws -- the very same drawKey() rows the
+     * launcher draws -- are proven to speak over a running race and not only
+     * in the launcher. Tab is counted in RENDERED frames rather than
+     * authoritative ticks because the overlay stops the simulation clock the
+     * moment it opens.
+     *
+     * It lets go of Settings once the scripted close is due: Escape walks the
+     * back-stack one level at a time, so a run that kept re-opening Settings
+     * would spend its single scripted Escape leaving the sub-panel and never
+     * close the overlay at all.
+     */
+    const bool closeDue = g_overlay.testEscapeCloseFrame >= 0 &&
+                          g_overlay.testFrame >= g_overlay.testEscapeCloseFrame;
+    if (g_overlay.testA11yWalk && g_overlay.open) {
+        g_overlay.showSettings = !closeDue;
+        if (!closeDue) {
+            SDL_Event tab{};
+            const bool press = (g_overlay.testA11yRenderFrame % 2) == 0;
+            tab.type = press ? SDL_KEYDOWN : SDL_KEYUP;
+            tab.key.state = press ? SDL_PRESSED : SDL_RELEASED;
+            tab.key.keysym.sym = SDLK_TAB;
+            tab.key.keysym.scancode = SDL_SCANCODE_TAB;
+            tab.key.keysym.mod = KMOD_NONE;
+            // The window id is load-bearing, unlike in the Escape hooks above:
+            // those are read by this file's own handler, while Tab has to be
+            // accepted by the ImGui SDL2 backend, which drops any key event
+            // whose window it does not recognise.
+            tab.key.timestamp = SDL_GetTicks();
+            tab.key.windowID = SDL_GetWindowID(g_overlay.window);
+            (void)SDL_PushEvent(&tab);
+            ++g_overlay.testA11yRenderFrame;
+        }
+    }
     if (!g_overlay.testEscapeOpenQueued &&
         g_overlay.testEscapeOpenFrame >= 0 &&
         !g_overlay.open &&
@@ -583,7 +646,14 @@ void drawOverlayMenu(float uiScale) {
 
     if (g_overlay.showSettings) {
         ui::Gap(ui::kGapS);
-        ImGui::BeginChild("##ovsettings", ImVec2(0, 340 * uiScale), true);
+        // NavFlattened only under the scripted walk, for the reason given on
+        // AppUi_a11yWalkArmed(): Tab does not leave a child window's focus
+        // scope, so without it the walk can never step off the overlay's
+        // buttons and onto the settings rows it is there to check.
+        ImGui::BeginChild(
+            "##ovsettings", ImVec2(0, 340 * uiScale),
+            ImGuiChildFlags_Borders |
+                (AppUi_a11yWalkArmed() ? ImGuiChildFlags_NavFlattened : 0));
         // Compact: the per-key help paragraphs belong in the launcher, not
         // over a running race. Each edit is already atomic in the config
         // layer, so there is no Apply/Cancel to stage here.
@@ -638,8 +708,11 @@ static int onRender(void) {
     overlayTestFrameTick();
 
     // Nothing to draw: skip the whole ImGui frame rather than building and
-    // discarding one every frame of every race.
-    if (!g_overlay.open && !g_overlay.showFps) {
+    // discarding one every frame of every race. Tools.Enabled joins this
+    // condition rather than "is a tool open", because the hotkey that opens a
+    // tool is dispatched from inside DevTools_draw() -- a frame built only once
+    // something is open could never see the key that opens it.
+    if (!g_overlay.open && !g_overlay.showFps && !DevTools_wantsFrame()) {
         // ImGui::NewFrame() is the only consumer of the event queue that
         // onProcessEvent keeps filling, and the only thing that releases a key
         // ImGui still believes is held. Neither runs while the overlay is
@@ -665,6 +738,10 @@ static int onRender(void) {
     beginImGuiFrame();
     if (g_overlay.showFps) drawFpsReadout();
     if (g_overlay.open) drawOverlay();
+    // After the overlay, so a diagnostic window never draws over the menu the
+    // player is operating. Self-gating on Tools.Enabled: this call is a no-op
+    // and costs one comparison in every normal session.
+    DevTools_draw();
     return endImGuiFrame() ? 1 : 0;
 }
 
@@ -692,7 +769,7 @@ void Overlay_install(SDL_Window *window) {
     }
     static AppOverlayHooks hooks;
     hooks.process_event = onProcessEvent;
-    hooks.service       = AppWindow_servicePending;
+    hooks.service       = onService;
     hooks.wants_input   = onWantsInput;
     hooks.wants_render  = onWantsRender;
     hooks.render        = onRender;

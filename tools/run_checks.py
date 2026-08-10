@@ -119,6 +119,57 @@ CHECKS = (
     Check("simulation_cadence", "check_simulation_cadence.py", "native",
           "NTSC/PAL source clocks, original/enhanced pacing mechanism, and "
           "explicit oracle policy"),
+    Check("enhancement_authority", "check_enhancement_authority.py", "rom",
+          "every enhancement's declared authority class matches its measured "
+          "effect on the authoritative state stream, in both directions"),
+    Check("subentry_bounds", "check_subentry_bounds.py", "rom",
+          "an out-of-range asset sub-entry index aborts loudly with the "
+          "section, index and count, instead of resolving to the section base"),
+    Check("dev_tools_purity", "check_dev_tools_purity.py", "rom",
+          "every registered developer tool leaves the authoritative state "
+          "stream byte-identical when opened"),
+    Check("enh_speedometer", "check_enh_speedometer.py", "rom",
+          "the speed readout draws, tracks a standing start, changes nothing "
+          "outside its own box, and moves no authoritative state"),
+    Check("enh_draw_distance", "check_enh_draw_distance.py", "rom",
+          "draw distance and LOD bias extend what is drawn without changing "
+          "which objects exist, proving both are render culls"),
+    Check("a11y_race", "check_a11y_race.py", "rom",
+          "race announcements fire, coalesce, toggle per category, and leave "
+          "the authoritative state stream byte-identical"),
+    Check("input_hotplug", "check_input_hotplug.py", "rom",
+          "a pad joining or leaving mid-run reaches the right channel, leaves "
+          "exact neutral on removal, and never binds one device to two ports"),
+    Check("rom_checker_page", "check_rom_checker_page.py", "rom",
+          "the hosted ROM checker uploads nothing and reaches the same verdict "
+          "as the native binary, character for character, on every ROM present"),
+    Check("rom_text_indices", "check_rom_text_indices.py", "rom",
+          "no driven route resolves a GAME_TEXT index at or above 259, the "
+          "count the 1.0 revisions carry"),
+    Check("a11y_shell", "check_a11y_shell.py", "rom",
+          "every focusable control in the launcher, settings and overlay speaks "
+          "its name and value, enumerated from the schema rather than a list"),
+    Check("future_fun_land", "check_future_fun_land.py", "rom",
+          "a full trophy set plus the Wizpig 1 bit opens the lighthouse, and "
+          "one trophy short does not"),
+    Check("mod_music_override", "check_mod_music_override.py", "rom",
+          "a pack's music replaces the sequenced original, obeys the music "
+          "volume, works from a zip, and moves no authoritative state"),
+    Check("mod_texture_override", "check_mod_texture_override.py", "rom",
+          "a pack's textures replace the ROM's, and the Custom content setting "
+          "switches them off and back on mid-run through the settings route, "
+          "off being byte-identical to having no pack installed"),
+    Check("enh_ai_difficulty", "check_enh_ai_difficulty.py", "rom",
+          "opponent skill leaves the authored arm bit-identical to a build "
+          "without the enhancement compiled in, and the harder arms measurably "
+          "beat it without wedging an opponent"),
+    Check("tool_freecam", "check_tool_freecam.py", "rom",
+          "detaching and re-attaching the free camera leaves the authoritative "
+          "state stream and the re-attached frame byte-identical"),
+    Check("crash_screen", "check_crash_screen.py", "rom",
+          "a fatal run still prints its [CRASH]/[FATAL] marker first, exits "
+          "with the same disposition, and adds a report naming the fault, "
+          "tick, track, renderer and log path"),
     Check("sprite_layout", "check_sprite_layout.py", "native",
           "independent ROM sprite census and display-list allocation controls"),
     Check("rdp_interpolation", "check_rdp_interpolation.py", "native",

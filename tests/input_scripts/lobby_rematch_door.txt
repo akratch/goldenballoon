@@ -1,0 +1,52 @@
+# DKR regression fixture -- the DRIVEN boss-rematch door (S9 M2).
+#
+#   resume an Adventure save -> Timber's Island -> Dino Domain lobby
+#                            -> through the lobby's boss door into the RE-match
+#
+# Driven by tests/check_campaign_progression.py's seam B "driven" arm. The
+# steering is MDKR_DRIVE_ROUTE's; this file contains only the two things a
+# controller script has to do, which are exactly the two the drive hook cannot:
+# navigate the frontend, and dismiss the hub's opening textbox.
+#
+# --- Frontend: resume, do not create -----------------------------------------
+# Lines up to 2050 are tests/input_scripts/adventure_resume_race.txt verbatim:
+#   TITLE -> CHARACTER_SELECT -> CAUTION -> GAME_SELECT(Adventure One)
+#   -> FILE_SELECT(resume the already-started first slot)
+# The hub (level 0) then loads at frame ~2069.
+#
+# --- The four taps after 2050 are load-bearing -------------------------------
+# Measured: with the frontend taps alone, the kart never leaves the hub spawn.
+# It sits at (25, 255, 16) with the drive hook reporting `blk=1` --
+# textbox_visible() -- and the hook's own stall/reverse firing every 66 frames
+# for the remaining 11,900 frames. The opening textbox is advanced by
+# input_pressed() read straight off the pad, and update_player_racer zeroes the
+# gCurrent* globals the drive hook writes whenever gRacerInputBlocked is set, so
+# the hook cannot clear it: only a real, edge-detected A can. Four taps, not a
+# hold -- a held A produces no further edges.
+#
+# --- Deliberately NO taps after 2200 -----------------------------------------
+# The rematch is a BOSS race, so there is no MENU_TRACK_SELECT_ADVENTURE to
+# confirm (boss exits transition straight in) and no post-race options menu on a
+# win. And the post-win cutscene stack cannot be popped by A at all: measured,
+# func_8006C300() -- the predicate thread3_main.c:905 ANDs with the A press --
+# is zero on every frame of a post-race cutscene, because game_load_level()
+# zeroes D_800DD330 on every load and only ever sets it for a REPEAT Wizpig boss
+# entry. Taps here would buy nothing and could only pick a menu row by accident.
+
+1250 START 4
+1330 START 4
+1450 A 4
+1540 A 4
+1750 A 4
+
+# GAME_SELECT: Adventure One is option 0.
+1900 A 4
+
+# FILE_SELECT: resume the already-started first slot.
+2050 A 4
+
+# Hub opening textbox.
+2100 A 4
+2130 A 4
+2160 A 4
+2200 A 4

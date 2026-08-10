@@ -43,6 +43,7 @@
 #include "platform_os.h"
 #include "display_config.h"
 #include "video_config.h"
+#include "enhancement_registry.h"
 #include "present_sched.h"
 #include "gameplay_event_trace.h"
 #include "input_consumption_trace.h"
@@ -64,6 +65,19 @@
 #ifndef __EMSCRIPTEN__
 int g_diagLogRealErrFd = -1;
 int g_diagLogFileFd    = -1;
+
+/*
+ * Crash-screen presentation hook (platform/app/crash_screen.cpp), published the
+ * same way and for the same reason as the two descriptors above: the C engine
+ * must not know about the C++ shell, so the shell registers itself here.
+ *
+ * Called by mdkr_crash_handler below AFTER the `[CRASH]` marker and the
+ * backtrace have been written and flushed, and before the disposition is
+ * restored. That ordering is the contract: every harness in tests/ greps for
+ * that marker, so the player-facing screen is strictly additive output that
+ * follows it. NULL on every CLI invocation, where nothing registers.
+ */
+void (*g_mdkrCrashScreenHook)(int signo) = NULL;
 #endif
 
 #ifndef __EMSCRIPTEN__
@@ -109,6 +123,13 @@ static void mdkr_crash_handler(int sig) {
     fprintf(stderr, "\n[CRASH] signal %d - backtrace (%d frames):\n", sig, n);
     backtrace_symbols_fd(bt, n, 2);
 #endif
+    /* The marker is out. Only now may anything else speak: the crash screen is
+     * additive, and a screen that printed first would reorder the one line the
+     * whole test suite keys on. */
+    fflush(stderr);
+    if (g_mdkrCrashScreenHook != NULL) {
+        g_mdkrCrashScreenHook(sig);
+    }
     signal(sig, SIG_DFL);
     raise(sig);
 }
@@ -408,6 +429,33 @@ int main(int argc, char **argv) {
     dkr_audio_out_init();
     audioInitialized = true;
 
+    /*
+     * Content packs: scan mods/ and bind the texture override layer.
+     *
+     * Here, and not earlier, for two reasons. The resolved video config is
+     * already published (Content.PacksEnabled and Content.PackDisabled are read
+     * during the scan), and mdkr_user_paths_init() has already run in the app
+     * shell, so the packaged writable root is known. Here, and not later,
+     * because Phase 4 is where the first texture is bound and the store has to
+     * be answering by then.
+     *
+     * No pack installed is the ordinary case: this resolves a path, finds no
+     * directory, prints nothing, and leaves the store inactive.
+     */
+    platform_content_packs_init();
+
+    /* The enhancement table, on request, for check_enhancement_authority.py.
+     * Emitted from the running binary rather than kept as a copy in the test:
+     * a test carrying its own list of enhancements keeps passing after someone
+     * adds a row and forgets the gate, which is precisely the drift the
+     * authority class exists to make impossible. */
+    {
+        const char *dump = getenv("MDKR_ENH_DUMP_TABLE");
+        if (dump != NULL && dump[0] == '1') {
+            mdkr_enhancement_dump_table();
+        }
+    }
+
     /* Phase 3: renderer front-end (F3DDKR HLE) on the selected backend
      * (MDKR_RENDERER; default WebGPU, GL selectable). gfx_init creates the
      * backend's GPU resources, so it needs the backend window/context from Phase 2
@@ -519,6 +567,10 @@ shutdown:
      * rather than as noise. */
     mdkr_camera_dynamic_occlusion_shutdown();
     gfx_shutdown();
+    /* After the renderer, because the renderer is the only thing that ever asks
+     * the store for pixels. Safe on the early-failure paths above, where the
+     * scan never ran. */
+    platform_content_packs_shutdown();
     mdkr_memory_shutdown();
     dkr_arena_shutdown();
     platform_rom_shutdown();

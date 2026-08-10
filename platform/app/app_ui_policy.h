@@ -86,14 +86,23 @@ enum class AppUiSmokeInputMode { Disabled, Keyboard, Gamepad, Invalid };
 // contract. Partial or stale environment combinations are invalid, so an
 // inherited variable can never attach a virtual controller to normal gameplay.
 //
-// `selection` is the scripted Frame limit value and `pace` the scripted
-// Presentation pace choice. EXACTLY ONE must be present: they are two pointer
-// scripts for two controls, and a run claiming both would be driving neither
-// deterministically.
+// `selection` is the scripted Frame limit value, `pace` the scripted
+// Presentation pace choice, and `walk` the accessibility keyboard walk.
+// EXACTLY ONE must be present: they are three scripts for three different
+// jobs, and a run claiming two would be driving neither deterministically.
 AppUiSmokeInputMode AppUi_validateSmokeInput(
     const char *frames, const char *selection, const char *input,
-    const char *token, const char *pace);
+    const char *token, const char *pace, const char *walk = nullptr);
 AppUiSmokeInputMode AppUi_smokeInputMode();
+
+// True while the scripted accessibility walk is armed. The walk needs two
+// things ordinary use does not -- every settings section already expanded, and
+// nav able to cross from the launcher shell into its scrolling panel child --
+// because a collapsed section draws no rows and Tab does not leave a window's
+// focus scope. Both are test scaffolding for reaching the controls, not a
+// change to what any control says: the announcements themselves are the
+// ordinary production ones.
+bool AppUi_a11yWalkArmed();
 
 // Reserved config keys remain parseable for forward compatibility, but the
 // launcher must not advertise settings that the running product cannot apply.
@@ -103,5 +112,49 @@ AppUiSmokeInputMode AppUi_smokeInputMode();
 // did. Defaulted so tests can assert the ordinary, not-stretched product.
 bool AppUi_videoSettingVisible(MdkrVideoKey key, bool webGpuRenderer,
                                bool legacyStretchActive = false);
+
+// Which settings section draws a key.
+//
+// Nearly every key is drawn under the header its schema category names, and
+// Category says exactly that. Three families cut across those categories and
+// are drawn in their own section instead: the enhancements are spread over
+// Interface, Advanced Graphics and Frame Rate & Motion, the content-pack keys
+// sit in Advanced Graphics beside render scale and filtering, and the
+// accessibility options are split between Interface (the speech settings) and
+// the camera group (reduced motion). A player looking for "the extras I
+// switched on", "the packs I installed" or "the options that make this playable
+// for me" looks for one list, not for rows scattered through three headers.
+//
+// Accessibility is the case where scattering costs the most. Someone who needs
+// reduced motion, larger text and a voice needs all three before they can use
+// the product at all, and asking them to find each one under a different header
+// asks them to explore the very interface they cannot yet use.
+//
+// This is a ROUTING decision and never a visibility one:
+// AppUi_videoSettingVisible stays true for every key below, because none of
+// them is hidden — they are drawn somewhere else.
+enum class AppUiSettingsSection {
+    Category, Enhancements, Content, Accessibility
+};
+
+AppUiSettingsSection AppUi_settingsSection(MdkrVideoKey key);
+
+// The same routing question for the shell preferences that have no schema key
+// and so cannot answer it through AppUi_settingsSection.
+//
+// UI scale is the only one: it is stored in the launcher's own preferences
+// rather than the video config, so nothing in MdkrVideoKey can say where it is
+// drawn. Routing it here rather than hand-placing the widget is what makes "it
+// is drawn in exactly one section" a property a test can read, instead of one
+// that holds until somebody copies the slider into a second header.
+enum class AppUiShellPreference { UiScale };
+
+AppUiSettingsSection AppUi_shellPreferenceSection(AppUiShellPreference key);
+
+// True for exactly the keys "Reset enhancements" restores to their schema
+// defaults. The scoping is the whole point of the action: a player resetting
+// the extras must keep the presentation, audio and controller preferences they
+// set for comfort, and the content packs they deliberately installed.
+bool AppUi_enhancementResetIncludes(MdkrVideoKey key);
 
 #endif  // MDKR64_APP_UI_POLICY_H

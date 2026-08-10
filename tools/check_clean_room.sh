@@ -108,7 +108,8 @@ echo "== 6. .gitignore covers ROMs, ROM ARCHIVES, saves and captures =="
 # match it and check_no_rom.sh scans for an N64 header, which a compressed member
 # does not present. Five DKR revisions once sat in the project root as .zip,
 # untracked but NOT ignored -- one `git add -A` from being committed.
-for pat in '*.z64' '*.n64' '*.v64' '*.zip' '*.7z' '*.rar' 'save/' '*.ppm'; do
+for pat in '*.z64' '*.n64' '*.v64' '*.zip' '*.7z' '*.rar' 'save/' '*.ppm' \
+           'mods/' 'mod-texture-dump/'; do
     if grep -qxF "$pat" .gitignore; then
         note ok ".gitignore has $pat"
     else
@@ -131,6 +132,55 @@ if [[ -n "$big_untracked" ]]; then
     fail=1
 else
     note ok "no un-ignored file over 4 MiB (a stray ROM/archive could not slip in)"
+fi
+
+echo "== 8. no content-pack payload tracked or in history =="
+# Content packs (platform/mod_registry.c) are user data. A pack legitimately
+# contains textures and audio derived from the player's own ROM, so a tracked
+# pack is ROM-derived data by another name -- and it would arrive under an
+# innocuous extension (.png, .wav, .ini), which sections 1-4 do not look for and
+# section 7's 4 MiB threshold would not notice. The ignore rule in .gitignore and
+# this check back each other up: the ignore stops the accident, this catches a
+# force-add and anything already in history.
+if git ls-files -- 'mods/*' 'mods' 'mod-texture-dump/*' | grep . ; then
+    note FAIL "content-pack files are tracked (above) -- packs are user data, never source"; fail=1
+elif git log --all --diff-filter=A --name-only --pretty=format: -- 'mods/*' 'mod-texture-dump/*' 2>/dev/null | grep . ; then
+    note FAIL "a content-pack path was added somewhere in history (above)"; fail=1
+else
+    note ok "no content-pack payload tracked, and none ever added in history"
+fi
+
+# 8b. The same payload, found by SHAPE rather than by directory.
+#
+# The path-scoped check above guards where the tool suggests writing. It does not
+# guard where the engine can be told to write: MDKR_MOD_TEXTURE_DUMP takes any
+# path, unvalidated, including the repository root, and each file it produces is
+# decoded ROM pixels under an innocuous extension. Sections 1-4 do not look for
+# .png, and section 7's 4 MiB threshold never fires on a few-KiB texture -- so a
+# dump into the source tree was invisible to every arm of this script, one
+# `git add -A` away from being committed.
+#
+# `<32 hex chars>.png` and its `.txt` sidecar are the exact names
+# mdkr_mod_texture_dump_observe() writes (platform/mod_texture_store.c). Nothing
+# authored is named that way; the shape itself is the evidence, wherever it sits.
+dump_shape='(^|/)[0-9a-f]{32}\.(png|txt)$'
+# Collect into variables rather than testing `git ls-files | grep -q` directly.
+# This script runs under `set -o pipefail`, and `grep -q` exits the moment it
+# matches, which SIGPIPEs the producer; the pipeline then reports 141 and the
+# `if` takes the ELSE branch. The guard would print "ok" precisely when it found
+# something -- it did exactly that when first written, and only a mutation test
+# caught it. The sections above avoid this by using `grep .`, which drains input.
+dump_tracked="$(git ls-files | grep -E "$dump_shape" || true)"
+dump_history="$(git log --all --diff-filter=A --name-only --pretty=format: \
+    2>/dev/null | grep -E "$dump_shape" | sort -u || true)"
+if [[ -n "$dump_tracked" ]]; then
+    printf '%s\n' "$dump_tracked" | head -20
+    note FAIL "dumped ROM texture files are tracked (above) -- decoded ROM pixels, never source"; fail=1
+elif [[ -n "$dump_history" ]]; then
+    printf '%s\n' "$dump_history" | head -20
+    note FAIL "a dumped ROM texture path was added somewhere in history (above)"; fail=1
+else
+    note ok "no dumped ROM texture payload tracked, and none ever added in history"
 fi
 
 echo

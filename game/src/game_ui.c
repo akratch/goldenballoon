@@ -16,6 +16,7 @@
 #include "objects.h"
 #ifdef NATIVE_PORT
 #include "asset_swap.h"
+#include "enh_speedometer.h"
 #include "mdkr_trace.h"
 #include "taj_mod.h"
 #include "taj_physics.h"
@@ -2698,6 +2699,14 @@ void hud_speedometre(Object *obj, UNUSED s32 updateRate) {
                     hud_element_render(&gHudDL, &gHudMtx, &gHudVtx, &gCurrentHud->entry[HUD_SPEEDOMETRE_120]);
                     hud_element_render(&gHudDL, &gHudMtx, &gHudVtx, &gCurrentHud->entry[HUD_SPEEDOMETRE_150]);
                 }
+#ifdef NATIVE_PORT
+                /* The optional speed readout, off unless the player turns it
+                 * on. Last, and outside the dial's own toggle, so it neither
+                 * reorders nor depends on anything the authored HUD emits;
+                 * everything it needs is read from the racer this function
+                 * already has. */
+                mdkr_enh_speedometer_draw(&gHudDL);
+#endif
             }
         }
     }

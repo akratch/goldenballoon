@@ -17,7 +17,11 @@ already own. No game assets are included.
 2. **Provide your ROM.** You need a legally acquired dump of the original game
    — US 1.1 or European 1.1, as `.z64`, `.v64`, or `.n64`. macOS and Windows
    open a file picker; on Linux, drag the ROM onto the launcher or paste its
-   path. In the browser the ROM is read locally and never uploaded.
+   path. In the browser the ROM is read locally and never uploaded. Not sure
+   which release your copy is? Drop it on the
+   [ROM checker](https://akratch.github.io/golden-balloon/rom-check.html) — it
+   names the release and says whether this port runs it, in your browser, with
+   nothing uploaded.
 3. **Play.** A gamepad is recommended and fully remappable, with rumble.
    Keyboard: arrows/WASD steer, `X` accelerates, `Z` brakes, `Space`
    hops/power-slides, `Shift` uses items, `Enter` is Start. `F1` pauses and
@@ -72,11 +76,33 @@ commit and checksum it was built from.
   or paste the path instead.
 - The Remastered presentation (lighting, shadows, SDF text) is opt-in and
   still in progress.
-- The desktop app supports keyboard/gamepad navigation, scaling, contrast,
-  and reduced motion, but does not yet speak to screen readers, so it is
-  not advertised as screen-reader compatible.
+- The desktop app supports keyboard/gamepad navigation, UI scaling and reduced
+  motion, and an Accessibility section gathers them. It does not yet expose a
+  contrast setting — earlier notes claimed one; there was never a control for
+  it. It also does not present itself to a screen reader, so it is not
+  advertised as screen-reader compatible.
 - Other ROM revisions (JP, US 1.0, EU 1.0) are recognized and refused by
-  name; only US 1.1 and EU 1.1 are supported.
+  name; only US 1.1 and EU 1.1 are supported. The
+  [ROM checker](https://akratch.github.io/golden-balloon/rom-check.html) tells
+  you which one you have and what is still missing for it.
+
+## Custom content
+
+You can replace the game's textures and music with your own. Put a folder or a
+`.zip` in `mods/` — next to your save data on macOS and Windows, next to the
+game on a portable build — with a small `pack.ini` naming the pack, plus a
+`textures/` or `music/` folder inside it. The game picks it up at launch, and
+**Tab** switches replaced textures off and back on while you play, so you can
+see both versions of the same corner. Settings → Content lists what loaded, and
+names anything it skipped and why.
+
+Nothing is included and nothing is hosted here: a pack is files you or someone
+else made, on your own machine. Replacement models and characters are not
+supported.
+
+[docs/MODDING.md](docs/MODDING.md) has the details, including
+`tools/mod_texture_dump.py`, which writes out every texture the game draws
+under the exact filename a pack needs.
 
 ## No game data is included
 

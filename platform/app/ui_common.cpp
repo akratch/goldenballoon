@@ -2,10 +2,14 @@
 #include "ui_common.h"
 #include "app_theme.h"
 
+#include "a11y_model.h"
+#include "video_config.h"
+
 #include <cstdarg>
 #include <cstdio>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace ui {
 
@@ -329,6 +333,122 @@ bool CardBegin(const char *id, const ImVec4 &borderColor, float height) {
 void CardEnd() {
     ImGui::EndChild();
     ImGui::PopStyleColor();
+}
+
+// --- Self-voicing ----------------------------------------------------------
+// See the contract in ui_common.h. Everything below this line is the whole of
+// the shell's announcement surface.
+
+namespace {
+
+// What was said last, per stream. A settings panel redraws its focused row
+// sixty times a second; without this the model would be handed sixty identical
+// utterances, coalesce fifty-nine of them, and put sixty lines in the trace
+// that no gate could read. Comparing the composed TEXT rather than the item id
+// is deliberate: it also re-announces a value the player just changed, which is
+// the confirmation they need and cannot get from the screen.
+char g_lastFocusSpoken[MDKR_A11Y_TEXT_MAX];
+char g_lastSectionSpoken[MDKR_A11Y_TEXT_MAX];
+
+// Returns true and latches when `text` differs from what this stream last said.
+bool claimIfNew(char *last, size_t capacity, const char *text) {
+    if (text == nullptr || text[0] == '\0') return false;
+    if (std::strncmp(last, text, capacity - 1) == 0) return false;
+    std::snprintf(last, capacity, "%s", text);
+    return true;
+}
+
+/*
+ * As much of the help paragraph as the utterance buffer can hold, cut only at a
+ * sentence boundary.
+ *
+ * The model refuses text that will not fit rather than chopping it mid-word,
+ * which is the right rule and the reason this exists: three settings ship help
+ * paragraphs longer than the whole buffer -- Frame limit, Allow tearing and
+ * Camera motion -- so handing them straight over made the three controls with
+ * the most to explain the only three that said nothing whatsoever. The name and
+ * the value are what a player needs to act; the paragraph is what they need to
+ * decide, and the first sentences of it are the part that says what the setting
+ * does. Cutting at a full stop keeps every word that is spoken a word the
+ * author wrote.
+ *
+ * Returns a pointer into `buffer`, or "" when not even one sentence fits.
+ */
+const char *helpThatFits(const char *name, const char *value, const char *help,
+                         char *buffer, size_t capacity) {
+    buffer[0] = '\0';
+    if (help == nullptr || help[0] == '\0') return buffer;
+    // Exactly what mdkr_a11y_focus() will spend before the help: the name, then
+    // ", " + value when there is one, then the ". " that introduces the help.
+    size_t spent = std::strlen(name) + 2u;
+    if (value != nullptr && value[0] != '\0') spent += 2u + std::strlen(value);
+    if (spent + 1u >= capacity) return buffer;
+    size_t budget = capacity - 1u - spent;
+    const size_t length = std::strlen(help);
+    if (length <= budget) {
+        std::snprintf(buffer, capacity, "%s", help);
+        return buffer;
+    }
+    size_t cut = 0u;
+    for (size_t i = 0u; i < budget && i < length; ++i) {
+        // A boundary is a terminator followed by a space or the end of the
+        // paragraph -- "4:3." inside a sentence is not one.
+        if ((help[i] == '.' || help[i] == '!' || help[i] == '?') &&
+            (help[i + 1u] == '\0' || help[i + 1u] == ' ')) {
+            cut = i + 1u;
+        }
+    }
+    if (cut == 0u) return buffer;  // no whole sentence fits: say none of it
+    std::memcpy(buffer, help, cut);
+    buffer[cut] = '\0';
+    return buffer;
+}
+
+}  // namespace
+
+bool SpeechEnabled() {
+    // The live config, not a cached copy: Accessibility.Speech is LIVE, so a
+    // player who switches it on hears the very next row they move to.
+    const MdkrVideoConfig *config = mdkr_video_config_current();
+    return config != nullptr &&
+           config->values[MDKR_A11Y_SPEECH].number != 0.0f;
+}
+
+void SpeakFocusedItem(const char *name, const char *value, const char *help) {
+    // Focus first: it is the cheapest test and it is false for all but one row.
+    if (!ImGui::IsItemFocused()) return;
+    if (!SpeechEnabled()) return;
+    if (name == nullptr || name[0] == '\0') return;
+    // Compose the identity exactly as mdkr_a11y_focus() will compose the
+    // utterance's opening, so "the same row with the same value" is recognised
+    // whatever the help paragraph does.
+    char identity[MDKR_A11Y_TEXT_MAX];
+    std::snprintf(identity, sizeof(identity), "%s|%s", name,
+                  value != nullptr ? value : "");
+    if (!claimIfNew(g_lastFocusSpoken, sizeof(g_lastFocusSpoken), identity)) {
+        return;
+    }
+    char trimmedHelp[MDKR_A11Y_TEXT_MAX];
+    mdkr_a11y_focus(name, value,
+                    helpThatFits(name, value, help, trimmedHelp,
+                                 sizeof(trimmedHelp)));
+}
+
+void SpeakSection(const char *name) {
+    if (!SpeechEnabled()) return;
+    if (name == nullptr || name[0] == '\0') return;
+    if (!claimIfNew(g_lastSectionSpoken, sizeof(g_lastSectionSpoken), name)) {
+        return;
+    }
+    char text[MDKR_A11Y_TEXT_MAX];
+    std::snprintf(text, sizeof(text), "%s section", name);
+    // NORMAL, not LOW: knowing which panel you are in is what makes the row
+    // announcements that follow it mean anything.
+    mdkr_a11y_announce(MDKR_A11Y_CAT_SECTION, MDKR_A11Y_PRI_NORMAL, text);
+    // A new section makes the previous row's announcement stale: the next row
+    // must speak even if the panel happens to open on one with the same name
+    // and value.
+    g_lastFocusSpoken[0] = '\0';
 }
 
 }  // namespace ui

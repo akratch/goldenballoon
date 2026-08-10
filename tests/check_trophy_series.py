@@ -189,22 +189,55 @@ def run_case(
         return proc, (run_dir / "save/eeprom.bin").read_bytes()
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
-    parser.add_argument("--rom", default="baserom.us.v80.z64")
-    parser.add_argument("--frames", type=int, default=18000)
-    parser.add_argument("-v", "--verbose", action="store_true")
-    args = parser.parse_args()
-    binary = Path(resolve_binary(args.build)).resolve()
-    rom = Path(args.rom).resolve()
-    for path in (binary, rom):
-        if not path.exists():
-            print(f"FAIL: missing {path}")
-            return 1
+# Racer 0 first in every round: 9 + 9 + 9 + 9 = 36 points, championship rank 0,
+# which is the gold trophy. The rank-1/2/3 podium branches are covered by
+# `world_matrix` below; this order exists for callers that need the GOLD one --
+# `trophies & 0xFF == 0xFF` is four golds and nothing else produces it.
+GOLD_ORDER = "/".join(("0,1,2,3,4,5,6,7",) * 4)
+GOLD_FRAMES = 13000
 
+
+def drive_gold_championship(
+    binary: Path,
+    rom: Path,
+    world: int,
+    initial_eeprom: bytes,
+    *,
+    frames: int = GOLD_FRAMES,
+) -> tuple[subprocess.CompletedProcess[str], bytes]:
+    """Drive one world's four production trophy rounds to a gold, from a save.
+
+    The extracted seam. `run_case` is this file's own championship driver and is
+    unchanged; what this adds is the (order, world, carried EEPROM) triple that
+    a caller outside this file needs, so `check_campaign_progression.py` can
+    chain four of these on one another's output instead of stating
+    `trophies == 0xFF` as a premise. Production still owns round selection,
+    points, championship sorting, the podium, the trophy upgrade and the save.
+    """
+    # Mode "retry", not "full", and the reason is a measured knife edge. The
+    # lobby route to the cabinet runs down the corridor the Hot Top Volcano door
+    # stands in, and whether the kart is captured by that exit is decided by a
+    # half-plane test it passes within a unit or two of: measured on a carried
+    # campaign save, the kart reaches (-298, -1062), where
+    # 0.383x + 0.924z + 1094.6 evaluates to -0.8, and is warped into Hot Top
+    # Volcano instead of arriving at the cabinet. "retry" is this file's own
+    # existing combination -- the same taps plus MDKR_TROPHY_COLLIDE, the
+    # controlled production collision used by the post-quit arm below -- so the
+    # kart still has to reach the lobby and the cabinet still evaluates its own
+    # gate (`balloonsPtr[worldId] >= 8` AND that world's rematch bit) before it
+    # opens. Driving up to the cabinet is what this file's own "full" arms
+    # already gate; what a caller chaining championships needs is the
+    # championship.
+    return run_case(binary, rom, frames, initial_eeprom, "retry", GOLD_ORDER,
+                    world)
+
+
+def run_trophy_series(
+    binary: Path, rom: Path, frames: int, verbose: bool
+) -> int:
+    """The whole gate. `main` is a thin caller so this can be imported."""
     proc, save = run_case(
-        binary, rom, args.frames, eeprom_image(), "full", TIE_ORDER
+        binary, rom, frames, eeprom_image(), "full", TIE_ORDER
     )
     output = proc.stdout
     failures: list[str] = []
@@ -366,7 +399,7 @@ def main() -> int:
         print("FAIL: trophy series")
         for failure in failures:
             print(f"  - {failure}")
-        if args.verbose:
+        if verbose:
             for line in output.splitlines():
                 if any(token in line for token in (
                     "trophycabinet:", "trophyseries:", "trophyround:",
@@ -386,7 +419,7 @@ def main() -> int:
         "PASS: trophy series — cabinet entry, four production rounds, "
         "stable tie, gold + reload, fail-closed order, quit + retry"
     )
-    if args.verbose:
+    if verbose:
         for line in output.splitlines():
             if any(token in line for token in (
                 "trophycabinet:", "trophyseries:", "trophyround:",
@@ -411,6 +444,22 @@ def main() -> int:
                 if "trophyaward:" in line:
                     print(f"  world {world}: " + line)
     return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
+    parser.add_argument("--rom", default="baserom.us.v80.z64")
+    parser.add_argument("--frames", type=int, default=18000)
+    parser.add_argument("-v", "--verbose", action="store_true")
+    args = parser.parse_args()
+    binary = Path(resolve_binary(args.build)).resolve()
+    rom = Path(args.rom).resolve()
+    for path in (binary, rom):
+        if not path.exists():
+            print(f"FAIL: missing {path}")
+            return 1
+    return run_trophy_series(binary, rom, args.frames, args.verbose)
 
 
 if __name__ == "__main__":

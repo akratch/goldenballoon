@@ -83,6 +83,7 @@
 #include "audi_port_dkr.h"
 #include "fs_utf8.h"
 #include "mdkr_trace.h"
+#include "mod_music.h"
 
 /* Match the game's ultratypes without pulling the whole PR header chain (which
  * would re-include mixer.h etc.). Same underlying widths as game/include. */
@@ -529,6 +530,20 @@ void dkr_audio_out_init(void) {
     s_appliedVolumeGeneration = 0u;
     s_masterGainInitialized = 0;
     audio_dump_open();
+    /*
+     * Content-pack music decodes to the output format ONCE, so the store has to
+     * be told that format, and this is the only file that owns it. It is bound
+     * here rather than beside the texture store's own init because
+     * platform_content_packs_init() has no business knowing the mixer's rate,
+     * and a rate passed through it would be a second copy of DKR_OUTPUT_RATE.
+     *
+     * Unconditional, and specifically NOT below the MDKR_AUDIO=0 return: with
+     * no device the synthesiser still runs and its PCM is still what the dump
+     * and the checks measure, so a muted headless run must reach exactly the
+     * same samples a played one would.
+     */
+    mdkr_mod_music_init(platform_content_packs_registry(), DKR_OUTPUT_RATE,
+                        DKR_AUDIO_CHANNELS);
     /* Emergency fallback for a fatal libc/process exit. Normal finite and
      * window-close paths now unwind through main() and call the idempotent
      * shutdown directly. */
@@ -658,6 +673,11 @@ void dkr_audio_out_shutdown(void) {
     }
     s_shutdownComplete = 1;
     dkr_audio_service_summary();
+    /* Drops the decoded track and unbinds the registry it was read from. Done
+     * before the device teardown below, because after this point nothing may
+     * synthesise another block and the mix hook must have nothing left to add
+     * to one. */
+    mdkr_mod_music_shutdown();
     had_device = s_devOpen;
 #ifdef __EMSCRIPTEN__
     had_web = s_webAudio;
@@ -1156,6 +1176,18 @@ void dkr_audio_service_tick(void) {
         frameSamples -= 16;
     }
     buf = amAudioSynthFrame(frameSamples);
+    /*
+     * Content-pack music is added to the block the synthesiser just produced,
+     * BEFORE the test gain and the master ramp, so a replaced track goes
+     * through the identical output stage the sequence it replaced would have:
+     * same master volume, same dump, same sink. The sequence player's own
+     * contribution to this buffer is already zero whenever this contributes
+     * anything (platform/audio_seqplayer.c mutes it), so the add lands on
+     * silence where the music was and leaves the sound effects alone.
+     */
+    if (buf != NULL) {
+        (void)mdkr_mod_music_mix(buf, (int)frameSamples);
+    }
     audio_apply_test_gain(buf, frameSamples);
     mdkr_audio_gain_ramp_apply_s16(
         &s_masterGain, buf, (u32)frameSamples, DKR_AUDIO_CHANNELS);
@@ -1203,6 +1235,11 @@ void dkr_audio_service_tick(void) {
             if (catchupBuf == NULL) {
                 break;
             }
+            /* A recovery block is still output, so it carries the replacement
+             * too -- and it must consume the same number of track frames it
+             * consumes synthesised ones, or the music would drift against the
+             * sequence after every recovery. */
+            (void)mdkr_mod_music_mix(catchupBuf, (int)catchup);
             audio_apply_test_gain(catchupBuf, catchup);
             mdkr_audio_gain_ramp_apply_s16(
                 &s_masterGain, catchupBuf, (u32)catchup, DKR_AUDIO_CHANNELS);

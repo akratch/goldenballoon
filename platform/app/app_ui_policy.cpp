@@ -92,22 +92,24 @@ bool AppUi_applyDpiTransition(AppUiDpiState *state, float framebufferScale) {
 
 AppUiSmokeInputMode AppUi_validateSmokeInput(
     const char *frames, const char *selection, const char *input,
-    const char *token, const char *pace) {
-    // Exactly one scripted selection, and it must be one of the two the
+    const char *token, const char *pace, const char *walk) {
+    // Exactly one scripted selection, and it must be one of the three the
     // launcher has scripts for. Naming them explicitly is what keeps an
     // inherited variable from attaching synthetic input to a normal session,
-    // and requiring exactly one keeps two pointer scripts from sharing a run.
+    // and requiring exactly one keeps two scripts from sharing a run.
     const bool selectsFrameLimit = selection && selection[0];
     const bool selectsPace = pace && pace[0];
+    const bool selectsWalk = walk && walk[0];
+    const int scripts = (selectsFrameLimit ? 1 : 0) + (selectsPace ? 1 : 0) +
+                        (selectsWalk ? 1 : 0);
     const bool anyInputContract =
-        selectsFrameLimit || selectsPace || (input && input[0]) ||
-        (token && token[0]);
+        scripts > 0 || (input && input[0]) || (token && token[0]);
     if (!anyInputContract) return AppUiSmokeInputMode::Disabled;
-    if (!frames || !frames[0] || !input || !token ||
-        selectsFrameLimit == selectsPace ||
+    if (!frames || !frames[0] || !input || !token || scripts != 1 ||
         (selectsFrameLimit && std::strcmp(selection, "240") != 0) ||
         (selectsPace && std::strcmp(pace, "original") != 0 &&
          std::strcmp(pace, "smooth") != 0) ||
+        (selectsWalk && std::strcmp(walk, "1") != 0) ||
         std::strcmp(token, "mdkr64-app-ui-input-v1") != 0) {
         return AppUiSmokeInputMode::Invalid;
     }
@@ -131,7 +133,26 @@ AppUiSmokeInputMode AppUi_smokeInputMode() {
         std::getenv("MDKR_APP_SMOKE_SELECT_FRAME_LIMIT"),
         std::getenv("MDKR_APP_SMOKE_INPUT"),
         std::getenv("MDKR_APP_SMOKE_INPUT_TOKEN"),
-        std::getenv("MDKR_APP_SMOKE_SELECT_PRESENTATION_PACE"));
+        std::getenv("MDKR_APP_SMOKE_SELECT_PRESENTATION_PACE"),
+        std::getenv("MDKR_APP_SMOKE_A11Y_WALK"));
+}
+
+bool AppUi_a11yWalkArmed() {
+    // Read once. Several draw paths ask this every frame, and the answer
+    // cannot change inside a process.
+    //
+    // Two arming routes because there are two walks over the same rows: the
+    // launcher's, which rides the complete versioned synthetic-input contract
+    // so an inherited variable cannot quietly rearrange a player's settings
+    // panel, and the in-game overlay's, which has no such contract to ride --
+    // it lives inside an engine session and scripts itself from
+    // ui_overlay.cpp's existing test schedule.
+    static const bool armed =
+        (AppUi_smokeInputMode() != AppUiSmokeInputMode::Disabled &&
+         AppUi_smokeInputMode() != AppUiSmokeInputMode::Invalid &&
+         std::getenv("MDKR_APP_SMOKE_A11Y_WALK") != nullptr) ||
+        std::getenv("MDKR_TEST_OVERLAY_A11Y_WALK") != nullptr;
+    return armed;
 }
 
 bool AppUi_videoSettingVisible(MdkrVideoKey key, bool webGpuRenderer,
@@ -165,4 +186,57 @@ bool AppUi_videoSettingVisible(MdkrVideoKey key, bool webGpuRenderer,
         case MDKR_VIDEO_MSAA: return !webGpuRenderer;
         default: return true;
     }
+}
+
+AppUiSettingsSection AppUi_settingsSection(MdkrVideoKey key) {
+    // Written out rather than derived, because the two functions that could
+    // derive it -- mdkr_video_key_is_enhancement() and
+    // mdkr_video_key_is_content(), both in platform/video_config.c -- live in a
+    // translation unit this policy is deliberately not linked against: these
+    // policies are pure so the contract test can run without the config layer,
+    // a ROM, a window, or a GPU. Keep the two lists in step; the settings panel
+    // reads THIS one, so a key added there and forgotten here is drawn under
+    // its category header rather than lost.
+    switch (key) {
+        case MDKR_ENH_SPEEDOMETER:
+        case MDKR_ENH_DRAW_DISTANCE:
+        case MDKR_ENH_LOD_BIAS:
+        case MDKR_ENH_AI_DIFFICULTY:
+            return AppUiSettingsSection::Enhancements;
+        case MDKR_CONTENT_PACKS_ENABLED:
+        case MDKR_CONTENT_PACK_DISABLED:
+            return AppUiSettingsSection::Content;
+        // Every accessibility option in the product, in one place. The speech
+        // keys declare the Interface category and Camera.Comfort declares a
+        // camera one, which is correct for what they configure and wrong for
+        // who is looking for them.
+        case MDKR_A11Y_SPEECH:
+        case MDKR_A11Y_SPEECH_RATE:
+        case MDKR_A11Y_SPEECH_VOLUME:
+        case MDKR_A11Y_SPEECH_RACE:
+        case MDKR_VIDEO_CAMERA_COMFORT:
+            return AppUiSettingsSection::Accessibility;
+        default:
+            return AppUiSettingsSection::Category;
+    }
+}
+
+AppUiSettingsSection AppUi_shellPreferenceSection(AppUiShellPreference key) {
+    switch (key) {
+        // Text size belongs with the other access needs, not with the window
+        // mode. It is also the one setting a player may have to change before
+        // they can read anything else, so it sits in the section they will be
+        // told to look for.
+        case AppUiShellPreference::UiScale:
+            return AppUiSettingsSection::Accessibility;
+    }
+    return AppUiSettingsSection::Category;
+}
+
+bool AppUi_enhancementResetIncludes(MdkrVideoKey key) {
+    // Exactly the rows the Enhancements section draws, and nothing else. In
+    // particular NOT the content keys: they share the section's "things you
+    // opted into" character but a pack is installed content, and silently
+    // switching it off is not what "reset the extras" offers to do.
+    return AppUi_settingsSection(key) == AppUiSettingsSection::Enhancements;
 }

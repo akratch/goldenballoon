@@ -84,9 +84,80 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "Video.TexturePack", "MDKR_TEXTURE_PACK",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
         "Texture pack",
-        "Reserved for a future user-supplied HD texture pack. This setting has "
-        "no runtime effect yet; stock textures are always used.",
+        "Superseded by Content.PacksEnabled and the mods folder. Kept so an "
+        "existing settings file still parses; it has no runtime effect.",
         MDKR_VIDEO_CAT_FIDELITY
+    },
+    [MDKR_CONTENT_PACKS_ENABLED] = {
+        "Content.PacksEnabled", "MDKR_CONTENT_PACKS",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 1.0f,
+        "Custom content",
+        "Apply installed content packs. Tab switches them off and back on "
+        "while you play, so you can compare against the original.",
+        MDKR_VIDEO_CAT_FIDELITY
+    },
+    [MDKR_CONTENT_PACK_DISABLED] = {
+        "Content.PackDisabled", "MDKR_CONTENT_PACK_DISABLED",
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
+        "Skipped packs",
+        "Comma-separated pack names to leave uninstalled. The Content list "
+        "below shows the exact name of every pack it found.",
+        MDKR_VIDEO_CAT_FIDELITY
+    },
+    [MDKR_ENH_SPEEDOMETER] = {
+        "Enhancements.Speedometer", "MDKR_ENH_SPEEDOMETER",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 2.0f,
+        "Speedometer",
+        "Show your current speed. 0 off, 1 miles per hour, 2 kilometres per "
+        "hour. Changes only how the game looks.",
+        MDKR_VIDEO_CAT_INTERFACE
+    },
+    [MDKR_ENH_DRAW_DISTANCE] = {
+        "Enhancements.DrawDistance", "MDKR_ENH_DRAW_DISTANCE",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 100.0f, 400.0f,
+        "Draw distance",
+        "How far ahead scenery is drawn, as a percentage of the authored "
+        "distance. Changes only how the game looks.",
+        MDKR_VIDEO_CAT_FIDELITY
+    },
+    [MDKR_ENH_LOD_BIAS] = {
+        "Enhancements.LodBias", "MDKR_ENH_LOD_BIAS",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 2.0f,
+        "Model detail",
+        "0 keeps the authored detail switching. 1 and 2 hold higher-detail "
+        "models further out. Changes only how the game looks.",
+        MDKR_VIDEO_CAT_FIDELITY
+    },
+    [MDKR_TOOLS_ENABLED] = {
+        "Tools.Enabled", "MDKR_TOOLS",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 1.0f,
+        "Developer tools",
+        "Show the diagnostic windows. Off by default, and they never change "
+        "how the game plays.",
+        MDKR_VIDEO_CAT_INTERFACE
+    },
+    [MDKR_APP_UPDATE_CHECK] = {
+        "App.UpdateCheck", "MDKR_UPDATE_CHECK",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 1.0f,
+        "Check for updates",
+        /* Says what it does, which is currently nothing. The comparator in
+         * platform/update_check.c is real and tested; the part that fetches a
+         * release feed is not written, so the previous wording promised a daily
+         * notice that cannot arrive and left the box unticking nothing. Whether
+         * to hide the control, change its default, or finish the fetch is a
+         * product call; describing it accurately is not. */
+        "Not active yet — nothing checks for updates in this build. Your "
+        "choice is remembered for when it does. Nothing is ever downloaded "
+        "or installed.",
+        MDKR_VIDEO_CAT_INTERFACE
+    },
+    [MDKR_ENH_AI_DIFFICULTY] = {
+        "Enhancements.AIDifficulty", "MDKR_ENH_AI_DIFFICULTY",
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
+        "Opponent skill",
+        "authored races the opponents as they were written. hard and brutal "
+        "make them faster. Changes how the game plays.",
+        MDKR_VIDEO_CAT_PACING
     },
     [MDKR_VIDEO_GAMEPLAY_FOV] = {
         "Video.GameplayFOV", "MDKR_FOV",
@@ -546,6 +617,42 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "reduced.",
         MDKR_VIDEO_CAT_PRESENTATION
     },
+    /*
+     * Speech. Appended, never inserted -- the enum index IS this table's row.
+     * Every one of these is LIVE: a player who is turning speech on cannot be
+     * asked to restart the game to hear whether it helped.
+     */
+    [MDKR_A11Y_SPEECH] = {
+        "Accessibility.Speech", "MDKR_A11Y_SPEECH",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 1.0f,
+        "Speak menus",
+        "Read out the control you are on, its setting, and what it does.",
+        MDKR_VIDEO_CAT_INTERFACE
+    },
+    [MDKR_A11Y_SPEECH_RATE] = {
+        "Accessibility.SpeechRate", "MDKR_A11Y_SPEECH_RATE",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 50.0f, 300.0f,
+        "Speech speed",
+        "How fast the voice talks, as a percentage of its normal speed. 100 is "
+        "normal; higher is quicker.",
+        MDKR_VIDEO_CAT_INTERFACE
+    },
+    [MDKR_A11Y_SPEECH_VOLUME] = {
+        "Accessibility.SpeechVolume", "MDKR_A11Y_SPEECH_VOLUME",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 100.0f,
+        "Speech volume",
+        "How loud the voice is. This is separate from the game's own volume "
+        "levels, so you can hear it over a race.",
+        MDKR_VIDEO_CAT_INTERFACE
+    },
+    [MDKR_A11Y_SPEECH_RACE] = {
+        "Accessibility.SpeechRace", "MDKR_A11Y_SPEECH_RACE",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 1.0f,
+        "Speak race events",
+        "Also call out your position, your lap, and what happens during a "
+        "race. Turn this off to keep the voice to menus only.",
+        MDKR_VIDEO_CAT_INTERFACE
+    },
 };
 
 const char *mdkr_video_category_name(MdkrVideoCategory category) {
@@ -597,8 +704,41 @@ int mdkr_video_key_is_input(MdkrVideoKey key) {
     return key >= MDKR_INPUT_FIRST_KEY && key <= MDKR_INPUT_LAST_KEY;
 }
 
+int mdkr_video_key_is_content(MdkrVideoKey key) {
+    return key == MDKR_CONTENT_PACKS_ENABLED ||
+           key == MDKR_CONTENT_PACK_DISABLED;
+}
+
+int mdkr_video_key_is_enhancement(MdkrVideoKey key) {
+    return key == MDKR_ENH_SPEEDOMETER || key == MDKR_ENH_DRAW_DISTANCE ||
+           key == MDKR_ENH_LOD_BIAS || key == MDKR_ENH_AI_DIFFICULTY;
+}
+
+int mdkr_video_key_is_accessibility(MdkrVideoKey key) {
+    return key >= MDKR_A11Y_FIRST_KEY && key <= MDKR_A11Y_LAST_KEY;
+}
+
 int mdkr_video_key_is_player_comfort(MdkrVideoKey key) {
+    /*
+     * Content and enhancement keys join audio, input and window mode here for
+     * the same reason those three are exempt: Pure/Restored/Remastered are
+     * art-direction presets, and none of these is art direction. A player who
+     * installed a pack or turned the speedometer on chose that deliberately,
+     * and switching presentation mode to compare two looks must not silently
+     * undo it. Without this exemption every preset switch would re-pin them to
+     * the preset table's zero row, which for Enhancements.DrawDistance is not
+     * even inside its own 100..400 range.
+     *
+     * The speech keys join them for a stronger version of the same reason: an
+     * accessibility choice is not art direction, and a player who switched the
+     * voice on must not lose it by comparing two looks. It also keeps the four
+     * of them adjustable during an explicit --pure reference session, where
+     * every presentation key is deliberately read-only.
+     */
     return mdkr_video_key_is_audio(key) || mdkr_video_key_is_input(key) ||
+           mdkr_video_key_is_content(key) ||
+           mdkr_video_key_is_enhancement(key) ||
+           mdkr_video_key_is_accessibility(key) ||
            key == MDKR_WINDOW_MODE;
 }
 
@@ -698,6 +838,18 @@ static const float s_preset[MDKR_VIDEO_KEY_COUNT][3] = {
     [MDKR_AUDIO_EFFECTS_VOLUME] = {   100.0f,   100.0f,     100.0f },
     [MDKR_VIDEO_MENU_LANGUAGES] = {     0.0f,     0.0f,       0.0f }, /* string; see below */
     [MDKR_VIDEO_CAMERA_COMFORT] = {     0.0f,     0.0f,       0.0f }, /* string; see below */
+    /*
+     * Speech. The three columns are identical because no art-direction preset
+     * has an opinion about accessibility; the row exists so
+     * mdkr_video_config_defaults() seeds the shipped value, and
+     * mdkr_video_key_is_player_comfort() keeps a preset switch from writing it
+     * back. Speech off, ordinary speed, full speech volume, race calls on for
+     * whoever does turn speech on.
+     */
+    [MDKR_A11Y_SPEECH]        = {      0.0f,     0.0f,       0.0f },
+    [MDKR_A11Y_SPEECH_RATE]   = {    100.0f,   100.0f,     100.0f },
+    [MDKR_A11Y_SPEECH_VOLUME] = {    100.0f,   100.0f,     100.0f },
+    [MDKR_A11Y_SPEECH_RACE]   = {      1.0f,     1.0f,       1.0f },
 };
 
 /*
@@ -853,6 +1005,40 @@ void mdkr_video_config_defaults(MdkrVideoConfig *config) {
         config->values[MDKR_VIDEO_MENU_LANGUAGES].text,
         sizeof(config->values[MDKR_VIDEO_MENU_LANGUAGES].text),
         "%s", "all");
+
+    /*
+     * Content packs apply when they are installed. The default is ON rather
+     * than off because installing a pack IS the opt-in -- an installed pack
+     * that silently does nothing until a second setting is found is the most
+     * common modding support question there is. With no mods directory the
+     * whole path is inert, so this default costs nothing to a player who has
+     * never heard of packs.
+     */
+    config->values[MDKR_CONTENT_PACKS_ENABLED].number = 1.0f;
+
+    /*
+     * Looking for a newer release defaults to ON, but the notice it produces
+     * is a single line in the launcher and nothing is ever downloaded or
+     * installed. A player who does not want the request makes at all sets this
+     * to 0, and then no request is made -- not a request whose result is
+     * discarded.
+     */
+    config->values[MDKR_APP_UPDATE_CHECK].number = 1.0f;
+
+    /*
+     * Enhancements default to the authored game. DrawDistance is seeded
+     * explicitly because its 100..400 range does not contain the zero the
+     * preset table would otherwise leave here, and a value outside its own
+     * schema range is exactly the kind of quiet invalid state that survives
+     * until something far away divides by it.
+     */
+    config->values[MDKR_ENH_SPEEDOMETER].number = 0.0f;
+    config->values[MDKR_ENH_DRAW_DISTANCE].number = 100.0f;
+    config->values[MDKR_ENH_LOD_BIAS].number = 0.0f;
+    snprintf(
+        config->values[MDKR_ENH_AI_DIFFICULTY].text,
+        sizeof(config->values[MDKR_ENH_AI_DIFFICULTY].text),
+        "%s", "authored");
 
     /* Window/input choices are player comfort, not presentation-mode state.
      * These defaults exactly preserve the pre-remapping SDL behavior, including

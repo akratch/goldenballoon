@@ -943,6 +943,24 @@ void obj_init_lighthouse_rocketsignpost(Object *obj, LevelObjectEntry_Lighthouse
 void obj_loop_rocketsignpost(Object *obj, UNUSED s32 updateRate) {
     Object *playerObj;
     ObjectInteraction *interactObj;
+#ifdef NATIVE_PORT
+    /* NATIVE_PORT, read-only. This signpost is the ONLY caller of
+     * begin_lighthouse_rocket_cutscene(), i.e. the only way Future Fun Land is
+     * ever unlocked, and the decision is invisible from outside: three save
+     * fields are read at once (trophies, cutsceneFlags, bosses) and a refusal
+     * writes nothing at all. So "the route never got to the signpost" and "the
+     * signpost refused" look identical in a log, which is exactly the pair a
+     * negative control has to separate. One line the first time the signpost
+     * spawns -- which is also how its world position was found for the route --
+     * and one line every time the honk/collision trigger actually fires.
+     * tests/check_future_fun_land.py consumes both. */
+    static s32 sSignpostReported;
+    if (!sSignpostReported && mdkr_trace_enabled()) {
+        sSignpostReported = TRUE;
+        mdkr_trace("rocketsign: spawned pos=(%.1f, %.1f, %.1f)", obj->trans.x_position, obj->trans.y_position,
+                   obj->trans.z_position);
+    }
+#endif
 
     playerObj = get_racer_object(PLAYER_ONE);
     if (playerObj != NULL) {
@@ -951,6 +969,14 @@ void obj_loop_rocketsignpost(Object *obj, UNUSED s32 updateRate) {
             if (playerObj == interactObj->obj) {
                 // Detect if the player honks or slams into the signpost.
                 if ((input_pressed(PLAYER_ONE) & Z_TRIG) || playerObj == obj->collisionData->collidedObj) {
+#ifdef NATIVE_PORT
+                    {
+                        Settings *settings = get_settings();
+                        MDKR_TRACE("rocketsign: trigger distance=%d trophies=0x%x bosses=0x%x cutsceneFlags=0x%x",
+                                   (int) interactObj->distance, (unsigned) settings->trophies,
+                                   (unsigned) settings->bosses, (unsigned) settings->cutsceneFlags);
+                    }
+#endif
                     begin_lighthouse_rocket_cutscene();
                 }
             }

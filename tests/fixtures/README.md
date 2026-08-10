@@ -7,12 +7,14 @@ contains nothing the previous seam has not been shown to produce. This file is
 that argument, field by field.
 
 The fixtures are **built in code, not stored as binaries** — `derive_seam_a`,
-`derive_seam_b` and `derive_seam_e` in the check. A committed `.bin` would be a
-number nobody can audit; a derivation function that names the seam each field
-comes from can be read against this document and against the game source. The
-one committed artefact is
-[`tests/input_scripts/wizpig_to_credits.txt`](../input_scripts/wizpig_to_credits.txt),
-which is a controller script, not save state.
+`derive_seam_b`, `derive_all_worlds_silver` and `derive_seam_e` in the check. A
+committed `.bin` would be a number nobody can audit; a derivation function that
+names the seam each field comes from can be read against this document and
+against the game source. The committed artefacts are controller scripts, not
+save state:
+[`wizpig_to_credits.txt`](../input_scripts/wizpig_to_credits.txt),
+[`lobby_rematch_door.txt`](../input_scripts/lobby_rematch_door.txt) and
+[`tt_challenge_win.txt`](../input_scripts/tt_challenge_win.txt).
 
 Bit offsets are not restated here; they are constants at the top of the check,
 taken from the write order in `game/src/save_data.c` (`func_800732E8`, and the
@@ -69,12 +71,15 @@ overridden, each override named at its call site.
 So the four seam B arms are not four independent runs from four synthetic saves —
 each is fought on the EEPROM the previous one persisted. `wizpigAmulet` climbing
 1 → 2 → 3 → 4 (and `bosses` 0x9e → 0x19e → 0x39e → 0x79e) is therefore something
-production wrote four times. Seam C runs on the end of that chain, seam E on the
-end of seam C. Each carried step also asserts that no bit the incoming save held
-was dropped, so “carried” is checked, not assumed.
+production wrote four times. Seam C runs on the end of that chain, seam T (four
+trophy championships) on the end of seam C, seam T.T. (four challenge wins) on
+the end of seam T, and seam E on the end of that. Each carried step also asserts
+that no bit the incoming save held was dropped, so “carried” is checked, not
+assumed — and seams T and T.T. additionally assert that they changed *nothing*
+outside their own field, so a trophy race cannot quietly move the campaign on.
 
-The only constructed inputs left are fixture A, the seam B negative control
-(deliberately not a legitimate state), and the four premise fields listed under
+The only constructed inputs left are fixture A, the two negative controls
+(deliberately not legitimate states), and Future Fun Land's own state under
 fixture E.
 
 ## Fixture B — “that world is silver-coin complete”
@@ -127,58 +132,222 @@ writer, `game/src/game.c:648`, inside that branch, and it was set. The
 `wizpigface:` trace was added so the redirect is stated where it happens rather
 than inferred, and seam C asserts both it and the persisted flag.
 
-## Fixture E — seam C’s save, plus what Wizpig 2 additionally wants
+## Fixture C.5 — the trophy and T.T.-amulet chain
 
-Entered by seam E. The campaign half is carried out of seam C untouched: the four
-rematch bits and `wizpigAmulet == 4` from seam B’s wins, Wizpig 1’s cleared
-course and `bosses` bit 0 from seam C’s.
+Entered by seams T and T.T., and neither is a fixture in the constructed sense:
+both run on the EEPROM the previous seam persisted.
 
-Four fields are **overridden**, and they are the only things in the whole chain
-this check asserts without having watched them. They are Wizpig 2’s other gate
-(`game/src/game.c:755`, and the T.T. door at
-`game/src/object_functions.c:4116`): `trophies == 0xFF`, `ttAmulet == 4` with the
-four world keys, Future Fun Land’s four races cleared, and at least 47 total
-balloons. See the residual list below.
+**Seam T** imports `check_trophy_series.py`'s own championship driver
+(`drive_gold_championship`, which is that file's `run_case` with the winning
+finish order and a caller-supplied save) and runs it four times, world 1 → 4,
+each on the last one's output. `trophies` therefore climbs
+0x3 → 0xf → 0x3f → 0xff, two bits per world, and each step is checked against
+production's own `trophyaward:` line — the world, rank 0, 36 points (four
+first places at 9 a round, the same scale that gives that check's 32 for a
+1st/2nd/1st/2nd tie), the incoming value it started from and the value it wrote.
+`check_trophy_series.py`'s own gate is unchanged by the extraction; its `main` is
+now a thin caller of `run_trophy_series`.
+
+Two things the chained form needs that the standalone gate does not, both
+measured rather than assumed:
+
+- **The cabinet is entered by that file's own controlled collision**
+  (`MDKR_TROPHY_COLLIDE`, its `retry` mode), not by bumping it. Driving up to the
+  cabinet from a *carried* save is a knife edge: the lobby corridor to it runs
+  past the Hot Top Volcano door, whose capture test
+  `0.383x + 0.924z + 1094.6 < 0` the kart passes within a unit of. Measured, it
+  reaches (-298, -1062) — where that expression is **-0.8** — and is warped into
+  Hot Top Volcano instead. The kart still has to reach the lobby, and the cabinet
+  still evaluates its own gate (eight world balloons **and** that world's rematch
+  bit) before it opens; driving the last few hundred units to it is what
+  `check_trophy_series.py`'s own arms already gate.
+- **Two hub-side fields are pinned back between championships.** A championship
+  drives Timber's Island on the way in, and the hub writes `taj`
+  (`TAJ_CAR_OFFERED`) and its own course flags (measured 0x4400 → 0x67b3) doing
+  so. Carried, the next championship's hub drive stalls before the lobby and
+  awards nothing — measured, worlds 2, 3 and 4 all left `trophies` at world 1's
+  0x3. `carry_trophy_save` restores exactly those two and touches nothing else,
+  and each championship's `trophyaward:` line is checked to have started from
+  the carried `trophies`, so the chain is verified rather than assumed.
+
+**Seam T.T.** drives the four challenge courses — 11 Fire Mountain (eggs),
+25 Smokey Castle (bananas), 26 Darkwater Beach and 27 Icicle Pyramid (battle) —
+in four separate processes on one another's saves, and `ttAmulet` climbs
+1 → 2 → 3 → 4. The award is `game/src/objects.c:9358-9367`, taken only when the
+human wins and the course is **not already** `RACE_CLEARED`.
+
+**The negative control is the second half of that sentence**, and it is run at
+*one* piece rather than at four on purpose: `ttAmulet` is clamped
+(`if (i > 4) i = 4`), so a replay at four would leave the counter unchanged even
+if the gate were gone. Replaying the FIRST challenge on the save that challenge
+itself produced must therefore award nothing, play no
+`ASSET_LEVEL_TTAMULETSEQUENCE`, and leave `ttAmulet` at 1.
+
+## Fixture E — the chain’s save, plus Future Fun Land
+
+Entered by seam E. Everything Wizpig 2 checks about the *campaign* is carried:
+the four rematch bits and `wizpigAmulet == 4` from seam B, Wizpig 1's cleared
+course and `bosses` bit 0 from seam C, `trophies == 0xFF` from seam T and
+`ttAmulet == 4` from seam T.T. The last two were premises until S9; seam E now
+asserts they arrived rather than writing them.
+
+What is still constructed is **Future Fun Land itself**, the world Wizpig 2 lives
+in, because this check does not drive there. Five fields:
+
+| Field | Value | Why it is not derived |
+| --- | --- | --- |
+| Future Fun Land’s four races | status 2 | reaching Wizpig 2 means having raced them |
+| `balloons[5]` | 4 | one per FFL race |
+| `balloons[0]` | ≥ 47 | the number the T.T. door counts (`game/src/object_functions.c:4159`) |
+| `keys` | 0xF | the four world keys |
+| `cutsceneFlags` | `CUTSCENE_DINO_DOMAIN_BOSS << 4` = 0x80 | the “arrived in Future Fun Land” scene |
+
+The lighthouse unlock that opens that world is not a premise: it is gated by
+[`check_future_fun_land.py`](../check_future_fun_land.py), on trophies four
+production championships wrote.
+
+### The arrival flag is load-bearing, and that was measured
+
+The last row is not cosmetic and is the reason residual 3 below is closed. Every
+Future Fun Land level header is `RACETYPE_HUBWORLD`, so `game_load_level`’s
+world-arrival branch (`game/src/game.c:762-802`) runs on the **post-race cutscene
+levels** too. With the flag clear it takes its `cutsceneId = CUTSCENE_ID_UNK_5`
+arm, which overwrites the cutscene channel the level-properties stack pushed.
+`func_8001E4C4()` then deactivates every animation object whose channel is not 5
+and `func_8001E93C()` builds an empty node list, so the scene has no animation
+left to run.
+
+Measured on `ASSET_LEVEL_WIZPIG2ANIM`: `gCutsceneID` 5 against a pushed channel
+of 1, all **159** of the level’s animation objects moved below
+`gObjectListStart`, the node list `D_8011AE78` at **0**, and the animation update
+never entered again for the rest of the run. With the flag set, the same route
+reaches `MENU_CREDITS` at frame ~12,050.
+
+A player cannot reach Wizpig 2 without having arrived in Future Fun Land once, so
+carrying the flag is what makes the fixture *legitimate*. A fixture without it is
+a state the campaign cannot produce, and the stall it caused was the fixture’s,
+not the game’s.
 
 ## Residual manual acceptance
 
-These are the parts of the campaign this check does not witness. Each is a
-specific headless obstacle, not a judgement call, and each is a step a manual
-acceptance pass still has to perform.
+The three residuals this section used to list — the lobby rematch door driven,
+the trophy/T.T.-amulet chain, and the credits screen from a won Wizpig 2 — are
+**closed**. What each one turned out to be is kept below, because each is the
+reason a route or a fixture is shaped the way it is, and a route whose reason has
+been deleted is a route the next person will “simplify”.
 
-**1. The lobby’s boss-rematch door, driven.** Seam B enters the rematch by
-`MDKR_LOAD_TRACK` retarget, the same way `check_bluey2_rematch.py` does. The
-route cannot instead drive through the lobby door: measured in the Dino Domain
-lobby with all door bits open, the kart stalls at (-1295, 685), 1,240 units short
-of the boss exit at (-777, 1812), and the drive hook’s reverse-and-retry
-oscillates there indefinitely. The exit is reachable from the spawn the player
-returns to *after a race*, which is why `check_first_boss_progression`’s route
-reaches the first boss only as `12:E7:E38`. What is unwitnessed is therefore the
-**approach**, not the gate: the gate itself is `balloonsPtr[worldId] == 8`, and
-seam A proves silver clears are what produce that number.
+### 1. The lobby’s boss-rematch door — closed, driven
 
-**2. The T.T. amulet and the trophy championships.** `ttAmulet` is written by the
-four T.T. challenge levels (`game/src/objects.c:9256-9268`) and `trophies` by the
-trophy-race rankings screen. The trophy side already has a gate —
-[`check_trophy_series.py`](../check_trophy_series.py) drives all four
-championships and their EEPROM persistence — but neither is chained into this
-file, so fixture E states both as premises. The Future Fun Land unlock they feed
-(`trophies & 0xFF == 0xFF` plus Wizpig 1, `game/src/thread3_main.c:1895-1899`) is
-unwitnessed for the same reason.
+Seam B still enters three of the four rematches by `MDKR_LOAD_TRACK` retarget,
+which is the fast path. It additionally enters the Dino Domain rematch by
+**driving the human through the lobby’s own boss door**, and that arm asserts the
+identical post-seam state.
 
-**3. The credits screen from a won Wizpig 2.** Seam E proves the campaign sets
-and persists `bosses & 0x20`, which is the single value `menu_credits_init`
-(`game/src/menu.c:15188-15201`) reads to choose “TO BE CONTINUED …” and
-`SEQUENCE_CRESCENT_ISLAND` over “THE END?”. It does not reach the screen. After
-the win the game pushes a stack of cutscene levels and pops them on either an A
-press with `func_8006C300()` non-zero or the scene ending itself
-(`game/src/thread3_main.c:894-919`); measured, the run reaches
-`ASSET_LEVEL_WIZPIG2ANIM` (level 62) and stays there for 25,000 further frames
-with A tapped every 200 frames, so the animation does not run itself out
-headlessly. `tests/input_scripts/wizpig_to_credits.txt` is the script that
-supplies those taps and is kept for the manual pass and for whoever closes this.
+The recorded obstacle reproduces exactly at this commit. Driving straight at the
+exit (`MDKR_DRIVE_ROUTE="…;12:E46"`) the kart leaves the lobby spawn at
+(-919, -343), heads north, is stopped at about (-911, 482) and then slides
+north-west along the wall to **(-1295, 685)** — 1,240 units short of the boss
+exit at (-777, 1812) — where the drive hook’s reverse-and-retry oscillates for
+the rest of the run. So the geometry, not the gate, was the problem: a wall runs
+WNW across the lobby’s northern approach and the direct line runs into it.
 
-The contrast arm is still meaningful: the WHODIDTHIS route reaches
-`MENU_CREDITS` from a save that was never started, which is why reaching credits
-is not by itself evidence about the campaign — and is why seam E asserts on the
-bit rather than on the screen.
+The fix is **one waypoint**, found by bisecting the space between the stall and
+the exit:
+
+| Intermediate waypoint | Result |
+| --- | --- |
+| none (straight at the exit) | stalls at (-1295, 685), 1,240 units short |
+| (-600, 1300) | stalls, 689 units short — still west of the wall |
+| (-300, 700) | reached at frame ~3021; the exit taken at ~3124 |
+| (200, 900) | reached — the opening is east of the blockage |
+
+`(-300, 700)` is east of the wall’s end; from there the run to the door is clear,
+passing (-377, 1308) on the way. The kart’s last sampled position before the exit
+latches is 28 units from it. Total cost from the frontend: the rematch race is
+entered at frame ~3124, the amulet sequence plays at ~7061 and the lobby is back
+at ~7441, so the driven arm is **not** materially slower than the retarget arm.
+
+The approach is watched by [`tests/route_plan.py`](../route_plan.py) rather than
+merely timed out: if it ever stalls again the failure names the waypoint, the
+closest approach and which of oscillation / held off / budget it was, at the
+frame it happened. That matters here specifically because the original symptom
+was an indefinite loop that reported nothing.
+
+The gate itself was never in doubt and is now asserted directly: the driven arm
+requires the lobby’s `bosswarp:` verdict to show `WARP_BOSS_REMATCH` live at
+eight world balloons and `WARP_BOSS_FIRST` disabled, so the door the route drove
+through is the rematch door and not its first-encounter twin 35 units away.
+
+The note this section used to carry — that the exit is reachable from the
+post-race spawn, which is why `check_first_boss_progression` reaches the first
+boss as `12:E7:E38` — is still true, but it is not the cheapest route. Entering a
+race and coming back costs the Adventure track-select screen
+(`MENU_TRACK_SELECT_ADVENTURE`, which waits for an A press: measured, 10,150
+frames of a run spent on it) and the post-race options menu. The waypoint avoids
+both.
+
+### 2. The T.T. amulet, the trophies and Future Fun Land — closed, chained
+
+Both are now produced state. See “Fixture C.5” above for seams T and T.T. and
+their negative control, and
+[`check_future_fun_land.py`](../check_future_fun_land.py) for the lighthouse
+unlock (`trophies & 0xFF == 0xFF` plus `bosses & 1`,
+`game/src/thread3_main.c:1925-1938`), which is gated on trophies four production
+championships wrote, with a “one silver instead of a gold” arm and a “no Wizpig
+1” arm.
+
+Two things that check needs and that are worth not re-deriving:
+
+- The unlock has exactly one trigger, the rocket signpost at
+  **(3892, -149, 2226)** on Timber’s Island, reached by extending
+  `check_adventure_hub.py`’s tour north-east.
+- A refusal writes **nothing** — no bit, no level load, no trace — so “the route
+  never got there” and “the signpost said no” are indistinguishable without the
+  `rocketsign: trigger` line, which is emitted before the gate is evaluated. Both
+  negative arms assert the trigger fired.
+
+Entering a world’s trophy cabinet needs that world’s **rematch** bit as well as
+its eight balloons (`obj_loop_trophycab`: `(1 << (worldId + 6)) & bosses`), which
+is why the trophy chain runs on a save that already holds them. A checkpoint with
+only the first-boss bits produced `trophies=0x0` through three championships.
+
+### 3. The credits screen from a won Wizpig 2 — closed, reached
+
+Seam E now drives the post-win cutscene stack all the way to `MENU_CREDITS` and
+asserts the branch `menu_credits_init` took: `"TO BE CONTINUED …"`,
+`SEQUENCE_CRESCENT_ISLAND`, and `gViewingCreditsFromCheat` zero. The WHODIDTHIS
+contrast arm still reaches the same screen from a save that was never started and
+must still produce `"THE END"`, which is what keeps “reached credits” from being
+evidence about the campaign on its own.
+
+**The recorded obstacle was the wrong one, and the measurement that says so is
+worth keeping.** The pop at `game/src/thread3_main.c:894-919` has two arms: an A
+press with `func_8006C300()` non-zero, or the scene ending. Instrumented over
+29,929 frames of a won Wizpig 2 run:
+
+- `func_8006C300()` was **zero on every single frame**, and zero on all 24,596
+  frames after `ASSET_LEVEL_WIZPIG2ANIM` loaded. It is not merely unlucky
+  timing: `game_load_level` zeroes `D_800DD330` on *every* load and the only
+  place that sets it is the redirect branch for a **repeat** Wizpig boss entry,
+  so during any post-race cutscene the A-press arm is structurally unreachable.
+  The 113 A presses the script delivered could never have popped anything, and
+  the tapping cadence was never the variable.
+- `func_800214C4()` — the scene-ending signal — fired exactly once in the whole
+  run, popping the Wizpig 2 boss *intro*, and never again.
+
+The real cause is the fixture, and it is written up under “Fixture E” above: the
+missing Future Fun Land arrival flag made `game_load_level` overwrite the
+cutscene channel, which deactivated all 159 of the animation objects that would
+have raised that signal. `tests/input_scripts/wizpig_to_credits.txt` is still the
+script seam E uses; its taps are now documented as harmless rather than
+load-bearing.
+
+## What is still not witnessed
+
+- **Future Fun Land’s own state.** Fixture E constructs the five fields in the
+  table above. The campaign check does not drive to Future Fun Land, race its
+  four courses or collect its balloons; `check_future_fun_land.py` proves the
+  door into it opens, not what is behind it.
+- **One continuous start-to-credits run.** Deliberate, and unchanged: it would
+  run for hours and fail as one opaque blob. The chain of witnessed seams is the
+  design.

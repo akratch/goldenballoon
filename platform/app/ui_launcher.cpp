@@ -523,8 +523,32 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
     }
 }
 
+// Nav can cross into a child window only when the child shares the parent's
+// focus scope. The scripted accessibility walk needs that to Tab off the nav
+// rail and into the panel; ordinary sessions keep ImGui's default, where the
+// launcher shell and its panel are separate nav scopes.
+ImGuiChildFlags panelChildFlags(ImGuiChildFlags flags) {
+    return AppUi_a11yWalkArmed() ? (flags | ImGuiChildFlags_NavFlattened)
+                                 : flags;
+}
+
+// Last panel announced. Guarding on the CHANGE, not on ui::SpeakSection's own
+// repeat filter, is what keeps this quiet: the panel draws every frame while
+// the settings headers announce themselves as the keyboard passes over them,
+// so an unguarded call here and a header call there would take turns being
+// "new" and the shell would talk without pause.
+int g_spokenPanel = -1;
+
 void drawActivePanel(int activePanel, LauncherState &state, LauncherAction &action) {
-    ImGui::BeginChild("##content", ImVec2(0, 0), false);
+    // Which panel you are in, said once per arrival. The launcher's counterpart
+    // to a settings section header; both go through the one announcement point
+    // in ui_common.cpp.
+    if (activePanel != g_spokenPanel && activePanel >= 0 &&
+        activePanel < kPanelCount) {
+        g_spokenPanel = activePanel;
+        ui::SpeakSection(kPanels[activePanel].label);
+    }
+    ImGui::BeginChild("##content", ImVec2(0, 0), panelChildFlags(0));
     if (state.bootErrorVisible) {
         if (ui::CardBegin("##boot-recovery", AppTheme::bad(), 0.0f)) {
             ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
@@ -607,7 +631,7 @@ void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
     // One page, one scroll owner. Keeping the introduction outside this child
     // left no reachable settings viewport at the supported 640x480 / 2.00x
     // extreme and wasted scarce height on 7-inch handhelds.
-    ImGui::BeginChild("##settingsscroll", ImVec2(0, 0), false);
+    ImGui::BeginChild("##settingsscroll", ImVec2(0, 0), panelChildFlags(0));
     ui::SectionHeader("Settings",
                       "Everything saves as you change it. Anything marked "
                       "“Next launch” waits for Play.");

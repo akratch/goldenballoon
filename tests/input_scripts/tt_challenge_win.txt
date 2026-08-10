@@ -1,0 +1,111 @@
+# T.T. challenge win -- the four amulet-piece courses (S9 M3).
+#
+# Resume a checksum-valid Adventure save and let MDKR_LOAD_TRACK retarget the
+# race load to a challenge course (11 Fire Mountain, 25 Smokey Castle,
+# 26 Darkwater Beach, 27 Icicle Pyramid). Driven by
+# tests/check_campaign_progression.py's T.T. seam; the tail is the same tap
+# cadence tests/check_challenge_modes.py builds for the same four courses.
+#
+# Lines up to 2050 are tests/input_scripts/adventure_resume_race.txt verbatim.
+# The taps from 2800 answer the challenge result flow, which is edge-detected,
+# so they are single taps and never a hold. During the arena itself A is only
+# the throttle MDKR_AUTOPILOT already supplies.
+
+1250 START 4
+1330 START 4
+1450 A 4
+1540 A 4
+
+1750 A 4
+
+# GAME_SELECT: Adventure One is option 0.
+1900 A 4
+
+# FILE_SELECT: resume the already-started first slot.
+2050 A 4
+
+# --- Challenge result flow ---
+2800 A 4
+2824 A 4
+2848 A 4
+2872 A 4
+2896 A 4
+2920 A 4
+2944 A 4
+2968 A 4
+2992 A 4
+3016 A 4
+3040 A 4
+3064 A 4
+3088 A 4
+3112 A 4
+3136 A 4
+3160 A 4
+3184 A 4
+3208 A 4
+3232 A 4
+3256 A 4
+3280 A 4
+3304 A 4
+3328 A 4
+3352 A 4
+3376 A 4
+3400 A 4
+3424 A 4
+3448 A 4
+3472 A 4
+3496 A 4
+3520 A 4
+3544 A 4
+3568 A 4
+3592 A 4
+3616 A 4
+3640 A 4
+3664 A 4
+3688 A 4
+3712 A 4
+3736 A 4
+3760 A 4
+3784 A 4
+3808 A 4
+3832 A 4
+3856 A 4
+3880 A 4
+3904 A 4
+3928 A 4
+3952 A 4
+3976 A 4
+4000 A 4
+4024 A 4
+4048 A 4
+4072 A 4
+4096 A 4
+4120 A 4
+4144 A 4
+4168 A 4
+4192 A 4
+4216 A 4
+4240 A 4
+4264 A 4
+4288 A 4
+4312 A 4
+4336 A 4
+4360 A 4
+4384 A 4
+4408 A 4
+4432 A 4
+4456 A 4
+4480 A 4
+4504 A 4
+4528 A 4
+4552 A 4
+4576 A 4
+4600 A 4
+4624 A 4
+4648 A 4
+4672 A 4
+4696 A 4
+4720 A 4
+4744 A 4
+4768 A 4
+4792 A 4

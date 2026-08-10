@@ -190,8 +190,29 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/config_ini.c       # INI engine (game-agnostic)
     ${CMAKE_SOURCE_DIR}/platform/taj_mod_state.c    # versioned global Taj unlock sidecar
     ${CMAKE_SOURCE_DIR}/platform/taj_mod_state_file.c # atomic desktop/Web state backend
+    # Content packs: a read-only override layer in front of the ROM asset path.
+    # No pack content is shipped, hosted or tracked; these only read what a
+    # player put in mods/ themselves.
+    ${CMAKE_SOURCE_DIR}/platform/mod_manifest.c     # one pack's pack.ini
+    ${CMAKE_SOURCE_DIR}/platform/mod_source.c       # directory/zip pack byte source
+    ${CMAKE_SOURCE_DIR}/platform/mod_registry.c     # ordered set of installed packs
+    ${CMAKE_SOURCE_DIR}/platform/mod_texture_key.c  # published texture content digest
+    ${CMAKE_SOURCE_DIR}/platform/mod_texture_store.c # decoded override textures (stb PNG)
+    ${CMAKE_SOURCE_DIR}/platform/mod_music.c        # decoded override music (dr_wav)
+    ${CMAKE_SOURCE_DIR}/platform/enhancement_registry.c # enhancements + authority class
+    ${CMAKE_SOURCE_DIR}/platform/enh_speedometer.c  # speed readout (presentation only)
+    ${CMAKE_SOURCE_DIR}/platform/enh_draw_distance.c # draw distance + LOD bias (presentation only)
+    ${CMAKE_SOURCE_DIR}/platform/enh_ai_difficulty.c # opponent skill (gameplay; authored by default)
+    ${CMAKE_SOURCE_DIR}/platform/save_state.c       # practice save states (NOT the progress save)
+    ${CMAKE_SOURCE_DIR}/platform/asset_subentry.c   # bounds-checked asset sub-entry access
+    # The console command parser. It was reachable only from cmake/tests.cmake
+    # until the console shipped -- a unit-tested island the engine never linked.
+    ${CMAKE_SOURCE_DIR}/platform/dev_command.c      # console command parsing
     ${CMAKE_SOURCE_DIR}/platform/video_config.c     # presentation modes (pure core)
     ${CMAKE_SOURCE_DIR}/platform/video_config_runtime.c  # ini/env/argv + g_pc* publication
+    ${CMAKE_SOURCE_DIR}/platform/a11y_model.c       # what the shell would say, as text
+    ${CMAKE_SOURCE_DIR}/platform/a11y_race.c        # race events -> the same text stream
+    ${CMAKE_SOURCE_DIR}/platform/a11y_speech_worker.c # drain thread: says it, off the render thread
     ${CMAKE_SOURCE_DIR}/platform/user_paths.c       # immutable bundle vs mutable user-data policy
     ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c          # UTF-8/long-path OS filesystem boundary
     ${CMAKE_SOURCE_DIR}/platform/pacing_policy.c    # original/enhanced simulation cadence
@@ -260,6 +281,33 @@ else()
         ${CMAKE_SOURCE_DIR}/platform/web_audio_worklet.c)
 endif()
 
+# The accessibility voice, one implementation per platform — the same
+# arrangement, for the same reason, as platform/app/file_dialog_* below: the
+# interface in platform/a11y_speech.h is shared, exactly one backend compiles,
+# and the drain worker above never learns which one it got. A platform with no
+# engine gets the null backend and degrades to text-only with a stated reason
+# rather than failing to link.
+if(EMSCRIPTEN)
+    list(APPEND PLATFORM_SOURCES
+        ${CMAKE_SOURCE_DIR}/platform/a11y_speech_web.c)     # Web Speech API
+elseif(APPLE)
+    # OBJCXX here as well as in the app-shell block below: this backend is
+    # compiled into the ENGINE (a11y_model.c is), and a -DMDKR_APP=OFF build
+    # still has to be able to speak.
+    enable_language(OBJCXX)
+    list(APPEND PLATFORM_SOURCES
+        ${CMAKE_SOURCE_DIR}/platform/a11y_speech_mac.mm)    # AVSpeechSynthesizer
+elseif(WIN32)
+    list(APPEND PLATFORM_SOURCES
+        ${CMAKE_SOURCE_DIR}/platform/a11y_speech_win.cpp)   # SAPI 5 / ISpVoice
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND PLATFORM_SOURCES
+        ${CMAKE_SOURCE_DIR}/platform/a11y_speech_linux.c)   # speech-dispatcher, dlopen'd
+else()
+    list(APPEND PLATFORM_SOURCES
+        ${CMAKE_SOURCE_DIR}/platform/a11y_speech_null.c)    # text-only, and says so
+endif()
+
 # Renderer front-end + backends (platform/fast3d/). gfx_pc_dkr.c (the F3DDKR
 # HLE) + the vendored mgb64 backends. The standalone Metal backend
 # (gfx_metal.mm) was dropped post-1.0.6 — it was never built by any target
@@ -313,6 +361,23 @@ else()
     set(GLAD_SOURCES "")
 endif()
 
+# stb_image, instantiated in its own TU so third-party source can be compiled
+# with warnings off without weakening the strict baseline PLATFORM_SOURCES is
+# held to. Every platform builds it: content-pack PNG decode is not
+# desktop-only. See lib/stb/stb_image_impl.c for the decoder configuration.
+set(STB_SOURCES ${CMAKE_SOURCE_DIR}/lib/stb/stb_image_impl.c)
+
+# miniz, the zip reader behind platform/mod_source.c's archive arm. Third-party
+# and, like stb_image, compiled with warnings off in its own TU rather than
+# relaxing the baseline every first-party file is held to.
+set(MINIZ_SOURCES ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c)
+
+# dr_wav, the WAV decoder behind platform/mod_music.c. Same arrangement as the
+# two above: header-only third-party source instantiated in one TU of its own
+# so it can be compiled with warnings off without relaxing anything a
+# first-party file is held to. See lib/dr_libs/dr_wav_impl.c.
+set(DR_LIBS_SOURCES ${CMAKE_SOURCE_DIR}/lib/dr_libs/dr_wav_impl.c)
+
 # --- Target name ----------------------------------------------------------
 # Native binary is `mdkr64`; the wasm engine is `mdkr64_web` (emits
 # mdkr64_web.js + mdkr64_web.wasm, loaded by dist/web/index.html).
@@ -327,6 +392,9 @@ add_executable(${MDKR_TARGET}
     ${PLATFORM_SOURCES}
     ${FAST3D_SOURCES}
     ${GLAD_SOURCES}
+    ${STB_SOURCES}
+    ${MINIZ_SOURCES}
+    ${DR_LIBS_SOURCES}
 )
 
 # Include layout mirrors the DKR Makefile (-I . -I include -I include/libc
@@ -344,7 +412,9 @@ target_include_directories(${MDKR_TARGET} PRIVATE
     ${CMAKE_SOURCE_DIR}/platform/fast3d
     ${CMAKE_SOURCE_DIR}/platform/fast3d_shim
     ${CMAKE_SOURCE_DIR}/lib/glad/include
-    ${CMAKE_SOURCE_DIR}/lib/stb
+    ${CMAKE_SOURCE_DIR}/lib/stb          # stb_image.h, taken by mod_texture_store.c
+    ${CMAKE_SOURCE_DIR}/lib/miniz        # miniz.h, taken by mod_source.c
+    ${CMAKE_SOURCE_DIR}/lib/dr_libs      # dr_wav.h, taken by mod_music.c
     ${SDL2_INCLUDE_DIRS}
 )
 
@@ -396,6 +466,17 @@ elseif(CMAKE_C_COMPILER_ID MATCHES "Clang" OR
        CMAKE_C_COMPILER_ID STREQUAL "GNU" OR EMSCRIPTEN)
     set_source_files_properties(${PLATFORM_SOURCES} PROPERTIES
         COMPILE_OPTIONS "-Wall;-Wextra;-Werror")
+endif()
+# Vendored third-party source does not survive this project's warning baseline,
+# and it is not this project's to fix. Suppress warnings for that FILE rather
+# than relaxing the flags any first-party file is held to — the whole reason
+# stb_image is instantiated in its own TU is to make this a one-file exemption.
+if(MSVC)
+    set_source_files_properties(${STB_SOURCES} ${MINIZ_SOURCES}
+        ${DR_LIBS_SOURCES} PROPERTIES COMPILE_OPTIONS "/w")
+else()
+    set_source_files_properties(${STB_SOURCES} ${MINIZ_SOURCES}
+        ${DR_LIBS_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
 endif()
 target_compile_options(${MDKR_TARGET} PRIVATE
     -fno-strict-aliasing
@@ -485,9 +566,20 @@ if(NOT EMSCRIPTEN)
         target_link_libraries(${MDKR_TARGET} PRIVATE m)
     endif()
     if(APPLE)
-        target_link_libraries(${MDKR_TARGET} PRIVATE ${OPENGL_LIB})
+        # AVFoundation: AVSpeechSynthesizer, behind platform/a11y_speech_mac.mm.
+        target_link_libraries(${MDKR_TARGET} PRIVATE ${OPENGL_LIB}
+            "-framework AVFoundation" "-framework Foundation")
     else()
+        # CMAKE_DL_LIBS also carries the dlopen that platform/a11y_speech_linux.c
+        # loads speech-dispatcher through — deliberately at runtime, so a tarball
+        # still starts on a machine that does not have it.
         target_link_libraries(${MDKR_TARGET} PRIVATE OpenGL::GL ${CMAKE_DL_LIBS})
+    endif()
+    if(WIN32)
+        # ole32: CoCreateInstance for SAPI's ISpVoice
+        # (platform/a11y_speech_win.cpp). A stock Windows system DLL, already on
+        # the import allowlist in tools/check_windows_imports.sh.
+        target_link_libraries(${MDKR_TARGET} PRIVATE ole32)
     endif()
     # WebGPU backend: gate the code + link the pinned wgpu-native prebuilt. GL +
     # WebGPU stay compiled together so MDKR_RENDERER switches at runtime.
@@ -536,6 +628,14 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/app_ui_policy.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/app_window.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/arg_triage.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/crash_screen.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/dev_tools.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/tool_collision.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/tool_console.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/tool_diagnostics.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/tool_freecam.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/tool_objects.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/tool_performance.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/diag_log.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/engine_boot.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/main_app.cpp

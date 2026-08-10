@@ -15,6 +15,11 @@
 #include "fast3d/gfx_mipgen.h"
 #include "fast3d/gfx_font_outline.h"
 #include "fast3d/gfx_uniforms.h"
+/* The two receivers of Content.PacksEnabled. Taken as headers, not as a
+ * platform_os.h round trip: publish() is the single place a LIVE key reaches
+ * its receiver, and these are receivers exactly like audio_volume.h below. */
+#include "mod_music.h"
+#include "mod_texture_store.h"
 #include "present_sched.h"
 #include "user_paths.h"
 
@@ -611,12 +616,52 @@ void mdkr_video_config_publish(void) {
         c->values[MDKR_VIDEO_WORLD_SHADOWS].text;
     const char *world_finish_off =
         mdkr_video_getenv("MDKR_TEST_WORLD_FINISH_OFF");
+    const int packs_enabled =
+        c->values[MDKR_CONTENT_PACKS_ENABLED].number != 0.0f;
     int world_finish;
 
     (void)mdkr_audio_volume_publish(
         (int)c->values[MDKR_AUDIO_MASTER_VOLUME].number,
         (int)c->values[MDKR_AUDIO_MUSIC_VOLUME].number,
         (int)c->values[MDKR_AUDIO_EFFECTS_VOLUME].number);
+
+    /*
+     * "Custom content" — the settings checkbox, applied while you play.
+     *
+     * Ticking or clearing it changes the picture on the next frame, the same
+     * way Tab does. The two are the same lever, so the rule between them is
+     * the plain one: Tab is a momentary comparison you hold against whatever
+     * you have chosen, and choosing again ends the comparison. If you have
+     * pressed Tab to look at the original and then you change a setting, the
+     * game goes back to showing you what your settings say — because the
+     * settings screen is where you say what you want, and a screen that
+     * silently kept overriding you would be lying about its own checkbox.
+     *
+     * A player who wanted the comparison back presses Tab again; a player who
+     * did not gets exactly what the box in front of them shows. This is also
+     * why the settings path does NOT copy Tab's "do nothing when no pack is
+     * installed" guard. That guard exists so a keypress with nothing to
+     * compare stays silent; here there is nothing to stay silent about, and
+     * skipping the write would leave the running game disagreeing with the
+     * setting the moment anything is installed. Both calls below are already
+     * no-ops when the value has not moved, and both are inert with no pack.
+     *
+     * ON->OFF and OFF->ON are BOTH live for textures, because
+     * platform_content_packs_init() scans mods/ and binds the decoded-texture
+     * store unconditionally: the setting has never gated the scan, only
+     * whether the store answers. So turning it back on has something to turn
+     * on, and the flip costs a cache generation rather than a rescan.
+     *
+     * Music is honoured from the next piece of music onwards rather than
+     * instantly, and mod_music.h states why: muting the sequence player is a
+     * one-way redirection, so cutting a replacement off mid-track would leave
+     * silence where the game's own music should be.
+     *
+     * Installing or removing a pack while the game runs is still a restart:
+     * that is the scan, not this switch, and nothing here pretends otherwise.
+     */
+    mdkr_mod_texture_set_enabled(packs_enabled != 0);
+    mdkr_mod_music_set_enabled(packs_enabled);
 
     g_pcRemasterFX        = (int) c->values[MDKR_VIDEO_REMASTER_FX].number;
     world_finish =

@@ -2528,3 +2528,59 @@ which did not reproduce here on either tree, in any render mode, at either
 aspect ratio, or at either pause timing. The fix closes the class by
 construction, but that half wants confirmation from the reporter on a patched
 build.
+
+## PARTLY FIXED: three content-pack defects found by peer review, two now closed — wave "packreview"
+
+Found by a review on the 1.1.1 release line against this branch's content-pack
+work, verified by reading rather than by running, and left open deliberately:
+the machine was held by another session's suite and an unverified fix to a gate
+that took hours to diagnose is worse than a recorded defect.
+
+Two of the three are now fixed and gated. The third — Original mode — is still
+open and is being handled separately.
+
+**FIXED: a pack PNG was decoded before the cache cap was consulted.** The load
+path called `stbi_load_from_memory()` and only then `evict_for()`, so the cap
+bounded what was *retained*, never what was *allocated*: a pack PNG of a few
+hundred kilobytes could cost a gigabyte before anything asked whether it fit,
+which is a denial of service out of a file a player downloaded from a stranger.
+`slot_resolve()` now reads the declared size with `stbi_info_from_memory()`
+first and rejects against the same cap `evict_for()` enforces, in 64-bit
+arithmetic, before any decode. The size is measured at four bytes a pixel
+whatever the file's own channel count says, because the store always asks the
+decoder for RGBA — a one-channel picture is the case where stb's internal
+ceiling and this store's cost differ by four, and it is the case the fixture
+uses. A header `stbi_info()` cannot parse still falls through to the decoder on
+purpose, so the log keeps naming the defect in stb's own words, and every
+post-decode check is untouched: `stbi_info()` reports what the header claims,
+and a header that lies is still caught afterwards.
+
+Gated by the new `mod_texture_store` CTest target. Its point is the *ordering*,
+which nothing the store returns exposes — an oversized picture came back
+rejected before the fix too, having first been decoded in full. So the test
+links `tests/mod_texture_store_probe.c` in place of `lib/stb/stb_image_impl.c`:
+the same stb_image, configured identically, with the decode entry point and the
+decoder's allocator each behind a counter, and a refusal ceiling so the broken
+build measures the gigabyte instead of allocating it. Mutation control: with
+the pre-check disabled, "a pack texture whose header declares more than the
+cache holds is refused" still passes, while "and the decoder is never entered
+for it" and "and nothing the size of the picture is ever allocated" both fail.
+
+**FIXED: `registry_add_skip()` overwrote the last slot's reason but not its
+name.** Once the skip list was full, Settings -> Content showed one pack's name
+against a different pack's explanation — the screen that exists so a player can
+find out why a pack did not load, lying in the one case where the most had
+already gone wrong. Both halves of the overflow slot are now rewritten; the
+name reads "More packs", chosen to be plural so nothing the player installed
+can be mistaken for it and to make a sentence with the reason beside it in the
+"name — reason" row that is the only place this text is seen. Gated by case 8b
+in `tests/test_mod_registry.c`, which asserts the overflow row's name is not
+any fixture pack's while its reason says the list is full.
+
+**OPEN: packs override textures in Original mode.** `dkr_bind_tile()` applies the
+override with no reference to presentation mode, so a session launched
+`--pure` renders pack textures while every report still says Original, and
+byte-exactness to the console picture no longer holds. Installing a pack is
+arguably itself the opt-in, and that is a defensible answer -- but it has to be
+a stated decision in `docs/MODDING.md` and the notes, not an omission nobody
+wrote down.

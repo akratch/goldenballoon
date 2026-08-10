@@ -7,6 +7,8 @@
 #include "ui_common.h"
 
 #include "controller_mapping.h"
+#include "enhancement_registry.h"
+#include "mod_registry.h"
 #include "video_config.h"
 #include "platform_os.h"
 
@@ -40,6 +42,22 @@ bool g_uiScaleInitialized = false;
 bool g_uiScaleDirty = false;
 float g_uiScaleEdit = 1.0f;
 std::string g_uiScaleError;
+/*
+ * Widget rectangles the scripted gates drive, and one flag each.
+ *
+ * The flag answers ONE question: is the panel showing this widget right now?
+ * Not "was it ever submitted" -- a widget scrolled past the bottom of the
+ * panel, or sitting in a collapsed section, is still submitted by ImGui, and a
+ * flag that only records submission hands a queued click coordinates the panel
+ * is currently clipping. The gate then fails on whatever it was really
+ * measuring (a saved value, an applied scale) and says nothing about layout.
+ * That mis-attribution cost hours once; see docs/open-items/misc.md.
+ *
+ * So each flag is assigned from ImGui::IsItemVisible() where the rect is read,
+ * and every flag is cleared at the top of Settings_draw() for the frames the
+ * widget is not submitted at all. Both halves are required: IsItemVisible()
+ * cannot speak for a widget whose section never drew it.
+ */
 bool g_frameLimitRectValid = false;
 ImVec2 g_frameLimitRectMin;
 ImVec2 g_frameLimitRectMax;
@@ -90,9 +108,16 @@ bool drawSettingsSectionHeader(const char *label, const char *subtitle,
     ImGui::PushStyleColor(ImGuiCol_Header, AppTheme::hex(0x212127));
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, AppTheme::hex(0x2C2C33));
     ImGui::PushStyleColor(ImGuiCol_HeaderActive, AppTheme::hex(0x37373F));
+    // The scripted accessibility walk cannot reach a row inside a collapsed
+    // section, because a collapsed section does not draw one.
+    if (AppUi_a11yWalkArmed()) flags |= ImGuiTreeNodeFlags_DefaultOpen;
     ImGui::PushFont(AppTheme::fonts().section);
     const bool open = ImGui::CollapsingHeader(label, flags);
     ImGui::PopFont();
+    // Landing on a header IS moving between sections; this is the one place
+    // the settings panel says so. Only one header can hold focus, and
+    // ui::SpeakSection drops the repeat on every subsequent frame.
+    if (ImGui::IsItemFocused()) ui::SpeakSection(label);
     ImGui::PopStyleColor(3);
     if (!open) return false;
     const ImVec2 min = ImGui::GetItemRectMin();
@@ -642,6 +667,97 @@ const Copy *copyFor(MdkrVideoKey key) {
     }
 }
 
+/*
+ * The value in the player's own words, for anything that has to SAY it rather
+ * than draw it. A voice reading "Frame limit, original" or "Rumble, 1" is
+ * reading the config file aloud; the control on screen says "Original
+ * (recommended)" and shows a tick, and the two must not disagree.
+ *
+ * Settings_dumpSchemaContract() and the row announcement both call this, so
+ * the gate's expectation and the utterance are produced by one function.
+ */
+void displayValue(MdkrVideoKey key, const MdkrVideoSchema *s,
+                  const MdkrVideoValue *v, char *out, size_t cap) {
+    char raw[MDKR_VIDEO_STRING_MAX];
+    formatValue(key, s, v, raw, sizeof(raw));
+    Options options;
+    if (optionsFor(key, options) || key == MDKR_VIDEO_MODE) {
+        std::snprintf(out, cap, "%s", optionLabel(key, raw));
+        return;
+    }
+    // A checkbox row. "on"/"off" is what the player sees and what a voice can
+    // act on; "1" is neither.
+    if (s->type == MDKR_VIDEO_TYPE_INT && s->min == 0.0f && s->max == 1.0f) {
+        std::snprintf(out, cap, "%s",
+                      v != nullptr && v->number != 0.0f ? "on" : "off");
+        return;
+    }
+    std::snprintf(out, cap, "%s", raw);
+}
+
+// --- Enhancement help ------------------------------------------------------
+// Every enhancement row ends with its AUTHORITY CLASS in the player's words.
+// The class is asserted and gated in platform/enhancement_registry.c, so that
+// is where this reads it from — never from the enum name, which says nothing to
+// a player, and never from a second list kept here.
+constexpr const char *kEnhancementGameplayNote = "Changes how the game plays.";
+constexpr const char *kEnhancementLooksNote =
+    "Changes only how the game looks.";
+
+// Composed once per key; drawn every frame.
+std::array<std::string, MDKR_VIDEO_KEY_COUNT> g_enhancementHelp;
+
+const char *enhancementHelp(MdkrVideoKey key,
+                            const MdkrEnhancement *enhancement,
+                            const MdkrVideoSchema *schema) {
+    std::string &text = g_enhancementHelp[static_cast<size_t>(key)];
+    if (!text.empty()) return text.c_str();
+    const char *note = enhancement->authority == MDKR_ENH_GAMEPLAY
+        ? kEnhancementGameplayNote : kEnhancementLooksNote;
+    // The schema paragraph, because it is the one that explains what the
+    // values mean; the registry's own sentence is the shorter summary the
+    // enhancement table carries.
+    text = schema->help != nullptr ? schema->help : enhancement->help;
+    // Appended only when the paragraph does not already end with it. Most were
+    // written with the sentence in place, and printing it twice reads as a
+    // stutter rather than as emphasis — while a new row whose author forgot it
+    // still gets the class stated, which is the part that must not be optional.
+    const size_t noteLength = std::strlen(note);
+    if (text.size() < noteLength ||
+        text.compare(text.size() - noteLength, noteLength, note) != 0) {
+        if (!text.empty()) text += ' ';
+        text += note;
+    }
+    return text.c_str();
+}
+
+const char *helpFor(MdkrVideoKey key, const MdkrVideoSchema *schema) {
+    const MdkrEnhancement *enhancement = mdkr_enhancement_for_key(key);
+    if (enhancement != nullptr) {
+        return enhancementHelp(key, enhancement, schema);
+    }
+    switch (key) {
+        case MDKR_VIDEO_SIMULATION_CADENCE:
+            return "Original preserves retail physics, AI, timers, and input "
+                   "timing. Enhanced is a compatibility mode for older port "
+                   "configurations and changes gameplay speed. It is not an "
+                   "FPS setting.";
+        case MDKR_VIDEO_FRAME_LIMIT:
+            return kFrameLimitHelp;
+        case MDKR_VIDEO_MOTION_SMOOTHING:
+            return "Interpolated blends adjacent authored presentation states "
+                   "at the display's exact fractional time. Simulation, input, "
+                   "audio, timers, and saves still advance only on Original "
+                   "gameplay ticks. Off shows authored images only.";
+        case MDKR_VIDEO_MODE:
+            // The section introduction directly above this control explains the
+            // three modes; repeating the schema paragraph creates a text wall.
+            return nullptr;
+        default:
+            return schema->help;
+    }
+}
+
 // --- One row ---------------------------------------------------------------
 bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
     const MdkrVideoSchema *s = mdkr_video_schema(k);
@@ -655,6 +771,10 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
         k == MDKR_INPUT_RUMBLE_PROFILE && rumbleEnabled != nullptr &&
         rumbleEnabled->number == 0.0f;
     bool changed = false;
+    // While an open combo is being browsed, "the last item" is the option under
+    // the cursor rather than this row. Announcing the row's CURRENT value then
+    // would tell the player the opposite of what they are about to choose.
+    bool comboBrowsing = false;
     EditState &editState = g_edits[static_cast<size_t>(k)];
 
     ImGui::PushID((int)k);
@@ -713,9 +833,48 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
         editState.active = comboOpen;
         if (k == MDKR_VIDEO_FRAME_LIMIT) {
             g_frameLimitPopupOpen = comboOpen;
-            g_frameLimitRectMin = ImGui::GetItemRectMin();
-            g_frameLimitRectMax = ImGui::GetItemRectMax();
-            g_frameLimitRectValid = true;
+            /* Sample only while the popup is closed. BeginCombo() returning
+             * true means it has ALREADY begun the popup window, and Begin()
+             * reassigns ImGui's last-item data to that window's title bar --
+             * so on open frames GetItemRectMin/Max describe the popup (a
+             * zero-height rect wherever it was placed) and IsItemVisible()
+             * answers for the popup too. Reading them there overwrote the
+             * combo's rect with popup geometry and made the off-screen
+             * diagnostic below fire on a perfectly visible combo. */
+            if (!comboOpen) {
+                g_frameLimitRectMin = ImGui::GetItemRectMin();
+                g_frameLimitRectMax = ImGui::GetItemRectMax();
+                /* The one source of truth for "the panel is showing this
+                 * widget right now": ImGui clears the visible bit for an item
+                 * whose rectangle misses the current clip rect, whether it was
+                 * scrolled past the bottom or squeezed off any other edge. The
+                 * scripted pacing gates click these coordinates on the next
+                 * frame, and Settings_smokeFrameLimitCenter() refuses to hand
+                 * them over unless this says the widget is on screen. */
+                g_frameLimitRectValid = ImGui::IsItemVisible();
+            }
+            /* Same fact, said out loud, because a gate that simply cannot find
+             * its target reports "was not rendered" and leaves the reader to
+             * guess which of the two it is. Read from the flag above so the
+             * diagnostic and the refusal can never disagree. Armed only for
+             * the gates: a player scrolling past this row is the same
+             * observation and means nothing. */
+            static const bool pacingGateArmed =
+                std::getenv("MDKR_APP_SMOKE_SELECT_FRAME_LIMIT") != nullptr ||
+                std::getenv("MDKR_APP_SMOKE_SELECT_PRESENTATION_PACE") != nullptr;
+            static bool offscreenReported = false;
+            if (pacingGateArmed && !offscreenReported && !comboOpen &&
+                !g_frameLimitRectValid) {
+                offscreenReported = true;
+                std::fprintf(stderr,
+                             "[app-ui-test] frame-limit combo is scrolled out "
+                             "of the panel (rect y=%.0f..%.0f, panel height "
+                             "%.0f): something drawn above it -- an open "
+                             "section, or a larger UI scale -- pushed it past "
+                             "the bottom\n",
+                             g_frameLimitRectMin.y, g_frameLimitRectMax.y,
+                             ImGui::GetIO().DisplaySize.y);
+            }
             if (std::getenv("MDKR_APP_UI_INPUT_TRACE")) {
                 static int smokeFrame = 0;
                 const ImVec2 mouse = ImGui::GetIO().MousePos;
@@ -766,6 +925,7 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
                 if (selected) ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();
+            comboBrowsing = true;
         }
     } else if (s->type == MDKR_VIDEO_TYPE_STRING) {
         // Open domain (aspect expressions, or "authored" / a FOV number).
@@ -839,6 +999,21 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
         }
     }
 
+    /*
+     * THE announcement. Every settings row in the product passes through here
+     * -- the launcher panel, the in-game overlay, the Enhancements and Content
+     * sections all call drawKey() -- so a row added later speaks without
+     * anybody remembering to make it, and a row can only be silent by being
+     * hand-rolled somewhere else. It sits immediately after the widget on
+     * purpose: ui::SpeakFocusedItem reads ImGui's last-submitted item, and the
+     * error text, badges and help paragraph below would take that place.
+     */
+    if (!comboBrowsing) {
+        char spoken[MDKR_VIDEO_STRING_MAX];
+        displayValue(k, s, d, spoken, sizeof(spoken));
+        ui::SpeakFocusedItem(s->label, spoken, helpFor(k, s));
+    }
+
     if (!editState.error.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
         ImGui::TextWrapped("%s", editState.error.c_str());
@@ -848,7 +1023,9 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
         if (editState.dirty && k == MDKR_VIDEO_FRAME_LIMIT) {
             g_frameLimitRetryRectMin = ImGui::GetItemRectMin();
             g_frameLimitRetryRectMax = ImGui::GetItemRectMax();
-            g_frameLimitRetryRectValid = true;
+            // Submitted is not the same as on screen; the same-process Retry
+            // gate clicks these coordinates. See the flag block up top.
+            g_frameLimitRetryRectValid = ImGui::IsItemVisible();
         }
         if (retryPressed) {
             if (k == MDKR_VIDEO_FRAME_LIMIT) {
@@ -993,7 +1170,9 @@ bool drawPresentationPace(bool compact) {
         const int slot = static_cast<int>(choice.pace);
         g_paceRectMin[slot] = ImGui::GetItemRectMin();
         g_paceRectMax[slot] = ImGui::GetItemRectMax();
-        g_paceRectValid[slot] = true;
+        // The quick-choice gate presses one of these radios at last frame's
+        // coordinates, so the flag has to mean "on screen", not "submitted".
+        g_paceRectValid[slot] = ImGui::IsItemVisible();
         if (!pressed) continue;
         const MdkrVideoRuntimeResult result =
             mdkr_video_config_runtime_set_presentation_pace(choice.pace);
@@ -1084,6 +1263,456 @@ bool restoreControllerDefaults() {
     setStatus("Controller mapping and rumble reset to defaults.",
               AppTheme::good());
     return true;
+}
+
+// --- Enhancements ----------------------------------------------------------
+// The rows are enumerated from platform/enhancement_registry.c rather than
+// listed here, for the reason that table exists: a panel carrying its own copy
+// of the list keeps looking complete after somebody adds a row and forgets it.
+// Grouping is the registry's category, and a category with no rows draws no
+// header — COSMETIC is declared and still empty.
+struct EnhancementGroup {
+    MdkrEnhCategory category;
+    const char *label;
+};
+const EnhancementGroup kEnhancementGroups[] = {
+    {MDKR_ENH_CAT_DISPLAY,    "On screen"},
+    {MDKR_ENH_CAT_DIFFICULTY, "Difficulty"},
+    {MDKR_ENH_CAT_COSMETIC,   "Appearance"},
+};
+
+// Restores the enhancement keys, and only those, to their schema defaults.
+//
+// The scoping is the action. "Reset" next to a list of extras must not be a
+// trap that also throws away the frame limit, the volume levels, and a
+// remapped controller, so the key set comes from AppUi_enhancementResetIncludes
+// and one transaction writes exactly it — the same shape as the controller
+// restore above, so a partial write is not a state either can land in.
+bool resetEnhancements() {
+    MdkrVideoConfig defaults;
+    std::array<std::string, MDKR_VIDEO_KEY_COUNT> values;
+    std::array<MdkrVideoRuntimeChange, MDKR_VIDEO_KEY_COUNT> changes;
+    int count = 0;
+
+    mdkr_video_config_defaults(&defaults);
+    for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
+        const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
+        if (!AppUi_enhancementResetIncludes(key)) continue;
+        const MdkrVideoSchema *schema = mdkr_video_schema(key);
+        if (schema == nullptr) return false;
+        if (schema->type == MDKR_VIDEO_TYPE_STRING) {
+            values[static_cast<size_t>(count)] = defaults.values[key].text;
+        } else if (schema->type == MDKR_VIDEO_TYPE_INT) {
+            values[static_cast<size_t>(count)] = std::to_string(
+                static_cast<int>(defaults.values[key].number));
+        } else {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%.2f",
+                          static_cast<double>(defaults.values[key].number));
+            values[static_cast<size_t>(count)] = buf;
+        }
+        // `values` is a fixed array, so no element ever moves and the pointer
+        // handed to the transaction stays valid until it returns.
+        changes[static_cast<size_t>(count)] =
+            {key, values[static_cast<size_t>(count)].c_str()};
+        ++count;
+    }
+    if (count == 0) return false;
+
+    const MdkrVideoRuntimeResult result =
+        mdkr_video_config_runtime_set_many(changes.data(), count);
+    if (!resultSucceeded(result)) {
+        // One pinned row refuses the whole transaction, so name the row that
+        // refused it rather than whichever one happened to be written first:
+        // "Speedometer is fixed by ..." is not an answer for a player whose
+        // Opponent skill is the pinned one.
+        MdkrVideoKey blamed = changes[0].key;
+        for (int i = 0; i < count; ++i) {
+            const MdkrVideoKey key = changes[static_cast<size_t>(i)].key;
+            if (mdkr_video_config_runtime_locked(key) != 0) {
+                blamed = key;
+                break;
+            }
+        }
+        reportResult(result, mdkr_video_schema(blamed));
+        return false;
+    }
+    for (int i = 0; i < count; ++i) {
+        g_edits[static_cast<size_t>(changes[static_cast<size_t>(i)].key)] =
+            EditState{};
+    }
+    setStatus("Enhancements are back to the way the game shipped. Your "
+              "picture, sound, controller and content-pack settings were left "
+              "as they were.",
+              AppTheme::good());
+    return true;
+}
+
+int enhancementsInGroup(MdkrEnhCategory category, bool webGpuRenderer,
+                        bool legacyStretchActive) {
+    int rows = 0;
+    for (int i = 0; i < mdkr_enhancement_count(); ++i) {
+        const MdkrEnhancement *enhancement = mdkr_enhancement_at(i);
+        if (enhancement == nullptr || enhancement->category != category) {
+            continue;
+        }
+        if (!AppUi_videoSettingVisible(enhancement->key, webGpuRenderer,
+                                       legacyStretchActive)) {
+            continue;
+        }
+        ++rows;
+    }
+    return rows;
+}
+
+bool drawEnhancementsSection(SDL_Window *window, bool compact,
+                             bool webGpuRenderer, bool legacyStretchActive) {
+    bool changed = false;
+    ui::Gap(ui::kGapS);
+    if (!compact) {
+        ui::TextSubtleWrapped(
+            "Extras that stay off until you switch them on. Each one says "
+            "whether it changes how the game plays or only how it looks.");
+    }
+    ui::Gap(ui::kGapS);
+    ImGui::Indent(ui::kGapM);
+    for (const EnhancementGroup &group : kEnhancementGroups) {
+        if (enhancementsInGroup(group.category, webGpuRenderer,
+                                legacyStretchActive) == 0) {
+            continue;
+        }
+        ImGui::SeparatorText(group.label);
+        ui::Gap(ui::kGapXS);
+        for (int i = 0; i < mdkr_enhancement_count(); ++i) {
+            const MdkrEnhancement *enhancement = mdkr_enhancement_at(i);
+            if (enhancement == nullptr ||
+                enhancement->category != group.category) {
+                continue;
+            }
+            if (!AppUi_videoSettingVisible(enhancement->key, webGpuRenderer,
+                                           legacyStretchActive)) {
+                continue;
+            }
+            changed |= drawKey(window, enhancement->key, compact);
+        }
+    }
+    ui::Gap(ui::kGapS);
+    if (ImGui::Button("Reset enhancements", ui::kBtnWide())) {
+        changed |= resetEnhancements();
+    }
+    if (!compact) {
+        ui::TextSubtleWrapped(
+            "Puts every extra above back to the way the game shipped. Your "
+            "picture, sound, controller and content-pack settings are not "
+            "touched.");
+    }
+    ImGui::Unindent(ui::kGapM);
+    ui::Gap(ui::kGapS);
+    return changed;
+}
+
+// --- UI scale --------------------------------------------------------------
+//
+// The one settings control with no schema key: it is a launcher preference, so
+// nothing in MdkrVideoKey can route it. Which section draws it is therefore a
+// policy question (AppUi_shellPreferenceSection), asked at both candidate
+// sections so that exactly one of them ever answers yes. Hand-placing the
+// widget instead is how a control ends up drawn twice, with two independent
+// copies of the commit path underneath it.
+bool drawUiScale(bool compact) {
+    bool changed = false;
+    if (!g_uiScaleInitialized) {
+        g_uiScaleEdit = AppTheme::uiScale();
+        g_uiScaleInitialized = true;
+    }
+    ui::RowStyle scaleStyle;
+    ui::SettingLabel(
+        "Interface scale",
+        compact ? nullptr
+                : "Text and controls together, 0.75x to 2x. Use 1.25x or "
+                  "more for touch.",
+        scaleStyle);
+    ImGui::SetNextItemWidth(ui::kControlWidth());
+    const bool scalePreviewChanged = ImGui::SliderFloat(
+        "##ui-scale", &g_uiScaleEdit, 0.75f, 2.0f, "%.2fx",
+        ImGuiSliderFlags_AlwaysClamp);
+    g_uiScaleRectMin = ImGui::GetItemRectMin();
+    g_uiScaleRectMax = ImGui::GetItemRectMax();
+    /* Same rule as the frame-limit combo: the drag gate grabs this slider at
+     * last frame's coordinates, so the flag has to mean "the panel is showing
+     * it", not "it was submitted". A slider is its own last item -- there is no
+     * popup to displace it -- so IsItemVisible() reads directly here. */
+    g_uiScaleRectValid = ImGui::IsItemVisible();
+    /* Say which failure this is, from the flag above rather than a second read,
+     * so the diagnostic cannot contradict the refusal. */
+    {
+        static const bool dragGateArmed =
+            std::getenv("MDKR_APP_SMOKE_UI_SCALE_DRAG") != nullptr;
+        static bool offscreenReported = false;
+        if (dragGateArmed && !offscreenReported && !g_uiScaleRectValid) {
+            offscreenReported = true;
+            std::fprintf(stderr,
+                         "[app-ui-test] UI-scale slider is scrolled out of the "
+                         "panel (rect y=%.0f..%.0f, panel height %.0f): "
+                         "something drawn above it -- an open section, or the "
+                         "scale this very slider just applied -- pushed it "
+                         "past the bottom\n",
+                         g_uiScaleRectMin.y, g_uiScaleRectMax.y,
+                         ImGui::GetIO().DisplaySize.y);
+        }
+        if (dragGateArmed) {
+            /* Deterministic starting viewport, and nothing more. The scripted
+             * drag presses a real SDL pointer at a fixed coordinate, so the
+             * slider has to be on screen before the first press. Two frames:
+             * the first scrolls, the second confirms the position is already
+             * correct, so the rectangle the gate captures from frame 1 onward
+             * never moves. */
+            static int scrolledFrames = 0;
+            if (scrolledFrames < 2) {
+                ImGui::SetScrollHereY(0.5f);
+                ++scrolledFrames;
+            }
+        }
+    }
+    // Spoken here for the same reason drawKey() speaks its rows: this widget
+    // is hand-rolled, so the shared helper cannot reach it, and a silent text
+    // size control is the one a player who cannot read the panel needs most.
+    {
+        char value[32];
+        std::snprintf(value, sizeof(value), "%.2fx",
+                      static_cast<double>(g_uiScaleEdit));
+        ui::SpeakFocusedItem(
+            "Interface scale", value,
+            "Scales text and controls together after you release the slider.");
+    }
+    if (AppUi_deferredCommit(scalePreviewChanged,
+                             ImGui::IsItemDeactivatedAfterEdit(),
+                             &g_uiScaleDirty)) {
+        // Applying while held changes every widget's geometry underneath
+        // the pointer. That feedback loop made the slider oscillate and
+        // the whole launcher flash. Commit once, on release, and let the
+        // host apply the new metrics at the next safe frame boundary.
+        AppTheme::requestUiScale(g_uiScaleEdit);
+        char value[32];
+        std::snprintf(value, sizeof(value), "%.2f",
+                      static_cast<double>(g_uiScaleEdit));
+        const AppConfig::PersistResult persist =
+            AppConfig::setAndSave("ui_scale", value);
+        if (AppConfig::persistResultApplied(persist)) {
+            g_uiScaleDirty = false;
+            g_uiScaleError.clear();
+            setStatus(
+                persist == AppConfig::PersistResult::DurabilityUnconfirmed
+                    ? "UI scale applied, but the system could not confirm it "
+                      "reached the disk. Set it again after an unexpected "
+                      "shutdown."
+                    : "Interface scale saved.",
+                persist == AppConfig::PersistResult::DurabilityUnconfirmed
+                    ? AppTheme::accent() : AppTheme::good());
+            changed = true;
+        } else {
+            g_uiScaleError =
+                "Interface scale could not be saved. It stays active for this "
+                "session; try again once the settings file is writable.";
+            setStatus(g_uiScaleError.c_str(), AppTheme::bad());
+        }
+    }
+    if (!g_uiScaleError.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+        ImGui::TextWrapped("%s", g_uiScaleError.c_str());
+        ImGui::PopStyleColor();
+        if (ImGui::Button(
+                "Try again",
+                ImVec2(0.0f, ui::kBtnSecondary().y))) {
+            char value[32];
+            std::snprintf(value, sizeof(value), "%.2f",
+                          static_cast<double>(g_uiScaleEdit));
+            const AppConfig::PersistResult persist =
+                AppConfig::setAndSave("ui_scale", value);
+            if (AppConfig::persistResultApplied(persist)) {
+                g_uiScaleDirty = false;
+                g_uiScaleError.clear();
+                setStatus(
+                    persist == AppConfig::PersistResult::DurabilityUnconfirmed
+                        ? "UI scale applied, but the system could not confirm it "
+                          "reached the disk. Set it again after an unexpected "
+                          "shutdown."
+                        : "Interface scale saved.",
+                    persist == AppConfig::PersistResult::DurabilityUnconfirmed
+                        ? AppTheme::accent() : AppTheme::good());
+                changed = true;
+            }
+        }
+    }
+    ui::Gap(ui::kGapS);
+    return changed;
+}
+
+// --- Accessibility ---------------------------------------------------------
+//
+// One place for every option a player might need before they can use the rest
+// of the panel. The rows are ENUMERATED from AppUi_settingsSection rather than
+// listed here, so an accessibility option added later appears the moment it is
+// routed -- and so this section and the sections the keys came from cannot
+// disagree about which of them draws a row.
+bool drawAccessibilitySection(SDL_Window *window, bool compact,
+                              bool webGpuRenderer, bool legacyStretchActive) {
+    bool changed = false;
+    ui::Gap(ui::kGapS);
+    if (!compact) {
+        ui::TextSubtleWrapped(
+            "How the game presents itself to you: how big it reads, how much "
+            "the camera moves, and whether it speaks. None of these changes "
+            "how the game plays.");
+    }
+    ui::Gap(ui::kGapS);
+    ImGui::Indent(ui::kGapM);
+    if (AppUi_shellPreferenceSection(AppUiShellPreference::UiScale) ==
+        AppUiSettingsSection::Accessibility) {
+        changed |= drawUiScale(compact);
+    }
+    for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
+        const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
+        if (AppUi_settingsSection(key) !=
+            AppUiSettingsSection::Accessibility) continue;
+        if (!AppUi_videoSettingVisible(key, webGpuRenderer,
+                                       legacyStretchActive)) continue;
+        changed |= drawKey(window, key, compact);
+    }
+    ImGui::Unindent(ui::kGapM);
+    ui::Gap(ui::kGapS);
+    return changed;
+}
+
+// --- Content packs ---------------------------------------------------------
+// The read-only list below exists for one failure: a pack that is quietly
+// ignored looks to the player exactly like a pack that loaded and did nothing.
+// Every directory the scan saw is accounted for here — installed, or skipped
+// with a reason — which is the same accounting the startup log prints and the
+// single commonest question a pack author is asked.
+
+// Only `name` is mandatory in a pack.ini, so the optional parts are appended
+// rather than formatted in: a pack that declared neither must not read as
+// "Name  by  (priority 100)".
+std::string packSummary(const MdkrModEntry *entry) {
+    std::string text = entry->manifest.name;
+    if (entry->manifest.version[0] != '\0') {
+        text += "  ";
+        text += entry->manifest.version;
+    }
+    if (entry->manifest.author[0] != '\0') {
+        text += "  by ";
+        text += entry->manifest.author;
+    }
+    char priority[48];
+    std::snprintf(priority, sizeof(priority), "  (priority %d)",
+                  entry->manifest.priority);
+    text += priority;
+    return text;
+}
+
+// Why a disabled entry is disabled. The registry records the state but not the
+// cause, so the cause is re-derived from the list the scan itself read, through
+// the scan's own matcher rather than a second one that could disagree with it.
+const char *packSkipReason(const MdkrModEntry *entry,
+                           const char *disabledList) {
+    return platform_content_pack_name_disabled(disabledList,
+                                               entry->manifest.name)
+        ? "you listed it under Skipped packs"
+        : "its own pack.ini switches it off";
+}
+
+// One row per pack, once per process, so a gate can read what the panel drew
+// without depending on whether the section happens to be expanded.
+void traceContentPacks(const MdkrModRegistry *packs, const char *disabledList) {
+    if (std::getenv("MDKR_APP_UI_TRACE") == nullptr) return;
+    static bool traced = false;
+    if (traced) return;
+    traced = true;
+    const int count = mdkr_mod_registry_count(packs);
+    const int skipped = mdkr_mod_registry_skipped(packs);
+    std::fprintf(stderr, "[app-ui] content-list found=%d unreadable=%d\n",
+                 count, skipped);
+    for (int i = 0; i < count; ++i) {
+        const MdkrModEntry *entry = mdkr_mod_registry_entry(packs, i);
+        if (entry == nullptr) continue;
+        std::fprintf(
+            stderr,
+            "[app-ui] content-pack name=\"%s\" version=\"%s\" author=\"%s\" "
+            "priority=%d state=%s reason=\"%s\"\n",
+            entry->manifest.name, entry->manifest.version,
+            entry->manifest.author, entry->manifest.priority,
+            entry->manifest.enabled ? "installed" : "skipped",
+            entry->manifest.enabled ? "" : packSkipReason(entry, disabledList));
+    }
+    for (int i = 0; i < skipped; ++i) {
+        const char *reason = mdkr_mod_registry_skip_reason(packs, i);
+        std::fprintf(stderr,
+                     "[app-ui] content-pack name=\"%s\" state=skipped "
+                     "reason=\"%s\"\n",
+                     packs->skip_name[i], reason != nullptr ? reason : "");
+    }
+}
+
+bool drawContentSection(SDL_Window *window, bool compact,
+                        const MdkrModRegistry *packs,
+                        const char *disabledList) {
+    bool changed = false;
+    const int count = mdkr_mod_registry_count(packs);
+    const int unreadable = mdkr_mod_registry_skipped(packs);
+
+    ui::Gap(ui::kGapS);
+    if (!compact) {
+        ui::TextSubtleWrapped(
+            "A content pack replaces some of the game's artwork with a pack "
+            "author's own. Put the pack's folder in the mods folder beside "
+            "your saves; everything found there is listed below.");
+    }
+    ui::Gap(ui::kGapS);
+    ImGui::Indent(ui::kGapM);
+    changed |= drawKey(window, MDKR_CONTENT_PACKS_ENABLED, compact);
+    changed |= drawKey(window, MDKR_CONTENT_PACK_DISABLED, compact);
+
+    ImGui::SeparatorText("Installed");
+    ui::Gap(ui::kGapXS);
+    int installed = 0;
+    for (int i = 0; i < count; ++i) {
+        const MdkrModEntry *entry = mdkr_mod_registry_entry(packs, i);
+        if (entry == nullptr || !entry->manifest.enabled) continue;
+        ImGui::BulletText("%s", packSummary(entry).c_str());
+        ++installed;
+    }
+    if (installed == 0) {
+        ui::TextSubtleWrapped(
+            count == 0 && unreadable == 0
+                ? "Nothing yet. A pack is a folder with a pack.ini file in it."
+                : "None of the packs found are in use. Every one of them is "
+                  "listed below with the reason.");
+    } else if (!compact) {
+        ui::TextSubtleWrapped(
+            "Where two packs supply the same artwork, the higher priority "
+            "wins.");
+    }
+
+    if (count - installed + unreadable > 0) {
+        ImGui::SeparatorText("Skipped");
+        ui::Gap(ui::kGapXS);
+        for (int i = 0; i < count; ++i) {
+            const MdkrModEntry *entry = mdkr_mod_registry_entry(packs, i);
+            if (entry == nullptr || entry->manifest.enabled) continue;
+            ImGui::BulletText("%s — %s", entry->manifest.name,
+                              packSkipReason(entry, disabledList));
+        }
+        for (int i = 0; i < unreadable; ++i) {
+            const char *reason = mdkr_mod_registry_skip_reason(packs, i);
+            ImGui::BulletText("%s — %s", packs->skip_name[i],
+                              reason != nullptr && reason[0] != '\0'
+                                  ? reason : "it could not be read");
+        }
+    }
+    ImGui::Unindent(ui::kGapM);
+    ui::Gap(ui::kGapS);
+    return changed;
 }
 
 }  // namespace
@@ -1180,6 +1809,40 @@ void Settings_dumpSchemaContract() {
         "caveat=\"%s\"\n",
         kOriginalFrameLimitLabel, kModernFrameLimitGroup,
         kFrameLimitHelp);
+
+    /*
+     * The control inventory, one row per schema key: the name a voice would
+     * say, the value it would say, and whether the product offers the setting
+     * at all.
+     *
+     * tests/check_a11y_shell.py grades the walk against THIS, rather than
+     * against a list kept in the test, which is the whole point: a setting
+     * added tomorrow gets a row here the moment it has a schema entry, and the
+     * gate then demands an utterance for it without anybody remembering to
+     * extend the test. The label and value come from the same displayValue()
+     * the announcement uses, so the expectation and the utterance cannot drift
+     * apart while both still look right.
+     *
+     * Visibility is reported for the qualified WebGPU renderer with widescreen
+     * engaged -- the shipped configuration. A diagnostic OpenGL session offers
+     * one setting MORE (MSAA), which can only ever add an utterance the gate
+     * did not require, never remove one it did.
+     */
+    const MdkrVideoConfig *config = mdkr_video_config_desired();
+    for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
+        const MdkrVideoKey     key = static_cast<MdkrVideoKey>(i);
+        const MdkrVideoSchema *s   = mdkr_video_schema(key);
+        if (s == nullptr) continue;
+        char value[MDKR_VIDEO_STRING_MAX];
+        displayValue(key, s, config != nullptr ? &config->values[i] : nullptr,
+                     value, sizeof(value));
+        std::printf(
+            "[app-a11y] control key=%s visible=%d label=\"%s\" value=\"%s\"\n",
+            s->name,
+            AppUi_videoSettingVisible(key, /*webGpuRenderer=*/true,
+                                      /*legacyStretchActive=*/false) ? 1 : 0,
+            s->label, value);
+    }
 }
 
 bool Settings_restartPending() {
@@ -1218,7 +1881,24 @@ bool Settings_draw(SDL_Window *window, bool compact) {
     bool changed = false;
     g_frameLimitPopupOpen = false;
     g_frameLimitFocusedIndex = -1;
+    /*
+     * Every widget-rect flag starts each frame false, and only the widget's own
+     * submission can raise it again. This is the half IsItemVisible() cannot
+     * cover: a collapsed section returns from here without ever reaching the
+     * widget, so nothing would run to lower a flag left true by an earlier
+     * frame -- which is precisely the stale latch this panel used to have. The
+     * whole set is cleared in one place so a rect added later is either listed
+     * here or is not per-frame, rather than being quietly sticky.
+     *
+     * Limit worth knowing: this is per Settings_draw() call, so it says nothing
+     * about frames where the panel is not drawn at all (another launcher tab,
+     * or the overlay with settings hidden). Every scripted gate pins
+     * MDKR_APP_PANEL=Settings, so for them "drawn" and "this frame" coincide.
+     */
+    g_frameLimitRectValid = false;
     g_frameLimitRetryRectValid = false;
+    g_uiScaleRectValid = false;
+    for (bool &paceValid : g_paceRectValid) paceValid = false;
     MdkrVideoRuntimeResult windowResult = MDKR_VIDEO_RUNTIME_INVALID;
     bool windowResultFresh = false;
     if (AppWindow_consumeCompleted(&windowResult, &windowResultFresh)) {
@@ -1289,6 +1969,10 @@ bool Settings_draw(SDL_Window *window, bool compact) {
     };
     const auto row = [&](MdkrVideoKey key) {
         if (!visible(key)) return;
+        // Keys the routing policy assigns to a dedicated section
+        // (Accessibility, Enhancements, Content) are drawn by that section,
+        // never under a group here -- one owner per control.
+        if (AppUi_settingsSection(key) != AppUiSettingsSection::Category) return;
         drawnKey[static_cast<size_t>(key)] = true;
         changed |= drawKey(window, key, compact);
     };
@@ -1335,6 +2019,22 @@ bool Settings_draw(SDL_Window *window, bool compact) {
         row(MDKR_VIDEO_ASPECT);
         row(MDKR_VIDEO_WIDESCREEN);
         ImGui::Unindent(ui::kGapM);
+    }
+
+    // --- Accessibility ------------------------------------------------------
+    // Second on the page: a player who needs it needs it before they can use
+    // anything below it. Rows come from the routing policy, so an
+    // accessibility key added tomorrow is drawn -- and voiced -- here.
+    if (drawSettingsSectionHeader(
+            "Accessibility",
+            "How the game reads and speaks. None of these change how it "
+            "plays.",
+            flagsFor(draggingUiScale ||
+                     (!controllerSettingsSmoke && !selectingFrameLimit)),
+            compact)) {
+        ImGui::Unindent(ui::kGapM);  // the section helper manages its own indent
+        changed |= drawAccessibilitySection(window, compact, webGpuRenderer,
+                                            legacyStretchActive);
     }
 
     // --- Frame rate ---------------------------------------------------------
@@ -1419,7 +2119,9 @@ bool Settings_draw(SDL_Window *window, bool compact) {
             "handling, results, ghosts and saves are identical.",
             flagsFor(false), compact)) {
         row(MDKR_VIDEO_CAMERA_OBSTRUCTION);
-        row(MDKR_VIDEO_CAMERA_COMFORT);
+        // Camera shake (MDKR_VIDEO_CAMERA_COMFORT) is an access need first and
+        // a camera setting second; the routing policy places it under
+        // Accessibility above.
         ImGui::Unindent(ui::kGapM);
     }
 
@@ -1496,97 +2198,21 @@ bool Settings_draw(SDL_Window *window, bool compact) {
             "App window",
             "Size and scale of the launcher and the game window.",
             interfaceFlags, compact)) {
-        if (!g_uiScaleInitialized) {
-            g_uiScaleEdit = AppTheme::uiScale();
-            g_uiScaleInitialized = true;
-        }
         row(MDKR_WINDOW_MODE);
-        ui::RowStyle scaleStyle;
-        ui::SettingLabel(
-            "Interface scale",
-            compact ? nullptr
-                    : "Text and controls together, 0.75x to 2x. Use 1.25x or "
-                      "more for touch.",
-            scaleStyle);
-        ImGui::SetNextItemWidth(ui::kControlWidth());
-        const bool scalePreviewChanged = ImGui::SliderFloat(
-            "##ui-scale", &g_uiScaleEdit, 0.75f, 2.0f, "%.2fx",
-            ImGuiSliderFlags_AlwaysClamp);
-        g_uiScaleRectMin = ImGui::GetItemRectMin();
-        g_uiScaleRectMax = ImGui::GetItemRectMax();
-        g_uiScaleRectValid = true;
-        if (draggingUiScale) {
-            /* Deterministic starting viewport, and nothing more. The scripted
-             * drag presses a real SDL pointer at a fixed coordinate, so the
-             * slider has to be on screen before the first press -- and this
-             * group now sits at the bottom of the page, where a player scrolls
-             * to it and a script cannot. Two frames: the first scrolls, the
-             * second confirms the position is already correct, so the
-             * rectangle the gate captures from frame 1 onward never moves. */
-            static int scrolledFrames = 0;
-            if (scrolledFrames < 2) {
-                ImGui::SetScrollHereY(0.5f);
-                ++scrolledFrames;
-            }
-        }
-        if (AppUi_deferredCommit(scalePreviewChanged,
-                                 ImGui::IsItemDeactivatedAfterEdit(),
-                                 &g_uiScaleDirty)) {
-            // Applying while held changes every widget's geometry underneath
-            // the pointer. That feedback loop made the slider oscillate and
-            // the whole launcher flash. Commit once, on release, and let the
-            // host apply the new metrics at the next safe frame boundary.
-            AppTheme::requestUiScale(g_uiScaleEdit);
-            char value[32];
-            std::snprintf(value, sizeof(value), "%.2f",
-                          static_cast<double>(g_uiScaleEdit));
-            const AppConfig::PersistResult persist =
-                AppConfig::setAndSave("ui_scale", value);
-            if (AppConfig::persistResultApplied(persist)) {
-                g_uiScaleDirty = false;
-                g_uiScaleError.clear();
-                setStatus(
-                    persist == AppConfig::PersistResult::DurabilityUnconfirmed
-                        ? "UI scale applied, but the system could not confirm it "
-                          "reached the disk. Set it again after an unexpected "
-                          "shutdown."
-                        : "Interface scale saved.",
-                    persist == AppConfig::PersistResult::DurabilityUnconfirmed
-                        ? AppTheme::accent() : AppTheme::good());
-                changed = true;
-            } else {
-                g_uiScaleError =
-                    "Interface scale could not be saved. It stays active for this "
-                    "session; try again once the settings file is writable.";
-                setStatus(g_uiScaleError.c_str(), AppTheme::bad());
-            }
-        }
-        if (!g_uiScaleError.empty()) {
-            ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
-            ImGui::TextWrapped("%s", g_uiScaleError.c_str());
-            ImGui::PopStyleColor();
-            if (ImGui::Button(
-                    "Try again",
-                    ImVec2(0.0f, ui::kBtnSecondary().y))) {
-                char value[32];
-                std::snprintf(value, sizeof(value), "%.2f",
-                              static_cast<double>(g_uiScaleEdit));
-                const AppConfig::PersistResult persist =
-                    AppConfig::setAndSave("ui_scale", value);
-                if (AppConfig::persistResultApplied(persist)) {
-                    g_uiScaleDirty = false;
-                    g_uiScaleError.clear();
-                    setStatus(
-                        persist == AppConfig::PersistResult::DurabilityUnconfirmed
-                            ? "UI scale applied, but the system could not confirm it "
-                              "reached the disk. Set it again after an "
-                              "unexpected shutdown."
-                            : "Interface scale saved.",
-                        persist == AppConfig::PersistResult::DurabilityUnconfirmed
-                            ? AppTheme::accent() : AppTheme::good());
-                    changed = true;
-                }
-            }
+        // Interface scale lives under Accessibility (see
+        // AppUi_shellPreferenceSection); it is the one control a player may
+        // need before they can read this page.
+        //
+        // Every other Interface-category schema key, so a key like Check for
+        // updates or Developer tools cannot end up with a schema row, an
+        // environment variable and no control anywhere in the product.
+        for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
+            const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
+            if (key == MDKR_WINDOW_MODE) continue;  // drawn at the top
+            const MdkrVideoSchema *schema = mdkr_video_schema(key);
+            if (schema == nullptr ||
+                schema->category != MDKR_VIDEO_CAT_INTERFACE) continue;
+            row(key);
         }
         ui::Gap(ui::kGapS);
         ImGui::Unindent(ui::kGapM);
@@ -1600,6 +2226,8 @@ bool Settings_draw(SDL_Window *window, bool compact) {
     for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
         const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
         if (drawnKey[i] || !visible(key)) continue;
+        if (AppUi_settingsSection(key) != AppUiSettingsSection::Category)
+            continue;  // owned by a dedicated section above
         ++unclaimed;
     }
     if (unclaimed > 0 &&
@@ -1611,6 +2239,42 @@ bool Settings_draw(SDL_Window *window, bool compact) {
             row(key);
         }
         ImGui::Unindent(ui::kGapM);
+    }
+
+    // Two sections that are not a schema category. Both gather keys the
+    // categories would otherwise scatter -- see AppUi_settingsSection -- and
+    // both add something no generated row can: the enhancements get one action
+    // that resets them and nothing else, and the content packs get the list of
+    // what the scan actually found.
+    if (drawSettingsSectionHeader(
+            "Enhancements",
+            "Extras you opt into. Each one says whether it changes how the "
+            "game plays.",
+            ImGuiTreeNodeFlags_None, compact)) {
+        ImGui::Unindent(ui::kGapM);  // the section helper manages its own indent
+        changed |= drawEnhancementsSection(window, compact, webGpuRenderer,
+                                           legacyStretchActive);
+    }
+
+    const MdkrModRegistry *packs = platform_content_packs_registry();
+    const MdkrVideoConfig *liveConfig = mdkr_video_config_current();
+    const char *disabledList = liveConfig != nullptr
+        ? liveConfig->values[MDKR_CONTENT_PACK_DISABLED].text : "";
+    traceContentPacks(packs, disabledList);
+    // Open when the scan found anything at all, including something it could
+    // not read. A player who installed a pack has a question this section
+    // answers; a player who has never installed one does not, and a collapsed
+    // header keeps the panel that player's size.
+    const bool anyPacks = mdkr_mod_registry_count(packs) > 0 ||
+                          mdkr_mod_registry_skipped(packs) > 0;
+    if (drawSettingsSectionHeader(
+            "Content",
+            "Packs that replace artwork or music, from the mods folder.",
+            anyPacks ? ImGuiTreeNodeFlags_DefaultOpen
+                     : ImGuiTreeNodeFlags_None,
+            compact)) {
+        ImGui::Unindent(ui::kGapM);  // the section helper manages its own indent
+        changed |= drawContentSection(window, compact, packs, disabledList);
     }
 
     if (controllerSettingsSmoke) {

@@ -7,6 +7,53 @@ table): none — every entry below is closed or resolved; kept as the
 append-only historical record.
 
 
+## FIXED: a pad connected before launch was bound to two channels — wave "hotplug"
+
+**Mechanism.** `SDL_Init` enumerates the devices already present and **queues** an
+`SDL_CONTROLLERDEVICEADDED` for each one. `platform_input_init()` then ran its own
+`for (i < SDL_NumJoysticks()) gc_try_open(i)` while that event was still sitting
+in the queue, so the first `platform_input_pump()` delivered it and opened the
+same device a second time. `SDL_GameControllerOpen()` is reference-counted and
+returns the **same** `SDL_GameController *` for an already-open device, so the
+second call stored that identical pointer in the next free slot.
+
+**Measured evidence.** `[PAD-CHANNEL]` shows `port=0 instance=0` and
+`port=1 instance=0` from tick 1, and stdout printed both `[SDL] gamepad P1:` and
+`[SDL] gamepad P2:` for one physical pad.
+
+**What a player saw.** The game believed a controller was plugged into P2 that
+nobody was holding. The next pad to join was pushed to P3, and
+`platform_pad_rumble(1, …)` buzzed the *first* player's pad. Only pads present
+**before launch** were affected: mid-run hotplug produces one ADDED event and no
+enumeration, which is why every existing gate missed it — they connect pads
+during a run, and this needed a pad connected before one.
+
+**Fix.** `gc_try_open()` returns early when the device's instance id is already
+bound, with a post-open pointer comparison as the backstop for a host that
+cannot report an instance id.
+
+**Class swept.** `gc_try_open` is the only place a controller is opened, and both
+shutdown loops sweep all four slots and close each, so a duplicated reference
+would have been released correctly there.
+
+**Verification.** `tests/check_input_hotplug.py` drives real device add/remove
+through `SDL_JoystickAttachVirtual` — no hardware — and scores eight assertions
+across a boot arm and a mid-run arm. It observes `[PAD-CHANNEL]` rows emitted
+from the same three accessors `osContGetReadData` reads, so the trace cannot
+agree with SDL while disagreeing with the game. Negative control: the fix was
+temporarily gated behind a runtime flag and the gate exited 1 with exactly four
+failures — join, neutral-on-ports-1-3, rebind, and rumble-on-a-padless-channel.
+Those three latter failures were *downstream* of the single root cause; the
+disconnect fail-safe and the padless-rumble guard were already correct, as the
+overflow arm's independent passes show.
+
+**Scope limit, stated rather than covered.** Re-binding a returning pad to its
+original channel is honoured by lowest-free-first assignment for a single
+disconnect. Two pads dropping out together and reconnecting in the other order
+would swap them. Recognising an individual unit across a reconnect needs an
+identity SDL does not offer — instance ids are per-connection, GUIDs name the
+model — so no speculative behaviour was added that the gate could not prove.
+
 ## P3.6 two-player split-screen — wave "splitscreen" (WORKS)
 
 A two-player split-screen race on Ancient Lake now runs headlessly: two viewports,

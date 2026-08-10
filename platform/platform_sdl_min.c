@@ -1,6 +1,7 @@
 /**
  * platform_sdl_min.c — the SDL2 host layer: window/context lifecycle, controller
- * and keyboard input, the cooperative frame boundary, and VI pacing.
+ * and keyboard input, content-pack discovery, the cooperative frame boundary,
+ * and VI pacing.
  *
  * Responsibilities:
  *   - Create the window for whichever backend is active (GL 3.3 core via glad,
@@ -9,6 +10,9 @@
  *     never switch renderers inside the live process.
  *   - Open game controllers, load SDL mappings, and drive the deterministic
  *     input-script fixtures the regression checks replay.
+ *   - Scan the player's mods/ directory and hold the pack registry the renderer's
+ *     texture override store borrows, including the Tab key that switches those
+ *     overrides off and back on mid-race.
  *   - Own the frame boundary. The collapsed single-threaded game loop blocks in
  *     osRecvMesg on the video queue; that block calls in here to poll input,
  *     present, and advance the headless frame counter.
@@ -147,10 +151,13 @@ uint64_t platform_perf_monotonic_ns(void) {
 #include "present_sched.h"
 #include "input_latency_census.h"
 #include "gameplay_event_trace.h"
+#include "a11y_race.h"
 #include "input_tick_queue.h"
 #include "input_consumption_trace.h"
 #include "controller_mapping.h"
 #include "video_config.h"
+#include "mod_registry.h"
+#include "mod_texture_store.h"
 #include "mdkr_bounds.h"
 #include "gfx_ptr.h"
 #ifdef MDKR_APP
@@ -1319,13 +1326,249 @@ static void platform_dump_frame(void) {
     free(pix);
 }
 
+/* ---- Content packs (see platform_os.h) ---------------------------------- *
+ *
+ * The registry is a plain value owned here for the life of the process, because
+ * the texture store BORROWS it (mod_texture_store.h) and must not outlive it.
+ * Storing it beside the store's own init/shutdown pair is what keeps that
+ * lifetime a local fact rather than an ordering rule spread across files.
+ *
+ * s_contentPacksActive is the answer to "did the player install anything?", and
+ * it is deliberately NOT mdkr_mod_texture_store_active(): that one goes false
+ * the moment the player switches overrides off, which is exactly when the
+ * toggle still has to work to switch them back on.
+ */
+static MdkrModRegistry s_contentPacks;
+static int s_contentPacksActive;   /* enabled packs the scan actually kept */
+static int s_contentPacksScanned;  /* init has run at least once this process */
+
+/* One entry of Content.PackDisabled. The list is comma-separated, entries are
+ * trimmed of surrounding blanks, and the comparison is ASCII case-insensitive
+ * for the same reason the registry's tie-break is: a player who types a pack's
+ * name back with different capitalisation means the same pack, and the answer
+ * must not depend on their locale. */
+int platform_content_pack_name_disabled(const char *list, const char *name) {
+    size_t name_length;
+
+    if (list == NULL || list[0] == '\0' || name == NULL || name[0] == '\0') {
+        return 0;
+    }
+    name_length = strlen(name);
+    while (*list != '\0') {
+        const char *entry_end;
+        size_t entry_length;
+
+        while (*list == ',' || *list == ' ' || *list == '\t') list++;
+        entry_end = strchr(list, ',');
+        if (entry_end == NULL) entry_end = list + strlen(list);
+        entry_length = (size_t)(entry_end - list);
+        while (entry_length > 0 &&
+               (list[entry_length - 1] == ' ' ||
+                list[entry_length - 1] == '\t')) {
+            entry_length--;
+        }
+        if (entry_length == name_length) {
+            size_t index = 0;
+            while (index < entry_length) {
+                unsigned char a = (unsigned char)list[index];
+                unsigned char b = (unsigned char)name[index];
+                if (a >= 'A' && a <= 'Z') a = (unsigned char)(a + ('a' - 'A'));
+                if (b >= 'A' && b <= 'Z') b = (unsigned char)(b + ('a' - 'A'));
+                if (a != b) break;
+                index++;
+            }
+            if (index == entry_length) return 1;
+        }
+        list = entry_end;
+        if (*list == ',') list++;
+    }
+    return 0;
+}
+
+void platform_content_packs_init(void) {
+    const MdkrVideoConfig *config = mdkr_video_config_current();
+    const char *disabled_list =
+        config != NULL ? config->values[MDKR_CONTENT_PACK_DISABLED].text : "";
+    const int packs_enabled =
+        config == NULL ||
+        config->values[MDKR_CONTENT_PACKS_ENABLED].number != 0.0f;
+    char mods_dir[MDKR_MOD_PATH_MAX];
+    int registry_skipped;
+    int player_disabled = 0;
+    int authored_off = 0;
+    int count;
+    int index;
+
+    s_contentPacksActive = 0;
+    s_contentPacksScanned = 1;
+    if (!mdkr_user_mods_directory(mods_dir, sizeof mods_dir)) {
+        /* Only reachable when the packaged preference directory could not be
+         * prepared, which mdkr_user_paths_init() has already reported. Content
+         * packs are not worth a second complaint about the same failure. */
+        mdkr_mod_registry_shutdown(&s_contentPacks);
+        mdkr_mod_texture_store_init(NULL);
+        mdkr_mod_texture_set_enabled(packs_enabled);
+        return;
+    }
+    (void)mdkr_mod_registry_init(&s_contentPacks, mods_dir);
+
+    /*
+     * Content.PackDisabled is applied HERE, to the registry, rather than in the
+     * texture store. Three reasons, in order of weight:
+     *
+     *  - It is a statement about which packs are installed, not about textures.
+     *    Clearing an entry's `enabled` bit is the same lever a pack's own
+     *    pack.ini pulls, so one rule governs both and mdkr_mod_registry_resolve()
+     *    honours it for every asset kind a later milestone adds -- a store-side
+     *    filter would cover textures and silently miss the rest.
+     *  - The store's public surface has no name in it. It is keyed by content
+     *    digest by design, and threading pack names through it would give the
+     *    hot lookup path a string compare it exists to avoid.
+     *  - A disabled pack has to appear in the summary below with a reason, and
+     *    the summary is written from the registry.
+     */
+    count = mdkr_mod_registry_count(&s_contentPacks);
+    for (index = 0; index < count; index++) {
+        MdkrModEntry *entry = &s_contentPacks.entries[index];
+        if (!entry->manifest.enabled) {
+            authored_off++;
+        } else if (platform_content_pack_name_disabled(
+                       disabled_list, entry->manifest.name)) {
+            entry->manifest.enabled = 0;
+            player_disabled++;
+        } else {
+            s_contentPacksActive++;
+        }
+    }
+
+    mdkr_mod_texture_store_init(&s_contentPacks);
+    mdkr_mod_texture_set_enabled(packs_enabled);
+
+    registry_skipped = mdkr_mod_registry_skipped(&s_contentPacks);
+    if (count == 0 && registry_skipped == 0) {
+        /* The overwhelmingly common install. Nothing was asked for and nothing
+         * happened, so say nothing: a line here would be in every log forever. */
+        return;
+    }
+
+    /* A pack that is quietly ignored looks exactly like a pack that loaded and
+     * did nothing, so every pack the scan saw is accounted for on one of the
+     * lines below, with a reason a player can act on. On stderr, which is where
+     * mod_texture_store.c already reports an unusable pack texture: all of a
+     * player's [MODS] evidence has to survive the same redirection.  */
+    fprintf(stderr, "[MODS] %d pack(s) active, %d skipped%s\n",
+            s_contentPacksActive,
+            registry_skipped + player_disabled + authored_off,
+            packs_enabled ? "" : "; overrides are switched off in settings");
+    for (index = 0; index < count; index++) {
+        const MdkrModEntry *entry = mdkr_mod_registry_entry(&s_contentPacks,
+                                                            index);
+        if (entry == NULL) continue;
+        if (entry->manifest.enabled) {
+            /* Only `name` is mandatory in a pack.ini, so the optional fields
+             * are appended rather than formatted in: a pack that declared
+             * neither must not print as "Name  by  (priority 100)". */
+            char credit[MDKR_MOD_VERSION_MAX + MDKR_MOD_AUTHOR_MAX + 8];
+            credit[0] = '\0';
+            snprintf(credit, sizeof credit, "%s%s%s%s",
+                     entry->manifest.version[0] != '\0' ? " " : "",
+                     entry->manifest.version,
+                     entry->manifest.author[0] != '\0' ? " by " : "",
+                     entry->manifest.author);
+            fprintf(stderr, "[MODS]   active: %s%s (priority %d)\n",
+                    entry->manifest.name, credit, entry->manifest.priority);
+        } else if (platform_content_pack_name_disabled(
+                       disabled_list, entry->manifest.name)) {
+            fprintf(stderr,
+                    "[MODS]   skipped: %s - listed in Content.PackDisabled\n",
+                    entry->manifest.name);
+        } else {
+            fprintf(stderr,
+                    "[MODS]   skipped: %s - its pack.ini sets enabled = 0\n",
+                    entry->manifest.name);
+        }
+    }
+    for (index = 0; index < registry_skipped; index++) {
+        /* mod_registry.h publishes an accessor for the reason but not for the
+         * name it belongs to; the skip table itself is public, so read it. */
+        fprintf(stderr, "[MODS]   skipped: %s - %s\n",
+                s_contentPacks.skip_name[index],
+                mdkr_mod_registry_skip_reason(&s_contentPacks, index));
+    }
+}
+
+const MdkrModRegistry *platform_content_packs_registry(void) {
+    /* The launcher draws Settings before anything calls init. Scanning here is
+     * the same scan, at the same path, reading the same two config keys -- and
+     * the engine's own call re-runs it, so the value the renderer binds to is
+     * still produced after the launcher -> engine handoff has resolved the
+     * config, never inherited from whatever the settings panel happened to see
+     * first. */
+    if (!s_contentPacksScanned) platform_content_packs_init();
+    return &s_contentPacks;
+}
+
+void platform_content_packs_shutdown(void) {
+    /* Store first: it borrows the registry, so unbinding it before the registry
+     * is cleared is the only order in which no lookup can see a dead scan. */
+    mdkr_mod_texture_store_shutdown();
+    mdkr_mod_registry_shutdown(&s_contentPacks);
+    s_contentPacksActive = 0;
+    /* Deliberately not clearing s_contentPacksScanned: a settings panel drawn
+     * during shutdown must read the empty registry it was just handed, not
+     * rescan the disk on the way out. */
+}
+
+void platform_content_packs_toggle(void) {
+    if (s_contentPacksActive == 0) return;
+    mdkr_mod_texture_set_enabled(!mdkr_mod_texture_enabled());
+    fprintf(stderr, "[MODS] content pack textures %s\n",
+            mdkr_mod_texture_enabled() ? "on" : "off");
+}
+
 /* ---- Game controller open/close ----------------------------------------- */
+/* The channel a live SDL instance id is bound to, or -1. Defined below with the
+ * rest of the per-event routing; declared here because binding a device is what
+ * has to know whether it is already bound. */
+static int gc_port_for_instance(SDL_JoystickID which);
+
+/*
+ * Binding one device to one channel, IDEMPOTENTLY.
+ *
+ * This runs from two places that legitimately see the same device: the startup
+ * enumeration in platform_input_init(), and SDL_CONTROLLERDEVICEADDED. Those
+ * two are NOT alternatives. A pad that is already plugged in when the game
+ * launches is enumerated by SDL_Init, which queues its device-added event; the
+ * enumeration loop then binds the pad while that event is still sitting in the
+ * queue, and the first input pump delivers it. SDL_GameControllerOpen() is
+ * reference-counted and hands back the SAME controller for a device that is
+ * already open, so without the guard below every boot-time pad claimed a second
+ * channel: DKR saw a controller plugged into P2 that no one was holding, the
+ * next real pad to join was pushed to P3, and rumble addressed at the phantom
+ * channel buzzed the first player's pad.
+ *
+ * The instance id is the identity that matters -- device indices renumber on
+ * every add and remove -- and the pointer comparison after the open is the
+ * backstop for a host that cannot report one.
+ */
 static void gc_try_open(int deviceIndex) {
+    SDL_JoystickID instance;
     if (!SDL_IsGameController(deviceIndex)) return;
+    instance = SDL_JoystickGetDeviceInstanceID(deviceIndex);
+    if (instance >= 0 && gc_port_for_instance(instance) >= 0) return;
     for (int i = 0; i < DKR_MAXPADS; i++) {
         if (!s_gc[i]) {
             s_gc[i] = SDL_GameControllerOpen(deviceIndex);
             if (s_gc[i]) {
+                for (int j = 0; j < DKR_MAXPADS; j++) {
+                    if (j != i && s_gc[j] == s_gc[i]) {
+                        /* Already bound to channel j; release this reference
+                         * and leave the binding where it was. */
+                        SDL_GameControllerClose(s_gc[i]);
+                        s_gc[i] = NULL;
+                        return;
+                    }
+                }
                 s_rumbleSupported[i] = -1;
                 s_rumbleRequested[i] = 0;
                 memset(&s_controllerSource[i], 0,
@@ -1336,6 +1579,10 @@ static void gc_try_open(int deviceIndex) {
             return;
         }
     }
+    /* DKR has four ports and no notion of a fifth. Say so once per device
+     * rather than leaving a plugged-in pad silently inert. */
+    printf("[SDL] gamepad ignored: all %d controller channels are in use\n",
+           DKR_MAXPADS);
 }
 static void gc_close_instance(SDL_JoystickID which) {
     for (int i = 0; i < DKR_MAXPADS; i++) {
@@ -1357,6 +1604,330 @@ static void gc_close_instance(SDL_JoystickID which) {
             }
         }
     }
+}
+
+/* ---- MDKR_TEST_PAD_HOTPLUG ----------------------------------------------- *
+ *
+ * The headless seam for controller hotplug, in the same spirit as
+ * MDKR_TEST_SETTINGS_TOGGLE above: an automated run cannot unplug a pad, but
+ * from SDL's device-added/removed event onward a virtual joystick and a
+ * physical one are the same thing. SDL_JoystickAttachVirtual() creates a device
+ * the game controller layer enumerates, maps, opens, reads and removes exactly
+ * like hardware, so the whole channel-assignment path below is exercised
+ * without any pad being plugged in.
+ *
+ * FORMAT: <op>=<args>@<tick>[,<op>=<args>@<tick>]... e.g.
+ *   MDKR_TEST_PAD_HOTPLUG=attach=1@0,attach=2@90,hold=2:left@120,detach=2@180
+ * Each entry fires once, at the first input pump at or after its tick.
+ *
+ *   attach=ID          add a virtual pad; ID (1..8) is the fixture's handle
+ *   detach=ID          remove it, whatever channel it landed in
+ *   hold=ID:POSE       pose in {neutral,left,right,up,down,a,start}
+ *   rumble=PORT:0|1    call platform_pad_rumble() on a DKR channel directly
+ *
+ * TICK 0 MEANS BOOT, and it is not a synonym for "very early". Entries at tick
+ * 0 fire from platform_input_init() BEFORE its startup enumeration, so the
+ * device exists while SDL_Init's own device-added event is still queued. That
+ * is the exact ordering a pad plugged in before launch produces, and it is not
+ * reachable from the pump: by then the queue has already drained.
+ *
+ * Test-only and inert unless set. When the arm is set, every published channel
+ * is traced once per authoritative tick from platform_input_commit_tick(), so a
+ * check reads what DKR reads rather than what SDL was told. */
+#if !defined(__EMSCRIPTEN__) && SDL_VERSION_ATLEAST(2, 0, 14)
+#define MDKR_TEST_HOTPLUG_VIRTUAL 1
+#else
+#define MDKR_TEST_HOTPLUG_VIRTUAL 0
+#endif
+
+#define MDKR_TEST_HOTPLUG_MAX 32
+#define MDKR_TEST_HOTPLUG_IDS 8
+#define MDKR_TEST_HOTPLUG_POSE_MAX 16
+
+enum {
+    MDKR_HOTPLUG_ATTACH,
+    MDKR_HOTPLUG_DETACH,
+    MDKR_HOTPLUG_HOLD,
+    MDKR_HOTPLUG_RUMBLE
+};
+
+typedef struct MdkrTestHotplug {
+    uint64_t tick;
+    int op;
+    int id;      /* fixture handle for attach/detach/hold; DKR port for rumble */
+    int value;   /* rumble on/off */
+    char pose[MDKR_TEST_HOTPLUG_POSE_MAX];
+    int fired;
+} MdkrTestHotplug;
+
+static int s_hotplugState = -1;   /* -1 unparsed, 0 disarmed, 1 armed */
+static MdkrTestHotplug s_hotplug[MDKR_TEST_HOTPLUG_MAX];
+static int s_hotplugCount;
+/* Fixture handle -> SDL instance id, so a fixture never has to know SDL's
+ * device indices (which renumber on every add and remove). Index 0 is unused
+ * so the fixture's handles read as 1-based, like the P1..P4 channels do. */
+static SDL_JoystickID s_hotplugInstance[MDKR_TEST_HOTPLUG_IDS + 1];
+
+static const char *hotplug_op_name(int op) {
+    switch (op) {
+        case MDKR_HOTPLUG_ATTACH: return "attach";
+        case MDKR_HOTPLUG_DETACH: return "detach";
+        case MDKR_HOTPLUG_HOLD:   return "hold";
+        default:                  return "rumble";
+    }
+}
+
+static void hotplug_report(uint64_t tick, int op, int id, int port,
+                           int instance, int result) {
+    fprintf(stderr,
+            "[PAD-HOTPLUG] tick=%llu op=%s id=%d port=%d instance=%d "
+            "result=%d\n",
+            (unsigned long long)tick, hotplug_op_name(op), id, port, instance,
+            result);
+    fflush(stderr);
+}
+
+#if MDKR_TEST_HOTPLUG_VIRTUAL
+/* SDL device indices renumber whenever anything is added or removed, so the
+ * only stable handle across a schedule is the instance id. */
+static int hotplug_device_index(SDL_JoystickID instance) {
+    for (int i = 0; i < SDL_NumJoysticks(); i++) {
+        if (SDL_JoystickGetDeviceInstanceID(i) == instance) return i;
+    }
+    return -1;
+}
+
+/* Poses are written in the game's vocabulary, not SDL's: the assertions are
+ * about what reaches a DKR channel, so a fixture should not have to restate
+ * SDL's axis numbering to hold a direction. Every axis and button the pose
+ * vocabulary covers is rewritten on each call, so a pose replaces the previous
+ * one rather than accumulating with it. */
+static int hotplug_pose_apply(SDL_Joystick *joystick, const char *pose) {
+    int stick_x = 0;
+    int stick_y = 0;
+    Uint8 button_a = 0;
+    Uint8 button_start = 0;
+    if (strcmp(pose, "left") == 0)         stick_x = -32000;
+    else if (strcmp(pose, "right") == 0)   stick_x = 32000;
+    else if (strcmp(pose, "up") == 0)      stick_y = -32000;
+    else if (strcmp(pose, "down") == 0)    stick_y = 32000;
+    else if (strcmp(pose, "a") == 0)       button_a = 1;
+    else if (strcmp(pose, "start") == 0)   button_start = 1;
+    else if (strcmp(pose, "neutral") != 0) return -1;
+    if (SDL_JoystickSetVirtualAxis(
+            joystick, SDL_CONTROLLER_AXIS_LEFTX, (Sint16)stick_x) != 0 ||
+        SDL_JoystickSetVirtualAxis(
+            joystick, SDL_CONTROLLER_AXIS_LEFTY, (Sint16)stick_y) != 0 ||
+        SDL_JoystickSetVirtualButton(
+            joystick, SDL_CONTROLLER_BUTTON_A, button_a) != 0 ||
+        SDL_JoystickSetVirtualButton(
+            joystick, SDL_CONTROLLER_BUTTON_START, button_start) != 0) {
+        return -1;
+    }
+    return 0;
+}
+#endif
+
+static void hotplug_fire(const MdkrTestHotplug *entry, uint64_t now) {
+    int instance = -1;
+    int port = -1;
+    int result = -1;
+
+    if (entry->op == MDKR_HOTPLUG_RUMBLE) {
+        /* Deliberately not filtered by presence: the point of the arm is that
+         * DKR's own Rumble Pak path may address a channel whose pad has just
+         * gone away, and that this is a no-op rather than a fault. */
+        port = entry->id;
+        result = platform_pad_rumble(port, entry->value);
+        hotplug_report(now, entry->op, -1, port, -1, result);
+        return;
+    }
+#if MDKR_TEST_HOTPLUG_VIRTUAL
+    if (entry->id >= 1 && entry->id <= MDKR_TEST_HOTPLUG_IDS) {
+        switch (entry->op) {
+            case MDKR_HOTPLUG_ATTACH: {
+                const int device = SDL_JoystickAttachVirtual(
+                    SDL_JOYSTICK_TYPE_GAMECONTROLLER, SDL_CONTROLLER_AXIS_MAX,
+                    SDL_CONTROLLER_BUTTON_MAX, 1);
+                if (device >= 0) {
+                    instance = (int)SDL_JoystickGetDeviceInstanceID(device);
+                    s_hotplugInstance[entry->id] = (SDL_JoystickID)instance;
+                    result = 0;
+                } else {
+                    fprintf(stderr, "[PAD-HOTPLUG] attach failed: %s\n",
+                            SDL_GetError());
+                }
+                break;
+            }
+            case MDKR_HOTPLUG_DETACH: {
+                instance = (int)s_hotplugInstance[entry->id];
+                if (instance >= 0) {
+                    const int device =
+                        hotplug_device_index((SDL_JoystickID)instance);
+                    port = gc_port_for_instance((SDL_JoystickID)instance);
+                    if (device >= 0) {
+                        result = SDL_JoystickDetachVirtual(device);
+                    }
+                    s_hotplugInstance[entry->id] = -1;
+                }
+                break;
+            }
+            default: {
+                SDL_Joystick *joystick = NULL;
+                instance = (int)s_hotplugInstance[entry->id];
+                if (instance >= 0) {
+                    port = gc_port_for_instance((SDL_JoystickID)instance);
+                    joystick =
+                        SDL_JoystickFromInstanceID((SDL_JoystickID)instance);
+                }
+                if (joystick != NULL) {
+                    result = hotplug_pose_apply(joystick, entry->pose);
+                }
+                break;
+            }
+        }
+    }
+#else
+    /* No virtual joystick support in this SDL: say so in the trace rather than
+     * letting a check read a missing row as a passing assertion. */
+    result = -2;
+#endif
+    hotplug_report(now, entry->op, entry->id, port, instance, result);
+}
+
+static void pad_hotplug_lazy_init(void) {
+    const char *value;
+    const char *cursor;
+
+    if (s_hotplugState >= 0) {
+        return;
+    }
+    s_hotplugState = 0;
+    for (int i = 0; i <= MDKR_TEST_HOTPLUG_IDS; i++) {
+        s_hotplugInstance[i] = -1;
+    }
+    value = getenv("MDKR_TEST_PAD_HOTPLUG");
+    if (value == NULL || value[0] == '\0') {
+        return;
+    }
+    cursor = value;
+    while (*cursor != '\0' && s_hotplugCount < MDKR_TEST_HOTPLUG_MAX) {
+        const char *end = strchr(cursor, ',');
+        const char *entry_end = end != NULL ? end : cursor + strlen(cursor);
+        const char *eq = memchr(cursor, '=', (size_t)(entry_end - cursor));
+        const char *at = NULL;
+        const char *colon = NULL;
+        MdkrTestHotplug entry;
+        char *tail = NULL;
+        size_t name_len;
+        int parsed = 0;
+
+        for (const char *scan = eq != NULL ? eq + 1 : cursor;
+             scan < entry_end; scan++) {
+            if (*scan == '@') at = scan;
+            else if (*scan == ':' && colon == NULL) colon = scan;
+        }
+        memset(&entry, 0, sizeof(entry));
+        name_len = eq != NULL ? (size_t)(eq - cursor) : 0u;
+        if (eq != NULL && at != NULL && at > eq) {
+            if (name_len == 6 && memcmp(cursor, "attach", 6) == 0) {
+                entry.op = MDKR_HOTPLUG_ATTACH;
+                parsed = 1;
+            } else if (name_len == 6 && memcmp(cursor, "detach", 6) == 0) {
+                entry.op = MDKR_HOTPLUG_DETACH;
+                parsed = 1;
+            } else if (name_len == 4 && memcmp(cursor, "hold", 4) == 0) {
+                entry.op = MDKR_HOTPLUG_HOLD;
+                parsed = colon != NULL && colon < at &&
+                         (size_t)(at - colon - 1) < sizeof(entry.pose);
+                if (parsed) {
+                    memcpy(entry.pose, colon + 1, (size_t)(at - colon - 1));
+                }
+            } else if (name_len == 6 && memcmp(cursor, "rumble", 6) == 0) {
+                entry.op = MDKR_HOTPLUG_RUMBLE;
+                parsed = colon != NULL && colon < at;
+                if (parsed) {
+                    entry.value = atoi(colon + 1);
+                }
+            }
+            if (parsed) {
+                entry.id = atoi(eq + 1);
+                entry.tick = strtoull(at + 1, &tail, 10);
+                parsed = tail == entry_end;
+            }
+        }
+        if (!parsed) {
+            fprintf(stderr, "[PAD-HOTPLUG] entry \"%.*s\" unrecognized "
+                            "(<op>=<args>@<tick>); ignored\n",
+                    (int)(entry_end - cursor), cursor);
+            cursor = end != NULL ? end + 1 : entry_end;
+            continue;
+        }
+        s_hotplug[s_hotplugCount++] = entry;
+        s_hotplugState = 1;
+        cursor = end != NULL ? end + 1 : entry_end;
+    }
+}
+
+/* Fires every entry the clock has reached, in schedule order so a fixture can
+ * attach several pads at one tick and know which channel each one claims. */
+static void pad_hotplug_run(uint64_t now) {
+    for (int i = 0; i < s_hotplugCount; i++) {
+        if (s_hotplug[i].fired || now < s_hotplug[i].tick) {
+            continue;
+        }
+        s_hotplug[i].fired = 1;
+        hotplug_fire(&s_hotplug[i], now);
+    }
+}
+
+static void pad_hotplug_poll(void) {
+    pad_hotplug_lazy_init();
+    if (s_hotplugState != 1) {
+        return;
+    }
+    pad_hotplug_run(present_sched_ticks());
+}
+
+/* The boot half of the arm: see the tick-0 note above. */
+static void pad_hotplug_boot(void) {
+    pad_hotplug_lazy_init();
+    if (s_hotplugState != 1) {
+        return;
+    }
+    pad_hotplug_run(0u);
+}
+
+/* One row per DKR channel per authoritative tick, read through the same
+ * accessors osContGetReadData uses, so the trace cannot agree with SDL while
+ * disagreeing with the game. `instance` and `attached` describe the SDL
+ * controller the channel currently owns: a channel still holding a detached
+ * device reports attached=0 rather than simply looking idle. */
+static void pad_hotplug_trace_channels(void) {
+    if (s_hotplugState != 1) {
+        return;
+    }
+    for (int port = 0; port < DKR_MAXPADS; port++) {
+        int stick_x = 0;
+        int stick_y = 0;
+        int instance = -1;
+        int attached = 0;
+        if (s_gc[port] != NULL) {
+            SDL_Joystick *joystick = SDL_GameControllerGetJoystick(s_gc[port]);
+            if (joystick != NULL) {
+                instance = (int)SDL_JoystickInstanceID(joystick);
+            }
+            attached = SDL_GameControllerGetAttached(s_gc[port]) ? 1 : 0;
+        }
+        platform_pad_stick(port, &stick_x, &stick_y);
+        fprintf(stderr,
+                "[PAD-CHANNEL] tick=%d port=%d present=%d buttons=0x%04x "
+                "sx=%d sy=%d instance=%d attached=%d\n",
+                g_simTickCounter, port, platform_pad_present(port),
+                platform_pad_buttons(port), stick_x, stick_y, instance,
+                attached);
+    }
+    fflush(stderr);
 }
 
 void platform_input_init(void) {
@@ -1411,6 +1982,9 @@ void platform_input_init(void) {
     if (executable_base != NULL) {
         SDL_free(executable_base);
     }
+    /* Before the enumeration below, so a fixture's boot pads are indistinguish-
+     * able from hardware SDL_Init already saw. Inert unless the arm is set. */
+    pad_hotplug_boot();
     for (int i = 0; i < SDL_NumJoysticks(); i++) gc_try_open(i);
     for (int i = 0; i < DKR_MAXPADS; i++) {
         s_pads[i].buttons = 0;
@@ -2042,6 +2616,21 @@ static void input_dispatch_events(uint64_t target_tick) {
                         s_keyboardDown[e.key.keysym.scancode] = 1;
                         input_changed = 1;
                     }
+                    /*
+                     * Tab: content-pack overrides off and back on, live, so a
+                     * pack can be compared against the original without a
+                     * restart. Deliberately handled HERE and not next to the
+                     * overlay's own F1/F10 bindings: everything above this
+                     * switch already dropped the event when the overlay was
+                     * capturing input, which is the one notion of "the menu has
+                     * the keyboard" this port has. Tab therefore still walks the
+                     * settings UI's fields while the menu is up, without a
+                     * second focus test that could disagree with the first.
+                     * `repeat` is filtered so holding the key does not strobe.
+                     */
+                    if (!e.key.repeat && e.key.keysym.sym == SDLK_TAB) {
+                        platform_content_packs_toggle();
+                    }
 #ifndef MDKR_APP
                     if (e.key.keysym.sym == SDLK_ESCAPE && g_headlessFrames < 0)
                         s_quitRequested = 1;   /* legacy non-shell host quit */
@@ -2149,6 +2738,7 @@ void platform_input_pump(void) {
     const uint64_t target_tick = present_sched_input_target_tick();
     /* Test-only; one compare in every real run (see settings_toggle_poll). */
     settings_toggle_poll();
+    pad_hotplug_poll();
 #ifdef MDKR_APP
     /* Applies deferred shell/window work after the previous present and before
      * any new frame acquires a drawable. No-op without registered app hooks. */
@@ -2249,6 +2839,9 @@ void platform_input_commit_tick(uint64_t ticket) {
      * simulation sample and is traced at N+1. Presentation count still cannot
      * move an edge. */
     script_apply(s_pads, g_simTickCounter > 0 ? g_simTickCounter - 1 : 0);
+    /* After script_apply, so the trace is the published snapshot DKR reads and
+     * not an intermediate one. Inert unless MDKR_TEST_PAD_HOTPLUG is set. */
+    pad_hotplug_trace_channels();
 }
 
 /* Publishes the pacing configuration the budget was taken under, then the
@@ -3756,7 +4349,9 @@ static int s_probeRaceFinishPosition = -1;
 static int s_probeRaceRacerIndex = -1, s_probeRacePlayerIndex = -1;
 void mdkr_pace_probe_finish(
     int lap, int raceFinished, int finishPosition,
-    int racerIndex, int playerIndex) {
+    int racerIndex, int playerIndex,
+    int racePosition, int racerCount, int lapCount, int itemQuantity,
+    int itemType) {
     static int eventValid;
     static int eventLap, eventFinished, eventPosition;
     static int eventRacerIndex, eventPlayerIndex;
@@ -3780,6 +4375,11 @@ void mdkr_pace_probe_finish(
     s_probeRaceFinishPosition = finishPosition;
     s_probeRaceRacerIndex = racerIndex;
     s_probeRacePlayerIndex = playerIndex;
+    /* The race announcer reads the same publication, one tick behind, and
+     * writes nothing but text. Inert unless the player has speech on. */
+    mdkr_a11y_race_publish(racePosition, racerCount, lap, lapCount,
+                           raceFinished, finishPosition, itemQuantity,
+                           itemType);
 }
 /* Time-trial ghost playback: a count of interpolated ghost frames, plus which
  * ghost bank the last one came from (0/1 = the player's own recorded ghost,

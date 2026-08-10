@@ -32,7 +32,24 @@
 
 const BUILD = new URL(self.location.href).searchParams.get("v") || "";
 const CACHE = "mdkr64-shell-" + BUILD;
-const DOCUMENT_KEY = "./?document=" + BUILD;
+
+// ONE CACHE ENTRY PER DOCUMENT, keyed by path.
+//
+// This was a single shared key while the site had a single page. It no longer
+// does: rom-check.html sits beside index.html, and with one key the LAST
+// navigation cached became the offline answer for EVERY navigation — visit the
+// ROM checker once and the shell would come back as the checker while offline,
+// and vice versa. Only the offline fallback was ever affected (a navigation
+// online returns the network response regardless), but "the app opened on the
+// wrong page" is exactly the kind of quiet wrongness a cache should not add.
+//
+// A trailing index.html collapses to the directory, so the shell has one entry
+// whether it is reached as `/` or as `/index.html`.
+function documentKey(url) {
+  const path = new URL(url, self.location.href).pathname.replace(/index\.html$/, "");
+  return path + "?document=" + BUILD;
+}
+const SHELL_DOCUMENT_KEY = documentKey("./");
 
 // Everything a home-screen launch needs before the player supplies a ROM.
 // The whole set is ~2.5 MB, so it is precached at install: the worker is
@@ -60,7 +77,7 @@ self.addEventListener("install", (event) => {
     try {
       const cache = await caches.open(CACHE);
       const response = await fetch("./", { cache: "reload" });
-      if (response.ok) await cache.put(DOCUMENT_KEY, response);
+      if (response.ok) await cache.put(SHELL_DOCUMENT_KEY, response);
       // Fetch each asset individually so one miss does not abandon the rest;
       // anything missed here is still captured by the runtime fetch path.
       await Promise.all(PRECACHE.map(async (url) => {
@@ -101,14 +118,16 @@ async function cacheFirst(request, key) {
 
 async function networkFirstDocument(request) {
   const cache = await caches.open(CACHE);
+  const key = documentKey(request.url);
   try {
     const response = await fetch(request);
     if (response.ok && response.type === "basic") {
-      await cache.put(DOCUMENT_KEY, response.clone());
+      await cache.put(key, response.clone());
     }
     return response;
   } catch (error) {
-    const hit = await cache.match(DOCUMENT_KEY);
+    // Offline: fall back to THIS page's own cached copy, never another page's.
+    const hit = await cache.match(key);
     if (hit) return hit;
     throw error;
   }

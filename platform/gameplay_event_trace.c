@@ -8,7 +8,8 @@
 #define EVENT_HASH_OFFSET UINT64_C(14695981039346656037)
 #define EVENT_HASH_PRIME  UINT64_C(1099511628211)
 
-static int s_enabled = -1;
+static int s_hash_stream = -1;
+static const GameplayEventObserver *s_observer;
 static uint64_t s_hash = EVENT_HASH_OFFSET;
 static uint64_t s_ticks;
 static uint64_t s_total_events;
@@ -20,13 +21,15 @@ static int32_t s_last_level;
 static int s_context_valid;
 static int64_t s_perturb_tick = -1;
 
-bool gameplay_event_trace_enabled(void) {
-    if (s_enabled < 0) {
+/* The `[EVENTHASH]` fidelity stream itself: parsed once, from MDKR_EVENT_HASH,
+ * and the sole authority over what is hashed and printed. */
+static bool hash_stream_enabled(void) {
+    if (s_hash_stream < 0) {
         const char *value = getenv("MDKR_EVENT_HASH");
         const char *perturb = getenv("MDKR_TEST_EVENT_PERTURB");
         char *end = NULL;
-        s_enabled = value != NULL && value[0] != '\0' &&
-                    strcmp(value, "0") != 0;
+        s_hash_stream = value != NULL && value[0] != '\0' &&
+                        strcmp(value, "0") != 0;
         if (perturb != NULL && perturb[0] != '\0') {
             long long parsed = strtoll(perturb, &end, 10);
             if (end != perturb && *end == '\0' && parsed >= 0) {
@@ -34,7 +37,19 @@ bool gameplay_event_trace_enabled(void) {
             }
         }
     }
-    return s_enabled;
+    return s_hash_stream != 0;
+}
+
+bool gameplay_event_trace_enabled(void) {
+    /* Two readers, one predicate: the emission sites are armed when EITHER the
+     * hash stream or an observer wants the events. Keeping this one function is
+     * what stops a call site from being armed for one reader and not the
+     * other, which would make an observer see a stream the hash never did. */
+    return hash_stream_enabled() || s_observer != NULL;
+}
+
+void gameplay_event_trace_set_observer(const GameplayEventObserver *observer) {
+    s_observer = observer;
 }
 
 static void hash_u32(uint32_t value) {
@@ -50,6 +65,12 @@ void gameplay_event_trace_emit(
     if (!gameplay_event_trace_enabled() ||
         kind <= 0 || kind >= GAMEPLAY_EVENT_KIND_COUNT) {
         return;
+    }
+    if (s_observer != NULL && s_observer->event != NULL) {
+        s_observer->event(kind, a, b, c, d);
+    }
+    if (!hash_stream_enabled()) {
+        return; /* observed, not hashed: the hash stream was not asked for */
     }
     hash_u32((uint32_t)kind);
     hash_u32((uint32_t)a);
@@ -77,7 +98,12 @@ void gameplay_event_trace_observe_context(int32_t mode, int32_t level) {
 
 void gameplay_event_trace_tick(uint64_t tick) {
     unsigned kind;
-    if (!gameplay_event_trace_enabled()) {
+    if (s_observer != NULL && s_observer->tick != NULL) {
+        /* The authoritative tick boundary, which is the only clock an observer
+         * can pace itself against without inventing one of its own. */
+        s_observer->tick(tick);
+    }
+    if (!hash_stream_enabled()) {
         return;
     }
     if (s_perturb_tick >= 0 && tick == (uint64_t)s_perturb_tick) {
@@ -119,7 +145,7 @@ void gameplay_event_trace_tick(uint64_t tick) {
 }
 
 void gameplay_event_trace_summary(void) {
-    if (!gameplay_event_trace_enabled()) {
+    if (!hash_stream_enabled()) {
         return;
     }
     fprintf(stderr,
