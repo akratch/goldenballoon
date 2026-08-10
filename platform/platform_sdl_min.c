@@ -4078,6 +4078,105 @@ static void present_pace_poll_display_switch(void) {
     present_pace_note_display_changed();
 }
 
+/*
+ * Rolling variance of the last 32 present-to-present intervals, fed from the
+ * SAME clock read platform_vi_present_pace_units() already takes to pace each
+ * present (quantum_interval_note() below is called with its `elapsed`, not a
+ * fresh pace_host_ns()). Expressed as parts-per-million of the mean interval
+ * squared -- the squared coefficient of variation -- so the threshold is
+ * resolution-independent across refresh rates: 2500 ppm is exactly 5%
+ * relative jitter (0.05^2 * 1e6), roughly a VRR panel mid-range. A fixed
+ * panel's ordinary scheduling noise sits orders of magnitude below that.
+ */
+#define QUANTUM_INTERVAL_WINDOW 32u
+static uint64_t s_quantumIntervalNs[QUANTUM_INTERVAL_WINDOW];
+static unsigned s_quantumIntervalCount;
+static unsigned s_quantumIntervalHead;
+static uint64_t s_quantumLastVariancePpm;
+
+static void quantum_interval_note(uint64_t elapsed_ns) {
+    s_quantumIntervalNs[s_quantumIntervalHead] = elapsed_ns;
+    s_quantumIntervalHead = (s_quantumIntervalHead + 1u) % QUANTUM_INTERVAL_WINDOW;
+    if (s_quantumIntervalCount < QUANTUM_INTERVAL_WINDOW) {
+        s_quantumIntervalCount++;
+    }
+}
+
+static uint64_t quantum_interval_variance_ppm(void) {
+    uint64_t sum = 0u;
+    uint64_t sum_sq = 0u;
+    uint64_t mean, mean_sq, variance;
+    unsigned i;
+
+    if (s_quantumIntervalCount < QUANTUM_INTERVAL_WINDOW) {
+        /* Not enough history yet: report no variance rather than a noisy
+         * early estimate that could flip mode on startup jitter alone. */
+        return 0u;
+    }
+    for (i = 0u; i < QUANTUM_INTERVAL_WINDOW; i++) {
+        sum += s_quantumIntervalNs[i];
+    }
+    mean = sum / QUANTUM_INTERVAL_WINDOW;
+    if (mean == 0u) {
+        return 0u;
+    }
+    for (i = 0u; i < QUANTUM_INTERVAL_WINDOW; i++) {
+        const uint64_t sample = s_quantumIntervalNs[i];
+        const uint64_t d = sample > mean ? sample - mean : mean - sample;
+        /* Every sample is bounded by MDKR_PACING_STALL_REBASE_NS (200ms):
+         * quantum_interval_note() is only ever called from the non-rebase
+         * branch. A bound this generous (d well under 2e8) keeps d*d far
+         * below UINT64_MAX (~1.8e19) on its own, but the bound is asserted
+         * rather than assumed -- a future widening of the rebase threshold
+         * must not silently reopen the overflow this guards against. */
+        if (d > (uint64_t)UINT32_MAX) {
+            return UINT64_MAX;
+        }
+        sum_sq += d * d;
+    }
+    variance = sum_sq / QUANTUM_INTERVAL_WINDOW;
+    mean_sq = mean * mean; /* mean is well under UINT32_MAX; cannot overflow */
+    /*
+     * variance_ppm = variance * 1e6 / mean_sq, but computing the numerator
+     * first overflows uint64 for perfectly ordinary jitter (mean_sq is
+     * ~2.8e14 at 60 Hz, so variance need only exceed ~1.8e13 -- a ~4.3ms
+     * deviation squared -- to overflow `variance * 1e6` before the division
+     * that would have brought it back down to a small ppm figure). Folding
+     * the 1e6 into the DIVISOR instead avoids that: it costs a few
+     * insignificant low bits of `mean_sq` (relative error ~1e6/mean_sq,
+     * negligible at any real display rate) rather than the answer itself.
+     */
+    {
+        const uint64_t scaled_mean_sq = mean_sq / UINT64_C(1000000);
+        if (scaled_mean_sq == 0u) {
+            /* mean_sq under 1e6 means a sub-millisecond mean interval --
+             * not a real display rate -- so there is nothing meaningful to
+             * report rather than dividing by zero. */
+            return 0u;
+        }
+        return variance / scaled_mean_sq;
+    }
+}
+
+uint64_t platform_present_quantum_variance_ppm(void) {
+    return s_quantumLastVariancePpm;
+}
+
+/*
+ * Opt-OUT of the variance-honest decision below, forcing today's
+ * always-grid-when-qualified behavior back on for A/B comparison. Cached like
+ * every other one-shot env read in this file: the flag cannot change mid-run.
+ */
+static bool present_pace_quantum_strict_forced(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *value = getenv("MDKR_PRESENT_QUANTUM_STRICT");
+        cached = (value != NULL && value[0] != '\0' &&
+                  strcmp(value, "0") != 0) ? 1 : 0;
+    }
+    return cached != 0;
+}
+
 uint64_t platform_present_display_quantum_units(void) {
     present_pace_lazy_init();
     if (s_paceMode != PACE_REALTIME) {
@@ -4098,6 +4197,30 @@ uint64_t platform_present_display_quantum_units(void) {
         MDKR_PRESENT_SYNC_BLOCKING) {
         /* A latest-image queue drops undisplayed frames rather than pacing the
          * caller, so a present is not one refresh. */
+        return 0u;
+    }
+    s_quantumLastVariancePpm = quantum_interval_variance_ppm();
+    if (s_quantumLastVariancePpm > 2500u &&
+        !present_pace_quantum_strict_forced()) {
+        /*
+         * Every branch above establishes that presents are gated by a
+         * blocking vblank queue at a reported fixed rate -- exactly the
+         * shape a constant-refresh panel has. But a VRR panel is ALSO gated
+         * by a blocking present queue, at whatever rate it reports as its
+         * adaptive ceiling, while actually retiring each present whenever the
+         * content asks it to. Snapping alpha onto that reported rate's grid
+         * is then dishonest: the panel is not on that grid, and rounding the
+         * phase onto ticks it never lands on is what UNCAPPED_PRESENTATION.md
+         * calls the latched-pacer hazard (docs/UNCAPPED_PRESENTATION.md:51-62)
+         * applied to the interpolation phase rather than the frame limit.
+         * Measured interval jitter is the signal a fixed panel cannot
+         * produce: declining here leaves the measured phase standing, same
+         * as every other 0-returning branch above.
+         *
+         * MDKR_PRESENT_QUANTUM_STRICT=1 forces today's behavior (always grid
+         * when the branches above qualify) for A/B comparison against this
+         * change.
+         */
         return 0u;
     }
     return (uint64_t)s_fieldHz * UINT64_C(1000000000) /
@@ -4258,6 +4381,10 @@ uint64_t platform_vi_present_pace_units(void) {
             if (deadline && clock != NULL) {
                 mdkr_present_deadline_commit(clock, now);
             }
+            /* Feed the ordinary (non-rebase) present-to-present interval to
+             * the quantum variance window -- the SAME `elapsed` this branch
+             * already computed from `now`, not a second clock read. */
+            quantum_interval_note(elapsed);
         }
         s_presentLastNs = now;
     }

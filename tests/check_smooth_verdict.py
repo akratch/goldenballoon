@@ -99,6 +99,18 @@ ROW_RE = re.compile(
     r"top_reason=(\S+) pandemoted=(\d+)"
 )
 PAN_THRESHOLD_RE = re.compile(r"\[PAN-DEMOTE\] armed threshold=([0-9.]+)")
+# Task 5: VRR-honest alpha quantization. This fixture drives synthetic
+# (non-realtime) pacing via --headless-frames, which
+# platform_present_display_quantum_units() declines to quantize onto a grid
+# unconditionally (platform_sdl_min.c:4083-4102, the very first branch) --
+# long before the new variance check ever runs. So this gate only proves the
+# line fires and reports what synthetic pacing has always done: mode=free,
+# units=0. It is not a witness for the variance-driven decline itself; that
+# needs a real, jittery display (tests/check_pacing_quality.py's realtime
+# arm).
+ALPHA_QUANTUM_RE = re.compile(
+    r"\[ALPHA-QUANTUM\] units=(\d+) variance_ppm=(\d+) mode=(grid|free)"
+)
 
 REQUIRED_CLASSES = ("WATER_WAVE", "OBJECT_ROOT", "WORLD_SCROLL")
 
@@ -247,6 +259,24 @@ def main() -> int:
 
     if not rows:
         failures.append("no [SMOOTH-VERDICT] rows at all")
+
+    # Task 5: the [ALPHA-QUANTUM] line must fire at the same flush window as
+    # [SMOOTH-VERDICT], and this fixture's synthetic (--headless-frames)
+    # pacing must report the harness's known-today value: mode=free, units=0
+    # (see ALPHA_QUANTUM_RE's comment above for why this is not yet a witness
+    # for the variance threshold itself).
+    alpha_quantum_match = ALPHA_QUANTUM_RE.search(output)
+    if alpha_quantum_match is None:
+        failures.append("no [ALPHA-QUANTUM] line at all")
+    else:
+        aq_units, aq_variance_ppm, aq_mode = alpha_quantum_match.groups()
+        if aq_units != "0" or aq_mode != "free":
+            failures.append(
+                f"[ALPHA-QUANTUM]: expected units=0 mode=free under "
+                f"synthetic pacing (declined long before the variance "
+                f"check runs), got units={aq_units} "
+                f"variance_ppm={aq_variance_ppm} mode={aq_mode}"
+            )
 
     for cls in REQUIRED_CLASSES:
         if cls not in rows:

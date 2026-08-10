@@ -67,6 +67,23 @@ interpolation phase onto the display's own grid and publishes that grid as
     phases that ARE grid points. A run that quietly stopped projecting would
     keep passing every count-based identity in here; only this catches it.
 
+TASK 5 MADE AN ASSUMPTION HERE EXPLICIT. The grid-phase assertions above are
+only meaningful on a fixed present interval -- projecting onto a grid a panel
+is not actually holding to would be dishonest, which is exactly what Task 5's
+measured-variance decline in `platform_present_display_quantum_units()` now
+refuses to do. That decline is real: this project's own M3 Max development
+machine has a ProMotion (ADAPTIVE-refresh) built-in display, and a genuinely
+unthrottled `MDKR_PRESENT_QUANTUM_STRICT`-free run on it measures present
+interval variance well above the 2500ppm threshold, so `gridppm` legitimately
+comes back 0 there. The main realtime arm below sets
+`MDKR_PRESENT_QUANTUM_STRICT=1` for exactly this reason -- it pins today's
+always-grid regime so this arm keeps measuring the SAME thing it always did,
+on any panel, fixed or adaptive. The variance-honest path itself is covered
+separately by a companion arm, WITHOUT strict, that asserts `[ALPHA-QUANTUM]`'s
+reported `mode` matches what its own `variance_ppm` implies -- `free` above
+the threshold, `grid` at or below it -- so it is a real assertion on any
+machine rather than a hardcoded expectation tied to this one.
+
 THE DISPLAY-CHANGE ARM (M3 slice 2) covers a window moving to a monitor with a
 different refresh. What can be automated is everything downstream of the event:
 MDKR_TEST_DISPLAY_RATE_SWITCH=<hz>@<tick> makes the host report a different
@@ -187,6 +204,12 @@ DISPLAY_SWITCH_TICKS = 140
 # checking would agree with any value the source happened to hold.
 DISPLAY_MARGIN_HZ = 3
 
+# platform/platform_sdl_min.c's own quantum-decline threshold
+# (variance_ppm > 2500 -> mode=free), duplicated as a number on purpose (see
+# DISPLAY_MARGIN_HZ above): a gate that read the constant out of the source it
+# is checking would agree with any value the source happened to hold.
+ALPHA_QUANTUM_VARIANCE_THRESHOLD_PPM = 2500
+
 # [PRESENTSCHED-SUMMARY] presentkind, as published by MdkrPresentPolicyKind.
 KIND_ORIGINAL = 0
 KIND_CAPPED = 1
@@ -264,6 +287,26 @@ def arm_label(output: str) -> str:
             if separator and key == "arm":
                 return value
     return ""
+
+
+def alpha_quantum_row(output: str) -> dict[str, str]:
+    """The one `[ALPHA-QUANTUM]` line this run's flush emitted, or {} if none.
+
+    Not a `parse_rows` payload: `mode` is a bare word (`grid`/`free`), which
+    that helper's int-only parsing would silently drop, and the mode is the
+    entire point of reading this line.
+    """
+    for line in output.splitlines():
+        marker = "[ALPHA-QUANTUM] "
+        if marker not in line:
+            continue
+        fields: dict[str, str] = {}
+        for token in line.split(marker, 1)[1].split():
+            key, separator, value = token.partition("=")
+            if separator:
+                fields[key] = value
+        return fields
+    return {}
 
 
 def run_arm(binary: Path, rom: Path, root: Path, label: str, policy: str,
@@ -562,6 +605,76 @@ def check_audio(result: Run) -> list[str]:
     return []
 
 
+def check_alpha_quantum_strict(result: Run) -> list[str]:
+    """Under MDKR_PRESENT_QUANTUM_STRICT=1, [ALPHA-QUANTUM] must report mode=grid.
+
+    The mutation-check half of the Task 5 companion coverage: strict mode
+    exists precisely to force today's always-grid behavior back on regardless
+    of measured variance, so its own diagnostic line must say so too. This is
+    not redundant with check_vblank_projection's `gridppm` check above -- that
+    proves the PROJECTION engaged, this proves the env var is what the new
+    variance-decline branch itself is reading, by checking the same trace line
+    the unstrict companion arm below reads to prove the opposite.
+    """
+    label = result.label
+    fields = alpha_quantum_row(result.output)
+    if not fields:
+        return [f"{label}: no [ALPHA-QUANTUM] line — the flush-window trace "
+                "did not fire"]
+    failures: list[str] = []
+    if fields.get("mode") != "grid":
+        failures.append(
+            f"{label}: MDKR_PRESENT_QUANTUM_STRICT=1 but [ALPHA-QUANTUM] "
+            f"reported mode={fields.get('mode')}, expected grid")
+    if fields.get("units") == "0":
+        failures.append(
+            f"{label}: MDKR_PRESENT_QUANTUM_STRICT=1 but [ALPHA-QUANTUM] "
+            "units=0")
+    return failures
+
+
+def check_alpha_quantum_honest(result: Run) -> list[str]:
+    """[ALPHA-QUANTUM]'s reported mode must match what its own variance_ppm implies.
+
+    This is the Task 5 path itself, run WITHOUT MDKR_PRESENT_QUANTUM_STRICT:
+    the quantizer declines to project onto a grid the measured present
+    interval is not actually holding to. The assertion is tied to the
+    MEASURED variance_ppm rather than a hardcoded expectation, so it can never
+    be vacuous: on a genuinely fixed panel (variance at or below the
+    threshold) it demands mode=grid, and on this project's own M3
+    Max/ProMotion development machine (variance measured well above the
+    threshold) it demands mode=free units=0 -- the real positive witness for
+    the new path that this specific machine happens to provide.
+    """
+    label = result.label
+    fields = alpha_quantum_row(result.output)
+    if not fields:
+        return [f"{label}: no [ALPHA-QUANTUM] line — the flush-window trace "
+                "did not fire"]
+    mode = fields.get("mode")
+    units = fields.get("units")
+    variance_raw = fields.get("variance_ppm")
+    if variance_raw is None or not variance_raw.isdigit():
+        return [f"{label}: [ALPHA-QUANTUM] variance_ppm={variance_raw!r} is "
+                "not a parseable non-negative integer"]
+    variance_ppm = int(variance_raw)
+    expected_mode = ("free"
+                      if variance_ppm > ALPHA_QUANTUM_VARIANCE_THRESHOLD_PPM
+                      else "grid")
+    if mode != expected_mode:
+        return [
+            f"{label}: [ALPHA-QUANTUM] variance_ppm={variance_ppm} implies "
+            f"mode={expected_mode} (threshold "
+            f"{ALPHA_QUANTUM_VARIANCE_THRESHOLD_PPM}ppm) but reported "
+            f"mode={mode}"]
+    if mode == "free" and units != "0":
+        return [f"{label}: [ALPHA-QUANTUM] mode=free but units={units}, "
+                "expected 0"]
+    if mode == "grid" and units == "0":
+        return [f"{label}: [ALPHA-QUANTUM] mode=grid but units=0"]
+    return []
+
+
 def check_realtime_quality(result: Run) -> list[str]:
     """The M3 numeric gates, for a run that genuinely paced.
 
@@ -587,6 +700,7 @@ def check_realtime_quality(result: Run) -> list[str]:
             f"{DISPLAYED_P99_MAX_US}us — the slowest 1% of frames are "
             "arriving late enough to be seen")
     failures.extend(check_vblank_projection(result))
+    failures.extend(check_alpha_quantum_strict(result))
     return failures
 
 
@@ -802,7 +916,16 @@ def main() -> int:
                     result = run_arm(
                         binary, rom, root, label, "display", "interpolate",
                         REALTIME_TICKS, args.timeout, args.verbose,
-                        realtime=True)
+                        realtime=True,
+                        # Task 5: the grid-phase assertions below are only
+                        # meaningful on a fixed present interval; strict mode
+                        # pins that regime, forcing today's always-grid
+                        # behavior back on regardless of measured variance so
+                        # this arm keeps measuring exactly what it always did
+                        # -- on a fixed panel or an adaptive one (see the
+                        # module docstring's "TASK 5 MADE AN ASSUMPTION HERE
+                        # EXPLICIT" section).
+                        extra_env={"MDKR_PRESENT_QUANTUM_STRICT": "1"})
                     if not result.arm.endswith("/realtime"):
                         failures.append(
                             f"{label}: census arm={result.arm!r} is not a "
@@ -864,6 +987,53 @@ def main() -> int:
                                      "--allow-no-baseline)")
                     else:
                         failures.append(message)
+
+                # Task 5 companion arm: the SAME policy/smoothing, but WITHOUT
+                # MDKR_PRESENT_QUANTUM_STRICT, so this is the variance-honest
+                # decision path itself rather than the strict A/B pin above.
+                # The assertion (check_alpha_quantum_honest) is tied to this
+                # run's OWN measured variance_ppm, not a hardcoded
+                # expectation, so it can never be vacuous: it demands
+                # mode=grid on a genuinely fixed panel and mode=free on one
+                # that is not. On this project's own M3 Max/ProMotion
+                # development machine it is a real positive witness for the
+                # new path (measured variance is well above the 2500ppm
+                # threshold there).
+                honest_paced = False
+                for attempt in range(1, REALTIME_ATTEMPTS + 1):
+                    label = "realtime-display-smoothing-quantum-honest"
+                    if attempt > 1:
+                        label = f"{label}-retry{attempt - 1}"
+                    honest_result = run_arm(
+                        binary, rom, root, label, "display", "interpolate",
+                        REALTIME_TICKS, args.timeout, args.verbose,
+                        realtime=True)
+                    failures.extend(
+                        tear_free_presentation(honest_result.output, label))
+                    honest_cause = (
+                        explain_no_display_session(honest_result)
+                        or explain_unthrottled_presentation(honest_result))
+                    if honest_cause:
+                        notes.append(
+                            f"{label}: no valid measurement — {honest_cause}")
+                        continue
+                    honest_paced = True
+                    honest_failures = check_alpha_quantum_honest(
+                        honest_result)
+                    failures.extend(honest_failures)
+                    notes.append(
+                        f"{label}: {alpha_quantum_row(honest_result.output)}")
+                    break
+                if not honest_paced:
+                    honest_message = (
+                        "quantum-honest companion arm: NO PACED SESSION "
+                        f"after {REALTIME_ATTEMPTS} attempts — the "
+                        "mode-matches-variance assertion could not run")
+                    if args.allow_no_baseline:
+                        notes.append(honest_message +
+                                     " (allowed by --allow-no-baseline)")
+                    else:
+                        failures.append(honest_message)
         except RuntimeError as error:
             failures.append(str(error))
 

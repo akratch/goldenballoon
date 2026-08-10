@@ -541,6 +541,11 @@ void present_sched_note_stale(void) {
  */
 static uint64_t s_alpha_grid_tick;
 static uint64_t s_alpha_grid_last;
+/* Logging only: the most recent quantum this choke point actually read, for
+ * present_sched_trace_summary()'s [ALPHA-QUANTUM] row to report the value the
+ * run used rather than re-querying platform_present_display_quantum_units()
+ * fresh at flush time (which could answer differently by then). */
+static uint64_t s_alpha_last_quantum;
 
 /* `advance` claims the returned grid index for a present. A diagnostic reader
  * passes false so it cannot consume one a present is entitled to. */
@@ -549,6 +554,8 @@ static uint64_t present_sched_alpha_projected(uint64_t num, uint64_t den,
     const uint64_t quantum = platform_present_display_quantum_units();
     const uint64_t ticks = host_frame_driver_clock_ticks(&s_driver);
     uint64_t projected;
+
+    s_alpha_last_quantum = quantum;
 
     if (ticks != s_alpha_grid_tick) {
         s_alpha_grid_tick = ticks;
@@ -1444,6 +1451,11 @@ void present_sched_trace_summary(void) {
                 (unsigned long long)
                     camera_endpoint_stats.mutation_control_rejections);
     }
+    fprintf(stderr,
+            "[ALPHA-QUANTUM] units=%llu variance_ppm=%llu mode=%s\n",
+            (unsigned long long)s_alpha_last_quantum,
+            (unsigned long long)platform_present_quantum_variance_ppm(),
+            s_alpha_last_quantum != 0u ? "grid" : "free");
     fprintf(stderr,
             "[PRESENTSCHED-SUMMARY] entries=%llu ticks=%llu presents=%d "
             "surfaceupdates=%llu "

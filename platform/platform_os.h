@@ -165,6 +165,18 @@ unsigned platform_present_display_rate(void);
  */
 uint64_t platform_present_display_quantum_units(void);
 
+/*
+ * The squared coefficient of variation of the last (up to 32) measured
+ * present-to-present intervals, in parts-per-million of the mean interval
+ * squared -- 2500 is exactly 5% relative jitter (0.05^2 * 1e6). This is what
+ * platform_present_display_quantum_units() itself compares against 2500 to
+ * decline quantizing a variable-refresh panel onto a grid it is not actually
+ * following; exposed separately so a trace line can report the measurement
+ * that drove the decision. 0 before the window has 32 samples or when the
+ * pacer is not in realtime mode.
+ */
+uint64_t platform_present_quantum_variance_ppm(void);
+
 /* True when the player selected the Enhanced simulation cadence (1 field per
  * authored tick, 60 Hz) rather than Original (2 fields, the authored 30 Hz).
  * Resolved once at launch. Gameplay code that compensates for the faster tick
