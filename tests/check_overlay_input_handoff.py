@@ -83,6 +83,19 @@ def check_single_latch_owner() -> None:
 
 def check_reconciled_before_dispatch() -> None:
     body = function_body(PUMP, "void platform_input_pump(void)")
+    # The dispatch loop may live in a helper the pump calls -- it was factored
+    # out so a second, just-in-time sample at the tick boundary could reuse it
+    # verbatim rather than duplicate the swallow/focus/hotplug handling. Inline
+    # the callee at its call site so the ORDERING assertions below still see one
+    # continuous sequence. This follows the code; it does not relax the checks,
+    # and every requirement below is unchanged. A pump that stopped calling the
+    # helper AND stopped polling still fails, because the inlined body would
+    # then contain no SDL_PollEvent either.
+    for callee in ("input_dispatch_events",):
+        call = f"{callee}(target_tick);"
+        if call in body:
+            body = body.replace(
+                call, function_body(PUMP, f"static void {callee}(uint64_t target_tick)"))
     poll = body.find("SDL_PollEvent")
     require(poll >= 0, "the pump no longer polls SDL events")
     before = body[:poll]
