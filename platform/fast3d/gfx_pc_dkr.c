@@ -626,22 +626,6 @@ static bool dkr_replay_uv_scroll_interpolation_enabled(void) {
 }
 
 /*
- * Pan-rate demotion (presentation-safety plan Task 4), default OFF this
- * release: with MDKR_SMOOTH_PAN_DEMOTE unset, dkr_replay_resolve_alpha's
- * demotion clause below can never fire, so the choke point is bit-identical
- * to before this feature existed. Flipping the default is an owner decision
- * made after device time, same shape as every other public opt gate here.
- */
-static int dkr_replay_pan_demote = -1;
-static bool dkr_replay_pan_demote_enabled(void) {
-    if (dkr_replay_pan_demote < 0) {
-        const char *value = getenv("MDKR_SMOOTH_PAN_DEMOTE");
-        dkr_replay_pan_demote = value != NULL && value[0] == '1';
-    }
-    return dkr_replay_pan_demote != 0;
-}
-
-/*
  * Above this per-tick camera yaw rate, WATER_WAVE/WORLD_SCROLL/SKYDOME are
  * unproven-correspondence surfaces (none of the three carries a real
  * presentation owner today -- see gfx_presentation_packet.h's MdkrSurfaceClass
@@ -681,6 +665,35 @@ static float dkr_replay_pan_demote_threshold_deg(void) {
         computed = true;
     }
     return threshold;
+}
+
+/*
+ * Pan-rate demotion (presentation-safety plan Task 4), default OFF this
+ * release: with MDKR_SMOOTH_PAN_DEMOTE unset, dkr_replay_resolve_alpha's
+ * demotion clause below can never fire, so the choke point is bit-identical
+ * to before this feature existed. Flipping the default is an owner decision
+ * made after device time, same shape as every other public opt gate here.
+ *
+ * The first call that finds the seam armed also emits one [PAN-DEMOTE]
+ * trace row naming the THRESHOLD ACTUALLY COMPILED IN (or test-overridden),
+ * unconditionally -- not gated on a class ever reaching the demotion branch,
+ * because a route that never crosses the real threshold (as the production
+ * default is expected not to on an ordinary route) must still let a gate
+ * confirm what value shipped. This is the only site that reads
+ * dkr_replay_pan_demote_threshold_deg() outside the choke point's own
+ * comparison, so it cannot itself change any decision -- only report one.
+ */
+static int dkr_replay_pan_demote = -1;
+static bool dkr_replay_pan_demote_enabled(void) {
+    if (dkr_replay_pan_demote < 0) {
+        const char *value = getenv("MDKR_SMOOTH_PAN_DEMOTE");
+        dkr_replay_pan_demote = value != NULL && value[0] == '1';
+        if (dkr_replay_pan_demote) {
+            fprintf(stderr, "[PAN-DEMOTE] armed threshold=%.2f\n",
+                    (double)dkr_replay_pan_demote_threshold_deg());
+        }
+    }
+    return dkr_replay_pan_demote != 0;
 }
 
 static bool dkr_replay_surface_class_pan_demotable(MdkrSurfaceClass surface_class) {

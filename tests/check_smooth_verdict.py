@@ -85,17 +85,26 @@ PAN_DEMOTE_FRAMES = 100000
 # does not have. The production default is untouched by this override --
 # it only takes effect once MDKR_SMOOTH_PAN_DEMOTE=1 has already been set.
 PAN_DEMOTE_TEST_THRESHOLD_DEG = "0.05"
+# The shipped production constant (MDKR_PAN_DEMOTE_YAW_DEG_PER_TICK in
+# gfx_pc_dkr.c), duplicated here ONLY as the value this gate expects
+# [PAN-DEMOTE]'s report to equal -- the report itself is read from the
+# binary's own stderr, not assumed, so a source change to the compiled
+# constant that this literal is not also updated to match fails the
+# production sub-arm below rather than passing silently.
+EXPECTED_PRODUCTION_THRESHOLD_DEG = 22.5
 FATAL_RE = fatal_re(r"\[FX BUG\]", "Assertion", "Validation Error")
 
 ROW_RE = re.compile(
     r"\[SMOOTH-VERDICT\] class=(\S+) blend=(\d+) snap=(\d+) "
     r"top_reason=(\S+) pandemoted=(\d+)"
 )
+PAN_THRESHOLD_RE = re.compile(r"\[PAN-DEMOTE\] armed threshold=([0-9.]+)")
 
 REQUIRED_CLASSES = ("WATER_WAVE", "OBJECT_ROOT", "WORLD_SCROLL")
 
 
-def environment(save_dir: Path, pan_demote: bool) -> dict[str, str]:
+def environment(save_dir: Path, pan_demote: bool,
+                 threshold_override: str | None = None) -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
@@ -121,25 +130,27 @@ def environment(save_dir: Path, pan_demote: bool) -> dict[str, str]:
         MDKR64_HIDDEN="1",
     )
     if pan_demote:
-        # Task 4's optional pan-rate demotion (default OFF; this is the one
-        # arm that opts in). Jungle Falls is the same fixture
-        # check_presentation_matrix.py already established as this tree's
-        # UV-scroll/wave witness -- autopilot cornering through it is what
-        # drives the camera's per-tick yaw rate. See
-        # PAN_DEMOTE_TEST_THRESHOLD_DEG above for why this arm also lowers
-        # the demotion threshold via the test-only override.
+        # Task 4's optional pan-rate demotion (default OFF). Jungle Falls is
+        # the same fixture check_presentation_matrix.py already established
+        # as this tree's UV-scroll/wave witness -- autopilot cornering
+        # through it is what drives the camera's per-tick yaw rate.
         env["MDKR_SMOOTH_PAN_DEMOTE"] = "1"
-        env["MDKR_TEST_PAN_DEMOTE_YAW_DEG_PER_TICK"] = PAN_DEMOTE_TEST_THRESHOLD_DEG
+        if threshold_override is not None:
+            # The test-only override (see PAN_DEMOTE_TEST_THRESHOLD_DEG
+            # above): only set for the exercising sub-arm. The production
+            # sub-arm below deliberately leaves this unset so it measures
+            # the compiled-in default.
+            env["MDKR_TEST_PAN_DEMOTE_YAW_DEG_PER_TICK"] = threshold_override
     return env
 
 
-def run(binary: Path, rom: Path, work: Path, timeout: int,
-        verbose: bool, pan_demote: bool) -> str:
+def run(binary: Path, rom: Path, work: Path, timeout: int, verbose: bool,
+        pan_demote: bool, frames: int,
+        threshold_override: str | None = None) -> str:
     import subprocess
 
     save_dir = work / "save"
     save_dir.mkdir(parents=True)
-    frames = PAN_DEMOTE_FRAMES if pan_demote else FRAMES
     command = [
         str(binary),
         "--headless-frames", str(frames),
@@ -152,7 +163,7 @@ def run(binary: Path, rom: Path, work: Path, timeout: int,
         proc = subprocess.run(
             command,
             cwd=work,
-            env=environment(save_dir, pan_demote),
+            env=environment(save_dir, pan_demote, threshold_override),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -172,6 +183,22 @@ def run(binary: Path, rom: Path, work: Path, timeout: int,
             f"fatal={fatal.group(0) if fatal else 'none'}\n{output[-5000:]}"
         )
     return output
+
+
+def parse_rows(output: str,
+                failures: list[str]) -> dict[str, tuple[int, int, str, int]]:
+    rows: dict[str, tuple[int, int, str, int]] = {}
+    for match in ROW_RE.finditer(output):
+        cls, blend_s, snap_s, top_reason, pandemoted_s = match.groups()
+        blend, snap, pandemoted = int(blend_s), int(snap_s), int(pandemoted_s)
+        # Multiple rows for the same class would mean [SMOOTH-VERDICT] fired
+        # more than once per process, which the flush contract (once, at
+        # present_sched_trace_summary) forbids.
+        if cls in rows:
+            failures.append(f"class={cls} printed more than one row")
+            continue
+        rows[cls] = (blend, snap, top_reason, pandemoted)
+    return rows
 
 
 def main() -> int:
@@ -206,23 +233,17 @@ def main() -> int:
 
     try:
         with tempfile.TemporaryDirectory(prefix="mdkr_smooth_verdict_") as temp:
+            frames = PAN_DEMOTE_FRAMES if args.pan_demote else FRAMES
+            threshold_override = (
+                PAN_DEMOTE_TEST_THRESHOLD_DEG if args.pan_demote else None
+            )
             output = run(binary, rom, Path(temp), args.timeout, args.verbose,
-                         args.pan_demote)
+                         args.pan_demote, frames, threshold_override)
     except (OSError, RuntimeError) as exc:
         print(f"check_smooth_verdict: FAIL — {exc}", file=sys.stderr)
         return 1
 
-    rows: dict[str, tuple[int, int, str, int]] = {}
-    for match in ROW_RE.finditer(output):
-        cls, blend_s, snap_s, top_reason, pandemoted_s = match.groups()
-        blend, snap, pandemoted = int(blend_s), int(snap_s), int(pandemoted_s)
-        # Multiple rows for the same class would mean [SMOOTH-VERDICT] fired
-        # more than once per process, which the flush contract (once, at
-        # present_sched_trace_summary) forbids.
-        if cls in rows:
-            failures.append(f"class={cls} printed more than one row")
-            continue
-        rows[cls] = (blend, snap, top_reason, pandemoted)
+    rows = parse_rows(output, failures)
 
     if not rows:
         failures.append("no [SMOOTH-VERDICT] rows at all")
@@ -278,6 +299,65 @@ def main() -> int:
                 f"{rows['OBJECT_ROOT'][3]} but OBJECT_ROOT is not in the "
                 "demotable surface-class set and must never be demoted"
             )
+
+        # Production-threshold sub-arm: everything above used
+        # PAN_DEMOTE_TEST_THRESHOLD_DEG, so nothing yet has ever exercised
+        # the SHIPPED 22.5 deg/tick default -- a change that broke the
+        # compiled default while leaving the override mechanism intact would
+        # pass every assertion above undetected. This sub-arm arms
+        # MDKR_SMOOTH_PAN_DEMOTE=1 with the override left UNSET, at the
+        # cheap base FRAMES budget (no need for PAN_DEMOTE_FRAMES' margin --
+        # this sub-arm does not need a demotion to actually fire), and pins
+        # two things read from the binary's own output, not assumed: (a) the
+        # compiled-in threshold the choke point is actually comparing
+        # against, via the one-shot [PAN-DEMOTE] trace
+        # dkr_replay_pan_demote_enabled() emits the first time it finds
+        # itself armed; (b) that this ordinary route's camera genuinely
+        # cannot cross that real threshold, so pandemoted stays 0 for every
+        # class -- the fixture's own physical limit, asserted rather than
+        # silently relied upon.
+        try:
+            with tempfile.TemporaryDirectory(
+                    prefix="mdkr_smooth_verdict_prodthresh_") as prod_temp:
+                prod_output = run(binary, rom, Path(prod_temp), args.timeout,
+                                  args.verbose, True, FRAMES, None)
+        except (OSError, RuntimeError) as exc:
+            failures.append(f"production-threshold sub-arm: {exc}")
+            prod_output = ""
+
+        if prod_output:
+            threshold_match = PAN_THRESHOLD_RE.search(prod_output)
+            if threshold_match is None:
+                failures.append(
+                    "production-threshold sub-arm: no [PAN-DEMOTE] armed "
+                    "threshold row was emitted -- dkr_replay_pan_demote_"
+                    "enabled() did not report the compiled threshold"
+                )
+            else:
+                reported = float(threshold_match.group(1))
+                if abs(reported - EXPECTED_PRODUCTION_THRESHOLD_DEG) > 1e-6:
+                    failures.append(
+                        f"production-threshold sub-arm: [PAN-DEMOTE] "
+                        f"reported threshold={reported}, expected "
+                        f"{EXPECTED_PRODUCTION_THRESHOLD_DEG} -- "
+                        "MDKR_PAN_DEMOTE_YAW_DEG_PER_TICK changed in "
+                        "gfx_pc_dkr.c without updating "
+                        "EXPECTED_PRODUCTION_THRESHOLD_DEG here (or the "
+                        "compiled default silently regressed)"
+                    )
+            prod_failures: list[str] = []
+            prod_rows = parse_rows(prod_output, prod_failures)
+            failures.extend(f"production-threshold sub-arm: {f}"
+                            for f in prod_failures)
+            for cls, (_, _, _, pandemoted) in prod_rows.items():
+                if pandemoted != 0:
+                    failures.append(
+                        f"production-threshold sub-arm: class={cls} "
+                        f"pandemoted={pandemoted} at the real 22.5 "
+                        "deg/tick threshold -- this fixture's route was "
+                        "assumed unable to cross it; either the route "
+                        "changed or the real threshold no longer holds"
+                    )
     else:
         # Default-off proof (Step 3): with the env unset, the choke point's
         # demotion clause can never fire, for ANY class.
