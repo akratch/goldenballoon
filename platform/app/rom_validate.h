@@ -36,7 +36,10 @@ typedef struct {
     int  integrity_verified;
     int  cancelled;
     char sha256[MDKR_SHA256_HEX_SIZE];
-    char message[512];      // human-readable, actionable validation status
+    // Sized to match DkrRomValidation.message (rom_validation.h): this is a
+    // straight copy of that verdict, and a smaller field here would re-apply
+    // exactly the truncation that buffer was widened to remove.
+    char message[1024];     // human-readable, actionable validation status
 } RomInfo;
 
 // Validate the file at `path`. Never modifies global state; safe on any thread.

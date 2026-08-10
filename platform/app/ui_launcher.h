@@ -47,7 +47,7 @@ struct LauncherState {
     // Play action remain intact until a candidate validates and persists.
     std::string romCandidatePath;
     RomInfo romCandidateInfo{};
-    char    romCandidateError[512] = {0};
+    char    romCandidateError[1024] = {0};  // carries RomInfo.message verbatim
     bool    romCandidateVisible = false;
     // Non-fatal: a first ROM can remain playable for this process even when
     // its path could not be remembered. Existing playable state is never
