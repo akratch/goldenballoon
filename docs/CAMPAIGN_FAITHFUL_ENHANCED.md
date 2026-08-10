@@ -157,6 +157,85 @@ M3 earns its cost for latency specifically.
 
 **Gate:** a recorded budget with a method others can re-run.
 
+**The instrument (2026-08-10).** `platform/input_latency_census.c`, armed by
+`MDKR_INPUT_LATENCY=1`, reported at shutdown as `[INPUT-LATENCY]` rows with
+n/mean/p50/p95/p99/max in ms. Four terms, on the pacer's own host clock:
+
+| term | measures |
+|---|---|
+| `queue` | SDL event timestamp → the pump that dispatched it. SDL2 stamps in ms, so this term is ms-resolution and no better. |
+| `sample` | last host capture that fed a ticket → the commit that published it. Dead time: the sample is taken and then waits. |
+| `tick` | commit → commit. The authored quantum, and the anchor the other rows are read against. |
+| `present` | commit → the swap that returns for the frame that ran on that input. Simulation, list build, submit, and the block inside the swap. |
+
+Scanout past the swap is not observable in-process. Bound it by hand from the
+backend's own `[PRESENT-MODE] frameLatency=` row plus one refresh; the WebGPU
+path pins `desiredMaximumFrameLatency` to 1.
+
+**Method, re-runnable:**
+
+```
+MDKR_INPUT_LATENCY=1 MDKR_PACE_REALTIME=1 \
+  ./build-rel/mdkr64 --rom baserom.us.v80.z64 2>&1 | grep INPUT-LATENCY
+```
+
+Play the run by hand — the `queue` and `sample` rows need real host events, and
+`--input-script` deliberately produces none. Vary `MDKR_PRESENT_RATE`
+(`original`, `60`, `120`) to move the `sample` term and confirm it tracks the
+present interval. **`MDKR_PACE_REALTIME=1` is not optional**: under the
+synthetic pacer every wall-clock number in this census is meaningless (§0 of
+`CAMPAIGN_HIGH_FPS.md`), and the config row printed with the budget records
+which pacing produced it so a synthetic run cannot be misread as a real one.
+
+**The structural result, derived from the loop and independent of the
+measurement.** In `stubs_dkr.c`'s retrace branch the presentation subloop is
+
+```
+for (;;) {
+    units = platform_vi_present_pace_units();   /* the wait */
+    ticks_due = present_sched_advance_units(units, rebased);
+    if (ticks_due != 0) break;                  /* exits with no pump */
+    ... replay ...  platform_frame_sync();      /* pumps, then presents */
+}
+... platform_input_commit_tick(ticket);
+```
+
+Every host capture runs from `platform_input_pump`, and the pump runs only from
+`platform_frame_sync_impl`. The loop breaks straight out of the wait, so **no
+capture happens between the last present opportunity and the commit**. The
+`sample` term is therefore one present interval by construction:
+
+| presentation | `sample`, structurally |
+|---|---|
+| Frame limit Original (30 Hz) | one authored quantum, ~33 ms — the subloop runs zero iterations |
+| 60 Hz | ~16.7 ms |
+| 120 Hz | ~8.3 ms |
+
+**So the pipeline does not dominate the tick quantum, and the reducible term is
+not small.** `present` is bounded below by one queued frame and one refresh —
+8–17 ms on a 60–120 Hz panel with `frameLatency` pinned to 1 — while `sample`
+is 33 ms at the shipping default. At the default the largest single term in the
+whole budget is dead waiting, not the pipeline and not the quantum.
+
+**M3 does not earn its cost for latency.** Halving the quantum removes ~17 ms of
+a term that is *authored*; removing the `sample` dead time takes 33 ms off a
+term that is *accidental*, changes no simulation state, and is available in
+Original. Latency is not an argument for the cadence work.
+
+**Implemented: `platform_input_sample_late()`** (`MDKR_INPUT_JIT=1`, default
+off), called at the tick boundary immediately before the commit. It reruns the
+same event dispatch and the same capture through the same
+`present_sched_input_target_tick()` accessor, so it adds host captures — which
+the bounded queue already accepts in unbounded number per tick and coalesces —
+and adds no ticket, no consume and no controller read. The DKR-visible contract
+is one published pad sample per authored tick, unchanged.
+
+**Bar to default it on:** `sample` p50 measured before and after on the same
+route and host, with `check_arbitrary_presentation_rates` green; and
+`--input-script` runs byte-identical with `MDKR_INPUT_JIT` set and unset, which
+is a strong control because scripted inputs are time-independent, so any
+divergence is proof the change touched processing rather than timing.
+
 ---
 
 ## 3. Code quality gates

@@ -209,6 +209,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/sim_hash.c         # authoritative-state hash (Phase 1)
     ${CMAKE_SOURCE_DIR}/platform/gameplay_event_trace.c # ordered transient authority events
     ${CMAKE_SOURCE_DIR}/platform/input_consumption_trace.c # tick-consumed pad trace
+    ${CMAKE_SOURCE_DIR}/platform/input_latency_census.c # input -> commit -> present budget (M4)
     ${CMAKE_SOURCE_DIR}/platform/presentation_snapshot.c       # presentation shadow state (Phase 3 Wave A)
     ${CMAKE_SOURCE_DIR}/platform/presentation_snapshot_walk.c  # its gObjPtrList/camera capture wiring
     ${CMAKE_SOURCE_DIR}/platform/platform_sdl_min.c

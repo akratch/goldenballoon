@@ -500,6 +500,7 @@ shutdown:
     gameplay_event_trace_summary();
     input_consumption_trace_summary();
     platform_input_queue_summary();
+    platform_input_latency_summary();
     /* Fixed-ticket/presentation census, emitted before subsystem teardown so
      * a failing fixture still reports clock debt and issued work. */
     present_sched_trace_summary();

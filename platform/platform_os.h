@@ -276,8 +276,13 @@ int platform_frame_dump_prepare_due(void);
  * indexed. */
 void platform_input_init(void);
 void platform_input_pump(void);
+/* Just-in-time host sample, taken at the tick boundary immediately before the
+ * ticket is committed. Inert unless MDKR_INPUT_JIT is armed. */
+void platform_input_sample_late(void);
 void platform_input_commit_tick(uint64_t ticket);
 void platform_input_queue_summary(void);
+/* Input latency budget (MDKR_INPUT_LATENCY), reported at shutdown. */
+void platform_input_latency_summary(void);
 int  platform_input_load_script(const char *path);
 int          platform_pad_present(int port);
 int          platform_pad_rumble_supported(int port);
