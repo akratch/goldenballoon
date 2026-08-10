@@ -15,8 +15,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !defined(_WIN32)
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 static int s_failures;
 
@@ -72,6 +74,12 @@ static const MdkrAssetSection kWordScaled = {
 /* child-process harness                                               */
 /* ------------------------------------------------------------------ */
 
+/* The aborting half runs each case in a forked child and asserts on the
+ * terminating signal, which has no Windows equivalent -- the same boundary
+ * test_app_config.cpp draws. On _WIN32 the death tests compile out and the
+ * resolving half still runs; the abort behaviour itself is covered on every
+ * POSIX build of the identical platform/asset_subentry.c. */
+#if !defined(_WIN32)
 typedef void (*SubentryCase)(void);
 
 /* Runs `body` in a forked child with stdout+stderr captured into `out`.
@@ -181,9 +189,12 @@ static void expect_abort(const char *name, SubentryCase body, char *out,
     }
     s_failures++;
 }
+#endif /* !_WIN32 */
 
 int main(void) {
+#if !defined(_WIN32)
     static char out[8192];
+#endif
     const uint8_t *entry;
     uint32_t size = 0xA5A5A5A5u;
 
@@ -213,6 +224,7 @@ int main(void) {
                 entry == kWordPayload + 12);
     expect_u32("entry before the terminator has unknown length", size, 0u);
 
+#if !defined(_WIN32)
     /* --- the aborting half ------------------------------------------- */
     expect_abort("index 1 of a 1-entry section aborts", case_index_one_of_one,
                  out, sizeof(out));
@@ -253,6 +265,10 @@ int main(void) {
     expect_contains("explicit guard names the count", out, "count=27");
     expect_contains("explicit guard names the call site", out,
                     "at=emitter_init_with_pos");
+#else
+    printf("test_asset_subentry: aborting half skipped on Windows (no fork); "
+           "the resolving half ran\n");
+#endif
 
     if (s_failures != 0) {
         fprintf(stderr, "test_asset_subentry: FAIL (%d)\n", s_failures);

@@ -489,6 +489,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                                    restoreConfigDirectory[0] && expectSaveFailure;
     bool       retryScheduled    = false;
     int        retryVisibleFrames = 0;
+    int        retryLastX = -1, retryLastY = -1;
     bool       keyboardActivationQueued = false;
     bool       keyboardMovePending = false;
     int        keyboardMoveFromIndex = -2;
@@ -702,6 +703,20 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                 // that first renders Retry. Wait for one more complete layout
                 // so the click targets the settled button, not its transient
                 // popup-relative rectangle.
+                //
+                // Stability, not mere validity: the error row and Retry make
+                // the panel taller, and the scrollbar that arrives a few
+                // frames later re-wraps a text line above, moving the button.
+                // A click aimed at the pre-settle coordinates lands on the
+                // widget below. Restart the wait whenever the rect moves, so
+                // the click is only ever taken at a layout that has held
+                // still for two frames -- which is also when a person would
+                // press it.
+                if (x != retryLastX || y != retryLastY) {
+                    retryVisibleFrames = 0;
+                    retryLastX = x;
+                    retryLastY = y;
+                }
                 ++retryVisibleFrames;
                 if (retryVisibleFrames >= 2) {
                     if (!createSmokeDirectory(restoreConfigDirectory)) {
@@ -820,24 +835,24 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                 renderOk = host.queueGamepadPressForSmoke(
                                SDL_CONTROLLER_BUTTON_A) &&
                            renderOk;
-            } else if (i >= smokeMoveStart &&
+            } else if (useGamepad && i >= smokeMoveStart &&
                        i < smokeActivateFrame && (i % 2) == 0) {
-                if (useGamepad) {
-                    renderOk = host.queueGamepadPressForSmoke(
-                                   SDL_CONTROLLER_BUTTON_DPAD_DOWN) &&
-                               renderOk;
-                } else {
-                    host.queueKeyPressForSmoke(SDLK_DOWN);
-                }
-            } else if (i == smokeActivateFrame) {
-                if (useGamepad) {
-                    renderOk = host.queueGamepadPressForSmoke(
-                                   SDL_CONTROLLER_BUTTON_A) &&
-                               renderOk;
-                } else {
-                    host.queueKeyPressForSmoke(SDLK_RETURN);
-                }
+                renderOk = host.queueGamepadPressForSmoke(
+                               SDL_CONTROLLER_BUTTON_DPAD_DOWN) &&
+                           renderOk;
+            } else if (useGamepad && i == smokeActivateFrame) {
+                renderOk = host.queueGamepadPressForSmoke(
+                               SDL_CONTROLLER_BUTTON_A) &&
+                           renderOk;
             }
+            /* No keyboard tail: the popup-tracking branch above owns the
+             * whole keyboard selection and sets keyboardActivationQueued when
+             * it presses Return. Falling through to this fixed-frame
+             * choreography afterwards queued a Down every even frame and a
+             * Return at the activation frame -- keys that cancel a scripted
+             * mouse press mid-click (nav steals the active widget) and then
+             * activate whichever row focus had drifted to. The same-process
+             * Retry arm only ever passed by winning that race. */
         }
     }
 

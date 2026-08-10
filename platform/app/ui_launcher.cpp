@@ -631,7 +631,14 @@ void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
     // One page, one scroll owner. Keeping the introduction outside this child
     // left no reachable settings viewport at the supported 640x480 / 2.00x
     // extreme and wasted scarce height on 7-inch handhelds.
-    ImGui::BeginChild("##settingsscroll", ImVec2(0, 0), panelChildFlags(0));
+    // The scrollbar is RESERVED, not on-demand. The settings page's height
+    // crosses the viewport boundary as rows appear (an error line and its
+    // Retry button, say), and an on-demand scrollbar then oscillates: it
+    // appears, the narrower content re-wraps one line shorter, it vanishes,
+    // the line un-wraps, and the page breathes by a text line every few
+    // frames -- moving every widget under a pointer or a scripted click.
+    ImGui::BeginChild("##settingsscroll", ImVec2(0, 0), panelChildFlags(0),
+                      ImGuiWindowFlags_AlwaysVerticalScrollbar);
     ui::SectionHeader("Settings",
                       "Everything saves as you change it. Anything marked "
                       "“Next launch” waits for Play.");
