@@ -27,6 +27,33 @@ the first.
 
 The last two rows are why this list is a feature backlog and not a rescue plan.
 
+## Merging this work — read before resolving conflicts
+
+**`tests/check_array_bounds_sweep.py`: do not sum the ceilings.** This branch
+and the release line both moved `equality-cap` and `shift-count`, by different
+amounts, for different sites. The triage blocks are additive — take both. The
+ceilings are not: the tool reports the informational population *after*
+excluding enumerated TRIAGE entries, so the merged ceiling is neither the sum
+nor the larger of the two. Re-measure on the merged tree and set each to what
+the tool reports. The same warning sits beside the constant, for whoever is
+looking at the conflict markers rather than at this file.
+
+**`tests/check_overlay_input_handoff.py`: take both hunks, not the newer file.**
+The two edits are disjoint and were diffed to confirm it — the hidden-guard
+block here, `check_reconciled_before_dispatch` on the release line. Both are
+load-bearing: one survives a third overlay surface being added, the other
+survives the input-pump refactor.
+
+**Rebuild `dist/web` after the merge commit, before any suite.**
+`run_checks.py` compares `dist/web/build-info.json`'s `source_commit` against
+HEAD and **refuses at task 0** when they differ — so any commit after the last
+`tools/web/build_web.sh`, including a docs-only one, makes a long unattended run
+do nothing at all. It cost one silent no-op relaunch here.
+
+What is verified and to what standard is in
+[Verification state](#verification-state) below; the open defects, each with its
+correct fix, are in [`../open-items/`](../open-items/).
+
 ## Sprints
 
 | # | Sprint | Size | Depends on |
