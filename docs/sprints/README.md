@@ -320,10 +320,24 @@ is an *asynchronous* Play recheck and so is genuinely timing-sensitive; a gate
 that can lose a race under load is worth knowing about even when the code is
 right.
 
-The suite has not been re-run end to end since the triage entries landed. That
-change is confined to a dict of strings in `tests/check_array_bounds_sweep.py`,
-nothing else reads it, and that check passes on re-run — but the honest
-statement is 159/162 plus a targeted re-verification, not a green suite.
+**Re-run end to end at `93f4e32` after the triage entries landed: 162 tasks,
+193m08s, `161/162`.** The single failure is `app_adopted_pacing`, same gate,
+same `presented=0 unavailable=1640` signature, and it was **predicted before the
+run** from `CGSSessionScreenLockedTime` — named task, named cause, falsifiable
+in advance. `array_bounds_sweep` passes. `shell_dropfile` passes.
+
+That is the best result obtainable while the machine is locked, and the
+remaining red is not a property of this branch. `check_app_adopted_pacing`
+needs an unlocked window-server session; run it once from an unlocked machine to
+close the last open question.
+
+One operational note earned the hard way: the first relaunch was **refused at
+task 0** with `staged web output predates HEAD ('081fd32' != '93f4e32')`. The
+web-staging guard compares `dist/web/build-info.json`'s `source_commit` against
+HEAD, so *any* commit after the last `tools/web/build_web.sh` fails it —
+including one made between runs, with nothing executing. Rebuild the web output
+as the last step before launching a suite that follows a commit, or a long
+unattended run does nothing at all.
 
 ### One task stopped at its own gate, which is a result
 
