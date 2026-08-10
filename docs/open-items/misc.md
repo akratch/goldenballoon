@@ -178,3 +178,31 @@ and it wants its own mutation pass on a quiet machine rather than a confident
 edit at the end of a long session. The off-screen diagnostics added alongside
 the collapse block already name the fault when it recurs, so the next occurrence
 costs a line of output rather than an afternoon.
+
+## OPEN: check_a11y_shell's in-game overlay arm covers a different number of rows every run — wave "shellwalk"
+
+Three consecutive passing runs of `tests/check_a11y_shell.py` on 2026-08-10
+reported `in-game overlay: 15 focus utterances over 14 settings rows`, then
+`8 focus utterances over 8 settings rows`, then `6 focus utterances over 6
+settings rows`. The gate passed all three times.
+
+The launcher half of this gate is its strength: the expected control set is
+enumerated from the app's own schema dump, so a setting added and never voiced
+fails it with no test edit, and that is what found three real defects on its
+first run. **The in-game overlay half has no such enumeration.** It walks
+whatever the scripted overlay pass happens to reach, and asserts about what it
+found — so for that portion the effective assertion is "more than zero rows were
+voiced", not "every row was".
+
+That means the overlay arm cannot currently be relied on to catch a row that
+stops speaking: a regression affecting rows 7 through 14 would pass silently in
+any run that only reached 6. The variance is in the walk, not in the speech path
+— the counts move with how far the overlay scroll gets, and the worker never
+starts under `MDKR_AUDIO=0`.
+
+Closing it means the overlay arm enumerating its expected rows the way the
+launcher arm already does, and failing on the ones it did not reach rather than
+scoring only what it did. Until then, read a green overlay count as evidence
+about the rows named in that run and nothing more.
+
+Noticed while verifying the barge-in fix, not caused by it.
