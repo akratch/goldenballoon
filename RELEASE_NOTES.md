@@ -1,10 +1,12 @@
-# Golden Balloon 1.1.1
+# Golden Balloon 1.2.0
 
-*Bug-fix release.*
+*Bug fixes, and the first feature release.*
 
 Three reported bugs are fixed, plus four more we found by looking for the rest
 of their families. The settings screen has been rewritten so it says what each
-setting actually does. No game data is included.
+setting actually does. And the port grows its first real product surface:
+content packs, an accessibility section that can speak the launcher out loud,
+an enhancements menu, and in-app developer tools. No game data is included.
 
 Recommended settings are unchanged: **WebGPU**, **Restored**, frame limit
 **Original**, motion smoothing **Off**, gameplay tick rate **Original**, camera
@@ -113,6 +115,64 @@ possible, without touching the physics.
 
 So: Enhanced stays available and honest about its state, Original stays exact,
 and the recommended route to a smooth 60 fps picture is Motion smoothing.
+
+## Content packs
+
+Put a pack — a folder or a `.zip` with a `pack.ini` inside — in the `mods`
+folder beside your saves, and its artwork replaces the game's. Packs can also
+carry custom music as ordinary `.wav` files. Settings → Content lists every
+pack the game found: the ones in use, and the ones it skipped with the reason.
+Press `Tab` in-game to flick the replaced artwork off and back on, so you can
+compare a pack against the original on the same corner.
+
+Worth knowing before you rely on it:
+
+- **A pack applies in every mode, including Original.** Installing the pack is
+  the opt-in. With a pack installed, Original is no longer a pixel-for-pixel
+  reference of the console — remove or disable the pack if that is what you
+  need.
+- A pack texture is shown at its own full size up close, but it does not yet
+  carry the distance-reduced versions the original artwork has, so it can
+  shimmer at long range.
+- Adding or removing a pack takes effect at the next launch.
+
+How to make one — the format, the filenames, and a tool that writes out every
+texture the game draws under the exact name a pack needs — is in
+[docs/MODDING.md](docs/MODDING.md).
+
+## The launcher can speak
+
+Settings → Accessibility now holds everything about how the game presents
+itself to you — text size, camera shake, reduced motion — and a new one: the
+launcher and settings can **say out loud** what the keyboard or controller is
+focused on, and the race can announce your position, lap, item and finish.
+Both are off unless you turn them on, and each is its own switch.
+
+Plainly, so nobody is misled: this is the app speaking for itself. It is not a
+screen-reader integration — VoiceOver and similar tools still cannot see into
+the launcher. Speech has been heard end-to-end on macOS; the same feature is
+built into the Windows and Linux versions but has not yet been heard on real
+hardware there. If you use it and it is silent, that report is valuable.
+
+## An enhancements menu
+
+Settings → Enhancements gathers the optional extras: a speedometer, draw
+distance, model detail, and opponent skill. Every row says whether it changes
+how the game plays or only how it looks, and one button resets them all. None
+of them touch Original's accuracy claims — they are off until you opt in.
+
+## Developer tools
+
+Settings → App window has a **Developer tools** switch, off by default. It
+unlocks a console, a free camera, collision and object viewers, a performance
+window, and a crash-report screen. Switched off, they do nothing at all — and
+the test suite holds them to that.
+
+## Does this game run my cartridge dump?
+
+The website now has a checker page: point it at your ROM file and it names the
+release you have and says whether the port runs it. The file is read in your
+browser and **nothing is uploaded**.
 
 ## Also
 

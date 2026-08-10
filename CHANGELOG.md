@@ -10,6 +10,36 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ## [Unreleased]
 
+### Added
+
+- **Content packs.** A folder or `.zip` with a `pack.ini` in the `mods`
+  directory replaces textures — in every presentation mode, including
+  Original, where the installed pack is the opt-in — and can carry custom
+  music as `.wav`. Settings → Content lists every pack found, in use or
+  skipped with the reason; `Tab` toggles the replaced artwork live. Format
+  and authoring tool in `docs/MODDING.md`. Pack textures are drawn at their
+  own full size but without distance-reduced versions yet, so they can
+  shimmer at long range; adding or removing a pack takes effect at the next
+  launch.
+- **Self-voicing and an Accessibility section.** The launcher and settings
+  can speak the focused control, and races can announce position, lap, item
+  and finish; each is its own switch, off by default. Settings →
+  Accessibility now gathers text size, camera shake, reduced motion and
+  speech. This is the app speaking for itself, not a screen-reader semantic
+  tree; speech has been exercised end-to-end on macOS, and is built but not
+  yet verified by ear on Windows and Linux.
+- **Enhancements menu.** Speedometer, draw distance, model detail and
+  opponent skill, each labelled with whether it changes gameplay or only the
+  picture, with a one-button reset. All off by default.
+- **In-app developer tools.** Console, free camera, collision and object
+  viewers, performance window and crash-report screen behind a single
+  off-by-default switch, held inert-when-off by a standing gate.
+- **ROM checker page.** The website can name your ROM's release and say
+  whether the port runs it, reading the file in the browser only — nothing
+  is uploaded.
+- **Check for updates control.** The preference exists and is remembered;
+  nothing checks for updates yet, and the control's own description says so.
+
 ### Fixed
 
 - **Smokey Castle's results screen no longer shows floating character
