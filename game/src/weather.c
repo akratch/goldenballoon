@@ -166,6 +166,7 @@ static void weather_register_vertex_batch(const void *key,
     owner.address = identity;
     owner.generation = generation;
     owner.matrix_class = GFX_PRESENTATION_MATRIX_PARTICLE_VERTICES;
+    owner.surface_class = MDKR_SURF_PARTICLE;
     owner.renderer_owned = true;
     owner.max_vertex_delta = maxVertexDelta;
     owner.capture_tick = presentation_task_authoring_tick();

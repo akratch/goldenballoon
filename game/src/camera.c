@@ -345,6 +345,11 @@ static bool mdkr_presentation_owner_root(
     out->address = transform;
     out->generation = generation;
     out->matrix_class = GFX_PRESENTATION_MATRIX_ROOT;
+    /* [SMOOTH-VERDICT] default. Every owner in the tree is either built here
+     * or copied from one that was, so this is where the "object root" default
+     * comes from; billboard/effect callers override it right after this
+     * returns, the same way they already override matrix_class. */
+    out->surface_class = MDKR_SURF_OBJECT_ROOT;
     /* Stamp the lifetime this recipe describes. Every owner in the tree is
      * either built here or copied from one that was (see
      * mdkr_presentation_owner_child), so this is the single site that decides
@@ -2562,6 +2567,7 @@ s32 render_sprite_billboard(Gfx **dList, Mtx **mtx, Vertex **vtx, Object *obj, S
         if (billboardOwnerValid) {
             billboardOwner.matrix_class =
                 GFX_PRESENTATION_MATRIX_BILLBOARD;
+            billboardOwner.surface_class = MDKR_SURF_BILLBOARD;
         }
     }
 #endif
@@ -3025,6 +3031,7 @@ void mtx_shear_push(Gfx **dList, Mtx **mtx, Object *obj, Object *objBase, f32 sh
             mdkr_presentation_owner_root(
                 &effectOwner, &objBase->trans, 1.0f, 0.0f, &identity)) {
             effectOwner.matrix_class = GFX_PRESENTATION_MATRIX_EFFECT;
+            effectOwner.surface_class = MDKR_SURF_EFFECT_SHELL;
             effectOwner.secondary_address = obj;
             effectOwner.secondary_generation = effectGeneration;
             effectOwner.effect_position[0] = obj->trans.x_position;

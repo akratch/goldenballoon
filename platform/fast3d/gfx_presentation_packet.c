@@ -1095,6 +1095,43 @@ void gfx_presentation_packet_get_stats(GfxPresentationPacketStats *out) {
     }
 }
 
+void gfx_presentation_packet_get_uv_scroll_hold_stats(
+    uint64_t *unpublished, uint64_t *ambiguous, uint64_t *shape,
+    uint64_t *phase) {
+    if (unpublished != NULL) {
+        *unpublished = s_stats.uv_scroll_hold_unpublished;
+    }
+    if (ambiguous != NULL) {
+        *ambiguous = s_stats.uv_scroll_hold_ambiguous;
+    }
+    if (shape != NULL) {
+        *shape = s_stats.uv_scroll_hold_shape;
+    }
+    if (phase != NULL) {
+        *phase = s_stats.uv_scroll_hold_phase;
+    }
+}
+
+void gfx_presentation_packet_note_verdict(MdkrSurfaceClass surface_class,
+                                          MdkrVerdictReason reason) {
+    if ((unsigned)surface_class >= (unsigned)MDKR_SURF_CLASS_COUNT ||
+        (unsigned)reason >= (unsigned)MDKR_VERDICT_REASON_COUNT) {
+        return;
+    }
+    if (reason == MDKR_VERDICT_BLEND) {
+        s_stats.verdict_blend[surface_class]++;
+    } else {
+        s_stats.verdict_snap[surface_class]++;
+    }
+    s_stats.verdict_reason[surface_class][reason]++;
+}
+
+void gfx_presentation_packet_reset_verdict_stats(void) {
+    memset(s_stats.verdict_blend, 0, sizeof(s_stats.verdict_blend));
+    memset(s_stats.verdict_snap, 0, sizeof(s_stats.verdict_snap));
+    memset(s_stats.verdict_reason, 0, sizeof(s_stats.verdict_reason));
+}
+
 void gfx_presentation_packet_shutdown(void) {
     free(s_live_matrices.entries);
     free(s_live_vertices.entries);

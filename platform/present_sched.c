@@ -21,6 +21,7 @@ int g_simTickCounter = 0;
 static HostFrameDriver s_driver;
 static int      s_ready = 0;
 static int      s_trace = -1;
+static int      s_smooth_verdict = -1;
 
 /* Clock/ticket census: due-ticket burst shape and maximum unissued debt. */
 static uint64_t s_entries = 0;
@@ -340,6 +341,19 @@ bool present_sched_trace_enabled(void) {
         s_trace = value != NULL && value[0] == '1';
     }
     return s_trace != 0;
+}
+
+/* [SMOOTH-VERDICT] rows are opt-in: the census counters themselves always
+ * accumulate (they are counters only, like every other stat in this file),
+ * but printing them is gated separately from MDKR_PRESENT_SCHED_TRACE so a
+ * gate can request the census without also asking for the rest of the trace
+ * dump. Test gates set this; play sessions opt in the same way. */
+static bool present_sched_smooth_verdict_enabled(void) {
+    if (s_smooth_verdict < 0) {
+        const char *value = getenv("MDKR_SMOOTH_VERDICT");
+        s_smooth_verdict = value != NULL && value[0] == '1';
+    }
+    return s_smooth_verdict != 0;
 }
 
 unsigned present_sched_advance_fields(unsigned fields, bool rebase) {
@@ -1355,6 +1369,44 @@ void present_sched_trace_summary(void) {
                 (unsigned long long)packet_stats.uv_scroll_overrides,
                 packet_stats.uv_scroll_peak,
                 packet_stats.uv_scroll_bytes_peak);
+        if (present_sched_smooth_verdict_enabled()) {
+            static const char *const surface_class_names[MDKR_SURF_CLASS_COUNT] = {
+                "WORLD_STATIC", "WORLD_SCROLL", "WATER_WAVE", "SKYDOME",
+                "OBJECT_ROOT",  "BILLBOARD",    "PARTICLE",   "PROJECTED_SHADOW",
+                "EFFECT_SHELL", "HUD_2D",
+            };
+            static const char *const verdict_reason_names[MDKR_VERDICT_REASON_COUNT] = {
+                "BLEND",     "NO_OWNER",         "TICK_MISMATCH",
+                "GENERATION_MISMATCH", "TOPOLOGY_MISMATCH", "DISCONTINUITY",
+                "CAMERA_CUT", "UV_HOLD", "DEPENDENCY_MISS", "PAN_RATE_DEMOTED",
+            };
+            unsigned cls;
+            for (cls = 0u; cls < (unsigned)MDKR_SURF_CLASS_COUNT; cls++) {
+                uint32_t blend = packet_stats.verdict_blend[cls];
+                uint32_t snap = packet_stats.verdict_snap[cls];
+                unsigned top_reason = 0u;
+                unsigned reason;
+
+                if (blend == 0u && snap == 0u) {
+                    /* Non-vacuity: a class with nothing graded this window
+                     * gets no row rather than a meaningless zero one. */
+                    continue;
+                }
+                for (reason = 1u; reason < (unsigned)MDKR_VERDICT_REASON_COUNT;
+                     reason++) {
+                    if (packet_stats.verdict_reason[cls][reason] >
+                        packet_stats.verdict_reason[cls][top_reason]) {
+                        top_reason = reason;
+                    }
+                }
+                fprintf(stderr,
+                        "[SMOOTH-VERDICT] class=%s blend=%u snap=%u "
+                        "top_reason=%s\n",
+                        surface_class_names[cls], (unsigned)blend,
+                        (unsigned)snap, verdict_reason_names[top_reason]);
+            }
+            gfx_presentation_packet_reset_verdict_stats();
+        }
         fprintf(stderr,
                 "[CAMERA-VP] alpha0checks=%llu alpha0mismatch=%llu "
                 "alpha0expected=%llu alpha0actual=%llu "

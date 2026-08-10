@@ -83,6 +83,26 @@ typedef struct GfxPresentationPacketBinding {
     bool stale;
 } GfxPresentationPacketBinding;
 
+/*
+ * Why a per-surface-class census row blended or snapped, for the
+ * [SMOOTH-VERDICT] report. MDKR_VERDICT_BLEND is itself a reason (the
+ * row's own success case), not just "not a failure" -- see
+ * gfx_presentation_packet_note_verdict.
+ */
+typedef enum MdkrVerdictReason {
+    MDKR_VERDICT_BLEND = 0,
+    MDKR_VERDICT_NO_OWNER,
+    MDKR_VERDICT_TICK_MISMATCH,
+    MDKR_VERDICT_GENERATION_MISMATCH,
+    MDKR_VERDICT_TOPOLOGY_MISMATCH,
+    MDKR_VERDICT_DISCONTINUITY,
+    MDKR_VERDICT_CAMERA_CUT,
+    MDKR_VERDICT_UV_HOLD,
+    MDKR_VERDICT_DEPENDENCY_MISS,
+    MDKR_VERDICT_PAN_RATE_DEMOTED,
+    MDKR_VERDICT_REASON_COUNT,
+} MdkrVerdictReason;
+
 typedef struct GfxPresentationPacketStats {
     uint64_t matrix_registrations;
     uint64_t vertex_registrations;
@@ -199,6 +219,19 @@ typedef struct GfxPresentationPacketStats {
     uint64_t uv_scroll_overrides;
     size_t uv_scroll_peak;
     size_t uv_scroll_bytes_peak;
+    /*
+     * [SMOOTH-VERDICT] per-surface-class census. `verdict_blend[c]` and
+     * `verdict_snap[c]` are the row's blend/snap totals for class c
+     * (blend + snap == every graded draw of that class); `verdict_reason[c]`
+     * is a full breakdown by MdkrVerdictReason, including
+     * MDKR_VERDICT_BLEND itself, so "top_reason" for a class is just the
+     * argmax over its own row. This translates outcomes clause sites have
+     * already decided (uv_scroll_hold_*, the MDKR_REPLAY_HOLD_* classes) --
+     * it does not re-run any confirmation or hold logic itself.
+     */
+    uint32_t verdict_blend[MDKR_SURF_CLASS_COUNT];
+    uint32_t verdict_snap[MDKR_SURF_CLASS_COUNT];
+    uint32_t verdict_reason[MDKR_SURF_CLASS_COUNT][MDKR_VERDICT_REASON_COUNT];
 } GfxPresentationPacketStats;
 
 typedef struct GfxPresentationDeformationBinding {
@@ -290,6 +323,13 @@ bool gfx_presentation_packet_capture_uv_scroll(
 bool gfx_presentation_packet_lookup_uv_scroll(
     const void *key, uint64_t target_tick, uint32_t triangle_count,
     GfxPresentationUvScroll *out);
+/* Cumulative hold-clause counters as of THIS call, so a caller of
+ * gfx_presentation_packet_lookup_uv_scroll can diff before/after and learn
+ * which clause (if any) refused a batch without gfx_pc_dkr.c re-deriving the
+ * confirm-or-hold rule itself. Any argument may be NULL. */
+void gfx_presentation_packet_get_uv_scroll_hold_stats(
+    uint64_t *unpublished, uint64_t *ambiguous, uint64_t *shape,
+    uint64_t *phase);
 /*
  * Publish the staged UV-scroll table under its own tick stamp.
  *
@@ -380,6 +420,20 @@ bool gfx_presentation_packet_has_frozen_vertex(const void *key);
 void gfx_presentation_packet_discard_live_registrations(void);
 void gfx_presentation_packet_invalidate(void);
 void gfx_presentation_packet_get_stats(GfxPresentationPacketStats *out);
+/*
+ * Record one graded [SMOOTH-VERDICT] outcome: `surface_class` blended when
+ * `reason == MDKR_VERDICT_BLEND` and snapped (held its captured pose) for
+ * every other reason. Out-of-range arguments are ignored rather than
+ * clamped, so a caller passing a class/reason this build does not know about
+ * cannot silently corrupt an adjacent row.
+ */
+void gfx_presentation_packet_note_verdict(MdkrSurfaceClass surface_class,
+                                          MdkrVerdictReason reason);
+/* Zero only the verdict census (verdict_blend/verdict_snap/verdict_reason),
+ * called after [SMOOTH-VERDICT] emits its rows so a later flush in the same
+ * process starts a fresh aggregation window. Every other stat in
+ * GfxPresentationPacketStats stays cumulative for the process lifetime. */
+void gfx_presentation_packet_reset_verdict_stats(void);
 void gfx_presentation_packet_shutdown(void);
 
 #ifdef __cplusplus

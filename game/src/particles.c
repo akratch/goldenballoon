@@ -54,6 +54,7 @@ static void mdkr_register_particle_vertex_batch(
     owner.address = particle;
     owner.generation = generation;
     owner.matrix_class = GFX_PRESENTATION_MATRIX_PARTICLE_VERTICES;
+    owner.surface_class = MDKR_SURF_PARTICLE;
     owner.valid = true;
     /* Point/line meshes are already in world space and are identical in every
      * viewport. Keep one shared retained stream (viewport zero); repeated

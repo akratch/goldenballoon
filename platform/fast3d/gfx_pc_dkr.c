@@ -5667,6 +5667,10 @@ static const float *dkr_replay_uv_scroll_offset(const Triangle *tris,
     GfxPresentationUvScroll scroll;
     const void *original;
     uint64_t target_tick;
+    bool wave_region;
+    bool confirmed;
+    uint64_t hold_unpub_before = 0u, hold_ambig_before = 0u;
+    uint64_t hold_shape_before = 0u, hold_phase_before = 0u;
 
     if (tris == NULL || out == NULL || num_tris <= 0 ||
         num_tris > (int)GFX_PRESENTATION_UV_SCROLL_MAX_TRIANGLES) {
@@ -5680,9 +5684,54 @@ static const float *dkr_replay_uv_scroll_offset(const Triangle *tris,
     if (original == NULL) {
         return NULL;
     }
-    (void)dkr_paired_triangle_alias(original, NULL, &original);
-    if (!gfx_presentation_packet_lookup_uv_scroll(
-            original, target_tick, (uint32_t)num_tris, &scroll)) {
+    /*
+     * [SMOOTH-VERDICT]: this is the one site in the tree that already knows
+     * whether a triangle batch is a game-declared ping-pong (wave/void
+     * curtain) surface. Wave content has no presentation owner of its own
+     * yet (residual obligation 0, docs/architecture/presentation-interpolation.md)
+     * -- every draw from a paired region is graded WATER_WAVE/NO_OWNER here
+     * regardless of whether ITS OWN UV scroll confirms, because what is
+     * missing is the surface's geometry ownership, not this texture math.
+     * Everything else that reaches this function and turns out to be a real
+     * scroller (current != NULL inside the lookup below) is graded
+     * WORLD_SCROLL from the confirm-or-hold outcome the lookup already
+     * computed; non-scrollers (most triangle batches) are not scroll content
+     * at all and are not graded here.
+     */
+    wave_region = dkr_paired_triangle_alias(original, NULL, &original);
+    gfx_presentation_packet_get_uv_scroll_hold_stats(
+        &hold_unpub_before, &hold_ambig_before, &hold_shape_before,
+        &hold_phase_before);
+    confirmed = gfx_presentation_packet_lookup_uv_scroll(
+        original, target_tick, (uint32_t)num_tris, &scroll);
+    if (wave_region) {
+        gfx_presentation_packet_note_verdict(MDKR_SURF_WATER_WAVE,
+                                             MDKR_VERDICT_NO_OWNER);
+    } else if (confirmed) {
+        gfx_presentation_packet_note_verdict(MDKR_SURF_WORLD_SCROLL,
+                                             MDKR_VERDICT_BLEND);
+    } else {
+        uint64_t hold_unpub_after = 0u, hold_ambig_after = 0u;
+        uint64_t hold_shape_after = 0u, hold_phase_after = 0u;
+        gfx_presentation_packet_get_uv_scroll_hold_stats(
+            &hold_unpub_after, &hold_ambig_after, &hold_shape_after,
+            &hold_phase_after);
+        if (hold_unpub_after != hold_unpub_before ||
+            hold_ambig_after != hold_ambig_before ||
+            hold_shape_after != hold_shape_before ||
+            hold_phase_after != hold_phase_before) {
+            /* A known scroller that held this tick. The census does not
+             * distinguish the four hold clauses further; they are all
+             * "the confirm-or-hold rule refused" from a replay's point of
+             * view, which is what MDKR_VERDICT_UV_HOLD names. */
+            gfx_presentation_packet_note_verdict(MDKR_SURF_WORLD_SCROLL,
+                                                 MDKR_VERDICT_UV_HOLD);
+        }
+        /* Else: not a registered scroller at all (ordinary static/animated
+         * geometry with no UV-scroll record) -- not scroll content, so
+         * nothing is graded. */
+    }
+    if (!confirmed) {
         return NULL;
     }
     if (scroll.authored) {
@@ -6020,7 +6069,11 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                 if (presentation_owner->valid && !effect_owner) {
                     if (object_overridden) {
                         dkr_replay_object_hits++;
+                        gfx_presentation_packet_note_verdict(
+                            presentation_owner->surface_class,
+                            MDKR_VERDICT_BLEND);
                     } else {
+                        MdkrVerdictReason verdict_reason;
                         dkr_replay_object_holds++;
                         switch (mdkr_camera_replay_object_hold_class(
                                     presentation_owner,
@@ -6028,18 +6081,35 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                                     dkr_replay_object_alpha_denominator)) {
                             case MDKR_REPLAY_HOLD_NO_PAIR:
                                 dkr_replay_hold_no_pair++;
+                                /* The other endpoint was never captured
+                                 * (recycled/uncaptured) -- a missing
+                                 * dependency, not a rejected one. */
+                                verdict_reason = MDKR_VERDICT_DEPENDENCY_MISS;
                                 break;
                             case MDKR_REPLAY_HOLD_DISCONTINUOUS_STILL:
                             case MDKR_REPLAY_HOLD_DISCONTINUOUS_MOVING:
                                 dkr_replay_hold_discont++;
+                                verdict_reason = MDKR_VERDICT_DISCONTINUITY;
                                 break;
                             case MDKR_REPLAY_HOLD_PAIRED_MOVING:
                                 dkr_replay_hold_moving++;
+                                /* Paired, but mdkr_camera_replay_object_world
+                                 * still declined -- the most common internal
+                                 * cause of a paired-but-refused recipe is the
+                                 * capture_tick agreement check (residual
+                                 * obligation 4); finer attribution than that
+                                 * would require instrumenting camera.c, which
+                                 * this census does not do. */
+                                verdict_reason = MDKR_VERDICT_TICK_MISMATCH;
                                 break;
                             default:
                                 dkr_replay_hold_still++;
+                                verdict_reason = MDKR_VERDICT_TICK_MISMATCH;
                                 break;
                         }
+                        gfx_presentation_packet_note_verdict(
+                            presentation_owner->surface_class,
+                            verdict_reason);
                     }
                 }
             }

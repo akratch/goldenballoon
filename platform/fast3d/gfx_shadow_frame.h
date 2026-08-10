@@ -50,6 +50,29 @@ typedef enum GfxPresentationMatrixClass {
     GFX_PRESENTATION_MATRIX_PROJECTED_SHADOW_VERTICES = 6,
 } GfxPresentationMatrixClass;
 
+/*
+ * Per-surface census classification for the [SMOOTH-VERDICT] report
+ * (gfx_presentation_packet.h). This lives beside GfxPresentationMatrixOwner
+ * rather than in gfx_presentation_packet.h because that header already
+ * includes this one -- putting the enum there and a field of its type here
+ * would be circular. WORLD_STATIC is deliberately ordinal 0: an owner that is
+ * never stamped with a surface class (a path this task does not touch yet)
+ * reads as "static world content" rather than aliasing a real class.
+ */
+typedef enum MdkrSurfaceClass {
+    MDKR_SURF_WORLD_STATIC = 0,
+    MDKR_SURF_WORLD_SCROLL,
+    MDKR_SURF_WATER_WAVE,
+    MDKR_SURF_SKYDOME,
+    MDKR_SURF_OBJECT_ROOT,
+    MDKR_SURF_BILLBOARD,
+    MDKR_SURF_PARTICLE,
+    MDKR_SURF_PROJECTED_SHADOW,
+    MDKR_SURF_EFFECT_SHELL,
+    MDKR_SURF_HUD_2D,
+    MDKR_SURF_CLASS_COUNT,
+} MdkrSurfaceClass;
+
 typedef struct GfxPresentationMatrixOwner {
     const void *address; /* identity token only; never dereferenced by replay */
     uint64_t generation;
@@ -58,6 +81,12 @@ typedef struct GfxPresentationMatrixOwner {
     const void *secondary_address; /* identity token only */
     uint64_t secondary_generation;
     GfxPresentationMatrixClass matrix_class;
+    /* [SMOOTH-VERDICT] census class. Stamped explicitly at every builder site
+     * (mdkr_presentation_owner_root defaults it to MDKR_SURF_OBJECT_ROOT;
+     * billboard/effect/particle/shadow sites override it) rather than left to
+     * the zero-value default, because ordinal 0 (WORLD_STATIC) is itself a
+     * meaningful class and must not be confused with "not yet classified". */
+    MdkrSurfaceClass surface_class;
     /* The authored tick the game was building THIS display list at when the
      * recipe was copied out. Replay's residual (source_* minus the alpha-zero
      * pose) cancels only when the two describe the same tick, so this is what

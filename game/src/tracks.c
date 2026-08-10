@@ -6159,6 +6159,7 @@ void shadow_render(Object *obj, ShadowData *shadow) {
                         owner.generation = generation;
                         owner.matrix_class =
                             GFX_PRESENTATION_MATRIX_PROJECTED_SHADOW_VERTICES;
+                        owner.surface_class = MDKR_SURF_PROJECTED_SHADOW;
                         owner.geometry_signature =
                             shadow_batch_topology_signature(
                                 gCurrShadowHeapData[i].texture, numVerts,
