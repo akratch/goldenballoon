@@ -96,7 +96,7 @@ int platformInitRom(const char *path) {
         DkrRomValidation validation;
         DkrRomValidationOptions options = dkr_rom_validation_options_from_env();
         DkrRomId *id;
-        char msg[512];
+        char msg[1024]; /* matches DkrRomValidation.message; see rom_validation.h */
         /* MDKR_ROM_ANY_REVISION=1 downgrades the refusal to a warning. This is an
          * INVESTIGATION hook, not a compatibility switch: it is how the
          * per-revision failure taxonomy in docs/ROM_REVISIONS.md was measured and

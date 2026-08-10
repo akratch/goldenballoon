@@ -40,7 +40,11 @@ typedef struct {
     DkrRomId id;
     char byteOrder[4];
     char sha256[MDKR_SHA256_HEX_SIZE];
-    char message[512];
+    /* Sized for the longest refusal sentence PLUS a deep worktree path: the
+     * two-revision supported list pushed the OTHER_REVISION sentence past 512
+     * with a long absolute path, and a truncated native verdict diverges from
+     * the browser's uncapped one -- exactly what check_rom_revision flags. */
+    char message[1024];
 } DkrRomValidation;
 
 /** Return the explicit developer overrides currently set in the environment. */
