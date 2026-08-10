@@ -131,9 +131,11 @@ static void fill_excluded_fields(struct DkrTexCacheKey *key) {
     key->source_line_bytes = 0;
     key->source_size_bytes = 0;
     key->line_swapped = false;
+    key->font_outline = false;
     key->font_remastered = false;
     key->mipmaps = false;
     key->cutout = false;
+    key->override_generation = 0;
 }
 
 static void test_digest_ignores_struct_padding(void) {

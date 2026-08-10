@@ -2371,8 +2371,10 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
          * achieved state instead means the next bind misses and retries.
          */
         struct DkrTexCacheKey achieved = key;
-        achieved.font_outline = (derived == DKR_FONT_DERIVED_OUTLINE);
-        achieved.font_remastered = (derived == DKR_FONT_DERIVED_SDF);
+        if (!over_used) {
+            achieved.font_outline = (derived == DKR_FONT_DERIVED_OUTLINE);
+            achieved.font_remastered = (derived == DKR_FONT_DERIVED_SDF);
+        }
         if (digest_known) {
             /* over.rgba when an override applied, tex_decode_buf (this file's
              * decode scratch buffer, still holding the plain base-level RGBA8

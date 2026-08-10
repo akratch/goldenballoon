@@ -168,7 +168,7 @@ Options:
   --output PATH          Output .app path (default: <build-dir>/mdkr64.app)
   --arch ARCH            Build one architecture: native, arm64, or x86_64
                          (default: native)
-  --version VER          CFBundleShortVersionString / MDKR_VERSION (default: 1.1.1)
+  --version VER          CFBundleShortVersionString / MDKR_VERSION (default: 1.2.0)
   --build-stamp SHA      Source commit shown in the About panel (default: empty)
   --deployment-target V  Minimum macOS version (default: 13.0)
   --strict-deployment-target
@@ -191,7 +191,7 @@ BUILD_TYPE="Release"
 BUILD_DIR=""
 OUTPUT_APP=""
 ARCH="native"
-APP_VERSION="1.1.1"
+APP_VERSION="1.2.0"
 BUILD_STAMP=""
 DEPLOYMENT_TARGET="13.0"
 STRICT_DEPLOYMENT_TARGET=false

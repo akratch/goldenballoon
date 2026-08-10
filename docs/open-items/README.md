@@ -17,7 +17,7 @@ unchanged.
 
 | File | Covers |
 |---|---|
-| [`renderer.md`](renderer.md) | Renderer and visual fidelity — 28 entries |
+| [`renderer.md`](renderer.md) | Renderer and visual fidelity — 29 entries |
 | [`audio.md`](audio.md) | Audio — 7 entries |
 | [`save.md`](save.md) | Saves and progression — 3 entries |
 | [`collision.md`](collision.md) | Collision — 3 entries |

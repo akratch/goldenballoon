@@ -794,9 +794,17 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
     if (copy != nullptr && !compact) rowStyle.tooltip = copy->tooltip;
     // A binding row is one of eighteen in a grid; a description under each one
     // would be a wall, and the label already says which control it is.
-    ui::SettingLabel(copy != nullptr ? copy->label : s->label,
-                     (compact || controllerBinding || copy == nullptr)
-                         ? nullptr : copy->description,
+    //
+    // A key with no Copy entry -- every row the sprint work added -- falls back
+    // to helpFor(), which carries the enhancement authority-class note and the
+    // update-check "not active yet" paragraph. A bare label here would silently
+    // break the Enhancements header's promise that every row states whether it
+    // changes gameplay.
+    const char *rowLabel = copy != nullptr ? copy->label : s->label;
+    const char *description =
+        copy != nullptr ? copy->description : helpFor(k, s);
+    ui::SettingLabel(rowLabel,
+                     (compact || controllerBinding) ? nullptr : description,
                      rowStyle);
 
     ImGui::SetNextItemWidth(ui::kControlWidth());
@@ -1011,7 +1019,9 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
     if (!comboBrowsing) {
         char spoken[MDKR_VIDEO_STRING_MAX];
         displayValue(k, s, d, spoken, sizeof(spoken));
-        ui::SpeakFocusedItem(s->label, spoken, helpFor(k, s));
+        // The drawn label, not the schema label: the voice and the screen
+        // must not disagree (see displayValue's contract).
+        ui::SpeakFocusedItem(rowLabel, spoken, helpFor(k, s));
     }
 
     if (!editState.error.empty()) {
@@ -1836,12 +1846,17 @@ void Settings_dumpSchemaContract() {
         char value[MDKR_VIDEO_STRING_MAX];
         displayValue(key, s, config != nullptr ? &config->values[i] : nullptr,
                      value, sizeof(value));
+        /* The DRAWN label -- the Copy table's where one exists -- for the same
+         * reason the value comes from displayValue(): the gate's expectation
+         * and the on-screen text must be one string, and the announcement
+         * speaks the drawn label. */
+        const Copy *copy = copyFor(key);
         std::printf(
             "[app-a11y] control key=%s visible=%d label=\"%s\" value=\"%s\"\n",
             s->name,
             AppUi_videoSettingVisible(key, /*webGpuRenderer=*/true,
                                       /*legacyStretchActive=*/false) ? 1 : 0,
-            s->label, value);
+            copy != nullptr ? copy->label : s->label, value);
     }
 }
 

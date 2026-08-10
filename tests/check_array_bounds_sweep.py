@@ -665,9 +665,13 @@ SHAPE_INFO_MAX = {
     # proof, and a summed guess would silently re-open exactly the growth this
     # gate exists to catch.
     # 2026-08-10, merge of land/rc2 and worktree-hm-parity-sprints: both
-    # narratives above are true of their own branches. Per the merge-hazard
-    # note, the combined ceiling is RE-MEASURED on the merged tree (not summed,
-    # not maxed) and set to what the tool reports.
+    # narratives above are true of their own branches. PROVISIONAL: 265 is the
+    # release line's number carried through the merge, and the merged tree
+    # enumerates the UNION of both triage blocks, so it cannot be right by
+    # construction. Per the merge-hazard note it must be RE-MEASURED on the
+    # merged tree (not summed, not maxed) and set to what the tool reports
+    # before any release is cut from this line. The same applies to
+    # "equality-cap" above (45 is also the release line's number).
     "shift-count": 265,
 }
 
