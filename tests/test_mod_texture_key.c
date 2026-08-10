@@ -161,9 +161,35 @@ static void test_digest_ignores_struct_padding(void) {
     fill_excluded_fields(&dirty.key);
 
     /* Positive control: without this the group could pass vacuously on a
-     * layout whose two routes happen to produce identical bytes. */
-    expect(memcmp(zeroed.bytes, dirty.bytes, sizeof zeroed.bytes) != 0,
-           "the two routes really do differ in their padding bytes");
+     * layout whose two routes happen to produce identical bytes. On an ABI
+     * whose layout has NO padding -- arm64 packs this struct to exactly its
+     * field bytes -- there is no byte left for the routes to differ in, and
+     * demanding a difference would fail for a reason the group does not
+     * test. So first establish from the field sizes whether padding exists,
+     * then assert the byte images accordingly; either branch is a real
+     * assertion about the layout, not a skip. */
+    {
+        const size_t field_bytes =
+            sizeof zeroed.key.addr + sizeof zeroed.key.source_line_bytes +
+            sizeof zeroed.key.source_size_bytes +
+            sizeof zeroed.key.palette_hash + sizeof zeroed.key.palette_fmt +
+            sizeof zeroed.key.width + sizeof zeroed.key.height +
+            sizeof zeroed.key.fmt + sizeof zeroed.key.siz +
+            sizeof zeroed.key.palette + sizeof zeroed.key.line_swapped +
+            sizeof zeroed.key.font_remastered +
+            sizeof zeroed.key.font_outline + sizeof zeroed.key.mipmaps +
+            sizeof zeroed.key.cutout + sizeof zeroed.key.override_generation;
+        if (field_bytes < sizeof(struct DkrTexCacheKey)) {
+            expect(memcmp(zeroed.bytes, dirty.bytes,
+                          sizeof zeroed.bytes) != 0,
+                   "the two routes really do differ in their padding bytes");
+        } else {
+            expect(memcmp(zeroed.bytes, dirty.bytes,
+                          sizeof zeroed.bytes) == 0,
+                   "layout has no padding, so the two routes are "
+                   "byte-identical");
+        }
+    }
 
     mdkr_mod_texture_digest(&zeroed.key, t, sizeof t, dz);
     mdkr_mod_texture_digest(&literal, t, sizeof t, dl);
