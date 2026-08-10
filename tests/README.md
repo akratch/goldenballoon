@@ -715,6 +715,52 @@ both special-vehicle mappings. It deletes every required fragment in memory and
 must reject each mutation, so its source assertions have executable failure
 directions.
 
+## Two ways a gate lies — read this before adding a check or a diagnostic
+
+Gates fail in two distinct ways here, and only one of them is loud.
+
+**Shape brittleness** is a check that greps for the *form* of the code rather
+than the property it cares about. `check_overlay_input_handoff.py` reads
+`platform_input_pump`'s body for `SDL_PollEvent`; a refactor moving that into a
+helper turned it red with behaviour untouched. Loud, annoying, cheap. The
+counter-intuitive part: making such a check **more precise makes it more
+brittle, not safer**. Pinning "exactly these two guard terms" breaks the moment
+a third surface appears. Loosen *what the text must look like*, keep *what the
+code must do* — or better, assert structurally: inline the callee before
+searching, allow an open-ended term list, count events rather than matching
+prose.
+
+**Assertion vacuity** is a check that cannot fail for the reason it claims. It
+is quiet, and it is far worse, because it converts "unchecked" into "checked and
+fine". Four found in one night:
+
+- `g_frameLimitRectValid` was a sticky latch, so a per-frame "the widget is on
+  screen" assertion was never evaluated against a visible widget.
+- `check_a11y_shell`'s in-game overlay arm walks whatever it reaches — three
+  passing runs covered 14, 8 and 6 rows. The real assertion is "more than zero".
+- "a header declaring more than the cache holds is refused" **still passed with
+  the guard it tested disabled**; only counting decoder entries and allocator
+  high-water could distinguish refused-before-decoding from refused-after.
+- `check_bluey2_rematch` asserted the very defect it existed to catch.
+
+The test is simple: **ask what would have to break for this to go red.** If the
+answer is not the property named, the assertion is decorative. Prove it by
+mutation — and when a mutation leaves one assertion green while others fail,
+that green one is worthless; say which survived rather than accepting the
+aggregate red.
+
+**A diagnostic can lie too, and confidently.** The off-screen helper added to
+the settings panel announced `frame-limit combo is scrolled out of the panel
+(rect y=614..614)` about a combo sitting visibly at y=596..633 — `BeginCombo()`
+returning true has already begun the popup window, and ImGui's `Begin()`
+reassigns last-item data to that window's title bar. A diagnostic exists to make
+the next failure cheap to read; one that points at a fault which is not there is
+worse than the silence it replaced. Same shape as a `grep -q` inside a pipeline
+under `set -o pipefail`, which SIGPIPEs its producer and reports **"ok" exactly
+when it finds a violation**. Verify a new diagnostic against a known-good case
+before trusting it, and never use `grep -q` in a pipeline under `pipefail` —
+drain with `grep .` or capture to a variable first.
+
 ## Open loop vs closed loop — read this before adding or editing a fixture
 
 An **open-loop** fixture replays fixed button presses at fixed frames and asserts
