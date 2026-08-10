@@ -161,6 +161,24 @@ replacing a track.
 - **`Content.PackDisabled`** is a comma-separated list of pack names to leave
   uninstalled. Matching ignores case and surrounding spaces.
 
+## Packs apply in every presentation mode, including Pure
+
+A pack replaces textures in Pure and Restored exactly as it does in Remastered.
+Nothing in the override path consults the presentation mode.
+
+**This is a decision, not an oversight**, and it is written down here because it
+was previously neither. Installing a pack *is* the opt-in. A player who put a
+folder in `mods/` and then launched with `--pure` asked for both things, and
+silently dropping their pack — with the pack list still saying it loaded — would
+be the more surprising behaviour of the two.
+
+The consequence you need to know: **Pure with a pack installed is no longer
+byte-exact to the original picture.** Pure's guarantee is about the port's own
+choices — framing, filtering, timing — and it cannot extend to art you replaced
+yourself. If you are using Pure as a reference for comparison against original
+hardware or an emulator, turn packs off first (`Tab`, or **Settings → Content**),
+because the mode indicator will still read Original either way.
+
 ## Seeing what loaded
 
 **Settings → Content** lists every pack the game found: name, version, author

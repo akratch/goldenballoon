@@ -330,6 +330,9 @@ static void slot_resolve(StoreSlot *slot) {
     unsigned char *file_bytes;
     size_t         file_size = 0;
     unsigned char *pixels;
+    int            declared_width = 0;
+    int            declared_height = 0;
+    int            declared_channels = 0;
     int            width = 0;
     int            height = 0;
     int            channels = 0;
@@ -357,6 +360,45 @@ static void slot_resolve(StoreSlot *slot) {
         slot->state = SLOT_REJECTED;
         report_rejection(slot->digest, "the file is too large to decode");
         return;
+    }
+
+    /* The header before the pixels. stbi_info_from_memory() parses the PNG
+     * header and stops, so the size the file CLAIMS costs a few hundred bytes
+     * of parsing to learn, while decoding to find out costs the whole picture.
+     * Without this the cap below bounds only what is RETAINED: a pack PNG of a
+     * few hundred kilobytes that declares 32768x32768 is a gigabyte the
+     * allocator has already handed over by the time anything asks whether it
+     * fits. Packs are files a player downloads from strangers, so "we free it
+     * again immediately" is not an answer.
+     *
+     * Measured in 64 bits and against the same cap evict_for() enforces, so
+     * the two cannot drift apart. The declared component count is deliberately
+     * ignored: this store always asks the decoder for RGBA, so four bytes a
+     * pixel is what a decode of this file would cost whatever the file itself
+     * stores -- and a one-channel image is precisely the case where the two
+     * differ by four.
+     *
+     * A header that cannot be parsed at all falls through to the decode on
+     * purpose. The decoder parses the same header and will fail on it with
+     * stb's own wording, which names the defect better than this module could
+     * about a header it could not read; and every check after the decode still
+     * runs regardless, because stbi_info() reports what the header claims and
+     * a header that lies has to be caught by the decode itself. */
+    if (stbi_info_from_memory(file_bytes, (int)file_size, &declared_width,
+                              &declared_height, &declared_channels) != 0 &&
+        declared_width > 0 && declared_height > 0) {
+        uint64_t declared = (uint64_t)declared_width *
+                            (uint64_t)declared_height * 4u;
+        if (declared > (uint64_t)MDKR_MOD_TEXTURE_CACHE_BYTES_MAX) {
+            char too_big[128];
+            snprintf(too_big, sizeof too_big,
+                     "the image declares %dx%d, larger than the whole texture "
+                     "cache", declared_width, declared_height);
+            free(file_bytes);
+            slot->state = SLOT_REJECTED;
+            report_rejection(slot->digest, too_big);
+            return;
+        }
     }
 
     pixels = stbi_load_from_memory(file_bytes, (int)file_size, &width, &height,

@@ -155,10 +155,25 @@ static MdkrModSource *open_pack_root(const char *root, const char *name,
 
 /* Never drops a rejection. Once the table is full the final slot is rewritten
  * to say so, so the count stays inside the array while the player is still
- * told that more went wrong than is listed. */
+ * told that more went wrong than is listed.
+ *
+ * Both halves of that slot are rewritten, not just the reason. Settings ->
+ * Content renders the list as "<name> — <reason>", so overwriting the reason
+ * alone leaves the row reading one pack's name against a different pack's
+ * explanation: the screen that exists to tell a player why a pack did not load
+ * would be lying, in the one case where the most has already gone wrong.
+ *
+ * "More packs" as the name, chosen so the row reads as a summary of the rest
+ * rather than as a pack: it is plural, so no single thing the player installed
+ * can be mistaken for it, and it makes a sentence with the reason next to it
+ * in the one place this text is ever seen. A pack directory could in principle
+ * be named that too, but then the row still says something true about the
+ * overflow, which a stale name does not. */
 static void registry_add_skip(MdkrModRegistry *reg, const char *name,
                               const char *reason) {
     if (reg->skipped >= MDKR_MOD_MAX_PACKS) {
+        copy_bounded(reg->skip_name[MDKR_MOD_MAX_PACKS - 1],
+                     sizeof reg->skip_name[0], "More packs");
         copy_bounded(reg->skip_reason[MDKR_MOD_MAX_PACKS - 1],
                      sizeof reg->skip_reason[0],
                      "further packs were skipped; this list is full");

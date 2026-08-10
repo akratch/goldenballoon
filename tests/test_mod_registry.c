@@ -327,6 +327,59 @@ static void test_pack_overflow_is_recorded(const char *scratch) {
     mdkr_mod_registry_shutdown(&reg);
 }
 
+/* 8b. Past the capacity of the SKIP list -- a different overflow from case 8,
+ * and the one where the report can start lying rather than merely stopping.
+ *
+ * The last slot is rewritten to say more went wrong than is listed. Settings ->
+ * Content draws that list as "<name> — <reason>", so if only the reason is
+ * rewritten the row shows one pack's name against another pack's explanation:
+ * the screen a player opens to find out why a pack did not load, giving a
+ * wrong answer, in the case where the most has already gone wrong. The
+ * assertion is therefore about the two halves agreeing, not about the wording
+ * of either. */
+static void test_overflowing_skip_list_names_what_it_explains(const char *scratch) {
+    char mods[1024];
+    MdkrModRegistry reg;
+    /* Enough unreadable packs to overrun the skip list, not merely fill it. */
+    int total = MDKR_MOD_MAX_PACKS + 6;
+    int index;
+    const char *last_name;
+    const char *last_reason;
+    int names_a_fixture_pack = 0;
+
+    path2(mods, sizeof mods, scratch, "skipoverflow");
+    for (index = 0; index < total; index++) {
+        char pack[32];
+        snprintf(pack, sizeof pack, "skipme%02d", index);
+        /* A directory with something in it but no pack.ini: skipped, and
+         * skipped for a reason of its own that names the pack. */
+        write_pack_file(mods, pack, "readme.txt", "not a manifest\n");
+    }
+
+    expect(mdkr_mod_registry_init(&reg, mods) == 0,
+           "a mods dir with more unreadable packs than the skip list holds "
+           "initialises");
+    expect(mdkr_mod_registry_skipped(&reg) == MDKR_MOD_MAX_PACKS,
+           "the skip list fills to its capacity and stops there");
+
+    last_name = reg.skip_name[MDKR_MOD_MAX_PACKS - 1];
+    last_reason = mdkr_mod_registry_skip_reason(&reg, MDKR_MOD_MAX_PACKS - 1);
+    expect(last_reason != NULL && strstr(last_reason, "list is full") != NULL,
+           "the last row explains that the list itself ran out");
+
+    for (index = 0; index < total; index++) {
+        char pack[32];
+        snprintf(pack, sizeof pack, "skipme%02d", index);
+        if (strcmp(last_name, pack) == 0) names_a_fixture_pack = 1;
+    }
+    expect(last_name[0] != '\0',
+           "and that row still has a name to show beside it");
+    expect(!names_a_fixture_pack,
+           "which is not some installed pack's, left over from the row this "
+           "one replaced");
+    mdkr_mod_registry_shutdown(&reg);
+}
+
 /* 9. `enabled = 0` is a real off switch, not a hint. */
 static void test_disabled_pack_never_wins(const char *scratch) {
     char mods[1024];
@@ -367,6 +420,7 @@ int main(int argc, char **argv) {
     test_dot_entries_are_skipped(scratch);
     test_path_traversal_is_rejected(scratch);
     test_pack_overflow_is_recorded(scratch);
+    test_overflowing_skip_list_names_what_it_explains(scratch);
     test_disabled_pack_never_wins(scratch);
 
     remove_tree(scratch);

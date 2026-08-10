@@ -330,6 +330,49 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME mod_registry COMMAND mdkr_mod_registry_test
              ${CMAKE_CURRENT_BINARY_DIR}/mod_registry_scratch)
 
+    # When a pack PNG is refused, relative to when it is decoded. A pack is a
+    # file a player downloaded from a stranger, so the cache cap is only a
+    # defence if it is consulted before the decoder is handed the bytes --
+    # applied afterwards it bounds what is retained, never what is allocated,
+    # and the allocation is the damage.
+    #
+    # tests/mod_texture_store_probe.c takes lib/stb/stb_image_impl.c's place
+    # here, and that substitution is the test: it is the same stb_image,
+    # configured identically, with the decode entry point and the decoder's
+    # allocator each behind a counter. Nothing the store RETURNS distinguishes
+    # "refused before decoding" from "decoded, then refused", so without that
+    # seam the case could only assert the weaker claim, which held before the
+    # fix as well.
+    add_executable(mdkr_mod_texture_store_test
+        ${CMAKE_SOURCE_DIR}/tests/test_mod_texture_store.c
+        ${CMAKE_SOURCE_DIR}/tests/mod_texture_store_probe.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_texture_store.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_registry.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/config_ini.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_source.c
+        ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c)
+    target_include_directories(mdkr_mod_texture_store_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/lib/stb
+        ${CMAKE_SOURCE_DIR}/lib/miniz)
+    # The probe instantiates stb_image, which is third-party and does not
+    # survive this project's warning baseline -- the same one-file exemption
+    # lib/stb/stb_image_impl.c and lib/miniz/miniz.c already have.
+    if(MSVC)
+        set_source_files_properties(
+            ${CMAKE_SOURCE_DIR}/tests/mod_texture_store_probe.c
+            PROPERTIES COMPILE_OPTIONS "/w")
+    else()
+        set_source_files_properties(
+            ${CMAKE_SOURCE_DIR}/tests/mod_texture_store_probe.c
+            PROPERTIES COMPILE_OPTIONS "-w")
+        target_link_libraries(mdkr_mod_texture_store_test PRIVATE m)
+    endif()
+    add_test(NAME mod_texture_store COMMAND mdkr_mod_texture_store_test
+             ${CMAKE_CURRENT_BINARY_DIR}/mod_texture_store_scratch)
+
     # The accessibility semantic model. ImGui exposes no accessibility tree, so
     # this module is the tree: it emits text, which is why the whole behaviour
     # is gateable in CI with no audio device and no window.
