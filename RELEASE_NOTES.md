@@ -1,12 +1,12 @@
 # Golden Balloon 1.2.0
 
-*Bug fixes, and the first feature release.*
+*Released 2026-08-10.*
 
-Three reported bugs are fixed, plus four more we found by looking for the rest
-of their families. The settings screen has been rewritten so it says what each
-setting actually does. And the port grows its first real product surface:
-content packs, an accessibility section that can speak the launcher out loud,
-an enhancements menu, and in-app developer tools. No game data is included.
+Golden Balloon 1.2.0 fixes the three bugs you reported, plus four more we found
+by looking for the rest of their families, and adds the biggest set of features
+so far: content packs, a launcher that can speak, an enhancements menu, and
+developer tools. The settings screen has been rewritten so it says what each
+setting actually does. No game data is included.
 
 Recommended settings are unchanged: **WebGPU**, **Restored**, frame limit
 **Original**, motion smoothing **Off**, gameplay tick rate **Original**, camera
@@ -150,23 +150,22 @@ Both are off unless you turn them on, and each is its own switch.
 
 Plainly, so nobody is misled: this is the app speaking for itself. It is not a
 screen-reader integration — VoiceOver and similar tools still cannot see into
-the launcher. Speech has been heard end-to-end on macOS; the same feature is
-built into the Windows and Linux versions but has not yet been heard on real
-hardware there. If you use it and it is silent, that report is valuable.
+the launcher. On macOS we have heard it speak; the same feature is built into
+the Windows and Linux versions but has not yet been heard on real hardware
+there. If you use it and it is silent, that report is valuable.
 
 ## An enhancements menu
 
 Settings → Enhancements gathers the optional extras: a speedometer, draw
 distance, model detail, and opponent skill. Every row says whether it changes
-how the game plays or only how it looks, and one button resets them all. None
-of them touch Original's accuracy claims — they are off until you opt in.
+how the game plays or only how it looks, and one button resets them all. All
+of them are off until you opt in.
 
 ## Developer tools
 
 Settings → App window has a **Developer tools** switch, off by default. It
 unlocks a console, a free camera, collision and object viewers, a performance
-window, and a crash-report screen. Switched off, they do nothing at all — and
-the test suite holds them to that.
+window, and a crash-report screen. Switched off, they do nothing at all.
 
 ## Does this game run my cartridge dump?
 
