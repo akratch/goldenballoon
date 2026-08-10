@@ -510,6 +510,35 @@ SHAPE_TRIAGE = {
         "worst. `length` itself comes from field_length(reason, size), which "
         "cannot report past size. Written out rather than snprintf'd so no "
         "clause can be lost to a format the compiler cannot bound.",
+    ("bare-pointer", "platform/mod_music.c", "resample_into:out"):
+        "BOUNDED BY CONSTRUCTION: `out` is the malloc immediately above the "
+        "only call site (decode_track), sized target_frames * s_channels * "
+        "sizeof(int16_t), and the out_frames argument IS target_frames. Both "
+        "loops write out[out_channels * frame + channel] for frame < "
+        "out_frames and channel < out_channels, so the highest element written "
+        "is out_channels * out_frames - 1: an exact fit with no slack, and "
+        "none is needed, because the count and the capacity are the same two "
+        "expressions. The product cannot overflow either -- target_frames is "
+        "rejected against MDKR_MOD_MUSIC_BYTES_MAX / (sizeof(int16_t) * "
+        "s_channels) before the allocation. The sweep flags it only because "
+        "`out_frames` does not match its bound-ish parameter-name heuristic; "
+        "the bound is present and is the parameter.",
+    ("bare-pointer", "platform/mod_music.c", "mdkr_mod_music_mix:out"):
+        "BOUNDED BY A CONSTANT SHARED WITH THE CALLER, which is the part worth "
+        "checking rather than assuming. The loop writes frame * s_channels + "
+        "channel for frame < frames and channel < s_channels, so `frames` "
+        "alone does not state the capacity -- `out` needs frames * s_channels "
+        "elements. Both call sites are in platform/audi_port_dkr.c and pass "
+        "the buffer amAudioSynthFrame(n) returned together with the same n; "
+        "that buffer holds n * DKR_AUDIO_CHANNELS int16 samples, which the "
+        "next line confirms by handing the identical (buf, n, "
+        "DKR_AUDIO_CHANNELS) to mdkr_audio_gain_ramp_apply_s16. So the write "
+        "fits exactly when s_channels == DKR_AUDIO_CHANNELS, and s_channels "
+        "has exactly one writer: mdkr_mod_music_init, called once, from that "
+        "same translation unit, with DKR_AUDIO_CHANNELS. A second initialiser "
+        "with a different channel count is the single change that would break "
+        "this, which is why it is recorded here rather than left to a reader "
+        "to re-derive.",
     ("bare-pointer", "platform/save_container.c", "json_parse_string:output"):
         "BOUNDED BY PARAMETER: every write path tests output_capacity first -- "
         "the single-byte path, append_utf8's `count > capacity - *length`, and "

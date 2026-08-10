@@ -272,6 +272,59 @@ list above says what was covered so that breadth is not inferred from it —
 `track_sweep` (all levels) and `vehicle_sweep` (47 combinations) are the two
 that most directly exercise the asset path the override layer sits in front of.
 
+### The complete suite has now run, and it found one thing — 2026-08-10
+
+`run_checks.py` over the whole manifest at `081fd32`, against the canonical
+artifacts (`build-rel` Release, `build-asan` with
+`-fsanitize=address -g -O1 -fno-omit-frame-pointer`, and the wasm build):
+**162 tasks, 192m43s, 3 failures.** One was real.
+
+**A caveat that applies to everything above this line.** The 41-check pass was
+run against `build/`, which in this worktree is `CMAKE_BUILD_TYPE=Debug`. The
+suite's canonical build is `build-rel`. That is not a pedantic distinction here:
+[`../RELEASE_CHECKLIST.md`](../RELEASE_CHECKLIST.md) §2 records two
+player-reported bugs that the optimiser created and that were invisible at
+`-O0`, because a progress flag written as `FLAG << (i + 31)` is UB, folds to
+zero at `-O2`, and clang then deletes the load, the test and the store as one
+dead unit — so both halves of a "show this once" latch disappear while every
+native check stays green. Debug-only verification of latch-shaped code (a11y
+state machines, settings persistence) is therefore weaker evidence than it
+looks, not merely differently configured.
+
+**Real: `array_bounds_sweep`, two untriaged bare-pointer sites in
+`platform/mod_music.c`** — `resample_into:out` and `mdkr_mod_music_mix:out`.
+Both turned out to be genuinely bounded and both now carry a triage entry
+answering the three questions the class asks. The second was worth the walk:
+`frames` alone does not state the capacity, because the write needs
+`frames * s_channels` elements. It holds because both call sites pass the buffer
+`amAudioSynthFrame(n)` returned with the same `n`, that buffer is
+`n * DKR_AUDIO_CHANNELS` samples, and `s_channels` has exactly one writer,
+called once, with `DKR_AUDIO_CHANNELS`. A second initialiser with a different
+channel count is the one change that would break it.
+
+This is the argument for the complete suite in one line: `array_bounds_sweep` is
+a `rom`-role check, so hosted CI cannot run it and no subset battery reaches it.
+The sites had been in the tree since the custom-music work and nothing had ever
+looked at them.
+
+**Not real: `app_adopted_pacing`** — `presented=0 unavailable=1478`, the
+documented no-window-server signature. Proven environmental rather than argued:
+the *same Debug binary* that passed this check two hours earlier failed it
+identically once the machine went idle and the display slept. Binary unchanged,
+result changed.
+
+**Not real: `shell_dropfile`** — "final Play arm emitted 0 Play actions, want 1",
+in a task that runs immediately after the suite's own `ctest -j` batch at peak
+load. Passes standalone 3 of 3. Recorded rather than dismissed, because the arm
+is an *asynchronous* Play recheck and so is genuinely timing-sensitive; a gate
+that can lose a race under load is worth knowing about even when the code is
+right.
+
+The suite has not been re-run end to end since the triage entries landed. That
+change is confined to a dict of strings in `tests/check_array_bounds_sweep.py`,
+nothing else reads it, and that check passes on re-run — but the honest
+statement is 159/162 plus a targeted re-verification, not a green suite.
+
 ### One task stopped at its own gate, which is a result
 
 **S2 T7 (save-state capture) is not built**, and the reason is measured rather
