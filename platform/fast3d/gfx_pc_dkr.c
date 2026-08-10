@@ -49,6 +49,7 @@
  * that reaches a DL word via gfx_ptr_store() (PLAN decision 3).
  */
 
+#include <assert.h>
 #include <math.h>
 #include <limits.h>
 #include <stdint.h>
@@ -613,6 +614,100 @@ static bool dkr_replay_uv_scroll_interpolation_enabled(void) {
 }
 
 /*
+ * dkr_replay_resolve_alpha() is the single choke point every replay stage
+ * asks "is this class allowed to blend right now, and at what fraction."
+ * Each per-stage MDKR_TEST_*_INTERPOLATION switch above still guards exactly
+ * the class it always guarded -- dkr_replay_surface_class_gate_enabled()
+ * below is only a class-keyed dispatch to the same eight predicates, not a
+ * new decision. Callers keep their own owner/pairing/discontinuity checks
+ * (this function does not know how a projected shadow proves its vertex
+ * pair is real, only whether the caller says it did); this function's job
+ * is to be the ONE place that turns {gate enabled, owner present, paired,
+ * discontinuous} into {alpha, reason}, and the one place that can therefore
+ * assert an extrapolation can never leave it.
+ */
+typedef struct DkrReplayAlphaRequest {
+    /* This stage's own MDKR_TEST_* switch state. The six per-class stages
+     * (object/billboard, effect, particle, projected shadow, world scroll,
+     * world-static deformation) fill this from
+     * dkr_replay_surface_class_gate_enabled() below, so their switch really
+     * does move inside the choke point, keyed by class. Primitive alpha is
+     * not itself a surface class -- MDKR_TEST_PRIMITIVE_ALPHA_INTERPOLATION
+     * applies to whichever class currently owns opacity -- so that call site
+     * evaluates its own switch and passes it here directly; the class
+     * argument still carries the current opacity owner's class for the
+     * reason/alpha semantics below. */
+    bool gate_enabled;
+    bool owner_present; /* the stage's presentation owner/binding is valid */
+    bool tick_paired;   /* the stage's own T/T+1 compatibility check passed */
+    bool discontinuity; /* the stage's own jump/topology guard tripped */
+    uint64_t numerator;
+    uint64_t denominator;
+} DkrReplayAlphaRequest;
+
+static bool dkr_replay_surface_class_gate_enabled(MdkrSurfaceClass surface_class) {
+    switch (surface_class) {
+        case MDKR_SURF_OBJECT_ROOT:
+        case MDKR_SURF_BILLBOARD:
+            return dkr_replay_object_interpolation_enabled();
+        case MDKR_SURF_EFFECT_SHELL:
+            return dkr_replay_effect_interpolation_enabled();
+        case MDKR_SURF_PARTICLE:
+            return dkr_replay_particle_interpolation_enabled();
+        case MDKR_SURF_PROJECTED_SHADOW:
+            return dkr_replay_deformation_interpolation_enabled() &&
+                dkr_replay_projected_shadow_interpolation_enabled();
+        case MDKR_SURF_WORLD_SCROLL:
+            return dkr_replay_uv_scroll_interpolation_enabled();
+        case MDKR_SURF_WORLD_STATIC:
+        case MDKR_SURF_WATER_WAVE:
+        case MDKR_SURF_SKYDOME:
+            return dkr_replay_deformation_interpolation_enabled();
+        default:
+            return true;
+    }
+}
+
+/*
+ * Pure: no global read besides the class's own env-gate memo, no write.
+ * On every path except MDKR_VERDICT_BLEND, alpha is the newest authored
+ * value (0.0f -- the un-advanced pose), never a scaled-up guess, so a caller
+ * that forgets to check `*out_reason` still gets a snap, not an
+ * extrapolation. assert() below is the structural guarantee: no arithmetic
+ * anywhere in this function can produce alpha > 1.0f.
+ */
+static float dkr_replay_resolve_alpha(MdkrSurfaceClass surface_class,
+                                       const DkrReplayAlphaRequest *req,
+                                       MdkrVerdictReason *out_reason) {
+    MdkrVerdictReason reason = MDKR_VERDICT_NO_OWNER;
+    float alpha = 0.0f;
+
+    (void)surface_class;
+    if (req != NULL && req->owner_present) {
+        if (!req->gate_enabled) {
+            reason = MDKR_VERDICT_DEPENDENCY_MISS;
+        } else if (!req->tick_paired) {
+            reason = MDKR_VERDICT_DEPENDENCY_MISS;
+        } else if (req->discontinuity) {
+            reason = MDKR_VERDICT_DISCONTINUITY;
+        } else if (req->denominator == 0u || req->numerator >= req->denominator) {
+            reason = MDKR_VERDICT_TICK_MISMATCH;
+        } else {
+            alpha = (float)req->numerator / (float)req->denominator;
+            reason = MDKR_VERDICT_BLEND;
+        }
+    }
+    if (reason != MDKR_VERDICT_BLEND) {
+        alpha = 0.0f;
+    }
+    assert(alpha <= 1.0f);
+    if (out_reason != NULL) {
+        *out_reason = reason;
+    }
+    return alpha;
+}
+
+/*
  * The authored-rate path's opt-out, and the reason it is a committed seam.
  *
  * Every scroller the ROM ships advances by 12 quarter-units a tick or more, so
@@ -972,11 +1067,20 @@ static void dkr_replay_apply_primitive_alpha(void) {
     bool particle;
     bool projected_shadow;
     uint8_t alpha;
+    DkrReplayAlphaRequest alpha_req;
+    MdkrVerdictReason alpha_reason;
 
     rdp.prim_color = rdp.authored_prim_color;
+    memset(&alpha_req, 0, sizeof(alpha_req));
+    alpha_req.gate_enabled = dkr_replay_primitive_alpha_interpolation_enabled();
+    alpha_req.owner_present = rsp.opacity_owner_valid && rsp.opacity_owner.valid;
+    alpha_req.tick_paired = true;
+    alpha_req.numerator = dkr_replay_object_alpha_numerator;
+    alpha_req.denominator = dkr_replay_object_alpha_denominator;
+    (void)dkr_replay_resolve_alpha(
+        rsp.opacity_owner.surface_class, &alpha_req, &alpha_reason);
     if (!dkr_replay_pass || !dkr_replay_object_alpha_valid ||
-        !dkr_replay_primitive_alpha_interpolation_enabled() ||
-        !rsp.opacity_owner_valid || !rsp.opacity_owner.valid ||
+        alpha_reason != MDKR_VERDICT_BLEND ||
         !presentation_snapshot_resolve_object_generation(
             rsp.opacity_owner.address, rsp.opacity_owner.generation,
             0u, dkr_replay_object_alpha_denominator, &source) ||
@@ -6055,7 +6159,19 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                     presentation_owner->matrix_class ==
                         GFX_PRESENTATION_MATRIX_EFFECT;
                 if (effect_owner) {
-                    if (dkr_replay_effect_interpolation_enabled()) {
+                    DkrReplayAlphaRequest effect_alpha_req;
+                    MdkrVerdictReason effect_alpha_reason;
+                    memset(&effect_alpha_req, 0, sizeof(effect_alpha_req));
+                    effect_alpha_req.gate_enabled =
+                        dkr_replay_effect_interpolation_enabled();
+                    effect_alpha_req.owner_present = presentation_owner->valid;
+                    effect_alpha_req.tick_paired = true;
+                    effect_alpha_req.numerator = dkr_replay_object_alpha_numerator;
+                    effect_alpha_req.denominator = dkr_replay_object_alpha_denominator;
+                    (void)dkr_replay_resolve_alpha(
+                        MDKR_SURF_EFFECT_SHELL, &effect_alpha_req,
+                        &effect_alpha_reason);
+                    if (effect_alpha_reason == MDKR_VERDICT_BLEND) {
                         effect_overridden = dkr_replay_effect_world(
                             presentation_owner,
                             rsp.shadow_matrix[slot].viewport, replay_world);
@@ -6498,11 +6614,22 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                         v, byte_size, (uint32_t)retained_n,
                         (uint32_t)sizeof(*v));
                 } else {
+                    DkrReplayAlphaRequest particle_alpha_req;
+                    MdkrVerdictReason particle_alpha_reason;
+                    memset(&particle_alpha_req, 0, sizeof(particle_alpha_req));
+                    particle_alpha_req.gate_enabled =
+                        dkr_replay_particle_interpolation_enabled();
+                    particle_alpha_req.owner_present = dkr_replay_object_alpha_valid;
+                    particle_alpha_req.tick_paired = true;
+                    particle_alpha_req.numerator = dkr_replay_object_alpha_numerator;
+                    particle_alpha_req.denominator = dkr_replay_object_alpha_denominator;
+                    (void)dkr_replay_resolve_alpha(
+                        MDKR_SURF_PARTICLE, &particle_alpha_req,
+                        &particle_alpha_reason);
                     retained_replay = dkr_replay_deformation_vertices(
                         &packet_binding.owner, packet_binding.viewport, 0u,
                         retained_n, true,
-                        dkr_replay_object_alpha_valid &&
-                            dkr_replay_particle_interpolation_enabled(),
+                        particle_alpha_reason == MDKR_VERDICT_BLEND,
                         retained_vertices, position_overrides,
                         color_overrides);
                     if (retained_replay !=
@@ -6543,11 +6670,22 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                             (uint32_t)retained_n, (uint32_t)sizeof(*v));
                     }
                 } else {
-                    rigid_translation =
-                        dkr_replay_object_alpha_valid &&
-                        dkr_replay_object_alpha_numerator != 0u &&
+                    DkrReplayAlphaRequest shadow_alpha_req;
+                    MdkrVerdictReason shadow_alpha_reason;
+                    memset(&shadow_alpha_req, 0, sizeof(shadow_alpha_req));
+                    shadow_alpha_req.gate_enabled =
                         dkr_replay_deformation_interpolation_enabled() &&
-                        dkr_replay_projected_shadow_interpolation_enabled() &&
+                        dkr_replay_projected_shadow_interpolation_enabled();
+                    shadow_alpha_req.owner_present = dkr_replay_object_alpha_valid;
+                    shadow_alpha_req.tick_paired = true;
+                    shadow_alpha_req.numerator = dkr_replay_object_alpha_numerator;
+                    shadow_alpha_req.denominator = dkr_replay_object_alpha_denominator;
+                    (void)dkr_replay_resolve_alpha(
+                        MDKR_SURF_PROJECTED_SHADOW, &shadow_alpha_req,
+                        &shadow_alpha_reason);
+                    rigid_translation =
+                        shadow_alpha_reason == MDKR_VERDICT_BLEND &&
+                        dkr_replay_object_alpha_numerator != 0u &&
                         !dkr_test_projected_shadow_vertex_lerp_enabled();
                     if (rigid_translation) {
                         retained_replay =
@@ -6558,9 +6696,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                         retained_replay = dkr_replay_deformation_vertices(
                             &packet_binding.owner, packet_binding.viewport,
                             packet_binding.ordinal, retained_n, false,
-                            dkr_replay_object_alpha_valid &&
-                                dkr_replay_deformation_interpolation_enabled() &&
-                                dkr_replay_projected_shadow_interpolation_enabled(),
+                            shadow_alpha_reason == MDKR_VERDICT_BLEND,
                             retained_vertices, position_overrides,
                             color_overrides);
                     }
@@ -6600,11 +6736,26 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                         (uint32_t)sizeof(*v));
                 } else if (dkr_replay_pass &&
                            !retained_packet_vertex) {
+                    DkrReplayAlphaRequest world_static_alpha_req;
+                    MdkrVerdictReason world_static_alpha_reason;
+                    memset(&world_static_alpha_req, 0,
+                           sizeof(world_static_alpha_req));
+                    world_static_alpha_req.gate_enabled =
+                        dkr_replay_deformation_interpolation_enabled();
+                    world_static_alpha_req.owner_present =
+                        dkr_replay_object_alpha_valid;
+                    world_static_alpha_req.tick_paired = true;
+                    world_static_alpha_req.numerator =
+                        dkr_replay_object_alpha_numerator;
+                    world_static_alpha_req.denominator =
+                        dkr_replay_object_alpha_denominator;
+                    (void)dkr_replay_resolve_alpha(
+                        MDKR_SURF_WORLD_STATIC, &world_static_alpha_req,
+                        &world_static_alpha_reason);
                     retained_replay = dkr_replay_deformation_vertices(
                         &rsp.deformation_owner,
                         rsp.deformation_viewport, ordinal, retained_n, false,
-                        dkr_replay_object_alpha_valid &&
-                            dkr_replay_deformation_interpolation_enabled(),
+                        world_static_alpha_reason == MDKR_VERDICT_BLEND,
                         retained_vertices, position_overrides,
                         color_overrides);
                     if (retained_replay !=
@@ -6661,11 +6812,23 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                 if (!dkr_replay_pass) {
                     (void)gfx_retained_task_capture_dependency(
                         t, t, (size_t)num_tris * sizeof(*t));
-                } else if (dkr_replay_object_alpha_valid &&
-                           dkr_replay_object_alpha_numerator != 0u &&
-                           dkr_replay_uv_scroll_interpolation_enabled()) {
-                    uv_offset_ptr = dkr_replay_uv_scroll_offset(
-                        t, num_tris, uv_offset, &uv_mask_u, &uv_mask_v);
+                } else if (dkr_replay_object_alpha_numerator != 0u) {
+                    DkrReplayAlphaRequest uv_scroll_alpha_req;
+                    MdkrVerdictReason uv_scroll_alpha_reason;
+                    memset(&uv_scroll_alpha_req, 0, sizeof(uv_scroll_alpha_req));
+                    uv_scroll_alpha_req.gate_enabled =
+                        dkr_replay_uv_scroll_interpolation_enabled();
+                    uv_scroll_alpha_req.owner_present = dkr_replay_object_alpha_valid;
+                    uv_scroll_alpha_req.tick_paired = true;
+                    uv_scroll_alpha_req.numerator = dkr_replay_object_alpha_numerator;
+                    uv_scroll_alpha_req.denominator = dkr_replay_object_alpha_denominator;
+                    (void)dkr_replay_resolve_alpha(
+                        MDKR_SURF_WORLD_SCROLL, &uv_scroll_alpha_req,
+                        &uv_scroll_alpha_reason);
+                    if (uv_scroll_alpha_reason == MDKR_VERDICT_BLEND) {
+                        uv_offset_ptr = dkr_replay_uv_scroll_offset(
+                            t, num_tris, uv_offset, &uv_mask_u, &uv_mask_v);
+                    }
                 }
                 dkr_begin_primitive(
                     rsp.draw_space != G_MTX_DKR_SPACE_WORLD);
@@ -7515,9 +7678,19 @@ static bool gfx_dkr_replay_walk_impl(
     if (!endpoint && numerator == 0u) {
         dkr_replay_zero_alpha_interior++;
     }
-    dkr_replay_object_alpha_valid =
-        object_alpha_valid && dkr_replay_object_interpolation_enabled() &&
-        denominator != 0u && numerator < denominator;
+    {
+        DkrReplayAlphaRequest object_alpha_req;
+        MdkrVerdictReason object_alpha_reason;
+        memset(&object_alpha_req, 0, sizeof(object_alpha_req));
+        object_alpha_req.gate_enabled = dkr_replay_object_interpolation_enabled();
+        object_alpha_req.owner_present = object_alpha_valid;
+        object_alpha_req.tick_paired = true;
+        object_alpha_req.numerator = numerator;
+        object_alpha_req.denominator = denominator;
+        (void)dkr_replay_resolve_alpha(
+            MDKR_SURF_OBJECT_ROOT, &object_alpha_req, &object_alpha_reason);
+        dkr_replay_object_alpha_valid = object_alpha_reason == MDKR_VERDICT_BLEND;
+    }
     dkr_replay_object_alpha_numerator = numerator;
     dkr_replay_object_alpha_denominator = denominator != 0u ? denominator : 1u;
     /* Caster capture belongs to the real walk, which already committed this
