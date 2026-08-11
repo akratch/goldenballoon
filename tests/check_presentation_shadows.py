@@ -435,11 +435,12 @@ def verify(production: Arm, control: Arm, hold: Arm) -> tuple[VisualMetrics, int
             "vertex-lerp control: the shadow reorder guard never ran "
             "(shadowreordercheck=0) -- Task 9's wiring is not reaching the "
             "choke point in this mode")
-    require(0 <= control_mismatches < control_checks,
+    require(0 < control_mismatches < control_checks,
             "vertex-lerp control: shadow reorder mismatches "
-            f"({control_mismatches}) are not a proper subset of checks "
-            f"({control_checks}) -- either the guard is firing on every "
-            "graded tick (indiscriminate) or the counters disagree")
+            f"({control_mismatches}) are not a proper, nonempty subset of "
+            f"checks ({control_checks}) -- either the guard never actually "
+            "caught a reorder on this route (inert/stubbed), is firing on "
+            "every graded tick (indiscriminate), or the counters disagree")
 
     production_frames = frames(production)
     control_frames = frames(control)

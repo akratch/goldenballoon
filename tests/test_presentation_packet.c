@@ -377,10 +377,18 @@ static void check_shadow_reorder_detection(void) {
            "shadow reorder: a single vertex has nothing to reorder against");
 
     binding.count = 3u;
+    /* x_offset=8 does NOT overrun (8 + sizeof(int16_t) == stride, not
+     * greater) -- current_bytes still equals previous_bytes at this point
+     * in the test (see the earlier `binding.current_bytes = previous;`),
+     * so this call returns false trivially (every vertex matches itself)
+     * and is here only as a same-call baseline. z_offset=9 DOES overrun
+     * (9 + sizeof(int16_t) == 11 > stride == 10) and is the call that
+     * actually exercises the bounds guard. */
     expect(!gfx_presentation_packet_deformation_reordered(&binding, 8u, 4u) &&
                !gfx_presentation_packet_deformation_reordered(&binding, 0u,
                                                                9u),
-           "shadow reorder: an offset that overruns the stride fails closed");
+           "shadow reorder: an offset that overruns the stride fails closed "
+           "(the z_offset=9 call; x_offset=8 is an in-bounds baseline)");
 
     /* Ordinary motion: every vertex drifts +5 in X, staying nearest its own
      * previous-tick position. Not a reorder. */
