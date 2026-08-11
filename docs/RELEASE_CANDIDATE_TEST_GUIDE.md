@@ -1,4 +1,4 @@
-# Golden Balloon 1.0.5 acceptance guide
+# Golden Balloon 1.2.1 acceptance guide
 
 Use this guide only with artifacts built from the same clean candidate commit.
 Do not publish, retag, or substitute a rebuilt file after testing begins.
@@ -10,10 +10,10 @@ bug report, not ROMs or ROM-derived captures.
 
 For each desktop artifact, record its filename and SHA-256. Verify the adjacent
 `.sha256` file where supplied and inspect `.provenance.json`: version must be
-`1.0.5`, `commit` must match the candidate commit, and its recorded hash
+`1.2.1`, `commit` must match the candidate commit, and its recorded hash
 must match the artifact.
 
-For the browser build, open `build-info.json` and confirm version `1.0.5`, the
+For the browser build, open `build-info.json` and confirm version `1.2.1`, the
 same source commit, and `source_dirty: false`. Hard-refresh before testing.
 
 Stop if any identity differs. Do not test an archive in place: extract it to a
@@ -82,10 +82,10 @@ Use WebGPU with Restored presentation unless a step says otherwise.
    with Motion smoothing set to Interpolated. Gameplay speed must not change.
    Look closely at kart shadows, wheels, particles, fades, split-screen seams,
    and camera cuts for flicker, doubling, or intermediate-frame artifacts.
-   Interpolated is a preview: UV-scrolled static level surfaces such as
-   waterfalls still advance on authored ticks and may look stepped or shimmer
-   during camera motion. Record that separately; new geometry corruption,
-   tearing, or artifacts outside this documented boundary remain failures.
+   On water and lava tracks, pan quickly across moving surfaces and watch the
+   wave shape, texture scroll, sky, and projected shadows. They must move as
+   one picture without shimmer, shearing, twisted shadows, or a one-tick sky
+   lag. Repeat on a variable-refresh display if one is available.
 9. Return Motion smoothing to Off and Frame Limit to Original. Confirm the
    authored presentation remains stable.
 

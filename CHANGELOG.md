@@ -8,6 +8,31 @@ From 1.0.0 onward this project follows semantic versioning for the platform
 layer's public seams (config keys, environment variables, command-line flags and
 save formats). Everything below 1.0.0 predates that commitment.
 
+## [1.2.1] — 2026-08-11
+
+### Fixed
+
+- Opening Settings during an attract demo no longer crashes the game.
+- Opening Settings during the start-line flyover now holds that camera in
+  place. Closing Settings resumes the countdown and gives control back at the
+  right time instead of making the player wait for a camera that kept running
+  behind the overlay.
+- With Motion smoothing on, wave deformation now advances with the camera and
+  texture scroll. The sky stays locked to the presented camera, and projected
+  shadows snap cleanly if their receiver triangles change order.
+- Motion smoothing now treats abrupt yaw and field-of-view changes, finish
+  cameras, and spectator cameras as cuts rather than inventing a frame between
+  unrelated views.
+- Adaptive-refresh displays no longer force in-between frames onto a fixed
+  refresh grid when the measured display timing is variable.
+
+### Acknowledgements
+
+- The presentation-correspondence work was informed by
+  [DKR-R](https://github.com/ThatGuyMcd/DKR-R) by
+  [ThatGuyMcd](https://github.com/ThatGuyMcd). We re-derived the relevant
+  policies for Golden Balloon's renderer; no DKR-R source code was copied.
+
 ## [1.2.0] — 2026-08-10
 
 ### Added

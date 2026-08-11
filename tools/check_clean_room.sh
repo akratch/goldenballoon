@@ -3,10 +3,11 @@
 # check_clean_room.sh -- FAIL-CLOSED guard: the repository itself must be clean-room.
 #
 # tools/check_no_rom.sh proves a *shipped artifact* carries no ROM data. This script
-# proves the complementary claim, the one DISCLAIMER.md and NOTICE.md both make:
-# that no ROM or ROM-derived data is in the repository -- "not in the working tree
-# and not in git history". A ROM committed and then deleted in a later commit is
-# still in the clone forever, and no artifact scan would ever see it.
+# proves the complementary claim that no ROM or bulk ROM-derived asset data is
+# in the repository or its history. A ROM committed and then deleted in a later
+# commit is still in the clone forever, and no artifact scan would ever see it.
+# The separate release-readiness guard audits every media filename against the
+# exact current/historical allowlists documented in NOTICE.md.
 #
 # Checks:
 #   1. No ROM-extension file is TRACKED (all three N64 byte orders).
@@ -188,4 +189,4 @@ if [[ $fail -ne 0 ]]; then
     echo "check_clean_room: FAIL -- the clean-room claim does NOT hold. DO NOT PUBLISH." >&2
     exit 1
 fi
-echo "check_clean_room: PASS -- no ROM or ROM-derived data in the tree or in history."
+echo "check_clean_room: PASS -- no ROM or bulk ROM-derived assets in the tree or in history."

@@ -157,6 +157,9 @@ the hyphen); code changes belong in this repository.
 - The sm64ex / fast3d lineage, for the renderer architecture this builds on
 - [ares](https://ares-emu.net/), the reference emulator behind the visual
   comparisons
+- [DKR-R](https://github.com/ThatGuyMcd/DKR-R) by
+  [ThatGuyMcd](https://github.com/ThatGuyMcd), whose presentation-identity
+  work informed several of Golden Balloon's interpolation safety rules
 - The original developers at Rare, whose work this project exists to study
   and preserve
 

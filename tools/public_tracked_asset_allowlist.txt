@@ -13,6 +13,7 @@ dist/web/index.html
 dist/web/manifest.webmanifest
 dist/web/mdkr-save-ui.js
 dist/web/mdkr64-shell.js
+dist/web/rom-check.html
 dist/web/rom-id.js
 dist/web/style.css
 dist/web/sw.js

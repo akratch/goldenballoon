@@ -1,6 +1,18 @@
-# Exact first-party branding paths present only in existing public history.
-# This is not a blanket media exemption: any new historical path still fails.
+# Exact reviewed asset paths present only in existing public history. Two of
+# the imgui-shell captures contain rendered gameplay behind the overlay; NOTICE
+# records that exception. This is not a blanket media exemption: any new
+# historical path still fails.
 brand/gb1.png
 brand/gb2.png
+docs/evidence/imgui-shell/ingame-overlay-f1.png
+docs/evidence/imgui-shell/ingame-overlay-gl.png
+docs/evidence/imgui-shell/launcher-about.png
+docs/evidence/imgui-shell/launcher-diagnostics.png
+docs/evidence/imgui-shell/launcher-rom-panel.png
+docs/evidence/imgui-shell/launcher-settings.png
+docs/evidence/imgui-shell/rompicker-firstrun.png
+docs/evidence/imgui-shell/rompicker-nsopenpanel.png
+docs/evidence/imgui-shell/rompicker-ready.png
+docs/evidence/imgui-shell/rompicker-rejected.png
 dist/web/assets/logo.png
 dist/web/assets/wordmark.png

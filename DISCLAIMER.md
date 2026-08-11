@@ -25,8 +25,11 @@ and is not affiliated with, endorsed by, or sponsored by any rights holder.**
 
 It contains **no game ROM** and **no bulk copyrighted assets** — no textures,
 audio, music, sequences, models, fonts, sprites, level geometry, or logos. It
-contains no proprietary SDK or library binaries. None of that data is present in
-the repository or anywhere in its git history.
+contains no proprietary SDK or library binaries. None of that bulk data is
+present in the repository or anywhere in its git history. Ten deleted AppHost UI
+screenshots remain reachable through old public tags; two show rendered gameplay
+behind the overlay. They are not in the current tree or any release archive and
+are recorded exactly in [NOTICE.md](NOTICE.md).
 
 To build or run anything useful you must **provide your own copy of the original
 game that you legally own and dumped yourself.** Every asset is read from that

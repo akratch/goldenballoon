@@ -93,8 +93,8 @@ def main() -> int:
     out_dir = Path(args.out).expanduser().resolve()
     # Every file this writes is decoded ROM pixels. Inside the working tree they
     # are untracked, un-ignored and innocuously named, so the next `git add -A`
-    # commits ROM-derived data -- the one thing this project guarantees it never
-    # does. Refuse rather than warn: there is no reason to dump into the source
+    # could commit ROM-derived data. Refuse rather than warn: there is no reason
+    # to dump into the source
     # tree, and the cost of being wrong is a published repository that has to be
     # rewritten. `mod-texture-dump/` is the exception because .gitignore covers
     # it by name.

@@ -5,8 +5,11 @@ Per-component provenance. Read alongside [LICENSE](LICENSE) (first-party terms),
 [THIRD_PARTY.md](THIRD_PARTY.md) (the per-path provenance table this document
 summarizes; every component named below has a row there).
 
-This repository contains **no game ROM and no bulk game assets**, and never has —
-not in the working tree and not in git history.
+This repository contains **no game ROM and no bulk game assets**, and never has.
+The current tree and every release archive are also free of ROM-derived
+captures. One narrow historical exception is recorded below: two deleted UI
+evidence screenshots show rendered gameplay behind the app overlay and remain
+reachable through existing public tags.
 
 ## First-party project code — MIT
 
@@ -129,8 +132,25 @@ The visual oracle (`docs/ORACLE.md`) builds a locally patched
 [ares](https://ares-emu.net/) checkout and captures reference frames from the real
 ROM for pixel comparison. The ares checkout, its build, and every captured frame
 live under git-ignored paths (`build/ares-oracle/`, `*.ppm`). ares source is
-patched in place, never vendored. No ROM-derived frame, save, or capture is
-committed.
+patched in place, never vendored. No oracle frame or save is committed.
+
+Ten early AppHost screenshots under `docs/evidence/imgui-shell/` were committed
+and later deleted. Eight show only launcher UI. Two
+(`ingame-overlay-f1.png` and `ingame-overlay-gl.png`) show rendered gameplay
+behind the overlay. They are absent from the current tree and release archives
+but remain reachable in existing public history. Their exact paths are pinned
+in `tools/public_historical_asset_allowlist.txt`; the release guard rejects any
+new historical media path.
+
+## External design influence — no copied code
+
+The presentation-safety work in 1.2.1 was informed by
+[DKR-R](https://github.com/ThatGuyMcd/DKR-R), an MIT-licensed recompilation by
+[ThatGuyMcd](https://github.com/ThatGuyMcd). In particular, its treatment of
+rotation snap-demotion, camera cuts, and topology-aware surface identity helped
+shape the corresponding Golden Balloon policies. Those policies were
+re-derived for this renderer and its own data structures and tests; no DKR-R
+source code is included here.
 
 ## Vendored platform code shared with mgb64
 
