@@ -109,6 +109,10 @@ def drive(binary: Path, rom: Path, save_dir: Path, script: Path, frames: int,
         "MDKR_AUDIO": "0",
         "MDKR_TRACE": "1",
         "MDKR_SAVE_DIR": str(save_dir),
+        # This route is authored against the default title/menu layout. Do not
+        # let a maintainer's launcher preferences (for example, exposing every
+        # language on the title screen) change which menu receives the input.
+        "MDKR_VIDEO_CONFIG_PATH": str(save_dir / "video.ini"),
     })
     cmd = [
         str(binary), "--headless-frames", str(frames),
