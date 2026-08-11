@@ -844,6 +844,108 @@ static void test_camera_cut_angle_and_fov(void) {
 }
 
 /*
+ * Code-review fix for Task 6: the two clauses above must stay QUIET on an
+ * ordinary racing route, not merely fire when handed a hand-picked cut.
+ * check_camera_snapshot_coverage.py's floor checks (counts >= wanted) only
+ * catch a DECREASE in cuts and are read from a pose-distance classifier that
+ * is structurally independent of the `discontinuity` flag these clauses
+ * set -- neither one would notice a future change that made the clauses
+ * over-fire on ordinary camera-follow panning.
+ *
+ * This drives a plausible sustained camera-follow pan: constant forward
+ * motion, yaw ramping at a fixed rate just UNDER MDKR_CUT_YAW_DEG every
+ * tick (12000 raw units == ~65.9 deg/tick, versus the 12288-unit/67.5-deg
+ * threshold), FOV drifting +-15 deg/tick (under the 20 deg MDKR_CUT_FOV_DEG
+ * threshold) across 40 consecutive ticks -- a tight hairpin's worth of
+ * continuous pan -- and asserts every single one of those ticks blends
+ * (`interpolated == 1`) with zero new discontinuities. The positive control
+ * appends one more tick whose yaw delta crosses the threshold (13000 raw
+ * units, ~71.1 deg) and asserts THAT tick, and only that tick, cuts -- so
+ * the 40-tick quiet stretch is not quiet merely because the clause can
+ * never fire in this test.
+ */
+static void test_camera_cut_clauses_quiet_on_ordinary_pan(void) {
+    PresentationCameraPose pose;
+    PresentationCameraEntry camera_sample;
+    PresentationSnapshotStats stats;
+    uint16_t rotation_raw = 0;
+    float fov = 60.0f;
+    float position_x = 0.0f;
+    int tick;
+    /* 12000/65536*360 = 65.918 deg/tick: safely under MDKR_CUT_YAW_DEG's
+     * 12288-unit (67.5 deg) threshold. */
+    const uint16_t yaw_step_quiet = 12000;
+    /* 13000/65536*360 = 71.398 deg/tick: past the threshold. */
+    const uint16_t yaw_step_cut = 13000;
+
+    begin();
+
+    /* Seed tick: always a viewport-entry discontinuity, not part of the
+     * quiet claim below. */
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, position_x, 0.0f, 0.0f);
+    camera_sample.rotation_y = (int16_t)rotation_raw;
+    camera_sample.fov = fov;
+    camera_sample.vertical_fov = fov;
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+
+    presentation_snapshot_get_stats(&stats);
+    for (tick = 0; tick < 40; tick++) {
+        uint64_t discontinuities_before = stats.discontinuities;
+
+        position_x += 10.0f;                 /* ordinary forward motion */
+        rotation_raw = (uint16_t)(rotation_raw + yaw_step_quiet);
+        fov += (tick % 2 == 0) ? 15.0f : -15.0f; /* drift, under threshold */
+
+        presentation_snapshot_capture_begin();
+        camera_sample = make_camera(0, position_x, 0.0f, 0.0f);
+        camera_sample.rotation_y = (int16_t)rotation_raw;
+        camera_sample.fov = fov;
+        camera_sample.vertical_fov = fov;
+        presentation_snapshot_capture_camera(&camera_sample);
+        presentation_snapshot_capture_commit();
+
+        expect(presentation_snapshot_resolve_camera(0, 1, 2, &pose) &&
+                   pose.interpolated == 1,
+               "quiet pan: an ordinary camera-follow tick under both "
+               "thresholds must blend, not cut");
+
+        presentation_snapshot_get_stats(&stats);
+        expect(stats.discontinuities == discontinuities_before,
+               "quiet pan: an ordinary camera-follow tick must not add a "
+               "new discontinuity");
+    }
+
+    /* Positive control: one tick over the yaw threshold, everything else
+     * unremarkable, must cut -- proving the 40-tick quiet stretch above was
+     * not quiet merely because these clauses cannot fire in this test. */
+    {
+        uint64_t discontinuities_before = stats.discontinuities;
+
+        position_x += 10.0f;
+        rotation_raw = (uint16_t)(rotation_raw + yaw_step_cut);
+
+        presentation_snapshot_capture_begin();
+        camera_sample = make_camera(0, position_x, 0.0f, 0.0f);
+        camera_sample.rotation_y = (int16_t)rotation_raw;
+        camera_sample.fov = fov;
+        camera_sample.vertical_fov = fov;
+        presentation_snapshot_capture_camera(&camera_sample);
+        presentation_snapshot_capture_commit();
+
+        expect(presentation_snapshot_resolve_camera(0, 1, 2, &pose) &&
+                   pose.interpolated == 0,
+               "quiet pan: a yaw delta past MDKR_CUT_YAW_DEG on this same "
+               "route still cuts -- the clause is armed, not disabled");
+        presentation_snapshot_get_stats(&stats);
+        expect(stats.discontinuities == discontinuities_before + 1,
+               "quiet pan: exactly one new discontinuity for the one tick "
+               "that crossed the threshold");
+    }
+}
+
+/*
  * A game-side camera cut is filed in VIEWPORT space, and it must still be
  * found when that viewport is drawing its CUTSCENE-bank camera.
  *
@@ -1345,6 +1447,7 @@ int main(void) {
     test_camera_fast_pan_snaps();
     test_camera_pitch_axis_snap_still_backstops();
     test_camera_cut_angle_and_fov();
+    test_camera_cut_clauses_quiet_on_ordinary_pan();
     test_camera_cut_note_viewport_space();
     test_identity_insert_failure_fails_closed();
     test_authored_camera_latch();
