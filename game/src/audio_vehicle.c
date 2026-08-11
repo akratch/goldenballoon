@@ -15,6 +15,9 @@
 #include "printf.h"
 #include "racer.h"
 #include "runtime_contracts.h"
+#ifdef NATIVE_PORT
+#include "taj_physics.h"
+#endif
 #include "types.h"
 
 #ifdef NATIVE_PORT
@@ -71,6 +74,52 @@ static void vehicle_audio_trace(Object_Racer *racer, VehicleSoundData *soundData
             (double) soundData->basePitch[0], (double) soundData->enginePitch,
             soundData->soundHandle[0] != NULL,
             soundData->engineIdleSoundHandle != NULL);
+}
+
+/* Terry's plane is his body, not a hidden mechanical vehicle.  Keep this
+ * decision at the sound-player seam: physics still updates the donor plane's
+ * VehicleSoundData, while only its continuous engine voices are withheld.
+ * One-shot collision, weapon, boost and world sounds use separate paths. */
+static s32 terry_flight_suppresses_engine(const Object_Racer *racer) {
+    return racer != NULL && racer->vehicleIDPrev == VEHICLE_PLANE &&
+           mod_racer_physics_identity(racer) == MOD_RACER_TERRY;
+}
+
+static void terry_flight_stop_engine(VehicleSoundData *soundData,
+                                     const Object_Racer *racer) {
+    static u32 sampleCounter;
+    s32 hadMain;
+    s32 hadIdle;
+    s32 i;
+    const char *trace;
+
+    if (soundData == NULL) {
+        return;
+    }
+    hadMain = soundData->soundHandle[0] != NULL ||
+              soundData->soundHandle[1] != NULL;
+    hadIdle = soundData->engineIdleSoundHandle != NULL;
+    for (i = 0; i < 2; i++) {
+        sndp_stop_and_detach(&soundData->soundHandle[i]);
+    }
+    sndp_stop_and_detach(&soundData->engineIdleSoundHandle);
+    for (i = 0; i < (s32)ARRAY_COUNT(gBackgroundRacerSounds); i++) {
+        if (gBackgroundRacerSounds[i] == soundData) {
+            gBackgroundRacerSounds[i] = NULL;
+        }
+    }
+    soundData->backgroundVolume = 0;
+    soundData->backgroundState = VEHICLE_BACKGROUND_STOPPED;
+
+    trace = getenv("MDKR_TERRY_AUDIO_TRACE");
+    if (trace != NULL && trace[0] != '\0' && trace[0] != '0' &&
+        ((sampleCounter++ & 31u) == 0 || hadMain || hadIdle)) {
+        fprintf(stderr,
+                "[TERRYAUDIO] event=engine_suppressed racer=%d vehicle=%d "
+                "had_main=%d had_idle=%d main=0 idle=0\n",
+                racer != NULL ? racer->racerIndex : -1,
+                racer != NULL ? racer->vehicleIDPrev : -1, hadMain, hadIdle);
+    }
 }
 #endif
 
@@ -935,6 +984,12 @@ void racer_sound_update_all(Object **racerObjs, s32 numRacers, Camera *cameras, 
         }
 
         if (gRacerSound != NULL && gRacerSound->soundId[0] != 0) {
+#ifdef NATIVE_PORT
+            if (terry_flight_suppresses_engine(racer)) {
+                terry_flight_stop_engine(gRacerSound, racer);
+                continue;
+            }
+#endif
             if (racer->raceFinished || check_if_showing_cutscene_camera()) {
                 // If the race is finished or a cutscene is playing, the vehicle is considered to move relative to the
                 // camera, so we calculate the engine sound's pitch, volume, and stereo pan accordingly.
@@ -1062,6 +1117,12 @@ void racer_sound_update_all(Object **racerObjs, s32 numRacers, Camera *cameras, 
         if (racer != NULL) {
             gRacerSound = racer->vehicleSound;
             if (gRacerSound != NULL) {
+#ifdef NATIVE_PORT
+                if (terry_flight_suppresses_engine(racer)) {
+                    terry_flight_stop_engine(gRacerSound, racer);
+                    continue;
+                }
+#endif
                 soundData = gRacerSound;
                 soundData->backgroundVolume = 0;
             }
@@ -1081,6 +1142,11 @@ void racer_sound_update_all(Object **racerObjs, s32 numRacers, Camera *cameras, 
         }
         for (j = numCameras; j < numRacers; j++) {
             if (racerObjs[j]->racer != NULL) {
+#ifdef NATIVE_PORT
+                if (terry_flight_suppresses_engine(racerObjs[j]->racer)) {
+                    continue;
+                }
+#endif
                 gRacerSound = racerObjs[j]->racer->vehicleSound;
                 if (gRacerSound != NULL) {
                     if (racer->raceFinished) {
@@ -1152,6 +1218,11 @@ void racer_sound_update_all(Object **racerObjs, s32 numRacers, Camera *cameras, 
     for (j = 1; j < numRacers; j++) {
         racer = racerObjs[j]->racer;
         if (racerObjs[j]->racer != NULL) {
+#ifdef NATIVE_PORT
+            if (terry_flight_suppresses_engine(racer)) {
+                continue;
+            }
+#endif
             gRacerSound = racer->vehicleSound;
             if (gRacerSound != NULL) {
                 // If a sound is currently stopped, check whether it should be restarted and find a suitable slot.

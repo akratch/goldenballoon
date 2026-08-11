@@ -5,6 +5,9 @@
 #include "PR/gbi.h"
 #include "font.h"
 #include "save_data.h"
+#ifdef NATIVE_PORT
+#include "taj_mod.h"
+#endif
 
 #define TT_MENU_ROOT              0
 #define TT_MENU_CONT_PAK_ERROR_1  1
@@ -587,8 +590,9 @@ void menu_dialogue_end(void);
 void menu_close_dialogue(void);
 void menu_racer_portraits(void);
 #ifdef NATIVE_PORT
-/* Project-owned Taj portrait shared by Rankings and portrait-bearing HUDs. */
+/* Project-owned bonus portraits shared by Rankings and portrait-bearing HUDs. */
 DrawTexture *menu_taj_portrait(void);
+DrawTexture *menu_mod_portrait(ModRacerIdentity identity);
 #endif
 void postrace_music_fade(s32 updateRate);
 void postrace_free(void);

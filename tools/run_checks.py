@@ -384,6 +384,9 @@ CHECKS = (
     Check("vehicle_audio", "check_vehicle_audio.py", "native",
           "ROM-derived vehicle sound IDs, engine-loop activation, pitch, and "
           "idle/main crossfade"),
+    Check("terry_flight_audio", "check_terry_flight_audio.py", "native",
+          "Terry fly-cycle flap cue/cadence, plane-engine suppression, and "
+          "ground-engine control"),
     Check("audio_level_reference", "check_audio_level_reference.py", "native",
           "absolute output level: RMS/crest/true-peak/per-band/per-slice against "
           "the frozen baseline, with injected-gain controls"),
@@ -414,6 +417,12 @@ CHECKS = (
     Check("taj_challenges", "check_taj_challenges.py", "native",
           "car, hovercraft, and plane Taj challenges: first win, loss, abort, "
           "replay, completion controls, and save reload"),
+    Check("bonus_character_select", "check_bonus_character_select.py", "native",
+          "contiguous 13-racer picker with independent Taj, Wizpig, and Terry "
+          "actor/placard composition, pose states, and controller navigation"),
+    Check("bonus_results_portraits", "check_bonus_results_portraits.py", "native",
+          "real post-race Wizpig/Terry portrait ownership, retail dimensions, "
+          "and distinct card pixels"),
     Check("taj_character_select", "check_taj_character_select.py", "native",
           "visible, contiguous Taj roster tile and real selection across all "
           "four 8/9/9/10-character retail layouts"),

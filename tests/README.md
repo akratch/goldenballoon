@@ -3829,6 +3829,64 @@ its MEMFS sidecar. It requires the visible C failure path, exact retained bytes,
 a successful ordinary retry flush, the matching IndexedDB record, and a fresh
 document that restores Taj without re-entering `ABRACADABRA`.
 
+## Complete bonus roster — `tests/check_bonus_character_select.py`
+
+This focused real-ROM smoke gate arms the version-3 sidecar and a completed
+retail save, then requires the contiguous 13-racer picker. It proves that Taj,
+Wizpig, and Terry each compose an independent physical actor/placard pair,
+checks the exact roster mapping, and navigates a real controller route from the
+retail cast through Wizpig to Terry. It also confirms/deselects Wizpig and
+confirms Terry, requiring each actor's unoccupied dance, hovered standing pose,
+and confirmation flourish. A 4:3 capture must be non-empty and use the full
+presentation surface. Failed runs preserve their isolated evidence directory;
+successful temporary runs clean it up.
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_bonus_character_select.py \
+  --build build-wizpig --rom baserom.us.v80.z64 -v
+```
+
+The check complements, rather than replaces, the deeper Taj picker and
+playability journeys. It specifically protects the shared expandable-roster
+layout and the two new ROM-authored presentation assets. It is registered as
+`bonus_character_select` in `tools/run_checks.py`.
+
+## Bonus results portraits — `tests/check_bonus_results_portraits.py`
+
+This real-ROM gate completes a time-trial post-race flow once as Wizpig and
+once as Terry. Each arm requires a project-owned 40x40 card at the results
+portrait seam, captures the real race-times page, and checks the card's visible
+identity palette (Wizpig's red/gold boss portrait; Terry's green pterodactyl
+portrait and yellow beak). This prevents either virtual racer from silently
+falling back to Krunch anywhere the shared results portrait lookup is used.
+
+```bash
+python3 tests/check_bonus_results_portraits.py --build build-wizpig \
+  --rom baserom.us.v80.z64
+```
+
+The gate is registered as `bonus_results_portraits` in
+`tools/run_checks.py`.
+
+## Terry flight audio — `tests/check_terry_flight_audio.py`
+
+This real-ROM gate runs Terry on the same course in a plane and kart. The plane
+must emit the retail Terry/Smokey sound 547 on the fly animation's exact 28→32
+subframe crossing, maintain the authored 48-tick cadence without drops, and
+keep both continuous engine and idle handles stopped. It also proves Terry uses
+Pipsy's light physics-stat row with the 1.03x performance contract and that the
+plane donor's ordinary/boosted wing-line emitter bits are filtered. The kart is
+the negative control: it must emit no flight-only audio or particle witness and
+retain Krunch's ordinary engine loop. This protects the presentation-only policy
+from muting item, collision, surface, or ground-vehicle paths.
+
+```bash
+python3 tests/check_terry_flight_audio.py --build build-wizpig \
+  --rom baserom.us.v80.z64
+```
+
+The gate is registered as `terry_flight_audio` in `tools/run_checks.py`.
+
 ## Adventure trophy series — `tests/check_trophy_series.py`
 
 ```bash

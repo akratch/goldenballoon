@@ -4,8 +4,11 @@
 #include "taj_physics.h"
 #define TAJ_RACER_ABSORBS_ATTACK(racer, attack) \
     taj_physics_absorb_attack((racer), (attack))
+#define MOD_RACER_PHYSICS_CHARACTER(racer) \
+    mod_racer_physics_stat_character((racer), (racer)->characterId)
 #else
 #define TAJ_RACER_ABSORBS_ATTACK(racer, attack) FALSE
+#define MOD_RACER_PHYSICS_CHARACTER(racer) ((racer)->characterId)
 #endif
 #include "mdkr_trace.h"
 #include "runtime_contracts.h"
@@ -4799,14 +4802,32 @@ void update_player_racer(Object *obj, s32 updateRate) {
         dkr_misc_swap_words(ASSET_MISC_RACER_UNUSED_11);
 #endif
         gCurrentRacerMiscAssetPtr = (f32 *) get_misc_asset(ASSET_MISC_RACER_WEIGHT);
-        gCurrentRacerWeightStat = gCurrentRacerMiscAssetPtr[tempRacer->characterId] * 0.45;
+        gCurrentRacerWeightStat = gCurrentRacerMiscAssetPtr[
+            MOD_RACER_PHYSICS_CHARACTER(tempRacer)] * 0.45;
         if (tempRacer->bubbleTrapTimer > 0) {
             gCurrentRacerWeightStat = -0.02f;
         }
         gCurrentRacerMiscAssetPtr = (f32 *) get_misc_asset(ASSET_MISC_RACER_HANDLING);
-        gCurrentRacerHandlingStat = gCurrentRacerMiscAssetPtr[tempRacer->characterId];
+        gCurrentRacerHandlingStat = gCurrentRacerMiscAssetPtr[
+            MOD_RACER_PHYSICS_CHARACTER(tempRacer)];
         gCurrentRacerMiscAssetPtr = (f32 *) get_misc_asset(ASSET_MISC_RACER_UNUSED_11);
-        gCurrentRacerUnusedMiscAsset11 = gCurrentRacerMiscAssetPtr[tempRacer->characterId];
+        gCurrentRacerUnusedMiscAsset11 = gCurrentRacerMiscAssetPtr[
+            MOD_RACER_PHYSICS_CHARACTER(tempRacer)];
+#ifdef NATIVE_PORT
+        if (mod_racer_physics_identity(tempRacer) == MOD_RACER_TERRY) {
+            static s32 sTerryPhysicsProfileTraced;
+            if (!sTerryPhysicsProfileTraced) {
+                MDKR_TRACE("terry_physics_profile: presentation=%d stats=%d weight=%.6f handling=%.6f response=%.6f performance=%.3f",
+                           tempRacer->characterId,
+                           MOD_RACER_PHYSICS_CHARACTER(tempRacer),
+                           gCurrentRacerWeightStat,
+                           gCurrentRacerHandlingStat,
+                           gCurrentRacerUnusedMiscAsset11,
+                           TERRY_PHYSICS_PERFORMANCE_MULTIPLIER);
+                sTerryPhysicsProfileTraced = TRUE;
+            }
+        }
+#endif
         if (tempRacer->unk1FE == 3) {
             gCurrentRacerWeightStat *= (f32) tempRacer->unk1FF / 256;
         }
@@ -8362,6 +8383,12 @@ void play_random_character_voice(Object *obj, s32 soundID, s32 range, s32 flags)
 #endif
 
     tempRacer = obj->racer;
+#ifdef NATIVE_PORT
+    /* Terry has no authored voice bank. Keep vehicle, item, crash, and world
+     * audio, but never make the pterodactyl speak with Krunch's donor grunts
+     * or Smokey's boss dialogue. */
+    if (mod_racer_physics_identity(tempRacer) == MOD_RACER_TERRY) return;
+#endif
     if (tempRacer->exitObj == 0 && (!(flags & 0x80) || gCurrentPlayerIndex != PLAYER_COMPUTER)) {
         if (flags == 2) {
             if (tempRacer->soundMask != NULL && soundID != tempRacer->unk2A) {
@@ -9851,14 +9878,17 @@ void update_AI_racer(Object *obj, Object_Racer *racer, s32 updateRate, f32 updat
         racer->unk18C = 0;
     }
     gCurrentRacerMiscAssetPtr = (f32 *) get_misc_asset(ASSET_MISC_RACER_WEIGHT);
-    gCurrentRacerWeightStat = gCurrentRacerMiscAssetPtr[racer->characterId] * 0.45;
+    gCurrentRacerWeightStat = gCurrentRacerMiscAssetPtr[
+        MOD_RACER_PHYSICS_CHARACTER(racer)] * 0.45;
     if (racer->bubbleTrapTimer > 0) {
         gCurrentRacerWeightStat = -0.02f;
     }
     gCurrentRacerMiscAssetPtr = (f32 *) get_misc_asset(ASSET_MISC_RACER_HANDLING);
-    gCurrentRacerHandlingStat = gCurrentRacerMiscAssetPtr[racer->characterId];
+    gCurrentRacerHandlingStat = gCurrentRacerMiscAssetPtr[
+        MOD_RACER_PHYSICS_CHARACTER(racer)];
     gCurrentRacerMiscAssetPtr = (f32 *) get_misc_asset(ASSET_MISC_RACER_UNUSED_11);
-    gCurrentRacerUnusedMiscAsset11 = gCurrentRacerMiscAssetPtr[racer->characterId];
+    gCurrentRacerUnusedMiscAsset11 = gCurrentRacerMiscAssetPtr[
+        MOD_RACER_PHYSICS_CHARACTER(racer)];
     xPos = obj->trans.x_position;
     yPos = obj->trans.y_position;
     zPos = obj->trans.z_position;

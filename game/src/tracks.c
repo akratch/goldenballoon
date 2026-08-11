@@ -18,6 +18,8 @@
 #include "present_sched.h"
 #include "presentation_snapshot.h"
 #include "taj_visual.h"
+#include "wizpig_visual.h"
+#include "terry_visual.h"
 #include "viewport_route_cache.h"
 #endif
 #include "camera.h"
@@ -69,7 +71,10 @@ _Static_assert(SHADOW_HEAP_TRI_CAPACITY <= 32767 &&
 #ifdef NATIVE_PORT
 /* A composed Taj uses the donor only for simulation. Its vehicle model,
  * shadow, and wake must disappear as one presentation transaction. */
-#define TAJ_DONOR_PRESENTATION_VISIBLE(obj) (!taj_visual_suppress_donor_draw(obj))
+#define TAJ_DONOR_PRESENTATION_VISIBLE(obj)                               \
+    (!taj_visual_suppress_donor_draw(obj) &&                              \
+     !wizpig_visual_suppress_donor_draw(obj) &&                            \
+     !terry_visual_suppress_donor_draw(obj))
 
 static uint64_t shadow_topology_hash_bytes(
     uint64_t hash, const void *bytes, size_t size) {
@@ -6333,7 +6338,10 @@ void shadow_update(s32 group, s32 waterGroup, s32 updateRate) {
         /* Taj is a visible carpet/rider composition. Both objects occupy the
          * same grounding footprint, so retaining the rider's actor shadow
          * would double-darken the single-player decal. */
-        if (shadow != NULL && taj_visual_suppress_companion_shadow(obj)) {
+        if (shadow != NULL &&
+            (taj_visual_suppress_companion_shadow(obj) ||
+             wizpig_visual_suppress_shadow(obj) ||
+             terry_visual_suppress_shadow(obj))) {
             shadow = NULL;
         }
 #endif
@@ -6357,7 +6365,9 @@ void shadow_update(s32 group, s32 waterGroup, s32 updateRate) {
                         skipShading = TRUE;
                     }
                 } else if (obj->behaviorId == BHV_WEAPON ||
-                           taj_visual_multiplayer_shadow_object(obj)) {
+                           taj_visual_multiplayer_shadow_object(obj) ||
+                           wizpig_visual_multiplayer_shadow_object(obj) ||
+                           terry_visual_multiplayer_shadow_object(obj)) {
                     shadow_generate(obj, FALSE);
                     skipShading = TRUE;
                 }

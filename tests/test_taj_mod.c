@@ -67,6 +67,10 @@ static void test_state_format(void) {
     static const char extra_blank_line[] =
         "taj_mod_version=1\ntaj_unlocked=1\n"
         "adventure_migration_complete=1\n\n";
+    static const char version_two[] =
+        "mod_roster_version=2\ntaj_unlocked=1\n"
+        "taj_migration_complete=1\nwizpig_unlocked=1\n"
+        "wizpig_migration_complete=1";
 
     taj_mod_state_defaults(&state);
     state.taj_unlocked = 1;
@@ -76,6 +80,13 @@ static void test_state_format(void) {
     CHECK(taj_mod_state_parse(&state, text, length));
     CHECK(state.version == TAJ_MOD_STATE_VERSION && state.taj_unlocked == 1 &&
           state.adventure_migration_complete == 1);
+    CHECK(strstr(text, "mod_roster_version=3") != NULL);
+    CHECK(strstr(text, "wizpig_unlocked=0") != NULL);
+    CHECK(strstr(text, "terry_unlocked=0") != NULL);
+    CHECK(taj_mod_state_parse(&state, version_two,
+                              sizeof(version_two) - 1));
+    CHECK(state.version == TAJ_MOD_STATE_VERSION && state.taj_unlocked == 1 &&
+          state.wizpig_unlocked == 1 && state.terry_unlocked == 0);
     CHECK(taj_mod_state_parse(&state, terminated,
                               sizeof(terminated) - 1));
     CHECK(taj_mod_state_parse(&state, crlf_terminated,
@@ -84,6 +95,82 @@ static void test_state_format(void) {
                                sizeof(extra_blank_line) - 1));
     CHECK(!taj_mod_state_parse(&state, "taj_mod_version=2\ntaj_unlocked=1", 33));
     CHECK(!taj_mod_state_parse(&state, "taj_mod_version=1\ntaj_unlocked=2", 33));
+}
+
+static void test_terry_unlock_and_identity(void) {
+    MemoryStore store = { {0}, 0, 0, 1 };
+    TajModStateStorage storage = storage_for(&store);
+    TajModPersistentState parsed;
+
+    taj_mod_reset_for_test();
+    taj_mod_boot(&storage);
+    CHECK(mod_racer_submit_magic_code("TERRYFL") == MOD_RACER_RETAIL);
+    CHECK(mod_racer_submit_magic_code("TERRYFLY") == MOD_RACER_TERRY);
+    CHECK(mod_racer_is_unlocked(MOD_RACER_TERRY));
+    CHECK(mod_racer_is_enabled(MOD_RACER_TERRY));
+    CHECK(mod_racer_consume_unlock_announcement(MOD_RACER_TERRY));
+    taj_mod_state_defaults(&parsed);
+    CHECK(taj_mod_state_parse(&parsed, store.text, store.length));
+    CHECK(parsed.terry_unlocked == 1 && parsed.terry_migration_complete == 1);
+    mod_racer_set_player_identity(0, MOD_RACER_TERRY);
+    CHECK(mod_racer_player_identity(0) == MOD_RACER_TERRY);
+    CHECK(mod_racer_resolve_race_character(0, 5) ==
+          TERRY_MOD_DONOR_CHARACTER);
+    taj_mod_begin_racer_bindings();
+    taj_mod_bind_racer_player(0, 3);
+    CHECK(mod_racer_live_identity(3) == MOD_RACER_TERRY);
+
+    taj_mod_reset_for_test();
+    memset(&store, 0, sizeof(store));
+    store.write_result = 1;
+    taj_mod_boot(&storage);
+    CHECK(!mod_racer_unlock_from_adventure_progress(MOD_RACER_TERRY, 0x40));
+    CHECK(mod_racer_unlock_from_adventure_progress(MOD_RACER_TERRY, 0x80));
+    CHECK(mod_racer_is_unlocked(MOD_RACER_TERRY));
+}
+
+static void test_wizpig_unlock_and_identity(void) {
+    MemoryStore store = { {0}, 0, 0, 1 };
+    TajModStateStorage storage = storage_for(&store);
+    TajModPersistentState parsed;
+
+    taj_mod_reset_for_test();
+    taj_mod_boot(&storage);
+    CHECK(mod_racer_submit_magic_code("WIZPIGPOWE") == MOD_RACER_RETAIL);
+    CHECK(mod_racer_submit_magic_code("WIZPIGPOWER") == MOD_RACER_WIZPIG);
+    CHECK(mod_racer_is_unlocked(MOD_RACER_WIZPIG));
+    CHECK(mod_racer_is_enabled(MOD_RACER_WIZPIG));
+    CHECK(mod_racer_consume_unlock_announcement(MOD_RACER_WIZPIG));
+    CHECK(!mod_racer_consume_unlock_announcement(MOD_RACER_TAJ));
+    taj_mod_state_defaults(&parsed);
+    CHECK(taj_mod_state_parse(&parsed, store.text, store.length));
+    CHECK(parsed.wizpig_unlocked == 1 &&
+          parsed.wizpig_migration_complete == 1);
+
+    mod_racer_set_player_identity(0, MOD_RACER_WIZPIG);
+    CHECK(mod_racer_player_identity(0) == MOD_RACER_WIZPIG);
+    CHECK(mod_racer_resolve_race_character(0, 7) ==
+          WIZPIG_MOD_DONOR_CHARACTER);
+    CHECK(!taj_mod_player_selected(0));
+    mod_racer_set_player_identity(1, MOD_RACER_TAJ);
+    CHECK(mod_racer_player_identity(1) == MOD_RACER_RETAIL);
+
+    taj_mod_begin_racer_bindings();
+    taj_mod_bind_racer_player(0, 2);
+    CHECK(mod_racer_live_identity(2) == MOD_RACER_WIZPIG);
+
+    taj_mod_reset_for_test();
+    memset(&store, 0, sizeof(store));
+    store.write_result = 1;
+    taj_mod_boot(&storage);
+    CHECK(!mod_racer_unlock_from_adventure_progress(MOD_RACER_WIZPIG,
+                                                     0x10));
+    CHECK(mod_racer_unlock_from_adventure_progress(MOD_RACER_WIZPIG,
+                                                    0x20));
+    CHECK(mod_racer_is_unlocked(MOD_RACER_WIZPIG));
+    CHECK(taj_mod_erase_all_bonuses());
+    CHECK(!mod_racer_is_unlocked(MOD_RACER_WIZPIG));
+    CHECK(!mod_racer_reconcile_imported_progress(0, 0x20));
 }
 
 static void test_magic_code_and_lifecycle(void) {
@@ -163,6 +250,8 @@ static void test_async_persistence_state_machine(void) {
     unsigned int retry;
     unsigned int erase;
     unsigned int erase_retry;
+    unsigned int roster_first;
+    unsigned int roster_second;
 
     /* The web backend writes into MEMFS before IDBFS accepts it. Model the
      * asynchronous completion explicitly, including a rejected unlock. */
@@ -214,6 +303,33 @@ static void test_async_persistence_state_machine(void) {
     store.read_result = 1;
     taj_mod_boot(&storage);
     CHECK(!taj_mod_is_unlocked() && !taj_mod_is_enabled());
+
+    /* Importing saves can discover every bonus racer in one listing pass.
+     * Later unlocks must coalesce behind the first rather than disappear when
+     * the first browser generation succeeds. */
+    taj_mod_reset_for_test();
+    memset(&store, 0, sizeof(store));
+    store.write_result = 1;
+    storage = storage_for(&store);
+    taj_mod_boot(&storage);
+    taj_mod_set_async_persistence_for_test(1);
+    CHECK(mod_racer_submit_magic_code("ABRACADABRA") == MOD_RACER_TAJ);
+    roster_first = taj_mod_pending_generation_for_test();
+    CHECK(mod_racer_submit_magic_code("WIZPIGPOWER") == MOD_RACER_WIZPIG);
+    CHECK(mod_racer_submit_magic_code("TERRYFLY") == MOD_RACER_TERRY);
+    CHECK(roster_first != 0 && taj_mod_persistence_pending());
+    taj_mod_report_persistence_success(roster_first);
+    roster_second = taj_mod_pending_generation_for_test();
+    CHECK(roster_second != 0 && roster_second != roster_first &&
+          taj_mod_persistence_pending());
+    CHECK(store_has_state(&store, 1, 1));
+    taj_mod_report_persistence_success(roster_second);
+    taj_mod_reset_for_test();
+    store.read_result = 1;
+    taj_mod_boot(&storage);
+    CHECK(taj_mod_is_unlocked());
+    CHECK(mod_racer_is_unlocked(MOD_RACER_WIZPIG));
+    CHECK(mod_racer_is_unlocked(MOD_RACER_TERRY));
 }
 
 static void test_failed_erase_is_transactional(void) {
@@ -344,6 +460,8 @@ int main(void) {
     test_async_persistence_state_machine();
     test_failed_erase_is_transactional();
     test_challenge_mask_and_identity();
+    test_wizpig_unlock_and_identity();
+    test_terry_unlock_and_identity();
     if (failures != 0) {
         fprintf(stderr, "taj-mod tests: %d failure(s)\n", failures);
         return 1;

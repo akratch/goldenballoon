@@ -31,9 +31,13 @@ UNSELECTED_FRAME = 1520
 SELECTED_FRAME = 1980
 SELECTED_MOTION_FRAME = 2040
 STATE_TEXT = (
-    "taj_mod_version=1\n"
+    "mod_roster_version=3\n"
     "taj_unlocked=1\n"
-    "adventure_migration_complete=1"
+    "taj_migration_complete=1\n"
+    "wizpig_unlocked=0\n"
+    "wizpig_migration_complete=0\n"
+    "terry_unlocked=0\n"
+    "terry_migration_complete=0"
 )
 PAL_V80_CRCS = (0x596E145B, 0xF7D9879F)
 
@@ -474,7 +478,8 @@ def main() -> int:
             if args.verbose:
                 for line in output.splitlines():
                     if any(marker in line for marker in (
-                            "[TAJSELECT]", "taj_roster:", "taj_select:",
+                            "[TAJSELECT]", "mod_roster:",
+                            "mod_racer_select:",
                             "[CRASH]", "[FATAL]", "runtime error:")):
                         print(line)
             if process.returncode != 0:
@@ -484,12 +489,15 @@ def main() -> int:
                     failures.append(f"{layout.name}: fatal marker {marker}")
 
             roster = (
-                f"taj_roster: base={layout.base_count} taj={layout.base_count} "
-                f"enabled=1 drumstick={int(layout.drumstick)} tt={int(layout.tt)}"
+                f"mod_roster: base={layout.base_count} "
+                f"count={layout.base_count + 1} taj={layout.base_count} "
+                "wizpig=-1 terry=-1 taj_enabled=1 wizpig_enabled=0 "
+                "terry_enabled=0 "
+                f"drumstick={int(layout.drumstick)} tt={int(layout.tt)}"
             )
             if roster not in output:
                 failures.append(f"{layout.name}: missing contiguous roster marker {roster!r}")
-            if "taj_select: player=0 controller=0 selected=1 donor=9" not in output:
+            if "mod_racer_select: player=0 controller=0 identity=1 donor=9" not in output:
                 failures.append(f"{layout.name}: controller route did not select Taj")
             if not any(
                     "[TAJSELECT] event=compose" in line and "model=208" in line
@@ -815,10 +823,10 @@ def main() -> int:
             if "[TAJSELECT] event=presentation_unavailable" not in failure_output:
                 failures.append(
                     "presentation-unavailable: retry budget never failed closed")
-            if "taj_select: player=0 controller=0 selected=1 donor=9" in failure_output:
+            if "mod_racer_select: player=0 controller=0 identity=1 donor=9" in failure_output:
                 failures.append(
                     "presentation-unavailable: invisible Taj remained selectable")
-            if "taj_select: player=0 controller=0 selected=0" not in failure_output:
+            if "mod_racer_select: player=0 controller=0 identity=0" not in failure_output:
                 failures.append(
                     "presentation-unavailable: ordinary fallback was not selected")
             for marker in ("[CRASH]", "[FATAL]", "AddressSanitizer",

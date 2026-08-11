@@ -31,6 +31,8 @@
 #include "presentation_snapshot.h"
 #include "taj_physics.h"
 #include "taj_visual.h"
+#include "wizpig_visual.h"
+#include "terry_visual.h"
 #define TAJ_ABSORBS_ATTACK(racer, attack) \
     taj_physics_absorb_attack((racer), (attack))
 #else
@@ -1235,27 +1237,26 @@ void obj_loop_characterflag(Object *obj, UNUSED s32 updateRate) {
             flagModel->vertices = gCharacterFlagVertices;
             flagModel->texture = obj->textures[obj->properties.characterFlag.characterID];
 #ifdef NATIVE_PORT
-            /* Taj rides on a donor character (Diddy), whose ID is in-range,
-             * so the bounds guard above never catches it and the giant wall
-             * portrait would show the donor's face. Use the same native card
-             * the HUD and Rankings draw. */
-            if (taj_physics_is_taj(racer)) {
-                DrawTexture *tajPortrait = menu_taj_portrait();
-                if (tajPortrait != NULL && tajPortrait[0].texture != NULL) {
-                    flagModel->texture = tajPortrait[0].texture;
+            /* Virtual racers use in-range donors, so the bounds guard above
+             * cannot catch a false donor portrait. Bind the same native card
+             * the HUD and Rankings draw for every bonus identity. */
+            {
+                ModRacerIdentity identity =
+                    (ModRacerIdentity)mod_racer_physics_identity(racer);
+                DrawTexture *bonusPortrait = menu_mod_portrait(identity);
+                if (bonusPortrait != NULL &&
+                    bonusPortrait[0].texture != NULL) {
+                    flagModel->texture = bonusPortrait[0].texture;
                 }
+                /* One bounded row per portrait, at the single moment the lazy
+                 * geometry build binds a racer. characterID is latched >= 0
+                 * here and the branch never re-enters, so this cannot spam. */
+                MDKR_TRACE("charflag_bound: playerID=%d characterID=%d texture=%s identity=%d",
+                           (s32) obj->properties.characterFlag.playerID,
+                           (s32) obj->properties.characterFlag.characterID,
+                           flagModel->texture != NULL ? "ok" : "missing",
+                           identity);
             }
-            /* One bounded row per portrait, at the single moment the lazy
-             * geometry build binds a racer.  characterID is latched >= 0 here
-             * and the branch never re-enters, so this cannot spam.  It is the
-             * positive witness tests/check_challenge_modes.py asserts on:
-             * colour-flatness metrics alone stay green with every portrait
-             * unbound. */
-            MDKR_TRACE("charflag_bound: playerID=%d characterID=%d texture=%s identity=%s",
-                       (s32) obj->properties.characterFlag.playerID,
-                       (s32) obj->properties.characterFlag.characterID,
-                       flagModel->texture != NULL ? "ok" : "missing",
-                       taj_physics_is_taj(racer) ? "taj" : "retail");
 #endif
             /* S10.5 texture coordinates. Stock packs them as N64 words --
              * (width-1) << 21 is ((width-1) << 5) in the U half, (height-1) << 5
@@ -2409,6 +2410,8 @@ void obj_loop_char_select(Object *charSelectObj, s32 updateRate) {
             if (playerIndex) {
 #ifdef NATIVE_PORT
                 taj_visual_select_apply_authored_actor(charSelectObj, i);
+                wizpig_visual_select_apply_authored_actor(charSelectObj, i);
+                terry_visual_select_apply_authored_actor(charSelectObj, i);
 #endif
                 charSelectObj->animationID = 1;
                 for (playerIndex = 0, numCursors = 0; playerIndex < MAXCONTROLLERS; playerIndex++) {

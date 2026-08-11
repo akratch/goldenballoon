@@ -13,6 +13,7 @@
 #include "fast3d/gfx_presentation_packet.h"
 #include "mdkr_trace.h"
 #include "presentation_snapshot.h"
+#include "taj_physics.h"
 #include <stdlib.h>
 #include <string.h>
 #endif
@@ -910,6 +911,26 @@ void update_vehicle_particles(Object *racerObj, s32 updateRate) {
     racer = racerObj->racer;
     emittersEnabled = racerObj->particleEmittersEnabled;
     vehicleId = racer->vehicleID;
+#ifdef NATIVE_PORT
+    /* Terry's wings are the propulsion system. The Krunch plane donor still
+     * authors paired wing-line emitters (ordinary 3/4, boosted 7/8); filter
+     * those presentation bits at the spawn boundary without mutating racer
+     * state or suppressing unrelated collision/surface particles. */
+    if (vehicleId == VEHICLE_PLANE &&
+        mod_racer_physics_identity(racer) == MOD_RACER_TERRY) {
+        static s32 sTerryWingTrailsTraced;
+        u32 wingTrailMask = OBJ_EMIT_3 | OBJ_EMIT_4 |
+                            OBJ_EMIT_7 | OBJ_EMIT_8;
+        u32 suppressed = emittersEnabled & wingTrailMask;
+        emittersEnabled &= ~wingTrailMask;
+        if (suppressed != 0 && !sTerryWingTrailsTraced) {
+            MDKR_TRACE("terry_particles: vehicle=plane suppressed=0x%X before=0x%X after=0x%X",
+                       suppressed, racerObj->particleEmittersEnabled,
+                       emittersEnabled);
+            sTerryWingTrailsTraced = TRUE;
+        }
+    }
+#endif
     i = 0;
     object_do_player_tumble(racerObj);
     for (; i < racerObj->header->particleCount; i++) {

@@ -2,6 +2,7 @@
 
 #ifdef NATIVE_PORT
 #include "mdkr_trace.h"
+#include "taj_mod.h"
 #endif
 #include "audio.h"
 #include "audio_spatial.h"
@@ -330,6 +331,16 @@ void racer_boss_finish(Object_Racer *racer, s8 *sceneTimer) {
             if (finishPos == 1) {
                 settings->bosses |= worldBit;
                 settings->courseFlagsPtr[settings->courseId] |= 2;
+#ifdef NATIVE_PORT
+                if (settings->worldId == WORLD_FUTURE_FUN_LAND &&
+                    mod_racer_unlock_from_adventure_progress(
+                        MOD_RACER_WIZPIG, settings->bosses)) {
+                    MDKR_TRACE(
+                        "mod_racer_unlock: identity=wizpig route=wizpig2 bosses=0x%x",
+                        (unsigned)settings->bosses);
+                    sound_play(SOUND_VOICE_WIZPIG_LAUGH_SHORT2, NULL);
+                }
+#endif
             }
             if (settings->worldId == WORLD_CENTRAL_AREA) {
                 if (finishPos == 1) {
@@ -405,6 +416,15 @@ void racer_boss_finish(Object_Racer *racer, s8 *sceneTimer) {
                     level_properties_push(i, 4, -1, 4);
                 }
             }
+#ifdef NATIVE_PORT
+            if (settings->worldId == WORLD_DINO_DOMAIN &&
+                mod_racer_unlock_from_adventure_progress(
+                    MOD_RACER_TERRY, settings->bosses)) {
+                MDKR_TRACE(
+                    "mod_racer_unlock: identity=terry route=tricky-rematch bosses=0x%x",
+                    (unsigned)settings->bosses);
+            }
+#endif
             level_transition_begin(4);
             instShowBearBar();
         } else {

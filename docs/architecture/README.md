@@ -15,6 +15,7 @@ identity is kept in each file's title — it is how the commit log, `docs/STATUS
 | [web.md](web.md) | `M8_WEB_SPEC.md` | The browser (wasm) build: why the architecture was already web-ready, the wasm32-specific defects found and fixed, ROM + saves in the browser |
 | [camera-obstruction.md](camera-obstruction.md) | Native camera modernization plan | Desired-versus-resolved camera authority, projection-derived lens collision, terrain/object occluders, mode policy, rollout, and release gates |
 | [taj-playable-mod.md](taj-playable-mod.md) | proposed mod architecture | A virtual playable Taj: easter-egg unlocks, carpet presentation, OP handling, persistence, compatibility boundaries, and execution gates |
+| [playable-wizpig-terry-campaign.md](playable-wizpig-terry-campaign.md) | bonus-racer implementation campaign | Playable Wizpig and Terry: virtual identity, balance, vehicle policy, assets, persistence migration, regression controls, and release gates |
 
 ## Reading order
 

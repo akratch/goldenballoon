@@ -22,6 +22,7 @@
 #include "taj_physics.h"
 #include "taj_visual.h"
 #include <stdlib.h>
+#include <string.h>
 #endif
 #include "PRinternal/viint.h"
 #include "printf.h"
@@ -771,8 +772,15 @@ u8 race_starting(void) {
 static void hud_render_taj_identity(const Object_Racer *racer) {
     s32 x = SCREEN_WIDTH_HALF;
     s32 y = 9;
+    const char *label;
 
-    if (!taj_physics_is_taj(racer)) {
+    if (taj_physics_is_taj(racer)) {
+        label = is_in_time_trial() ? "TAJ - NO RECORD" : "TAJ MAGIC";
+    } else if (wizpig_physics_is_wizpig(racer)) {
+        label = is_in_time_trial() ? "WIZPIG - NO RECORD" : "WIZPIG";
+    } else if (mod_racer_physics_identity(racer) == MOD_RACER_TERRY) {
+        label = is_in_time_trial() ? "TERRY - NO RECORD" : "TERRY";
+    } else {
         return;
     }
     if (gHUDNumPlayers == TWO_PLAYERS) {
@@ -784,41 +792,39 @@ static void hud_render_taj_identity(const Object_Racer *racer) {
     set_text_font(ASSET_FONTS_FUNFONT);
     set_text_background_colour(0, 0, 0, 0);
     set_text_colour(0, 0, 0, 255, 180);
-    draw_text(&gHudDL, x + 1, y + 1,
-              is_in_time_trial() ? "TAJ - NO RECORD" : "TAJ MAGIC",
-              ALIGN_MIDDLE_CENTER);
+    draw_text(&gHudDL, x + 1, y + 1, label, ALIGN_MIDDLE_CENTER);
     set_text_colour(255, 224, 96, 0, 235);
-    draw_text(&gHudDL, x, y,
-              is_in_time_trial() ? "TAJ - NO RECORD" : "TAJ MAGIC",
-              ALIGN_MIDDLE_CENTER);
+    draw_text(&gHudDL, x, y, label, ALIGN_MIDDLE_CENTER);
 }
 
-/* Retail HUD portraits have no Taj frame. Keep donor identity out of challenge
- * and two-player Adventure UI by drawing the same native portrait used by
- * Rankings at the authored portrait anchor. This remains presentation-only. */
+/* Retail HUD portraits have no bonus-character frames. Keep donor identity
+ * out of challenge and two-player Adventure UI by drawing the same native
+ * portraits used by Rankings at the authored anchor. Presentation-only. */
 static void hud_render_identity_portrait(HudElement *portrait, s32 character,
-                                         s32 isTaj, s32 playerIndex) {
-    /* Private draw list: the array menu_taj_portrait() returns is the shared
-     * one Rankings and the results pages draw from, so its offsets are not
+                                         ModRacerIdentity identity,
+                                         s32 playerIndex) {
+    /* Private draw list: the array menu_mod_portrait() returns is shared with
+     * Rankings and the results pages, so its offsets are not
      * ours to write. Only the texture pointer is borrowed; element[1] stays
      * the NULL terminator both texrect scans stop on. */
-    static DrawTexture sHudTajPortrait[2];
-    static u32 tracedPlayers;
+    static DrawTexture sHudBonusPortrait[2];
+    static u32 tracedPlayers[MOD_RACER_IDENTITY_COUNT];
     static u32 tracedEpoch;
     u32 playerBit;
-    DrawTexture *tajPortrait;
+    DrawTexture *bonusPortrait;
 
     if (tracedEpoch != taj_visual_trace_epoch()) {
         tracedEpoch = taj_visual_trace_epoch();
-        tracedPlayers = 0;
+        memset(tracedPlayers, 0, sizeof(tracedPlayers));
     }
-    if (!isTaj) {
+    if (identity <= MOD_RACER_RETAIL ||
+        identity >= MOD_RACER_IDENTITY_COUNT) {
         portrait->spriteID = character + HUD_SPRITE_PORTRAIT;
         hud_element_render(&gHudDL, &gHudMtx, &gHudVtx, portrait);
         return;
     }
-    tajPortrait = menu_taj_portrait();
-    if (tajPortrait != NULL && tajPortrait[0].texture != NULL) {
+    bonusPortrait = menu_mod_portrait(identity);
+    if (bonusPortrait != NULL && bonusPortrait[0].texture != NULL) {
         /* The same conventions hud_element_render() gives every retail
          * portrait at this anchor: pos is the top-left corner, the anchor's
          * authored scale applies to this draw, the HUD slide/bounce and fade
@@ -832,27 +838,31 @@ static void hud_render_identity_portrait(HudElement *portrait, s32 character,
         if (gMinimapXlu & 1) {
             y -= gMinimapOpacity;
         }
-        sHudTajPortrait[0].texture = tajPortrait[0].texture;
-        sHudTajPortrait[0].xOffset = 0;
-        sHudTajPortrait[0].yOffset = 0;
-        sHudTajPortrait[1].texture = NULL;
-        texrect_draw_scaled(&gHudDL, sHudTajPortrait,
+        sHudBonusPortrait[0].texture = bonusPortrait[0].texture;
+        sHudBonusPortrait[0].xOffset = 0;
+        sHudBonusPortrait[0].yOffset = 0;
+        sHudBonusPortrait[1].texture = NULL;
+        texrect_draw_scaled(&gHudDL, sHudBonusPortrait,
                             portrait->pos.x + gHudOffsetX + gHudBounceX,
                             y, portrait->scale, yScale,
                             gHudColour, TEXRECT_POINT);
     }
     playerBit = taj_mod_player_bit(playerIndex);
-    if (playerBit != 0 && !(tracedPlayers & playerBit)) {
-        tracedPlayers |= playerBit;
-        MDKR_TRACE("taj_hud_portrait: player=%d identity=taj source=native-taj-card",
-                   playerIndex);
+    if (playerBit != 0 && !(tracedPlayers[identity] & playerBit)) {
+        tracedPlayers[identity] |= playerBit;
+        MDKR_TRACE("bonus_hud_portrait: player=%d identity=%d source=native-card",
+                   playerIndex, identity);
+        if (identity == MOD_RACER_TAJ) {
+            MDKR_TRACE("taj_hud_portrait: player=%d identity=taj source=native-taj-card",
+                       playerIndex);
+        }
     }
 }
 
 static void hud_render_racer_portrait(HudElement *portrait,
                                       const Object_Racer *racer) {
     hud_render_identity_portrait(portrait, racer->characterId,
-                                 taj_physics_is_taj(racer),
+                                 mod_racer_physics_identity(racer),
                                  racer->playerIndex);
 }
 #endif
@@ -2247,7 +2257,7 @@ void hud_main_hub(Object *obj, s32 updateRate) {
 #ifdef NATIVE_PORT
             hud_render_identity_portrait(
                 portrait, get_settings()->racers[1].character,
-                taj_mod_player_selected(1), PLAYER_TWO);
+                mod_racer_player_identity(1), PLAYER_TWO);
 #else
             portrait->spriteID = (get_settings()->racers[1].character + HUD_SPRITE_PORTRAIT);
             hud_element_render(&gHudDL, &gHudMtx, &gHudVtx, portrait);
@@ -4658,31 +4668,57 @@ void hud_render_general(Gfx **dList, Mtx **mtx, Vertex **vtx, s32 updateRate) {
                 gCurrentHud->entry[HUD_MINIMAP_MARKER].rotation.z_rotation = 0;
                 gCurrentHud->entry[HUD_MINIMAP_MARKER].spriteID = HUD_SPRITE_MAP_DOT;
             }
-            if (
 #ifdef NATIVE_PORT
-                taj_physics_is_taj(someRacer) ||
-#endif
-                (is_taj_challenge() &&
-                 someRacer->vehicleID == VEHICLE_CARPET)) {
+            {
+                ModRacerIdentity identity =
+                    (ModRacerIdentity)mod_racer_physics_identity(someRacer);
+                if (identity != MOD_RACER_RETAIL) {
+                    s32 red = 255;
+                    s32 green = 0;
+                    s32 blue = 255;
+                    if (identity == MOD_RACER_WIZPIG) {
+                        red = 232;
+                        green = 52;
+                        blue = 40;
+                    } else if (identity == MOD_RACER_TERRY) {
+                        red = 56;
+                        green = 224;
+                        blue = 176;
+                    }
+                    gDPSetPrimColor(gHudDL++, 0, 0, red, green, blue,
+                                    opacity);
+                    if (identity == MOD_RACER_TAJ &&
+                        (sTajMinimapTracedEpoch != taj_visual_trace_epoch() ||
+                         !sTajMinimapIdentityTraced)) {
+                        sTajMinimapTracedEpoch = taj_visual_trace_epoch();
+                        MDKR_TRACE("taj_minimap: identity=taj rgb=255,0,255 player=%d",
+                                   someRacer->playerIndex);
+                        sTajMinimapIdentityTraced = TRUE;
+                    }
+                } else if (is_taj_challenge() &&
+                           someRacer->vehicleID == VEHICLE_CARPET) {
+                    gDPSetPrimColor(gHudDL++, 0, 0, 255, 0, 255, opacity);
+                } else {
+                    gDPSetPrimColor(gHudDL++, 0, 0,
+                                    gHudMinimapColours[someRacer->characterId].red,
+                                    gHudMinimapColours[someRacer->characterId].green,
+                                    gHudMinimapColours[someRacer->characterId].blue,
+                                    opacity);
+                }
+            }
+#else
+            if (is_taj_challenge() &&
+                someRacer->vehicleID == VEHICLE_CARPET) {
                 /* Match the retail hub/challenge Taj marker. The playable
                  * character is a virtual Diddy donor, so falling through to
                  * characterId would incorrectly paint Diddy's blue marker. */
                 gDPSetPrimColor(gHudDL++, 0, 0, 255, 0, 255, opacity);
-#ifdef NATIVE_PORT
-                if (taj_physics_is_taj(someRacer) &&
-                    (sTajMinimapTracedEpoch != taj_visual_trace_epoch() ||
-                     !sTajMinimapIdentityTraced)) {
-                    sTajMinimapTracedEpoch = taj_visual_trace_epoch();
-                    MDKR_TRACE("taj_minimap: identity=taj rgb=255,0,255 player=%d",
-                               someRacer->playerIndex);
-                    sTajMinimapIdentityTraced = TRUE;
-                }
-#endif
             } else {
                 gDPSetPrimColor(gHudDL++, 0, 0, gHudMinimapColours[someRacer->characterId].red,
                                 gHudMinimapColours[someRacer->characterId].green,
                                 gHudMinimapColours[someRacer->characterId].blue, opacity);
             }
+#endif
             if (!(level_type() & RACETYPE_CHALLENGE) || (!someRacer->raceFinished)) {
                 if (osTvType == OS_TV_TYPE_PAL) {
                     gCurrentHud->entry[HUD_MINIMAP_MARKER].pos.x -= 4.0f;

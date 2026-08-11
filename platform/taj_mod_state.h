@@ -5,14 +5,20 @@
 #include <stddef.h>
 
 enum {
-    TAJ_MOD_STATE_VERSION = 1,
-    TAJ_MOD_STATE_TEXT_CAPACITY = 96
+    TAJ_MOD_STATE_VERSION = 3,
+    TAJ_MOD_STATE_TEXT_CAPACITY = 256
 };
 
 typedef struct TajModPersistentState {
     unsigned int version;
     int taj_unlocked;
+    /* Kept under its original C name so existing Taj transaction code remains
+     * source-compatible. Version 2+ calls this taj_migration_complete on disk. */
     int adventure_migration_complete;
+    int wizpig_unlocked;
+    int wizpig_migration_complete;
+    int terry_unlocked;
+    int terry_migration_complete;
 } TajModPersistentState;
 
 /* A backend returns 1 for a completed operation, 0 for an absent state, and

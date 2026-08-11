@@ -16,22 +16,22 @@
 #define TAJ_MOD_KEEPALIVE
 #endif
 
-typedef struct TajModRuntimeState {
+typedef struct ModRacerRuntimeState {
     TajModPersistentState persisted;
     TajModPersistentState pending_previous;
     TajModPersistentState pending_candidate;
     TajModPersistentState retry_candidate;
     const TajModStateStorage *storage;
-    unsigned int player_mask;
-    unsigned int racer_mask;
-    int unlock_announcement;
-    int enabled;
+    ModRacerIdentity player_identity[TAJ_MOD_MAX_PLAYERS];
+    ModRacerIdentity racer_identity[TAJ_MOD_MAX_PLAYERS];
+    unsigned int unlock_announcement_mask;
+    unsigned int enabled_mask;
     int persistence_failed;
     TajModPersistenceIssue persistence_issue;
     TajModPersistenceIssue pending_issue;
     TajModPersistenceIssue retry_issue;
-    int pending_enabled;
-    int pending_unlock_announcement;
+    unsigned int pending_enabled_mask;
+    unsigned int pending_unlock_announcement_mask;
     int pending_store;
     int retry_pending;
     unsigned int pending_generation;
@@ -41,482 +41,632 @@ typedef struct TajModRuntimeState {
 #endif
     int racer_bindings_active;
     int booted;
-} TajModRuntimeState;
+} ModRacerRuntimeState;
 
-static TajModRuntimeState s_taj;
+static ModRacerRuntimeState s_roster;
 
-static int taj_mod_valid_player(int player_index) {
+static int mod_racer_valid_player(int player_index) {
     return player_index >= 0 && player_index < TAJ_MOD_MAX_PLAYERS;
 }
 
+static int mod_racer_valid_identity(ModRacerIdentity identity) {
+    return identity > MOD_RACER_RETAIL &&
+           identity < MOD_RACER_IDENTITY_COUNT;
+}
+
+static unsigned int mod_racer_identity_bit(ModRacerIdentity identity) {
+    static const unsigned int bits[MOD_RACER_IDENTITY_COUNT] = {
+        0u, 0x1u, 0x2u, 0x4u
+    };
+    return mod_racer_valid_identity(identity) ? bits[identity] : 0u;
+}
+
+static int mod_racer_persisted_unlocked(const TajModPersistentState *state,
+                                         ModRacerIdentity identity) {
+    if (state == NULL) return 0;
+    switch (identity) {
+        case MOD_RACER_TAJ:
+            return state->taj_unlocked != 0;
+        case MOD_RACER_WIZPIG:
+            return state->wizpig_unlocked != 0;
+        case MOD_RACER_TERRY:
+            return state->terry_unlocked != 0;
+        default:
+            return 0;
+    }
+}
+
+static int mod_racer_persisted_migrated(const TajModPersistentState *state,
+                                         ModRacerIdentity identity) {
+    if (state == NULL) return 0;
+    switch (identity) {
+        case MOD_RACER_TAJ:
+            return state->adventure_migration_complete != 0;
+        case MOD_RACER_WIZPIG:
+            return state->wizpig_migration_complete != 0;
+        case MOD_RACER_TERRY:
+            return state->terry_migration_complete != 0;
+        default:
+            return 0;
+    }
+}
+
+static void mod_racer_set_persisted_unlock(TajModPersistentState *state,
+                                            ModRacerIdentity identity,
+                                            int unlocked, int migrated) {
+    if (state == NULL) return;
+    switch (identity) {
+        case MOD_RACER_TAJ:
+            state->taj_unlocked = unlocked != 0;
+            state->adventure_migration_complete = migrated != 0;
+            break;
+        case MOD_RACER_WIZPIG:
+            state->wizpig_unlocked = unlocked != 0;
+            state->wizpig_migration_complete = migrated != 0;
+            break;
+        case MOD_RACER_TERRY:
+            state->terry_unlocked = unlocked != 0;
+            state->terry_migration_complete = migrated != 0;
+            break;
+        default:
+            break;
+    }
+}
+
+static unsigned int mod_racer_enabled_mask_from_state(
+    const TajModPersistentState *state) {
+    unsigned int mask = 0;
+    ModRacerIdentity identity;
+    for (identity = MOD_RACER_TAJ; identity < MOD_RACER_IDENTITY_COUNT;
+         identity++) {
+        if (mod_racer_persisted_unlocked(state, identity)) {
+            mask |= mod_racer_identity_bit(identity);
+        }
+    }
+    return mask;
+}
+
 int taj_mod_valid_live_player(int player_index) {
-    return taj_mod_valid_player(player_index);
+    return mod_racer_valid_player(player_index);
 }
 
 unsigned int taj_mod_player_bit(int player_index) {
     static const unsigned int bits[TAJ_MOD_MAX_PLAYERS] = {
         0x1u, 0x2u, 0x4u, 0x8u
     };
-    return taj_mod_valid_player(player_index) ? bits[player_index] : 0u;
+    return mod_racer_valid_player(player_index) ? bits[player_index] : 0u;
 }
 
-static int taj_mod_uses_async_persistence(void) {
+static int mod_racer_uses_async_persistence(void) {
 #ifdef __EMSCRIPTEN__
     return 1;
 #elif defined(TAJ_MOD_TESTING)
-    return s_taj.test_async_persistence;
+    return s_roster.test_async_persistence;
 #else
     return 0;
 #endif
 }
 
-static unsigned int taj_mod_next_generation(void) {
-    s_taj.next_generation++;
-    if (s_taj.next_generation == 0) {
-        s_taj.next_generation++;
-    }
-    return s_taj.next_generation;
+static unsigned int mod_racer_next_generation(void) {
+    s_roster.next_generation++;
+    if (s_roster.next_generation == 0) s_roster.next_generation++;
+    return s_roster.next_generation;
 }
 
-static void taj_mod_queue_retry(const TajModPersistentState *candidate,
-                                TajModPersistenceIssue issue) {
-    if (candidate == NULL) {
-        return;
-    }
-    s_taj.retry_candidate = *candidate;
-    s_taj.retry_issue = issue;
-    s_taj.retry_pending = 1;
+static void mod_racer_queue_retry(const TajModPersistentState *candidate,
+                                   TajModPersistenceIssue issue) {
+    if (candidate == NULL) return;
+    s_roster.retry_candidate = *candidate;
+    s_roster.retry_issue = issue;
+    s_roster.retry_pending = 1;
 }
 
 #ifdef NATIVE_PORT
-/* MDKR_TAJ_TEST_PLAYER is an opt-in native bootstrap that makes one port play
- * as Taj without driving the menus. It is a SHADOW: it is resolved once, it is
- * never written into `persisted` and never into `player_mask`, and every read
- * site ORs it in through the accessors below.
- *
- * It used to assign persisted.taj_unlocked / .adventure_migration_complete and
- * player_mask directly. Both were real defects. Writing the persisted struct
- * made a later genuine ABRACADABRA compute persistence_changed == 0, so the
- * unlock was never stored and the player never saw the banner -- the test hook
- * silently disabled the shipping unlock path. Writing player_mask re-applied it
- * on EVERY taj_mod_begin_racer_bindings(), so it also clobbered whatever the
- * player had actually chosen at every race init. */
-static int taj_mod_test_player(void) {
-    static int cached = -2; /* -2 unparsed, -1 absent/invalid */
-    const char *text;
+static int mod_racer_test_player(const char *variable, const char *label) {
+    const char *text = getenv(variable);
     char *end = NULL;
     long player;
 
-    if (cached != -2) {
-        return cached;
-    }
-    cached = -1;
-    text = getenv("MDKR_TAJ_TEST_PLAYER");
-    if (text == NULL) {
-        return cached;
-    }
+    if (text == NULL) return -1;
     errno = 0;
     player = strtol(text, &end, 10);
-    if (errno != 0 || end == text || *end != '\0' ||
-        player < 0 || player >= TAJ_MOD_MAX_PLAYERS) {
-        fprintf(stderr,
-                "[TAJ] ignoring invalid MDKR_TAJ_TEST_PLAYER value: %s\n",
+    if (errno != 0 || end == text || *end != '\0' || player < 0 ||
+        player >= TAJ_MOD_MAX_PLAYERS) {
+        fprintf(stderr, "[ROSTER] ignoring invalid %s value: %s\n", variable,
                 text);
-        return cached;
+        return -1;
     }
-    cached = (int)player;
-    MDKR_TRACE("taj_test_player: player=%d enabled=1", cached);
-    return cached;
+    MDKR_TRACE("%s_test_player: player=%d enabled=1", label, (int)player);
+    return (int)player;
 }
 
-static unsigned int taj_mod_test_player_bit(void) {
-    int player = taj_mod_test_player();
-    return player < 0 ? 0u : taj_mod_player_bit(player);
+static ModRacerIdentity mod_racer_test_identity(int player_index) {
+    static int taj_player = -2;
+    static int wizpig_player = -2;
+    static int terry_player = -2;
+    static int warned_conflict;
+    if (taj_player == -2) {
+        taj_player = mod_racer_test_player("MDKR_TAJ_TEST_PLAYER", "taj");
+        wizpig_player = mod_racer_test_player("MDKR_WIZPIG_TEST_PLAYER",
+                                               "wizpig");
+        terry_player = mod_racer_test_player("MDKR_TERRY_TEST_PLAYER",
+                                              "terry");
+    }
+    if (player_index == taj_player &&
+        (player_index == wizpig_player || player_index == terry_player)) {
+        if (!warned_conflict) {
+            fprintf(stderr,
+                    "[ROSTER] multiple test racers target player %d; Taj wins\n",
+                    player_index);
+            warned_conflict = 1;
+        }
+        return MOD_RACER_TAJ;
+    }
+    if (player_index == taj_player) return MOD_RACER_TAJ;
+    if (player_index == wizpig_player && player_index == terry_player) {
+        if (!warned_conflict) {
+            fprintf(stderr,
+                    "[ROSTER] Wizpig and Terry target player %d; Wizpig wins\n",
+                    player_index);
+            warned_conflict = 1;
+        }
+        return MOD_RACER_WIZPIG;
+    }
+    if (player_index == wizpig_player) return MOD_RACER_WIZPIG;
+    if (player_index == terry_player) return MOD_RACER_TERRY;
+    return MOD_RACER_RETAIL;
 }
 #else
-#define taj_mod_test_player_bit() 0u
+static ModRacerIdentity mod_racer_test_identity(int player_index) {
+    (void)player_index;
+    return MOD_RACER_RETAIL;
+}
 #endif
 
-/* Every read of the selection mask goes through here so the test shadow is
- * applied in exactly one place and can never leak into stored state. */
-static unsigned int taj_mod_effective_player_mask(void) {
-    return s_taj.player_mask | taj_mod_test_player_bit();
+static int mod_racer_test_identity_active(ModRacerIdentity identity) {
+    int player;
+    for (player = 0; player < TAJ_MOD_MAX_PLAYERS; player++) {
+        if (mod_racer_test_identity(player) == identity) return 1;
+    }
+    return 0;
 }
 
-/* The hook must also make Taj reachable, but only for reads: an unlock it
- * implies is a session fact, never a persisted one. */
-static int taj_mod_test_player_active(void) {
-    return taj_mod_test_player_bit() != 0u;
+static ModRacerIdentity mod_racer_effective_player_identity(int player_index) {
+    ModRacerIdentity identity;
+    if (!mod_racer_valid_player(player_index)) return MOD_RACER_RETAIL;
+    identity = s_roster.player_identity[player_index];
+    return identity == MOD_RACER_RETAIL
+               ? mod_racer_test_identity(player_index)
+               : identity;
 }
 
-static int taj_mod_store_candidate(const TajModPersistentState *candidate,
-                                   TajModPersistenceIssue issue) {
-    if (s_taj.storage == NULL) {
-        s_taj.persistence_failed = 0;
-        s_taj.persistence_issue = TAJ_MOD_PERSISTENCE_NONE;
-        s_taj.retry_pending = 0;
+static int mod_racer_store_candidate(const TajModPersistentState *candidate,
+                                      TajModPersistenceIssue issue) {
+    if (s_roster.storage == NULL) {
+        s_roster.persistence_failed = 0;
+        s_roster.persistence_issue = TAJ_MOD_PERSISTENCE_NONE;
+        s_roster.retry_pending = 0;
         return 1;
     }
-    if (taj_mod_uses_async_persistence()) {
-        /* IDBFS commits asynchronously. Keep exactly one transaction in
-         * flight so its rollback snapshot cannot be replaced by a later menu
-         * action. A second action is refused; it must be explicitly retried. */
-        if (s_taj.pending_store) {
-            /* REFUSED, not failed. The in-flight transaction is still going to
-             * succeed or fail on its own and report through the keepalive
-             * callbacks; latching persistence_failed here raised a banner for a
-             * write that had not been attempted yet, and it overwrote the issue
-             * belonging to the transaction actually in flight. Queue the
-             * candidate so taj_mod_retry_persistence() can pick it up once the
-             * commit settles, and leave the reported state to the owner of the
-             * transaction. */
-            taj_mod_queue_retry(candidate, issue);
+    if (mod_racer_uses_async_persistence()) {
+        if (s_roster.pending_store) {
+            mod_racer_queue_retry(candidate, issue);
             fprintf(stderr,
-                    "[TAJ] persistence is still busy; retry this action shortly\n");
+                    "[ROSTER] persistence is busy; retry this action shortly\n");
             return 0;
         }
-        s_taj.pending_previous = s_taj.persisted;
-        s_taj.pending_enabled = s_taj.enabled;
-        s_taj.pending_unlock_announcement = s_taj.unlock_announcement;
-        s_taj.pending_issue = issue;
-        s_taj.pending_candidate = *candidate;
-        s_taj.pending_generation = taj_mod_next_generation();
-        s_taj.pending_store = 1;
+        s_roster.pending_previous = s_roster.persisted;
+        s_roster.pending_enabled_mask = s_roster.enabled_mask;
+        s_roster.pending_unlock_announcement_mask =
+            s_roster.unlock_announcement_mask;
+        s_roster.pending_issue = issue;
+        s_roster.pending_candidate = *candidate;
+        s_roster.pending_generation = mod_racer_next_generation();
+        s_roster.pending_store = 1;
     }
-    if (taj_mod_state_store(candidate, s_taj.storage) != 1) {
-        s_taj.pending_store = 0;
-        s_taj.pending_generation = 0;
-        taj_mod_queue_retry(candidate, issue);
-        s_taj.persistence_failed = 1;
-        s_taj.persistence_issue = issue;
+    if (taj_mod_state_store(candidate, s_roster.storage) != 1) {
+        s_roster.pending_store = 0;
+        s_roster.pending_generation = 0;
+        mod_racer_queue_retry(candidate, issue);
+        s_roster.persistence_failed = 1;
+        s_roster.persistence_issue = issue;
         fprintf(stderr,
                 issue == TAJ_MOD_PERSISTENCE_ERASE
-                    ? "[TAJ] bonus erase was not persisted; keeping the prior unlock\n"
-                    : "[TAJ] global unlock state was not persisted; session remains active\n");
+                    ? "[ROSTER] bonus erase was not persisted; keeping the prior unlocks\n"
+                    : "[ROSTER] unlock state was not persisted; session remains active\n");
         return 0;
     }
-    /* Desktop storage is durable on return. Web storage reports its later
-     * IDBFS result through the keepalive callbacks below. */
-    s_taj.persistence_failed = 0;
-    s_taj.persistence_issue = TAJ_MOD_PERSISTENCE_NONE;
-    if (!taj_mod_uses_async_persistence()) {
-        s_taj.retry_pending = 0;
-    }
+    s_roster.persistence_failed = 0;
+    s_roster.persistence_issue = TAJ_MOD_PERSISTENCE_NONE;
+    if (!mod_racer_uses_async_persistence()) s_roster.retry_pending = 0;
     return 1;
 }
 
-static void taj_mod_unlock(void) {
-    TajModPersistentState candidate = s_taj.persisted;
-    int newly_unlocked = !s_taj.persisted.taj_unlocked;
-    int persistence_changed = newly_unlocked ||
-        !s_taj.persisted.adventure_migration_complete;
+static int mod_racer_unlock(ModRacerIdentity identity) {
+    TajModPersistentState candidate = s_roster.persisted;
+    int newly_unlocked;
+    int persistence_changed;
     int stored = 1;
 
-    candidate.taj_unlocked = 1;
-    candidate.adventure_migration_complete = 1;
+    if (!mod_racer_valid_identity(identity)) return 0;
+    newly_unlocked = !mod_racer_persisted_unlocked(&s_roster.persisted,
+                                                    identity);
+    persistence_changed = newly_unlocked ||
+        !mod_racer_persisted_migrated(&s_roster.persisted, identity);
+    mod_racer_set_persisted_unlock(&candidate, identity, 1, 1);
     if (persistence_changed ||
-        (s_taj.retry_pending &&
-         s_taj.retry_issue == TAJ_MOD_PERSISTENCE_UNLOCK)) {
-        stored = taj_mod_store_candidate(&candidate,
-                                         TAJ_MOD_PERSISTENCE_UNLOCK);
+        (s_roster.retry_pending &&
+         s_roster.retry_issue == TAJ_MOD_PERSISTENCE_UNLOCK)) {
+        stored = mod_racer_store_candidate(&candidate,
+                                            TAJ_MOD_PERSISTENCE_UNLOCK);
     }
-    /* An unlock remains useful for this session even if storage failed. */
-    s_taj.persisted.taj_unlocked = 1;
-    s_taj.persisted.version = candidate.version;
-    /* adventure_migration_complete is NOT a session fact: it is the record that
-     * the one-time import reconcile has been written down. Committing it in RAM
-     * after a refused or failed store made taj_mod_reconcile_imported_taj_flags()
-     * early-out for the rest of the session, so the retry that was supposed to
-     * write the unlock never had a reason to run again. Only advance it when
-     * the bytes really went out. */
-    if (stored) {
-        s_taj.persisted.adventure_migration_complete =
-            candidate.adventure_migration_complete;
-    }
+    mod_racer_set_persisted_unlock(&s_roster.persisted, identity, 1,
+        stored ? 1 : mod_racer_persisted_migrated(&s_roster.persisted,
+                                                   identity));
+    s_roster.persisted.version = candidate.version;
     if (newly_unlocked) {
-        s_taj.unlock_announcement = 1;
+        s_roster.unlock_announcement_mask |= mod_racer_identity_bit(identity);
     }
-    s_taj.enabled = 1;
+    s_roster.enabled_mask |= mod_racer_identity_bit(identity);
+    return newly_unlocked;
 }
 
 void taj_mod_boot(const TajModStateStorage *storage) {
     int result;
-
-    if (s_taj.booted) {
-        return;
-    }
-    memset(&s_taj, 0, sizeof(s_taj));
-    taj_mod_state_defaults(&s_taj.persisted);
-    s_taj.storage = storage;
+    if (s_roster.booted) return;
+    memset(&s_roster, 0, sizeof(s_roster));
+    taj_mod_state_defaults(&s_roster.persisted);
+    s_roster.storage = storage;
     if (storage != NULL) {
-        result = taj_mod_state_load(&s_taj.persisted, storage);
+        result = taj_mod_state_load(&s_roster.persisted, storage);
         if (result < 0) {
-            taj_mod_state_defaults(&s_taj.persisted);
-            s_taj.persistence_failed = 1;
-            s_taj.persistence_issue = TAJ_MOD_PERSISTENCE_LOAD;
-            fprintf(stderr, "[TAJ] global unlock state could not be loaded; using defaults\n");
+            taj_mod_state_defaults(&s_roster.persisted);
+            s_roster.persistence_failed = 1;
+            s_roster.persistence_issue = TAJ_MOD_PERSISTENCE_LOAD;
+            fprintf(stderr,
+                    "[ROSTER] unlock state could not be loaded; using defaults\n");
         }
     }
-    s_taj.enabled = s_taj.persisted.taj_unlocked;
-    s_taj.booted = 1;
+    s_roster.enabled_mask =
+        mod_racer_enabled_mask_from_state(&s_roster.persisted);
+    s_roster.booted = 1;
 }
 
 void taj_mod_on_title_return(void) { taj_mod_reset_player_selections(); }
-
-int taj_mod_persistence_failed(void) { return s_taj.persistence_failed; }
+int taj_mod_persistence_failed(void) { return s_roster.persistence_failed; }
 TajModPersistenceIssue taj_mod_persistence_issue(void) {
-    return s_taj.persistence_issue;
+    return s_roster.persistence_issue;
 }
-int taj_mod_persistence_pending(void) { return s_taj.pending_store; }
+int taj_mod_persistence_pending(void) { return s_roster.pending_store; }
 
 int taj_mod_retry_persistence(void) {
     TajModPersistentState candidate;
     TajModPersistenceIssue issue;
-
-    if (s_taj.pending_store || !s_taj.retry_pending) {
-        return 0;
-    }
-    candidate = s_taj.retry_candidate;
-    issue = s_taj.retry_issue;
-    if (!taj_mod_store_candidate(&candidate, issue)) {
-        return 0;
-    }
-    s_taj.persisted = candidate;
-    s_taj.enabled = candidate.taj_unlocked != 0;
-    if (!s_taj.enabled) {
-        s_taj.unlock_announcement = 0;
+    if (s_roster.pending_store || !s_roster.retry_pending) return 0;
+    candidate = s_roster.retry_candidate;
+    issue = s_roster.retry_issue;
+    /* This queue entry now owns the in-flight attempt. A failure will enqueue
+     * it again; clearing first prevents a successful callback from replaying
+     * the same transaction forever. */
+    s_roster.retry_pending = 0;
+    if (!mod_racer_store_candidate(&candidate, issue)) return 0;
+    s_roster.persisted = candidate;
+    s_roster.enabled_mask &= mod_racer_enabled_mask_from_state(&candidate);
+    if (s_roster.enabled_mask == 0) {
+        s_roster.unlock_announcement_mask = 0;
         taj_mod_reset_player_selections();
     }
     return 1;
 }
-int taj_mod_is_unlocked(void) {
-    return s_taj.persisted.taj_unlocked != 0 || taj_mod_test_player_active();
+
+int mod_racer_is_unlocked(ModRacerIdentity identity) {
+    return mod_racer_valid_identity(identity) &&
+           (mod_racer_persisted_unlocked(&s_roster.persisted, identity) ||
+            mod_racer_test_identity_active(identity));
 }
-int taj_mod_is_enabled(void) {
-    return taj_mod_is_unlocked() &&
-           (s_taj.enabled || taj_mod_test_player_active());
+
+int mod_racer_is_enabled(ModRacerIdentity identity) {
+    return mod_racer_is_unlocked(identity) &&
+           ((s_roster.enabled_mask & mod_racer_identity_bit(identity)) != 0 ||
+            mod_racer_test_identity_active(identity));
 }
-void taj_mod_set_enabled(int enabled) {
-    s_taj.enabled = taj_mod_is_unlocked() && enabled != 0;
-    if (!s_taj.enabled) {
-        taj_mod_reset_player_selections();
+
+void mod_racer_set_enabled(ModRacerIdentity identity, int enabled) {
+    int player;
+    unsigned int bit = mod_racer_identity_bit(identity);
+    if (bit == 0) return;
+    if (enabled && mod_racer_is_unlocked(identity)) {
+        s_roster.enabled_mask |= bit;
+        return;
     }
+    s_roster.enabled_mask &= ~bit;
+    for (player = 0; player < TAJ_MOD_MAX_PLAYERS; player++) {
+        if (s_roster.player_identity[player] == identity) {
+            s_roster.player_identity[player] = MOD_RACER_RETAIL;
+        }
+        if (s_roster.racer_identity[player] == identity) {
+            s_roster.racer_identity[player] = MOD_RACER_RETAIL;
+        }
+    }
+}
+
+int mod_racer_consume_unlock_announcement(ModRacerIdentity identity) {
+    unsigned int bit = mod_racer_identity_bit(identity);
+    int result = (s_roster.unlock_announcement_mask & bit) != 0;
+    s_roster.unlock_announcement_mask &= ~bit;
+    return result;
+}
+
+ModRacerIdentity mod_racer_submit_magic_code(const char *input) {
+    if (input == NULL) return MOD_RACER_RETAIL;
+    if (strcmp(input, "ABRACADABRA") == 0) {
+        mod_racer_unlock(MOD_RACER_TAJ);
+        return MOD_RACER_TAJ;
+    }
+    if (strcmp(input, "WIZPIGPOWER") == 0) {
+        mod_racer_unlock(MOD_RACER_WIZPIG);
+        return MOD_RACER_WIZPIG;
+    }
+    if (strcmp(input, "TERRYFLY") == 0) {
+        mod_racer_unlock(MOD_RACER_TERRY);
+        return MOD_RACER_TERRY;
+    }
+    return MOD_RACER_RETAIL;
+}
+
+int mod_racer_unlock_from_adventure_progress(ModRacerIdentity identity,
+                                              unsigned int progress) {
+    unsigned int required;
+    if (identity == MOD_RACER_TAJ) {
+        required = TAJ_MOD_COMPLETED_CHALLENGES;
+    } else if (identity == MOD_RACER_WIZPIG) {
+        required = WIZPIG_MOD_COMPLETED_BOSSES;
+    } else if (identity == MOD_RACER_TERRY) {
+        required = TERRY_MOD_COMPLETED_BOSSES;
+    } else {
+        return 0;
+    }
+    if ((progress & required) != required) return 0;
+    return mod_racer_unlock(identity);
+}
+
+int mod_racer_reconcile_imported_progress(unsigned int taj_flags,
+                                           unsigned int bosses) {
+    int unlocked = 0;
+    if (!mod_racer_persisted_migrated(&s_roster.persisted, MOD_RACER_TAJ) &&
+        (taj_flags & TAJ_MOD_COMPLETED_CHALLENGES) ==
+            TAJ_MOD_COMPLETED_CHALLENGES) {
+        unlocked |= mod_racer_unlock(MOD_RACER_TAJ);
+    }
+    if (!mod_racer_persisted_migrated(&s_roster.persisted,
+                                      MOD_RACER_WIZPIG) &&
+        (bosses & WIZPIG_MOD_COMPLETED_BOSSES) ==
+            WIZPIG_MOD_COMPLETED_BOSSES) {
+        unlocked |= mod_racer_unlock(MOD_RACER_WIZPIG);
+    }
+    if (!mod_racer_persisted_migrated(&s_roster.persisted,
+                                      MOD_RACER_TERRY) &&
+        (bosses & TERRY_MOD_COMPLETED_BOSSES) ==
+            TERRY_MOD_COMPLETED_BOSSES) {
+        unlocked |= mod_racer_unlock(MOD_RACER_TERRY);
+    }
+    return unlocked;
+}
+
+int taj_mod_is_unlocked(void) { return mod_racer_is_unlocked(MOD_RACER_TAJ); }
+int taj_mod_is_enabled(void) { return mod_racer_is_enabled(MOD_RACER_TAJ); }
+void taj_mod_set_enabled(int enabled) {
+    mod_racer_set_enabled(MOD_RACER_TAJ, enabled);
 }
 int taj_mod_consume_unlock_announcement(void) {
-    int announcement = s_taj.unlock_announcement;
-    s_taj.unlock_announcement = 0;
-    return announcement;
+    return mod_racer_consume_unlock_announcement(MOD_RACER_TAJ);
 }
-
 int taj_mod_submit_magic_code(const char *input) {
-    if (input == NULL || strcmp(input, "ABRACADABRA") != 0) {
-        return 0;
-    }
-    taj_mod_unlock();
-    return 1;
+    return mod_racer_submit_magic_code(input) == MOD_RACER_TAJ;
 }
-
 int taj_mod_unlock_from_taj_flags(unsigned int taj_flags) {
-    if ((taj_flags & TAJ_MOD_COMPLETED_CHALLENGES) !=
-        TAJ_MOD_COMPLETED_CHALLENGES) {
-        return 0;
-    }
-    if (!taj_mod_is_unlocked()) {
-        taj_mod_unlock();
-        return 1;
-    }
-    return 0;
+    return mod_racer_unlock_from_adventure_progress(MOD_RACER_TAJ, taj_flags);
 }
-
 int taj_mod_reconcile_imported_taj_flags(unsigned int taj_flags) {
-    if (s_taj.persisted.adventure_migration_complete ||
+    if (mod_racer_persisted_migrated(&s_roster.persisted, MOD_RACER_TAJ) ||
         (taj_flags & TAJ_MOD_COMPLETED_CHALLENGES) !=
             TAJ_MOD_COMPLETED_CHALLENGES) {
         return 0;
     }
-    return taj_mod_unlock_from_taj_flags(taj_flags);
+    return mod_racer_unlock(MOD_RACER_TAJ);
 }
 
 void taj_mod_reset_player_selections(void) {
-    s_taj.player_mask = 0;
-    s_taj.racer_mask = 0;
-    s_taj.racer_bindings_active = 0;
+    memset(s_roster.player_identity, 0, sizeof(s_roster.player_identity));
+    memset(s_roster.racer_identity, 0, sizeof(s_roster.racer_identity));
+    s_roster.racer_bindings_active = 0;
 }
 
 void taj_mod_clear_session_codes(void) {
-    taj_mod_set_enabled(0);
+    ModRacerIdentity identity;
+    for (identity = MOD_RACER_TAJ; identity < MOD_RACER_IDENTITY_COUNT;
+         identity++) {
+        mod_racer_set_enabled(identity, 0);
+    }
 }
 
 int taj_mod_erase_all_bonuses(void) {
-    TajModPersistentState candidate = s_taj.persisted;
-
-    candidate.taj_unlocked = 0;
-    candidate.adventure_migration_complete = 1;
-    if (!taj_mod_store_candidate(&candidate, TAJ_MOD_PERSISTENCE_ERASE)) {
+    TajModPersistentState candidate = s_roster.persisted;
+    mod_racer_set_persisted_unlock(&candidate, MOD_RACER_TAJ, 0, 1);
+    mod_racer_set_persisted_unlock(&candidate, MOD_RACER_WIZPIG, 0, 1);
+    mod_racer_set_persisted_unlock(&candidate, MOD_RACER_TERRY, 0, 1);
+    if (!mod_racer_store_candidate(&candidate, TAJ_MOD_PERSISTENCE_ERASE)) {
         return 0;
     }
-    s_taj.persisted = candidate;
-    s_taj.enabled = 0;
-    s_taj.unlock_announcement = 0;
+    s_roster.persisted = candidate;
+    s_roster.enabled_mask = 0;
+    s_roster.unlock_announcement_mask = 0;
     taj_mod_reset_player_selections();
     return 1;
 }
 
 void taj_mod_on_adventure_file_deleted(void) {
-    /* This global sidecar intentionally survives individual Adventure saves. */
     taj_mod_reset_player_selections();
 }
 
+void mod_racer_set_player_identity(int player_index,
+                                   ModRacerIdentity identity) {
+    if (!mod_racer_valid_player(player_index)) return;
+    if (identity != MOD_RACER_RETAIL && !mod_racer_is_enabled(identity)) return;
+    s_roster.player_identity[player_index] = identity;
+}
+
+ModRacerIdentity mod_racer_player_identity(int player_index) {
+    return mod_racer_effective_player_identity(player_index);
+}
+
 void taj_mod_set_player_selected(int player_index, int selected) {
-    unsigned int player_bit = taj_mod_player_bit(player_index);
-    if (!taj_mod_valid_player(player_index)) {
-        return;
-    }
-    if (selected && taj_mod_is_enabled()) {
-        s_taj.player_mask |= player_bit;
-    } else {
-        s_taj.player_mask &= ~player_bit;
+    if (!mod_racer_valid_player(player_index)) return;
+    if (selected) {
+        mod_racer_set_player_identity(player_index, MOD_RACER_TAJ);
+    } else if (s_roster.player_identity[player_index] == MOD_RACER_TAJ) {
+        s_roster.player_identity[player_index] = MOD_RACER_RETAIL;
     }
 }
 
 void taj_mod_swap_player_selections(int first_player, int second_player) {
-    unsigned int first_bit;
-    unsigned int second_bit;
-    unsigned int first_selected;
-    unsigned int second_selected;
-
-    if (!taj_mod_valid_player(first_player) ||
-        !taj_mod_valid_player(second_player) ||
-        first_player == second_player) {
+    ModRacerIdentity swap;
+    if (!mod_racer_valid_player(first_player) ||
+        !mod_racer_valid_player(second_player) || first_player == second_player) {
         return;
     }
-    first_bit = taj_mod_player_bit(first_player);
-    second_bit = taj_mod_player_bit(second_player);
-    first_selected = s_taj.player_mask & first_bit;
-    second_selected = s_taj.player_mask & second_bit;
-    s_taj.player_mask &= ~(first_bit | second_bit);
-    if (first_selected) {
-        s_taj.player_mask |= second_bit;
-    }
-    if (second_selected) {
-        s_taj.player_mask |= first_bit;
-    }
+    swap = s_roster.player_identity[first_player];
+    s_roster.player_identity[first_player] =
+        s_roster.player_identity[second_player];
+    s_roster.player_identity[second_player] = swap;
 }
 
 void taj_mod_begin_racer_bindings(void) {
-    s_taj.racer_mask = 0;
-    s_taj.racer_bindings_active = 1;
+    memset(s_roster.racer_identity, 0, sizeof(s_roster.racer_identity));
+    s_roster.racer_bindings_active = 1;
 }
 
 void taj_mod_bind_racer_player(int selected_player_index,
                                int live_player_index) {
-    unsigned int selected_bit;
-    unsigned int live_bit;
-    if (!s_taj.racer_bindings_active ||
-        !taj_mod_valid_player(selected_player_index) ||
-        !taj_mod_valid_player(live_player_index)) {
+    if (!s_roster.racer_bindings_active ||
+        !mod_racer_valid_player(selected_player_index) ||
+        !mod_racer_valid_player(live_player_index)) {
         return;
     }
-    selected_bit = taj_mod_player_bit(selected_player_index);
-    live_bit = taj_mod_player_bit(live_player_index);
-    if (taj_mod_effective_player_mask() & selected_bit) {
-        s_taj.racer_mask |= live_bit;
-    } else {
-        s_taj.racer_mask &= ~live_bit;
-    }
+    s_roster.racer_identity[live_player_index] =
+        mod_racer_effective_player_identity(selected_player_index);
+}
+
+ModRacerIdentity mod_racer_live_identity(int player_index) {
+    ModRacerIdentity identity;
+    if (!mod_racer_valid_player(player_index)) return MOD_RACER_RETAIL;
+    identity = s_roster.racer_bindings_active
+                   ? s_roster.racer_identity[player_index]
+                   : mod_racer_effective_player_identity(player_index);
+    return mod_racer_is_enabled(identity) ? identity : MOD_RACER_RETAIL;
+}
+
+int mod_racer_live_is(int player_index, ModRacerIdentity identity) {
+    return mod_racer_valid_identity(identity) &&
+           mod_racer_live_identity(player_index) == identity;
 }
 
 int taj_mod_player_selected(int player_index) {
-    return taj_mod_valid_player(player_index) &&
-           (taj_mod_effective_player_mask() &
-            taj_mod_player_bit(player_index)) != 0;
+    return mod_racer_player_identity(player_index) == MOD_RACER_TAJ;
 }
-
 int taj_mod_racer_is_taj(int player_index) {
-    unsigned int mask;
-
-    mask = s_taj.racer_bindings_active ? s_taj.racer_mask
-                                      : taj_mod_effective_player_mask();
-    return taj_mod_is_enabled() && taj_mod_valid_player(player_index) &&
-           (mask & taj_mod_player_bit(player_index)) != 0;
+    return mod_racer_live_is(player_index, MOD_RACER_TAJ);
 }
 
-int taj_mod_resolve_race_character(int player_index, int requested_character) {
-    /* This resolver is called before live racer bindings exist. */
-    if (taj_mod_is_enabled() && taj_mod_valid_player(player_index) &&
-        (taj_mod_effective_player_mask() &
-         taj_mod_player_bit(player_index))) {
-        return TAJ_MOD_DONOR_CHARACTER;
+int mod_racer_resolve_race_character(int player_index,
+                                     int requested_character) {
+    /* The native test identity is intentionally routed through the same donor
+     * resolver as a menu selection. Otherwise a real-ROM presentation run can
+     * claim Terry/Wizpig while leaving an unrelated retail model underneath,
+     * which exercises only the fail-visible fallback rather than gameplay. */
+    ModRacerIdentity identity = mod_racer_effective_player_identity(player_index);
+    if (mod_racer_is_enabled(identity)) {
+        if (identity == MOD_RACER_TAJ) return TAJ_MOD_DONOR_CHARACTER;
+        if (identity == MOD_RACER_WIZPIG) return WIZPIG_MOD_DONOR_CHARACTER;
+        if (identity == MOD_RACER_TERRY) return TERRY_MOD_DONOR_CHARACTER;
     }
-    if (requested_character < 0 || requested_character > TAJ_MOD_DONOR_CHARACTER) {
-        /* Out of range means the caller has a corrupt or uninitialised slot,
-         * not that this player picked Taj. Returning the DONOR here handed the
-         * donor character to a player who never selected it and made a garbage
-         * value indistinguishable from a genuine Taj pick. Fail to the neutral
-         * default the rest of the menu uses instead. */
+    if (requested_character < 0 ||
+        requested_character > TAJ_MOD_DONOR_CHARACTER) {
         return TAJ_MOD_NEUTRAL_CHARACTER;
     }
     return requested_character;
 }
 
-unsigned int taj_mod_persistence_pending_generation(void) {
-    return s_taj.pending_store ? s_taj.pending_generation : 0;
+int taj_mod_resolve_race_character(int player_index, int requested_character) {
+    return mod_racer_resolve_race_character(player_index, requested_character);
 }
 
-TAJ_MOD_KEEPALIVE void taj_mod_report_persistence_failure(unsigned int generation) {
+unsigned int taj_mod_persistence_pending_generation(void) {
+    return s_roster.pending_store ? s_roster.pending_generation : 0;
+}
+
+TAJ_MOD_KEEPALIVE void taj_mod_report_persistence_failure(
+    unsigned int generation) {
     TajModPersistenceIssue issue;
     TajModPersistentState previous;
     TajModPersistentState candidate;
     int restored = 1;
-
-    /* Ignore a duplicate or stale browser callback. It must never overwrite a
-     * later load error or a failure already reported to the player. */
-    if (!s_taj.pending_store || generation == 0 ||
-        generation != s_taj.pending_generation) return;
-    issue = s_taj.pending_issue;
-    previous = s_taj.pending_previous;
-    candidate = s_taj.pending_candidate;
-
+    if (!s_roster.pending_store || generation == 0 ||
+        generation != s_roster.pending_generation) return;
+    issue = s_roster.pending_issue;
+    previous = s_roster.pending_previous;
+    candidate = s_roster.pending_candidate;
     if (issue == TAJ_MOD_PERSISTENCE_ERASE) {
-        /* The browser's in-memory write succeeded but its durable IDBFS flush
-         * did not. Put the previous bytes back before the shell's independent
-         * retry chain can flush the failed erase on a later timer tick. */
-        restored = taj_mod_state_store(&previous, s_taj.storage) == 1;
+        restored = taj_mod_state_store(&previous, s_roster.storage) == 1;
         if (restored) {
-            s_taj.persisted = previous;
-            s_taj.enabled = s_taj.pending_enabled &&
-                            s_taj.persisted.taj_unlocked;
-            s_taj.unlock_announcement = s_taj.pending_unlock_announcement;
+            s_roster.persisted = previous;
+            s_roster.enabled_mask = s_roster.pending_enabled_mask &
+                mod_racer_enabled_mask_from_state(&s_roster.persisted);
+            s_roster.unlock_announcement_mask =
+                s_roster.pending_unlock_announcement_mask;
             taj_mod_reset_player_selections();
         }
     }
     fprintf(stderr,
             issue == TAJ_MOD_PERSISTENCE_ERASE
                 ? (restored
-                    ? "[TAJ] bonus erase could not be committed; keeping the prior unlock\n"
-                    : "[TAJ] bonus erase could not be committed; retry before restarting\n")
-                : "[TAJ] global unlock state could not be committed; session remains active\n");
-    s_taj.pending_store = 0;
-    s_taj.pending_generation = 0;
-    taj_mod_queue_retry(&candidate, issue);
-    s_taj.persistence_failed = 1;
-    s_taj.persistence_issue = issue;
+                    ? "[ROSTER] bonus erase could not be committed; keeping prior unlocks\n"
+                    : "[ROSTER] bonus erase could not be committed; retry before restarting\n")
+                : "[ROSTER] unlock state could not be committed; session remains active\n");
+    s_roster.pending_store = 0;
+    s_roster.pending_generation = 0;
+    /* Two unlocks can be discovered during one save-file listing pass. The
+     * later candidate contains both, so retain that coalesced write if the
+     * first browser commit fails. Destructive actions deliberately do not
+     * coalesce with unlocks. */
+    if (!(issue == TAJ_MOD_PERSISTENCE_UNLOCK && s_roster.retry_pending &&
+          s_roster.retry_issue == TAJ_MOD_PERSISTENCE_UNLOCK)) {
+        mod_racer_queue_retry(&candidate, issue);
+    }
+    s_roster.persistence_failed = 1;
+    s_roster.persistence_issue = issue;
 }
 
-TAJ_MOD_KEEPALIVE void taj_mod_report_persistence_success(unsigned int generation) {
-    if (!s_taj.pending_store || generation == 0 ||
-        generation != s_taj.pending_generation) return;
-    s_taj.pending_store = 0;
-    s_taj.pending_generation = 0;
-    s_taj.retry_pending = 0;
-    s_taj.persistence_failed = 0;
-    s_taj.persistence_issue = TAJ_MOD_PERSISTENCE_NONE;
+TAJ_MOD_KEEPALIVE void taj_mod_report_persistence_success(
+    unsigned int generation) {
+    int continue_queue;
+    if (!s_roster.pending_store || generation == 0 ||
+        generation != s_roster.pending_generation) return;
+    continue_queue = s_roster.retry_pending;
+    s_roster.pending_store = 0;
+    s_roster.pending_generation = 0;
+    s_roster.persistence_failed = 0;
+    s_roster.persistence_issue = TAJ_MOD_PERSISTENCE_NONE;
+    /* A refused second unlock is not lost merely because the transaction in
+     * front of it succeeded. Start it only after the first generation settles
+     * so rollback snapshots can never overlap. */
+    if (continue_queue) (void)taj_mod_retry_persistence();
 }
 
 #ifdef TAJ_MOD_TESTING
-void taj_mod_reset_for_test(void) { memset(&s_taj, 0, sizeof(s_taj)); }
+void taj_mod_reset_for_test(void) { memset(&s_roster, 0, sizeof(s_roster)); }
 void taj_mod_set_async_persistence_for_test(int enabled) {
-    s_taj.test_async_persistence = enabled != 0;
+    s_roster.test_async_persistence = enabled != 0;
 }
 unsigned int taj_mod_pending_generation_for_test(void) {
     return taj_mod_persistence_pending_generation();

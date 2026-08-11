@@ -871,8 +871,8 @@ s32 read_game_data_from_controller_pak(s32 controllerIndex, char *fileExt, Setti
                         /* Controller Pak Adventure imports bypass
                          * read_save_file(), so reconcile valid completed
                          * pre-mod saves before the cart slot is written. */
-                        taj_mod_reconcile_imported_taj_flags(
-                            settings->tajFlags);
+                        mod_racer_reconcile_imported_progress(
+                            settings->tajFlags, settings->bosses);
 #endif
                     }
                 } else {
@@ -1033,7 +1033,8 @@ s32 read_save_file(s32 saveFileNum, Settings *settings) {
          * the unlock was never written. Both are fixed in taj_mod.c: a refused
          * store queues a retry and reports nothing, and the migration flag only
          * advances when the bytes really went out. */
-        taj_mod_reconcile_imported_taj_flags(settings->tajFlags);
+        mod_racer_reconcile_imported_progress(settings->tajFlags,
+                                              settings->bosses);
     }
 #endif
     if (settings->newGame) {

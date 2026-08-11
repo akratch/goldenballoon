@@ -7,6 +7,8 @@
 #include "taj_physics.h"
 #include "taj_select_layout.h"
 #include "taj_visual.h"
+#include "wizpig_visual.h"
+#include "terry_visual.h"
 #include "taj_mod_state_file.h"
 #include "video_config.h"
 extern int g_frameCounter;
@@ -52,7 +54,7 @@ extern int g_frameCounter;
 #include <string.h>
 #include "display_config.h" /* mdkr_display_widescreen_enabled */
 
-#define CHARSELECT_RUNTIME_CAPACITY 11
+#define CHARSELECT_RUNTIME_CAPACITY 13
 #define CHARSELECT_DATA(index) gCurrCharacterSelectData[(index)]
 #else
 #define CHARSELECT_DATA(index) (*gCurrCharacterSelectData)[(index)]
@@ -1055,8 +1057,14 @@ CharacterSelectData gCharacterSelectBytesComplete[] = {
 static CharacterSelectData sTajCharacterSelectData[CHARSELECT_RUNTIME_CAPACITY];
 static TajSelectLayout sTajSelectLayout;
 static s32 sCharacterSelectBaseCount;
+static s32 sCharacterSelectCount;
 static s32 sTajCharacterSelectIndex = -1;
+static s32 sWizpigCharacterSelectIndex = -1;
+static s32 sTerryCharacterSelectIndex = -1;
 static s32 sTajUnlockBannerTimer;
+static s32 sWizpigUnlockBannerTimer;
+static s32 sTerryUnlockBannerTimer;
+static ModRacerIdentity sLastSyntheticUnlock = MOD_RACER_RETAIL;
 static s32 sTajPersistenceWarningTimer;
 static s32 sTajPersistenceWarningShown;
 static s8 sTajTraceCharacter[MAXCONTROLLERS];
@@ -1074,15 +1082,46 @@ static s32 charselect_index_is_taj(s32 index) {
            index == sTajCharacterSelectIndex;
 }
 
+static s32 charselect_index_is_wizpig(s32 index) {
+    return mod_racer_is_enabled(MOD_RACER_WIZPIG) &&
+           sWizpigCharacterSelectIndex >= 0 &&
+           index == sWizpigCharacterSelectIndex;
+}
+
+static s32 charselect_index_is_terry(s32 index) {
+    return mod_racer_is_enabled(MOD_RACER_TERRY) &&
+           sTerryCharacterSelectIndex >= 0 && index == sTerryCharacterSelectIndex;
+}
+
+static ModRacerIdentity charselect_identity_for_index(s32 index) {
+    if (charselect_index_is_taj(index)) return MOD_RACER_TAJ;
+    if (charselect_index_is_wizpig(index)) return MOD_RACER_WIZPIG;
+    if (charselect_index_is_terry(index)) return MOD_RACER_TERRY;
+    return MOD_RACER_RETAIL;
+}
+
 /* The virtual row keeps Diddy only as a safe retail-table donor. Taj has no
  * retail character-music channel, so hovering him preserves the neutral
  * Choose Your Racer arrangement instead of audibly turning into Diddy. */
 static s32 charselect_music_channel_for_index(s32 index) {
-    return charselect_index_is_taj(index) ? -1 : CHARSELECT_DATA(index).voiceID;
+    return charselect_identity_for_index(index) != MOD_RACER_RETAIL
+               ? -1
+               : CHARSELECT_DATA(index).voiceID;
 }
 
 static s32 charselect_taj_is_selectable(void) {
     return taj_visual_select_status() == TAJ_SELECT_VISUAL_READY;
+}
+
+static s32 charselect_virtual_is_selectable(s32 index) {
+    if (charselect_index_is_taj(index)) return charselect_taj_is_selectable();
+    if (charselect_index_is_wizpig(index)) {
+        return wizpig_visual_select_status() == TAJ_SELECT_VISUAL_READY;
+    }
+    if (charselect_index_is_terry(index)) {
+        return terry_visual_select_status() == TAJ_SELECT_VISUAL_READY;
+    }
+    return TRUE;
 }
 
 /* Selection-table indexes are not retail Character values. Keep the trace in
@@ -1098,6 +1137,8 @@ static const char *charselect_trace_label(s32 index) {
     if (charselect_index_is_taj(index)) {
         return "TAJ";
     }
+    if (charselect_index_is_wizpig(index)) return "WIZPIG";
+    if (charselect_index_is_terry(index)) return "TERRY";
     if (index < 0 || index >= sCharacterSelectBaseCount) {
         return "INACTIVE";
     }
@@ -1108,25 +1149,46 @@ static const char *charselect_trace_label(s32 index) {
 
 static void charselect_build_taj_table(CharacterSelectData *base, s32 baseCount,
                                        s32 drumstickUnlocked, s32 ttUnlocked) {
-    CharacterSelectData *taj;
+    CharacterSelectData *virtualEntry;
     s32 i;
 
     if (base == NULL || baseCount < 8 || baseCount >= CHARSELECT_RUNTIME_CAPACITY ||
-        !taj_select_layout_build(&sTajSelectLayout, baseCount,
-                                 drumstickUnlocked, ttUnlocked)) {
+        !mod_racer_select_layout_build(
+            &sTajSelectLayout, baseCount, drumstickUnlocked, ttUnlocked,
+            taj_mod_is_enabled(),
+            mod_racer_is_enabled(MOD_RACER_WIZPIG),
+            mod_racer_is_enabled(MOD_RACER_TERRY))) {
         gCurrCharacterSelectData = base;
         sCharacterSelectBaseCount = baseCount;
+        sCharacterSelectCount = baseCount;
         sTajCharacterSelectIndex = -1;
+        sWizpigCharacterSelectIndex = -1;
+        sTerryCharacterSelectIndex = -1;
         taj_visual_select_end();
+        wizpig_visual_select_end();
+        terry_visual_select_end();
         return;
     }
     sTajCharacterSelectIndex = sTajSelectLayout.tajIndex;
+    sWizpigCharacterSelectIndex = sTajSelectLayout.wizpigIndex;
+    sTerryCharacterSelectIndex = sTajSelectLayout.terryIndex;
+    sCharacterSelectCount = sTajSelectLayout.characterCount;
     memcpy(sTajCharacterSelectData, base, (size_t)baseCount * sizeof(*base));
-    taj = &sTajCharacterSelectData[sTajCharacterSelectIndex];
-    memset(taj, NONE, sizeof(*taj));
-    /* Diddy is retained only as the bounded retail character-data donor.
-     * Picker music and voice identity are resolved separately. */
-    taj->voiceID = CHARACTER_DIDDY;
+    if (sTajCharacterSelectIndex >= 0) {
+        virtualEntry = &sTajCharacterSelectData[sTajCharacterSelectIndex];
+        memset(virtualEntry, NONE, sizeof(*virtualEntry));
+        virtualEntry->voiceID = CHARACTER_DIDDY;
+    }
+    if (sWizpigCharacterSelectIndex >= 0) {
+        virtualEntry = &sTajCharacterSelectData[sWizpigCharacterSelectIndex];
+        memset(virtualEntry, NONE, sizeof(*virtualEntry));
+        virtualEntry->voiceID = CHARACTER_KRUNCH;
+    }
+    if (sTerryCharacterSelectIndex >= 0) {
+        virtualEntry = &sTajCharacterSelectData[sTerryCharacterSelectIndex];
+        memset(virtualEntry, NONE, sizeof(*virtualEntry));
+        virtualEntry->voiceID = CHARACTER_KRUNCH;
+    }
     for (i = 0; i < sTajSelectLayout.characterCount; i++) {
         /* Decomp field names are reversed: rightInput is used for a physical
          * left move and leftInput for a physical right move. */
@@ -1140,12 +1202,30 @@ static void charselect_build_taj_table(CharacterSelectData *base, s32 baseCount,
 
     gCurrCharacterSelectData = sTajCharacterSelectData;
     sCharacterSelectBaseCount = baseCount;
-    taj_visual_select_begin(&sTajSelectLayout);
+    if (sTajCharacterSelectIndex >= 0) {
+        taj_visual_select_begin(&sTajSelectLayout);
+    } else {
+        taj_visual_select_end();
+    }
+    if (sWizpigCharacterSelectIndex >= 0) {
+        wizpig_visual_select_begin(&sTajSelectLayout);
+    } else {
+        wizpig_visual_select_end();
+    }
+    if (sTerryCharacterSelectIndex >= 0) {
+        terry_visual_select_begin(&sTajSelectLayout);
+    } else {
+        terry_visual_select_end();
+    }
 }
 
 static void charselect_update_taj_visual_state(void) {
     u32 hoverMask = 0;
     u32 confirmedMask = 0;
+    u32 wizpigHoverMask = 0;
+    u32 wizpigConfirmedMask = 0;
+    u32 terryHoverMask = 0;
+    u32 terryConfirmedMask = 0;
     TajSelectVisualStatus visualStatus = taj_visual_select_status();
     s32 signVisible = taj_visual_select_sign_visible();
     s32 i;
@@ -1158,8 +1238,24 @@ static void charselect_update_taj_visual_state(void) {
                 confirmedMask |= playerBit;
             }
         }
+        if (gActivePlayersArray[i] &&
+            charselect_index_is_wizpig(gPlayersCharacterArray[i])) {
+            wizpigHoverMask |= playerBit;
+            if (gCharselectStatus[i] != CHARSELECT_STATUS_UNCONFIRMED) {
+                wizpigConfirmedMask |= playerBit;
+            }
+        }
+        if (gActivePlayersArray[i] &&
+            charselect_index_is_terry(gPlayersCharacterArray[i])) {
+            terryHoverMask |= playerBit;
+            if (gCharselectStatus[i] != CHARSELECT_STATUS_UNCONFIRMED) {
+                terryConfirmedMask |= playerBit;
+            }
+        }
     }
     taj_visual_select_set_state(hoverMask, confirmedMask);
+    wizpig_visual_select_set_state(wizpigHoverMask, wizpigConfirmedMask);
+    terry_visual_select_set_state(terryHoverMask, terryConfirmedMask);
     /* The trace ties every cursor position to the presentation state. It is a
      * durable oracle for the historical bug where a TAJ label followed every
      * ordinary hover even though no Taj actor existed. */
@@ -1184,8 +1280,20 @@ static void charselect_update_taj_visual_state(void) {
 
 static u16 charselect_taj_sound(s32 playerIndex, u16 fallback, s32 event) {
     u16 sound;
-    if (playerIndex < 0 || playerIndex >= MAXCONTROLLERS ||
-        !charselect_index_is_taj(gPlayersCharacterArray[playerIndex])) {
+    if (playerIndex < 0 || playerIndex >= MAXCONTROLLERS) {
+        return fallback;
+    }
+    if (charselect_index_is_wizpig(gPlayersCharacterArray[playerIndex])) {
+        return event == TAJ_CHARSELECT_DESELECT
+                   ? SOUND_VOICE_WIZPIG_LAUGH_SHORT3
+                   : SOUND_VOICE_WIZPIG_LAUGH_SHORT2;
+    }
+    if (charselect_index_is_terry(gPlayersCharacterArray[playerIndex])) {
+        /* Terry has no authored voice bank. Keep the ordinary menu cue instead
+         * of borrowing Smokey dialogue or Krunch grunts. */
+        return SOUND_SELECT2;
+    }
+    if (!charselect_index_is_taj(gPlayersCharacterArray[playerIndex])) {
         return fallback;
     }
     if (event == TAJ_CHARSELECT_CONFIRMED) {
@@ -1598,16 +1706,24 @@ typedef struct TajPortraitTexture {
 } TajPortraitTexture;
 
 static TajPortraitTexture sTajPortraitTexture;
+static TajPortraitTexture sWizpigPortraitTexture;
+static TajPortraitTexture sTerryPortraitTexture;
 static u8 sTajPortraitArt[TAJ_PORTRAIT_ART_SIZE *
                           TAJ_PORTRAIT_ART_SIZE * 4];
 static Gfx *sTajPortraitCommands;
+static Gfx *sWizpigPortraitCommands;
+static Gfx *sTerryPortraitCommands;
 static s32 sTajPortraitInitialized;
+static s32 sWizpigPortraitInitialized;
+static s32 sTerryPortraitInitialized;
 
 /* Taj has no retail results portrait. This small native RGBA card is original
  * port artwork assembled from geometric pixel primitives: it stays inside the
  * retail 40x40 portrait contract without bundling extracted ROM art or showing
  * the Diddy donor underneath. */
 DrawTexture gMenuPortraitTaj[2] = { { NULL, 0, 0 }, { NULL, 0, 0 } };
+DrawTexture gMenuPortraitWizpig[2] = { { NULL, 0, 0 }, { NULL, 0, 0 } };
+DrawTexture gMenuPortraitTerry[2] = { { NULL, 0, 0 }, { NULL, 0, 0 } };
 
 static void taj_portrait_pixel(s32 x, s32 y, u32 colour) {
     u8 *pixel;
@@ -1624,7 +1740,7 @@ static void taj_portrait_pixel(s32 x, s32 y, u32 colour) {
     pixel[3] = (u8)colour;
 }
 
-static void taj_portrait_resample(void) {
+static void taj_portrait_resample(TajPortraitTexture *texture) {
     s32 x;
     s32 y;
 
@@ -1643,7 +1759,7 @@ static void taj_portrait_resample(void) {
             u32 x0 = sx >> 8;
             u32 x1 = MIN(x0 + 1, TAJ_PORTRAIT_ART_SIZE - 1);
             u32 fx = sx & 255u;
-            u8 *out = &sTajPortraitTexture.texels[
+            u8 *out = &texture->texels[
                 (y * TAJ_PORTRAIT_SIZE + x) * 4];
             s32 channel;
 
@@ -1664,6 +1780,24 @@ static void taj_portrait_resample(void) {
             }
         }
     }
+}
+
+static TextureHeader *bonus_portrait_finish(TajPortraitTexture *texture,
+                                            Gfx *commands,
+                                            s32 *initialized) {
+    taj_portrait_resample(texture);
+    texture->header.width = TAJ_PORTRAIT_SIZE;
+    texture->header.height = TAJ_PORTRAIT_SIZE;
+    texture->header.format = (OPAQUE << 4) | TEX_FORMAT_RGBA32;
+    texture->header.numberOfInstances = 1;
+    texture->header.flags = RENDER_CLAMP_X | RENDER_CLAMP_Y;
+    texture->header.numOfTextures = 1;
+    texture->header.textureSize =
+        sizeof(TextureHeader) + sizeof(texture->texels);
+    material_init(&texture->header, commands);
+    dkr_dl_register_host_ptr(texture->texels);
+    *initialized = TRUE;
+    return &texture->header;
 }
 
 static void taj_portrait_rect(s32 x0, s32 y0, s32 x1, s32 y1,
@@ -1814,21 +1948,107 @@ static TextureHeader *taj_portrait_texture(void) {
                                COLOUR_RGBA32(255, 255, 235, 255));
         }
     }
-    taj_portrait_resample();
+    return bonus_portrait_finish(&sTajPortraitTexture,
+                                 sTajPortraitCommands,
+                                 &sTajPortraitInitialized);
+}
 
-    sTajPortraitTexture.header.width = TAJ_PORTRAIT_SIZE;
-    sTajPortraitTexture.header.height = TAJ_PORTRAIT_SIZE;
-    sTajPortraitTexture.header.format = (OPAQUE << 4) | TEX_FORMAT_RGBA32;
-    sTajPortraitTexture.header.numberOfInstances = 1;
-    sTajPortraitTexture.header.flags = RENDER_CLAMP_X | RENDER_CLAMP_Y;
-    sTajPortraitTexture.header.numOfTextures = 1;
-    sTajPortraitTexture.header.textureSize =
-        sizeof(TextureHeader) + sizeof(sTajPortraitTexture.texels);
-    material_init(&sTajPortraitTexture.header,
-                  sTajPortraitCommands);
-    dkr_dl_register_host_ptr(sTajPortraitTexture.texels);
-    sTajPortraitInitialized = TRUE;
-    return &sTajPortraitTexture.header;
+static TextureHeader *wizpig_portrait_texture(void) {
+    s32 y;
+
+    if (sWizpigPortraitInitialized) {
+        dkr_dl_register_host_ptr(sWizpigPortraitTexture.texels);
+        return &sWizpigPortraitTexture.header;
+    }
+    if (sWizpigPortraitCommands == NULL) {
+        sWizpigPortraitCommands = mempool_alloc_safe(
+            TAJ_PORTRAIT_COMMANDS * sizeof(*sWizpigPortraitCommands),
+            COLOUR_TAG_MAGENTA);
+    }
+    memset(&sWizpigPortraitTexture, 0, sizeof(sWizpigPortraitTexture));
+    memset(sTajPortraitArt, 0, sizeof(sTajPortraitArt));
+
+    /* A warm boss card with the same bevel and occupancy as retail portraits. */
+    taj_portrait_rect(0, 0, 31, 31, COLOUR_RGBA32(62, 42, 38, 255));
+    taj_portrait_rect(1, 1, 30, 30, COLOUR_RGBA32(244, 205, 100, 255));
+    for (y = 2; y <= 29; y++) {
+        taj_portrait_rect(2, y, 29, y,
+                          COLOUR_RGBA32(112 + y, 24, 22, 255));
+    }
+    /* Broad shoulders, ears, and the unmistakable pig head. */
+    taj_portrait_ellipse(16, 29, 13, 8, COLOUR_RGBA32(48, 26, 28, 255));
+    taj_portrait_ellipse(16, 28, 11, 7, COLOUR_RGBA32(122, 42, 44, 255));
+    taj_portrait_ellipse(7, 13, 5, 7, COLOUR_RGBA32(115, 49, 42, 255));
+    taj_portrait_ellipse(25, 13, 5, 7, COLOUR_RGBA32(115, 49, 42, 255));
+    taj_portrait_ellipse(7, 13, 3, 5, COLOUR_RGBA32(222, 112, 92, 255));
+    taj_portrait_ellipse(25, 13, 3, 5, COLOUR_RGBA32(222, 112, 92, 255));
+    taj_portrait_ellipse(16, 16, 10, 12, COLOUR_RGBA32(101, 43, 37, 255));
+    taj_portrait_ellipse(16, 17, 9, 11, COLOUR_RGBA32(207, 103, 82, 255));
+    taj_portrait_ellipse(18, 18, 6, 9, COLOUR_RGBA32(231, 133, 103, 255));
+    /* Brow, eyes, snout, tusks, and crown spikes stay legible at 40x40. */
+    taj_portrait_rect(9, 10, 14, 12, COLOUR_RGBA32(55, 25, 24, 255));
+    taj_portrait_rect(18, 10, 23, 12, COLOUR_RGBA32(55, 25, 24, 255));
+    taj_portrait_rect(11, 12, 14, 15, COLOUR_RGBA32(248, 222, 174, 255));
+    taj_portrait_rect(18, 12, 21, 15, COLOUR_RGBA32(248, 222, 174, 255));
+    taj_portrait_rect(12, 13, 14, 15, COLOUR_RGBA32(26, 18, 16, 255));
+    taj_portrait_rect(18, 13, 20, 15, COLOUR_RGBA32(26, 18, 16, 255));
+    taj_portrait_ellipse(16, 21, 7, 5, COLOUR_RGBA32(238, 139, 116, 255));
+    taj_portrait_ellipse(13, 21, 2, 2, COLOUR_RGBA32(76, 35, 38, 255));
+    taj_portrait_ellipse(19, 21, 2, 2, COLOUR_RGBA32(76, 35, 38, 255));
+    taj_portrait_rect(8, 22, 10, 27, COLOUR_RGBA32(255, 246, 205, 255));
+    taj_portrait_rect(22, 22, 24, 27, COLOUR_RGBA32(255, 246, 205, 255));
+    taj_portrait_rect(9, 6, 23, 8, COLOUR_RGBA32(244, 174, 35, 255));
+    taj_portrait_rect(11, 4, 13, 7, COLOUR_RGBA32(255, 211, 61, 255));
+    taj_portrait_rect(15, 2, 17, 7, COLOUR_RGBA32(255, 226, 72, 255));
+    taj_portrait_rect(19, 4, 21, 7, COLOUR_RGBA32(255, 211, 61, 255));
+
+    return bonus_portrait_finish(&sWizpigPortraitTexture,
+                                 sWizpigPortraitCommands,
+                                 &sWizpigPortraitInitialized);
+}
+
+static TextureHeader *terry_portrait_texture(void) {
+    s32 y;
+
+    if (sTerryPortraitInitialized) {
+        dkr_dl_register_host_ptr(sTerryPortraitTexture.texels);
+        return &sTerryPortraitTexture.header;
+    }
+    if (sTerryPortraitCommands == NULL) {
+        sTerryPortraitCommands = mempool_alloc_safe(
+            TAJ_PORTRAIT_COMMANDS * sizeof(*sTerryPortraitCommands),
+            COLOUR_TAG_MAGENTA);
+    }
+    memset(&sTerryPortraitTexture, 0, sizeof(sTerryPortraitTexture));
+    memset(sTajPortraitArt, 0, sizeof(sTajPortraitArt));
+
+    taj_portrait_rect(0, 0, 31, 31, COLOUR_RGBA32(35, 48, 57, 255));
+    taj_portrait_rect(1, 1, 30, 30, COLOUR_RGBA32(204, 231, 220, 255));
+    for (y = 2; y <= 29; y++) {
+        taj_portrait_rect(2, y, 29, y,
+                          COLOUR_RGBA32(30, 104 + y, 136 + y, 255));
+    }
+    /* Folded wings frame a large, clean pterodactyl profile. */
+    taj_portrait_ellipse(7, 27, 8, 6, COLOUR_RGBA32(62, 86, 76, 255));
+    taj_portrait_ellipse(25, 27, 8, 6, COLOUR_RGBA32(62, 86, 76, 255));
+    taj_portrait_ellipse(16, 25, 9, 8, COLOUR_RGBA32(92, 132, 105, 255));
+    taj_portrait_ellipse(16, 14, 8, 10, COLOUR_RGBA32(71, 108, 83, 255));
+    taj_portrait_ellipse(17, 15, 7, 9, COLOUR_RGBA32(131, 174, 132, 255));
+    /* Long beak and swept crest distinguish Terry from any kart donor. */
+    taj_portrait_rect(6, 16, 16, 20, COLOUR_RGBA32(238, 184, 58, 255));
+    taj_portrait_rect(3, 17, 11, 19, COLOUR_RGBA32(255, 211, 75, 255));
+    taj_portrait_pixel(2, 18, COLOUR_RGBA32(255, 232, 104, 255));
+    taj_portrait_rect(18, 5, 25, 8, COLOUR_RGBA32(52, 83, 67, 255));
+    taj_portrait_rect(21, 3, 28, 5, COLOUR_RGBA32(59, 92, 73, 255));
+    taj_portrait_rect(24, 2, 30, 3, COLOUR_RGBA32(71, 106, 82, 255));
+    taj_portrait_rect(11, 11, 16, 15, COLOUR_RGBA32(244, 242, 194, 255));
+    taj_portrait_rect(12, 12, 15, 15, COLOUR_RGBA32(22, 30, 24, 255));
+    taj_portrait_pixel(13, 12, COLOUR_RGBA32(255, 255, 255, 255));
+    taj_portrait_rect(8, 9, 16, 10, COLOUR_RGBA32(41, 67, 52, 255));
+
+    return bonus_portrait_finish(&sTerryPortraitTexture,
+                                 sTerryPortraitCommands,
+                                 &sTerryPortraitInitialized);
 }
 #endif
 
@@ -1843,6 +2063,25 @@ DrawTexture *menu_taj_portrait(void) {
         gMenuPortraitTaj[0].texture = taj_portrait_texture();
     }
     return gMenuPortraitTaj;
+}
+
+DrawTexture *menu_mod_portrait(ModRacerIdentity identity) {
+    switch (identity) {
+        case MOD_RACER_TAJ:
+            return menu_taj_portrait();
+        case MOD_RACER_WIZPIG:
+            if (gMenuPortraitWizpig[0].texture == NULL) {
+                gMenuPortraitWizpig[0].texture = wizpig_portrait_texture();
+            }
+            return gMenuPortraitWizpig;
+        case MOD_RACER_TERRY:
+            if (gMenuPortraitTerry[0].texture == NULL) {
+                gMenuPortraitTerry[0].texture = terry_portrait_texture();
+            }
+            return gMenuPortraitTerry;
+        default:
+            return NULL;
+    }
 }
 #endif
 
@@ -3456,24 +3695,29 @@ void postrace_offsets(MenuElement *elements, f32 in, f32 mid, f32 out, s32 textO
 }
 
 #ifdef NATIVE_PORT
-static s32 menu_any_taj_player_selected(void) {
+static ModRacerIdentity menu_any_mod_player_selected(void) {
     s32 i;
 
     for (i = 0; i < TAJ_MOD_MAX_PLAYERS; i++) {
-        if (taj_mod_player_selected(i)) {
-            return TRUE;
-        }
+        ModRacerIdentity identity = mod_racer_player_identity(i);
+        if (identity != MOD_RACER_RETAIL) return identity;
     }
-    return FALSE;
+    return MOD_RACER_RETAIL;
 }
 
 static void menu_render_taj_postrace_identity(void) {
     char *label;
+    ModRacerIdentity identity = menu_any_mod_player_selected();
 
-    if (!menu_any_taj_player_selected()) {
-        return;
+    if (identity == MOD_RACER_RETAIL) return;
+    if (identity == MOD_RACER_WIZPIG) {
+        label = is_in_time_trial() ? "WIZPIG - NO RECORD" : "WIZPIG";
+    } else if (identity == MOD_RACER_TERRY) {
+        label = is_in_time_trial() ? "TERRY - NO RECORD" : "TERRY";
+    } else {
+        label = is_in_time_trial() ? "TAJ MAGIC - NO RECORD"
+                                   : "TAJ MAGIC CARPET";
     }
-    label = is_in_time_trial() ? "TAJ MAGIC - NO RECORD" : "TAJ MAGIC CARPET";
     set_text_font(ASSET_FONTS_FUNFONT);
     set_text_background_colour(0, 0, 0, 0);
     set_text_colour(0, 0, 0, 255, 180);
@@ -3858,8 +4102,10 @@ void init_title_screen_variables(void) {
     /* Reconcile pre-mod/imported Adventure challenge completion before the
      * first character-select visit, not after the player has already chosen. */
     mark_read_all_save_files();
-    taj_physics_set_racer_predicate(taj_mod_racer_is_taj);
+    taj_physics_set_identity_predicate(mod_racer_live_identity);
     taj_visual_set_racer_predicate(taj_mod_racer_is_taj);
+    wizpig_visual_set_identity_predicate(mod_racer_live_identity);
+    terry_visual_set_identity_predicate(mod_racer_live_identity);
 #endif
     if (sEepromSettings & 2) {
         set_magic_code_flags(CHEAT_CONTROL_DRUMSTICK);
@@ -7599,12 +7845,17 @@ void cheatmenu_render(UNUSED s32 updateRate) {
 #ifdef NATIVE_PORT
         } else if (gNewCheatID == -2) {
             /* This synthetic success must never index the 29-row asset. */
-            draw_text(&sMenuCurrDisplayList, POS_CENTRED, 144, "TAJ HAS JOINED THE RACE!",
+            draw_text(&sMenuCurrDisplayList, POS_CENTRED, 144,
+                      sLastSyntheticUnlock == MOD_RACER_WIZPIG
+                          ? "WIZPIG HAS JOINED THE RACE!"
+                          : (sLastSyntheticUnlock == MOD_RACER_TERRY
+                                 ? "TERRY HAS JOINED THE RACE!"
+                                 : "TAJ HAS JOINED THE RACE!"),
                       ALIGN_MIDDLE_CENTER);
             if (taj_mod_persistence_failed()) {
                 set_text_colour(255, 96, 64, 0, 255);
                 draw_text(&sMenuCurrDisplayList, POS_CENTRED, 160,
-                          "TAJ UNLOCK NOT SAVED", ALIGN_MIDDLE_CENTER);
+                          "ROSTER UNLOCK NOT SAVED", ALIGN_MIDDLE_CENTER);
             }
 #endif
         } else {
@@ -7791,7 +8042,9 @@ s32 menu_magic_codes_loop(s32 updateRate) {
                 gOptionsMenuItemIndex = 0;
             } else {
 #ifdef NATIVE_PORT
-                if (taj_mod_submit_magic_code(gCheatInput)) {
+                sLastSyntheticUnlock =
+                    mod_racer_submit_magic_code(gCheatInput);
+                if (sLastSyntheticUnlock != MOD_RACER_RETAIL) {
                     /* Synthetic success: do not enter the retail magic table. */
                     foundCheat = TRUE;
                     gNewCheatID = -2;
@@ -8046,6 +8299,10 @@ void cheatlist_render(UNUSED s32 updateRate) {
     if (taj_mod_is_unlocked()) {
         numOfUnlockedCheats++;
     }
+    if (mod_racer_is_unlocked(MOD_RACER_WIZPIG)) {
+        numOfUnlockedCheats++;
+    }
+    if (mod_racer_is_unlocked(MOD_RACER_TERRY)) numOfUnlockedCheats++;
 #endif
     yPos = 54;
     alpha = gOptionBlinkTimer * 8;
@@ -8060,11 +8317,31 @@ void cheatlist_render(UNUSED s32 updateRate) {
             set_text_colour(255, 255, 255, alpha, 255);
         }
 #ifdef NATIVE_PORT
-        if (i == numOfRetailUnlockedCheats) {
-            draw_text(&sMenuCurrDisplayList, 48, yPos, "CONTROL TAJ", ALIGN_TOP_LEFT);
+        if (i >= numOfRetailUnlockedCheats) {
+            ModRacerIdentity identity = MOD_RACER_RETAIL;
+            s32 virtualIndex = i - numOfRetailUnlockedCheats;
+            if (taj_mod_is_unlocked()) {
+                if (virtualIndex == 0) identity = MOD_RACER_TAJ;
+                virtualIndex--;
+            }
+            if (identity == MOD_RACER_RETAIL && virtualIndex == 0 &&
+                mod_racer_is_unlocked(MOD_RACER_WIZPIG)) {
+                identity = MOD_RACER_WIZPIG;
+                virtualIndex--;
+            }
+            if (identity == MOD_RACER_RETAIL && virtualIndex == 0 &&
+                mod_racer_is_unlocked(MOD_RACER_TERRY)) {
+                identity = MOD_RACER_TERRY;
+            }
+            draw_text(&sMenuCurrDisplayList, 48, yPos,
+                      identity == MOD_RACER_TAJ ? "CONTROL TAJ"
+                      : identity == MOD_RACER_WIZPIG ? "CONTROL WIZPIG"
+                                                     : "CONTROL TERRY",
+                      ALIGN_TOP_LEFT);
             draw_text(&sMenuCurrDisplayList, 256, yPos,
-                      taj_mod_is_enabled() ? gMenuText[ASSET_MENU_TEXT_ON] :
-                                             gMenuText[ASSET_MENU_TEXT_OFF],
+                      mod_racer_is_enabled(identity)
+                          ? gMenuText[ASSET_MENU_TEXT_ON]
+                          : gMenuText[ASSET_MENU_TEXT_OFF],
                       ALIGN_TOP_LEFT);
             if (i == gOptionsMenuItemIndex) {
                 set_text_colour(255, 255, 255, 0, 255);
@@ -8178,13 +8455,34 @@ s32 menu_magic_codes_list_loop(s32 updateRate) {
     if (taj_mod_is_unlocked()) {
         numUnlockedCodes++;
     }
+    if (mod_racer_is_unlocked(MOD_RACER_WIZPIG)) {
+        numUnlockedCodes++;
+    }
+    if (mod_racer_is_unlocked(MOD_RACER_TERRY)) numUnlockedCodes++;
 #endif
 
     if ((xAxis < 0 || xAxis > 0) && numUnlockedCodes != gOptionsMenuItemIndex) {
         sound_play(SOUND_SELECT2, NULL);
 #ifdef NATIVE_PORT
-        if (gOptionsMenuItemIndex == numRetailUnlockedCodes) {
-            taj_mod_set_enabled(!taj_mod_is_enabled());
+        if (gOptionsMenuItemIndex >= numRetailUnlockedCodes) {
+            ModRacerIdentity identity = MOD_RACER_RETAIL;
+            s32 virtualIndex =
+                gOptionsMenuItemIndex - numRetailUnlockedCodes;
+            if (taj_mod_is_unlocked()) {
+                if (virtualIndex == 0) identity = MOD_RACER_TAJ;
+                virtualIndex--;
+            }
+            if (identity == MOD_RACER_RETAIL && virtualIndex == 0 &&
+                mod_racer_is_unlocked(MOD_RACER_WIZPIG)) {
+                identity = MOD_RACER_WIZPIG;
+                virtualIndex--;
+            }
+            if (identity == MOD_RACER_RETAIL && virtualIndex == 0 &&
+                mod_racer_is_unlocked(MOD_RACER_TERRY)) {
+                identity = MOD_RACER_TERRY;
+            }
+            mod_racer_set_enabled(identity,
+                                  !mod_racer_is_enabled(identity));
         } else {
 #endif
         code = 1U << gUnlockedCheatIDs[gOptionsMenuItemIndex];
@@ -8423,27 +8721,42 @@ void menu_character_select_init(void) {
         baseCharacterSelectData = gCharacterSelectBytesDefault;
         baseCharacterCount = ARRAY_COUNT(gCharacterSelectBytesDefault);
     }
-    if (taj_mod_is_enabled()) {
+    if (taj_mod_is_enabled() ||
+        mod_racer_is_enabled(MOD_RACER_WIZPIG) ||
+        mod_racer_is_enabled(MOD_RACER_TERRY)) {
         charselect_build_taj_table(baseCharacterSelectData, baseCharacterCount,
                                    is_drumstick_unlocked(), ttUnlocked);
     } else {
         gCurrCharacterSelectData = baseCharacterSelectData;
         sCharacterSelectBaseCount = baseCharacterCount;
+        sCharacterSelectCount = baseCharacterCount;
         sTajCharacterSelectIndex = -1;
+        sWizpigCharacterSelectIndex = -1;
+        sTerryCharacterSelectIndex = -1;
         taj_visual_select_end();
+        wizpig_visual_select_end();
+        terry_visual_select_end();
     }
-    MDKR_TRACE("taj_roster: base=%d taj=%d enabled=%d drumstick=%d tt=%d",
-               baseCharacterCount, sTajCharacterSelectIndex,
-               taj_mod_is_enabled(), is_drumstick_unlocked() != 0,
-               ttUnlocked != 0);
+    MDKR_TRACE(
+        "mod_roster: base=%d count=%d taj=%d wizpig=%d terry=%d taj_enabled=%d wizpig_enabled=%d terry_enabled=%d drumstick=%d tt=%d",
+        baseCharacterCount, sCharacterSelectCount,
+        sTajCharacterSelectIndex, sWizpigCharacterSelectIndex,
+        sTerryCharacterSelectIndex, taj_mod_is_enabled(),
+        mod_racer_is_enabled(MOD_RACER_WIZPIG),
+        mod_racer_is_enabled(MOD_RACER_TERRY),
+        is_drumstick_unlocked() != 0, ttUnlocked != 0);
     for (i = 0; i < ARRAY_COUNT(gActivePlayersArray); i++) {
         if (gPlayersCharacterArray[i] < 0 ||
-            (!taj_mod_is_enabled() && gPlayersCharacterArray[i] >= sCharacterSelectBaseCount) ||
+            gPlayersCharacterArray[i] >= sCharacterSelectCount ||
             gPlayersCharacterArray[i] >= CHARSELECT_RUNTIME_CAPACITY) {
             gPlayersCharacterArray[i] = gActivePlayersArray[i] ? DIDDY : -1;
         }
     }
     sTajUnlockBannerTimer = taj_mod_consume_unlock_announcement() ? 300 : 0;
+    sWizpigUnlockBannerTimer =
+        mod_racer_consume_unlock_announcement(MOD_RACER_WIZPIG) ? 300 : 0;
+    sTerryUnlockBannerTimer =
+        mod_racer_consume_unlock_announcement(MOD_RACER_TERRY) ? 300 : 0;
     sTajPersistenceWarningTimer = taj_mod_persistence_failed() ? 600 : 0;
     sTajPersistenceWarningShown = sTajPersistenceWarningTimer > 0;
     memset(sTajTraceCharacter, -2, sizeof(sTajTraceCharacter));
@@ -8533,6 +8846,30 @@ void charselect_render_text(UNUSED s32 updateRate) {
             set_text_colour(255, 224, 96, 0, 255);
             draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 52, "TAJ UNLOCKED!", ALIGN_MIDDLE_CENTER);
         }
+        if (sWizpigUnlockBannerTimer > 0) {
+            s32 bannerY = sTajUnlockBannerTimer > 0 ? 66 : 52;
+            sWizpigUnlockBannerTimer -= updateRate;
+            if (sWizpigUnlockBannerTimer < 0) sWizpigUnlockBannerTimer = 0;
+            set_text_colour(0, 0, 0, 255, 160);
+            draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF + 1, bannerY + 2,
+                      "WIZPIG UNLOCKED!", ALIGN_MIDDLE_CENTER);
+            set_text_colour(255, 224, 96, 0, 255);
+            draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, bannerY,
+                      "WIZPIG UNLOCKED!", ALIGN_MIDDLE_CENTER);
+        }
+        if (sTerryUnlockBannerTimer > 0) {
+            s32 bannerY = 52;
+            if (sTajUnlockBannerTimer > 0) bannerY += 14;
+            if (sWizpigUnlockBannerTimer > 0) bannerY += 14;
+            sTerryUnlockBannerTimer -= updateRate;
+            if (sTerryUnlockBannerTimer < 0) sTerryUnlockBannerTimer = 0;
+            set_text_colour(0, 0, 0, 255, 160);
+            draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF + 1,
+                      bannerY + 2, "TERRY UNLOCKED!", ALIGN_MIDDLE_CENTER);
+            set_text_colour(255, 224, 96, 0, 255);
+            draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, bannerY,
+                      "TERRY UNLOCKED!", ALIGN_MIDDLE_CENTER);
+        }
         if (sTajPersistenceWarningTimer > 0 &&
             taj_mod_persistence_failed()) {
             char *persistenceText = "TAJ UNLOCK NOT SAVED";
@@ -8567,6 +8904,27 @@ void charselect_render_text(UNUSED s32 updateRate) {
             set_text_colour(255, 96, 64, 0, 255);
             draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 85,
                       "TAJ PRESENTATION UNAVAILABLE", ALIGN_MIDDLE_CENTER);
+        }
+        if (wizpig_visual_select_status() ==
+            TAJ_SELECT_VISUAL_UNAVAILABLE) {
+            set_text_font(ASSET_FONTS_FUNFONT);
+            set_text_colour(0, 0, 0, 255, 192);
+            draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF + 1, 86,
+                      "WIZPIG PRESENTATION UNAVAILABLE",
+                      ALIGN_MIDDLE_CENTER);
+            set_text_colour(255, 96, 64, 0, 255);
+            draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 85,
+                      "WIZPIG PRESENTATION UNAVAILABLE",
+                      ALIGN_MIDDLE_CENTER);
+        }
+        if (terry_visual_select_status() == TAJ_SELECT_VISUAL_UNAVAILABLE) {
+            set_text_font(ASSET_FONTS_FUNFONT);
+            set_text_colour(0, 0, 0, 255, 192);
+            draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF + 1, 100,
+                      "TERRY PRESENTATION UNAVAILABLE", ALIGN_MIDDLE_CENTER);
+            set_text_colour(255, 96, 64, 0, 255);
+            draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 99,
+                      "TERRY PRESENTATION UNAVAILABLE", ALIGN_MIDDLE_CENTER);
         }
 #endif
         if (gNumberOfReadyPlayers == gNumberOfActivePlayers && gNumberOfActivePlayers > 0) {
@@ -8759,8 +9117,8 @@ void charselect_input(s8 *activePlayers) {
                     }
                 } else if (gMenuButtons[i] & (A_BUTTON | START_BUTTON)) {
 #ifdef NATIVE_PORT
-                    if (charselect_index_is_taj(gPlayersCharacterArray[i]) &&
-                        !charselect_taj_is_selectable()) {
+                    if (!charselect_virtual_is_selectable(
+                            gPlayersCharacterArray[i])) {
                         sound_play(SOUND_HORN_DRUMSTICK, NULL);
                         continue;
                     }
@@ -8970,12 +9328,22 @@ s32 menu_character_select_loop(s32 updateRate) {
                 if (gActivePlayersArray[j]) {
 #ifdef NATIVE_PORT
                     s32 selectedIndex = gPlayersCharacterArray[j];
-                    s32 selectedTaj = charselect_index_is_taj(selectedIndex);
-                    taj_mod_set_player_selected(charSlot, selectedTaj);
-                    gCharacterIdSlots[charSlot] = (s8)taj_mod_resolve_race_character(
+                    ModRacerIdentity identity =
+                        charselect_identity_for_index(selectedIndex);
+                    mod_racer_set_player_identity(charSlot, identity);
+                    gCharacterIdSlots[charSlot] = (s8)mod_racer_resolve_race_character(
                         charSlot, CHARSELECT_DATA(selectedIndex).voiceID);
-                    MDKR_TRACE("taj_select: player=%d controller=%d selected=%d donor=%d",
-                               charSlot, j, selectedTaj, gCharacterIdSlots[charSlot]);
+                    MDKR_TRACE(
+                        "mod_racer_select: player=%d controller=%d identity=%d donor=%d",
+                        charSlot, j, identity, gCharacterIdSlots[charSlot]);
+                    if (identity == MOD_RACER_TAJ) {
+                        /* Preserve the rollout-era witness consumed by the
+                         * Taj Adventure/HUD regressions while the generic
+                         * roster trace carries all three identities. */
+                        MDKR_TRACE(
+                            "taj_select: player=%d controller=%d selected=1 donor=%d",
+                            charSlot, j, gCharacterIdSlots[charSlot]);
+                    }
 #else
                     gCharacterIdSlots[charSlot] = CHARSELECT_DATA(gPlayersCharacterArray[j]).voiceID;
 #endif
@@ -12433,14 +12801,25 @@ void menu_racer_portraits(void) {
     gMenuPortraitPipsy[0].texture = gMenuAssets[TEXTURE_ICON_PORTRAIT_PIPSY];
     gMenuPortraitTimber[0].texture = gMenuAssets[TEXTURE_ICON_PORTRAIT_TIMBER];
 #ifdef NATIVE_PORT
-    if (gMenuPortraitTaj[0].texture == NULL) {
-        (void)menu_taj_portrait();
-        if (gMenuPortraitTaj[0].texture != NULL) {
-            MDKR_TRACE("taj_portrait: source=native-taj-card size=%dx%d retail=%dx%d",
-                       gMenuPortraitTaj[0].texture->width,
-                       gMenuPortraitTaj[0].texture->height,
-                       gMenuPortraitDiddy[0].texture->width,
-                       gMenuPortraitDiddy[0].texture->height);
+    {
+        ModRacerIdentity identity;
+        for (identity = MOD_RACER_TAJ;
+             identity < MOD_RACER_IDENTITY_COUNT; identity++) {
+            DrawTexture *portrait = menu_mod_portrait(identity);
+            if (portrait != NULL && portrait[0].texture != NULL) {
+                MDKR_TRACE("bonus_portrait: identity=%d source=native-card size=%dx%d retail=%dx%d",
+                           identity, portrait[0].texture->width,
+                           portrait[0].texture->height,
+                           gMenuPortraitDiddy[0].texture->width,
+                           gMenuPortraitDiddy[0].texture->height);
+                if (identity == MOD_RACER_TAJ) {
+                    MDKR_TRACE("taj_portrait: source=native-taj-card size=%dx%d retail=%dx%d",
+                               portrait[0].texture->width,
+                               portrait[0].texture->height,
+                               gMenuPortraitDiddy[0].texture->width,
+                               gMenuPortraitDiddy[0].texture->height);
+                }
+            }
         }
     }
 #endif
@@ -12449,22 +12828,31 @@ void menu_racer_portraits(void) {
 #ifdef NATIVE_PORT
 static DrawTexture *menu_racer_portrait_for_player(s32 playerIndex,
                                                    s32 character) {
-    static u32 tracedTajPlayers;
+    static u32 tracedPlayers[MOD_RACER_IDENTITY_COUNT];
     static u32 tracedEpoch;
+    ModRacerIdentity identity = mod_racer_player_identity(playerIndex);
     u32 playerBit = taj_mod_player_bit(playerIndex);
+    DrawTexture *portrait;
     if (tracedEpoch != taj_visual_trace_epoch()) {
         tracedEpoch = taj_visual_trace_epoch();
-        tracedTajPlayers = 0;
+        memset(tracedPlayers, 0, sizeof(tracedPlayers));
     }
     if (playerIndex >= 0 && playerIndex < TAJ_MOD_MAX_PLAYERS &&
-        taj_mod_player_selected(playerIndex) &&
-        gMenuPortraitTaj[0].texture != NULL) {
-        if (!(tracedTajPlayers & playerBit)) {
-            tracedTajPlayers |= playerBit;
-            MDKR_TRACE("taj_results_portrait: player=%d identity=taj source=native-taj-card",
-                       playerIndex);
+        identity > MOD_RACER_RETAIL &&
+        identity < MOD_RACER_IDENTITY_COUNT) {
+        portrait = menu_mod_portrait(identity);
+        if (portrait != NULL && portrait[0].texture != NULL) {
+            if (!(tracedPlayers[identity] & playerBit)) {
+                tracedPlayers[identity] |= playerBit;
+                MDKR_TRACE("bonus_results_portrait: player=%d identity=%d source=native-card",
+                           playerIndex, identity);
+                if (identity == MOD_RACER_TAJ) {
+                    MDKR_TRACE("taj_results_portrait: player=%d identity=taj source=native-taj-card",
+                               playerIndex);
+                }
+            }
+            return portrait;
         }
-        return gMenuPortraitTaj;
     }
     if (character < 0 || character >= ARRAY_COUNT(gRacerPortraits)) {
         character = CHARACTER_DIDDY;
@@ -16076,10 +16464,14 @@ void menu_asset_free(s32 assetID) {
     }
     if (gMenuObjectsCount == 0) {
 #ifdef NATIVE_PORT
-        if (gMenuPortraitTaj[0].texture != NULL) {
+        if (gMenuPortraitTaj[0].texture != NULL ||
+            gMenuPortraitWizpig[0].texture != NULL ||
+            gMenuPortraitTerry[0].texture != NULL) {
             /* Process-owned native card; retail menu textures keep their own
              * cache/refcount lifecycle. */
             gMenuPortraitTaj[0].texture = NULL;
+            gMenuPortraitWizpig[0].texture = NULL;
+            gMenuPortraitTerry[0].texture = NULL;
         }
 #endif
         if (gMenuImages != NULL) {

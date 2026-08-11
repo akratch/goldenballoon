@@ -18,6 +18,12 @@ static int failures;
     } while (0)
 
 static s32 player_one_is_taj(s32 playerIndex) { return playerIndex == 0; }
+static ModRacerIdentity player_one_is_wizpig(s32 playerIndex) {
+    return playerIndex == 0 ? MOD_RACER_WIZPIG : MOD_RACER_RETAIL;
+}
+static ModRacerIdentity player_one_is_terry(s32 playerIndex) {
+    return playerIndex == 0 ? MOD_RACER_TERRY : MOD_RACER_RETAIL;
+}
 
 static void init_racer(Object *object, Object_Racer *racer, s32 vehicle) {
     memset(object, 0, sizeof(*object));
@@ -214,6 +220,64 @@ static void test_boost_survives_the_sustained_cap(void) {
     CHECK(taj_physics_speed_cap(car_cap, 3.0f, TRUE) == car_cap);
 }
 
+static void test_wizpig_is_a_slightly_faster_heavy_racer(void) {
+    Object object;
+    Object_Racer racer;
+
+    taj_physics_set_identity_predicate(player_one_is_wizpig);
+    taj_physics_reset();
+    init_racer(&object, &racer, VEHICLE_CAR);
+    racer.spinout_timer = 12;
+    racer.squish_timer = 13;
+    racer.bubbleTrapTimer = 14;
+    racer.attackType = ATTACK_BUBBLE;
+    taj_physics_pre_vehicle_update(&object, &racer);
+    CHECK(racer.spinout_timer == 12 && racer.squish_timer == 13 &&
+          racer.bubbleTrapTimer == 14 && racer.attackType == ATTACK_BUBBLE);
+    racer.velocity = -5.0f;
+    taj_physics_post_vehicle_update(&object, &racer, 1, 1.0f, A_BUTTON);
+    CHECK(racer.velocity < -5.039f && racer.velocity > -5.041f);
+    CHECK(taj_physics_run_is_noncanonical());
+    CHECK(!taj_physics_absorb_attack(&racer, ATTACK_EXPLOSION));
+
+    taj_physics_pre_vehicle_update(&object, &racer);
+    racer.boostTimer = 10;
+    racer.velocity = -10.0f;
+    taj_physics_post_vehicle_update(&object, &racer, 1, 1.0f, A_BUTTON);
+    CHECK(racer.velocity == -10.0f);
+    racer.playerIndex = PLAYER_COMPUTER;
+    racer.raceFinished = TRUE;
+    CHECK(wizpig_physics_is_wizpig(&racer));
+    CHECK(!taj_physics_canonical_records_allowed(&racer));
+    taj_physics_set_identity_predicate(NULL);
+}
+
+static void test_terry_uses_light_handling_with_modest_performance(void) {
+    Object object;
+    Object_Racer racer;
+    taj_physics_set_identity_predicate(player_one_is_terry);
+    taj_physics_reset();
+    init_racer(&object, &racer, VEHICLE_PLANE);
+    racer.spinout_timer = 7;
+    racer.attackType = ATTACK_EXPLOSION;
+    taj_physics_pre_vehicle_update(&object, &racer);
+    CHECK(racer.spinout_timer == 7 && racer.attackType == ATTACK_EXPLOSION);
+    CHECK(mod_racer_physics_stat_character(&racer, CHARACTER_KRUNCH) ==
+          CHARACTER_PIPSY);
+    racer.velocity = -5.0f;
+    taj_physics_post_vehicle_update(&object, &racer, 1, 1.0f, A_BUTTON);
+    CHECK(racer.velocity < -5.029f && racer.velocity > -5.031f);
+    taj_physics_pre_vehicle_update(&object, &racer);
+    racer.boostTimer = 10;
+    racer.velocity = -10.0f;
+    taj_physics_post_vehicle_update(&object, &racer, 1, 1.0f, A_BUTTON);
+    CHECK(racer.velocity == -10.0f);
+    CHECK(mod_racer_physics_identity(&racer) == MOD_RACER_TERRY);
+    CHECK(taj_physics_run_is_noncanonical());
+    CHECK(!taj_physics_canonical_records_allowed(&racer));
+    taj_physics_set_identity_predicate(NULL);
+}
+
 int main(void) {
     TajPhysicsDashState dash = { 0, 0 };
 
@@ -260,6 +324,8 @@ int main(void) {
     test_identity_handoff_and_negative_control();
     test_invalid_racer_index_does_not_alias_p1();
     test_boost_survives_the_sustained_cap();
+    test_wizpig_is_a_slightly_faster_heavy_racer();
+    test_terry_uses_light_handling_with_modest_performance();
 
     if (failures != 0) {
         fprintf(stderr, "taj-physics tests: %d failure(s)\n", failures);
