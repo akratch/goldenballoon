@@ -348,6 +348,24 @@ void mdkr_residual_census_report(u64 tick) {
 static MdkrSurfaceClass sPendingSurfaceClass = MDKR_SURF_OBJECT_ROOT;
 static bool sPendingSurfaceValid = FALSE;
 static bool sPendingTopologyKeyed = FALSE;
+/*
+ * ONE-SHOT "THIS IS A CAMERA-FOLLOW ROOT" NOTE FOR THE NEXT mtx_cam_push().
+ *
+ * Separate from sPendingSurfaceClass on purpose: that classification only
+ * survives into the registry when mdkr_presentation_owner_root succeeds,
+ * which requires a real spawned Object identity (presentation_snapshot_
+ * identity_generation) -- and the skydome's segment is not one (residual
+ * obligation 0, docs/architecture/presentation-interpolation.md). This note
+ * is read directly by mtx_cam_push and forwarded to the shadow registry
+ * (gfx_shadow_matrix_set_camera_locked) independently of whether an owner
+ * gets built, because the vp-overridden recompose path that needs it does
+ * not require ownership either (see gfx_pc_dkr.c's G_MTX handler).
+ */
+static bool sPendingCameraLocked = FALSE;
+
+void mdkr_presentation_note_camera_locked(void) {
+    sPendingCameraLocked = TRUE;
+}
 
 void mdkr_presentation_note_next_surface(s32 surfaceClass, s32 topologyKeyed) {
     if (surfaceClass < 0 || surfaceClass >= MDKR_SURF_CLASS_COUNT) {
@@ -2414,6 +2432,14 @@ size_t mdkr_camera_interpolated_view_projections(
         }
         out[viewport].valid = TRUE;
         out[viewport].camera_id = pose.camera_id;
+        /* The eye this VP was built from, for a camera-locked root (the
+         * skydome) to substitute for its own captured tick-T translation.
+         * Correct in all three branches above: pose is resolved to this same
+         * alpha whether that resolve then took the alpha-zero, alpha-one or
+         * genuinely-interpolated shortcut. */
+        out[viewport].camera_position[0] = pose.position[0];
+        out[viewport].camera_position[1] = pose.position[1];
+        out[viewport].camera_position[2] = pose.position[2];
         if (presentation_snapshot_resolve_camera(
                 (int)viewport, denominator, denominator, &next) &&
             next.interpolated && next.camera_id == pose.camera_id) {
@@ -3142,6 +3168,12 @@ s32 mtx_cam_push(Gfx **dList, Mtx **mtx, ObjectTransform *trans, f32 scaleY, f32
     /* Unconditional: the note is consumed even when no owner was built, so it
      * cannot survive to reclassify the next caller's push. */
     mdkr_presentation_consume_next_surface(&rootOwner);
+    /* Same one-shot discipline as the surface-class note just above, and for
+     * the same reason: read and cleared here regardless of whether this push
+     * turns out to have an owner, so it can never survive to mislabel a
+     * later, unrelated push. */
+    gfx_shadow_matrix_set_camera_locked(sPendingCameraLocked);
+    sPendingCameraLocked = FALSE;
     mdkr_shadow_register_matrix(
         *mtx, gModelMatrixF[gModelMatrixStackPos + 1],
         GFX_SHADOW_MOBILITY_DYNAMIC, GFX_SHADOW_SITE_CAM_PUSH, owner);

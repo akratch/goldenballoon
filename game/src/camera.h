@@ -232,6 +232,13 @@ s32 mtx_cam_push(Gfx **dList, Mtx **mtx, ObjectTransform *trans, f32 scaleY, f32
  * cleared by that push. See camera.c for why this is a note rather than a
  * parameter. */
 void mdkr_presentation_note_next_surface(s32 surfaceClass, s32 topologyKeyed);
+/* Mark the NEXT mtx_cam_push() as a camera-follow root: the game is about to
+ * copy the active camera's own position into this push's ObjectTransform for
+ * the draw (skydome_render, tracks.c, is the only caller). Consumed and
+ * cleared by that push whether or not it manages to build a presentation
+ * owner -- see camera.c's sPendingCameraLocked for why this is independent
+ * of mdkr_presentation_note_next_surface. */
+void mdkr_presentation_note_camera_locked(void);
 #endif
 void viewport_scissor(Gfx **dList);
 void mtx_pop(Gfx **dList);

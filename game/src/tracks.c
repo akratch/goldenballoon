@@ -2827,6 +2827,16 @@ void skydome_render(void) {
         }
         mtx_world_origin(&gTrackDL, &gTrackMtxPtr);
         if (gSceneRenderSkyDome) {
+            /* Only when the transform above actually copied the camera's
+             * position: a skyDome != 0 track's dome is level-authored
+             * geometry at its own fixed position, not a camera follower, and
+             * must never have its world translation substituted at replay.
+             * Set AFTER mtx_world_origin (itself a registration) so the note
+             * survives to the dome's own mtx_cam_push, inside render_object,
+             * and not to the origin push. */
+            if (gCurrentLevelHeader2->skyDome == 0) {
+                mdkr_presentation_note_camera_locked();
+            }
             render_object(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, gSkydomeSegment);
         }
         gSkydomeSegment->trans.x_position = savedX;

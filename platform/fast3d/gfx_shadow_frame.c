@@ -203,6 +203,9 @@ static int s_register_site;
  * one tagged call can never license a byte copy off the next, untagged one.
  */
 static bool s_register_key_is_mtx;
+/* See GfxShadowMatrixBinding.camera_locked. Consumed and cleared by every
+ * registration the same way s_register_site is. */
+static bool s_register_camera_locked;
 static GfxPresentationMatrixOwner s_register_presentation_owner;
 static bool s_register_presentation_owner_valid;
 static GfxPresentationOwnerStats s_presentation_owner_stats;
@@ -687,10 +690,12 @@ bool gfx_shadow_matrix_register(
      * untagged registration would inherit them. */
     const int site = s_register_site;
     const bool key_is_mtx = s_register_key_is_mtx;
+    const bool camera_locked = s_register_camera_locked;
     const bool owner_valid = s_register_presentation_owner_valid;
     const GfxPresentationMatrixOwner owner = s_register_presentation_owner;
     s_register_site = GFX_SHADOW_SITE_UNKNOWN;
     s_register_key_is_mtx = false;
+    s_register_camera_locked = false;
     s_register_presentation_owner_valid = false;
     memset(&s_register_presentation_owner, 0,
            sizeof(s_register_presentation_owner));
@@ -725,6 +730,7 @@ bool gfx_shadow_matrix_register(
             s_matrix_entries[index].binding.viewport = s_register_viewport;
             s_matrix_entries[index].binding.gameplay_vp = s_register_gameplay_vp;
             s_matrix_entries[index].binding.site = site;
+            s_matrix_entries[index].binding.camera_locked = camera_locked;
             s_matrix_entries[index].binding.key_bytes_valid = key_is_mtx;
             s_matrix_entries[index].binding.walked_key_bytes_valid = false;
             if (owner_valid) {
@@ -793,6 +799,7 @@ bool gfx_shadow_matrix_register(
     s_matrix_entries[s_matrix_count].binding.gameplay_vp =
         s_register_gameplay_vp;
     s_matrix_entries[s_matrix_count].binding.site = site;
+    s_matrix_entries[s_matrix_count].binding.camera_locked = camera_locked;
     s_matrix_entries[s_matrix_count].binding.key_bytes_valid = key_is_mtx;
     if (owner_valid) {
         s_matrix_entries[s_matrix_count].binding.presentation_owner = owner;
@@ -878,6 +885,10 @@ void gfx_shadow_matrix_set_context(int viewport, bool gameplay_vp) {
 void gfx_shadow_matrix_set_site(int site) {
     s_register_site = site;
     s_register_key_is_mtx = true;
+}
+
+void gfx_shadow_matrix_set_camera_locked(bool camera_locked) {
+    s_register_camera_locked = camera_locked;
 }
 
 void gfx_shadow_matrix_set_presentation_owner(
@@ -1122,6 +1133,12 @@ bool gfx_shadow_replay_restore(
                overrides[entry->viewport].view_projection,
                sizeof(entry->binding.view_projection));
         entry->binding.vp_overridden = true;
+        /* Only a camera-locked entry (the skydome) ever reads this; carried
+         * for every overridden entry regardless because it costs nothing and
+         * keeps this loop the single place vp_overridden's payload is set. */
+        memcpy(entry->binding.camera_position,
+               overrides[entry->viewport].camera_position,
+               sizeof(entry->binding.camera_position));
     }
     s_restore_count++;
     return true;

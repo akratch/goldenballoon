@@ -236,6 +236,220 @@ def parse_rows(
     return rows
 
 
+#
+# --sky-midpoint (Task 8): the skydome's midpoint-sensitivity witness.
+#
+# check_smooth_verdict.py's other arms all read the [SMOOTH-VERDICT] census,
+# which the skydome does not (and should not: residual obligation 0 notes it
+# has no spawned-Object identity to publish one from -- see
+# docs/architecture/presentation-interpolation.md). This arm is pixel-based
+# instead, on the same two-run-diff method as check_wave_midpoint_envelope.py:
+# production against MDKR_TEST_SKYDOME_CAMERA_LOCK_DISABLE=1, the negative
+# control that makes gfx_pc_dkr.c's G_MTX replay branch recompose a
+# camera_locked entry exactly like any other -- captured tick-T translation
+# held frozen against an interpolated view-projection, i.e. this fix's own
+# defect reproduced on demand. The pixels that differ between the two runs
+# ARE the fix's footprint; measuring "does the sky move at all" on a single
+# run cannot distinguish this fix from the camera-ROTATION panning that
+# already worked before it (mtx_cam_push's matrices were already recomposed
+# against the interpolated camera on vp_overridden -- see gfx_pc_dkr.c:6559
+# and this file's own WATER_WAVE note above). Only the frozen-translation
+# defect this task closes is invisible to that broader check.
+#
+# Route: the title screen's own scripted camera fly-around (levelId 23,
+# reached by simply booting -- the same "title" fixture
+# check_overlay_pause_cutscene.py uses), which pans and translates hard
+# enough to move the dome. MDKR_PRESENT_RATE=120 over the 30 Hz tick gives 4
+# presents per tick; measured empirically that the exact-tick present lands
+# at (index - SKY_DUMP_FROM) % 4 == 2 in this fixture's cadence, not 0 --
+# read from the dump, not assumed, by the endpoint-identity check below.
+SKY_SCRIPT = ROOT / "tests" / "input_scripts" / "adventure_hub_drive.txt"
+SKY_TICKS = 1090
+SKY_DUMP_FROM = 690
+# Measured: 429 of 3670 presents in this window differ between the two runs,
+# the dome's own footprint, concentrated in the top ~24% of the frame (bbox
+# y max 229 of 960) -- consistent with "sky band, top 20% of frame" once HUD
+# rows and window chrome are accounted for. 20 keeps ample margin against
+# host-scheduling changing which presents land as an interpolated replay.
+SKY_MIN_ACTED = 20
+SKY_WINDOW = "640x480"
+# Top 20% of the (possibly HiDPI-doubled) frame, then trimmed another 4
+# rows off the top: this fixture has no HUD, but the title logo/press-start
+# prompt can start as low as the sky band's own top edge on some window
+# scales, and trimming a slim margin costs nothing the dome needs.
+SKY_BAND_FRACTION = 0.20
+SKY_BAND_TRIM_ROWS = 4
+
+
+def _read_ppm(path: Path) -> tuple[int, int, bytes]:
+    data = path.read_bytes()
+    fields: list[bytes] = []
+    idx = 0
+    while len(fields) < 4:
+        while data[idx:idx + 1].isspace():
+            idx += 1
+        if data[idx:idx + 1] == b"#":
+            while idx < len(data) and data[idx] != 0x0A:
+                idx += 1
+            continue
+        start = idx
+        while not data[idx:idx + 1].isspace():
+            idx += 1
+        fields.append(data[start:idx])
+    idx += 1
+    width, height = int(fields[1]), int(fields[2])
+    return width, height, data[idx:idx + width * height * 3]
+
+
+def _sky_band(width: int, height: int, pixels: bytes) -> bytes:
+    band_h = max(1, int(height * SKY_BAND_FRACTION) - SKY_BAND_TRIM_ROWS)
+    return pixels[:band_h * width * 3]
+
+
+def _run_sky_arm(binary: Path, rom: Path, work: Path, timeout: int,
+                  verbose: bool, disable_lock: bool) -> dict[int, bytes]:
+    import subprocess
+
+    frames_dir = work / "frames"
+    frames_dir.mkdir(parents=True)
+    (work / "save").mkdir(parents=True)
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("MDKR", "GE007_"))}
+    env.update(
+        LC_ALL="C",
+        MDKR_APP_AUTOPLAY="1",
+        MDKR_APP_AUTOPLAY_TICKS=str(SKY_TICKS),
+        MDKR_APP_AUTOPLAY_INPUT_SCRIPT=str(SKY_SCRIPT),
+        MDKR_APP_AUTOPLAY_DUMP_FRAMES=str(frames_dir),
+        MDKR_APP_PREFS_DIR=str(work / "prefs"),
+        MDKR_APP_SMOKE_WINDOW_SIZE=SKY_WINDOW,
+        MDKR_AUDIO="0",
+        MDKR_DUMP_FROM=str(SKY_DUMP_FROM),
+        MDKR_DUMP_EVERY="1",
+        MDKR_PRESENT_RATE="120",
+        MDKR_PRESENT_SMOOTHING="interpolate",
+        MDKR_ROM=str(rom),
+        MDKR_SAVE_DIR=str(work / "save"),
+        MDKR_NO_CRASH_HANDLER="1",
+        MDKR_VIDEO_CONFIG_PATH=str(work / "video.ini"),
+        MDKR64_HIDDEN="1",
+    )
+    (work / "prefs").mkdir(parents=True, exist_ok=True)
+    if disable_lock:
+        env["MDKR_TEST_SKYDOME_CAMERA_LOCK_DISABLE"] = "1"
+    if verbose:
+        print(f"$ [sky-midpoint disable_lock={disable_lock}] {binary}",
+              flush=True)
+    try:
+        proc = subprocess.run(
+            [str(binary)], cwd=str(work), env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=timeout, check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"sky-midpoint timed out\n{(exc.stdout or '')[-4000:]}"
+        ) from exc
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"sky-midpoint: exit={proc.returncode}\n"
+            f"{(proc.stdout or '')[-4000:]}")
+
+    out: dict[int, bytes] = {}
+    for path in frames_dir.glob("frame_*.ppm"):
+        match = re.search(r"frame_(\d+)\.ppm$", path.name)
+        if not match:
+            continue
+        width, height, pixels = _read_ppm(path)
+        out[int(match.group(1))] = _sky_band(width, height, pixels)
+    return out
+
+
+def run_sky_midpoint_arm(binary: Path, rom: Path, timeout: int,
+                          verbose: bool) -> int:
+    failures: list[str] = []
+    try:
+        with tempfile.TemporaryDirectory(
+                prefix="mdkr_sky_midpoint_prod_") as prod_dir, \
+             tempfile.TemporaryDirectory(
+                prefix="mdkr_sky_midpoint_ctrl_") as ctrl_dir:
+            production = _run_sky_arm(binary, rom, Path(prod_dir), timeout,
+                                      verbose, disable_lock=False)
+            control = _run_sky_arm(binary, rom, Path(ctrl_dir), timeout,
+                                   verbose, disable_lock=True)
+    except (OSError, RuntimeError) as exc:
+        print(f"check_smooth_verdict --sky-midpoint: FAIL — {exc}",
+              file=sys.stderr)
+        return 1
+
+    shared = sorted(set(production) & set(control))
+    if len(shared) < 100:
+        failures.append(
+            f"only {len(shared)} presents captured in both runs; nothing "
+            "to judge")
+        print("check_smooth_verdict --sky-midpoint: FAIL", file=sys.stderr)
+        for failure in failures:
+            print(f"  - {failure}", file=sys.stderr)
+        return 1
+
+    # The exact-tick present's phase (index - SKY_DUMP_FROM) % 4 is a
+    # property of when MDKR_DUMP_FROM happens to land inside the present
+    # cadence, not a constant this file can assume -- so it is FOUND from the
+    # data: the phase with the fewest disagreements between the two runs is
+    # the authored endpoint, because a snap and a blend agree exactly at
+    # their shared alpha-0/alpha-1 endpoint (the same identity the wave
+    # envelope gate's claim 1 checks), while every other phase is a genuine
+    # interpolated replay the fix can (and, per claim below, does) touch.
+    phase_diffs = [0, 0, 0, 0]
+    phase_totals = [0, 0, 0, 0]
+    for index in shared:
+        phase = (index - SKY_DUMP_FROM) % 4
+        phase_totals[phase] += 1
+        if production[index] != control[index]:
+            phase_diffs[phase] += 1
+    endpoint_phase = min(range(4), key=lambda p: phase_diffs[p])
+    endpoint_mismatches = phase_diffs[endpoint_phase]
+    endpoint_checks = phase_totals[endpoint_phase]
+    acted = sum(phase_diffs) - endpoint_mismatches
+
+    if endpoint_checks < 20:
+        failures.append(
+            f"endpoint phase {endpoint_phase} only had {endpoint_checks} "
+            "presents -- not enough to trust as the authored-tick phase")
+    if endpoint_mismatches != 0:
+        failures.append(
+            f"endpoint phase {endpoint_phase}: {endpoint_mismatches} of "
+            f"{endpoint_checks} presents differ between production and the "
+            "MDKR_TEST_SKYDOME_CAMERA_LOCK_DISABLE=1 control -- an authored "
+            "tick frame must be identical regardless of the fix, since "
+            "vp_overridden is never set at alpha 0/1. If this phase is "
+            "wrong (see the comment above), the real endpoint phase has a "
+            "worse mismatch count than this one and something else is "
+            "moving too")
+    if acted < SKY_MIN_ACTED:
+        failures.append(
+            f"acted={acted} of {len(shared) - endpoint_checks} interpolated "
+            f"presents (need {SKY_MIN_ACTED}) -- the fix's own footprint "
+            "barely or never reached the screen. Either the camera-lock "
+            "substitution stopped firing, or the title route no longer "
+            "pans/translates hard enough for this fixture to witness it")
+
+    if failures:
+        print("check_smooth_verdict --sky-midpoint: FAIL", file=sys.stderr)
+        for failure in failures:
+            print(f"  - {failure}", file=sys.stderr)
+        print(f"phase_diffs={phase_diffs} phase_totals={phase_totals}",
+              file=sys.stderr)
+        return 1
+
+    print(
+        "check_smooth_verdict --sky-midpoint: PASS — "
+        f"acted={acted} of {len(shared) - endpoint_checks} interpolated "
+        f"presents, endpoint_phase={endpoint_phase} "
+        f"endpoint_checks={endpoint_checks} mismatches=0")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
@@ -265,6 +479,16 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--sky-midpoint", action="store_true",
+        help=(
+            "Task 8: the skydome's midpoint-sensitivity witness. Runs the "
+            "title screen's fly-around twice (production vs "
+            "MDKR_TEST_SKYDOME_CAMERA_LOCK_DISABLE=1) and diffs the sky "
+            "band. Standalone -- does not read [SMOOTH-VERDICT] and "
+            "ignores every other flag."
+        ),
+    )
+    parser.add_argument(
         "--pan-demote", action="store_true",
         help=(
             "Task 4: arm MDKR_SMOOTH_PAN_DEMOTE=1 over the same Jungle Falls "
@@ -279,6 +503,10 @@ def main() -> int:
 
     binary = Path(resolve_binary(args.build)).resolve()
     rom = Path(args.rom).expanduser().resolve()
+
+    if args.sky_midpoint:
+        return run_sky_midpoint_arm(binary, rom, args.timeout, args.verbose)
+
     failures: list[str] = []
 
     try:

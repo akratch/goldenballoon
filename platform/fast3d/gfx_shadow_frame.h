@@ -229,6 +229,30 @@ typedef struct GfxShadowMatrixBinding {
      */
     bool vp_overridden;
     /*
+     * A camera-follow root (currently: the skydome only) whose captured
+     * world's translation IS the tick-T camera position the game copied into
+     * its own transform for this one draw (see skydome_render, tracks.c).
+     * The generic vp-overridden recompose below swaps in an interpolated
+     * view-projection but otherwise reuses the captured world verbatim; for
+     * every OTHER site that is correct, because the captured world is the
+     * content's own authored pose. For a camera-follow root it is not: the
+     * translation is the camera's, not the content's, and leaving it frozen
+     * at tick-T while the view-projection interpolates reintroduces exactly
+     * the camera/content mismatch vp_overridden exists to remove. Set once at
+     * registration (gfx_shadow_matrix_set_camera_locked, consumed the same
+     * way `site` is) and read only alongside vp_overridden.
+     */
+    bool camera_locked;
+    /*
+     * The interpolated camera's own eye position -- the same pose
+     * mdkr_camera_interpolated_view_projections built `view_projection`
+     * from -- copied in only when vp_overridden is set. Meaningless
+     * otherwise; a camera_locked entry that never got an override keeps its
+     * captured (tick-T) world untouched, which is the correct snap-on-cut
+     * behaviour (see gfx_shadow_replay_restore).
+     */
+    float camera_position[3];
+    /*
      * The view-projection AS CAPTURED, never overridden. The replay recomposes
      * with this first and compares the result against the display list's own
      * bytes: that comparison is what proves this particular entry's
@@ -372,6 +396,12 @@ typedef struct GfxShadowReplayViewProjection {
     uint64_t numerator;
     uint64_t denominator;
     float view_projection[GFX_SHADOW_MATRIX_DIM][GFX_SHADOW_MATRIX_DIM];
+    /* The interpolated camera's own eye position, the same pose
+     * `view_projection` above was built from. Carried alongside the matrix
+     * so a camera_locked registration (the skydome) can substitute it for
+     * the tick-T translation baked into its captured world -- see
+     * GfxShadowMatrixBinding.camera_locked. */
+    float camera_position[3];
     /* The exact target endpoint derived from the same immutable snapshot pair.
      * The replay observer carries it to the following task, where that target
      * must become the next alpha-zero authored VP byte-for-byte. */
@@ -400,6 +430,10 @@ typedef struct GfxShadowCameraEndpointStats {
 void gfx_shadow_matrix_set_context(int viewport, bool gameplay_vp);
 /* The site the NEXT gfx_shadow_matrix_register call is attributed to. */
 void gfx_shadow_matrix_set_site(int site);
+/* Marks the NEXT gfx_shadow_matrix_register call as a camera-follow root
+ * (see GfxShadowMatrixBinding.camera_locked). Consumed the same way `site`
+ * is: cleared on every register attempt whether or not it was read. */
+void gfx_shadow_matrix_set_camera_locked(bool camera_locked);
 /* Copied into the NEXT registration and consumed on every register attempt,
  * like the site tag. NULL explicitly clears the pending owner. */
 void gfx_shadow_matrix_set_presentation_owner(

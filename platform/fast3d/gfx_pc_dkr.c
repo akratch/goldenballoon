@@ -696,6 +696,23 @@ static bool dkr_replay_pan_demote_enabled(void) {
     return dkr_replay_pan_demote != 0;
 }
 
+/*
+ * Task 8's negative control: with this set, the G_MTX replay branch below
+ * recomposes a camera_locked (skydome) entry exactly as it recomposes any
+ * other -- the captured tick-T translation held frozen against an
+ * interpolated view-projection -- reproducing the pre-fix drift so a gate can
+ * prove the fix's own pixel footprint by diffing production against this.
+ */
+static int dkr_replay_skydome_camera_lock_disable = -1;
+static bool dkr_replay_skydome_camera_lock_disabled(void) {
+    if (dkr_replay_skydome_camera_lock_disable < 0) {
+        const char *value = getenv("MDKR_TEST_SKYDOME_CAMERA_LOCK_DISABLE");
+        dkr_replay_skydome_camera_lock_disable =
+            value != NULL && value[0] == '1';
+    }
+    return dkr_replay_skydome_camera_lock_disable != 0;
+}
+
 static bool dkr_replay_surface_class_pan_demotable(MdkrSurfaceClass surface_class) {
     switch (surface_class) {
         case MDKR_SURF_WATER_WAVE:
@@ -6656,10 +6673,42 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                 }
                 if (faithful) {
                     int32_t recomposed[16];
+                    float world_source[GFX_SHADOW_MATRIX_DIM]
+                                       [GFX_SHADOW_MATRIX_DIM];
+                    memcpy(world_source,
+                           (object_overridden || effect_overridden)
+                               ? replay_world
+                               : rsp.shadow_matrix[slot].world,
+                           sizeof(world_source));
+                    if (rsp.shadow_matrix[slot].camera_locked &&
+                        rsp.shadow_matrix[slot].vp_overridden &&
+                        !dkr_replay_skydome_camera_lock_disabled()) {
+                        /*
+                         * SKYDOME (the only camera_locked registrant today).
+                         * The captured world's translation is the TICK-T
+                         * camera position skydome_render copied into the
+                         * dome's transform for this one draw -- not the
+                         * dome's own authored pose. Recomposing that frozen
+                         * translation against an interpolated view-projection
+                         * reintroduces exactly the camera/content mismatch
+                         * vp_overridden exists to remove: the dome would be
+                         * centered on the CAMERA'S PREVIOUS tick position
+                         * while viewed from its INTERPOLATED one, drifting by
+                         * the tick's own translation every frame the camera
+                         * moves. Substitute the interpolated camera's own eye
+                         * -- the same pose the overridden view-projection was
+                         * built from -- and leave rotation/scale untouched
+                         * (skydome_render never rotates the dome).
+                         */
+                        world_source[3][0] =
+                            rsp.shadow_matrix[slot].camera_position[0];
+                        world_source[3][1] =
+                            rsp.shadow_matrix[slot].camera_position[1];
+                        world_source[3][2] =
+                            rsp.shadow_matrix[slot].camera_position[2];
+                    }
                     mdkr_camera_replay_mvp(
-                        (object_overridden || effect_overridden)
-                            ? replay_world
-                            : rsp.shadow_matrix[slot].world,
+                        world_source,
                         rsp.shadow_matrix[slot].view_projection,
                         recomposed);
                     dkr_decode_matrix(slot, recomposed);
