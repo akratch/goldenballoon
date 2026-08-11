@@ -155,6 +155,13 @@ s32 gMtxOriginID;
 s32 gSpriteAnimMode;
 f32 gCurCamFOV;
 s8 gCutsceneCameraActive;
+#ifdef NATIVE_PORT
+/* The app overlay opens from presentation, after the authored tick that drew
+ * its background has already cleared this per-frame flag. Retain only the
+ * preceding frame's bank choice so the next zero-rate tick can hold that pose.
+ */
+static s8 sCutsceneCameraActiveLastFrame;
+#endif
 s8 gAdjustViewportHeight;
 s32 gNoCamShake;
 s32 gModelMatrixStackPos;
@@ -1071,6 +1078,9 @@ void cam_init(void) {
     }
 
     gCutsceneCameraActive = FALSE;
+#ifdef NATIVE_PORT
+    sCutsceneCameraActiveLastFrame = FALSE;
+#endif
     gActiveCameraID = 0;
     gModelMatrixStackPos = 0;
     gCameraMatrixPos = 0;
@@ -1349,6 +1359,18 @@ s8 check_if_showing_cutscene_camera(void) {
 void disable_cutscene_camera(void) {
     gCutsceneCameraActive = FALSE;
 }
+
+#ifdef NATIVE_PORT
+void cutscene_camera_pause_snapshot(void) {
+    sCutsceneCameraActiveLastFrame = gCutsceneCameraActive;
+}
+
+void cutscene_camera_pause_restore(void) {
+    if (sCutsceneCameraActiveLastFrame) {
+        gCutsceneCameraActive = TRUE;
+    }
+}
+#endif
 
 /**
  * Sets the current layout and returns the number of active cameras for that layout.

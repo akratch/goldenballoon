@@ -1047,23 +1047,27 @@ routine, reconciled against the overlay's live answer both before and across
 dispatch — because the defect was the absence of a call, which no run of the
 paths that still worked could reveal.
 
-`check_overlay_pause_cutscene.py` covers the other half of that pause: a scene
-running under a MENU rather than in a race. `check_overlay_pause.py` proves the
-simulation freezes; this proves the PICTURE survives the freeze. It opens the
-overlay during the title screen's scripted camera and during the new-game intro
-animation, and requires every frame presented while it is open to keep roughly
-the boundary frame's colour count, stay within a few mean levels of that frame,
-and start moving again after the close. Both arms went to a single flat colour —
-each level's own background fill — and stayed there for the rest of the session:
-the pause hands the game a zero update rate, `update_menu_scene` (unlike
-`mode_game`) keeps running `obj_update` at it because that is what re-arms the
-cutscene camera each tick, and the animation-path followers in `game/src/objects.c`
-divided by that rate. One paused frame produced inf/NaN, stored it in the
-spline's own interpolation parameter, and every camera and object matrix built
-from it was NaN from then on. The colour-count assertion alone would pass on a
-scene that kept animating behind the overlay, so the hold assertion runs beside
-it. Frame capture from an app-shell run comes from `MDKR_APP_AUTOPLAY_DUMP_FRAMES`,
-which forwards `--dump-frames` through the synthesized engine argv.
+`check_overlay_pause_cutscene.py` covers the other half of that pause.
+`check_overlay_pause.py` proves the simulation freezes; this proves the PICTURE
+and every object that must publish it survive the freeze. It opens the overlay
+during the title screen's scripted camera, the new-game intro animation, the
+title attract race, and an Ancient Lake start-line flyover. Every frame presented
+while it is open must keep roughly the boundary frame's colour count, stay within
+a few mean levels of that frame, and start moving again after the close; every
+process must also exit cleanly. The original menu-camera arms went to a single
+flat colour — each level's own background fill — because `update_menu_scene`
+keeps running `obj_update(0)` to re-arm its camera and an animation-path follower
+divided by zero. The attract arm covers the same required zero-rate object walk
+with eight racers: their vehicle solvers also divide by the update rate, and the
+pre-fix Greenwood Village run aborted with a NaN racer at the first paused tick.
+The race-start arm covers the complementary in-game path: its camera-bank pulse
+must be retained when an app overlay opened from presentation reaches the next
+input boundary. Before the fix, frame 2680 jumped 73.166 mean levels from the
+held flyover to the ordinary behind-kart camera. The colour-count assertion
+alone would pass on a scene that kept animating behind the overlay, so the hold
+assertion runs beside it. Frame capture from an app-shell run comes from
+`MDKR_APP_AUTOPLAY_DUMP_FRAMES`, which forwards `--dump-frames` through the
+synthesized engine argv.
 
 `check_surface_suspension.py` compares equal-tick control and minimized arms on
 both native backends. The minimized interval must stop real display-list walks

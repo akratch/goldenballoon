@@ -359,6 +359,14 @@ void main_game_loop(void) {
      * is constant-zero, so CLI/browser/oracle behavior remains unchanged. */
     {
         const s32 overlayPaused = platformOverlayWantsInput();
+        /* A cutscene camera is a one-frame pulse. The app overlay opens from
+         * presentation, so unlike the authored START pause it reaches this
+         * input boundary one tick after that pulse was cleared. Restore the
+         * preceding frame's bank without advancing its camera object; the
+         * existing paused clear gate below then holds the authored pose. */
+        if (overlayPaused) {
+            cutscene_camera_pause_restore();
+        }
         /* The scripted overlay gate needs the exact simulation boundary, not
          * the presentation ordinal printed by ImGui. Keep this diagnostic
          * dormant outside that explicit test contract. */
@@ -440,6 +448,12 @@ void main_game_loop(void) {
     }
     gSkipGfxTask = FALSE;
     mempool_free_queue_clear();
+#ifdef NATIVE_PORT
+    /* Capture the authored bank before its ordinary end-of-frame clear. This
+     * is reset by cam_init(), so a level generation cannot lend its camera to
+     * the next one. */
+    cutscene_camera_pause_snapshot();
+#endif
     if (!is_game_paused()) {
         disable_cutscene_camera();
     }
@@ -1010,20 +1024,17 @@ void mode_game(s32 updateRate) {
         D_801234F8 = FALSE;
     }
 #ifdef NATIVE_PORT
-    /* The authoritative clear of gCutsceneCameraActive. It used to be issued
-     * from inside render_scene's
-     * three-player TT-camera viewport (tracks.c), which made "was the scene
-     * drawn, and in which layout" an input to a flag the SIMULATION reads --
-     * racer input gating (racer.c:4513), audio, and active-camera selection
-     * (camera.c:1984).
-     *
-     * Placed at the same relative point in the frame as main_game_loop's own
-     * clear (thread3_main.c:373), i.e. after the draw, so the cutscene camera
-     * that obj_update armed this tick via write_to_object_render_stack() is
-     * still live for the render that consumes it. Unlike that one it is
-     * unconditional: main_game_loop's is gated on !gIsPaused, and it was
-     * exactly the paused frames that the render-side clear was covering. */
-    disable_cutscene_camera();
+    /* Preserve the retail three-player TT-camera side effect without making
+     * every paused layout inherit it. The general per-frame clear remains in
+     * main_game_loop and deliberately does not fire while paused: when the app
+     * overlay opens during presentation, that retained latch is what keeps the
+     * just-drawn cutscene bank selected until simulation resumes. */
+    if (cam_get_viewport_layout() == VIEWPORT_LAYOUT_3_PLAYERS &&
+        level_type() != RACETYPE_CHALLENGE_EGGS &&
+        level_type() != RACETYPE_CHALLENGE_BATTLE &&
+        level_type() != RACETYPE_CHALLENGE_BANANAS && hud_setting() == 0) {
+        disable_cutscene_camera();
+    }
 #endif
 }
 

@@ -4649,6 +4649,18 @@ void update_player_racer(Object *obj, s32 updateRate) {
     s32 i;
     struct LevelObjectEntryCommon newObject;
 
+#ifdef NATIVE_PORT
+    /* Menu-owned scenes still run obj_update(0) while the application overlay
+     * is open so their scripted cameras can publish a held pose. Racers in an
+     * attract race share that object list, but their vehicle solvers require a
+     * positive timestep (several paths divide by updateRateF). A zero-rate
+     * racer tick cannot advance any authored state, so stop at the subsystem
+     * boundary instead of letting one vehicle path manufacture inf/NaN. */
+    if (updateRate <= 0) {
+        return;
+    }
+#endif
+
     gNumViewports = cam_get_viewport_layout() + 1;
     gCurrentSurfaceType = SURFACE_DEFAULT;
     gRaceStartTimer = get_race_countdown();
