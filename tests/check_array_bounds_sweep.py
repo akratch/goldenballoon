@@ -672,7 +672,18 @@ SHAPE_INFO_MAX = {
     # one parity's narrative names and reads (mod_texture_key.c:46, the
     # little-endian digest encoder, index 0..3 over a u32). equality-cap
     # came back 45, coincidentally equal to the release line's number.
-    "shift-count": 266,
+    #
+    # 266 -> 269. Three sites from the standing finish/spectator-camera
+    # exclusion, each read and bounded before the shift:
+    #   * presentation_snapshot_set_camera_excluded (x2) returns unless
+    #     viewport_index is in [0, PRESENTATION_SNAPSHOT_MAX_VIEWPORTS), then
+    #     uses that checked value for the set/clear bit.
+    #   * presentation_snapshot_capture_camera reads the exclusion bit using
+    #     viewport = write->camera_count immediately after the existing
+    #     camera_count >= PRESENTATION_SNAPSHOT_MAX_VIEWPORTS failure guard.
+    # These are the same four-viewport domain as the neighboring camera-cut
+    # journal sites documented above; none can approach the 32-bit width.
+    "shift-count": 269,
 }
 
 # Only array-bounds is load-bearing for this class. pointer-overflow is kept
