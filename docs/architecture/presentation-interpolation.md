@@ -433,6 +433,20 @@ registry and still have to agree with their previous tick.
 
 ---
 
+## Design influences
+
+Three specific decisions in the presentation-safety wave were informed by
+studying the DKR-R project's presentation-identity design, which is
+MIT-licensed: the per-axis rotation snap-demotion policy in the table above
+(§2, "Rotation shortest-arc / snap census"), the camera-cut clauses that treat
+a large per-tick yaw or FOV change as a cut rather than a blend (§1's camera
+handling), and the topology-key pairing that lets a wave tile's owner detect
+an LOD change and snap instead of interpolating between two different meshes.
+No code was copied; each idea was re-derived and adapted against this
+codebase's own data structures, thresholds, and test fixtures.
+
+---
+
 ## Build and test evidence
 
 Commit `d707767`, macOS arm64, `cmake --preset rel`.

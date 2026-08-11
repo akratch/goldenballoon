@@ -1561,6 +1561,65 @@ rAF schedules. See [`UNCAPPED_PRESENTATION.md`](../UNCAPPED_PRESENTATION.md) and
 `tests/check_presentation_matrix.py`. Physical platform breadth remains release
 qualification, not an open ownership defect.
 
+## FIXED: the two documented unowned presentation surfaces — wave "presentation-safety"
+
+[`presentation-interpolation.md`'s residual obligation 0](../architecture/presentation-interpolation.md#residual-obligations)
+named two surfaces drawn from storage the object walk cannot discover: the
+wave surfaces (`waves.c`) and the skydome (`tracks.c skydome_render`). Both
+were re-examined; the fixes are not the same shape and neither is a full close
+of the obligation.
+
+- **Wave surfaces: owned.** Each visible wave tile now registers an
+  `ObjectTransform` at tick time from the existing 26-slot visibility table
+  (`e16c481`, "wave geometry joins the interpolation envelope, with
+  topology-keyed pairing"). **Corrected framing:** a wave tile's *matrix* was
+  never actually tick-locked — it was already recomposed against the
+  interpolated camera through the shadow registry's `vp_overridden` path, so
+  the surface was never drawn under a stale camera. What ownership opens is
+  the *deformation* stream, the surface's per-tick vertex animation, which
+  previously held its tick-T shape while the geometry around it glided. The
+  wave renderer selects one of 25 grid LOD variants per tick out of a single
+  allocation, so pairing is topology-keyed (`PresentationObjectEntry.
+  topology_key`): a frame crossing an LOD boundary snaps once instead of
+  walking vertex *i* of one grid toward vertex *i* of another. Gated by
+  `check_smooth_verdict.py` (structural, both arms) and
+  `check_wave_midpoint_envelope.py` (pixel).
+- **Skydome: its camera-lock defect is fixed; the dome itself remains
+  unowned.** The dome's captured world transform held the tick-T camera
+  *position* frozen across the interpolated view-projection swap — rotation
+  was already correct via the same generic recomposition path the wave
+  surfaces use, so the visible defect was translation-only. Replaced with
+  substitution against the interpolated camera (`1099928`, "the sky pans with
+  the camera the player sees, not the camera the tick saw"). This is
+  structurally cut-safe (gated on `vp_overridden`, which a camera cut already
+  forces false) but it is not an `ObjectTransform`/topology-key registration
+  like the wave fix — the skydome still has no presentation identity of its
+  own, so residual obligation 0 keeps it listed as unowned. Gated by
+  `check_smooth_verdict.py --sky-midpoint` (two-run diff against
+  `MDKR_TEST_SKYDOME_CAMERA_LOCK_DISABLE`, a permanent negative-control env
+  toggle) and `check_camera_snapshot_coverage.py`.
+
+## CLOSED IN CODE, OWNER DEVICE PROOF PENDING: VRR-honest alpha quantization — wave "presentation-safety"
+
+Presentation alpha was unconditionally snapped onto a fixed-Hz grid, which is
+correct on a fixed-refresh panel but not on a variable-refresh one following
+the game's own cadence. `platform_present_display_quantum_units()` now measures
+a rolling variance over the last 32 present-to-present intervals and declines
+the grid (`mode=free`, `units=0`) when `variance_ppm > 2500`, defaulting to the
+measured-interval-honest path; `MDKR_PRESENT_QUANTUM_STRICT=1` opts back into
+the always-grid regime (`c5f7415`, "stop snapping alpha onto a grid a
+variable-refresh display is not following"). `check_pacing_quality.py`'s
+legacy realtime arm now pins strict mode explicitly (its grid-phase assertions
+are only meaningful on a fixed present interval) and a new companion arm
+(`realtime-display-smoothing-quantum-honest`) is a non-vacuous positive
+witness for the free-running path, tied to its own measured variance rather
+than a hardcoded expectation. **Status: closed in code; real-device
+fixed-vs-variable-refresh proof is still owner-run and pending** — the
+implementation dev machine's own built-in panel turned out to be
+ProMotion/adaptive-refresh, so every measurement taken here already exercises
+the `mode=free` branch and none of it is evidence about a genuine fixed-Hz
+external display.
+
 ## Frame pacing / slow-motion — RESOLVED (pacing wave)
 - [x] **Root cause of in-race slow motion (and high-refresh fast motion).** DKR
   normalises game speed against framerate in `fb_update()` (game/src/video.c:277):
