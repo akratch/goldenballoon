@@ -563,6 +563,14 @@ production coverage:
   pair. `--pan-demote` and `--sky-midpoint` are optional token-gated arms
   for the pan-rate demotion clause and the skydome midpoint-sensitivity
   witness, respectively; neither runs by default.
+  The pan-demotion arm uses the presentation matrix's Jungle Falls window and
+  a token-gated forced presentation-yaw input. WATER_WAVE is its deterministic
+  positive witness and OBJECT_ROOT its non-demotable control. A confirmed
+  WORLD_SCROLL draw must also demote, but UV-scroll confirmation itself is
+  host-schedule-sensitive, so a run containing only honest UV_HOLD rows does
+  not make this otherwise deterministic gate probabilistic again.
+  A companion run supplies the forced-yaw variable without the internal token
+  and requires the seam to remain dormant.
 - `check_motion_quality_battery.py` states six things Motion smoothing must
   never do, one row each, in the words a player would use: spin a kart the
   long way round (R1), smear a spawn or respawn across the screen (R2), blend

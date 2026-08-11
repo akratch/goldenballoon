@@ -66,6 +66,10 @@ behind nearly every hard defect in this port, several of them completely silent.
   controller hotplug, and the audible-output matrix. Every route carries exact
   expected observations, requires a `[GPUINFO]` capture, and is currently marked
   *not executed*.
+- **[`HUMAN_ACCEPTANCE_PRESENTATION_AND_OVERLAY.md`](HUMAN_ACCEPTANCE_PRESENTATION_AND_OVERLAY.md)** —
+  the owner-device matrix and stop-ship criteria for VRR motion smoothing,
+  water/wave/sky/shadow presentation, camera cuts, and application-overlay
+  pauses in title, intro, attract-demo, and race-flyover scenes.
 - **[`MODDING.md`](MODDING.md)** — content packs: where they go, what
   `pack.ini` holds, how a texture is named by its content digest, and the four
   things that do not work yet. No content ships with this project and none is

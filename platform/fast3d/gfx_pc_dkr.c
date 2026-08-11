@@ -626,46 +626,17 @@ static bool dkr_replay_uv_scroll_interpolation_enabled(void) {
 }
 
 /*
- * Above this per-tick camera yaw rate, WATER_WAVE/WORLD_SCROLL/SKYDOME are
- * unproven-correspondence surfaces (none of the three carries a real
- * presentation owner today -- see gfx_presentation_packet.h's MdkrSurfaceClass
- * doc): the blend the choke point would otherwise draw is texture-space
- * shimmer, not a proven in-between pose, and a hard camera pan is exactly
- * when that shimmer reads as wrong rather than as smoothing. 22.5 deg/tick is
+ * Above this per-tick camera yaw rate, the selected water/scroll/sky classes
+ * can be diagnostically demoted from blending to the newest authored state.
+ * Wave geometry gained topology-keyed ownership after this opt-in was added,
+ * so this is now a device-triage policy rather than an ownership substitute:
+ * it answers whether snapping camera-relative surfaces during a hard pan reads
+ * better on a specific display. 22.5 deg/tick is
  * a quarter of PRESENTATION_SNAPSHOT_ROTATION_SNAP (0x4000 = 90 deg/tick):
  * comfortably above ordinary camera-follow panning, comfortably below the
  * point the rotation interpolator itself refuses to smear.
  */
 #define MDKR_PAN_DEMOTE_YAW_DEG_PER_TICK 22.5f
-
-/*
- * The production threshold above, with one test-only override: mutation
- * testing this clause (raise the threshold until the gate that proved it
- * fires can no longer observe a single demotion) has to reach a value no
- * real route will ever cross without recompiling, and re-flashing a whole
- * binary per mutation value is what every OTHER numeric mutation in this
- * tree avoids by threading the value through, not hardcoding it twice.
- * Unset, this returns exactly MDKR_PAN_DEMOTE_YAW_DEG_PER_TICK -- the
- * override can only ever be reached by a caller that already opted in with
- * MDKR_SMOOTH_PAN_DEMOTE=1, so it changes no default-off behaviour.
- */
-static float dkr_replay_pan_demote_threshold_deg(void) {
-    static bool computed = false;
-    static float threshold = MDKR_PAN_DEMOTE_YAW_DEG_PER_TICK;
-
-    if (!computed) {
-        const char *value = getenv("MDKR_TEST_PAN_DEMOTE_YAW_DEG_PER_TICK");
-        if (value != NULL && value[0] != '\0') {
-            char *end = NULL;
-            float parsed = strtof(value, &end);
-            if (end != value && parsed > 0.0f) {
-                threshold = parsed;
-            }
-        }
-        computed = true;
-    }
-    return threshold;
-}
 
 /*
  * Pan-rate demotion (presentation-safety plan Task 4), default OFF this
@@ -675,13 +646,12 @@ static float dkr_replay_pan_demote_threshold_deg(void) {
  * made after device time, same shape as every other public opt gate here.
  *
  * The first call that finds the seam armed also emits one [PAN-DEMOTE]
- * trace row naming the THRESHOLD ACTUALLY COMPILED IN (or test-overridden),
+ * trace row naming the threshold actually compiled in,
  * unconditionally -- not gated on a class ever reaching the demotion branch,
  * because a route that never crosses the real threshold (as the production
  * default is expected not to on an ordinary route) must still let a gate
  * confirm what value shipped. This is the only site that reads
- * dkr_replay_pan_demote_threshold_deg() outside the choke point's own
- * comparison, so it cannot itself change any decision -- only report one.
+ * the comparison, so it cannot itself change any decision -- only report one.
  */
 static int dkr_replay_pan_demote = -1;
 static bool dkr_replay_pan_demote_enabled(void) {
@@ -690,10 +660,45 @@ static bool dkr_replay_pan_demote_enabled(void) {
         dkr_replay_pan_demote = value != NULL && value[0] == '1';
         if (dkr_replay_pan_demote) {
             fprintf(stderr, "[PAN-DEMOTE] armed threshold=%.2f\n",
-                    (double)dkr_replay_pan_demote_threshold_deg());
+                    (double)MDKR_PAN_DEMOTE_YAW_DEG_PER_TICK);
         }
     }
     return dkr_replay_pan_demote != 0;
+}
+
+/*
+ * Deterministic negative-control input for check_smooth_verdict.py. The
+ * production route's actual yaw is deliberately measured above, but tying a
+ * release gate to the chance that a hard pan and one particular scrolling
+ * batch share the same admitted replay made the gate statistically flaky.
+ * This seam substitutes only the already-latched presentation yaw, is
+ * unreachable without the internal replay token, and never changes gameplay
+ * or the default environment.
+ */
+static bool dkr_replay_test_pan_yaw_deg(float *out_yaw_deg) {
+    static int computed = 0;
+    static bool enabled = false;
+    static float yaw_deg = 0.0f;
+
+    if (!computed) {
+        const char *value = getenv("MDKR_TEST_PAN_DEMOTE_FORCE_YAW_DEG_PER_TICK");
+        if (present_sched_internal_replay_test_enabled() && value != NULL &&
+            value[0] != '\0') {
+            char *end = NULL;
+            const float parsed = strtof(value, &end);
+            if (end != value && isfinite(parsed)) {
+                yaw_deg = parsed;
+                enabled = true;
+                fprintf(stderr, "[PAN-DEMOTE-TEST] forced_yaw=%.2f\n",
+                        (double)yaw_deg);
+            }
+        }
+        computed = 1;
+    }
+    if (enabled && out_yaw_deg != NULL) {
+        *out_yaw_deg = yaw_deg;
+    }
+    return enabled;
 }
 
 /*
@@ -882,9 +887,8 @@ static bool dkr_replay_surface_class_gate_enabled(MdkrSurfaceClass surface_class
 
 /*
  * Pure: no global read besides the class's own env-gate memo (and, for pan
- * demotion, dkr_replay_pan_demote_enabled's/dkr_replay_pan_demote_threshold_deg's
- * identically-shaped memos -- the dynamic per-tick rate itself still arrives
- * only through `req`), no write.
+ * demotion, dkr_replay_pan_demote_enabled's memo -- the dynamic per-tick rate
+ * itself still arrives only through `req`), no write.
  * On every path except MDKR_VERDICT_BLEND, alpha is the newest authored
  * value (0.0f -- the un-advanced pose), never a scaled-up guess, so a caller
  * that forgets to check `*out_reason` still gets a snap, not an
@@ -919,12 +923,12 @@ static float dkr_replay_resolve_alpha(MdkrSurfaceClass surface_class,
                    dkr_replay_surface_class_pan_demotable(surface_class) &&
                    req->pan_rate_known &&
                    fabsf(req->pan_yaw_delta_deg) >
-                       dkr_replay_pan_demote_threshold_deg()) {
+                       MDKR_PAN_DEMOTE_YAW_DEG_PER_TICK) {
             /* Would otherwise BLEND -- every earlier clause already passed --
-             * but this class's correspondence is unproven and the camera is
-             * panning hard enough that the blend would read as shimmer, not
-             * smoothing. Demote to the newest authored value, same as every
-             * other refusal above. */
+             * but this opt-in asks the selected camera-relative classes to
+             * step during a hard pan for device-level shimmer attribution.
+             * Demote to the newest authored value, same as every other
+             * refusal above. */
             reason = MDKR_VERDICT_PAN_RATE_DEMOTED;
         } else {
             alpha = (float)req->numerator / (float)req->denominator;
@@ -8099,8 +8103,14 @@ static bool gfx_dkr_replay_walk_impl(
      * dkr_replay_alpha_req_set_pan_rate rather than re-querying the
      * snapshot, same as numerator/denominator above.
      */
-    dkr_replay_pan_yaw_delta_valid = presentation_snapshot_camera_pan_rate_deg(
-        0, &dkr_replay_pan_yaw_delta_deg);
+    dkr_replay_pan_yaw_delta_valid =
+        dkr_replay_pan_demote_enabled() &&
+        dkr_replay_test_pan_yaw_deg(&dkr_replay_pan_yaw_delta_deg);
+    if (!dkr_replay_pan_yaw_delta_valid) {
+        dkr_replay_pan_yaw_delta_valid =
+            presentation_snapshot_camera_pan_rate_deg(
+                0, &dkr_replay_pan_yaw_delta_deg);
+    }
     {
         DkrReplayAlphaRequest object_alpha_req;
         MdkrVerdictReason object_alpha_reason;

@@ -52,6 +52,7 @@ from harness_utils import DEFAULT_BUILD_DIR, fatal_re, resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "race_full_3lap_tt.txt"
+PAN_DEMOTE_SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
 TRACK = "29"                # Jungle Falls: waterfall scroll + ping-pong water
 # Interpolated-replay OPPORTUNITY count is not perfectly reproducible run to
 # run even headless (host scheduling noise reaches present_sched's
@@ -61,33 +62,14 @@ TRACK = "29"                # Jungle Falls: waterfall scroll + ping-pong water
 # produced a WORLD_SCROLL row in most trials and none in one; 20,000 produced
 # one in every trial measured (n=3) with margin (blend+snap already >= 14).
 FRAMES = 20000
-# The --pan-demote arm needs its own, larger budget than FRAMES: it is not
-# enough for a WORLD_SCROLL row to exist (FRAMES above already guarantees
-# that with margin) -- it needs at least one CONFIRMED scroller tick to also
-# be a tick this route's camera is panning on, and -- per this file's own
-# "not perfectly reproducible run to run even headless" note above -- which
-# ticks land a confirmed interpolated replay walk at all is itself noisy, so
-# that joint event needs real margin. 40,000 frames measured 30-60% failure
-# across repeated trials; 100,000 measured WORLD_SCROLL pandemoted > 0 in
-# 5/5 trials (1 to 65 demotions each), with OBJECT_ROOT pandemoted == 0 in
-# every trial. One of those five also dropped the WATER_WAVE row entirely --
-# a pre-existing large-frame-count flake in this same fixture unrelated to
-# pan demotion (WATER_WAVE's count does not depend on the demotion clause at
-# all) -- so this is the same kind of statistical margin FRAMES/20000 above
-# carries for the base arm, not a stronger guarantee.
-PAN_DEMOTE_FRAMES = 100000
-# Test-only override of the production 22.5 deg/tick threshold (see
-# MDKR_TEST_PAN_DEMOTE_YAW_DEG_PER_TICK in gfx_pc_dkr.c): Jungle Falls'
-# autopilot route pans hard enough to spike past 22.5 deg/tick only a
-# handful of times over an entire 3-lap race (measured max ~150 deg/tick),
-# and essentially never exactly on the same tick a confirmed WORLD_SCROLL
-# batch also draws. 0.05 deg/tick demotes on ordinary camera-follow motion
-# instead of requiring a genuine hard pan, which proves the SAME choke-point
-# clause (dkr_replay_resolve_alpha's demotion branch, the class filter, and
-# the census wiring) without needing a dedicated hard-pan fixture this tree
-# does not have. The production default is untouched by this override --
-# it only takes effect once MDKR_SMOOTH_PAN_DEMOTE=1 has already been set.
-PAN_DEMOTE_TEST_THRESHOLD_DEG = "0.05"
+# The pan-demote arm uses the presentation matrix's measured UV-scroll window:
+# Jungle Falls' waterfall has one confirmed scroll site per authored tick from
+# tick 3000 through 3230. It then token-gates a 45 degree presentation-yaw
+# input, so the production 22.5 degree threshold and the class filter are
+# exercised deterministically instead of waiting for a real hard pan and a
+# confirmed scroller replay to coincide by chance.
+PAN_DEMOTE_FRAMES = 3230 * 2
+PAN_DEMOTE_FORCED_YAW_DEG = "45.0"
 # The shipped production constant (MDKR_PAN_DEMOTE_YAW_DEG_PER_TICK in
 # gfx_pc_dkr.c), duplicated here ONLY as the value this gate expects
 # [PAN-DEMOTE]'s report to equal -- the report itself is read from the
@@ -103,6 +85,7 @@ ROW_RE = re.compile(
     r"topomismatch=(\d+)"
 )
 PAN_THRESHOLD_RE = re.compile(r"\[PAN-DEMOTE\] armed threshold=([0-9.]+)")
+PAN_FORCED_YAW_RE = re.compile(r"\[PAN-DEMOTE-TEST\] forced_yaw=([0-9.]+)")
 # Task 7's topology-key pair comparison, from [PRESENT-PACKET]. The CHECK
 # count is what makes "zero mismatches" mean anything: wave tiles change grid
 # variant only when the camera crosses a distance boundary, so an ordinary
@@ -127,8 +110,8 @@ REQUIRED_CLASSES = ("WATER_WAVE", "OBJECT_ROOT", "WORLD_SCROLL")
 
 
 def environment(save_dir: Path, pan_demote: bool,
-                 threshold_override: str | None = None,
-                 topology_flip: bool = False) -> dict[str, str]:
+                 topology_flip: bool = False,
+                 authorize_forced_yaw: bool = True) -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
@@ -154,17 +137,15 @@ def environment(save_dir: Path, pan_demote: bool,
         MDKR64_HIDDEN="1",
     )
     if pan_demote:
-        # Task 4's optional pan-rate demotion (default OFF). Jungle Falls is
-        # the same fixture check_presentation_matrix.py already established
-        # as this tree's UV-scroll/wave witness -- autopilot cornering
-        # through it is what drives the camera's per-tick yaw rate.
+        # Task 4's optional pan-rate demotion (default OFF). The forced yaw is
+        # a token-gated presentation-only negative control; the route and
+        # frame budget are the presentation matrix's measured scroll window.
         env["MDKR_SMOOTH_PAN_DEMOTE"] = "1"
-        if threshold_override is not None:
-            # The test-only override (see PAN_DEMOTE_TEST_THRESHOLD_DEG
-            # above): only set for the exercising sub-arm. The production
-            # sub-arm below deliberately leaves this unset so it measures
-            # the compiled-in default.
-            env["MDKR_TEST_PAN_DEMOTE_YAW_DEG_PER_TICK"] = threshold_override
+        env["MDKR_TEST_PAN_DEMOTE_FORCE_YAW_DEG_PER_TICK"] = (
+            PAN_DEMOTE_FORCED_YAW_DEG
+        )
+        if authorize_forced_yaw:
+            env["MDKR_INTERNAL_TEST_TOKEN"] = "mdkr64-presentation-replay-v1"
     if topology_flip:
         # Task 7's negative control: fold the per-tick vertex-buffer flip into
         # the wave topology key, which declares every authored pair a topology
@@ -176,8 +157,8 @@ def environment(save_dir: Path, pan_demote: bool,
 
 def run(binary: Path, rom: Path, work: Path, timeout: int, verbose: bool,
         pan_demote: bool, frames: int,
-        threshold_override: str | None = None,
-        topology_flip: bool = False) -> str:
+        topology_flip: bool = False,
+        authorize_forced_yaw: bool = True) -> str:
     import subprocess
 
     save_dir = work / "save"
@@ -185,7 +166,7 @@ def run(binary: Path, rom: Path, work: Path, timeout: int, verbose: bool,
     command = [
         str(binary),
         "--headless-frames", str(frames),
-        "--input-script", str(SCRIPT),
+        "--input-script", str(PAN_DEMOTE_SCRIPT if pan_demote else SCRIPT),
         "--rom", str(rom),
     ]
     if verbose:
@@ -194,8 +175,8 @@ def run(binary: Path, rom: Path, work: Path, timeout: int, verbose: bool,
         proc = subprocess.run(
             command,
             cwd=work,
-            env=environment(save_dir, pan_demote, threshold_override,
-                            topology_flip),
+            env=environment(save_dir, pan_demote, topology_flip,
+                            authorize_forced_yaw),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -494,11 +475,12 @@ def main() -> int:
         "--pan-demote", action="store_true",
         help=(
             "Task 4: arm MDKR_SMOOTH_PAN_DEMOTE=1 over the same Jungle Falls "
-            "route and prove WORLD_SCROLL sees PAN_RATE_DEMOTED rows while "
-            "OBJECT_ROOT still blends (objects are never in the demotable "
-            "set). With this flag omitted (the default), the env stays "
-            "unset and every observed class must show pandemoted=0 -- the "
-            "default-off proof."
+            "route with a token-gated forced yaw and prove WATER_WAVE is "
+            "demoted while OBJECT_ROOT still blends (objects are never in "
+            "the demotable set). Any confirmed WORLD_SCROLL draw must also "
+            "demote, but a run containing only UV_HOLD scroll rows is not "
+            "failed. With this flag omitted, every observed class must show "
+            "pandemoted=0 -- the default-off proof."
         ),
     )
     args = parser.parse_args()
@@ -514,11 +496,8 @@ def main() -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="mdkr_smooth_verdict_") as temp:
             frames = PAN_DEMOTE_FRAMES if args.pan_demote else FRAMES
-            threshold_override = (
-                PAN_DEMOTE_TEST_THRESHOLD_DEG if args.pan_demote else None
-            )
             output = run(binary, rom, Path(temp), args.timeout, args.verbose,
-                         args.pan_demote, frames, threshold_override,
+                         args.pan_demote, frames,
                          args.topology_negative_control)
     except (OSError, RuntimeError) as exc:
         print(f"check_smooth_verdict: FAIL — {exc}", file=sys.stderr)
@@ -587,7 +566,8 @@ def main() -> int:
     # would import that flake into an assertion it has nothing to do with; the
     # default arm still requires all three.
     required = (tuple(c for c in REQUIRED_CLASSES if c != "WORLD_SCROLL")
-                if args.topology_negative_control else REQUIRED_CLASSES)
+                if args.topology_negative_control or args.pan_demote
+                else REQUIRED_CLASSES)
     for cls in required:
         if cls not in rows:
             failures.append(f"no [SMOOTH-VERDICT] row for class={cls}")
@@ -613,6 +593,18 @@ def main() -> int:
                         f"class=WATER_WAVE: top_reason={top_reason} with "
                         "MDKR_TEST_WAVE_TOPOLOGY_FLIP=1 — the surface "
                         "snapped, but not for the reason the seam forced")
+            elif args.pan_demote:
+                if noowner != 0:
+                    failures.append(
+                        f"class=WATER_WAVE: noowner={noowner} under forced "
+                        "pan — ownership must remain intact while the choke "
+                        "point demotes the draw"
+                    )
+                if pandemoted <= 0 or top_reason != "PAN_RATE_DEMOTED":
+                    failures.append(
+                        f"class=WATER_WAVE: pandemoted={pandemoted} "
+                        f"top_reason={top_reason} under forced pan"
+                    )
             elif args.expect_water_owned:
                 # Two separate claims, because either alone is satisfiable by
                 # a broken tree: blend>0 without noowner==0 is "some tiles
@@ -645,18 +637,13 @@ def main() -> int:
                     )
 
     if args.pan_demote:
-        # Positive proof: with the env armed, the demotable WORLD_SCROLL
-        # class actually sees PAN_RATE_DEMOTED rows on this hard-cornering
-        # route, while OBJECT_ROOT -- never in
-        # dkr_replay_surface_class_pan_demotable's set -- must NOT be
-        # demoted at all. Object pairing (ownership) is proven by the
-        # existing REQUIRED_CLASSES/n>0 checks above; this only adds the
-        # zero-demotion assertion on top of that already-proven pairing.
-        if "WORLD_SCROLL" in rows and rows["WORLD_SCROLL"][3] <= 0:
+        # WATER_WAVE is the deterministic positive witness. WORLD_SCROLL's
+        # lookup can legitimately produce only UV_HOLD rows on a host-scheduled
+        # run; if it does confirm a draw, forced yaw must prevent BLEND.
+        if "WORLD_SCROLL" in rows and rows["WORLD_SCROLL"][0] != 0:
             failures.append(
-                "class=WORLD_SCROLL: MDKR_SMOOTH_PAN_DEMOTE=1 but "
-                "pandemoted=0 -- the armed route never crossed "
-                "MDKR_PAN_DEMOTE_YAW_DEG_PER_TICK"
+                f"class=WORLD_SCROLL: blend={rows['WORLD_SCROLL'][0]} under "
+                "forced pan — a confirmed scroller escaped demotion"
             )
         if "OBJECT_ROOT" in rows and rows["OBJECT_ROOT"][3] != 0:
             failures.append(
@@ -664,65 +651,39 @@ def main() -> int:
                 f"{rows['OBJECT_ROOT'][3]} but OBJECT_ROOT is not in the "
                 "demotable surface-class set and must never be demoted"
             )
-
-        # Production-threshold sub-arm: everything above used
-        # PAN_DEMOTE_TEST_THRESHOLD_DEG, so nothing yet has ever exercised
-        # the SHIPPED 22.5 deg/tick default -- a change that broke the
-        # compiled default while leaving the override mechanism intact would
-        # pass every assertion above undetected. This sub-arm arms
-        # MDKR_SMOOTH_PAN_DEMOTE=1 with the override left UNSET, at the
-        # cheap base FRAMES budget (no need for PAN_DEMOTE_FRAMES' margin --
-        # this sub-arm does not need a demotion to actually fire), and pins
-        # two things read from the binary's own output, not assumed: (a) the
-        # compiled-in threshold the choke point is actually comparing
-        # against, via the one-shot [PAN-DEMOTE] trace
-        # dkr_replay_pan_demote_enabled() emits the first time it finds
-        # itself armed; (b) that this ordinary route's camera genuinely
-        # cannot cross that real threshold, so pandemoted stays 0 for every
-        # class -- the fixture's own physical limit, asserted rather than
-        # silently relied upon.
+        threshold_match = PAN_THRESHOLD_RE.search(output)
+        if threshold_match is None:
+            failures.append("no [PAN-DEMOTE] production-threshold row")
+        elif abs(float(threshold_match.group(1)) -
+                 EXPECTED_PRODUCTION_THRESHOLD_DEG) > 1e-6:
+            failures.append(
+                f"[PAN-DEMOTE] threshold={threshold_match.group(1)}, "
+                f"expected {EXPECTED_PRODUCTION_THRESHOLD_DEG}"
+            )
+        forced_match = PAN_FORCED_YAW_RE.search(output)
+        if forced_match is None:
+            failures.append("token-gated forced-yaw seam did not report")
+        elif abs(float(forced_match.group(1)) -
+                 float(PAN_DEMOTE_FORCED_YAW_DEG)) > 1e-6:
+            failures.append(
+                f"forced yaw={forced_match.group(1)}, expected "
+                f"{PAN_DEMOTE_FORCED_YAW_DEG}"
+            )
         try:
             with tempfile.TemporaryDirectory(
-                    prefix="mdkr_smooth_verdict_prodthresh_") as prod_temp:
-                prod_output = run(binary, rom, Path(prod_temp), args.timeout,
-                                  args.verbose, True, FRAMES, None)
-        except (OSError, RuntimeError) as exc:
-            failures.append(f"production-threshold sub-arm: {exc}")
-            prod_output = ""
-
-        if prod_output:
-            threshold_match = PAN_THRESHOLD_RE.search(prod_output)
-            if threshold_match is None:
-                failures.append(
-                    "production-threshold sub-arm: no [PAN-DEMOTE] armed "
-                    "threshold row was emitted -- dkr_replay_pan_demote_"
-                    "enabled() did not report the compiled threshold"
+                    prefix="mdkr_smooth_verdict_bare_pan_") as bare_temp:
+                bare_output = run(
+                    binary, rom, Path(bare_temp), args.timeout, args.verbose,
+                    True, PAN_DEMOTE_FRAMES, authorize_forced_yaw=False,
                 )
-            else:
-                reported = float(threshold_match.group(1))
-                if abs(reported - EXPECTED_PRODUCTION_THRESHOLD_DEG) > 1e-6:
-                    failures.append(
-                        f"production-threshold sub-arm: [PAN-DEMOTE] "
-                        f"reported threshold={reported}, expected "
-                        f"{EXPECTED_PRODUCTION_THRESHOLD_DEG} -- "
-                        "MDKR_PAN_DEMOTE_YAW_DEG_PER_TICK changed in "
-                        "gfx_pc_dkr.c without updating "
-                        "EXPECTED_PRODUCTION_THRESHOLD_DEG here (or the "
-                        "compiled default silently regressed)"
-                    )
-            prod_failures: list[str] = []
-            prod_rows = parse_rows(prod_output, prod_failures)
-            failures.extend(f"production-threshold sub-arm: {f}"
-                            for f in prod_failures)
-            for cls, (_, _, _, pandemoted, _, _) in prod_rows.items():
-                if pandemoted != 0:
-                    failures.append(
-                        f"production-threshold sub-arm: class={cls} "
-                        f"pandemoted={pandemoted} at the real 22.5 "
-                        "deg/tick threshold -- this fixture's route was "
-                        "assumed unable to cross it; either the route "
-                        "changed or the real threshold no longer holds"
-                    )
+        except (OSError, RuntimeError) as exc:
+            failures.append(f"bare-token forced-yaw control: {exc}")
+            bare_output = ""
+        if PAN_FORCED_YAW_RE.search(bare_output) is not None:
+            failures.append(
+                "bare-token forced-yaw control activated without "
+                "MDKR_INTERNAL_TEST_TOKEN"
+            )
     else:
         # Default-off proof (Step 3): with the env unset, the choke point's
         # demotion clause can never fire, for ANY class.
