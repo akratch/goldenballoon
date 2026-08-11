@@ -1112,6 +1112,13 @@ void gfx_presentation_packet_get_uv_scroll_hold_stats(
     }
 }
 
+void gfx_presentation_packet_note_topology(bool agree) {
+    s_stats.topology_checks++;
+    if (!agree) {
+        s_stats.topology_mismatches++;
+    }
+}
+
 void gfx_presentation_packet_note_verdict(MdkrSurfaceClass surface_class,
                                           MdkrVerdictReason reason) {
     if ((unsigned)surface_class >= (unsigned)MDKR_SURF_CLASS_COUNT ||

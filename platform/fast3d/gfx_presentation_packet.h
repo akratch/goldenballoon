@@ -232,6 +232,21 @@ typedef struct GfxPresentationPacketStats {
     uint32_t verdict_blend[MDKR_SURF_CLASS_COUNT];
     uint32_t verdict_snap[MDKR_SURF_CLASS_COUNT];
     uint32_t verdict_reason[MDKR_SURF_CLASS_COUNT][MDKR_VERDICT_REASON_COUNT];
+    /*
+     * Topology-key pair comparisons (Task 7). `topology_checks` counts every
+     * time a topology-keyed owner asked the published pair whether its two
+     * ticks describe the same mesh; `topology_mismatches` counts the answers
+     * that were no.
+     *
+     * The pair is the point. A gate that only asserted mismatches==0 would
+     * pass just as well on a build where the question is never asked at all,
+     * which is precisely how a topology guard would rot: the wave surfaces
+     * change LOD variant only when the camera crosses a distance boundary, so
+     * a route can legitimately produce zero mismatches, and only checks>0
+     * separates that from a guard that stopped running.
+     */
+    uint64_t topology_checks;
+    uint64_t topology_mismatches;
 } GfxPresentationPacketStats;
 
 typedef struct GfxPresentationDeformationBinding {
@@ -427,6 +442,8 @@ void gfx_presentation_packet_get_stats(GfxPresentationPacketStats *out);
  * clamped, so a caller passing a class/reason this build does not know about
  * cannot silently corrupt an adjacent row.
  */
+/* One topology-key pair comparison and its outcome (see topology_checks). */
+void gfx_presentation_packet_note_topology(bool agree);
 void gfx_presentation_packet_note_verdict(MdkrSurfaceClass surface_class,
                                           MdkrVerdictReason reason);
 /* Zero only the verdict census (verdict_blend/verdict_snap/verdict_reason),

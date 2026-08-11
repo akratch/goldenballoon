@@ -141,6 +141,29 @@ typedef struct GfxPresentationMatrixOwner {
      * carried in the same view-space number -- is bounded well below it.
      */
     float max_vertex_delta;
+    /*
+     * TOPOLOGY-KEYED SURFACE. The owner's geometry is selected per authored
+     * tick from a family of meshes that share an address and a vertex count
+     * but not a vertex ORDERING -- the wave renderer's 25 grid LOD variants
+     * are the case this exists for. Nothing about the owner's pose says which
+     * variant this tick drew, so the pair must be compared through a key the
+     * game publishes per tick into its snapshot entry
+     * (presentation_snapshot_set_external_topology_key). This flag only says
+     * "check that key"; the key itself lives in the snapshot, because the two
+     * things being compared are two authored TICKS, not a tick and a recipe.
+     *
+     * A blend across two different variants would interpolate vertex i of one
+     * grid toward vertex i of another, which is not a motion the surface ever
+     * had. dkr_replay_resolve_alpha turns a disagreeing pair into
+     * MDKR_VERDICT_TOPOLOGY_MISMATCH, i.e. a snap: the frame that crosses an
+     * LOD boundary steps once instead of exploding.
+     *
+     * The double-buffered vertex alternation the same renderer runs
+     * (gWaveVertexFlip) is deliberately NOT part of the key -- it is a phase
+     * of one surface, not a change of surface, and
+     * gfx_dkr_note_paired_triangle_buffers already pairs those two phases.
+     */
+    bool topology_keyed;
     bool valid;
 } GfxPresentationMatrixOwner;
 

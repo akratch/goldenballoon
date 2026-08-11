@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include "gfx_shadow_frame.h"
 #include "gfx_pc_dkr.h"
+#include "presentation_snapshot.h"
 #endif
 #include <ultra64.h>
 
@@ -190,6 +191,42 @@ _Static_assert(sizeof(WaveVisibleTable) == WAVE_VISIBLE_SLOTS * sizeof(unk8012A5
  * fails closed on the built wasm. This is belt-and-braces behind it.
  */
 #define WAVE_VISIBLE_WALK_LIVE(k) ((k) < WAVE_VISIBLE_SLOTS && D_8012A5E8[k].blockID != -1)
+
+/*
+ * ---- the wave surface's presentation identity ---------------------------
+ *
+ * WHAT WAS MISSING. waves_render() emitted every tile through ONE stack-local
+ * ObjectTransform. The snapshot's capture walk enumerates gObjPtrList, so a
+ * stack local is invisible to it: no snapshot entry, no presentation owner,
+ * and an interpolated present replayed the water's tick-T matrix under a
+ * tick-T+alpha camera. The UV side of the same surface was already handled
+ * (gfx_dkr_note_paired_triangle_buffers, waves_alloc), which is the worst of
+ * both: a texture gliding over geometry stepping at 30 Hz. This is residual
+ * obligation 0 in docs/architecture/presentation-interpolation.md.
+ *
+ * ONE SLOT PER TILE, NOT PER SUB-QUAD. A double-density tile draws four
+ * sub-quads from four different offsets of the same origin. They still share
+ * a slot, because the owner's residual (`source_position` minus the pose the
+ * snapshot captured) already carries a render-time offset exactly like the
+ * racer tumble and bob it was built for -- and here it carries it EXACTLY,
+ * because a wave tile's captured pose is constant, so the reconstructed
+ * transform is the pushed one to the bit. Four slots per tile would cost 104
+ * registry entries to reproduce a number the residual already reproduces.
+ *
+ * BOUNDED BY THE VISIBILITY TABLE. One slot per entry the 26-slot table can
+ * hold, claimed and retired at TICK time from that table rather than at the
+ * draw: registration issues a fresh generation, and reissuing one every frame
+ * would mark the tile discontinuous forever and interpolate nothing. A tile
+ * that becomes visible between two ticks simply draws unowned for one frame,
+ * which is what it did for every frame before this existed.
+ */
+#define WAVE_OWNER_SLOTS WAVE_VISIBLE_SLOTS
+static ObjectTransform sWaveOwnerTransforms[WAVE_OWNER_SLOTS];
+/* Which wave block each slot currently is, or -1. This is the identity: a
+ * slot that changes tenant is a new lifetime and re-registers. */
+static s16 sWaveOwnerBlock[WAVE_OWNER_SLOTS];
+static u8 sWaveOwnerLive[WAVE_OWNER_SLOTS];
+static s32 sWaveOwnerReady = FALSE;
 #else
 unk8012A5E8 D_8012A5E8[2];
 unk8012A5E8 D_8012A600[24];
@@ -214,6 +251,197 @@ s32 gWavePowerDivisor;
         tex = NULL;        \
     }
 
+#ifdef NATIVE_PORT
+/*
+ * The pose a wave tile publishes, and the only thing about it that ever
+ * reaches the snapshot. It is level data, not simulation state: the tile
+ * origin never moves and the scale is a level-header property. That is what
+ * makes ONE slot enough for a double-density tile's four sub-quads -- the
+ * per-sub-quad offsets reach replay through each push's own owner residual --
+ * and it is why a slot can be registered the moment it is claimed, with the
+ * real pose already in it, instead of waiting for a draw to fill it.
+ */
+static void waves_owner_pose(s32 blockID, ObjectTransform *out) {
+    memset(out, 0, sizeof(*out));
+    out->scale = gWaveController.doubleDensity ? 0.5f : 1.0f;
+    out->x_position = gWaveModel[blockID].originX;
+    out->y_position = gWaveModel[blockID].originY;
+    out->z_position = gWaveModel[blockID].originZ;
+}
+
+static void waves_owner_retire_slot(s32 slot) {
+    if (sWaveOwnerLive[slot]) {
+        presentation_snapshot_unregister_external_transform(
+            &sWaveOwnerTransforms[slot]);
+        sWaveOwnerLive[slot] = FALSE;
+    }
+    sWaveOwnerBlock[slot] = -1;
+    memset(&sWaveOwnerTransforms[slot], 0, sizeof(sWaveOwnerTransforms[slot]));
+}
+
+/*
+ * Retire every wave presentation lifetime. Called when the wave storage goes
+ * away, which is a level boundary: a slot left registered across one would
+ * keep publishing a pose from a scene that no longer exists, and the next
+ * level's first tile to claim that slot would look continuous with it.
+ */
+static void waves_owner_retire_all(void) {
+    s32 slot;
+
+    for (slot = 0; slot < WAVE_OWNER_SLOTS; slot++) {
+        waves_owner_retire_slot(slot);
+    }
+    sWaveOwnerReady = TRUE;
+}
+
+/*
+ * TICK-TIME lifecycle for the wave surfaces' presentation identities.
+ *
+ * Reads the 26-slot visibility table the previous render filled and makes the
+ * slot set match it: a tile that is still visible keeps its slot and its
+ * generation, a tile that has gone unregisters, and a newly visible tile
+ * claims a free slot -- and registers on the FIRST tick at which a draw has
+ * already put a real pose in that slot, which is the tick after the claim.
+ * Registration is a lifecycle event here for the same reason a rain splash's
+ * is at its spawn rather than at its draw (weather.c) -- it issues a fresh
+ * generation, and issuing one per frame would leave every tile permanently
+ * discontinuous. The one-tick delay is the fail-closed direction: the tile
+ * draws unowned for its first frame, exactly as every wave tile did before
+ * this existed.
+ *
+ * Read-only with respect to authoritative state: it reads block IDs and level
+ * model origins and writes only presentation-side storage.
+ */
+static void waves_owner_tick(void) {
+    u8 keep[WAVE_OWNER_SLOTS];
+    s32 slot;
+    s32 k;
+
+    if (!sWaveOwnerReady) {
+        waves_owner_retire_all();
+    }
+    if (gWaveModel == NULL) {
+        waves_owner_retire_all();
+        return;
+    }
+    memset(keep, 0, sizeof(keep));
+    for (k = 0; WAVE_VISIBLE_WALK_LIVE(k); k++) {
+        s32 blockID = D_8012A5E8[k].blockID;
+        s32 free_slot = -1;
+        s32 found = -1;
+
+        if (blockID < 0 || blockID >= gNumberOfLevelSegments) {
+            continue;
+        }
+        for (slot = 0; slot < WAVE_OWNER_SLOTS; slot++) {
+            if (sWaveOwnerBlock[slot] == blockID) {
+                found = slot;
+                break;
+            }
+            if (free_slot < 0 && sWaveOwnerBlock[slot] == -1) {
+                free_slot = slot;
+            }
+        }
+        if (found < 0) {
+            if (free_slot < 0) {
+                /* More distinct tiles than slots. The extras draw exactly as
+                 * they did before this existed: unowned, and graded NO_OWNER.
+                 * Never share a slot -- two tiles behind one identity would
+                 * blend each into the other's pose. */
+                continue;
+            }
+            found = free_slot;
+            waves_owner_pose(blockID, &sWaveOwnerTransforms[found]);
+            sWaveOwnerBlock[found] = (s16) blockID;
+            sWaveOwnerLive[found] =
+                presentation_snapshot_register_external_transform(
+                    &sWaveOwnerTransforms[found]);
+        }
+        keep[found] = TRUE;
+    }
+    for (slot = 0; slot < WAVE_OWNER_SLOTS; slot++) {
+        if (!keep[slot] && sWaveOwnerBlock[slot] != -1) {
+            waves_owner_retire_slot(slot);
+        }
+    }
+}
+
+/*
+ * The registered slot a tile is drawn through, or NULL when it has none --
+ * a tile that became visible since the last tick, or one the slot budget
+ * could not hold. Those keep the old stack local and draw exactly as every
+ * wave tile did before this existed.
+ */
+static ObjectTransform *waves_owner_transform(s32 blockID) {
+    s32 slot;
+
+    for (slot = 0; slot < WAVE_OWNER_SLOTS; slot++) {
+        if (sWaveOwnerBlock[slot] == blockID && sWaveOwnerLive[slot]) {
+            return &sWaveOwnerTransforms[slot];
+        }
+    }
+    return NULL;
+}
+
+/*
+ * WHICH GRID THIS TICK DREW.
+ *
+ * `D_800E30D4[unkC]` packs the tile's selected grid LOD variant -- one of the
+ * 25 that share the vertex allocation -- in its low byte, and for a
+ * double-density tile one byte per sub-quad. waves_render() consumes it a
+ * byte at a time (`sp104 >>= 8`), so the whole word is what identifies the
+ * mesh the tile drew, and folding it to 16 bits leaves the single-density
+ * case exactly equal to the variant id.
+ *
+ * gWaveVertexFlip is deliberately absent. It alternates every authored tick
+ * by design and is a PHASE of one surface, not a change of surface;
+ * gfx_dkr_note_paired_triangle_buffers (waves_alloc) already pairs the two
+ * phases. Keying it in would declare every single tick a topology change and
+ * turn the whole surface back into a snap.
+ */
+/*
+ * NEGATIVE CONTROL for the whole topology path (MDKR_TEST_WAVE_TOPOLOGY_FLIP).
+ *
+ * A wave tile changes grid variant only when the camera crosses a distance
+ * boundary, so an ordinary route can produce hundreds of key comparisons and
+ * zero disagreements -- measured 282/0 on Jungle Falls. A guard whose refusal
+ * branch is never taken is indistinguishable from a guard that has stopped
+ * running, and asserting "no mismatches" on such a route asserts nothing.
+ *
+ * With this seam armed the key folds in gWaveVertexFlip, which alternates
+ * EVERY authored tick by design. That is precisely the mistake the production
+ * key is written to avoid, so it declares every pair a topology change and
+ * forces the refusal on every wave draw: the census must go all-snap with
+ * top_reason=TOPOLOGY_MISMATCH. It proves key publication, capture, pair
+ * comparison, the choke-point clause and the census attribution in one arm,
+ * and it is what makes "return a constant key" a mutation with a visible
+ * consequence rather than a change nothing can see.
+ *
+ * Test-only and off by default, like every other adversarial seam here.
+ */
+static s32 sWaveTopologyFlipSeam = -1;
+
+static s32 waves_owner_topology_flip_seam(void) {
+    if (sWaveTopologyFlipSeam < 0) {
+        const char *value = getenv("MDKR_TEST_WAVE_TOPOLOGY_FLIP");
+        sWaveTopologyFlipSeam =
+            (value != NULL && value[0] != '\0' && strcmp(value, "0") != 0)
+                ? TRUE
+                : FALSE;
+    }
+    return sWaveTopologyFlipSeam;
+}
+
+static u16 waves_owner_topology_key(s32 blockID) {
+    u32 word = (u32) D_800E30D4[gWaveModel[blockID].unkC];
+
+    if (waves_owner_topology_flip_seam()) {
+        word = (word << 1) | (u32) gWaveVertexFlip;
+    }
+    return (u16) (word ^ (word >> 16));
+}
+#endif
+
 /**
  * Free all Wavegen data from memory.
  * Has safety checks to ensure what it's freeing exists, first.
@@ -221,6 +449,10 @@ s32 gWavePowerDivisor;
 void waves_free(void) {
     TextureHeader *tempTex;
     s32 *tempMem;
+#ifdef NATIVE_PORT
+    /* Before gWaveModel goes back to the pool: see waves_owner_retire_all. */
+    waves_owner_retire_all();
+#endif
     FREE_MEM(gWaveHeightTable);
     FREE_MEM(gWaveHeightIndices);
     FREE_MEM(gWaveUVTable);
@@ -996,6 +1228,11 @@ void waves_tick(s32 updateRate) {
     s32 j_2;
     s32 k_2;
 
+    /* The wave surfaces' presentation lifecycle, at the tick boundary and
+     * nowhere else. Reads the visibility table and the level model; writes
+     * only presentation-side storage, so it cannot move the state hash. */
+    waves_owner_tick();
+
     for (i_2 = 0, j_2 = 0; i_2 < gWaveController.tileCount; i_2++) {
         for (k_2 = 0; k_2 < gWaveController.tileCount; k_2++) {
             gWaveHeightIndices[j_2].s[0] += updateRate;
@@ -1291,11 +1528,23 @@ void waves_render(Gfx **dList, Mtx **mtx, s32 viewportID) {
     s32 sp104;
     s32 var_fp;
     s32 var_t0;
-    ObjectTransform transform;
+    ObjectTransform localTransform;
+    ObjectTransform *transform;
     LevelModel_Alternate *spE0;
     s32 i;
     TextureHeader *tex1;
     TextureHeader *tex2;
+#ifdef NATIVE_PORT
+    ObjectTransform *slot;
+    s32 owned = FALSE;
+#endif
+
+    /* The transform every tile is pushed through. It is the tile's OWN
+     * registered slot when the tick claimed one, and the old stack local
+     * otherwise -- byte-identical either way, because both hold the same
+     * numbers; the only difference is whether the snapshot has ever seen the
+     * address. See the presentation-identity note at the top of this file. */
+    transform = &localTransform;
 
     if (viewportID != VIEWPORT_LAYOUT_2_PLAYERS || gWavePlayerCount != 2) {
         viewportID = 0;
@@ -1345,13 +1594,6 @@ void waves_render(Gfx **dList, Mtx **mtx, s32 viewportID) {
                 gDPSetEnvColor(gWaveDL++, 255, 255, 255, 0);
             }
         }
-        if (gWaveController.doubleDensity) {
-            transform.scale = 0.5f;
-        } else {
-            transform.scale = 1.0f;
-        }
-
-        transform.rotation.x = transform.rotation.y = transform.rotation.z = 0;
         // High Quality water
         for (; i < gVisibleWaveTiles; i++) {
             if (gWaveController.xlu) {
@@ -1359,16 +1601,48 @@ void waves_render(Gfx **dList, Mtx **mtx, s32 viewportID) {
             } else {
                 func_800B97A8(gWaveBlockIDs[i], viewportID);
             }
+#ifdef NATIVE_PORT
+            /* This tile's own registered slot, if the tick claimed one. The
+             * numbers written below are identical either way; what changes is
+             * that the snapshot has a pose and a topology key for THIS tile at
+             * THIS tick, which is what lets replay recompose its matrix
+             * against the interpolated camera instead of replaying the
+             * authored one. */
+            slot = waves_owner_transform(gWaveBlockIDs[i]);
+            owned = slot != NULL;
+            transform = owned ? slot : &localTransform;
+            if (owned) {
+                (void)presentation_snapshot_set_external_topology_key(
+                    slot, waves_owner_topology_key(gWaveBlockIDs[i]));
+            }
+#endif
+            if (gWaveController.doubleDensity) {
+                transform->scale = 0.5f;
+            } else {
+                transform->scale = 1.0f;
+            }
+            transform->rotation.x = transform->rotation.y = transform->rotation.z = 0;
             spE0 = &gWaveModel[gWaveBlockIDs[i]];
-            transform.x_position = spE0->originX;
-            transform.y_position = spE0->originY;
-            transform.z_position = spE0->originZ;
+            transform->x_position = spE0->originX;
+            transform->y_position = spE0->originY;
+            transform->z_position = spE0->originZ;
             sp104 = D_800E30D4[spE0->unkC];
             if (gWaveController.doubleDensity) {
                 for (sp11C = 0; sp11C < 2; sp11C++) {
-                    transform.x_position = spE0->originX;
+                    transform->x_position = spE0->originX;
                     for (var_fp = 0; var_fp < 2; var_fp++) {
-                        mtx_cam_push(&gWaveDL, &gWaveMtx, &transform, 1.0f, 0.0f);
+#ifdef NATIVE_PORT
+                        /* Classify the push this tile is about to make.
+                         * Topology-keyed: the grid variant below
+                         * (`sp104 & 0xFF`) is chosen per tick, so two
+                         * adjacent ticks can name one vertex array and
+                         * mean two different meshes. */
+                        if (owned) {
+                            mdkr_presentation_note_next_surface(
+                                MDKR_SURF_WATER_WAVE, TRUE);
+                        }
+#endif
+                        mtx_cam_push(&gWaveDL, &gWaveMtx, transform, 1.0f, 0.0f);
                         if (sp104 & 0xFF) {
                             numTris = gWaveController.subdivisions << 1;
                             numVerts = gWaveController.subdivisions + 1;
@@ -1401,12 +1675,19 @@ void waves_render(Gfx **dList, Mtx **mtx, s32 viewportID) {
                         }
                         mtx_pop(&gWaveDL);
                         sp104 >>= 8;
-                        transform.x_position += gWaveBoundingBoxW * 0.5f;
+                        transform->x_position += gWaveBoundingBoxW * 0.5f;
                     }
-                    transform.z_position += gWaveBoundingBoxH * 0.5f;
+                    transform->z_position += gWaveBoundingBoxH * 0.5f;
                 }
             } else {
-                mtx_cam_push(&gWaveDL, &gWaveMtx, &transform, 1.0f, 0.0f);
+#ifdef NATIVE_PORT
+                /* See the double-density push above. */
+                if (owned) {
+                    mdkr_presentation_note_next_surface(
+                        MDKR_SURF_WATER_WAVE, TRUE);
+                }
+#endif
+                mtx_cam_push(&gWaveDL, &gWaveMtx, transform, 1.0f, 0.0f);
                 numTris = gWaveController.subdivisions << 1;
                 numVerts = gWaveController.subdivisions + 1;
                 var_t0 = ((sp104 & 0xFF) - 1) * numVerts * numVerts;
@@ -1425,6 +1706,20 @@ void waves_render(Gfx **dList, Mtx **mtx, s32 viewportID) {
                 }
                 mtx_pop(&gWaveDL);
             }
+#ifdef NATIVE_PORT
+            /* Leave the slot holding the TILE's pose, not whichever sub-quad
+             * happened to be drawn last. The tick-boundary capture publishes
+             * whatever is here, and a published pose that depends on the
+             * sub-quad loop's exit state is not a property of the tile: it
+             * would differ between a single- and a double-density level for
+             * the same water, and the pair would disagree the first time a
+             * tile's sub-quad count changed. The per-sub-quad offsets are not
+             * lost -- each push stamped its own source_position, and the
+             * owner's residual carries the difference exactly. */
+            if (owned) {
+                waves_owner_pose(gWaveBlockIDs[i], slot);
+            }
+#endif
         }
         if (gWaveController.xlu) {
             gSPSetGeometryMode(gWaveDL++, G_FOG);

@@ -224,6 +224,15 @@ s32 render_sprite_billboard_transform(Gfx **dList, Mtx **mtx, Vertex **vtx,
                                       Sprite *sprite, s32 flags);
 #endif
 s32 mtx_cam_push(Gfx **dList, Mtx **mtx, ObjectTransform *trans, f32 scaleY, f32 offsetY);
+#ifdef NATIVE_PORT
+/* Classify the geometry the NEXT mtx_cam_push() is about to emit: an
+ * MdkrSurfaceClass ordinal (gfx_shadow_frame.h -- taken as s32 so this header
+ * stays free of the platform enum) and whether that surface selects its mesh
+ * per authored tick and therefore publishes a topology key. Consumed and
+ * cleared by that push. See camera.c for why this is a note rather than a
+ * parameter. */
+void mdkr_presentation_note_next_surface(s32 surfaceClass, s32 topologyKeyed);
+#endif
 void viewport_scissor(Gfx **dList);
 void mtx_pop(Gfx **dList);
 void copy_viewports_to_stack(void);

@@ -10,12 +10,15 @@ things about that translation on one Remastered scripted race:
   WORLD_SCROLL;
 * it is not vacuous: every row's blend+snap equals its own total, and
   WATER_WAVE graded at least one draw;
-* it pins today's known-incomplete truth: the wave surfaces have no
-  presentation owner yet (docs/architecture/presentation-interpolation.md,
-  residual obligation 0), so WATER_WAVE must currently be all-snap with
-  top_reason=NO_OWNER. ``--expect-water-owned`` flips that assertion once a
-  later task gives waves a real owner; it defaults to false so this gate
-  fails loudly the day that default goes stale instead of quietly passing.
+* it pins the wave surfaces' ownership. Task 7 gave wave geometry a real
+  presentation owner (``game/src/waves.c``: one registered transform per
+  visible tile, topology-keyed on the grid LOD variant), so WATER_WAVE must
+  now BLEND at least once and must file NO_OWNER exactly zero times -- a
+  minority of unowned wave draws would hide behind ``top_reason`` otherwise.
+  ``--no-expect-water-owned`` restores the pre-Task-7 assertion (all-snap,
+  top_reason=NO_OWNER) and is how the red state is reproduced on an older
+  tree; the default is now the owned one, so this gate fails loudly the day
+  ownership regresses instead of quietly passing.
 
 Route: Jungle Falls (level 29), MDKR_LOAD_TRACK-retargeted so the race loads
 without menu navigation. Jungle Falls is the tree's own established
@@ -96,9 +99,17 @@ FATAL_RE = fatal_re(r"\[FX BUG\]", "Assertion", "Validation Error")
 
 ROW_RE = re.compile(
     r"\[SMOOTH-VERDICT\] class=(\S+) blend=(\d+) snap=(\d+) "
-    r"top_reason=(\S+) pandemoted=(\d+)"
+    r"top_reason=(\S+) pandemoted=(\d+) noowner=(\d+) "
+    r"topomismatch=(\d+)"
 )
 PAN_THRESHOLD_RE = re.compile(r"\[PAN-DEMOTE\] armed threshold=([0-9.]+)")
+# Task 7's topology-key pair comparison, from [PRESENT-PACKET]. The CHECK
+# count is what makes "zero mismatches" mean anything: wave tiles change grid
+# variant only when the camera crosses a distance boundary, so an ordinary
+# route legitimately produces no mismatches at all -- measured 282 checks / 0
+# mismatches on this fixture -- and only a positive check count separates that
+# from a guard that stopped running.
+TOPOLOGY_RE = re.compile(r"topocheck=(\d+) topomismatch=(\d+)")
 # Task 5: VRR-honest alpha quantization. This fixture drives synthetic
 # (non-realtime) pacing via --headless-frames, which
 # platform_present_display_quantum_units() declines to quantize onto a grid
@@ -116,7 +127,8 @@ REQUIRED_CLASSES = ("WATER_WAVE", "OBJECT_ROOT", "WORLD_SCROLL")
 
 
 def environment(save_dir: Path, pan_demote: bool,
-                 threshold_override: str | None = None) -> dict[str, str]:
+                 threshold_override: str | None = None,
+                 topology_flip: bool = False) -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
@@ -153,12 +165,18 @@ def environment(save_dir: Path, pan_demote: bool,
             # sub-arm below deliberately leaves this unset so it measures
             # the compiled-in default.
             env["MDKR_TEST_PAN_DEMOTE_YAW_DEG_PER_TICK"] = threshold_override
+    if topology_flip:
+        # Task 7's negative control: fold the per-tick vertex-buffer flip into
+        # the wave topology key, which declares every authored pair a topology
+        # change. See waves.c waves_owner_topology_flip_seam.
+        env["MDKR_TEST_WAVE_TOPOLOGY_FLIP"] = "1"
     return env
 
 
 def run(binary: Path, rom: Path, work: Path, timeout: int, verbose: bool,
         pan_demote: bool, frames: int,
-        threshold_override: str | None = None) -> str:
+        threshold_override: str | None = None,
+        topology_flip: bool = False) -> str:
     import subprocess
 
     save_dir = work / "save"
@@ -175,7 +193,8 @@ def run(binary: Path, rom: Path, work: Path, timeout: int, verbose: bool,
         proc = subprocess.run(
             command,
             cwd=work,
-            env=environment(save_dir, pan_demote, threshold_override),
+            env=environment(save_dir, pan_demote, threshold_override,
+                            topology_flip),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -197,19 +216,23 @@ def run(binary: Path, rom: Path, work: Path, timeout: int, verbose: bool,
     return output
 
 
-def parse_rows(output: str,
-                failures: list[str]) -> dict[str, tuple[int, int, str, int]]:
-    rows: dict[str, tuple[int, int, str, int]] = {}
+def parse_rows(
+        output: str,
+        failures: list[str]) -> dict[str, tuple[int, int, str, int, int, int]]:
+    rows: dict[str, tuple[int, int, str, int, int, int]] = {}
     for match in ROW_RE.finditer(output):
-        cls, blend_s, snap_s, top_reason, pandemoted_s = match.groups()
+        (cls, blend_s, snap_s, top_reason, pandemoted_s, noowner_s,
+         topomismatch_s) = match.groups()
         blend, snap, pandemoted = int(blend_s), int(snap_s), int(pandemoted_s)
+        noowner, topomismatch = int(noowner_s), int(topomismatch_s)
         # Multiple rows for the same class would mean [SMOOTH-VERDICT] fired
         # more than once per process, which the flush contract (once, at
         # present_sched_trace_summary) forbids.
         if cls in rows:
             failures.append(f"class={cls} printed more than one row")
             continue
-        rows[cls] = (blend, snap, top_reason, pandemoted)
+        rows[cls] = (blend, snap, top_reason, pandemoted, noowner,
+                     topomismatch)
     return rows
 
 
@@ -220,10 +243,25 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument(
-        "--expect-water-owned", action="store_true",
+        "--expect-water-owned", action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
-            "flip the pinned WATER_WAVE/NO_OWNER assertion once wave "
-            "geometry has a real presentation owner (Task 7)"
+            "assert wave geometry carries a real presentation owner "
+            "(Task 7): WATER_WAVE blends and never files NO_OWNER. "
+            "--no-expect-water-owned restores the pre-Task-7 pin "
+            "(all-snap, top_reason=NO_OWNER) for reproducing the red state "
+            "on an older tree"
+        ),
+    )
+    parser.add_argument(
+        "--topology-negative-control", action="store_true",
+        help=(
+            "Task 7: arm MDKR_TEST_WAVE_TOPOLOGY_FLIP=1 so every authored "
+            "wave pair reads as a topology change, and prove the guard "
+            "actually refuses -- WATER_WAVE all-snap with "
+            "top_reason=TOPOLOGY_MISMATCH. Without this the route's own "
+            "zero mismatches cannot distinguish a working guard from a "
+            "dead one."
         ),
     )
     parser.add_argument(
@@ -250,7 +288,8 @@ def main() -> int:
                 PAN_DEMOTE_TEST_THRESHOLD_DEG if args.pan_demote else None
             )
             output = run(binary, rom, Path(temp), args.timeout, args.verbose,
-                         args.pan_demote, frames, threshold_override)
+                         args.pan_demote, frames, threshold_override,
+                         args.topology_negative_control)
     except (OSError, RuntimeError) as exc:
         print(f"check_smooth_verdict: FAIL — {exc}", file=sys.stderr)
         return 1
@@ -259,6 +298,40 @@ def main() -> int:
 
     if not rows:
         failures.append("no [SMOOTH-VERDICT] rows at all")
+
+    # Task 7 non-vacuity: the topology guard must have been ASKED.
+    topology_match = None
+    for topology_match in TOPOLOGY_RE.finditer(output):
+        pass
+    if topology_match is None:
+        failures.append(
+            "[PRESENT-PACKET] carries no topocheck/topomismatch fields — "
+            "Task 7's topology-key comparison has no witness at all")
+    else:
+        topo_checks = int(topology_match.group(1))
+        topo_mismatches = int(topology_match.group(2))
+        if args.expect_water_owned and topo_checks <= 0:
+            failures.append(
+                "topocheck=0 — no topology-keyed owner ever asked the "
+                "published pair whether its two ticks describe the same "
+                "mesh. Either wave ownership stopped stamping "
+                "topology_keyed, or the guard is no longer reached; every "
+                "mismatch assertion below would be vacuous")
+        if args.topology_negative_control:
+            if topo_mismatches <= 0:
+                failures.append(
+                    f"topomismatch={topo_mismatches} of {topo_checks} "
+                    "checks with MDKR_TEST_WAVE_TOPOLOGY_FLIP=1 — the seam "
+                    "makes every authored pair a topology change, so a "
+                    "guard that compares keys at all cannot agree even "
+                    "once. A constant topology key reads exactly like this")
+        elif topo_mismatches != 0:
+            failures.append(
+                f"topomismatch={topo_mismatches} of {topo_checks} checks — "
+                "this fixture's wave tiles were measured never to change "
+                "grid variant across a replayed pair. A nonzero count means "
+                "either the route changed or the key is keying something "
+                "that alternates (the vertex flip is the trap)")
 
     # Task 5: the [ALPHA-QUANTUM] line must fire at the same flush window as
     # [SMOOTH-VERDICT], and this fixture's synthetic (--headless-frames)
@@ -278,24 +351,56 @@ def main() -> int:
                 f"variance_ppm={aq_variance_ppm} mode={aq_mode}"
             )
 
-    for cls in REQUIRED_CLASSES:
+    # Under the topology negative control the subject is the wave guard, and
+    # WORLD_SCROLL is an unrelated class whose ROW is itself statistically
+    # flaky at this frame budget (see FRAMES' note above). Requiring it here
+    # would import that flake into an assertion it has nothing to do with; the
+    # default arm still requires all three.
+    required = (tuple(c for c in REQUIRED_CLASSES if c != "WORLD_SCROLL")
+                if args.topology_negative_control else REQUIRED_CLASSES)
+    for cls in required:
         if cls not in rows:
             failures.append(f"no [SMOOTH-VERDICT] row for class={cls}")
             continue
-        blend, snap, top_reason, pandemoted = rows[cls]
+        blend, snap, top_reason, pandemoted, noowner, _ = rows[cls]
         n = blend + snap
         if n <= 0:
             failures.append(f"class={cls}: blend+snap={n} is not positive")
         if cls == "WATER_WAVE":
             if n <= 0:
                 failures.append("class=WATER_WAVE: non-vacuity requires n>0")
-            if args.expect_water_owned:
-                if snap == n and top_reason == "NO_OWNER":
+            if args.topology_negative_control:
+                # Every pair is a declared topology change, so nothing about
+                # the surface may blend and the refusal must be attributed to
+                # the clause that caused it -- not folded into a generic hold.
+                if blend != 0:
                     failures.append(
-                        "class=WATER_WAVE: --expect-water-owned but the "
-                        "surface is still all-snap/NO_OWNER — the pin was "
-                        "not flipped by the owner that was supposed to add "
-                        "one"
+                        f"class=WATER_WAVE: blend={blend} with "
+                        "MDKR_TEST_WAVE_TOPOLOGY_FLIP=1 — a pair the guard "
+                        "declared incompatible was interpolated anyway")
+                if top_reason != "TOPOLOGY_MISMATCH":
+                    failures.append(
+                        f"class=WATER_WAVE: top_reason={top_reason} with "
+                        "MDKR_TEST_WAVE_TOPOLOGY_FLIP=1 — the surface "
+                        "snapped, but not for the reason the seam forced")
+            elif args.expect_water_owned:
+                # Two separate claims, because either alone is satisfiable by
+                # a broken tree: blend>0 without noowner==0 is "some tiles
+                # got owners", and noowner==0 without blend>0 is "nothing
+                # graded this class at all in a way that could fail".
+                if blend <= 0:
+                    failures.append(
+                        f"class=WATER_WAVE: blend={blend} over n={n} — wave "
+                        "geometry is supposed to carry a presentation owner "
+                        "(Task 7) and nothing about the surface interpolated"
+                    )
+                if noowner != 0:
+                    failures.append(
+                        f"class=WATER_WAVE: noowner={noowner} of n={n} — "
+                        "some wave draws still reach the census with no "
+                        "presentation owner at all. top_reason cannot see "
+                        "this: a minority of unowned tiles hides behind a "
+                        "modal BLEND"
                     )
             else:
                 if snap != n or top_reason != "NO_OWNER":
@@ -304,9 +409,9 @@ def main() -> int:
                         f"top_reason=NO_OWNER (today's pinned truth — wave "
                         f"geometry has no presentation owner yet), got "
                         f"blend={blend} snap={snap} "
-                        f"top_reason={top_reason}. If a later task gave "
-                        f"waves a real owner, this gate needs "
-                        f"--expect-water-owned flipped as its new default."
+                        f"top_reason={top_reason}. This is the "
+                        f"--no-expect-water-owned arm: it only holds on a "
+                        f"tree from before wave ownership landed."
                     )
 
     if args.pan_demote:
@@ -379,7 +484,7 @@ def main() -> int:
             prod_rows = parse_rows(prod_output, prod_failures)
             failures.extend(f"production-threshold sub-arm: {f}"
                             for f in prod_failures)
-            for cls, (_, _, _, pandemoted) in prod_rows.items():
+            for cls, (_, _, _, pandemoted, _, _) in prod_rows.items():
                 if pandemoted != 0:
                     failures.append(
                         f"production-threshold sub-arm: class={cls} "
@@ -391,7 +496,8 @@ def main() -> int:
     else:
         # Default-off proof (Step 3): with the env unset, the choke point's
         # demotion clause can never fire, for ANY class.
-        for cls, (blend, snap, top_reason, pandemoted) in rows.items():
+        for cls, (blend, snap, top_reason, pandemoted, _,
+                  _topo) in rows.items():
             if pandemoted != 0:
                 failures.append(
                     f"class={cls}: MDKR_SMOOTH_PAN_DEMOTE is unset but "
@@ -407,8 +513,9 @@ def main() -> int:
 
     summary = "; ".join(
         f"{cls} blend={rows[cls][0]} snap={rows[cls][1]} "
-        f"top_reason={rows[cls][2]} pandemoted={rows[cls][3]}"
-        for cls in REQUIRED_CLASSES
+        f"top_reason={rows[cls][2]} pandemoted={rows[cls][3]} "
+        f"noowner={rows[cls][4]} topomismatch={rows[cls][5]}"
+        for cls in required if cls in rows
     )
     print(f"check_smooth_verdict: PASS — {summary}")
     return 0

@@ -251,6 +251,12 @@ CHECKS = (
           "the shield/magnet shell's displacement from its own tick's authored "
           "pose stays inside the endpoint-to-endpoint interpolation envelope "
           "at the 120 Hz alpha grid"),
+    Check("wave_midpoint_envelope", "check_wave_midpoint_envelope.py",
+          "release",
+          "wave surfaces are reconstructed, not replayed: every interpolated "
+          "midpoint the wave stage touches differs from both of its authored "
+          "endpoints, against a topology-refusal control that leaves the "
+          "authored frames byte-identical"),
     Check("motion_quality_battery", "check_motion_quality_battery.py",
           "release",
           "the perceptual motion battery: fast-rotation shortest-arc and snap, "

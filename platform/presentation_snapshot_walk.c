@@ -114,7 +114,8 @@ static void capture_object(const Object *object) {
  * NOT flagged is_particle -- that flag selects the particle-topology
  * compatibility rule, and these are not particles.
  */
-static void capture_external_transform(const ObjectTransform *transform) {
+static void capture_external_transform(const ObjectTransform *transform,
+                                       uint16_t topology_key) {
     PresentationObjectEntry sample;
 
     memset(&sample, 0, sizeof(sample));
@@ -130,6 +131,10 @@ static void capture_external_transform(const ObjectTransform *transform) {
     sample.animation_id = -1;
     sample.animation_frame = 0;
     sample.opacity = 255;
+    /* The one thing an external entry carries beyond its pose: which mesh the
+     * owner drew this tick, for the families that have more than one. Unset
+     * (zero) for every registrant that does not select geometry per tick. */
+    sample.topology_key = topology_key;
     presentation_snapshot_capture_object(&sample);
 }
 
@@ -141,8 +146,11 @@ static void capture_external_transforms(void) {
         const ObjectTransform *transform =
             (const ObjectTransform *)
                 presentation_snapshot_external_transform_at(index);
+        uint16_t topology_key = 0u;
         if (transform != NULL) {
-            capture_external_transform(transform);
+            (void)presentation_snapshot_external_topology_key_at(
+                index, &topology_key);
+            capture_external_transform(transform, topology_key);
         }
     }
 }

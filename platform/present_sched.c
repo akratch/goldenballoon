@@ -1274,7 +1274,8 @@ void present_sched_trace_summary(void) {
                 "uvscrollholdshape=%llu uvscrollholdphase=%llu "
                 "uvscrollauthored=%llu uvscrollauthoredconfirm=%llu "
                 "uvscrolloverride=%llu uvscrollpeak=%zu "
-                "uvscrollbytespeak=%zu\n",
+                "uvscrollbytespeak=%zu "
+                "topocheck=%llu topomismatch=%llu\n",
                 (unsigned long long)packet_stats.matrix_registrations,
                 (unsigned long long)packet_stats.vertex_registrations,
                 (unsigned long long)
@@ -1375,7 +1376,9 @@ void present_sched_trace_summary(void) {
                     packet_stats.uv_scroll_authored_confirmations,
                 (unsigned long long)packet_stats.uv_scroll_overrides,
                 packet_stats.uv_scroll_peak,
-                packet_stats.uv_scroll_bytes_peak);
+                packet_stats.uv_scroll_bytes_peak,
+                (unsigned long long)packet_stats.topology_checks,
+                (unsigned long long)packet_stats.topology_mismatches);
         if (present_sched_smooth_verdict_enabled()) {
             static const char *const surface_class_names[MDKR_SURF_CLASS_COUNT] = {
                 "WORLD_STATIC", "WORLD_SCROLL", "WATER_WAVE", "SKYDOME",
@@ -1416,13 +1419,28 @@ void present_sched_trace_summary(void) {
                  * MODAL reason would never confirm demotion fired at all on a
                  * route where it is legitimately rare.
                  */
+                /*
+                 * noowner is broken out for the same reason pandemoted is,
+                 * and for a stronger one: "this class has an owner" is not a
+                 * majority statement. A surface whose modal reason is BLEND
+                 * can still be drawing a steady minority of its geometry with
+                 * no presentation identity at all, and top_reason cannot say
+                 * so. The wave surfaces are the case -- one tile that never
+                 * gets registered would hide behind every tile that does.
+                 */
                 fprintf(stderr,
                         "[SMOOTH-VERDICT] class=%s blend=%u snap=%u "
-                        "top_reason=%s pandemoted=%u\n",
+                        "top_reason=%s pandemoted=%u noowner=%u "
+                        "topomismatch=%u\n",
                         surface_class_names[cls], (unsigned)blend,
                         (unsigned)snap, verdict_reason_names[top_reason],
                         (unsigned)packet_stats
-                            .verdict_reason[cls][MDKR_VERDICT_PAN_RATE_DEMOTED]);
+                            .verdict_reason[cls][MDKR_VERDICT_PAN_RATE_DEMOTED],
+                        (unsigned)packet_stats
+                            .verdict_reason[cls][MDKR_VERDICT_NO_OWNER],
+                        (unsigned)packet_stats
+                            .verdict_reason[cls]
+                                           [MDKR_VERDICT_TOPOLOGY_MISMATCH]);
             }
             gfx_presentation_packet_reset_verdict_stats();
         }

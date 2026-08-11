@@ -536,6 +536,21 @@ production coverage:
   right one. The gate also requires the shell's drawn area to recover to the
   area the game itself draws, so a shell that vanished instead of leading
   cannot pass.
+- `check_wave_midpoint_envelope.py` holds the water and lava surfaces to the
+  midpoint-sensitivity contract: an image reconstructed between two authored
+  ticks has to differ from BOTH of them where the reconstruction lives.
+  Replayed content passes every endpoint check ever written, because
+  reproducing an endpoint is exactly what it does, so the region under
+  measurement is derived rather than cropped — the route runs twice, once
+  normally and once with the wave topology guard forced to refuse every pair,
+  and the pixels that differ between the two runs at a given present are the
+  wave stage's own footprint at that present. The gate first proves the
+  control changes nothing else (every authored frame byte-identical between
+  the runs), then that the stage reaches the screen at all (a floor on how
+  many midpoints the two runs disagree about — which is also what catches a
+  topology key that has gone constant), and only then takes the midpoint
+  verdict. Whale Bay, not Jungle Falls: an entire Jungle Falls race produced
+  zero presents at which wave interpolation moved a pixel.
 - `check_motion_quality_battery.py` states six things Motion smoothing must
   never do, one row each, in the words a player would use: spin a kart the
   long way round (R1), smear a spawn or respawn across the screen (R2), blend

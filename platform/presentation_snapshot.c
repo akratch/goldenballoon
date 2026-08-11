@@ -435,14 +435,30 @@ static PresentationSnapshotStats s_stats;
 /* ---- renderer-owned transform registry ----------------------------------- */
 
 /*
- * Small and fixed on purpose. The only members today are the eight rain-splash
- * slots; a registry that could grow without bound would be a way for the
- * render path to push the capture over PRESENTATION_SNAPSHOT_MAX_OBJECTS and
- * fail every snapshot whole.
+ * Small and fixed on purpose. A registry that could grow without bound would
+ * be a way for the render path to push the capture over
+ * PRESENTATION_SNAPSHOT_MAX_OBJECTS and fail every snapshot whole.
+ *
+ * Sized for the three renderer-owned families that exist: eight rain-splash
+ * slots, sixteen lens-flare pieces, and one slot per visible wave tile. The
+ * wave count is bounded by the renderer's own 26-slot wave-visibility table
+ * (game/src/waves.c WAVE_VISIBLE_SLOTS), NOT by the number of wave tiles a
+ * level has -- one tile, not one sub-quad: a double-density tile's four
+ * sub-quads share a slot and differ only by the render-time offset the
+ * owner's residual already carries. 8 + 16 + 26 == 50; 64 leaves headroom
+ * without approaching the 512-entry object budget.
  */
-#define PRESENTATION_SNAPSHOT_MAX_EXTERNALS 32u
+#define PRESENTATION_SNAPSHOT_MAX_EXTERNALS 64u
 
 static const void *s_externals[PRESENTATION_SNAPSHOT_MAX_EXTERNALS];
+/*
+ * Per-tick topology key, parallel to s_externals (see
+ * presentation_snapshot_set_external_topology_key). Zero means "this owner
+ * publishes no key", which is what every registrant except the wave surfaces
+ * is: an unkeyed pair always agrees, so an owner that never sets one is
+ * treated exactly as it was before keys existed.
+ */
+static uint16_t s_external_topology_keys[PRESENTATION_SNAPSHOT_MAX_EXTERNALS];
 static size_t s_external_count;
 
 bool presentation_snapshot_register_external_transform(const void *transform) {
@@ -463,6 +479,7 @@ bool presentation_snapshot_register_external_transform(const void *transform) {
     if (s_external_count >= PRESENTATION_SNAPSHOT_MAX_EXTERNALS) {
         return false;
     }
+    s_external_topology_keys[s_external_count] = 0u;
     s_externals[s_external_count++] = transform;
     if (s_external_count > s_stats.external_peak) {
         s_stats.external_peak = s_external_count;
@@ -482,11 +499,40 @@ void presentation_snapshot_unregister_external_transform(
         if (s_externals[index] != transform) {
             continue;
         }
-        s_externals[index] = s_externals[--s_external_count];
+        s_external_count--;
+        s_externals[index] = s_externals[s_external_count];
+        s_external_topology_keys[index] =
+            s_external_topology_keys[s_external_count];
         s_externals[s_external_count] = NULL;
+        s_external_topology_keys[s_external_count] = 0u;
         presentation_snapshot_note_free(transform);
         return;
     }
+}
+
+bool presentation_snapshot_set_external_topology_key(const void *transform,
+                                                     uint16_t key) {
+    size_t index;
+
+    if (transform == NULL) {
+        return false;
+    }
+    for (index = 0u; index < s_external_count; index++) {
+        if (s_externals[index] == transform) {
+            s_external_topology_keys[index] = key;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool presentation_snapshot_external_topology_key_at(size_t index,
+                                                     uint16_t *out_key) {
+    if (out_key == NULL || index >= s_external_count) {
+        return false;
+    }
+    *out_key = s_external_topology_keys[index];
+    return true;
 }
 
 size_t presentation_snapshot_external_transform_count(void) {
@@ -957,6 +1003,7 @@ void presentation_snapshot_stage_reset(void) {
      * re-register so it is issued a generation from the new epoch rather than
      * carrying a retired one. */
     memset(s_externals, 0, sizeof(s_externals));
+    memset(s_external_topology_keys, 0, sizeof(s_external_topology_keys));
     s_external_count = 0u;
     s_current = -1;
     s_previous = -1;
@@ -1557,6 +1604,31 @@ bool presentation_snapshot_particle_deformation_compatible(
            now->generation == generation &&
            before->generation == generation &&
            now->model_index == before->model_index;
+}
+
+bool presentation_snapshot_topology_keys_agree(const void *address,
+                                                uint64_t generation) {
+    const PresentationSnapshot *current = presentation_snapshot_current();
+    const PresentationSnapshot *previous = presentation_snapshot_previous();
+    size_t now_index;
+    size_t before_index;
+
+    if (address == NULL || generation == 0u || current == NULL ||
+        previous == NULL || !current->valid || !previous->valid ||
+        current->stage_generation != previous->stage_generation) {
+        return false;
+    }
+    now_index = frame_lookup(current, address);
+    before_index = frame_lookup(previous, address);
+    if (now_index == (size_t)-1 || before_index == (size_t)-1) {
+        return false;
+    }
+    if (current->objects[now_index].generation != generation ||
+        previous->objects[before_index].generation != generation) {
+        return false;
+    }
+    return current->objects[now_index].topology_key ==
+           previous->objects[before_index].topology_key;
 }
 
 bool presentation_snapshot_resolve_object_at(size_t index,

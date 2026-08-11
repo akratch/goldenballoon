@@ -735,6 +735,14 @@ typedef struct DkrReplayAlphaRequest {
     bool owner_present; /* the stage's presentation owner/binding is valid */
     bool tick_paired;   /* the stage's own T/T+1 compatibility check passed */
     bool discontinuity; /* the stage's own jump/topology guard tripped */
+    /*
+     * The two published ticks disagree about WHICH MESH this owner drew, or
+     * the pair cannot be asked (see presentation_snapshot_topology_keys_agree).
+     * Only ever set for an owner that declares itself topology-keyed; every
+     * other caller leaves it false and gets exactly the decision it got before
+     * this field existed.
+     */
+    bool topology_mismatch;
     uint64_t numerator;
     uint64_t denominator;
     /* This walk's primary-viewport camera pan rate (see
@@ -757,6 +765,23 @@ typedef struct DkrReplayAlphaRequest {
 static void dkr_replay_alpha_req_set_pan_rate(DkrReplayAlphaRequest *req) {
     req->pan_rate_known = dkr_replay_pan_yaw_delta_valid;
     req->pan_yaw_delta_deg = dkr_replay_pan_yaw_delta_deg;
+}
+
+/*
+ * The owner-carried half of the topology decision, in one place for the same
+ * reason the pan rate is: every stage that can draw a topology-keyed surface
+ * fills the field identically, and an owner that does not declare a key never
+ * reaches the snapshot at all.
+ */
+static void dkr_replay_alpha_req_set_topology(
+    DkrReplayAlphaRequest *req, const GfxPresentationMatrixOwner *owner) {
+    if (owner == NULL || !owner->valid || !owner->topology_keyed) {
+        req->topology_mismatch = false;
+        return;
+    }
+    req->topology_mismatch = !presentation_snapshot_topology_keys_agree(
+        owner->address, owner->generation);
+    gfx_presentation_packet_note_topology(!req->topology_mismatch);
 }
 
 static bool dkr_replay_surface_class_gate_enabled(MdkrSurfaceClass surface_class) {
@@ -804,6 +829,15 @@ static float dkr_replay_resolve_alpha(MdkrSurfaceClass surface_class,
             reason = MDKR_VERDICT_DEPENDENCY_MISS;
         } else if (!req->tick_paired) {
             reason = MDKR_VERDICT_DEPENDENCY_MISS;
+        } else if (req->topology_mismatch) {
+            /* Paired ticks that describe two different meshes. Blending them
+             * would walk vertex i of one grid toward vertex i of another --
+             * geometry the surface never held at any alpha -- so the frame
+             * that crosses the boundary steps once and the next one is
+             * ordinary again. Deliberately ahead of the discontinuity clause:
+             * this is a statement about the CONTENT, and it holds whether or
+             * not the pose also jumped. */
+            reason = MDKR_VERDICT_TOPOLOGY_MISMATCH;
         } else if (req->discontinuity) {
             reason = MDKR_VERDICT_DISCONTINUITY;
         } else if (req->denominator == 0u || req->numerator >= req->denominator) {
@@ -5940,8 +5974,51 @@ static const float *dkr_replay_uv_scroll_offset(const Triangle *tris,
     confirmed = gfx_presentation_packet_lookup_uv_scroll(
         original, target_tick, (uint32_t)num_tris, &scroll);
     if (wave_region) {
-        gfx_presentation_packet_note_verdict(MDKR_SURF_WATER_WAVE,
-                                             MDKR_VERDICT_NO_OWNER);
+        /*
+         * A wave-region batch is graded by whether ITS SURFACE has a
+         * presentation owner, which is the thing that was missing. Task 7
+         * gives visible wave tiles one (game/src/waves.c), so the blanket
+         * NO_OWNER that used to be filed here is now filed only for the
+         * draws that really have none -- a tile that became visible this
+         * tick and has not been registered yet, or a level whose tiles
+         * exceeded the registry. An owned draw is graded from the choke
+         * point, exactly like every other class, with the topology key
+         * deciding whether its two ticks describe one grid.
+         */
+        const GfxPresentationMatrixOwner *wave_owner =
+            rsp.deformation_owner_valid &&
+                    rsp.deformation_owner.surface_class ==
+                        MDKR_SURF_WATER_WAVE
+                ? &rsp.deformation_owner
+                : NULL;
+        if (wave_owner == NULL) {
+            gfx_presentation_packet_note_verdict(MDKR_SURF_WATER_WAVE,
+                                                 MDKR_VERDICT_NO_OWNER);
+        } else {
+            DkrReplayAlphaRequest wave_alpha_req;
+            MdkrVerdictReason wave_alpha_reason;
+            memset(&wave_alpha_req, 0, sizeof(wave_alpha_req));
+            wave_alpha_req.gate_enabled =
+                dkr_replay_surface_class_gate_enabled(MDKR_SURF_WATER_WAVE);
+            wave_alpha_req.owner_present = true;
+            /* The UV side's own confirm-or-hold outcome is this batch's
+             * pairing evidence; the geometry owner supplies the rest. */
+            wave_alpha_req.tick_paired = confirmed;
+            wave_alpha_req.numerator = dkr_replay_object_alpha_numerator;
+            wave_alpha_req.denominator = dkr_replay_object_alpha_denominator;
+            dkr_replay_alpha_req_set_pan_rate(&wave_alpha_req);
+            dkr_replay_alpha_req_set_topology(&wave_alpha_req, wave_owner);
+            (void)dkr_replay_resolve_alpha(MDKR_SURF_WATER_WAVE,
+                                           &wave_alpha_req,
+                                           &wave_alpha_reason);
+            if (wave_alpha_reason == MDKR_VERDICT_BLEND && pan_demoted) {
+                /* The caller's own choke-point call already demoted this
+                 * draw; reporting BLEND here would contradict it. */
+                wave_alpha_reason = MDKR_VERDICT_PAN_RATE_DEMOTED;
+            }
+            gfx_presentation_packet_note_verdict(MDKR_SURF_WATER_WAVE,
+                                                 wave_alpha_reason);
+        }
     } else if (confirmed) {
         gfx_presentation_packet_note_verdict(
             MDKR_SURF_WORLD_SCROLL,
@@ -6217,6 +6294,9 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                 gfx_retained_task_original_address(ma);
             float replay_world[4][4];
             bool object_overridden = false;
+            /* A topology-keyed root that the choke point already refused AND
+             * already graded; see the keyed branch below. */
+            bool keyed_snapped = false;
             bool effect_overridden = false;
             bool billboard_overridden = false;
             bool billboard_binding_found = false;
@@ -6316,13 +6396,61 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                             presentation_owner,
                             rsp.shadow_matrix[slot].viewport, replay_world);
                     }
+                } else if (presentation_owner->valid &&
+                           presentation_owner->topology_keyed) {
+                    /*
+                     * A topology-keyed root (the wave surfaces) is the one
+                     * world matrix whose pose alone does not say whether the
+                     * two published ticks describe the same surface, so it is
+                     * the one that asks the choke point BEFORE reconstructing
+                     * anything. Everything else about the decision -- the
+                     * class gate, the pan-rate demotion, the alpha itself --
+                     * comes from the same function every other stage uses; the
+                     * only thing this branch adds is the question.
+                     */
+                    DkrReplayAlphaRequest keyed_alpha_req;
+                    MdkrVerdictReason keyed_alpha_reason;
+                    memset(&keyed_alpha_req, 0, sizeof(keyed_alpha_req));
+                    keyed_alpha_req.gate_enabled =
+                        dkr_replay_surface_class_gate_enabled(
+                            presentation_owner->surface_class);
+                    keyed_alpha_req.owner_present = true;
+                    keyed_alpha_req.tick_paired = true;
+                    keyed_alpha_req.numerator =
+                        dkr_replay_object_alpha_numerator;
+                    keyed_alpha_req.denominator =
+                        dkr_replay_object_alpha_denominator;
+                    dkr_replay_alpha_req_set_pan_rate(&keyed_alpha_req);
+                    dkr_replay_alpha_req_set_topology(&keyed_alpha_req,
+                                                      presentation_owner);
+                    (void)dkr_replay_resolve_alpha(
+                        presentation_owner->surface_class, &keyed_alpha_req,
+                        &keyed_alpha_reason);
+                    if (keyed_alpha_reason == MDKR_VERDICT_BLEND) {
+                        object_overridden = mdkr_camera_replay_object_world(
+                            presentation_owner,
+                            dkr_replay_object_alpha_numerator,
+                            dkr_replay_object_alpha_denominator, replay_world);
+                    } else {
+                        /* The refusal is already fully attributed by the choke
+                         * point, so it is graded here and the shared
+                         * hold-classifier below is skipped: running that too
+                         * would count one draw twice and overwrite a precise
+                         * reason with a coarser one. */
+                        keyed_snapped = true;
+                        dkr_replay_object_holds++;
+                        gfx_presentation_packet_note_verdict(
+                            presentation_owner->surface_class,
+                            keyed_alpha_reason);
+                    }
                 } else {
                     object_overridden = mdkr_camera_replay_object_world(
                         presentation_owner,
                         dkr_replay_object_alpha_numerator,
                         dkr_replay_object_alpha_denominator, replay_world);
                 }
-                if (presentation_owner->valid && !effect_owner) {
+                if (presentation_owner->valid && !effect_owner &&
+                    !keyed_snapped) {
                     if (object_overridden) {
                         dkr_replay_object_hits++;
                         gfx_presentation_packet_note_verdict(
@@ -6880,6 +7008,23 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                            !retained_packet_vertex) {
                     DkrReplayAlphaRequest world_static_alpha_req;
                     MdkrVerdictReason world_static_alpha_reason;
+                    /*
+                     * This stage grades as WORLD_STATIC by default -- an
+                     * ordinary level-model batch under whatever root happens
+                     * to own it -- and that stays true. The one exception is
+                     * a wave surface, whose per-tick vertex animation IS the
+                     * content and whose owner therefore has to be able to
+                     * refuse a pair the deformation copy alone would happily
+                     * blend. Both classes gate on
+                     * dkr_replay_deformation_interpolation_enabled(), so this
+                     * changes the census attribution and the topology
+                     * question, not which switch arms the stage.
+                     */
+                    const MdkrSurfaceClass deform_class =
+                        rsp.deformation_owner.surface_class ==
+                                MDKR_SURF_WATER_WAVE
+                            ? MDKR_SURF_WATER_WAVE
+                            : MDKR_SURF_WORLD_STATIC;
                     memset(&world_static_alpha_req, 0,
                            sizeof(world_static_alpha_req));
                     world_static_alpha_req.gate_enabled =
@@ -6892,8 +7037,10 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                     world_static_alpha_req.denominator =
                         dkr_replay_object_alpha_denominator;
                     dkr_replay_alpha_req_set_pan_rate(&world_static_alpha_req);
+                    dkr_replay_alpha_req_set_topology(
+                        &world_static_alpha_req, &rsp.deformation_owner);
                     (void)dkr_replay_resolve_alpha(
-                        MDKR_SURF_WORLD_STATIC, &world_static_alpha_req,
+                        deform_class, &world_static_alpha_req,
                         &world_static_alpha_reason);
                     retained_replay = dkr_replay_deformation_vertices(
                         &rsp.deformation_owner,

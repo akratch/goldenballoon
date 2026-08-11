@@ -329,6 +329,46 @@ void mdkr_residual_census_report(u64 tick) {
     }
 }
 
+/*
+ * ONE-SHOT CLASSIFICATION FOR THE NEXT mtx_cam_push().
+ *
+ * mtx_cam_push is the ROM's shared world-matrix push: every caller from a
+ * racer to a wave tile goes through it, and its owner is stamped
+ * MDKR_SURF_OBJECT_ROOT because that is what almost all of them are. A caller
+ * that knows better says so here immediately before the push, the same way
+ * gfx_shadow_matrix_set_site already announces a site -- rather than the push
+ * growing a parameter every caller in the tree would have to be edited for.
+ *
+ * Consumed and cleared by the very next push whether or not that push manages
+ * to build an owner, so a note can never survive to describe someone else's
+ * geometry. Presentation-only: nothing here is read by the simulation, and
+ * with the snapshot seam off no owner is built at all and the note is simply
+ * discarded.
+ */
+static MdkrSurfaceClass sPendingSurfaceClass = MDKR_SURF_OBJECT_ROOT;
+static bool sPendingSurfaceValid = FALSE;
+static bool sPendingTopologyKeyed = FALSE;
+
+void mdkr_presentation_note_next_surface(s32 surfaceClass, s32 topologyKeyed) {
+    if (surfaceClass < 0 || surfaceClass >= MDKR_SURF_CLASS_COUNT) {
+        return;
+    }
+    sPendingSurfaceClass = (MdkrSurfaceClass)surfaceClass;
+    sPendingSurfaceValid = TRUE;
+    sPendingTopologyKeyed = topologyKeyed != 0;
+}
+
+static void mdkr_presentation_consume_next_surface(
+    GfxPresentationMatrixOwner *owner) {
+    if (owner != NULL && sPendingSurfaceValid) {
+        owner->surface_class = sPendingSurfaceClass;
+        owner->topology_keyed = sPendingTopologyKeyed;
+    }
+    sPendingSurfaceValid = FALSE;
+    sPendingTopologyKeyed = FALSE;
+    sPendingSurfaceClass = MDKR_SURF_OBJECT_ROOT;
+}
+
 static bool mdkr_presentation_owner_root(
     GfxPresentationMatrixOwner *out, const ObjectTransform *transform,
     f32 scaleY, f32 offsetY, const MtxF *parentWorld) {
@@ -3099,6 +3139,9 @@ s32 mtx_cam_push(Gfx **dList, Mtx **mtx, ObjectTransform *trans, f32 scaleY, f32
             gModelMatrixF[gModelMatrixStackPos])) {
         owner = &rootOwner;
     }
+    /* Unconditional: the note is consumed even when no owner was built, so it
+     * cannot survive to reclassify the next caller's push. */
+    mdkr_presentation_consume_next_surface(&rootOwner);
     mdkr_shadow_register_matrix(
         *mtx, gModelMatrixF[gModelMatrixStackPos + 1],
         GFX_SHADOW_MOBILITY_DYNAMIC, GFX_SHADOW_SITE_CAM_PUSH, owner);

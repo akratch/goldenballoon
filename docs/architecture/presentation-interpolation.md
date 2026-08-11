@@ -258,12 +258,43 @@ Not `PRES-001` failures, but the properties any future change must preserve:
    around it glides. Two mechanisms exist for it and both are now used:
    `presentation_snapshot_identity_ensure_generation()` for a renderer-owned
    vertex batch, and `presentation_snapshot_register_external_transform()` for a
-   renderer-owned transform. **Still unowned as of 2026-08-09:** the skydome
+   renderer-owned transform. **Still unowned as of 2026-08-11:** the skydome
    (`tracks.c skydome_render`, which writes the tick-T camera into the dome's
    transform for the draw and restores it, so its owner's residual is measured
-   against a pose the snapshot never saw) and the wave surfaces (`waves.c`,
-   emitted under a stack-local transform, with the UV side of the same surface
-   already handled — a texture that glides over geometry stepping at 30 Hz).
+   against a pose the snapshot never saw).
+
+   **The wave surfaces are owned as of 2026-08-11** (`waves.c`). One registered
+   `ObjectTransform` per visible wave tile, claimed and retired at tick time
+   from the existing 26-slot visibility table; a double-density tile's four
+   sub-quads share one slot, because their offsets are render-time adjustments
+   and the owner residual already carries those exactly.
+
+   What ownership actually bought is the VERTEX envelope, not the matrix one,
+   and the distinction matters for anyone reading this row as a defect report.
+   A wave tile's pose is constant, and its matrix was already recomposed
+   against the interpolated camera through the shadow registry's
+   `vp_overridden` path — so the surface was never drawn under a stale camera,
+   and ownership changes no matrix. What it opens is the deformation stream,
+   where the surface's per-tick vertex animation lives.
+
+   The wave renderer selects one of 25 grid LOD variants per tick out of a
+   single allocation, so two adjacent ticks can name one vertex array and mean
+   two different meshes. Each owner therefore publishes a `topology_key`
+   (`PresentationObjectEntry`) beside its pose, and `dkr_replay_resolve_alpha`
+   returns `MDKR_VERDICT_TOPOLOGY_MISMATCH` when the published pair disagrees
+   — a snap, so a frame crossing an LOD boundary steps once instead of walking
+   vertex *i* of one grid toward vertex *i* of another. The double-buffered
+   vertex alternation (`gWaveVertexFlip`) is deliberately NOT keyed in: it is a
+   phase of one surface, already paired by
+   `gfx_dkr_note_paired_triangle_buffers`, and keying it would declare every
+   tick a topology change. `MDKR_TEST_WAVE_TOPOLOGY_FLIP=1` does exactly that
+   as a negative control, because an ordinary route produces hundreds of key
+   comparisons and no disagreements — measured 282 checks / 0 mismatches on
+   Jungle Falls — and a guard whose refusal is never taken cannot be told from
+   one that has stopped running. Gates: `check_smooth_verdict.py` (structural,
+   both arms) and `check_wave_midpoint_envelope.py` (pixel, on Whale Bay —
+   an entire Jungle Falls race produced zero presents at which wave
+   interpolation moved a pixel).
 
 
 1. **Do not narrow the retained copy on a timing argument.** The full 16 MiB copy

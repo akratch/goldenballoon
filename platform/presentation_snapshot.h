@@ -147,6 +147,20 @@ typedef struct PresentationObjectEntry {
     uint8_t opacity;
     uint8_t is_particle;      /* read through Particle, not Object (see .c) */
     uint8_t discontinuity;    /* 1 == spawn/teleport: draw current, never blend */
+    /*
+     * WHICH MESH THIS TICK DREW, for owners whose geometry is chosen per tick
+     * from a family that shares an address and a vertex count. The wave
+     * surfaces are the case: 25 grid LOD variants live in one allocation and
+     * the visible variant changes as the camera closes on a tile, so two
+     * adjacent ticks can name the same vertex array while meaning two
+     * different grids. Nothing in the pose carries that, which is why it is
+     * captured here beside the pose and not derived from it.
+     *
+     * Zero == this owner publishes no key. Every registrant except the wave
+     * surfaces is unkeyed, and an unkeyed pair always agrees, so this field
+     * is inert for them.
+     */
+    uint16_t topology_key;
 } PresentationObjectEntry;
 
 /*
@@ -389,6 +403,32 @@ bool presentation_snapshot_identity_ensure_generation(
 bool presentation_snapshot_register_external_transform(const void *transform);
 void presentation_snapshot_unregister_external_transform(
     const void *transform);
+/*
+ * Publish which mesh THIS authored tick drew for an already-registered
+ * renderer-owned transform (PresentationObjectEntry::topology_key). Called
+ * from the same place the pose is written, so the key and the pose it belongs
+ * to always land in the same captured entry; a key set against an
+ * unregistered address is refused rather than remembered.
+ *
+ * Setting it does not decide anything. The comparison of two ticks' keys, and
+ * the snap that a disagreement earns, both live at the replay choke point
+ * (dkr_replay_resolve_alpha -> MDKR_VERDICT_TOPOLOGY_MISMATCH).
+ */
+bool presentation_snapshot_set_external_topology_key(const void *transform,
+                                                     uint16_t key);
+/* Registry read-back for the walk, matching _external_transform_at's shape. */
+bool presentation_snapshot_external_topology_key_at(size_t index,
+                                                     uint16_t *out_key);
+/*
+ * Do the two published ticks agree about this identity's mesh?
+ *
+ * FACT, NOT VERDICT: false is returned both when the keys disagree and when
+ * the pair does not contain the identity at all, because in both cases there
+ * is no evidence the two endpoints describe one surface. The caller turns
+ * that into a reason; this only reports it.
+ */
+bool presentation_snapshot_topology_keys_agree(const void *address,
+                                                uint64_t generation);
 /* Live registered count, and the registry's contents by index. The walk in
  * presentation_snapshot_walk.c enumerates through these because it is the only
  * translation unit allowed to know what an ObjectTransform is. */
