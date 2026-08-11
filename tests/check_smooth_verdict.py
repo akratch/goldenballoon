@@ -170,6 +170,7 @@ def environment(save_dir: Path, pan_demote: bool,
         # the wave topology key, which declares every authored pair a topology
         # change. See waves.c waves_owner_topology_flip_seam.
         env["MDKR_TEST_WAVE_TOPOLOGY_FLIP"] = "1"
+        env["MDKR_INTERNAL_TEST_TOKEN"] = "mdkr64-presentation-replay-v1"
     return env
 
 
@@ -337,6 +338,7 @@ def _run_sky_arm(binary: Path, rom: Path, work: Path, timeout: int,
     (work / "prefs").mkdir(parents=True, exist_ok=True)
     if disable_lock:
         env["MDKR_TEST_SKYDOME_CAMERA_LOCK_DISABLE"] = "1"
+        env["MDKR_INTERNAL_TEST_TOKEN"] = "mdkr64-presentation-replay-v1"
     if verbose:
         print(f"$ [sky-midpoint disable_lock={disable_lock}] {binary}",
               flush=True)

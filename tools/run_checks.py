@@ -257,6 +257,12 @@ CHECKS = (
           "midpoint the wave stage touches differs from both of its authored "
           "endpoints, against a topology-refusal control that leaves the "
           "authored frames byte-identical"),
+    Check("smooth_verdict", "check_smooth_verdict.py", "release",
+          "the [SMOOTH-VERDICT] per-surface-class census is real, not "
+          "vacuous: WATER_WAVE, OBJECT_ROOT, and WORLD_SCROLL all report on "
+          "one Remastered scripted race, WATER_WAVE's rows pin its Task-7 "
+          "ownership (blend>0, noowner=0), and the topology-key comparison "
+          "actually ran"),
     Check("motion_quality_battery", "check_motion_quality_battery.py",
           "release",
           "the perceptual motion battery: fast-rotation shortest-arc and snap, "

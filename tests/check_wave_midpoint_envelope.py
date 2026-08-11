@@ -140,6 +140,7 @@ def run(binary: Path, rom: Path, root: Path, label: str, timeout: int,
     )
     if topology_flip:
         env["MDKR_TEST_WAVE_TOPOLOGY_FLIP"] = "1"
+        env["MDKR_INTERNAL_TEST_TOKEN"] = "mdkr64-presentation-replay-v1"
     command = [
         str(binary), "--headless-ticks", str(ROUTE_TICKS),
         "--input-script", str(SCRIPT), "--rom", str(rom),

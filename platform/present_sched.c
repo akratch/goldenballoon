@@ -345,9 +345,13 @@ bool present_sched_trace_enabled(void) {
 
 /* [SMOOTH-VERDICT] rows are opt-in: the census counters themselves always
  * accumulate (they are counters only, like every other stat in this file),
- * but printing them is gated separately from MDKR_PRESENT_SCHED_TRACE so a
- * gate can request the census without also asking for the rest of the trace
- * dump. Test gates set this; play sessions opt in the same way. */
+ * but printing them requires this flag on TOP of MDKR_PRESENT_SCHED_TRACE,
+ * not instead of it -- the row is emitted from inside
+ * present_sched_trace_summary(), which returns immediately unless
+ * present_sched_trace_enabled() is true (see its early return above this
+ * function). So the census does not get its own independent opt-in; both
+ * env vars must be set together. Test gates set both; play sessions opt in
+ * the same way. */
 static bool present_sched_smooth_verdict_enabled(void) {
     if (s_smooth_verdict < 0) {
         const char *value = getenv("MDKR_SMOOTH_VERDICT");

@@ -702,13 +702,16 @@ static bool dkr_replay_pan_demote_enabled(void) {
  * other -- the captured tick-T translation held frozen against an
  * interpolated view-projection -- reproducing the pre-fix drift so a gate can
  * prove the fix's own pixel footprint by diffing production against this.
+ * Token-gated like every other adversarial seam: it must not be reachable
+ * from a bare environment variable.
  */
 static int dkr_replay_skydome_camera_lock_disable = -1;
 static bool dkr_replay_skydome_camera_lock_disabled(void) {
     if (dkr_replay_skydome_camera_lock_disable < 0) {
         const char *value = getenv("MDKR_TEST_SKYDOME_CAMERA_LOCK_DISABLE");
         dkr_replay_skydome_camera_lock_disable =
-            value != NULL && value[0] == '1';
+            present_sched_internal_replay_test_enabled() && value != NULL &&
+            value[0] == '1';
     }
     return dkr_replay_skydome_camera_lock_disable != 0;
 }

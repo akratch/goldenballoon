@@ -551,6 +551,18 @@ production coverage:
   topology key that has gone constant), and only then takes the midpoint
   verdict. Whale Bay, not Jungle Falls: an entire Jungle Falls race produced
   zero presents at which wave interpolation moved a pixel.
+- `check_smooth_verdict.py` proves the `[SMOOTH-VERDICT]` per-surface-class
+  census — the translation of existing replay clause outcomes into one row
+  per graded `MdkrSurfaceClass` — is real rather than vacuous, on one Jungle
+  Falls scripted race. It requires at least one row for WATER_WAVE,
+  OBJECT_ROOT, and WORLD_SCROLL; that every row's blend+snap equals its own
+  total; that WATER_WAVE carries the wave stage's real presentation
+  ownership (blend at least once, zero NO_OWNER); and, via
+  `--topology-negative-control`, that the topology-key guard is actually
+  reached (a positive check count) and actually refuses a forced-mismatched
+  pair. `--pan-demote` and `--sky-midpoint` are optional token-gated arms
+  for the pan-rate demotion clause and the skydome midpoint-sensitivity
+  witness, respectively; neither runs by default.
 - `check_motion_quality_battery.py` states six things Motion smoothing must
   never do, one row each, in the words a player would use: spin a kart the
   long way round (R1), smear a spawn or respawn across the screen (R2), blend

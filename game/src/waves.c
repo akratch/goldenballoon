@@ -20,6 +20,7 @@
 #include "gfx_shadow_frame.h"
 #include "gfx_pc_dkr.h"
 #include "presentation_snapshot.h"
+#include "present_sched.h"
 #endif
 #include <ultra64.h>
 
@@ -418,6 +419,9 @@ static ObjectTransform *waves_owner_transform(s32 blockID) {
  * consequence rather than a change nothing can see.
  *
  * Test-only and off by default, like every other adversarial seam here.
+ * Token-gated like every other adversarial seam: it must not be reachable
+ * from a bare environment variable (see
+ * present_sched_internal_replay_test_enabled()).
  */
 static s32 sWaveTopologyFlipSeam = -1;
 
@@ -425,7 +429,8 @@ static s32 waves_owner_topology_flip_seam(void) {
     if (sWaveTopologyFlipSeam < 0) {
         const char *value = getenv("MDKR_TEST_WAVE_TOPOLOGY_FLIP");
         sWaveTopologyFlipSeam =
-            (value != NULL && value[0] != '\0' && strcmp(value, "0") != 0)
+            (present_sched_internal_replay_test_enabled() && value != NULL &&
+             value[0] != '\0' && strcmp(value, "0") != 0)
                 ? TRUE
                 : FALSE;
     }
