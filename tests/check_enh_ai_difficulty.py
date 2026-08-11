@@ -150,6 +150,10 @@ def base_env(save_dir: Path) -> dict[str, str]:
         MDKR_AUTOPILOT="1",          # DKR's own AI drives the player, so the race runs
         MDKR_AIDIFF_TRACE="1",       # [AIDIFF] arm/scale witness
         MDKR_SAVE_DIR=str(save_dir),
+        # The scripted menu route is authored against default input and video
+        # settings. A maintainer's real launcher preferences must not decide
+        # whether this release gate reaches the race it claims to measure.
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
     )
     # Deliberately absent: MDKR_TRACE. It arms engine behaviour as well as
     # printing (see tests/check_ai_unstick_opponents.py), so a run with it set
