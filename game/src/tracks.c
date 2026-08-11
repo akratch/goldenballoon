@@ -1388,10 +1388,11 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
              * !gIsPaused -- so on a PAUSED three-player TT-camera frame the
              * render-side clear was the only one in the frame, and whether the
              * flag survived the frame depended on whether the scene was drawn.
-             * The authoritative clear now lives at the end of mode_game (the
-             * simulation step). What is left here is a viewport-local mask,
-             * the same save/restore scene_visibility_prepare_viewport already
-             * uses for this same viewport. */
+             * The matching, narrowly conditioned clear now lives at the end of
+             * mode_game (the simulation step). What is left here is a
+             * viewport-local mask, the same save/restore
+             * scene_visibility_prepare_viewport already uses for this same
+             * viewport. */
             savedCutsceneCamera = gCutsceneCameraActive;
             gCutsceneCameraActive = 0;
 #else

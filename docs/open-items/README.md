@@ -24,7 +24,7 @@ unchanged.
 | [`allocator.md`](allocator.md) | Allocator and native memory layout — 2 entries |
 | [`web.md`](web.md) | Browser (wasm) build — 3 entries |
 | [`multiplayer.md`](multiplayer.md) | Multiplayer — 1 entry |
-| [`gameplay.md`](gameplay.md) | Gameplay, race and Adventure — 11 entries |
+| [`gameplay.md`](gameplay.md) | Gameplay, race and Adventure — 12 entries |
 | [`portability.md`](portability.md) | 64-bit (LP64), endianness and portability — 13 entries |
 | [`misc.md`](misc.md) | Everything else — 3 entries |
 
@@ -39,7 +39,7 @@ already carried its own FIXED/CLOSED strikethrough, and the only live thread
 was the same external-platform validation WGPU-11 already tracks — and four
 new entries record campaign completeness, Taj's deferred Time Trial scope,
 ghost coverage breadth, and shadow-gate trustworthiness, all previously
-disclosed only outside this ledger). The 39 closed ones follow in their own
+disclosed only outside this ledger). The 40 closed ones follow in their own
 table.
 
 17 entries below are genuinely open. Two rows in this table are struck through
@@ -51,7 +51,7 @@ headless-driving residuals. Both are retained here because a closed entry is
 the only warning the next person gets that the trap existed — and because the
 `ROADMAP.md` text describing them stayed stale for two days after the gates
 landed, which is the specific failure this ledger exists to prevent. One new
-entry records unbounded asset sub-entry indices. The 39 closed ones follow in
+entry records unbounded asset sub-entry indices. The 40 closed ones follow in
 their own table.
 
 > **Current presentation scope:** the 1.0.1 authored-image containment has been
@@ -93,6 +93,7 @@ what was done and what proves it.
 
 | Item | Where |
 |---|---|
+| ~~**Opening the app overlay could abort an attract race or drop a race-intro camera.**~~ — **FIXED:** zero-rate racer physics is rejected at the racer boundary while menu camera objects still republish; the app pause retains the last authored cutscene-camera bank; the former render-owned three-player TT clear is conditioned on its exact retail predicate. Live failing controls reproduce the Greenwood Village NaN abort and a 73.166-level flyover-to-kart camera snap; both fixed arms freeze exactly and resume | [issues #28/#29, wave "overlaypause"](gameplay.md#fixed-the-app-overlay-crashed-attract-races-and-dropped-race-intro-cameras--issues-2829-wave-overlaypause) |
 | ~~Deferred integration work: wire the `asset_swap_normalize` / `asset_swap_lut` hooks into the loader~~ — **DONE.** M2 wired the LUT and `asset_table_load` hooks; M3 wired the per-caller post-inflate and whole-record hooks. `asset_swap_normalize()` is called from `asset_loading.c`, `game.c`, `object_models.c`, `objects.c`, `textures_sprites.c`, `tracks.c` and `racer.c`, and gzip'd sections swap after inflate | [Integration pending](misc.md#integration-pending) |
 | ~~**Every magic code was rejected and the enabled list showed `8` plus a blank row**~~ — **FIXED/HARDENED:** reproduced as the decrypted table's big-endian u16 count/offsets being consumed natively. Clean `v1.0.0` source already carries the original normalization repair, proving the reported DMG was not a reproducible tag artifact; complete offset/string validation, rollback, a ROM-free exact-symptom unit, and commit/version/checksum-bound release provenance now fail closed | [magic-code endian/artifact investigation](portability.md#fixed-tagged-macos-artifact-exposed-a-stale-magic-code-endian-failure) |
 | ~~**The macOS DMG produced Finder's “damaged” rejection instead of the expected unidentified-developer warning**~~ — **FIXED in the packaging path:** post-link mutation is followed by inside-out ad-hoc sealing; every intentionally unsigned patch app must pass strict nested/resource/load-path checks plus a LaunchServices/WebGPU present-and-capture smoke from the read-only mounted DMG. An optional protected Developer ID/notarization lane remains publication-disabled until it has an equivalent post-sign runtime gate; it is not required for this ad-hoc patch | [macOS damaged bundle](portability.md#fixed-macos-packaged-app-was-reported-as-damaged) |

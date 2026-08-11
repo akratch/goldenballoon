@@ -28,6 +28,7 @@ the target column.
 
 | Section (legacy anchor) | Now lives in |
 |---|---|
+| FIXED: the app overlay crashed attract races and dropped race-intro cameras — issues #28/#29, wave "overlaypause" | [open-items/gameplay.md](open-items/gameplay.md#fixed-the-app-overlay-crashed-attract-races-and-dropped-race-intro-cameras--issues-2829-wave-overlaypause) |
 | FIXED: v0.4 playthrough shadow defects — wave "shadowplay" | [open-items/renderer.md](open-items/renderer.md#fixed-v04-playthrough-shadow-defects--wave-shadowplay) |
 | FIXED: pre-release shadow deep review — wave "shadowdeep" | [open-items/renderer.md](open-items/renderer.md#fixed-pre-release-shadow-deep-review--wave-shadowdeep) |
 | FIXED: save progression and persistence isolation | [open-items/save.md](open-items/save.md#fixed-save-progression-and-persistence-isolation) |

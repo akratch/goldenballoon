@@ -231,6 +231,76 @@ shipping launch path does. An opt-in `--restored`-tier unstick (labeled, never
 default in `--pure`) is noted as a possible future enhancement, not
 implemented.
 
+## FIXED: the app overlay crashed attract races and dropped race-intro cameras — issues #28/#29, wave "overlaypause"
+
+Two 1.2.0 reports reached zero-rate paths that the original title/new-game
+overlay regression did not cover.
+
+### Issue #28: an attract racer received a zero-rate physics tick
+
+The production WebGPU route reproduced the report without injected game input:
+Greenwood Village attract mode loaded at tick 2569, the app overlay opened at
+2600, and tick 2601 aborted with `update_player_racer` reporting a NaN vertical
+position and velocity. This also reproduces the reporter's copied crash screen
+at track 18 rather than merely inferring from its log.
+
+The overlay deliberately passes a zero update rate while it owns input.
+`update_menu_scene()` must still call `obj_update(0)`: menu-owned scripted-camera
+objects use that walk to republish the pose that keeps the held scene visible.
+Attract racers share the object list, so `obj_update()` subsequently called
+`update_player_racer(..., 0)`. The racer vehicle family is not a zero-rate
+integrator: car, hover, plane, carpet, loop and boss paths all contain velocity
+reconstruction of the form `delta / updateRateF`; the Greenwood Village car
+path stored the resulting NaN and the existing finite-position invariant
+aborted.
+
+The native racer boundary now returns before any racer state or globals are
+touched when `updateRate <= 0`. This is one guard for the whole vehicle family,
+not a special case for the observed car division, and it leaves the required
+zero-rate menu object/camera walk intact.
+
+### Issue #29: the app pause arrived one boundary after a camera pulse
+
+The corrected Ancient Lake reproduction opens the overlay at tick 2670 while
+the camera is moving across the starting grid, before the countdown. On the
+unfixed build the first later sample, frame 2680, differed from the pause
+boundary by 73.166 mean RGB levels: it was the normal camera directly behind
+the kart, exactly as reported.
+
+`gCutsceneCameraActive` is a per-authored-frame bank-selection pulse. A camera
+object sets it while publishing bank 4, rendering consumes it, and the main loop
+clears it. The cartridge START pause is decided after `obj_update()` has armed
+that tick's pulse, so the paused-clear gate retains it. The app overlay opens
+from presentation and is observed at the following input boundary, after the
+preceding tick's ordinary clear; `mode_game()` then skips the object walk, so no
+camera object can re-arm the bank. A native refactor had compounded this by
+moving the three-player TT-camera render clear into an unconditional
+end-of-`mode_game()` clear for every layout, including paused single-player.
+
+The TT-camera clear is now conditioned on the exact retail three-player/layout,
+non-challenge and HUD predicate. Separately, the camera subsystem snapshots the
+authored bank before the ordinary frame clear and restores that one-bit choice
+when the app overlay owns the next input boundary. It does not tick or copy a
+camera: bank 4 already holds the last authored pose. `cam_init()` resets the
+snapshot, preventing a level generation from lending its camera to the next.
+
+### Regression and controls
+
+`tests/check_overlay_pause_cutscene.py` now has four arms: title, new-game intro,
+Greenwood Village attract mode, and the Ancient Lake start-line flyover. All
+require a non-flat picture, an exact visual hold, visible motion after resume,
+clean exit, and no fatal marker. The two new failing controls were measured
+before rebuilding the fixes:
+
+- issue #28 aborted at the first paused attract tick with the reported
+  non-finite racer position;
+- issue #29 changed 73.166 mean levels on frame 2680, while its fixed arm holds
+  all 11 pause samples exactly (0.000) and moves 85.417 levels after resume.
+
+The ordinary live-race exact-state pause gate remains the authority control:
+the fix retains a camera-bank selection and declines zero-rate racer physics;
+it does not advance race state while settings are open.
+
 ## CLOSED, NOT A DEFECT: the zip-pad boost is the magnitude DKR authored — wave "zippad"
 
 The register carried this since wave "closedloop": *a zip pad reaches 44.9 world

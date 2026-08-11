@@ -94,9 +94,9 @@ CHECKS = (
           "production WebGPU app overlay holds exact race state, clock, kart, "
           "checkpoint, and lap before resuming"),
     Check("overlay_pause_cutscene", "check_overlay_pause_cutscene.py", "native",
-          "opening the pause overlay during the title and new-game intro "
-          "authored animations holds the picture and resumes it, instead of "
-          "collapsing the scene to its background colour"),
+          "title/new-game cameras, attract racers, and a race-start flyover "
+          "freeze and resume intact across the app overlay, without a flat "
+          "scene, zero-rate racer crash, or camera-bank snap"),
     Check("restart_apply", "check_restart_apply.py", "native",
           "package-like Unicode/deep-path Restart & Apply and Return to "
           "Launcher process replacement, launcher-shaped replacement "

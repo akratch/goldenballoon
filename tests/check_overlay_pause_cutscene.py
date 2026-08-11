@@ -12,6 +12,13 @@ flat royal blue.  The colour is each level's own authored sky/background fill,
 which is the only thing still being drawn once everything in front of it has
 collapsed.
 
+Two later reports exposed the same pause boundary in paths those original arms
+did not enter.  An attract-mode racer divided by the zero update rate and made
+its vertical position NaN (#28).  The race-intro camera is a per-frame pulse;
+the app overlay arrived at the next input boundary after that pulse had been
+cleared, so the paused picture snapped behind the kart and the resumed race ran
+while the flyover caught up (#29).
+
 The pause hands the whole game a zero update rate.  The animation-path follower
 (`func_8001F460`, game/src/objects.c) divides by that rate twice, so a paused
 frame produced inf -- or NaN where the path step was zero as well -- and folded
@@ -39,6 +46,10 @@ Arms
     reached by simply booting.
   * ``intro`` -- the new-game intro animation the report came from, reached
     through GAME SELECT -> FILE SELECT -> name entry on a fresh save.
+  * ``demo`` -- the title's attract race, with no input script.  All eight
+    racers must remain finite while the menu-owned scene keeps its camera alive.
+  * ``race-intro`` -- the Ancient Lake start-line flyover, before the authored
+    camera gives control back to the player or starts the countdown.
 
 Usage:
     tests/check_overlay_pause_cutscene.py [--build build] [--rom baserom.us.v80.z64]
@@ -62,7 +73,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from harness_utils import DEFAULT_BUILD_DIR, fatal_re, resolve_binary
 
-SCRIPT = Path(__file__).resolve().parent / "input_scripts" / "adventure_hub_drive.txt"
+INPUT_SCRIPTS = Path(__file__).resolve().parent / "input_scripts"
+INTRO_SCRIPT = INPUT_SCRIPTS / "adventure_hub_drive.txt"
+RACE_SCRIPT = INPUT_SCRIPTS / "nav_to_time_trial_race.txt"
 
 FATAL_RE = fatal_re("Segmentation fault", "Abort trap")
 OPEN_RE = re.compile(r"^\[overlay-test\] opened at frame (\d+)", re.MULTILINE)
@@ -79,9 +92,11 @@ COLOUR_FLOOR = 1000
 COLOUR_FRACTION_MIN = 0.40
 
 ARMS = {
-    # name: (ticks, open_tick, close_tick, dump_from, dump_every)
-    "title": (1100, 700, 1000, 690, 10),
-    "intro": (3400, 2900, 3150, 2890, 10),
+    # name: (ticks, open_tick, close_tick, dump_from, dump_every, input_script)
+    "title": (1100, 700, 1000, 690, 10, INTRO_SCRIPT),
+    "intro": (3400, 2900, 3150, 2890, 10, INTRO_SCRIPT),
+    "demo": (3000, 2600, 2800, 2590, 10, None),
+    "race-intro": (2900, 2670, 2770, 2660, 10, RACE_SCRIPT),
 }
 
 
@@ -143,7 +158,7 @@ def frames_in(directory: str) -> list[tuple[int, str]]:
 
 def run_arm(name: str, binary: str, rom: str, keep: str | None,
             timeout: int, verbose: bool) -> list[str]:
-    ticks, open_tick, close_tick, dump_from, dump_every = ARMS[name]
+    ticks, open_tick, close_tick, dump_from, dump_every, input_script = ARMS[name]
     failures: list[str] = []
 
     holder = keep or tempfile.mkdtemp(prefix=f"mdkr_pause_cutscene_{name}_")
@@ -152,17 +167,17 @@ def run_arm(name: str, binary: str, rom: str, keep: str | None,
     for sub in ("prefs", "save", "frames"):
         (root / sub).mkdir(parents=True, exist_ok=True)
 
-    env = clean_environment(
+    environment = dict(
         LC_ALL="C",
         MDKR_APP_AUTOPLAY="1",
         MDKR_APP_AUTOPLAY_TICKS=str(ticks),
-        MDKR_APP_AUTOPLAY_INPUT_SCRIPT=str(SCRIPT),
         MDKR_APP_AUTOPLAY_DUMP_FRAMES=str(frames_dir),
         MDKR_APP_PREFS_DIR=str(root / "prefs"),
         MDKR_APP_SMOKE_WINDOW_SIZE="640x480",
         MDKR_AUDIO="0",
         MDKR_DUMP_FROM=str(dump_from),
         MDKR_DUMP_EVERY=str(dump_every),
+        MDKR_NO_CRASH_HANDLER="1",
         MDKR_ROM=str(rom),
         MDKR_SAVE_DIR=str(root / "save"),
         MDKR_TEST_OVERLAY_OPEN_FRAME=str(open_tick),
@@ -171,6 +186,9 @@ def run_arm(name: str, binary: str, rom: str, keep: str | None,
         MDKR_VIDEO_CONFIG_PATH=str(root / "video.ini"),
         MDKR64_HIDDEN="1",
     )
+    if input_script is not None:
+        environment["MDKR_APP_AUTOPLAY_INPUT_SCRIPT"] = str(input_script)
+    env = clean_environment(**environment)
     if verbose:
         print(f"$ [{name}] {binary}  ticks={ticks} open={open_tick} close={close_tick}",
               flush=True)
@@ -267,7 +285,7 @@ def main() -> int:
 
     binary = resolve_binary(args.build)
     rom = os.path.abspath(args.rom)
-    for path in (binary, rom, str(SCRIPT)):
+    for path in (binary, rom, str(INTRO_SCRIPT), str(RACE_SCRIPT)):
         if not os.path.exists(path):
             print(f"FAIL overlay pause cutscene: missing {path}", file=sys.stderr)
             return 1

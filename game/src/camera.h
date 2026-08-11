@@ -140,6 +140,8 @@ s8 check_if_showing_cutscene_camera(void);
 s32 cam_set_layout(s32 layoutID);
 void set_active_camera(s32 num);
 #ifdef NATIVE_PORT
+void cutscene_camera_pause_snapshot(void);
+void cutscene_camera_pause_restore(void);
 /* Fidelity Phase 2b: the pure (display-list-free) half of camSetProjMtx -- the
  * view / inverse-view basis, so the fixed step can reconstruct the basis render
  * will use later in the same frame. */
