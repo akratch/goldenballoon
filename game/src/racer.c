@@ -222,6 +222,31 @@ static void racer_camera_note_mode_cut(Object_Racer *racer) {
 }
 
 /*
+ * Task 9: the finish/post-race spectate cameras (CAMERA_FINISH_RACE,
+ * CAMERA_FINISH_CHALLENGE) hop between trackside objects a note alone
+ * cannot fully cover -- see presentation_snapshot_set_camera_excluded's
+ * header comment for why a standing exclusion exists beside the mode-cut
+ * note above rather than instead of it.
+ *
+ * Recomputed every tick from the CURRENT authored mode, not latched once:
+ * entering either mode excludes the viewport, and leaving it (mode returns
+ * to CAMERA_CAR/CAMERA_PLANE/etc. -- practically only via a stage reset,
+ * which already clears every exclusion, but this stays correct even if a
+ * future caller finds another way out) un-excludes it in the same tick,
+ * with no separate call and no reliance on that reset running first.
+ */
+static void racer_camera_apply_finish_exclusion(Object_Racer *racer) {
+    if (gCameraObject == NULL || racer->playerIndex < PLAYER_ONE ||
+        racer->playerIndex > PLAYER_FOUR) {
+        return;
+    }
+    presentation_snapshot_set_camera_excluded(
+        racer->playerIndex,
+        gCameraObject->mode == CAMERA_FINISH_RACE ||
+            gCameraObject->mode == CAMERA_FINISH_CHALLENGE);
+}
+
+/*
  * The ordinary camera authors know their subject here, before dialogue/shake
  * finishes. For car/hover/plane we preserve the available racer-local focus
  * axis (ox1/oy1/oz1, ten world units ahead), rather than guessing a pivot from
@@ -8655,6 +8680,7 @@ void update_player_camera(Object *obj, Object_Racer *racer, f32 updateRateF) {
     }
 #ifdef NATIVE_PORT
     racer_camera_note_mode_cut(racer);
+    racer_camera_apply_finish_exclusion(racer);
 #endif
     // Set the camera behaviour based on current mode.
     switch (gCameraObject->mode) {

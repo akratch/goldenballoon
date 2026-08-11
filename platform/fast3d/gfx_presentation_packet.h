@@ -247,6 +247,19 @@ typedef struct GfxPresentationPacketStats {
      */
     uint64_t topology_checks;
     uint64_t topology_mismatches;
+    /*
+     * Task 9: X/Z nearest-slot reorder checks against a regenerated
+     * projected-shadow decal's own published pair (see
+     * gfx_presentation_packet_deformation_reordered). Kept SEPARATE from
+     * topology_checks/topology_mismatches above rather than folding into
+     * them: shadows are never topology-keyed (they have no discrete variant
+     * a game-side note could name the way a wave tile's LOD grid can), so a
+     * route with wave content would otherwise make `shadow_reorder_checks
+     * >0` ambiguous between "the shadow guard ran" and "an unrelated wave
+     * tile changed variant" -- a distinction the fixture needs.
+     */
+    uint64_t shadow_reorder_checks;
+    uint64_t shadow_reorder_mismatches;
 } GfxPresentationPacketStats;
 
 typedef struct GfxPresentationDeformationBinding {
@@ -313,6 +326,38 @@ bool gfx_presentation_packet_lookup_deformation_hold(
     const GfxPresentationMatrixOwner *owner, int viewport, uint32_t ordinal,
     uint64_t authored_tick, uint32_t count, uint32_t stride,
     GfxPresentationDeformationBinding *out);
+/*
+ * Task 9: does a published deformation pair describe the SAME vertex at the
+ * SAME index across both ticks, judged by X/Z position alone (Y is the
+ * receiver's contact height, not identity)?
+ *
+ * `gfx_presentation_packet_lookup_deformation` proves the pair by COUNT and
+ * BYTE SIZE agreeing -- it cannot see whether index i still names the same
+ * authored point it named last tick. A regenerated decal (projected shadow,
+ * or any other per-tick-rebuilt mesh sharing this recipe) can hold both
+ * counts steady while the walk that built it started from a different
+ * triangle, so what used to be vertex 0 is now vertex 3 and vice versa: same
+ * topology, reordered authoring. Blending previous[i] with current[i] under
+ * that condition mixes two unrelated points and can pull the decal's shape
+ * far past any single vertex's real per-tick displacement -- the "explosion"
+ * a per-vertex magnitude guard (owner->max_vertex_delta) does not catch,
+ * because each individual index's delta can still be small.
+ *
+ * The test: for every current-tick vertex, is its own previous-tick vertex
+ * (index i) at least as close in X/Z as every OTHER previous-tick vertex? If
+ * some other index is strictly closer, the index-for-index correspondence
+ * the caller is about to blend is not the nearest-slot pairing, i.e. not the
+ * identity permutation, and the pair should snap rather than blend.
+ *
+ * `x_offset`/`z_offset` are byte offsets of two `int16_t` fields within one
+ * stride-sized element (Vertex::x, Vertex::z on the DKR side); this file is
+ * deliberately game-struct-agnostic, so the caller who knows the layout
+ * supplies it. O(count^2) with count bounded by DKR_MAX_VERTICES (32), i.e.
+ * at most 1024 comparisons per call.
+ */
+bool gfx_presentation_packet_deformation_reordered(
+    const GfxPresentationDeformationBinding *binding, size_t x_offset,
+    size_t z_offset);
 /*
  * Stage one triangle batch's {T -> T+1} UV displacement, keyed by the batch's
  * ORIGINAL address. Level triangle arrays are level-lifetime allocations, so
@@ -444,6 +489,9 @@ void gfx_presentation_packet_get_stats(GfxPresentationPacketStats *out);
  */
 /* One topology-key pair comparison and its outcome (see topology_checks). */
 void gfx_presentation_packet_note_topology(bool agree);
+/* One X/Z nearest-slot reorder check against a shadow's own published pair
+ * and its outcome (see shadow_reorder_checks). */
+void gfx_presentation_packet_note_shadow_reorder(bool reordered);
 void gfx_presentation_packet_note_verdict(MdkrSurfaceClass surface_class,
                                           MdkrVerdictReason reason);
 /* Zero only the verdict census (verdict_blend/verdict_snap/verdict_reason),

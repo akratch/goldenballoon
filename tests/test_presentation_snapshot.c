@@ -1023,6 +1023,90 @@ static void test_camera_cut_note_viewport_space(void) {
 }
 
 /*
+ * Task 9: a standing camera exclusion holds a viewport discontinuous on
+ * EVERY capture while set — dwell ticks included, not just the tick a note
+ * happened to fire — and stops the moment it is cleared, with no dependency
+ * on a note or a stage reset.
+ *
+ * The two adjacent samples below are 1 unit apart with identical yaw/FOV:
+ * by every existing clause (position, yaw, FOV, region, note) this pair
+ * would blend. Only the standing exclusion should hold it.
+ */
+static void test_camera_finish_exclusion_never_pairs(void) {
+    PresentationCameraPose pose;
+    PresentationCameraEntry camera_sample;
+    PresentationSnapshotStats stats;
+
+    begin();
+
+    /* Seed tick: ordinary viewport-entry discontinuity. */
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 0.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+
+    /* Negative control first: with no exclusion set, this tiny move blends,
+     * exactly like the ordinary-pan quiet stretch above. */
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 1.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &pose) &&
+               pose.interpolated == 1,
+           "finish exclusion: unset, a tiny move blends as usual");
+
+    /* Now exclude viewport 0 and re-run three consecutive dwell ticks, each
+     * moving 1 unit with identical yaw/FOV — no clause but the exclusion
+     * itself has any reason to fire. */
+    presentation_snapshot_set_camera_excluded(0, true);
+
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 2.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &pose) &&
+               pose.interpolated == 0 && pose.position[0] == 2.0f,
+           "finish exclusion: excluded, the first dwell tick holds instead "
+           "of blending");
+
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 3.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &pose) &&
+               pose.interpolated == 0 && pose.position[0] == 3.0f,
+           "finish exclusion: a SECOND consecutive dwell tick still holds — "
+           "this is the case a one-shot note cannot cover");
+
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 4.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &pose) &&
+               pose.interpolated == 0 && pose.position[0] == 4.0f,
+           "finish exclusion: a THIRD consecutive dwell tick still holds");
+
+    presentation_snapshot_get_stats(&stats);
+    expect(stats.camera_excluded_captures == 3,
+           "finish exclusion: census counts exactly the three excluded "
+           "captures, not the seed or the pre-exclusion tick");
+    expect(stats.camera_cut_notes == 0 && stats.camera_cut_consumed == 0,
+           "finish exclusion: no note was ever raised — this defect class "
+           "is exactly the one a note-only mechanism cannot see");
+
+    /* Clear the exclusion: the very next capture resumes blending, with no
+     * reliance on a stage reset. */
+    presentation_snapshot_set_camera_excluded(0, false);
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 5.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &pose) &&
+               pose.interpolated == 1,
+           "finish exclusion: cleared, the very next capture blends again");
+}
+
+/*
  * A lifecycle spawn the identity table cannot register fails the NEXT commit
  * whole instead of returning silently.
  *
@@ -1449,6 +1533,7 @@ int main(void) {
     test_camera_cut_angle_and_fov();
     test_camera_cut_clauses_quiet_on_ordinary_pan();
     test_camera_cut_note_viewport_space();
+    test_camera_finish_exclusion_never_pairs();
     test_identity_insert_failure_fails_closed();
     test_authored_camera_latch();
     test_authored_tick_pair();

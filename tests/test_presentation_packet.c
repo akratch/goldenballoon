@@ -327,6 +327,146 @@ static void check_uv_scroll_authored(void) {
     gfx_presentation_packet_shutdown();
 }
 
+/* Build one Vertex-shaped (stride 10: s16 x @0, s16 y @2, s16 z @4, RGBA @6)
+ * element into `buf + index*10`. Y and color are left zeroed -- the reorder
+ * test only reads X/Z. */
+static void set_shadow_vertex(unsigned char *buf, unsigned index, int16_t x,
+                              int16_t z) {
+    unsigned char *element = buf + (size_t)index * 10u;
+    memcpy(element + 0, &x, sizeof(x));
+    memcpy(element + 4, &z, sizeof(z));
+}
+
+/*
+ * Task 9: gfx_presentation_packet_deformation_reordered.
+ *
+ * A regenerated projected-shadow decal has no discrete topology "variant" a
+ * game-side note could name (see waves.c's LOD key); the only evidence
+ * available is whether index i still names the same authored point across
+ * two published ticks, judged in X/Z. This proves the low-level detector
+ * directly against synthetic bindings, then once more through the real
+ * capture/freeze/lookup pipeline so the exact function the choke point calls
+ * (gfx_presentation_packet_lookup_deformation) is what feeds it.
+ */
+static void check_shadow_reorder_detection(void) {
+    unsigned char previous[30];
+    unsigned char current_shifted[30];
+    unsigned char current_reordered[30];
+    unsigned char current_tied[30];
+    GfxPresentationDeformationBinding binding;
+    GfxPresentationMatrixOwner shadow_owner;
+
+    memset(&binding, 0, sizeof(binding));
+
+    /* ---- low-level function, synthetic bindings ---- */
+
+    /* Three vertices on a line: (0,0), (100,0), (200,0). */
+    memset(previous, 0, sizeof(previous));
+    set_shadow_vertex(previous, 0, 0, 0);
+    set_shadow_vertex(previous, 1, 100, 0);
+    set_shadow_vertex(previous, 2, 200, 0);
+
+    expect(!gfx_presentation_packet_deformation_reordered(NULL, 0u, 4u),
+           "shadow reorder: a null binding is not a reorder");
+
+    binding.previous_bytes = previous;
+    binding.current_bytes = previous;
+    binding.count = 1u;
+    binding.stride = 10u;
+    expect(!gfx_presentation_packet_deformation_reordered(&binding, 0u, 4u),
+           "shadow reorder: a single vertex has nothing to reorder against");
+
+    binding.count = 3u;
+    expect(!gfx_presentation_packet_deformation_reordered(&binding, 8u, 4u) &&
+               !gfx_presentation_packet_deformation_reordered(&binding, 0u,
+                                                               9u),
+           "shadow reorder: an offset that overruns the stride fails closed");
+
+    /* Ordinary motion: every vertex drifts +5 in X, staying nearest its own
+     * previous-tick position. Not a reorder. */
+    memset(current_shifted, 0, sizeof(current_shifted));
+    set_shadow_vertex(current_shifted, 0, 5, 0);
+    set_shadow_vertex(current_shifted, 1, 105, 0);
+    set_shadow_vertex(current_shifted, 2, 205, 0);
+    binding.current_bytes = current_shifted;
+    expect(!gfx_presentation_packet_deformation_reordered(&binding, 0u, 4u),
+           "shadow reorder: ordinary per-slot motion is not a reorder");
+
+    /* Authored vertex order changed: this tick's slots 0 and 1 carry what
+     * were slots 1 and 0 last tick (same topology -- same count, same
+     * triangle indices elsewhere -- different authoring order). Vertex 0's
+     * nearest previous-tick neighbour is now slot 1, not slot 0. */
+    memset(current_reordered, 0, sizeof(current_reordered));
+    set_shadow_vertex(current_reordered, 0, 100, 0); /* was slot 1's spot */
+    set_shadow_vertex(current_reordered, 1, 0, 0);   /* was slot 0's spot */
+    set_shadow_vertex(current_reordered, 2, 200, 0);
+    binding.current_bytes = current_reordered;
+    expect(gfx_presentation_packet_deformation_reordered(&binding, 0u, 4u),
+           "shadow reorder: a two-slot swap with identical topology is "
+           "caught even though this is exactly the case a per-index "
+           "magnitude guard (owner->max_vertex_delta) cannot see -- each "
+           "individual slot's own delta (100 units) is unremarkable, only "
+           "the CORRESPONDENCE is wrong");
+
+    /* Mutation check: a detector that always answered "identity permutation"
+     * (the naive/broken form this guards against) would pass every case
+     * above except this one -- it is the one assertion that actually
+     * exercises the nearest-neighbour search rather than a fixed-false
+     * return, so a stubbed-out detector fails exactly here. */
+
+    /* Degenerate but legitimate: two vertices land on the exact same X/Z
+     * both ticks (a decal seam). Ties must not manufacture a false reorder:
+     * each slot's own previous position is an equally good match, and the
+     * detector must prefer the identity assignment on a tie. */
+    memset(current_tied, 0, sizeof(current_tied));
+    set_shadow_vertex(previous, 0, 50, 0);
+    set_shadow_vertex(previous, 1, 50, 0); /* duplicate position */
+    set_shadow_vertex(previous, 2, 200, 0);
+    set_shadow_vertex(current_tied, 0, 50, 0);
+    set_shadow_vertex(current_tied, 1, 50, 0);
+    set_shadow_vertex(current_tied, 2, 200, 0);
+    binding.current_bytes = current_tied;
+    expect(!gfx_presentation_packet_deformation_reordered(&binding, 0u, 4u),
+           "shadow reorder: a duplicate-position tie resolves to the "
+           "identity assignment, not a false positive");
+
+    /* ---- integration: the real capture/freeze/lookup pipeline the choke
+     * point actually calls (gfx_presentation_packet_lookup_deformation) ---- */
+
+    gfx_presentation_packet_shutdown();
+    shadow_owner = make_owner(current_shifted, 41u);
+    shadow_owner.matrix_class = GFX_PRESENTATION_MATRIX_PROJECTED_SHADOW_VERTICES;
+
+    memset(previous, 0, sizeof(previous));
+    set_shadow_vertex(previous, 0, 0, 0);
+    set_shadow_vertex(previous, 1, 100, 0);
+    set_shadow_vertex(previous, 2, 200, 0);
+    gfx_presentation_packet_capture_begin(6000u);
+    expect(gfx_presentation_packet_capture_deformation(
+               &shadow_owner, 1, 7u, previous, sizeof(previous), 3u, 10u),
+           "shadow reorder integration: first tick's decal captures");
+    gfx_presentation_packet_freeze();
+
+    gfx_presentation_packet_capture_begin(6001u);
+    expect(gfx_presentation_packet_capture_deformation(
+               &shadow_owner, 1, 7u, current_reordered,
+               sizeof(current_reordered), 3u, 10u),
+           "shadow reorder integration: second tick's reordered decal "
+           "captures");
+    gfx_presentation_packet_freeze();
+
+    memset(&binding, 0, sizeof(binding));
+    expect(gfx_presentation_packet_lookup_deformation(
+               &shadow_owner, 1, 7u, 6001u, 3u, 10u, &binding),
+           "shadow reorder integration: the published pair resolves");
+    expect(gfx_presentation_packet_deformation_reordered(&binding, 0u, 4u),
+           "shadow reorder integration: the same reorder is caught when fed "
+           "through the real lookup path the gfx_pc_dkr.c choke point uses, "
+           "not just a hand-built binding");
+
+    gfx_presentation_packet_shutdown();
+}
+
 int main(void) {
     unsigned char matrix[64];
     unsigned char vertex[10];
@@ -976,6 +1116,7 @@ int main(void) {
 
     check_uv_scroll();
     check_uv_scroll_authored();
+    check_shadow_reorder_detection();
 
     if (failures != 0) {
         fprintf(stderr, "presentation_packet: %d failure(s)\n", failures);

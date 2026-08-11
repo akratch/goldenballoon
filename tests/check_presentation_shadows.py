@@ -384,6 +384,63 @@ def verify(production: Arm, control: Arm, hold: Arm) -> tuple[VisualMetrics, int
     require(packet.get("deformcollision", -1) == 0,
             f"production: deformation collisions={packet.get('deformcollision')}")
 
+    # Task 9: the X/Z nearest-slot reorder guard for regenerated shadow
+    # decals (gfx_presentation_packet_deformation_reordered) only has
+    # anything to check when the per-vertex lerp path is armed -- the
+    # shipped rigid-translation default (exercised by this file's
+    # "production" arm) never reads a previous tick's vertex bytes at all,
+    # so index correspondence cannot matter to it.
+    #
+    # "production" must show shadowreordercheck=0: not because the route
+    # lacks shadows (projectedshadow* above already proves it does not) but
+    # because the guard itself never runs outside the token-gated lerp mode.
+    require(packet.get("shadowreordercheck", -1) == 0,
+            "production: the shadow reorder guard ran outside its "
+            f"token-gated vertex-lerp mode (shadowreordercheck="
+            f"{packet.get('shadowreordercheck')}); it must stay fully inert "
+            "for the shipped rigid-translation default")
+
+    # An initial version of this fixture asserted shadowreordermismatch=0 on
+    # this route, expecting a well-behaved TT lap to never trip the guard.
+    # Measured instead: 617 of 22456 checks (~2.7%) DO reorder on real
+    # Ancient Lake gameplay -- the assertion, not the guard, was wrong. A
+    # kart's shadow decal is rebuilt from whichever ground triangles it is
+    # currently touching, and which triangles those are (and the order
+    # shadow_generate() walks them in) can legitimately change as the kart
+    # crosses a terrain triangle boundary between two adjacent ticks, even
+    # though the decal's vertex/triangle COUNT stays the same -- exactly the
+    # "same topology, reordered authoring" case this guard exists for. The
+    # nearest-neighbour heuristic cannot distinguish that from a decal that
+    # simply moved farther than half its own inter-vertex spacing in one
+    # tick; both are graded the same way here, and both get the same
+    # response: hold on the authored current mesh rather than guess a
+    # correspondence, which is the safe side of the ambiguity regardless of
+    # which case actually happened. Requiring zero would only prove this one
+    # route's frame count never touched a boundary tick, not that the guard
+    # is correct -- exactly the kind of measurement Task 9's own brief warns
+    # against trusting without checking it against the tree.
+    #
+    # What IS provable here: the guard actually ran (checks>0) and it
+    # discriminates rather than firing on everything (0 < mismatches <
+    # checks) -- a detector stubbed to always answer "reordered" would fail
+    # the upper bound, and one stubbed to always answer "not reordered"
+    # (silently inert) would fail the lower bound and packet_fields'
+    # ">0" floor above. The exact catch (a synthetic, known two-slot swap)
+    # is proven precisely, and mutation-tested, at the packet layer in
+    # test_presentation_packet.c's check_shadow_reorder_detection.
+    control_packet = packet_fields(control.output, control.label)
+    control_checks = control_packet.get("shadowreordercheck", 0)
+    control_mismatches = control_packet.get("shadowreordermismatch", -1)
+    require(control_checks > 0,
+            "vertex-lerp control: the shadow reorder guard never ran "
+            "(shadowreordercheck=0) -- Task 9's wiring is not reaching the "
+            "choke point in this mode")
+    require(0 <= control_mismatches < control_checks,
+            "vertex-lerp control: shadow reorder mismatches "
+            f"({control_mismatches}) are not a proper subset of checks "
+            f"({control_checks}) -- either the guard is firing on every "
+            "graded tick (indiscriminate) or the counters disagree")
+
     production_frames = frames(production)
     control_frames = frames(control)
     hold_frames = frames(hold)
@@ -519,6 +576,7 @@ def main() -> int:
             (root / hold.label / "run.log").write_text(hold.output)
             metrics, motion_triples, motion_support = verify(production, control, hold)
             packet = packet_fields(production.output, production.label)
+            control_packet = packet_fields(control.output, control.label)
             notes.append(
                 f"{backend}: projected hits/overrides "
                 f"{packet['projectedshadowdeformhit']}/"
@@ -530,7 +588,12 @@ def main() -> int:
                 f"control/production {metrics.ratio_median:.2f}/"
                 f"{metrics.ratio_p95:.2f} (severe {metrics.severe_control}); "
                 f"motion/hold {motion_triples} triples, support median "
-                f"{motion_support:.0f}px")
+                f"{motion_support:.0f}px; "
+                f"shadow reorder checks (vertex-lerp control) "
+                f"{control_packet.get('shadowreordercheck')}, mismatches "
+                f"{control_packet.get('shadowreordermismatch')} "
+                f"(production, unarmed: "
+                f"{packet.get('shadowreordercheck')})")
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"check_presentation_shadows: FAIL\n  - {error}", file=sys.stderr)
         if args.keep_artifacts:

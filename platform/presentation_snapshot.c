@@ -400,6 +400,30 @@ void presentation_snapshot_note_camera_cut(int viewport_index) {
 }
 
 /*
+ * One bit per VIEWPORT under a STANDING exclusion (Task 9). Unlike
+ * s_camera_cut_pending, this is not spent by the next capture: it stays set
+ * across every capture of the viewport until the caller clears it, so a
+ * finish/spectate camera cannot enter resolve_camera_pair as a blend
+ * candidate for any tick it is active, dwell ticks included, whether or not
+ * anything filed a one-shot note for that particular tick.
+ */
+static uint32_t s_camera_excluded;
+
+void presentation_snapshot_set_camera_excluded(int viewport_index,
+                                               bool excluded) {
+    if (viewport_index < 0 ||
+        viewport_index >= PRESENTATION_SNAPSHOT_MAX_VIEWPORTS ||
+        !presentation_snapshot_enabled()) {
+        return;
+    }
+    if (excluded) {
+        s_camera_excluded |= 1u << (unsigned)viewport_index;
+    } else {
+        s_camera_excluded &= ~(1u << (unsigned)viewport_index);
+    }
+}
+
+/*
  * Per-tick camera cut journal (test observability only).
  *
  * The exit row counts discontinuities in aggregate, which is enough to prove
@@ -794,6 +818,13 @@ bool presentation_snapshot_capture_camera(
         s_camera_cut_pending &= ~(1u << (unsigned)viewport);
         s_stats.camera_cut_consumed++;
     }
+    /* Task 9: a standing exclusion holds this viewport discontinuous on
+     * EVERY capture while set, not only the tick a note was raised -- see
+     * presentation_snapshot_set_camera_excluded. */
+    if ((s_camera_excluded & (1u << (unsigned)viewport)) != 0u) {
+        discontinuous = true;
+        s_stats.camera_excluded_captures++;
+    }
     if (!discontinuous) {
         const float moved =
             distance_squared(history->last_position, sample->position);
@@ -1017,6 +1048,10 @@ void presentation_snapshot_stage_reset(void) {
      * the unconsumed-note failure the counter watches for — that one is a note
      * lost while the viewport it names WAS published. */
     s_camera_cut_pending = 0u;
+    /* A standing exclusion belongs to the mode that set it (racer.c
+     * re-asserts it every tick the mode is active), and the stage boundary
+     * that just retired every identity retired the racer along with it. */
+    s_camera_excluded = 0u;
     /* The table is empty again, so the refusal that set this has been undone
      * before any capture could observe it. */
     s_identity_insert_failed = false;
@@ -1177,6 +1212,7 @@ void presentation_snapshot_shutdown(void) {
     s_stage_generation = 0;
     s_generation_serial = 0;
     s_camera_cut_pending = 0u;
+    s_camera_excluded = 0u;
     s_identity_insert_failed = false;
 }
 
@@ -1191,6 +1227,7 @@ static void presentation_snapshot_report(void) {
            "rotarccheck=%llu rotarcsnap=%llu rotarcviolation=%llu "
            "disconthold=%llu discontblend=%llu "
            "camcutnote=%llu camcutconsumed=%llu camcutunconsumed=%llu "
+           "camexcluded=%llu "
            "identityinsertfail=%llu "
            "externalpeak=%llu externalcaptures=%llu\n",
            (unsigned long long)s_stats.captures,
@@ -1223,6 +1260,7 @@ static void presentation_snapshot_report(void) {
            (unsigned long long)s_stats.camera_cut_notes,
            (unsigned long long)s_stats.camera_cut_consumed,
            (unsigned long long)s_stats.camera_cut_unconsumed,
+           (unsigned long long)s_stats.camera_excluded_captures,
            (unsigned long long)s_stats.identity_insert_failures,
            (unsigned long long)s_stats.external_peak,
            (unsigned long long)s_stats.external_captures);

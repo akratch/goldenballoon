@@ -255,6 +255,14 @@ typedef struct PresentationSnapshotStats {
     uint64_t camera_cut_notes;
     uint64_t camera_cut_consumed;
     uint64_t camera_cut_unconsumed;
+    /* Task 9: captures forced discontinuous by a standing camera exclusion
+     * (presentation_snapshot_set_camera_excluded), independent of any note
+     * and independent of what the pose itself says. Nonzero on a route that
+     * reaches the finish/spectate camera is the proof the exclusion actually
+     * armed, not just that it compiled -- the same reasoning
+     * camera_cut_notes/consumed/unconsumed already document for the one-shot
+     * note path above. */
+    uint64_t camera_excluded_captures;
     /* Lifecycle spawn notes that could not register an identity. Each one
      * fails the next commit whole (see note_spawn); nonzero means the identity
      * table ran out of slots, not that anything was mis-blended. */
@@ -355,6 +363,33 @@ void presentation_snapshot_note_free(const void *object);
  * that capture happens. No-op unless the seam is enabled.
  */
 void presentation_snapshot_note_camera_cut(int viewport_index);
+
+/*
+ * Task 9: declare (or retract) a STANDING exclusion for this VIEWPORT --
+ * every capture of it is a cut, not just the tick the game happened to note
+ * one.
+ *
+ * note_camera_cut above is a one-shot fact spent by the very next capture:
+ * exactly right for a mode-change tick, but it depends on every site that
+ * can re-aim the shot remembering to raise it. The finish/post-race spectate
+ * cameras (racer.c's CAMERA_FINISH_RACE / CAMERA_FINISH_CHALLENGE) hop
+ * between trackside objects that individually clear every automatic bar
+ * (position, yaw, FOV, region) and are individually noted at the handoff --
+ * but they also idle at each point for a run of ticks, and nothing says a
+ * future site that adjusts the shot mid-dwell (a look-at ease, a boom
+ * settle) will remember to note itself. A standing exclusion does not
+ * depend on that: while set, this viewport's captures hold discontinuous
+ * regardless of what the pose says or whether anything noted a cut this
+ * tick, so it can never enter resolve_camera_pair as a blend candidate.
+ *
+ * The caller re-asserts this every tick the excluded mode is active (see
+ * update_player_camera) rather than latching once, so leaving the mode
+ * un-excludes the viewport with no separate call needed and no reliance on
+ * a stage reset. Also cleared by presentation_snapshot_stage_reset and
+ * _shutdown. No-op unless the seam is enabled.
+ */
+void presentation_snapshot_set_camera_excluded(int viewport_index,
+                                               bool excluded);
 
 /*
  * Return the generation currently assigned by the lifecycle registry without

@@ -801,6 +801,59 @@ static void dkr_replay_alpha_req_set_topology(
     gfx_presentation_packet_note_topology(!req->topology_mismatch);
 }
 
+/*
+ * Task 9: a regenerated projected-shadow decal has no discrete "variant" a
+ * game-side note could name the way waves.c names an LOD grid -- it is
+ * rebuilt from scratch every tick from whatever ground triangles the object
+ * is currently touching. So this owner cannot be topology-keyed the way a
+ * wave tile is; instead the correspondence is proved (or refused) directly
+ * from the two published ticks' own vertex positions, in X/Z, via
+ * gfx_presentation_packet_deformation_reordered.
+ *
+ * Only meaningful -- and only ever reached -- when the per-vertex lerp path
+ * is armed (dkr_test_projected_shadow_vertex_lerp_enabled): the shipped
+ * default (dkr_replay_projected_shadow_rigid) never reads a previous tick's
+ * vertex bytes at all, so index correspondence cannot matter to it, and this
+ * check must not downgrade that path's verdict. It exists so the one place
+ * that DOES blend previous[i] against current[i] by index cannot be handed a
+ * reordered pair without the census, and every reviewer after it, being able
+ * to see it happened.
+ */
+static void dkr_replay_alpha_req_set_shadow_reorder(
+    DkrReplayAlphaRequest *req, const GfxPresentationMatrixOwner *owner,
+    int viewport, uint32_t ordinal, int count) {
+    GfxPresentationDeformationBinding deformation;
+    uint64_t target_tick = 0u;
+
+    if (req == NULL || owner == NULL || count <= 0 ||
+        !dkr_test_projected_shadow_vertex_lerp_enabled()) {
+        return;
+    }
+    if (!presentation_snapshot_replay_target_tick(dkr_last_walked_authored_tick,
+                                                  &target_tick)) {
+        return;
+    }
+    if (!gfx_presentation_packet_lookup_deformation(
+            owner, viewport, ordinal, target_tick, (uint32_t)count,
+            (uint32_t)sizeof(Vertex), &deformation)) {
+        return;
+    }
+    {
+        const bool reordered = gfx_presentation_packet_deformation_reordered(
+            &deformation, offsetof(Vertex, x), offsetof(Vertex, z));
+        if (reordered) {
+            req->topology_mismatch = true;
+        }
+        /* Deliberately a dedicated counter, not
+         * gfx_presentation_packet_note_topology: shadows are never
+         * topology-keyed (owner->topology_keyed stays false for this
+         * class), and folding into topology_checks/topology_mismatches
+         * would make those totals ambiguous on any route that also has
+         * topology-keyed wave content in view. */
+        gfx_presentation_packet_note_shadow_reorder(reordered);
+    }
+}
+
 static bool dkr_replay_surface_class_gate_enabled(MdkrSurfaceClass surface_class) {
     switch (surface_class) {
         case MDKR_SURF_OBJECT_ROOT:
@@ -6999,6 +7052,10 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                     shadow_alpha_req.numerator = dkr_replay_object_alpha_numerator;
                     shadow_alpha_req.denominator = dkr_replay_object_alpha_denominator;
                     dkr_replay_alpha_req_set_pan_rate(&shadow_alpha_req);
+                    dkr_replay_alpha_req_set_shadow_reorder(
+                        &shadow_alpha_req, &packet_binding.owner,
+                        packet_binding.viewport, packet_binding.ordinal,
+                        retained_n);
                     (void)dkr_replay_resolve_alpha(
                         MDKR_SURF_PROJECTED_SHADOW, &shadow_alpha_req,
                         &shadow_alpha_reason);

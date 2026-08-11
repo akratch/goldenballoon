@@ -1275,7 +1275,8 @@ void present_sched_trace_summary(void) {
                 "uvscrollauthored=%llu uvscrollauthoredconfirm=%llu "
                 "uvscrolloverride=%llu uvscrollpeak=%zu "
                 "uvscrollbytespeak=%zu "
-                "topocheck=%llu topomismatch=%llu\n",
+                "topocheck=%llu topomismatch=%llu "
+                "shadowreordercheck=%llu shadowreordermismatch=%llu\n",
                 (unsigned long long)packet_stats.matrix_registrations,
                 (unsigned long long)packet_stats.vertex_registrations,
                 (unsigned long long)
@@ -1378,7 +1379,9 @@ void present_sched_trace_summary(void) {
                 packet_stats.uv_scroll_peak,
                 packet_stats.uv_scroll_bytes_peak,
                 (unsigned long long)packet_stats.topology_checks,
-                (unsigned long long)packet_stats.topology_mismatches);
+                (unsigned long long)packet_stats.topology_mismatches,
+                (unsigned long long)packet_stats.shadow_reorder_checks,
+                (unsigned long long)packet_stats.shadow_reorder_mismatches);
         if (present_sched_smooth_verdict_enabled()) {
             static const char *const surface_class_names[MDKR_SURF_CLASS_COUNT] = {
                 "WORLD_STATIC", "WORLD_SCROLL", "WATER_WAVE", "SKYDOME",

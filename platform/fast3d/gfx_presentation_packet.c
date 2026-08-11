@@ -941,6 +941,70 @@ bool gfx_presentation_packet_lookup_deformation_hold(
     return true;
 }
 
+bool gfx_presentation_packet_deformation_reordered(
+    const GfxPresentationDeformationBinding *binding, size_t x_offset,
+    size_t z_offset) {
+    uint32_t i;
+
+    if (binding == NULL || binding->previous_bytes == NULL ||
+        binding->current_bytes == NULL || binding->count < 2u ||
+        binding->stride < sizeof(int16_t) ||
+        x_offset + sizeof(int16_t) > binding->stride ||
+        z_offset + sizeof(int16_t) > binding->stride) {
+        return false;
+    }
+    for (i = 0; i < binding->count; i++) {
+        int16_t cur_x;
+        int16_t cur_z;
+        int16_t self_x;
+        int16_t self_z;
+        int64_t dx;
+        int64_t dz;
+        int64_t best_dist;
+        uint32_t best_j = i;
+        uint32_t j;
+        const size_t cur_off = (size_t)i * binding->stride;
+
+        memcpy(&cur_x, binding->current_bytes + cur_off + x_offset,
+               sizeof(cur_x));
+        memcpy(&cur_z, binding->current_bytes + cur_off + z_offset,
+               sizeof(cur_z));
+        memcpy(&self_x, binding->previous_bytes + cur_off + x_offset,
+               sizeof(self_x));
+        memcpy(&self_z, binding->previous_bytes + cur_off + z_offset,
+               sizeof(self_z));
+        dx = (int64_t)cur_x - (int64_t)self_x;
+        dz = (int64_t)cur_z - (int64_t)self_z;
+        best_dist = dx * dx + dz * dz;
+
+        for (j = 0; j < binding->count; j++) {
+            int16_t prev_x;
+            int16_t prev_z;
+            int64_t dist;
+            const size_t prev_off = (size_t)j * binding->stride;
+
+            if (j == i) {
+                continue;
+            }
+            memcpy(&prev_x, binding->previous_bytes + prev_off + x_offset,
+                   sizeof(prev_x));
+            memcpy(&prev_z, binding->previous_bytes + prev_off + z_offset,
+                   sizeof(prev_z));
+            dx = (int64_t)cur_x - (int64_t)prev_x;
+            dz = (int64_t)cur_z - (int64_t)prev_z;
+            dist = dx * dx + dz * dz;
+            if (dist < best_dist) {
+                best_dist = dist;
+                best_j = j;
+            }
+        }
+        if (best_j != i) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void gfx_presentation_packet_note_deformation_incompatible(void) {
     s_stats.deformation_incompatible++;
 }
@@ -1116,6 +1180,13 @@ void gfx_presentation_packet_note_topology(bool agree) {
     s_stats.topology_checks++;
     if (!agree) {
         s_stats.topology_mismatches++;
+    }
+}
+
+void gfx_presentation_packet_note_shadow_reorder(bool reordered) {
+    s_stats.shadow_reorder_checks++;
+    if (reordered) {
+        s_stats.shadow_reorder_mismatches++;
     }
 }
 
