@@ -6234,8 +6234,17 @@ static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
     if (allowLodBias && fromDistanceLadder) {
         modelIndex = mdkr_enh_lod_bias_apply(modelIndex, firstModel, lastModel);
     }
-    modelIndex = wizpig_visual_cap_donor_lod(obj, modelIndex);
-    modelIndex = terry_visual_cap_donor_lod(obj, modelIndex);
+    /* Bonus-racer donor LOD cap. Gated on allowLodBias for exactly the reason the bias above is:
+     * this is presentation-only, and `allowLodBias` is TRUE only on the draw seam in
+     * set_temp_model_transforms(). obj_lod_tick() and obj_authoritative_texture_tick() both pass
+     * FALSE, so the authoritative obj->modelIndex -- which is part of the v3 simulation hash and
+     * selects the ModelInstance sphere collision reads -- is never moved by a composed companion.
+     * Placed before the firstModel/lastModel clamp so a capped index can never fall outside the
+     * range this racer actually carries. */
+    if (allowLodBias) {
+        modelIndex = wizpig_visual_cap_donor_lod(obj, modelIndex);
+        modelIndex = terry_visual_cap_donor_lod(obj, modelIndex);
+    }
     if (modelIndex < firstModel) {
         modelIndex = firstModel;
     }
