@@ -64,6 +64,13 @@ struct MdkrRollbackAudioCommand {
     void *handle_slot;
     MdkrRollbackAudioApplyFn apply;
     void *context;
+    /* Teardown commands (stop/detach) still apply when the queue is
+     * DISCARDED: by the time the caller deferred one it had already
+     * relinquished the voice, so dropping it would leave a live voice no
+     * game code references — it loops until level teardown while the caller
+     * allocates a replacement. Tuning commands (priority/params) drop with
+     * the discarded timeline as before. */
+    bool teardown;
 };
 
 typedef struct MdkrRollbackAudioStats {

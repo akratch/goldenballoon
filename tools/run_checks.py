@@ -853,14 +853,18 @@ def command_for(
     roms: Path,
     wasm: Path,
     no_rebuild_instrumented: bool,
+    with_gpu_tests: bool,
 ) -> list[str]:
     if check.role == "ctest":
-        return [
+        command = [
             "ctest",
             "--test-dir",
             str(native.parent),
             "--output-on-failure",
         ]
+        if not with_gpu_tests:
+            command += ["-LE", "gpu"]
+        return command
     cmd = [sys.executable, str(TESTS / check.script)]
     if check.role == "source":
         pass
@@ -1108,6 +1112,12 @@ def main() -> int:
         action="store_true",
         help="reuse existing UBSan and layout instrumented builds",
     )
+    parser.add_argument(
+        "--with-gpu-tests",
+        action="store_true",
+        help="explicitly run native GPU/window CTests; default excludes them "
+             "so validation cannot take over the workstation",
+    )
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument(
         "--jobs", type=int, default=1,
@@ -1184,6 +1194,13 @@ def main() -> int:
     os.makedirs(save_dir, exist_ok=True)
     environment.update({
         "MDKR_AUDIO": "0",
+        # The suite is automation by definition: no engine or app window it
+        # spawns may activate the app, become key, or raise itself over the
+        # user's desktop. The window layer renders automation surfaces behind
+        # existing windows (app_activation.h), so drawable-dependent gates
+        # keep real surfaces. A check that genuinely needs a foreground
+        # window must opt out explicitly in its own environment.
+        "MDKR64_HIDDEN": "1",
         # Never inherit a developer's playable repository config. Individual
         # configuration/migration checks replace this with a writable fixture.
         "MDKR_VIDEO_CONFIG_PATH": os.devnull,
@@ -1209,6 +1226,7 @@ def main() -> int:
         cmd = command_for(
             check, native, release, asan, rom, roms, wasm,
             args.no_rebuild_instrumented,
+            args.with_gpu_tests,
         )
         print(
             f"\n[{index}/{len(checks)}] {check.name} — {check.description}\n"
@@ -1254,12 +1272,18 @@ def main() -> int:
         cmd = command_for(
             check, native, release, asan, rom, roms, wasm,
             args.no_rebuild_instrumented,
+            args.with_gpu_tests,
         )
         log_path = os.path.join(log_dir, f"{check.name}.log")
         started = time.monotonic()
         timeout = task_timeout(check)
+        # ignore_cleanup_errors: a timed-out check can leave an orphaned
+        # grandchild (engine, Chromium, wrangler) still writing into the
+        # scratch save while rmtree walks it; that race must fail THIS task
+        # at worst, never crash the whole run.
         with tempfile.TemporaryDirectory(
-                prefix=f"mdkr64-save-{check.name}-") as task_save, \
+                prefix=f"mdkr64-save-{check.name}-",
+                ignore_cleanup_errors=True) as task_save, \
                 open(log_path, "wb") as log:
             task_env = dict(environment)
             task_env["MDKR_SAVE_DIR"] = task_save
@@ -1298,13 +1322,21 @@ def main() -> int:
                   flush=True)
             done = 0
             failed_early = False
-            with ThreadPoolExecutor(max_workers=jobs) as pool:
+            pool = ThreadPoolExecutor(max_workers=jobs)
+            try:
                 futures = {pool.submit(run_captured, c, log_scratch): c
                            for c in pooled}
                 from concurrent.futures import as_completed
                 for future in as_completed(futures):
                     check = futures[future]
-                    returncode, elapsed, log_path = future.result()
+                    try:
+                        returncode, elapsed, log_path = future.result()
+                    except Exception as error:  # harness fault, not a gate verdict
+                        returncode, elapsed = 1, 0.0
+                        log_path = os.path.join(log_scratch,
+                                                f"{check.name}.log")
+                        print(f"run_checks: {check.name} harness fault: "
+                              f"{error}", file=sys.stderr, flush=True)
                     done += 1
                     results.append((check, returncode, elapsed))
                     label = "PASS" if returncode == 0 else (
@@ -1319,8 +1351,15 @@ def main() -> int:
                             print(f"    | {line}", flush=True)
                         if args.fail_fast:
                             failed_early = True
-                            pool.shutdown(cancel_futures=True)
                             break
+            except KeyboardInterrupt:
+                # Cancel everything still queued and stop waiting: Ctrl-C
+                # must interrupt NOW, not after the remaining pooled tasks
+                # drain (Executor.__exit__ would otherwise wait for them).
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
+            finally:
+                pool.shutdown(wait=True, cancel_futures=failed_early)
             # The measurement-sensitive tail runs alone, in manifest order, on
             # a host the pool has finished loading.
             if not failed_early:

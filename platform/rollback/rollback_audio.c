@@ -131,8 +131,12 @@ void mdkr_rollback_audio_confirm_through(
     }
 }
 
+static void rollback_audio_apply_teardown_commands(
+    MdkrRollbackAudioAdapter *adapter);
+
 void mdkr_rollback_audio_forget_all(MdkrRollbackAudioAdapter *adapter) {
     if (adapter != NULL) {
+        rollback_audio_apply_teardown_commands(adapter);
         adapter->count = 0u;
         adapter->command_count = 0u;
     }
@@ -181,6 +185,22 @@ void mdkr_rollback_audio_flush_commands(MdkrRollbackAudioAdapter *adapter) {
     adapter->command_count = 0u;
 }
 
+static void rollback_audio_apply_teardown_commands(
+    MdkrRollbackAudioAdapter *adapter) {
+    unsigned index;
+    for (index = 0u; index < adapter->command_count; index++) {
+        const MdkrRollbackAudioCommand *command = &adapter->commands[index];
+        if (command->teardown && command->apply != NULL) {
+            command->apply(command, command->context);
+        }
+    }
+}
+
 void mdkr_rollback_audio_discard_commands(MdkrRollbackAudioAdapter *adapter) {
-    if (adapter != NULL) adapter->command_count = 0u;
+    if (adapter != NULL) {
+        /* See MdkrRollbackAudioCommand.teardown: stops/detaches survive a
+         * discarded timeline; tuning commands drop with it. */
+        rollback_audio_apply_teardown_commands(adapter);
+        adapter->command_count = 0u;
+    }
 }

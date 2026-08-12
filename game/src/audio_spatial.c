@@ -505,7 +505,11 @@ void audspat_update_all(Object **objList, s32 numObjects, s32 updateRate) {
                     pitch2 = audioPoint->pitch / 100.0f;
 #ifdef NATIVE_PORT
                     audspat_endpoint_point_mix(
-                        audioPoint, cameras, numCameras, volume, pan,
+                        audioPoint, cameras, numCameras, volume,
+                        /* Retail centers split-screen pans (the clamp below
+                         * writes 64 before PAN_EVT); the offline fallback
+                         * must carry the same value. */
+                        numCameras != 1 ? 64 : pan,
                         &endpointMix);
                     sndp_set_param(audioPoint->soundHandle, AL_SNDP_VOL_EVT,
                                    endpointMix.volume * 256);
@@ -618,7 +622,9 @@ void audspat_update_all(Object **objList, s32 numObjects, s32 updateRate) {
                     if (line->soundHandle != NULL) {
 #ifdef NATIVE_PORT
                         audspat_endpoint_line_mix(
-                            line, cameras, numCameras, volume, pan,
+                            line, cameras, numCameras, volume,
+                            /* See the point-mix clamp note. */
+                            numCameras != 1 ? 64 : pan,
                             &endpointMix);
                         sndp_set_param(line->soundHandle, AL_SNDP_VOL_EVT,
                                        endpointMix.volume * 256);

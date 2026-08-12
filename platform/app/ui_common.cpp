@@ -243,6 +243,10 @@ void ConfirmModalSize() {
     if (viewport != nullptr && viewport->WorkSize.x - margin < width) {
         width = viewport->WorkSize.x - margin;
     }
+    /* Floor like kControlWidth(): a non-positive width does not shrink the
+     * window — ImGui re-enables content auto-fit, which with NoResize is
+     * exactly the overflow this helper exists to prevent. */
+    width = (std::max)(1.0f, width);
     /* Height 0 = auto-fit that axis; only the width is pinned. */
     ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
 }

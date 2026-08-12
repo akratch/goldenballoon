@@ -81,6 +81,12 @@ static bool defer_rollback_audio_command(
     command.handle_slot = handlePtr;
     command.apply = apply_rollback_audio_command;
     command.context = NULL;
+    /* Stops and detaches survive a discarded rollback timeline (see
+     * MdkrRollbackAudioCommand.teardown): the caller has already given the
+     * voice up, so dropping the command would orphan a looping voice while
+     * game code allocates its replacement. */
+    command.teardown = operation == ROLLBACK_AUDIO_COMMAND_STOP ||
+                       operation == ROLLBACK_AUDIO_COMMAND_DETACH;
     return mdkr_rollback_game_runtime_defer_audio_command(&command);
 }
 /* App-overlay ducking is an output layer, not an authored group-volume mode.

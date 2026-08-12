@@ -107,6 +107,30 @@ int main(void) {
     assert(fixture.last_value == 20u);
     assert(adapter.command_count == 0u);
 
+    /* Teardown commands survive a discard; tuning commands drop with it. A
+     * discarded stop that never applies orphans a live voice no game code
+     * references, so the contract is: relinquished is relinquished. */
+    command.value = 30u;
+    command.teardown = false;
+    assert(mdkr_rollback_audio_defer_command(&adapter, &command));
+    mdkr_rollback_audio_discard_commands(&adapter);
+    assert(fixture.commands == 1u);      /* tuning command dropped silently */
+    assert(adapter.command_count == 0u);
+    command.value = 40u;
+    command.teardown = true;
+    assert(mdkr_rollback_audio_defer_command(&adapter, &command));
+    mdkr_rollback_audio_discard_commands(&adapter);
+    assert(fixture.commands == 2u);      /* teardown applied on discard */
+    assert(fixture.last_value == 40u);
+    assert(adapter.command_count == 0u);
+    command.value = 50u;
+    command.teardown = true;
+    assert(mdkr_rollback_audio_defer_command(&adapter, &command));
+    mdkr_rollback_audio_forget_all(&adapter);
+    assert(fixture.commands == 3u);      /* forget_all honors teardown too */
+    assert(fixture.last_value == 50u);
+    assert(adapter.command_count == 0u && adapter.count == 0u);
+
     puts("test_rollback_audio: PASS");
     return 0;
 }

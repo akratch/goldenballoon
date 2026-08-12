@@ -928,7 +928,12 @@ static int sdl_should_hide_window(void) {
     if (visible_headless != NULL && strcmp(visible_headless, "1") == 0) {
         return 0;
     }
-    return g_headlessFrames >= 0 || getenv("MDKR64_HIDDEN") != NULL;
+    /* A tick budget is automation exactly like a frame budget. Visible
+     * --headless-ticks windows were seizing the desktop — six at once under
+     * the pooled suite — because SDL window creation activates the app on
+     * macOS. A human watching a bounded run opts in with the variable above. */
+    return g_headlessFrames >= 0 || g_headlessTicks >= 0 ||
+           getenv("MDKR64_HIDDEN") != NULL;
 }
 
 static int sdl_should_start_fullscreen(void) {
@@ -2537,19 +2542,35 @@ static void input_capture_live(uint64_t target_tick) {
             if (kind == MDKR_PAD_SDL) {
                 gc_read(&s_controllerSource[port], &live);
                 /* One source at a time, but presence must not outrank use: a
-                 * merely-connected pad (charging, paired but idle) must not
-                 * take P1's keyboard away. When the pad contributes nothing
-                 * this capture and the keyboard does, the keyboard is the
-                 * active source; the seat follows whoever is actually
-                 * playing, and the pad reclaims it on its next input. */
-                if (port == 0 && live.buttons == 0u &&
-                    live.stick_x > -8 && live.stick_x < 8 &&
-                    live.stick_y > -8 && live.stick_y < 8) {
+                 * merely-connected pad (charging, paired, idle, or slightly
+                 * drifting) must not take P1's keyboard away. The latch is
+                 * sticky with a hysteresis band so the seat cannot flap
+                 * between sources within a tick: the keyboard takes the seat
+                 * only while the pad sits under the take threshold with the
+                 * keyboard active, and the pad reclaims it only with a button
+                 * or a decisive deflection. gc_read's own deadzone is +/-8,
+                 * so an 8-unit test would let a drifting stick lock the
+                 * keyboard out forever; 24/32 sits above real drift and
+                 * below any deliberate steer. */
+                if (port == 0) {
+                    static int keyboardHasSeat = 0;
+                    const int padQuiet = live.buttons == 0u &&
+                        live.stick_x > -24 && live.stick_x < 24 &&
+                        live.stick_y > -24 && live.stick_y < 24;
+                    const int padDecisive = live.buttons != 0u ||
+                        live.stick_x <= -32 || live.stick_x >= 32 ||
+                        live.stick_y <= -32 || live.stick_y >= 32;
                     struct pad_state keys = { 0, 0, 0, 0 };
                     keys.present = 1;
                     kbd_read(&keys);
-                    if (keys.buttons != 0u || keys.stick_x != 0 ||
-                        keys.stick_y != 0) {
+                    const int keysActive = keys.buttons != 0u ||
+                        keys.stick_x != 0 || keys.stick_y != 0;
+                    if (keyboardHasSeat) {
+                        if (padDecisive) keyboardHasSeat = 0;
+                    } else if (padQuiet && keysActive) {
+                        keyboardHasSeat = 1;
+                    }
+                    if (keyboardHasSeat) {
                         kind = MDKR_PAD_KEYBOARD;
                         live = keys;
                     }

@@ -1182,8 +1182,12 @@ void racer_sound_update_all(Object **racerObjs, s32 numRacers, Camera *cameras, 
                                                    racerObjs[i]->trans.y_position, racerObjs[i]->trans.z_position);
 #ifdef NATIVE_PORT
                             racer_sound_endpoint_mix(
-                                racerObjs[i], i, cameras, numCameras,
-                                volume, gRacerSound->pan, &endpointMix);
+                                racerObjs[i], i, cameras, numCameras, volume,
+                                /* Retail centers split-screen pans (the clamp
+                                 * below writes 64 before PAN_EVT); the
+                                 * offline fallback must carry the same. */
+                                numCameras != 1 ? 64 : gRacerSound->pan,
+                                &endpointMix);
                             sndp_set_param(gRacerSound->soundHandle[j],
                                            AL_SNDP_VOL_EVT,
                                            endpointMix.volume << 8);
