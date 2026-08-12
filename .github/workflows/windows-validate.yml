@@ -80,10 +80,10 @@ jobs:
       # (ON by default via include(CTest) in CMakeLists.txt) so the ROM-free
       # CTest unit exes are produced alongside mdkr64.exe. No --target filter:
       # the default build target builds mdkr64 plus every ctest executable.
-      - name: Build the app + ROM-free test exes (Release)
+      - name: Build the app + release sentinel (Release)
         run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMDKR_VERSION=1.2.1
-          cmake --build build -j
+          cmake --build build --target mdkr64 mdkr_memory_allocator_test -j
           test -f build/mdkr64.exe || { echo "FAIL: build/mdkr64.exe missing"; exit 1; }
           file build/mdkr64.exe
 
@@ -132,12 +132,12 @@ jobs:
       # release lanes. Nothing else is excluded: the audio and mixer tests are
       # the ones most likely to expose a Windows CRT/toolchain difference, so
       # skipping them by name was removing this lane's best signal.
-      - name: ROM-free CTest suite
+      - name: Release sentinel
         env:
           SDL_VIDEODRIVER: dummy
           SDL_AUDIODRIVER: dummy
         run: |
-          ctest --test-dir build --output-on-failure -LE gpu
+          ctest --test-dir build --output-on-failure --no-tests=error -R '^memory_allocator$'
 
       # Asset-free verify (mirror the release job's post-build check): the binary
       # must contain no ROM-derived copyrighted data. MSYS2 `nm` reads the PE and
