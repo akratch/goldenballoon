@@ -70,8 +70,11 @@ int mdkr_windows_quote_argument_utf8(const char *argument, char *output,
 
 #if defined(_WIN32) && !defined(__EMSCRIPTEN__)
 #include <direct.h>
+#include <fcntl.h>
 #include <io.h>
 #include <process.h>
+#include <share.h>
+#include <sys/stat.h>
 #include <wchar.h>
 #include <windows.h>
 
@@ -194,6 +197,54 @@ static int ascii_mode(const char *mode, wchar_t output[16]) {
     return 1;
 }
 
+/*
+ * C11 exclusive create, independent of which CRT the toolchain links.
+ *
+ * fopen's 'x' flag is honored by the UCRT but rejected wholesale (EINVAL,
+ * NULL) by the legacy msvcrt.dll. Every atomic settings/preferences/state
+ * writer in this tree opens its temp file with "wbx", so a build lane that
+ * links msvcrt turns every save into a visible failure — that is exactly how
+ * the withdrawn v1.2.1 Windows zip broke ROM-path and settings persistence
+ * (issue #32). Exclusive create therefore goes through the OS-level _wsopen
+ * primitive, whose _O_CREAT|_O_EXCL semantics are identical on both CRTs.
+ */
+static FILE *wide_fopen_exclusive(const wchar_t *wide_path, const char *mode) {
+    wchar_t stripped[16];
+    size_t out = 0u;
+    int flags = _O_CREAT | _O_EXCL;
+    int has_write = 0;
+    int has_plus = 0;
+    int has_binary = 0;
+    int fd;
+    FILE *file;
+    size_t index;
+
+    for (index = 0u; mode[index] != '\0'; ++index) {
+        if (mode[index] == 'x') continue;
+        if (mode[index] == 'w') has_write = 1;
+        else if (mode[index] == 'b') has_binary = 1;
+        else if (mode[index] == '+') has_plus = 1;
+        stripped[out++] = (wchar_t)(unsigned char)mode[index];
+    }
+    stripped[out] = L'\0';
+    if (!has_write) {
+        /* C11 permits 'x' only with 'w'; match fopen's contract. */
+        errno = EINVAL;
+        return NULL;
+    }
+    flags |= has_plus ? _O_RDWR : _O_WRONLY;
+    flags |= has_binary ? _O_BINARY : _O_TEXT;
+    fd = _wsopen(wide_path, flags, _SH_DENYNO, _S_IREAD | _S_IWRITE);
+    if (fd < 0) return NULL; /* _wsopen sets errno; EEXIST when present. */
+    file = _wfdopen(fd, stripped);
+    if (file == NULL) {
+        const int saved_errno = errno;
+        (void)_close(fd);
+        errno = saved_errno;
+    }
+    return file;
+}
+
 FILE *mdkr_fopen_utf8(const char *path, const char *mode) {
     wchar_t wide_mode[16];
     wchar_t *wide_path;
@@ -201,7 +252,9 @@ FILE *mdkr_fopen_utf8(const char *path, const char *mode) {
     if (!ascii_mode(mode, wide_mode)) return NULL;
     wide_path = utf8_to_extended_path(path);
     if (wide_path == NULL) return NULL;
-    file = _wfopen(wide_path, wide_mode);
+    file = strchr(mode, 'x') != NULL
+        ? wide_fopen_exclusive(wide_path, mode)
+        : _wfopen(wide_path, wide_mode);
     free(wide_path);
     return file;
 }

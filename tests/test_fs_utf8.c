@@ -134,11 +134,12 @@ int main(void) {
 
     /* Exclusive create ("wbx") is the foundation of every atomic settings,
      * preferences, and state write in the tree (app_config.cpp,
-     * video_config_runtime.c, user_paths.c, taj_mod_state_file.c). The C11
-     * 'x' flag is a UCRT feature on Windows: a toolchain that links the
-     * legacy msvcrt CRT rejects the whole mode string, which silently turns
-     * EVERY launcher save into a failure. This block must pass on the exact
-     * CRT the shipped executable links. */
+     * video_config_runtime.c, user_paths.c, text_state_file.c). On Windows
+     * the C11 'x' flag is a UCRT feature: the legacy msvcrt CRT rejects the
+     * whole mode string with EINVAL, which silently turns EVERY launcher
+     * save into a failure — the withdrawn v1.2.1 Windows zip shipped exactly
+     * that (issue #32). This block must pass on the exact CRT the shipped
+     * executable links. */
     errno = 0;
     file = mdkr_fopen_utf8(path, "wbx");
     expect(file != NULL, "exclusive create succeeds on a fresh path");
