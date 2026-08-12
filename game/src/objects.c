@@ -5,25 +5,24 @@
 #include "asset_loading.h"
 #ifdef NATIVE_PORT
 #include "asset_subentry.h"
-#include "asset_swap.h"
-#include "camera_dynamic_occlusion.h"
-#include "enh_draw_distance.h"
-#include "fast3d/gfx_level_lighting.h"
-#include "gameplay_event_trace.h"
 #include "mdkr_adventure.h"
+#include "asset_swap.h"
 #include "mdkr_challenge.h"
 #include "mdkr_taj.h"
-#include "mdkr_trace.h"
-#include "presentation_snapshot.h"
 #include "taj_mod.h"
+#include "mdkr_trace.h"
 #include "taj_visual.h"
 #include "terry_visual.h"
 #include "wizpig_visual.h"
+#include "presentation_snapshot.h"
+#include "camera_dynamic_occlusion.h"
+#include "enh_draw_distance.h"
+#include "gameplay_event_trace.h"
+#include "fast3d/gfx_level_lighting.h"
 #endif
 /* The level-object-map header is 16 bytes; gObjectMap[] is s32*, so the entries
  * begin 4 s32-elements in. The original code wrote this as sizeof(uintptr_t),
- * which is 4 on the N64 but 8 on LP64 — pinned to 4 to keep the 16-byte skip.
- */
+ * which is 4 on the N64 but 8 on LP64 — pinned to 4 to keep the 16-byte skip. */
 #define OBJ_MAP_HEADER_S32S 4
 #include "audio_spatial.h"
 #include "audio_vehicle.h"
@@ -68,16 +67,15 @@
 #include "waves.h"
 #include "weather.h"
 
-/* Wizpig and Terry presentation actors reuse retail racer object headers so
- * their animated boss meshes load through the original asset path. They are
- * claimed before obj_init_racer(), though, and therefore must never enter code
- * that interprets their uninitialised object tail as Object_Racer state. */
+/* Wizpig and Terry presentation actors reuse retail racer object headers so their animated boss
+ * meshes load through the original asset path. They are claimed before obj_init_racer(), though, and
+ * therefore must never enter code that interprets their uninitialised object tail as Object_Racer
+ * state. */
 static s32 bonus_visual_is_presentation_actor(const Object *obj) {
 #ifdef NATIVE_PORT
-    return wizpig_visual_is_presentation_object(obj) ||
-           terry_visual_is_presentation_object(obj);
+    return wizpig_visual_is_presentation_object(obj) || terry_visual_is_presentation_object(obj);
 #else
-    (void)obj;
+    (void) obj;
     return FALSE;
 #endif
 }
@@ -88,8 +86,7 @@ static void bonus_visual_trace_transform_bypass(const Object *obj) {
     const char *identity = NULL;
     u32 identityBit = 0;
 
-    if (obj->objectID == ASSET_OBJECT_ID_WIZPIG ||
-        obj->objectID == ASSET_OBJECT_ID_WIZPIGROCKET) {
+    if (obj->objectID == ASSET_OBJECT_ID_WIZPIG || obj->objectID == ASSET_OBJECT_ID_WIZPIGROCKET) {
         identity = "WIZPIG";
         identityBit = 1;
     } else if (obj->objectID == ASSET_OBJECT_ID_TERRYBOSS) {
@@ -97,8 +94,7 @@ static void bonus_visual_trace_transform_bypass(const Object *obj) {
         identityBit = 2;
     }
     if (identityBit != 0 && !(sTracedIdentities & identityBit)) {
-        MDKR_TRACE("bonus_transform: identity=%s header_racer=1 "
-                   "racer_transform=0 scale_y=1.000",
+        MDKR_TRACE("bonus_transform: identity=%s header_racer=1 racer_transform=0 scale_y=1.000",
                    identity);
         sTracedIdentities |= identityBit;
     }
@@ -111,13 +107,12 @@ static void bonus_visual_trace_transform_bypass(const Object *obj) {
 #include <stdlib.h> /* abort */
 #include <string.h> /* strchr — native trace/test-hook parsing */
 
-void mdkr_objcoll_hit(
-    void); /* platform/hasm_stubs_temp.c — [OBJCOLL] telemetry */
+void mdkr_objcoll_hit(void);   /* platform/hasm_stubs_temp.c — [OBJCOLL] telemetry */
 int  mdkr_objcoll_legacy(void); /*   ""      — MDKR_OBJCOLL=legacy A/B arm */
 
-static void mdkr_taj_trace_phase(const char *phase, s32 vehicle,
-                                 const s8 *thresholds, s32 reason, s32 menu,
-                                 s32 tick);
+static void mdkr_taj_trace_phase(
+    const char *phase, s32 vehicle, const s8 *thresholds,
+    s32 reason, s32 menu, s32 tick);
 
 extern Object *(*gRacers)[10];
 extern s32 gNumRacers;
@@ -164,17 +159,18 @@ void mdkr_oracle_trace_racers(s32 frame) {
         for (lapIndex = 0; lapIndex < lapCount; lapIndex++) {
             clock += racer->lap_times[lapIndex];
         }
-        mdkr_trace("[ORACLE] frame=%d map=%d slot=%d "
+        mdkr_trace(
+            "[ORACLE] frame=%d map=%d slot=%d "
             "x=%.9g y=%.9g z=%.9g xv=%.9g yv=%.9g zv=%.9g "
             "fvel=%.9g vel=%.9g cp=%d next=%d lap=%d countlap=%d "
             "fin=%d fpos=%d ridx=%d pidx=%d vehicle=%d grounded=%d "
             "clock=%u start=%d delta=%u rate=%d rng=%u",
-                   frame, get_ingame_map_id(), i, obj->trans.x_position,
-                   obj->trans.y_position, obj->trans.z_position,
-                   obj->x_velocity, obj->y_velocity, obj->z_velocity,
-                   racer->forwardVel, racer->velocity, racer->courseCheckpoint,
-                   racer->nextCheckpoint, racer->lap, racer->countLap,
-                   racer->raceFinished, racer->finishPosition,
+            frame, get_ingame_map_id(), i,
+            obj->trans.x_position, obj->trans.y_position,
+            obj->trans.z_position, obj->x_velocity, obj->y_velocity,
+            obj->z_velocity, racer->forwardVel, racer->velocity,
+            racer->courseCheckpoint, racer->nextCheckpoint, racer->lap,
+            racer->countLap, racer->raceFinished, racer->finishPosition,
             racer->racerIndex, racer->playerIndex, racer->vehicleID,
             racer->groundedWheels, clock, get_race_start_timer(),
             gVideoDeltaTime, sLogicUpdateRate, (u32) gCurrentRNGSeed);
@@ -223,14 +219,16 @@ mdkr_remaster_light_class(const Object *obj) {
 
 static u32 mdkr_remaster_light_target(const Object *obj) {
     const GfxLevelLightingRig *rig = gfx_level_lighting_current();
-    enum MdkrRemasterLightClass light_class = mdkr_remaster_light_class(obj);
+    enum MdkrRemasterLightClass light_class =
+        mdkr_remaster_light_class(obj);
     ObjectTransform inverse;
     MtxF inverse_matrix;
     Vec3f world_direction;
     Vec3f local_direction;
     u32 packed;
 
-    if (light_class == MDKR_REMASTER_LIGHT_NONE || rig == NULL || !rig->valid) {
+    if (light_class == MDKR_REMASTER_LIGHT_NONE ||
+        rig == NULL || !rig->valid) {
         return 0;
     }
 
@@ -248,7 +246,8 @@ static u32 mdkr_remaster_light_target(const Object *obj) {
     world_direction.x = rig->direction_world[0];
     world_direction.y = rig->direction_world[1];
     world_direction.z = rig->direction_world[2];
-    mtxf_transform_dir(&inverse_matrix, &world_direction, &local_direction);
+    mtxf_transform_dir(&inverse_matrix, &world_direction,
+                       &local_direction);
     packed = gfx_level_lighting_pack_direction(local_direction.f);
     if (packed == 0) {
         return 0;
@@ -262,13 +261,14 @@ static u32 mdkr_remaster_light_target(const Object *obj) {
  * Reproduce the engine's obj_shade_fast cursor walk so each display-list
  * gSPVertex receives exactly the normal subspan for that batch.
  */
-static Vec3s *mdkr_object_batch_normals(ObjectModel *model, s32 batch_index) {
+static Vec3s *mdkr_object_batch_normals(ObjectModel *model,
+                                       s32 batch_index) {
     TriangleBatchInfo *batches;
     Vec3s *normals;
     s32 normal_offset = 0;
 
-    if (model == NULL || model->normals == 0 || batch_index < 0 ||
-        batch_index >= model->numberOfBatches) {
+    if (model == NULL || model->normals == 0 ||
+        batch_index < 0 || batch_index >= model->numberOfBatches) {
         return NULL;
     }
     batches = DKR_PTR(TriangleBatchInfo, model->batches);
@@ -277,8 +277,11 @@ static Vec3s *mdkr_object_batch_normals(ObjectModel *model, s32 batch_index) {
         return NULL;
     }
     for (s32 i = 0; i <= batch_index; i++) {
-        s32 count = batches[i + 1].verticesOffset - batches[i].verticesOffset;
-        bool consumes = batches[i].miscData != BATCH_VTX_COL ||
+        s32 count =
+            batches[i + 1].verticesOffset -
+            batches[i].verticesOffset;
+        bool consumes =
+            batches[i].miscData != BATCH_VTX_COL ||
             (batches[i].flags & RENDER_ENVMAP) != 0;
         if (i == batch_index) {
             return consumes ? normals + normal_offset : NULL;
@@ -294,19 +297,18 @@ static Vec3s *mdkr_object_batch_normals(ObjectModel *model, s32 batch_index) {
 #define OBJECT_MAP_SIZE 0x3000
 #define MAX_CHECKPOINTS 60
 #ifdef NATIVE_PORT
-/* LP64: 0x15800 is the N64 byte budget for the object sub-pool. Every
- * allocation in it (Object + its variable-size trailing payload:
- * modelInstances[], shading, shadow, interaction, collision, attach points,
- * emitters, lightData[], plus the ObjectHeaders themselves) is built out of
- * REAL host pointers, which are 8 bytes here and 4 on N64 — so the same scene
- * needs roughly twice the bytes. Scale the budget by the host pointer size; on
- * N64 sizeof(void *) == 4 and this is exactly the original 0x15800, and 0x2b000
- * here. Measured peaks against that budget: a driven Time-Trial race 0x12fe0
- * (77792); the attract demo through its first track 0x14b50 (84752); and the
- * demo's second track, which is what exposed this, demanded at least 0x158d0
- * (88272 = 86240 already used + a 2032-byte request that failed) — i.e. more
- * than the whole old 0x15800 budget. Slot count is unchanged and was never the
- * limit (peak 296-297 of 512). See docs/OPEN_ITEMS.md. */
+/* LP64: 0x15800 is the N64 byte budget for the object sub-pool. Every allocation
+ * in it (Object + its variable-size trailing payload: modelInstances[], shading,
+ * shadow, interaction, collision, attach points, emitters, lightData[], plus the
+ * ObjectHeaders themselves) is built out of REAL host pointers, which are 8 bytes
+ * here and 4 on N64 — so the same scene needs roughly twice the bytes. Scale the
+ * budget by the host pointer size; on N64 sizeof(void *) == 4 and this is exactly
+ * the original 0x15800, and 0x2b000 here. Measured peaks against that budget: a
+ * driven Time-Trial race 0x12fe0 (77792); the attract demo through its first
+ * track 0x14b50 (84752); and the demo's second track, which is what exposed this,
+ * demanded at least 0x158d0 (88272 = 86240 already used + a 2032-byte request
+ * that failed) — i.e. more than the whole old 0x15800 budget. Slot count is
+ * unchanged and was never the limit (peak 296-297 of 512). See docs/OPEN_ITEMS.md. */
 #define OBJECT_POOL_SIZE (0x15800 * (sizeof(void *) / 4))
 #else
 #define OBJECT_POOL_SIZE 0x15800
@@ -334,10 +336,8 @@ static Vec3s *mdkr_object_batch_normals(ObjectModel *model, s32 batch_index) {
 
 /************ .data ************/
 
-FadeTransition gTajChallengeTransition =
-    FADE_TRANSITION(FADE_FULLSCREEN, FADE_FLAG_OUT, FADE_COLOR_BLACK, 30, 15);
-FadeTransition gBalloonCutsceneTransition =
-    FADE_TRANSITION(FADE_CIRCLE, FADE_FLAG_NONE, FADE_COLOR_BLACK, 30, 15);
+FadeTransition gTajChallengeTransition = FADE_TRANSITION(FADE_FULLSCREEN, FADE_FLAG_OUT, FADE_COLOR_BLACK, 30, 15);
+FadeTransition gBalloonCutsceneTransition = FADE_TRANSITION(FADE_CIRCLE, FADE_FLAG_NONE, FADE_COLOR_BLACK, 30, 15);
 
 s32 D_800DC700 = 0;
 s32 D_800DC704 = 0; // Currently unknown, might be a different type.
@@ -355,8 +355,7 @@ u8 gHasGhostToSave = FALSE;
 u8 gTimeTrialStaffGhost = FALSE;
 u8 gBeatStaffGhost = FALSE;
 s8 gLeadPlayerIndex = 0;
-s8 gTwoActivePlayersInAdventure =
-    FALSE; // Has basically the same purpose as gTwoPlayerAdvRace
+s8 gTwoActivePlayersInAdventure = FALSE; // Has basically the same purpose as gTwoPlayerAdvRace
 s8 gSwapLeadPlayer = FALSE;
 s8 gIsP2LeadPlayer = FALSE;
 Vertex *gBoostVerts[2] = { 0, 0 };
@@ -461,10 +460,8 @@ u32 gMagnetColours[3] = {
     COLOUR_RGBA32(16, 64, 255, 0), // Level 2
     COLOUR_RGBA32(16, 255, 64, 0), // Level 3
 };
-FadeTransition gRaceEndFade = FADE_TRANSITION(FADE_FULLSCREEN, FADE_FLAG_NONE,
-                                              FADE_COLOR_BLACK, 40, FADE_STAY);
-FadeTransition gRaceEndTransition =
-    FADE_TRANSITION(FADE_FULLSCREEN, FADE_FLAG_OUT, FADE_COLOR_BLACK, 40, 0);
+FadeTransition gRaceEndFade = FADE_TRANSITION(FADE_FULLSCREEN, FADE_FLAG_NONE, FADE_COLOR_BLACK, 40, FADE_STAY);
+FadeTransition gRaceEndTransition = FADE_TRANSITION(FADE_FULLSCREEN, FADE_FLAG_OUT, FADE_COLOR_BLACK, 40, 0);
 
 /*******************************/
 
@@ -472,8 +469,7 @@ FadeTransition gRaceEndTransition =
 
 UNUSED const char sObjectOutofMemString[] = "Objects out of ram(1) !!\n";
 UNUSED const char sDoorNumberErrorString[] = "Door numbering error %d!!\n";
-UNUSED const char sObjectScopeErrorString[] =
-    "objGetScope: Unknown scope for object %d\n";
+UNUSED const char sObjectScopeErrorString[] = "objGetScope: Unknown scope for object %d\n";
 
 /*********************************/
 
@@ -489,8 +485,7 @@ f32 gObjectModelScaleY;
 s32 D_8011AD2C;
 f32 gCurrentLightIntensity;
 Object *gGhostObjPlayer;
-s32 gTimeTrialContPak; // gTimeTrialContPak is ultimately set by func_80074B34,
-                       // and is almost definitely SIDeviceStatus
+s32 gTimeTrialContPak; // gTimeTrialContPak is ultimately set by func_80074B34, and is almost definitely SIDeviceStatus
 s8 D_8011AD3C;
 s8 D_8011AD3D;
 s8 D_8011AD3E;
@@ -532,10 +527,8 @@ s8 (*gDrawbridgeTimers)[8];
 f32 gObjectOffsetY;
 #ifdef NATIVE_PORT
 static f32 gObjectSavedTumbleY; /* exact pre-tumble bits; see do/undo pair */
-static Object
-    *gObjectSavedTumbleFor; /* pairing guard, see gObjectSavedBobFor */
-static f32 gObjectSavedBobX, gObjectSavedBobY,
-    gObjectSavedBobZ;              /* carBob pair */
+static Object *gObjectSavedTumbleFor; /* pairing guard, see gObjectSavedBobFor */
+static f32 gObjectSavedBobX, gObjectSavedBobY, gObjectSavedBobZ; /* carBob pair */
 static Object *gObjectSavedBobFor; /* pairing guard for the exact-bits restore.
     Saved bits are valid only for the object that saved them, so the restore is
     conditional on the pointer matching. The save and restore guards are today
@@ -558,8 +551,9 @@ static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
                                       f32 viewDistance, f32 *outScale,
                                       s32 allowLodBias);
 static s32 obj_door_batch_texture_offset(const ObjectModel *model,
-                                         const Object *obj, s32 batchIndex,
-                                         s32 *outOffset, s32 *outDigitPlace);
+                                         const Object *obj,
+                                         s32 batchIndex, s32 *outOffset,
+                                         s32 *outDigitPlace);
 #endif
 s8 D_8011ADD4;
 s8 gOverrideDoors;
@@ -607,17 +601,14 @@ size_t gAssetsLvlObjTranslationTableCapacity;
 s32 gObjectMapIndex;
 Object **gParticlePtrList;
 s32 gFreeListCount;
-CheckpointNode
-    *gTrackCheckpoints; // Array of structs, unknown number of members
+CheckpointNode *gTrackCheckpoints; // Array of structs, unknown number of members
 s32 gNumberOfMainCheckpoints;
 s32 gNumberOfTotalCheckpoints;
 s16 gTajChallengeType;
-Object *(
-    *gCameraObjList)[CAMCONTROL_COUNT]; // Camera objects with a maximum of 20
+Object *(*gCameraObjList)[CAMCONTROL_COUNT]; // Camera objects with a maximum of 20
 s32 gCameraObjCount;                         // The number of camera objects in the above list
 Object *(*gRacers)[10];                      // Official Name: playerlist
-// Similar to gRacers, but sorts the pointer by the players' current position in
-// the race.
+// Similar to gRacers, but sorts the pointer by the players' current position in the race.
 Object **gRacersByPosition;
 // Similar to gRacers, but sorts the pointer by controller ports 1-4, then CPUs.
 Object **gRacersByPort;
@@ -660,8 +651,7 @@ s32 gNumOfBoostTris;
 s32 gBoostVertFlip; // indexes gBoostVerts and gBoostTris
 u8 gShieldSineTime[16];
 Object *gBoostEffectObjects[NUMBER_OF_CHARACTERS];
-u8 D_8011B048[16]; // Vehicle IDs for the boost objects, used to determine which
-                   // racer is using which boost object.
+u8 D_8011B048[16]; // Vehicle IDs for the boost objects, used to determine which racer is using which boost object.
 u8 D_8011B058[16];
 u8 D_8011B068[16];
 RacerFXData gRacerFXData[NUMBER_OF_CHARACTERS];
@@ -671,30 +661,23 @@ extern s16 gGhostMapID;
 /******************************/
 
 /**
- * Spawns control objects for racer boost visuals, as well as shield and magnet
- * visuals. Boost geometry is made in real time, and allocated here. This
- * function is called on every level load, but only racers use the stuff here.
+ * Spawns control objects for racer boost visuals, as well as shield and magnet visuals.
+ * Boost geometry is made in real time, and allocated here.
+ * This function is called on every level load, but only racers use the stuff here.
  */
 void racerfx_alloc(s32 numberOfVertices, s32 numberOfTriangles) {
     Object_Boost *boostObj;
     LevelObjectEntry_Boost2 objEntry;
     s32 i;
 
-    gBoostTris[0] =
-        (Triangle *)mempool_alloc_safe(((numberOfTriangles * sizeof(Triangle)) +
-                                        (numberOfVertices * sizeof(Vertex))) *
-                                           2,
-                                       COLOUR_TAG_BLUE);
-    /* LP64: (u32) truncates the arena base returned by mempool_alloc_safe, so
-     * the derived boost triangle/vertex buffers would be wild pointers written
-     * to on every race that has racers. Carry the full pointer through
-     * uintptr_t. */
-    gBoostTris[1] = (Triangle *)((uintptr_t)gBoostTris[0] +
-                                 numberOfTriangles * sizeof(Triangle));
-    gBoostVerts[0] = (Vertex *)((uintptr_t)gBoostTris[1] +
-                                numberOfTriangles * sizeof(Triangle));
-    gBoostVerts[1] = (Vertex *)((uintptr_t)gBoostVerts[0] +
-                                numberOfVertices * sizeof(Vertex));
+    gBoostTris[0] = (Triangle *) mempool_alloc_safe(
+        ((numberOfTriangles * sizeof(Triangle)) + (numberOfVertices * sizeof(Vertex))) * 2, COLOUR_TAG_BLUE);
+    /* LP64: (u32) truncates the arena base returned by mempool_alloc_safe, so the
+     * derived boost triangle/vertex buffers would be wild pointers written to on
+     * every race that has racers. Carry the full pointer through uintptr_t. */
+    gBoostTris[1] = (Triangle *) ((uintptr_t) gBoostTris[0] + numberOfTriangles * sizeof(Triangle));
+    gBoostVerts[0] = (Vertex *) ((uintptr_t) gBoostTris[1] + numberOfTriangles * sizeof(Triangle));
+    gBoostVerts[1] = (Vertex *) ((uintptr_t) gBoostVerts[0] + numberOfVertices * sizeof(Vertex));
     gBoostVertCount = numberOfVertices;
     gNumOfBoostVerts = 0;
     gBoostTriCount = numberOfTriangles;
@@ -709,8 +692,7 @@ void racerfx_alloc(s32 numberOfVertices, s32 numberOfTriangles) {
         objEntry.common.y = 0;
         objEntry.common.z = 0;
         objEntry.racerIndex = i;
-        gBoostEffectObjects[i] =
-            spawn_object(&objEntry.common, OBJECT_SPAWN_UNK01);
+        gBoostEffectObjects[i] = spawn_object(&objEntry.common, OBJECT_SPAWN_UNK01);
         if (gBoostEffectObjects[i] != NULL) {
             gBoostEffectObjects[i]->properties.common.unk0 = 0;
             gBoostEffectObjects[i]->properties.common.unk4 = 0;
@@ -739,8 +721,7 @@ void racerfx_alloc(s32 numberOfVertices, s32 numberOfTriangles) {
         gRacerFXData[i].unk3 = 0;
     }
     objEntry.common.objectID = ASSET_OBJECT_ID_AINODE;
-    objEntry.common.size = sizeof(LevelObjectEntry_Boost2) +
-                           0x80; // Not sure where this 0x80 comes from.
+    objEntry.common.size = sizeof(LevelObjectEntry_Boost2) + 0x80; // Not sure where this 0x80 comes from.
     objEntry.common.x = 0;
     objEntry.common.y = 0;
     objEntry.common.z = 0;
@@ -788,8 +769,7 @@ void racerfx_free(void) {
     gParticlePtrList_flush();
 }
 
-void func_8000B38C(Vertex *vertices, Triangle *triangles,
-                   ObjectTransform *trans, f32 arg3, f32 arg4, s16 arg5,
+void func_8000B38C(Vertex *vertices, Triangle *triangles, ObjectTransform *trans, f32 arg3, f32 arg4, s16 arg5,
                    TextureHeader *tex) {
     s32 sp80[8];
     s32 i;
@@ -852,8 +832,7 @@ void func_8000B38C(Vertex *vertices, Triangle *triangles,
     }
 }
 
-void func_8000B750(Object *racerObj, s32 racerIndex, s32 vehicleIDPrev,
-                   s32 boostType, s32 arg4) {
+void func_8000B750(Object *racerObj, s32 racerIndex, s32 vehicleIDPrev, s32 boostType, s32 arg4) {
     Vec3f sp74;
     f32 temp_f0;
     f32 var_f2;
@@ -897,11 +876,8 @@ void func_8000B750(Object *racerObj, s32 racerIndex, s32 vehicleIDPrev,
                 D_8011B058[racerIndex] = boostType;
                 if (objBoostRacer->unk70 == 2) {
                     temp_f0 = coss_f(objBoostRacer->unk72 << 12);
-                    var_f2 = (boostData->unk14 + (temp_f0 * boostData->unk18)) *
-                             objBoostRacer->unk74;
-                    temp_f0 =
-                        (boostData->unk1C + (temp_f0 * boostData->unk20)) *
-                        objBoostRacer->unk74;
+                    var_f2 = (boostData->unk14 + (temp_f0 * boostData->unk18)) * objBoostRacer->unk74;
+                    temp_f0 = (boostData->unk1C + (temp_f0 * boostData->unk20)) * objBoostRacer->unk74;
                     if ((boostType & 3) == BOOST_MEDIUM) {
                         var_f2 *= 1.09f;
                         temp_f0 *= 1.09f;
@@ -917,19 +893,16 @@ void func_8000B750(Object *racerObj, s32 racerIndex, s32 vehicleIDPrev,
                     objTrans.rotation.y_rotation = -0x8000;
                     objTrans.rotation.x_rotation = 0;
                     objTrans.rotation.z_rotation = 0;
-                    func_8000B38C(
-                        &gBoostVerts[gBoostVertFlip][gNumOfBoostVerts],
-                        &gBoostTris[gBoostVertFlip][gNumOfBoostTris], &objTrans,
-                        var_f2, temp_f0, objBoostRacer->unk72 << 12,
-                        objBoostType->tex);
+                    func_8000B38C(&gBoostVerts[gBoostVertFlip][gNumOfBoostVerts],
+                                  &gBoostTris[gBoostVertFlip][gNumOfBoostTris], &objTrans, var_f2, temp_f0,
+                                  objBoostRacer->unk72 << 12, objBoostType->tex);
                     gBoostEffectObjects[racerIndex]->properties.boost.indexes =
-                        ((u32)racerIndex << 28) |
-                        ((u32)gNumOfBoostVerts << 14) | (u32)gNumOfBoostTris;
+                        ((u32) racerIndex << 28) | ((u32) gNumOfBoostVerts << 14) |
+                        (u32) gNumOfBoostTris;
                     gNumOfBoostVerts += BOOST_VERT_COUNT;
                     gNumOfBoostTris += BOOST_TRI_COUNT;
                 }
-                gBoostEffectObjects[racerIndex]->properties.boost.obj =
-                    racerObj;
+                gBoostEffectObjects[racerIndex]->properties.boost.obj = racerObj;
                 gBoostEffectObjects[racerIndex]->trans.x_position = 0.0f;
                 gBoostEffectObjects[racerIndex]->trans.y_position = 0.0f;
                 gBoostEffectObjects[racerIndex]->trans.z_position = 0.0f;
@@ -938,10 +911,8 @@ void func_8000B750(Object *racerObj, s32 racerIndex, s32 vehicleIDPrev,
                 sp74.z = boostData->position.z;
                 vec3f_rotate(&racerObj->trans.rotation, &sp74);
                 ignore_bounds_check();
-                move_object(gBoostEffectObjects[racerIndex],
-                            racerObj->trans.x_position + sp74.f[0],
-                            racerObj->trans.y_position + sp74.f[1],
-                            racerObj->trans.z_position + sp74.f[2]);
+                move_object(gBoostEffectObjects[racerIndex], racerObj->trans.x_position + sp74.f[0],
+                            racerObj->trans.y_position + sp74.f[1], racerObj->trans.z_position + sp74.f[2]);
             }
             if (arg4 != FALSE) {
                 D_8011B068[racerIndex] = FALSE;
@@ -953,16 +924,15 @@ void func_8000B750(Object *racerObj, s32 racerIndex, s32 vehicleIDPrev,
 #ifdef NATIVE_PORT
 /*
  * Headless verification hook for the boost/exhaust graphics (see
- * tests/README.md). MDKR_FORCE_BOOST=<frame>[:<len>] hands every racer the
- * exact state a SURFACE_ZIP_PAD gives it (racer.c: boostTimer =
- * normalise_time(45), boostType = BOOST_LARGE) on every frame in [frame,
- * frame+len), so a dumped frame is guaranteed to contain a rendered boost.
- * Default len is 90 frames.
+ * tests/README.md). MDKR_FORCE_BOOST=<frame>[:<len>] hands every racer the exact
+ * state a SURFACE_ZIP_PAD gives it (racer.c: boostTimer = normalise_time(45),
+ * boostType = BOOST_LARGE) on every frame in [frame, frame+len), so a dumped
+ * frame is guaranteed to contain a rendered boost. Default len is 90 frames.
  *
  * This exists because no deterministic input fixture reliably reaches a zip pad
- * (the port's driving physics currently strands the racer before the first
- * one), and the attract demo only ever boosts racers that the demo camera is
- * not following, so their boost objects are correctly culled before the draw.
+ * (the port's driving physics currently strands the racer before the first one),
+ * and the attract demo only ever boosts racers that the demo camera is not
+ * following, so their boost objects are correctly culled before the draw.
  * Zero cost when the variable is unset.
  */
 void dkr_force_boost_hook(Object_Racer *racer) {
@@ -1033,18 +1003,18 @@ static void dkr_force_shield_hook(Object_Racer *racer) {
  * WHY THIS EXISTS RATHER THAN A PAD-CROSSING FIXTURE. The register's 44.9
  * units/frame measurement came from a zip pad that `nav_to_time_trial_race.txt`
  * + `MDKR_AUTOPILOT` happened to drive over. It does not any more: the AI line
- * moved when the wave "closedloop" ROM-fidelity corrections landed, and the
- * same route now peaks at 14.3 (tests/check_race_drive.py's own reported
- * figure). That is exactly the fixture class tests/README.md warns about — the
- * *line* is chaotic with respect to any simulation change, so no committed
- * route can be relied on to keep crossing a particular pad.
+ * moved when the wave "closedloop" ROM-fidelity corrections landed, and the same
+ * route now peaks at 14.3 (tests/check_race_drive.py's own reported figure).
+ * That is exactly the fixture class tests/README.md warns about — the *line* is
+ * chaotic with respect to any simulation change, so no committed route can be
+ * relied on to keep crossing a particular pad.
  *
  * So the magnitude is measured by arming the boost directly, in the state a pad
- * arms it in, and letting the authored physics run. Everything downstream of
- * the two assignments below — `racer.c`'s `traction = 2.0f` throttle override,
- * the `boostTimer -= updateRate` decay and every velocity/drag term — is
- * untouched decomp code (verified statement-for-statement against the recorded
- * decomp baseline), so what this measures IS the shipping boost, only with a
+ * arms it in, and letting the authored physics run. Everything downstream of the
+ * two assignments below — `racer.c`'s `traction = 2.0f` throttle override, the
+ * `boostTimer -= updateRate` decay and every velocity/drag term — is untouched
+ * decomp code (verified statement-for-statement against the recorded decomp
+ * baseline), so what this measures IS the shipping boost, only with a
  * deterministic trigger instead of a chaotic one.
  *
  *   MDKR_ZIPPAD_BOOST=<frame>[:<ticks>]
@@ -1062,8 +1032,8 @@ static void dkr_force_shield_hook(Object_Racer *racer) {
  *
  * Unlike MDKR_FORCE_BOOST above (which re-arms every racer on every frame of a
  * window, for the benefit of the boost *renderer*), this arms the one racer
- * once, so the boost decays on its own schedule and the magnitude that comes
- * out is the authored one. Both are zero cost when unset.
+ * once, so the boost decays on its own schedule and the magnitude that comes out
+ * is the authored one. Both are zero cost when unset.
  */
 void mdkr_zippad_boost_hook(Object *obj, Object_Racer *racer) {
     /* AUTHORED TICKS — see dkr_force_boost_hook. */
@@ -1115,20 +1085,18 @@ void mdkr_boost_trace(Object *obj, Object_Racer *racer) {
     if (racer->playerIndex == PLAYER_COMPUTER || racer->racerIndex != 0) {
         return;
     }
-    mdkr_trace(
-        "[BOOST] frame=%d timer=%d type=%d vel=%.9g x=%.9g y=%.9g z=%.9g "
+    mdkr_trace("[BOOST] frame=%d timer=%d type=%d vel=%.9g x=%.9g y=%.9g z=%.9g "
                "surf=%d grounded=%d start=%d",
-        g_frameCounter, racer->boostTimer, racer->boostType, racer->velocity,
-        obj->trans.x_position, obj->trans.y_position, obj->trans.z_position,
-        racer->wheel_surfaces[0], racer->groundedWheels,
-        get_race_start_timer());
+               g_frameCounter, racer->boostTimer, racer->boostType,
+               racer->velocity, obj->trans.x_position, obj->trans.y_position,
+               obj->trans.z_position, racer->wheel_surfaces[0],
+               racer->groundedWheels, get_race_start_timer());
 }
 #endif
 
 /**
  * Updates the racer FX object states.
- * This includes the shield wobble timer, and the texture frames for the magnet
- * and shield.
+ * This includes the shield wobble timer, and the texture frames for the magnet and shield.
  */
 void racerfx_update(s32 updateRate) {
     s32 i;
@@ -1214,8 +1182,7 @@ void racerfx_update(s32 updateRate) {
             }
         }
         if ((boostObj->unk70 > 0) || (boostObj->unk74 > 0.0f)) {
-            func_8000B750((*gRacers)[i], racer->racerIndex,
-                          racer->vehicleIDPrev, racer->boostType, 0);
+            func_8000B750((*gRacers)[i], racer->racerIndex, racer->vehicleIDPrev, racer->boostType, 0);
         }
         temp = racer->racerIndex;
         gRacerFXData[temp].unk1 += updateRate;
@@ -1255,8 +1222,7 @@ Object *racerfx_get_boost(s32 boostID) {
 
 /**
  * Allocate memory for objects and object related systems.
- * This includes the objects themselves, particles, and all of the pointer lists
- * for tracking objects.
+ * This includes the objects themselves, particles, and all of the pointer lists for tracking objects.
  */
 void allocate_object_pools(void) {
     s32 i;
@@ -1265,46 +1231,36 @@ void allocate_object_pools(void) {
 #endif
 
     set_world_shading(0.67f, 0.33f, 0, -0x2000, 0);
-    gObjectMemoryPool =
-        (Object *)mempool_new_sub(OBJECT_POOL_SIZE, OBJECT_SLOT_COUNT);
-    gParticlePtrList = mempool_alloc_safe(sizeof(uintptr_t) * FREE_QUEUE_COUNT,
-                                          COLOUR_TAG_BLUE);
-    gCollisionObjects = mempool_alloc_safe(
-        sizeof(uintptr_t) * OBJECT_COLLISION_COUNT, COLOUR_TAG_BLUE);
-    D_8011AE74 = mempool_alloc_safe(sizeof(uintptr_t) * ANIMATION_OBJECT_COUNT,
-                                    COLOUR_TAG_BLUE);
-    gTrackCheckpoints = mempool_alloc_safe(
-        sizeof(CheckpointNode) * MAX_CHECKPOINTS, COLOUR_TAG_BLUE);
-    gCameraObjList = mempool_alloc_safe(sizeof(uintptr_t *) * CAMCONTROL_COUNT,
-                                        COLOUR_TAG_BLUE);
+    gObjectMemoryPool = (Object *) mempool_new_sub(OBJECT_POOL_SIZE, OBJECT_SLOT_COUNT);
+    gParticlePtrList = mempool_alloc_safe(sizeof(uintptr_t) * FREE_QUEUE_COUNT, COLOUR_TAG_BLUE);
+    gCollisionObjects = mempool_alloc_safe(sizeof(uintptr_t) * OBJECT_COLLISION_COUNT, COLOUR_TAG_BLUE);
+    D_8011AE74 = mempool_alloc_safe(sizeof(uintptr_t) * ANIMATION_OBJECT_COUNT, COLOUR_TAG_BLUE);
+    gTrackCheckpoints = mempool_alloc_safe(sizeof(CheckpointNode) * MAX_CHECKPOINTS, COLOUR_TAG_BLUE);
+    gCameraObjList = mempool_alloc_safe(sizeof(uintptr_t *) * CAMCONTROL_COUNT, COLOUR_TAG_BLUE);
     gRacers = mempool_alloc_safe(sizeof(uintptr_t) * 10, COLOUR_TAG_BLUE);
     gRacersByPort = mempool_alloc_safe(sizeof(uintptr_t) * 10, COLOUR_TAG_BLUE);
-    gRacersByPosition =
-        mempool_alloc_safe(sizeof(uintptr_t) * 10, COLOUR_TAG_BLUE);
-    gAINodes =
-        mempool_alloc_safe(sizeof(uintptr_t) * AINODE_COUNT, COLOUR_TAG_BLUE);
+    gRacersByPosition = mempool_alloc_safe(sizeof(uintptr_t) * 10, COLOUR_TAG_BLUE);
+    gAINodes = mempool_alloc_safe(sizeof(uintptr_t) * AINODE_COUNT, COLOUR_TAG_BLUE);
     gDrawbridgeTimers = mempool_alloc_safe(8, COLOUR_TAG_BLUE);
     D_8011AFF4 = mempool_alloc_safe(sizeof(unk800179D0) * 16, COLOUR_TAG_BLUE);
-    gAssetsLvlObjTranslationTable =
-        (s16 *)asset_table_load(ASSET_LEVEL_OBJECT_TRANSLATION_TABLE);
+    gAssetsLvlObjTranslationTable = (s16 *) asset_table_load(ASSET_LEVEL_OBJECT_TRANSLATION_TABLE);
 #ifdef NATIVE_PORT
     translationTableBytes =
         asset_table_size(ASSET_LEVEL_OBJECT_TRANSLATION_TABLE);
     if (translationTableBytes <= 0 ||
-        translationTableBytes % (s32)sizeof(*gAssetsLvlObjTranslationTable) !=
-            0) {
-        fprintf(
-            stderr,
+        translationTableBytes % (s32) sizeof(*gAssetsLvlObjTranslationTable) != 0) {
+        fprintf(stderr,
                 "[FATAL] level-object translation table has invalid byte size %d\n",
                 translationTableBytes);
         abort();
     }
     gAssetsLvlObjTranslationTableCapacity =
-        (size_t)translationTableBytes / sizeof(*gAssetsLvlObjTranslationTable);
+        (size_t) translationTableBytes /
+        sizeof(*gAssetsLvlObjTranslationTable);
     if (gAssetsLvlObjTranslationTable == NULL ||
         gAssetsLvlObjTranslationTableCapacity == 0) {
-        fprintf(stderr, "[FATAL] level-object translation table is empty or "
-                        "failed to load\n");
+        fprintf(stderr,
+                "[FATAL] level-object translation table is empty or failed to load\n");
         abort();
     }
 #endif
@@ -1316,35 +1272,29 @@ void allocate_object_pools(void) {
         (asset_table_size(ASSET_LEVEL_OBJECT_TRANSLATION_TABLE) >> 1) - 1;
 #endif
     while (gAssetsLvlObjTranslationTableLength > 0 &&
-           gAssetsLvlObjTranslationTable[gAssetsLvlObjTranslationTableLength] ==
-               0) {
+           gAssetsLvlObjTranslationTable[gAssetsLvlObjTranslationTableLength] == 0) {
         gAssetsLvlObjTranslationTableLength--;
     }
-    gSpawnObjectHeap =
-        mempool_alloc_safe(OBJECT_BLUEPRINT_SIZE, COLOUR_TAG_BLUE);
-    gAssetsObjectHeadersTable =
-        (s32 *)asset_table_load(ASSET_OBJECT_HEADERS_TABLE);
+    gSpawnObjectHeap = mempool_alloc_safe(OBJECT_BLUEPRINT_SIZE, COLOUR_TAG_BLUE);
+    gAssetsObjectHeadersTable = (s32 *) asset_table_load(ASSET_OBJECT_HEADERS_TABLE);
     gAssetsObjectHeadersTableLength = 0;
     while (-1 != gAssetsObjectHeadersTable[gAssetsObjectHeadersTableLength]) {
         gAssetsObjectHeadersTableLength++;
     }
     gAssetsObjectHeadersTableLength--;
-    /* LP64: gLoadedObjectHeaders is an array of real `ObjectHeader *`, which is
-     * 4 bytes on N64 but 8 on a 64-bit host. The original hardcodes 4, so every
-     * header index >= tableLength/2 (>= 152 of 304 on US v80) stored its
-     * pointer PAST the end of this allocation — straight over
-     * gObjectHeaderReferences, which mempool places immediately after it, and
-     * then over the allocations after that. A splattered refcount makes
-     * load_object_header() take its "already loaded" branch and hand back the
-     * never-written gLoadedObjectHeaders slot (NULL / stale), which is the
-     * "freshly-loaded header reads back all zeros" crash in spawn_object().
-     * sizeof(ObjectHeader *) is 4 on N64, so this expression is unchanged for
-     * the N64 build. */
-    gLoadedObjectHeaders = mempool_alloc_safe(gAssetsObjectHeadersTableLength *
-                                                  (s32)sizeof(ObjectHeader *),
-                                              COLOUR_TAG_WHITE);
-    gObjectHeaderReferences =
-        mempool_alloc_safe(gAssetsObjectHeadersTableLength, COLOUR_TAG_WHITE);
+    /* LP64: gLoadedObjectHeaders is an array of real `ObjectHeader *`, which is 4
+     * bytes on N64 but 8 on a 64-bit host. The original hardcodes 4, so every
+     * header index >= tableLength/2 (>= 152 of 304 on US v80) stored its pointer
+     * PAST the end of this allocation — straight over gObjectHeaderReferences,
+     * which mempool places immediately after it, and then over the allocations
+     * after that. A splattered refcount makes load_object_header() take its
+     * "already loaded" branch and hand back the never-written gLoadedObjectHeaders
+     * slot (NULL / stale), which is the "freshly-loaded header reads back all
+     * zeros" crash in spawn_object(). sizeof(ObjectHeader *) is 4 on N64, so this
+     * expression is unchanged for the N64 build. */
+    gLoadedObjectHeaders =
+        mempool_alloc_safe(gAssetsObjectHeadersTableLength * (s32) sizeof(ObjectHeader *), COLOUR_TAG_WHITE);
+    gObjectHeaderReferences = mempool_alloc_safe(gAssetsObjectHeadersTableLength, COLOUR_TAG_WHITE);
 
     for (i = 0; i < gAssetsObjectHeadersTableLength; i++) {
         (*gObjectHeaderReferences)[i] = 0;
@@ -1361,15 +1311,14 @@ void allocate_object_pools(void) {
     }
 
 #ifdef NATIVE_PORT
-    /* Normalize the big-endian ASSET_MISC sub-assets exactly once, here, while
-     * the section pointer is fresh. See dkr_misc_normalize_tables(). */
+    /* Normalize the big-endian ASSET_MISC sub-assets exactly once, here, while the
+     * section pointer is fresh. See dkr_misc_normalize_tables(). */
     dkr_misc_normalize_tables();
-    /* Negative control for tests/check_subentry_bounds.py. Drives a
-     * deliberately out-of-range index through the REAL get_misc_asset() with
-     * the REAL section loaded, so the gate proves the live accessor aborts
-     * rather than only the synthetic descriptor in
-     * mdkr_asset_subentry_env_selftest(). No-op unless the variable is set, so
-     * a normal run never reaches the accessor here. */
+    /* Negative control for tests/check_subentry_bounds.py. Drives a deliberately
+     * out-of-range index through the REAL get_misc_asset() with the REAL section
+     * loaded, so the gate proves the live accessor aborts rather than only the
+     * synthetic descriptor in mdkr_asset_subentry_env_selftest(). No-op unless
+     * the variable is set, so a normal run never reaches the accessor here. */
     {
         const char *subentryTest = getenv("MDKR_SUBENTRY_TEST_MISC_INDEX");
 
@@ -1382,8 +1331,7 @@ void allocate_object_pools(void) {
             fflush(stderr);
             (void) get_misc_asset((s32) requested);
             fprintf(stderr,
-                    "[SUBENTRY] selftest misc index %lld resolved without "
-                    "aborting\n",
+                    "[SUBENTRY] selftest misc index %lld resolved without aborting\n",
                     requested);
             fflush(stderr);
         }
@@ -1391,15 +1339,13 @@ void allocate_object_pools(void) {
 #endif
     decrypt_magic_codes(
         &gAssetsMiscSection[gAssetsMiscTable[ASSET_MISC_MAGIC_CODES]],
-        (gAssetsMiscTable[ASSET_MISC_TITLE_SCREEN_DEMO_IDS] -
-         gAssetsMiscTable[ASSET_MISC_MAGIC_CODES]) *
+        (gAssetsMiscTable[ASSET_MISC_TITLE_SCREEN_DEMO_IDS] - gAssetsMiscTable[ASSET_MISC_MAGIC_CODES]) *
 #ifdef NATIVE_PORT
             /* LP64: MISC-table entries are s32 word offsets, so the decrypted
              * byte length is (wordCount * 4). The original uses sizeof(s32 *),
              * which is 4 on N64 but 8 on a 64-bit host — doubling the length
              * and overrunning gAssetsMiscSection into the adjacent
-             * gAssetsMiscTable allocation. Use sizeof(s32) (== 4 everywhere).
-             */
+             * gAssetsMiscTable allocation. Use sizeof(s32) (== 4 everywhere). */
             sizeof(s32));
 #else
             sizeof(s32 *));
@@ -1433,7 +1379,8 @@ void allocate_object_pools(void) {
          * pose. Killing the process here turned a recoverable side-table
          * allocation failure into a crash on the default path. */
         mdkr_camera_dynamic_occlusion_shutdown();
-        fprintf(stderr, "[CAMERA] dynamic camera occlusion preparation failed; "
+        fprintf(stderr,
+                "[CAMERA] dynamic camera occlusion preparation failed; "
                 "dynamic occluders disabled for this session\n");
     }
 #endif
@@ -1453,8 +1400,7 @@ void decrypt_magic_codes(s32 *data, s32 length) {
 
     for (i = 0; i < (length >> 2); i++) {
         // Swap bits according to the following pattern:
-        // AABBCCDD EEFFGGHH IIJJKKLL MMNNOOPP -> AAEEIIMM BBFFJJNN CCGGKKOO
-        // DDHHLLPP
+        // AABBCCDD EEFFGGHH IIJJKKLL MMNNOOPP -> AAEEIIMM BBFFJJNN CCGGKKOO DDHHLLPP
         // clang-format off
         temp[0] = ((ptr[0] & 0xC0)     ) |
                   ((ptr[1] & 0xC0) >> 2) |
@@ -1482,8 +1428,8 @@ void decrypt_magic_codes(s32 *data, s32 length) {
 }
 
 /**
- * Set all object counters and headers to zero, effectively telling the game
- * there are no objects currently in the scene.
+ * Set all object counters and headers to zero, effectively telling the game there are no objects currently in the
+ * scene.
  */
 void clear_object_pointers(void) {
     s32 i;
@@ -1533,8 +1479,7 @@ void clear_object_pointers(void) {
 
 /**
  * Clear all objects from memory. Also clear rumble.
- * Swap lead player in adventure two if the other player finished ahead of the
- * lead player.
+ * Swap lead player in adventure two if the other player finished ahead of the lead player.
  */
 void free_all_objects(void) {
     s32 i, len;
@@ -1584,10 +1529,10 @@ ObjectHeader *load_object_header(s32 index) {
 
 #ifdef NATIVE_PORT
     /* `index` reaches gAssetsObjectHeadersTable[index] and [index + 1] below,
-     * plus the two parallel arrays sized from the same count, with no
-     * comparison anywhere in the function on either side of the call boundary
-     * (tools/sweep_subentry_access.py, objects.c:1474). The count is the walk
-     * to the table's -1 terminator, less one, in allocate_object_pools. */
+     * plus the two parallel arrays sized from the same count, with no comparison
+     * anywhere in the function on either side of the call boundary
+     * (tools/sweep_subentry_access.py, objects.c:1474). The count is the walk to
+     * the table's -1 terminator, less one, in allocate_object_pools. */
     if (index < 0 || index >= gAssetsObjectHeadersTableLength) {
         mdkr_asset_subentry_out_of_range("ASSET_OBJECT_HEADERS_TABLE", index,
                                          gAssetsObjectHeadersTableLength,
@@ -1598,15 +1543,13 @@ ObjectHeader *load_object_header(s32 index) {
 #ifdef NATIVE_PORT
         /* Invariant: refcount != 0 implies a live header pointer. If this ever
          * trips, some writer has splattered the header table / refcount array
-         * (that is exactly what the LP64 sizing bug in allocate_object_pools
-         * used to do) — fail loudly rather than hand the caller a NULL/stale
-         * header that only crashes later, deep inside spawn_object(). */
+         * (that is exactly what the LP64 sizing bug in allocate_object_pools used
+         * to do) — fail loudly rather than hand the caller a NULL/stale header
+         * that only crashes later, deep inside spawn_object(). */
         if ((*gLoadedObjectHeaders)[index] == NULL) {
             fprintf(stderr,
-                    "[FATAL] load_object_header(%d): refcount=%d but the "
-                    "header table slot is NULL - "
-                    "the object-header table or refcount array has been "
-                    "corrupted.\n",
+                    "[FATAL] load_object_header(%d): refcount=%d but the header table slot is NULL - "
+                    "the object-header table or refcount array has been corrupted.\n",
                     index, (*gObjectHeaderReferences)[index]);
             abort();
         }
@@ -1651,10 +1594,10 @@ void try_free_object_header(s32 index) {
             mempool_free((void *) (*gLoadedObjectHeaders)[index]);
 #ifdef NATIVE_PORT
             /* The original leaves the freed pointer in the table. The refcount
-             * alone gates the "already loaded" branch of load_object_header(),
-             * so on N64 that is benign — but it means a single bad refcount
-             * byte turns into a use-after-free instead of a clean reload. Null
-             * the slot so the table can never hand out freed memory. */
+             * alone gates the "already loaded" branch of load_object_header(), so
+             * on N64 that is benign — but it means a single bad refcount byte
+             * turns into a use-after-free instead of a clean reload. Null the slot
+             * so the table can never hand out freed memory. */
             (*gLoadedObjectHeaders)[index] = NULL;
 #endif
         }
@@ -1662,9 +1605,9 @@ void try_free_object_header(s32 index) {
 }
 
 /**
- * Converts the passed value into an accurate countdown value based on the
- * systems region. Since PAL runs at 50Hz, it therefore will reduce the timer to
- * 5/6 to match, keeping it consistent with non PAL timers, running 60Hz.
+ * Converts the passed value into an accurate countdown value based on the systems region.
+ * Since PAL runs at 50Hz, it therefore will reduce the timer to 5/6 to match, keeping
+ * it consistent with non PAL timers, running 60Hz.
  * Official Name: objTvTimes
  */
 s32 normalise_time(s32 timer) {
@@ -1679,14 +1622,13 @@ s32 normalise_time(s32 timer) {
 /*
  * The object-map asset is big-endian on disk. The generic asset swap
  * (platform/asset_swap.c swap_level_object_map) only byteswaps the common
- * per-entry x/y/z at +0x02/+0x04/+0x06 — the type-specific body params (>=
- * +0x08) are polymorphic per object behaviour and were punted there. They are
- * swapped here instead, where each entry's behaviour is resolvable exactly the
- * way spawn_object() resolves it (translation table -> object header). Every
- * field is only swapped when it fits inside the entry's actual stride, so short
- * entries are never over-read. Field offsets/widths come from
- * level_object_entries.h and the behaviour->struct mapping is the obj_init
- * dispatch (objects.c ~L10390).
+ * per-entry x/y/z at +0x02/+0x04/+0x06 — the type-specific body params (>= +0x08)
+ * are polymorphic per object behaviour and were punted there. They are swapped
+ * here instead, where each entry's behaviour is resolvable exactly the way
+ * spawn_object() resolves it (translation table -> object header). Every field is
+ * only swapped when it fits inside the entry's actual stride, so short entries are
+ * never over-read. Field offsets/widths come from level_object_entries.h and the
+ * behaviour->struct mapping is the obj_init dispatch (objects.c ~L10390).
  */
 static size_t mdkr_level_object_min_size(s32 behaviorId) {
 #define MDKR_ENTRY_SIZE(type) return sizeof(type)
@@ -1888,11 +1830,11 @@ static s32 mdkr_objmap_probe_enabled(void) {
     return enabled;
 }
 
-/* Swap one 16-bit body field in place. `behaviorId` is carried only so the
- * probe above can name the row; it has no effect on the bytes. The `off + 2 <=
- * stride` guard is load-bearing: entries are variable-stride, so a field
- * declared in the struct may simply not be present in this level's record, and
- * swapping past the stride would corrupt the *next* entry. Never widen it. */
+/* Swap one 16-bit body field in place. `behaviorId` is carried only so the probe
+ * above can name the row; it has no effect on the bytes. The `off + 2 <= stride`
+ * guard is load-bearing: entries are variable-stride, so a field declared in the
+ * struct may simply not be present in this level's record, and swapping past the
+ * stride would corrupt the *next* entry. Never widen it. */
 static void mdkr_objmap_swap_u16(s32 behaviorId, u8 *e, s32 off, s32 stride) {
     if (off + 2 <= stride) {
         u8 t = e[off];
@@ -1966,8 +1908,7 @@ static void mdkr_objmap_swap_entry_body(s32 behaviorId, u8 *e, s32 stride) {
             mdkr_objmap_swap_u16(behaviorId, e, 0x0C, stride);
             mdkr_objmap_swap_u16(behaviorId, e, 0x0E, stride);
             break;
-    case BHV_ANIMATION: /* s16 objectIdToSpawn @0x0C, animationStartDelay @0x0E,
-                           pauseFrameCount @0x24 */
+        case BHV_ANIMATION: /* s16 objectIdToSpawn @0x0C, animationStartDelay @0x0E, pauseFrameCount @0x24 */
             mdkr_objmap_swap_u16(behaviorId, e, 0x0C, stride);
             mdkr_objmap_swap_u16(behaviorId, e, 0x0E, stride);
             mdkr_objmap_swap_u16(behaviorId, e, 0x24, stride);
@@ -2026,8 +1967,7 @@ static void mdkr_objmap_swap_entry_body(s32 behaviorId, u8 *e, s32 stride) {
          * a u16/s16/u32/s32/f32 at offset >= 0x08, mapping it to its behaviour
          * through run_object_init_func's dispatch, and grepping the reader. */
 
-    case BHV_FISH: /* u16 unk8 @0x08 -- orbit radius (Object_Fish.unk114, f32)
-                    */
+        case BHV_FISH: /* u16 unk8 @0x08 -- orbit radius (Object_Fish.unk114, f32) */
             /* obj_init_fish: fish->unk114 = fishEntry->unk8, then the swim
              * position is sins_f(phase) * unk114 -- a swapped radius flings the
              * fish a whole map away from the pond it was authored in. */
@@ -2056,9 +1996,9 @@ static void mdkr_objmap_swap_entry_body(s32 behaviorId, u8 *e, s32 stride) {
              * Settled against the upstream decomp (Diddy-Kong-Racing
              * 38d7f9ba, include/level_object_entries.h): particleDensity is
              * u16 at 0x0A there too, and obj_init_bubbler/obj_loop_bubbler are
-         * character-for-character with the vendored copy. That decomp is a
-         * reading of the N64 binary, where this map is consumed big-endian with
-         * no swap at all -- so on real hardware these bytes are 0x0401 = 1025
+             * character-for-character with the vendored copy. That decomp is a reading
+             * of the N64 binary, where this map is consumed big-endian with no
+             * swap at all -- so on real hardware these bytes are 0x0401 = 1025
              * and the emitter genuinely does run every tick. 1025 is an
              * authored "always on", not a decode error; the comment describes
              * the mechanism, not this object's authored value. The swap
@@ -2113,13 +2053,12 @@ static void mdkr_objmap_swap_entry_body(s32 behaviorId, u8 *e, s32 stride) {
     }
 }
 
-/* Resolve a header type -> behaviourId. An object header's behaviour is a
- * static property of the asset, so the result is cached for the whole program
- * lifetime: load_object_header() gzip-decompresses on a cache miss, so
- * resolving per map entry (with many repeats, every level load) is
- * prohibitively slow. With the cache each unique header type is decompressed at
- * most once ever, and since the spawn loop loads the same headers anyway this
- * adds ~no cost. -3 = unknown. */
+/* Resolve a header type -> behaviourId. An object header's behaviour is a static
+ * property of the asset, so the result is cached for the whole program lifetime:
+ * load_object_header() gzip-decompresses on a cache miss, so resolving per map
+ * entry (with many repeats, every level load) is prohibitively slow. With the
+ * cache each unique header type is decompressed at most once ever, and since the
+ * spawn loop loads the same headers anyway this adds ~no cost. -3 = unknown. */
 #define MDKR_OBJ_BHV_CACHE_N 1024
 static s16 mdkr_obj_behavior_of(s16 hdrType) {
     static s16 cache[MDKR_OBJ_BHV_CACHE_N];
@@ -2145,8 +2084,7 @@ static s16 mdkr_obj_behavior_of(s16 hdrType) {
         return -1;
     }
     bhv = hdr->behaviorId;
-    try_free_object_header(
-        hdrType); /* keep the refcount balanced (spawn loop reloads). */
+    try_free_object_header(hdrType); /* keep the refcount balanced (spawn loop reloads). */
     cache[hdrType] = bhv;
     return bhv;
 }
@@ -2176,11 +2114,12 @@ static s32 mdkr_objmap_swap_bodies(u8 *entries, s32 totalSize) {
         size_t minimumSize;
 
         error = mdkr_level_object_record_parse(
-            entries + walked, (size_t)totalSize - walked,
-            gAssetsLvlObjTranslationTableCapacity, &view);
+            entries + walked,
+            (size_t) totalSize - walked,
+            gAssetsLvlObjTranslationTableCapacity,
+            &view);
         if (error != MDKR_LEVEL_OBJECT_RECORD_OK) {
-            fprintf(
-                stderr,
+            fprintf(stderr,
                     "[FATAL] invalid level-object record at map byte %zu/%d: %s\n",
                     walked, totalSize,
                     mdkr_level_object_record_error_string(error));
@@ -2211,12 +2150,13 @@ static s32 mdkr_objmap_swap_bodies(u8 *entries, s32 totalSize) {
             fprintf(stderr,
                     "[FATAL] level-object id %u behavior %d at map byte %zu "
                     "has %zu bytes; initializer requires at least %zu\n",
-                    view.object_id, behaviorId, walked, view.size, minimumSize);
+                    view.object_id, behaviorId, walked, view.size,
+                    minimumSize);
             return FALSE;
         }
 
-        mdkr_objmap_swap_entry_body(behaviorId, entries + walked,
-                                    (s32)view.size);
+        mdkr_objmap_swap_entry_body(
+            behaviorId, entries + walked, (s32) view.size);
         walked += view.size;
     }
 
@@ -2245,14 +2185,11 @@ void track_spawn_objects(s32 mapID, s32 index) {
 #endif
 
     settings = get_settings();
-    assetOffset = settings->bosses |
-                  0x820; // 0x820 = Wizpig 2 and some unknown 0x800 boss bit
-    gIsSilverCoinRace = ((settings->courseFlagsPtr[settings->courseId] &
-                          RACE_CLEARED_SILVER_COINS) == FALSE) &&
+    assetOffset = settings->bosses | 0x820; // 0x820 = Wizpig 2 and some unknown 0x800 boss bit
+    gIsSilverCoinRace = ((settings->courseFlagsPtr[settings->courseId] & RACE_CLEARED_SILVER_COINS) == FALSE) &&
                         (((1 << settings->worldId) & assetOffset) != 0);
 
-    if ((settings->courseFlagsPtr[settings->courseId] & RACE_CLEARED) ==
-        FALSE) {
+    if ((settings->courseFlagsPtr[settings->courseId] & RACE_CLEARED) == FALSE) {
         gIsSilverCoinRace = FALSE;
     }
     if (is_in_tracks_mode()) {
@@ -2330,17 +2267,17 @@ void track_spawn_objects(s32 mapID, s32 index) {
         inflatedSize = (size_t) (gzip_inflate_output - (u8 *) mem);
         if (inflatedSize < OBJ_MAP_HEADER_S32S * sizeof(s32)) {
             fprintf(stderr,
-                    "[FATAL] object map %d inflated to only %zu bytes\n", mapID,
-                    inflatedSize);
+                    "[FATAL] object map %d inflated to only %zu bytes\n",
+                    mapID, inflatedSize);
             abort();
         }
         /* Decompressed object map is still big-endian; normalize the header
          * fileSize + per-entry x/y/z before the spawn loop reads them. */
-        asset_swap_normalize(ASSET_LEVEL_OBJECT_MAPS, mem, (u32)inflatedSize);
+        asset_swap_normalize(
+            ASSET_LEVEL_OBJECT_MAPS, mem, (u32) inflatedSize);
 #endif
         mempool_free(objMapTable);
-        gObjectMapSpawnList[index] =
-            (u8 *)(gObjectMap[index] + OBJ_MAP_HEADER_S32S);
+        gObjectMapSpawnList[index] = (u8 *) (gObjectMap[index] + OBJ_MAP_HEADER_S32S);
         gObjectMapSize[index] = *mem;
         gObjectMapIndex = index;
 #ifdef NATIVE_PORT
@@ -2366,19 +2303,15 @@ void track_spawn_objects(s32 mapID, s32 index) {
              * stride before spawn callbacks can mutate unrelated map state. */
             temp_t3 = gObjectMapSpawnList[index][1] & 0x3F;
 #endif
-            spawn_object((LevelObjectEntryCommon *)gObjectMapSpawnList[index],
-                         OBJECT_SPAWN_UNK01);
+            spawn_object((LevelObjectEntryCommon *) gObjectMapSpawnList[index], OBJECT_SPAWN_UNK01);
 #ifdef NATIVE_PORT
-            gObjectMapSpawnList[index] = &gObjectMapSpawnList[index][temp_t3];
-#else
             gObjectMapSpawnList[index] =
-                &gObjectMapSpawnList[index]
-                                    [temp_t3 =
-                                         gObjectMapSpawnList[index][1] & 0x3F];
+                &gObjectMapSpawnList[index][temp_t3];
+#else
+            gObjectMapSpawnList[index] = &gObjectMapSpawnList[index][temp_t3 = gObjectMapSpawnList[index][1] & 0x3F];
 #endif
         }
-        gObjectMapSpawnList[index] =
-            (u8 *)(gObjectMap[index] + OBJ_MAP_HEADER_S32S);
+        gObjectMapSpawnList[index] = (u8 *) (gObjectMap[index] + OBJ_MAP_HEADER_S32S);
         gCollisionObjectCount = 0;
         gNumFinishedRacers = 1;
         if (gPathUpdateOff == FALSE) {
@@ -2404,13 +2337,11 @@ void func_8000CBF0(Object *obj, s32 index) {
     if (D_8011AE08[index] == NULL) {
         D_8011AE08[index] = obj;
     } else {
-        if (D_8011AE08[index]) {
-        }
+        if (D_8011AE08[index]) {}
     }
 }
 
-// Set the next available value in D_8011AE08, and return it's index value. -1
-// if it's not set.
+// Set the next available value in D_8011AE08, and return it's index value. -1 if it's not set.
 s32 func_8000CC20(Object *obj) {
     s32 i;
     s32 NextFreeIndex;
@@ -2496,8 +2427,7 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
     miscAsset16 = (s8 *) get_misc_asset(ASSET_MISC_3);
     gPrevTimeTrialVehicle = D_8011ADC5;
     if (!(settings->courseFlagsPtr[settings->courseId] &
-          RACE_VISITED)) { // Check if the player has not visited the course
-                           // yet.
+          RACE_VISITED)) { // Check if the player has not visited the course yet.
         settings->courseFlagsPtr[settings->courseId] |= RACE_VISITED;
         D_8011AF00 = 2;
     }
@@ -2510,32 +2440,30 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
         spawnZ[j] = 0;
 #ifdef NATIVE_PORT
         /*
-         * spawnAngle[] is the fourth member of this quartet and the only one
-         * the original loop leaves uninitialised, while both readers below --
+         * spawnAngle[] is the fourth member of this quartet and the only one the
+         * original loop leaves uninitialised, while both readers below --
          * `racerEntry->angleY = spawnAngle[i]` and
          * `racerObj->trans.rotation.y_rotation = spawnAngle[i]` -- read it
          * unconditionally for every racer index. The writer only fires for a
-         * BHV_SETUP_POINT that matches BOTH this entranceID and this
-         * racerIndex, so a level whose object map has no such setup point hands
-         * the racer a heading read straight off the host stack.
+         * BHV_SETUP_POINT that matches BOTH this entranceID and this racerIndex,
+         * so a level whose object map has no such setup point hands the racer a
+         * heading read straight off the host stack.
          *
-         * On the N64 that stack slot held whatever the previous call left
-         * there, which was the SAME thing on every boot, so the bug was
-         * invisible: the console is deterministic even when it is wrong. On a
-         * hosted process it is not -- the slot moves with ASLR, the environment
-         * block and the dynamic loader -- so the racer's heading differed run
-         * to run and the authoritative [SIMHASH] stream diverged from ITSELF.
-         * Measured on levels 41 and 54 (Smokey 1/2), which have no matching
-         * setup point: three runs gave 0x038cf920 / 0x03083916 / 0x02e83920
-         * into an s16 field, against x = y = z = 0 from the zeroed siblings --
-         * a racer parked at the world origin facing a different way each
-         * process.
+         * On the N64 that stack slot held whatever the previous call left there,
+         * which was the SAME thing on every boot, so the bug was invisible: the
+         * console is deterministic even when it is wrong. On a hosted process it
+         * is not -- the slot moves with ASLR, the environment block and the
+         * dynamic loader -- so the racer's heading differed run to run and the
+         * authoritative [SIMHASH] stream diverged from ITSELF. Measured on
+         * levels 41 and 54 (Smokey 1/2), which have no matching setup point:
+         * three runs gave 0x038cf920 / 0x03083916 / 0x02e83920 into an s16 field,
+         * against x = y = z = 0 from the zeroed siblings -- a racer parked at the
+         * world origin facing a different way each process.
          *
          * Zeroing it here is the minimal repair and matches its three siblings
          * exactly: where a setup point exists the value is overwritten and
          * nothing changes, and where none exists the racer now faces a defined
-         * direction instead of an undefined one. The original build is
-         * untouched.
+         * direction instead of an undefined one. The original build is untouched.
          */
         spawnAngle[j] = 0;
 #endif
@@ -2546,14 +2474,10 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
             if (racerObj->behaviorId == BHV_SETUP_POINT) {
                 if (entranceID == racerObj->properties.setupPoint.entranceID) {
                     if (racerObj->properties.setupPoint.racerIndex < 8) {
-                        spawnX[racerObj->properties.setupPoint.racerIndex] =
-                            racerObj->trans.x_position;
-                        spawnY[racerObj->properties.setupPoint.racerIndex] =
-                            racerObj->trans.y_position;
-                        spawnZ[racerObj->properties.setupPoint.racerIndex] =
-                            racerObj->trans.z_position;
-                        spawnAngle[racerObj->properties.setupPoint.racerIndex] =
-                            racerObj->trans.rotation.y_rotation;
+                        spawnX[racerObj->properties.setupPoint.racerIndex] = racerObj->trans.x_position;
+                        spawnY[racerObj->properties.setupPoint.racerIndex] = racerObj->trans.y_position;
+                        spawnZ[racerObj->properties.setupPoint.racerIndex] = racerObj->trans.z_position;
+                        spawnAngle[racerObj->properties.setupPoint.racerIndex] = racerObj->trans.rotation.y_rotation;
                     }
 
                     objEntry = racerObj->level_entry;
@@ -2564,8 +2488,7 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
             }
         }
     }
-    D_8011ADC5 =
-        vehicle; // UB if all setup points don't have an assigned vehicle ID.
+    D_8011ADC5 = vehicle; // UB if all setup points don't have an assigned vehicle ID.
     gPrevTimeTrialVehicle = D_8011ADC5;
     numPlayers = playerCount + 1;
     gNumRacers = 8;
@@ -2658,8 +2581,7 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
             }
         }
     }
-    racerEntry =
-        mempool_alloc_safe(sizeof(LevelObjectEntry_Racer), COLOUR_TAG_YELLOW);
+    racerEntry = mempool_alloc_safe(sizeof(LevelObjectEntry_Racer), COLOUR_TAG_YELLOW);
     racerEntry->angleY = 0;
     racerEntry->angleX = 0;
     racerEntry->angleZ = 0;
@@ -2671,8 +2593,7 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
     D_8011AD24[1] = levelHeader->bossRaceID;
     sp127 = -1;
     for (i = 0; i < gNumRacers; i++) {
-        if (raceType != RACETYPE_HUBWORLD && !(raceType & RACETYPE_CHALLENGE) &&
-            D_8011AD3C == 0) {
+        if (raceType != RACETYPE_HUBWORLD && !(raceType & RACETYPE_CHALLENGE) && D_8011AD3C == 0) {
             j = 0;
             var_s4 = j;
             do {
@@ -2699,19 +2620,15 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
                 if (racerEntry->playerIndex == 4 || race_is_adventure_2P()) {
                     vehicle = get_player_selected_vehicle(PLAYER_ONE);
                 } else if (numPlayers >= 2) {
-                    vehicle =
-                        get_player_selected_vehicle(racerEntry->playerIndex);
+                    vehicle = get_player_selected_vehicle(racerEntry->playerIndex);
                 }
             }
 
             // Are these assignments correct? Seems weird.
             if (D_8011AD3C == 2) {
-                objectID = gRacerObjectTable[D_800DC840[i] +
-                                             (vehicle * NUM_CHARACTERS)];
+                objectID = gRacerObjectTable[D_800DC840[i] + (vehicle * NUM_CHARACTERS)];
             } else if (vehicle < 5) {
-                objectID =
-                    gRacerObjectTable[(settings->racers[var_s4].character) +
-                                      (vehicle * NUM_CHARACTERS)];
+                objectID = gRacerObjectTable[(settings->racers[var_s4].character) + (vehicle * NUM_CHARACTERS)];
             } else {
                 objectID = gRacerObjectTable[vehicle + 45];
             }
@@ -2728,10 +2645,8 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
 
             spawnObjFlags = OBJECT_BEHAVIOUR_SHADED;
             if (racerEntry->playerIndex == 4) {
-                spawnObjFlags =
-                    OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_WATER_EFFECT;
-                // @fake but required for the | OBJECT_BEHAVIOUR_ANIMATION below
-                // to work
+                spawnObjFlags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_WATER_EFFECT;
+                // @fake but required for the | OBJECT_BEHAVIOUR_ANIMATION below to work
                 if (1) {
                     spawnObjFlags |= 0;
                 }
@@ -2748,20 +2663,17 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
                 spawnObjFlags = OBJECT_BEHAVIOUR_SHADED;
                 model_anim_offset(0);
             }
-            racerObj = spawn_object((LevelObjectEntryCommon *)racerEntry,
-                                    spawnObjFlags);
+            racerObj = spawn_object((LevelObjectEntryCommon *) racerEntry, spawnObjFlags);
 #ifdef NATIVE_PORT
-            /* The original assumes a racer can always be spawned and
-             * dereferences this immediately. The only way it returns NULL is an
-             * exhausted object sub-pool or a corrupt header — both are bugs in
-             * this port, and both used to surface here as a bare SIGSEGV with
-             * no explanation (see OBJECT_POOL_SIZE above). Say what actually
-             * happened; memory.c has already printed the pool's occupancy. */
+            /* The original assumes a racer can always be spawned and dereferences
+             * this immediately. The only way it returns NULL is an exhausted
+             * object sub-pool or a corrupt header — both are bugs in this port,
+             * and both used to surface here as a bare SIGSEGV with no explanation
+             * (see OBJECT_POOL_SIZE above). Say what actually happened; memory.c
+             * has already printed the pool's occupancy. */
             if (racerObj == NULL) {
-                fprintf(stderr,
-                        "[FATAL] track_setup_racers: spawn_object failed for "
-                        "racer %d (objectID %d).\n",
-                        i, (int)objectID);
+                fprintf(stderr, "[FATAL] track_setup_racers: spawn_object failed for racer %d (objectID %d).\n", i,
+                        (int) objectID);
                 abort();
             }
 #endif
@@ -2777,14 +2689,12 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
                 D_8011AD20 = TRUE;
             }
             sp127 = vehicle;
-            if (curRacer->vehicleID == VEHICLE_PLANE ||
-                curRacer->vehicleID == VEHICLE_SMOKEY ||
+            if (curRacer->vehicleID == VEHICLE_PLANE || curRacer->vehicleID == VEHICLE_SMOKEY ||
                 curRacer->vehicleID == VEHICLE_PTERODACTYL) {
                 gIsNonCarRacers = TRUE;
             }
             curRacer->unk1CB = vehicle;
-            if (curRacer->unk1CB < VEHICLE_CAR ||
-                curRacer->unk1CB > VEHICLE_PLANE) {
+            if (curRacer->unk1CB < VEHICLE_CAR || curRacer->unk1CB > VEHICLE_PLANE) {
                 curRacer->unk1CB = 0;
             }
             curRacer->racerIndex = var_s4;
@@ -2799,22 +2709,18 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
             } else {
                 curRacer->bananas = 0;
             }
-            if (get_filtered_cheats() & CHEAT_START_WITH_10_BANANAS &&
-                !(raceType & RACETYPE_CHALLENGE)) {
+            if (get_filtered_cheats() & CHEAT_START_WITH_10_BANANAS && !(raceType & RACETYPE_CHALLENGE)) {
                 if (curRacer->playerIndex != PLAYER_COMPUTER) {
                     curRacer->bananas = 10;
                 }
             }
-            if ((gameMode != GAMEMODE_MENU || D_8011AD3C == 2) &&
-                vehicle < VEHICLE_BOSSES) {
-                curRacer->vehicleSound = racer_sound_init(curRacer->characterId,
-                                                          curRacer->vehicleID);
+            if ((gameMode != GAMEMODE_MENU || D_8011AD3C == 2) && vehicle < VEHICLE_BOSSES) {
+                curRacer->vehicleSound = racer_sound_init(curRacer->characterId, curRacer->vehicleID);
             } else {
                 curRacer->vehicleSound = NULL;
             }
 
-            racerObj->interactObj->pushForce =
-                miscAsset16[curRacer->characterId] + 1;
+            racerObj->interactObj->pushForce = miscAsset16[curRacer->characterId] + 1;
             switch (curRacer->vehicleID) {
                 case VEHICLE_TRICKY:
                 case VEHICLE_BLUEY:
@@ -2862,8 +2768,7 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
         }
         // Spawn player ghost.
         if (timetrial_valid_player_ghost()) {
-            objectID = gRacerObjectTable[gTimeTrialCharacter +
-                                         (gTimeTrialVehicle * NUM_CHARACTERS)];
+            objectID = gRacerObjectTable[gTimeTrialCharacter + (gTimeTrialVehicle * NUM_CHARACTERS)];
             racerEntry->common.size = ((objectID & 0x100) >> 1) | 0x10;
             racerEntry->common.objectID = objectID;
             racerEntry->common.x = spawnX[0];
@@ -2881,8 +2786,7 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
         }
         // Spawn staff ghost
         if (timetrial_init_staff_ghost(level_id())) {
-            objectID =
-                gRacerObjectTable[(gMapDefaultVehicle * NUM_CHARACTERS) + 8];
+            objectID = gRacerObjectTable[(gMapDefaultVehicle * NUM_CHARACTERS) + 8];
 
             racerEntry->common.size = ((objectID & 0x100) >> 1) | 0x10;
             racerEntry->common.objectID = objectID;
@@ -2913,8 +2817,7 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
             for (k = 0; k < racerObj->header->numberOfModelIds; k++) {
                 if (racerObj->modelInstances[k] != NULL) {
                     if (racerObj->modelInstances[k]->animUpdateTimer != 0) {
-                        racerObj->modelInstances[k]->animUpdateTimer =
-                            (var_s4 * 2);
+                        racerObj->modelInstances[k]->animUpdateTimer = (var_s4 * 2);
                     }
                 }
             }
@@ -2938,14 +2841,12 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
         curRacer->stretch_height_cap = 1.0f;
         curRacer->stretch_height = 1.0f;
     }
-    if (raceType == RACETYPE_DEFAULT || raceType & RACETYPE_CHALLENGE ||
-        gIsTimeTrial || D_8011AD3C != 0) {
+    if (raceType == RACETYPE_DEFAULT || raceType & RACETYPE_CHALLENGE || gIsTimeTrial || D_8011AD3C != 0) {
         gEventCountdown = 80;
     } else {
         gEventCountdown = 0;
     }
-    if (raceType == RACETYPE_DEFAULT && (playerCount + 1) == 1 &&
-        is_in_adventure_two() == FALSE) {
+    if (raceType == RACETYPE_DEFAULT && (playerCount + 1) == 1 && is_in_adventure_two() == FALSE) {
         if (!race_is_adventure_2P()) {
             for (j = 0; j < 3; j++) {
                 racerEntry->common.objectID = ASSET_OBJECT_ID_POSARROW;
@@ -2953,8 +2854,7 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
                 racerEntry->common.x = 0;
                 racerEntry->common.y = 0;
                 racerEntry->common.z = 0;
-                curObj = spawn_object((LevelObjectEntryCommon *)racerEntry,
-                                      OBJECT_SPAWN_UNK01);
+                curObj = spawn_object((LevelObjectEntryCommon *) racerEntry, OBJECT_SPAWN_UNK01);
                 curObj->properties.common.unk0 = j;
                 curObj->level_entry = NULL;
             }
@@ -2972,11 +2872,11 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
             miscAsset16 = (s8 *) get_misc_asset(ASSET_MISC_16);
             j = 0;
             tajFlagsBefore = settings->tajFlags;
-            mdkr_taj_trace_phase("load", -1, miscAsset16, -1, 0, 0);
+            mdkr_taj_trace_phase(
+                "load", -1, miscAsset16, -1, 0, 0);
 
             // settings->balloonsPtr[0] is the total balloon count.
-            if (!(settings->tajFlags & TAJ_FLAGS_CAR_CHAL_UNLOCKED) &&
-                (settings->balloonsPtr[0] >= miscAsset16[0])) {
+            if (!(settings->tajFlags & TAJ_FLAGS_CAR_CHAL_UNLOCKED) && (settings->balloonsPtr[0] >= miscAsset16[0])) {
                 j = 1;
             } else if (!(settings->tajFlags & TAJ_FLAGS_HOVER_CHAL_UNLOCKED) &&
                        (settings->balloonsPtr[0] >= miscAsset16[1])) {
@@ -2989,26 +2889,25 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
             // Taj will teleport straight to the player to initiate a challenge.
             if (j) {
                 set_taj_voice_line(SOUND_VOICE_TAJ_CHALLENGE_RACE);
-                /* DKR_SHL32 (NATIVE_PORT): j is 1..3 here, so the ROM's `1 <<
-                 * (j + 31)` means TAJ_FLAGS_CAR_CHAL_UNLOCKED << (j - 1) via
-                 * MIPS `sllv` masking. As a plain C shift the count is >= 32 --
-                 * UB -- and the if/else-if chain above pins j to exactly
-                 * {1,2,3}, which is all clang needs.
+                /* DKR_SHL32 (NATIVE_PORT): j is 1..3 here, so the ROM's `1 << (j + 31)`
+                 * means TAJ_FLAGS_CAR_CHAL_UNLOCKED << (j - 1) via MIPS `sllv` masking.
+                 * As a plain C shift the count is >= 32 -- UB -- and the if/else-if
+                 * chain above pins j to exactly {1,2,3}, which is all clang needs.
                  *
-                 * Measured: at -O2 this whole statement is DELETED, on arm64
-                 * and wasm32 alike -- the emitted block calls
-                 * set_taj_voice_line(), set_taj_status(),
-                 * set_next_taj_challenge_menu() and safe_mark_write_save_file()
-                 * and never touches tajFlags at all. So in any optimized build
-                 * the OFFERED half of tajFlags is never set, while the BEATEN
-                 * half (mode_end_taj_race) is written normally, and the save is
-                 * flushed in that state, so an already-completed genie test is
+                 * Measured: at -O2 this whole statement is DELETED, on arm64 and
+                 * wasm32 alike -- the emitted block calls set_taj_voice_line(),
+                 * set_taj_status(), set_next_taj_challenge_menu() and
+                 * safe_mark_write_save_file() and never touches tajFlags at all. So in
+                 * any optimized build the OFFERED half of tajFlags is never set, while
+                 * the BEATEN half (mode_end_taj_race) is written normally, and the save
+                 * is flushed in that state, so an already-completed genie test is
                  * offered again on every entry to Timber's Island. */
                 settings->tajFlags |= DKR_SHL32(1, j + 31);
                 set_taj_status(TAJ_TELEPORT);
                 set_next_taj_challenge_menu(j);
                 safe_mark_write_save_file(get_save_file_index());
-                mdkr_taj_trace_phase("offer", j - 1, miscAsset16, -1, j, 0);
+                mdkr_taj_trace_phase(
+                    "offer", j - 1, miscAsset16, -1, j, 0);
             } else {
                 /*
                  * Already-completed replay fixture. First-time challenges take
@@ -3024,7 +2923,8 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
                      (TAJ_FLAGS_CAR_CHAL_UNLOCKED << requestedVehicle)) &&
                     (tajFlagsBefore &
                      (TAJ_FLAGS_CAR_CHAL_COMPLETED << requestedVehicle)) &&
-                    requestedRacer != NULL && requestedRacer->racer != NULL &&
+                    requestedRacer != NULL &&
+                    requestedRacer->racer != NULL &&
                     requestedRacer->racer->vehicleID == requestedVehicle) {
                     init_racer_for_challenge(requestedVehicle);
                 }
@@ -3049,12 +2949,10 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
 
 /**
  * Return an error status for the controller pak.
- * Categorises multiple different controller pak messages into one for fewer
- * cases.
+ * Categorises multiple different controller pak messages into one for fewer cases.
  */
 s32 get_contpak_error(void) {
-    // gTimeTrialContPak is likely an SIDeviceStatus value, but not 100% sure
-    // yet.
+    // gTimeTrialContPak is likely an SIDeviceStatus value, but not 100% sure yet.
     switch (gTimeTrialContPak) {
         case CONTROLLER_PAK_NOT_FOUND:
             return CONTPAK_ERROR_MISSING;
@@ -3075,14 +2973,20 @@ s32 get_contpak_error(void) {
     }
 }
 
-void instShowBearBar(void) { D_800DC708 = 0x8000; }
+void instShowBearBar(void) {
+    D_800DC708 = 0x8000;
+}
 
-s8 func_8000E138(void) { return D_8011AD20; }
+s8 func_8000E138(void) {
+    return D_8011AD20;
+}
 
 /**
  * Returns true if currently in a rolling demo.
  */
-s8 racetype_demo(void) { return gRollingDemo; }
+s8 racetype_demo(void) {
+    return gRollingDemo;
+}
 
 /**
  * Returns true if we're in a race started by P2 in adventure mode.
@@ -3098,7 +3002,9 @@ s8 is_race_started_by_player_two(void) {
 /**
  * Returns true if P2 is the lead player in adventure mode.
  */
-s8 is_player_two_in_control(void) { return gIsP2LeadPlayer; }
+s8 is_player_two_in_control(void) {
+    return gIsP2LeadPlayer;
+}
 
 /**
  * Swaps the lead player index during 2P adventure mode.
@@ -3121,13 +3027,17 @@ void reset_lead_player_index(void) {
  * Return true if there exist players piloting planes or hovercraft.
  * Used to determine whether to use certain zippers.
  */
-s8 find_non_car_racers(void) { return gIsNonCarRacers; }
+s8 find_non_car_racers(void) {
+    return gIsNonCarRacers;
+}
 
 /**
  * Return true if the silver coin race mode is active.
  * Used to determine whether to spawn silver coins.
  */
-s8 check_if_silver_coin_race(void) { return gIsSilverCoinRace; }
+s8 check_if_silver_coin_race(void) {
+    return gIsSilverCoinRace;
+}
 
 /**
  * Store some things about the racer object then remove it.
@@ -3148,8 +3058,8 @@ void despawn_player_racer(Object *obj, s32 vehicleID) {
 }
 
 /**
- * Spawn a new racer object and set the initial position and rotation to what
- * was set before the old one was freed.
+ * Spawn a new racer object and set the initial position and rotation to what was set
+ * before the old one was freed.
  */
 void transform_player_vehicle(void) {
     Object *player;
@@ -3170,8 +3080,7 @@ void transform_player_vehicle(void) {
     spawnObj.common.size = 16;
     if (gOverworldVehicle < VEHICLE_BOSSES) {
         objectID =
-            ((s16 *)gRacerObjectTable)[settings->racers[PLAYER_ONE].character +
-                                       gOverworldVehicle * NUM_CHARACTERS];
+            ((s16 *) gRacerObjectTable)[settings->racers[PLAYER_ONE].character + gOverworldVehicle * NUM_CHARACTERS];
     } else {
         objectID = gRacerObjectTable[gOverworldVehicle + 45];
     }
@@ -3185,8 +3094,7 @@ void transform_player_vehicle(void) {
     spawnObj.common.z = gTransformPosZ;
     spawnObj.unkC = gTransformAngleY;
     set_taj_status(TAJ_DIALOGUE);
-    player = spawn_object(&spawnObj.common,
-                          OBJECT_SPAWN_NO_LODS | OBJECT_SPAWN_UNK01);
+    player = spawn_object(&spawnObj.common, OBJECT_SPAWN_NO_LODS | OBJECT_SPAWN_UNK01);
     gNumRacers = 1;
     (*gRacers)[PLAYER_ONE] = player;
     gRacersByPort[PLAYER_ONE] = player;
@@ -3212,17 +3120,23 @@ void transform_player_vehicle(void) {
 /**
  * Enables or Disables time trial mode.
  */
-void set_time_trial_enabled(s32 status) { gTimeTrialEnabled = status; }
+void set_time_trial_enabled(s32 status) {
+    gTimeTrialEnabled = status;
+}
 
 /**
  * Returns the value in gTimeTrialEnabled.
  */
-u8 is_time_trial_enabled(void) { return gTimeTrialEnabled; }
+u8 is_time_trial_enabled(void) {
+    return gTimeTrialEnabled;
+}
 
 /**
  * Returns true if the player is currently performaing a time trial.
  */
-u8 is_in_time_trial(void) { return gIsTimeTrial; }
+u8 is_in_time_trial(void) {
+    return gIsTimeTrial;
+}
 
 UNUSED void func_8000E4E8(s32 index) {
     s32 *temp_v0;
@@ -3345,8 +3259,7 @@ void func_8000E5EC(LevelObjectEntryCommon *arg0) {
 
     if ((s32) arg0 >= (s32) gObjectMapSpawnList[0] && (s32) arg0 < sp30[0]) {
         sp1C = 0;
-    } else if ((s32)arg0 >= (s32)gObjectMapSpawnList[1] &&
-               (s32)arg0 < sp30[1]) {
+    } else if ((s32) arg0 >= (s32) gObjectMapSpawnList[1] && (s32) arg0 < sp30[1]) {
         sp1C = 1;
     }
 #ifdef AVOID_UB
@@ -3513,19 +3426,22 @@ Object **objGetObjList(s32 *arg0, s32 *cnt) {
 /**
  * Return the number of objects currently existing.
  */
-UNUSED s32 obj_count(void) { return gObjectCount; }
+UNUSED s32 obj_count(void) {
+    return gObjectCount;
+}
 
 /**
  * Return the number of particles currently existing.
  */
-UNUSED s32 particle_count(void) { return gParticleCount; }
+UNUSED s32 particle_count(void) {
+    return gParticleCount;
+}
 
 void add_particle_to_entity_list(Object *obj) {
     obj->trans.flags |= OBJ_FLAGS_PARTICLE;
     func_800245B4(obj->headerType | (OBJ_FLAGS_PARTICLE | OBJ_FLAGS_INVISIBLE));
     gObjPtrList[gObjectCount++] = obj;
-    if (1) {
-    } // Fakematch
+    if (1) {} // Fakematch
     gParticleCount++;
 #ifdef NATIVE_PORT
     /* The second spawn site: particles come from particle_allocate(), not
@@ -3539,26 +3455,33 @@ void add_particle_to_entity_list(Object *obj) {
 }
 
 #ifdef NATIVE_PORT
-static void *mdkr_spawn_layout_require(MdkrObjectLayout *layout, size_t count,
-                                       size_t elementSize, size_t alignment,
-                                       const char *field, s32 objectId) {
-    void *result =
-        mdkr_object_layout_append_array(layout, count, elementSize, alignment);
+static void *mdkr_spawn_layout_require(
+    MdkrObjectLayout *layout,
+    size_t count,
+    size_t elementSize,
+    size_t alignment,
+    const char *field,
+    s32 objectId) {
+    void *result = mdkr_object_layout_append_array(
+        layout, count, elementSize, alignment);
 
     if (result == NULL) {
-        fprintf(
-            stderr,
+        fprintf(stderr,
                 "[FATAL] spawn_object(%d): object blueprint could not place "
                 "%s (%zu x %zu, align %zu): %s\n",
                 objectId, field, count, elementSize, alignment,
-            mdkr_object_layout_error_string(mdkr_object_layout_error(layout)));
+                mdkr_object_layout_error_string(
+                    mdkr_object_layout_error(layout)));
         abort();
     }
     return result;
 }
 
-static void mdkr_spawn_require_alignment(const void *pointer, size_t alignment,
-                                         const char *field, s32 objectId) {
+static void mdkr_spawn_require_alignment(
+    const void *pointer,
+    size_t alignment,
+    const char *field,
+    s32 objectId) {
     if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
         fprintf(stderr,
                 "[FATAL] spawn_object(%d): internal %s alignment %zu is "
@@ -3566,7 +3489,8 @@ static void mdkr_spawn_require_alignment(const void *pointer, size_t alignment,
                 objectId, field, alignment);
         abort();
     }
-    if (pointer != NULL && ((uintptr_t)pointer & (alignment - 1)) != 0) {
+    if (pointer != NULL &&
+        ((uintptr_t) pointer & (alignment - 1)) != 0) {
         fprintf(stderr,
                 "[FATAL] spawn_object(%d): rebased %s pointer %p is not "
                 "%zu-byte aligned\n",
@@ -3606,7 +3530,8 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
         abort();
     }
     entrySize = entry->size & 0x3F;
-    if (entrySize < sizeof(LevelObjectEntryCommon) || (entrySize & 1u) != 0) {
+    if (entrySize < sizeof(LevelObjectEntryCommon) ||
+        (entrySize & 1u) != 0) {
         fprintf(stderr,
                 "[FATAL] spawn_object: invalid level-entry stride %zu "
                 "(minimum %zu, must be even)\n",
@@ -3620,7 +3545,8 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
         headerType = objType;
     } else {
 #ifdef NATIVE_PORT
-        if ((size_t)objType >= gAssetsLvlObjTranslationTableCapacity) {
+        if ((size_t) objType >=
+            gAssetsLvlObjTranslationTableCapacity) {
             fprintf(stderr,
                     "[FATAL] spawn_object: object id %d exceeds the "
                     "%zu-entry translation table\n",
@@ -3631,7 +3557,8 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
         headerType = gAssetsLvlObjTranslationTable[objType];
     }
 #ifdef NATIVE_PORT
-    if (headerType < 0 || headerType >= gAssetsObjectHeadersTableLength) {
+    if (headerType < 0 ||
+        headerType >= gAssetsObjectHeadersTableLength) {
         fprintf(stderr,
                 "[FATAL] spawn_object(%d): invalid object header %d "
                 "(count=%d)\n",
@@ -3649,10 +3576,11 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
     }
 
 #ifdef NATIVE_PORT
-    mdkr_object_layout_init(&objectLayout, gSpawnObjectHeap,
-                            OBJECT_BLUEPRINT_SIZE);
-    curObj = mdkr_spawn_layout_require(&objectLayout, 1, sizeof(Object),
-                                       _Alignof(Object), "Object", objType);
+    mdkr_object_layout_init(
+        &objectLayout, gSpawnObjectHeap, OBJECT_BLUEPRINT_SIZE);
+    curObj = mdkr_spawn_layout_require(
+        &objectLayout, 1, sizeof(Object), _Alignof(Object),
+        "Object", objType);
 #else
     curObj = (Object *) gSpawnObjectHeap;
 #endif
@@ -3665,8 +3593,7 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
     if (curObj->header->flags & HEADER_FLAGS_UNK_0080) {
         curObj->trans.flags |= OBJ_FLAGS_UNK_0080;
     }
-    if (curObj->header->behaviorId == BHV_ROCKET_SIGNPOST &&
-        (settings->cutsceneFlags & CUTSCENE_LIGHTHOUSE_ROCKET)) {
+    if (curObj->header->behaviorId == BHV_ROCKET_SIGNPOST && (settings->cutsceneFlags & CUTSCENE_LIGHTHOUSE_ROCKET)) {
         update_object_stack_trace(OBJECT_SPAWN, -1);
 #ifdef NATIVE_PORT
         try_free_object_header(headerType);
@@ -3675,12 +3602,14 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
         return NULL;
     }
 #ifdef NATIVE_PORT
-    if (entrySize < mdkr_level_object_min_size(curObj->header->behaviorId)) {
+    if (entrySize <
+        mdkr_level_object_min_size(curObj->header->behaviorId)) {
         fprintf(stderr,
                 "[FATAL] spawn_object(%d): behavior %d received %zu entry "
                 "bytes; initializer requires at least %zu\n",
                 objType, curObj->header->behaviorId, entrySize,
-                mdkr_level_object_min_size(curObj->header->behaviorId));
+                mdkr_level_object_min_size(
+                    curObj->header->behaviorId));
         abort();
     }
 #endif
@@ -3688,8 +3617,7 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
     curObj->trans.x_position = entry->x;
     curObj->trans.y_position = entry->y;
     curObj->trans.z_position = entry->z;
-    curObj->segmentID = get_level_segment_index_from_position(
-        curObj->trans.x_position, curObj->trans.y_position,
+    curObj->segmentID = get_level_segment_index_from_position(curObj->trans.x_position, curObj->trans.y_position,
                                                               curObj->trans.z_position);
 
     curObj->headerType = headerType;
@@ -3715,9 +3643,9 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
         abort();
     }
     curObj->modelInstances = mdkr_spawn_layout_require(
-        &objectLayout, (size_t)modelSlotCount, sizeof(*curObj->modelInstances),
-        _Alignof(ModelInstance *), "model/sprite pointer array",
-        curObj->objectID);
+        &objectLayout, (size_t) modelSlotCount,
+        sizeof(*curObj->modelInstances), _Alignof(ModelInstance *),
+        "model/sprite pointer array", curObj->objectID);
 #else
     curObj->modelInstances = (ModelInstance **) &curObj[1];
 #endif
@@ -3754,8 +3682,9 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
 #endif
             break;
         case BHV_ANIMATED_OBJECT_4:
-        if (!mdkr_model_load_selection(get_character_id_from_slot(PLAYER_ONE),
-                                       modelSlotCount, &i, &assetCount)) {
+            if (!mdkr_model_load_selection(
+                    get_character_id_from_slot(PLAYER_ONE), modelSlotCount,
+                    &i, &assetCount)) {
                 i = 0;
                 assetCount = 0;
             }
@@ -3766,8 +3695,9 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
             if (mdkr_trophy_state(settings->trophies, settings->worldId,
                                   &trophyState) &&
                 trophyState != 0) {
-            if (!mdkr_model_load_selection((s32)trophyState - 1, modelSlotCount,
-                                           &i, &assetCount)) {
+                if (!mdkr_model_load_selection(
+                        (s32) trophyState - 1, modelSlotCount, &i,
+                        &assetCount)) {
                     i = 0;
                     assetCount = 0;
                 }
@@ -3776,8 +3706,9 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
             break;
         }
         case BHV_DYNAMIC_LIGHT_OBJECT_2:
-        if (!mdkr_model_load_selection(settings->wizpigAmulet, modelSlotCount,
-                                       &i, &assetCount)) {
+            if (!mdkr_model_load_selection(
+                    settings->wizpigAmulet, modelSlotCount, &i,
+                    &assetCount)) {
                 i = 0;
                 assetCount = 0;
             }
@@ -3794,7 +3725,8 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
                 }
                 trophyBits >>= 2;
             }
-        if (!mdkr_model_load_selection(i, modelSlotCount, &i, &assetCount)) {
+            if (!mdkr_model_load_selection(i, modelSlotCount, &i,
+                                           &assetCount)) {
                 i = 0;
                 assetCount = 0;
             }
@@ -3804,8 +3736,7 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
         case BHV_GOLDEN_BALLOON:
             assetCount = 1;
             if (is_in_adventure_two()) {
-            DKR_PTR(s32, curObj->header->modelIds)
-            [0] = DKR_PTR(s32, curObj->header->modelIds)[1];
+                DKR_PTR(s32, curObj->header->modelIds)[0] = DKR_PTR(s32, curObj->header->modelIds)[1];
             }
             curObj->header->numberOfModelIds = 1;
             break;
@@ -3815,16 +3746,14 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
             case ASSET_OBJECT_ID_POLYGOLDBALOON:
                 assetCount = 1;
                 if (is_in_adventure_two()) {
-                DKR_PTR(s32, curObj->header->modelIds)
-                [0] = DKR_PTR(s32, curObj->header->modelIds)[1];
+                    DKR_PTR(s32, curObj->header->modelIds)[0] = DKR_PTR(s32, curObj->header->modelIds)[1];
                 }
                 curObj->header->numberOfModelIds = 1;
                 break;
             case ASSET_OBJECT_ID_LEVELDOOR:
                 if (is_in_adventure_two()) {
                     for (i = 0; i < 5; i++) {
-                    DKR_PTR(s32, curObj->header->modelIds)
-                    [i] = DKR_PTR(s32, curObj->header->modelIds)[i + 5];
+                        DKR_PTR(s32, curObj->header->modelIds)[i] = DKR_PTR(s32, curObj->header->modelIds)[i + 5];
                     }
                 }
                 assetCount = 5;
@@ -3836,27 +3765,24 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
 
     failed = FALSE;
 #ifdef NATIVE_PORT
-    if (assetCount < 0 || assetCount > modelSlotCount || i < 0 ||
-        i > assetCount) {
+    if (assetCount < 0 || assetCount > modelSlotCount ||
+        i < 0 || i > assetCount) {
         fprintf(stderr,
                 "[FATAL] spawn_object: header %d (objectID %d, behavior %d) "
                 "would write asset range [%d,%d) into %d pointer slots\n",
-                headerType, curObj->objectID, curObj->header->behaviorId, i,
-                assetCount, modelSlotCount);
+                headerType, curObj->objectID, curObj->header->behaviorId,
+                i, assetCount, modelSlotCount);
         abort();
     }
     /* A header that claims models/sprites/textures must have a resolvable
-     * modelIds array. This used to be a silent "failed spawn" guard papering
-     * over the object-header table overrun in allocate_object_pools(); that is
-     * fixed at root, so any hit here is a NEW corruption and must be loud, not
-     * hidden. */
+     * modelIds array. This used to be a silent "failed spawn" guard papering over
+     * the object-header table overrun in allocate_object_pools(); that is fixed at
+     * root, so any hit here is a NEW corruption and must be loud, not hidden. */
     if (assetCount > 0 && DKR_PTR(s32, curObj->header->modelIds) == NULL) {
         fprintf(stderr,
-                "[FATAL] spawn_object: header %d (objectID %d, behaviour %d) "
-                "claims %d assets but modelIds "
+                "[FATAL] spawn_object: header %d (objectID %d, behaviour %d) claims %d assets but modelIds "
                 "resolves NULL - corrupted object header.\n",
-                headerType, curObj->objectID, curObj->header->behaviorId,
-                assetCount);
+                headerType, curObj->objectID, curObj->header->behaviorId, assetCount);
         abort();
     }
 #endif
@@ -3867,8 +3793,7 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
             } else if (i == 1 && (spawnFlags & OBJECT_SPAWN_UNK08)) {
                 curObj->modelInstances[i] = NULL;
             } else {
-                curObj->modelInstances[i] = object_model_init(
-                    DKR_PTR(s32, curObj->header->modelIds)[i], behaviourFlags);
+                curObj->modelInstances[i] = object_model_init(DKR_PTR(s32, curObj->header->modelIds)[i], behaviourFlags);
                 if (curObj->modelInstances[i] == NULL) {
                     failed = TRUE;
                 }
@@ -3877,8 +3802,7 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
         }
     } else if (objType == OBJECT_MODEL_TYPE_MISC) {
         while (i < assetCount) {
-            curObj->textures[i] =
-                load_texture(DKR_PTR(s32, curObj->header->modelIds)[i]);
+            curObj->textures[i] = load_texture(DKR_PTR(s32, curObj->header->modelIds)[i]);
             if (curObj->textures[i] == NULL) {
                 failed = TRUE;
             }
@@ -3886,8 +3810,7 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
         }
     } else {
         while (i < assetCount) {
-            curObj->sprites[i] =
-                tex_load_sprite(DKR_PTR(s32, curObj->header->modelIds)[i], 10);
+            curObj->sprites[i] = tex_load_sprite(DKR_PTR(s32, curObj->header->modelIds)[i], 10);
             if (curObj->sprites[i] == NULL) {
                 failed = TRUE;
             }
@@ -3913,21 +3836,22 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
      */
     propertySize = (size_t) get_object_property_size(curObj, NULL);
     if (propertySize > 0) {
-        curObj->anyBehaviorData =
-            mdkr_spawn_layout_require(&objectLayout, 1, propertySize, 16,
+        curObj->anyBehaviorData = mdkr_spawn_layout_require(
+            &objectLayout, 1, propertySize, 16,
             "behavior storage", curObj->objectID);
     }
 
     if (behaviourFlags & OBJECT_BEHAVIOUR_SHADED) {
         init_object_shading(
             curObj,
-            mdkr_spawn_layout_require(&objectLayout, 1, sizeof(ShadeProperties),
-                                      _Alignof(ShadeProperties), "shading",
-                                      curObj->objectID));
+            mdkr_spawn_layout_require(
+                &objectLayout, 1, sizeof(ShadeProperties),
+                _Alignof(ShadeProperties), "shading", curObj->objectID));
     }
     if (behaviourFlags & OBJECT_BEHAVIOUR_SHADOW) {
         sizeOfobj = init_object_shadow(
-            curObj, mdkr_spawn_layout_require(
+            curObj,
+            mdkr_spawn_layout_require(
                 &objectLayout, 1, sizeof(ShadowData),
                 _Alignof(ShadowData), "shadow", curObj->objectID));
         if (sizeOfobj == 0) {
@@ -3940,9 +3864,9 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
     if (behaviourFlags & OBJECT_BEHAVIOUR_WATER_EFFECT) {
         sizeOfobj = init_object_water_effect(
             curObj,
-            mdkr_spawn_layout_require(&objectLayout, 1, sizeof(WaterEffect),
-                                      _Alignof(WaterEffect), "water effect",
-                                      curObj->objectID));
+            mdkr_spawn_layout_require(
+                &objectLayout, 1, sizeof(WaterEffect),
+                _Alignof(WaterEffect), "water effect", curObj->objectID));
         if (sizeOfobj == 0) {
             if (D_8011AE50 != NULL) {
                 tex_free((TextureHeader *) (uintptr_t) D_8011AE50);
@@ -3987,7 +3911,8 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
             "light pointer array", curObj->objectID);
     }
 
-    if (!mdkr_object_layout_finish(&objectLayout, 16, &finalObjectSize) ||
+    if (!mdkr_object_layout_finish(
+            &objectLayout, 16, &finalObjectSize) ||
         finalObjectSize > INT_MAX) {
         fprintf(stderr,
                 "[FATAL] spawn_object(%d): invalid final blueprint size: %s "
@@ -4185,8 +4110,7 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
         curObj->interactObj->y_position = curObj->trans.y_position;
         curObj->interactObj->z_position = curObj->trans.z_position;
     }
-    if (curObj->header->attachPointCount > 0 &&
-        curObj->header->attachPointCount < 10 && obj_init_attachpoint(curObj)) {
+    if (curObj->header->attachPointCount > 0 && curObj->header->attachPointCount < 10 && obj_init_attachpoint(curObj)) {
         if (D_8011AE50 != NULL) {
             tex_free((TextureHeader *) (uintptr_t) D_8011AE50);
         }
@@ -4220,9 +4144,9 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
      */
     presentation_snapshot_note_spawn(curObj);
     mdkr_camera_dynamic_occlusion_note_spawn(curObj);
-    GAMEPLAY_EVENT_TRACE(GAMEPLAY_EVENT_SPAWN, curObj->objectID,
-                         curObj->header != NULL ? curObj->header->behaviorId
-                                                : -1,
+    GAMEPLAY_EVENT_TRACE(
+        GAMEPLAY_EVENT_SPAWN, curObj->objectID,
+        curObj->header != NULL ? curObj->header->behaviorId : -1,
         spawnFlags, gObjectCount);
 #endif
     return curObj;
@@ -4237,8 +4161,7 @@ void objFreeAssets(Object *obj, s32 count, s32 objType) {
     if (objType == OBJECT_MODEL_TYPE_3D_MODEL) { // 3D model
         for (i = 0; i < count; i++) {
             if (obj->modelInstances[i] != NULL) {
-                free_3d_model(
-                    (ModelInstance *)(uintptr_t)obj->modelInstances[i]);
+                free_3d_model((ModelInstance *) (uintptr_t) obj->modelInstances[i]);
             }
         }
     } else if (objType == OBJECT_MODEL_TYPE_MISC) {
@@ -4261,8 +4184,7 @@ void objFreeAssets(Object *obj, s32 count, s32 objType) {
 void light_setup_light_sources(Object *obj) {
     s32 i;
     for (i = 0; i < obj->header->numLightSources; i++) {
-        obj->lightData[i] = light_add_from_object_header(
-            obj, &DKR_PTR(ObjectHeader24, obj->header->unk24)[i]);
+        obj->lightData[i] = light_add_from_object_header(obj, &DKR_PTR(ObjectHeader24, obj->header->unk24)[i]);
     }
 }
 
@@ -4278,17 +4200,11 @@ s32 init_object_shading(Object *obj, ShadeProperties *shadeData) {
     if (obj->header->modelType == OBJECT_MODEL_TYPE_3D_MODEL) {
         /* The scan has no sentinel of its own: a header with every slot empty
          * (or none at all) walks off the end of modelInstances. */
-        for (i = 0; i < obj->header->numberOfModelIds &&
-                    obj->modelInstances[i] == NULL;
-             i++) {
-        }
-        if (i < obj->header->numberOfModelIds &&
-            obj->modelInstances[i] != NULL &&
+        for (i = 0; i < obj->header->numberOfModelIds && obj->modelInstances[i] == NULL; i++) {}
+        if (i < obj->header->numberOfModelIds && obj->modelInstances[i] != NULL &&
             obj->modelInstances[i]->objModel->normals != 0) {
-            set_shading_properties(obj->shading, obj->header->shadeAmbient,
-                                   obj->header->shadeDiffuse, 0,
-                                   obj->header->shadeAngleY,
-                                   obj->header->shadeAngleZ);
+            set_shading_properties(obj->shading, obj->header->shadeAmbient, obj->header->shadeDiffuse, 0,
+                                   obj->header->shadeAngleY, obj->header->shadeAngleZ);
             if (obj->header->shadeIntensityy != 0) {
                 obj->shading->lightR = obj->header->unk3A;
                 obj->shading->lightG = obj->header->unk3B;
@@ -4325,8 +4241,7 @@ s32 obj_init_attachpoint(Object *obj) {
     attachPoint->count = attachPoint->count; // Fakematch?
     failed = FALSE;
     for (i = 0; i < attachPoint->count; i++) {
-        attachPoint->obj[i] = obj_spawn_attachment(DKR_PTR(
-            s32, obj->header->vehiclePartIds)[i ^ 0]); // i ^ 0 fakematch
+        attachPoint->obj[i] = obj_spawn_attachment(DKR_PTR(s32, obj->header->vehiclePartIds)[i ^ 0]); // i ^ 0 fakematch
         if (attachPoint->obj[i] == NULL) {
             failed = TRUE;
         }
@@ -4335,8 +4250,7 @@ s32 obj_init_attachpoint(Object *obj) {
         for (i = 0; i < attachPoint->count; i++) {
             attachObj = attachPoint->obj[i];
             if (attachObj != NULL) {
-                objFreeAssets(attachObj, attachObj->header->numberOfModelIds,
-                              attachObj->header->modelType);
+                objFreeAssets(attachObj, attachObj->header->numberOfModelIds, attachObj->header->modelType);
                 try_free_object_header(attachObj->headerType);
                 mempool_free(attachObj);
             }
@@ -4352,20 +4266,15 @@ s32 obj_init_emitter(Object *obj, ParticleEmitter *emitter) {
     s32 i;
 
     obj->particleEmitter = emitter;
-    particleDataEntry =
-        DKR_PTR(ObjHeaderParticleEntry, obj->header->objectParticles);
+    particleDataEntry = DKR_PTR(ObjHeaderParticleEntry, obj->header->objectParticles);
     for (i = 0; i < obj->header->particleCount; i++) {
         if ((particleDataEntry[i].upper & 0xFFFF0000) == 0xFFFF0000) {
-            emitter_init(&obj->particleEmitter[i],
-                         (particleDataEntry[i].upper >> 8) & 0xFF,
+            emitter_init(&obj->particleEmitter[i], (particleDataEntry[i].upper >> 8) & 0xFF,
                          particleDataEntry[i].upper & 0xFF);
         } else {
-            emitter_init_with_pos(&obj->particleEmitter[i],
-                                  (particleDataEntry[i].upper >> 0x18) & 0xFF,
-                                  (particleDataEntry[i].upper >> 0x10) & 0xFF,
-                                  particleDataEntry[i].upper & 0xFFFF,
-                                  (particleDataEntry[i].lower >> 0x10) & 0xFFFF,
-                                  particleDataEntry[i].lower & 0xFFFF);
+            emitter_init_with_pos(&obj->particleEmitter[i], (particleDataEntry[i].upper >> 0x18) & 0xFF,
+                                  (particleDataEntry[i].upper >> 0x10) & 0xFF, particleDataEntry[i].upper & 0xFFFF,
+                                  (particleDataEntry[i].lower >> 0x10) & 0xFFFF, particleDataEntry[i].lower & 0xFFFF);
         }
     }
     return ((obj->header->particleCount * sizeof(ParticleEmitter)) + 3) & ~3;
@@ -4395,8 +4304,8 @@ s32 init_object_shadow(Object *obj, ShadowData *shadow) {
 }
 
 /**
- * Assigns water effect data to an object. Loads and assigns the effect texture,
- * too. Returns zero if the texture is missing.
+ * Assigns water effect data to an object. Loads and assigns the effect texture, too.
+ * Returns zero if the texture is missing.
  */
 s32 init_object_water_effect(Object *obj, WaterEffect *waterEffect) {
     obj->waterEffect = waterEffect;
@@ -4463,8 +4372,7 @@ Object *obj_spawn_attachment(s32 objID) {
      * under-allocates and the array writes spill into the next object (its 0x68
      * union then reads back as garbage -> render_3d_model faults). Size it from
      * the real struct + pointer widths. */
-    objSize = (s32)sizeof(Object) +
-              (objHeader->numberOfModelIds * (s32)sizeof(void *));
+    objSize = (s32) sizeof(Object) + (objHeader->numberOfModelIds * (s32) sizeof(void *));
 #else
     objSize = (objHeader->numberOfModelIds * 4) + 0x80;
 #endif
@@ -4494,16 +4402,14 @@ Object *obj_spawn_attachment(s32 objID) {
     failedToLoadModel = FALSE;
     if (modelType == OBJECT_MODEL_TYPE_3D_MODEL) {
         for (i = 0; i < numModelIds; i++) {
-            object->modelInstances[i] =
-                object_model_init(DKR_PTR(s32, object->header->modelIds)[i], 0);
+            object->modelInstances[i] = object_model_init(DKR_PTR(s32, object->header->modelIds)[i], 0);
             if (object->modelInstances[i] == NULL) {
                 failedToLoadModel = TRUE;
             }
         }
     } else {
         for (i = 0; i < numModelIds; i++) {
-            object->sprites[i] =
-                tex_load_sprite(DKR_PTR(s32, object->header->modelIds)[i], 10);
+            object->sprites[i] = tex_load_sprite(DKR_PTR(s32, object->header->modelIds)[i], 10);
             if (object->sprites[i] == NULL) {
                 failedToLoadModel = TRUE;
             }
@@ -4534,8 +4440,9 @@ void free_object(Object *object) {
      * to authoritative object lifecycle changes; snapshot identity still
      * tracks particles independently for interpolation safety. */
     if (!(object->trans.flags & OBJ_FLAGS_PARTICLE)) {
-        GAMEPLAY_EVENT_TRACE(GAMEPLAY_EVENT_DESPAWN, object->objectID,
-                             object->headerType, FALSE, gFreeListCount);
+        GAMEPLAY_EVENT_TRACE(
+            GAMEPLAY_EVENT_DESPAWN, object->objectID, object->headerType,
+            FALSE, gFreeListCount);
     }
 #endif
     func_800245B4(object->objectID | OBJ_FLAGS_PARTICLE);
@@ -4552,7 +4459,9 @@ void free_object(Object *object) {
 /**
  * Return the length of the object ID table.
  */
-UNUSED s32 obj_table_ids(void) { return gAssetsLvlObjTranslationTableLength; }
+UNUSED s32 obj_table_ids(void) {
+    return gAssetsLvlObjTranslationTableLength;
+}
 
 /**
  * Return true if the object ID is not higher than the header table length.
@@ -4562,16 +4471,15 @@ UNUSED s32 obj_id_valid(s32 arg0) {
     /* The function name promises a validity test and then indexes the
      * translation table with the very value it is meant to validate, unbounded
      * (tools/sweep_subentry_access.py, objects.c:4382). The count is the
-     * trailing-zero trim in allocate_object_pools, which leaves the LAST live
-     * index rather than a one-past-the-end count — hence `>` and not `>=`. */
+     * trailing-zero trim in allocate_object_pools, which leaves the LAST live index
+     * rather than a one-past-the-end count — hence `>` and not `>=`. */
     if (arg0 < 0 || arg0 > gAssetsLvlObjTranslationTableLength) {
-        mdkr_asset_subentry_out_of_range(
-            "ASSET_LEVEL_OBJECT_TRANSLATION_TABLE", arg0,
-            gAssetsLvlObjTranslationTableLength, "obj_id_valid");
+        mdkr_asset_subentry_out_of_range("ASSET_LEVEL_OBJECT_TRANSLATION_TABLE",
+                                         arg0, gAssetsLvlObjTranslationTableLength,
+                                         "obj_id_valid");
     }
 #endif
-    return (gAssetsLvlObjTranslationTable[arg0] <
-            gAssetsObjectHeadersTableLength);
+    return (gAssetsLvlObjTranslationTable[arg0] < gAssetsObjectHeadersTableLength);
 }
 
 /*
@@ -4598,8 +4506,7 @@ void gParticlePtrList_flush(void) {
                 gFirstActiveObjectId--;
             }
             gObjectCount--;
-            if (0) {
-            } // Fakematch
+            if (0) {} // Fakematch
             for (j = search_indx; j < gObjectCount; j++) {
                 gObjPtrList[j] = gObjPtrList[j + 1];
             }
@@ -4659,8 +4566,7 @@ void obj_destroy(Object *obj, s32 arg1) {
             modelType = tempObj->header->modelType;
             if (modelType == OBJECT_MODEL_TYPE_3D_MODEL) {
                 for (j = 0; j < numberOfModelIds; j++) {
-                    free_3d_model(
-                        (ModelInstance *)&tempObj->modelInstances[j]->objModel);
+                    free_3d_model((ModelInstance *) &tempObj->modelInstances[j]->objModel);
                 }
             } else {
                 for (j = 0; j < numberOfModelIds; j++) {
@@ -4742,8 +4648,7 @@ void obj_destroy(Object *obj, s32 arg1) {
             i = BHV_RACER;
             break;
         case BHV_OVERRIDE_POS:
-        for (j = 0; j < D_8011AE00 && obj != D_8011ADD8[j]; j++) {
-        }
+            for (j = 0; j < D_8011AE00 && obj != D_8011ADD8[j]; j++) {}
             if (j < D_8011AE00) {
                 D_8011AE00--;
                 for (; j < D_8011AE00; j++) {
@@ -4810,24 +4715,19 @@ void obj_destroy(Object *obj, s32 arg1) {
     if (obj->behaviorId == i) {
         racer = obj->racer;
         if (racer->unk18 != NULL) {
-            sndp_stop((SoundHandle)(uintptr_t)
-                          racer->unk18); // LP64: full ptr (sndp_stop derefs)
+            sndp_stop((SoundHandle) (uintptr_t) racer->unk18); // LP64: full ptr (sndp_stop derefs)
         }
         if (racer->unk10 != NULL) {
-            sndp_stop((SoundHandle)(uintptr_t)
-                          racer->unk10); // LP64: full ptr (sndp_stop derefs)
+            sndp_stop((SoundHandle) (uintptr_t) racer->unk10); // LP64: full ptr (sndp_stop derefs)
         }
         if (racer->unk14 != NULL) {
-            sndp_stop((SoundHandle)(uintptr_t)
-                          racer->unk14); // LP64: full ptr (sndp_stop derefs)
+            sndp_stop((SoundHandle) (uintptr_t) racer->unk14); // LP64: full ptr (sndp_stop derefs)
         }
         if (racer->unk1C != NULL) {
-            sndp_stop((SoundHandle)(uintptr_t)
-                          racer->unk1C); // LP64: full ptr (sndp_stop derefs)
+            sndp_stop((SoundHandle) (uintptr_t) racer->unk1C); // LP64: full ptr (sndp_stop derefs)
         }
         if (racer->unk20 != NULL) {
-            sndp_stop((SoundHandle)(uintptr_t)
-                          racer->unk20); // LP64: full ptr (sndp_stop derefs)
+            sndp_stop((SoundHandle) (uintptr_t) racer->unk20); // LP64: full ptr (sndp_stop derefs)
         }
         if (racer->soundMask != NULL) {
             audspat_point_stop(racer->soundMask);
@@ -4844,8 +4744,7 @@ void obj_destroy(Object *obj, s32 arg1) {
                 (gObjPtrList[j]->level_entry == (LevelObjectEntry *) obj)) {
                 gObjPtrList[j]->level_entry = NULL;
             }
-            if (gObjPtrList[j]->behaviorId == BHV_WEAPON_2 ||
-                gObjPtrList[j]->behaviorId == BHV_FLY_COIN ||
+            if (gObjPtrList[j]->behaviorId == BHV_WEAPON_2 || gObjPtrList[j]->behaviorId == BHV_FLY_COIN ||
                 gObjPtrList[j]->behaviorId == BHV_WEAPON) {
                 free_object(gObjPtrList[j]);
             }
@@ -4931,8 +4830,7 @@ void obj_update(s32 updateRate) {
     for (i = gObjectListStart; i < j; i++) {
         obj = gObjPtrList[i];
         if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE)) {
-            if ((obj->behaviorId != BHV_LIGHT_RGBA) &&
-                (obj->behaviorId != BHV_WEAPON) &&
+            if ((obj->behaviorId != BHV_LIGHT_RGBA) && (obj->behaviorId != BHV_WEAPON) &&
                 (obj->behaviorId != BHV_FOG_CHANGER)) {
                 if (obj->interactObj != NULL) {
                     if (obj->interactObj->unk11 != 2) {
@@ -4942,8 +4840,7 @@ void obj_update(s32 updateRate) {
                     run_object_loop_func(obj, updateRate);
                 }
                 if (obj->header->modelType == OBJECT_MODEL_TYPE_3D_MODEL) {
-                    for (sp54 = 0; sp54 < obj->header->numberOfModelIds;
-                         sp54++) {
+                    for (sp54 = 0; sp54 < obj->header->numberOfModelIds; sp54++) {
                         modInst = obj->modelInstances[sp54];
                         if (modInst != NULL) {
                             modInst->objModel->texOffsetUpdateRate = updateRate;
@@ -4970,8 +4867,7 @@ void obj_update(s32 updateRate) {
         for (i = 0; i < gNumRacers; i++) {
             racer = gRacersByPosition[i]->racer;
             if (racer->playerIndex != -1) {
-                increment_ai_behaviour_chances(gRacersByPosition[i], racer,
-                                               updateRate);
+                increment_ai_behaviour_chances(gRacersByPosition[i], racer, updateRate);
                 i = gNumRacers; // Why not just break?
             }
         }
@@ -4979,8 +4875,7 @@ void obj_update(s32 updateRate) {
     racerfx_update(updateRate);
     for (i = gObjectListStart; i < j; i++) {
         obj = gObjPtrList[i];
-        if ((!(obj->trans.flags & OBJ_FLAGS_PARTICLE) &&
-             (obj->behaviorId == BHV_WEAPON)) ||
+        if ((!(obj->trans.flags & OBJ_FLAGS_PARTICLE) && (obj->behaviorId == BHV_WEAPON)) ||
             (obj->behaviorId == BHV_FOG_CHANGER)) {
             run_object_loop_func(obj, updateRate);
         }
@@ -5000,8 +4895,7 @@ void obj_update(s32 updateRate) {
     if (light_count() > 0) {
         for (i = gObjectListStart; i < gObjectCount; i++) {
             obj = gObjPtrList[i];
-            if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE) &&
-                (obj->shading != NULL)) {
+            if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE) && (obj->shading != NULL)) {
                 light_update_shading(obj);
             }
         }
@@ -5044,8 +4938,7 @@ void obj_update(s32 updateRate) {
 
             if (sp54 & A_BUTTON) {
                 func_8001E45C(CUTSCENE_ID_UNK_64);
-            } else if ((sp54 & B_BUTTON) && (get_trophy_race_world_id() == 0) &&
-                       (is_in_tracks_mode() == 0)) {
+            } else if ((sp54 & B_BUTTON) && (get_trophy_race_world_id() == 0) && (is_in_tracks_mode() == 0)) {
                 level_transition_begin(1); // FADE_BARNDOOR_HORIZONTAL?
             }
         }
@@ -5058,8 +4951,7 @@ void obj_update(s32 updateRate) {
  * Handles texture animation for an object.
  * Applies texture offset based on the update rate.
  */
-static void obj_tex_animate_model(ObjectModel *model, s32 updateRate,
-                                  s32 authoredRng) {
+static void obj_tex_animate_model(ObjectModel *model, s32 updateRate, s32 authoredRng) {
     TriangleBatchInfo *batches;
     s32 offset;
     TextureHeader *tex;
@@ -5067,29 +4959,22 @@ static void obj_tex_animate_model(ObjectModel *model, s32 updateRate,
     s32 batchNumber;
     batches = DKR_PTR(TriangleBatchInfo, model->batches);
     textureIsAnimated = model->hasAnimatedTexture;
-    for (batchNumber = 0;
-         textureIsAnimated > 0 && batchNumber < model->numberOfBatches;
-         batchNumber++) {
+    for (batchNumber = 0; textureIsAnimated > 0 && batchNumber < model->numberOfBatches; batchNumber++) {
         if (batches[batchNumber].flags & RENDER_TEX_ANIM) {
             if (batches[batchNumber].textureIndex != TEX_INDEX_NO_TEXTURE) {
-                tex = DKR_PTR(
-                    TextureHeader,
-                    DKR_PTR(TextureInfo,
-                            model->textures)[batches[batchNumber].textureIndex]
-                        .texture);
+                tex = DKR_PTR(TextureHeader, DKR_PTR(TextureInfo, model->textures)[batches[batchNumber].textureIndex].texture);
                 offset = batches[batchNumber].texOffset;
                 offset <<= 6;
 #ifdef NATIVE_PORT
                 if (authoredRng) {
                     tex_animate_texture_cadence_compat(
-                        tex, &batches[batchNumber].flags, &offset, updateRate);
+                        tex, &batches[batchNumber].flags, &offset,
+                        updateRate);
                 } else {
-                    tex_animate_texture(tex, &batches[batchNumber].flags,
-                                        &offset, updateRate);
+                    tex_animate_texture(tex, &batches[batchNumber].flags, &offset, updateRate);
                 }
 #else
-                tex_animate_texture(tex, &batches[batchNumber].flags, &offset,
-                                    updateRate);
+                tex_animate_texture(tex, &batches[batchNumber].flags, &offset, updateRate);
 #endif
                 batches[batchNumber].texOffset = (offset >> 6) & 0xFF;
             }
@@ -5120,23 +5005,22 @@ void obj_tex_animate(Object *obj, s32 updateRate) {
  * texture offsets therefore belong to display-list construction, where the
  * current Object is known, rather than to this shared-model tick.
  */
-void obj_authoritative_texture_tick(Object *obj, s32 updateRate,
-                                    f32 viewDistance) {
+void obj_authoritative_texture_tick(Object *obj, s32 updateRate, f32 viewDistance) {
     ModelInstance *modInst;
     ObjectModel *model;
     s32 modelIndex = obj->modelIndex;
 
     if (obj == NULL || obj->header == NULL || obj->modelInstances == NULL ||
-        (obj->trans.flags &
-         (OBJ_FLAGS_PARTICLE | OBJ_FLAGS_INVISIBLE | OBJ_FLAGS_SHADOW_ONLY)) ||
+        (obj->trans.flags & (OBJ_FLAGS_PARTICLE | OBJ_FLAGS_INVISIBLE |
+                             OBJ_FLAGS_SHADOW_ONLY)) ||
         obj->header->modelType != OBJECT_MODEL_TYPE_3D_MODEL) {
         return;
     }
     if (obj->header->behaviorId == BHV_RACER && obj->racer != NULL &&
         !bonus_visual_is_presentation_actor(obj)) {
         f32 unusedScale;
-        modelIndex = racer_model_index_for_view(obj, obj->racer, viewDistance,
-                                                &unusedScale, FALSE);
+        modelIndex = racer_model_index_for_view(
+            obj, obj->racer, viewDistance, &unusedScale, FALSE);
     }
     /* modelInstances holds header->numberOfModelIds slots; obj->modelIndex is
      * behaviour-owned and racer_model_index_for_view() picks an LOD from the
@@ -5160,8 +5044,9 @@ void obj_authoritative_texture_tick(Object *obj, s32 updateRate,
  * Sets the texture offset on the door number based on the balloon requirement.
  */
 static s32 obj_door_batch_texture_offset(const ObjectModel *model,
-                                         const Object *obj, s32 batchIndex,
-                                         s32 *outOffset, s32 *outDigitPlace) {
+                                         const Object *obj,
+                                         s32 batchIndex, s32 *outOffset,
+                                         s32 *outDigitPlace) {
     const Object_Door *door;
     s32 current;
     s32 remaining;
@@ -5183,7 +5068,8 @@ static s32 obj_door_batch_texture_offset(const ObjectModel *model,
         return FALSE;
     }
     textures = DKR_PTR(const TextureInfo, model->textures);
-    texture = DKR_PTR(const TextureHeader,
+    texture = DKR_PTR(
+        const TextureHeader,
         textures[batch[batchIndex].textureIndex].texture);
     if (texture == NULL) {
         return FALSE;
@@ -5238,7 +5124,8 @@ void obj_door_number(ObjectModel *model, Object *obj) {
 /**
  * Do nothing. Unused.
  */
-UNUSED void do_nothing_func_80011364(UNUSED s32 unused) {}
+UNUSED void do_nothing_func_80011364(UNUSED s32 unused) {
+}
 
 /**
  * Return true if paths are intended to be updated.
@@ -5257,29 +5144,36 @@ UNUSED s32 path_update_check(void) {
 /**
  * Signal to the game that checkpoints should be updated.
  */
-void path_enable(void) { gPathUpdateOff = FALSE; }
+void path_enable(void) {
+    gPathUpdateOff = FALSE;
+}
 
 /**
  * Return the current race countdown timer.
  */
-s32 get_race_countdown(void) { return gEventCountdown; }
+s32 get_race_countdown(void) {
+    return gEventCountdown;
+}
 
 /**
  * Return the timer that the countdown is set to before the race starts.
  * There exists another variable in racer.c with exactly the same purpose.
  * This does not get used anywhere else.
  */
-s32 get_race_start_timer(void) { return gEventStartTimer; }
+s32 get_race_start_timer(void) {
+    return gEventStartTimer;
+}
 
 // Unused function, purpose currently unknown.
-UNUSED s32 func_800113BC(void) { return D_8011ADBC; }
+UNUSED s32 func_800113BC(void) {
+    return D_8011ADBC;
+}
 
 /**
- * When the object reaches a certain anim frame, play a sound and shake the
- * camera to emphasise the effect of their movement.
+ * When the object reaches a certain anim frame, play a sound and shake the camera to emphasise the effect of their
+ * movement.
  */
-s32 play_footstep_sounds(Object *obj, s32 arg1, s32 frame, s32 oddSoundId,
-                         s32 evenSoundId) {
+s32 play_footstep_sounds(Object *obj, s32 arg1, s32 frame, s32 oddSoundId, s32 evenSoundId) {
     s8 *asset;
     f32 shakeDist;
     f32 shakeMagnitude;
@@ -5302,20 +5196,16 @@ s32 play_footstep_sounds(Object *obj, s32 arg1, s32 frame, s32 oddSoundId,
         animFrame = obj->animFrame >> 4;
         for (i = 0; i < asset0; i++) {
             nextAsset = asset[i + 3];
-            if ((animFrame >= nextAsset && frame < nextAsset) ||
-                (nextAsset >= animFrame && nextAsset < frame)) {
-                set_camera_shake_by_distance(
-                    obj->trans.x_position, obj->trans.y_position,
-                    obj->trans.z_position, shakeDist, shakeMagnitude);
+            if ((animFrame >= nextAsset && frame < nextAsset) || (nextAsset >= animFrame && nextAsset < frame)) {
+                set_camera_shake_by_distance(obj->trans.x_position, obj->trans.y_position, obj->trans.z_position,
+                                             shakeDist, shakeMagnitude);
                 if (i & 1) {
                     soundId = oddSoundId; // Always set to SOUND_STOMP2
                 } else {
                     soundId = evenSoundId; // Always set to SOUND_STOMP3
                 }
-                audspat_play_sound_at_position(
-                    soundId, obj->trans.x_position, obj->trans.y_position,
-                    obj->trans.z_position, AUDIO_POINT_FLAG_ONE_TIME_TRIGGER,
-                    NULL);
+                audspat_play_sound_at_position(soundId, obj->trans.x_position, obj->trans.y_position,
+                                               obj->trans.z_position, AUDIO_POINT_FLAG_ONE_TIME_TRIGGER, NULL);
                 ret = i + 1;
                 i = asset0; // Come on, just use break!
             }
@@ -5328,12 +5218,14 @@ s32 play_footstep_sounds(Object *obj, s32 arg1, s32 frame, s32 oddSoundId,
  * Make the next call of move_object never mark the object as out of bounds.
  * Official Name: objMoveXYZnocheck
  */
-void ignore_bounds_check(void) { gNoBoundsCheck = TRUE; }
+void ignore_bounds_check(void) {
+    gNoBoundsCheck = TRUE;
+}
 
 /**
  * Sets the new position of the object using the differences given.
- * Compares against the outer edges of the level geometry to decide wether or
- * not to apply a segment ID. Official Name: objMoveXYZ
+ * Compares against the outer edges of the level geometry to decide wether or not to apply a segment ID.
+ * Official Name: objMoveXYZ
  */
 s32 move_object(Object *obj, f32 xPos, f32 yPos, f32 zPos) {
     s32 segmentID;
@@ -5365,12 +5257,9 @@ s32 move_object(Object *obj, f32 xPos, f32 yPos, f32 zPos) {
     if (obj->trans.x_position < x1) {
         outOfBounds = TRUE;
     }
-    if (1) {
-    }
-    if (1) {
-    }
-    if (1) {
-    } // Fakematch
+    if (1) {}
+    if (1) {}
+    if (1) {} // Fakematch
     y2 = (levelModel->upperYBounds + 3000.0);
     if (obj->trans.y_position > y2) {
         outOfBounds = TRUE;
@@ -5402,13 +5291,11 @@ s32 move_object(Object *obj, f32 xPos, f32 yPos, f32 zPos) {
     obj->trans.z_position = newZPos;
     box = block_boundbox(obj->segmentID);
 
-    // For some reason the XYZ positions are converted into integers for the
-    // next section
+    // For some reason the XYZ positions are converted into integers for the next section
     intXPos = newXPos, intYPos = newYPos, intZPos = newZPos;
 
     if (box == NULL) {
-        obj->segmentID =
-            get_level_segment_index_from_position(intXPos, intYPos, intZPos);
+        obj->segmentID = get_level_segment_index_from_position(intXPos, intYPos, intZPos);
         return FALSE;
     } else {
         outsideBBox = FALSE;
@@ -5422,8 +5309,7 @@ s32 move_object(Object *obj, f32 xPos, f32 yPos, f32 zPos) {
             outsideBBox = TRUE;
         }
         if (outsideBBox) {
-            segmentID = get_level_segment_index_from_position(intXPos, intYPos,
-                                                              intZPos);
+            segmentID = get_level_segment_index_from_position(intXPos, intYPos, intZPos);
             if (segmentID != -1) {
                 obj->segmentID = segmentID;
             }
@@ -5434,26 +5320,20 @@ s32 move_object(Object *obj, f32 xPos, f32 yPos, f32 zPos) {
 
 /**
  * Set up the basic model view matrix, load a texture, then render the mesh.
- * A much simpler, faster way to render an object model as opposed to
- * render_3d_model
+ * A much simpler, faster way to render an object model as opposed to render_3d_model
  */
-void render_misc_model(Object *obj, Vertex *verts, u32 numVertices,
-                       Triangle *triangles, u32 numTriangles,
-                       TextureHeader *tex, u32 flags, u32 texOffset,
-                       f32 scaleY) {
+void render_misc_model(Object *obj, Vertex *verts, u32 numVertices, Triangle *triangles, u32 numTriangles,
+                       TextureHeader *tex, u32 flags, u32 texOffset, f32 scaleY) {
     s32 hasTexture = FALSE;
-    mtx_cam_push(&gObjectCurrDisplayList, &gObjectCurrMatrix, &obj->trans,
-                 scaleY, 0.0f);
+    mtx_cam_push(&gObjectCurrDisplayList, &gObjectCurrMatrix, &obj->trans, scaleY, 0.0f);
     gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, 255, 255, 255, 255);
     gDPSetEnvColor(gObjectCurrDisplayList++, 255, 255, 255, 0);
     if (tex != NULL) {
         hasTexture = TRUE;
     }
     material_set(&gObjectCurrDisplayList, tex, flags, texOffset);
-    gSPVertexDKR(gObjectCurrDisplayList++, OS_K0_TO_PHYSICAL(verts),
-                 numVertices, 0);
-    gSPPolygon(gObjectCurrDisplayList++, OS_K0_TO_PHYSICAL(triangles),
-               numTriangles, hasTexture);
+    gSPVertexDKR(gObjectCurrDisplayList++, OS_K0_TO_PHYSICAL(verts), numVertices, 0);
+    gSPPolygon(gObjectCurrDisplayList++, OS_K0_TO_PHYSICAL(triangles), numTriangles, hasTexture);
     mtx_pop(&gObjectCurrDisplayList);
 }
 
@@ -5474,9 +5354,8 @@ static s32 character_portrait_draw_suppressed(void) {
     static s32 suppressed = -1;
     if (suppressed < 0) {
         const char *value = getenv("MDKR_SUPPRESS_PORTRAITS");
-        suppressed =
-            (value != NULL && value[0] != '\0' && strcmp(value, "0") != 0) ? 1
-                                                                           : 0;
+        suppressed = (value != NULL && value[0] != '\0' &&
+                      strcmp(value, "0") != 0) ? 1 : 0;
     }
     return suppressed;
 }
@@ -5498,31 +5377,25 @@ void render_3d_misc(Object *obj) {
             if (obj->properties.characterFlag.characterID >= 0 &&
                 !character_portrait_draw_suppressed()) {
                 characterFlagModel = obj->characterFlagModel;
-            render_misc_model(
-                obj, characterFlagModel->vertices, 4,
-                characterFlagModel->triangles, 2, characterFlagModel->texture,
-                RENDER_ANTI_ALIASING | RENDER_Z_COMPARE | RENDER_FOG_ACTIVE, 0,
-                1.0f);
+                render_misc_model(obj, characterFlagModel->vertices, 4, characterFlagModel->triangles, 2,
+                                  characterFlagModel->texture,
+                                  RENDER_ANTI_ALIASING | RENDER_Z_COMPARE | RENDER_FOG_ACTIVE, 0, 1.0f);
             }
             break;
         case BHV_BUTTERFLY:
             butterfly = obj->butterfly;
-        render_misc_model(obj, &butterfly->vertices[butterfly->unkFC * 6], 6,
-                          butterfly->triangles, 8, butterfly->texture,
-                          RENDER_Z_COMPARE | RENDER_FOG_ACTIVE, 0, 1.0f);
+            render_misc_model(obj, &butterfly->vertices[butterfly->unkFC * 6], 6, butterfly->triangles, 8,
+                              butterfly->texture, RENDER_Z_COMPARE | RENDER_FOG_ACTIVE, 0, 1.0f);
             break;
         case BHV_FISH:
             fish = obj->fish;
             scaleY = obj->level_entry->fish.unkD;
             scaleY *= 0.01f;
-        render_misc_model(obj, &fish->vertices[fish->unkFC * 6], 6,
-                          fish->triangles, 8, fish->texture,
-                          RENDER_Z_COMPARE | RENDER_FOG_ACTIVE | RENDER_CUTOUT,
-                          0, scaleY);
+            render_misc_model(obj, &fish->vertices[fish->unkFC * 6], 6, fish->triangles, 8, fish->texture,
+                              RENDER_Z_COMPARE | RENDER_FOG_ACTIVE | RENDER_CUTOUT, 0, scaleY);
             break;
         case BHV_BOOST:
-        if (obj->properties.common.unk0 &&
-            (obj->boost->unk70 > 0 || obj->boost->unk74 > 0.0f)) {
+            if (obj->properties.common.unk0 && (obj->boost->unk70 > 0 || obj->boost->unk74 > 0.0f)) {
                 func_800135B8(obj);
             }
             break;
@@ -5575,22 +5448,18 @@ void render_3d_billboard(Object *obj) {
         hasPrimCol = TRUE;
     }
     if ((obj->behaviorId == 5) && (obj->trans.scale == 6.0f)) {
-        gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, (intensity * 3) >> 2,
-                        intensity, intensity >> 1, alpha);
+        gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, (intensity * 3) >> 2, intensity, intensity >> 1, alpha);
         hasPrimCol = TRUE;
-    } else if (obj->behaviorId ==
-               BHV_WIZPIG_GHOSTS) { // If the behavior is a wizpig ghost
+    } else if (obj->behaviorId == BHV_WIZPIG_GHOSTS) { // If the behavior is a wizpig ghost
         gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, 150, 230, 255, alpha);
         hasPrimCol = TRUE;
     } else if (hasPrimCol || alpha < 255) {
-        gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, intensity, intensity,
-                        intensity, alpha);
+        gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, intensity, intensity, intensity, alpha);
     } else {
         gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, 255, 255, 255, 255);
     }
     if (hasEnvCol) {
-        gDPSetEnvColor(gObjectCurrDisplayList++, obj->shading->lightR,
-                       obj->shading->lightG, obj->shading->lightB,
+        gDPSetEnvColor(gObjectCurrDisplayList++, obj->shading->lightR, obj->shading->lightG, obj->shading->lightB,
                        obj->shading->lightIntensity);
     } else if (obj->behaviorId == BHV_LAVA_SPURT) {
         hasEnvCol = TRUE;
@@ -5608,8 +5477,7 @@ void render_3d_billboard(Object *obj) {
     }
 
     // 5 = OilSlick, SmokeCloud, Bomb, BubbleWeapon
-    if (bubbleTrap != NULL || !(obj->behaviorId != BHV_WEAPON ||
-                                obj->weapon->weaponID != WEAPON_BUBBLE_TRAP)) {
+    if (bubbleTrap != NULL || !(obj->behaviorId != BHV_WEAPON || obj->weapon->weaponID != WEAPON_BUBBLE_TRAP)) {
         objTrans.trans.rotation.z_rotation = 0;
         objTrans.trans.rotation.x_rotation = 0;
         objTrans.trans.rotation.y_rotation = 0;
@@ -5630,13 +5498,13 @@ void render_3d_billboard(Object *obj) {
             &bubbleTrap->trans, sprite, &objTrans,
             RENDER_Z_COMPARE | RENDER_SEMI_TRANSPARENT | RENDER_Z_UPDATE);
 #else
-        render_bubble_trap(&bubbleTrap->trans, sprite, (Object *)&objTrans,
-                           RENDER_Z_COMPARE | RENDER_SEMI_TRANSPARENT |
-                               RENDER_Z_UPDATE);
+        render_bubble_trap(
+            &bubbleTrap->trans, sprite, (Object *) &objTrans,
+            RENDER_Z_COMPARE | RENDER_SEMI_TRANSPARENT | RENDER_Z_UPDATE);
 #endif
     } else {
-        render_sprite_billboard(&gObjectCurrDisplayList, &gObjectCurrMatrix,
-                                &gObjectCurrVertexList, obj, sprite, flags);
+        render_sprite_billboard(&gObjectCurrDisplayList, &gObjectCurrMatrix, &gObjectCurrVertexList, obj, sprite,
+                                flags);
     }
     if (hasPrimCol) {
         gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, 255, 255, 255, 255);
@@ -5651,20 +5519,19 @@ void render_3d_billboard(Object *obj) {
  * Authoritative racer visibility, hoisted out of set_temp_model_transforms so
  * that render admission cannot drive AI RNG.
  *
- * set_temp_model_transforms only ran for objects the RENDER path admitted, and
- * the first thing it did for a racer was `objRacer->unk201 = 30` (:5227). That
- * timer is decremented in update_player_racer (racer.c:4306-4309) and at zero
- * the AI STOPS STEERING ENTIRELY (racer.c:9088 gates racer_AI_pathing_inputs),
- * stops rolling roll_percent_chance -> rand_range for its balloon upgrades
- * (racer.c:382), and has particleEmittersEnabled forced to none
- * (racer.c:2247/3452). Whether a racer was on screen -- and in how many
- * viewports -- was therefore an input to how it drove.
+ * set_temp_model_transforms only ran for objects the RENDER path admitted, and the
+ * first thing it did for a racer was `objRacer->unk201 = 30` (:5227). That timer is
+ * decremented in update_player_racer (racer.c:4306-4309) and at zero the AI STOPS
+ * STEERING ENTIRELY (racer.c:9088 gates racer_AI_pathing_inputs), stops rolling
+ * roll_percent_chance -> rand_range for its balloon upgrades (racer.c:382), and has
+ * particleEmittersEnabled forced to none (racer.c:2247/3452). Whether a racer was
+ * on screen -- and in how many viewports -- was therefore an input to how it drove.
  *
- * This evaluates render's own admission predicate for every viewport of the
- * frame, including the 3P TT-camera viewport, and OR-s the result: a racer
+ * This evaluates render's own admission predicate for every viewport of the frame,
+ * including the 3P TT-camera viewport, and OR-s the result: a racer
  * admitted by ANY viewport gets the timer. scene_visibility_prepare_viewport()
- * (tracks.c) rebuilds each viewport's camera basis, cull planes and
- * visible-segment set without drawing, and scene_object_admitted() is
+ * (tracks.c) rebuilds each viewport's camera basis, cull planes and visible-segment
+ * set without drawing, and scene_object_admitted() is
  * render_level_geometry_and_objects' test verbatim.
  *
  * Exactness is measured, not argued: a throwaway probe recording every
@@ -5695,27 +5562,25 @@ void obj_visibility_tick(void) {
 
     /* render_scene's viewport loop, then its 3P TT-camera fourth viewport. */
     ttCam = numViewports == 3 && level_type() != RACETYPE_CHALLENGE_EGGS &&
-            level_type() != RACETYPE_CHALLENGE_BATTLE &&
-            level_type() != RACETYPE_CHALLENGE_BANANAS && hud_setting() == 0;
+            level_type() != RACETYPE_CHALLENGE_BATTLE && level_type() != RACETYPE_CHALLENGE_BANANAS &&
+            hud_setting() == 0;
 
     for (pass = 0; pass < numViewports + (ttCam ? 1 : 0); pass++) {
-        scene_visibility_prepare_viewport(pass, numViewports,
-                                          pass >= numViewports);
+        scene_visibility_prepare_viewport(pass, numViewports, pass >= numViewports);
         for (i = gObjectListStart; i < gObjectCount; i++) {
             obj = gObjPtrList[i];
             /* The particle test comes first: obj->racer overlays the particle
-             * payload in the object tail, so it is only a racer pointer once
-             * the object is known not to be a particle. Same order as the
-             * sibling ticks. */
+             * payload in the object tail, so it is only a racer pointer once the
+             * object is known not to be a particle. Same order as the sibling
+             * ticks. */
             if (obj == NULL || (obj->trans.flags & OBJ_FLAGS_PARTICLE)) {
                 continue;
             }
             if (obj->header == NULL || obj->racer == NULL) {
                 continue;
             }
-            /* set_temp_model_transforms keys on the HEADER behaviour, so
-             * time-trial ghosts (obj->behaviorId == BHV_TIMETRIAL_GHOST) are
-             * included. */
+            /* set_temp_model_transforms keys on the HEADER behaviour, so time-trial
+             * ghosts (obj->behaviorId == BHV_TIMETRIAL_GHOST) are included. */
             if (obj->header->behaviorId != BHV_RACER) {
                 continue;
             }
@@ -5739,8 +5604,8 @@ void obj_visibility_tick(void) {
  *
  *   - `obj->curVertData` was written ONLY on the render path
  *     (objects.c:4772/4785/4802, with obj_animate at :4774) and is READ by
- *     SIMULATION: sphere collision func_80016748 (:6382-6435, which writes
- * racer velocity and fires rumble) and the Wizpig-ship attach logic
+ *     SIMULATION: sphere collision func_80016748 (:6382-6435, which writes racer
+ *     velocity and fires rumble) and the Wizpig-ship attach logic
  *     (object_functions.c:1969-1972). An object that was never drawn therefore
  *     kept a NULL curVertData and was silently exempt from sphere collision.
  * This walks gObjPtrList once per authoritative tick, immediately before
@@ -5751,8 +5616,8 @@ void obj_visibility_tick(void) {
  *
  *   - The three curVertData assignments collapse to one. :4772 stores the
  *     pre-animate buffer, obj_animate flips modInst->animationTaskNum
- *     (hasm_native/obj_animate.c:272), and :4785/:4802 re-store the
- * post-animate buffer; :4802 is unconditional, so the surviving value is always
+ *     (hasm_native/obj_animate.c:272), and :4785/:4802 re-store the post-animate
+ *     buffer; :4802 is unconditional, so the surviving value is always
  *     modInst->vertices[animationTaskNum] AFTER obj_animate. One store, same
  *     result.
  *   - Shading remains presentation work, but obj_animation_cadence_tick commits
@@ -5784,14 +5649,13 @@ void obj_animate_tick(void) {
         if (obj == NULL || obj->header == NULL) {
             continue;
         }
-        /* render_object_parts (:5227) sends particles to render_particle and
-         * only OBJECT_MODEL_TYPE_3D_MODEL objects to render_3d_model. */
+        /* render_object_parts (:5227) sends particles to render_particle and only
+         * OBJECT_MODEL_TYPE_3D_MODEL objects to render_3d_model. */
         if (obj->trans.flags & OBJ_FLAGS_PARTICLE) {
             continue;
         }
-        if (obj->header->modelType != OBJECT_MODEL_TYPE_3D_MODEL ||
-            obj->modelInstances == NULL || obj->modelIndex < 0 ||
-            obj->modelIndex >= obj->header->numberOfModelIds) {
+        if (obj->header->modelType != OBJECT_MODEL_TYPE_3D_MODEL || obj->modelInstances == NULL ||
+            obj->modelIndex < 0 || obj->modelIndex >= obj->header->numberOfModelIds) {
             continue;
         }
         modInst = obj->modelInstances[obj->modelIndex];
@@ -5800,8 +5664,7 @@ void obj_animate_tick(void) {
         }
         objModel = modInst->objModel;
 
-        if (modInst->animUpdateTimer <= 0 &&
-            modInst->modelType == MODELTYPE_ANIMATED) {
+        if (modInst->animUpdateTimer <= 0 && modInst->modelType == MODELTYPE_ANIMATED) {
             obj_animate(obj);
         }
         obj->curVertData = modInst->vertices[modInst->animationTaskNum];
@@ -5811,11 +5674,10 @@ void obj_animate_tick(void) {
 #endif
 
 /**
- * Renders a 3D object, with support for vehicle part entities as part of the
- * process. Loads materials, and sets environment and/or primitive colours based
- * on the material type. Computes the view matrix for the model, and calls a
- * function to draw meshes. Loops through racers to find vehicle parts, which
- * are wheels and propellers.
+ * Renders a 3D object, with support for vehicle part entities as part of the process.
+ * Loads materials, and sets environment and/or primitive colours based on the material type.
+ * Computes the view matrix for the model, and calls a function to draw meshes.
+ * Loops through racers to find vehicle parts, which are wheels and propellers.
  */
 void render_3d_model(Object *obj) {
     s32 i;
@@ -5847,13 +5709,12 @@ void render_3d_model(Object *obj) {
     if (modInst != NULL) {
         objModel = modInst->objModel;
 #ifdef NATIVE_PORT
-        /* obj_animate_tick() owns the authoritative curVertData pointer. A
-         * racer may nevertheless draw a different per-viewport LOD, whose
-         * vertex counts must match shading, mesh and attach-point work below.
-         * Temporarily select that model's buffer and restore the exact
-         * authoritative pointer in unset_temp_model_transforms(). This also
-         * covers the skydome, the one measured 3D draw object outside
-         * gObjPtrList. */
+        /* obj_animate_tick() owns the authoritative curVertData pointer. A racer
+         * may nevertheless draw a different per-viewport LOD, whose vertex counts
+         * must match shading, mesh and attach-point work below. Temporarily select
+         * that model's buffer and restore the exact authoritative pointer in
+         * unset_temp_model_transforms(). This also covers the skydome, the one
+         * measured 3D draw object outside gObjPtrList. */
         gObjectSavedCurVertData = obj->curVertData;
         gObjectSavedCurVertFor = obj;
         obj->curVertData = modInst->vertices[modInst->animationTaskNum];
@@ -5862,8 +5723,7 @@ void render_3d_model(Object *obj) {
         hasLighting = FALSE;
         intensity = 255;
         if (obj->shading != NULL) {
-            intensity =
-                (s32)(obj->shading->unk0 * 255.0f * gCurrentLightIntensity);
+            intensity = (s32) (obj->shading->unk0 * 255.0f * gCurrentLightIntensity);
             hasOpacity = TRUE;
             hasLighting = TRUE;
         }
@@ -5875,16 +5735,15 @@ void render_3d_model(Object *obj) {
         }
         if (modInst->animUpdateTimer <= 0) {
 #ifndef NATIVE_PORT
-            /* NATIVE_PORT: moved to obj_animate_tick() -- curVertData is read
-             * by SIMULATION (sphere collision, Wizpig attach), so the fixed
-             * step owns it now. */
+            /* NATIVE_PORT: moved to obj_animate_tick() -- curVertData is read by
+             * SIMULATION (sphere collision, Wizpig attach), so the fixed step owns
+             * it now. */
             obj->curVertData = modInst->vertices[modInst->animationTaskNum];
             if (modInst->modelType == MODELTYPE_ANIMATED) {
                 obj_animate(obj);
             }
 #endif
-            if (modInst->modelType != MODELTYPE_BASIC &&
-                objModel->normals != 0) {
+            if (modInst->modelType != MODELTYPE_BASIC && objModel->normals != 0) {
                 flags = TRUE;
                 if (racerObj != NULL && racerObj->vehicleID < VEHICLE_BOSSES &&
                     racerObj->playerIndex == PLAYER_COMPUTER) {
@@ -5896,8 +5755,7 @@ void render_3d_model(Object *obj) {
 #ifndef NATIVE_PORT
                 obj->curVertData = modInst->vertices[modInst->animationTaskNum];
 #endif
-                if (obj->behaviorId ==
-                    BHV_UNK_3F) { // 63 = stopwatchicon, stopwatchhand
+                if (obj->behaviorId == BHV_UNK_3F) { // 63 = stopwatchicon, stopwatchhand
                     obj_shade_fancy(objModel, obj, 0, gCurrentLightIntensity);
                 } else if (flags) {
                     obj_shade_fancy(objModel, obj, -1, gCurrentLightIntensity);
@@ -5905,11 +5763,9 @@ void render_3d_model(Object *obj) {
                     obj_shade_fast(objModel, obj, gCurrentLightIntensity);
                 }
             }
-            // Set the animation ticker for non player racers to 2, making them
-            // animate at half the framerate.
+            // Set the animation ticker for non player racers to 2, making them animate at half the framerate.
 #ifndef NATIVE_PORT
-            if ((racerObj != NULL) &&
-                (racerObj->playerIndex == PLAYER_COMPUTER) &&
+            if ((racerObj != NULL) && (racerObj->playerIndex == PLAYER_COMPUTER) &&
                 (racerObj->vehicleID < VEHICLE_BOSSES)) {
                 modInst->animUpdateTimer = 2;
             } else {
@@ -5934,19 +5790,19 @@ void render_3d_model(Object *obj) {
 #ifdef NATIVE_PORT
         {
             u32 remaster_target =
-                objModel->normals != 0 ? mdkr_remaster_light_target(obj) : 0;
-            gDkrSetRemasterTarget(gObjectCurrDisplayList++, remaster_target);
+                objModel->normals != 0
+                    ? mdkr_remaster_light_target(obj)
+                    : 0;
+            gDkrSetRemasterTarget(
+                gObjectCurrDisplayList++, remaster_target);
         }
 #endif
-        mtx_cam_push(&gObjectCurrDisplayList, &gObjectCurrMatrix, &obj->trans,
-                     gObjectModelScaleY, 0.0f);
+        mtx_cam_push(&gObjectCurrDisplayList, &gObjectCurrMatrix, &obj->trans, gObjectModelScaleY, 0.0f);
         vertOffset = FALSE;
         if (racerObj != NULL) {
             object_undo_player_tumble(obj);
-            if (obj->animationID == 0 ||
-                racerObj->vehicleID >= VEHICLE_BOSSES) {
-                mtx_head_push(&gObjectCurrDisplayList, &gObjectCurrMatrix,
-                              modInst, racerObj->headAngle);
+            if (obj->animationID == 0 || racerObj->vehicleID >= VEHICLE_BOSSES) {
+                mtx_head_push(&gObjectCurrDisplayList, &gObjectCurrMatrix, modInst, racerObj->headAngle);
                 vertOffset = TRUE;
             } else {
 #ifndef NATIVE_PORT
@@ -5954,15 +5810,12 @@ void render_3d_model(Object *obj) {
 #endif
             }
 #ifdef NATIVE_PORT
-        } else if (wizpig_visual_uses_boss_head_matrix(obj) ||
-                   terry_visual_uses_boss_head_matrix(obj)) {
-            /* The bonus actors retain their boss models but are deliberately
-             * claimed as BHV_NONE so they cannot own physics, AI, collision or
-             * camera state. Boss meshes still require retail's secondary head
-             * matrix for vertOverride batches; omitting it folds those vertices
-             * through the body matrix and visibly collapses the model. */
-            mtx_head_push(&gObjectCurrDisplayList, &gObjectCurrMatrix, modInst,
-                          0);
+        } else if (wizpig_visual_uses_boss_head_matrix(obj) || terry_visual_uses_boss_head_matrix(obj)) {
+            /* The bonus actors retain their boss models but are deliberately claimed as BHV_NONE so
+             * they cannot own physics, AI, collision or camera state. Boss meshes still require
+             * retail's secondary head matrix for vertOverride batches; omitting it folds those
+             * vertices through the body matrix and visibly collapses the model. */
+            mtx_head_push(&gObjectCurrDisplayList, &gObjectCurrMatrix, modInst, 0);
             vertOffset = TRUE;
 #endif
         }
@@ -5978,36 +5831,30 @@ void render_3d_model(Object *obj) {
             hasOpacity = TRUE;
         }
         if (hasLighting) {
-            gDPSetEnvColor(gObjectCurrDisplayList++, obj->shading->lightR,
-                           obj->shading->lightG, obj->shading->lightB,
+            gDPSetEnvColor(gObjectCurrDisplayList++, obj->shading->lightR, obj->shading->lightG, obj->shading->lightB,
                            obj->shading->lightIntensity);
         } else {
             gDPSetEnvColor(gObjectCurrDisplayList++, 255, 255, 255, 0);
         }
         if (obj->header->directionalPointLighting) {
-            gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0,
-                            obj->shading->shadowR, obj->shading->shadowG,
+            gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, obj->shading->shadowR, obj->shading->shadowG,
                             obj->shading->shadowB, opacity);
             directional_lighting_on();
         } else if (hasOpacity) {
-            gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, intensity,
-                            intensity, intensity, opacity);
+            gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, intensity, intensity, intensity, opacity);
         } else {
             gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, 255, 255, 255, 255);
         }
         if (opacity < 255) {
-            meshBatch = render_mesh(objModel, obj, 0, RENDER_SEMI_TRANSPARENT,
-                                    vertOffset);
+            meshBatch = render_mesh(objModel, obj, 0, RENDER_SEMI_TRANSPARENT, vertOffset);
         } else {
             meshBatch = render_mesh(objModel, obj, 0, RENDER_NONE, vertOffset);
         }
         if (obj->header->directionalPointLighting) {
             if (hasOpacity) {
-                gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, intensity,
-                                intensity, intensity, opacity);
+                gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, intensity, intensity, intensity, opacity);
             } else {
-                gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, 255, 255, 255,
-                                255);
+                gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, 255, 255, 255, 255);
             }
             directional_lighting_off();
         }
@@ -6022,28 +5869,16 @@ void render_3d_model(Object *obj) {
                     index = obj->attachPoints->unk2C[i];
                     if (index >= 0 && index < objModel->numberOfAttachPoints) {
                         something = loopObj->sprites[loopObj->modelIndex];
-                        vtxX = obj
-                                   ->curVertData[DKR_PTR(
-                                       s16, objModel->attachPoints)[index]]
-                                   .x;
-                        vtxY = obj
-                                   ->curVertData[DKR_PTR(
-                                       s16, objModel->attachPoints)[index]]
-                                   .y;
-                        vtxZ = obj
-                                   ->curVertData[DKR_PTR(
-                                       s16, objModel->attachPoints)[index]]
-                                   .z;
+                        vtxX = obj->curVertData[DKR_PTR(s16, objModel->attachPoints)[index]].x;
+                        vtxY = obj->curVertData[DKR_PTR(s16, objModel->attachPoints)[index]].y;
+                        vtxZ = obj->curVertData[DKR_PTR(s16, objModel->attachPoints)[index]].z;
                         loopObj->trans.x_position += vtxX;
                         loopObj->trans.y_position += vtxY;
                         loopObj->trans.z_position += vtxZ;
-                        if (loopObj->header->modelType ==
-                            OBJECT_MODEL_TYPE_SPRITE_BILLBOARD) {
-                            flags = (RENDER_Z_COMPARE | RENDER_FOG_ACTIVE |
-                                     RENDER_Z_UPDATE);
+                        if (loopObj->header->modelType == OBJECT_MODEL_TYPE_SPRITE_BILLBOARD) {
+                            flags = (RENDER_Z_COMPARE | RENDER_FOG_ACTIVE | RENDER_Z_UPDATE);
                         } else {
-                            flags = (RENDER_Z_COMPARE | RENDER_FOG_ACTIVE |
-                                     RENDER_Z_UPDATE | RENDER_ANTI_ALIASING);
+                            flags = (RENDER_Z_COMPARE | RENDER_FOG_ACTIVE | RENDER_Z_UPDATE | RENDER_ANTI_ALIASING);
                         }
                         if (opacity < 255) {
                             flags |= RENDER_SEMI_TRANSPARENT;
@@ -6058,31 +5893,22 @@ void render_3d_model(Object *obj) {
 #else
                         if (1) {
 #endif
-                            // In this instance, cargo refers to the eggs in the
-                            // fire mountain challenge.
-                            isCargo =
-                                (loopObj->trans.flags & OBJ_FLAGS_UNK_0080 &&
-                                 attachPointCount == 3);
-                            if (racerObj != NULL &&
-                                racerObj->transparency < 255) {
+                            // In this instance, cargo refers to the eggs in the fire mountain challenge.
+                            isCargo = (loopObj->trans.flags & OBJ_FLAGS_UNK_0080 && attachPointCount == 3);
+                            if (racerObj != NULL && racerObj->transparency < 255) {
                                 isCargo = FALSE;
                             }
                             if (isCargo) {
                                 func_80012C98(&gObjectCurrDisplayList);
-                                gDPSetEnvColor(gObjectCurrDisplayList++, 255,
-                                               255, 255, 0);
-                                gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0,
-                                                intensity, intensity, intensity,
+                                gDPSetEnvColor(gObjectCurrDisplayList++, 255, 255, 255, 0);
+                                gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, intensity, intensity, intensity,
                                                 opacity);
                             }
                             loopObj->properties.common.unk0 =
-                                render_sprite_billboard(
-                                    &gObjectCurrDisplayList, &gObjectCurrMatrix,
-                                    &gObjectCurrVertexList, loopObj, something,
-                                    flags);
+                                render_sprite_billboard(&gObjectCurrDisplayList, &gObjectCurrMatrix,
+                                                        &gObjectCurrVertexList, loopObj, something, flags);
                             if (isCargo) {
-                                gSPSelectMatrixDKR(gObjectCurrDisplayList++,
-                                                   G_MTX_DKR_INDEX_0);
+                                gSPSelectMatrixDKR(gObjectCurrDisplayList++, G_MTX_DKR_INDEX_0);
                                 func_80012CE8(&gObjectCurrDisplayList);
                             }
                         }
@@ -6099,53 +5925,35 @@ void render_3d_model(Object *obj) {
             if (loopObj != NULL) {
                 index = obj->header->unk58;
                 if (index >= 0 && index < objModel->numberOfAttachPoints) {
-                    flags = (RENDER_Z_COMPARE | RENDER_FOG_ACTIVE |
-                             RENDER_Z_UPDATE);
+                    flags = (RENDER_Z_COMPARE | RENDER_FOG_ACTIVE | RENDER_Z_UPDATE);
                     something = loopObj->sprites[loopObj->modelIndex];
 #ifndef NATIVE_PORT
                     /* NATIVE_PORT: the convergence lerp moved to
                      * racer_held_object_lerp(), called once per tick from
-                     * update_player_racer. It ran once per DRAW here and was
-                     * never restored, so the settle rate followed the viewport
-                     * count and the frame rate, and a culled carrier froze its
-                     * egg. */
-                    vtxX =
-                        obj->curVertData[DKR_PTR(s16,
-                                                 objModel->attachPoints)[index]]
-                            .x;
-                    vtxY =
-                        obj->curVertData[DKR_PTR(s16,
-                                                 objModel->attachPoints)[index]]
-                            .y;
-                    vtxZ =
-                        obj->curVertData[DKR_PTR(s16,
-                                                 objModel->attachPoints)[index]]
-                            .z;
-                    loopObj->trans.x_position +=
-                        (vtxX - loopObj->trans.x_position) * 0.25;
-                    loopObj->trans.y_position +=
-                        (vtxY - loopObj->trans.y_position) * 0.25;
-                    loopObj->trans.z_position +=
-                        (vtxZ - loopObj->trans.z_position) * 0.25;
+                     * update_player_racer. It ran once per DRAW here and was never
+                     * restored, so the settle rate followed the viewport count and
+                     * the frame rate, and a culled carrier froze its egg. */
+                    vtxX = obj->curVertData[DKR_PTR(s16, objModel->attachPoints)[index]].x;
+                    vtxY = obj->curVertData[DKR_PTR(s16, objModel->attachPoints)[index]].y;
+                    vtxZ = obj->curVertData[DKR_PTR(s16, objModel->attachPoints)[index]].z;
+                    loopObj->trans.x_position += (vtxX - loopObj->trans.x_position) * 0.25;
+                    loopObj->trans.y_position += (vtxY - loopObj->trans.y_position) * 0.25;
+                    loopObj->trans.z_position += (vtxZ - loopObj->trans.z_position) * 0.25;
 #endif
-                    if (loopObj->header->modelType ==
-                        OBJECT_MODEL_TYPE_SPRITE_BILLBOARD) {
-                        render_sprite_billboard(
-                            &gObjectCurrDisplayList, &gObjectCurrMatrix,
-                            &gObjectCurrVertexList, loopObj, something, flags);
+                    if (loopObj->header->modelType == OBJECT_MODEL_TYPE_SPRITE_BILLBOARD) {
+                        render_sprite_billboard(&gObjectCurrDisplayList, &gObjectCurrMatrix, &gObjectCurrVertexList,
+                                                loopObj, something, flags);
                     }
                 }
             }
         }
         if (meshBatch != -1) {
             if (obj->header->directionalPointLighting) {
-                gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0,
-                                obj->shading->shadowR, obj->shading->shadowG,
+                gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, obj->shading->shadowR, obj->shading->shadowG,
                                 obj->shading->shadowB, opacity);
                 directional_lighting_on();
             }
-            render_mesh(objModel, obj, meshBatch, RENDER_SEMI_TRANSPARENT,
-                        vertOffset);
+            render_mesh(objModel, obj, meshBatch, RENDER_SEMI_TRANSPARENT, vertOffset);
             if (obj->header->directionalPointLighting) {
                 directional_lighting_off();
             }
@@ -6164,7 +5972,9 @@ void render_3d_model(Object *obj) {
     }
 }
 
-void func_80012C30(void) { D_8011ADA4 = 0; }
+void func_80012C30(void) {
+    D_8011ADA4 = 0;
+}
 
 void func_80012C3C(Gfx **dList) {
     s32 i;
@@ -6189,14 +5999,13 @@ void func_80012CE8(Gfx **dList) {
 }
 
 /**
- * Update the object stack trace, set the draw pointers, then begin rendering
- * the object. Official Name: objPrintObject
+ * Update the object stack trace, set the draw pointers, then begin rendering the object.
+ * Official Name: objPrintObject
  */
 void render_object(Gfx **dList, Mtx **mtx, Vertex **verts, Object *obj) {
     f32 scale;
 #ifdef NATIVE_PORT
-    if (taj_visual_suppress_donor_draw(obj) ||
-        wizpig_visual_suppress_donor_draw(obj) ||
+    if (taj_visual_suppress_donor_draw(obj) || wizpig_visual_suppress_donor_draw(obj) ||
         terry_visual_suppress_donor_draw(obj)) {
         return;
     }
@@ -6209,8 +6018,9 @@ void render_object(Gfx **dList, Mtx **mtx, Vertex **verts, Object *obj) {
         return;
     }
     if (terry_visual_select_sign_object(obj) &&
-        terry_visual_select_sign_player(obj) < 0)
+        terry_visual_select_sign_player(obj) < 0) {
         return;
+    }
 #endif
     if (obj->trans.flags & (OBJ_FLAGS_INVISIBLE | OBJ_FLAGS_SHADOW_ONLY)) {
         return;
@@ -6255,8 +6065,7 @@ void object_do_player_tumble(Object *this) {
             tmp_f0 = (tmp_f0 < 0.0f) ? 0.0f : tmp_f0 * tmp_f0;
 
             temp = (1.0f - tmp_f0) * 24.0f + sp_20->unkD0;
-            if (0) {
-            } // Fakematch
+            if (0) {} // Fakematch
             offsetY = temp;
         }
 #ifdef NATIVE_PORT
@@ -6268,12 +6077,11 @@ void object_do_player_tumble(Object *this) {
          * gObjectOffsetY's own single-global contract; the do/undo pairs are
          * verified non-nested.
          *
-         * The pairing guard mirrors the carBob pair's. It is inert on every
-         * path measured today -- the do/undo guards are identical -- but this
-         * bracket is the wider of the two:
-         * object_do_player_tumble/object_undo_player_tumble span
-         * obj_tex_animate and mtx_cam_push in render_3d_model (:5002/:5097),
-         * the boost draw
+         * The pairing guard mirrors the carBob pair's. It is inert on every path
+         * measured today -- the do/undo guards are identical -- but this bracket
+         * is the wider of the two:
+         * object_do_player_tumble/object_undo_player_tumble span obj_tex_animate
+         * and mtx_cam_push in render_3d_model (:5002/:5097), the boost draw
          * (:5628/:5630), and in particles.c the entire per-racer emitter loop
          * (:855/:985). A nested pair over a DIFFERENT object would otherwise
          * write that object's saved y onto this one. */
@@ -6320,12 +6128,10 @@ static s32 object_render_model_index(const Object *obj) {
 /* The authored level-of-detail ladder, exactly as it was written inline in
  * set_temp_model_transforms: `scaledDistance` is the view distance shifted down
  * three places and multiplied by the character's scale, and `thresholds` is the
- * five-byte band table for this vehicle and viewport layout. Lifted into its
- * own function so the draw can ask it the same question twice -- once at the
- * real distance and once at the biased one -- and tell whether the answer
- * changed. */
-static s32 racer_lod_index_for_scaled(s32 scaledDistance,
-                                      const u8 *thresholds) {
+ * five-byte band table for this vehicle and viewport layout. Lifted into its own
+ * function so the draw can ask it the same question twice -- once at the real
+ * distance and once at the biased one -- and tell whether the answer changed. */
+static s32 racer_lod_index_for_scaled(s32 scaledDistance, const u8 *thresholds) {
     if (scaledDistance < -50) {
         return 5;
     }
@@ -6479,8 +6285,7 @@ static s32 racer_light_tex_offset(u8 lightFlags) {
     return offset * 4;
 }
 
-/** Commit the final viewport's racer LOD and light phase once per fixed tick.
- */
+/** Commit the final viewport's racer LOD and light phase once per fixed tick. */
 void obj_lod_tick(void) {
     extern LevelModel *gCurrentLevelModel;
     s32 savedCamera;
@@ -6518,8 +6323,7 @@ void obj_lod_tick(void) {
 
 void set_temp_model_transforms(Object *obj) {
 #ifdef NATIVE_PORT
-    extern f32
-        gSceneDrawDistance; /* tracks.c: this viewport's private sort key */
+    extern f32 gSceneDrawDistance; /* tracks.c: this viewport's private sort key */
     extern s32 gSceneDrawDistanceValid;
 #endif
     s32 batchNum;
@@ -6544,13 +6348,12 @@ void set_temp_model_transforms(Object *obj) {
     ret1 = 1.0f;
     ret2 = 1.0f;
     if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE)) {
-        if (obj->header->behaviorId == BHV_RACER &&
-            !bonus_visual_is_presentation_actor(obj)) {
+        if (obj->header->behaviorId == BHV_RACER && !bonus_visual_is_presentation_actor(obj)) {
             objRacer = obj->racer;
 #ifndef NATIVE_PORT
-            /* NATIVE_PORT: moved to obj_visibility_tick(). "This racer was
-             * drawn" was a simulation input: unk201 gates the AI's steering and
-             * its RNG (racer.c:9088 -> racer_AI_pathing_inputs, racer.c:382
+            /* NATIVE_PORT: moved to obj_visibility_tick(). "This racer was drawn"
+             * was a simulation input: unk201 gates the AI's steering and its RNG
+             * (racer.c:9088 -> racer_AI_pathing_inputs, racer.c:382
              * roll_percent_chance -> rand_range) and particle emission
              * (racer.c:2247/3452). */
             objRacer->unk201 = 30;
@@ -6564,8 +6367,8 @@ void set_temp_model_transforms(Object *obj) {
 #ifdef NATIVE_PORT
             var_f0 = gSceneDrawDistanceValid ? gSceneDrawDistance
                                              : obj->distanceToCamera;
-            modelIndex = racer_model_index_for_view(obj, objRacer, var_f0,
-                                                    &lodScale, TRUE);
+            modelIndex = racer_model_index_for_view(
+                obj, objRacer, var_f0, &lodScale, TRUE);
             obj->trans.scale *= lodScale;
             gObjectRenderModelFor = obj;
             gObjectRenderModelIndex = modelIndex;
@@ -6574,8 +6377,7 @@ void set_temp_model_transforms(Object *obj) {
             modInst = obj->modelInstances[modelIndex];
             objModel = modInst->objModel;
 #else
-            if (objRacer->playerIndex != PLAYER_COMPUTER &&
-                objRacer->raceFinished) {
+            if (objRacer->playerIndex != PLAYER_COMPUTER && objRacer->raceFinished) {
                 modelIndex = 0;
                 batchNum = 0;
             } else {
@@ -6583,15 +6385,12 @@ void set_temp_model_transforms(Object *obj) {
                     modelIndex = 1;
                     batchNum = 0;
                 } else {
-                    // Loads vehicles between VEHICLE_TRICKY and VEHICLE_SMOKEY.
-                    // So all boss vehicles except wizpig.
+                    // Loads vehicles between VEHICLE_TRICKY and VEHICLE_SMOKEY. So all boss vehicles except wizpig.
                     batchNum = objRacer->vehicleID;
                     if (objRacer->vehicleID >= NUMBER_OF_PLAYER_VEHICLES) {
                         batchNum = 0;
                     }
-                    bossAsset = (u8 *)get_misc_asset(
-                        batchNum +
-                        VEHICLE_BOSSES); // 40 bytes of data u8[8][5]?
+                    bossAsset = (u8 *) get_misc_asset(batchNum + VEHICLE_BOSSES); // 40 bytes of data u8[8][5]?
                     batchNum = 0;
                     bossAsset += cam_get_viewport_layout() * 10;
                     if (get_current_viewport() != objRacer->playerIndex) {
@@ -6607,10 +6406,8 @@ void set_temp_model_transforms(Object *obj) {
                     var_f0 /= 2700.0f;
                     var_f0 += 1.0f;
                     obj->trans.scale *= var_f0;
-                    var_v1 *= ((f32 *)get_misc_asset(
-                        ASSET_MISC_4))[objRacer->characterId];
-                    // ASSET_MISC_4 is just 10 floats of 1.0f. One for each
-                    // playable character.
+                    var_v1 *= ((f32 *) get_misc_asset(ASSET_MISC_4))[objRacer->characterId];
+                    // ASSET_MISC_4 is just 10 floats of 1.0f. One for each playable character.
                     if (var_v1 < -50) {
                         modelIndex = 5;
                     } else {
@@ -6671,14 +6468,10 @@ void set_temp_model_transforms(Object *obj) {
                 modelIndex--;
                 if (objRacer->lightFlags & RACER_LIGHT_BRAKE) {
                     modelIndex += 1;
-                    objRacer->lightFlags =
-                        (objRacer->lightFlags & ~RACER_LIGHT_UNK10) |
-                        RACER_LIGHT_UNK20;
+                    objRacer->lightFlags = (objRacer->lightFlags & ~RACER_LIGHT_UNK10) | RACER_LIGHT_UNK20;
                 } else if (objRacer->lightFlags & RACER_LIGHT_NIGHT) {
                     modelIndex += 3;
-                    objRacer->lightFlags =
-                        (objRacer->lightFlags & ~RACER_LIGHT_UNK20) |
-                        RACER_LIGHT_UNK10;
+                    objRacer->lightFlags = (objRacer->lightFlags & ~RACER_LIGHT_UNK20) | RACER_LIGHT_UNK10;
                 } else if (objRacer->lightFlags & RACER_LIGHT_UNK20) {
                     modelIndex += 1;
                 } else {
@@ -6686,13 +6479,9 @@ void set_temp_model_transforms(Object *obj) {
                 }
             }
             modelIndex *= 4;
-            for (batchNum = 0; batchNum < objModel->numberOfBatches;
-                 batchNum++) {
-                if ((DKR_PTR(TriangleBatchInfo, objModel->batches)[batchNum]
-                         .flags &
-                     0x810000) == RENDER_TEX_ANIM) {
-                    DKR_PTR(TriangleBatchInfo, objModel->batches)
-                    [batchNum].texOffset = modelIndex;
+            for (batchNum = 0; batchNum < objModel->numberOfBatches; batchNum++) {
+                if ((DKR_PTR(TriangleBatchInfo, objModel->batches)[batchNum].flags & 0x810000) == RENDER_TEX_ANIM) {
+                    DKR_PTR(TriangleBatchInfo, objModel->batches)[batchNum].texOffset = modelIndex;
                 }
             }
 #endif
@@ -6711,11 +6500,10 @@ void set_temp_model_transforms(Object *obj) {
             obj->trans.z_position += objRacer->carBobZ;
             ret1 = objRacer->stretch_height;
 #ifdef NATIVE_PORT
-        } else if (obj->header->behaviorId == BHV_RACER &&
-                   bonus_visual_is_presentation_actor(obj)) {
-            /* Claimed boss presentation actors have no Object_Racer payload.
-             * Keep the neutral scale established above instead of reading a
-             * zero stretch_height and flattening their animated vertices. */
+        } else if (obj->header->behaviorId == BHV_RACER && bonus_visual_is_presentation_actor(obj)) {
+            /* Claimed boss presentation actors have no Object_Racer payload. Keep the neutral scale
+             * established above instead of reading a zero stretch_height and flattening their
+             * animated vertices. */
             bonus_visual_trace_transform_bypass(obj);
 #endif
         } else if (obj->behaviorId == BHV_FROG) {
@@ -6727,21 +6515,19 @@ void set_temp_model_transforms(Object *obj) {
 }
 
 /**
- * Determine which model type the object is using, then call the related
- * function to render it. Beforehand, call a function to apply a temporary
- * transformation, mostly for racers. Afterwards, undo that.
+ * Determine which model type the object is using, then call the related function to render it.
+ * Beforehand, call a function to apply a temporary transformation, mostly for racers.
+ * Afterwards, undo that.
  */
 void render_object_parts(Object *obj) {
     set_temp_model_transforms(obj);
     if (obj->trans.flags & OBJ_FLAGS_PARTICLE) {
-        render_particle((Particle *)obj, &gObjectCurrDisplayList,
-                        &gObjectCurrMatrix, &gObjectCurrVertexList,
+        render_particle((Particle *) obj, &gObjectCurrDisplayList, &gObjectCurrMatrix, &gObjectCurrVertexList,
                         PARTICLE_UNK_FLAG_8000);
     } else {
         if (obj->header->modelType == OBJECT_MODEL_TYPE_3D_MODEL) {
             render_3d_model(obj);
-        } else if (obj->header->modelType ==
-                   OBJECT_MODEL_TYPE_SPRITE_BILLBOARD) {
+        } else if (obj->header->modelType == OBJECT_MODEL_TYPE_SPRITE_BILLBOARD) {
             render_3d_billboard(obj);
         } else if (obj->header->modelType == OBJECT_MODEL_TYPE_MISC) {
             render_3d_misc(obj);
@@ -6763,8 +6549,7 @@ void unset_temp_model_transforms(Object *obj) {
         gObjectRenderModelFor = NULL;
     }
 #endif
-    if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE) &&
-        obj->header->behaviorId == BHV_RACER &&
+    if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE) && obj->header->behaviorId == BHV_RACER &&
         !bonus_visual_is_presentation_actor(obj)) {
 #ifdef NATIVE_PORT
         if (gObjectSavedBobFor == obj) {
@@ -6812,14 +6597,12 @@ void func_800135B8(Object *boostObj) {
     asset = GET_BOOST_TABLE();
     asset = &asset[D_8011B058[racerIndex]];
     object_do_player_tumble(boostObj->properties.boost.obj);
-    mtx_cam_push(&gObjectCurrDisplayList, &gObjectCurrMatrix,
-                 &boostObj->properties.boost.obj->trans, 1.0f, 0.0f);
+    mtx_cam_push(&gObjectCurrDisplayList, &gObjectCurrMatrix, &boostObj->properties.boost.obj->trans, 1.0f, 0.0f);
     object_undo_player_tumble(boostObj->properties.boost.obj);
     objTransform.trans.x_position = boostData->position.x;
     objTransform.trans.y_position = boostData->position.y;
     objTransform.trans.z_position = boostData->position.z;
-    objTransform.trans.scale =
-        boostData->unkC + (boostData->unk10 * coss_f(boost->unk72 << 12));
+    objTransform.trans.scale = boostData->unkC + (boostData->unk10 * coss_f(boost->unk72 << 12));
     if (boost->unk70 < 2) {
         objTransform.trans.scale *= boost->unk74;
     }
@@ -6844,24 +6627,18 @@ void func_800135B8(Object *boostObj) {
         RENDER_Z_COMPARE | RENDER_FOG_ACTIVE | RENDER_Z_UPDATE);
 #endif
     if (boost->unk70 == 2) {
-        material_set(
-            &gObjectCurrDisplayList, asset->tex,
-            (RENDER_Z_COMPARE | RENDER_SEMI_TRANSPARENT | RENDER_FOG_ACTIVE),
-            0);
+        material_set(&gObjectCurrDisplayList, asset->tex,
+                     (RENDER_Z_COMPARE | RENDER_SEMI_TRANSPARENT | RENDER_FOG_ACTIVE), 0);
         if (asset->tex != NULL) {
             hasTexture = TRUE;
         } else {
             hasTexture = FALSE;
         }
 
-        vtx = &gBoostVerts[gBoostVertFlip]
-                          [(boostObj->properties.boost.indexes >> 14) & 0x3FFF];
-        tri = &gBoostTris[gBoostVertFlip]
-                         [boostObj->properties.boost.indexes & 0x3FFF];
-        gSPVertexDKR(gObjectCurrDisplayList++, OS_K0_TO_PHYSICAL(vtx),
-                     BOOST_VERT_COUNT, 0);
-        gSPPolygon(gObjectCurrDisplayList++, OS_K0_TO_PHYSICAL(tri),
-                   BOOST_TRI_COUNT, hasTexture);
+        vtx = &gBoostVerts[gBoostVertFlip][(boostObj->properties.boost.indexes >> 14) & 0x3FFF];
+        tri = &gBoostTris[gBoostVertFlip][boostObj->properties.boost.indexes & 0x3FFF];
+        gSPVertexDKR(gObjectCurrDisplayList++, OS_K0_TO_PHYSICAL(vtx), BOOST_VERT_COUNT, 0);
+        gSPPolygon(gObjectCurrDisplayList++, OS_K0_TO_PHYSICAL(tri), BOOST_TRI_COUNT, hasTexture);
     }
     mtx_pop(&gObjectCurrDisplayList);
 }
@@ -6873,8 +6650,7 @@ void func_800135B8(Object *boostObj) {
 void render_bubble_trap_transform(const ObjectTransform *trans, Sprite *gfxData,
                                   ObjectTransformExt *obj, s32 flags) {
 #else
-void render_bubble_trap(ObjectTransform *trans, Sprite *gfxData, Object *obj,
-                        s32 flags) {
+void render_bubble_trap(ObjectTransform *trans, Sprite *gfxData, Object *obj, s32 flags) {
 #endif
     f32 x;
     f32 y;
@@ -6909,18 +6685,15 @@ void render_bubble_trap(ObjectTransform *trans, Sprite *gfxData, Object *obj,
         &gObjectCurrDisplayList, &gObjectCurrMatrix, &gObjectCurrVertexList,
         &obj->trans, obj->animFrame, gfxData, flags);
 #else
-    render_sprite_billboard(&gObjectCurrDisplayList, &gObjectCurrMatrix,
-                            &gObjectCurrVertexList, obj, gfxData, flags);
+    render_sprite_billboard(&gObjectCurrDisplayList, &gObjectCurrMatrix, &gObjectCurrVertexList, obj, gfxData, flags);
 #endif
 }
 
 /**
- * Get the racer object data, and fetch set visual shield properties based on
- * that racer. Afterwards, render the graphics with opacity scaling with the
- * fadetimer.
+ * Get the racer object data, and fetch set visual shield properties based on that racer.
+ * Afterwards, render the graphics with opacity scaling with the fadetimer.
  */
-void render_racer_shield(Gfx **dList, Mtx **mtx, Vertex **vtxList,
-                         Object *obj) {
+void render_racer_shield(Gfx **dList, Mtx **mtx, Vertex **vtxList, Object *obj) {
     Object *effectAnchor = obj;
     Object_Racer *racer;
     ModelInstance *modInst;
@@ -6954,13 +6727,11 @@ void render_racer_shield(Gfx **dList, Mtx **mtx, Vertex **vtxList,
         gShieldEffectObject->trans.x_position = shield->x_position;
         gShieldEffectObject->trans.y_position = shield->y_position;
         gShieldEffectObject->trans.z_position = shield->z_position;
-        gShieldEffectObject->trans.y_position +=
-            shield->y_offset * sins_f(gShieldSineTime[racerIndex] * 0x200);
+        gShieldEffectObject->trans.y_position += shield->y_offset * sins_f(gShieldSineTime[racerIndex] * 0x200);
         shear = (coss_f(gShieldSineTime[racerIndex] * 0x400) * 0.05f) + 0.95f;
         gShieldEffectObject->trans.scale = shield->scale * shear;
         shear = shear * shield->turnSpeed;
-        gShieldEffectObject->trans.rotation.y_rotation =
-            gShieldSineTime[racerIndex] * 0x800;
+        gShieldEffectObject->trans.rotation.y_rotation = gShieldSineTime[racerIndex] * 0x800;
         gShieldEffectObject->trans.rotation.x_rotation = 0x800;
         gShieldEffectObject->trans.rotation.z_rotation = 0;
         shieldType = racer->shieldType;
@@ -6975,12 +6746,10 @@ void render_racer_shield(Gfx **dList, Mtx **mtx, Vertex **vtxList,
         shear *= scale;
         modInst = gShieldEffectObject->modelInstances[shieldType];
         mdl = modInst->objModel;
-        gShieldEffectObject->curVertData =
-            modInst->vertices[modInst->animationTaskNum];
+        gShieldEffectObject->curVertData = modInst->vertices[modInst->animationTaskNum];
         gDPSetEnvColor(gObjectCurrDisplayList++, 255, 255, 255, 0);
         if (racer->shieldTimer < 64) {
-            gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, 255, 255, 255,
-                            racer->shieldTimer * 4);
+            gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, 255, 255, 255, racer->shieldTimer * 4);
         } else {
             gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, 255, 255, 255, 255);
         }
@@ -6998,12 +6767,10 @@ void render_racer_shield(Gfx **dList, Mtx **mtx, Vertex **vtxList,
 }
 
 /**
- * Get the racer object data, and fetch set visual magnet properties based on
- * that racer. Afterwards, render the graphics with opacity set by the
- * properties.
+ * Get the racer object data, and fetch set visual magnet properties based on that racer.
+ * Afterwards, render the graphics with opacity set by the properties.
  */
-void render_racer_magnet(Gfx **dList, Mtx **mtx, Vertex **vtxList,
-                         Object *obj) {
+void render_racer_magnet(Gfx **dList, Mtx **mtx, Vertex **vtxList, Object *obj) {
     Object *effectAnchor = obj;
     Object_Racer *racer;
     ModelInstance *modInst;
@@ -7027,8 +6794,7 @@ void render_racer_magnet(Gfx **dList, Mtx **mtx, Vertex **vtxList,
             gObjectCurrVertexList = *vtxList;
             magnet = (f32 *) get_misc_asset(ASSET_MISC_MAGNET_DATA);
             vehicleID = racer->vehicleID;
-            if (vehicleID < VEHICLE_CAR ||
-                vehicleID >= NUMBER_OF_PLAYER_VEHICLES) {
+            if (vehicleID < VEHICLE_CAR || vehicleID >= NUMBER_OF_PLAYER_VEHICLES) {
                 vehicleID = VEHICLE_CAR;
             }
             magnet = &magnet[vehicleID * 5];
@@ -7040,28 +6806,23 @@ void render_racer_magnet(Gfx **dList, Mtx **mtx, Vertex **vtxList,
             gMagnetEffectObject->trans.y_position = magnet[1];
             gMagnetEffectObject->trans.z_position = magnet[2];
             magnet += 3;
-            shear = (coss_f((gRacerFXData[racerIndex].unk1 * 0x400)) * 0.02f) +
-                    0.98f;
+            shear = (coss_f((gRacerFXData[racerIndex].unk1 * 0x400)) * 0.02f) + 0.98f;
             gMagnetEffectObject->trans.scale = magnet[0] * shear;
             magnet += 1;
             shear = magnet[0] * shear;
-            gMagnetEffectObject->trans.rotation.y_rotation =
-                gRacerFXData[racerIndex].unk2 * 0x1000;
+            gMagnetEffectObject->trans.rotation.y_rotation = gRacerFXData[racerIndex].unk2 * 0x1000;
             gMagnetEffectObject->trans.rotation.x_rotation = 0;
             gMagnetEffectObject->trans.rotation.z_rotation = 0;
             modInst = gMagnetEffectObject->modelInstances[0];
             mdl = modInst->objModel;
-            gMagnetEffectObject->curVertData =
-                modInst->vertices[modInst->animationTaskNum];
+            gMagnetEffectObject->curVertData = modInst->vertices[modInst->animationTaskNum];
             opacity = ((gRacerFXData[racerIndex].unk1 * 8) & 0x7F) + 0x80;
-            gfx_init_basic_xlu(&gObjectCurrDisplayList, DRAW_BASIC_2CYCLE,
-                               COLOUR_RGBA32(255, 255, 255, opacity),
+            gfx_init_basic_xlu(&gObjectCurrDisplayList, DRAW_BASIC_2CYCLE, COLOUR_RGBA32(255, 255, 255, opacity),
                                gMagnetColours[racer->magnetModelID]);
             mtx_shear_push(&gObjectCurrDisplayList, &gObjectCurrMatrix,
                            gMagnetEffectObject, effectAnchor, shear);
             gObjectTexAnim = TRUE;
-            render_mesh(mdl, gMagnetEffectObject, 0, RENDER_SEMI_TRANSPARENT,
-                        0);
+            render_mesh(mdl, gMagnetEffectObject, 0, RENDER_SEMI_TRANSPARENT, 0);
             gObjectTexAnim = FALSE;
             gSPSelectMatrixDKR(gObjectCurrDisplayList++, G_MTX_DKR_INDEX_0);
             gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, 255, 255, 255, 255);
@@ -7110,28 +6871,11 @@ void func_80014090(Object *obj, s32 arg1) {
             modInst = obj->modelInstances[i];
             objMdl = modInst->objModel;
             if (objHeader72 < objMdl->numberOfTextures) {
-                width =
-                    DKR_PTR(TextureHeader,
-                            DKR_PTR(TextureInfo, objMdl->textures)[objHeader72]
-                                .texture)
-                        ->width
-                    << 5;
-                height =
-                    DKR_PTR(TextureHeader,
-                            DKR_PTR(TextureInfo, objMdl->textures)[objHeader72]
-                                .texture)
-                        ->height
-                    << 5;
+                width = DKR_PTR(TextureHeader, DKR_PTR(TextureInfo, objMdl->textures)[objHeader72].texture)->width << 5;
+                height = DKR_PTR(TextureHeader, DKR_PTR(TextureInfo, objMdl->textures)[objHeader72].texture)->height << 5;
                 for (j = 0; j < objMdl->numberOfBatches; j++) {
-                    if (objHeader72 ==
-                        DKR_PTR(TriangleBatchInfo, objMdl->batches)[j]
-                            .textureIndex) {
-                        for (k = DKR_PTR(TriangleBatchInfo, objMdl->batches)[j]
-                                     .facesOffset;
-                             k <
-                             DKR_PTR(TriangleBatchInfo, objMdl->batches)[j + 1]
-                                 .facesOffset;
-                             k++) {
+                    if (objHeader72 == DKR_PTR(TriangleBatchInfo, objMdl->batches)[j].textureIndex) {
+                        for (k = DKR_PTR(TriangleBatchInfo, objMdl->batches)[j].facesOffset; k < DKR_PTR(TriangleBatchInfo, objMdl->batches)[j + 1].facesOffset; k++) {
                             tri = &DKR_PTR(Triangle, objMdl->triangles)[k];
                             newU1 = (tri->uv1.u - tri->uv0.u);
                             newV1 = (tri->uv1.v - tri->uv0.v);
@@ -7165,8 +6909,7 @@ void obj_tick_anims(void) {
 
     for (; i < gObjectCount; i++) {
         currObj = gObjPtrList[i];
-        if (!(currObj->trans.flags & OBJ_FLAGS_PARTICLE) &&
-            currObj->header->modelType == OBJECT_MODEL_TYPE_3D_MODEL) {
+        if (!(currObj->trans.flags & OBJ_FLAGS_PARTICLE) && currObj->header->modelType == OBJECT_MODEL_TYPE_3D_MODEL) {
             for (j = 0; j < currObj->header->numberOfModelIds; j++) {
                 modInst = currObj->modelInstances[j];
                 if (modInst != NULL && modInst->animUpdateTimer > 0) {
@@ -7221,11 +6964,9 @@ void obj_animation_cadence_tick(void) {
 
 /**
  * Renders every triangle batch in an objects mesh.
- * If vertOffset is true, then draw in two passes, utilising the head matrix and
- * vertex ID offset in the batch.
+ * If vertOffset is true, then draw in two passes, utilising the head matrix and vertex ID offset in the batch.
  */
-s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags,
-                s32 overrideVerts) {
+s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s32 overrideVerts) {
     s32 i;
     s32 textureIndex;
     s32 triOffset;
@@ -7261,13 +7002,11 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags,
             i++;
             continue;
         }
-        if (wizpig_visual_select_sign_object(obj) &&
-            !wizpig_visual_select_sign_batch(obj, i)) {
+        if (wizpig_visual_select_sign_object(obj) && !wizpig_visual_select_sign_batch(obj, i)) {
             i++;
             continue;
         }
-        if (terry_visual_select_sign_object(obj) &&
-            !terry_visual_select_sign_batch(obj, i)) {
+        if (terry_visual_select_sign_object(obj) && !terry_visual_select_sign_batch(obj, i)) {
             i++;
             continue;
         }
@@ -7280,48 +7019,30 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags,
             continue;
         }
 #endif
-        if (!(DKR_PTR(TriangleBatchInfo, objModel->batches)[i].flags &
-              RENDER_SEMI_TRANSPARENT) ||
-            flags & RENDER_SEMI_TRANSPARENT) {
+        if (!(DKR_PTR(TriangleBatchInfo, objModel->batches)[i].flags & RENDER_SEMI_TRANSPARENT) || flags & RENDER_SEMI_TRANSPARENT) {
             // Hidden/Invisible geometry
-            textureIndex =
-                DKR_PTR(TriangleBatchInfo, objModel->batches)[i].flags &
-                RENDER_HIDDEN;
+            textureIndex = DKR_PTR(TriangleBatchInfo, objModel->batches)[i].flags & RENDER_HIDDEN;
             // Probably a fakematch to use textureIndex here, but it works.
             if (!textureIndex) {
-                vertOffset = DKR_PTR(TriangleBatchInfo, objModel->batches)[i]
-                                 .verticesOffset;
-                triOffset = DKR_PTR(TriangleBatchInfo, objModel->batches)[i]
-                                .facesOffset;
-                numVertices =
-                    DKR_PTR(TriangleBatchInfo, objModel->batches)[i + 1]
-                        .verticesOffset -
-                    vertOffset;
-                offsetStartVertex =
-                    (overrideVerts)
-                        ? DKR_PTR(TriangleBatchInfo, objModel->batches)[i]
-                              .vertOverride
-                        : numVertices;
-                numTris = DKR_PTR(TriangleBatchInfo, objModel->batches)[i + 1]
-                              .facesOffset -
-                          triOffset;
+                vertOffset = DKR_PTR(TriangleBatchInfo, objModel->batches)[i].verticesOffset;
+                triOffset = DKR_PTR(TriangleBatchInfo, objModel->batches)[i].facesOffset;
+                numVertices = DKR_PTR(TriangleBatchInfo, objModel->batches)[i + 1].verticesOffset - vertOffset;
+                offsetStartVertex = (overrideVerts) ? DKR_PTR(TriangleBatchInfo, objModel->batches)[i].vertOverride : numVertices;
+                numTris = DKR_PTR(TriangleBatchInfo, objModel->batches)[i + 1].facesOffset - triOffset;
                 tris = &DKR_PTR(Triangle, objModel->triangles)[triOffset];
                 vtx = &obj->curVertData[vertOffset];
-                textureIndex = DKR_PTR(TriangleBatchInfo, objModel->batches)[i]
-                                   .textureIndex;
+                textureIndex = DKR_PTR(TriangleBatchInfo, objModel->batches)[i].textureIndex;
 #ifdef NATIVE_PORT
-                if (taj_visual_select_sign_object(obj) ||
-                    wizpig_visual_select_sign_object(obj) ||
+                if (taj_visual_select_sign_object(obj) || wizpig_visual_select_sign_object(obj) ||
                     terry_visual_select_sign_object(obj)) {
                     /* taj_visual proved the P1..P4 placard indices against the
-                     * ASSET-ID model it composed
-                     * (taj_visual_sign_schema_is_ready requires
-                     * numberOfTextures == 20). This draw consumes them on
-                     * whichever LOD model modelIndex selected, which is a
+                     * ASSET-ID model it composed (taj_visual_sign_schema_is_ready
+                     * requires numberOfTextures == 20). This draw consumes them
+                     * on whichever LOD model modelIndex selected, which is a
                      * different ObjectModel and is not covered by that proof.
-                     * Bound it here like obj_authoritative_texture_tick()
-                     * bounds modelIndex, and fall back to the authored texture
-                     * rather than indexing past the array. */
+                     * Bound it here like obj_authoritative_texture_tick() bounds
+                     * modelIndex, and fall back to the authored texture rather
+                     * than indexing past the array. */
                     s32 signTexIndex =
                         taj_visual_select_sign_object(obj)
                             ? taj_visual_select_sign_player(obj)
@@ -7346,8 +7067,8 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags,
                     texEnabled = FALSE;
                 } else {
 #ifdef NATIVE_PORT
-                    if (obj_door_batch_texture_offset(objModel, obj, i,
-                                                      &doorTexOffset,
+                    if (obj_door_batch_texture_offset(
+                            objModel, obj, i, &doorTexOffset,
                             &doorDigitPlace)) {
                         texOffset = doorTexOffset << 14;
                         if (sDoorTexTrace < 0) {
@@ -7396,49 +7117,48 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags,
 #endif
                 if (offsetStartVertex == numVertices) {
 #ifdef NATIVE_PORT
-                    gDkrSetSmoothNormals(dList++,
+                    gDkrSetSmoothNormals(
+                        dList++,
                         batchNormals != NULL
                             ? OS_K0_TO_PHYSICAL(batchNormals)
                             : 0);
 #endif
-                    gSPVertexDKR(dList++, OS_K0_TO_PHYSICAL(vtx), numVertices,
-                                 0);
+                    gSPVertexDKR(dList++, OS_K0_TO_PHYSICAL(vtx), numVertices, 0);
                 } else {
                     if (offsetStartVertex > 0) {
 #ifdef NATIVE_PORT
                         gDkrSetSmoothNormals(
-                            dList++, batchNormals != NULL
+                            dList++,
+                            batchNormals != NULL
                                 ? OS_K0_TO_PHYSICAL(batchNormals)
                                 : 0);
 #endif
-                        gSPVertexDKR(dList++, OS_K0_TO_PHYSICAL(vtx),
-                                     offsetStartVertex, 0);
+                        gSPVertexDKR(dList++, OS_K0_TO_PHYSICAL(vtx), offsetStartVertex, 0);
                         gSPSelectMatrixDKR(dList++, G_MTX_DKR_INDEX_2);
 #ifdef NATIVE_PORT
                         gDkrSetSmoothNormals(
-                            dList++, batchNormals != NULL
+                            dList++,
+                            batchNormals != NULL
                                 ? OS_K0_TO_PHYSICAL(
                                       &batchNormals[offsetStartVertex])
                                 : 0);
 #endif
-                        gSPVertexDKR(dList++,
-                                     OS_K0_TO_PHYSICAL(&vtx[offsetStartVertex]),
+                        gSPVertexDKR(dList++, OS_K0_TO_PHYSICAL(&vtx[offsetStartVertex]),
                                      (numVertices - offsetStartVertex), 1);
                     } else {
                         gSPSelectMatrixDKR(dList++, G_MTX_DKR_INDEX_2);
 #ifdef NATIVE_PORT
                         gDkrSetSmoothNormals(
-                            dList++, batchNormals != NULL
+                            dList++,
+                            batchNormals != NULL
                                 ? OS_K0_TO_PHYSICAL(batchNormals)
                                 : 0);
 #endif
-                        gSPVertexDKR(dList++, OS_K0_TO_PHYSICAL(vtx),
-                                     numVertices, 0);
+                        gSPVertexDKR(dList++, OS_K0_TO_PHYSICAL(vtx), numVertices, 0);
                     }
                     gSPSelectMatrixDKR(dList++, G_MTX_DKR_INDEX_1);
                 }
-                gSPPolygon(dList++, OS_K0_TO_PHYSICAL(tris), numTris,
-                           texEnabled);
+                gSPPolygon(dList++, OS_K0_TO_PHYSICAL(tris), numTris, texEnabled);
             }
             i++;
         } else {
@@ -7475,8 +7195,7 @@ s32 get_first_active_object(s32 *retObjCount) {
                 if (gObjPtrList[i]->header->flags & HEADER_FLAGS_UNK_0001) {
                     i++;
                 } else {
-                    // Break the loop if neither OBJ_FLAGS_PARTICLE nor bit 1 in
-                    // header->flags is set
+                    // Break the loop if neither OBJ_FLAGS_PARTICLE nor bit 1 in header->flags is set
                     breakLoop = -1;
                 }
             } else {
@@ -7489,8 +7208,7 @@ s32 get_first_active_object(s32 *retObjCount) {
             if (gObjPtrList[j]->trans.flags & OBJ_FLAGS_PARTICLE) {
                 // Break the loop if OBJ_FLAGS_PARTICLE is set
                 breakLoop = -1;
-            } else if (!(gObjPtrList[j]->header->flags &
-                         HEADER_FLAGS_UNK_0001)) {
+            } else if (!(gObjPtrList[j]->header->flags & HEADER_FLAGS_UNK_0001)) {
                 j--;
             } else {
                 // Break the loop if bit 1 in header->flags is set
@@ -7512,8 +7230,7 @@ s32 get_first_active_object(s32 *retObjCount) {
     return i;
 }
 
-UNUSED void func_800149C0(unk800149C0 *arg0, UNUSED s32 arg1, s32 arg2,
-                          s32 arg3, s32 *arg4, s32 *arg5, s32 arg6) {
+UNUSED void func_800149C0(unk800149C0 *arg0, UNUSED s32 arg1, s32 arg2, s32 arg3, s32 *arg4, s32 *arg5, s32 arg6) {
     UNUSED s32 pad;
     s32 endVal;
     s32 startVal;
@@ -7543,13 +7260,10 @@ s32 func_80014B50(s32 arg0, s32 arg1, f32 arg2, u32 arg3) {
     switch (arg3) {
         case 0:
             while (arg1 >= arg0) {
-            while ((var_a1 >= arg0) && ((gObjPtrList[arg0]->trans.x_position -
-                                         gObjPtrList[arg0]->unk34) < arg2)) {
+                while ((var_a1 >= arg0) && ((gObjPtrList[arg0]->trans.x_position - gObjPtrList[arg0]->unk34) < arg2)) {
                     arg0++;
                 }
-            while ((arg1 >= var_a0) &&
-                   (arg2 <= (gObjPtrList[arg1]->trans.x_position -
-                             gObjPtrList[arg1]->unk34))) {
+                while ((arg1 >= var_a0) && (arg2 <= (gObjPtrList[arg1]->trans.x_position - gObjPtrList[arg1]->unk34))) {
                     arg1--;
                 }
                 if (arg0 < arg1) {
@@ -7563,13 +7277,10 @@ s32 func_80014B50(s32 arg0, s32 arg1, f32 arg2, u32 arg3) {
             break;
         case 1:
             while (arg1 >= arg0) {
-            while ((var_a1 >= arg0) && ((gObjPtrList[arg0]->trans.y_position -
-                                         gObjPtrList[arg0]->unk34) < arg2)) {
+                while ((var_a1 >= arg0) && ((gObjPtrList[arg0]->trans.y_position - gObjPtrList[arg0]->unk34) < arg2)) {
                     arg0++;
                 }
-            while ((arg1 >= var_a0) &&
-                   (arg2 <= (gObjPtrList[arg1]->trans.y_position -
-                             gObjPtrList[arg1]->unk34))) {
+                while ((arg1 >= var_a0) && (arg2 <= (gObjPtrList[arg1]->trans.y_position - gObjPtrList[arg1]->unk34))) {
                     arg1--;
                 }
                 if (arg0 < arg1) {
@@ -7583,13 +7294,10 @@ s32 func_80014B50(s32 arg0, s32 arg1, f32 arg2, u32 arg3) {
             break;
         case 2:
             while (arg1 >= arg0) {
-            while ((var_a1 >= arg0) && ((gObjPtrList[arg0]->trans.z_position -
-                                         gObjPtrList[arg0]->unk34) < arg2)) {
+                while ((var_a1 >= arg0) && ((gObjPtrList[arg0]->trans.z_position - gObjPtrList[arg0]->unk34) < arg2)) {
                     arg0++;
                 }
-            while ((arg1 >= var_a0) &&
-                   (arg2 <= (gObjPtrList[arg1]->trans.z_position -
-                             gObjPtrList[arg1]->unk34))) {
+                while ((arg1 >= var_a0) && (arg2 <= (gObjPtrList[arg1]->trans.z_position - gObjPtrList[arg1]->unk34))) {
                     arg1--;
                 }
                 if (arg0 < arg1) {
@@ -7603,13 +7311,10 @@ s32 func_80014B50(s32 arg0, s32 arg1, f32 arg2, u32 arg3) {
             break;
         case 8:
             while (arg1 >= arg0) {
-            while ((var_a1 >= arg0) && ((gObjPtrList[arg0]->trans.x_position +
-                                         gObjPtrList[arg0]->unk34) < arg2)) {
+                while ((var_a1 >= arg0) && ((gObjPtrList[arg0]->trans.x_position + gObjPtrList[arg0]->unk34) < arg2)) {
                     arg0++;
                 }
-            while ((arg1 >= var_a0) &&
-                   (arg2 <= (gObjPtrList[arg1]->trans.x_position +
-                             gObjPtrList[arg1]->unk34))) {
+                while ((arg1 >= var_a0) && (arg2 <= (gObjPtrList[arg1]->trans.x_position + gObjPtrList[arg1]->unk34))) {
                     arg1--;
                 }
                 if (arg0 < arg1) {
@@ -7623,13 +7328,10 @@ s32 func_80014B50(s32 arg0, s32 arg1, f32 arg2, u32 arg3) {
             break;
         case 9:
             while (arg1 >= arg0) {
-            while ((var_a1 >= arg0) && ((gObjPtrList[arg0]->trans.y_position +
-                                         gObjPtrList[arg0]->unk34) < arg2)) {
+                while ((var_a1 >= arg0) && ((gObjPtrList[arg0]->trans.y_position + gObjPtrList[arg0]->unk34) < arg2)) {
                     arg0++;
                 }
-            while ((arg1 >= var_a0) &&
-                   (arg2 <= (gObjPtrList[arg1]->trans.y_position +
-                             gObjPtrList[arg1]->unk34))) {
+                while ((arg1 >= var_a0) && (arg2 <= (gObjPtrList[arg1]->trans.y_position + gObjPtrList[arg1]->unk34))) {
                     arg1--;
                 }
                 if (arg0 < arg1) {
@@ -7643,13 +7345,10 @@ s32 func_80014B50(s32 arg0, s32 arg1, f32 arg2, u32 arg3) {
             break;
         case 10:
             while (arg1 >= arg0) {
-            while ((var_a1 >= arg0) && ((gObjPtrList[arg0]->trans.z_position +
-                                         gObjPtrList[arg0]->unk34) < arg2)) {
+                while ((var_a1 >= arg0) && ((gObjPtrList[arg0]->trans.z_position + gObjPtrList[arg0]->unk34) < arg2)) {
                     arg0++;
                 }
-            while ((arg1 >= var_a0) &&
-                   (arg2 <= (gObjPtrList[arg1]->trans.z_position +
-                             gObjPtrList[arg1]->unk34))) {
+                while ((arg1 >= var_a0) && (arg2 <= (gObjPtrList[arg1]->trans.z_position + gObjPtrList[arg1]->unk34))) {
                     arg1--;
                 }
                 if (arg0 < arg1) {
@@ -7681,37 +7380,32 @@ void sort_objects_by_dist(s32 startIndex, s32 lastIndex) {
         obj = gObjPtrList[i];
         if (obj != NULL) {
             if (obj->trans.flags & OBJ_FLAGS_PARTICLE) {
-                // get_distance_to_camera calculates the distance to the camera
-                // from a XYZ location.
-                obj->distanceToCamera = -get_distance_to_camera(
-                    obj->trans.x_position, obj->trans.y_position,
-                    obj->trans.z_position);
+                // get_distance_to_camera calculates the distance to the camera from a XYZ location.
+                obj->distanceToCamera =
+                    -get_distance_to_camera(obj->trans.x_position, obj->trans.y_position, obj->trans.z_position);
             } else if (obj->header->flags & HEADER_FLAGS_UNK_0080) {
 #ifdef NATIVE_PORT
-                /* The original ACCUMULATES: `distanceToCamera += -16000.0f`,
-                 * once per sort, i.e. once per viewport per frame, forever.
-                 * These objects are meant to sort behind everything ("draw me
-                 * last"), and one pass of the original already achieves that --
-                 * the sentinel it lands on after the first pass is exactly
-                 * -16000. Every pass after that is unbounded drift in a field
-                 * SIMULATION reads (vehicle_tricky.c:428, racer.c:4881/9287,
-                 * tracks.c:4377) and the authoritative hash covers. Store the
-                 * sentinel instead of accumulating it: identical single-pass
-                 * ordering (behind every real distance, tied among themselves
-                 * so the bubble sort keeps their relative order), no drift, and
-                 * no dependence on how many times the scene was drawn. */
+                /* The original ACCUMULATES: `distanceToCamera += -16000.0f`, once
+                 * per sort, i.e. once per viewport per frame, forever. These objects
+                 * are meant to sort behind everything ("draw me last"), and one pass
+                 * of the original already achieves that -- the sentinel it lands on
+                 * after the first pass is exactly -16000. Every pass after that is
+                 * unbounded drift in a field SIMULATION reads (vehicle_tricky.c:428,
+                 * racer.c:4881/9287, tracks.c:4377) and the authoritative hash
+                 * covers. Store the sentinel instead of accumulating it: identical
+                 * single-pass ordering (behind every real distance, tied among
+                 * themselves so the bubble sort keeps their relative order), no
+                 * drift, and no dependence on how many times the scene was drawn. */
                 obj->distanceToCamera = -16000.0f;
 #else
                 obj->distanceToCamera += -16000.0f;
 #endif
             } else {
-                obj->distanceToCamera = -get_distance_to_camera(
-                    obj->trans.x_position, obj->trans.y_position,
-                    obj->trans.z_position);
+                obj->distanceToCamera =
+                    -get_distance_to_camera(obj->trans.x_position, obj->trans.y_position, obj->trans.z_position);
             }
         } else {
-            //!@bug obj is NULL here, so it would probably cause a crash.
-            //!Thankfully, gObjPtrList shouldn't have NULL
+            //!@bug obj is NULL here, so it would probably cause a crash. Thankfully, gObjPtrList shouldn't have NULL
             //! objects in it.
             obj->distanceToCamera = 0.0f;
         }
@@ -7721,8 +7415,7 @@ void sort_objects_by_dist(s32 startIndex, s32 lastIndex) {
     do {
         didNotSwap = TRUE;
         for (i = startIndex; i < lastIndex; i++) {
-            if (gObjPtrList[i]->distanceToCamera <
-                gObjPtrList[i + 1]->distanceToCamera) {
+            if (gObjPtrList[i]->distanceToCamera < gObjPtrList[i + 1]->distanceToCamera) {
                 obj = gObjPtrList[i];
                 gObjPtrList[i] = gObjPtrList[i + 1];
                 gObjPtrList[i + 1] = obj;
@@ -7733,9 +7426,8 @@ void sort_objects_by_dist(s32 startIndex, s32 lastIndex) {
 }
 
 #ifdef NATIVE_PORT
-/* Results of the last obj_sort_tick(), consumed by
- * render_level_geometry_and_objects instead of it recomputing (and
- * re-permuting) them per viewport. */
+/* Results of the last obj_sort_tick(), consumed by render_level_geometry_and_objects
+ * instead of it recomputing (and re-permuting) them per viewport. */
 s32 gObjSortFirstActive;
 s32 gObjSortObjCount;
 
@@ -7744,19 +7436,17 @@ s32 gObjSortObjCount;
  * THE SIMULATION'S ITERATION ARRAY.
  *
  * get_first_active_object (objects.c:5850) partitions gObjPtrList and
- * sort_objects_by_dist (:6045) permutes it by distance to the CURRENT
- * VIEWPORT's camera -- once per viewport, inside
- * render_level_geometry_and_objects. That same array is what obj_update
- * (:4176/4216/4225), process_object_interactions (:6081) and
- * checkpoint_update_all iterate, so how (and how many times) the scene was
- * drawn chose the next tick's collision and RNG order. The distances it writes
- * are gameplay-read too (vehicle_tricky.c:428, racer.c:4881/9287,
- * tracks.c:4377).
+ * sort_objects_by_dist (:6045) permutes it by distance to the CURRENT VIEWPORT's
+ * camera -- once per viewport, inside render_level_geometry_and_objects. That same
+ * array is what obj_update (:4176/4216/4225), process_object_interactions (:6081)
+ * and checkpoint_update_all iterate, so how (and how many times) the scene was
+ * drawn chose the next tick's collision and RNG order. The distances it writes are
+ * gameplay-read too (vehicle_tricky.c:428, racer.c:4881/9287, tracks.c:4377).
  *
  * The permutation and the distance writes now happen exactly once per
- * authoritative tick, here, using the basis of the LAST viewport of the frame
- * -- which is the ordering the simulation observed before this change, because
- * the last viewport's sort is the one that survived into the next tick.
+ * authoritative tick, here, using the basis of the LAST viewport of the frame --
+ * which is the ordering the simulation observed before this change, because the
+ * last viewport's sort is the one that survived into the next tick.
  *
  * Render keeps correct per-viewport back-to-front ordering by sorting a PRIVATE
  * index array (render_level_geometry_and_objects), touching neither gObjPtrList
@@ -7812,8 +7502,7 @@ void process_object_interactions(void) {
                 objsWithInteractives++;
                 if (objInteract->unk11 != 2) {
                     objInteract->obj = NULL;
-                    objInteract->flags &=
-                        ~(INTERACT_FLAGS_COLLIDED | INTERACT_FLAGS_PUSHING);
+                    objInteract->flags &= ~(INTERACT_FLAGS_COLLIDED | INTERACT_FLAGS_PUSHING);
                     objInteract->distance = 255;
                 }
             }
@@ -7834,15 +7523,12 @@ void process_object_interactions(void) {
                 if (i != j) {
                     obj2 = objList[j];
                     objInteract2 = obj2->interactObj;
-                    if (objInteract2->flags &
-                        (INTERACT_FLAGS_SOLID | INTERACT_FLAGS_TANGIBLE)) {
+                    if (objInteract2->flags & (INTERACT_FLAGS_SOLID | INTERACT_FLAGS_TANGIBLE)) {
                         if (objInteract2->unk11 == 3) {
                             func_80016748(obj, obj2);
                         } else if (objInteract2->unk11 != 2) {
-                            xDiff =
-                                obj->trans.x_position - obj2->trans.x_position;
-                            zDiff =
-                                obj->trans.z_position - obj2->trans.z_position;
+                            xDiff = obj->trans.x_position - obj2->trans.x_position;
+                            zDiff = obj->trans.z_position - obj2->trans.z_position;
                             if (objInteract2->flags & INTERACT_FLAGS_UNK_0020) {
                                 radius = 0x400000; // 4194304.0f;
                             } else {
@@ -7976,20 +7662,16 @@ void func_800159C8(Object *arg0, Object *arg1) {
 
     f2 = sp7C * sp7C + f12 * f12 + sp74 * sp74;
     if (f2 > 1.0) {
-        f2 = ((arg1->trans.x_position - sp58->x_position) * sp7C +
-              (arg1->trans.y_position - sp58->y_position) * f12 +
+        f2 = ((arg1->trans.x_position - sp58->x_position) * sp7C + (arg1->trans.y_position - sp58->y_position) * f12 +
               (arg1->trans.z_position - sp58->z_position) * sp74) /
              f2;
         if (f2 >= 0.0f && f2 <= 1.0) {
             sp8C = sp58->x_position + f2 * sp7C;
             f18 = sp58->y_position + f2 * f12;
             sp84 = sp58->z_position + f2 * sp74;
-            sp9C = sqrtf((sp8C - arg1->trans.x_position) *
-                             (sp8C - arg1->trans.x_position) +
-                         (f18 - arg1->trans.y_position) *
-                             (f18 - arg1->trans.y_position) +
-                         (sp84 - arg1->trans.z_position) *
-                             (sp84 - arg1->trans.z_position));
+            sp9C = sqrtf((sp8C - arg1->trans.x_position) * (sp8C - arg1->trans.x_position) +
+                         (f18 - arg1->trans.y_position) * (f18 - arg1->trans.y_position) +
+                         (sp84 - arg1->trans.z_position) * (sp84 - arg1->trans.z_position));
         }
     }
 
@@ -8046,10 +7728,8 @@ void func_800159C8(Object *arg0, Object *arg1) {
                     }
                     if (var_v0) {
                         sp54->flags |= 0x40;
-                        f2 = (arg0->trans.x_position * arg0->z_velocity -
-                              arg0->trans.z_position * arg0->x_velocity);
-                        f2 = (arg1->trans.x_position * arg0->z_velocity -
-                              arg1->trans.z_position * arg0->x_velocity) -
+                        f2 = (arg0->trans.x_position * arg0->z_velocity - arg0->trans.z_position * arg0->x_velocity);
+                        f2 = (arg1->trans.x_position * arg0->z_velocity - arg1->trans.z_position * arg0->x_velocity) -
                              f2;
                         sp50->unk1D2 = 7;
                         if (f2 >= 0.0f) {
@@ -8073,10 +7753,8 @@ void func_800159C8(Object *arg0, Object *arg1) {
                 }
                 if (var_v0) {
                     sp54->flags |= 0x40;
-                    f2 = arg0->trans.x_position * arg0->z_velocity -
-                         arg0->trans.z_position * arg0->x_velocity;
-                    f2 = arg1->trans.x_position * arg0->z_velocity -
-                         arg1->trans.z_position * arg0->x_velocity - f2;
+                    f2 = arg0->trans.x_position * arg0->z_velocity - arg0->trans.z_position * arg0->x_velocity;
+                    f2 = arg1->trans.x_position * arg0->z_velocity - arg1->trans.z_position * arg0->x_velocity - f2;
                     if (f2 >= 0.0f) {
                         f2 = 2.0f;
                     } else {
@@ -8163,10 +7841,8 @@ void func_80016500(Object *obj, Object_Racer *racer) {
     }
     cosAngle = coss_f(-angle);
     sinAngle = sins_f(-angle);
-    racer->lateral_velocity =
-        (obj->x_velocity * cosAngle) + (obj->z_velocity * sinAngle);
-    racer->velocity =
-        (-obj->x_velocity * sinAngle) + (obj->z_velocity * cosAngle);
+    racer->lateral_velocity = (obj->x_velocity * cosAngle) + (obj->z_velocity * sinAngle);
+    racer->velocity = (-obj->x_velocity * sinAngle) + (obj->z_velocity * cosAngle);
     if (racer->playerIndex != PLAYER_COMPUTER) {
         volume = (startVelocity - racer->velocity) * 14.0f;
         if (volume < 0) {
@@ -8178,8 +7854,7 @@ void func_80016500(Object *obj, Object_Racer *racer) {
         }
         if (racer->unk1F6 == 0) {
             sound_play(SOUND_CRASH_CHARACTER, &racer->unk220);
-            sound_volume_set_relative(SOUND_CRASH_CHARACTER, racer->unk220,
-                                      volume);
+            sound_volume_set_relative(SOUND_CRASH_CHARACTER, racer->unk220, volume);
         }
         if (racer->unk1F6 == 0 && volume > 55) {
             if (!racer->raceFinished) {
@@ -8188,8 +7863,7 @@ void func_80016500(Object *obj, Object_Racer *racer) {
             racer->unk1F3 |= 8;
         }
         if (volume > 55) {
-            play_random_character_voice(obj, SOUND_VOICE_CHARACTER_NEGATIVE, 8,
-                                        1);
+            play_random_character_voice(obj, SOUND_VOICE_CHARACTER_NEGATIVE, 8, 1);
         }
         shakeMagnitude = (startVelocity - racer->velocity);
         if (shakeMagnitude < 0) {
@@ -8212,8 +7886,7 @@ void func_80016748(Object *obj0, Object *obj1) {
 #ifdef AVOID_UB
     MtxF obj1TransformMtx;
 #else
-    // THIS IS A HACK! Supposed to be a MtxF, but the stack ended up being too
-    // big.
+    // THIS IS A HACK! Supposed to be a MtxF, but the stack ended up being too big.
     f32 pad[2];
     f32 obj1TransformMtx[4][3];
 #endif
@@ -8305,8 +7978,7 @@ void func_80016BC4(Object *obj) {
 /**
  * Find the first butterfly node within range and return a pointer to it.
  */
-Object *obj_butterfly_node(f32 x, f32 y, f32 z, f32 maxDistCheck,
-                           s32 dontCheckYAxis) {
+Object *obj_butterfly_node(f32 x, f32 y, f32 z, f32 maxDistCheck, s32 dontCheckYAxis) {
     f32 diffY;
     f32 diffZ;
     f32 diffX;
@@ -8316,14 +7988,12 @@ Object *obj_butterfly_node(f32 x, f32 y, f32 z, f32 maxDistCheck,
 
     for (i = 0; i < gObjectCount; i++) {
         curObj = gObjPtrList[i];
-        if (!(curObj->trans.flags & OBJ_FLAGS_PARTICLE) &&
-            curObj->behaviorId == BHV_ANIMATED_OBJECT_3) {
+        if (!(curObj->trans.flags & OBJ_FLAGS_PARTICLE) && curObj->behaviorId == BHV_ANIMATED_OBJECT_3) {
             diffX = curObj->trans.x_position - x;
             diffZ = curObj->trans.z_position - z;
             if (!dontCheckYAxis) {
                 diffY = curObj->trans.y_position - y;
-                distance =
-                    sqrtf((diffX * diffX) + (diffY * diffY) + (diffZ * diffZ));
+                distance = sqrtf((diffX * diffX) + (diffY * diffY) + (diffZ * diffZ));
             } else {
                 distance = sqrtf((diffX * diffX) + (diffZ * diffZ));
             }
@@ -8340,8 +8010,7 @@ Object *obj_butterfly_node(f32 x, f32 y, f32 z, f32 maxDistCheck,
  * Any racer within the radius is sorted from nearest to furthest.
  * Returns the number of racers within the radius.
  */
-s32 obj_dist_racer(f32 x, f32 y, f32 z, f32 radius, s32 is2dCheck,
-                   Object **sortObj) {
+s32 obj_dist_racer(f32 x, f32 y, f32 z, f32 radius, s32 is2dCheck, Object **sortObj) {
     f32 distances[8];
     s32 i;
     s32 j;
@@ -8368,8 +8037,7 @@ s32 obj_dist_racer(f32 x, f32 y, f32 z, f32 radius, s32 is2dCheck,
                     xDiff = racerObj->trans.x_position - x;
                     yDiff = racerObj->trans.y_position - y;
                     zDiff = racerObj->trans.z_position - z;
-                    yDiff = sqrtf((xDiff * xDiff) + (yDiff * yDiff) +
-                                  (zDiff * zDiff));
+                    yDiff = sqrtf((xDiff * xDiff) + (yDiff * yDiff) + (zDiff * zDiff));
                 }
                 if (yDiff < radius) {
                     distances[result] = yDiff;
@@ -8442,17 +8110,14 @@ void obj_collision_transform(Object *obj) {
     trans.y_position = obj->trans.y_position;
     trans.z_position = obj->trans.z_position;
 #ifdef AVOID_UB
-    mtxf_from_transform((MtxF *)colData->matrices[(colData->mtxFlip + 2)],
-                        &trans);
+    mtxf_from_transform((MtxF *) colData->matrices[(colData->mtxFlip + 2)], &trans);
 #else
-    mtxf_from_transform((MtxF *)colData->_matrices[(colData->mtxFlip + 2) << 1],
-                        &trans);
+    mtxf_from_transform((MtxF *) colData->_matrices[(colData->mtxFlip + 2) << 1], &trans);
 #endif
     colData->collidedObj = NULL;
 }
 
-s32 collision_objectmodel(Object *obj, s32 arg1, s32 *arg2, Vec3f *arg3,
-                          f32 *arg4, f32 *arg5, s8 *surface) {
+s32 collision_objectmodel(Object *obj, s32 arg1, s32 *arg2, Vec3f *arg3, f32 *arg4, f32 *arg5, s8 *surface) {
     ModelInstance *modInst;
     s32 sp170;
     s32 sp16C;
@@ -8485,11 +8150,10 @@ s32 collision_objectmodel(Object *obj, s32 arg1, s32 *arg2, Vec3f *arg3,
         sp154 = modInst->objModel;
 
         temp = sp158->trans.x_position - obj->trans.x_position;
-        dist = sqrtf((temp) * (temp) +
-                     (sp158->trans.y_position - obj->trans.y_position) *
-                         (sp158->trans.y_position - obj->trans.y_position) +
-                     (sp158->trans.z_position - obj->trans.z_position) *
-                         (sp158->trans.z_position - obj->trans.z_position));
+        dist = sqrtf(
+            (temp) * (temp) +
+            (sp158->trans.y_position - obj->trans.y_position) * (sp158->trans.y_position - obj->trans.y_position) +
+            (sp158->trans.z_position - obj->trans.z_position) * (sp158->trans.z_position - obj->trans.z_position));
 
         j = dist;
         if (sp158->interactObj->flags & 0x20) {
@@ -8532,8 +8196,7 @@ s32 collision_objectmodel(Object *obj, s32 arg1, s32 *arg2, Vec3f *arg3,
 #ifdef AVOID_UB
         spDC = &collision->matrices[((sp158->collisionData->mtxFlip + 1) & 1)];
 #else
-        spDC = (MtxF *)&collision
-                   ->_matrices[((sp158->collisionData->mtxFlip + 1) & 1) << 1];
+        spDC = (MtxF *) &collision->_matrices[((sp158->collisionData->mtxFlip + 1) & 1) << 1];
 #endif
 
         sp14C = func_8001790C(obj, sp158);
@@ -8542,39 +8205,33 @@ s32 collision_objectmodel(Object *obj, s32 arg1, s32 *arg2, Vec3f *arg3,
                 sp13C[j] = sp14C->unk0C[i + 0];
                 sp12C[j] = sp14C->unk0C[i + 1];
                 sp11C[j] = sp14C->unk0C[i + 2];
-                mtxf_transform_point(*spDC, arg4[i], arg4[i + 1], arg4[i + 2],
-                                     &sp100[j], &spF0[j], &spE0[j]);
+                mtxf_transform_point(*spDC, arg4[i], arg4[i + 1], arg4[i + 2], &sp100[j], &spF0[j], &spE0[j]);
             }
         } else {
             for (i = 0, j = 0; j < arg1; j++, i++) {
-                mtxf_transform_point(*spDC, arg3[i].x, arg3[i].y, arg3[i].z,
-                                     &sp13C[j], &sp12C[j], &sp11C[j]);
+                mtxf_transform_point(*spDC, arg3[i].x, arg3[i].y, arg3[i].z, &sp13C[j], &sp12C[j], &sp11C[j]);
             }
         }
 
         for (i = 0, j = 0; j < arg1; j++, i += 3) {
-            mtxf_transform_point(*spDC, arg4[i], arg4[i + 1], arg4[i + 2],
-                                 &sp100[j], &spF0[j], &spE0[j]);
+            mtxf_transform_point(*spDC, arg4[i], arg4[i + 1], arg4[i + 2], &sp100[j], &spF0[j], &spE0[j]);
         }
 
         arg2[0] = 0;
-        tempv0 =
-            func_80017A18(sp154, arg1, arg2, sp13C, sp12C, sp11C, sp100, spF0,
-                          spE0, arg5, surface, 1.0 / sp158->trans.scale);
+        tempv0 = func_80017A18(sp154, arg1, arg2, sp13C, sp12C, sp11C, sp100, spF0, spE0, arg5, surface,
+                               1.0 / sp158->trans.scale);
         if (tempv0 != 0) {
 
             // @fake
-            if (!j) {
-            }
+            if (!j) {}
 
             sp158->collisionData->collidedObj = obj;
 #ifdef NATIVE_PORT
-            /* [OBJCOLL] telemetry. This assignment is the ONLY non-NULL writer
-             * of collidedObj in the whole game, and five interaction sites read
-             * it (the door and T.T.-door balloon textboxes, the trophy cabinet,
-             * the lighthouse signpost). It was unreachable while func_80017A18
-             * was stubbed, so counting it is what shows the gap is really
-             * closed. */
+            /* [OBJCOLL] telemetry. This assignment is the ONLY non-NULL writer of
+             * collidedObj in the whole game, and five interaction sites read it
+             * (the door and T.T.-door balloon textboxes, the trophy cabinet, the
+             * lighthouse signpost). It was unreachable while func_80017A18 was
+             * stubbed, so counting it is what shows the gap is really closed. */
             mdkr_objcoll_hit();
 #endif
         }
@@ -8584,16 +8241,13 @@ s32 collision_objectmodel(Object *obj, s32 arg1, s32 *arg2, Vec3f *arg3,
         }
 
 #ifdef AVOID_UB
-        spDC = &sp158->collisionData
-                    ->matrices[(sp158->collisionData->mtxFlip + 2)];
+        spDC = &sp158->collisionData->matrices[(sp158->collisionData->mtxFlip + 2)];
 #else
-        spDC = (MtxF *)&sp158->collisionData
-                   ->_matrices[(sp158->collisionData->mtxFlip + 2) << 1];
+        spDC = (MtxF *) &sp158->collisionData->_matrices[(sp158->collisionData->mtxFlip + 2) << 1];
 #endif
 
         // @fake
-        if (sp158) {
-        }
+        if (sp158) {}
 
         sp16C = 1;
         for (i = 0, j = 0; j < arg1; j++, i += 3, sp16C <<= 1) {
@@ -8603,8 +8257,7 @@ s32 collision_objectmodel(Object *obj, s32 arg1, s32 *arg2, Vec3f *arg3,
                 sp14C->unk0C[i + 2] = spE0[j];
             }
             if (tempv0 & sp16C) {
-                mtxf_transform_point(*spDC, sp100[j], spF0[j], spE0[j],
-                                     &arg4[i + 0], &arg4[i + 1], &arg4[i + 2]);
+                mtxf_transform_point(*spDC, sp100[j], spF0[j], spE0[j], &arg4[i + 0], &arg4[i + 1], &arg4[i + 2]);
             }
         }
 
@@ -8666,9 +8319,9 @@ u32 func_800179D0(void) {
 #endif
 }
 
-/* NATIVE_PORT: this body is the upstream decomp's matched func_80017A18,
- * adopted verbatim -- the port carries no patches of its own to it beyond the
- * three deltas below.
+/* NATIVE_PORT: this body is the upstream decomp's matched func_80017A18, adopted
+ * verbatim -- the port carries no patches of its own to it beyond the three
+ * deltas below.
  *
  * THREE deltas from upstream, all of them NATIVE_PORT-only:
  *   1-2. `collisionPlanes` and `collisionFacets` are `dkrptr32` tokens here, so
@@ -8683,20 +8336,19 @@ u32 func_800179D0(void) {
  *
  * Until this landed, the link resolved to a `return 0` WEAK stub in
  * platform/hasm_stubs_temp.c, so object-model collision never reported a hit:
- * every collision-meshed object was intangible and `collidedObj` was
- * permanently NULL. See docs/OPEN_ITEMS.md wave "objcoll".
+ * every collision-meshed object was intangible and `collidedObj` was permanently
+ * NULL. See docs/OPEN_ITEMS.md wave "objcoll".
  *
  * Sync 2026-08-07: the branch-only provenance is RESOLVED. This function landed
  * on upstream master as db7482cc ("match: func_80017A18", PR #749), so the body
- * below is now plain upstream text taken from master -- named parameters and
- * the `for (j...)` facet loop are upstream's, replacing the older do/while
- * spelling this port had adopted from the pre-merge branch commit 9da89ecb. The
+ * below is now plain upstream text taken from master -- named parameters and the
+ * `for (j...)` facet loop are upstream's, replacing the older do/while spelling
+ * this port had adopted from the pre-merge branch commit 9da89ecb. The
  * ours-newer-than-theirs hazard that .decomp-baseline and docs/DECOMP_SYNC.md
  * recorded no longer applies and both notes have been retired. */
-s32 func_80017A18(ObjectModel *arg0, s32 arg1, s32 *numCollisions,
-                  f32 *originPointsX, f32 *originPointsY, f32 *originPointsZ,
-                  f32 *targetPointsX, f32 *targetPointsY, f32 *targetPointsZ,
-                  f32 *collisionRadii, s8 *surfaces, f32 scale) {
+s32 func_80017A18(ObjectModel *arg0, s32 arg1, s32 *numCollisions, f32 *originPointsX, f32 *originPointsY,
+                  f32 *originPointsZ, f32 *targetPointsX, f32 *targetPointsY, f32 *targetPointsZ, f32 *collisionRadii,
+                  s8 *surfaces, f32 scale) {
     f32 *planes;
     s32 i, j, k;
     f32 sum1, sum2;
@@ -8829,7 +8481,9 @@ void set_taj_challenge_type(s32 vehicleID) {
 /**
  * Returns which Taj challenge is currently active.
  */
-UNUSED s16 get_taj_challenge_type(void) { return gTajChallengeType; }
+UNUSED s16 get_taj_challenge_type(void) {
+    return gTajChallengeType;
+}
 
 /**
  * Updates information pertaining to all checkpoints in the current race.
@@ -8860,8 +8514,7 @@ void checkpoint_update_all(void) {
     gNumberOfMainCheckpoints = 0;
     for (i = 0; i < gObjectCount; i++) {
         obj = gObjPtrList[i];
-        if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE) &&
-            obj->behaviorId == BHV_CHECKPOINT &&
+        if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE) && obj->behaviorId == BHV_CHECKPOINT &&
             gNumberOfMainCheckpoints < MAX_CHECKPOINTS) {
             checkpointEntry = &obj->level_entry->checkpoint;
             if (checkpointEntry->vehicleType == gTajChallengeType) {
@@ -8871,8 +8524,7 @@ void checkpoint_update_all(void) {
                     checkpointID += 255;
                     alternateCount++;
                 }
-                gTrackCheckpoints[gNumberOfMainCheckpoints].checkpointID =
-                    checkpointID;
+                gTrackCheckpoints[gNumberOfMainCheckpoints].checkpointID = checkpointID;
                 gTrackCheckpoints[gNumberOfMainCheckpoints].altRouteID = -1;
                 gNumberOfMainCheckpoints++;
             }
@@ -8884,18 +8536,15 @@ void checkpoint_update_all(void) {
         isSorted = TRUE;
 
         for (i = 0; i < gNumberOfMainCheckpoints - 1; i++) {
-            if (gTrackCheckpoints[i].checkpointID ==
-                gTrackCheckpoints[i + 1].checkpointID) {
+            if (gTrackCheckpoints[i].checkpointID == gTrackCheckpoints[i + 1].checkpointID) {
                 duplicateCheckpoint = TRUE;
                 checkpointNum = gTrackCheckpoints[i].checkpointID;
             }
 
-            if (gTrackCheckpoints[i + 1].checkpointID <
-                gTrackCheckpoints[i].checkpointID) {
+            if (gTrackCheckpoints[i + 1].checkpointID < gTrackCheckpoints[i].checkpointID) {
                 tempCheckpointID = gTrackCheckpoints[i].checkpointID;
                 obj = gTrackCheckpoints[i].obj;
-                gTrackCheckpoints[i].checkpointID =
-                    gTrackCheckpoints[i + 1].checkpointID;
+                gTrackCheckpoints[i].checkpointID = gTrackCheckpoints[i + 1].checkpointID;
                 gTrackCheckpoints[i].obj = gTrackCheckpoints[i + 1].obj;
                 gTrackCheckpoints[i + 1].checkpointID = tempCheckpointID;
                 gTrackCheckpoints[i + 1].obj = obj;
@@ -8911,11 +8560,8 @@ void checkpoint_update_all(void) {
     }
     for (i = gNumberOfMainCheckpoints; i < gNumberOfTotalCheckpoints; i++) {
         tempCheckpointID = gTrackCheckpoints[i].checkpointID - 255;
-        for (checkpointID = 0, breakOut = FALSE;
-             checkpointID < gNumberOfMainCheckpoints && !breakOut;
-             checkpointID++) {
-            if (tempCheckpointID ==
-                gTrackCheckpoints[checkpointID].checkpointID) {
+        for (checkpointID = 0, breakOut = FALSE; checkpointID < gNumberOfMainCheckpoints && !breakOut; checkpointID++) {
+            if (tempCheckpointID == gTrackCheckpoints[checkpointID].checkpointID) {
                 gTrackCheckpoints[checkpointID].altRouteID = i;
                 gTrackCheckpoints[i].altRouteID = checkpointID;
                 breakOut = TRUE;
@@ -8940,8 +8586,7 @@ void checkpoint_update_all(void) {
         checkpoint->rotationYFrac = oy;
         checkpoint->rotationZFrac = oz;
         checkpoint->unkC =
-            -(((obj->trans.x_position * ox) + (obj->trans.y_position * oy)) +
-              (obj->trans.z_position * oz));
+            -(((obj->trans.x_position * ox) + (obj->trans.y_position * oy)) + (obj->trans.z_position * oz));
         checkpoint->x = obj->trans.x_position;
         checkpoint->y = obj->trans.y_position;
         checkpoint->z = obj->trans.z_position;
@@ -8954,24 +8599,16 @@ void checkpoint_update_all(void) {
             if (tempCheckpointID == gNumberOfMainCheckpoints) {
                 tempCheckpointID = 0;
             }
-            xDiff = obj->trans.x_position -
-                    gTrackCheckpoints[tempCheckpointID].obj->trans.x_position;
-            yDiff = obj->trans.y_position -
-                    gTrackCheckpoints[tempCheckpointID].obj->trans.y_position;
-            zDiff = obj->trans.z_position -
-                    gTrackCheckpoints[tempCheckpointID].obj->trans.z_position;
-            checkpoint->distance =
-                sqrtf(((xDiff * xDiff) + (yDiff * yDiff)) + (zDiff * zDiff));
+            xDiff = obj->trans.x_position - gTrackCheckpoints[tempCheckpointID].obj->trans.x_position;
+            yDiff = obj->trans.y_position - gTrackCheckpoints[tempCheckpointID].obj->trans.y_position;
+            zDiff = obj->trans.z_position - gTrackCheckpoints[tempCheckpointID].obj->trans.z_position;
+            checkpoint->distance = sqrtf(((xDiff * xDiff) + (yDiff * yDiff)) + (zDiff * zDiff));
             altRouteId = gTrackCheckpoints[tempCheckpointID].altRouteID;
             if (altRouteId != -1) {
-                xDiff = obj->trans.x_position -
-                        gTrackCheckpoints[altRouteId].obj->trans.x_position;
-                yDiff = obj->trans.y_position -
-                        gTrackCheckpoints[altRouteId].obj->trans.y_position;
-                zDiff = obj->trans.z_position -
-                        gTrackCheckpoints[altRouteId].obj->trans.z_position;
-                checkpoint->altDistance = sqrtf(
-                    ((xDiff * xDiff) + (yDiff * yDiff)) + (zDiff * zDiff));
+                xDiff = obj->trans.x_position - gTrackCheckpoints[altRouteId].obj->trans.x_position;
+                yDiff = obj->trans.y_position - gTrackCheckpoints[altRouteId].obj->trans.y_position;
+                zDiff = obj->trans.z_position - gTrackCheckpoints[altRouteId].obj->trans.z_position;
+                checkpoint->altDistance = sqrtf(((xDiff * xDiff) + (yDiff * yDiff)) + (zDiff * zDiff));
             } else {
                 checkpoint->altDistance = checkpoint->distance;
             }
@@ -8980,24 +8617,16 @@ void checkpoint_update_all(void) {
             if (tempCheckpointID == gNumberOfMainCheckpoints) {
                 tempCheckpointID = 0;
             }
-            xDiff = obj->trans.x_position -
-                    gTrackCheckpoints[tempCheckpointID].obj->trans.x_position;
-            yDiff = obj->trans.y_position -
-                    gTrackCheckpoints[tempCheckpointID].obj->trans.y_position;
-            zDiff = obj->trans.z_position -
-                    gTrackCheckpoints[tempCheckpointID].obj->trans.z_position;
-            checkpoint->distance =
-                sqrtf(((xDiff * xDiff) + (yDiff * yDiff)) + (zDiff * zDiff));
+            xDiff = obj->trans.x_position - gTrackCheckpoints[tempCheckpointID].obj->trans.x_position;
+            yDiff = obj->trans.y_position - gTrackCheckpoints[tempCheckpointID].obj->trans.y_position;
+            zDiff = obj->trans.z_position - gTrackCheckpoints[tempCheckpointID].obj->trans.z_position;
+            checkpoint->distance = sqrtf(((xDiff * xDiff) + (yDiff * yDiff)) + (zDiff * zDiff));
             altRouteId = gTrackCheckpoints[tempCheckpointID].altRouteID;
             if (altRouteId != -1) {
-                xDiff = obj->trans.x_position -
-                        gTrackCheckpoints[altRouteId].obj->trans.x_position;
-                yDiff = obj->trans.y_position -
-                        gTrackCheckpoints[altRouteId].obj->trans.y_position;
-                zDiff = obj->trans.z_position -
-                        gTrackCheckpoints[altRouteId].obj->trans.z_position;
-                checkpoint->altDistance = sqrtf(
-                    ((xDiff * xDiff) + (yDiff * yDiff)) + (zDiff * zDiff));
+                xDiff = obj->trans.x_position - gTrackCheckpoints[altRouteId].obj->trans.x_position;
+                yDiff = obj->trans.y_position - gTrackCheckpoints[altRouteId].obj->trans.y_position;
+                zDiff = obj->trans.z_position - gTrackCheckpoints[altRouteId].obj->trans.z_position;
+                checkpoint->altDistance = sqrtf(((xDiff * xDiff) + (yDiff * yDiff)) + (zDiff * zDiff));
             } else {
                 checkpoint->altDistance = checkpoint->distance;
             }
@@ -9025,8 +8654,7 @@ void checkpoint_update_all(void) {
  * - -100: Racer passed the checkpoint.
  * - Otherwise: No checkpoint has been passed.
  */
-s32 checkpoint_is_passed(s32 checkpointIndex, Object *obj, f32 objX, f32 objY,
-                         f32 objZ, f32 *checkpointDistance,
+s32 checkpoint_is_passed(s32 checkpointIndex, Object *obj, f32 objX, f32 objY, f32 objZ, f32 *checkpointDistance,
                          u8 *isOnAlternateRoute) {
     s32 retLength;
     s32 isAltCheckpoint;
@@ -9053,8 +8681,7 @@ s32 checkpoint_is_passed(s32 checkpointIndex, Object *obj, f32 objX, f32 objY,
 
     if (*isOnAlternateRoute) {
         if (currentCheckpoint->altRouteID != -1) {
-            currentCheckpoint =
-                &gTrackCheckpoints[currentCheckpoint->altRouteID];
+            currentCheckpoint = &gTrackCheckpoints[currentCheckpoint->altRouteID];
         }
         if (prevCheckpoint->altRouteID != -1) {
             prevCheckpoint = &gTrackCheckpoints[prevCheckpoint->altRouteID];
@@ -9062,14 +8689,12 @@ s32 checkpoint_is_passed(s32 checkpointIndex, Object *obj, f32 objX, f32 objY,
     }
 
     isAltCheckpoint = FALSE;
-    if (!(*isOnAlternateRoute) && prevCheckpoint->altRouteID == -1 &&
-        currentCheckpoint->altRouteID != -1) {
+    if (!(*isOnAlternateRoute) && prevCheckpoint->altRouteID == -1 && currentCheckpoint->altRouteID != -1) {
         altRouteCheckpoint = &gTrackCheckpoints[currentCheckpoint->altRouteID];
         distX = altRouteCheckpoint->x - obj->trans.x_position;
         distY = altRouteCheckpoint->y - obj->trans.y_position;
         distZ = altRouteCheckpoint->z - obj->trans.z_position;
-        if (sqrtf(distX * distX + distY * distY + distZ * distZ) <
-            altRouteCheckpoint->checkpointID) {
+        if (sqrtf(distX * distX + distY * distY + distZ * distZ) < altRouteCheckpoint->checkpointID) {
             currentCheckpoint = altRouteCheckpoint;
             isAltCheckpoint = TRUE;
         }
@@ -9087,21 +8712,17 @@ s32 checkpoint_is_passed(s32 checkpointIndex, Object *obj, f32 objX, f32 objY,
 
     toNext = currentCheckpoint->rotationXFrac * obj->trans.x_position +
              currentCheckpoint->rotationYFrac * obj->trans.y_position +
-             currentCheckpoint->rotationZFrac * obj->trans.z_position +
-             currentCheckpoint->unkC;
+             currentCheckpoint->rotationZFrac * obj->trans.z_position + currentCheckpoint->unkC;
 
-    nextLength = currentCheckpoint->rotationXFrac * distX +
-                 currentCheckpoint->rotationYFrac * distY +
+    nextLength = currentCheckpoint->rotationXFrac * distX + currentCheckpoint->rotationYFrac * distY +
                  currentCheckpoint->rotationZFrac * distZ;
     nextLength = -toNext / nextLength;
 
     fromPrev = prevCheckpoint->rotationXFrac * obj->trans.x_position +
                prevCheckpoint->rotationYFrac * obj->trans.y_position +
-               prevCheckpoint->rotationZFrac * obj->trans.z_position +
-               prevCheckpoint->unkC;
+               prevCheckpoint->rotationZFrac * obj->trans.z_position + prevCheckpoint->unkC;
 
-    length = prevCheckpoint->rotationXFrac * distX +
-             prevCheckpoint->rotationYFrac * distY +
+    length = prevCheckpoint->rotationXFrac * distX + prevCheckpoint->rotationYFrac * distY +
              prevCheckpoint->rotationZFrac * distZ;
     length = fromPrev / length;
 
@@ -9131,10 +8752,8 @@ s32 checkpoint_is_passed(s32 checkpointIndex, Object *obj, f32 objX, f32 objY,
             *isOnAlternateRoute = FALSE;
         }
 
-        distY = currentCheckpoint->rotationXFrac * objX +
-                currentCheckpoint->rotationYFrac * objY +
-                currentCheckpoint->rotationZFrac * objZ +
-                currentCheckpoint->unkC;
+        distY = currentCheckpoint->rotationXFrac * objX + currentCheckpoint->rotationYFrac * objY +
+                currentCheckpoint->rotationZFrac * objZ + currentCheckpoint->unkC;
         if (distY > 0) {
             if (obj->behaviorId == BHV_RACER) {
                 Object_Racer *objRacer = obj->racer;
@@ -9154,19 +8773,15 @@ s32 checkpoint_is_passed(s32 checkpointIndex, Object *obj, f32 objX, f32 objY,
 
             toNext = currentCheckpoint->rotationXFrac * obj->trans.x_position +
                      currentCheckpoint->rotationYFrac * obj->trans.y_position +
-                     currentCheckpoint->rotationZFrac * obj->trans.z_position +
-                     currentCheckpoint->unkC;
-            nextLength = currentCheckpoint->rotationXFrac * distX +
-                         currentCheckpoint->rotationYFrac * distY +
+                     currentCheckpoint->rotationZFrac * obj->trans.z_position + currentCheckpoint->unkC;
+            nextLength = currentCheckpoint->rotationXFrac * distX + currentCheckpoint->rotationYFrac * distY +
                          currentCheckpoint->rotationZFrac * distZ;
             nextLength = -toNext / nextLength;
 
             fromPrev = prevCheckpoint->rotationXFrac * obj->trans.x_position +
                        prevCheckpoint->rotationYFrac * obj->trans.y_position +
-                       prevCheckpoint->rotationZFrac * obj->trans.z_position +
-                       prevCheckpoint->unkC;
-            length = prevCheckpoint->rotationXFrac * distX +
-                     prevCheckpoint->rotationYFrac * distY +
+                       prevCheckpoint->rotationZFrac * obj->trans.z_position + prevCheckpoint->unkC;
+            length = prevCheckpoint->rotationXFrac * distX + prevCheckpoint->rotationYFrac * distY +
                      prevCheckpoint->rotationZFrac * distZ;
             length = fromPrev / length;
 
@@ -9198,8 +8813,7 @@ Object *find_taj_object(void) {
     Object *current_obj;
     for (i = gObjectListStart; i < gObjectCount; i++) {
         current_obj = gObjPtrList[i];
-        if (!(current_obj->trans.flags & OBJ_FLAGS_PARTICLE) &&
-            (current_obj->behaviorId == BHV_PARK_WARDEN)) {
+        if (!(current_obj->trans.flags & OBJ_FLAGS_PARTICLE) && (current_obj->behaviorId == BHV_PARK_WARDEN)) {
             return current_obj;
         }
     }
@@ -9207,8 +8821,7 @@ Object *find_taj_object(void) {
 }
 
 // Handles MidiFadePoint, MidiFade, and MidiSetChannel objects?
-void func_80018CE0(Object *racerObj, f32 xPos, f32 yPos, f32 zPos,
-                   s32 updateRate) {
+void func_80018CE0(Object *racerObj, f32 xPos, f32 yPos, f32 zPos, s32 updateRate) {
     f32 temp_f0;
     s32 pad_spF8;
     s32 spF4;
@@ -9249,8 +8862,7 @@ void func_80018CE0(Object *racerObj, f32 xPos, f32 yPos, f32 zPos,
         obj = gObjPtrList[spF4];
         if (!(obj->trans.flags & 0x8000)) {
             if (obj->behaviorId == BHV_MIDI_FADE_POINT) {
-                spC0 = sqrtf(
-                    ((racerObj->trans.x_position - obj->trans.x_position) *
+                spC0 = sqrtf(((racerObj->trans.x_position - obj->trans.x_position) *
                               (racerObj->trans.x_position - obj->trans.x_position)) +
                              ((racerObj->trans.y_position - obj->trans.y_position) *
                               (racerObj->trans.y_position - obj->trans.y_position)) +
@@ -9263,8 +8875,7 @@ void func_80018CE0(Object *racerObj, f32 xPos, f32 yPos, f32 zPos,
                             var_s2 = 0;
                         } else {
                             spC0 -= midiFadePoint->unk0;
-                            temp_f0 =
-                                (midiFadePoint->unk2 - midiFadePoint->unk0);
+                            temp_f0 = (midiFadePoint->unk2 - midiFadePoint->unk0);
                             var_s2 = (127.0f * spC0) / temp_f0;
                         }
                         for (i = 0; i < 16; i++) {
@@ -9278,8 +8889,7 @@ void func_80018CE0(Object *racerObj, f32 xPos, f32 yPos, f32 zPos,
                                     }
                                     break;
                                 case 2:
-                                if ((music_channel_fade(i) > 0) &&
-                                    (music_channel_active(i) == 0)) {
+                                    if ((music_channel_fade(i) > 0) && (music_channel_active(i) == 0)) {
                                         music_channel_fade_set(i, var_s2);
                                     }
                                     break;
@@ -9293,12 +8903,11 @@ void func_80018CE0(Object *racerObj, f32 xPos, f32 yPos, f32 zPos,
             } else if (obj->behaviorId == BHV_MIDI_FADE) {
                 midiFade = obj->midi_fade;
 
-                temp_f0 = (midiFade->unk8 * xPos) + (midiFade->unkC * yPos) +
-                          (midiFade->unk10 * zPos) + midiFade->unk14;
+                temp_f0 =
+                    (midiFade->unk8 * xPos) + (midiFade->unkC * yPos) + (midiFade->unk10 * zPos) + midiFade->unk14;
                 temp_f2 = (midiFade->unk8 * racerObj->trans.x_position) +
                           (midiFade->unkC * racerObj->trans.y_position) +
-                          (midiFade->unk10 * racerObj->trans.z_position) +
-                          midiFade->unk14;
+                          (midiFade->unk10 * racerObj->trans.z_position) + midiFade->unk14;
                 if (temp_f0 > 0.0f && temp_f2 <= 0.0f) {
                     var_v1 = 1;
                 } else if (temp_f2 > 0.0f && temp_f0 <= 0.0f) {
@@ -9311,20 +8920,16 @@ void func_80018CE0(Object *racerObj, f32 xPos, f32 yPos, f32 zPos,
                     temp_f2 = racerObj->trans.y_position - yPos;
 
                     temp_f22 =
-                        (-midiFade->unk8 * xPos - midiFade->unkC * yPos -
-                         midiFade->unk10 * zPos - midiFade->unk14) /
+                        (-midiFade->unk8 * xPos - midiFade->unkC * yPos - midiFade->unk10 * zPos - midiFade->unk14) /
                         (midiFade->unk8 * temp_f0 + midiFade->unkC * temp_f2 +
                          midiFade->unk10 * (racerObj->trans.z_position - zPos));
                     tempF = temp_f22 * temp_f0;
-                    if ((midiFade->unk18 <= tempF + xPos) &&
-                        (tempF + xPos <= midiFade->unk24)) {
+                    if ((midiFade->unk18 <= tempF + xPos) && (tempF + xPos <= midiFade->unk24)) {
                         tempF2 = racerObj->trans.z_position - zPos;
                         if ((midiFade->unk1C <= (temp_f22 * temp_f2) + yPos) &&
                             ((temp_f22 * temp_f2) + yPos <= midiFade->unk28)) {
-                            if ((midiFade->unk20 <=
-                                 (temp_f22 * (tempF2)) + zPos) &&
-                                ((temp_f22 * (tempF2)) + zPos <=
-                                 midiFade->unk2C)) {
+                            if ((midiFade->unk20 <= (temp_f22 * (tempF2)) + zPos) &&
+                                ((temp_f22 * (tempF2)) + zPos <= midiFade->unk2C)) {
                                 midiFade->unk0 = var_v1;
                                 midiFade->unk1 = 0;
                                 midiFade->unk4 = 0;
@@ -9335,16 +8940,14 @@ void func_80018CE0(Object *racerObj, f32 xPos, f32 yPos, f32 zPos,
                 }
             } else if (obj->behaviorId == BHV_MIDI_CHANNEL_SET) {
                 midiChannelSet = obj->midi_channel_set;
-                temp_f0 = sqrtf(
-                    ((racerObj->trans.x_position - obj->trans.x_position) *
+                temp_f0 = sqrtf(((racerObj->trans.x_position - obj->trans.x_position) *
                                  (racerObj->trans.x_position - obj->trans.x_position)) +
                                 ((racerObj->trans.y_position - obj->trans.y_position) *
                                  (racerObj->trans.y_position - obj->trans.y_position)) +
                                 ((racerObj->trans.z_position - obj->trans.z_position) *
                                  (racerObj->trans.z_position - obj->trans.z_position)));
                 var_v0_u = midiChannelSet->unk2;
-                if ((temp_f0 < (var_v0_u * 4)) &&
-                    (midiChannelSet->unk0 != music_channel_get_mask()) &&
+                if ((temp_f0 < (var_v0_u * 4)) && (midiChannelSet->unk0 != music_channel_get_mask()) &&
                     (midiChannelSet->unk3 == music_current_sequence())) {
                     music_dynamic_set(midiChannelSet->unk0);
                 }
@@ -9406,21 +9009,17 @@ void func_80018CE0(Object *racerObj, f32 xPos, f32 yPos, f32 zPos,
             }
         }
     }
-    if ((D_8011AF60->unk1 == 0xFE) &&
-        (D_8011AF60->unk40 == music_current_sequence())) {
+    if ((D_8011AF60->unk1 == 0xFE) && (D_8011AF60->unk40 == music_current_sequence())) {
         D_8011AF60 = 0;
     }
 }
 
 /**
  * Calculates the direction a homing rocket takes toward the next checkpoint.
- * Returns true if a direction was calculated, or false if there are no
- * checkpoints.
+ * Returns true if a direction was calculated, or false if there are no checkpoints.
  */
-s32 homing_rocket_get_next_direction(Object *obj, s32 checkpoint,
-                                     u8 isOnAlternateRoute, s32 arg3, s32 arg4,
-                                     f32 checkpointDist, f32 *outX, f32 *outY,
-                                     f32 *outZ) {
+s32 homing_rocket_get_next_direction(Object *obj, s32 checkpoint, u8 isOnAlternateRoute, s32 arg3, s32 arg4,
+                                     f32 checkpointDist, f32 *outX, f32 *outY, f32 *outZ) {
     s32 numCheckpoints;
     s32 checkpointIndex;
     s32 i;
@@ -9445,13 +9044,10 @@ s32 homing_rocket_get_next_direction(Object *obj, s32 checkpoint,
         checkpointIndex += numCheckpoints;
     }
     for (i = 0; i < 4; i++) {
-        checkpointNode =
-            find_next_checkpoint_node(checkpointIndex, isOnAlternateRoute);
-        xData[i] = checkpointNode->x + (checkpointNode->scale *
-                                        checkpointNode->rotationZFrac * arg3);
+        checkpointNode = find_next_checkpoint_node(checkpointIndex, isOnAlternateRoute);
+        xData[i] = checkpointNode->x + (checkpointNode->scale * checkpointNode->rotationZFrac * arg3);
         yData[i] = checkpointNode->y + (checkpointNode->scale * arg4);
-        zData[i] = checkpointNode->z + (checkpointNode->scale *
-                                        -checkpointNode->rotationXFrac * arg3);
+        zData[i] = checkpointNode->z + (checkpointNode->scale * -checkpointNode->rotationXFrac * arg3);
         checkpointIndex += 1;
         if (checkpointIndex == numCheckpoints) {
             checkpointIndex = 0;
@@ -9485,16 +9081,16 @@ extern s32 D_B0000574;
 
 /**
  * Check the win conditions of the current race.
- * This varies based on the race type, so this does a multitude of different
- * possible things. When the race is finished, it will then for the most part
- * trigger the next menu, but adventure mode will start the balloon cutscene if
- * it has not yet been awarded.
+ * This varies based on the race type, so this does a multitude of different possible things.
+ * When the race is finished, it will then for the most part trigger the next menu,
+ * but adventure mode will start the balloon cutscene if it has not yet been awarded.
  */
 #ifdef NATIVE_PORT
 static s32 sMdkrChallengeProbeCourse = -1;
 static s32 sMdkrChallengeProbeTick;
 
-static void mdkr_challenge_snapshot(MdkrChallengeProbe *probe, s8 raceType) {
+static void mdkr_challenge_snapshot(
+    MdkrChallengeProbe *probe, s8 raceType) {
     Settings *settings;
     s32 i;
 
@@ -9595,8 +9191,8 @@ static void mdkr_challenge_drive_terminal_event(s8 raceType) {
                 sMdkrChallengeProbeTick == 1 ? "ready" : "state", &probe);
         }
     }
-    if (!mdkr_challenge_test_event(raceType, ready, gRaceFinishTriggered,
-                                   &eventOrdinal)) {
+    if (!mdkr_challenge_test_event(
+            raceType, ready, gRaceFinishTriggered, &eventOrdinal)) {
         return;
     }
 
@@ -9605,7 +9201,8 @@ static void mdkr_challenge_drive_terminal_event(s8 raceType) {
     } else if (outcome > 0) {
         target = mdkr_challenge_human();
     } else {
-        target = raceType == RACETYPE_CHALLENGE_BATTLE ? mdkr_challenge_human()
+        target = raceType == RACETYPE_CHALLENGE_BATTLE
+                     ? mdkr_challenge_human()
                      : mdkr_challenge_ai(0);
     }
     if (target == NULL) {
@@ -9616,7 +9213,8 @@ static void mdkr_challenge_drive_terminal_event(s8 raceType) {
         racer_challenge_egg_finish_if_complete(target);
     } else if (raceType == RACETYPE_CHALLENGE_BANANAS) {
         racer_challenge_banana_deposit(target);
-    } else if (raceType == RACETYPE_CHALLENGE_BATTLE && target->bananas > 0) {
+    } else if (raceType == RACETYPE_CHALLENGE_BATTLE &&
+               target->bananas > 0) {
         target->bananas--;
     }
 
@@ -9649,7 +9247,8 @@ static void mdkr_taj_trace_phase(
     settings = get_settings();
     probe.vehicle = vehicle;
     probe.flags = settings != NULL ? settings->tajFlags : 0;
-    probe.balloons = settings != NULL && settings->balloonsPtr != NULL
+    probe.balloons =
+        settings != NULL && settings->balloonsPtr != NULL
             ? settings->balloonsPtr[0]
             : 0;
     if (thresholds != NULL) {
@@ -9661,10 +9260,12 @@ static void mdkr_taj_trace_phase(
     probe.tick = tick;
     probe.reason = reason;
     probe.menu = menu;
-    probe.completion_gate = vehicle >= VEHICLE_CAR && vehicle <= VEHICLE_PLANE
+    probe.completion_gate =
+        vehicle >= VEHICLE_CAR && vehicle <= VEHICLE_PLANE
             ? mdkr_taj_completion_gate_enabled(vehicle)
             : 1;
-    humanObj = gRacersByPort != NULL ? gRacersByPort[PLAYER_ONE] : NULL;
+    humanObj =
+        gRacersByPort != NULL ? gRacersByPort[PLAYER_ONE] : NULL;
     if (humanObj != NULL && humanObj->racer != NULL) {
         Object_Racer *human = humanObj->racer;
         if (vehicle < VEHICLE_CAR || vehicle > VEHICLE_PLANE) {
@@ -9677,7 +9278,8 @@ static void mdkr_taj_trace_phase(
         probe.human_y = humanObj->trans.y_position;
         probe.human_z = humanObj->trans.z_position;
     }
-    aiObj = gNumRacers > 1 && gRacers != NULL ? (*gRacers)[1] : NULL;
+    aiObj =
+        gNumRacers > 1 && gRacers != NULL ? (*gRacers)[1] : NULL;
     if (aiObj != NULL && aiObj->racer != NULL) {
         Object_Racer *ai = aiObj->racer;
         probe.ai_lap = ai->lap;
@@ -9714,29 +9316,30 @@ void race_check_finish(s32 updateRate) {
     s8 sp5C[4];
     s8 someBool2;
     s8 flags[3];
-    uintptr_t camera; /* LP64: must hold a full 64-bit Camera* (see ->mode write
-                         below) */
+    uintptr_t camera; /* LP64: must hold a full 64-bit Camera* (see ->mode write below) */
 
     currentLevelHeader = level_header();
     settings = get_settings();
 #ifdef NATIVE_PORT
     if (gIsTajChallenge && gNumRacers >= 2 && gRacers != NULL &&
-        gRacersByPort != NULL && gRacersByPort[PLAYER_ONE] != NULL &&
-        gRacersByPort[PLAYER_ONE]->racer != NULL && (*gRacers)[1] != NULL &&
-        (*gRacers)[1]->racer != NULL) {
+        gRacersByPort != NULL &&
+        gRacersByPort[PLAYER_ONE] != NULL &&
+        gRacersByPort[PLAYER_ONE]->racer != NULL &&
+        (*gRacers)[1] != NULL && (*gRacers)[1]->racer != NULL) {
         Object_Racer *tajHuman = gRacersByPort[PLAYER_ONE]->racer;
         Object_Racer *tajAi = (*gRacers)[1]->racer;
         s32 tajTick = 0;
-        s32 tajAction =
-            mdkr_taj_test_action(TRUE, tajHuman->lap, tajHuman->raceFinished,
+        s32 tajAction = mdkr_taj_test_action(
+            TRUE, tajHuman->lap, tajHuman->raceFinished,
             tajAi->lap, tajAi->raceFinished, &tajTick);
 
         if (mdkr_taj_should_probe(tajTick)) {
-            mdkr_taj_trace_phase("race", tajHuman->vehicleID, NULL, -1, 0,
-                                 tajTick);
+            mdkr_taj_trace_phase(
+                "race", tajHuman->vehicleID, NULL, -1, 0, tajTick);
         }
         if (tajAction == MDKR_TAJ_ACTION_ABORT) {
-            mdkr_taj_trace_phase("event_abort", tajHuman->vehicleID, NULL,
+            mdkr_taj_trace_phase(
+                "event_abort", tajHuman->vehicleID, NULL,
                 CHALLENGE_END_QUIT, 0, tajTick);
             mode_end_taj_race(CHALLENGE_END_QUIT);
             return;
@@ -9748,7 +9351,8 @@ void race_check_finish(s32 updateRate) {
              * dialogue choice, flags, and save behavior.
              */
             tajAi->lap = currentLevelHeader->laps;
-            mdkr_taj_trace_phase("event_ai_finish", tajHuman->vehicleID, NULL,
+            mdkr_taj_trace_phase(
+                "event_ai_finish", tajHuman->vehicleID, NULL,
                 CHALLENGE_END_FINISH, 4, tajTick);
         }
         if (tajAction == MDKR_TAJ_ACTION_AI_HOLD ||
@@ -9760,7 +9364,8 @@ void race_check_finish(s32 updateRate) {
              */
             tajAi->lap = currentLevelHeader->laps - 1;
             if (tajAction == MDKR_TAJ_ACTION_AI_HOLD_FIRST) {
-                mdkr_taj_trace_phase("event_ai_hold", tajHuman->vehicleID, NULL,
+                mdkr_taj_trace_phase(
+                    "event_ai_hold", tajHuman->vehicleID, NULL,
                     CHALLENGE_END_FINISH, 0, tajTick);
             }
         }
@@ -9770,8 +9375,7 @@ void race_check_finish(s32 updateRate) {
     numHumanRacers = 0;
     someBool2 = currentLevelHeader->race_type;
     numFinishedRacers = 0;
-    if (someBool2 != RACETYPE_DEFAULT &&
-        someBool2 != RACETYPE_HORSESHOE_GULCH && someBool2 != RACETYPE_BOSS) {
+    if (someBool2 != RACETYPE_DEFAULT && someBool2 != RACETYPE_HORSESHOE_GULCH && someBool2 != RACETYPE_BOSS) {
         if (someBool2 & RACETYPE_CHALLENGE) {
             if (someBool2 == RACETYPE_CHALLENGE_EGGS) {
                 racer_update_eggs(*gRacers);
@@ -9783,12 +9387,9 @@ void race_check_finish(s32 updateRate) {
                 for (i = 0; i < gNumRacers; i++) {
                     racer[i] = (*gRacers)[i]->racer;
                     // Manage eliminated racers in deathmatch.
-                    if (currentLevelHeader->race_type ==
-                            RACETYPE_CHALLENGE_BATTLE &&
-                        racer[i]->bananas <= 0 &&
+                    if (currentLevelHeader->race_type == RACETYPE_CHALLENGE_BATTLE && racer[i]->bananas <= 0 &&
 #ifdef NATIVE_PORT
-                        mdkr_challenge_terminal_gate_enabled(
-                            RACETYPE_CHALLENGE_BATTLE) &&
+                        mdkr_challenge_terminal_gate_enabled(RACETYPE_CHALLENGE_BATTLE) &&
 #endif
                         !racer[i]->raceFinished) {
                         racer[i]->raceFinished = TRUE;
@@ -9813,21 +9414,16 @@ void race_check_finish(s32 updateRate) {
                         }
                     }
                 }
-                if ((currentLevelHeader->race_type !=
-                         RACETYPE_CHALLENGE_BATTLE &&
-                     numFinishedRacers > 0) ||
+                if ((currentLevelHeader->race_type != RACETYPE_CHALLENGE_BATTLE && numFinishedRacers > 0) ||
                     ((((numHumanRacers == 1 && numHumanRacersFinished == 1) ||
-                       (numHumanRacers >= 2 &&
-                        numHumanRacersFinished >= numHumanRacers)) ||
+                       (numHumanRacers >= 2 && numHumanRacersFinished >= numHumanRacers)) ||
                       numFinishedRacers >= 3))) {
                     for (i = 0; i < gNumRacers; i++) {
-                        if (currentLevelHeader->race_type ==
-                            RACETYPE_CHALLENGE_BATTLE) {
+                        if (currentLevelHeader->race_type == RACETYPE_CHALLENGE_BATTLE) {
                             sp5C[i] = 10 - racer[i]->bananas;
                         } else {
                             sp5C[i] = racer[i]->lap;
-                            if (currentLevelHeader->race_type ==
-                                RACETYPE_CHALLENGE_EGGS) {
+                            if (currentLevelHeader->race_type == RACETYPE_CHALLENGE_EGGS) {
                                 sp5C[i] *= 3;
                                 if (racer[i]->eggHudCounter != 0) {
                                     sp5C[i] += 2;
@@ -9849,23 +9445,18 @@ void race_check_finish(s32 updateRate) {
                         racerIndex = -1;
                         foundIndex = -1;
                         for (i = 0; i < gNumRacers; i++) {
-                            if (!racer[i]->raceFinished &&
-                                sp5C[i] >= foundIndex) {
+                            if (!racer[i]->raceFinished && sp5C[i] >= foundIndex) {
                                 foundIndex = sp5C[i];
                                 racerIndex = i;
                             }
                         }
 
                         if (racerIndex != -1) {
-                            // In battle mode, last to finish wins, so flip the
-                            // finish order.
-                            if (currentLevelHeader->race_type ==
-                                RACETYPE_CHALLENGE_BATTLE) {
-                                racer[racerIndex]->finishPosition =
-                                    5 - gNumFinishedRacers;
+                            // In battle mode, last to finish wins, so flip the finish order.
+                            if (currentLevelHeader->race_type == RACETYPE_CHALLENGE_BATTLE) {
+                                racer[racerIndex]->finishPosition = 5 - gNumFinishedRacers;
                             } else {
-                                racer[racerIndex]->finishPosition =
-                                    gNumFinishedRacers;
+                                racer[racerIndex]->finishPosition = gNumFinishedRacers;
                             }
                             gNumFinishedRacers++;
                             racer[racerIndex]->raceFinished = TRUE;
@@ -9877,12 +9468,9 @@ void race_check_finish(s32 updateRate) {
                     // Award the winner a TT amulet if not in tracks mode.
                     if (!is_in_tracks_mode() &&
                         (racer[0]->finishPosition == 1 ||
-                         (is_in_two_player_adventure() &&
-                          racer[1]->finishPosition == 1)) &&
-                        (!(settings->courseFlagsPtr[settings->courseId] &
-                           RACE_CLEARED))) {
-                        settings->courseFlagsPtr[settings->courseId] |=
-                            RACE_CLEARED;
+                         (is_in_two_player_adventure() && racer[1]->finishPosition == 1)) &&
+                        (!(settings->courseFlagsPtr[settings->courseId] & RACE_CLEARED))) {
+                        settings->courseFlagsPtr[settings->courseId] |= RACE_CLEARED;
                         i = settings->ttAmulet + 1;
                         if (i > 4) {
                             i = 4;
@@ -9895,33 +9483,27 @@ void race_check_finish(s32 updateRate) {
 
                     newStartingPosition = SEQUENCE_BATTLE_LOSE;
                     for (racerPos = 0; racerPos < gNumRacers; racerPos++) {
-                        if (racer[racerPos]->playerIndex != PLAYER_COMPUTER &&
-                            racer[racerPos]->finishPosition == 1) {
+                        if (racer[racerPos]->playerIndex != PLAYER_COMPUTER && racer[racerPos]->finishPosition == 1) {
                             newStartingPosition = SEQUENCE_BATTLE_VICTORY;
                         }
-                        settings->racers[racerPos].starting_position =
-                            racer[racerPos]->finishPosition - 1;
+                        settings->racers[racerPos].starting_position = racer[racerPos]->finishPosition - 1;
                     }
 
                     music_play(newStartingPosition);
                     newStartingPosition = 4;
                     for (prevRacerPos = 0; prevRacerPos < 8; prevRacerPos++) {
-                        if (settings->racers[prevRacerPos].starting_position ==
-                            -1) {
-                            settings->racers[prevRacerPos].starting_position =
-                                newStartingPosition;
+                        if (settings->racers[prevRacerPos].starting_position == -1) {
+                            settings->racers[prevRacerPos].starting_position = newStartingPosition;
                             newStartingPosition++;
                         }
                     }
 
                     gSwapLeadPlayer = FALSE;
-                    if (is_in_two_player_adventure() &&
-                        settings->racers[PLAYER_TWO].starting_position <
+                    if (is_in_two_player_adventure() && settings->racers[PLAYER_TWO].starting_position <
                                                             settings->racers[PLAYER_ONE].starting_position) {
                         gSwapLeadPlayer = TRUE;
                     }
-                    // i will be nonzero if any adventure mode award triggers
-                    // happened.
+                    // i will be nonzero if any adventure mode award triggers happened.
                     if (i == 0) {
                         if (is_in_two_player_adventure()) {
                             if (gSwapLeadPlayer) {
@@ -9939,10 +9521,8 @@ void race_check_finish(s32 updateRate) {
                         mdkr_challenge_trace_phase("postrace", someBool2);
 #endif
                     } else {
-                        level_properties_push(SPECIAL_MAP_ID_NO_LEVEL, 0,
-                                              VEHICLE_CAR, CUTSCENE_ID_NONE);
-                        level_properties_push(ASSET_LEVEL_TTAMULETSEQUENCE, 0,
-                                              VEHICLE_NO_OVERRIDE,
+                        level_properties_push(SPECIAL_MAP_ID_NO_LEVEL, 0, VEHICLE_CAR, CUTSCENE_ID_NONE);
+                        level_properties_push(ASSET_LEVEL_TTAMULETSEQUENCE, 0, VEHICLE_NO_OVERRIDE,
                                               settings->ttAmulet - 1);
                         race_finish_adventure(TRUE);
 #ifdef NATIVE_PORT
@@ -9961,15 +9541,14 @@ void race_check_finish(s32 updateRate) {
          * their trace coverage, but use the same stable controller mapping. */
         if (gNumRacers > 0 && gRacersByPort != NULL &&
             gRacersByPort[PLAYER_ONE] != NULL) {
-            extern void mdkr_pace_probe_finish(int, int, int, int, int, int,
-                                               int, int, int, int);
+            extern void mdkr_pace_probe_finish(int, int, int, int, int, int, int, int, int, int);
             Object_Racer *humanRacer = gRacersByPort[PLAYER_ONE]->racer;
             mdkr_pace_probe_finish(
                 humanRacer->lap, humanRacer->raceFinished,
                 humanRacer->finishPosition, humanRacer->racerIndex,
-                humanRacer->playerIndex, humanRacer->racePosition, gNumRacers,
-                currentLevelHeader->laps, humanRacer->balloon_quantity,
-                humanRacer->balloon_type);
+                humanRacer->playerIndex, humanRacer->racePosition,
+                gNumRacers, currentLevelHeader->laps,
+                humanRacer->balloon_quantity, humanRacer->balloon_type);
         }
 #endif
         return;
@@ -9984,14 +9563,11 @@ void race_check_finish(s32 updateRate) {
         do {
             if (j != i) {
                 curRacer2 = (*gRacers)[j]->racer;
-                if (curRacer->raceFinished == FALSE &&
-                    curRacer2->raceFinished != FALSE) {
+                if (curRacer->raceFinished == FALSE && curRacer2->raceFinished != FALSE) {
                     racerPos++;
-                } else if (curRacer->courseCheckpoint <
-                           curRacer2->courseCheckpoint) {
+                } else if (curRacer->courseCheckpoint < curRacer2->courseCheckpoint) {
                     racerPos++;
-                } else if (curRacer->courseCheckpoint ==
-                           curRacer2->courseCheckpoint) {
+                } else if (curRacer->courseCheckpoint == curRacer2->courseCheckpoint) {
                     if (curRacer2->unk1A8 < curRacer->unk1A8) {
                         racerPos++;
                     }
@@ -10028,19 +9604,18 @@ void race_check_finish(s32 updateRate) {
      * the production block immediately below still assigns finish positions,
      * builds the post-race order and owns every menu/points/award decision.
      */
-    mdkr_trophy_complete_race(*gRacers, gNumRacers, currentLevelHeader->laps);
+    mdkr_trophy_complete_race(*gRacers, gNumRacers,
+                              currentLevelHeader->laps);
 #endif
 
     i = 0;
     do {
         curRacer = (*gRacers)[i]->racer;
-        if (curRacer->lap >= currentLevelHeader->laps &&
-            curRacer->raceFinished == FALSE) {
+        if (curRacer->lap >= currentLevelHeader->laps && curRacer->raceFinished == FALSE) {
             if (get_game_mode() != GAMEMODE_UNUSED_4) {
                 curRacer->raceFinished = TRUE;
                 curRacer->finishPosition = gNumFinishedRacers;
-                if (gNumFinishedRacers == 1 &&
-                    curRacer->playerIndex == PLAYER_COMPUTER) {
+                if (gNumFinishedRacers == 1 && curRacer->playerIndex == PLAYER_COMPUTER) {
                     sound_play(SOUND_WHOOSH5, NULL);
                 }
                 gNumFinishedRacers++;
@@ -10069,8 +9644,8 @@ void race_check_finish(s32 updateRate) {
      */
     if (gNumRacers > 0 && gRacersByPort != NULL &&
         gRacersByPort[PLAYER_ONE] != NULL) {
-        mdkr_adventure_force_verdict(gRacersByPort[PLAYER_ONE], *gRacers,
-                                     gNumRacers);
+        mdkr_adventure_force_verdict(
+            gRacersByPort[PLAYER_ONE], *gRacers, gNumRacers);
     }
 
     /*
@@ -10086,15 +9661,14 @@ void race_check_finish(s32 updateRate) {
      */
     if (gNumRacers > 0 && gRacersByPort != NULL &&
         gRacersByPort[PLAYER_ONE] != NULL) {
-        extern void mdkr_pace_probe_finish(int, int, int, int, int, int, int,
-                                           int, int, int);
+        extern void mdkr_pace_probe_finish(int, int, int, int, int, int, int, int, int, int);
         Object_Racer *humanRacer = gRacersByPort[PLAYER_ONE]->racer;
         mdkr_pace_probe_finish(
             humanRacer->lap, humanRacer->raceFinished,
             humanRacer->finishPosition, humanRacer->racerIndex,
-            humanRacer->playerIndex, humanRacer->racePosition, gNumRacers,
-            currentLevelHeader->laps, humanRacer->balloon_quantity,
-            humanRacer->balloon_type);
+            humanRacer->playerIndex, humanRacer->racePosition,
+            gNumRacers, currentLevelHeader->laps,
+            humanRacer->balloon_quantity, humanRacer->balloon_type);
     }
 #endif
 
@@ -10120,16 +9694,14 @@ void race_check_finish(s32 updateRate) {
     j = 0;
     do {
         // @fake
-        if (1) {
-        }
+        if (1) {}
 
         someBool = FALSE;
 
         for (; j < gNumRacers; j++) {
             if (gRacersByPosition[j] == (*gRacers)[i]) {
                 someBool = TRUE;
-                if (!curRacer) {
-                }
+                if (!curRacer) {}
                 j = gNumRacers;
             }
         }
@@ -10150,14 +9722,10 @@ void race_check_finish(s32 updateRate) {
     j = 0;
     for (i = 0; i < MAXCONTROLLERS; i++) {
         // @fake
-        if (1) {
-        }
-        if (1) {
-        }
-        if (1) {
-        }
-        if (1) {
-        }
+        if (1) {}
+        if (1) {}
+        if (1) {}
+        if (1) {}
         j |= input_pressed(i);
     }
 
@@ -10172,8 +9740,7 @@ void race_check_finish(s32 updateRate) {
         }
     } else if (gRaceFinishTriggered == FALSE) {
         someBool2 = FALSE;
-        if (is_in_two_player_adventure() && numHumanRacersFinished > 0 &&
-            get_trophy_race_world_id() == 0 &&
+        if (is_in_two_player_adventure() && numHumanRacersFinished > 0 && get_trophy_race_world_id() == 0 &&
             set_course_finish_flags(settings) != 0) {
             someBool2 = TRUE;
         }
@@ -10226,15 +9793,13 @@ void race_check_finish(s32 updateRate) {
             gSwapLeadPlayer = FALSE;
             flags[2] = raceType;
             if (is_in_two_player_adventure() &&
-                (settings->racers[PLAYER_TWO].starting_position <
-                 settings->racers[PLAYER_ONE].starting_position)) {
+                (settings->racers[PLAYER_TWO].starting_position < settings->racers[PLAYER_ONE].starting_position)) {
                 gSwapLeadPlayer = TRUE;
             }
             curRacer = (*gRacersByPosition)->racer;
             gFirstTimeFinish = FALSE;
             if ((settings->gNumRacers == 1 || is_in_two_player_adventure()) &&
-                curRacer->playerIndex != PLAYER_COMPUTER &&
-                !is_in_tracks_mode() && get_trophy_race_world_id() == 0) {
+                curRacer->playerIndex != PLAYER_COMPUTER && !is_in_tracks_mode() && get_trophy_race_world_id() == 0) {
                 gFirstTimeFinish = TRUE;
             }
             i = FALSE;
@@ -10283,8 +9848,8 @@ void race_check_finish(s32 updateRate) {
 
 /**
  * Mark the course as finished for the appropriate mode.
- * Check if it's the first race or the silver coin race before deciding which
- * flag to write. Return whether something was written.
+ * Check if it's the first race or the silver coin race before deciding which flag to write.
+ * Return whether something was written.
  */
 s8 set_course_finish_flags(Settings *settings) {
     Object_Racer *racer;
@@ -10313,11 +9878,9 @@ s8 set_course_finish_flags(Settings *settings) {
             gFirstTimeFinish = TRUE;
             settings->courseFlagsPtr[settings->courseId] |= RACE_CLEARED;
         }
-    } else if (gIsSilverCoinRace && racer->silverCoinCount >= 8 &&
-               gIsTimeTrial == FALSE) {
+    } else if (gIsSilverCoinRace && racer->silverCoinCount >= 8 && gIsTimeTrial == FALSE) {
         gFirstTimeFinish = TRUE;
-        settings->courseFlagsPtr[settings->courseId] |=
-            RACE_CLEARED_SILVER_COINS;
+        settings->courseFlagsPtr[settings->courseId] |= RACE_CLEARED_SILVER_COINS;
     }
     return gFirstTimeFinish;
 }
@@ -10333,10 +9896,9 @@ void race_finish_adventure(UNUSED s32 unusedArg) {
 }
 
 /**
- * Begins counting down, once it reaches 0, start stopping all the race
- * behaviours. This function is also where the Taj Balloon cutscene is also
- * handled. After that's done, write to save and send the player back to the
- * hub.
+ * Begins counting down, once it reaches 0, start stopping all the race behaviours.
+ * This function is also where the Taj Balloon cutscene is also handled.
+ * After that's done, write to save and send the player back to the hub.
  */
 void race_transition_adventure(s32 updateRate) {
     s32 i;
@@ -10361,8 +9923,7 @@ void race_transition_adventure(s32 updateRate) {
         for (i = 0; i < gNumRacers; i++) {
             racer = (*gRacers)[i]->racer;
             racer->magnetTargetObj = NULL;
-            if (racer->playerIndex != PLAYER_COMPUTER &&
-                racer->finishPosition == 1) {
+            if (racer->playerIndex != PLAYER_COMPUTER && racer->finishPosition == 1) {
                 sp30 = i;
             }
             if (racer->magnetSoundMask != NULL) {
@@ -10401,8 +9962,7 @@ void race_transition_adventure(s32 updateRate) {
         gNumRacersSaved--;
         if (gNumRacersSaved > 0) {
             i = 0;
-            while (i < gNumRacers &&
-                   gRacersByPosition[i] != (*gRacers)[gNumRacersSaved]) {
+            while (i < gNumRacers && gRacersByPosition[i] != (*gRacers)[gNumRacersSaved]) {
                 i++;
             }
             if (i < gNumRacers) {
@@ -10454,8 +10014,7 @@ void race_transition_adventure(s32 updateRate) {
         if (!(settings->cutsceneFlags & 0x40000)) {
             i = 0;
         }
-        if (func_800214C4() != 0 ||
-            (i != 0 && check_fadeout_transition() == 0)) {
+        if (func_800214C4() != 0 || (i != 0 && check_fadeout_transition() == 0)) {
             if (i != 0) {
                 transition_begin(&gBalloonCutsceneTransition);
             }
@@ -10469,17 +10028,21 @@ void race_transition_adventure(s32 updateRate) {
 /**
  * Returns the race finish timer.
  */
-s16 race_finish_timer(void) { return gRaceEndTimer; }
+s16 race_finish_timer(void) {
+    return gRaceEndTimer;
+}
 
 /**
  * Return the timer used for the collectable balloon cutscene.
  */
-u32 get_balloon_cutscene_timer(void) { return gBalloonCutsceneTimer; }
+u32 get_balloon_cutscene_timer(void) {
+    return gBalloonCutsceneTimer;
+}
 
 /**
  * Checks if the fastest lap or the race time is faster than the current record.
- * Save those if they are, and if the staff ghost is not enabled, enable it for
- * the next attempt. The staff ghost comparison is also called here.
+ * Save those if they are, and if the staff ghost is not enabled, enable it for the next attempt.
+ * The staff ghost comparison is also called here.
  */
 void race_finish_time_trial(void) {
     s32 bestCourseTime;
@@ -10507,10 +10070,8 @@ void race_finish_time_trial(void) {
     bestRacer = gRacersByPosition[0]->racer;
 #ifdef NATIVE_PORT
     for (i = 0; i < gNumRacers; i++) {
-        if (gRacersByPosition[i] != NULL &&
-            gRacersByPosition[i]->racer != NULL &&
-            !taj_physics_canonical_records_allowed(
-                gRacersByPosition[i]->racer)) {
+        if (gRacersByPosition[i] != NULL && gRacersByPosition[i]->racer != NULL &&
+            !taj_physics_canonical_records_allowed(gRacersByPosition[i]->racer)) {
             tajTimeTrial = TRUE;
         }
     }
@@ -10521,12 +10082,10 @@ void race_finish_time_trial(void) {
             if (curRacer->racerIndex < get_number_of_active_players()) {
                 settings->racers[curRacer->racerIndex].best_times = 0;
                 vehicleID = curRacer->vehicleIDPrev;
-                if (vehicleID >= VEHICLE_CAR &&
-                    vehicleID < NUMBER_OF_PLAYER_VEHICLES) {
+                if (vehicleID >= VEHICLE_CAR && vehicleID < NUMBER_OF_PLAYER_VEHICLES) {
                     courseTime = 0;
                     for (j = 0; j < levelHeader->laps && j < 5; j++) {
-                        settings->racers[curRacer->racerIndex].lap_times[j] =
-                            curRacer->lap_times[j];
+                        settings->racers[curRacer->racerIndex].lap_times[j] = curRacer->lap_times[j];
                         curRacerLapTime = curRacer->lap_times[j];
                         courseTime += curRacerLapTime;
                         if (curRacerLapTime < bestRacerTime) {
@@ -10535,8 +10094,7 @@ void race_finish_time_trial(void) {
                             bestRacerTime = curRacerLapTime;
                         }
                     }
-                    settings->racers[curRacer->racerIndex].course_time =
-                        courseTime;
+                    settings->racers[curRacer->racerIndex].course_time = courseTime;
                     if (courseTime < bestCourseTime) {
                         bestCourseTime = courseTime;
                         settings->timeTrialRacer = curRacer->racerIndex;
@@ -10559,12 +10117,9 @@ void race_finish_time_trial(void) {
         if (settings->unk115[0] == 0) {
 #endif
             if ((settings->flapTimesPtr[vehicleID][settings->courseId] == 0) ||
-                (bestRacerTime <
-                 settings->flapTimesPtr[vehicleID][settings->courseId])) {
-                settings->flapTimesPtr[vehicleID][settings->courseId] =
-                    bestRacerTime;
-                settings->racers[settings->unk115[0]].best_times |=
-                    1 << settings->unk115[1];
+                (bestRacerTime < settings->flapTimesPtr[vehicleID][settings->courseId])) {
+                settings->flapTimesPtr[vehicleID][settings->courseId] = bestRacerTime;
+                settings->racers[settings->unk115[0]].best_times |= 1 << settings->unk115[1];
             }
         }
 #ifdef NATIVE_PORT
@@ -10572,17 +10127,13 @@ void race_finish_time_trial(void) {
 #else
         if (settings->timeTrialRacer == 0) {
 #endif
-            if ((settings->courseTimesPtr[vehicleID][settings->courseId] ==
-                 0) ||
-                (bestCourseTime <
-                 settings->courseTimesPtr[vehicleID][settings->courseId])) {
-                settings->courseTimesPtr[vehicleID][settings->courseId] =
-                    bestCourseTime;
+            if ((settings->courseTimesPtr[vehicleID][settings->courseId] == 0) ||
+                (bestCourseTime < settings->courseTimesPtr[vehicleID][settings->courseId])) {
+                settings->courseTimesPtr[vehicleID][settings->courseId] = bestCourseTime;
                 settings->racers[settings->timeTrialRacer].best_times |= 0x80;
             }
         }
-        if (((!vehicleID) && (!vehicleID)) && (!vehicleID)) {
-        } // Fakematch
+        if (((!vehicleID) && (!vehicleID)) && (!vehicleID)) {} // Fakematch
         if (settings->timeTrialRacer == 0) {
 #ifdef NATIVE_PORT
             /* A modded (Taj) run is non-canonical, so nothing PERSISTENT may
@@ -10593,9 +10144,7 @@ void race_finish_time_trial(void) {
              * block left Taj time trials silent. */
             if (!tajTimeTrial) {
 #endif
-                if (bestCourseTime < 10800 &&
-                    (vehicleID != gTimeTrialVehicle ||
-                     timetrial_map_id() != level_id() ||
+            if (bestCourseTime < 10800 && (vehicleID != gTimeTrialVehicle || timetrial_map_id() != level_id() ||
                                            bestCourseTime < gTimeTrialTime)) {
                 gTimeTrialTime = bestCourseTime;
                 gTimeTrialVehicle = gPrevTimeTrialVehicle;
@@ -10654,13 +10203,15 @@ s32 timetrial_valid_player_ghost(void) {
 /**
  * Return the player ghost object.
  */
-Object *timetrial_player_ghost(void) { return gGhostObjPlayer; }
+Object *timetrial_player_ghost(void) {
+    return gGhostObjPlayer;
+}
 
 /**
-Pretty sure this determines whether or not you're eligible to race TT ghost in
-track select when TT is on. It looks like it checks some ghost data makes sure
-you've got a ghost for that level with the default vehicle, Returns 0 if TT
-ghost was loaded successfully.
+Pretty sure this determines whether or not you're eligible to race TT ghost in track select
+when TT is on. It looks like it checks some ghost data makes sure you've got a ghost for that level
+with the default vehicle,
+Returns 0 if TT ghost was loaded successfully.
 */
 s32 timetrial_load_staff_ghost(s32 mapId) {
     TTGhostTable *ghostTable;
@@ -10674,8 +10225,7 @@ s32 timetrial_load_staff_ghost(s32 mapId) {
     nextGhostTable = ghostTable;
     do {
         prevGhostTable = nextGhostTable;
-        if ((prevGhostTable->mapId == mapId) &&
-            (prevGhostTable->defaultVehicleId == gMapDefaultVehicle)) {
+        if ((prevGhostTable->mapId == mapId) && (prevGhostTable->defaultVehicleId == gMapDefaultVehicle)) {
             break;
         }
         nextGhostTable++;
@@ -10684,9 +10234,7 @@ s32 timetrial_load_staff_ghost(s32 mapId) {
     ret = 1;
 
     if (prevGhostTable->mapId != 0xFF) {
-        ret = load_tt_ghost(nextGhostTable->ghostOffset,
-                            nextGhostTable[1].ghostOffset -
-                                nextGhostTable->ghostOffset,
+        ret = load_tt_ghost(nextGhostTable->ghostOffset, nextGhostTable[1].ghostOffset - nextGhostTable->ghostOffset,
                             &gTTGhostTimeToBeat);
     }
 
@@ -10697,7 +10245,9 @@ s32 timetrial_load_staff_ghost(s32 mapId) {
 /**
  * Return true if this object is the time trial ghost.
  */
-s32 timetrial_staff_ghost_check(Object *obj) { return obj == gGhostObjStaff; }
+s32 timetrial_staff_ghost_check(Object *obj) {
+    return obj == gGhostObjStaff;
+}
 
 /**
  * Free ghost data then save the players victory.
@@ -10713,8 +10263,7 @@ void tt_ghost_beaten(s32 arg0, s16 *playerId) {
     gTimeTrialStaffGhost = FALSE;
     mainTrackIds = (s8 *) get_misc_asset(ASSET_MISC_MAIN_TRACKS_IDS);
     trackIdCount = 0;
-    while (mainTrackIds[trackIdCount] != -1 &&
-           mainTrackIds[trackIdCount] != arg0) {
+    while (mainTrackIds[trackIdCount] != -1 && mainTrackIds[trackIdCount] != arg0) {
         trackIdCount++;
     }
     if (gBeatStaffGhost) {
@@ -10726,13 +10275,11 @@ void tt_ghost_beaten(s32 arg0, s16 *playerId) {
             sound_play(SOUND_VOICE_TT_BEAT_ALL_TIMES, NULL);
             sound_play_delayed(SOUND_VOICE_TT_UNLOCKED, NULL, 1.5f);
             set_current_text(
-                ASSET_GAME_TEXT_84); // Text for "You have beaten all my times!"
-                                     // and then "Now you can PICK me!"
+                ASSET_GAME_TEXT_84); // Text for "You have beaten all my times!" and then "Now you can PICK me!"
         } else {
             sound_play(SOUND_VOICE_TT_WELL_DONE, NULL);
             sound_play_delayed(SOUND_VOICE_TT_TRY_ANOTHER_TRACK, NULL, 1.0f);
-            set_current_text(ASSET_GAME_TEXT_83); // Text for "Well Done! Now
-                                                  // try another track."
+            set_current_text(ASSET_GAME_TEXT_83); // Text for "Well Done! Now try another track."
         }
         gBeatStaffGhost = FALSE;
         return;
@@ -10776,16 +10323,20 @@ u8 timetrial_init_staff_ghost(s32 trackId) {
 /**
  * Return the time trial staff ghost object.
  */
-Object *timetrial_ghost_staff(void) { return gGhostObjStaff; }
+Object *timetrial_ghost_staff(void) {
+    return gGhostObjStaff;
+}
 
 /**
  * Return true if the tt ghost is unbeaten for this track.
  */
-s32 timetrial_staff_unbeaten(void) { return gBeatStaffGhost == FALSE; }
+s32 timetrial_staff_unbeaten(void) {
+    return gBeatStaffGhost == FALSE;
+}
 
 /**
- * Calls a function to start loading the player ghost data from the controller
- * pak. Returns the controller pak status. 0 means good.
+ * Calls a function to start loading the player ghost data from the controller pak.
+ * Returns the controller pak status. 0 means good.
  */
 s32 timetrial_init_player_ghost(s32 playerID) {
     s16 characterID;
@@ -10794,10 +10345,8 @@ s32 timetrial_init_player_ghost(s32 playerID) {
     s32 ghostMapID;
 
     ghostMapID = timetrial_map_id();
-    if (level_id() != ghostMapID ||
-        gTimeTrialVehicle != gPrevTimeTrialVehicle) {
-        cpakStatus = timetrial_load_player_ghost(
-            playerID, level_id(), gPrevTimeTrialVehicle, &characterID, &time);
+    if (level_id() != ghostMapID || gTimeTrialVehicle != gPrevTimeTrialVehicle) {
+        cpakStatus = timetrial_load_player_ghost(playerID, level_id(), gPrevTimeTrialVehicle, &characterID, &time);
         if (cpakStatus == CONTROLLER_PAK_GOOD) {
             gTimeTrialVehicle = gPrevTimeTrialVehicle;
             gTimeTrialCharacter = characterID;
@@ -10805,8 +10354,7 @@ s32 timetrial_init_player_ghost(s32 playerID) {
         }
         return cpakStatus;
     }
-    return timetrial_load_player_ghost(playerID, level_id(),
-                                       gPrevTimeTrialVehicle, NULL, NULL);
+    return timetrial_load_player_ghost(playerID, level_id(), gPrevTimeTrialVehicle, NULL, NULL);
 }
 
 /**
@@ -10820,15 +10368,16 @@ SIDeviceStatus timetrial_save_player_ghost(s32 controllerIndex) {
         return CONTROLLER_PAK_BAD_DATA;
     }
 #endif
-    return timetrial_write_player_ghost(controllerIndex, timetrial_map_id(),
-                                        gTimeTrialVehicle, gTimeTrialCharacter,
+    return timetrial_write_player_ghost(controllerIndex, timetrial_map_id(), gTimeTrialVehicle, gTimeTrialCharacter,
                                         gTimeTrialTime);
 }
 
 /**
  * Returns whether there's valid ghost data to save.
  */
-u8 has_ghost_to_save(void) { return gHasGhostToSave; }
+u8 has_ghost_to_save(void) {
+    return gHasGhostToSave;
+}
 
 /**
  * Resets the variables used for ghost data saving.
@@ -10839,15 +10388,12 @@ void set_ghost_none(void) {
 }
 
 /**
- * Finds the opponent to this racer in a relative position to them and
- * calculates the distance to them. The position argument is relative to the
- * racer's current position and represents the number of places ahead (positive)
- * or behind (negative) the opponent is. So, for instance, if position is 1,
- * find the opponent one place ahead of the racer; if it's -1, find the opponent
- * one place behind.
+ * Finds the opponent to this racer in a relative position to them and calculates the distance to them.
+ * The position argument is relative to the racer's current position and represents the number of
+ * places ahead (positive) or behind (negative) the opponent is. So, for instance, if position is 1,
+ * find the opponent one place ahead of the racer; if it's -1, find the opponent one place behind.
  */
-Object *racer_find_nearest_opponent_relative(Object_Racer *racer, s32 position,
-                                             f32 *distance) {
+Object *racer_find_nearest_opponent_relative(Object_Racer *racer, s32 position, f32 *distance) {
     UNUSED s32 pad;
     Object *tempRacerObj;
     position = (racer->racerOrder - position) - 1;
@@ -10867,8 +10413,7 @@ Object *racer_find_nearest_opponent_relative(Object_Racer *racer, s32 position,
  * between the two racers to calculate the total distance.
  * If the second racer is ahead, the distance is positive, otherwise negative.
  */
-f32 racer_calc_distance_to_opponent(Object_Racer *racer1,
-                                    Object_Racer *racer2) {
+f32 racer_calc_distance_to_opponent(Object_Racer *racer1, Object_Racer *racer2) {
     Object_Racer *temp_racer;
     f32 totalDistance;
     s32 r1_ccp;
@@ -10888,8 +10433,7 @@ f32 racer_calc_distance_to_opponent(Object_Racer *racer1,
         reverseOrder = TRUE;
     }
     checkpointID = racer1->nextCheckpoint;
-    for (r1_ccp = racer1->courseCheckpoint; r1_ccp < racer2->courseCheckpoint;
-         r1_ccp++) {
+    for (r1_ccp = racer1->courseCheckpoint; r1_ccp < racer2->courseCheckpoint; r1_ccp++) {
         totalDistance += gTrackCheckpoints[checkpointID++].distance;
         if (checkpointID == gNumberOfMainCheckpoints) {
             checkpointID = 0;
@@ -10899,14 +10443,12 @@ f32 racer_calc_distance_to_opponent(Object_Racer *racer1,
     if (checkpointID < 0) {
         checkpointID = gNumberOfMainCheckpoints - 1;
     }
-    totalDistance += (gTrackCheckpoints[checkpointID].distance *
-                      racer1->checkpoint_distance);
+    totalDistance += (gTrackCheckpoints[checkpointID].distance * racer1->checkpoint_distance);
     checkpointID = racer2->nextCheckpoint - 1;
     if (checkpointID < 0) {
         checkpointID = gNumberOfMainCheckpoints - 1;
     }
-    totalDistance -= (gTrackCheckpoints[checkpointID].distance *
-                      racer2->checkpoint_distance);
+    totalDistance -= (gTrackCheckpoints[checkpointID].distance * racer2->checkpoint_distance);
     if (reverseOrder) {
         totalDistance = -totalDistance;
     }
@@ -10925,16 +10467,14 @@ UNUSED f32 race_calc_distance_to_start_line(Object_Racer *racer) {
         return 0.0f;
     }
     distLeft = 0.0f;
-    for (checkpointID = racer->nextCheckpoint;
-         checkpointID < gNumberOfMainCheckpoints; checkpointID++) {
+    for (checkpointID = racer->nextCheckpoint; checkpointID < gNumberOfMainCheckpoints; checkpointID++) {
         distLeft += gTrackCheckpoints[checkpointID].distance;
     }
     checkpointID = racer->nextCheckpoint - 1;
     if (checkpointID < 0) {
         checkpointID = gNumberOfMainCheckpoints - 1;
     }
-    distLeft +=
-        (gTrackCheckpoints[checkpointID].distance * racer->checkpoint_distance);
+    distLeft += (gTrackCheckpoints[checkpointID].distance * racer->checkpoint_distance);
     return distLeft;
 }
 
@@ -10946,8 +10486,8 @@ CheckpointNode *get_checkpoint_node(s32 checkpointID) {
 }
 
 /**
- * Takes the position along the checkpoint path, and finds the next applicable
- * node. If an alternative path is available, use that node instead.
+ * Takes the position along the checkpoint path, and finds the next applicable node.
+ * If an alternative path is available, use that node instead.
  */
 CheckpointNode *find_next_checkpoint_node(s32 splinePos, s32 isAlternate) {
     CheckpointNode *checkpointNode = &gTrackCheckpoints[splinePos];
@@ -10960,7 +10500,9 @@ CheckpointNode *find_next_checkpoint_node(s32 splinePos, s32 isAlternate) {
 /**
  * Returns the number of active checkpoints in the current level.
  */
-s32 get_checkpoint_count(void) { return gNumberOfMainCheckpoints; }
+s32 get_checkpoint_count(void) {
+    return gNumberOfMainCheckpoints;
+}
 
 /**
  * Returns the group of racer objects.
@@ -11014,8 +10556,8 @@ Object *get_racer_object_by_port(s32 index) {
 }
 
 /**
- * Unused function that would've iterated through all active checkpoints to
- * render their visual nodes. The function it calls is completely stubbed out.
+ * Unused function that would've iterated through all active checkpoints to render their visual nodes.
+ * The function it calls is completely stubbed out.
  */
 UNUSED void debug_render_checkpoints(Gfx **dList, Mtx **mtx, Vertex **vtx) {
     s32 i;
@@ -11034,14 +10576,12 @@ UNUSED void debug_render_checkpoints(Gfx **dList, Mtx **mtx, Vertex **vtx) {
 }
 
 /**
- * Would've rendered an individual checkpoint node. On https://noclip.website,
- * with dev objects enabled, you can see a visual representation of what these
- * checkpoints would've looked like ingame.
+ * Would've rendered an individual checkpoint node. On https://noclip.website, with dev objects enabled, you can see a
+ * visual representation of what these checkpoints would've looked like ingame.
  */
-UNUSED void debug_render_checkpoint_node(UNUSED s32 checkpointID,
-                                         UNUSED s32 pathID, UNUSED Gfx **dList,
-                                         UNUSED Mtx **mtx,
-                                         UNUSED Vertex **vtx) {}
+UNUSED void debug_render_checkpoint_node(UNUSED s32 checkpointID, UNUSED s32 pathID, UNUSED Gfx **dList,
+                                         UNUSED Mtx **mtx, UNUSED Vertex **vtx) {
+}
 
 /**
  * Loop through every existing spectate camera and sort them by index.
@@ -11070,8 +10610,7 @@ void spectate_update(void) {
         for (i = 0; i < gCameraObjCount - 1; i++) {
             objPtr = (*gCameraObjList)[i + 1];
             temp = (*gCameraObjList)[i];
-            if (temp->properties.camControl.cameraID >
-                objPtr->properties.camControl.cameraID) {
+            if (temp->properties.camControl.cameraID > objPtr->properties.camControl.cameraID) {
                 (*gCameraObjList)[i] = (*gCameraObjList)[i + 1];
                 (*gCameraObjList)[i + 1] = temp;
                 continueLoop = FALSE;
@@ -11088,9 +10627,8 @@ Object *spectate_object(s32 cameraIndex) {
 }
 
 /**
- * Take the current camera passed through the function and compare distances
- * between the next and previous camera. Set the camera to be whichever's
- * closest to the object.
+ * Take the current camera passed through the function and compare distances between the next and previous camera.
+ * Set the camera to be whichever's closest to the object.
  */
 Object *spectate_nearest(Object *obj, s32 *cameraId) {
     Object *nextCamera;
@@ -11149,8 +10687,7 @@ Object *spectate_nearest(Object *obj, s32 *cameraId) {
 
 /**
  * Take every existing AI node and find each neighbouring node.
- * Afterwards, sort them by height so the game can generate elevation
- * thresholds.
+ * Afterwards, sort them by height so the game can generate elevation thresholds.
  */
 void ainode_update(void) {
     LevelObjectEntry_AiNode *aiNodeEntry;
@@ -11180,8 +10717,7 @@ void ainode_update(void) {
     // Store each existing node ID in the temporary vars.
     for (i = 0; i < gObjectCount; i++) {
         obj = gObjPtrList[i];
-        if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE) &&
-            obj->behaviorId == BHV_AINODE) {
+        if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE) && obj->behaviorId == BHV_AINODE) {
             aiNodeEntry = &obj->level_entry->aiNode;
             index2 = aiNodeEntry->nodeID;
             if (!(index2 & AINODE_COUNT)) {
@@ -11209,15 +10745,10 @@ void ainode_update(void) {
                     if (nextAiNodeObj == NULL) {
                         aiNodeEntry->adjacent[j] = -1;
                     } else {
-                        diffX = obj->trans.x_position -
-                                nextAiNodeObj->trans.x_position;
-                        diffY = obj->trans.y_position -
-                                nextAiNodeObj->trans.y_position;
-                        diffZ = obj->trans.z_position -
-                                nextAiNodeObj->trans.z_position;
-                        aiNodeObj64->distToNode[j] =
-                            sqrtf((diffX * diffX) + (diffY * diffY) +
-                                  (diffZ * diffZ));
+                        diffX = obj->trans.x_position - nextAiNodeObj->trans.x_position;
+                        diffY = obj->trans.y_position - nextAiNodeObj->trans.y_position;
+                        diffZ = obj->trans.z_position - nextAiNodeObj->trans.z_position;
+                        aiNodeObj64->distToNode[j] = sqrtf((diffX * diffX) + (diffY * diffY) + (diffZ * diffZ));
                     }
                 }
             }
@@ -11227,8 +10758,7 @@ void ainode_update(void) {
     do {
         j = TRUE;
         for (i = 0; i < nodeCount - 1; i++) {
-            if ((*gAINodes)[nodeIDs[i + 1]]->trans.y_position <
-                (*gAINodes)[nodeIDs[i]]->trans.y_position) {
+            if ((*gAINodes)[nodeIDs[i + 1]]->trans.y_position < (*gAINodes)[nodeIDs[i]]->trans.y_position) {
                 swap = nodeIDs[i];
                 nodeIDs[i] = nodeIDs[i + 1];
                 nodeIDs[i + 1] = swap;
@@ -11240,8 +10770,7 @@ void ainode_update(void) {
         }
     } while (!j); // Keep doing this until no more swaps are needed.
 
-    if (1) {
-    } // Fakematch
+    if (1) {} // Fakematch
 
     for (i = 0; i < 5; i++) {
         gElevationHeights[i] = -20000.0f;
@@ -11255,9 +10784,7 @@ void ainode_update(void) {
         if (index < elevations[i]) {
             index = elevations[i];
             gElevationHeights[index] =
-                ((*gAINodes)[nodeIDs[i]]->trans.y_position +
-                 (*gAINodes)[nodeIDs[i - 1]]->trans.y_position) *
-                0.5;
+                ((*gAINodes)[nodeIDs[i]]->trans.y_position + (*gAINodes)[nodeIDs[i - 1]]->trans.y_position) * 0.5;
         } else {
             i = nodeCount;
         }
@@ -11282,8 +10809,7 @@ s16 obj_elevation(f32 yPos) {
 }
 
 /**
- * Loop through the AI Node list and add this new object to the list if it does
- * not already exist.
+ * Loop through the AI Node list and add this new object to the list if it does not already exist.
  */
 s32 ainode_register(Object *obj) {
     s32 i;
@@ -11297,8 +10823,8 @@ s32 ainode_register(Object *obj) {
 }
 
 /**
- * Search through each AI node and find the one closest to the coordinates
- * given. Can choose to include or ignore elevation.
+ * Search through each AI node and find the one closest to the coordinates given.
+ * Can choose to include or ignore elevation.
  */
 s32 ainode_find_nearest(f32 diffX, f32 diffY, f32 diffZ, s32 useElevation) {
     UNUSED f32 pad[6];
@@ -11346,8 +10872,7 @@ s32 ainode_find_nearest(f32 diffX, f32 diffY, f32 diffZ, s32 useElevation) {
 }
 
 // Updated Object_NPC
-f32 func_8001C6C4(Object_NPC *npc, Object *npcParentObj, f32 updateRateF,
-                  f32 speedF, s32 direction) {
+f32 func_8001C6C4(Object_NPC *npc, Object *npcParentObj, f32 updateRateF, f32 speedF, s32 direction) {
     f32 xPositions[5];
     f32 yPositions[5];
     f32 zPositions[5];
@@ -11409,15 +10934,13 @@ f32 func_8001C6C4(Object_NPC *npc, Object *npcParentObj, f32 updateRateF,
             someBool = FALSE;
 #ifdef NATIVE_PORT
             /* The same zero-rate divide func_8001F460 carries, in the NPC path
-             * follower: at a paused update rate this produced inf/NaN and
-             * stored it in npc->unk8, which feeds npc->unk0 above and never
-             * recovers. See the note there. */
+             * follower: at a paused update rate this produced inf/NaN and stored
+             * it in npc->unk8, which feeds npc->unk0 above and never recovers.
+             * See the note there. */
             if (updateRateF > 0.0f)
 #endif
             {
-                dist =
-                    sqrtf((xDiff * xDiff) + (yDiff * yDiff) + (zDiff * zDiff)) /
-                    updateRateF;
+                dist = sqrtf((xDiff * xDiff) + (yDiff * yDiff) + (zDiff * zDiff)) / updateRateF;
                 if (dist != 0.0f) {
                     npc->unk8 *= (speedF / dist);
                 }
@@ -11444,41 +10967,33 @@ f32 func_8001C6C4(Object_NPC *npc, Object *npcParentObj, f32 updateRateF,
         yDiff *= dist;
         zDiff *= dist;
     }
-    dist =
-        sqrtf((xDiff2 * xDiff2) + (yDiff2 * yDiff2) + (zDiff2 * zDiff2)) / 16;
+    dist = sqrtf((xDiff2 * xDiff2) + (yDiff2 * yDiff2) + (zDiff2 * zDiff2)) / 16;
     if (speedF < dist) {
         dist = speedF;
     }
     if (dist >= 1.0) {
-        var_s0 = (arctan2_f(xDiff, zDiff) -
-                  (npcParentObj->trans.rotation.y_rotation & 0xFFFF)) -
-                 0x8000;
+        var_s0 = (arctan2_f(xDiff, zDiff) - (npcParentObj->trans.rotation.y_rotation & 0xFFFF)) - 0x8000;
         if (var_s0 > 0x8000) {
             var_s0 -= 0xFFFF;
         }
         if (var_s0 < -0x8000) {
             var_s0 += 0xFFFF;
         }
-        npcParentObj->trans.rotation.y_rotation +=
-            ((var_s0 * (s32)updateRateF)) >> 4;
-        var_s0 = arctan2_f(yDiff, 255.0f) -
-                 (npcParentObj->trans.rotation.x_rotation & 0xFFFF);
+        npcParentObj->trans.rotation.y_rotation += ((var_s0 * (s32) updateRateF)) >> 4;
+        var_s0 = arctan2_f(yDiff, 255.0f) - (npcParentObj->trans.rotation.x_rotation & 0xFFFF);
         if (var_s0 > 0x8000) {
             var_s0 -= 0xFFFF;
         }
         if (var_s0 < -0x8000) {
             var_s0 += 0xFFFF;
         }
-        npcParentObj->trans.rotation.x_rotation +=
-            ((var_s0 * (s32)updateRateF)) >> 4;
+        npcParentObj->trans.rotation.x_rotation += ((var_s0 * (s32) updateRateF)) >> 4;
     }
 
     npcParentObj->trans.rotation.z_rotation = 0;
-    xDiff =
-        sins_f((s16)(npcParentObj->trans.rotation.y_rotation + 0x8000)) * dist;
+    xDiff = sins_f((s16) (npcParentObj->trans.rotation.y_rotation + 0x8000)) * dist;
     move_object(npcParentObj, xDiff * updateRateF, 0.0f,
-                coss_f((npcParentObj->trans.rotation.y_rotation + 0x8000)) *
-                    dist * updateRateF);
+                coss_f((npcParentObj->trans.rotation.y_rotation + 0x8000)) * dist * updateRateF);
     npcParentObj->trans.y_position = tempYDiff;
     dist = dist * updateRateF * 2;
     if (someBool != 0) {
@@ -11486,8 +11001,7 @@ f32 func_8001C6C4(Object_NPC *npc, Object *npcParentObj, f32 updateRateF,
         npc->nodeData[1] = npc->nodeData[2];
         npc->nodeData[2] = npc->nodeData[3];
         npc->nodeData[3] = npc->nodeData[4];
-        npc->nodeData[4] =
-            ainode_find_next(npc->nodeData[3], npc->nodeData[2], direction);
+        npc->nodeData[4] = ainode_find_next(npc->nodeData[3], npc->nodeData[2], direction);
     }
 
     return dist;
@@ -11516,8 +11030,7 @@ s32 ainode_find_next(s32 nodeId, s32 nextNodeId, s32 direction) {
     nextIndex = (aiNode->directions[direction] + 1) & 3;
 
     for (i = 0; i < 4; i++) {
-        if (entry->adjacent[nextIndex] != NODE_NONE &&
-            entry->adjacent[nextIndex] != nextNodeId) {
+        if (entry->adjacent[nextIndex] != NODE_NONE && entry->adjacent[nextIndex] != nextNodeId) {
             aiNode->directions[direction] = nextIndex;
             i = 4; // break
             someCount++;
@@ -11607,12 +11120,10 @@ s16 func_8001CD28(s32 arg0, s32 arg1, s32 arg2, s32 arg3) {
 
                     sp36C = var_t1 - 1;
 
-                    sp54[sp36C] =
-                        (someBool) ? aiNodeEntry->adjacent[i] : var_s3;
+                    sp54[sp36C] = (someBool) ? aiNodeEntry->adjacent[i] : var_s3;
                     spD4[sp36C] = aiNodeEntry->adjacent[i];
 
-                    while ((sp36C > 0) &&
-                           (sp154[spD4[sp36C - 1]] < sp154[spD4[sp36C]])) {
+                    while ((sp36C > 0) && (sp154[spD4[sp36C - 1]] < sp154[spD4[sp36C]])) {
                         temp = spD4[sp36C];
                         spD4[sp36C] = spD4[sp36C - 1];
                         spD4[sp36C - 1] = temp;
@@ -11650,8 +11161,7 @@ s16 func_8001CD28(s32 arg0, s32 arg1, s32 arg2, s32 arg3) {
         aiNodeObj = (*gAINodes)[arg0];
         aiNodeEntry = &aiNodeObj->level_entry->aiNode;
         aiNode = aiNodeObj->ai_node;
-        for (i = 0; (i < 4) && (result != aiNodeEntry->adjacent[i]); i++) {
-        }
+        for (i = 0; (i < 4) && (result != aiNodeEntry->adjacent[i]); i++) {}
         if (i < 4) {
             aiNode->directions[arg3] = i;
         }
@@ -11662,7 +11172,9 @@ s16 func_8001CD28(s32 arg0, s32 arg1, s32 arg2, s32 arg3) {
 /**
  * Signal that AI nodes exist, so the game knows to initialise them.
  */
-void ainode_enable(void) { gInitAINodes = TRUE; }
+void ainode_enable(void) {
+    gInitAINodes = TRUE;
+}
 
 /**
  * If the node ID is new, set the tail ID to it.
@@ -11692,21 +11204,19 @@ Object *ainode_get(s32 nodeID) {
     return NULL;
 }
 
-UNUSED void func_8001D248(UNUSED s32 arg0, UNUSED s32 arg1, UNUSED s32 arg2) {}
+UNUSED void func_8001D248(UNUSED s32 arg0, UNUSED s32 arg1, UNUSED s32 arg2) {
+}
 
 /**
  * Applies shading properties to a global variable.
- * Presumably intended for level geometry, which supports shading, but never
- * uses it.
+ * Presumably intended for level geometry, which supports shading, but never uses it.
  */
-void set_world_shading(f32 ambient, f32 diffuse, s16 angleX, s16 angleY,
-                       s16 angleZ) {
+void set_world_shading(f32 ambient, f32 diffuse, s16 angleX, s16 angleY, s16 angleZ) {
 #ifdef NATIVE_PORT
-    set_shading_properties(&gWorldShading, ambient, diffuse, angleX, angleY,
-                           angleZ);
+    set_shading_properties(
+        &gWorldShading, ambient, diffuse, angleX, angleY, angleZ);
 #else
-    set_shading_properties((ShadeProperties *)&gWorldShading, ambient, diffuse,
-                           angleX, angleY, angleZ);
+    set_shading_properties((ShadeProperties *) &gWorldShading, ambient, diffuse, angleX, angleY, angleZ);
 #endif
 }
 
@@ -11714,8 +11224,7 @@ void set_world_shading(f32 ambient, f32 diffuse, s16 angleX, s16 angleY,
  * Add values onto the existing properties of an objects shading.
  * Resets the shading based off the new values.
  */
-UNUSED void add_shading_properties(Object *obj, f32 ambientChange,
-                                   f32 diffuseChange, s16 angleX, s16 angleY,
+UNUSED void add_shading_properties(Object *obj, f32 ambientChange, f32 diffuseChange, s16 angleX, s16 angleY,
                                    s16 angleZ) {
     if (obj->shading != NULL) {
         obj->shading->ambient += ambientChange;
@@ -11731,8 +11240,7 @@ UNUSED void add_shading_properties(Object *obj, f32 ambientChange,
         if (obj->shading->diffuse >= 2.0f) {
             obj->shading->diffuse = 1.99f;
         }
-        set_shading_properties(
-            obj->shading, obj->shading->ambient, obj->shading->diffuse,
+        set_shading_properties(obj->shading, obj->shading->ambient, obj->shading->diffuse,
                                (obj->shading->unk22 + angleX), (obj->shading->unk24 + angleY),
                                (obj->shading->unk26 + angleZ));
         if (obj->header->shadeIntensityy != 0) {
@@ -11747,8 +11255,7 @@ UNUSED void add_shading_properties(Object *obj, f32 ambientChange,
     }
 }
 
-void set_shading_properties(ShadeProperties *arg0, f32 ambient, f32 diffuse,
-                            s16 angleX, s16 angleY, s16 angleZ) {
+void set_shading_properties(ShadeProperties *arg0, f32 ambient, f32 diffuse, s16 angleX, s16 angleY, s16 angleZ) {
     Vec3s angle;
     Vec3f velocityPos;
 
@@ -11774,8 +11281,8 @@ void set_shading_properties(ShadeProperties *arg0, f32 ambient, f32 diffuse,
 }
 
 /**
- * Take the normalised length of the position set by the perspective and set the
- * world angle for the envmap. Official name: setObjectViewNormal
+ * Take the normalised length of the position set by the perspective and set the world angle for the envmap.
+ * Official name: setObjectViewNormal
  */
 void update_envmap_position(f32 x, f32 y, f32 z) {
     f32 vecLength = sqrtf((x * x) + (y * y) + (z * z));
@@ -11793,11 +11300,9 @@ void update_envmap_position(f32 x, f32 y, f32 z) {
 
 /**
  * If the triangle batch allows for it, compute envmap normals for the mesh.
- * Some objects will prefer some extra additions on top before calculating, like
- * light intensity.
+ * Some objects will prefer some extra additions on top before calculating, like light intensity.
  */
-void obj_shade_fancy(ObjectModel *model, Object *object, s32 arg2,
-                     f32 intensity) {
+void obj_shade_fancy(ObjectModel *model, Object *object, s32 arg2, f32 intensity) {
     s16 environmentMappingEnabled;
     s32 dynamicLightingEnabled;
     s16 i;
@@ -11806,13 +11311,10 @@ void obj_shade_fancy(ObjectModel *model, Object *object, s32 arg2,
     environmentMappingEnabled = 0;
 
     for (i = 0; i < model->numberOfBatches; i++) {
-        if (DKR_PTR(TriangleBatchInfo, model->batches)[i].miscData !=
-            BATCH_VTX_COL) {
-            dynamicLightingEnabled =
-                -1; // This is a bit weird, but I guess it works.
+        if (DKR_PTR(TriangleBatchInfo, model->batches)[i].miscData != BATCH_VTX_COL) {
+            dynamicLightingEnabled = -1; // This is a bit weird, but I guess it works.
         }
-        if (DKR_PTR(TriangleBatchInfo, model->batches)[i].flags &
-            RENDER_ENVMAP) {
+        if (DKR_PTR(TriangleBatchInfo, model->batches)[i].flags & RENDER_ENVMAP) {
             environmentMappingEnabled = -1;
         }
     }
@@ -11820,27 +11322,22 @@ void obj_shade_fancy(ObjectModel *model, Object *object, s32 arg2,
     if (dynamicLightingEnabled) {
         // Calculates dynamic lighting for the object
         if (object->header->directionalPointLighting) {
-            // Dynamic directional lighting for some objects (Intro diddy, Taj,
-            // T.T., Bosses)
-            calc_dynamic_lighting_for_object_1(object, model, arg2, object,
-                                               intensity, 1.0f);
+            // Dynamic directional lighting for some objects (Intro diddy, Taj, T.T., Bosses)
+            calc_dynamic_lighting_for_object_1(object, model, arg2, object, intensity, 1.0f);
         } else {
-            // Dynamic ambient lighting for other objects (Racers, Rare logo,
-            // Wizpig face, etc.)
+            // Dynamic ambient lighting for other objects (Racers, Rare logo, Wizpig face, etc.)
             calc_dynamic_lighting_for_object_2(object, model, arg2, intensity);
         }
     }
 
     if (environmentMappingEnabled) {
         // Calculates environment mapping for the object
-        calc_env_mapping_for_object(model, object->trans.rotation.z_rotation,
-                                    object->trans.rotation.x_rotation,
+        calc_env_mapping_for_object(model, object->trans.rotation.z_rotation, object->trans.rotation.x_rotation,
                                     object->trans.rotation.y_rotation);
     }
 }
 
-void calc_dynamic_lighting_for_object_1(Object *object, ObjectModel *model,
-                                        s16 arg2, Object *anotherObject,
+void calc_dynamic_lighting_for_object_1(Object *object, ObjectModel *model, s16 arg2, Object *anotherObject,
                                         f32 intensity, f32 arg5) {
     s16 normIdx;
     s16 j;
@@ -11895,22 +11392,14 @@ void calc_dynamic_lighting_for_object_1(Object *object, ObjectModel *model,
     shadowDirY = direction.y;
     shadowDirZ = direction.z;
 
-    ambientFactor =
-        object->shading->ambient * object->shading->unk0 * 255.0f * intensity;
-    diffuseFactor =
-        object->shading->diffuse * object->shading->unk0 * 255.0f * intensity;
+    ambientFactor = object->shading->ambient * object->shading->unk0 * 255.0f * intensity;
+    diffuseFactor = object->shading->diffuse * object->shading->unk0 * 255.0f * intensity;
 
     for (i = 0; i < model->numberOfBatches; i++) {
-        if (DKR_PTR(TriangleBatchInfo, model->batches)[i].miscData !=
-            BATCH_VTX_COL) { // 0xFF means use vertex colors
-            for (j = DKR_PTR(TriangleBatchInfo, model->batches)[i]
-                         .verticesOffset;
-                 j < DKR_PTR(TriangleBatchInfo, model->batches)[i + 1]
-                         .verticesOffset;
-                 j++) {
+        if (DKR_PTR(TriangleBatchInfo, model->batches)[i].miscData != BATCH_VTX_COL) { // 0xFF means use vertex colors
+            for (j = DKR_PTR(TriangleBatchInfo, model->batches)[i].verticesOffset; j < DKR_PTR(TriangleBatchInfo, model->batches)[i + 1].verticesOffset; j++) {
                 // calculate lighting
-                lightIntensity = (normals[normIdx].x * lightDirX +
-                                  normals[normIdx].y * lightDirY +
+                lightIntensity = (normals[normIdx].x * lightDirX + normals[normIdx].y * lightDirY +
                                   normals[normIdx].z * lightDirZ) >>
                                  13;
                 if (lightIntensity > 0) {
@@ -11923,8 +11412,7 @@ void calc_dynamic_lighting_for_object_1(Object *object, ObjectModel *model,
                 }
 
                 // calculate shading
-                shadeStrength = (normals[normIdx].x * shadowDirX +
-                                 normals[normIdx].y * shadowDirY +
+                shadeStrength = (normals[normIdx].x * shadowDirX + normals[normIdx].y * shadowDirY +
                                  normals[normIdx].z * shadowDirZ) >>
                                 13;
                 if (shadeStrength > 0) {
@@ -11943,18 +11431,13 @@ void calc_dynamic_lighting_for_object_1(Object *object, ObjectModel *model,
                 vertices[j].a = shadeStrength;
                 normIdx++;
             }
-        } else if (DKR_PTR(TriangleBatchInfo, model->batches)[i].flags &
-                   RENDER_ENVMAP) {
-            normIdx +=
-                DKR_PTR(TriangleBatchInfo, model->batches)[i + 1]
-                    .verticesOffset -
-                DKR_PTR(TriangleBatchInfo, model->batches)[i].verticesOffset;
+        } else if (DKR_PTR(TriangleBatchInfo, model->batches)[i].flags & RENDER_ENVMAP) {
+            normIdx += DKR_PTR(TriangleBatchInfo, model->batches)[i + 1].verticesOffset - DKR_PTR(TriangleBatchInfo, model->batches)[i].verticesOffset;
         }
     }
 }
 
-void calc_env_mapping_for_object(ObjectModel *model, s16 zRot, s16 xRot,
-                                 s16 yRot) {
+void calc_env_mapping_for_object(ObjectModel *model, s16 zRot, s16 xRot, s16 yRot) {
     MtxS objRotMtxS32;
     MtxF objRotMtxF32;
     ObjectTransform objTrans;
@@ -11987,17 +11470,9 @@ void calc_env_mapping_for_object(ObjectModel *model, s16 zRot, s16 xRot,
     mtxf_to_mtxs(&objRotMtxF32, &objRotMtxS32);
 
     for (i = 0; i < model->numberOfBatches; i++) {
-        if (DKR_PTR(TriangleBatchInfo, model->batches)[i].flags &
-            RENDER_ENVMAP) {
-            sp70 = ((DKR_PTR(TriangleBatchInfo, model->batches)[i].flags &
-                     RENDER_UNK_0020000) |
-                    RENDER_ENVMAP) ^
-                   RENDER_ENVMAP;
-            tex = DKR_PTR(
-                TextureHeader,
-                DKR_PTR(TextureInfo, model->textures)
-                    [DKR_PTR(TriangleBatchInfo, model->batches)[i].textureIndex]
-                        .texture);
+        if (DKR_PTR(TriangleBatchInfo, model->batches)[i].flags & RENDER_ENVMAP) {
+            sp70 = ((DKR_PTR(TriangleBatchInfo, model->batches)[i].flags & RENDER_UNK_0020000) | RENDER_ENVMAP) ^ RENDER_ENVMAP;
+            tex = DKR_PTR(TextureHeader, DKR_PTR(TextureInfo, model->textures)[DKR_PTR(TriangleBatchInfo, model->batches)[i].textureIndex].texture);
             k = 0;
 
             switch (tex->width) {
@@ -12029,11 +11504,7 @@ void calc_env_mapping_for_object(ObjectModel *model, s16 zRot, s16 xRot,
                     break;
             }
 
-            for (j = DKR_PTR(TriangleBatchInfo, model->batches)[i]
-                         .verticesOffset;
-                 j < DKR_PTR(TriangleBatchInfo, model->batches)[i + 1]
-                         .verticesOffset;
-                 j++, k++) {
+            for (j = DKR_PTR(TriangleBatchInfo, model->batches)[i].verticesOffset; j < DKR_PTR(TriangleBatchInfo, model->batches)[i + 1].verticesOffset; j++, k++) {
                 gEnvmapPos[1].x = model40Entries[count].x;
                 gEnvmapPos[1].y = model40Entries[count].y;
                 gEnvmapPos[1].z = model40Entries[count].z;
@@ -12056,10 +11527,7 @@ void calc_env_mapping_for_object(ObjectModel *model, s16 zRot, s16 xRot,
                 D_8011AF68[k].v = (var_v1 >> shiftT) & maskT;
             }
 
-            for (j = DKR_PTR(TriangleBatchInfo, model->batches)[i].facesOffset;
-                 j <
-                 DKR_PTR(TriangleBatchInfo, model->batches)[i + 1].facesOffset;
-                 j++) {
+            for (j = DKR_PTR(TriangleBatchInfo, model->batches)[i].facesOffset; j < DKR_PTR(TriangleBatchInfo, model->batches)[i + 1].facesOffset; j++) {
                 triangles[j].uv0.u = D_8011AF68[triangles[j].vi0].u;
                 triangles[j].uv0.v = D_8011AF68[triangles[j].vi0].v;
                 triangles[j].uv1.u = D_8011AF68[triangles[j].vi1].u;
@@ -12067,23 +11535,16 @@ void calc_env_mapping_for_object(ObjectModel *model, s16 zRot, s16 xRot,
                 triangles[j].uv2.u = D_8011AF68[triangles[j].vi2].u;
                 triangles[j].uv2.v = D_8011AF68[triangles[j].vi2].v;
             }
-        } else if (DKR_PTR(TriangleBatchInfo, model->batches)[i].miscData <
-                   BATCH_VTX_COL) {
-            count +=
-                DKR_PTR(TriangleBatchInfo, model->batches)[i + 1]
-                    .verticesOffset -
-                DKR_PTR(TriangleBatchInfo, model->batches)[i].verticesOffset;
+        } else if (DKR_PTR(TriangleBatchInfo, model->batches)[i].miscData < BATCH_VTX_COL) {
+            count += DKR_PTR(TriangleBatchInfo, model->batches)[i + 1].verticesOffset - DKR_PTR(TriangleBatchInfo, model->batches)[i].verticesOffset;
         }
     }
 }
 
 /**
- * Find the racer object representing the player and directly set position and
- * angle to new values.
+ * Find the racer object representing the player and directly set position and angle to new values.
  */
-UNUSED void set_racer_position_and_angle(s16 player, s16 *x, s16 *y, s16 *z,
-                                         s16 *angleZ, s16 *angleX,
-                                         s16 *angleY) {
+UNUSED void set_racer_position_and_angle(s16 player, s16 *x, s16 *y, s16 *z, s16 *angleZ, s16 *angleX, s16 *angleY) {
     Object *obj;
     Object_Racer *racer;
     s32 i;
@@ -12100,8 +11561,7 @@ UNUSED void set_racer_position_and_angle(s16 player, s16 *x, s16 *y, s16 *z,
                     *angleZ = obj->trans.rotation.z_rotation;
                     *angleX = obj->trans.rotation.x_rotation;
                     *angleY = obj->trans.rotation.y_rotation;
-                    i = gObjectCount; // Feels like it should be a break
-                                      // instead.
+                    i = gObjectCount; // Feels like it should be a break instead.
                 }
             }
         }
@@ -12153,8 +11613,7 @@ s32 *get_misc_asset(s32 index) {
     misc_asset_section(&section);
     /* A negative index converts to a huge u32 and is rejected by the same
      * bound; the accessor never returns NULL and never returns the base. */
-    return (s32 *)(void *)(uintptr_t)mdkr_asset_subentry(&section, (u32)index,
-                                                         NULL);
+    return (s32 *) (void *) (uintptr_t) mdkr_asset_subentry(&section, (u32) index, NULL);
 #else
     if (index < 0 || index >= gAssetsMiscTableLength) {
         return gAssetsMiscSection;
@@ -12190,32 +11649,30 @@ s32 get_misc_asset_size(s32 index) {
 
 #ifdef NATIVE_PORT
 /*
- * The ASSET_MISC section is heterogeneous and deliberately left un-normalized
- * by asset_swap (its sub-assets have different types). Several sub-assets are,
- * however, big-endian 32-bit word (f32/s32) arrays that the game reads directly
- * — notably the per-vehicle wheel-collision points (ObjectHeader.unk5C/unk5D)
- * and the stone-surface grip table (ASSET_MISC_32). Read little-endian, a value
- * like -10.0f (0xC1200000) becomes 0x000020C1 — a ~0 denormal — so wheel
- * offsets/radii come out all zero and a racer's wheels never ground, leaving it
- * unable to accelerate. Byte-swap such a word-array sub-asset in place, once
- * (dedup keyed on the section pointer so it resets if the section is ever
- * reloaded). Note gAssetsMiscTable offsets are s32-word indices into
- * gAssetsMiscSection (see get_misc_asset), not byte offsets.
+ * The ASSET_MISC section is heterogeneous and deliberately left un-normalized by
+ * asset_swap (its sub-assets have different types). Several sub-assets are, however,
+ * big-endian 32-bit word (f32/s32) arrays that the game reads directly — notably the
+ * per-vehicle wheel-collision points (ObjectHeader.unk5C/unk5D) and the stone-surface
+ * grip table (ASSET_MISC_32). Read little-endian, a value like -10.0f (0xC1200000)
+ * becomes 0x000020C1 — a ~0 denormal — so wheel offsets/radii come out all zero and a
+ * racer's wheels never ground, leaving it unable to accelerate. Byte-swap such a
+ * word-array sub-asset in place, once (dedup keyed on the section pointer so it resets
+ * if the section is ever reloaded). Note gAssetsMiscTable offsets are s32-word indices
+ * into gAssetsMiscSection (see get_misc_asset), not byte offsets.
  */
 static s32 *sMiscSwapSection = NULL;
 static u8 sMiscSwapDone[512];
 
 /*
  * Locate a sub-asset without claiming it. Returns NULL when the index is out of
- * range or the table entry is the terminator / an implausible range. Used by
- * the per-field swizzles and by the post-swap verification, neither of which
- * wants the one-shot dedup.
+ * range or the table entry is the terminator / an implausible range. Used by the
+ * per-field swizzles and by the post-swap verification, neither of which wants
+ * the one-shot dedup.
  */
 static u8 *dkr_misc_subasset(s32 index, s32 *byteLenOut) {
     s32 wstart, wend;
 
-    if (gAssetsMiscSection == NULL || index < 0 ||
-        index + 1 > gAssetsMiscTableLength) {
+    if (gAssetsMiscSection == NULL || index < 0 || index + 1 > gAssetsMiscTableLength) {
         return NULL;
     }
     wstart = gAssetsMiscTable[index];
@@ -12228,18 +11685,16 @@ static u8 *dkr_misc_subasset(s32 index, s32 *byteLenOut) {
 }
 
 /*
- * Claim a sub-asset for a one-shot in-place byteswap. Returns FALSE if the
- * index is unusable or has already been swapped (by ANY of the swap kinds — the
- * flag is per index, not per kind, so a sub-asset is swapped exactly once in
- * exactly one way; two kinds claiming the same index is a bug in the lists, not
- * a double swap). On TRUE, [*wstartOut, *wendOut) is the sub-asset's s32-WORD
- * range.
+ * Claim a sub-asset for a one-shot in-place byteswap. Returns FALSE if the index
+ * is unusable or has already been swapped (by ANY of the swap kinds — the flag is
+ * per index, not per kind, so a sub-asset is swapped exactly once in exactly one
+ * way; two kinds claiming the same index is a bug in the lists, not a double
+ * swap). On TRUE, [*wstartOut, *wendOut) is the sub-asset's s32-WORD range.
  */
 static s32 dkr_misc_swap_claim(s32 index, s32 *wstartOut, s32 *wendOut) {
     s32 wstart, wend;
 
-    if (index < 0 || index + 1 > gAssetsMiscTableLength ||
-        index >= (s32)sizeof(sMiscSwapDone)) {
+    if (index < 0 || index + 1 > gAssetsMiscTableLength || index >= (s32) sizeof(sMiscSwapDone)) {
         return FALSE;
     }
     if (sMiscSwapSection != gAssetsMiscSection) {
@@ -12274,19 +11729,18 @@ void dkr_misc_swap_words(s32 index) {
     base = (u32 *) gAssetsMiscSection;
     for (w = wstart; w < wend; w++) {
         u32 v = base[w];
-        base[w] = ((v & 0x000000FFu) << 24) | ((v & 0x0000FF00u) << 8) |
-                  ((v & 0x00FF0000u) >> 8) | ((v & 0xFF000000u) >> 24);
+        base[w] = ((v & 0x000000FFu) << 24) | ((v & 0x0000FF00u) << 8) | ((v & 0x00FF0000u) >> 8) |
+                  ((v & 0xFF000000u) >> 24);
     }
 }
 
 /*
- * The 16-bit sibling of dkr_misc_swap_words(), for sub-assets the game reads
- * only as s16[]/u16[]. A 32-bit word swap is WRONG for these: besides reversing
- * each halfword it also transposes the two halfwords within every word, which
- * for ASSET_MISC_RUMBLE_DATA would swap strength with duration in each
- * {strength, duration} pair. Sub-asset byte lengths are always a multiple of 4
- * (the MISC table stores s32 word offsets), so the halfword walk never has a
- * partial tail.
+ * The 16-bit sibling of dkr_misc_swap_words(), for sub-assets the game reads only
+ * as s16[]/u16[]. A 32-bit word swap is WRONG for these: besides reversing each
+ * halfword it also transposes the two halfwords within every word, which for
+ * ASSET_MISC_RUMBLE_DATA would swap strength with duration in each {strength,
+ * duration} pair. Sub-asset byte lengths are always a multiple of 4 (the MISC
+ * table stores s32 word offsets), so the halfword walk never has a partial tail.
  */
 void dkr_misc_swap_halfwords(s32 index) {
     s32 wstart, wend, h;
@@ -12414,8 +11868,8 @@ static void dkr_misc_swap_shield_records(void) {
         for (k = 0; k < 2; k++) { /* scale, turnSpeed */
             u32 *w = (u32 *) (rec + 0x8 + (k * 4));
             u32 v = *w;
-            *w = ((v & 0x000000FFu) << 24) | ((v & 0x0000FF00u) << 8) |
-                 ((v & 0x00FF0000u) >> 8) | ((v & 0xFF000000u) >> 24);
+            *w = ((v & 0x000000FFu) << 24) | ((v & 0x0000FF00u) << 8) | ((v & 0x00FF0000u) >> 8) |
+                 ((v & 0xFF000000u) >> 24);
         }
     }
 }
@@ -12424,34 +11878,30 @@ static void dkr_misc_swap_shield_records(void) {
  * Post-swap plausibility verification.
  *
  * None of the four sub-assets normalized by the halfword list and the shield
- * swizzle is reached by any fixture in the regression matrix (the shield needs
- * a racer to actually hold a shield, RUMBLE_DATA needs a rumble pak, and
- * MISC_23 / GHOST_UNLOCK_TIMES sit on save-file and time-trial-record paths).
- * "0 crashes across the matrix" therefore proves nothing about them, which is
- * exactly the trap that let ASSET_MISC_8 stay big-endian for three waves. So
- * each table is checked against a bound that the CORRECT decode satisfies with
- * room to spare and the byte-reversed decode violates outright — measured on
- * us.v80:
+ * swizzle is reached by any fixture in the regression matrix (the shield needs a
+ * racer to actually hold a shield, RUMBLE_DATA needs a rumble pak, and MISC_23 /
+ * GHOST_UNLOCK_TIMES sit on save-file and time-trial-record paths). "0 crashes
+ * across the matrix" therefore proves nothing about them, which is exactly the
+ * trap that let ASSET_MISC_8 stay big-endian for three waves. So each table is
+ * checked against a bound that the CORRECT decode satisfies with room to spare
+ * and the byte-reversed decode violates outright — measured on us.v80:
  *
  *   table          invariant                 correct   byte-reversed
- *   SHIELD_DATA    0 < scale,turnSpeed < 100   0.4/1.0  scale -4.29e8      ->
- * trips RUMBLE_DATA    every u16 <= 255            max 100  max 25600 -> trips
- *   GHOST_TIMES    every u16 <= 36000          max 8520 10 of 20 over      ->
- * trips MISC_23        time fields <= 36000        max 10800 48 of 288 over ->
- * trips
+ *   SHIELD_DATA    0 < scale,turnSpeed < 100   0.4/1.0  scale -4.29e8      -> trips
+ *   RUMBLE_DATA    every u16 <= 255            max 100  max 25600          -> trips
+ *   GHOST_TIMES    every u16 <= 36000          max 8520 10 of 20 over      -> trips
+ *   MISC_23        time fields <= 36000        max 10800 48 of 288 over    -> trips
  *
  * MISC_23's initials fields are deliberately NOT bounded — they are packed
- * character triples, so no range test discriminates them (byte-reversed they
- * peak at 20749, under any useful bound). The time fields alone are a strong
- * enough discriminator. A comparison against hardcoded expected VALUES was
- * rejected as ROM-version specific; these bounds hold for any plausible table.
+ * character triples, so no range test discriminates them (byte-reversed they peak
+ * at 20749, under any useful bound). The time fields alone are a strong enough
+ * discriminator. A comparison against hardcoded expected VALUES was rejected as
+ * ROM-version specific; these bounds hold for any plausible table.
  */
 #define DKR_MISC_MAX_TIME_FRAMES 36000 /* 10 minutes at 60 Hz */
-#define DKR_MISC_MAX_RUMBLE                                                    \
-    255 /* strength is an amplitude, duration is in frames */
+#define DKR_MISC_MAX_RUMBLE 255        /* strength is an amplitude, duration is in frames */
 
-static void dkr_misc_verify_halfword_bound(s32 index, const char *name,
-                                           u32 bound, s32 stride, s32 phase) {
+static void dkr_misc_verify_halfword_bound(s32 index, const char *name, u32 bound, s32 stride, s32 phase) {
     s32 byteLen = 0;
     const u8 *base = dkr_misc_subasset(index, &byteLen);
     s32 n, i;
@@ -12481,19 +11931,16 @@ static void dkr_misc_verify_tables(void) {
     const u8 *base;
     s32 i, n;
 
-    /* SHIELD_DATA — the two f32 fields must be sane positive scales. NaN and
-     * inf both fail these comparisons, so no <math.h> isfinite() is needed. */
+    /* SHIELD_DATA — the two f32 fields must be sane positive scales. NaN and inf
+     * both fail these comparisons, so no <math.h> isfinite() is needed. */
     base = dkr_misc_subasset(ASSET_MISC_SHIELD_DATA, &byteLen);
     if (base != NULL && (byteLen % DKR_SHIELD_ROM_STRIDE) == 0) {
         n = byteLen / DKR_SHIELD_ROM_STRIDE;
         for (i = 0; i < n; i++) {
-            const RacerShieldGfx *r =
-                (const RacerShieldGfx *)(base + (i * DKR_SHIELD_ROM_STRIDE));
-            if (!(r->scale > 0.0f && r->scale < 100.0f) ||
-                !(r->turnSpeed > 0.0f && r->turnSpeed < 100.0f)) {
+            const RacerShieldGfx *r = (const RacerShieldGfx *) (base + (i * DKR_SHIELD_ROM_STRIDE));
+            if (!(r->scale > 0.0f && r->scale < 100.0f) || !(r->turnSpeed > 0.0f && r->turnSpeed < 100.0f)) {
                 fprintf(stderr,
-                        "[FATAL] SHIELD_DATA[%d]: scale=%g turnSpeed=%g is not "
-                        "a plausible shield record "
+                        "[FATAL] SHIELD_DATA[%d]: scale=%g turnSpeed=%g is not a plausible shield record "
                         "- the sub-asset looks byte-reversed\n",
                         (int) i, (double) r->scale, (double) r->turnSpeed);
                 abort();
@@ -12501,20 +11948,16 @@ static void dkr_misc_verify_tables(void) {
         }
     }
 
-    dkr_misc_verify_halfword_bound(ASSET_MISC_RUMBLE_DATA, "RUMBLE_DATA",
-                                   DKR_MISC_MAX_RUMBLE, 1, 0);
-    dkr_misc_verify_halfword_bound(ASSET_MISC_GHOST_UNLOCK_TIMES,
-                                   "GHOST_UNLOCK_TIMES",
+    dkr_misc_verify_halfword_bound(ASSET_MISC_RUMBLE_DATA, "RUMBLE_DATA", DKR_MISC_MAX_RUMBLE, 1, 0);
+    dkr_misc_verify_halfword_bound(ASSET_MISC_GHOST_UNLOCK_TIMES, "GHOST_UNLOCK_TIMES",
                                    DKR_MISC_MAX_TIME_FRAMES, 1, 0);
-    /* MISC_23 is groups of 4: {courseTime, courseInitials, flapTime,
-     * flapInitials}; bound entries 0 and 2 of each group (see
-     * clear_lap_records). */
-    dkr_misc_verify_halfword_bound(ASSET_MISC_23, "MISC_23",
-                                   DKR_MISC_MAX_TIME_FRAMES, 4, 0);
+    /* MISC_23 is groups of 4: {courseTime, courseInitials, flapTime, flapInitials};
+     * bound entries 0 and 2 of each group (see clear_lap_records). */
+    dkr_misc_verify_halfword_bound(ASSET_MISC_23, "MISC_23", DKR_MISC_MAX_TIME_FRAMES, 4, 0);
 }
 
-/* One bounded line per newly-normalized table, so a future regression is
- * visible in a trace rather than silent. Matches the boost_table: line. */
+/* One bounded line per newly-normalized table, so a future regression is visible
+ * in a trace rather than silent. Matches the boost_table: line. */
 static void dkr_misc_trace_tables(void) {
     s32 byteLen = 0;
     const u8 *base;
@@ -12527,12 +11970,9 @@ static void dkr_misc_trace_tables(void) {
     if (base != NULL && (byteLen % DKR_SHIELD_ROM_STRIDE) == 0) {
         const RacerShieldGfx *r = (const RacerShieldGfx *) base;
         n = byteLen / DKR_SHIELD_ROM_STRIDE;
-        fprintf(stderr,
-                "[TRACE] shield_table: %d records; [0] pos=(%d,%d,%d) y_off=%d "
-                "scale=%.4f turnSpeed=%.4f\n",
-                (int)n, (int)r->x_position, (int)r->y_position,
-                (int)r->z_position, (int)r->y_offset, (double)r->scale,
-                (double)r->turnSpeed);
+        fprintf(stderr, "[TRACE] shield_table: %d records; [0] pos=(%d,%d,%d) y_off=%d scale=%.4f turnSpeed=%.4f\n",
+                (int) n, (int) r->x_position, (int) r->y_position, (int) r->z_position, (int) r->y_offset,
+                (double) r->scale, (double) r->turnSpeed);
     }
     base = dkr_misc_subasset(ASSET_MISC_RUMBLE_DATA, &byteLen);
     if (base != NULL) {
@@ -12547,13 +11987,9 @@ static void dkr_misc_trace_tables(void) {
     base = dkr_misc_subasset(ASSET_MISC_23, &byteLen);
     if (base != NULL) {
         n = byteLen / 2;
-        fprintf(stderr,
-                "[TRACE] misc23_table: %d u16 (%d levels x 12); [0] "
-                "course=%u/%u lap=%u/%u\n",
-                (int)n, (int)(n / 12), (unsigned)*(const u16 *)(base + 0),
-                (unsigned)*(const u16 *)(base + 2),
-                (unsigned)*(const u16 *)(base + 4),
-                (unsigned)*(const u16 *)(base + 6));
+        fprintf(stderr, "[TRACE] misc23_table: %d u16 (%d levels x 12); [0] course=%u/%u lap=%u/%u\n", (int) n,
+                (int) (n / 12), (unsigned) *(const u16 *) (base + 0), (unsigned) *(const u16 *) (base + 2),
+                (unsigned) *(const u16 *) (base + 4), (unsigned) *(const u16 *) (base + 6));
     }
     base = dkr_misc_subasset(ASSET_MISC_GHOST_UNLOCK_TIMES, &byteLen);
     if (base != NULL) {
@@ -12569,74 +12005,51 @@ static void dkr_misc_trace_tables(void) {
 
 void dkr_misc_normalize_tables(void) {
     static const s16 sWordArrayMiscIds[] = {
-        ASSET_MISC_4, /* f32[10] per-character model-scale multiplier
-                         (objects.c) */
-        ASSET_MISC_8, /* f32[10] per-character steer-slide divisor (racer.c
-                         func_80050A28) */
+        ASSET_MISC_4,  /* f32[10] per-character model-scale multiplier (objects.c) */
+        ASSET_MISC_8,  /* f32[10] per-character steer-slide divisor (racer.c func_80050A28) */
         ASSET_MISC_RACER_WEIGHT,     /* f32[10] */
         ASSET_MISC_RACER_HANDLING,   /* f32[10] */
         ASSET_MISC_RACER_UNUSED_11,  /* f32[10] */
         ASSET_MISC_17, /* f32[3]  taj-challenge unk124 values (racer.c) */
         ASSET_MISC_18, /* f32[10] challenge unk124 values (racer.c) */
-        ASSET_MISC_MAGNET_DATA, /* f32[3][5] magnet gfx x/y/z/scale/shear
-                                   (objects.c) */
-        ASSET_MISC_32, /* f32[5]  stone-surface top-speed multiplier by wheel
-                          count */
-        /* f32[16] per-vehicle acceleration curves, reached via
-           ObjectHeader.unk5C */
-        ASSET_MISC_RACERACCELERATION_UNKNOWN0,
-        ASSET_MISC_RACERACCELERATION_DIDDY,
-        ASSET_MISC_RACERACCELERATION_TT,
-        ASSET_MISC_RACERACCELERATION_UNKNOWN1,
-        ASSET_MISC_RACERACCELERATION_KRUNCH,
-        ASSET_MISC_RACERACCELERATION_BUMPER,
-        ASSET_MISC_RACERACCELERATION_TIPTUP,
-        ASSET_MISC_RACERACCELERATION_CONKER,
-        ASSET_MISC_RACERACCELERATION_TIMBER,
-        ASSET_MISC_RACERACCELERATION_BANJO,
-        ASSET_MISC_RACERACCELERATION_DRUMSTICK,
-        ASSET_MISC_RACERACCELERATION_PIPSY,
+        ASSET_MISC_MAGNET_DATA, /* f32[3][5] magnet gfx x/y/z/scale/shear (objects.c) */
+        ASSET_MISC_32, /* f32[5]  stone-surface top-speed multiplier by wheel count */
+        /* f32[16] per-vehicle acceleration curves, reached via ObjectHeader.unk5C */
+        ASSET_MISC_RACERACCELERATION_UNKNOWN0, ASSET_MISC_RACERACCELERATION_DIDDY,
+        ASSET_MISC_RACERACCELERATION_TT, ASSET_MISC_RACERACCELERATION_UNKNOWN1,
+        ASSET_MISC_RACERACCELERATION_KRUNCH, ASSET_MISC_RACERACCELERATION_BUMPER,
+        ASSET_MISC_RACERACCELERATION_TIPTUP, ASSET_MISC_RACERACCELERATION_CONKER,
+        ASSET_MISC_RACERACCELERATION_TIMBER, ASSET_MISC_RACERACCELERATION_BANJO,
+        ASSET_MISC_RACERACCELERATION_DRUMSTICK, ASSET_MISC_RACERACCELERATION_PIPSY,
         ASSET_MISC_RACERACCELERATION_UNKNOWN2,
-        /* f32[4][4] per-vehicle wheel-collision points, reached via
-           ObjectHeader.unk5D */
-        ASSET_MISC_51,
-        ASSET_MISC_52,
-        ASSET_MISC_53,
-        ASSET_MISC_54,
-        ASSET_MISC_55,
-        ASSET_MISC_RACER_HITBOX_SIZE, /* f32[14] collision radius by vehicle id
-                                         (racer.c) */
+        /* f32[4][4] per-vehicle wheel-collision points, reached via ObjectHeader.unk5D */
+        ASSET_MISC_51, ASSET_MISC_52, ASSET_MISC_53, ASSET_MISC_54, ASSET_MISC_55,
+        ASSET_MISC_RACER_HITBOX_SIZE, /* f32[14] collision radius by vehicle id (racer.c) */
     };
     /*
-     * Sub-assets the game reads ONLY as s16[]/u16[]. These must not go in the
-     * word list above: a 32-bit swap additionally transposes the two halfwords
-     * in every word (for RUMBLE_DATA that swaps strength with duration in each
-     * pair).
+     * Sub-assets the game reads ONLY as s16[]/u16[]. These must not go in the word
+     * list above: a 32-bit swap additionally transposes the two halfwords in every
+     * word (for RUMBLE_DATA that swaps strength with duration in each pair).
      */
     static const s16 sHalfWordArrayMiscIds[] = {
-        ASSET_MISC_RUMBLE_DATA, /* u16[38] = 19 {strength, duration} pairs
-                                   (save_data.c) */
-        ASSET_MISC_23,          /* u16[576] = 48 levels x 3 files x {courseTime,
-                                 * initials,          flapTime, initials} default records
-                                 * (thread3_main.c          clear_lap_records) */
+        ASSET_MISC_RUMBLE_DATA, /* u16[38] = 19 {strength, duration} pairs (save_data.c) */
+        ASSET_MISC_23,          /* u16[576] = 48 levels x 3 files x {courseTime, initials,
+                                 * flapTime, initials} default records (thread3_main.c
+                                 * clear_lap_records) */
         ASSET_MISC_GHOST_UNLOCK_TIMES, /* u16[20] staff times, 1:1 with the 20
                                         * MAIN_TRACKS_IDS entries (objects.c) */
     };
     s32 i;
 
-    for (i = 0;
-         i < (s32)(sizeof(sWordArrayMiscIds) / sizeof(sWordArrayMiscIds[0]));
-         i++) {
+    for (i = 0; i < (s32) (sizeof(sWordArrayMiscIds) / sizeof(sWordArrayMiscIds[0])); i++) {
         dkr_misc_swap_words(sWordArrayMiscIds[i]);
     }
-    for (i = 0; i < (s32)(sizeof(sHalfWordArrayMiscIds) /
-                          sizeof(sHalfWordArrayMiscIds[0]));
-         i++) {
+    for (i = 0; i < (s32) (sizeof(sHalfWordArrayMiscIds) / sizeof(sHalfWordArrayMiscIds[0])); i++) {
         dkr_misc_swap_halfwords(sHalfWordArrayMiscIds[i]);
     }
-    /* Records needing a per-field swizzle. ASSET_MISC_20 (boost) is NOT here —
-     * it also needs an LP64 stride conversion, so it is converted out to a
-     * native array by dkr_boost_table() instead of in place. */
+    /* Records needing a per-field swizzle. ASSET_MISC_20 (boost) is NOT here — it
+     * also needs an LP64 stride conversion, so it is converted out to a native
+     * array by dkr_boost_table() instead of in place. */
     dkr_misc_swap_shield_records();
 
     dkr_misc_verify_tables();
@@ -12672,48 +12085,31 @@ void dkr_misc_normalize_tables(void) {
  * The game WRITES into this table (runtime animation state at 0x70..0x77 plus
  * the two loaded resource pointers), so the native array is the single source
  * of truth from here on and is built exactly once per gAssetsMiscSection load —
- * rebuilding it mid-session would wipe that state. Call it via
- * GET_BOOST_TABLE() (objects.h), which is a plain get_misc_asset() cast on the
- * N64 build.
+ * rebuilding it mid-session would wipe that state. Call it via GET_BOOST_TABLE()
+ * (objects.h), which is a plain get_misc_asset() cast on the N64 build.
  */
 #define DKR_BOOST_ROM_STRIDE 0x80 /* on-disk record size (see asset_swap.c) */
-#define DKR_BOOST_MAX_ENTRIES NUMBER_OF_CHARACTERS /* us.v80 ships exactly 10  \
-                                                    */
+#define DKR_BOOST_MAX_ENTRIES NUMBER_OF_CHARACTERS /* us.v80 ships exactly 10 */
 
 /* Lock the host layout this conversion depends on. The 0x00..0x77 prefix must
- * stay byte-for-byte offset-identical to the on-disk record —
- * asset_swap_misc_boost() memcpy()s it wholesale and then swaps at ON-DISK
- * offsets. Only the two trailing pointer fields are allowed to move (that is
- * the whole point). */
-_Static_assert(sizeof(Object_Boost_Inner) == 0x24,
-               "Object_Boost_Inner must be 9 f32 (0x24)");
-_Static_assert(offsetof(Object_Boost, carBoostData) == 0x00,
-               "Object_Boost.carBoostData@0x00");
-_Static_assert(offsetof(Object_Boost, hovercraftBoostData) == 0x24,
-               "Object_Boost.hovercraftBoostData@0x24");
-_Static_assert(offsetof(Object_Boost, flyingBoostData) == 0x48,
-               "Object_Boost.flyingBoostData@0x48");
-_Static_assert(offsetof(Object_Boost, spriteId) == 0x6C,
-               "Object_Boost.spriteId@0x6C");
-_Static_assert(offsetof(Object_Boost, textureId) == 0x6E,
-               "Object_Boost.textureId@0x6E");
-_Static_assert(offsetof(Object_Boost, unk70) == 0x70,
-               "Object_Boost.unk70@0x70");
-_Static_assert(offsetof(Object_Boost, unk71) == 0x71,
-               "Object_Boost.unk71@0x71");
-_Static_assert(offsetof(Object_Boost, unk72) == 0x72,
-               "Object_Boost.unk72@0x72");
-_Static_assert(offsetof(Object_Boost, unk73) == 0x73,
-               "Object_Boost.unk73@0x73");
-_Static_assert(offsetof(Object_Boost, unk74) == 0x74,
-               "Object_Boost.unk74@0x74");
-_Static_assert(offsetof(Object_Boost, sprite) == 0x78,
-               "Object_Boost.sprite@0x78 (end of the copied prefix)");
-/* On the N64 the host struct IS the on-disk record; on LP64 it is 8 bytes
- * larger. Both are fine — but nothing between 0x00 and 0x78 may ever gain
- * padding. */
-_Static_assert(sizeof(Object_Boost) >= DKR_BOOST_ROM_STRIDE,
-               "Object_Boost smaller than its on-disk record");
+ * stay byte-for-byte offset-identical to the on-disk record — asset_swap_misc_boost()
+ * memcpy()s it wholesale and then swaps at ON-DISK offsets. Only the two
+ * trailing pointer fields are allowed to move (that is the whole point). */
+_Static_assert(sizeof(Object_Boost_Inner) == 0x24, "Object_Boost_Inner must be 9 f32 (0x24)");
+_Static_assert(offsetof(Object_Boost, carBoostData) == 0x00, "Object_Boost.carBoostData@0x00");
+_Static_assert(offsetof(Object_Boost, hovercraftBoostData) == 0x24, "Object_Boost.hovercraftBoostData@0x24");
+_Static_assert(offsetof(Object_Boost, flyingBoostData) == 0x48, "Object_Boost.flyingBoostData@0x48");
+_Static_assert(offsetof(Object_Boost, spriteId) == 0x6C, "Object_Boost.spriteId@0x6C");
+_Static_assert(offsetof(Object_Boost, textureId) == 0x6E, "Object_Boost.textureId@0x6E");
+_Static_assert(offsetof(Object_Boost, unk70) == 0x70, "Object_Boost.unk70@0x70");
+_Static_assert(offsetof(Object_Boost, unk71) == 0x71, "Object_Boost.unk71@0x71");
+_Static_assert(offsetof(Object_Boost, unk72) == 0x72, "Object_Boost.unk72@0x72");
+_Static_assert(offsetof(Object_Boost, unk73) == 0x73, "Object_Boost.unk73@0x73");
+_Static_assert(offsetof(Object_Boost, unk74) == 0x74, "Object_Boost.unk74@0x74");
+_Static_assert(offsetof(Object_Boost, sprite) == 0x78, "Object_Boost.sprite@0x78 (end of the copied prefix)");
+/* On the N64 the host struct IS the on-disk record; on LP64 it is 8 bytes larger.
+ * Both are fine — but nothing between 0x00 and 0x78 may ever gain padding. */
+_Static_assert(sizeof(Object_Boost) >= DKR_BOOST_ROM_STRIDE, "Object_Boost smaller than its on-disk record");
 
 static Object_Boost sBoostTable[DKR_BOOST_MAX_ENTRIES];
 static s32 *sBoostTableSection = NULL;
@@ -12723,8 +12119,7 @@ Object_Boost *dkr_boost_table(void) {
     s32 byteLen;
     u32 entries;
 
-    if (gAssetsMiscSection == NULL ||
-        gAssetsMiscTableLength <= ASSET_MISC_20 + 1) {
+    if (gAssetsMiscSection == NULL || gAssetsMiscTableLength <= ASSET_MISC_20 + 1) {
         return sBoostTable; /* zeroed; caller-safe */
     }
     if (sBoostTableSection == gAssetsMiscSection) {
@@ -12785,8 +12180,7 @@ void start_bridge_timer(s32 index) {
 }
 
 /**
- * When the sound timer hits the correct value, write the objects position to
- * the arguments.
+ * When the sound timer hits the correct value, write the objects position to the arguments.
  */
 void obj_bridge_pos(s32 timing, f32 *x, f32 *y, f32 *z) {
     s32 i;
@@ -12797,10 +12191,8 @@ void obj_bridge_pos(s32 timing, f32 *x, f32 *y, f32 *z) {
     for (i = 0; i < gObjectCount; i++) {
         current_obj = gObjPtrList[i];
 
-        if (current_obj != NULL &&
-            !(current_obj->trans.flags & OBJ_FLAGS_PARTICLE) &&
-            current_obj->behaviorId == BHV_RAMP_SWITCH &&
-            current_obj->properties.common.unk0 == timing) {
+        if (current_obj != NULL && !(current_obj->trans.flags & OBJ_FLAGS_PARTICLE) &&
+            current_obj->behaviorId == BHV_RAMP_SWITCH && current_obj->properties.common.unk0 == timing) {
             *x = current_obj->trans.x_position;
             *y = current_obj->trans.y_position;
             *z = current_obj->trans.z_position;
@@ -12811,12 +12203,16 @@ void obj_bridge_pos(s32 timing, f32 *x, f32 *y, f32 *z) {
 /**
  * Return the index of the currently active cutscene.
  */
-s16 cutscene_id(void) { return gCutsceneID; }
+s16 cutscene_id(void) {
+    return gCutsceneID;
+}
 
 /**
  * Set the current cutscene index.
  */
-void cutscene_id_set(s32 cutsceneID) { gCutsceneID = cutsceneID; }
+void cutscene_id_set(s32 cutsceneID) {
+    gCutsceneID = cutsceneID;
+}
 
 void func_8001E45C(s32 cutsceneID) {
     if (cutsceneID != gCutsceneID) {
@@ -12833,7 +12229,9 @@ void func_8001E45C(s32 cutsceneID) {
  * Returns the index of the standard object list.
  * Goes unused, since objGetObjList exists
  */
-UNUSED s32 get_object_list_index(void) { return gObjectListStart; }
+UNUSED s32 get_object_list_index(void) {
+    return gObjectListStart;
+}
 
 void func_8001E4C4(void) {
     Object *obj;
@@ -12848,11 +12246,9 @@ void func_8001E4C4(void) {
     }
     for (i = 0; i < gObjectCount; i++) {
         obj = gObjPtrList[i];
-        if (obj != NULL && !(obj->trans.flags & OBJ_FLAGS_PARTICLE) &&
-            obj->behaviorId == BHV_ANIMATION) {
+        if (obj != NULL && !(obj->trans.flags & OBJ_FLAGS_PARTICLE) && obj->behaviorId == BHV_ANIMATION) {
             entryAnimation = &obj->level_entry->animation;
-            if (entryAnimation->channel != gCutsceneID &&
-                entryAnimation->channel != 20) {
+            if (entryAnimation->channel != gCutsceneID && entryAnimation->channel != 20) {
                 obj->trans.flags |= OBJ_FLAGS_UNK_2000;
                 if (obj->animTarget != NULL) {
                     obj->animTarget->trans.flags |= OBJ_FLAGS_UNK_2000;
@@ -12902,29 +12298,21 @@ void func_8001E6EC(s8 arg0) {
         overridePosObj = D_8011ADD8[i];
         overridePosEntry = &overridePosObj->level_entry->overridePos;
         overridePos = overridePosObj->override_pos;
-        if ((overridePosEntry->cutsceneId == gCutsceneID) ||
-            ((overridePosEntry->cutsceneId == 20))) {
-            for (j = 0; (j < D_8011AE78) &&
-                        (overridePosEntry->behaviorId !=
-                         D_8011AE74[j]->properties.animation.behaviourID);
-                 j++) {
-            }
+        if ((overridePosEntry->cutsceneId == gCutsceneID) || ((overridePosEntry->cutsceneId == 20))) {
+            for (j = 0;
+                 (j < D_8011AE78) && (overridePosEntry->behaviorId != D_8011AE74[j]->properties.animation.behaviourID);
+                 j++) {}
             if (j != D_8011AE78 && D_8011AE74[j]->animTarget != NULL) {
-                someBool = (D_8011AE74[j]->animTarget->collisionData != NULL)
-                               ? FALSE
-                               : TRUE;
+                someBool = (D_8011AE74[j]->animTarget->collisionData != NULL) ? FALSE : TRUE;
                 if (arg0 != someBool) {
                     animTarget = D_8011AE74[j]->animTarget;
                     overridePos->x = animTarget->trans.x_position;
                     overridePos->y = animTarget->trans.y_position;
                     overridePos->z = animTarget->trans.z_position;
                     overridePos->anim = animTarget;
-                    animTarget->trans.x_position =
-                        overridePosObj->trans.x_position;
-                    animTarget->trans.y_position =
-                        overridePosObj->trans.y_position;
-                    animTarget->trans.z_position =
-                        overridePosObj->trans.z_position;
+                    animTarget->trans.x_position = overridePosObj->trans.x_position;
+                    animTarget->trans.y_position = overridePosObj->trans.y_position;
+                    animTarget->trans.z_position = overridePosObj->trans.z_position;
                 }
             } else {
                 overridePos->anim = NULL;
@@ -13049,8 +12437,7 @@ void func_8001E93C(void) {
                     D_8011AE74[i + 1] = animObj1;
                     stopLooping = FALSE;
                 } else if (animation1->order == animation2->order &&
-                           (D_8011AE74[i + 1]->properties.animation.action ==
-                                1 ||
+                           (D_8011AE74[i + 1]->properties.animation.action == 1 ||
                             D_8011AE74[i]->properties.animation.action == 2)) {
                     animObj1 = D_8011AE74[i];
                     D_8011AE74[i] = D_8011AE74[i + 1];
@@ -13068,8 +12455,7 @@ void func_8001E93C(void) {
             var_a0 = animation1->actorIndex;
             sp28 = 0;
         }
-        animation1->order =
-            sp28++; // It is possible that sp28 could not be initalized?
+        animation1->order = sp28++; // It is possible that sp28 could not be initalized?
         D_8011AE74[i]->properties.animation.action = 0;
     }
 
@@ -13088,8 +12474,7 @@ void func_8001EE74(void) {
     for (i = 0; i < D_8011AE78; i++) {
         obj = D_8011AE74[i];
         animation = &obj->level_entry->animation;
-        if (obj->animTarget == NULL && animation->order == 0 &&
-            animation->objectIdToSpawn != -1) {
+        if (obj->animTarget == NULL && animation->order == 0 && animation->objectIdToSpawn != -1) {
             func_8001F23C(obj, animation);
         }
         if (D_8011AD26 || animation->channel != 20) {
@@ -13143,10 +12528,12 @@ static s32 mdkr_anim_target_is_valid(const Object *obj, const Object_AnimatedObj
     return obj != NULL && obj->header != NULL &&
            mdkr_is_animated_behavior(obj->behaviorId) &&
            obj->header->behaviorId == obj->behaviorId &&
-           address >= arenaStart && address <= arenaEnd - sizeof(*anim);
+           address >= arenaStart &&
+           address <= arenaEnd - sizeof(*anim);
 }
 
-__attribute__((destructor)) static void mdkr_anim_target_report(void) {
+__attribute__((destructor))
+static void mdkr_anim_target_report(void) {
     const char *trace = getenv("MDKR_TRACE");
     if (trace != NULL && trace[0] != '\0' && trace[0] != '0') {
         fprintf(stderr, "[TRACE] [ANIMTARGET] init=%u invalid=%u\n",
@@ -13196,12 +12583,9 @@ void obj_init_animobject(Object *animationObj, Object *animatedObj) {
     animatedObj->trans.x_position = animationObj->trans.x_position;
     animatedObj->trans.y_position = animationObj->trans.y_position;
     animatedObj->trans.z_position = animationObj->trans.z_position;
-    animatedObj->trans.rotation.y_rotation =
-        animationObj->trans.rotation.y_rotation;
-    animatedObj->trans.rotation.z_rotation =
-        animationObj->trans.rotation.z_rotation;
-    animatedObj->trans.rotation.x_rotation =
-        animationObj->trans.rotation.x_rotation;
+    animatedObj->trans.rotation.y_rotation = animationObj->trans.rotation.y_rotation;
+    animatedObj->trans.rotation.z_rotation = animationObj->trans.rotation.z_rotation;
+    animatedObj->trans.rotation.x_rotation = animationObj->trans.rotation.x_rotation;
     anim->unk26 = 0;
     anim->unk3D = animEntry->channel;
     anim->actorIndex = animEntry->actorIndex;
@@ -13251,16 +12635,13 @@ void func_8001F23C(Object *obj, LevelObjectEntry_Animation *animEntry) {
     Object_AnimatedObject *camera;
     s32 viewportCount;
 
-    NEW_OBJECT_ENTRY(newObjEntry, animEntry->objectIdToSpawn, 8,
-                     animEntry->common.x, animEntry->common.y,
+    NEW_OBJECT_ENTRY(newObjEntry, animEntry->objectIdToSpawn, 8, animEntry->common.x, animEntry->common.y,
                      animEntry->common.z);
 
     obj->animTarget = spawn_object(&newObjEntry, OBJECT_SPAWN_UNK01);
     newObj = obj->animTarget;
-    // (newObj->behaviorId == BHV_DINO_WHALE) is Dinosaur1, Dinosaur2,
-    // Dinosaur3, Whale, and Dinoisle
-    if (obj->animTarget != NULL && newObj->behaviorId == BHV_DINO_WHALE &&
-        gTimeTrialEnabled) {
+    // (newObj->behaviorId == BHV_DINO_WHALE) is Dinosaur1, Dinosaur2, Dinosaur3, Whale, and Dinoisle
+    if (obj->animTarget != NULL && newObj->behaviorId == BHV_DINO_WHALE && gTimeTrialEnabled) {
         free_object(newObj);
         obj->animTarget = NULL;
         newObj = NULL;
@@ -13291,7 +12672,9 @@ void func_8001F23C(Object *obj, LevelObjectEntry_Animation *animEntry) {
     }
 }
 
-s8 func_8001F3B8(void) { return D_8011ADD4; }
+s8 func_8001F3B8(void) {
+    return D_8011ADD4;
+}
 
 void func_8001F3C8(s32 arg0) {
     if (arg0 != D_8011ADD4) {
@@ -13317,7 +12700,9 @@ s32 func_8001F3EC(s32 arg0) {
     return count;
 }
 
-void func_8001F450(void) { D_8011AD53 = 1; }
+void func_8001F450(void) {
+    D_8011AD53 = 1;
+}
 
 s32 func_8001F460(Object *arg0, s32 arg1, Object *arg2) {
     f32 var_f2;
@@ -13476,8 +12861,7 @@ s32 func_8001F460(Object *arg0, s32 arg1, Object *arg2) {
             miscAsset -= 0x28;
             var_t0 = (miscAsset[0] & 0xFF) + 900;
             var_s0 = (miscAsset[1] & 0xFF) + 900;
-            slowly_change_fog(0, miscAsset[2] & 0xFF, miscAsset[3] & 0xFF,
-                              miscAsset[4] & 0xFF, var_t0, var_s0,
+            slowly_change_fog(0, miscAsset[2] & 0xFF, miscAsset[3] & 0xFF, miscAsset[4] & 0xFF, var_t0, var_s0,
                               normalise_time(6) * obj64->unk3C);
         } else if (var_s2 >= 6) {
             fadeTransition.type = FADE_FLAG_INVERT;
@@ -13493,8 +12877,7 @@ s32 func_8001F460(Object *arg0, s32 arg1, Object *arg2) {
             transition_begin(&fadeTransition);
         } else {
             fadeTransition.type = obj64->unk3B;
-            miscAsset =
-                (s8 *)get_misc_asset(ASSET_MISC_14) + (obj64->unk40 * 3);
+            miscAsset = (s8 *) get_misc_asset(ASSET_MISC_14) + (obj64->unk40 * 3);
             fadeTransition.red = miscAsset[0];
             fadeTransition.green = miscAsset[1];
             fadeTransition.blue = miscAsset[2];
@@ -13504,8 +12887,7 @@ s32 func_8001F460(Object *arg0, s32 arg1, Object *arg2) {
                 fadeTransition.endTimer = 0xFFFF;
             }
             fadeTransition.duration = normalise_time(6) * obj64->unk3C;
-            if (check_fadeout_transition() == 0 ||
-                (fadeTransition.type & 0x80)) {
+            if (check_fadeout_transition() == 0 || (fadeTransition.type & 0x80)) {
                 transition_begin(&fadeTransition);
             }
         }
@@ -13513,12 +12895,9 @@ s32 func_8001F460(Object *arg0, s32 arg1, Object *arg2) {
     }
 
     if (obj64->unk2E == 1) {
-        arg0->trans.rotation.y_rotation +=
-            (s16)(obj64->unk31 * (f32)(sp114 * 8.0));
-        arg0->trans.rotation.x_rotation +=
-            (s16)(obj64->unk32 * (f32)(sp114 * 8.0));
-        arg0->trans.rotation.z_rotation +=
-            (s16)(obj64->unk33 * (f32)(sp114 * 8.0));
+        arg0->trans.rotation.y_rotation += (s16) (obj64->unk31 * (f32) (sp114 * 8.0));
+        arg0->trans.rotation.x_rotation += (s16) (obj64->unk32 * (f32) (sp114 * 8.0));
+        arg0->trans.rotation.z_rotation += (s16) (obj64->unk33 * (f32) (sp114 * 8.0));
     }
 
     if (arg2 != NULL && arg2->header->modelType == 0) {
@@ -13528,13 +12907,8 @@ s32 func_8001F460(Object *arg0, s32 arg1, Object *arg2) {
         }
         if (arg2->modelInstances[arg2->modelIndex] != NULL) {
             temp_a0_3 = arg2->modelInstances[arg2->modelIndex]->objModel;
-            if (arg2->animationID >= 0 &&
-                arg2->animationID < temp_a0_3->numberOfAnimations) {
-                var_s5 = (DKR_PTR(ObjectModel_44,
-                                  temp_a0_3->animations)[arg2->animationID]
-                              .animLength -
-                          1)
-                         << 4;
+            if (arg2->animationID >= 0 && arg2->animationID < temp_a0_3->numberOfAnimations) {
+                var_s5 = (DKR_PTR(ObjectModel_44, temp_a0_3->animations)[arg2->animationID].animLength - 1) << 4;
                 switch (obj64->loopType) {
                     case 0:
                         obj64->y += obj64->z * sp114;
@@ -13588,21 +12962,15 @@ s32 func_8001F460(Object *arg0, s32 arg1, Object *arg2) {
     }
 
     temp_a1_2 = obj64->actorIndex;
-    for (var_s4 = 0;
-         var_s4 < D_8011AE78 &&
-         temp_a1_2 != D_8011AE74[var_s4]->properties.animation.behaviourID;
-         var_s4++) {
-    }
+    for (var_s4 = 0; var_s4 < D_8011AE78 && temp_a1_2 != D_8011AE74[var_s4]->properties.animation.behaviourID;
+         var_s4++) {}
     if (var_s4 >= D_8011AE78) {
         return func_800214E4(arg0, arg1);
     }
 
     for (var_s5 = 1;
-         (var_s4 + var_s5) < D_8011AE78 &&
-         temp_a1_2 ==
-             D_8011AE74[var_s4 + var_s5]->properties.animation.behaviourID;
-         var_s5++) {
-    }
+         (var_s4 + var_s5) < D_8011AE78 && temp_a1_2 == D_8011AE74[var_s4 + var_s5]->properties.animation.behaviourID;
+         var_s5++) {}
     if (var_s5 < 2) {
         return func_800214E4(arg0, arg1);
     }
@@ -13634,14 +13002,11 @@ s32 func_8001F460(Object *arg0, s32 arg1, Object *arg2) {
         if (var_s0 == -1) {
             if (sp168 != 0) {
                 sp154[var_s2] = D_8011AE74[var_s4]->trans.x_position +
-                                (D_8011AE74[var_s4]->trans.x_position -
-                                 D_8011AE74[var_s4 + 1]->trans.x_position);
+                                (D_8011AE74[var_s4]->trans.x_position - D_8011AE74[var_s4 + 1]->trans.x_position);
                 sp140[var_s2] = D_8011AE74[var_s4]->trans.y_position +
-                                (D_8011AE74[var_s4]->trans.y_position -
-                                 D_8011AE74[var_s4 + 1]->trans.y_position);
+                                (D_8011AE74[var_s4]->trans.y_position - D_8011AE74[var_s4 + 1]->trans.y_position);
                 sp12C[var_s2] = D_8011AE74[var_s4]->trans.z_position +
-                                (D_8011AE74[var_s4]->trans.z_position -
-                                 D_8011AE74[var_s4 + 1]->trans.z_position);
+                                (D_8011AE74[var_s4]->trans.z_position - D_8011AE74[var_s4 + 1]->trans.z_position);
                 spE0[var_t0] = D_8011AE74[var_s4]->trans.rotation.y_rotation;
                 spCC[var_t0] = D_8011AE74[var_s4]->trans.rotation.x_rotation;
                 spB8[var_t0] = D_8011AE74[var_s4]->trans.rotation.z_rotation;
@@ -13667,15 +13032,9 @@ s32 func_8001F460(Object *arg0, s32 arg1, Object *arg2) {
                 } else {
                     trans = &D_8011AE74[q]->trans;
                 }
-                sp154[var_s2] =
-                    trans->x_position +
-                    (trans->x_position - D_8011AE74[q - 1]->trans.x_position);
-                sp140[var_s2] =
-                    trans->y_position +
-                    (trans->y_position - D_8011AE74[q - 1]->trans.y_position);
-                sp12C[var_s2] =
-                    trans->z_position +
-                    (trans->z_position - D_8011AE74[q - 1]->trans.z_position);
+                sp154[var_s2] = trans->x_position + (trans->x_position - D_8011AE74[q - 1]->trans.x_position);
+                sp140[var_s2] = trans->y_position + (trans->y_position - D_8011AE74[q - 1]->trans.y_position);
+                sp12C[var_s2] = trans->z_position + (trans->z_position - D_8011AE74[q - 1]->trans.z_position);
                 spCC[var_t0] = trans->rotation.x_rotation;
                 spB8[var_t0] = trans->rotation.z_rotation;
                 trans = &D_8011AE74[q]->trans;
@@ -13693,8 +13052,7 @@ s32 func_8001F460(Object *arg0, s32 arg1, Object *arg2) {
             }
         } else {
             q = var_s0 + var_s4;
-            if (obj64->z) {
-            } // @fake
+            if (obj64->z) {} // @fake
             temp_s1 = &D_8011AE74[q]->level_entry->animation;
 
             if (temp_s1->unk22 == 1) {
@@ -13751,14 +13109,11 @@ s32 func_8001F460(Object *arg0, s32 arg1, Object *arg2) {
              * object matrix built from it became NaN for the rest of the
              * session. A rate of zero means "advance nothing", so leave the
              * speed adaptation alone; the interpolation below re-evaluates at
-             * the unchanged parameter and reproduces the frozen pose exactly.
-             */
+             * the unchanged parameter and reproduces the frozen pose exactly. */
             if (sp114 > 0.0f)
 #endif
             {
-                var_f2 =
-                    sqrtf((sp124 * sp124) + (sp120 * sp120) + (sp11C * sp11C)) /
-                    sp114;
+                var_f2 = sqrtf((sp124 * sp124) + (sp120 * sp120) + (sp11C * sp11C)) / sp114;
                 if (var_f2 != 0) {
                     obj64->unk4 *= obj64->unk8 / var_f2;
                 }
@@ -13766,8 +13121,7 @@ s32 func_8001F460(Object *arg0, s32 arg1, Object *arg2) {
         }
     }
 
-    arg0->trans.scale = catmull_rom_interpolation(spF4, var_s2, var_f20) *
-                        spB4 * arg0->header->scale;
+    arg0->trans.scale = catmull_rom_interpolation(spF4, var_s2, var_f20) * spB4 * arg0->header->scale;
     if (var_s2 != 0 && sp168 == -1 && var_s5 == obj64->unk26 + 2) {
         sp124 = catmull_rom_interpolation(sp154, 0, 1.0f);
         sp120 = catmull_rom_interpolation(sp140, 0, 1.0f);
@@ -13778,9 +13132,9 @@ s32 func_8001F460(Object *arg0, s32 arg1, Object *arg2) {
     }
 
 #ifdef NATIVE_PORT
-    /* Same zero-rate seam as the speed adaptation above: keep the velocities
-     * the paused frame inherited rather than dividing by zero into them. The
-     * move below is a no-op at a frozen parameter, so the pose is preserved. */
+    /* Same zero-rate seam as the speed adaptation above: keep the velocities the
+     * paused frame inherited rather than dividing by zero into them. The move
+     * below is a no-op at a frozen parameter, so the pose is preserved. */
     if (sp114 > 0.0f)
 #endif
     {
@@ -13853,19 +13207,16 @@ s32 func_8001F460(Object *arg0, s32 arg1, Object *arg2) {
                 // clang-format on
             }
             if (obj64->unk3F == 0) {
-            arg0->trans.rotation.s[0] = dkr_f32_to_s16_wrap(
-                catmull_rom_interpolation(spE0, var_s2, var_f20));
-            arg0->trans.rotation.s[1] = dkr_f32_to_s16_wrap(
-                catmull_rom_interpolation(spCC, var_s2, var_f20));
-            arg0->trans.rotation.s[2] = dkr_f32_to_s16_wrap(
-                catmull_rom_interpolation(spB8, var_s2, var_f20));
-        } else {
                 arg0->trans.rotation.s[0] =
-                dkr_f32_to_s16_wrap(lerp(spE0, var_s2, var_f20));
+                    dkr_f32_to_s16_wrap(catmull_rom_interpolation(spE0, var_s2, var_f20));
                 arg0->trans.rotation.s[1] =
-                dkr_f32_to_s16_wrap(lerp(spCC, var_s2, var_f20));
+                    dkr_f32_to_s16_wrap(catmull_rom_interpolation(spCC, var_s2, var_f20));
                 arg0->trans.rotation.s[2] =
-                dkr_f32_to_s16_wrap(lerp(spB8, var_s2, var_f20));
+                    dkr_f32_to_s16_wrap(catmull_rom_interpolation(spB8, var_s2, var_f20));
+            } else {
+                arg0->trans.rotation.s[0] = dkr_f32_to_s16_wrap(lerp(spE0, var_s2, var_f20));
+                arg0->trans.rotation.s[1] = dkr_f32_to_s16_wrap(lerp(spCC, var_s2, var_f20));
+                arg0->trans.rotation.s[2] = dkr_f32_to_s16_wrap(lerp(spB8, var_s2, var_f20));
             }
             break;
     }
@@ -13908,8 +13259,7 @@ s32 func_8001F460(Object *arg0, s32 arg1, Object *arg2) {
             if (obj64->unk26 >= var_s5) {
                 obj64->unk26 = var_s5 - 1;
             } else {
-                temp_s1 =
-                    &D_8011AE74[var_s4 + obj64->unk26]->level_entry->animation;
+                temp_s1 = &D_8011AE74[var_s4 + obj64->unk26]->level_entry->animation;
                 func_8002125C(arg0, temp_s1, obj64, var_s4);
             }
         } else {
@@ -13926,23 +13276,17 @@ s32 func_8001F460(Object *arg0, s32 arg1, Object *arg2) {
         }
     }
     if (obj64->unk2E == 3) {
-        for (var_t0 = 0;
-             var_t0 < D_8011AE78 &&
-             obj64->unk3E !=
-                 D_8011AE74[var_t0]->properties.animation.behaviourID;
-             var_t0++) {
-        }
+        for (var_t0 = 0; var_t0 < D_8011AE78 && obj64->unk3E != D_8011AE74[var_t0]->properties.animation.behaviourID;
+             var_t0++) {}
         if (var_t0 != D_8011AE78) {
             trans = &D_8011AE74[var_t0]->animTarget->trans;
             if (trans != NULL) {
                 sp124 = trans->x_position - arg0->trans.x_position;
                 sp120 = trans->y_position - arg0->trans.y_position;
                 sp11C = trans->z_position - arg0->trans.z_position;
-                var_f0 =
-                    sqrtf((sp124 * sp124) + (sp120 * sp120) + (sp11C * sp11C));
+                var_f0 = sqrtf((sp124 * sp124) + (sp120 * sp120) + (sp11C * sp11C));
                 if (var_f0 > 0) {
-                    arg0->trans.rotation.y_rotation =
-                        arctan2_f(sp124, sp11C) - 0x8000;
+                    arg0->trans.rotation.y_rotation = arctan2_f(sp124, sp11C) - 0x8000;
                     arg0->trans.rotation.x_rotation = arctan2_f(sp120, var_f0);
                 }
             }
@@ -13961,8 +13305,7 @@ s32 func_800210CC(s8 arg0) {
     return FALSE;
 }
 
-void func_80021104(Object *obj, Object_AnimatedObject *animObj,
-                   LevelObjectEntry_Animation *entry) {
+void func_80021104(Object *obj, Object_AnimatedObject *animObj, LevelObjectEntry_Animation *entry) {
     Camera *camera;
     ObjectTransform *animObjTrans;
 
@@ -13977,8 +13320,7 @@ void func_80021104(Object *obj, Object_AnimatedObject *animObj,
         animObjTrans->x_position = camera->trans.x_position;
         animObjTrans->y_position = camera->trans.y_position;
         animObjTrans->z_position = camera->trans.z_position;
-        animObjTrans->rotation.y_rotation =
-            (0x8000 - camera->trans.rotation.y_rotation);
+        animObjTrans->rotation.y_rotation = (0x8000 - camera->trans.rotation.y_rotation);
         animObjTrans->rotation.x_rotation = -camera->trans.rotation.x_rotation;
         animObjTrans->rotation.z_rotation = camera->trans.rotation.z_rotation;
     }
@@ -13995,8 +13337,7 @@ void func_80021104(Object *obj, Object_AnimatedObject *animObj,
     }
 }
 
-void func_8002125C(Object *obj, LevelObjectEntry_Animation *entry,
-                   Object_AnimatedObject *animObj, UNUSED s32 index) {
+void func_8002125C(Object *obj, LevelObjectEntry_Animation *entry, Object_AnimatedObject *animObj, UNUSED s32 index) {
     s32 initialAnimFrame;
 
     initialAnimFrame = entry->objAnimIndex;
@@ -14040,11 +13381,7 @@ void func_80021400(s32 arg0) {
     s32 i;
     arg0 &= 0xFF; //?
 
-    for (i = 0;
-         i < D_8011AE78 &&
-         (arg0 != (D_8011AE74[i]->properties.animation.behaviourID & 0xFF));
-         i++) {
-    }
+    for (i = 0; i < D_8011AE78 && (arg0 != (D_8011AE74[i]->properties.animation.behaviourID & 0xFF)); i++) {}
 
     if (i < D_8011AE78) {
         if (D_8011AE74[i]->animTarget != NULL) {
@@ -14055,7 +13392,9 @@ void func_80021400(s32 arg0) {
     }
 }
 
-s8 func_800214C4(void) { return D_8011AD22[1 - D_8011AD21]; }
+s8 func_800214C4(void) {
+    return D_8011AD22[1 - D_8011AD21];
+}
 
 s8 func_800214E4(Object *obj, s32 updateRate) {
     s32 i;
@@ -14076,12 +13415,8 @@ s8 func_800214E4(Object *obj, s32 updateRate) {
     }
     if (animObj->pauseCounter <= 0) {
         obj->trans.flags |= OBJ_FLAGS_INVISIBLE;
-        for (i = 0; (i < D_8011AE78 &&
-                     animObj->actorIndex !=
-                         D_8011AE74[i]->properties.animation.behaviourID);
-             i++) {
-            if (FALSE) {
-            } // FAKEMATCH
+        for (i = 0; (i < D_8011AE78 && animObj->actorIndex != D_8011AE74[i]->properties.animation.behaviourID); i++) {
+            if (FALSE) {} // FAKEMATCH
         }
         obj_init_animobject(D_8011AE74[i], obj);
         return 1;
@@ -14119,19 +13454,13 @@ s32 func_80021600(s32 arg0) {
         return TRUE;
     }
 
-    for (i = 0; i < D_8011AE78 &&
-                arg0 != D_8011AE74[i]->properties.animation.behaviourID;
-         i++) {
-    }
+    for (i = 0; i < D_8011AE78 && arg0 != D_8011AE74[i]->properties.animation.behaviourID; i++) {}
     if (i >= D_8011AE78) {
         return TRUE;
     }
 
-    for (count = 1;
-         i + count < D_8011AE78 &&
-         arg0 == D_8011AE74[i + count]->properties.animation.behaviourID;
-         count++) {
-    }
+    for (count = 1; i + count < D_8011AE78 && arg0 == D_8011AE74[i + count]->properties.animation.behaviourID;
+         count++) {}
     if (count < 2) {
         return TRUE;
     }
@@ -14157,14 +13486,11 @@ s32 func_80021600(s32 arg0) {
         if (s0 == -1) {
             if (sp138 != 0) {
                 xPositions[j] = D_8011AE74[i]->trans.x_position +
-                                (D_8011AE74[i]->trans.x_position -
-                                 D_8011AE74[i + 1]->trans.x_position);
+                                (D_8011AE74[i]->trans.x_position - D_8011AE74[i + 1]->trans.x_position);
                 yPositions[j] = D_8011AE74[i]->trans.y_position +
-                                (D_8011AE74[i]->trans.y_position -
-                                 D_8011AE74[i + 1]->trans.y_position);
+                                (D_8011AE74[i]->trans.y_position - D_8011AE74[i + 1]->trans.y_position);
                 zPositions[j] = D_8011AE74[i]->trans.z_position +
-                                (D_8011AE74[i]->trans.z_position -
-                                 D_8011AE74[i + 1]->trans.z_position);
+                                (D_8011AE74[i]->trans.z_position - D_8011AE74[i + 1]->trans.z_position);
                 yRotations[j] = D_8011AE74[i]->trans.rotation.y_rotation;
                 xRotations[j] = D_8011AE74[i]->trans.rotation.x_rotation;
                 zRotations[j] = D_8011AE74[i]->trans.rotation.z_rotation;
@@ -14191,15 +13517,12 @@ s32 func_80021600(s32 arg0) {
                     objTransform = &D_8011AE74[q]->trans;
                 }
 
-                xPositions[j] = (objTransform->x_position -
-                                 D_8011AE74[q - 1]->trans.x_position) +
-                                objTransform->x_position;
-                yPositions[j] = (objTransform->y_position -
-                                 D_8011AE74[q - 1]->trans.y_position) +
-                                objTransform->y_position;
-                zPositions[j] = (objTransform->z_position -
-                                 D_8011AE74[q - 1]->trans.z_position) +
-                                objTransform->z_position;
+                xPositions[j] =
+                    (objTransform->x_position - D_8011AE74[q - 1]->trans.x_position) + objTransform->x_position;
+                yPositions[j] =
+                    (objTransform->y_position - D_8011AE74[q - 1]->trans.y_position) + objTransform->y_position;
+                zPositions[j] =
+                    (objTransform->z_position - D_8011AE74[q - 1]->trans.z_position) + objTransform->z_position;
                 xRotations[j] = objTransform->rotation.x_rotation;
                 zRotations[j] = objTransform->rotation.z_rotation;
                 objTransform = &D_8011AE74[q]->trans;
@@ -14217,8 +13540,7 @@ s32 func_80021600(s32 arg0) {
             }
         } else {
             q = s0 + i;
-            if (1) {
-            } // Fake
+            if (1) {} // Fake
             levelObjAnim = &D_8011AE74[q]->level_entry->animation;
             if (levelObjAnim->unk22 == 1) {
                 set_active_camera(objAnim->cameraID);
@@ -14256,8 +13578,7 @@ s32 func_80021600(s32 arg0) {
     spF0 -= sp154->trans.z_position;
 
     move_object(sp154, spF8, spF4, spF0);
-    sp154->trans.scale = catmull_rom_interpolation(scales, 0, spEC) * sp90 *
-                         sp154->header->scale;
+    sp154->trans.scale = catmull_rom_interpolation(scales, 0, spEC) * sp90 * sp154->header->scale;
 
     switch (objAnim->unk2E) {
         case 1:
@@ -14288,11 +13609,7 @@ s32 func_80021600(s32 arg0) {
             sp154->trans.rotation.x_rotation = arctan2_f(spF4, 100.0f);
             break;
         case 3:
-        for (j = 0;
-             j < D_8011AE78 &&
-             objAnim->unk3E != D_8011AE74[j]->properties.animation.behaviourID;
-             j++) {
-        }
+            for (j = 0; j < D_8011AE78 && objAnim->unk3E != D_8011AE74[j]->properties.animation.behaviourID; j++) {}
 
             if (j != D_8011AE78) {
                 objTransform = &D_8011AE74[j]->animTarget->trans;
@@ -14302,8 +13619,7 @@ s32 func_80021600(s32 arg0) {
                     spF0 = objTransform->z_position - sp154->trans.z_position;
                     spEC = sqrtf(spF8 * spF8 + spF4 * spF4 + spF0 * spF0);
                     if (spEC > 0.0f) {
-                    sp154->trans.rotation.y_rotation =
-                        arctan2_f(spF8, spF0) - 0x8000;
+                        sp154->trans.rotation.y_rotation = arctan2_f(spF8, spF0) - 0x8000;
                         sp154->trans.rotation.x_rotation = arctan2_f(spF4, spEC);
                     }
                 }
@@ -14349,12 +13665,9 @@ s32 func_80021600(s32 arg0) {
             }
 
             if (objAnim->unk3F == 0) {
-            sp154->trans.rotation.y_rotation =
-                catmull_rom_interpolation(yRotations, 0, spEC);
-            sp154->trans.rotation.x_rotation =
-                catmull_rom_interpolation(xRotations, 0, spEC);
-            sp154->trans.rotation.z_rotation =
-                catmull_rom_interpolation(zRotations, 0, spEC);
+                sp154->trans.rotation.y_rotation = catmull_rom_interpolation(yRotations, 0, spEC);
+                sp154->trans.rotation.x_rotation = catmull_rom_interpolation(xRotations, 0, spEC);
+                sp154->trans.rotation.z_rotation = catmull_rom_interpolation(zRotations, 0, spEC);
             } else {
                 sp154->trans.rotation.y_rotation = lerp(yRotations, 0, spEC);
                 sp154->trans.rotation.x_rotation = lerp(xRotations, 0, spEC);
@@ -14370,12 +13683,9 @@ f32 catmull_rom_interpolation(f32 *data, s32 index, f32 x) {
     f32 ret;
     f32 c, b, a;
 
-    a = (-0.5 * data[index]) + (1.5 * data[index + 1]) +
-        (-1.5 * data[index + 2]) + (0.5 * data[index + 3]);
-    b = (1.0 * data[index]) + (-2.5 * data[index + 1]) +
-        (2.0 * data[index + 2]) + (-0.5 * data[index + 3]);
-    c = (data[index + 2] * 0.5) + (0.0 * data[index + 1]) +
-        (-0.5 * data[index]) + (0.0 * data[index + 3]);
+    a = (-0.5 * data[index]) + (1.5 * data[index + 1]) + (-1.5 * data[index + 2]) + (0.5 * data[index + 3]);
+    b = (1.0 * data[index]) + (-2.5 * data[index + 1]) + (2.0 * data[index + 2]) + (-0.5 * data[index + 3]);
+    c = (data[index + 2] * 0.5) + (0.0 * data[index + 1]) + (-0.5 * data[index]) + (0.0 * data[index + 3]);
 
     ret = (1.0 * data[index + 1]);
     ret = (((((a * x) + b) * x) + c) * x) + ret;
@@ -14384,19 +13694,15 @@ f32 catmull_rom_interpolation(f32 *data, s32 index, f32 x) {
 }
 
 /**
- * Interpolates x along a spline and returns the resultant progress along the
- * spline.
+ * Interpolates x along a spline and returns the resultant progress along the spline.
  */
 f32 cubic_spline_interpolation(f32 *data, s32 index, f32 x, f32 *derivative) {
     f32 ret;
     f32 c, b, a;
 
-    a = (-0.5 * data[index]) + (1.5 * data[index + 1]) +
-        (-1.5 * data[index + 2]) + (0.5 * data[index + 3]);
-    b = (1.0 * data[index]) + (-2.5 * data[index + 1]) +
-        (2.0 * data[index + 2]) + (-0.5 * data[index + 3]);
-    c = (data[index + 2] * 0.5) + (0.0 * data[index + 1]) +
-        (-0.5 * data[index]) + (0.0 * data[index + 3]);
+    a = (-0.5 * data[index]) + (1.5 * data[index + 1]) + (-1.5 * data[index + 2]) + (0.5 * data[index + 3]);
+    b = (1.0 * data[index]) + (-2.5 * data[index + 1]) + (2.0 * data[index + 2]) + (-0.5 * data[index + 3]);
+    c = (data[index + 2] * 0.5) + (0.0 * data[index + 1]) + (-0.5 * data[index]) + (0.0 * data[index + 3]);
 
     ret = (1.0 * data[index + 1]);
     *derivative = (((a * 3 * x) + (2 * b)) * x) + c;
@@ -14409,12 +13715,9 @@ f32 catmull_rom_derivative(f32 *data, s32 index, f32 x) {
     f32 derivative;
     f32 c, b, a;
 
-    a = (-0.5 * data[index]) + (1.5 * data[index + 1]) +
-        (-1.5 * data[index + 2]) + (0.5 * data[index + 3]);
-    b = (1.0 * data[index]) + (-2.5 * data[index + 1]) +
-        (2.0 * data[index + 2]) + (-0.5 * data[index + 3]);
-    c = (data[index + 2] * 0.5) + (0.0 * data[index + 1]) +
-        (-0.5 * data[index]) + (0.0 * data[index + 3]);
+    a = (-0.5 * data[index]) + (1.5 * data[index + 1]) + (-1.5 * data[index + 2]) + (0.5 * data[index + 3]);
+    b = (1.0 * data[index]) + (-2.5 * data[index + 1]) + (2.0 * data[index + 2]) + (-0.5 * data[index + 3]);
+    c = (data[index + 2] * 0.5) + (0.0 * data[index + 1]) + (-0.5 * data[index]) + (0.0 * data[index + 3]);
 
     derivative = (((a * 3 * x) + (2 * b)) * x) + c;
 
@@ -14422,8 +13725,7 @@ f32 catmull_rom_derivative(f32 *data, s32 index, f32 x) {
 }
 
 /**
- * Imprecise method, which does not guarantee v = v1 when t = 1. (From
- * Wikipedia)
+ * Imprecise method, which does not guarantee v = v1 when t = 1. (From Wikipedia)
  */
 f32 lerp(f32 *data, u32 index, f32 t) {
     f32 result = data[index + 1] + t * ((data[index + 2] - data[index + 1]));
@@ -14442,7 +13744,8 @@ f32 lerp_and_get_derivative(f32 *data, u32 index, f32 t, f32 *derivative) {
     return lerp;
 }
 
-UNUSED void func_800228DC(UNUSED s32 arg0, UNUSED s32 arg1, UNUSED s32 arg2) {}
+UNUSED void func_800228DC(UNUSED s32 arg0, UNUSED s32 arg1, UNUSED s32 arg2) {
+}
 
 /**
  * Prepares the player racer for a Taj Challenge race.
@@ -14466,8 +13769,7 @@ void init_racer_for_challenge(s32 vehicleID) {
 
 /**
  * Initialise the relevant variables related to races.
- * These are usually done on level load, but Taj challenges don't reset the
- * level.
+ * These are usually done on level load, but Taj challenges don't reset the level.
  */
 void mode_init_taj_race(void) {
     CheckpointNode *checkpointNode;
@@ -14518,23 +13820,17 @@ void mode_init_taj_race(void) {
         // clang-format off
         for (i = 0; i < ARRAY_COUNT(racer->lap_times); i++) { racer->lap_times[i] = 0; } // Must be a single line.
         // clang-format on
-        newRacerEntry.common.x =
-            (checkpointNode->x + (checkpointNode->rotationZFrac * 35.0f));
-        newRacerEntry.common.z =
-            (checkpointNode->z - (checkpointNode->rotationXFrac * 35.0f));
-        lvlSeg = get_level_segment_index_from_position(
-            newRacerEntry.common.x, checkpointNode->y, newRacerEntry.common.z);
+        newRacerEntry.common.x = (checkpointNode->x + (checkpointNode->rotationZFrac * 35.0f));
+        newRacerEntry.common.z = (checkpointNode->z - (checkpointNode->rotationXFrac * 35.0f));
+        lvlSeg =
+            get_level_segment_index_from_position(newRacerEntry.common.x, checkpointNode->y, newRacerEntry.common.z);
         newRacerEntry.common.y =
 #ifdef NATIVE_PORT
-            collision_get_y(lvlSeg, newRacerEntry.common.x,
-                            newRacerEntry.common.z, yOut, ARRAY_COUNT(yOut))
+            collision_get_y(lvlSeg, newRacerEntry.common.x, newRacerEntry.common.z, yOut, ARRAY_COUNT(yOut))
                 ? yOut[0]
                 : checkpointNode->y;
 #else
-            collision_get_y(lvlSeg, newRacerEntry.common.x,
-                            newRacerEntry.common.z, yOut)
-                ? yOut[0]
-                : checkpointNode->y;
+            collision_get_y(lvlSeg, newRacerEntry.common.x, newRacerEntry.common.z, yOut) ? yOut[0] : checkpointNode->y;
 #endif
         newRacerEntry.common.size = 16;
         newRacerEntry.angleY = racer->steerVisualRotation;
@@ -14562,16 +13858,15 @@ void mode_init_taj_race(void) {
         racerObj->interactObj->pushForce = 2;
 
         for (j = gObjectListStart; j < gObjectCount; j++) {
-            if (!(gObjPtrList[j]->trans.flags & OBJ_FLAGS_PARTICLE) &&
-                gObjPtrList[j]->behaviorId == BHV_PARK_WARDEN) {
+            if (!(gObjPtrList[j]->trans.flags & OBJ_FLAGS_PARTICLE) && gObjPtrList[j]->behaviorId == BHV_PARK_WARDEN) {
                 racer->unk154 = gObjPtrList[j];
             }
         }
         set_pause_lockout_timer(20);
         transition_begin(&gTajChallengeTransition);
 #ifdef NATIVE_PORT
-        mdkr_taj_trace_phase("start",
-                             racer->vehicleID == VEHICLE_CARPET
+        mdkr_taj_trace_phase(
+            "start", racer->vehicleID == VEHICLE_CARPET
                          ? gIsTajChallenge - 1
                          : racer->vehicleID,
             NULL, -1, 0, 0);
@@ -14580,8 +13875,8 @@ void mode_init_taj_race(void) {
 }
 
 /**
- * Finds which golden balloon should be moved, and move it onto Taj's current
- * position. Sets opacity to 0, so the balloon with smoothly fade in.
+ * Finds which golden balloon should be moved, and move it onto Taj's current position.
+ * Sets opacity to 0, so the balloon with smoothly fade in.
  */
 void obj_taj_create_balloon(s32 blockID, f32 x, f32 y, f32 z) {
     s32 i;
@@ -14595,8 +13890,8 @@ void obj_taj_create_balloon(s32 blockID, f32 x, f32 y, f32 z) {
             obj->level_entry->goldenBalloon.challengeID <= 3) {
             if (settings->tajFlags &&
                 settings->tajFlags &
-                    (UINT32_C(1)
-                     << (obj->level_entry->goldenBalloon.challengeID + 2))) {
+                    (UINT32_C(1) <<
+                     (obj->level_entry->goldenBalloon.challengeID + 2))) {
                 obj->trans.x_position = x;
                 obj->trans.y_position = y + 10.0;
                 obj->trans.z_position = z;
@@ -14611,8 +13906,7 @@ void obj_taj_create_balloon(s32 blockID, f32 x, f32 y, f32 z) {
 /**
  * Revert changes set by the game when starting the Taj challenge.
  * This includes the music set, as well as the extra racer spawned.
- * Has a different response depending on whether the challenge was aborted or
- * finished.
+ * Has a different response depending on whether the challenge was aborted or finished.
  */
 void mode_end_taj_race(s32 reason) {
     s32 flags;
@@ -14628,7 +13922,8 @@ void mode_end_taj_race(s32 reason) {
     vehicle = racer->vehicleID;
     menu = 0;
 #ifdef NATIVE_PORT
-    mdkr_taj_trace_phase("end_before", vehicle, NULL, reason, 0, 0);
+    mdkr_taj_trace_phase(
+        "end_before", vehicle, NULL, reason, 0, 0);
 #endif
     levelHeader = level_header();
     levelHeader->race_type = RACETYPE_HUBWORLD;
@@ -14640,8 +13935,7 @@ void mode_end_taj_race(s32 reason) {
     i = 0;
     do {
         racer = (*gRacers)[i]->racer;
-        if (!racer) {
-        }
+        if (!racer) {}
         racer->raceFinished = 0;
         racer->lap = 0;
         racer->nextCheckpoint = 0;
@@ -14653,8 +13947,7 @@ void mode_end_taj_race(s32 reason) {
     gNumRacers = 1;
     obj = NULL;
     for (i = gObjectListStart; i < gObjectCount; i++) {
-        if (!(gObjPtrList[i]->trans.flags & OBJ_FLAGS_PARTICLE) &&
-            gObjPtrList[i]->behaviorId == BHV_PARK_WARDEN) {
+        if (!(gObjPtrList[i]->trans.flags & OBJ_FLAGS_PARTICLE) && gObjPtrList[i]->behaviorId == BHV_PARK_WARDEN) {
             obj = gObjPtrList[i];
         }
     }
@@ -14685,11 +13978,9 @@ void mode_end_taj_race(s32 reason) {
                     safe_mark_write_save_file(get_save_file_index());
                 }
 #ifdef NATIVE_PORT
-                /* Also recover a global sidecar lost after an imported 0x38
-                 * save. */
+                /* Also recover a global sidecar lost after an imported 0x38 save. */
                 if (taj_mod_unlock_from_taj_flags(settings->tajFlags)) {
-                    MDKR_TRACE(
-                        "taj_mod_unlock: route=taj_challenges flags=0x%x",
+                    MDKR_TRACE("taj_mod_unlock: route=taj_challenges flags=0x%x",
                                settings->tajFlags);
                     sound_play(SOUND_VOICE_TAJ_WAHEY, NULL);
                 }
@@ -14722,7 +14013,8 @@ void mode_end_taj_race(s32 reason) {
     level_music_start(1.0f);
     gIsTajChallenge = FALSE;
 #ifdef NATIVE_PORT
-    mdkr_taj_trace_phase("end_after", vehicle, NULL, reason, menu, 0);
+    mdkr_taj_trace_phase(
+        "end_after", vehicle, NULL, reason, menu, 0);
 #endif
 }
 
@@ -14745,8 +14037,7 @@ CheckpointNode *func_800230D0(Object *obj, Object_Racer *racer) {
             if (ptrList == NULL) {
                 continue;
             }
-            if (!(ptrList->trans.flags & OBJ_FLAGS_PARTICLE) &&
-                (ptrList->behaviorId == BHV_SETUP_POINT)) {
+            if (!(ptrList->trans.flags & OBJ_FLAGS_PARTICLE) && (ptrList->behaviorId == BHV_SETUP_POINT)) {
                 if (ptrList->properties.setupPoint.racerIndex == 0) {
                     obj->trans.x_position = ptrList->trans.x_position;
                     obj->trans.y_position = ptrList->trans.y_position;
@@ -14758,21 +14049,17 @@ CheckpointNode *func_800230D0(Object *obj, Object_Racer *racer) {
         }
     } else {
         lastCheckpointNode = &gTrackCheckpoints[gNumberOfMainCheckpoints - 1];
-        obj->trans.x_position =
-            lastCheckpointNode->x - (lastCheckpointNode->rotationZFrac * 35.0f);
+        obj->trans.x_position = lastCheckpointNode->x - (lastCheckpointNode->rotationZFrac * 35.0f);
         obj->trans.y_position = lastCheckpointNode->y;
-        obj->trans.z_position =
-            lastCheckpointNode->z + (lastCheckpointNode->rotationXFrac * 35.0f);
-        obj->segmentID = get_level_segment_index_from_position(
-            obj->trans.x_position, obj->trans.y_position,
-            obj->trans.z_position);
+        obj->trans.z_position = lastCheckpointNode->z + (lastCheckpointNode->rotationXFrac * 35.0f);
+        obj->segmentID =
+            get_level_segment_index_from_position(obj->trans.x_position, obj->trans.y_position, obj->trans.z_position);
     }
 #ifdef NATIVE_PORT
-    yOutCount = collision_get_y(obj->segmentID, obj->trans.x_position,
-                                obj->trans.z_position, yOut, ARRAY_COUNT(yOut));
+    yOutCount = collision_get_y(obj->segmentID, obj->trans.x_position, obj->trans.z_position, yOut,
+                                ARRAY_COUNT(yOut));
 #else
-    yOutCount = collision_get_y(obj->segmentID, obj->trans.x_position,
-                                obj->trans.z_position, yOut);
+    yOutCount = collision_get_y(obj->segmentID, obj->trans.x_position, obj->trans.z_position, yOut);
 #endif
     if (yOutCount != 0) {
         obj->trans.y_position = yOut[yOutCount - 1];
@@ -14781,14 +14068,11 @@ CheckpointNode *func_800230D0(Object *obj, Object_Racer *racer) {
     racer->prev_y_position = obj->trans.y_position;
     racer->prev_z_position = obj->trans.z_position;
     if (lastCheckpointNode != NULL) {
-        racer->steerVisualRotation =
-            arctan2_f(lastCheckpointNode->rotationXFrac,
-                      lastCheckpointNode->rotationZFrac);
+        racer->steerVisualRotation = arctan2_f(lastCheckpointNode->rotationXFrac, lastCheckpointNode->rotationZFrac);
     } else if (ptrList != NULL) {
         racer->steerVisualRotation = ptrList->trans.rotation.y_rotation;
     } else {
-        /* A malformed level without checkpoints/setup points retains heading.
-         */
+        /* A malformed level without checkpoints/setup points retains heading. */
         racer->steerVisualRotation = obj->trans.rotation.y_rotation;
     }
     racer->nextCheckpoint = 0;
@@ -14810,10 +14094,8 @@ CheckpointNode *func_800230D0(Object *obj, Object_Racer *racer) {
     obj->interactObj->y_position = obj->trans.y_position;
     obj->interactObj->z_position = obj->trans.z_position;
     // fake
-    if (1) {
-    }
-    if (1) {
-    }
+    if (1) {}
+    if (1) {}
     racer->velocity = 0.0f;
     racer->lateral_velocity = 0.0f;
     obj->x_velocity = 0.0f;
@@ -14832,7 +14114,9 @@ CheckpointNode *func_800230D0(Object *obj, Object_Racer *racer) {
 /**
  * Returns true if a taj challenge is currently active.
  */
-s8 is_taj_challenge(void) { return gIsTajChallenge; }
+s8 is_taj_challenge(void) {
+    return gIsTajChallenge;
+}
 
 /**
  * Searches for the furthest teleport anchor and returns it.
@@ -14852,8 +14136,7 @@ Object *find_furthest_telepoint(f32 x, f32 z) {
     if (gObjectCount > 0) {
         do {
             tempObj = gObjPtrList[i];
-            if (!(tempObj->trans.flags & OBJ_FLAGS_PARTICLE) &&
-                tempObj->behaviorId == BHV_TAJ_TELEPOINT) {
+            if (!(tempObj->trans.flags & OBJ_FLAGS_PARTICLE) && tempObj->behaviorId == BHV_TAJ_TELEPOINT) {
                 diffX = tempObj->trans.x_position - x;
                 diffZ = tempObj->trans.z_position - z;
                 tempObj = gObjPtrList[i]; // fakematch
@@ -14881,16 +14164,19 @@ s32 func_80023568(void) {
 /**
  * Return whether doors can be forced open.
  */
-s8 obj_door_override(void) { return gOverrideDoors; }
+s8 obj_door_override(void) {
+    return gOverrideDoors;
+}
 
 /**
  * Set a value that decides whether doors can be forced open.
  */
-void obj_door_open(s32 setting) { gOverrideDoors = setting; }
+void obj_door_open(s32 setting) {
+    gOverrideDoors = setting;
+}
 
 /**
- * Return the size of the object property struct intended to be used with the
- * object.
+ * Return the size of the object property struct intended to be used with the object.
  */
 s32 get_object_property_size(Object *obj, void *obj64) {
 #ifndef NATIVE_PORT
@@ -15170,8 +14456,7 @@ void run_object_init_func(Object *obj, void *entry, s32 param) {
             obj_init_rgbalight(obj, (LevelObjectEntry_RgbaLight *) entry, param);
             break;
         case BHV_BUOY_PIRATE_SHIP:
-        obj_init_buoy_pirateship(obj, (LevelObjectEntry_Buoy_PirateShip *)entry,
-                                 param);
+            obj_init_buoy_pirateship(obj, (LevelObjectEntry_Buoy_PirateShip *) entry, param);
             break;
         case BHV_LOG:
             obj_init_log(obj, (LevelObjectEntry_Log *) entry, param);
@@ -15180,8 +14465,7 @@ void run_object_init_func(Object *obj, void *entry, s32 param) {
             obj_init_weather(obj, (LevelObjectEntry_Weather *) entry);
             break;
         case BHV_BRIDGE_WHALE_RAMP:
-        obj_init_bridge_whaleramp(obj,
-                                  (LevelObjectEntry_Bridge_WhaleRamp *)entry);
+            obj_init_bridge_whaleramp(obj, (LevelObjectEntry_Bridge_WhaleRamp *) entry);
             break;
         case BHV_RAMP_SWITCH:
             obj_init_rampswitch(obj, (LevelObjectEntry_RampSwitch *) entry);
@@ -15193,8 +14477,7 @@ void run_object_init_func(Object *obj, void *entry, s32 param) {
             obj_init_lensflare(obj, (LevelObjectEntry_LensFlare *) entry);
             break;
         case BHV_LENS_FLARE_SWITCH:
-        obj_init_lensflareswitch(obj, (LevelObjectEntry_LensFlareSwitch *)entry,
-                                 param);
+            obj_init_lensflareswitch(obj, (LevelObjectEntry_LensFlareSwitch *) entry, param);
             break;
         case BHV_COLLECT_EGG:
             obj_init_collectegg(obj, (LevelObjectEntry_CollectEgg *) entry);
@@ -15252,8 +14535,7 @@ void run_object_init_func(Object *obj, void *entry, s32 param) {
         case BHV_HIT_TESTER_2:
         case BHV_DYNAMIC_LIGHT_OBJECT_2:
         case BHV_HIT_TESTER_4:
-        obj_init_dynamic_lighting_object(
-            obj, (LevelObjectEntry_DynamicLightingObject *)entry);
+            obj_init_dynamic_lighting_object(obj, (LevelObjectEntry_DynamicLightingObject *) entry);
             break;
         case BHV_SNOWBALL:
         case BHV_SNOWBALL_3:
@@ -15348,21 +14630,18 @@ s32 obj_init_property_flags(s32 behaviorId) {
     s32 flags = OBJECT_BEHAVIOUR_NONE;
     switch (behaviorId) {
         case BHV_RACER:
-        flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_SHADOW |
-                OBJECT_BEHAVIOUR_WATER_EFFECT | OBJECT_BEHAVIOUR_ANIMATION |
-                OBJECT_BEHAVIOUR_INTERACTIVE;
+            flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_SHADOW | OBJECT_BEHAVIOUR_WATER_EFFECT |
+                    OBJECT_BEHAVIOUR_ANIMATION | OBJECT_BEHAVIOUR_INTERACTIVE;
             break;
         case BHV_SCENERY:
-        flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_SHADOW |
-                OBJECT_BEHAVIOUR_INTERACTIVE;
+            flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_SHADOW | OBJECT_BEHAVIOUR_INTERACTIVE;
             break;
         case BHV_WEAPON:
-        flags = OBJECT_BEHAVIOUR_SHADOW | OBJECT_BEHAVIOUR_WATER_EFFECT |
-                OBJECT_BEHAVIOUR_INTERACTIVE;
+            flags = OBJECT_BEHAVIOUR_SHADOW | OBJECT_BEHAVIOUR_WATER_EFFECT | OBJECT_BEHAVIOUR_INTERACTIVE;
             break;
         case BHV_DINO_WHALE:
-        flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_SHADOW |
-                OBJECT_BEHAVIOUR_ANIMATION | OBJECT_BEHAVIOUR_INTERACTIVE;
+            flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_SHADOW | OBJECT_BEHAVIOUR_ANIMATION |
+                    OBJECT_BEHAVIOUR_INTERACTIVE;
             break;
         case BHV_DOOR:
         case BHV_TT_DOOR:
@@ -15376,23 +14655,22 @@ s32 obj_init_property_flags(s32 behaviorId) {
         case BHV_HIT_TESTER_2:
         case BHV_SNOWBALL:
         case BHV_SNOWBALL_2:
-        flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_SHADOW |
-                OBJECT_BEHAVIOUR_ANIMATION | OBJECT_BEHAVIOUR_INTERACTIVE |
-                OBJECT_BEHAVIOUR_COLLIDABLE;
+            flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_SHADOW | OBJECT_BEHAVIOUR_ANIMATION |
+                    OBJECT_BEHAVIOUR_INTERACTIVE | OBJECT_BEHAVIOUR_COLLIDABLE;
             break;
         case BHV_SNOWBALL_3:
         case BHV_SNOWBALL_4:
         case BHV_HIT_TESTER_3:
         case BHV_HIT_TESTER_4:
-        flags = OBJECT_BEHAVIOUR_SHADOW | OBJECT_BEHAVIOUR_ANIMATION |
-                OBJECT_BEHAVIOUR_INTERACTIVE | OBJECT_BEHAVIOUR_COLLIDABLE;
+            flags = OBJECT_BEHAVIOUR_SHADOW | OBJECT_BEHAVIOUR_ANIMATION | OBJECT_BEHAVIOUR_INTERACTIVE |
+                    OBJECT_BEHAVIOUR_COLLIDABLE;
             break;
         case BHV_UNK_18:
             flags = OBJECT_BEHAVIOUR_WATER_EFFECT;
             break;
         case BHV_STOPWATCH_MAN:
-        flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_SHADOW |
-                OBJECT_BEHAVIOUR_ANIMATION | OBJECT_BEHAVIOUR_INTERACTIVE;
+            flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_SHADOW | OBJECT_BEHAVIOUR_ANIMATION |
+                    OBJECT_BEHAVIOUR_INTERACTIVE;
             break;
         case BHV_BANANA:
         case BHV_WORLD_KEY:
@@ -15404,8 +14682,8 @@ s32 obj_init_property_flags(s32 behaviorId) {
             flags = OBJECT_BEHAVIOUR_INTERACTIVE | OBJECT_BEHAVIOUR_COLLIDABLE;
             break;
         case BHV_BRIDGE_WHALE_RAMP:
-        flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_ANIMATION |
-                OBJECT_BEHAVIOUR_INTERACTIVE | OBJECT_BEHAVIOUR_COLLIDABLE;
+            flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_ANIMATION | OBJECT_BEHAVIOUR_INTERACTIVE |
+                    OBJECT_BEHAVIOUR_COLLIDABLE;
             break;
         case BHV_RAMP_SWITCH:
             flags = OBJECT_BEHAVIOUR_INTERACTIVE | OBJECT_BEHAVIOUR_SHADOW;
@@ -15428,19 +14706,16 @@ s32 obj_init_property_flags(s32 behaviorId) {
         case BHV_WIZPIG_SHIP:
         case BHV_ANIMATED_OBJECT_4:
         case BHV_PIG_ROCKETEER:
-        flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_SHADOW |
-                OBJECT_BEHAVIOUR_ANIMATION;
+            flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_SHADOW | OBJECT_BEHAVIOUR_ANIMATION;
             break;
         case BHV_CHARACTER_SELECT:
-        flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_SHADOW |
-                OBJECT_BEHAVIOUR_ANIMATION;
+            flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_SHADOW | OBJECT_BEHAVIOUR_ANIMATION;
             break;
         case BHV_TROPHY_CABINET:
         case BHV_DYNAMIC_LIGHT_OBJECT_2:
         case BHV_ROCKET_SIGNPOST:
         case BHV_ROCKET_SIGNPOST_2:
-        flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_INTERACTIVE |
-                OBJECT_BEHAVIOUR_COLLIDABLE;
+            flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_INTERACTIVE | OBJECT_BEHAVIOUR_COLLIDABLE;
             break;
         case BHV_UNK_5B:
             flags = OBJECT_BEHAVIOUR_SHADED;
@@ -15476,12 +14751,11 @@ s32 obj_init_property_flags(s32 behaviorId) {
             flags = OBJECT_BEHAVIOUR_SHADOW;
             break;
         case BHV_PARK_WARDEN:
-        flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_SHADOW |
-                OBJECT_BEHAVIOUR_ANIMATION | OBJECT_BEHAVIOUR_INTERACTIVE;
+            flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_SHADOW | OBJECT_BEHAVIOUR_ANIMATION |
+                    OBJECT_BEHAVIOUR_INTERACTIVE;
             break;
         case BHV_FROG:
-        flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_SHADOW |
-                OBJECT_BEHAVIOUR_ANIMATION;
+            flags = OBJECT_BEHAVIOUR_SHADED | OBJECT_BEHAVIOUR_SHADOW | OBJECT_BEHAVIOUR_ANIMATION;
             break;
         case BHV_UNK_72:
             flags = OBJECT_BEHAVIOUR_SHADED;
@@ -15739,7 +15013,8 @@ void run_object_loop_func(Object *obj, s32 updateRate) {
     update_object_stack_trace(OBJECT_UPDATE, OBJECT_CLEAR);
 }
 
-UNUSED void func_8002458C(UNUSED s32 arg0) {}
+UNUSED void func_8002458C(UNUSED s32 arg0) {
+}
 
 s16 *func_80024594(s32 *currentCount, s32 *maxCount) {
     *currentCount = D_800DC700;
