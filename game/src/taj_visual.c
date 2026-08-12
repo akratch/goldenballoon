@@ -84,8 +84,8 @@ typedef struct TajVisualSlot {
 
 typedef struct TajSelectVisual {
     TajSelectLayout layout;
-    Object *authoredActors[11];
-    f32 authoredScales[11];
+    Object *authoredActors[13];
+    f32 authoredScales[13];
     Object *source;
     Object *rider;
     Object *sign;
@@ -754,6 +754,8 @@ void taj_visual_select_end(void) {
     }
     memset(&sSelect, 0, sizeof(sSelect));
     sSelect.layout.tajIndex = -1;
+    sSelect.layout.wizpigIndex = -1;
+    sSelect.layout.terryIndex = -1;
 }
 
 /* Same atomic ownership rule as the race pair. This is called before the lost

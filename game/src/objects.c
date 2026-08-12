@@ -12,6 +12,8 @@
 #include "taj_mod.h"
 #include "mdkr_trace.h"
 #include "taj_visual.h"
+#include "terry_visual.h"
+#include "wizpig_visual.h"
 #include "presentation_snapshot.h"
 #include "camera_dynamic_occlusion.h"
 #include "enh_draw_distance.h"
@@ -66,6 +68,40 @@
 #include "video.h"
 #include "waves.h"
 #include "weather.h"
+
+/* Wizpig and Terry presentation actors reuse retail racer object headers so their animated boss
+ * meshes load through the original asset path. They are claimed before obj_init_racer(), though, and
+ * therefore must never enter code that interprets their uninitialised object tail as Object_Racer
+ * state. */
+static s32 bonus_visual_is_presentation_actor(const Object *obj) {
+#ifdef NATIVE_PORT
+    return wizpig_visual_is_presentation_object(obj) || terry_visual_is_presentation_object(obj);
+#else
+    (void) obj;
+    return FALSE;
+#endif
+}
+
+#ifdef NATIVE_PORT
+static void bonus_visual_trace_transform_bypass(const Object *obj) {
+    static u32 sTracedIdentities;
+    const char *identity = NULL;
+    u32 identityBit = 0;
+
+    if (obj->objectID == ASSET_OBJECT_ID_WIZPIG || obj->objectID == ASSET_OBJECT_ID_WIZPIGROCKET) {
+        identity = "WIZPIG";
+        identityBit = 1;
+    } else if (obj->objectID == ASSET_OBJECT_ID_TERRYBOSS) {
+        identity = "TERRY";
+        identityBit = 2;
+    }
+    if (identityBit != 0 && !(sTracedIdentities & identityBit)) {
+        MDKR_TRACE("bonus_transform: identity=%s header_racer=1 racer_transform=0 scale_y=1.000",
+                   identity);
+        sTracedIdentities |= identityBit;
+    }
+}
+#endif
 
 #ifdef NATIVE_PORT
 #include <limits.h> /* INT_MAX */
@@ -1670,6 +1706,8 @@ void free_all_objects(void) {
 #ifdef NATIVE_PORT
     /* Queue native Taj companions before this direct destruction walk. */
     taj_visual_reset();
+    wizpig_visual_reset();
+    terry_visual_reset();
 #endif
     timetrial_free_staff_ghost();
     gIsP2LeadPlayer = FALSE;
@@ -4622,6 +4660,8 @@ Object *obj_spawn_attachment(s32 objID) {
 void free_object(Object *object) {
 #ifdef NATIVE_PORT
     taj_visual_on_object_free(object);
+    wizpig_visual_on_object_free(object);
+    terry_visual_on_object_free(object);
     /* Particle allocation and recycling are presentation-owned and may change
      * when a scene draw is elided. Keep the gameplay-event stream restricted
      * to authoritative object lifecycle changes; snapshot identity still
@@ -4724,6 +4764,8 @@ void obj_destroy(Object *obj, s32 arg1) {
 
 #ifdef NATIVE_PORT
     taj_visual_on_object_destroy(obj);
+    wizpig_visual_on_object_destroy(obj);
+    terry_visual_on_object_destroy(obj);
     /*
      * The retire half of the snapshot identity.
      * obj_destroy is the ONE place an Object's memory actually returns to
@@ -5045,6 +5087,8 @@ void obj_update(s32 updateRate) {
 #ifdef NATIVE_PORT
     /* Physics has completed; companions now inherit the authoritative pose. */
     taj_visual_tick(updateRate);
+    wizpig_visual_tick(updateRate);
+    terry_visual_tick(updateRate);
 #endif
     if (level_type() == RACETYPE_DEFAULT) {
         for (i = 0; i < gNumRacers; i++) {
@@ -5199,7 +5243,8 @@ void obj_authoritative_texture_tick(Object *obj, s32 updateRate, f32 viewDistanc
         obj->header->modelType != OBJECT_MODEL_TYPE_3D_MODEL) {
         return;
     }
-    if (obj->header->behaviorId == BHV_RACER && obj->racer != NULL) {
+    if (obj->header->behaviorId == BHV_RACER && obj->racer != NULL &&
+        !bonus_visual_is_presentation_actor(obj)) {
         f32 unusedScale;
         modelIndex = racer_model_index_for_view(
             obj, obj->racer, viewDistance, &unusedScale, FALSE);
@@ -5766,6 +5811,9 @@ void obj_visibility_tick(void) {
             if (obj->header->behaviorId != BHV_RACER) {
                 continue;
             }
+            if (bonus_visual_is_presentation_actor(obj)) {
+                continue;
+            }
             if (!scene_object_admitted(obj)) {
                 continue;
             }
@@ -5988,6 +6036,15 @@ void render_3d_model(Object *obj) {
                 racerObj->headAngle = 0;
 #endif
             }
+#ifdef NATIVE_PORT
+        } else if (wizpig_visual_uses_boss_head_matrix(obj) || terry_visual_uses_boss_head_matrix(obj)) {
+            /* The bonus actors retain their boss models but are deliberately claimed as BHV_NONE so
+             * they cannot own physics, AI, collision or camera state. Boss meshes still require
+             * retail's secondary head matrix for vertOverride batches; omitting it folds those
+             * vertices through the body matrix and visibly collapses the model. */
+            mtx_head_push(&gObjectCurrDisplayList, &gObjectCurrMatrix, modInst, 0);
+            vertOffset = TRUE;
+#endif
         }
         opacity = scene_object_render_opacity(obj);
         if (opacity > 255) {
@@ -6203,11 +6260,20 @@ void func_80012CE8(Gfx **dList) {
 void render_object(Gfx **dList, Mtx **mtx, Vertex **verts, Object *obj) {
     f32 scale;
 #ifdef NATIVE_PORT
-    if (taj_visual_suppress_donor_draw(obj)) {
+    if (taj_visual_suppress_donor_draw(obj) || wizpig_visual_suppress_donor_draw(obj) ||
+        terry_visual_suppress_donor_draw(obj)) {
         return;
     }
     if (taj_visual_select_sign_object(obj) &&
         taj_visual_select_sign_player(obj) < 0) {
+        return;
+    }
+    if (wizpig_visual_select_sign_object(obj) &&
+        wizpig_visual_select_sign_player(obj) < 0) {
+        return;
+    }
+    if (terry_visual_select_sign_object(obj) &&
+        terry_visual_select_sign_player(obj) < 0) {
         return;
     }
 #endif
@@ -6423,6 +6489,17 @@ static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
     if (allowLodBias && fromDistanceLadder) {
         modelIndex = mdkr_enh_lod_bias_apply(modelIndex, firstModel, lastModel);
     }
+    /* Bonus-racer donor LOD cap. Gated on allowLodBias for exactly the reason the bias above is:
+     * this is presentation-only, and `allowLodBias` is TRUE only on the draw seam in
+     * set_temp_model_transforms(). obj_lod_tick() and obj_authoritative_texture_tick() both pass
+     * FALSE, so the authoritative obj->modelIndex -- which is part of the v3 simulation hash and
+     * selects the ModelInstance sphere collision reads -- is never moved by a composed companion.
+     * Placed before the firstModel/lastModel clamp so a capped index can never fall outside the
+     * range this racer actually carries. */
+    if (allowLodBias) {
+        modelIndex = wizpig_visual_cap_donor_lod(obj, modelIndex);
+        modelIndex = terry_visual_cap_donor_lod(obj, modelIndex);
+    }
     if (modelIndex < firstModel) {
         modelIndex = firstModel;
     }
@@ -6494,6 +6571,9 @@ void obj_lod_tick(void) {
             obj->racer == NULL || obj->modelInstances == NULL) {
             continue;
         }
+        if (bonus_visual_is_presentation_actor(obj)) {
+            continue;
+        }
         racer = obj->racer;
         obj->modelIndex = racer_model_index_for_view(
             obj, racer, obj->distanceToCamera, &unusedScale, FALSE);
@@ -6532,7 +6612,7 @@ void set_temp_model_transforms(Object *obj) {
     ret1 = 1.0f;
     ret2 = 1.0f;
     if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE)) {
-        if (obj->header->behaviorId == BHV_RACER) {
+        if (obj->header->behaviorId == BHV_RACER && !bonus_visual_is_presentation_actor(obj)) {
             objRacer = obj->racer;
 #ifndef NATIVE_PORT
             /* NATIVE_PORT: moved to obj_visibility_tick(). "This racer was drawn"
@@ -6683,6 +6763,13 @@ void set_temp_model_transforms(Object *obj) {
             obj->trans.y_position += objRacer->carBobY;
             obj->trans.z_position += objRacer->carBobZ;
             ret1 = objRacer->stretch_height;
+#ifdef NATIVE_PORT
+        } else if (obj->header->behaviorId == BHV_RACER && bonus_visual_is_presentation_actor(obj)) {
+            /* Claimed boss presentation actors have no Object_Racer payload. Keep the neutral scale
+             * established above instead of reading a zero stretch_height and flattening their
+             * animated vertices. */
+            bonus_visual_trace_transform_bypass(obj);
+#endif
         } else if (obj->behaviorId == BHV_FROG) {
             ret1 = obj->frog->scaleY;
         }
@@ -6726,7 +6813,8 @@ void unset_temp_model_transforms(Object *obj) {
         gObjectRenderModelFor = NULL;
     }
 #endif
-    if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE) && obj->header->behaviorId == BHV_RACER) {
+    if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE) && obj->header->behaviorId == BHV_RACER &&
+        !bonus_visual_is_presentation_actor(obj)) {
 #ifdef NATIVE_PORT
         if (gObjectSavedBobFor == obj) {
             obj->trans.x_position = gObjectSavedBobX;
@@ -7178,6 +7266,22 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
             i++;
             continue;
         }
+        if (wizpig_visual_select_sign_object(obj) && !wizpig_visual_select_sign_batch(obj, i)) {
+            i++;
+            continue;
+        }
+        if (terry_visual_select_sign_object(obj) && !terry_visual_select_sign_batch(obj, i)) {
+            i++;
+            continue;
+        }
+        if (!wizpig_visual_batch_visible(objModel, obj, i)) {
+            i++;
+            continue;
+        }
+        if (!terry_visual_batch_visible(objModel, obj, i)) {
+            i++;
+            continue;
+        }
 #endif
         if (!(DKR_PTR(TriangleBatchInfo, objModel->batches)[i].flags & RENDER_SEMI_TRANSPARENT) || flags & RENDER_SEMI_TRANSPARENT) {
             // Hidden/Invisible geometry
@@ -7193,7 +7297,8 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
                 vtx = &obj->curVertData[vertOffset];
                 textureIndex = DKR_PTR(TriangleBatchInfo, objModel->batches)[i].textureIndex;
 #ifdef NATIVE_PORT
-                if (taj_visual_select_sign_object(obj)) {
+                if (taj_visual_select_sign_object(obj) || wizpig_visual_select_sign_object(obj) ||
+                    terry_visual_select_sign_object(obj)) {
                     /* taj_visual proved the P1..P4 placard indices against the
                      * ASSET-ID model it composed (taj_visual_sign_schema_is_ready
                      * requires numberOfTextures == 20). This draw consumes them
@@ -7202,7 +7307,12 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
                      * Bound it here like obj_authoritative_texture_tick() bounds
                      * modelIndex, and fall back to the authored texture rather
                      * than indexing past the array. */
-                    s32 signTexIndex = taj_visual_select_sign_player(obj);
+                    s32 signTexIndex =
+                        taj_visual_select_sign_object(obj)
+                            ? taj_visual_select_sign_player(obj)
+                            : (wizpig_visual_select_sign_object(obj)
+                                   ? wizpig_visual_select_sign_player(obj)
+                                   : terry_visual_select_sign_player(obj));
                     if (signTexIndex >= 0 &&
                         signTexIndex < objModel->numberOfTextures) {
                         textureIndex = signTexIndex;
@@ -14684,6 +14794,12 @@ void run_object_init_func(Object *obj, void *entry, s32 param) {
     obj->behaviorId = obj->header->behaviorId;
 #ifdef NATIVE_PORT
     if (taj_visual_claim_spawned_object(obj)) {
+        return;
+    }
+    if (wizpig_visual_claim_spawned_object(obj)) {
+        return;
+    }
+    if (terry_visual_claim_spawned_object(obj)) {
         return;
     }
 #endif

@@ -3,7 +3,7 @@
 
 #include "types.h"
 
-#define TAJ_SELECT_MAX_ROW 6
+#define TAJ_SELECT_MAX_ROW 7
 
 typedef enum TajSelectRow {
     TAJ_SELECT_ROW_NONE   = -1,
@@ -19,9 +19,15 @@ typedef struct TajSelectLayout {
     s8 bottomCount;
     s8 characterCount;
     s8 tajIndex;
+    s8 wizpigIndex;
+    s8 terryIndex;
 } TajSelectLayout;
 
 s32  taj_select_layout_build(TajSelectLayout *layout, s32 baseCount, s32 drumstickUnlocked, s32 ttUnlocked);
+s32  mod_racer_select_layout_build(TajSelectLayout *layout, s32 baseCount,
+                                    s32 drumstickUnlocked, s32 ttUnlocked,
+                                    s32 tajEnabled, s32 wizpigEnabled,
+                                    s32 terryEnabled);
 s32  taj_select_layout_position(const TajSelectLayout *layout,
                                 s32                    characterIndex,
                                 TajSelectRow          *row,

@@ -288,7 +288,7 @@ def main() -> int:
 
         required = {
             "custom code accepted": "magic_code_submit: accepted=1 id=-2",
-            "virtual identity selected": "taj_select: player=0 controller=0 selected=1 donor=9",
+            "virtual identity selected": "mod_racer_select: player=0 controller=0 identity=1 donor=9",
             "race loaded": "level_load: levelId=5 numPlayers=0",
             "race rendered on WebGPU": "[mdkr64] renderer backend: webgpu",
             "exact car physics activated": "[TAJPHYS] active racer=0 player=0 vehicle=0",
@@ -410,8 +410,10 @@ def main() -> int:
         if not state_path.exists():
             failures.append("global Taj sidecar was not created")
         elif state_path.read_text(encoding="ascii") != (
-            "taj_mod_version=1\ntaj_unlocked=1\n"
-            "adventure_migration_complete=1"
+            "mod_roster_version=3\ntaj_unlocked=1\n"
+            "taj_migration_complete=1\nwizpig_unlocked=0\n"
+            "wizpig_migration_complete=0\nterry_unlocked=0\n"
+            "terry_migration_complete=0"
         ):
             failures.append("global Taj sidecar has unexpected contents")
         eeprom_path = save_dir / "eeprom.bin"
@@ -502,8 +504,8 @@ def main() -> int:
         if split_process.returncode != 0:
             failures.append(f"split-screen exit code {split_process.returncode}")
         split_required = (
-            "taj_select: player=0 controller=0 selected=1 donor=9",
-            "taj_select: player=1 controller=1 selected=0 donor=9",
+            "mod_racer_select: player=0 controller=0 identity=1 donor=9",
+            "mod_racer_select: player=1 controller=1 identity=0 donor=9",
             "hud_init: hudPlayers=1 numViewports=2",
         )
         for marker in split_required:
@@ -604,8 +606,8 @@ def main() -> int:
             multiplayer_outputs.append(multiplayer_output)
             taj_slot = players - 1
             expected_rows = (
-                f"taj_select: player={taj_slot} controller={taj_slot} "
-                "selected=1 donor=9",
+                f"mod_racer_select: player={taj_slot} controller={taj_slot} "
+                "identity=1 donor=9",
                 f"hud_init: hudPlayers={taj_slot} numViewports={players}",
                 f"[TAJPHYS] active racer={taj_slot} player={taj_slot} vehicle=0",
             )
@@ -673,7 +675,7 @@ def main() -> int:
             if args.verbose:
                 for output_line in vehicle_output.splitlines():
                     if any(marker in output_line for marker in (
-                        "menu_init:", "level_load:", "taj_select:",
+                        "menu_init:", "level_load:", "mod_racer_select:",
                         "trackmenu_input:", "[TAJPHYS]", "[TAJVIS]",
                     )):
                         print(f"[{name}] {output_line}", flush=True)

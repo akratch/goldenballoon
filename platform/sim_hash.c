@@ -452,6 +452,8 @@ static uint64_t fnv1a64(uint64_t hash, const void *data, size_t size) {
  * invariance tests/check_state_hash.py mutation-proves.
  */
 extern s32 taj_visual_is_presentation_object(const Object *object);
+extern s32 wizpig_visual_is_presentation_object(const Object *object);
+extern s32 terry_visual_is_presentation_object(const Object *object);
 
 static int sim_hash_object_is_presentation(const Object *object) {
     if (object == NULL) {
@@ -462,7 +464,9 @@ static int sim_hash_object_is_presentation(const Object *object) {
     if (object->trans.flags & OBJ_FLAGS_PARTICLE) {
         return 0;
     }
-    return taj_visual_is_presentation_object(object) != 0;
+    return taj_visual_is_presentation_object(object) != 0 ||
+           wizpig_visual_is_presentation_object(object) != 0 ||
+           terry_visual_is_presentation_object(object) != 0;
 }
 
 /* The authoritative population: what `objs=` reports and what the per-object

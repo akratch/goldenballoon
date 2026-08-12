@@ -16,6 +16,8 @@ identity is kept in each file's title — it is how the commit log, `docs/STATUS
 | [online-multiplayer.md](online-multiplayer.md) | proposed online architecture | Launcher-owned deterministic rollback, private-room UX, local/online seat model, asset-blind room service and zero-cost reliability constraints |
 | [camera-obstruction.md](camera-obstruction.md) | Native camera modernization plan | Desired-versus-resolved camera authority, projection-derived lens collision, terrain/object occluders, mode policy, rollout, and release gates |
 | [taj-playable-mod.md](taj-playable-mod.md) | proposed mod architecture | A virtual playable Taj: easter-egg unlocks, carpet presentation, OP handling, persistence, compatibility boundaries, and execution gates |
+| [playable-wizpig-terry-campaign.md](playable-wizpig-terry-campaign.md) | bonus-racer implementation campaign | Playable Wizpig and Terry: virtual identity, balance, vehicle policy, assets, persistence migration, regression controls, and release gates |
+| [playable-wizpig-terry-integration.md](playable-wizpig-terry-integration.md) | bonus-racer integration guide | Exact implementation commit, product contract, subsystem ownership, conflict hotspots, completed qualification, known caveats, and post-merge checklist |
 
 ## Reading order
 

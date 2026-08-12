@@ -19,7 +19,7 @@ static void check_candidates(const TajSelectLayout *layout, s32 source,
                              s32 horizontalDirection) {
     TajSelectRow sourceRow;
     f32 sourceX;
-    s32 seen[11] = {0};
+    s32 seen[13] = {0};
     s32 ended = FALSE;
     s32 i;
 
@@ -37,7 +37,7 @@ static void check_candidates(const TajSelectLayout *layout, s32 source,
         CHECK(!ended, "candidate lists must be densely terminated");
         CHECK(candidate < layout->characterCount,
               "candidate index must remain inside the runtime roster");
-        if (candidate >= layout->characterCount || candidate >= 11) {
+        if (candidate >= layout->characterCount || candidate >= 13) {
             continue;
         }
         CHECK(candidate != source, "a direction must not select itself");
@@ -58,7 +58,7 @@ static void check_candidates(const TajSelectLayout *layout, s32 source,
 }
 
 static void check_connected(const TajSelectLayout *layout) {
-    s32 visited[11] = {0};
+    s32 visited[13] = {0};
     s32 progress = TRUE;
     s32 character;
     visited[0] = TRUE;
@@ -170,6 +170,7 @@ int main(void) {
     static const s8 completeTop[] = {0, 1, 8, 2, 3};
     static const s8 completeBottom[] = {4, 5, 9, 10, 6, 7};
     TajSelectLayout invalid;
+    TajSelectLayout expanded;
 
     check_layout(8, FALSE, FALSE, baseTop, topX4, 4, baseBottom, bottomX5, 5);
     check_layout(9, TRUE, FALSE, drumTop, topX5, 5, drumBottom, bottomX5, 5);
@@ -180,6 +181,30 @@ int main(void) {
           "NULL layout must fail closed");
     CHECK(!taj_select_layout_build(&invalid, 9, FALSE, FALSE),
           "inconsistent unlock metadata must fail closed");
+    CHECK(mod_racer_select_layout_build(&expanded, 10, TRUE, TRUE, TRUE,
+                                         TRUE, FALSE),
+          "Taj and Wizpig must fit the fully unlocked roster");
+    CHECK(expanded.characterCount == 12 && expanded.tajIndex == 10 &&
+              expanded.wizpigIndex == 11,
+          "virtual identities must append contiguously after retail racers");
+    CHECK(expanded.topCount == 6 && expanded.bottomCount == 6,
+          "the twelve-racer roster must retain two bounded rows");
+    CHECK(expanded.top[3] == expanded.wizpigIndex,
+          "Wizpig moves to the upper row only when the lower row would overflow");
+    check_connected(&expanded);
+    CHECK(mod_racer_select_layout_build(&expanded, 10, TRUE, TRUE, TRUE,
+                                         TRUE, TRUE),
+          "Taj, Wizpig, and Terry must fit the fully unlocked roster");
+    CHECK(expanded.characterCount == 13 && expanded.tajIndex == 10 &&
+              expanded.wizpigIndex == 11 && expanded.terryIndex == 12,
+          "three virtual identities must append contiguously");
+    CHECK(expanded.topCount == 6 && expanded.bottomCount == 7,
+          "the thirteen-racer roster must remain in two safe rows");
+    CHECK(expanded.bottom[4] == expanded.terryIndex,
+          "Terry must have a stable lower-row slot");
+    CHECK(taj_select_layout_scale(&expanded, expanded.terryIndex) == 0.82f,
+          "the seven-actor row must receive safe-area scaling");
+    check_connected(&expanded);
 
     if (sFailures != 0) {
         return 1;

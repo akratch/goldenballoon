@@ -51,8 +51,10 @@ RELOAD_SCRIPT = """\
 RELOAD_SCRIPT_ENTRIES = len(
     [line for line in RELOAD_SCRIPT.splitlines() if line.strip()])
 STATE_TEXT = (
-    "taj_mod_version=1\ntaj_unlocked=1\n"
-    "adventure_migration_complete=1"
+    "mod_roster_version=3\ntaj_unlocked=1\n"
+    "taj_migration_complete=1\nwizpig_unlocked=0\n"
+    "wizpig_migration_complete=0\nterry_unlocked=0\n"
+    "terry_migration_complete=0"
 )
 
 

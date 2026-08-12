@@ -3,6 +3,7 @@
 #ifdef NATIVE_PORT
 
 #include "PR/os_cont.h"
+#include "enums.h"
 #include "structs.h"
 
 #include <stdio.h>
@@ -25,11 +26,12 @@ typedef struct TajPhysicsRacerState {
     const Object_Racer *racer;
     f32 entrySpeed;
     s32 wasDrifting;
-    s32 selected;
+    ModRacerIdentity selectedIdentity;
     TajPhysicsDashState dash;
 } TajPhysicsRacerState;
 
 static TajPhysicsRacerPredicate sTajPredicate;
+static ModRacerPhysicsIdentityPredicate sIdentityPredicate;
 static TajPhysicsRacerState sTajStates[TAJ_PHYSICS_MAX_RACERS];
 static s32 sRunNoncanonical;
 
@@ -118,7 +120,7 @@ static TajPhysicsRacerState *taj_state(const Object_Racer *racer) {
         state->racer = racer;
         state->entrySpeed = 0.0f;
         state->wasDrifting = FALSE;
-        state->selected = FALSE;
+        state->selectedIdentity = MOD_RACER_RETAIL;
         state->dash.dashTicks = 0;
         state->dash.cooldownTicks = 0;
     }
@@ -204,10 +206,56 @@ void taj_physics_advance_dash(TajPhysicsDashState *state, s32 driftReleased, s32
     }
 }
 
+static f32 bonus_physics_accelerated_speed(f32 entrySpeed,
+                                           f32 ordinarySpeed,
+                                           s32 accelerating,
+                                           s32 boostActive,
+                                           f32 multiplier) {
+    f32 ordinaryGain;
+    if (!accelerating || boostActive || ordinarySpeed >= 0.0f) {
+        return ordinarySpeed;
+    }
+    ordinaryGain = taj_abs(ordinarySpeed) - taj_abs(entrySpeed);
+    if (ordinaryGain <= 0.0f) return ordinarySpeed;
+    return -(taj_abs(entrySpeed) +
+             ordinaryGain * multiplier);
+}
+
+f32 wizpig_physics_accelerated_speed(f32 entrySpeed, f32 ordinarySpeed,
+                                     s32 accelerating, s32 boostActive) {
+    return bonus_physics_accelerated_speed(
+        entrySpeed, ordinarySpeed, accelerating, boostActive,
+        WIZPIG_PHYSICS_PERFORMANCE_MULTIPLIER);
+}
+
+f32 wizpig_physics_sustained_speed(f32 stockSpeed) {
+    return stockSpeed * WIZPIG_PHYSICS_PERFORMANCE_MULTIPLIER;
+}
+
+f32 terry_physics_accelerated_speed(f32 entrySpeed, f32 ordinarySpeed,
+                                    s32 accelerating, s32 boostActive) {
+    return bonus_physics_accelerated_speed(
+        entrySpeed, ordinarySpeed, accelerating, boostActive,
+        TERRY_PHYSICS_PERFORMANCE_MULTIPLIER);
+}
+
+f32 terry_physics_sustained_speed(f32 stockSpeed) {
+    return stockSpeed * TERRY_PHYSICS_PERFORMANCE_MULTIPLIER;
+}
+
 void taj_physics_set_racer_predicate(TajPhysicsRacerPredicate predicate) {
     sTajPredicate = predicate;
     if (taj_trace_enabled()) {
         fprintf(stderr, "[TAJPHYS] predicate=%s\n", predicate != NULL ? "registered" : "cleared");
+    }
+}
+
+void taj_physics_set_identity_predicate(
+    ModRacerPhysicsIdentityPredicate predicate) {
+    sIdentityPredicate = predicate;
+    if (taj_trace_enabled()) {
+        fprintf(stderr, "[TAJPHYS] identity-predicate=%s\n",
+                predicate != NULL ? "registered" : "cleared");
     }
 }
 
@@ -218,34 +266,58 @@ void taj_physics_reset(void) {
         sTajStates[i].racer = NULL;
         sTajStates[i].entrySpeed = 0.0f;
         sTajStates[i].wasDrifting = FALSE;
-        sTajStates[i].selected = FALSE;
+        sTajStates[i].selectedIdentity = MOD_RACER_RETAIL;
         sTajStates[i].dash.dashTicks = 0;
         sTajStates[i].dash.cooldownTicks = 0;
     }
     sRunNoncanonical = FALSE;
 }
 
-s32 taj_physics_is_taj(const Object_Racer *racer) {
+s32 mod_racer_physics_identity(const Object_Racer *racer) {
     s32 index;
+    ModRacerIdentity identity;
 
-    if (racer == NULL || sTajPredicate == NULL) {
-        return FALSE;
+    if (racer == NULL) return MOD_RACER_RETAIL;
+    if (sIdentityPredicate != NULL) {
+        identity = sIdentityPredicate(racer->playerIndex);
+    } else if (sTajPredicate != NULL &&
+               sTajPredicate(racer->playerIndex) != 0) {
+        identity = MOD_RACER_TAJ;
+    } else {
+        identity = MOD_RACER_RETAIL;
     }
-    if (sTajPredicate(racer->playerIndex) != 0) {
-        return TRUE;
-    }
+    if (identity != MOD_RACER_RETAIL) return identity;
     /* A finished human is handed to the CPU before the finish/record path.
      * Preserve its previously authoritative player binding through that handoff. */
     index = racer->racerIndex;
-    return racer->raceFinished && index >= 0 && index < TAJ_PHYSICS_MAX_RACERS && sTajStates[index].racer == racer &&
-           sTajStates[index].selected;
+    return racer->raceFinished && index >= 0 &&
+                   index < TAJ_PHYSICS_MAX_RACERS &&
+                   sTajStates[index].racer == racer
+               ? sTajStates[index].selectedIdentity
+               : MOD_RACER_RETAIL;
+}
+
+s32 taj_physics_is_taj(const Object_Racer *racer) {
+    return mod_racer_physics_identity(racer) == MOD_RACER_TAJ;
+}
+
+s32 wizpig_physics_is_wizpig(const Object_Racer *racer) {
+    return mod_racer_physics_identity(racer) == MOD_RACER_WIZPIG;
+}
+
+s32 mod_racer_physics_stat_character(const Object_Racer *racer,
+                                     s32 presentationCharacter) {
+    return mod_racer_physics_identity(racer) == MOD_RACER_TERRY
+               ? CHARACTER_PIPSY
+               : presentationCharacter;
 }
 
 s32 taj_physics_canonical_records_allowed(const Object_Racer *racer) {
     /* The run latch is deliberately stronger than a live racer lookup.  A
      * finished racer can become CPU-controlled, and an invalid racer index
      * must never turn a modded run recordable merely because it has no sidecar. */
-    return !sRunNoncanonical && !taj_physics_is_taj(racer);
+    return !sRunNoncanonical &&
+           mod_racer_physics_identity(racer) == MOD_RACER_RETAIL;
 }
 
 s32 taj_physics_run_is_noncanonical(void) { return sRunNoncanonical; }
@@ -278,29 +350,30 @@ s32 taj_physics_absorb_attack(Object_Racer *racer, s32 attackType) {
 
 void taj_physics_pre_vehicle_update(Object *obj, Object_Racer *racer) {
     TajPhysicsRacerState *state;
+    ModRacerIdentity identity;
 
     (void) obj;
-    if (!taj_physics_is_taj(racer)) {
-        return;
-    }
+    identity = (ModRacerIdentity)mod_racer_physics_identity(racer);
+    if (identity == MOD_RACER_RETAIL) return;
     sRunNoncanonical = TRUE;
     if (!taj_racer_vehicle(racer->vehicleID)) {
         return;
     }
     state = taj_state(racer);
     if (state == NULL) {
-        /* Keep immunity fail-safe without creating or borrowing a sidecar. */
-        taj_clear_ordinary_attack_state(racer);
+        if (identity == MOD_RACER_TAJ) taj_clear_ordinary_attack_state(racer);
         return;
     }
-    if (!state->selected && taj_trace_enabled()) {
-        fprintf(stderr, "[TAJPHYS] active racer=%d player=%d vehicle=%d\n",
-                racer->racerIndex, racer->playerIndex, racer->vehicleID);
+    if (state->selectedIdentity == MOD_RACER_RETAIL && taj_trace_enabled()) {
+        fprintf(stderr,
+                "[TAJPHYS] active racer=%d player=%d vehicle=%d identity=%d\n",
+                racer->racerIndex, racer->playerIndex, racer->vehicleID,
+                identity);
     }
-    state->selected = TRUE;
+    state->selectedIdentity = identity;
     state->entrySpeed = racer->velocity;
     state->wasDrifting = racer->drift_direction != 0;
-    taj_clear_ordinary_attack_state(racer);
+    if (identity == MOD_RACER_TAJ) taj_clear_ordinary_attack_state(racer);
 }
 
 static void taj_apply_horizontal_forward_speed(Object *obj, Object_Racer *racer, f32 speed) {
@@ -322,17 +395,67 @@ void taj_physics_post_vehicle_update(Object *obj, Object_Racer *racer, s32 updat
     s32 accelerating;
     s32 hardTurn;
     s32 dashWasActive;
+    ModRacerIdentity identity;
 
-    if (!taj_physics_is_taj(racer) || !taj_tunable_vehicle(racer->vehicleID)) {
+    identity = (ModRacerIdentity)mod_racer_physics_identity(racer);
+    if (identity == MOD_RACER_RETAIL ||
+        !taj_tunable_vehicle(racer->vehicleID)) {
         return;
     }
     state = taj_state(racer);
     if (state == NULL) {
-        taj_clear_ordinary_attack_state(racer);
+        if (identity == MOD_RACER_TAJ) taj_clear_ordinary_attack_state(racer);
         return;
     }
+    accelerating = (heldInput & A_BUTTON) != 0 && !racer->raceFinished &&
+                   racer->approachTarget == NULL;
+    if (identity == MOD_RACER_WIZPIG || identity == MOD_RACER_TERRY) {
+        f32 multiplier = identity == MOD_RACER_WIZPIG
+                             ? WIZPIG_PHYSICS_PERFORMANCE_MULTIPLIER
+                             : TERRY_PHYSICS_PERFORMANCE_MULTIPLIER;
+        if (identity == MOD_RACER_WIZPIG) {
+            speed = wizpig_physics_accelerated_speed(
+                state->entrySpeed, racer->velocity, accelerating,
+                racer->boostTimer != 0);
+            maxSpeed = wizpig_physics_sustained_speed(
+                taj_nominal_speed(racer->vehicleID));
+        } else {
+            speed = terry_physics_accelerated_speed(
+                state->entrySpeed, racer->velocity, accelerating,
+                racer->boostTimer != 0);
+            maxSpeed = terry_physics_sustained_speed(
+                taj_nominal_speed(racer->vehicleID));
+        }
+        /* Once the authored solver reaches equilibrium, add only enough
+         * authority to reach the identity's modest cruise target. Boosts
+         * remain exactly stock and never stack with this enhancement. */
+        if (accelerating && racer->boostTimer == 0 && speed < 0.0f &&
+            taj_abs(speed) < maxSpeed &&
+            taj_abs(racer->velocity) <= taj_abs(state->entrySpeed)) {
+            speed -= (multiplier - 1.0f) * updateRateF;
+        }
+        /* The cruise target is a floor to grow toward, never a ceiling imposed on the authored
+         * solver. Cap at whichever is larger: this identity's cruise target, or the speed the
+         * donor's own physics already produced this tick.
+         *
+         * Without this the clamp cut every boost, zipper, and downhill overspeed back to
+         * nominal * multiplier -- 14.04 for Wizpig, 12.772 for Terry -- leaving both strictly
+         * SLOWER than the Krunch/Pipsy donors whose stats they inherit, and contradicting the
+         * "stock boost magnitudes remain unchanged" contract. Taj's arm below takes the same
+         * exemption through taj_physics_speed_cap(); his 1.35x target simply sits above the
+         * authored envelope, so the defect was never observable there. */
+        if (taj_abs(racer->velocity) > maxSpeed) {
+            maxSpeed = taj_abs(racer->velocity);
+        }
+        if (speed < -maxSpeed) speed = -maxSpeed;
+        taj_apply_horizontal_forward_speed(obj, racer, speed);
+        return;
+    }
+    /* Other virtual identities use their donor's authored physics unchanged.
+     * They are still latched as noncanonical above, but Taj's immunity, dash,
+     * acceleration, and turn retention must never leak by fall-through. */
+    if (identity != MOD_RACER_TAJ) return;
     taj_clear_ordinary_attack_state(racer);
-    accelerating = (heldInput & A_BUTTON) != 0 && !racer->raceFinished && racer->approachTarget == NULL;
     hardTurn = racer->vehicleID == VEHICLE_CAR && taj_abs((f32) racer->steerAngle) >= 40.0f && racer->groundedWheels >= 3;
     dashWasActive = state->dash.dashTicks > 0;
     taj_physics_advance_dash(&state->dash, racer->vehicleID == VEHICLE_CAR && state->wasDrifting &&
