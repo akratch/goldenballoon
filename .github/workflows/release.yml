@@ -281,12 +281,20 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: msys2/setup-msys2@d40200dc2db4c351366b048a9565ad82919e1c24 # v2
         with:
-          msystem: MINGW64
+          # UCRT64, not MINGW64: MINGW64 executables link the legacy
+          # msvcrt.dll, whose fopen rejects the C11 'x' flag every atomic
+          # settings write here depends on. The withdrawn v1.2.1 Windows zip
+          # shipped from a MINGW64 build and could not save any preference
+          # (issue #32). fs_utf8.c now implements exclusive create CRT-
+          # independently, and this lane pins the UCRT — the same CRT the
+          # qualified v1.2.0 artifact linked and the flavor MSYS2 itself
+          # recommends for new projects.
+          msystem: UCRT64
           update: true
           install: >-
-            mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-SDL2
-            mingw-w64-x86_64-pkg-config mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-python zip unzip
+            mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-SDL2 mingw-w64-ucrt-x86_64-pkg-config
+            mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-python zip unzip
       - name: Verify declared Python toolchain
         run: python3 --version
       - name: Build the app (Release)

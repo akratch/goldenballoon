@@ -61,17 +61,22 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      # Mirror release.yml's Windows toolchain EXACTLY (same MINGW64 msystem,
+      # Mirror release.yml's Windows toolchain EXACTLY (same UCRT64 msystem,
       # same package set) so the build half is known-good by construction.
+      # UCRT64, not MINGW64 — see the release.yml comment: the msvcrt-linked
+      # MINGW64 flavor rejects fopen's 'x' flag and shipped as the withdrawn
+      # v1.2.1 settings-save regression (issue #32). The fs_utf8 ctest below
+      # pins exclusive create on the exact CRT this lane links.
       # `python` is added for the asset-free verifier and Python CTests; `git`
       # is added for the public-surface tests' isolated-repository fixtures.
       - uses: msys2/setup-msys2@d40200dc2db4c351366b048a9565ad82919e1c24 # v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
           install: >-
-            mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-SDL2
-            mingw-w64-x86_64-pkg-config mingw-w64-x86_64-ninja zip unzip python git
+            mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-SDL2 mingw-w64-ucrt-x86_64-pkg-config
+            mingw-w64-ucrt-x86_64-ninja zip unzip python git
 
       # Same CMake config as the release.yml Windows job, plus BUILD_TESTING
       # (ON by default via include(CTest) in CMakeLists.txt) so the ROM-free
