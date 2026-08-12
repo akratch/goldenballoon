@@ -123,6 +123,7 @@ jobs:
           grep -qE '^\[video\] mode=' video.txt
 
           echo "PASS: all ROM-free execution surfaces ran and produced expected output."
+          rm -f help.txt help.err video.txt video.err
 
       # ROM-free CTest suite: the compiled C/C++ unit tests, run as native
       # Windows exes. correctness.yml runs this identical suite on Linux and
