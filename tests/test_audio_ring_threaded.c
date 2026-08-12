@@ -86,6 +86,11 @@ typedef struct Fixture {
      * join. Written only by the consumer thread. */
     SDL_atomic_t fill_exceeded_capacity;
     SDL_atomic_t pulls;
+    /* Flood-only rendezvous. Phase 1 publishes one priming block; phase 2
+     * confirms the consumer delivered it. Phase 3 publishes a guaranteed
+     * over-capacity fill; phase 4 confirms the consumer clamped it. The rest
+     * of the stream then runs with both threads free. */
+    SDL_atomic_t flood_phase;
     /* Producer-side. */
     uint64_t pushed_frames;
     uint64_t reported_evictions;
@@ -108,7 +113,28 @@ static int SDLCALL producer_thread(void *arg) {
             mdkr_audio_ring_push(&fx->ring, block, PUSH_BLOCK);
         fx->pushed_frames += PUSH_BLOCK;
         produced += PUSH_BLOCK;
-        if (!fx->flood) {
+        if (fx->flood) {
+            if (produced == PUSH_BLOCK) {
+                SDL_AtomicSet(&fx->flood_phase, 1);
+                while (SDL_AtomicGet(&fx->flood_phase) < 2) {
+                    if (SDL_AtomicGet(&fx->stop_consumer)) {
+                        SDL_AtomicSet(&fx->producer_done, 1);
+                        return 0;
+                    }
+                    SDL_Delay(0);
+                }
+            } else if (produced ==
+                       PUSH_BLOCK + RING_FRAMES + PUSH_BLOCK) {
+                SDL_AtomicSet(&fx->flood_phase, 3);
+                while (SDL_AtomicGet(&fx->flood_phase) < 4) {
+                    if (SDL_AtomicGet(&fx->stop_consumer)) {
+                        SDL_AtomicSet(&fx->producer_done, 1);
+                        return 0;
+                    }
+                    SDL_Delay(0);
+                }
+            }
+        } else {
             /*
              * Sized to keep the ring near half full so the steady phase spends
              * its time in ordinary wraparound rather than pinned at an
@@ -127,11 +153,35 @@ static int SDLCALL consumer_thread(void *arg) {
     Fixture *fx = (Fixture *)arg;
     int16_t out[PULL_BLOCK * 2u];
 
+    if (fx->flood) {
+        while (SDL_AtomicGet(&fx->flood_phase) < 1) {
+            if (SDL_AtomicGet(&fx->stop_consumer)) {
+                return 0;
+            }
+            SDL_Delay(0);
+        }
+    }
+
     for (;;) {
         uint32_t fill;
 
         mdkr_audio_ring_pull(&fx->ring, out, PULL_BLOCK);
         SDL_AtomicAdd(&fx->pulls, 1);
+
+        if (fx->flood) {
+            const int phase = SDL_AtomicGet(&fx->flood_phase);
+            if (phase == 1) {
+                SDL_AtomicSet(&fx->flood_phase, 2);
+                while (SDL_AtomicGet(&fx->flood_phase) < 3) {
+                    if (SDL_AtomicGet(&fx->stop_consumer)) {
+                        return 0;
+                    }
+                    SDL_Delay(0);
+                }
+            } else if (phase == 3) {
+                SDL_AtomicSet(&fx->flood_phase, 4);
+            }
+        }
 
         /*
          * Only meaningful while the producer is THROTTLED. With the producer
@@ -174,6 +224,7 @@ static void run_stream(Fixture *fx, int flood) {
     SDL_AtomicSet(&fx->stop_consumer, 0);
     SDL_AtomicSet(&fx->fill_exceeded_capacity, 0);
     SDL_AtomicSet(&fx->pulls, 0);
+    SDL_AtomicSet(&fx->flood_phase, 0);
 
     consumer = SDL_CreateThread(consumer_thread, "ring-consumer", fx);
     producer = SDL_CreateThread(producer_thread, "ring-producer", fx);
