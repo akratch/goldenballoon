@@ -54,6 +54,10 @@ int mod_racer_unlock_from_adventure_progress(ModRacerIdentity identity,
                                               unsigned int progress);
 int mod_racer_reconcile_imported_progress(unsigned int taj_flags,
                                            unsigned int bosses);
+/* Magic Codes list: which identity owns row `virtual_row` of the bonus block, and how many bonus
+ * rows the list has. Single source of truth for the render and the input loop. */
+ModRacerIdentity mod_racer_identity_for_cheat_row(int virtual_row);
+int mod_racer_unlocked_count(void);
 int taj_mod_is_unlocked(void);
 int taj_mod_is_enabled(void);
 void taj_mod_set_enabled(int enabled);

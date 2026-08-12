@@ -453,6 +453,37 @@ int mod_racer_reconcile_imported_progress(unsigned int taj_flags,
     return unlocked;
 }
 
+/* Maps a 0-based row offset within the bonus block of the Magic Codes list to the identity that
+ * owns it. The list shows one row per UNLOCKED bonus identity, appended after the retail rows, in
+ * enum order, so the mapping is "skip locked identities, then count".
+ *
+ * This lives here rather than inline in menu.c because it was previously open-coded twice --
+ * cheatlist_render() and menu_magic_codes_list_loop() -- and both copies consumed Wizpig's row only
+ * when it was the row being resolved. With Taj and Wizpig both unlocked, Terry's row resolved to
+ * MOD_RACER_RETAIL: it still drew the "CONTROL TERRY" label, but reported OFF forever and its
+ * toggle was a silent no-op. One definition, unit-tested across all eight unlock combinations. */
+ModRacerIdentity mod_racer_identity_for_cheat_row(int virtual_row) {
+    ModRacerIdentity identity;
+
+    if (virtual_row < 0) return MOD_RACER_RETAIL;
+    for (identity = MOD_RACER_TAJ; identity < MOD_RACER_IDENTITY_COUNT; identity++) {
+        if (!mod_racer_is_unlocked(identity)) continue;
+        if (virtual_row == 0) return identity;
+        virtual_row--;
+    }
+    return MOD_RACER_RETAIL;
+}
+
+int mod_racer_unlocked_count(void) {
+    ModRacerIdentity identity;
+    int count = 0;
+
+    for (identity = MOD_RACER_TAJ; identity < MOD_RACER_IDENTITY_COUNT; identity++) {
+        if (mod_racer_is_unlocked(identity)) count++;
+    }
+    return count;
+}
+
 int taj_mod_is_unlocked(void) { return mod_racer_is_unlocked(MOD_RACER_TAJ); }
 int taj_mod_is_enabled(void) { return mod_racer_is_enabled(MOD_RACER_TAJ); }
 void taj_mod_set_enabled(int enabled) {

@@ -8296,13 +8296,8 @@ void cheatlist_render(UNUSED s32 updateRate) {
     }
 #ifdef NATIVE_PORT
     numOfRetailUnlockedCheats = numOfUnlockedCheats;
-    if (taj_mod_is_unlocked()) {
-        numOfUnlockedCheats++;
-    }
-    if (mod_racer_is_unlocked(MOD_RACER_WIZPIG)) {
-        numOfUnlockedCheats++;
-    }
-    if (mod_racer_is_unlocked(MOD_RACER_TERRY)) numOfUnlockedCheats++;
+    /* Must stay in lockstep with mod_racer_identity_for_cheat_row(). */
+    numOfUnlockedCheats += mod_racer_unlocked_count();
 #endif
     yPos = 54;
     alpha = gOptionBlinkTimer * 8;
@@ -8318,20 +8313,12 @@ void cheatlist_render(UNUSED s32 updateRate) {
         }
 #ifdef NATIVE_PORT
         if (i >= numOfRetailUnlockedCheats) {
-            ModRacerIdentity identity = MOD_RACER_RETAIL;
-            s32 virtualIndex = i - numOfRetailUnlockedCheats;
-            if (taj_mod_is_unlocked()) {
-                if (virtualIndex == 0) identity = MOD_RACER_TAJ;
-                virtualIndex--;
-            }
-            if (identity == MOD_RACER_RETAIL && virtualIndex == 0 &&
-                mod_racer_is_unlocked(MOD_RACER_WIZPIG)) {
-                identity = MOD_RACER_WIZPIG;
-                virtualIndex--;
-            }
-            if (identity == MOD_RACER_RETAIL && virtualIndex == 0 &&
-                mod_racer_is_unlocked(MOD_RACER_TERRY)) {
-                identity = MOD_RACER_TERRY;
+            ModRacerIdentity identity =
+                mod_racer_identity_for_cheat_row(i - numOfRetailUnlockedCheats);
+            if (identity == MOD_RACER_RETAIL) {
+                /* Unreachable while the row count agrees with the unlock predicate; never draw a
+                 * toggle we cannot action. */
+                continue;
             }
             draw_text(&sMenuCurrDisplayList, 48, yPos,
                       identity == MOD_RACER_TAJ ? "CONTROL TAJ"
@@ -8452,35 +8439,16 @@ s32 menu_magic_codes_list_loop(s32 updateRate) {
     }
 #ifdef NATIVE_PORT
     numRetailUnlockedCodes = numUnlockedCodes;
-    if (taj_mod_is_unlocked()) {
-        numUnlockedCodes++;
-    }
-    if (mod_racer_is_unlocked(MOD_RACER_WIZPIG)) {
-        numUnlockedCodes++;
-    }
-    if (mod_racer_is_unlocked(MOD_RACER_TERRY)) numUnlockedCodes++;
+    /* Must stay in lockstep with mod_racer_identity_for_cheat_row(). */
+    numUnlockedCodes += mod_racer_unlocked_count();
 #endif
 
     if ((xAxis < 0 || xAxis > 0) && numUnlockedCodes != gOptionsMenuItemIndex) {
         sound_play(SOUND_SELECT2, NULL);
 #ifdef NATIVE_PORT
         if (gOptionsMenuItemIndex >= numRetailUnlockedCodes) {
-            ModRacerIdentity identity = MOD_RACER_RETAIL;
-            s32 virtualIndex =
-                gOptionsMenuItemIndex - numRetailUnlockedCodes;
-            if (taj_mod_is_unlocked()) {
-                if (virtualIndex == 0) identity = MOD_RACER_TAJ;
-                virtualIndex--;
-            }
-            if (identity == MOD_RACER_RETAIL && virtualIndex == 0 &&
-                mod_racer_is_unlocked(MOD_RACER_WIZPIG)) {
-                identity = MOD_RACER_WIZPIG;
-                virtualIndex--;
-            }
-            if (identity == MOD_RACER_RETAIL && virtualIndex == 0 &&
-                mod_racer_is_unlocked(MOD_RACER_TERRY)) {
-                identity = MOD_RACER_TERRY;
-            }
+            ModRacerIdentity identity = mod_racer_identity_for_cheat_row(
+                gOptionsMenuItemIndex - numRetailUnlockedCodes);
             mod_racer_set_enabled(identity,
                                   !mod_racer_is_enabled(identity));
         } else {

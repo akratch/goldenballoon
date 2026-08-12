@@ -97,6 +97,58 @@ static void test_state_format(void) {
     CHECK(!taj_mod_state_parse(&state, "taj_mod_version=1\ntaj_unlocked=2", 33));
 }
 
+/* The Magic Codes list appends one row per unlocked bonus identity after the retail rows. Every
+ * unlock combination must map its rows onto exactly the unlocked identities, with no identity
+ * unreachable and no row resolving to MOD_RACER_RETAIL.
+ *
+ * Regression: with Taj and Wizpig unlocked, Terry's row used to resolve to MOD_RACER_RETAIL, which
+ * rendered a "CONTROL TERRY" label that read OFF forever and whose toggle did nothing. */
+static void test_cheat_row_identity_mapping(void) {
+    static const char *const codes[3] = { "ABRACADABRA", "WIZPIGPOWER", "TERRYFLY" };
+    static const ModRacerIdentity identities[3] = { MOD_RACER_TAJ, MOD_RACER_WIZPIG,
+                                                    MOD_RACER_TERRY };
+    int combo;
+
+    for (combo = 0; combo < 8; combo++) {
+        MemoryStore store = { {0}, 0, 0, 1 };
+        TajModStateStorage storage = storage_for(&store);
+        ModRacerIdentity seen[3];
+        int expected = 0;
+        int row;
+        int i;
+
+        taj_mod_reset_for_test();
+        taj_mod_boot(&storage);
+        for (i = 0; i < 3; i++) {
+            if (combo & (1 << i)) {
+                CHECK(mod_racer_submit_magic_code(codes[i]) == identities[i]);
+                seen[expected] = identities[i];
+                expected++;
+            }
+        }
+        CHECK(mod_racer_unlocked_count() == expected);
+
+        /* Every row resolves, in enum order, to a distinct unlocked identity. */
+        for (row = 0; row < expected; row++) {
+            CHECK(mod_racer_identity_for_cheat_row(row) == seen[row]);
+            CHECK(mod_racer_is_unlocked(mod_racer_identity_for_cheat_row(row)));
+        }
+        /* Every unlocked identity is reachable from some row -- the property the old open-coded
+         * ladder violated for Terry. */
+        for (i = 0; i < 3; i++) {
+            int reachable = 0;
+            if (!(combo & (1 << i))) continue;
+            for (row = 0; row < expected; row++) {
+                if (mod_racer_identity_for_cheat_row(row) == identities[i]) reachable = 1;
+            }
+            CHECK(reachable);
+        }
+        /* Out-of-range rows are refused rather than aliasing onto a real identity. */
+        CHECK(mod_racer_identity_for_cheat_row(-1) == MOD_RACER_RETAIL);
+        CHECK(mod_racer_identity_for_cheat_row(expected) == MOD_RACER_RETAIL);
+    }
+}
+
 static void test_terry_unlock_and_identity(void) {
     MemoryStore store = { {0}, 0, 0, 1 };
     TajModStateStorage storage = storage_for(&store);
@@ -462,6 +514,7 @@ int main(void) {
     test_challenge_mask_and_identity();
     test_wizpig_unlock_and_identity();
     test_terry_unlock_and_identity();
+    test_cheat_row_identity_mapping();
     if (failures != 0) {
         fprintf(stderr, "taj-mod tests: %d failure(s)\n", failures);
         return 1;
