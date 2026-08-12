@@ -1,67 +1,74 @@
-# Golden Balloon 1.2.1
+# Golden Balloon 1.3.0
 
 *Released 2026-08-12.*
 
-This is a focused patch for the in-game Settings overlay and Motion smoothing.
+This release replaces the withdrawn 1.2.1. If you downloaded 1.2.1 for
+Windows, please update: that build could not save any launcher setting.
 No game data is included, and existing preferences carry over unchanged.
 
 Recommended settings are unchanged: **WebGPU**, **Restored**, frame limit
 **Original**, Motion smoothing **Off**, gameplay tick rate **Original**, camera
 **Authored**.
 
+## New racers: Wizpig and Terry
+
+Beat Wizpig a second time — or enter `WIZPIGPOWER` — and he joins the
+character select. Beat the Dino Domain rematch — or enter `TERRYFLY` — and
+Terry does too. Wizpig rides his rocket on plane tracks; Terry flies under his
+own wings. Both race with normal attacks, items, and collisions, and each has
+his own portrait, placard, and character-select entrance. Their runs don't
+write Time Trial records or ghosts, so your leaderboards stay yours.
+
+`CONTROL WIZPIG` and `CONTROL TERRY` in the Magic Codes menu switch each racer
+on or off once unlocked.
+
+## Phone Party (beta)
+
+Pair phones as extra controllers by scanning a QR code from the launcher —
+nothing to install. An approved phone keeps its seat if it reconnects, and a
+phone that drops out leaves its kart coasting in neutral instead of handing
+the controls to someone else. We'd love reports from real living rooms while
+this is in beta.
+
+You'll also notice an **Online Room** panel in the launcher. It's a preview of
+what's coming; online races are not enabled yet. Local and split-screen play
+are unchanged.
+
+## Magic Codes remember themselves
+
+Codes you've unlocked and switched on come back after a restart. Codes that
+change how a save is read, grant one-time rewards, show the credits, or can
+lock the game deliberately do not restore themselves.
+
 ## Fixed
 
-**Settings no longer crashes an attract demo.** The demo racers were being
-asked to update with a zero-length game tick while the overlay held the scene.
-Vehicle code cannot safely run that way. The overlay now freezes the demo at
-the subsystem boundary and resumes it normally when closed. *(#28)*
+**Windows: settings save again.** The withdrawn 1.2.1 Windows build failed to
+write its settings file at all — ROM path, preferences, and ROM removal were
+all lost on restart. Saving now works regardless of how the executable was
+built, and the fix is guarded on every platform we ship. *(#32)*
 
-**Pausing during the start-line flyover no longer delays player control.** The
-camera used to keep advancing behind Settings even though the rest of the race
-was frozen. Closing the overlay could therefore leave the player waiting for
-the flyover to catch up. The exact camera pose is now held with the countdown,
-then both resume together. *(#29)*
+**Missing music and silver-coin chimes.** On some tracks the busiest musical
+passages dropped notes, and the silver-coin pickup jingle could cut off after
+its first note. Both were limits carried over from the N64's smaller audio
+budget; the full arrangement now plays. *(#30)*
 
-## Motion smoothing
+**No more getting stuck in doors and trees.** A kart that ended up inside a
+locked door or a piece of scenery after an angled bounce could stay wedged
+there. It's now pushed back out the same way the ground already pushes karts
+out.
 
-Water and lava now move as a single picture: their wave deformation advances
-with the scrolling texture and presented camera. The sky follows the camera
-used for the in-between frame instead of the previous game tick, and a shadow
-whose receiver triangles change order snaps to the new shape rather than
-twisting between two different meshes.
+**A plugged-in but idle controller no longer disables the keyboard.** Player
+one can drive on keys with a gamepad connected; whichever device you actually
+use takes over.
 
-Abrupt yaw and field-of-view changes, finish cameras, and spectator cameras now
-cut cleanly. On adaptive-refresh displays, Golden Balloon also stops forcing
-in-between frames onto a fixed timing grid when the display is not following
-one.
+**Small screens: the "Forget Remembered ROM" dialog is readable again** instead
+of collapsing into a tall, one-word-per-line column on handhelds.
 
-These changes affect presentation only. Physics, input, timers, audio, and
-saves still advance at the game's authored rate. Motion smoothing remains off
-by default.
+## Smoother in-between frames
 
-Interpolated draws presentation-only in-between images from adjacent authored
-frames; they do not advance the game a second time.
-
-## Acknowledgement
-
-The correspondence rules behind this work were informed by
-[DKR-R](https://github.com/ThatGuyMcd/DKR-R), an MIT-licensed recompilation by
-[ThatGuyMcd](https://github.com/ThatGuyMcd). We adapted the ideas to Golden
-Balloon's renderer and wrote the implementation and tests here; no DKR-R source
-code was copied.
-
-## Support boundaries
-
-WebGPU with Restored presentation remains the qualified native and browser
-configuration; other combinations run but are not what we test against.
-
-The launcher is keyboard and gamepad navigable, and does not claim a
-  VoiceOver, UI Automation, or other screen-reader semantic tree.
-
-## First launch
-
-- macOS is not notarized. If macOS blocks the app, use **System Settings →
-  Privacy & Security → Open Anyway**. A “damaged” warning is not expected.
-- Windows is not code-signed. If SmartScreen intervenes, choose **More info →
-  Run anyway**.
-- Bring your own legally acquired US 1.1 or European 1.1 ROM.
+Sudden camera pitch and roll changes now cut cleanly instead of one axis
+blending while another snaps, and cutscene shots are as smooth as gameplay.
+With Motion smoothing on, controls are sampled right before each game tick,
+trimming about a frame of input delay at 60 Hz. These changes affect
+presentation only: physics, timers, audio, and saves still advance at the
+game's authored rate.

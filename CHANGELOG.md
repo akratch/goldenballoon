@@ -8,10 +8,22 @@ From 1.0.0 onward this project follows semantic versioning for the platform
 layer's public seams (config keys, environment variables, command-line flags and
 save formats). Everything below 1.0.0 predates that commitment.
 
-## Unreleased
+## [1.3.0] — 2026-08-12
 
 ### Added
 
+- Wizpig and Terry are playable. Wizpig unlocks after beating him the second
+  time or with `WIZPIGPOWER`; Terry unlocks after the Dino Domain rematch or
+  with `TERRYFLY`. Both keep normal attacks, items, and collisions, ride their
+  own crafts — Wizpig's rocket on plane tracks, Terry's full flying pose — and
+  have their own portraits, placards, and character-select poses. Their runs
+  don't write Time Trial records or ghosts.
+- Phone Party (beta): pair phones as extra controllers by scanning a QR code
+  from the launcher — no app install. Approved phones keep their seat through
+  reconnects, and a phone dropping out leaves its kart in neutral rather than
+  handing it to someone else.
+- An Online Room panel is visible in the launcher as a preview. Online races
+  are not yet enabled; local and split-screen play are unaffected.
 - Magic Codes now keep their unlocked and active state between launches. Codes
   that alter save progression, grant one-time rewards, show credits, or can
   lock the game are deliberately not restored.
