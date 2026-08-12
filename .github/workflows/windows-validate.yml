@@ -60,6 +60,9 @@ jobs:
         shell: msys2 {0}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: v1.2.1
+          fetch-depth: 0
 
       # Mirror release.yml's Windows toolchain EXACTLY (same MINGW64 msystem,
       # same package set) so the build half is known-good by construction.
@@ -79,7 +82,7 @@ jobs:
       # the default build target builds mdkr64 plus every ctest executable.
       - name: Build the app + ROM-free test exes (Release)
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMDKR_VERSION=1.2.1
           cmake --build build -j
           test -f build/mdkr64.exe || { echo "FAIL: build/mdkr64.exe missing"; exit 1; }
           file build/mdkr64.exe
@@ -153,12 +156,12 @@ jobs:
       - name: Package and verify extracted startup (not published)
         run: |
           set -euo pipefail
-          ./tools/package_windows_zip.sh --binary build/mdkr64.exe --version dev
+          ./tools/package_windows_zip.sh --binary build/mdkr64.exe --version 1.2.1
           expected_version="$(./build/mdkr64.exe --version | tr -d '\r')"
           package_root="$RUNNER_TEMP/windows package with spaces"
           unrelated="$RUNNER_TEMP/unrelated-launch-cwd"
           mkdir -p "$package_root" "$unrelated"
-          unzip -q dist/Golden-Balloon-dev-windows-x64.zip -d "$package_root"
+          unzip -q dist/Golden-Balloon-1.2.1-windows-x64.zip -d "$package_root"
           executable="$package_root/GoldenBalloon/GoldenBalloon.exe"
           (
             cd "$unrelated"
@@ -167,4 +170,11 @@ jobs:
             "$executable" --help > help.txt
             grep -q '^Usage: ' help.txt
           )
-          echo "Windows artifact not uploaded: hosted GPU launcher qualification is unavailable."
+          ./tools/release/stamp_provenance.sh dist/Golden-Balloon-1.2.1-windows-x64.zip 1.2.1
+          ./tools/release/verify_provenance.sh --dist dist --version 1.2.1 --commit "$(git rev-parse HEAD)" --require platform=windows
+
+      - name: Export owner-accepted v1.2.1 archive
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
+        with:
+          name: Golden-Balloon-1.2.1-windows-x64
+          path: dist/Golden-Balloon-1.2.1-windows-x64.zip*
