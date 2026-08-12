@@ -171,8 +171,9 @@ jobs:
             "$executable" --help > help.txt
             grep -q '^Usage: ' help.txt
           )
-          ./tools/release/stamp_provenance.sh dist/Golden-Balloon-1.2.1-windows-x64.zip 1.2.1
-          ./tools/release/verify_provenance.sh --dist dist --version 1.2.1 --commit "$(git rev-parse HEAD)" --require platform=windows
+          source_commit="$(git rev-parse HEAD)"
+          GITHUB_SHA="$source_commit" ./tools/release/stamp_provenance.sh dist/Golden-Balloon-1.2.1-windows-x64.zip 1.2.1
+          ./tools/release/verify_provenance.sh --dist dist --version 1.2.1 --commit "$source_commit" --require platform=windows
 
       - name: Export owner-accepted v1.2.1 archive
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
