@@ -222,7 +222,15 @@ static Object *terry_spawn(TerryVisualLease lease, s32 objectID,
     entry->z = (s16)source->trans.z_position;
     sLease = lease;
     obj = spawn_object(entry, OBJECT_SPAWN_UNK01);
-    sLease = TERRY_LEASE_NONE;
+    /* An unconsumed lease means the claim hook never ran for this entry, so the object was never
+     * neutered; see wizpig_visual_spawn_companion(). Refuse it. */
+    if (sLease != TERRY_LEASE_NONE) {
+        sLease = TERRY_LEASE_NONE;
+        if (obj != NULL) {
+            free_object(obj);
+        }
+        return NULL;
+    }
     return obj;
 }
 
@@ -345,11 +353,17 @@ static void terry_sync(TerryVisualSlot *slot, s32 updateRate) {
     /* This is the exact one-shot used by the retail Terry/Smokey controller,
      * on the same fly-cycle threshold.  Crossing detection is intentionally
      * tolerant of multi-tick catch-up so a slow present cannot drop the flap. */
+    /* obj_clamp_model_animation() resets animFrame to exactly 0 on wrap (object_models.c), never to
+     * a partial remainder. The previous catch-up arm asked for `animFrame >= CUE` after a wrap,
+     * which 0 can never satisfy -- so it was dead code and the miss it was written to prevent could
+     * still happen: a tick large enough to step from below the cue straight past the end of the
+     * cycle skipped the flap entirely. The live test is instead "did we wrap while still below the
+     * cue", which is precisely the case where the cue frame was passed inside that step. */
     if (flying &&
         ((previousAnimFrame < TERRY_FLAP_CUE_FRAME &&
           actor->animFrame >= TERRY_FLAP_CUE_FRAME) ||
          (actor->animFrame < previousAnimFrame &&
-          actor->animFrame >= TERRY_FLAP_CUE_FRAME))) {
+          previousAnimFrame < TERRY_FLAP_CUE_FRAME))) {
         audspat_play_sound_at_position(
             SOUND_UNK_223, actor->trans.x_position, actor->trans.y_position,
             actor->trans.z_position, AUDIO_POINT_FLAG_ONE_TIME_TRIGGER, NULL);
@@ -762,6 +776,19 @@ s32 terry_visual_suppress_shadow(const Object *obj) {
 
 void terry_visual_on_object_free(Object *obj) {
     TerryVisualSlot *slot = terry_slot_for_object(obj);
+    s32 i;
+
+    /* Borrowed retail character-select actors; see wizpig_visual_on_object_free() for why these
+     * must be dropped here rather than left to select_end(). Mirrors taj_visual_on_object_free(). */
+    if (sSelect.source == obj) {
+        sSelect.source = NULL;
+    }
+    for (i = 0; i < (s32) ARRAY_COUNT(sSelect.authoredActors); i++) {
+        if (sSelect.authoredActors[i] == obj) {
+            sSelect.authoredActors[i] = NULL;
+            sSelect.authoredScales[i] = 0.0f;
+        }
+    }
     if (obj == sSelect.actor || obj == sSelect.sign) {
         Object *other = obj == sSelect.actor ? sSelect.sign : sSelect.actor;
         sSelect.actor = NULL;

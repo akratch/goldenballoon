@@ -234,7 +234,17 @@ static Object *wizpig_spawn(WizpigVisualLease lease, s32 objectID,
     entry->z = (s16)source->trans.z_position;
     sLease = lease;
     obj = spawn_object(entry, OBJECT_SPAWN_UNK01);
-    sLease = WIZPIG_LEASE_NONE;
+    /* The claim hook clears sLease as it consumes it. A still-set lease here means spawn_object()
+     * returned without ever reaching run_object_init_func() for our entry -- so this object was
+     * never neutered (BHV_NONE, no interactObj, no level_entry) and is a live, physics-owning
+     * racer. Refuse it rather than tracking it as a presentation companion. */
+    if (sLease != WIZPIG_LEASE_NONE) {
+        sLease = WIZPIG_LEASE_NONE;
+        if (obj != NULL) {
+            free_object(obj);
+        }
+        return NULL;
+    }
     return obj;
 }
 
@@ -743,8 +753,15 @@ s32 wizpig_visual_batch_visible(const ObjectModel *model, const Object *obj,
             }
         }
     } else if (obj == slot->rider && !wizpig_owner_uses_rocket(slot->owner)) {
-        /* Immutable model-215 schema: these seven batches are the rocket-only
-         * materials (environment shell, red stripe, and lightning). */
+        /* These seven batch indices are the rocket-only materials (environment shell, red stripe,
+         * lightning) in ASSET_OBJECTMODEL_WIZPIGROCKET. They are meaningless on any other model, so
+         * revalidate the exact fingerprint at draw time for the same reason the donor branch above
+         * does: this must fail VISIBLE (a complete rider) rather than carve seven arbitrary batches
+         * out of an asset whose layout we have not proven. */
+        if (model->numberOfTextures != 20 || model->numberOfVertices != 887 ||
+            model->numberOfTriangles != 654 || model->numberOfBatches != 68) {
+            return TRUE;
+        }
         return !((batchIndex >= 9 && batchIndex <= 13) || batchIndex == 63 ||
                  batchIndex == 64);
     }
@@ -772,6 +789,23 @@ s32 wizpig_visual_suppress_shadow(const Object *obj) {
 
 void wizpig_visual_on_object_free(Object *obj) {
     WizpigVisualSlot *slot = wizpig_slot_for_object(obj);
+    s32 i;
+
+    /* sSelect.source and sSelect.authoredActors[] are BORROWED pointers to retail character-select
+     * actors this module never owns. They are dereferenced every tick while the picker is live
+     * (wizpig_sync_select_actor), so they must be dropped the moment the pool reclaims them --
+     * object slots are recycled aggressively, and a stale entry would silently re-target Wizpig
+     * onto an unrelated live object's transform. Cleared before the actor/sign branch below, which
+     * returns early. Mirrors taj_visual_on_object_free(). */
+    if (sSelect.source == obj) {
+        sSelect.source = NULL;
+    }
+    for (i = 0; i < (s32) ARRAY_COUNT(sSelect.authoredActors); i++) {
+        if (sSelect.authoredActors[i] == obj) {
+            sSelect.authoredActors[i] = NULL;
+            sSelect.authoredScales[i] = 0.0f;
+        }
+    }
     if (obj == sSelect.actor || obj == sSelect.sign) {
         Object *other = obj == sSelect.actor ? sSelect.sign : sSelect.actor;
         sSelect.actor = NULL;
