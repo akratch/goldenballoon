@@ -602,6 +602,10 @@ CHECKS = (
     # Provisionally registered by the release session so the manifest guard
     # passes; descriptions taken from each script's own docstring. The online
     # campaign owner should adjust role/description when this work lands.
+    Check("app_background_activation", "check_app_background_activation.py",
+          "source",
+          "native UI automation stays renderable without stealing desktop "
+          "focus"),
     Check("party_experience_canary_smoke",
           "check_party_experience_canary_smoke.py", "source",
           "operated canary and direct play smoke through local signaling "

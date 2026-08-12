@@ -1,6 +1,7 @@
 #include "app_window.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace {
@@ -45,6 +46,17 @@ void reset() {
 
 SDL_Window *fakeWindow() {
     return reinterpret_cast<SDL_Window *>(static_cast<uintptr_t>(1));
+}
+
+void setBackgroundAutomation(bool enabled) {
+#if defined(_WIN32)
+    _putenv_s("MDKR64_HIDDEN", enabled ? "1" : "");
+#else
+    if (enabled)
+        setenv("MDKR64_HIDDEN", "1", 1);
+    else
+        unsetenv("MDKR64_HIDDEN");
+#endif
 }
 } // namespace
 
@@ -109,6 +121,7 @@ const char *mdkr_window_mode_canonical(const char *value) {
 }
 
 int main() {
+    setBackgroundAutomation(false);
     reset();
     expect(AppWindow_creationFlags() == 0,
            "windowed startup requests ordinary decorations");
@@ -131,6 +144,16 @@ int main() {
     expect(configSetCalls == 1 && raiseCalls == 1,
            "successful platform transition persists and raises the window");
 
+    reset();
+    setBackgroundAutomation(true);
+    expect(AppWindow_applyMode(fakeWindow(), "fullscreen") ==
+               MDKR_VIDEO_RUNTIME_LIVE,
+           "background automation preserves settings transaction semantics");
+    expect(fullscreenCalls == 0 && borderedCalls == 0 && raiseCalls == 0 &&
+               configSetCalls == 1,
+           "background automation cannot enter fullscreen or raise its window");
+    setBackgroundAutomation(false);
+
     windowFlags = SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_BORDERLESS;
     expect(AppWindow_applyMode(fakeWindow(), "windowed") ==
                MDKR_VIDEO_RUNTIME_LIVE,
@@ -147,7 +170,7 @@ int main() {
            "save failure rolls the SDL transition back");
 
     reset();
-    configResult = MDKR_VIDEO_RUNTIME_SAVE_FAILED;
+    configResult         = MDKR_VIDEO_RUNTIME_SAVE_FAILED;
     fullscreenFailOnCall = 2;
     expect(AppWindow_applyMode(fakeWindow(), "fullscreen") ==
                MDKR_VIDEO_RUNTIME_ROLLBACK_FAILED,
@@ -210,9 +233,9 @@ int main() {
 
     reset();
     expect(AppWindow_requestMode(fakeWindow(), "fullscreen") ==
-               MDKR_VIDEO_RUNTIME_PENDING &&
+                   MDKR_VIDEO_RUNTIME_PENDING &&
                AppWindow_requestMode(fakeWindow(), "windowed") ==
-               MDKR_VIDEO_RUNTIME_SUPERSEDED,
+                   MDKR_VIDEO_RUNTIME_SUPERSEDED,
            "a newer valid settings request replaces the pending mode, and says "
            "so distinctly from the first queued request");
     AppWindow_servicePending();
@@ -230,7 +253,7 @@ int main() {
                MDKR_VIDEO_RUNTIME_PENDING,
            "queued failure setup is accepted");
     AppWindow_servicePending();
-    configResult = MDKR_VIDEO_RUNTIME_LIVE;
+    configResult               = MDKR_VIDEO_RUNTIME_LIVE;
     SDL_Event latestEvent      = {};
     latestEvent.type           = SDL_KEYDOWN;
     latestEvent.key.keysym.sym = SDLK_F11;

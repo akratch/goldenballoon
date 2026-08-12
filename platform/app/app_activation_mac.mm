@@ -9,10 +9,6 @@ void AppActivation_requestForeground(SDL_Window *window, void *nativeView) {
      * launches used by release tests do not, and a background CAMetalLayer can
      * report every drawable as unavailable. Exercise the same foreground state
      * for both paths before qualifying or adopting the surface. */
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-    [NSApp activateIgnoringOtherApps:YES];
-    SDL_ShowWindow(window);
-
     NSWindow *nativeWindow = nil;
     if (nativeView != nullptr) {
         nativeWindow = [(NSView *)nativeView window];
@@ -23,6 +19,24 @@ void AppActivation_requestForeground(SDL_Window *window, void *nativeView) {
         info.subsystem == SDL_SYSWM_COCOA) {
         nativeWindow = info.info.cocoa.window;
     }
+    if (AppActivation_backgroundAutomation()) {
+        /* A hidden CAMetalLayer may be permanently occluded and never vend a
+         * drawable. Order the automation surface behind existing windows so
+         * it remains renderable, but deliberately never activate NSApp, make
+         * the NSWindow key, or raise it. Accessory policy also keeps dozens of
+         * isolated screenshot processes out of the Dock/app switcher. */
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        if (nativeWindow != nil) {
+            [nativeWindow setIsVisible:YES];
+            [nativeWindow orderBack:nil];
+        }
+        SDL_PumpEvents();
+        return;
+    }
+
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    [NSApp activateIgnoringOtherApps:YES];
+    SDL_ShowWindow(window);
     if (nativeWindow != nil) {
         [nativeWindow deminiaturize:nil];
         [nativeWindow setIsVisible:YES];

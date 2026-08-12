@@ -1,5 +1,7 @@
 #include "app_window.h"
 
+#include "app_activation.h"
+
 #include <cstdio>
 #include <cstring>
 
@@ -20,9 +22,9 @@ PendingWindowMode g_pending;
  * rest of the session. Past this window the result still has to be consumed —
  * the panel resynchronizes from it — but it is no longer something the player
  * is waiting on, so it must not be announced as if it just happened. */
-constexpr Uint64 kCompletionFreshnessMs = 4000u;
+constexpr Uint64  kCompletionFreshnessMs = 4000u;
 
-void publishCompleted(SDL_Window *window, MdkrVideoRuntimeResult result) {
+void              publishCompleted(SDL_Window *window, MdkrVideoRuntimeResult result) {
     g_pending.window        = window;
     g_pending.pending       = false;
     g_pending.completed     = true;
@@ -31,7 +33,7 @@ void publishCompleted(SDL_Window *window, MdkrVideoRuntimeResult result) {
     g_pending.mode[0]       = '\0';
 }
 
-bool              isFullscreen(SDL_Window *window) {
+bool isFullscreen(SDL_Window *window) {
     return window != nullptr &&
            (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
 }
@@ -79,6 +81,14 @@ MdkrVideoRuntimeResult AppWindow_applyMode(
     const Uint32 oldFlags       = SDL_GetWindowFlags(window);
     const bool   wasFullscreen  = (oldFlags & SDL_WINDOW_FULLSCREEN) != 0;
     const bool   wantFullscreen = std::strcmp(mode, "fullscreen") == 0;
+    /* Screenshot/input automation owns a deliberately non-key background
+     * surface. An F11 event or persisted fullscreen choice must not turn that
+     * surface into a foreground Space. Preserve the requested config result
+     * for UI/persistence coverage while leaving the automation window alone. */
+    if (AppActivation_backgroundAutomation() &&
+        wasFullscreen != wantFullscreen) {
+        return mdkr_video_config_runtime_set(MDKR_WINDOW_MODE, mode);
+    }
     if (wasFullscreen != wantFullscreen) {
         const Uint32 fullscreenFlag =
             wantFullscreen
@@ -93,7 +103,7 @@ MdkrVideoRuntimeResult AppWindow_applyMode(
          * desktop-sized overlapped window whose normal border remained visible. */
         SDL_SetWindowBordered(window,
                               wantFullscreen ? SDL_FALSE : SDL_TRUE);
-        SDL_RaiseWindow(window);
+        if (!AppActivation_backgroundAutomation()) SDL_RaiseWindow(window);
     }
 
     const MdkrVideoRuntimeResult result =

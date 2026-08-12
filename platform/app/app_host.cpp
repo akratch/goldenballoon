@@ -1,41 +1,41 @@
 // app_host.cpp — see app_host.h.
 #include "app_host.h"
 #include "a11y_speech.h"
-#include "fs_utf8.h"
 #include "app_activation.h"
 #include "app_theme.h"
 #include "app_ui_policy.h"
 #include "app_window.h"
 #include "crash_screen.h"
 #include "engine_entry.h"
+#include "fs_utf8.h"
 
-#include "imgui.h"
-#include "backends/imgui_impl_sdl2.h"
 #include "backends/imgui_impl_opengl3.h"
+#include "backends/imgui_impl_sdl2.h"
+#include "imgui.h"
 
-#include <cstdio>
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <chrono>
 #include <vector>
 
 #if defined(__APPLE__)
-#  include <OpenGL/gl3.h>
+    #include <OpenGL/gl3.h>
 #else
-// Non-Apple: the engine uses glad; the app shell resolves GL via SDL. We only
-// call a couple of raw GL entry points (glClear/glViewport), declared here to
-// avoid a hard glad dependency in the shell TU. They resolve at link time
-// against the same GL the engine links.
-#  include <glad/glad.h>
+    // Non-Apple: the engine uses glad; the app shell resolves GL via SDL. We only
+    // call a couple of raw GL entry points (glClear/glViewport), declared here to
+    // avoid a hard glad dependency in the shell TU. They resolve at link time
+    // against the same GL the engine links.
+    #include <glad/glad.h>
 #endif
 
 #ifdef MDKR_WEBGPU_BACKEND
-#  include <webgpu/webgpu.h>
-#  include <webgpu/wgpu.h>   /* wgpuDevicePoll */
-#  include "gfx_webgpu.h"
-#  include "gfx_webgpu_fault.h"
-#  include "gfx_webgpu_imgui.h"
+    #include "gfx_webgpu.h"
+    #include "gfx_webgpu_fault.h"
+    #include "gfx_webgpu_imgui.h"
+    #include <webgpu/webgpu.h>
+    #include <webgpu/wgpu.h> /* wgpuDevicePoll */
 #endif
 
 // Backend selector (platform/platform_sdl_min.c). The shell asks the SAME
@@ -47,7 +47,7 @@
 // "#version 330 core" shaders; valid on the macOS 4.1-core context too.
 static const char *kGlslVersion = "#version 330 core";
 
-static void bindSmokeGamepadToImGui(SDL_GameController *gamepad) {
+static void        bindSmokeGamepadToImGui(SDL_GameController *gamepad) {
     if (gamepad == nullptr) {
         return;
     }
@@ -56,11 +56,13 @@ static void bindSmokeGamepadToImGui(SDL_GameController *gamepad) {
      * Interactive launches have no smoke device and retain AutoFirst. */
     SDL_GameController *gamepads[] = {gamepad};
     ImGui_ImplSDL2_SetGamepadMode(
-        ImGui_ImplSDL2_GamepadMode_Manual, gamepads, 1);
+        ImGui_ImplSDL2_GamepadMode_Manual,
+        gamepads,
+        1);
 }
 
 bool AppHost::init(const char *title, int width, int height) {
-    active_ = true;
+    active_    = true;
     /* Resolve before the availability check so diagnostics still name an
      * explicitly requested WebGPU backend in a GL-only build. */
     useWebGpu_ = (mdkr_render_backend() == MDKR_BACKEND_WEBGPU);
@@ -84,7 +86,9 @@ bool AppHost::init(const char *title, int width, int height) {
          * override is reachable only through the validated smoke contract and
          * does not change interactive background-input policy. */
         SDL_SetHintWithPriority(
-            SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1", SDL_HINT_OVERRIDE);
+            SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,
+            "1",
+            SDL_HINT_OVERRIDE);
     }
     if (SDL_WasInit(SDL_INIT_VIDEO) == 0) {
         if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) < 0) {
@@ -97,18 +101,18 @@ bool AppHost::init(const char *title, int width, int height) {
     if (smokeInputMode == AppUiSmokeInputMode::Gamepad) {
 #if SDL_VERSION_ATLEAST(2, 0, 14)
         smokeGamepadDeviceIndex_ = SDL_JoystickAttachVirtual(
-            SDL_JOYSTICK_TYPE_GAMECONTROLLER, SDL_CONTROLLER_AXIS_MAX,
-            SDL_CONTROLLER_BUTTON_MAX, 0);
+            SDL_JOYSTICK_TYPE_GAMECONTROLLER,
+            SDL_CONTROLLER_AXIS_MAX,
+            SDL_CONTROLLER_BUTTON_MAX,
+            0);
         if (smokeGamepadDeviceIndex_ < 0 ||
             !SDL_IsGameController(smokeGamepadDeviceIndex_)) {
-            std::fprintf(stderr, "[app-ui-test] virtual gamepad attach failed: %s\n",
-                         SDL_GetError());
+            std::fprintf(stderr, "[app-ui-test] virtual gamepad attach failed: %s\n", SDL_GetError());
             return false;
         }
         smokeGamepad_ = SDL_GameControllerOpen(smokeGamepadDeviceIndex_);
         if (!smokeGamepad_) {
-            std::fprintf(stderr, "[app-ui-test] virtual gamepad open failed: %s\n",
-                         SDL_GetError());
+            std::fprintf(stderr, "[app-ui-test] virtual gamepad open failed: %s\n", SDL_GetError());
             return false;
         }
         std::fprintf(stderr, "[app-ui-test] virtual SDL gamepad connected\n");
@@ -157,11 +161,13 @@ bool AppHost::initGL(const char *title, int width, int height) {
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
 
-    Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE |
-                   SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_SHOWN |
-                   AppWindow_creationFlags();
-    window_ = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                               width, height, flags);
+    const bool backgroundAutomation = AppActivation_backgroundAutomation();
+    Uint32     flags                = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE |
+                                      SDL_WINDOW_ALLOW_HIGHDPI |
+                                      (backgroundAutomation ? SDL_WINDOW_HIDDEN
+                                                            : SDL_WINDOW_SHOWN);
+    if (!backgroundAutomation) flags |= AppWindow_creationFlags();
+    window_ = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, flags);
     if (!window_) {
         std::fprintf(stderr, "[app] SDL_CreateWindow failed: %s\n", SDL_GetError());
         return false;
@@ -183,16 +189,14 @@ bool AppHost::initGL(const char *title, int width, int height) {
      * command-launched NSWindow has not been serviced by the compositor; the
      * engine applies and validates the requested numeric/uncapped policy as
      * soon as it adopts this same context. */
-    const int hostSwapInterval = std::getenv("MDKR_APP_AUTOPLAY") ? 0 : 1;
+    const int  hostSwapInterval = std::getenv("MDKR_APP_AUTOPLAY") ? 0 : 1;
     const bool injectSwapFailure =
         std::getenv("MDKR_TEST_GL_SWAP_INTERVAL_FAILURE") != nullptr;
     if (injectSwapFailure || SDL_GL_SetSwapInterval(hostSwapInterval) != 0) {
-        std::fprintf(stderr, "[app] SDL_GL_SetSwapInterval(%d) failed: %s\n",
-                     hostSwapInterval,
-                     injectSwapFailure ? "injected test failure" : SDL_GetError());
+        std::fprintf(stderr, "[app] SDL_GL_SetSwapInterval(%d) failed: %s\n", hostSwapInterval, injectSwapFailure ? "injected test failure" : SDL_GetError());
     }
     const int effectiveSwapInterval = SDL_GL_GetSwapInterval();
-    glSoftwarePacing_ = hostSwapInterval > 0 && effectiveSwapInterval <= 0;
+    glSoftwarePacing_               = hostSwapInterval > 0 && effectiveSwapInterval <= 0;
     if (glSoftwarePacing_) {
         std::fprintf(stderr,
                      "[app] OpenGL swap interval unavailable; using bounded 60 Hz "
@@ -209,8 +213,8 @@ bool AppHost::initGL(const char *title, int width, int height) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     imguiContextReady_ = true;
-    ImGuiIO &io = ImGui::GetIO();
-    io.IniFilename = nullptr;  // don't litter imgui.ini in the cwd (persist later)
+    ImGuiIO &io        = ImGui::GetIO();
+    io.IniFilename     = nullptr; // don't litter imgui.ini in the cwd (persist later)
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     AppTheme::setup(framebufferScale());
@@ -231,13 +235,15 @@ bool AppHost::initGL(const char *title, int width, int height) {
 
 #ifdef MDKR_WEBGPU_BACKEND
 bool AppHost::initWebGpu(const char *title, int width, int height) {
-    Uint32 flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
-                   SDL_WINDOW_SHOWN | AppWindow_creationFlags();
-#if defined(__APPLE__)
-    flags |= SDL_WINDOW_METAL;   // wgpu-native wraps the CAMetalLayer as its surface
-#endif
-    window_ = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                               width, height, flags);
+    const bool backgroundAutomation = AppActivation_backgroundAutomation();
+    Uint32     flags                = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
+                                      (backgroundAutomation ? SDL_WINDOW_HIDDEN
+                                                            : SDL_WINDOW_SHOWN);
+    if (!backgroundAutomation) flags |= AppWindow_creationFlags();
+    #if defined(__APPLE__)
+    flags |= SDL_WINDOW_METAL; // wgpu-native wraps the CAMetalLayer as its surface
+    #endif
+    window_ = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, flags);
     if (!window_) {
         std::fprintf(stderr, "[app] SDL_CreateWindow (WebGPU) failed: %s\n", SDL_GetError());
         return false;
@@ -245,27 +251,35 @@ bool AppHost::initWebGpu(const char *title, int width, int height) {
     SDL_SetWindowMinimumSize(window_, 640, 480);
 
     void *layer = nullptr;
-#if defined(__APPLE__)
+    #if defined(__APPLE__)
     metalView_ = SDL_Metal_CreateView(window_);
     if (!metalView_) {
         std::fprintf(stderr, "[app] SDL_Metal_CreateView failed: %s\n", SDL_GetError());
         return false;
     }
     layer = SDL_Metal_GetLayer((SDL_MetalView)metalView_);
-#endif
+    #endif
     /* On macOS order the native NSWindow only after SDL has attached the Metal
      * view/CAMetalLayer. Otherwise a command-launched app can be foregrounded
      * while the surface still remains permanently Occluded. */
     AppActivation_requestForeground(window_, metalView_);
 
-    WGPUInstance inst = nullptr; WGPUAdapter adapter = nullptr; WGPUDevice device = nullptr;
-    WGPUQueue queue = nullptr; WGPUSurface surface = nullptr; int fmt = 0;
+    WGPUInstance inst    = nullptr;
+    WGPUAdapter  adapter = nullptr;
+    WGPUDevice   device  = nullptr;
+    WGPUQueue    queue   = nullptr;
+    WGPUSurface  surface = nullptr;
+    int          fmt     = 0;
     if (!gfx_webgpu_bringup(layer, window_, &inst, &adapter, &device, &queue, &surface, &fmt)) {
         std::fprintf(stderr, "[app] WebGPU bring-up failed\n");
         return false;
     }
-    wgpuInstance_ = inst; wgpuAdapter_ = adapter; wgpuDevice_ = device;
-    wgpuQueue_ = queue; wgpuSurface_ = surface; wgpuFormat_ = fmt;
+    wgpuInstance_ = inst;
+    wgpuAdapter_  = adapter;
+    wgpuDevice_   = device;
+    wgpuQueue_    = queue;
+    wgpuSurface_  = surface;
+    wgpuFormat_   = fmt;
 
     int dw = 0, dh = 0;
     drawableSize(&dw, &dh);
@@ -277,11 +291,11 @@ bool AppHost::initWebGpu(const char *title, int width, int height) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     imguiContextReady_ = true;
-    ImGuiIO &io = ImGui::GetIO();
-    io.IniFilename = nullptr;
+    ImGuiIO &io        = ImGui::GetIO();
+    io.IniFilename     = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    AppTheme::setup(framebufferScale());   // build fonts BEFORE gfx_webgpu_imgui_init
+    AppTheme::setup(framebufferScale()); // build fonts BEFORE gfx_webgpu_imgui_init
     if (!ImGui_ImplSDL2_InitForOther(window_)) {
         std::fprintf(stderr, "[app] ImGui_ImplSDL2_InitForOther failed\n");
         return false;
@@ -321,7 +335,7 @@ int AppHost::recoverWebGpuRoots(int phase) {
         }
         recoveryInstance_ = recoveryAdapter_ = recoveryDevice_ = nullptr;
         recoveryQueue_ = recoverySurface_ = nullptr;
-        recoveryFormat_ = 0;
+        recoveryFormat_                   = 0;
     };
 
     if (!useWebGpu_) return 0;
@@ -338,20 +352,26 @@ int AppHost::recoverWebGpuRoots(int phase) {
         releaseCandidate();
         wgpuRecoveryError_.clear();
         void *layer = nullptr;
-#if defined(__APPLE__)
+    #if defined(__APPLE__)
         if (metalView_ != nullptr) {
             layer = SDL_Metal_GetLayer((SDL_MetalView)metalView_);
         }
-#endif
+    #endif
         WGPUInstance instance = nullptr;
-        WGPUAdapter adapter = nullptr;
-        WGPUDevice device = nullptr;
-        WGPUQueue queue = nullptr;
-        WGPUSurface surface = nullptr;
-        int format = 0;
+        WGPUAdapter  adapter  = nullptr;
+        WGPUDevice   device   = nullptr;
+        WGPUQueue    queue    = nullptr;
+        WGPUSurface  surface  = nullptr;
+        int          format   = 0;
         if (!gfx_webgpu_bringup(
-                layer, window_, &instance, &adapter, &device, &queue,
-                &surface, &format)) {
+                layer,
+                window_,
+                &instance,
+                &adapter,
+                &device,
+                &queue,
+                &surface,
+                &format)) {
             wgpuRecoveryError_ =
                 "WebGPU could not create a replacement graphics device. "
                 "Your game stopped safely; restart the app to continue from "
@@ -361,11 +381,11 @@ int AppHost::recoverWebGpuRoots(int phase) {
             return 0;
         }
         recoveryInstance_ = instance;
-        recoveryAdapter_ = adapter;
-        recoveryDevice_ = device;
-        recoveryQueue_ = queue;
-        recoverySurface_ = surface;
-        recoveryFormat_ = format;
+        recoveryAdapter_  = adapter;
+        recoveryDevice_   = device;
+        recoveryQueue_    = queue;
+        recoverySurface_  = surface;
+        recoveryFormat_   = format;
         std::fprintf(stderr,
                      "[app] replacement WebGPU roots prepared (format=%d)\n",
                      format);
@@ -391,7 +411,8 @@ int AppHost::recoverWebGpuRoots(int phase) {
         imguiRendererReady_ = false;
     }
     if (!gfx_webgpu_imgui_init(
-            (WGPUDevice)recoveryDevice_, (WGPUQueue)recoveryQueue_,
+            (WGPUDevice)recoveryDevice_,
+            (WGPUQueue)recoveryQueue_,
             recoveryFormat_)) {
         wgpuRecoveryError_ =
             "WebGPU created a replacement device, but the interface renderer "
@@ -418,26 +439,30 @@ int AppHost::recoverWebGpuRoots(int phase) {
     captureW_ = captureH_ = 0;
 
     WGPUInstance oldInstance = (WGPUInstance)wgpuInstance_;
-    WGPUAdapter oldAdapter = (WGPUAdapter)wgpuAdapter_;
-    WGPUDevice oldDevice = (WGPUDevice)wgpuDevice_;
-    WGPUQueue oldQueue = (WGPUQueue)wgpuQueue_;
-    WGPUSurface oldSurface = (WGPUSurface)wgpuSurface_;
+    WGPUAdapter  oldAdapter  = (WGPUAdapter)wgpuAdapter_;
+    WGPUDevice   oldDevice   = (WGPUDevice)wgpuDevice_;
+    WGPUQueue    oldQueue    = (WGPUQueue)wgpuQueue_;
+    WGPUSurface  oldSurface  = (WGPUSurface)wgpuSurface_;
 
-    wgpuInstance_ = recoveryInstance_;
-    wgpuAdapter_ = recoveryAdapter_;
-    wgpuDevice_ = recoveryDevice_;
-    wgpuQueue_ = recoveryQueue_;
-    wgpuSurface_ = recoverySurface_;
-    wgpuFormat_ = recoveryFormat_;
+    wgpuInstance_     = recoveryInstance_;
+    wgpuAdapter_      = recoveryAdapter_;
+    wgpuDevice_       = recoveryDevice_;
+    wgpuQueue_        = recoveryQueue_;
+    wgpuSurface_      = recoverySurface_;
+    wgpuFormat_       = recoveryFormat_;
     recoveryInstance_ = recoveryAdapter_ = recoveryDevice_ = nullptr;
     recoveryQueue_ = recoverySurface_ = nullptr;
-    recoveryFormat_ = 0;
-    wgpuSurfaceConfigured_ = false;
+    recoveryFormat_                   = 0;
+    wgpuSurfaceConfigured_            = false;
     cfgW_ = cfgH_ = 0;
-    wgpuFatal_ = false;
+    wgpuFatal_    = false;
 
     platformSetHostWebGpu(
-        wgpuInstance_, wgpuAdapter_, wgpuDevice_, wgpuQueue_, wgpuSurface_,
+        wgpuInstance_,
+        wgpuAdapter_,
+        wgpuDevice_,
+        wgpuQueue_,
+        wgpuSurface_,
         wgpuFormat_);
 
     if (oldSurface != nullptr) {
@@ -462,9 +487,11 @@ bool AppHost::configureWgpuSurface(int w, int h) {
     if (!useWebGpu_ || wgpuSurface_ == nullptr || wgpuDevice_ == nullptr || w <= 0 || h <= 0) {
         return false;
     }
-    WGPUSurfaceCapabilities caps = {};
-    const WGPUStatus status = wgpuSurfaceGetCapabilities(
-        (WGPUSurface)wgpuSurface_, (WGPUAdapter)wgpuAdapter_, &caps);
+    WGPUSurfaceCapabilities caps   = {};
+    const WGPUStatus        status = wgpuSurfaceGetCapabilities(
+        (WGPUSurface)wgpuSurface_,
+        (WGPUAdapter)wgpuAdapter_,
+        &caps);
     bool formatSupported = false;
     for (size_t i = 0; status == WGPUStatus_Success && i < caps.formatCount; ++i) {
         if (caps.formats[i] == (WGPUTextureFormat)wgpuFormat_) {
@@ -473,28 +500,30 @@ bool AppHost::configureWgpuSurface(int w, int h) {
         }
     }
     const bool usageSupported = status == WGPUStatus_Success &&
-        (caps.usages & WGPUTextureUsage_RenderAttachment) != 0;
+                                (caps.usages & WGPUTextureUsage_RenderAttachment) != 0;
     if (!formatSupported || !usageSupported) {
         std::fprintf(stderr,
                      "[app] WebGPU surface cannot be configured "
                      "(status=%d format=%d renderAttachment=%d)\n",
-                     (int)status, wgpuFormat_, usageSupported ? 1 : 0);
+                     (int)status,
+                     wgpuFormat_,
+                     usageSupported ? 1 : 0);
         wgpuSurfaceCapabilitiesFreeMembers(caps);
         return false;
     }
     wgpuSurfaceCapabilitiesFreeMembers(caps);
 
-    WGPUSurfaceConfiguration cfg = {};
-    cfg.device = (WGPUDevice)wgpuDevice_;
-    cfg.format = (WGPUTextureFormat)wgpuFormat_;
+    WGPUSurfaceConfiguration cfg           = {};
+    cfg.device                             = (WGPUDevice)wgpuDevice_;
+    cfg.format                             = (WGPUTextureFormat)wgpuFormat_;
     // Normal UI frames render directly to the acquired drawable. Requiring
     // CopyDst here rejected otherwise valid surfaces and paid for a full-frame
     // offscreen copy on every launcher present.
-    cfg.usage = WGPUTextureUsage_RenderAttachment;
-    cfg.width = (uint32_t)w;
-    cfg.height = (uint32_t)h;
-    cfg.alphaMode = WGPUCompositeAlphaMode_Auto;
-    cfg.presentMode = WGPUPresentMode_Fifo;   // vsync; matches the GL swap interval
+    cfg.usage                              = WGPUTextureUsage_RenderAttachment;
+    cfg.width                              = (uint32_t)w;
+    cfg.height                             = (uint32_t)h;
+    cfg.alphaMode                          = WGPUCompositeAlphaMode_Auto;
+    cfg.presentMode                        = WGPUPresentMode_Fifo; // vsync; matches the GL swap interval
     // One frame in flight, the minimum the backend allows, for the same reason
     // and at the same documented trade as the engine's pin (see
     // WGPU_SURFACE_MAX_FRAME_LATENCY in gfx_webgpu.c: latency minimized, CPU
@@ -504,9 +533,9 @@ bool AppHost::configureWgpuSurface(int w, int h) {
     // any re-configure that does not carry it returns the surface to the
     // backend's two-deep default.
     WGPUSurfaceConfigurationExtras latency = {};
-    latency.chain.sType = (WGPUSType)WGPUSType_SurfaceConfigurationExtras;
-    latency.desiredMaximumFrameLatency = 1;
-    cfg.nextInChain = &latency.chain;
+    latency.chain.sType                    = (WGPUSType)WGPUSType_SurfaceConfigurationExtras;
+    latency.desiredMaximumFrameLatency     = 1;
+    cfg.nextInChain                        = &latency.chain;
     if (gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_HOST_SURFACE_CONFIGURE)) {
         std::fprintf(stderr,
                      "[app] injected initial WebGPU surface configuration failure\n");
@@ -521,8 +550,8 @@ bool AppHost::configureWgpuSurface(int w, int h) {
         wgpuFatal_ = true;
         return false;
     }
-    cfgW_ = (unsigned)w;
-    cfgH_ = (unsigned)h;
+    cfgW_                  = (unsigned)w;
+    cfgH_                  = (unsigned)h;
     wgpuSurfaceConfigured_ = true;
     // The adopted window's own configure witness. The engine reports its swap
     // chain on the [PRESENT-MODE] row, but that row is emitted by the present
@@ -535,7 +564,9 @@ bool AppHost::configureWgpuSurface(int w, int h) {
     std::fprintf(stderr,
                  "[SURFACE-CONFIG] backend=webgpu owner=app-shell "
                  "presentMode=fifo frameLatency=%u width=%u height=%u\n",
-                 latency.desiredMaximumFrameLatency, cfgW_, cfgH_);
+                 latency.desiredMaximumFrameLatency,
+                 cfgW_,
+                 cfgH_);
     std::fflush(stderr);
     return true;
 }
@@ -552,26 +583,29 @@ void AppHost::ensureWgpuCaptureTarget(int w, int h) {
         wgpuTextureRelease((WGPUTexture)captureTex_);
         captureTex_ = nullptr;
     }
-    captureW_ = captureH_ = 0;
-    WGPUTextureDescriptor td = {};
-    td.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
-    td.dimension = WGPUTextureDimension_2D;
-    td.size.width = (uint32_t)w; td.size.height = (uint32_t)h; td.size.depthOrArrayLayers = 1;
-    td.format = (WGPUTextureFormat)wgpuFormat_;   // match the surface for capture parity
-    td.mipLevelCount = 1; td.sampleCount = 1;
-    WGPUTexture tex = wgpuDeviceCreateTexture((WGPUDevice)wgpuDevice_, &td);
+    captureW_ = captureH_      = 0;
+    WGPUTextureDescriptor td   = {};
+    td.usage                   = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
+    td.dimension               = WGPUTextureDimension_2D;
+    td.size.width              = (uint32_t)w;
+    td.size.height             = (uint32_t)h;
+    td.size.depthOrArrayLayers = 1;
+    td.format                  = (WGPUTextureFormat)wgpuFormat_; // match the surface for capture parity
+    td.mipLevelCount           = 1;
+    td.sampleCount             = 1;
+    WGPUTexture tex            = wgpuDeviceCreateTexture((WGPUDevice)wgpuDevice_, &td);
     if (tex == nullptr) return;
     WGPUTextureView view = wgpuTextureCreateView(tex, nullptr);
     if (view == nullptr) {
         wgpuTextureRelease(tex);
         return;
     }
-    captureTex_ = tex;
+    captureTex_  = tex;
     captureView_ = view;
-    captureW_ = (unsigned)w;
-    captureH_ = (unsigned)h;
+    captureW_    = (unsigned)w;
+    captureH_    = (unsigned)h;
 }
-#endif  // MDKR_WEBGPU_BACKEND
+#endif // MDKR_WEBGPU_BACKEND
 
 void AppHost::beginFrame() {
     AppTheme::applyPendingUiScale();
@@ -579,7 +613,7 @@ void AppHost::beginFrame() {
     if (const char *sequence = std::getenv("MDKR_APP_SMOKE_DPI_SEQUENCE")) {
         if (std::strcmp(sequence, "1,2,1") == 0 && dpiSmokeFrame_ < 3) {
             static const float kScales[] = {1.0f, 2.0f, 1.0f};
-            frameScale = kScales[dpiSmokeFrame_++];
+            frameScale                   = kScales[dpiSmokeFrame_++];
             AppTheme::refreshFramebufferScale(frameScale);
             std::fprintf(stderr,
                          "[app-ui-test] dpi transition scale=%.0f atlasGeneration=%u\n",
@@ -601,11 +635,11 @@ void AppHost::beginFrame() {
         // drawable) → scale (1,1). Set the true high-DPI scale from the actual
         // drawable so geometry fills the target and scissors land in pixels.
         ImGuiIO &io = ImGui::GetIO();
-        int lw = 0, lh = 0, dw = 0, dh = 0;
+        int      lw = 0, lh = 0, dw = 0, dh = 0;
         SDL_GetWindowSize(window_, &lw, &lh);
         drawableSize(&dw, &dh);
         if (lw > 0 && lh > 0) {
-            io.DisplaySize = ImVec2((float)lw, (float)lh);
+            io.DisplaySize             = ImVec2((float)lw, (float)lh);
             io.DisplayFramebufferScale = ImVec2((float)dw / (float)lw, (float)dh / (float)lh);
         }
         reassertSmokePointer();
@@ -636,33 +670,45 @@ static bool writeBackbufferBmp(const char *path, int w, int h) {
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, rgb.data());
 
-    const int rowBytes = w * 3;
-    const int pad = (4 - (rowBytes % 4)) % 4;
-    const size_t imgSize = (size_t)(rowBytes + pad) * (size_t)h;  // size_t: no int overflow on 8K+
+    const int    rowBytes = w * 3;
+    const int    pad      = (4 - (rowBytes % 4)) % 4;
+    const size_t imgSize  = (size_t)(rowBytes + pad) * (size_t)h; // size_t: no int overflow on 8K+
     const size_t fileSize = 54 + imgSize;
 
-    FILE *f = mdkr_fopen_utf8(path, "wb");
-    if (!f) { std::fprintf(stderr, "[app] could not open %s\n", path); return false; }
-    uint8_t hdr[54] = {0};
-    hdr[0] = 'B'; hdr[1] = 'M';
-    hdr[2] = fileSize & 0xFF; hdr[3] = (fileSize >> 8) & 0xFF;
-    hdr[4] = (fileSize >> 16) & 0xFF; hdr[5] = (fileSize >> 24) & 0xFF;
-    hdr[10] = 54;                       // pixel data offset
-    hdr[14] = 40;                       // DIB header size
-    hdr[18] = w & 0xFF; hdr[19] = (w >> 8) & 0xFF;
-    hdr[20] = (w >> 16) & 0xFF; hdr[21] = (w >> 24) & 0xFF;
-    hdr[22] = h & 0xFF; hdr[23] = (h >> 8) & 0xFF;
-    hdr[24] = (h >> 16) & 0xFF; hdr[25] = (h >> 24) & 0xFF;
-    hdr[26] = 1;                        // planes
-    hdr[28] = 24;                       // bpp
-    hdr[34] = imgSize & 0xFF; hdr[35] = (imgSize >> 8) & 0xFF;
-    hdr[36] = (imgSize >> 16) & 0xFF; hdr[37] = (imgSize >> 24) & 0xFF;
-    bool ok = (std::fwrite(hdr, 1, 54, f) == 54);
+    FILE        *f = mdkr_fopen_utf8(path, "wb");
+    if (!f) {
+        std::fprintf(stderr, "[app] could not open %s\n", path);
+        return false;
+    }
+    uint8_t hdr[54]         = {0};
+    hdr[0]                  = 'B';
+    hdr[1]                  = 'M';
+    hdr[2]                  = fileSize & 0xFF;
+    hdr[3]                  = (fileSize >> 8) & 0xFF;
+    hdr[4]                  = (fileSize >> 16) & 0xFF;
+    hdr[5]                  = (fileSize >> 24) & 0xFF;
+    hdr[10]                 = 54; // pixel data offset
+    hdr[14]                 = 40; // DIB header size
+    hdr[18]                 = w & 0xFF;
+    hdr[19]                 = (w >> 8) & 0xFF;
+    hdr[20]                 = (w >> 16) & 0xFF;
+    hdr[21]                 = (w >> 24) & 0xFF;
+    hdr[22]                 = h & 0xFF;
+    hdr[23]                 = (h >> 8) & 0xFF;
+    hdr[24]                 = (h >> 16) & 0xFF;
+    hdr[25]                 = (h >> 24) & 0xFF;
+    hdr[26]                 = 1;  // planes
+    hdr[28]                 = 24; // bpp
+    hdr[34]                 = imgSize & 0xFF;
+    hdr[35]                 = (imgSize >> 8) & 0xFF;
+    hdr[36]                 = (imgSize >> 16) & 0xFF;
+    hdr[37]                 = (imgSize >> 24) & 0xFF;
+    bool                 ok = (std::fwrite(hdr, 1, 54, f) == 54);
 
     std::vector<uint8_t> row(rowBytes + pad, 0);
     for (int y = 0; y < h; ++y) {
         const uint8_t *src = &rgb[(size_t)y * rowBytes];
-        for (int x = 0; x < w; ++x) {  // RGB -> BGR
+        for (int x = 0; x < w; ++x) { // RGB -> BGR
             row[x * 3 + 0] = src[x * 3 + 2];
             row[x * 3 + 1] = src[x * 3 + 1];
             row[x * 3 + 2] = src[x * 3 + 0];
@@ -682,11 +728,11 @@ static bool writeBackbufferBmp(const char *path, int w, int h) {
 #ifdef MDKR_WEBGPU_BACKEND
 namespace {
 struct WgpuMapReq {
-    bool pending;
-    bool done;
-    bool cancelRequested;
+    bool               pending;
+    bool               done;
+    bool               cancelRequested;
     WGPUMapAsyncStatus status;
-    WGPUBuffer buffer;
+    WGPUBuffer         buffer;
 };
 
 /* mapAsync may resolve after a bounded capture wait gives up. Its userdata must
@@ -694,12 +740,13 @@ struct WgpuMapReq {
  * a timed-out request remains pending here until the device callback resolves. */
 WgpuMapReq s_captureMapReq = {};
 
-void on_map(WGPUMapAsyncStatus s, WGPUStringView m, void *u1, void *u2) {
-    (void)m; (void)u2;
+void       on_map(WGPUMapAsyncStatus s, WGPUStringView m, void *u1, void *u2) {
+    (void)m;
+    (void)u2;
     WgpuMapReq *r = (WgpuMapReq *)u1;
-    r->status = s;
-    r->done = true;
-    r->pending = false;
+    r->status     = s;
+    r->done       = true;
+    r->pending    = false;
 }
 
 void release_capture_map_request() {
@@ -748,8 +795,7 @@ void drain_capture_map_request(WGPUDevice device) {
 // surface format — vs RGBA8). BMP rows are bottom-up, so source rows are emitted
 // in reverse; BMP pixels are B,G,R.
 // Returns true only if the BMP was fully written (AUDIT-0046).
-bool writeWgpuBmp(WGPUBuffer buf, uint32_t bpr, int w, int h, const char *path,
-                  WGPUDevice device, bool bgra) {
+bool writeWgpuBmp(WGPUBuffer buf, uint32_t bpr, int w, int h, const char *path, WGPUDevice device, bool bgra) {
     if (w <= 0 || h <= 0) return false;
     reap_capture_map_request();
     if (s_captureMapReq.pending) {
@@ -760,12 +806,15 @@ bool writeWgpuBmp(WGPUBuffer buf, uint32_t bpr, int w, int h, const char *path,
     size_t size = (size_t)bpr * (uint32_t)h;
     wgpuBufferAddRef(buf);
     s_captureMapReq = {
-        true, false, false, (WGPUMapAsyncStatus)0, buf
-    };
+        true,
+        false,
+        false,
+        (WGPUMapAsyncStatus)0,
+        buf};
     WGPUBufferMapCallbackInfo ci = {};
-    ci.mode = WGPUCallbackMode_AllowProcessEvents;
-    ci.callback = on_map;
-    ci.userdata1 = &s_captureMapReq;
+    ci.mode                      = WGPUCallbackMode_AllowProcessEvents;
+    ci.callback                  = on_map;
+    ci.userdata1                 = &s_captureMapReq;
     wgpuBufferMapAsync(buf, WGPUMapMode_Read, 0, size, ci);
 
     const bool injectTimeout =
@@ -782,39 +831,49 @@ bool writeWgpuBmp(WGPUBuffer buf, uint32_t bpr, int w, int h, const char *path,
         return false;
     }
     if (s_captureMapReq.status != WGPUMapAsyncStatus_Success) {
-        std::fprintf(stderr, "[app] capture map failed (status=%d)\n",
-                     (int)s_captureMapReq.status);
+        std::fprintf(stderr, "[app] capture map failed (status=%d)\n", (int)s_captureMapReq.status);
         release_capture_map_request();
         return false;
     }
     const uint8_t *px = (const uint8_t *)wgpuBufferGetConstMappedRange(buf, 0, size);
-    FILE *f = px ? mdkr_fopen_utf8(path, "wb") : nullptr;
-    bool ok = false;
+    FILE          *f  = px ? mdkr_fopen_utf8(path, "wb") : nullptr;
+    bool           ok = false;
     if (f != nullptr) {
-        const int rowBytes = w * 3;
-        const int pad = (4 - (rowBytes % 4)) % 4;
-        const size_t imgSize = (size_t)(rowBytes + pad) * (size_t)h;
+        const int    rowBytes = w * 3;
+        const int    pad      = (4 - (rowBytes % 4)) % 4;
+        const size_t imgSize  = (size_t)(rowBytes + pad) * (size_t)h;
         const size_t fileSize = 54 + imgSize;
-        uint8_t hdr[54] = {0};
-        hdr[0] = 'B'; hdr[1] = 'M';
-        hdr[2] = fileSize & 0xFF; hdr[3] = (fileSize >> 8) & 0xFF;
-        hdr[4] = (fileSize >> 16) & 0xFF; hdr[5] = (fileSize >> 24) & 0xFF;
-        hdr[10] = 54; hdr[14] = 40;
-        hdr[18] = w & 0xFF; hdr[19] = (w >> 8) & 0xFF;
-        hdr[20] = (w >> 16) & 0xFF; hdr[21] = (w >> 24) & 0xFF;
-        hdr[22] = h & 0xFF; hdr[23] = (h >> 8) & 0xFF;
-        hdr[24] = (h >> 16) & 0xFF; hdr[25] = (h >> 24) & 0xFF;
-        hdr[26] = 1; hdr[28] = 24;
-        hdr[34] = imgSize & 0xFF; hdr[35] = (imgSize >> 8) & 0xFF;
-        hdr[36] = (imgSize >> 16) & 0xFF; hdr[37] = (imgSize >> 24) & 0xFF;
-        ok = (std::fwrite(hdr, 1, 54, f) == 54);
+        uint8_t      hdr[54]  = {0};
+        hdr[0]                = 'B';
+        hdr[1]                = 'M';
+        hdr[2]                = fileSize & 0xFF;
+        hdr[3]                = (fileSize >> 8) & 0xFF;
+        hdr[4]                = (fileSize >> 16) & 0xFF;
+        hdr[5]                = (fileSize >> 24) & 0xFF;
+        hdr[10]               = 54;
+        hdr[14]               = 40;
+        hdr[18]               = w & 0xFF;
+        hdr[19]               = (w >> 8) & 0xFF;
+        hdr[20]               = (w >> 16) & 0xFF;
+        hdr[21]               = (w >> 24) & 0xFF;
+        hdr[22]               = h & 0xFF;
+        hdr[23]               = (h >> 8) & 0xFF;
+        hdr[24]               = (h >> 16) & 0xFF;
+        hdr[25]               = (h >> 24) & 0xFF;
+        hdr[26]               = 1;
+        hdr[28]               = 24;
+        hdr[34]               = imgSize & 0xFF;
+        hdr[35]               = (imgSize >> 8) & 0xFF;
+        hdr[36]               = (imgSize >> 16) & 0xFF;
+        hdr[37]               = (imgSize >> 24) & 0xFF;
+        ok                    = (std::fwrite(hdr, 1, 54, f) == 54);
         std::vector<uint8_t> row(rowBytes + pad, 0);
-        for (int y = h - 1; y >= 0; --y) {   // BMP bottom-up
+        for (int y = h - 1; y >= 0; --y) { // BMP bottom-up
             const uint8_t *srow = px + (size_t)y * bpr;
-            for (int x = 0; x < w; ++x) {     // -> BMP B,G,R (drop alpha)
-                row[x * 3 + 0] = bgra ? srow[x * 4 + 0] : srow[x * 4 + 2];  // B
-                row[x * 3 + 1] = srow[x * 4 + 1];                            // G
-                row[x * 3 + 2] = bgra ? srow[x * 4 + 2] : srow[x * 4 + 0];  // R
+            for (int x = 0; x < w; ++x) {                                  // -> BMP B,G,R (drop alpha)
+                row[x * 3 + 0] = bgra ? srow[x * 4 + 0] : srow[x * 4 + 2]; // B
+                row[x * 3 + 1] = srow[x * 4 + 1];                          // G
+                row[x * 3 + 2] = bgra ? srow[x * 4 + 2] : srow[x * 4 + 0]; // R
             }
             if (std::fwrite(row.data(), 1, rowBytes + pad, f) != (size_t)(rowBytes + pad)) ok = false;
         }
@@ -833,23 +892,22 @@ bool writeWgpuBmp(WGPUBuffer buf, uint32_t bpr, int w, int h, const char *path,
     return ok;
 }
 
-bool encodeImGuiPass(WGPUCommandEncoder encoder, WGPUTextureView target,
-                     ImDrawData *drawData, int w, int h) {
+bool encodeImGuiPass(WGPUCommandEncoder encoder, WGPUTextureView target, ImDrawData *drawData, int w, int h) {
     if (encoder == nullptr || target == nullptr || drawData == nullptr) return false;
 
     WGPURenderPassColorAttachment color = {};
-    color.view = target;
-    color.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
-    color.loadOp = WGPULoadOp_Clear;
-    color.storeOp = WGPUStoreOp_Store;
-    color.clearValue.r = 0.06;
-    color.clearValue.g = 0.07;
-    color.clearValue.b = 0.09;
-    color.clearValue.a = 1.0;
+    color.view                          = target;
+    color.depthSlice                    = WGPU_DEPTH_SLICE_UNDEFINED;
+    color.loadOp                        = WGPULoadOp_Clear;
+    color.storeOp                       = WGPUStoreOp_Store;
+    color.clearValue.r                  = 0.06;
+    color.clearValue.g                  = 0.07;
+    color.clearValue.b                  = 0.09;
+    color.clearValue.a                  = 1.0;
 
     WGPURenderPassDescriptor descriptor = {};
-    descriptor.colorAttachmentCount = 1;
-    descriptor.colorAttachments = &color;
+    descriptor.colorAttachmentCount     = 1;
+    descriptor.colorAttachments         = &color;
     WGPURenderPassEncoder pass =
         wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
     if (pass == nullptr) return false;
@@ -858,7 +916,7 @@ bool encodeImGuiPass(WGPUCommandEncoder encoder, WGPUTextureView target,
     wgpuRenderPassEncoderRelease(pass);
     return rendered;
 }
-}  // namespace
+} // namespace
 
 bool AppHost::endFrameWebGpu(const char *captureBmpPath) {
     if (wgpuFatal_ || gfx_webgpu_device_failed()) {
@@ -878,8 +936,8 @@ bool AppHost::endFrameWebGpu(const char *captureBmpPath) {
     }
 
     WGPUSurface surface = (WGPUSurface)wgpuSurface_;
-    WGPUDevice device = (WGPUDevice)wgpuDevice_;
-    WGPUQueue queue = (WGPUQueue)wgpuQueue_;
+    WGPUDevice  device  = (WGPUDevice)wgpuDevice_;
+    WGPUQueue   queue   = (WGPUQueue)wgpuQueue_;
     if ((unsigned)w != cfgW_ || (unsigned)h != cfgH_) {
         if (!configureWgpuSurface(w, h)) {
             if (captureRequested) ++wgpuCaptureFailures_;
@@ -891,9 +949,9 @@ bool AppHost::endFrameWebGpu(const char *captureBmpPath) {
     // Acquire before encoding. The normal path renders ImGui directly into this
     // view, so the surface needs RenderAttachment only and there is no per-frame
     // scene texture or full-frame CopyTextureToTexture operation.
-    WGPUSurfaceTexture st = {};
-    WGPUTextureView surfaceView = nullptr;
-    bool surfaceAcquired = false;
+    WGPUSurfaceTexture st              = {};
+    WGPUTextureView    surfaceView     = nullptr;
+    bool               surfaceAcquired = false;
     ++wgpuPresentAttempts_;
     if (surface != nullptr && wgpuSurfaceConfigured_) {
         if (gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_HOST_SURFACE_ACQUIRE)) {
@@ -904,9 +962,9 @@ bool AppHost::endFrameWebGpu(const char *captureBmpPath) {
             wgpuSurfaceGetCurrentTexture(surface, &st);
         }
         wgpuLastSurfaceStatus_ = (int)st.status;
-        surfaceAcquired = st.texture != nullptr &&
-        (st.status == WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal ||
-         st.status == WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal);
+        surfaceAcquired        = st.texture != nullptr &&
+                                 (st.status == WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal ||
+                                  st.status == WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal);
     }
     if (!surfaceAcquired) {
         ++wgpuUnavailableFrames_;
@@ -936,7 +994,8 @@ bool AppHost::endFrameWebGpu(const char *captureBmpPath) {
         }
     } else {
         surfaceView = gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_HOST_SURFACE_VIEW)
-            ? nullptr : wgpuTextureCreateView(st.texture, nullptr);
+                          ? nullptr
+                          : wgpuTextureCreateView(st.texture, nullptr);
         if (surfaceView == nullptr) ++wgpuEncodeFailures_;
     }
     const bool directRenderExpected = surfaceAcquired;
@@ -944,26 +1003,27 @@ bool AppHost::endFrameWebGpu(const char *captureBmpPath) {
     // Screenshot capture deliberately gets a second, identical render pass.
     // This retains hidden-window capture semantics without taxing ordinary UI
     // presentation with an offscreen texture and copy.
-    WGPUBuffer capBuf = nullptr;
-    uint32_t capBpr = 0;
-    bool captureResourcesReady = false;
+    WGPUBuffer capBuf                = nullptr;
+    uint32_t   capBpr                = 0;
+    bool       captureResourcesReady = false;
     if (captureRequested) {
         ensureWgpuCaptureTarget(w, h);
-        capBpr = ((uint32_t)w * 4u + 255u) / 256u * 256u;   // 256-align for CopyTextureToBuffer
+        capBpr                  = ((uint32_t)w * 4u + 255u) / 256u * 256u; // 256-align for CopyTextureToBuffer
         WGPUBufferDescriptor bd = {};
-        bd.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
-        bd.size = (uint64_t)capBpr * (uint32_t)h;
+        bd.usage                = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
+        bd.size                 = (uint64_t)capBpr * (uint32_t)h;
         if (captureTex_ != nullptr && captureView_ != nullptr) {
-            capBuf = wgpuDeviceCreateBuffer(device, &bd);
+            capBuf                = wgpuDeviceCreateBuffer(device, &bd);
             captureResourcesReady = capBuf != nullptr;
         }
     }
 
-    const bool needEncoder = surfaceView != nullptr || captureResourcesReady;
-    WGPUCommandEncoder encoder = needEncoder
-        ? wgpuDeviceCreateCommandEncoder(device, nullptr) : nullptr;
-    bool directEncoded = false;
-    bool captureEncoded = false;
+    const bool         needEncoder    = surfaceView != nullptr || captureResourcesReady;
+    WGPUCommandEncoder encoder        = needEncoder
+                                            ? wgpuDeviceCreateCommandEncoder(device, nullptr)
+                                            : nullptr;
+    bool               directEncoded  = false;
+    bool               captureEncoded = false;
     if (needEncoder && encoder == nullptr) {
         ++wgpuEncodeFailures_;
     } else if (encoder != nullptr) {
@@ -974,16 +1034,20 @@ bool AppHost::endFrameWebGpu(const char *captureBmpPath) {
         }
         if (captureResourcesReady) {
             captureEncoded = encodeImGuiPass(
-                encoder, (WGPUTextureView)captureView_, drawData, w, h);
+                encoder,
+                (WGPUTextureView)captureView_,
+                drawData,
+                w,
+                h);
             if (captureEncoded) {
                 WGPUTexelCopyTextureInfo src = {};
-                src.texture = (WGPUTexture)captureTex_;
-                src.aspect = WGPUTextureAspect_All;
-                WGPUTexelCopyBufferInfo dst = {};
-                dst.buffer = capBuf;
-                dst.layout.bytesPerRow = capBpr;
-                dst.layout.rowsPerImage = (uint32_t)h;
-                WGPUExtent3D ext = { (uint32_t)w, (uint32_t)h, 1 };
+                src.texture                  = (WGPUTexture)captureTex_;
+                src.aspect                   = WGPUTextureAspect_All;
+                WGPUTexelCopyBufferInfo dst  = {};
+                dst.buffer                   = capBuf;
+                dst.layout.bytesPerRow       = capBpr;
+                dst.layout.rowsPerImage      = (uint32_t)h;
+                WGPUExtent3D ext             = {(uint32_t)w, (uint32_t)h, 1};
                 wgpuCommandEncoderCopyTextureToBuffer(encoder, &src, &dst, &ext);
             } else {
                 ++wgpuEncodeFailures_;
@@ -1019,7 +1083,7 @@ bool AppHost::endFrameWebGpu(const char *captureBmpPath) {
     if (submitted && captureEncoded && capBuf != nullptr) {
         const bool bgra = ((WGPUTextureFormat)wgpuFormat_ == WGPUTextureFormat_BGRA8Unorm ||
                            (WGPUTextureFormat)wgpuFormat_ == WGPUTextureFormat_BGRA8UnormSrgb);
-        captureOk = writeWgpuBmp(capBuf, capBpr, w, h, captureBmpPath, device, bgra);
+        captureOk       = writeWgpuBmp(capBuf, capBpr, w, h, captureBmpPath, device, bgra);
     }
     if (captureRequested && !captureOk) ++wgpuCaptureFailures_;
 
@@ -1029,7 +1093,7 @@ bool AppHost::endFrameWebGpu(const char *captureBmpPath) {
     if (gfx_webgpu_device_failed()) wgpuFatal_ = true;
     return captureOk && !wgpuFatal_;
 }
-#endif  // MDKR_WEBGPU_BACKEND
+#endif // MDKR_WEBGPU_BACKEND
 
 #ifndef MDKR_WEBGPU_BACKEND
 int AppHost::recoverWebGpuRoots(int phase) {
@@ -1049,11 +1113,11 @@ bool AppHost::endFrameGL(const char *captureBmpPath) {
     }
     if (glSoftwarePacing_) {
         const Uint64 frequency = SDL_GetPerformanceFrequency();
-        const Uint64 now = SDL_GetPerformanceCounter();
-        const Uint64 target = frequency / 60u;
+        const Uint64 now       = SDL_GetPerformanceCounter();
+        const Uint64 target    = frequency / 60u;
         if (glLastPresentCounter_ != 0 && now - glLastPresentCounter_ < target) {
             const Uint64 remaining = target - (now - glLastPresentCounter_);
-            const Uint32 delayMs = static_cast<Uint32>(remaining * 1000u / frequency);
+            const Uint32 delayMs   = static_cast<Uint32>(remaining * 1000u / frequency);
             if (delayMs > 0) SDL_Delay(delayMs);
         }
     }
@@ -1066,23 +1130,26 @@ bool AppHost::endFrameGL(const char *captureBmpPath) {
 // Returns true when the host renderer is healthy and no capture failed.
 bool AppHost::endFrame(const char *captureBmpPath) {
 #ifdef MDKR_WEBGPU_BACKEND
-    if (useWebGpu_) { return endFrameWebGpu(captureBmpPath); }
+    if (useWebGpu_) {
+        return endFrameWebGpu(captureBmpPath);
+    }
 #endif
     return endFrameGL(captureBmpPath);
 }
 
 void AppHost::drawableSize(int *w, int *h) const {
-    *w = 0; *h = 0;
+    *w = 0;
+    *h = 0;
     if (!window_) return;
 #ifdef MDKR_WEBGPU_BACKEND
     if (useWebGpu_) {
-#  if defined(__APPLE__)
+    #if defined(__APPLE__)
         SDL_Metal_GetDrawableSize(window_, w, h);
-#  elif SDL_VERSION_ATLEAST(2, 26, 0)
+    #elif SDL_VERSION_ATLEAST(2, 26, 0)
         SDL_GetWindowSizeInPixels(window_, w, h);
-#  else
+    #else
         SDL_GetWindowSize(window_, w, h);
-#  endif
+    #endif
         return;
     }
 #endif
@@ -1141,7 +1208,7 @@ bool AppHost::processEvent(SDL_Event &e) {
         return true;
     }
     if (e.type == SDL_DROPFILE && e.drop.file) {
-        droppedFile_ = e.drop.file;  // consumed by takeDroppedFile()
+        droppedFile_ = e.drop.file; // consumed by takeDroppedFile()
         SDL_free(e.drop.file);
         return false;
     }
@@ -1159,16 +1226,16 @@ bool AppHost::processEvent(SDL_Event &e) {
 
 bool AppHost::injectSmokeEvent(SDL_Event &event) {
     injectingSmokeEvent_ = true;
-    const bool quit = processEvent(event);
+    const bool quit      = processEvent(event);
     injectingSmokeEvent_ = false;
     switch (event.type) {
         case SDL_MOUSEMOTION:
-            smokePointer_ = {event.motion.x, event.motion.y};
+            smokePointer_      = {event.motion.x, event.motion.y};
             smokePointerValid_ = true;
             break;
         case SDL_MOUSEBUTTONDOWN:
         case SDL_MOUSEBUTTONUP:
-            smokePointer_ = {event.button.x, event.button.y};
+            smokePointer_      = {event.button.x, event.button.y};
             smokePointerValid_ = true;
             break;
         default:
@@ -1207,10 +1274,10 @@ bool AppHost::queueGamepadPressForSmoke(SDL_GameControllerButton button) {
 
 void AppHost::queueMouseClickForSmoke(int x, int y) {
     const char *navigationTarget = std::getenv("MDKR_APP_SMOKE_NAV_TARGET");
-    const char *navigationToken = std::getenv("MDKR_APP_SMOKE_NAV_TOKEN");
-    const bool navigationSmoke = navigationTarget && navigationTarget[0] &&
-        navigationToken &&
-        std::strcmp(navigationToken, "mdkr64-app-nav-v1") == 0;
+    const char *navigationToken  = std::getenv("MDKR_APP_SMOKE_NAV_TOKEN");
+    const bool  navigationSmoke  = navigationTarget && navigationTarget[0] &&
+                                   navigationToken &&
+                                   std::strcmp(navigationToken, "mdkr64-app-nav-v1") == 0;
     if (AppUi_smokeInputMode() != AppUiSmokeInputMode::Keyboard &&
         !navigationSmoke) {
         return;
@@ -1251,12 +1318,12 @@ bool AppHost::pumpAndShouldQuit() {
     // feed the exact same event type and ownership contract to processEvent().
     if (!pendingSmokeDrop_.empty()) {
         std::string path;
-        path.swap(pendingSmokeDrop_);  // consume exactly once, even on OOM
-        SDL_Event e = {};
-        e.type = SDL_DROPFILE;
+        path.swap(pendingSmokeDrop_); // consume exactly once, even on OOM
+        SDL_Event e      = {};
+        e.type           = SDL_DROPFILE;
         e.drop.timestamp = SDL_GetTicks();
-        e.drop.file = SDL_strdup(path.c_str());
-        e.drop.windowID = SDL_GetWindowID(window_);
+        e.drop.file      = SDL_strdup(path.c_str());
+        e.drop.windowID  = SDL_GetWindowID(window_);
         if (e.drop.file) {
             quit = injectSmokeEvent(e) || quit;
         } else {
@@ -1264,106 +1331,107 @@ bool AppHost::pumpAndShouldQuit() {
         }
     }
 
-
     if (smokeHeldKey_ != SDLK_UNKNOWN || !pendingSmokeKeys_.empty()) {
-        SDL_Event event = {};
+        SDL_Event event     = {};
         event.key.timestamp = SDL_GetTicks();
-        event.key.windowID = SDL_GetWindowID(window_);
-        event.key.repeat = 0;
+        event.key.windowID  = SDL_GetWindowID(window_);
+        event.key.repeat    = 0;
         if (smokeHeldKey_ != SDLK_UNKNOWN) {
-            event.type = SDL_KEYUP;
-            event.key.state = SDL_RELEASED;
-            event.key.keysym.sym = smokeHeldKey_;
+            event.type                = SDL_KEYUP;
+            event.key.state           = SDL_RELEASED;
+            event.key.keysym.sym      = smokeHeldKey_;
             event.key.keysym.scancode = SDL_GetScancodeFromKey(smokeHeldKey_);
-            quit = injectSmokeEvent(event) || quit;
-            smokeHeldKey_ = SDLK_UNKNOWN;
+            quit                      = injectSmokeEvent(event) || quit;
+            smokeHeldKey_             = SDLK_UNKNOWN;
         }
         if (!pendingSmokeKeys_.empty()) {
             smokeHeldKey_ = pendingSmokeKeys_.front();
             pendingSmokeKeys_.erase(pendingSmokeKeys_.begin());
-            event.type = SDL_KEYDOWN;
-            event.key.state = SDL_PRESSED;
-            event.key.keysym.sym = smokeHeldKey_;
+            event.type                = SDL_KEYDOWN;
+            event.key.state           = SDL_PRESSED;
+            event.key.keysym.sym      = smokeHeldKey_;
             event.key.keysym.scancode = SDL_GetScancodeFromKey(smokeHeldKey_);
-            quit = injectSmokeEvent(event) || quit;
+            quit                      = injectSmokeEvent(event) || quit;
         }
     }
-
 
     if (smokeClickHeld_) {
         // Keep the backend's held-button bit set through its next NewFrame so
         // the OS global-mouse fallback cannot overwrite the synthetic widget
         // coordinate. releaseSmokeMouseClick() queues the release immediately
         // afterward and before ImGui::NewFrame consumes the input stream.
-        smokeClickHeld_ = false;
+        smokeClickHeld_           = false;
         smokeClickReleasePending_ = true;
     } else if (!smokeClickReleasePending_ && !pendingSmokeClicks_.empty()) {
         SDL_Event event = {};
         smokeHeldClick_ = pendingSmokeClicks_.front();
         pendingSmokeClicks_.erase(pendingSmokeClicks_.begin());
 
-        event.type = SDL_MOUSEMOTION;
+        event.type             = SDL_MOUSEMOTION;
         event.motion.timestamp = SDL_GetTicks();
-        event.motion.windowID = SDL_GetWindowID(window_);
-        event.motion.x = smokeHeldClick_.x;
-        event.motion.y = smokeHeldClick_.y;
-        quit = injectSmokeEvent(event) || quit;
+        event.motion.windowID  = SDL_GetWindowID(window_);
+        event.motion.x         = smokeHeldClick_.x;
+        event.motion.y         = smokeHeldClick_.y;
+        quit                   = injectSmokeEvent(event) || quit;
 
-        event = {};
-        event.type = SDL_MOUSEBUTTONDOWN;
+        event                  = {};
+        event.type             = SDL_MOUSEBUTTONDOWN;
         event.button.timestamp = SDL_GetTicks();
-        event.button.windowID = SDL_GetWindowID(window_);
-        event.button.button = SDL_BUTTON_LEFT;
-        event.button.state = SDL_PRESSED;
-        event.button.clicks = 1;
-        event.button.x = smokeHeldClick_.x;
-        event.button.y = smokeHeldClick_.y;
-        quit = injectSmokeEvent(event) || quit;
-        smokeClickHeld_ = true;
+        event.button.windowID  = SDL_GetWindowID(window_);
+        event.button.button    = SDL_BUTTON_LEFT;
+        event.button.state     = SDL_PRESSED;
+        event.button.clicks    = 1;
+        event.button.x         = smokeHeldClick_.x;
+        event.button.y         = smokeHeldClick_.y;
+        quit                   = injectSmokeEvent(event) || quit;
+        smokeClickHeld_        = true;
     }
 
     if (!pendingSmokeDragSteps_.empty()) {
         const SmokeDragStep step = pendingSmokeDragSteps_.front();
         pendingSmokeDragSteps_.erase(pendingSmokeDragSteps_.begin());
-        SDL_Event event = {};
-        event.type = SDL_MOUSEMOTION;
+        SDL_Event event        = {};
+        event.type             = SDL_MOUSEMOTION;
         event.motion.timestamp = SDL_GetTicks();
-        event.motion.windowID = SDL_GetWindowID(window_);
-        event.motion.which = step.touch ? SDL_TOUCH_MOUSEID : 0;
-        event.motion.x = step.x;
-        event.motion.y = step.y;
-        quit = injectSmokeEvent(event) || quit;
+        event.motion.windowID  = SDL_GetWindowID(window_);
+        event.motion.which     = step.touch ? SDL_TOUCH_MOUSEID : 0;
+        event.motion.x         = step.x;
+        event.motion.y         = step.y;
+        quit                   = injectSmokeEvent(event) || quit;
 
         if (step.held != smokeDragHeld_) {
-            event = {};
-            event.type = step.held ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP;
+            event                  = {};
+            event.type             = step.held ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP;
             event.button.timestamp = SDL_GetTicks();
-            event.button.windowID = SDL_GetWindowID(window_);
-            event.button.which = step.touch ? SDL_TOUCH_MOUSEID : 0;
-            event.button.button = SDL_BUTTON_LEFT;
-            event.button.state = step.held ? SDL_PRESSED : SDL_RELEASED;
-            event.button.clicks = 1;
-            event.button.x = step.x;
-            event.button.y = step.y;
-            quit = injectSmokeEvent(event) || quit;
-            smokeDragHeld_ = step.held;
+            event.button.windowID  = SDL_GetWindowID(window_);
+            event.button.which     = step.touch ? SDL_TOUCH_MOUSEID : 0;
+            event.button.button    = SDL_BUTTON_LEFT;
+            event.button.state     = step.held ? SDL_PRESSED : SDL_RELEASED;
+            event.button.clicks    = 1;
+            event.button.x         = step.x;
+            event.button.y         = step.y;
+            quit                   = injectSmokeEvent(event) || quit;
+            smokeDragHeld_         = step.held;
         }
     }
-
 
 #if SDL_VERSION_ATLEAST(2, 0, 14)
     if (smokeGamepad_) {
         SDL_Joystick *joystick = SDL_GameControllerGetJoystick(smokeGamepad_);
         if (smokeHeldGamepadButton_ >= 0) {
             (void)SDL_JoystickSetVirtualButton(
-                joystick, smokeHeldGamepadButton_, SDL_RELEASED);
+                joystick,
+                smokeHeldGamepadButton_,
+                SDL_RELEASED);
             smokeHeldGamepadButton_ = -1;
         }
         if (!pendingSmokeGamepadButtons_.empty()) {
             smokeHeldGamepadButton_ = pendingSmokeGamepadButtons_.front();
             pendingSmokeGamepadButtons_.erase(pendingSmokeGamepadButtons_.begin());
             if (SDL_JoystickSetVirtualButton(
-                    joystick, smokeHeldGamepadButton_, SDL_PRESSED) != 0) {
+                    joystick,
+                    smokeHeldGamepadButton_,
+                    SDL_PRESSED) != 0) {
                 std::fprintf(stderr,
                              "[app-ui-test] virtual gamepad button update failed: %s\n",
                              SDL_GetError());
@@ -1381,15 +1449,15 @@ bool AppHost::pumpAndShouldQuit() {
 
 void AppHost::releaseSmokeMouseClick() {
     if (!smokeClickReleasePending_) return;
-    SDL_Event event = {};
-    event.type = SDL_MOUSEBUTTONUP;
+    SDL_Event event        = {};
+    event.type             = SDL_MOUSEBUTTONUP;
     event.button.timestamp = SDL_GetTicks();
-    event.button.windowID = SDL_GetWindowID(window_);
-    event.button.button = SDL_BUTTON_LEFT;
-    event.button.state = SDL_RELEASED;
-    event.button.clicks = 1;
-    event.button.x = smokeHeldClick_.x;
-    event.button.y = smokeHeldClick_.y;
+    event.button.windowID  = SDL_GetWindowID(window_);
+    event.button.button    = SDL_BUTTON_LEFT;
+    event.button.state     = SDL_RELEASED;
+    event.button.clicks    = 1;
+    event.button.x         = smokeHeldClick_.x;
+    event.button.y         = smokeHeldClick_.y;
     (void)injectSmokeEvent(event);
     smokeClickReleasePending_ = false;
 }
@@ -1398,7 +1466,7 @@ bool AppHost::waitAndPump(int timeoutMs) {
     if (pumpAndShouldQuit()) return true;
     if (timeoutMs < 0) timeoutMs = 0;
 
-    bool quit = false;
+    bool      quit  = false;
     SDL_Event event = {};
     if (SDL_WaitEventTimeout(&event, timeoutMs) == 1) {
         quit = processEvent(event);
@@ -1536,9 +1604,21 @@ void AppHost::shutdown() {
     wgpuFormat_ = 0;
     cfgW_ = cfgH_ = 0;
     /* The surface no longer references this CAMetalLayer. */
-    if (metalView_) { SDL_Metal_DestroyView((SDL_MetalView)metalView_); metalView_ = nullptr; }
+    if (metalView_) {
+        SDL_Metal_DestroyView((SDL_MetalView)metalView_);
+        metalView_ = nullptr;
+    }
 #endif
-    if (gl_) { SDL_GL_DeleteContext(gl_); gl_ = nullptr; }
-    if (window_) { SDL_DestroyWindow(window_); window_ = nullptr; }
-    if (sdlOwned_) { SDL_Quit(); sdlOwned_ = false; }
+    if (gl_) {
+        SDL_GL_DeleteContext(gl_);
+        gl_ = nullptr;
+    }
+    if (window_) {
+        SDL_DestroyWindow(window_);
+        window_ = nullptr;
+    }
+    if (sdlOwned_) {
+        SDL_Quit();
+        sdlOwned_ = false;
+    }
 }
