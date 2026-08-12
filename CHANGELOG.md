@@ -23,14 +23,16 @@ save formats). Everything below 1.0.0 predates that commitment.
   reconnects, and a phone dropping out leaves its kart in neutral rather than
   handing it to someone else. Established direct controls keep working through
   a room-service interruption and reconnect inside the same approved seat.
-- An Online Room panel is visible in the launcher as a preview. Online races
-  are not yet enabled; local and split-screen play are unaffected.
 - Magic Codes now keep their unlocked and active state between launches. Codes
   that alter save progression, grant one-time rewards, show credits, or can
   lock the game are deliberately not restored.
 
 ### Fixed
 
+- Simultaneous room commands can no longer both commit from one revision or
+  lease the same Phone Party seat. Direct controller channels now use stale-
+  generation rejection and a bounded liveness watchdog, fail neutral when the
+  reliable path closes, and recover inside the approved seat.
 - Rollback races now keep projectile models, glow attachments and shared model
   lifetimes deterministic across rewinds. A 15-configuration item matrix covers
   every balloon tier through the real inventory path and guards the fix.

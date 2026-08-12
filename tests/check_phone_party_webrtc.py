@@ -124,10 +124,122 @@ def run(args: argparse.Namespace) -> None:
                     "host could not send bounded phone rumble")
             wait_value(phone, "globalThis.__mdkrVibration", lambda value: value == 250,
                        "optional phone vibration", args.timeout)
+            require(bool(host.evaluate("globalThis.MDKRPartyHost.testPingControl()")),
+                    "host refused a reliable-channel liveness probe")
+            wait_value(host,
+                       "globalThis.__mdkrPartyHostTestState.controlPongs",
+                       lambda value: value == 1,
+                       "reliable control ping/pong", args.timeout)
+
+            initial_peer_evidence = host.evaluate(
+                "({creations:globalThis.__mdkrPartyHostTestState.peerCreations,"
+                "generation:globalThis.MDKRPartyHost.testPeerState().generation})")
+            require(initial_peer_evidence == {"creations": 1, "generation": 1},
+                    f"initial direct handshake churned peers: {initial_peer_evidence}")
+            initial_generation = initial_peer_evidence["generation"]
+            require(bool(host.evaluate("globalThis.MDKRPartyHost.testRestartIce()",
+                                       await_promise=True)),
+                    "host refused an ICE restart inside the approved lease")
+            deadline = time.monotonic() + args.timeout
+            restart_answered = False
+            while time.monotonic() < deadline:
+                relay(host, phone,
+                      "globalThis.__mdkrPartyHostTestState.signals?.splice(0) || []",
+                      "globalThis.__mdkrControllerTest.receiveSignal")
+                answered = relay(phone, host,
+                      "globalThis.__mdkrControllerTestState.signals?.splice(0) || []",
+                      "globalThis.MDKRPartyHost.receiveSignal")
+                peer_state = host.evaluate("globalThis.MDKRPartyHost.testPeerState()")
+                if answered and peer_state and peer_state["signalingState"] == "stable":
+                    restart_answered = True
+                    break
+                time.sleep(0.03)
+            require(restart_answered,
+                    "ICE restart offer/answer did not settle on the existing peer")
+            restart_evidence = host.evaluate(
+                "({restarts:globalThis.__mdkrPartyHostTestState.iceRestarts,"
+                "creations:globalThis.__mdkrPartyHostTestState.peerCreations,"
+                "generation:globalThis.MDKRPartyHost.testPeerState()?.generation})")
+            require(restart_evidence == {"restarts": 1,
+                                        "creations": initial_peer_evidence["creations"],
+                                        "generation": initial_generation},
+                    f"ICE restart did not preserve the approved peer: "
+                    f"before={initial_peer_evidence} after={restart_evidence}")
+
+            phone.evaluate("dispatchEvent(new PointerEvent('pointerup',{pointerId:31,bubbles:true}))")
+            require(bool(host.evaluate("globalThis.MDKRPartyHost.testCloseControl()")),
+                    "control-channel failure could not be injected")
+            wait_value(host, "!globalThis.MDKRPartyHost.remotePads()[0].active",
+                       bool, "host fail-neutral after reliable channel close", args.timeout)
+            wait_value(phone,
+                       "globalThis.__mdkrControllerTest.state().phase === 'reconnecting'",
+                       bool, "phone fail-neutral after reliable channel close", args.timeout)
+            deadline = time.monotonic() + args.timeout
+            recovered = False
+            while time.monotonic() < deadline:
+                relay(host, phone,
+                      "globalThis.__mdkrPartyHostTestState.signals?.splice(0) || []",
+                      "globalThis.__mdkrControllerTest.receiveSignal")
+                relay(phone, host,
+                      "globalThis.__mdkrControllerTestState.signals?.splice(0) || []",
+                      "globalThis.MDKRPartyHost.receiveSignal")
+                recovered = bool(host.evaluate(
+                    "globalThis.MDKRPartyHost.remotePads()[0].active")) and bool(
+                    phone.evaluate(
+                    "globalThis.__mdkrControllerTest.state().phase === 'controller'"))
+                if recovered:
+                    break
+                time.sleep(0.03)
+            require(recovered, "controller did not recover after reliable channel close")
+            recovery = host.evaluate("({creations:globalThis.__mdkrPartyHostTestState.peerCreations,"
+                "failures:globalThis.__mdkrPartyHostTestState.channelFailures,"
+                "generation:globalThis.MDKRPartyHost.testPeerState().generation})")
+            require(recovery["creations"] == initial_peer_evidence["creations"] + 1 and
+                    recovery["failures"] >= 1 and
+                    recovery["generation"] > initial_generation,
+                    f"channel recovery did not use one fresh peer generation: {recovery}")
+            host.evaluate("globalThis.MDKRPartyHost.remotePads()[0].packets.length=0")
+            phone.evaluate("""(() => {
+              const go=document.querySelector('.touch-go');
+              const r=go.getBoundingClientRect();
+              go.parentElement.dispatchEvent(new PointerEvent('pointerdown',{
+                pointerId:32,pointerType:'touch',clientX:(r.left+r.right)/2,
+                clientY:(r.top+r.bottom)/2,bubbles:true,cancelable:true}));
+            })()""")
+            wait_value(host, "globalThis.MDKRPartyHost.remotePads()[0].packets.length",
+                       lambda value: isinstance(value, int) and value > 0,
+                       "pad input after control-channel recovery", args.timeout)
+            require(bool(host.evaluate("globalThis.MDKRPartyHost.testExpireControl()")),
+                    "control watchdog failure could not be injected")
+            wait_value(host, "!globalThis.MDKRPartyHost.remotePads()[0].active",
+                       bool, "host fail-neutral after control watchdog expiry", args.timeout)
+            deadline = time.monotonic() + args.timeout
+            watchdog_recovered = False
+            while time.monotonic() < deadline:
+                relay(host, phone,
+                      "globalThis.__mdkrPartyHostTestState.signals?.splice(0) || []",
+                      "globalThis.__mdkrControllerTest.receiveSignal")
+                relay(phone, host,
+                      "globalThis.__mdkrControllerTestState.signals?.splice(0) || []",
+                      "globalThis.MDKRPartyHost.receiveSignal")
+                watchdog_recovered = bool(host.evaluate(
+                    "globalThis.MDKRPartyHost.remotePads()[0].active")) and bool(
+                    phone.evaluate(
+                    "globalThis.__mdkrControllerTest.state().phase === 'controller'"))
+                if watchdog_recovered:
+                    break
+                time.sleep(0.03)
+            require(watchdog_recovered,
+                    "controller did not recover after control watchdog expiry")
+            require(host.evaluate(
+                "globalThis.__mdkrPartyHostTestState.peerCreations") ==
+                    initial_peer_evidence["creations"] + 2,
+                    "control watchdog recovery did not create exactly one fresh peer")
             require(not host.failures and not phone.failures,
                     "CDP failure in direct controller path")
             print("check_phone_party_webrtc: PASS — authenticated signaling relay, "
-                  "direct unordered state/reliable control channels, input-test RTT, "
+                  "direct unordered state/reliable control channels, same-lease ICE "
+                  "restart, ping watchdog, fail-neutral control-channel recovery, input-test RTT, "
                   "bounded pad handoff and optional phone haptics")
         finally:
             host.close()

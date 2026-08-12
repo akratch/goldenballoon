@@ -10,6 +10,10 @@ Recommended settings are unchanged: **WebGPU**, **Restored**, frame limit
 **Original**, Motion smoothing **Off**, gameplay tick rate **Original**, camera
 **Authored**.
 
+WebGPU with Restored presentation remains the qualified native and browser
+visual path. The launcher is keyboard and gamepad operable, but does not claim a
+VoiceOver, UI Automation, or other screen-reader semantic tree.
+
 ## New racers: Wizpig and Terry
 
 Beat Wizpig a second time — or enter `WIZPIGPOWER` — and he joins the
@@ -27,12 +31,9 @@ on or off once unlocked.
 Pair phones as extra controllers by scanning a QR code from the launcher —
 nothing to install. An approved phone keeps its seat if it reconnects, and a
 phone that drops out leaves its kart coasting in neutral instead of handing
-the controls to someone else. We'd love reports from real living rooms while
-this is in beta.
-
-You'll also notice an **Online Room** panel in the launcher. It's a preview of
-what's coming; online races are not enabled yet. Local and split-screen play
-are unchanged.
+the controls to someone else. Once paired, direct controls keep working through
+a brief room-service interruption and reconnect in the same approved seat.
+We'd love reports from real living rooms while this is in beta.
 
 ## Magic Codes remember themselves
 
@@ -71,4 +72,5 @@ blending while another snaps, and cutscene shots are as smooth as gameplay.
 With Motion smoothing on, controls are sampled right before each game tick,
 trimming about a frame of input delay at 60 Hz. These changes affect
 presentation only: physics, timers, audio, and saves still advance at the
-game's authored rate.
+game's authored rate. Interpolated draws presentation-only in-between images
+from adjacent authored states; Original repeats authored holds.

@@ -126,6 +126,7 @@ def inventory(executable: Path, root: Path,
     """
     _home, env = session(root, "schema")
     env["MDKR_APP_DUMP_SCHEMA"] = "1"
+    env["MDKR_ONLINE_ROOM_PREVIEW"] = "1"
     output = run(executable, env, "schema dump", timeout)
     rows = CONTROL_RE.findall(output)
     if not rows:
@@ -147,6 +148,7 @@ def walk_launcher(executable: Path, root: Path, timeout: int) -> str:
     env.update({
         "MDKR_APP_PANEL": "Settings",
         "MDKR_APP_SMOKE_FRAMES": str(WALK_FRAMES),
+        "MDKR_ONLINE_ROOM_PREVIEW": "1",
         "MDKR_APP_SMOKE_A11Y_WALK": "1",
         "MDKR_APP_SMOKE_INPUT": "keyboard",
         "MDKR_APP_SMOKE_INPUT_TOKEN": INPUT_TOKEN,
@@ -162,6 +164,9 @@ def walk_panel(executable: Path, root: Path, panel: str, timeout: int) -> str:
         "MDKR_APP_SMOKE_A11Y_WALK": "1",
         "MDKR_APP_SMOKE_INPUT": "keyboard",
         "MDKR_APP_SMOKE_INPUT_TOKEN": INPUT_TOKEN,
+        # The Online Room panel is hidden without the preview flag; this gate
+        # must still speak-walk every panel that CAN exist.
+        "MDKR_ONLINE_ROOM_PREVIEW": "1",
     })
     return run(executable, env, f"{panel} panel walk", timeout)
 

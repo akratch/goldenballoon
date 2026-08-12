@@ -12,6 +12,6 @@ Decision: **OPEN — browser direct-path automation passes; device/release gates
 | Security controls | Origin/body/key/rotation/replay/rate/census tests; 20-bit phrase derivation; sheet dismissal revokes its QR/code but preserves approved leases |
 | Four physical phones/mixed race | OPEN |
 | iOS/Android/accessibility/hand comfort | Automated keyboard/switch-compatible steering, focus and semantics pass; physical VoiceOver/TalkBack and hand-comfort review OPEN |
-| Native macOS/Windows/Linux | OPEN (A2) |
+| Native macOS/Windows/Linux | Generation-tagged libdatachannel host, direct close recovery and ping watchdog compile/test locally; executed packaged/device matrix remains OPEN (A2) |
 | Cost/deploy/privacy review | Aggregate-only production-path collector and one-attempt real-Worker smoke pass locally; hosted 20-attempt/seven-day evidence remains OPEN |
 | Reviewer/date/decision | OPEN |

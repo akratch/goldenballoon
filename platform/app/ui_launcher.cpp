@@ -38,6 +38,22 @@ const Panel kPanels[] = {
 constexpr int kPanelCount = (int)(sizeof(kPanels) / sizeof(kPanels[0]));
 static_assert(kPanelCount == kLauncherPanelCount,
               "launcher panel count must match the public smoke contract");
+
+/* Online races are not part of this release: docs/multiplayer/STATUS.md holds
+ * no A3 GO, and the room is already fail-closed (no I/O, Start unreachable).
+ * This hides the SURFACE as well, so a shipped launcher offers exactly what
+ * the release offers. MDKR_ONLINE_ROOM_PREVIEW=1 shows the panel for the
+ * online-room gates and for development; the panel keeps its index either
+ * way, so the smoke-contract arrays and panel routing stay stable. */
+static bool panelVisible(int index) {
+    if (index < 0 || index >= kPanelCount) return false;
+    if (std::strcmp(kPanels[index].label, "Online Room") != 0) return true;
+    static const bool preview = [] {
+        const char *value = std::getenv("MDKR_ONLINE_ROOM_PREVIEW");
+        return value != nullptr && value[0] == '1';
+    }();
+    return preview;
+}
 ImVec2 g_smokeTopTabMin[kPanelCount];
 ImVec2 g_smokeTopTabMax[kPanelCount];
 bool g_smokeTopTabValid[kPanelCount] = {};
@@ -67,11 +83,14 @@ void selectPanelFromEnvironment(int &activePanel) {
 
     if (requested[0] >= '0' && requested[0] <= '9') {
         const int index = std::atoi(requested);
-        if (index >= 0 && index < kPanelCount) activePanel = index;
+        if (index >= 0 && index < kPanelCount && panelVisible(index)) {
+            activePanel = index;
+        }
         return;
     }
 
     for (int i = 0; i < kPanelCount; ++i) {
+        if (!panelVisible(i)) continue;
         if (std::strcmp(kPanels[i].label, requested) == 0) {
             activePanel = i;
             return;
@@ -196,8 +215,12 @@ void drawTopPanelTabs(int activePanel, LauncherState &state) {
     ImGui::PushStyleVar(
         ImGuiStyleVar_ItemSpacing,
         ImVec2(8.0f * AppTheme::uiScale(), ImGui::GetStyle().ItemSpacing.y));
-    for (int i = 0; i < kPanelCount; ++i) {
-        if (i != 0) ImGui::SameLine();
+    {
+        bool firstTab = true;
+        for (int i = 0; i < kPanelCount; ++i) {
+        if (!panelVisible(i)) { g_smokeTopTabValid[i] = false; continue; }
+        if (!firstTab) ImGui::SameLine();
+        firstTab = false;
         ImGui::PushID(i);
         if (drawTopPanelTab(kPanels[i].label, selectedPanel == i)) {
             requestedPanel = i;
@@ -206,6 +229,7 @@ void drawTopPanelTabs(int activePanel, LauncherState &state) {
         g_smokeTopTabMax[i] = ImGui::GetItemRectMax();
         g_smokeTopTabValid[i] = true;
         ImGui::PopID();
+        }
     }
     ImGui::PopStyleVar();
     ImGui::PopID();
@@ -273,6 +297,7 @@ void drawNavigation(int &activePanel, LauncherState &state,
 
     const int selectedPanel = activePanel;
     for (int i = 0; i < kPanelCount; ++i) {
+        if (!panelVisible(i)) continue;
         if (drawRailPanelItem(kPanels[i].label, selectedPanel == i)) {
             Launcher_requestTab(state, i, kLauncherTabPlayer);
         }
@@ -395,6 +420,7 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
                 ? kPanels[activePanel].label : "";
         if (ImGui::BeginCombo("##compact-section", activeLabel)) {
             for (int i = 0; i < kPanelCount; ++i) {
+                if (!panelVisible(i)) continue;
                 const bool selected = activePanel == i;
                 if (ImGui::Selectable(
                         kPanels[i].label, selected, 0,

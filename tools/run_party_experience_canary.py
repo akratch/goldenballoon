@@ -197,6 +197,8 @@ def phone_attempt(origin: str, chrome_path: str, profiles: Path,
         phone.evaluate("document.getElementById('use-controller').click()")
         wait_value(phone, "!document.getElementById('state-controller').hidden", bool,
                    "canary active controller", timeout)
+        initial_sequence = host.evaluate(
+            f"MDKRPartyHost.remotePads()[{seat - 1}].connectionSequence")
         host.evaluate(f"MDKRPartyHost.remotePads()[{seat - 1}].packets.length=0")
         phone.evaluate("""(() => {
           globalThis.__canaryBlockSockets=true;
@@ -214,6 +216,22 @@ def phone_attempt(origin: str, chrome_path: str, profiles: Path,
             return (value.buttons & 32768)!==0 ||
               value.edges.some(edge => (edge.buttons & 32768)!==0);
           }})""", bool, "direct input during signaling outage", timeout)
+        phone.evaluate("globalThis.__canaryBlockSockets=false")
+        wait_value(host, f"""(() => {{
+          const pad=MDKRPartyHost.remotePads()[{seat - 1}];
+          return pad.active && pad.connectionSequence>{int(initial_sequence)};
+        }})()""", bool, "same-lease controller recovery", timeout)
+        wait_value(phone, "!document.getElementById('state-controller').hidden && "
+                   "!document.getElementById('connection-mark').classList.contains('limited')",
+                   bool, "phone controls after signaling recovery", timeout)
+        host.evaluate(f"MDKRPartyHost.remotePads()[{seat - 1}].packets.length=0")
+        phone.evaluate("document.querySelector('.touch-go').click()")
+        wait_value(host, f"""MDKRPartyHost.remotePads()[{seat - 1}].packets.some(
+          packet => {{
+            const value=MDKRPartyProtocol.decode(packet);
+            return (value.buttons & 32768)!==0 ||
+              value.edges.some(edge => (edge.buttons & 32768)!==0);
+          }})""", bool, "direct input after signaling recovery", timeout)
         require(not host.failures and not phone.failures,
                 "canary browser protocol failure")
         return setup_time, input_rtt

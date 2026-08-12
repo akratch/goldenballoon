@@ -7,7 +7,8 @@
     ? globalThis.__mdkrPartyHostTestConfig : null;
   const testState = testConfig
     ? {requests: [], requestDetails: [], rooms: [], announcements: [], lifecycle: [],
-      peerCreations: 0, iceRestarts: 0, channelFailures: 0} : null;
+      peerCreations: 0, iceRestarts: 0, channelFailures: 0,
+      controlPings: 0, controlPongs: 0} : null;
   if (testState) globalThis.__mdkrPartyHostTestState = testState;
 
   const dialog = $("party-dialog");
@@ -181,12 +182,22 @@
     return true;
   }
 
+  function sendPeerOffer(controllerId, peer) {
+    if (!peer.pc.localDescription) return false;
+    const sent = sendSignal({type: "webrtc_offer", to: controllerId,
+      peerGeneration: peer.generation, sdp: peer.pc.localDescription});
+    if (sent) peer.offerSentAt = Date.now();
+    return sent;
+  }
+
   function retirePeer(controllerId, releaseReservation = false) {
     const peer = peers.get(controllerId);
     if (peer) {
       peer.retired = true;
       if (peer.recoveryTimer !== null) clearTimeout(peer.recoveryTimer);
+      if (peer.pingTimer !== null) clearTimeout(peer.pingTimer);
       peer.recoveryTimer = null;
+      peer.pingTimer = null;
       peer.pc.close();
     }
     peers.delete(controllerId);
@@ -255,9 +266,8 @@
     try {
       peer.pc.restartIce?.();
       await peer.pc.setLocalDescription(await peer.pc.createOffer({iceRestart: true}));
-      if (!sendSignal({type: "webrtc_offer", to: controllerId,
-        peerGeneration: peer.generation,
-        sdp: peer.pc.localDescription})) throw new Error("signaling_unavailable");
+      peer.remoteReady = false;
+      if (!sendPeerOffer(controllerId, peer)) return false;
       if (testState) testState.iceRestarts++;
       if (wasUnhealthy) scheduleIceRestart(controllerId, peer,
         Math.min(4000, 800 * (2 ** (peer.restartAttempt - 1))));
@@ -278,6 +288,36 @@
     rebuildPeer(controllerId, peer);
   }
 
+  function scheduleControlPing(controllerId, peer, delay = 5000) {
+    if (peers.get(controllerId) !== peer || peer.retired || peer.pingTimer !== null) return;
+    peer.pingTimer = setTimeout(() => {
+      peer.pingTimer = null;
+      if (peers.get(controllerId) !== peer || peer.retired) return;
+      if (peer.control?.readyState !== "open") {
+        directChannelLost(controllerId, peer);
+        return;
+      }
+      const now = Date.now();
+      if (peer.pingOutstandingAt !== 0 && now - peer.pingOutstandingAt >= 15000) {
+        directChannelLost(controllerId, peer);
+        return;
+      }
+      if (peer.pingOutstandingAt === 0) {
+        peer.pingNonce = (peer.pingNonce + 1) >>> 0;
+        try {
+          peer.control.send(JSON.stringify({type: "ping", protocol: 1,
+            nonce: peer.pingNonce}));
+          peer.pingOutstandingAt = now;
+          if (testState) testState.controlPings++;
+        } catch (_) {
+          directChannelLost(controllerId, peer);
+          return;
+        }
+      }
+      scheduleControlPing(controllerId, peer);
+    }, delay);
+  }
+
   async function ensurePeer(controllerId) {
     if (peers.has(controllerId) || !signaledControllers.has(controllerId)) return;
     const controller = controllerById(controllerId);
@@ -285,7 +325,9 @@
     const pc = new RTCPeerConnection(rtcConfig);
     const peer = {pc, controller, generation: ++peerGeneration,
       state: null, control: null, authenticated: false,
-      retired: false, restartAttempt: 0, recoveryTimer: null};
+      retired: false, remoteReady: false, offerSentAt: 0,
+      restartAttempt: 0, recoveryTimer: null, pingTimer: null,
+      pingNonce: 0, pingOutstandingAt: 0};
     peers.set(controllerId, peer);
     if (testState) testState.peerCreations++;
     const activateIfReady = () => {
@@ -362,9 +404,15 @@
             return true;
           } : null;
           activateIfReady();
+          scheduleControlPing(controllerId, peer);
           control.send(JSON.stringify({type: "controller_ready_ack"}));
         } else if (message.type === "input_test") {
           control.send(JSON.stringify({type: "input_test_ack", nonce: message.nonce}));
+        } else if (message.type === "pong" && message.protocol === 1 &&
+                   Number.isInteger(message.nonce) &&
+                   message.nonce === peer.pingNonce) {
+          peer.pingOutstandingAt = 0;
+          if (testState) testState.controlPongs++;
         }
       } catch (_) { /* reliable control still rejects malformed JSON */ }
     });
@@ -372,9 +420,7 @@
     peer.control = control;
     try {
       await pc.setLocalDescription(await pc.createOffer());
-      if (!sendSignal({type: "webrtc_offer", to: controllerId,
-        peerGeneration: peer.generation,
-        sdp: pc.localDescription})) throw new Error("signaling_unavailable");
+      sendPeerOffer(controllerId, peer);
     } catch (_) {
       retirePeer(controllerId, false);
       announce("Could not establish a direct phone connection. Try pairing again.");
@@ -389,8 +435,10 @@
       signaledControllers.add(controllerId);
       await ensurePeer(controllerId);
       const existing = peers.get(controllerId);
-      if (existing && existing.pc.connectionState !== "connected") {
-        scheduleIceRestart(controllerId, existing, 0);
+      if (existing && !existing.remoteReady &&
+          existing.pc.signalingState === "have-local-offer" &&
+          existing.pc.localDescription && Date.now() - existing.offerSentAt >= 250) {
+        sendPeerOffer(controllerId, existing);
       }
       return;
     }
@@ -403,6 +451,7 @@
       if (message.type === "webrtc_answer" && message.sdp &&
           JSON.stringify(message.sdp).length <= 60 * 1024) {
         await peer.pc.setRemoteDescription(message.sdp);
+        peer.remoteReady = true;
       } else if (message.type === "webrtc_ice" && message.candidate &&
                  JSON.stringify(message.candidate).length <= 4096) {
         await peer.pc.addIceCandidate(message.candidate);
@@ -572,9 +621,15 @@
       socketReconnectAttempt = 0;
       announce("Controller room connected.");
       for (const [controllerId, peer] of peers) {
-        if (peer.pc.connectionState !== "connected") {
+        if (!peer.remoteReady && peer.pc.signalingState === "have-local-offer" &&
+            peer.pc.localDescription) {
+          sendPeerOffer(controllerId, peer);
+        } else if (peer.pc.connectionState !== "connected") {
           scheduleIceRestart(controllerId, peer, 0);
         }
+      }
+      for (const controller of activeControllers()) {
+        void ensurePeer(controller.controllerId);
       }
     });
     connection.addEventListener("message", (event) => {
@@ -858,6 +913,28 @@
         if (!entry?.control) return false;
         entry.control.close();
         return true;
+      },
+      testPingControl: () => {
+        const entry = peers.entries().next().value;
+        if (!entry) return false;
+        scheduleControlPing(entry[0], entry[1], 0);
+        return true;
+      },
+      testExpireControl: () => {
+        const entry = peers.entries().next().value;
+        if (!entry) return false;
+        if (entry[1].pingTimer !== null) clearTimeout(entry[1].pingTimer);
+        entry[1].pingTimer = null;
+        entry[1].pingOutstandingAt = Date.now() - 15000;
+        scheduleControlPing(entry[0], entry[1], 0);
+        return true;
+      },
+      testPeerState: () => {
+        const entry = peers.values().next().value;
+        return entry ? {generation: entry.generation,
+          connectionState: entry.pc.connectionState,
+          signalingState: entry.pc.signalingState,
+          state: entry.state?.readyState, control: entry.control?.readyState} : null;
       },
     } : {}),
   });
