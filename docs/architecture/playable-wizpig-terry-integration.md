@@ -145,18 +145,43 @@ Wizpig investigation remains in `docs/architecture/wizpig-playable-campaign.md`.
 
 ### `game/src/objects.c`
 
-This file has a broad formatting delta in `1235879` in addition to its semantic
-hooks. If main has changed it, use the function names below to transplant or
-resolve the functional edits instead of reviewing by raw line count:
+`1235879` also reflowed the whole file to `.clang-format`, which buried 128
+lines of real hooks inside a 3716-line diff. That reflow has since been reverted
+on this branch: `git diff v1.2.1 -- game/src/objects.c` is now 18 hunks, all
+semantic. Review or transplant by the function names below.
 
-- `bonus_visual_is_presentation_actor()` and transform-bypass tracing
-- visual reset/tick/free/destroy lifecycle calls
-- presentation-actor exclusions from racer visibility, LOD, temporary
-  transform, and transform restore
-- donor draw suppression and companion shadow admission
-- picker placard filtering and owner-local transforms
-- schema-driven donor LOD and render-batch filtering
-- spawned-object claims before boss racer initialization
+Note that `git diff -w --ignore-blank-lines` gives **zero** reduction against
+the reflowed revision — `-w` normalises whitespace within a line and cannot see
+through re-wrapping. Statement-level canonicalisation is what separates the two.
+
+The complete hook inventory, in file order:
+
+1. `wizpig_visual.h` / `terry_visual.h` includes.
+2. `bonus_visual_is_presentation_actor()` — the shared exclusion predicate, with
+   a `#else` arm so it is a compile-time `FALSE` on matching builds.
+3. `bonus_visual_trace_transform_bypass()` — one-shot per-identity witness.
+4. `free_all_objects()` — companion reset before the destruction walk.
+5. `free_object()` and `obj_destroy()` — free/destroy lifecycle.
+6. `obj_update()` — companion tick, after the authoritative racer loop.
+7. `obj_authoritative_texture_tick()` — presentation-actor exclusion.
+8. `obj_visibility_tick()` — presentation-actor exclusion.
+9. `render_3d_model()` — **boss head-matrix push**. Bonus actors are claimed as
+   `BHV_NONE`, so `racerObj` is NULL and retail's secondary head matrix is
+   skipped; without this `else if` arm the `vertOverride` batches fold through
+   the body matrix and the model visibly collapses. This is the hook whose
+   omission the 13-racer picker test detects.
+10. `render_object()` — donor draw suppression and placard-owner filtering.
+11. `racer_model_index_for_view()` — donor LOD cap, gated on `allowLodBias` so
+    it applies at the draw seam only. It must never reach the authoritative
+    `obj->modelIndex`, which is part of the v3 simulation hash.
+12. `obj_lod_tick()` — presentation-actor exclusion.
+13. `set_temp_model_transforms()` — presentation-actor exclusion, plus the
+    transform-bypass arm that keeps a neutral scale instead of reading a zeroed
+    `stretch_height`.
+14. `unset_temp_model_transforms()` — matching restore exclusion.
+15. `render_mesh()` — placard batch filtering, schema-verified donor and rider
+    render-batch filtering, and the bounded placard texture index.
+16. `run_object_init_func()` — spawned-object claims before racer init.
 
 After resolution, the 13-racer picker test is the fastest positive detector for
 the former flattened/collapsed model defect.
@@ -212,10 +237,12 @@ Observed ROM-backed results:
 
 The complete 112-test native CTest run reported 111 passes. The only red was
 `audio_ring_threaded`, which failed its four overflow/flood timing assertions
-and failed the same way when rerun alone. This commit does not touch the audio
-ring implementation or that test. The lead should run that test on target main
-before and after integration to establish whether the target branch already
-contains the same host-timing failure.
+and failed the same way when rerun alone.
+
+That red is resolved. It was a host-timing flake in the test itself, fixed on
+main by `0c3cf96` ("test: make audio ring overflow stress deterministic"), which
+this branch predated. v1.2.1 has since been merged in, so the gate is green
+here; the branch never touched the audio ring implementation.
 
 The commit hook also passed the clean-room scan: no ROM, extracted bulk asset,
 capture, local machine path, or content-pack payload is tracked.
