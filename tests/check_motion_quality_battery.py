@@ -112,10 +112,13 @@ PRESENTS_PER_TICK = 4
 # recovery logic, and the chase camera swings through all of it. It is chosen
 # over the diagnosis note's shorter navigation route for one measured reason:
 # it is the only route probed that produces past-quarter-turn rotation deltas
-# at all (rotarcsnap=18 against 0 on nav_to_time_trial_race, the battle
-# challenge, and race_drive_long), which is the population R1's snap clause
-# exists to grade. A route with no fast rotation would let R1 pass by having
-# nothing to fail on.
+# at all. That population originally reached the per-axis backstop as
+# rotarcsnap=33 on the current fixture. The capture-time yaw/FOV clauses added
+# later intentionally hold those camera pairs before the backstop is reached,
+# so the live route now reports zero snaps. R1 keeps this broad rotation route
+# to audit every continuous pair; the direct pitch-axis unit test pins the
+# backstop itself, and the long-arc mutation proves the live audit sees a
+# deliberately wrong interpolated result.
 SPIN_SCRIPT = ROOT / "tests" / "input_scripts" / "race_full_3lap.txt"
 SPIN_TRACK = "29"
 SPIN_TICKS = 6000
@@ -527,25 +530,18 @@ def main() -> int:
                 print(f"FAIL: {problem}", file=sys.stderr)
             return 1
 
-    # Non-vacuity first, and in two independent directions. `rotarccheck` says
-    # angles were reconstructed at all; `rotarcsnap` says this route actually
-    # contains the past-quarter-turn population the snap clause grades. A route
-    # that drifted off the spin sections would satisfy the first and not the
-    # second, and R1 would then be a green row about nothing.
+    # Non-vacuity in two independent directions. `rotarccheck` says continuous
+    # angles were reconstructed at all; the token-gated long-arc arm below must
+    # then turn that same audit red. Fast camera pairs no longer reach
+    # `rotarcsnap`: the capture-time angle/FOV clauses atomically hold them
+    # first. The direct pitch-only unit in test_presentation_snapshot.c keeps
+    # the older per-axis backstop covered without demanding unsafe live input.
     if spin_snap["rotarccheck"] == 0:
         failures.append(
             "R1: rotarccheck=0 — no interpolated angle was audited on the spin "
             "route, so rotarcviolation=0 asserts nothing. The replay never "
             "resolved a rotation pair (presentation_snapshot.c "
             "rotation_arc_audit)")
-    if spin_snap["rotarcsnap"] == 0:
-        failures.append(
-            "R1: rotarcsnap=0 — the spin route produced no rotation delta past "
-            f"the quarter-turn snap over {spin_snap['rotarccheck']} audited "
-            "angles, so the snap clause was never exercised. race_full_3lap on "
-            "level 29 is the only route probed that produces this population "
-            "(18 on the calibrating run); a route change that loses it must be "
-            "replaced, not tolerated")
     if spin_snap["rotarcviolation"] != 0:
         failures.append(
             f"R1: rotarcviolation={spin_snap['rotarcviolation']} of "
@@ -567,7 +563,7 @@ def main() -> int:
         f"snaps={spin_snap['rotarcsnap']} "
         f"violations={spin_snap['rotarcviolation']} "
         f"control={arc_snap['rotarcviolation']} "
-        f"verdict={'PASS' if spin_snap['rotarcviolation'] == 0 and arc_snap['rotarcviolation'] > 0 and spin_snap['rotarcsnap'] > 0 else 'FAIL'}")
+        f"verdict={'PASS' if spin_snap['rotarcviolation'] == 0 and arc_snap['rotarcviolation'] > 0 else 'FAIL'}")
 
     # ---- R2 TELEPORT ------------------------------------------------------
     if spin_snap["disconthold"] == 0:

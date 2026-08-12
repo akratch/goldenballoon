@@ -73,6 +73,11 @@ def frame_hashes(build, rom, script, outdir, frames, every, verbose,
     env["MDKR_AUDIO"] = "0"          # belt-and-braces; --headless-frames is the guarantee
     env["MDKR_DUMP_EVERY"] = str(every)
     env["MDKR_SAVE_DIR"] = os.path.join(outdir, "save")
+    # The comparison must exercise the authored default renderer state, not the
+    # maintainer's launcher preferences. In particular, a local mdkr64.ini may
+    # enable uncapped interpolation or supersampling and make this release gate
+    # measure a different presentation path from one machine to the next.
+    env["MDKR_VIDEO_CONFIG_PATH"] = os.path.join(outdir, "video.ini")
     if renderer != "default":
         env["MDKR_RENDERER"] = renderer
     cmd = [build, "--headless-frames", str(frames), "--rom", rom,
