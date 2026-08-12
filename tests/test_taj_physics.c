@@ -245,6 +245,25 @@ static void test_wizpig_is_a_slightly_faster_heavy_racer(void) {
     racer.velocity = -10.0f;
     taj_physics_post_vehicle_update(&object, &racer, 1, 1.0f, A_BUTTON);
     CHECK(racer.velocity == -10.0f);
+    /* Above the 13.5 * 1.04 = 14.04 cruise target, so this can actually fail: a cruise cap applied
+     * as a ceiling would cut these back to -14.04 and make Wizpig slower than his own donor. */
+    taj_physics_pre_vehicle_update(&object, &racer);
+    racer.boostTimer = 10;
+    racer.velocity = -18.0f;
+    taj_physics_post_vehicle_update(&object, &racer, 1, 1.0f, A_BUTTON);
+    CHECK(racer.velocity == -18.0f);
+    taj_physics_pre_vehicle_update(&object, &racer);
+    racer.boostTimer = 22;
+    racer.velocity = -24.5f;
+    taj_physics_post_vehicle_update(&object, &racer, 1, 1.0f, A_BUTTON);
+    CHECK(racer.velocity == -24.5f);
+    /* Unboosted overspeed -- a zipper or a downhill -- is authored authority too, and must not be
+     * clawed back either. */
+    taj_physics_pre_vehicle_update(&object, &racer);
+    racer.boostTimer = 0;
+    racer.velocity = -19.75f;
+    taj_physics_post_vehicle_update(&object, &racer, 1, 1.0f, A_BUTTON);
+    CHECK(racer.velocity == -19.75f);
     racer.playerIndex = PLAYER_COMPUTER;
     racer.raceFinished = TRUE;
     CHECK(wizpig_physics_is_wizpig(&racer));
@@ -272,6 +291,17 @@ static void test_terry_uses_light_handling_with_modest_performance(void) {
     racer.velocity = -10.0f;
     taj_physics_post_vehicle_update(&object, &racer, 1, 1.0f, A_BUTTON);
     CHECK(racer.velocity == -10.0f);
+    /* Above the 12.4 * 1.03 = 12.772 plane cruise target, so this can actually fail. */
+    taj_physics_pre_vehicle_update(&object, &racer);
+    racer.boostTimer = 10;
+    racer.velocity = -18.0f;
+    taj_physics_post_vehicle_update(&object, &racer, 1, 1.0f, A_BUTTON);
+    CHECK(racer.velocity == -18.0f);
+    taj_physics_pre_vehicle_update(&object, &racer);
+    racer.boostTimer = 0;
+    racer.velocity = -16.25f;
+    taj_physics_post_vehicle_update(&object, &racer, 1, 1.0f, A_BUTTON);
+    CHECK(racer.velocity == -16.25f);
     CHECK(mod_racer_physics_identity(&racer) == MOD_RACER_TERRY);
     CHECK(taj_physics_run_is_noncanonical());
     CHECK(!taj_physics_canonical_records_allowed(&racer));

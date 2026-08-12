@@ -434,6 +434,19 @@ void taj_physics_post_vehicle_update(Object *obj, Object_Racer *racer, s32 updat
             taj_abs(racer->velocity) <= taj_abs(state->entrySpeed)) {
             speed -= (multiplier - 1.0f) * updateRateF;
         }
+        /* The cruise target is a floor to grow toward, never a ceiling imposed on the authored
+         * solver. Cap at whichever is larger: this identity's cruise target, or the speed the
+         * donor's own physics already produced this tick.
+         *
+         * Without this the clamp cut every boost, zipper, and downhill overspeed back to
+         * nominal * multiplier -- 14.04 for Wizpig, 12.772 for Terry -- leaving both strictly
+         * SLOWER than the Krunch/Pipsy donors whose stats they inherit, and contradicting the
+         * "stock boost magnitudes remain unchanged" contract. Taj's arm below takes the same
+         * exemption through taj_physics_speed_cap(); his 1.35x target simply sits above the
+         * authored envelope, so the defect was never observable there. */
+        if (taj_abs(racer->velocity) > maxSpeed) {
+            maxSpeed = taj_abs(racer->velocity);
+        }
         if (speed < -maxSpeed) speed = -maxSpeed;
         taj_apply_horizontal_forward_speed(obj, racer, speed);
         return;
