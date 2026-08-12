@@ -1,6 +1,6 @@
 # Golden Balloon 1.2.1
 
-*Released 2026-08-11.*
+*Released 2026-08-12.*
 
 This is a focused patch for the in-game Settings overlay and Motion smoothing.
 No game data is included, and existing preferences carry over unchanged.
